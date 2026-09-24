@@ -17,8 +17,8 @@ used. The GPUs compute cached experts while the CPU computes the rest, in parall
 |---|---|---|---|---|---|
 | GLM-5.3-Flash 3.0-bit, original GGUF | 117 GB | 12.3 | ~25 | 2.0x | 3.5534 -> 3.5534 |
 | GLM-5.3-Flash 3.0-bit, [Q4_K attention GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 12.3 | **27.72** | 2.3x | 3.5534 -> 3.5871 (+0.95%) |
-| MiMo-2.6-Flash-RL IQ3_XXS | 132 GB | 4.7 | **9.9** | 2.1x | not measured |
-| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 29.7 | **32.1** | 1.08x | not measured |
+| MiMo-2.6-Flash-RL IQ3_XXS | 132 GB | 4.7 | **9.9** | 2.1x | unchanged (no requant) |
+| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 29.7 | **32.1** | 1.08x | unchanged (no requant) |
 
 GLM prompt: "generate smallest html tetris game."; MiMo/Qwen prompt: "write smallest
 html tetris game" (both temp 0). PPL: wikitext-2, 40 x 512-token chunks (GLM only).
