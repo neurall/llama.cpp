@@ -79,6 +79,11 @@ per token today: ~20 ms GPU work on non-expert layers, ~10 ms CPU on missed expe
 | 4 | ~82 GB | ~240 | ~99% | ~1 ms | ~38-42 |
 | 5+ | whole model | 288 | 100% | 0 | ~40-45 (plateau) |
 
+as for other models I tested it on. Here is newest Mimo 2.6 iq3 141g model
+llama-cli -m /m/m/3/MiMo-V2.6-Flash-RL-IQ3_XXS-00001-of-00008.gguf -fitt 8000 --cpu-moe -nr --moe-expert-cache    -1 -c 1024 -p "write smallest html tetris game"  --temp 0 -st  
+stock llama 4.7 t/s 
+our fork 9.9 t/s 
+
 The plateau is the ~20 ms GPU part: with the default layer split each layer runs on
 one GPU at a time, so extra GPUs add cache room, not speed on that part. System RAM
 must still hold all experts. Cards in x4 PCIe slots upload experts slower, so the
