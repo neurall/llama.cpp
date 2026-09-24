@@ -10,7 +10,7 @@ used. The GPUs compute cached experts while the CPU computes the rest, in parall
 |---|---|---|
 | stock llama.cpp (autofit) | 12.3 | 3.5534 |
 | this fork, original GGUF | ~24 | 3.5534 |
-| this fork, Q4_K attention/shared weights | **26.15** | 3.5871 (+0.95%) |
+| this fork, Q4_K attention/shared weights | **27.72** | 3.5871 (+0.95%) |
 
 Decode: prompt "generate smallest html tetris game.", 1024 context, temperature 0.
 Perplexity: 40 x 512-token chunks.
