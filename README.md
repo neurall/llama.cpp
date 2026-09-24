@@ -1,12 +1,11 @@
 # llama.cpp: fork with multi gpu acceleration even for models bigger than total gpu mem
 
-> **Built on the GPU expert cache by [@csantiago78](https://github.com/csantiago78)**,
-> llama.cpp PR [#27861](https://github.com/ggml-org/llama.cpp/pull/27861)
-> ("GPU-resident LRU cache for host-offloaded MoE expert weights"). That PR had the
-> key idea and the core mechanism: keep hot experts in VRAM, run them on the GPU
-> and the rest on the CPU, and sum the exact result. This fork extends it (VRAM
-> filling, eviction, CPU/GPU overlap, kernel fusion); the foundation is theirs.
-> Thank you!
+> **Big thanks to [@csantiago78](https://github.com/csantiago78)**: the expert cache
+> here builds on their implementation in llama.cpp PR
+> [#27861](https://github.com/ggml-org/llama.cpp/pull/27861) ("GPU-resident LRU cache
+> for host-offloaded MoE expert weights"), the first to get a working hot-expert
+> cache into llama.cpp. This fork takes it further: filling all free VRAM, smarter
+> eviction, CPU/GPU overlap and fused kernels.
 
 For MoE models much larger than VRAM: every expert stays in system RAM, and all
 VRAM left after the KV cache becomes a live cache of the experts actually being
