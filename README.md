@@ -9,8 +9,15 @@ used. The GPUs compute cached experts while the CPU computes the rest, in parall
 | | decode t/s | wikitext-2 PPL |
 |---|---|---|
 | stock llama.cpp (autofit) | 12.3 | 3.5534 |
-| this fork, original GGUF | ~24 | 3.5534 |
+| this fork, original GGUF | ~25 | 3.5534 |
 | this fork, Q4_K attention/shared weights | **27.72** | 3.5871 (+0.95%) |
+
+Models:
+- Original GGUF (tested): [pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF](https://huggingface.co/pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF),
+  the 3.0-bit file. Most of the speedup comes from the fork, not the requantization:
+  ~25 t/s with this file vs ~28 t/s with the Q4_K attention variant below.
+- Q4_K attention variant (same experts, non-expert Q8_0 weights requantized to Q4_K):
+  [neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF).
 
 Decode: prompt "generate smallest html tetris game.", 1024 context, temperature 0.
 Perplexity: 40 x 512-token chunks.
