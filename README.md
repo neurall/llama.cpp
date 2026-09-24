@@ -79,10 +79,20 @@ per token today: ~20 ms GPU work on non-expert layers, ~10 ms CPU on missed expe
 | 4 | ~82 GB | ~240 | ~99% | ~1 ms | ~38-42 |
 | 5+ | whole model | 288 | 100% | 0 | ~40-45 (plateau) |
 
-as for other models I tested it on. Here is newest Mimo 2.6 iq3 141g model
-llama-cli -m /m/m/3/MiMo-V2.6-Flash-RL-IQ3_XXS-00001-of-00008.gguf -fitt 8000 --cpu-moe -nr --moe-expert-cache    -1 -c 1024 -p "write smallest html tetris game"  --temp 0 -st  
-stock llama 4.7 t/s 
-our fork 9.9 t/s 
+**Other models tested**, same box, prompt "write smallest html tetris game", temp 0,
+`-c 1024`, single stream:
+
+| model | size | stock t/s | fork t/s | gain |
+|---|---|---|---|---|
+| MiMo-2.6-Flash-RL IQ3_XXS | 132 GB | 4.7 | **9.9** | 2.1x |
+| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 29.7 | **32.1** | 1.08x |
+
+MiMo needed `-fitt 8000` on both stock and fork to avoid autofit OOM-ing on this
+arch/quant combo; Qwen3.8-Flash-Next loaded fine with default fit on both.
+Qwen's gain is small because stock's autofit already placed most of its experts on
+GPU by default here — there's little for the cache to improve on when the static
+layer placement already mostly fits. The big wins (GLM, MiMo) are on models where
+default placement leaves most expert work on the CPU.
 
 The plateau is the ~20 ms GPU part: with the default layer split each layer runs on
 one GPU at a time, so extra GPUs add cache room, not speed on that part. System RAM
