@@ -14,8 +14,10 @@ used. The GPUs compute cached experts while the CPU computes the rest, in parall
 
 Models:
 - Original GGUF (tested): [pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF](https://huggingface.co/pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF),
-  the 3.0-bit file. Most of the speedup comes from the fork, not the requantization:
-  ~25 t/s with this file vs ~28 t/s with the Q4_K attention variant below.
+  the 3.0-bit file. It works as-is with this fork, no conversion needed, and it's the
+  quality reference (unchanged perplexity). Most of the speedup comes from the fork,
+  not the requantization: ~25 t/s with this file vs ~28 t/s with the Q4_K attention
+  variant below.
 - Q4_K attention variant (same experts, non-expert Q8_0 weights requantized to Q4_K):
   [neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF).
 
