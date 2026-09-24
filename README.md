@@ -104,6 +104,33 @@ first generated token, instead of starting cold and only learning from decode.
 in the [PR #27861 discussion](https://github.com/ggml-org/llama.cpp/pull/27861)
 with their own patch; worth checking out too.
 
+**Other notable tweaks:**
+- **Swap budget from measured cost, not a guess**: each step measures real upload
+  time (ms/expert) and real token time, then computes how many swaps fit in
+  `LLAMA_MOE_CACHE_SWAP_FRAC` of a token (default 25%) — instead of a fixed
+  swaps-per-step constant.
+- **Pay-back filter on every eviction**: a swap only happens if the candidate's
+  measured usage beats the cached victim's by more than what the upload itself
+  costs in CPU-equivalent time, so churn can't cost more than it saves.
+- **Usage tracking with decay** (`LLAMA_MOE_CACHE_POLICY`: `add` default, `halve`,
+  `window`): recent use counts more than old use, so the cache follows shifts in
+  which experts are hot instead of freezing on early-token bias.
+- **CPU/GPU overlap inside a layer**: the GPU cache chain is queued and its inputs
+  copied *before* the CPU miss chain runs, so both compute at the same time instead
+  of the scheduler serializing them.
+- **Scheduler fixes upstream benefits from too**: no host barrier between two GPU
+  splits when neither reads host memory, and a new split is inserted exactly when
+  another GPU's result is needed mid-split — both apply to any multi-GPU llama.cpp
+  workload, not just this cache.
+- **Fused CUDA kernel** for the hyper-connection/KDA gate chain
+  (`MUL -> ADD|SCALE -> SIGMOID -> SCALE`, one kernel instead of four), and GLM5-Next's
+  KDA Q/K norm collapsed from `rms_norm`+`scale` into one `l2_norm` op.
+- **Repacked CPU experts stay cacheable**: uploads read raw bytes straight from the
+  GGUF file (recorded per-tensor file offsets) when host memory holds a
+  repack-transformed layout instead of the on-disk one.
+- `GGML_SCHED_PROF=1` and `LLAMA_MOE_CACHE_STATS=1` for live profiling: barrier vs.
+  copy wait time, fill %, in-flight uploads, queue depth, hit rate.
+
 ---
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
