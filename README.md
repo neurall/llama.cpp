@@ -1,4 +1,47 @@
-# llama.cpp
+# llama.cpp: fork with a VRAM-filling MoE expert cache
+
+For MoE models much larger than VRAM: every expert stays in system RAM, and all
+VRAM left after the KV cache becomes a live cache of the experts actually being
+used. The GPUs compute cached experts while the CPU computes the rest, in parallel.
+
+**GLM-5.3-Flash 3.0-bit (117 GB) on 2x RTX 3090 (48 GB) + 125 GB RAM, single stream:**
+
+| | decode t/s | wikitext-2 PPL |
+|---|---|---|
+| stock llama.cpp (autofit) | 12.3 | 3.5534 |
+| this fork, original GGUF | ~24 | 3.5534 |
+| this fork, Q4_K attention/shared weights | **26.15** | 3.5871 (+0.95%) |
+
+Decode: prompt "generate smallest html tetris game.", 1024 context, temperature 0.
+Perplexity: 40 x 512-token chunks.
+
+```sh
+llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
+    -np 1 -c 1024 -t 6 --cpu-moe -nr --moe-expert-cache -1
+```
+
+- `--cpu-moe` keeps all experts in RAM; `--moe-expert-cache -1` sizes the cache
+  per GPU from the VRAM free after KV and compute buffers. Set `-c` explicitly:
+  without it autofit grows the context and takes the VRAM the cache needs.
+- `-t 6` suits an 8-core CPU (leave cores to drive the GPUs).
+- Cache hit rate is ~85% after warm-up. `LLAMA_MOE_CACHE_STATS=1` logs it.
+- Tuning: `LLAMA_MOE_CACHE_POLICY` (`add` default, `halve`, `window`),
+  `LLAMA_MOE_CACHE_MARGIN_MB` (VRAM left free, default 1024),
+  `LLAMA_MOE_CACHE_SWAP_FRAC` (share of token time for uploads, default 0.25).
+- `GGML_SCHED_PROF=1` prints where each token's host time goes.
+
+What's in it: the GPU expert cache from PR [#27861](https://github.com/ggml-org/llama.cpp/pull/27861)
+(csantiago78), extended with VRAM-filling auto-sizing, prefill warm start,
+usage-driven eviction that only swaps when the upload pays back, CPU/GPU overlap
+per layer, scheduler barrier fixes and fused gate kernels. GLM-5.3-Flash support
+comes from PRs [#27773](https://github.com/ggml-org/llama.cpp/pull/27773) and
+[#27917](https://github.com/ggml-org/llama.cpp/pull/27917) (timkhronos); stock
+llama.cpp can't load GLM-5.3-Flash yet.
+
+Branches: `release` (this), `experiments` (network MoE split, dense split,
+local 2-GPU expert split, io_uring lazy loading; not needed for the above).
+
+---
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
