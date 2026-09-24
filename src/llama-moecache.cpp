@@ -108,6 +108,11 @@ bool file_location(const llama_model & model, const ggml_tensor * t, int * fd, s
 }
 
 bool pread_full(int fd, void * dst, size_t n, size_t off) {
+#ifdef _WIN32
+    // no file locations are recorded on Windows; uploads use host memory
+    GGML_UNUSED(fd); GGML_UNUSED(dst); GGML_UNUSED(n); GGML_UNUSED(off);
+    return false;
+#else
     uint8_t * d = (uint8_t *) dst;
     while (n > 0) {
         const ssize_t r = pread(fd, d, n, (off_t) off);
@@ -117,6 +122,7 @@ bool pread_full(int fd, void * dst, size_t n, size_t off) {
         d += r; n -= (size_t) r; off += (size_t) r;
     }
     return true;
+#endif
 }
 
 
