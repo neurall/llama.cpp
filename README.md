@@ -30,6 +30,23 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   `LLAMA_MOE_CACHE_SWAP_FRAC` (share of token time for uploads, default 0.25).
 - `GGML_SCHED_PROF=1` prints where each token's host time goes.
 
+**More GPUs (estimate, only 2 tested).** Nothing assumes two GPUs: each GPU gets
+its own cache, sized from its free VRAM. Each extra GPU adds cache room, so more
+of every token's experts are hits and less work falls to the CPU. For this model,
+per token today: ~20 ms GPU work on non-expert layers, ~10 ms CPU on missed experts.
+
+| GPUs (24 GB each) | cache room | slots/layer (of 288) | hit rate | CPU miss time | decode t/s |
+|---|---|---|---|---|---|
+| 2 (measured) | ~34 GB | ~100 | 85-88% | ~10 ms | 26-28 |
+| 3 | ~58 GB | ~170 | ~95% | ~3-4 ms | ~33-35 |
+| 4 | ~82 GB | ~240 | ~99% | ~1 ms | ~38-42 |
+| 5+ | whole model | 288 | 100% | 0 | ~40-45 (plateau) |
+
+The plateau is the ~20 ms GPU part: with the default layer split each layer runs on
+one GPU at a time, so extra GPUs add cache room, not speed on that part. System RAM
+must still hold all experts. Cards in x4 PCIe slots upload experts slower, so the
+cache warms up slower. Reports from 3+ GPU setups are welcome.
+
 What's in it: the GPU expert cache from PR [#27861](https://github.com/ggml-org/llama.cpp/pull/27861)
 (csantiago78), extended with VRAM-filling auto-sizing, prefill warm start,
 usage-driven eviction that only swaps when the upload pays back, CPU/GPU overlap
