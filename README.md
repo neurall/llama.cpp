@@ -1,4 +1,4 @@
-# llama.cpp: fork with a VRAM-filling MoE expert cache
+# llama.cpp: fork with multi gpu acceleration even for models bigger than total gpu mem
 
 For MoE models much larger than VRAM: every expert stays in system RAM, and all
 VRAM left after the KV cache becomes a live cache of the experts actually being
