@@ -90,12 +90,19 @@ must still hold all experts. Cards in x4 PCIe slots upload experts slower, so th
 cache warms up slower. Reports from 3+ GPU setups are welcome.
 
 What's in it: the GPU expert cache from PR [#27861](https://github.com/ggml-org/llama.cpp/pull/27861)
-(csantiago78), extended with VRAM-filling auto-sizing, prefill warm start,
-usage-driven eviction that only swaps when the upload pays back, CPU/GPU overlap
-per layer, scheduler barrier fixes and fused gate kernels. GLM-5.3-Flash support
-comes from PRs [#27773](https://github.com/ggml-org/llama.cpp/pull/27773) and
+(csantiago78), extended with VRAM-filling auto-sizing, usage-driven eviction that
+only swaps when the upload pays back, CPU/GPU overlap per layer, scheduler barrier
+fixes and fused gate kernels. GLM-5.3-Flash support comes from PRs
+[#27773](https://github.com/ggml-org/llama.cpp/pull/27773) and
 [#27917](https://github.com/ggml-org/llama.cpp/pull/27917) (timkhronos); stock
 llama.cpp can't load GLM-5.3-Flash yet.
+
+**Prefill warm start**, implemented independently for this fork: the cache observes
+which experts the prompt itself selects during prefill and preloads them before the
+first generated token, instead of starting cold and only learning from decode.
+[@sdroege](https://github.com/sdroege) explored the same idea independently
+in the [PR #27861 discussion](https://github.com/ggml-org/llama.cpp/pull/27861)
+with their own patch; worth checking out too.
 
 ---
 
