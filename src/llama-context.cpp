@@ -93,8 +93,6 @@ llama_context::llama_context(
     //     may need to be backend-dependent
     LLAMA_LOG_INFO("%s: constructing llama_context\n", __func__);
 
-    llama_moe_cache_init(model, params.n_moe_cache_slots, params.n_moe_cache_inserts);
-
     t_start_us = model.t_start_us;
     t_load_us  = model.t_load_us;
 
@@ -464,6 +462,13 @@ llama_context::llama_context(
 
         sched_reserve();
 
+        // after KV/compute buffers so auto sizing (-1) sees the real free VRAM;
+        // re-reserve so the compute graph includes the cache chain
+        if (params.n_moe_cache_slots != 0) {
+            llama_moe_cache_init(model, params.n_moe_cache_slots, params.n_moe_cache_inserts);
+            sched_reserve();
+        }
+
         if (!cparams.flash_attn) {
             if (ggml_is_quantized(params.type_v)) {
                 throw std::runtime_error("quantized V cache was requested, but this requires Flash Attention");
@@ -483,6 +488,7 @@ llama_context::llama_context(
 }
 
 llama_context::~llama_context() {
+    llama_moe_cache_free();
     // wait for any pending asynchronous copies into the output buffers before they are freed
     synchronize();
 

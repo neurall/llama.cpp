@@ -53,6 +53,7 @@ struct llama_moe_cache_layer {
 // build the cache for every host-resident expert layer of the model.
 // Safe to call more than once; only the first call does work.
 void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts);
+void llama_moe_cache_free();
 
 // nullptr when the cache is disabled or this tensor has no cached layer
 const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps);

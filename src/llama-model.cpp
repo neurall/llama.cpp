@@ -1,5 +1,9 @@
 #include "llama-model.h"
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 #include "llama-arch.h"
 #include "llama-ext.h"
 #include "llama-hparams.h"
@@ -1194,6 +1198,11 @@ llama_model::llama_model(const llama_model_params & params) : params(params), pi
 }
 
 llama_model::~llama_model() {
+#ifndef _WIN32
+    for (int fd : exps_fds) {
+        close(fd);
+    }
+#endif
     for (auto * lora : loras) {
         delete lora;
     }
@@ -1848,6 +1857,25 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             return false;
         }
     }
+
+#ifndef _WIN32
+    {
+        std::vector<int> fd_of(ml.files.size(), -1);
+        for (auto & layer : layers) {
+            for (ggml_tensor * t : { layer.ffn_up_exps, layer.ffn_gate_exps, layer.ffn_down_exps }) {
+                const auto * w = t ? ml.get_weight(ggml_get_name(t)) : nullptr;
+                if (!w) {
+                    continue;
+                }
+                if (fd_of[w->idx] < 0) {
+                    fd_of[w->idx] = dup(ml.files[w->idx]->file_id());
+                    exps_fds.push_back(fd_of[w->idx]);
+                }
+                exps_file_locs[t] = { fd_of[w->idx], w->offs };
+            }
+        }
+    }
+#endif
 
     if (use_mmap_buffer) {
         for (auto & mapping : ml.mappings) {

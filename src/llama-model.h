@@ -695,6 +695,12 @@ struct llama_model {
 
     std::vector<llama_layer> layers;
 
+    // where each routed-expert tensor's raw GGUF bytes live (owned fds), so the
+    // moe-cache can upload experts even when host memory holds a repacked copy
+    struct tensor_file_loc { int fd; size_t offs; };
+    std::unordered_map<const ggml_tensor *, tensor_file_loc> exps_file_locs;
+    std::vector<int> exps_fds;
+
     //Dense linear projections for SentenceTransformers models like embeddinggemma
     // For Sentence Transformers models structure see
     // https://sbert.net/docs/sentence_transformer/usage/custom_models.html#structure-of-sentence-transformer-models
