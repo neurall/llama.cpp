@@ -24,6 +24,25 @@ Models:
 Decode: prompt "generate smallest html tetris game.", 1024 context, temperature 0.
 Perplexity: 40 x 512-token chunks.
 
+**Same VRAM, different use.** Stock llama.cpp and this fork get the same 48 GB; what
+differs is what it holds. Each token uses only 8 of the 288 experts in each layer.
+
+- Stock places experts statically, whole layers at a time: ~36 GB fits all 288
+  experts of ~14 of the 42 MoE layers. Most of that VRAM holds experts the current
+  token doesn't touch, so only ~33% of each token's expert work runs on GPU and the
+  CPU does ~67%, one after the other.
+- This fork fills the same VRAM with the ~100 most-used experts of every layer.
+  Usage is skewed, so those cover ~85% of what tokens actually pick: ~85% of expert
+  work runs on GPU and the CPU does ~15%, at the same time as the GPUs.
+
+| | expert work on GPU | expert work on CPU | decode t/s |
+|---|---|---|---|
+| stock (static whole layers) | ~33% | ~67% | 12.3 |
+| this fork (cache of hot experts) | ~85% | ~15%, in parallel | 26-28 |
+
+So stock can't reach 2x on the same hardware: without an expert cache, extra VRAM
+mostly holds experts that aren't being used.
+
 Run (with the faster Q4_K attention GGUF from [neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF)):
 
 ```sh
