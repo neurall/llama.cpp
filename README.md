@@ -132,6 +132,10 @@ with their own patch; worth checking out too.
 - `GGML_SCHED_PROF=1` and `LLAMA_MOE_CACHE_STATS=1` for live profiling: barrier vs.
   copy wait time, fill %, in-flight uploads, queue depth, hit rate.
 
+**About the author of this fork**: I'm actively looking for an AI engineering/research
+role and open to relocating out of Eastern Europe. If this work is useful to you or
+your team, reach out: [linkedin.com/in/neuralll](https://www.linkedin.com/in/neuralll/)
+
 ---
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
@@ -258,9 +262,3 @@ The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-or
 - [nlohmann/json](https://github.com/nlohmann/json) - Single-header JSON library, used by various tools/examples - MIT License
 - [mackron/miniaudio](https://github.com/mackron/miniaudio) - Single-header audio format decoder, used by multimodal subsystem - Public domain
 - [sheredom/subprocess.h](https://github.com/sheredom/subprocess.h) - Single-header process launching solution for C and C++ - Public domain
-
----
-
-**About the author of this fork**: I'm actively looking for an AI engineering/research
-role and open to relocating out of Eastern Europe. If this work is useful to you or
-your team, reach out: [linkedin.com/in/neuralll](https://www.linkedin.com/in/neuralll/)
