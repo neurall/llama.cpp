@@ -38,9 +38,6 @@ comes from PRs [#27773](https://github.com/ggml-org/llama.cpp/pull/27773) and
 [#27917](https://github.com/ggml-org/llama.cpp/pull/27917) (timkhronos); stock
 llama.cpp can't load GLM-5.3-Flash yet.
 
-Branches: `release` (this), `experiments` (network MoE split, dense split,
-local 2-GPU expert split, io_uring lazy loading; not needed for the above).
-
 ---
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
