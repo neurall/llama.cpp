@@ -2178,6 +2178,62 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     cur = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
     ggml_tensor * mc_inp = cur;
 
+    // Expert cache: overlap the GPU cache chain with the CPU chain for the
+    // uncached experts. Copy the CPU chain's inputs to CPU in their own split
+    // first (that copy syncs the GPU while only the router is queued), then
+    // queue the GPU chain, then run the CPU chain on the copies only, so the
+    // scheduler has no reason to wait for the GPU before computing on CPU.
+    ggml_tensor * down_g = nullptr;
+    if (mcache) {
+        ggml_backend_t cpu_backend = nullptr;
+        for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+            ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+            if (ggml_backend_dev_type(ggml_backend_get_device(b)) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+                cpu_backend = b;
+            }
+        }
+        if (cpu_backend) {
+            cur = ggml_cont(ctx0, cur);
+            selected_experts = ggml_cont(ctx0, selected_experts);
+            ggml_backend_sched_set_tensor_backend(sched, cur, cpu_backend);
+            ggml_backend_sched_set_tensor_backend(sched, selected_experts, cpu_backend);
+            cb(cur, "ffn_moe_cpu_inp", il);
+            ggml_build_forward_expand(gf, cur);
+            ggml_build_forward_expand(gf, selected_experts);
+        }
+
+        // device-side chain over the cached experts, mirroring the LLM_FFN_SILU
+        // activation above (the only type_op the cache path is enabled for)
+        ggml_tensor * up_g   = ggml_mul_mat_id(ctx0, mcache->up_c,   mc_inp, mc_slot_ids);
+        ggml_tensor * gate_g = ggml_mul_mat_id(ctx0, mcache->gate_c, mc_inp, mc_slot_ids);
+        cb(up_g,   "ffn_moe_cache_up",   il);
+        cb(gate_g, "ffn_moe_cache_gate", il);
+
+        ggml_tensor * act_g = nullptr;
+        {
+            const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
+            constexpr float eps = 1e-6f;
+            if (limit > eps) {
+                if (arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_GLM5_NEXT || (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0)) {
+                    // exactly the op the CPU chain uses for these archs
+                    act_g = ggml_swiglu_clamp(ctx0, gate_g, up_g, limit);
+                } else {
+                    up_g = ggml_clamp(ctx0, up_g, -limit, limit);
+                    ggml_tensor * ga = ggml_silu(ctx0, gate_g);
+                    ga    = ggml_clamp(ctx0, ga, -INFINITY, limit);
+                    act_g = ggml_mul(ctx0, ga, up_g);
+                }
+            } else {
+                act_g = ggml_swiglu_split(ctx0, gate_g, up_g);
+            }
+        }
+
+        down_g = ggml_mul_mat_id(ctx0, mcache->down_c, act_g, mc_slot_ids);
+        cb(down_g, "ffn_moe_cache_down", il);
+
+        ggml_build_forward_expand(gf, down_g);
+    }
+
     if (weight_before_ffn) {
         // repeat cur to [n_embd, n_expert_used, n_tokens]
         ggml_tensor * repeated = ggml_repeat_4d(ctx0, cur, n_embd, n_expert_used, n_tokens, 1);
@@ -2339,35 +2395,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     if (mcache) {
         experts->src[3] = mcache->host_table;
         experts->op_params[0] = mcache->n_slots;
-
-        // device-side chain over the cached experts, mirroring the LLM_FFN_SILU
-        // activation above (the only type_op the cache path is enabled for)
-        ggml_tensor * up_g   = ggml_mul_mat_id(ctx0, mcache->up_c,   mc_inp, mc_slot_ids);
-        ggml_tensor * gate_g = ggml_mul_mat_id(ctx0, mcache->gate_c, mc_inp, mc_slot_ids);
-        cb(up_g,   "ffn_moe_cache_up",   il);
-        cb(gate_g, "ffn_moe_cache_gate", il);
-
-        ggml_tensor * act_g = nullptr;
-        {
-            const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
-            constexpr float eps = 1e-6f;
-            if (limit > eps) {
-                up_g = ggml_clamp(ctx0, up_g, -limit, limit);
-                if (arch == LLM_ARCH_DEEPSEEK4 || (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0)) {
-                    gate_g = ggml_clamp(ctx0, gate_g, -INFINITY, limit);
-                    act_g  = ggml_swiglu_split(ctx0, gate_g, up_g);
-                } else {
-                    ggml_tensor * ga = ggml_silu(ctx0, gate_g);
-                    ga    = ggml_clamp(ctx0, ga, -INFINITY, limit);
-                    act_g = ggml_mul(ctx0, ga, up_g);
-                }
-            } else {
-                act_g = ggml_swiglu_split(ctx0, gate_g, up_g);
-            }
-        }
-
-        ggml_tensor * down_g = ggml_mul_mat_id(ctx0, mcache->down_c, act_g, mc_slot_ids);
-        cb(down_g, "ffn_moe_cache_down", il);
 
         experts = ggml_add(ctx0, experts, down_g);
         cb(experts, "ffn_moe_cache_merged", il);

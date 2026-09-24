@@ -1341,6 +1341,31 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                 }
             }
 
+            if (node_backend_id == cur_backend_id && !need_new_split) {
+                for (int j = 0; j < GGML_MAX_SRC; j++) {
+                    struct ggml_tensor * src = node->src[j];
+                    if (src == NULL) {
+                        continue;
+                    }
+                    // an activation from another GPU needed mid-split: start a new split
+                    // here, otherwise its copy (and the wait on that GPU) is done at split
+                    // start and the independent nodes before this one can't overlap it
+                    if (i > split->i_start && (src->buffer == NULL || src->buffer->usage != GGML_BACKEND_BUFFER_USAGE_WEIGHTS)) {
+                        const int src_backend_id = tensor_backend_id(src);
+                        if (src_backend_id >= 0 && src_backend_id != cur_backend_id &&
+                                tensor_id_copy(hash_id(src), cur_backend_id, 0) == NULL) {
+                            ggml_backend_dev_t sd = ggml_backend_get_device(sched->backends[src_backend_id]);
+                            ggml_backend_dev_t cd = ggml_backend_get_device(sched->backends[cur_backend_id]);
+                            if (sd && cd && ggml_backend_dev_type(sd) == GGML_BACKEND_DEVICE_TYPE_GPU &&
+                                    ggml_backend_dev_type(cd) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                                need_new_split = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
             if (node_backend_id != cur_backend_id || need_new_split) {
                 split->i_end = i;
                 i_split++;
@@ -1650,19 +1675,53 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
     int prev_backend_id = -1;
 
+    // GGML_SCHED_PROF=1: host-side time per graph, averaged over 64 graphs:
+    // waiting before CPU/GPU splits (barriers, input copies = syncs), CPU split
+    // compute (synchronous), GPU split launch
+    static const bool prof = getenv("GGML_SCHED_PROF") != NULL;
+    static int64_t pw_cpu = 0, pw_gpu = 0, pc_cpu = 0, pl_gpu = 0, p_total = 0, p_n = 0, p_splits = 0;
+    static int64_t pb_cpu = 0, pb_gpu = 0, pc_tiny = 0, n_tiny = 0; // barrier waits; CPU splits of <= 2 nodes (input copies only)
+    const int64_t p_graph_t0 = prof ? ggml_time_us() : 0;
+
     for (int split_id = 0; split_id < sched->n_splits; split_id++) {
         struct ggml_backend_sched_split * split = &splits[split_id];
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
+        const int64_t p_t0 = prof ? ggml_time_us() : 0;
+        const bool    p_is_cpu = prof && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU;
+        int64_t       p_t1 = 0;
 
         // ensure the previous split's async work has completed before we start
         // this split, the allocator may have reused buffer regions across splits
-        if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id) {
+        // GPU->GPU needs no host barrier: a GPU only reads another GPU's memory
+        // through input copies, which are ordered on the source GPU's stream
+        const auto is_gpu = [](ggml_backend_t b) {
+            ggml_backend_dev_t d = ggml_backend_get_device(b);
+            return d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU;
+        };
+        // a GPU split that read no host memory only touched device memory, so
+        // nothing this split writes can still be in use by it: no barrier either
+        const auto prev_reads_host = [&]() {
+            const struct ggml_backend_sched_split * prev = &splits[split_id - 1];
+            for (int j = 0; j < prev->n_inputs; j++) {
+                ggml_backend_buffer_t b = prev->inputs[j]->view_src ? prev->inputs[j]->view_src->buffer : prev->inputs[j]->buffer;
+                if (!b || ggml_backend_buffer_is_host(b)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id &&
+                !(is_gpu(sched->backends[prev_backend_id]) && (is_gpu(split_backend) || !prev_reads_host()))) {
             if (sched->events[prev_backend_id][sched->cur_copy] != NULL) {
                 ggml_backend_event_synchronize(sched->events[prev_backend_id][sched->cur_copy]);
             } else {
                 ggml_backend_synchronize(sched->backends[prev_backend_id]);
             }
+        }
+
+        if (prof) {
+            (p_is_cpu ? pb_cpu : pb_gpu) += ggml_time_us() - p_t0;
         }
 
         // copy the input tensors to the split backend
@@ -1719,6 +1778,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         ids.resize(ggml_nbytes(ids_tensor) / sizeof(int32_t));
                         ggml_backend_tensor_get_async(ids_backend, ids_tensor, ids.data(), 0, ggml_nbytes(ids_tensor));
                         ggml_backend_synchronize(ids_backend);
+
+                        // let an expert cache see which experts offloaded batches use
+                        void * obs_ud = NULL;
+                        ggml_moe_obs_cb_t obs_cb = ggml_get_moe_obs_callback(&obs_ud);
+                        if (obs_cb && strstr(input->name, "ffn_gate_exps")) {
+                            ggml_tensor ids_host = *ids_tensor;
+                            ids_host.data = ids.data();
+                            obs_cb(input->name, &ids_host, obs_ud);
+                        }
 
                         // find the used experts
                         used_ids.clear();
@@ -1788,6 +1856,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
 
+        if (prof) {
+            p_t1 = ggml_time_us();
+        }
+
         if (!sched->callback_eval) {
             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
             if (ec != GGML_STATUS_SUCCESS) {
@@ -1832,7 +1904,31 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             ggml_backend_event_record(sched->events[split_backend_id][sched->cur_copy], split_backend);
         }
 
+        if (prof) {
+            const int64_t p_t2 = ggml_time_us();
+            (p_is_cpu ? pw_cpu : pw_gpu) += p_t1 - p_t0;
+            (p_is_cpu ? pc_cpu : pl_gpu) += p_t2 - p_t1;
+            if (p_is_cpu && split->graph.n_nodes <= 2) {
+                pc_tiny += p_t2 - p_t1;
+                n_tiny++;
+            }
+        }
+
         prev_backend_id = split_backend_id;
+    }
+
+    if (prof && sched->n_splits > 8) {
+        p_total  += ggml_time_us() - p_graph_t0;
+        p_splits += sched->n_splits;
+        if (++p_n == 64) {
+            GGML_LOG_WARN("sched-prof: per graph %.2f ms (%.0f splits): wait before CPU %.2f (barrier %.2f, input copy %.2f), CPU compute %.2f (tiny splits %.1f x %.1f us), wait before GPU %.2f (barrier %.2f, input copy %.2f), GPU launch %.2f ms\n",
+                    p_total/1e3/p_n, (double) p_splits/p_n,
+                    pw_cpu/1e3/p_n, pb_cpu/1e3/p_n, (pw_cpu - pb_cpu)/1e3/p_n,
+                    pc_cpu/1e3/p_n, (double) n_tiny/p_n, n_tiny ? (double) pc_tiny/n_tiny : 0.0,
+                    pw_gpu/1e3/p_n, pb_gpu/1e3/p_n, (pw_gpu - pb_gpu)/1e3/p_n, pl_gpu/1e3/p_n);
+            pw_cpu = pw_gpu = pc_cpu = pl_gpu = p_total = p_n = p_splits = 0;
+            pb_cpu = pb_gpu = pc_tiny = n_tiny = 0;
+        }
     }
 
     return GGML_STATUS_SUCCESS;

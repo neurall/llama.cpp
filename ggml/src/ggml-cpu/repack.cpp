@@ -4452,6 +4452,11 @@ template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS, ggml_type PAR
             // initialize matrix_row_counts
             memset(matrix_row_counts, 0, n_as * sizeof(int64_t));
 
+            // llama MoE expert cache: skip ids served by the device cache and zero
+            // their dst rows (same contract as the generic CPU mul_mat_id)
+            const int32_t * moe_tbl   = dst->src[3] ? (const int32_t *) dst->src[3]->data : nullptr;
+            const int32_t   moe_dummy = ggml_get_op_params_i32(dst, 0);
+
             // group rows by src0 matrix
             for (int32_t iid1 = 0; iid1 < ids->ne[1]; ++iid1) {
                 for (int32_t id = 0; id < n_ids; ++id) {
@@ -4460,9 +4465,20 @@ template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS, ggml_type PAR
 
                     GGML_ASSERT(i02 >= 0 && i02 < n_as);
 
+                    if (moe_tbl && moe_tbl[i02] != moe_dummy) {
+                        memset((char *) dst->data + id*nb1 + iid1*nb2, 0, ne0*sizeof(float));
+                        continue;
+                    }
+
                     MMID_MATRIX_ROW(i02, matrix_row_counts[i02]) = { id, iid1 };
                     matrix_row_counts[i02] += 1;
                 }
+            }
+
+            void * moe_obs_ud = nullptr;
+            ggml_moe_obs_cb_t moe_obs_cb = ggml_get_moe_obs_callback(&moe_obs_ud);
+            if (moe_obs_cb && strstr(src0->name, "ffn_gate_exps")) {
+                moe_obs_cb(src0->name, ids, moe_obs_ud);
             }
         }
 

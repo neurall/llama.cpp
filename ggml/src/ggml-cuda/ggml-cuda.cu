@@ -3169,6 +3169,92 @@ static bool ggml_cuda_match_moe_weighted_reduction(
 }
 
 
+// fused MUL -> (ADD | SCALE) -> SIGMOID -> SCALE:
+//   dst = sigmoid((x*m + a)*s1 + b1)*k + c, m/a broadcast, a optional
+// (DeepSeek-V4 / GLM5-Next hyper-connection gates and the KDA gate: 4 tiny kernels otherwise)
+static __global__ void k_mul_add_sigmoid_scale(
+        const char * x, const char * m, const char * a, char * dst,
+        int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3,
+        size_t xb0, size_t xb1, size_t xb2, size_t xb3,
+        int64_t mne0, int64_t mne1, int64_t mne2, int64_t mne3, size_t mb0, size_t mb1, size_t mb2, size_t mb3,
+        int64_t ane0, int64_t ane1, int64_t ane2, int64_t ane3, size_t ab0, size_t ab1, size_t ab2, size_t ab3,
+        size_t db0, size_t db1, size_t db2, size_t db3, float s1, float b1, float k, float c) {
+    const int64_t n = ne0*ne1*ne2*ne3;
+    for (int64_t idx = blockIdx.x*(int64_t) blockDim.x + threadIdx.x; idx < n; idx += (int64_t) blockDim.x*gridDim.x) {
+        const int64_t i0 = idx % ne0;
+        const int64_t i1 = (idx / ne0) % ne1;
+        const int64_t i2 = (idx / (ne0*ne1)) % ne2;
+        const int64_t i3 = idx / (ne0*ne1*ne2);
+        const float xv = *(const float *) (x + i0*xb0 + i1*xb1 + i2*xb2 + i3*xb3);
+        const float mv = *(const float *) (m + (i0 % mne0)*mb0 + (i1 % mne1)*mb1 + (i2 % mne2)*mb2 + (i3 % mne3)*mb3);
+        const float av = a ? *(const float *) (a + (i0 % ane0)*ab0 + (i1 % ane1)*ab1 + (i2 % ane2)*ab2 + (i3 % ane3)*ab3) : 0.0f;
+        const float v  = (xv*mv + av)*s1 + b1;
+        *(float *) (dst + i0*db0 + i1*db1 + i2*db2 + i3*db3) = k/(1.0f + expf(-v)) + c;
+    }
+}
+
+// returns the number of extra nodes consumed (0 = not fused)
+static int ggml_cuda_try_fuse_mul_add_sigmoid_scale(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int i) {
+    static const ggml_op ops_add[4] = { GGML_OP_MUL, GGML_OP_ADD,   GGML_OP_UNARY, GGML_OP_SCALE };
+    static const ggml_op ops_scl[4] = { GGML_OP_MUL, GGML_OP_SCALE, GGML_OP_UNARY, GGML_OP_SCALE };
+
+    // the chain's operands are often views of weights created in between (no-op nodes): skip them
+    int idx[4] = { i, 0, 0, 0 };
+    for (int k = 1, j = i + 1; k < 4; ++j) {
+        if (j >= cgraph->n_nodes) {
+            return 0;
+        }
+        const ggml_op op = cgraph->nodes[j]->op;
+        if (op == GGML_OP_VIEW || op == GGML_OP_RESHAPE || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE) {
+            continue;
+        }
+        idx[k++] = j;
+    }
+    const bool with_add = ggml_can_fuse_ext(cgraph, idx, ops_add, 4);
+    if (!with_add && !ggml_can_fuse_ext(cgraph, idx, ops_scl, 4)) {
+        return 0;
+    }
+    const ggml_tensor * mul = cgraph->nodes[idx[0]];
+    const ggml_tensor * mid = cgraph->nodes[idx[1]];
+    const ggml_tensor * sig = cgraph->nodes[idx[2]];
+    const ggml_tensor * scl = cgraph->nodes[idx[3]];
+    if (ggml_get_unary_op(sig) != GGML_UNARY_OP_SIGMOID || mid->src[0] != mul || sig->src[0] != mid || scl->src[0] != sig) {
+        return 0;
+    }
+    const ggml_tensor * x = mul->src[0];
+    const ggml_tensor * m = mul->src[1];
+    const ggml_tensor * a = with_add ? mid->src[1] : nullptr;
+    for (const ggml_tensor * t : { x, m, a, mul, mid, sig, scl }) {
+        if (t && t->type != GGML_TYPE_F32) {
+            return 0;
+        }
+    }
+    if (!ggml_are_same_shape(x, mul) || !ggml_are_same_shape(mul, scl) || !ggml_can_repeat(m, x) || (a && !ggml_can_repeat(a, x))) {
+        return 0;
+    }
+    float s1 = 1.0f, b1 = 0.0f;
+    if (!with_add) {
+        memcpy(&s1, (const float *) mid->op_params + 0, sizeof(float));
+        memcpy(&b1, (const float *) mid->op_params + 1, sizeof(float));
+    }
+    float k, c;
+    memcpy(&k, (const float *) scl->op_params + 0, sizeof(float));
+    memcpy(&c, (const float *) scl->op_params + 1, sizeof(float));
+
+    const int64_t n = ggml_nelements(scl);
+    const int block = 256;
+    const int grid  = (int) std::min<int64_t>((n + block - 1)/block, 1024);
+    k_mul_add_sigmoid_scale<<<grid, block, 0, ctx.stream()>>>(
+        (const char *) x->data, (const char *) m->data, a ? (const char *) a->data : nullptr, (char *) scl->data,
+        scl->ne[0], scl->ne[1], scl->ne[2], scl->ne[3],
+        x->nb[0], x->nb[1], x->nb[2], x->nb[3],
+        m->ne[0], m->ne[1], m->ne[2], m->ne[3], m->nb[0], m->nb[1], m->nb[2], m->nb[3],
+        a ? a->ne[0] : 1, a ? a->ne[1] : 1, a ? a->ne[2] : 1, a ? a->ne[3] : 1,
+        a ? a->nb[0] : 0, a ? a->nb[1] : 0, a ? a->nb[2] : 0, a ? a->nb[3] : 0,
+        scl->nb[0], scl->nb[1], scl->nb[2], scl->nb[3], s1, b1, k, c);
+    return idx[3] - i;
+}
+
 static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
                                int                                       node_idx,
                                std::initializer_list<enum ggml_op>       ops,
@@ -3585,6 +3671,12 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         if (types_ok && shape_ok && dim_ok && contig_ok && x_in_add == x) {
             ggml_cuda_op_snake_fused(*cuda_ctx, x, a, inv_b, add);
             return 4;
+        }
+    }
+
+    if (node->op == GGML_OP_MUL) {
+        if (const int n = ggml_cuda_try_fuse_mul_add_sigmoid_scale(*cuda_ctx, cgraph, i)) {
+            return n;
         }
     }
 
