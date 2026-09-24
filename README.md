@@ -11,25 +11,31 @@ For MoE models much larger than VRAM: every expert stays in system RAM, and all
 VRAM left after the KV cache becomes a live cache of the experts actually being
 used. The GPUs compute cached experts while the CPU computes the rest, in parallel.
 
-**GLM-5.3-Flash 3.0-bit (117 GB) on 2x RTX 3090 (48 GB) + 125 GB RAM, single stream:**
+**Results, 2x RTX 3090 (48 GB) + 125 GB RAM, single stream, temp 0, `-c 1024`:**
 
-| | decode t/s | wikitext-2 PPL |
-|---|---|---|
-| stock llama.cpp (autofit) | 12.3 | 3.5534 |
-| this fork, original GGUF | ~25 | 3.5534 |
-| this fork, [Q4_K attention GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) (faster) | **27.72** | 3.5871 (+0.95%) |
+| model | size | stock t/s | fork t/s | gain | PPL (stock -> fork) |
+|---|---|---|---|---|---|
+| GLM-5.3-Flash 3.0-bit, original GGUF | 117 GB | 12.3 | ~25 | 2.0x | 3.5534 -> 3.5534 |
+| GLM-5.3-Flash 3.0-bit, [Q4_K attention GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 12.3 | **27.72** | 2.3x | 3.5534 -> 3.5871 (+0.95%) |
+| MiMo-2.6-Flash-RL IQ3_XXS | 132 GB | 4.7 | **9.9** | 2.1x | not measured |
+| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 29.7 | **32.1** | 1.08x | not measured |
+
+GLM prompt: "generate smallest html tetris game."; MiMo/Qwen prompt: "write smallest
+html tetris game" (both temp 0). PPL: wikitext-2, 40 x 512-token chunks (GLM only).
+MiMo needed `-fitt 8000` on both stock and fork to avoid autofit OOM-ing on this
+arch/quant combo; the others loaded fine with default fit.
+
+Qwen's gain is small because stock's autofit already placed most of its experts on
+GPU by default here — little room left for the cache to improve on. The big wins
+(GLM, MiMo) are on models where default placement leaves most expert work on the CPU.
 
 Models:
-- Original GGUF (tested): [pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF](https://huggingface.co/pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF),
+- GLM original GGUF (tested): [pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF](https://huggingface.co/pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF),
   the 3.0-bit file. It works as-is with this fork, no conversion needed, and it's the
   quality reference (unchanged perplexity). Most of the speedup comes from the fork,
-  not the requantization: ~25 t/s with this file vs ~28 t/s with the Q4_K attention
-  variant below.
-- Q4_K attention variant (same experts, non-expert Q8_0 weights requantized to Q4_K):
+  not the requantization.
+- GLM Q4_K attention variant (same experts, non-expert Q8_0 weights requantized to Q4_K):
   [neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF).
-
-Decode: prompt "generate smallest html tetris game.", 1024 context, temperature 0.
-Perplexity: 40 x 512-token chunks.
 
 **Same VRAM, different use.** Stock llama.cpp and this fork get the same 48 GB; what
 differs is what it holds. Each token uses only 8 of the 288 experts in each layer.
@@ -78,21 +84,6 @@ per token today: ~20 ms GPU work on non-expert layers, ~10 ms CPU on missed expe
 | 3 | ~58 GB | ~170 | ~95% | ~3-4 ms | ~33-35 |
 | 4 | ~82 GB | ~240 | ~99% | ~1 ms | ~38-42 |
 | 5+ | whole model | 288 | 100% | 0 | ~40-45 (plateau) |
-
-**Other models tested**, same box, prompt "write smallest html tetris game", temp 0,
-`-c 1024`, single stream:
-
-| model | size | stock t/s | fork t/s | gain |
-|---|---|---|---|---|
-| MiMo-2.6-Flash-RL IQ3_XXS | 132 GB | 4.7 | **9.9** | 2.1x |
-| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 29.7 | **32.1** | 1.08x |
-
-MiMo needed `-fitt 8000` on both stock and fork to avoid autofit OOM-ing on this
-arch/quant combo; Qwen3.8-Flash-Next loaded fine with default fit on both.
-Qwen's gain is small because stock's autofit already placed most of its experts on
-GPU by default here — there's little for the cache to improve on when the static
-layer placement already mostly fits. The big wins (GLM, MiMo) are on models where
-default placement leaves most expert work on the CPU.
 
 The plateau is the ~20 ms GPU part: with the default layer split each layer runs on
 one GPU at a time, so extra GPUs add cache room, not speed on that part. System RAM
