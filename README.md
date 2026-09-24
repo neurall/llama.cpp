@@ -10,7 +10,7 @@ used. The GPUs compute cached experts while the CPU computes the rest, in parall
 |---|---|---|
 | stock llama.cpp (autofit) | 12.3 | 3.5534 |
 | this fork, original GGUF | ~25 | 3.5534 |
-| this fork, Q4_K attention/shared weights | **27.72** | 3.5871 (+0.95%) |
+| this fork, [Q4_K attention GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) (faster) | **27.72** | 3.5871 (+0.95%) |
 
 Models:
 - Original GGUF (tested): [pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF](https://huggingface.co/pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF),
@@ -23,6 +23,8 @@ Models:
 
 Decode: prompt "generate smallest html tetris game.", 1024 context, temperature 0.
 Perplexity: 40 x 512-token chunks.
+
+Run (with the faster Q4_K attention GGUF from [neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF)):
 
 ```sh
 llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
