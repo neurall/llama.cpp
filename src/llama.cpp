@@ -24,7 +24,9 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #if defined(_MSC_VER)
@@ -271,6 +273,27 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
                 }
             }
         }
+
+        // widest PCIe link first: big-batch ops on host weights (e.g. MoE experts
+        // with --cpu-moe) are offloaded to the first GPU, so its upload bandwidth
+        // bounds prompt processing
+        // ponytail: Linux sysfs link width only (idle GPUs downclock link speed),
+        // no-op elsewhere; pass --device to force an order
+        auto pcie_width = [](ggml_backend_dev_t dev) -> int {
+            ggml_backend_dev_props props;
+            ggml_backend_dev_get_props(dev, &props);
+            if (!props.device_id) {
+                return 0;
+            }
+            std::string id = props.device_id;
+            std::transform(id.begin(), id.end(), id.begin(), ::tolower);
+            std::ifstream f("/sys/bus/pci/devices/" + id + "/current_link_width");
+            int w = 0;
+            return (f >> w) ? w : 0;
+        };
+        std::stable_sort(gpus.begin(), gpus.end(), [&](const llama_device & a, const llama_device & b) {
+            return pcie_width(a.dev) > pcie_width(b.dev);
+        });
 
         // add RPC servers at the front of the list to minimize network transfers
         model->devices.insert(model->devices.begin(), rpc_servers.begin(), rpc_servers.end());
