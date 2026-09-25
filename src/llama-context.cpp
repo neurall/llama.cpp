@@ -467,7 +467,7 @@ llama_context::llama_context(
         // after KV/compute buffers so auto sizing (-1) sees the real free VRAM;
         // re-reserve so the compute graph includes the cache chain
         if (params.n_moe_cache_slots != 0) {
-            llama_moe_cache_init(model, params.n_moe_cache_slots, params.n_moe_cache_inserts);
+            llama_moe_cache_init(model, params.n_moe_cache_slots, params.n_moe_cache_inserts, cparams.prefetch_experts_slots);
             sched_reserve();
         }
 

@@ -277,7 +277,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     return true;
 }
 
-void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts) {
+void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots) {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
     if (g_init_done) {
         return;
@@ -351,7 +351,25 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             size_t free = 0, total = 0;
             ggml_backend_dev_memory(dev, &free, &total);
             const char * m = getenv("LLAMA_MOE_CACHE_MARGIN_MB");
-            const size_t margin = (size_t) (m ? atoll(m) : 1024) * 1024 * 1024;
+            size_t margin = (size_t) (m ? atoll(m) : 1024) * 1024 * 1024;
+            // --prefetch-experts-slots: the scheduler lazily allocates N full expert
+            // tensors on the device big batches are offloaded to (the first GPU)
+            if (prefetch_slots >= 2) {
+                ggml_backend_dev_t first_gpu = nullptr;
+                for (size_t i = 0; i < ggml_backend_dev_count() && !first_gpu; ++i) {
+                    ggml_backend_dev_t d = ggml_backend_dev_get(i);
+                    if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                        first_gpu = d;
+                    }
+                }
+                if (dev == first_gpu) {
+                    size_t max_tensor = 0;
+                    for (const auto & c : all) {
+                        max_tensor = std::max({max_tensor, ggml_nbytes(c.l->ffn_up_exps), ggml_nbytes(c.l->ffn_gate_exps), ggml_nbytes(c.l->ffn_down_exps)});
+                    }
+                    margin += (size_t) std::min(prefetch_slots, 4) * max_tensor;
+                }
+            }
             size_t per_slot = 0;
             int64_t n_expert = 0;
             for (const auto & c : cands) {
