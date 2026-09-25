@@ -115,6 +115,14 @@ extern "C" {
     // automatic fallback to sync copy if async is not supported
     GGML_API void ggml_backend_tensor_copy_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const struct ggml_tensor * src, struct ggml_tensor * dst);
 
+    // MoE expert source lookup: when the scheduler offloads a host-resident expert
+    // matmul it copies only the used experts to the device. If this callback returns
+    // true, expert `expert` of `weight` is already resident on `dev` at `*data` (same
+    // bytes, inside `*buffer`) and is copied device-to-device instead of over PCIe.
+    typedef bool (*ggml_backend_moe_src_cb_t)(const struct ggml_tensor * weight, int32_t expert, ggml_backend_dev_t dev,
+                                             const void ** data, ggml_backend_buffer_t * buffer, void * user_data);
+    GGML_API void ggml_backend_set_moe_src_callback(ggml_backend_moe_src_cb_t cb, void * user_data);
+
     GGML_API ggml_backend_dev_t ggml_backend_get_device(ggml_backend_t backend);
 
     //

@@ -55,6 +55,11 @@ struct llama_moe_cache_layer {
 void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts);
 void llama_moe_cache_free();
 
+// largest batch (tokens) that uses the cache; bigger ones take the stock path
+// (LLAMA_MOE_CACHE_MAX_BATCH, default 31: below the CUDA op-offload threshold)
+int64_t llama_moe_cache_max_batch();
+bool    llama_moe_cache_active();
+
 // nullptr when the cache is disabled or this tensor has no cached layer
 const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps);
 
