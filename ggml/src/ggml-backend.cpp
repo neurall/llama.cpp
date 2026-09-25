@@ -508,6 +508,14 @@ void ggml_backend_tensor_copy(const struct ggml_tensor * src, struct ggml_tensor
     }
 }
 
+static ggml_backend_moe_src_cb_t g_moe_src_cb = NULL;
+static void *                    g_moe_src_ud = NULL;
+
+void ggml_backend_set_moe_src_callback(ggml_backend_moe_src_cb_t cb, void * user_data) {
+    g_moe_src_cb = cb;
+    g_moe_src_ud = user_data;
+}
+
 void ggml_backend_tensor_copy_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const struct ggml_tensor * src, struct ggml_tensor * dst) {
     GGML_ASSERT(ggml_are_same_layout(src, dst) && "cannot copy tensors with different layouts");
 
@@ -1824,29 +1832,54 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             expert_size_copy + padding_end);
                     };
 
-                    int id = 0;
-                    while (!ggml_bitset_get(used_ids.data(), id)) {
-                        id++;
-                    }
-                    int32_t first_id = id;
-                    int32_t last_id = first_id;
+                    // experts already resident on this device (e.g. a MoE expert cache) are
+                    // copied device-to-device; runs of the rest go over PCIe as before
+                    ggml_backend_dev_t split_dev = ggml_backend_get_device(split_backend);
+                    auto bytes_view = [](ggml_backend_buffer_t buf, void * data, size_t n) {
+                        ggml_tensor t = {};
+                        t.type   = GGML_TYPE_I8;
+                        t.buffer = buf;
+                        t.data   = data;
+                        t.ne[0] = (int64_t) n; t.ne[1] = t.ne[2] = t.ne[3] = 1;
+                        t.nb[0] = 1; t.nb[1] = t.nb[2] = t.nb[3] = n;
+                        return t;
+                    };
 
-                    for (++id; id < n_expert; ++id) {
+                    int32_t first_id = -1;
+                    int32_t last_id  = -1;
+                    for (int32_t id = 0; id < n_expert; ++id) {
                         if (!ggml_bitset_get(used_ids.data(), id)) {
                             continue;
                         }
 
-                        if (id == last_id + 1) {
-                            last_id = id;
+                        const void *          dev_data = NULL;
+                        ggml_backend_buffer_t dev_buf  = NULL;
+                        if (g_moe_src_cb && g_moe_src_cb(input, id, split_dev, &dev_data, &dev_buf, g_moe_src_ud)) {
+                            ggml_tensor s = bytes_view(dev_buf, (void *) dev_data, expert_size);
+                            ggml_tensor d = bytes_view(input_cpy->buffer, (uint8_t *) input_cpy->data + (size_t) id*expert_size, expert_size);
+                            ggml_backend_tensor_copy_async(split_backend, split_backend, &s, &d);
+                            // keep the MMQ padding rule: the unused neighbour must not hold NaNs
+                            if (id < n_expert - 1 && !ggml_bitset_get(used_ids.data(), id + 1)) {
+                                const size_t off = (size_t) (id + 1)*expert_size;
+                                ggml_backend_tensor_set_async(split_backend, input_cpy, (const uint8_t *) input->data + off, off,
+                                        std::min<size_t>(expert_size, 512));
+                            }
                             continue;
                         }
 
-                        copy_experts(first_id, last_id);
-
+                        if (first_id >= 0 && id == last_id + 1) {
+                            last_id = id;
+                            continue;
+                        }
+                        if (first_id >= 0) {
+                            copy_experts(first_id, last_id);
+                        }
                         first_id = id;
-                        last_id = id;
+                        last_id  = id;
                     }
-                    copy_experts(first_id, last_id);
+                    if (first_id >= 0) {
+                        copy_experts(first_id, last_id);
+                    }
                 } else {
                     // try async copy, but if not possible, we can still use a sync copy without synchronizing the dst backend, since we handle the synchronization here with multiple copies and events
                     // TODO: add public function to facilitate this, since applications do not have direct access to the backend interface

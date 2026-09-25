@@ -68,6 +68,11 @@ struct moe_cache {
 
     std::vector<layer_state> layers;
     std::map<const ggml_tensor *, size_t> by_up_src;
+    std::map<const ggml_tensor *, std::pair<size_t, int>> by_src; // host weight -> (layer, 0 up / 1 gate / 2 down)
+
+    // big-batch prefill: experts served device-to-device from the cache vs over PCIe
+    uint64_t n_src_hit   = 0;
+    uint64_t n_src_query = 0;
 
     std::vector<ggml_context *>         ctxs;
     std::vector<ggml_backend_buffer_t>  bufs;
@@ -173,9 +178,9 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, void * ud) {
 
     const int64_t n_ids    = ids->ne[0];
     const int64_t n_tokens = ids->ne[1];
-    // prefill ids are observed too: they warm the cache before decode starts
-    // (hits during prefill aren't counted, the cache graph isn't built there)
-    const bool prefill = n_tokens > 4;
+    // big-batch prefill ids are observed too: they warm the cache before decode
+    // (hits aren't counted there, the cache graph isn't built for big batches)
+    const bool prefill = n_tokens > llama_moe_cache_max_batch();
 
     const int il = parse_layer_from_name(name);
     if (il < 0) {
@@ -243,6 +248,34 @@ void set_table_entry(llama_moe_cache_layer & pub, int32_t expert, int32_t slot_o
 }
 
 } // namespace
+
+// Big-batch prefill offloads expert matmuls and copies the used experts to the
+// GPU; experts published in this cache on that GPU are copied from their slot
+// (device-to-device) instead. Called from the scheduler on the decode thread;
+// published slots are stable until the next step(), which runs after a sync.
+static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t dev,
+                const void ** data, ggml_backend_buffer_t * buffer, void * ud) {
+    moe_cache * mc = (moe_cache *) ud;
+    auto it = mc->by_src.find(weight);
+    if (it == mc->by_src.end()) {
+        return false;
+    }
+    layer_state & ls = mc->layers[it->second.first];
+    ggml_tensor * c = it->second.second == 0 ? ls.pub.up_c : it->second.second == 1 ? ls.pub.gate_c : ls.pub.down_c;
+    if (!c || !c->buffer || c->nb[2] != weight->nb[2] ||
+        ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    mc->n_src_query++;
+    if (expert < 0 || expert >= (int32_t) ls.expert_slot.size() || ls.expert_slot[expert] < 0) {
+        return false;
+    }
+    mc->n_src_hit++;
+    *data   = (const uint8_t *) c->data + (size_t) ls.expert_slot[expert]*c->nb[2];
+    *buffer = c->buffer;
+    return true;
+}
 
 void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts) {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
@@ -439,6 +472,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             ggml_backend_tensor_set(ls.pub.host_table, dummy.data(), 0, n_expert*sizeof(int32_t));
 
             mc->by_up_src[ls.pub.up_src] = &ls - mc->layers.data();
+            mc->by_src[ls.pub.up_src]   = { (size_t) (&ls - mc->layers.data()), 0 };
+            mc->by_src[ls.pub.gate_src] = { (size_t) (&ls - mc->layers.data()), 1 };
+            mc->by_src[ls.pub.down_src] = { (size_t) (&ls - mc->layers.data()), 2 };
             vram += ggml_nbytes(ls.pub.up_c) + ggml_nbytes(ls.pub.gate_c) + ggml_nbytes(ls.pub.down_c);
             LLAMA_LOG_DEBUG("moe-cache: init layer %d '%s' %zu bytes/expert\n",
                     ls.pub.il, ls.pub.up_src->name, ls.pub.up_src->nb[2]);
@@ -508,6 +544,12 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         });
 
         ggml_set_moe_obs_callback(moe_obs_cb, mc);
+        {
+            const char * e = getenv("LLAMA_MOE_CACHE_PREFILL_D2D");
+            if (!e || e[0] != '0') {
+                ggml_backend_set_moe_src_callback(moe_src_cb, mc);
+            }
+        }
         g_cache = mc;
         g_init_done = true;
 
@@ -697,6 +739,18 @@ void llama_moe_cache_step() {
     }
 }
 
+bool llama_moe_cache_active() {
+    return g_cache != nullptr;
+}
+
+int64_t llama_moe_cache_max_batch() {
+    static const int64_t v = [] {
+        const char * e = getenv("LLAMA_MOE_CACHE_MAX_BATCH");
+        return (int64_t) (e ? atoi(e) : 31);
+    }();
+    return v;
+}
+
 void llama_moe_cache_free() {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
     moe_cache * mc = g_cache;
@@ -704,6 +758,7 @@ void llama_moe_cache_free() {
         return;
     }
     ggml_set_moe_obs_callback(nullptr, nullptr);
+    ggml_backend_set_moe_src_callback(nullptr, nullptr);
     {
         std::lock_guard<std::mutex> lk(mc->wmtx);
         mc->stop = true;
@@ -714,8 +769,8 @@ void llama_moe_cache_free() {
     }
     uint64_t h = 0, m = 0;
     for (auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
-    LLAMA_LOG_WARN("moe-cache: steps=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " hit-rate=%.1f%%\n",
-            mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0);
+    LLAMA_LOG_WARN("moe-cache: steps=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " hit-rate=%.1f%%, prefill experts from cache %" PRIu64 "/%" PRIu64 "\n",
+            mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0, mc->n_src_hit, mc->n_src_query);
     for (auto * b : mc->staging) { if (b) { ggml_backend_buffer_free(b); } }
     for (auto * b : mc->bufs) { ggml_backend_buffer_free(b); }
     for (auto * c : mc->ctxs) { ggml_free(c); }
