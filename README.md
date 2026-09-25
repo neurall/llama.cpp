@@ -112,11 +112,17 @@ PCIe (warm 1.1k-token prefill 27.9 to 33.6 t/s). For long prompts add
 `-ub 2048 -b 2048`: each expert upload is shared by 4x more tokens (1.1k-token
 prefill 33 to 73 t/s) and decode stays within ~4%.
 
-**Lookahead expert prefetch** from PR
-[#28414](https://github.com/ggml-org/llama.cpp/pull/28414) is included as
-`--prefetch-experts-slots N` (off by default). On 2x RTX 3090 with the expert cache
-it is slower (73 to 58 t/s prefill): uploads are PCIe-bound, and full-tensor
-prefetch skips the GPU-to-GPU cache copies. It may help on setups without the cache.
+**Lookahead expert prefetch**, thanks to
+[@leshchukandrej](https://github.com/leshchukandrej) (llama.cpp PR
+[#28414](https://github.com/ggml-org/llama.cpp/pull/28414)), is included as
+`--prefetch-experts-slots N` (off by default, 3 recommended). While one layer
+computes, a second CUDA stream uploads the next layer's host-resident experts into
+rotating staging buffers, overlapping PCIe transfers with compute during prefill.
+This fork reserves the staging VRAM up front so the expert cache doesn't crowd it
+out. On 2x RTX 3090 with the expert cache it is slower (73 to 58 t/s prefill):
+uploads there are PCIe-bound and full-tensor prefetch bypasses the GPU-to-GPU cache
+copies. It is expected to help on setups without the cache or with less VRAM
+headroom; measure both on yours.
 
 **Other notable tweaks:**
 - **Swap budget from measured cost, not a guess**: each step measures real upload
