@@ -2209,33 +2209,44 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
 
         // device-side chain over the cached experts, mirroring the LLM_FFN_SILU
-        // activation above (the only type_op the cache path is enabled for)
-        ggml_tensor * up_g   = ggml_mul_mat_id(ctx0, mcache->up_c,   mc_inp, mc_slot_ids);
-        ggml_tensor * gate_g = ggml_mul_mat_id(ctx0, mcache->gate_c, mc_inp, mc_slot_ids);
-        cb(up_g,   "ffn_moe_cache_up",   il);
-        cb(gate_g, "ffn_moe_cache_gate", il);
+        // activation above (the only type_op the cache path is enabled for).
+        // Uncached ids all map to one zero slot, so an id repeats within a token; only
+        // the vector kernels (MMVQ/MMVF) handle that, MMQ sizes its grid for distinct
+        // ids. Run batches in chunks of 4 tokens, below every type's MMVQ id limit.
+        constexpr int64_t mc_chunk = 4;
+        for (int64_t t0 = 0; t0 < n_tokens; t0 += mc_chunk) {
+            const int64_t nt = std::min<int64_t>(mc_chunk, n_tokens - t0);
+            ggml_tensor * inp_c = ggml_view_3d(ctx0, mc_inp, n_embd, 1, nt, mc_inp->nb[1], mc_inp->nb[2], t0*mc_inp->nb[2]);
+            ggml_tensor * ids_c = ggml_view_2d(ctx0, mc_slot_ids, n_expert_used, nt, mc_slot_ids->nb[1], t0*mc_slot_ids->nb[1]);
 
-        ggml_tensor * act_g = nullptr;
-        {
-            const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
-            constexpr float eps = 1e-6f;
-            if (limit > eps) {
-                if (arch == LLM_ARCH_MAPLE || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_GLM5_NEXT || (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0) || arch == LLM_ARCH_HY_V4) {
-                    // exactly the op the CPU chain uses for these archs
-                    act_g = ggml_swiglu_clamp(ctx0, gate_g, up_g, limit);
+            ggml_tensor * up_g   = ggml_mul_mat_id(ctx0, mcache->up_c,   inp_c, ids_c);
+            ggml_tensor * gate_g = ggml_mul_mat_id(ctx0, mcache->gate_c, inp_c, ids_c);
+            cb(up_g,   "ffn_moe_cache_up",   il);
+            cb(gate_g, "ffn_moe_cache_gate", il);
+
+            ggml_tensor * act_g = nullptr;
+            {
+                const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
+                constexpr float eps = 1e-6f;
+                if (limit > eps) {
+                    if (arch == LLM_ARCH_MAPLE || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_GLM5_NEXT || (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0) || arch == LLM_ARCH_HY_V4) {
+                        // exactly the op the CPU chain uses for these archs
+                        act_g = ggml_swiglu_clamp(ctx0, gate_g, up_g, limit);
+                    } else {
+                        up_g = ggml_clamp(ctx0, up_g, -limit, limit);
+                        ggml_tensor * ga = ggml_silu(ctx0, gate_g);
+                        ga    = ggml_clamp(ctx0, ga, -INFINITY, limit);
+                        act_g = ggml_mul(ctx0, ga, up_g);
+                    }
                 } else {
-                    up_g = ggml_clamp(ctx0, up_g, -limit, limit);
-                    ggml_tensor * ga = ggml_silu(ctx0, gate_g);
-                    ga    = ggml_clamp(ctx0, ga, -INFINITY, limit);
-                    act_g = ggml_mul(ctx0, ga, up_g);
+                    act_g = ggml_swiglu_split(ctx0, gate_g, up_g);
                 }
-            } else {
-                act_g = ggml_swiglu_split(ctx0, gate_g, up_g);
             }
-        }
 
-        down_g = ggml_mul_mat_id(ctx0, mcache->down_c, act_g, mc_slot_ids);
-        cb(down_g, "ffn_moe_cache_down", il);
+            ggml_tensor * down_c = ggml_mul_mat_id(ctx0, mcache->down_c, act_g, ids_c); // [n_embd, n_expert_used, nt]
+            cb(down_c, "ffn_moe_cache_down", il);
+            down_g = down_g ? ggml_concat(ctx0, down_g, down_c, 2) : down_c;
+        }
 
         ggml_build_forward_expand(gf, down_g);
     }
