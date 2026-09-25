@@ -81,9 +81,21 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   x4 slot: `set CUDA_VISIBLE_DEVICES=1,0` (cmd) or
   `$env:CUDA_VISIBLE_DEVICES="1,0"` (PowerShell). Check link widths with
   `nvidia-smi --query-gpu=index,pcie.link.width.max,pcie.link.width.current --format=csv`
-  (read the current width under load, idle cards can downshift). On 2x 3090
-  (x4 + x16), 12k-token prompt with `-ub 2048 -b 2048`: 45.9 t/s stock to
-  188 t/s, 265 s to 65 s.
+  (read the current width under load, idle cards can downshift).
+
+  12k-token prompt on 2x 3090 (one x4, one x16 slot), prefill t/s. Both tips also
+  apply to stock llama.cpp:
+
+  | | x4 card first, default batch | x16 card first, default batch | x16 first, `-ub 2048 -b 2048` |
+  |---|---|---|---|
+  | stock | 45.9 (265 s) | 84.1 (145 s) | **227.7 (53 s)** |
+  | this fork | | | 188.1 (65 s) |
+
+  At equal settings the fork's prefill is ~20% slower than stock today: stock keeps
+  ~14 whole MoE layers in VRAM so they need no upload, while the fork keeps all
+  experts in RAM and serves only ~26% of prefill expert copies from its cache. The
+  fork's gain is decode (12.4 to 18.5 t/s); for long prompts the batch and slot
+  tips matter far more than either build.
 - Cache hit rate is ~66% on real text, 85%+ on repetitive output.
   `LLAMA_MOE_CACHE_STATS=1` logs it.
 - Tuning: `LLAMA_MOE_CACHE_POLICY` (`add` default, `halve`, `window`),
