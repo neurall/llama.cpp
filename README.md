@@ -105,6 +105,19 @@ first generated token, instead of starting cold and only learning from decode.
 in the [PR #27861 discussion](https://github.com/ggml-org/llama.cpp/pull/27861)
 with their own patch; worth checking out too.
 
+**The cache also serves prefill**: small batches (up to 31 tokens, e.g. server
+requests with short prompts) run through the cache chain like decode, and in large
+prefill batches experts already in the cache are copied GPU-to-GPU instead of over
+PCIe (warm 1.1k-token prefill 27.9 to 33.6 t/s). For long prompts add
+`-ub 2048 -b 2048`: each expert upload is shared by 4x more tokens (1.1k-token
+prefill 33 to 73 t/s) and decode stays within ~4%.
+
+**Lookahead expert prefetch** from PR
+[#28414](https://github.com/ggml-org/llama.cpp/pull/28414) is included as
+`--prefetch-experts-slots N` (off by default). On 2x RTX 3090 with the expert cache
+it is slower (73 to 58 t/s prefill): uploads are PCIe-bound, and full-tensor
+prefetch skips the GPU-to-GPU cache copies. It may help on setups without the cache.
+
 **Other notable tweaks:**
 - **Swap budget from measured cost, not a guess**: each step measures real upload
   time (ms/expert) and real token time, then computes how many swaps fit in
