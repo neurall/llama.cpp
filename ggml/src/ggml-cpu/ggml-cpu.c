@@ -1700,7 +1700,11 @@ static void ggml_compute_forward_mul_mat_id(
                 moe_log_state = moe_log_file ? 1 : 0;
             }
             if (moe_log_state == 1 && strstr(src0->name, "ffn_gate_exps")) {
+#ifdef _WIN32
+                _lock_file(moe_log_file);
+#else
                 flockfile(moe_log_file);
+#endif
                 for (int64_t iid1 = 0; iid1 < ids->ne[1]; ++iid1) {
                     fprintf(moe_log_file, "%s", src0->name);
                     for (int id = 0; id < n_ids; ++id) {
@@ -1709,7 +1713,11 @@ static void ggml_compute_forward_mul_mat_id(
                     }
                     fputc('\n', moe_log_file);
                 }
+#ifdef _WIN32
+                _unlock_file(moe_log_file);
+#else
                 funlockfile(moe_log_file);
+#endif
             }
         }
     }
