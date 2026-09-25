@@ -74,6 +74,16 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
 - `-t 6` suits an 8-core CPU (leave cores to drive the GPUs).
 - `-ub 2048 -b 2048` speeds up prompt processing ~2.2x at ~4% decode cost; drop
   it if you only send short prompts.
+- Prompt processing uploads the experts to the **first GPU**, so that GPU's PCIe
+  bandwidth sets the prefill speed. On Linux the fork puts the GPU with the widest
+  PCIe link first automatically. On Windows (or to force it) list the fastest-link
+  card first yourself, e.g. if GPU 1 is in the CPU x16 slot and GPU 0 in a chipset
+  x4 slot: `set CUDA_VISIBLE_DEVICES=1,0` (cmd) or
+  `$env:CUDA_VISIBLE_DEVICES="1,0"` (PowerShell). Check link widths with
+  `nvidia-smi --query-gpu=index,pcie.link.width.max,pcie.link.width.current --format=csv`
+  (read the current width under load, idle cards can downshift). On 2x 3090
+  (x4 + x16), 12k-token prompt with `-ub 2048 -b 2048`: 45.9 t/s stock to
+  188 t/s, 265 s to 65 s.
 - Cache hit rate is ~66% on real text, 85%+ on repetitive output.
   `LLAMA_MOE_CACHE_STATS=1` logs it.
 - Tuning: `LLAMA_MOE_CACHE_POLICY` (`add` default, `halve`, `window`),
