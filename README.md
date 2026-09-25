@@ -11,17 +11,21 @@ For MoE models much larger than VRAM: every expert stays in system RAM, and all
 VRAM left after the KV cache becomes a live cache of the experts actually being
 used. The GPUs compute cached experts while the CPU computes the rest, in parallel.
 
-**Results, 2x RTX 3090 (48 GB) + 125 GB RAM, single stream, temp 0, `-c 1024`:**
+**Results, 2x RTX 3090 (48 GB) + 125 GB RAM, single stream, temp 0:**
 
-| model | size | stock t/s | fork t/s | gain | PPL (stock -> fork) |
-|---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit, original GGUF | 117 GB | 12.3 | ~25 | 2.0x | 3.5534 -> 3.5534 |
-| GLM-5.3-Flash 3.0-bit, [Q4_K attention GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 12.3 | **27.72** | 2.3x | 3.5534 -> 3.5871 (+0.95%) |
-| MiMo-2.6-Flash-RL IQ3_XXS | 132 GB | 4.7 | **9.9** | 2.1x | unchanged (no requant) |
-| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 29.7 | **32.1** | 1.08x | unchanged (no requant) |
+| model | size | stock t/s | fork t/s, chat | gain | fork t/s, repetitive | PPL (stock -> fork) |
+|---|---|---|---|---|---|---|
+| GLM-5.3-Flash 3.0-bit, original GGUF | 117 GB | 12.4 | **17.2** | 1.4x | ~25 | 3.5534 -> 3.5534 |
+| GLM-5.3-Flash 3.0-bit, [Q4_K attention GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 12.4 | **18.5** | 1.5x | 27.7 | 3.5534 -> 3.5871 (+0.95%) |
+| MiMo-2.6-Flash-RL IQ3_XXS | 132 GB | 4.7 | not measured | | 9.9 | unchanged (no requant) |
+| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 29.7 | not measured | | 32.1 | unchanged (no requant) |
 
-GLM prompt: "generate smallest html tetris game."; MiMo/Qwen prompt: "write smallest
-html tetris game" (both temp 0). PPL: wikitext-2, 40 x 512-token chunks (GLM only).
+Chat: a 1500-token reply via /v1/chat/completions, realistic text, ~66% cache hit
+rate. This is the number to expect. Repetitive: raw-completion prompt "generate
+smallest html tetris game." whose output loops (~87% hit rate), a best case; MiMo
+and Qwen were only measured this way, so their real-text gain is likely lower
+(stock speed doesn't depend on the text). PPL: wikitext-2, 40 x 512-token chunks
+(GLM only).
 MiMo needed `-fitt 8000` on both stock and fork to avoid autofit OOM-ing on this
 arch/quant combo; the others loaded fine with default fit.
 
@@ -45,29 +49,33 @@ differs is what it holds. Each token uses only 8 of the 288 experts in each laye
   token doesn't touch, so only ~33% of each token's expert work runs on GPU and the
   CPU does ~67%, one after the other.
 - This fork fills the same VRAM with the ~100 most-used experts of every layer.
-  Usage is skewed, so those cover ~85% of what tokens actually pick: ~85% of expert
-  work runs on GPU and the CPU does ~15%, at the same time as the GPUs.
+  Usage is skewed, so those cover ~66% of what tokens actually pick in real text
+  (up to ~87% on repetitive output): ~66% of expert work runs on GPU and the CPU
+  does ~34%, at the same time as the GPUs.
 
 | | expert work on GPU | expert work on CPU | decode t/s |
 |---|---|---|---|
-| stock (static whole layers) | ~33% | ~67% | 12.3 |
-| this fork (cache of hot experts) | ~85% | ~15%, in parallel | 26-28 |
+| stock (static whole layers) | ~33% | ~67% | 12.4 |
+| this fork (cache of hot experts) | ~66% | ~34%, in parallel | 18.5 |
 
-So stock can't reach 2x on the same hardware: without an expert cache, extra VRAM
+So stock can't reach this on the same hardware: without an expert cache, extra VRAM
 mostly holds experts that aren't being used.
 
 Run (with the faster Q4_K attention GGUF from [neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF)):
 
 ```sh
 llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
-    -np 1 -c 1024 -t 6 --cpu-moe -nr --moe-expert-cache -1
+    -np 1 -c 4096 -t 6 --cpu-moe -nr --moe-expert-cache -1 -ub 2048 -b 2048
 ```
 
 - `--cpu-moe` keeps all experts in RAM; `--moe-expert-cache -1` sizes the cache
   per GPU from the VRAM free after KV and compute buffers. Set `-c` explicitly:
   without it autofit grows the context and takes the VRAM the cache needs.
 - `-t 6` suits an 8-core CPU (leave cores to drive the GPUs).
-- Cache hit rate is ~85% after warm-up. `LLAMA_MOE_CACHE_STATS=1` logs it.
+- `-ub 2048 -b 2048` speeds up prompt processing ~2.2x at ~4% decode cost; drop
+  it if you only send short prompts.
+- Cache hit rate is ~66% on real text, 85%+ on repetitive output.
+  `LLAMA_MOE_CACHE_STATS=1` logs it.
 - Tuning: `LLAMA_MOE_CACHE_POLICY` (`add` default, `halve`, `window`),
   `LLAMA_MOE_CACHE_MARGIN_MB` (VRAM left free, default 1024),
   `LLAMA_MOE_CACHE_SWAP_FRAC` (share of token time for uploads, default 0.25).
@@ -76,14 +84,15 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
 **More GPUs (estimate, only 2 tested).** Nothing assumes two GPUs: each GPU gets
 its own cache, sized from its free VRAM. Each extra GPU adds cache room, so more
 of every token's experts are hits and less work falls to the CPU. For this model,
-per token today: ~20 ms GPU work on non-expert layers, ~10 ms CPU on missed experts.
+per token today on real text: ~20 ms GPU work on non-expert layers, ~23 ms CPU on
+missed experts, ~7 ms other. Hit rates for 3+ GPUs are rough guesses.
 
-| GPUs (24 GB each) | cache room | slots/layer (of 288) | hit rate | CPU miss time | decode t/s |
+| GPUs (24 GB each) | cache room | slots/layer (of 288) | hit rate (real text) | CPU miss time | decode t/s |
 |---|---|---|---|---|---|
-| 2 (measured) | ~34 GB | ~100 | 85-88% | ~10 ms | 26-28 |
-| 3 | ~58 GB | ~170 | ~95% | ~3-4 ms | ~33-35 |
-| 4 | ~82 GB | ~240 | ~99% | ~1 ms | ~38-42 |
-| 5+ | whole model | 288 | 100% | 0 | ~40-45 (plateau) |
+| 2 (measured) | ~34 GB | ~100 | ~66% | ~23 ms | 18.5 |
+| 3 | ~58 GB | ~170 | ~80% | ~13 ms | ~25 |
+| 4 | ~82 GB | ~240 | ~92% | ~5 ms | ~30 |
+| 5+ | whole model | 288 | 100% | 0 | ~35-37 (plateau) |
 
 The plateau is the ~20 ms GPU part: with the default layer split each layer runs on
 one GPU at a time, so extra GPUs add cache room, not speed on that part. System RAM
