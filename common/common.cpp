@@ -1492,9 +1492,12 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
 
     const size_t swap0 = params.load_pinned_auto ? common_swap_out_bytes() : 0;
     llama_model * model = llama_model_load_from_file(params.model.path.c_str(), mparams);
-    if (params.load_pinned_auto && (model == NULL || common_swap_out_bytes() - swap0 > (256u << 20))) {
-        // pinning didn't fit after all (allocation failed or the system started swapping): use mmap
-        LOG_WRN("%s: pinned weights %s, reloading with mmap\n", __func__, model ? "made the system swap" : "failed to load");
+    // real memory pressure, not the kernel moving idle pages of other programs to swap (zram)
+    const size_t swapped = params.load_pinned_auto ? common_swap_out_bytes() - swap0 : 0;
+    const size_t avail   = params.load_pinned_auto ? common_ram_available() : 0;
+    if (params.load_pinned_auto && (model == NULL || swapped > (2ull << 30) || (avail && avail < (512ull << 20)))) {
+        LOG_WRN("%s: pinned weights %s (swapped %.1f GiB, %.1f GiB RAM left), reloading with mmap\n", __func__,
+            model ? "left too little RAM" : "failed to load", swapped / 1073741824.0, avail / 1073741824.0);
         llama_model_free(model);
         params.load_mode        = LLAMA_LOAD_MODE_AUTO;
         params.load_pinned_auto = false;
@@ -1503,6 +1506,10 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
     if (model == NULL) {
         return;
+    }
+    if (params.load_pinned_auto) {
+        LOG_INF("%s: weights pinned (swapped %.1f GiB while loading, %.1f GiB RAM left)\n", __func__,
+            swapped / 1073741824.0, avail / 1073741824.0);
     }
 
     pimpl->model.reset(model);

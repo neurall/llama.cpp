@@ -2709,7 +2709,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"-lm", "--load-mode"}, "MODE",
         "model loading mode (default: auto)\n"
         "- auto: mmap, unless a device does not support it\n"
-        "- none: no special loading mode\n"
+        "- none: no special loading mode (with a GPU: weights in pinned RAM, faster uploads)\n"
+        "- pin: same as none; llama-server picks it by itself when the model fits in available RAM\n"
         "- mmap: memory-map model (if mmap disabled, slower load but may reduce pageouts if not using mlock)\n"
         "- mlock: force system to keep model in RAM rather than swapping or compressing\n"
         "- mmap+mlock: mmap + force system to keep model in RAM rather than swapping or compressing\n"
@@ -2717,6 +2718,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) {
             /**/ if (value == "auto")       { params.load_mode = LLAMA_LOAD_MODE_AUTO;       }
             else if (value == "none")       { params.load_mode = LLAMA_LOAD_MODE_NONE;       }
+            else if (value == "pin")        { params.load_mode = LLAMA_LOAD_MODE_NONE;       } // = none: weights in pinned RAM
             else if (value == "mmap")       { params.load_mode = LLAMA_LOAD_MODE_MMAP;       }
             else if (value == "mlock")      { params.load_mode = LLAMA_LOAD_MODE_MLOCK;      }
             else if (value == "mmap+mlock") { params.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK; }
