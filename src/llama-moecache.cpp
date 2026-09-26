@@ -58,8 +58,7 @@ struct upload_job {
     size_t  layer_idx;
     int32_t expert;
     int32_t slot;
-    bool    done  = false;
-    bool    burst = false; // prompt burst: low priority, published whenever done (decode never waits for it)
+    bool    done = false;
 };
 
 struct moe_cache {
@@ -92,9 +91,7 @@ struct moe_cache {
     std::deque<upload_job>   todo;
     std::vector<upload_job>  done;
     bool                     stop = false;
-    int                      in_flight = 0; // normal jobs popped by a worker, not yet in done
-    std::deque<upload_job>   todo_burst;    // prompt-burst uploads: taken only when todo is empty
-    int                      in_flight_burst = 0;
+    int                      in_flight = 0; // jobs popped by a worker, not yet in done
     std::condition_variable  dcv;           // signalled when a job lands in done
 
     // swap cost accounting (guarded by wmtx for the upload side)
@@ -699,14 +696,13 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 upload_job j;
                 {
                     std::unique_lock<std::mutex> lk(mc->wmtx);
-                    mc->wcv.wait(lk, [mc]() { return mc->stop || !mc->todo.empty() || !mc->todo_burst.empty(); });
+                    mc->wcv.wait(lk, [mc]() { return mc->stop || !mc->todo.empty(); });
                     if (mc->stop) {
                         return;
                     }
-                    auto & q = !mc->todo.empty() ? mc->todo : mc->todo_burst; // normal swaps first
-                    j = q.front();
-                    q.pop_front();
-                    (j.burst ? mc->in_flight_burst : mc->in_flight)++;
+                    j = mc->todo.front();
+                    mc->todo.pop_front();
+                    mc->in_flight++;
                 }
                 auto & ls = mc->layers[j.layer_idx];
                 const int64_t t0 = ggml_time_us();
@@ -729,7 +725,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     mc->upload_us = mc->n_uploads++ ? 0.9*mc->upload_us + 0.1*dt : dt;
                     j.done = true;
                     mc->done.push_back(j);
-                    (j.burst ? mc->in_flight_burst : mc->in_flight)--;
+                    mc->in_flight--;
                 }
                 mc->dcv.notify_all();
             }
@@ -927,7 +923,7 @@ void llama_moe_cache_step(int64_t n_tokens) {
                 }
                 ls.slot_in_flight[slot] = true;
                 std::lock_guard<std::mutex> wlk(mc->wmtx);
-                mc->todo_burst.push_back({li, ids[i], slot, false, true});
+                mc->todo.push_back({li, ids[i], slot});
                 n_burst++;
             }
             std::fill(ls.prompt_count.begin(), ls.prompt_count.end(), 0);
