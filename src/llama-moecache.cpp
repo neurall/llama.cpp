@@ -649,12 +649,13 @@ void llama_moe_cache_step() {
         } else {
             budget_total = (int) (frac*step_us*mc->workers.size()/mc->upload_us) - (int) mc->todo.size();
         }
-        if (det) {
-            static const int det_budget = [] {
-                const char * e = getenv("LLAMA_MOE_CACHE_DET_BUDGET");
-                return e ? atoi(e) : 8;
-            }();
-            budget_total = det_budget;
+        // static budget: LLAMA_MOE_CACHE_BUDGET swaps per step (deterministic mode: default 8)
+        static const int fixed_budget = [] {
+            const char * e = getenv("LLAMA_MOE_CACHE_BUDGET");
+            return e ? atoi(e) : -1;
+        }();
+        if (fixed_budget >= 0 || det) {
+            budget_total = fixed_budget >= 0 ? fixed_budget : 8;
         }
         budget_total = std::max(0, budget_total);
         mc->last_budget = budget_total;
@@ -673,12 +674,13 @@ void llama_moe_cache_step() {
         const double cpu_us = bytes / (cpu_gbs * 1e3); // GB/s -> bytes per us
         margin = (uint32_t) std::max(1.0, std::ceil(mc->upload_us / cpu_us));
     }
-    if (det) {
-        static const uint32_t det_margin = [] {
-            const char * e = getenv("LLAMA_MOE_CACHE_DET_MARGIN");
-            return (uint32_t) (e ? atoi(e) : 4);
-        }();
-        margin = det_margin;
+    // static pay-back margin: LLAMA_MOE_CACHE_MARGIN (deterministic mode: default 4)
+    static const int fixed_margin = [] {
+        const char * e = getenv("LLAMA_MOE_CACHE_MARGIN");
+        return e ? atoi(e) : -1;
+    }();
+    if (fixed_margin >= 0 || det) {
+        margin = (uint32_t) (fixed_margin >= 0 ? fixed_margin : 4);
     }
     mc->last_margin = (int) margin;
 
