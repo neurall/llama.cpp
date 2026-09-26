@@ -25,7 +25,7 @@ memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned
 
 | model | test | stock | fork, mmap | fork, mmap + MTP | fork, pinned | fork, pinned + MTP |
 |---|---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB; `llama-server` default: pinned | short: decode | 13.8 | 20.4 (1.48x) | 17.6 (1.28x) ‡ | [**21.1 (1.53x)**](tools/moe-bench/) | 18.8 (1.36x) ‡ |
+| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB; `llama-server` default: pinned | short: decode | 13.8 | 20.4 (1.48x) | 18.2 (1.32x) ‡ | [**21.1 (1.53x)**](tools/moe-bench/) | 18.2 (1.32x) ‡ |
 | | long: prompt processing † | 217 | 180 (0.83x) | | [**262 (1.21x)**](tools/moe-bench/) ||
 | | long: decode | 12.3 | 15.6 (1.27x) | | [**16.3 (1.33x)**](tools/moe-bench/) ||
 | MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB; `llama-server` default: mmap (bigger than RAM) | short: decode | 4.0 | [**10.1 (2.54x)**](tools/moe-bench/) | 9.7 (2.42x) ¶ | - (bigger than RAM) | - |
@@ -50,7 +50,7 @@ the model from disk. Multipliers are vs stock.
 PCIe 4.0 x16 CPU slot; the second card sits in an X570 chipset x4 slot). A board with more
 x16 slots, or another GPU, should raise it; splitting prompt processing across both GPUs'
 links is the next milestone.
-‡ MTP on GLM-5.3-Flash is slower on this box (pinned: 18.8 vs 21.1 t/s without; mmap: 17.6 vs 20.2; the model is 2.3x
+‡ MTP on GLM-5.3-Flash is slower on this box (pinned: 18.2 vs 21.1 t/s without; mmap: 18.2 vs 20.4; tuner picks depth 1; the model is 2.3x
 the VRAM, so verifying drafts adds CPU work and the draft takes cache VRAM). The fork
 doesn't load the draft here by default. Another GPU (more VRAM) should make it pay off,
 as it does for Qwen (1.9x VRAM).
