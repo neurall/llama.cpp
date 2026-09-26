@@ -56,20 +56,26 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 llama-cli    -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf -p "hello"
 ```
 
-- No extra flags needed. When a MoE model doesn't fit in free VRAM, the fork sets
-  itself up: all experts in RAM, the cache fills each GPU's free VRAM (after KV and
-  compute buffers), no CPU weight repacking, `-ub 2048` (long prompts ~2x faster,
-  each expert upload serves 4x more tokens) and a 32k context. Models that fit in
-  VRAM run exactly as in stock llama.cpp.
-- Anything you set yourself wins: `-c 65536` for a longer context (costs cache
-  VRAM), `-ub 512` for slightly faster decode with short prompts,
-  `--moe-expert-cache 0` to turn the cache off, `-ngl`/`-ot`/`--cpu-moe` for your own
-  placement (the cache then only sizes itself, pass `--moe-expert-cache -1`).
+**Automatic defaults that differ from stock llama.cpp.** They apply only when a MoE
+model's weights are larger than the free VRAM of all GPUs. Other models, and every
+setting you pass yourself, behave as in stock llama.cpp. The chosen values are
+printed at startup (`-lv 5` prints all of them).
+
+| setting | stock default | fork default | why |
+|---|---|---|---|
+| expert placement | autofit: whole layers on GPU, rest on CPU | all experts in RAM (`--cpu-moe`) | the VRAM is used for the expert cache instead of fixed layers |
+| expert cache | off | fills each GPU's free VRAM (`--moe-expert-cache -1`) | holds the experts tokens actually use, so most expert work runs on the GPUs |
+| CPU weight repacking | on | off (`-nr`) | repacked experts can't be copied to the GPU cache |
+| `-ub` (tokens per prompt step) | 512 | 2048 if the largest GPU has 20+ GiB free, 1024 at 10+ GiB, else 512 | every expert upload serves more prompt tokens: ~2x faster long prompts; costs ~0.7 GiB cache VRAM (~1% decode) on GLM-5.3-Flash |
+| `-c` (context) | model maximum, fitted to VRAM | 32768 | a bigger KV cache would take VRAM from the expert cache; `-c 65536` if you need more |
+| `-t` (threads) | all physical cores | cores minus one per GPU (6 of 8 here) | a free core per GPU keeps kernel launches and cache uploads fast; measured faster |
+
+Settings you pass always win, e.g. `--moe-expert-cache 0` turns the cache off. With your
+own placement (`-ngl`, `-ot`, `--cpu-moe`) the cache stays off unless you also pass
+`--moe-expert-cache -1`.
 - **Prompt processing runs on one GPU, so its PCIe bandwidth sets the speed.** The
   fork measures host->GPU upload speed per GPU at startup and sends prompt processing
   to the fastest (here x16 13.2 GB/s vs chipset x4 6.1 GB/s); layers stay in bus order.
-- Threads: auto mode leaves one core per GPU free to drive it (6 of 8 cores here); `-t`
-  overrides.
 - Output can differ between runs even at temperature 0: a cached expert runs on the
   GPU, a missed one on the CPU, and they round slightly differently. For benchmarks,
   `LLAMA_MOE_CACHE_DETERMINISTIC=1` makes a build repeat its output.
@@ -92,9 +98,8 @@ expert fits. Reports from 3+ GPU setups are welcome.
 - Prefill: experts the prompt selects warm the cache before the first token
   ([@sdroege](https://github.com/sdroege) explored the same idea in the PR thread);
   in big prefill batches, cached experts are copied GPU-to-GPU instead of over PCIe.
-- Auto mode: a MoE model bigger than free VRAM gets the whole setup (experts in RAM,
-  cache, no repack, 2048 ubatch, 32k context, one core per GPU left free) from a plain
-  `-m`; `-lv 5` logs every chosen setting.
+- Automatic defaults for MoE models bigger than free VRAM (see Run): experts in RAM,
+  cache, no repack, `-ub` by VRAM, 32k context, one core per GPU left free.
 - Startup upload-bandwidth probe that sends prompt processing to the fastest-link GPU.
 - Lookahead expert prefetch from PR [#28414](https://github.com/ggml-org/llama.cpp/pull/28414)
   ([@leshchukandrej](https://github.com/leshchukandrej)), `--prefetch-experts-slots N`,
