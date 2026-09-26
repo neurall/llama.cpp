@@ -14,6 +14,7 @@
 #include "ggml.h"
 #include "ggml-cpp.h"
 #include "ggml-backend.h"
+#include "ggml-alloc.h"
 #include "gguf.h"
 
 #include <algorithm>
@@ -24,7 +25,6 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
-#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -274,26 +274,44 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
             }
         }
 
-        // widest PCIe link first: big-batch ops on host weights (e.g. MoE experts
-        // with --cpu-moe) are offloaded to the first GPU, so its upload bandwidth
-        // bounds prompt processing
-        // ponytail: Linux sysfs link width only (idle GPUs downclock link speed),
-        // no-op elsewhere; pass --device to force an order
-        auto pcie_width = [](ggml_backend_dev_t dev) -> int {
-            ggml_backend_dev_props props;
-            ggml_backend_dev_get_props(dev, &props);
-            if (!props.device_id) {
-                return 0;
+        // fastest host->GPU upload first: big-batch ops on host weights (e.g. MoE
+        // experts with --cpu-moe) are offloaded to the first GPU, so its upload
+        // bandwidth bounds prompt processing, and GPUs are numbered by bus order,
+        // not slot speed. Measured, so x4/x16, PCIe gen and chipset sharing all
+        // count, on any OS and backend. Pass --device to force an order.
+        if (gpus.size() > 1) {
+            constexpr size_t n_bytes = 64u << 20;
+            std::vector<uint8_t> host(n_bytes, 1);
+            auto h2d_gbs = [&](ggml_backend_dev_t dev) -> double {
+                ggml_init_params ip = { ggml_tensor_overhead(), nullptr, true };
+                ggml_context * ctx = ggml_init(ip);
+                ggml_tensor * t = ggml_new_tensor_1d(ctx, GGML_TYPE_I8, n_bytes);
+                ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, ggml_backend_dev_buffer_type(dev));
+                double best = 0.0;
+                if (buf) {
+                    for (int i = 0; i < 3; ++i) { // first copy warms up
+                        const int64_t t0 = ggml_time_us();
+                        ggml_backend_tensor_set(t, host.data(), 0, n_bytes);
+                        const double gbs = n_bytes / 1e3 / std::max<int64_t>(1, ggml_time_us() - t0);
+                        best = i ? std::max(best, gbs) : 0.0;
+                    }
+                    ggml_backend_buffer_free(buf);
+                }
+                ggml_free(ctx);
+                return best;
+            };
+            std::vector<std::pair<double, llama_device>> bw;
+            for (const auto & d : gpus) {
+                bw.push_back({ h2d_gbs(d.dev), d });
+                LLAMA_LOG_INFO("%s: %s host->device upload %.1f GB/s\n", __func__, ggml_backend_dev_name(d.dev), bw.back().first);
             }
-            std::string id = props.device_id;
-            std::transform(id.begin(), id.end(), id.begin(), ::tolower);
-            std::ifstream f("/sys/bus/pci/devices/" + id + "/current_link_width");
-            int w = 0;
-            return (f >> w) ? w : 0;
-        };
-        std::stable_sort(gpus.begin(), gpus.end(), [&](const llama_device & a, const llama_device & b) {
-            return pcie_width(a.dev) > pcie_width(b.dev);
-        });
+            // within 15% counts as equal: identical setups keep their order
+            // (ponytail: not a strict weak order for long chains of near-equal GPUs; fine for 2-8)
+            std::stable_sort(bw.begin(), bw.end(), [](const auto & a, const auto & b) { return a.first > 1.15*b.first; });
+            for (size_t i = 0; i < gpus.size(); ++i) {
+                gpus[i] = bw[i].second;
+            }
+        }
 
         // add RPC servers at the front of the list to minimize network transfers
         model->devices.insert(model->devices.begin(), rpc_servers.begin(), rpc_servers.end());
