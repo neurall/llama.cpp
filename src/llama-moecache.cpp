@@ -86,6 +86,8 @@ struct moe_cache {
     std::deque<upload_job>   todo;
     std::vector<upload_job>  done;
     bool                     stop = false;
+    int                      in_flight = 0; // jobs popped by a worker, not yet in done
+    std::condition_variable  dcv;           // signalled when a job lands in done
 
     // swap cost accounting (guarded by wmtx for the upload side)
     double   upload_us    = 0;  // EMA of one expert upload (up+gate+down)
@@ -528,6 +530,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     }
                     j = mc->todo.front();
                     mc->todo.pop_front();
+                    mc->in_flight++;
                 }
                 auto & ls = mc->layers[j.layer_idx];
                 const int64_t t0 = ggml_time_us();
@@ -550,7 +553,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     mc->upload_us = mc->n_uploads++ ? 0.9*mc->upload_us + 0.1*dt : dt;
                     j.done = true;
                     mc->done.push_back(j);
+                    mc->in_flight--;
                 }
+                mc->dcv.notify_all();
             }
         });
 
@@ -589,9 +594,25 @@ void llama_moe_cache_step() {
         return;
     }
 
+    // LLAMA_MOE_CACHE_DETERMINISTIC=1 (benchmarks): publish exactly the uploads
+    // scheduled by the previous step, in a fixed order, with a fixed swap budget
+    // and margin, so a run no longer depends on upload timing and repeats its
+    // output. Uploads still overlap the token's compute; the wait is only for
+    // the ones not finished by then.
+    static const bool det = [] {
+        const char * e = getenv("LLAMA_MOE_CACHE_DETERMINISTIC");
+        return e && atoi(e) != 0;
+    }();
+
     // 1) publish completed uploads (sync point: no graph is executing)
     {
-        std::lock_guard<std::mutex> wlk(mc->wmtx);
+        std::unique_lock<std::mutex> wlk(mc->wmtx);
+        if (det) {
+            mc->dcv.wait(wlk, [mc]() { return mc->todo.empty() && mc->in_flight == 0; });
+            std::sort(mc->done.begin(), mc->done.end(), [](const upload_job & a, const upload_job & b) {
+                return a.layer_idx != b.layer_idx ? a.layer_idx < b.layer_idx : a.slot < b.slot;
+            });
+        }
         std::lock_guard<std::mutex> lk(mc->mtx);
         for (const auto & j : mc->done) {
             auto & ls = mc->layers[j.layer_idx];
@@ -628,6 +649,13 @@ void llama_moe_cache_step() {
         } else {
             budget_total = (int) (frac*step_us*mc->workers.size()/mc->upload_us) - (int) mc->todo.size();
         }
+        if (det) {
+            static const int det_budget = [] {
+                const char * e = getenv("LLAMA_MOE_CACHE_DET_BUDGET");
+                return e ? atoi(e) : 8;
+            }();
+            budget_total = det_budget;
+        }
         budget_total = std::max(0, budget_total);
         mc->last_budget = budget_total;
     }
@@ -644,6 +672,13 @@ void llama_moe_cache_step() {
         const double bytes  = (double) (l0.up_src->nb[2] + l0.gate_src->nb[2] + l0.down_src->nb[2]);
         const double cpu_us = bytes / (cpu_gbs * 1e3); // GB/s -> bytes per us
         margin = (uint32_t) std::max(1.0, std::ceil(mc->upload_us / cpu_us));
+    }
+    if (det) {
+        static const uint32_t det_margin = [] {
+            const char * e = getenv("LLAMA_MOE_CACHE_DET_MARGIN");
+            return (uint32_t) (e ? atoi(e) : 4);
+        }();
+        margin = det_margin;
     }
     mc->last_margin = (int) margin;
 

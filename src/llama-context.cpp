@@ -2104,7 +2104,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 
     // apply throttled MoE expert-cache updates between graph executions; wait for
     // the GPU first so no queued read of a slot races the worker refilling it
-    if (llama_moe_cache_active()) {
+    static const bool mc_sync = !getenv("LLAMA_MOE_CACHE_SYNC") || atoi(getenv("LLAMA_MOE_CACHE_SYNC")) != 0;
+    if (mc_sync && llama_moe_cache_active()) {
         ggml_backend_sched_synchronize(sched.get());
     }
     llama_moe_cache_step();
