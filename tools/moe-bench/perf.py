@@ -53,8 +53,46 @@ def db():
     return c
 
 
+def _die_with_parent():
+    # the server dies with perf.py (killed, Ctrl-C, crash): no orphan holding the port and VRAM
+    import ctypes, signal
+    ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+
+
+def kill_leftovers():
+    """Stop any llama-server / llama-perplexity left running (TERM, then KILL after 15 s)."""
+    import signal
+    for sig, wait_s in ((signal.SIGTERM, 15), (signal.SIGKILL, 10)):
+        pids = subprocess.run(["pgrep", "-x", "llama-server|llama-perplexit"], capture_output=True, text=True).stdout.split()
+        if not pids:
+            return
+        for pid in pids:
+            try:
+                os.kill(int(pid), sig)
+            except ProcessLookupError:
+                pass
+        for _ in range(wait_s):
+            if not subprocess.run(["pgrep", "-x", "llama-server|llama-perplexit"], capture_output=True).stdout:
+                return
+            time.sleep(1)
+
+
+def stop(p):
+    p.terminate()
+    try:
+        p.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+
+
 def wait_vram_free():
+    kill_leftovers()
+    t0 = time.time()
     while True:
+        if time.time() - t0 > 60:  # something still holds VRAM: clean up again
+            kill_leftovers()
+            t0 = time.time()
         out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True).stdout.split()
         if out and max(int(x) for x in out) < 500:
@@ -78,13 +116,16 @@ def server_start(build, env, args):
     logf = f"/tmp/perf-{build}.log"
     with open(logf, "w") as lf:
         p = subprocess.Popen([os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
-                             + args, stdout=lf, stderr=subprocess.STDOUT, env=env)
+                             + args, stdout=lf, stderr=subprocess.STDOUT, env=env, preexec_fn=_die_with_parent)
     while True:
         log = open(logf).read()
         if "listening on" in log:
             return p, logf
         if p.poll() is not None:
             raise RuntimeError("server exited: " + log[-300:])
+        if "couldn't bind" in log:
+            stop(p)
+            raise RuntimeError("port busy: " + log[-300:])
         time.sleep(1)
 
 
@@ -99,8 +140,7 @@ def server_run(build, env, args, path, body):
     try:
         return post(path, body), logf
     finally:
-        p.terminate()
-        p.wait()
+        stop(p)
 
 
 def agent_run(build, env, args):
@@ -110,8 +150,7 @@ def agent_run(build, env, args):
     try:
         return miniagentic.run(f"http://127.0.0.1:{PORT}"), logf
     finally:
-        p.terminate()
-        p.wait()
+        stop(p)
 
 
 def run_one(build, test, extra_env, plain=False, extra_args=()):
@@ -128,7 +167,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         nb = "1" if test == "ppl" else "3"
         args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", "2", "-b", nb, "-ub", nb]
         r = subprocess.run([os.path.join(HERE, build, "llama-perplexity"), "-m", MODEL] + args,
-                           capture_output=True, text=True, env=env)
+                           capture_output=True, text=True, env=env, preexec_fn=_die_with_parent)
         log = r.stdout + r.stderr
         s = re.search(r"([\d.]+) seconds per pass", log)
         ppl = re.findall(r"PPL = ([\d.]+)", log)

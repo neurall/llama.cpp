@@ -1307,7 +1307,7 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
         return nullptr;
     }
     madvise(ptr, size, MADV_NOHUGEPAGE);
-    if (cudaHostRegister(ptr, size, cudaHostRegisterPortable) != cudaSuccess) {
+    if (cudaHostRegister(ptr, size, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
         (void) cudaGetLastError();
         munmap(ptr, size);
         return nullptr;

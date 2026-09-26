@@ -108,6 +108,8 @@ int llama_server(int argc, char ** argv) {
         return 1;
     }
 
+    params.auto_pin = true; // a server starts once and serves many requests: pinned weights pay off
+
     llama_backend_init();
     llama_numa_init(params.numa);
 
