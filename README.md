@@ -20,22 +20,22 @@ reproduce these tests are in [`tools/moe-bench/`](tools/moe-bench/).
 
 **Stock llama.cpp vs this fork**, tokens/s, model already in RAM (*). "mmap": weights
 memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned RAM, what
-`llama-server` does by itself when the model fits in RAM; "+ MTP": the model's MTP draft head
+`llama-server` does by itself when the model fits in RAM; "+ MTP": plus the model's MTP draft head
 (`-md`, automatic draft depth). Multipliers vs stock; best number per row in bold (links to how to reproduce it).
 
-| model | test | stock | fork, mmap | fork, pinned (server default) | fork, pinned + MTP |
-|---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB | short: decode | 13.8 | 20.4 (1.48x) | [**21.1 (1.53x)**](tools/moe-bench/) | 18.8 (1.36x), slower than without ‡ |
-| | long: prompt processing † | 217 | 180 (0.83x) | [**262 (1.21x)**](tools/moe-bench/) | |
-| | long: decode | 12.3 | 15.6 (1.27x) | [**16.3 (1.33x)**](tools/moe-bench/) | |
-| MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB | short: decode | 4.0 | [**10.1 (2.54x)**](tools/moe-bench/) | - (bigger than RAM) | pending (built-in MTP) |
-| | long: prompt processing † | [**136**](tools/moe-bench/) | 133 (0.98x) | - | |
-| | long: decode | 4.2 | [**8.3 (1.98x)**](tools/moe-bench/) | - | |
-| Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB | short: decode | 27.7 | 47.1 (1.70x) | 46.5 (1.68x) | 51.5 (1.86x); [**57.0 (2.06x)**](tools/moe-bench/) with mmap + MTP |
-| | long: prompt processing † | 500 | 372 (0.74x) | [**538 (1.08x)**](tools/moe-bench/) | 501 (1.00x) |
-| | long: decode | 25.3 | 38.4 (1.52x) | [**42.3 (1.67x)**](tools/moe-bench/) | 33.6 (1.33x) § |
-| Qwen3.8-27B IQ4_NL (dense, fits VRAM), 16 GB | short / long prompt | 44.7 / 1726 | 44.8 / 1811 (no cache needed) | | |
-| OLMoE-1B-7B Q4_K_M (fits VRAM), 4 GB | short: decode | 504 | 504 (no cache needed) | | |
+| model | test | stock | fork, mmap | fork, mmap + MTP | fork, pinned (server default) | fork, pinned + MTP |
+|---|---|---|---|---|---|---|
+| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB | short: decode | 13.8 | 20.4 (1.48x) | 17.6 (1.28x) ‡ | [**21.1 (1.53x)**](tools/moe-bench/) | 18.8 (1.36x) ‡ |
+| | long: prompt processing † | 217 | 180 (0.83x) | | [**262 (1.21x)**](tools/moe-bench/) | |
+| | long: decode | 12.3 | 15.6 (1.27x) | | [**16.3 (1.33x)**](tools/moe-bench/) | |
+| MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB | short: decode | 4.0 | [**10.1 (2.54x)**](tools/moe-bench/) | pending (built-in MTP) | - (bigger than RAM) | - |
+| | long: prompt processing † | [**136**](tools/moe-bench/) | 133 (0.98x) | | - | - |
+| | long: decode | 4.2 | [**8.3 (1.98x)**](tools/moe-bench/) | | - | - |
+| Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB | short: decode | 27.7 | 47.1 (1.70x) | [**57.0 (2.06x)**](tools/moe-bench/) | 46.5 (1.68x) | 51.5 (1.86x) |
+| | long: prompt processing † | 500 | 372 (0.74x) | 347 (0.69x) | [**538 (1.08x)**](tools/moe-bench/) | 501 (1.00x) |
+| | long: decode | 25.3 | 38.4 (1.52x) | 38.2 (1.51x) § | [**42.3 (1.67x)**](tools/moe-bench/) | 33.6 (1.33x) § |
+| Qwen3.8-27B IQ4_NL (dense, fits VRAM), 16 GB | short / long prompt | 44.7 / 1726 | 44.8 / 1811 (no cache needed) | | | |
+| OLMoE-1B-7B Q4_K_M (fits VRAM), 4 GB | short: decode | 504 | 504 (no cache needed) | | | |
 
 § The 12k test generates only 32 tokens: too few for the MTP depth tuner to settle, so MTP
 mostly adds overhead there; it pays off on longer replies (short-prompt row).
