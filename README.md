@@ -11,21 +11,27 @@ For MoE models larger than VRAM: every expert stays in system RAM, and all VRAM 
 after the KV cache becomes a live cache of the experts actually being used. The GPUs
 compute cached experts while the CPU computes the rest, in parallel.
 
-llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf -np 1 -c 16384 -t 6 --cpu-moe -nr --moe-expert-cache -1 -ub 2048 -b 2048
+llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
-**Results, 2x RTX 3090 (one am4 CPU pcie4 x16, one chipset x4 slot) + Ryzen 7 3700X + 125 GB DDR4,
+**Results, 2x RTX 3090 (one AM4 CPU PCIe 4.0 x16, one X570 chipset x4 slot) + Ryzen 7 3700X + 125 GB DDR4,
 CPU frequency governor `performance`, single stream, temp 0.** Short = 1500-token chat reply to "write smallest html tetris game". Long =
 12k-token code prompt (llama.cpp sources): prompt processing, then decode.
 
 | model | size | short: decode t/s | long: prefill t/s | long: decode t/s |
 |---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 13.5 -> **21.9 (1.63x)** | 216 -> 179 | 12.2 -> **15.5 (1.27x)** |
-| MiMo-V2.6-Flash-RL IQ3_XXS | 132 GB | 4.1 -> **9.4 (2.28x)** | 153 -> 139 | 4.2 -> **9.7 (2.30x)** |
-| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 27.5 -> **40.9 (1.49x)** | 492 -> 313 | 24.6 -> **38.3 (1.55x)** |
+| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 13.8 -> **21.5 (1.56x)*** | 217 -> 181* | 12.3 -> **15.7 (1.28x)*** |
+| MiMo-V2.6-Flash-RL IQ3_XXS | 132 GB | 4.0 -> **10.1 (2.54x)**** | 136 -> 133** | 4.2 -> **8.3 (1.98x)**** |
+| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 27.7 -> **46.4 (1.68x)*** | 500 -> 390* | 25.3 -> **38.7 (1.53x)*** |
 | Qwen3.8-27B IQ4_NL (dense, fits VRAM) | 16 GB | 44.7 -> 44.8 | 1726 -> 1811 | |
 | OLMoE-1B-7B Q4_K_M (fits VRAM) | 4 GB | 504 -> 504 | | |
 
-stock llama.cpp -> this fork. Stock can't load GLM-5.3-Flash, so its stock column is
+\* Model already in RAM (OS page cache), as on a server after its first request. The
+first run after switching to another large model is slower, once, while the file is
+read from disk. \*\* MiMo (132 GB) can't fully stay cached in 125 GB RAM, so it always
+reads part of the model from disk.
+
+stock llama.cpp -> this fork. The fork numbers match a plain `llama-server -m model` within ~4%
+(auto mode, see Run). Stock can't load GLM-5.3-Flash, so its stock column is
 this fork without the cache. Models that fit in VRAM don't use the cache and run the
 same (identical output). With the default `schedutil`/`powersave` governor, decode can
 be lower, mostly where the CPU computes missed experts. Prompt processing is slower than stock: stock keeps whole
@@ -46,21 +52,24 @@ GPUs, at the same time as the CPU handles the misses.
 ## Run
 
 ```sh
-llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
-    -np 1 -c 16384 -t 6 --cpu-moe -nr --moe-expert-cache -1 -ub 2048 -b 2048
+llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
+llama-cli    -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf -p "hello"
 ```
 
-- `--cpu-moe` keeps all experts in RAM; `--moe-expert-cache -1` fills each GPU's free
-  VRAM (after KV and compute buffers) with the cache. Set `-c` explicitly, otherwise
-  autofit grows the context into the VRAM the cache needs. No other flags or
-  environment variables are needed.
-- `-ub 2048 -b 2048` speeds up long prompts ~2x (each expert upload serves 4x more
-  tokens) at ~4% decode cost.
-- **Prompt processing runs on the first GPU, so its PCIe bandwidth sets the speed.**
-  The fork measures host->GPU upload speed per GPU at startup and puts the fastest
-  first (here x16 13.2 GB/s vs chipset x4 6.1 GB/s). Release b11214 predates this:
-  with it, list the fastest card first yourself (`CUDA_VISIBLE_DEVICES=1,0`).
-- `-t` about cores minus 2 (leave cores to drive the GPUs).
+- No extra flags needed. When a MoE model doesn't fit in free VRAM, the fork sets
+  itself up: all experts in RAM, the cache fills each GPU's free VRAM (after KV and
+  compute buffers), no CPU weight repacking, `-ub 2048` (long prompts ~2x faster,
+  each expert upload serves 4x more tokens) and a 32k context. Models that fit in
+  VRAM run exactly as in stock llama.cpp.
+- Anything you set yourself wins: `-c 65536` for a longer context (costs cache
+  VRAM), `-ub 512` for slightly faster decode with short prompts,
+  `--moe-expert-cache 0` to turn the cache off, `-ngl`/`-ot`/`--cpu-moe` for your own
+  placement (the cache then only sizes itself, pass `--moe-expert-cache -1`).
+- **Prompt processing runs on one GPU, so its PCIe bandwidth sets the speed.** The
+  fork measures host->GPU upload speed per GPU at startup and sends prompt processing
+  to the fastest (here x16 13.2 GB/s vs chipset x4 6.1 GB/s); layers stay in bus order.
+- Threads: auto mode leaves one core per GPU free to drive it (6 of 8 cores here); `-t`
+  overrides.
 - Output can differ between runs even at temperature 0: a cached expert runs on the
   GPU, a missed one on the CPU, and they round slightly differently. For benchmarks,
   `LLAMA_MOE_CACHE_DETERMINISTIC=1` makes a build repeat its output.
@@ -83,7 +92,10 @@ expert fits. Reports from 3+ GPU setups are welcome.
 - Prefill: experts the prompt selects warm the cache before the first token
   ([@sdroege](https://github.com/sdroege) explored the same idea in the PR thread);
   in big prefill batches, cached experts are copied GPU-to-GPU instead of over PCIe.
-- Startup upload-bandwidth probe that puts the fastest-link GPU first.
+- Auto mode: a MoE model bigger than free VRAM gets the whole setup (experts in RAM,
+  cache, no repack, 2048 ubatch, 32k context, one core per GPU left free) from a plain
+  `-m`; `-lv 5` logs every chosen setting.
+- Startup upload-bandwidth probe that sends prompt processing to the fastest-link GPU.
 - Lookahead expert prefetch from PR [#28414](https://github.com/ggml-org/llama.cpp/pull/28414)
   ([@leshchukandrej](https://github.com/leshchukandrej)), `--prefetch-experts-slots N`,
   off by default (slower with the cache on this box; may help without it).
@@ -97,11 +109,18 @@ expert fits. Reports from 3+ GPU setups are welcome.
 
 ## Known limits and next steps
 
-- Prompt processing is 10-35% slower than stock on these models. Next milestone: use
+- Prompt processing is up to ~22% slower than stock on these models. Next milestone: use
   both GPUs' PCIe links for it (split each layer's experts by measured bandwidth).
-- Qwen3.8-Flash-Next prompt processing may be ~5% below release b11214 (313 vs 331 t/s,
-  12k prompt); not settled yet, because switching between large models evicts part of
-  the model from the OS page cache and skews the next run.
+- GPU order, ongoing research. On this box decode is ~7% faster (tetris 28.6 vs
+  26.7 t/s, cache hits 90% vs 87%, same cache size) when the layers stay in bus order
+  (x4 GPU first) than when the x16 GPU takes the first layers, while prompt processing
+  wants the x16 GPU. So since this release prompt processing goes to the fastest-link
+  GPU and layers keep bus order, which gets both. Why the layer order matters is not
+  known yet: the two cards differ (x16: Gainward 3-slot 370 W with partly blocked
+  airflow, x4: Dell OEM 2-slot 350 W), so clocks or memory hotspot throttling may count
+  as much as the PCIe link. Next: log clocks and throttle reasons per GPU during
+  decode, and in auto mode choose the order per request (prompt length, measured
+  speeds).
 - MTP speculative decoding (PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243))
   is not merged yet. The path it uses is already tested: with 3-token batches the cache
   gives Qwen3.8-Flash-Next 80.4 vs 44.9 t/s and GLM-5.3-Flash 27.7 vs 19.6 t/s, with
