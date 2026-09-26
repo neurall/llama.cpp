@@ -63,7 +63,16 @@ def kill_leftovers():
     """Kill every llama-* process (server, perplexity, cli, ...) by process name, in a loop until
     none is left: TERM, escalating to KILL after 2 s. Name matching (no -f) never hits
     the calling shell; exiting processes (freeing ~100 GB pinned RAM) are waited for."""
-    left = lambda: subprocess.run(["pgrep", "^llama-"], capture_output=True).stdout.split()
+    def left():  # zombies (state Z) are already dead: nothing to kill or wait for
+        pids = subprocess.run(["pgrep", "^llama-"], capture_output=True, text=True).stdout.split()
+        out = []
+        for pid in pids:
+            try:
+                if open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0] != "Z":
+                    out.append(pid)
+            except OSError:
+                pass
+        return out
     t0 = time.time()
     while left():
         subprocess.run(["pkill", "-KILL" if time.time() - t0 > 2 else "-TERM", "^llama-"])
@@ -73,7 +82,7 @@ def kill_leftovers():
 def stop(p):
     p.terminate()
     try:
-        p.wait(timeout=30)
+        p.wait(timeout=2)
     except subprocess.TimeoutExpired:
         p.kill()
         p.wait()
