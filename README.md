@@ -79,11 +79,15 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
 - `-t 6` suits an 8-core CPU (leave cores to drive the GPUs).
 - `-ub 2048 -b 2048` speeds up prompt processing ~2.2x at ~4% decode cost; drop
   it if you only send short prompts.
-- Prompt processing uploads the experts to the **first GPU**, so that GPU's PCIe
-  bandwidth sets the prefill speed. On Linux the fork puts the GPU with the widest
-  PCIe link first automatically. On Windows (or to force it) list the fastest-link
-  card first yourself, e.g. if GPU 1 is in the CPU x16 slot and GPU 0 in a chipset
-  x4 slot: `set CUDA_VISIBLE_DEVICES=1,0` (cmd) or
+- **Put the GPU in the fastest PCIe slot first, or prefill collapses.** Prompt
+  processing uploads the experts to the **first GPU**, so that GPU's PCIe
+  bandwidth sets the prefill speed, and GPUs are numbered by PCI bus order, not
+  slot speed: the first one is often a card in a chipset x4 slot. Building from
+  source on Linux, the fork puts the widest-link GPU first automatically. **With
+  the current release binary (b11214), on Linux too, and on Windows,** list the
+  fastest-link card first yourself, e.g. if GPU 1 is in the CPU x16 slot and
+  GPU 0 in a chipset x4 slot: `CUDA_VISIBLE_DEVICES=1,0 llama-server ...` (Linux),
+  `set CUDA_VISIBLE_DEVICES=1,0` (Windows cmd) or
   `$env:CUDA_VISIBLE_DEVICES="1,0"` (PowerShell). Check link widths with
   `nvidia-smi --query-gpu=index,pcie.link.width.max,pcie.link.width.current --format=csv`
   (read the current width under load, idle cards can downshift).
