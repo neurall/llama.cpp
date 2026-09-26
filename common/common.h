@@ -73,6 +73,7 @@ struct common_cpu_params {
     enum ggml_sched_priority  priority   = GGML_SCHED_PRIO_NORMAL;  // Scheduling prio : (0 - normal, 1 - medium, 2 - high, 3 - realtime)
     bool     strict_cpu                  = false;   // Use strict CPU placement
     uint32_t poll                        = 50;      // Polling (busywait) level (0 - no polling, 100 - mostly polling)
+    bool     auto_threads                = false;   // n_threads came from the default, not the user
 };
 
 int32_t common_cpu_get_num_physical_cores();
