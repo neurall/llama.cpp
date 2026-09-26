@@ -182,7 +182,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             dev = ["-t", "6", "-dev", "CUDA1,CUDA0", "-c", "16384", "-ub", "2048", "-b", "2048"]
             args = list(extra_args) if BARE else dev + ((["--moe-expert-cache", "0"] if test == "pf12k-stock" and not build.startswith("stock") else []) if test == "pf12k-stock" or plain or build.startswith("stock") else ["--cpu-moe", "-nr", "--moe-expert-cache", "-1"]) + list(extra_args)
             res, logf = server_run(build, env, args, "/completion",
-                                   {"prompt": open(os.path.join(PROMPTS, "src_12k.cpp")).read(), "n_predict": 32,
+                                   {"prompt": open(os.path.join(PROMPTS, "src_12k.cpp")).read(), "n_predict": int(os.environ.get("PERF_NPRED", 32)),
                                     "cache_prompt": False, **GREEDY})
             t = res["timings"]
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
