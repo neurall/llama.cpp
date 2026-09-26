@@ -514,8 +514,12 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 ggml_backend_buffer_t b = hbuft ? ggml_backend_buft_alloc_buffer(hbuft, max_expert) : nullptr;
                 mc->staging.push_back(b);
             }
+            // weights loaded without mmap (--load-mode none) sit in the GPU's pinned host buffer: direct DMA
+            const bool src_pinned = gpu && ggml_backend_buffer_get_type(mc->layers[0].pub.up_src->buffer) == ggml_backend_dev_host_buffer_type(gpu);
             LLAMA_LOG_WARN("moe-cache: %d upload workers, %s\n", n_workers,
-                    mc->staging[0] ? "pread -> pinned staging -> GPU" : "from host memory (no file location or pinned buffer)");
+                    mc->staging[0] ? "pread -> pinned staging -> GPU" :
+                    src_pinned     ? "from pinned host memory (direct DMA)" :
+                                     "from pageable host memory (mmap; --load-mode none pins the weights: faster uploads)");
         }
 
         for (size_t w = 0; w < mc->staging.size(); ++w)

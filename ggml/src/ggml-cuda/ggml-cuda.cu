@@ -1,3 +1,6 @@
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 #include "ggml-cuda.h"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
@@ -1286,7 +1289,42 @@ static void * ggml_cuda_host_malloc(size_t size) {
     return ptr;
 }
 
+#if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+// cudaMallocHost pins at ~1.3 GiB/s (a 100 GiB model: ~70 s); anonymous memory + cudaHostRegister
+// pins ~2x faster. Used for big buffers (model weights kept in RAM). Transparent huge pages were
+// measured slower here: with RAM full of page cache the kernel has to compact to build them.
+static void ggml_backend_cuda_host_buffer_free_registered(ggml_backend_buffer_t buffer) {
+    CUDA_CHECK(cudaHostUnregister(buffer->context));
+    munmap(buffer->context, buffer->size);
+}
+
+static void * ggml_cuda_host_malloc_registered(size_t size) {
+    if (size < (1ull << 30) || getenv("GGML_CUDA_NO_PINNED") != nullptr) {
+        return nullptr;
+    }
+    void * ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (ptr == MAP_FAILED) {
+        return nullptr;
+    }
+    madvise(ptr, size, MADV_NOHUGEPAGE);
+    if (cudaHostRegister(ptr, size, cudaHostRegisterPortable) != cudaSuccess) {
+        (void) cudaGetLastError();
+        munmap(ptr, size);
+        return nullptr;
+    }
+    return ptr;
+}
+#endif
+
 static ggml_backend_buffer_t ggml_backend_cuda_host_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
+#if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (void * reg = ggml_cuda_host_malloc_registered(size)) {
+        ggml_backend_buffer_t buffer = ggml_backend_cpu_buffer_from_ptr(reg, size);
+        buffer->buft = buft;
+        buffer->iface.free_buffer = ggml_backend_cuda_host_buffer_free_registered;
+        return buffer;
+    }
+#endif
     void * ptr = ggml_cuda_host_malloc(size);
 
     if (ptr == nullptr) {
