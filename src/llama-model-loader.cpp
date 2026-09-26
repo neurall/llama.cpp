@@ -1,5 +1,9 @@
 #include "llama-model-loader.h"
 
+#if defined(__linux__)
+#include <fcntl.h>
+#endif
+
 #include "ggml-alloc.h"
 #include "ggml.h"
 #include "gguf.h"
@@ -1675,6 +1679,10 @@ bool llama_model_loader::load_all_data(
             if (ggml_backend_buffer_is_host(cur->buffer)) {
                 file->seek(weight->offs, SEEK_SET);
                 file->read_raw(cur->data, n_size);
+#if defined(__linux__)
+                // the copy now lives in RAM: drop the file's cached pages so the two don't compete for memory
+                posix_fadvise(file->file_id(), weight->offs, n_size, POSIX_FADV_DONTNEED);
+#endif
                 if (check_tensors) {
                     validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
                         return std::make_pair(cur, ggml_validate_row_data(cur->type, cur->data, n_size));
