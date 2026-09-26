@@ -1312,6 +1312,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     }
 
     size_t vram_free = 0;
+    size_t vram_max  = 0; // largest single GPU: prompt processing is offloaded to one GPU
     int    n_gpu     = 0;
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
@@ -1321,6 +1322,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
         size_t free, total;
         ggml_backend_dev_memory(dev, &free, &total);
         vram_free += free;
+        vram_max   = std::max(vram_max, free);
         n_gpu++;
     }
     // ponytail: weights vs free VRAM minus 1 GiB per GPU for context/compute; fit handles the borderline rest
@@ -1331,14 +1333,16 @@ static void common_moe_cache_auto_impl(common_params & params) {
         return;
     }
 
-    LOG_INF("%s: MoE model (%.1f GiB) exceeds free VRAM (%.1f GiB), enabling expert cache: experts in RAM, no repack, auto cache size, 2048 ubatch, 32k ctx, 1 core per GPU left free unless set\n",
-        __func__, model_size / 1073741824.0, vram_free / 1073741824.0);
     auto & tbo = params.tensor_buft_overrides;
     tbo.insert(std::find_if(tbo.begin(), tbo.end(), [](const auto & o) { return o.pattern == nullptr; }), llm_ffn_exps_cpu_override());
     params.no_extra_bufts    = true;
     params.n_moe_cache_slots = -1;
-    if (params.n_ubatch == 512 && params.n_batch == 2048) {
-        params.n_ubatch = 2048; // big ubatch: experts are uploaded once per ubatch in prompt processing
+    if (!params.ubatch_user) {
+        // experts are uploaded once per ubatch in prompt processing: 2048 is ~2x faster on long
+        // prompts than 512; its compute buffer (~0.7 GiB on GLM-5.3-Flash) comes out of the cache
+        // ponytail: VRAM tiers, measured on 24 GB; estimate the buffer from n_embd if small GPUs need finer steps
+        const size_t GiB = 1ull << 30;
+        params.n_ubatch = std::min(params.n_batch, vram_max >= 20*GiB ? 2048 : vram_max >= 10*GiB ? 1024 : 512);
     }
     // leave one core per GPU to drive it (measured on 2 GPUs: 6 of 8 cores beats 8)
     for (auto * cp : { &params.cpuparams, &params.cpuparams_batch }) {
@@ -1349,6 +1353,9 @@ static void common_moe_cache_auto_impl(common_params & params) {
     if (params.n_ctx == 0) {
         params.n_ctx = 32768; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more
     }
+    LOG_INF("%s: MoE model (%.1f GiB) exceeds free VRAM (%.1f GiB): experts in RAM + GPU expert cache, no repack, "
+        "ctx %d, ubatch %d, threads %d (settings you pass win)\n", __func__, model_size / 1073741824.0, vram_free / 1073741824.0,
+        params.n_ctx, params.n_ubatch, params.cpuparams.n_threads);
 }
 
 common_init_result::common_init_result(common_params & params, bool model_only) :

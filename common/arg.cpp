@@ -1674,6 +1674,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format("physical maximum batch size (default: %d)", params.n_ubatch),
         [](common_params & params, int value) {
             params.n_ubatch = value;
+            params.ubatch_user = true;
         }
     ).set_env("LLAMA_ARG_UBATCH"));
     add_opt(common_arg(
