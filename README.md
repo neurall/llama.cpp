@@ -114,8 +114,8 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   and the text diverges from there (stock llama.cpp places experts the same way
   every run, so it repeats itself). For benchmarks and regression tests set
   `LLAMA_MOE_CACHE_DETERMINISTIC=1`: each step publishes exactly the uploads of
-  the previous step with a fixed swap budget (`LLAMA_MOE_CACHE_DET_BUDGET`,
-  default 8) and margin (`LLAMA_MOE_CACHE_DET_MARGIN`, default 4), so a given
+  the previous step with a fixed swap budget (`LLAMA_MOE_CACHE_BUDGET`,
+  default 8) and margin (`LLAMA_MOE_CACHE_MARGIN`, default 4), so a given
   build repeats its output. It is slightly slower and its hit rate differs from
   the normal adaptive mode, so compare builds within the same mode.
   `LLAMA_MOE_CACHE_STATS=1` logs it.
