@@ -8,9 +8,9 @@ The inputs behind the numbers in the main README, frozen so anyone can reproduce
 
 ```sh
 llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf -c 131072   # -c only needed for 128k
-python3 bench/moe-cache/run.py short    # 1500-token chat reply
-python3 bench/moe-cache/run.py 12k
-python3 bench/moe-cache/run.py 128k
+python3 tools/moe-bench/run.py short    # 1500-token chat reply
+python3 tools/moe-bench/run.py 12k
+python3 tools/moe-bench/run.py 128k
 ```
 
 Run each test twice and keep the second: the first request after starting the server also
@@ -23,15 +23,16 @@ behaves like stock llama.cpp, for comparison. Token counts are for the GLM-5.3-F
 rate, output text and its md5) in a sqlite database, so a new build can be compared with the
 previous ones at any time.
 
-1. Keep each build in its own directory, e.g. `~/rels/b11327-79e9090/` (copy `build/bin/*` there).
-2. Run tests from that parent directory:
+Keep each build in its own directory under one folder (copy `build/bin/*` there), point
+`PERF_BUILDS` at that folder, and run from the repo root:
 
 ```sh
-cd ~/rels
-export MODEL=/models/GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf   # first split for split models
-export PERF_MODELS_DIR=/models                                  # optional, see below
-python3 /path/to/llama.cpp/bench/moe-cache/perf.py run b11297-fc23325 b11327-79e9090 -t chat --bare -n 2
-python3 /path/to/llama.cpp/bench/moe-cache/perf.py show -t chat          # mean/stdev per build
+mkdir -p ../rels/b11327-79e9090 && cp build/bin/* ../rels/b11327-79e9090/
+export PERF_BUILDS=../rels                        # builds + perf.db (default: current directory)
+export MODEL=../models/GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf   # first split for split models
+export PERF_MODELS_DIR=../models                  # optional, see below
+python3 tools/moe-bench/perf.py run b11297-fc23325 b11327-79e9090 -t chat --bare -n 2
+python3 tools/moe-bench/perf.py show -t chat      # mean/stdev per build
 ```
 
 Tests (`-t`): `chat` (1500-token chat reply), `tetris` (raw completion, repetitive output),
