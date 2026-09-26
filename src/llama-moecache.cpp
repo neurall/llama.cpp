@@ -897,23 +897,23 @@ void llama_moe_cache_step(int64_t n_tokens) {
             std::sort(ids.begin(), ids.end(), [&](int32_t a, int32_t b) { return ls.prompt_count[a] > ls.prompt_count[b]; });
             const int32_t cap = std::min<int32_t>((int32_t) ids.size(), (int32_t) (burst * ls.pub.n_slots));
             for (int32_t i = 0; i < cap; ++i) {
-                // victim: empty slot, else the non-sticky cached expert the prompt used least (a long
-                // prompt touches nearly every expert), and only if the prompt used it less than this one
+                // victim: empty slot, else a non-sticky expert the prompt didn't use, lowest score first
                 int32_t slot = -1;
-                uint32_t least = UINT32_MAX;
+                double best = 1e300;
                 for (int32_t sl = 0; sl < ls.pub.n_slots; ++sl) {
                     if (ls.slot_in_flight[sl]) {
                         continue;
                     }
                     const int32_t v = ls.slot_expert[sl];
-                    if (v < 0) { slot = sl; least = 0; break; }
-                    if (ls.sticky[v]) {
+                    if (v < 0) { slot = sl; break; }
+                    if (ls.sticky[v] || ls.prompt_count[v] > 0) {
                         continue;
                     }
-                    if (ls.prompt_count[v] < least) { least = ls.prompt_count[v]; slot = sl; }
+                    const double c = score(ls, v);
+                    if (c < best) { best = c; slot = sl; }
                 }
-                if (slot < 0 || least >= ls.prompt_count[ids[i]]) {
-                    break; // candidates are sorted: nothing left the prompt used more than what's cached
+                if (slot < 0) {
+                    break;
                 }
                 const int32_t victim = ls.slot_expert[slot];
                 if (victim >= 0) {
