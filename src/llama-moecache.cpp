@@ -223,11 +223,11 @@ void profile_save(const moe_cache * mc) {
 // seed usage from the profile and queue the most-used experts of each layer for upload;
 // the first step() waits for them and publishes them. Returns the number queued.
 // Always-hot experts (formatting, common tokens) stay in VRAM: the most-used experts by lifetime
-// count, up to LLAMA_MOE_CACHE_STICKY (default 0.3) of each layer's slots, are never evicted.
+// count, up to LLAMA_MOE_CACHE_STICKY (default 0, e.g. 0.3) of each layer's slots, are never evicted.
 void refresh_sticky(layer_state & ls) {
     static const double frac = [] {
         const char * e = getenv("LLAMA_MOE_CACHE_STICKY");
-        return e ? atof(e) : 0.3;
+        return e ? atof(e) : 0.0; // off: +1.6% on GLM chat, within noise
     }();
     ls.sticky.assign(ls.glob_count.size(), false);
     const int32_t k = (int32_t) (frac * ls.pub.n_slots);
@@ -414,14 +414,12 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     }
     layer_state & ls = mc->layers[it->second.first];
     std::lock_guard<std::mutex> lock(mc->mtx);
-    // GPU-offloaded prompt batches never reach the CPU observer (moe_obs_cb): record the prompt's
-    // experts here, once per expert and batch (on up), so they warm the cache before decode
+    // GPU-offloaded prompt batches never reach the CPU observer (moe_obs_cb): count the prompt's
+    // experts here (once per expert and batch, on up) for the lifetime usage and the saved profile.
+    // Not queued for upload: extra uploads after a long prompt measured slower (they compete with decode)
     if (it->second.second == 0 && expert >= 0 && expert < (int32_t) ls.expert_slot.size()) {
         ls.expert_count[expert]++;
         ls.glob_max = std::max(ls.glob_max, ++ls.glob_count[expert]);
-        if (ls.expert_slot[expert] < 0 && std::find(ls.pending.begin(), ls.pending.end(), expert) == ls.pending.end()) {
-            ls.pending.push_back(expert);
-        }
     }
     ggml_tensor * c = it->second.second == 0 ? ls.pub.up_c : it->second.second == 1 ? ls.pub.gate_c : ls.pub.down_c;
     if (!c || !c->buffer || c->nb[2] != weight->nb[2] ||
