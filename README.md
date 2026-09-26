@@ -225,10 +225,12 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   GPU and layers keep bus order, which gets both. Why the layer order matters is not
   known yet: the two cards differ (x16: Gainward 3-slot 370 W with partly blocked
   airflow, x4: Dell OEM 2-slot 350 W; a budget build, these were the cards available
-  at a good price), so clocks or memory hotspot throttling may count
-  as much as the PCIe link. Next: log clocks and throttle reasons per GPU during
-  decode, and in auto mode choose the order per request (prompt length, measured
-  speeds).
+  at a good price). Thermals are ruled out: logged every 5 s through a 12-minute
+  128k-token run and the pinned tests (30+ minutes), neither GPU ever hit a thermal or
+  hardware slowdown (x16 card peaked at ~79 °C, clocks steady at 1860-1890 MHz; CPU and
+  DIMMs also stayed below throttling). So the difference comes from where the layers sit
+  relative to the links and cards, not from heat. Next: per-GPU timing of each layer's
+  split during decode, and in auto mode choose the order per request.
 - MTP on models much bigger than VRAM (GLM-5.3-Flash here) is slower: verifying drafts
   multiplies the CPU's expert work. Next: let the draft use the expert cache, and verify
   drafts with the experts the main token already selected where possible.
