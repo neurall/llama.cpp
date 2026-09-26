@@ -1339,9 +1339,11 @@ void common_spec_auto(common_params & params) {
     if (!dft.n_max_user) {
         dft.n_max = ratio <= 1 ? 5 : 2; // bigger than VRAM: 2 measured best (Qwen); --spec-draft-n-max raises it
     }
-    if (dft.n_start == 0 && !dft.n_max_user) {
-        // measured (GLM-5.3-Flash, 2.3x VRAM): the loaded draft's VRAM costs the expert cache more
-        // than drafting gains, even at depth 0; --spec-draft-n-max N loads it anyway
+    if (dft.n_start == 0 && !dft.n_max_user && params.speculative.has_dft()) {
+        // measured (GLM-5.3-Flash, 2.3x VRAM, separate -md draft with MoE experts): the draft's VRAM
+        // costs the expert cache more than drafting gains, even at depth 0; --spec-draft-n-max N
+        // loads it anyway. Built-in MTP (no -md) is kept: MiMo-V2.6 (2.8x VRAM, 3 dense MTP layers)
+        // measured +9% with it, so the depth tuner starts at 0 and measures instead.
         LOG_WRN("%s: model is %.1fx free VRAM: speculative decoding would be slower here, not loading it "
                 "(--spec-draft-n-max N to force)\n", __func__, ratio);
         params.speculative.types = { COMMON_SPECULATIVE_TYPE_NONE };
