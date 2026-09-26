@@ -293,6 +293,7 @@ void postprocess_cpu_params(common_cpu_params & cpuparams, const common_cpu_para
             cpuparams = *role_model;
         } else {
             cpuparams.n_threads = common_cpu_get_num_math();
+            cpuparams.auto_threads = true;
         }
     }
 
@@ -1243,8 +1244,20 @@ struct common_init_result::impl {
 // --moe-expert-cache default (-2): a MoE model whose weights don't fit in free VRAM gets the
 // expert cache setup (experts in RAM, no repack, auto-sized cache, 2048 ubatch) so a plain
 // `-m model` runs the fast path; explicit user settings are kept
+static void common_moe_cache_auto_impl(common_params & params);
+
 static void common_moe_cache_auto(common_params & params) {
+    common_moe_cache_auto_impl(params);
+    COM_DBG("moe_cache_slots=%d ctx=%d batch=%d ubatch=%d threads=%d threads_batch=%d repack=%s ngl=%d tensor_overrides=%zu fit=%s\n",
+        params.n_moe_cache_slots, params.n_ctx, params.n_batch, params.n_ubatch, params.cpuparams.n_threads,
+        params.cpuparams_batch.n_threads, params.no_extra_bufts ? "off" : "on", params.n_gpu_layers,
+        (size_t) std::count_if(params.tensor_buft_overrides.begin(), params.tensor_buft_overrides.end(), [](const auto & o) { return o.pattern != nullptr; }),
+        params.fit_params ? "on" : "off");
+}
+
+static void common_moe_cache_auto_impl(common_params & params) {
     if (params.n_moe_cache_slots != -2) {
+        COM_DBG("expert cache set by user (%d), no auto setup\n", params.n_moe_cache_slots);
         return;
     }
     params.n_moe_cache_slots = 0;
@@ -1252,6 +1265,7 @@ static void common_moe_cache_auto(common_params & params) {
     const bool user_placement = params.n_gpu_layers != -1 ||
         (!params.tensor_buft_overrides.empty() && params.tensor_buft_overrides[0].pattern != nullptr);
     if (user_placement) {
+        COM_DBG("%s\n", "user tensor placement (-ngl/-ot/--cpu-moe), expert cache stays off unless --moe-expert-cache is set");
         return;
     }
 
@@ -1277,6 +1291,7 @@ static void common_moe_cache_auto(common_params & params) {
     const uint32_t n_split  = std::max<uint32_t>(1, get_uint("split.count"));
     gguf_free(gguf);
     if (n_expert == 0) {
+        COM_DBG("%s\n", "not a MoE model, no expert cache");
         return;
     }
 
@@ -1311,10 +1326,12 @@ static void common_moe_cache_auto(common_params & params) {
     // ponytail: weights vs free VRAM minus 1 GiB per GPU for context/compute; fit handles the borderline rest
     const size_t reserve = (size_t) n_gpu << 30;
     if (n_gpu == 0 || model_size + reserve <= vram_free) {
+        COM_DBG("MoE model (%.1f GiB) fits free VRAM (%.1f GiB on %d GPUs), no expert cache\n",
+            model_size / 1073741824.0, vram_free / 1073741824.0, n_gpu);
         return;
     }
 
-    LOG_INF("%s: MoE model (%.1f GiB) exceeds free VRAM (%.1f GiB), enabling expert cache: experts in RAM, no repack, auto cache size, 2048 ubatch, 32k ctx unless set\n",
+    LOG_INF("%s: MoE model (%.1f GiB) exceeds free VRAM (%.1f GiB), enabling expert cache: experts in RAM, no repack, auto cache size, 2048 ubatch, 32k ctx, cores-2 threads unless set\n",
         __func__, model_size / 1073741824.0, vram_free / 1073741824.0);
     auto & tbo = params.tensor_buft_overrides;
     tbo.insert(std::find_if(tbo.begin(), tbo.end(), [](const auto & o) { return o.pattern == nullptr; }), llm_ffn_exps_cpu_override());
@@ -1322,6 +1339,12 @@ static void common_moe_cache_auto(common_params & params) {
     params.n_moe_cache_slots = -1;
     if (params.n_ubatch == 512 && params.n_batch == 2048) {
         params.n_ubatch = 2048; // big ubatch: experts are uploaded once per ubatch in prompt processing
+    }
+    // leave 2 cores to drive the GPUs and the upload thread (measured: 6 of 8 cores beats 8)
+    for (auto * cp : { &params.cpuparams, &params.cpuparams_batch }) {
+        if (cp->auto_threads && cp->n_threads > 4) {
+            cp->n_threads -= 2;
+        }
     }
     if (params.n_ctx == 0) {
         params.n_ctx = 32768; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more
