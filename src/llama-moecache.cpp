@@ -24,6 +24,7 @@
 
 #ifndef _WIN32
 #include <unistd.h>
+#include <sys/mman.h>
 #endif
 
 namespace {
@@ -85,6 +86,11 @@ struct moe_cache {
     uint64_t n_src_hit   = 0;
     uint64_t n_src_query = 0;
     uint64_t n_adopted   = 0; // prefill preheat: experts kept from prompt batches
+
+    // model bigger than RAM, weights mmap'd: an expert in VRAM doesn't need its RAM copy. Its pages
+    // are dropped when it is cached and read back (async readahead) when it is evicted, so RAM holds
+    // the experts the CPU computes instead of the kernel's LRU choice (LLAMA_MOE_CACHE_DROP=1/0)
+    bool drop_cached = false;
 
     std::vector<ggml_context *>         ctxs;
     std::vector<ggml_backend_buffer_t>  bufs;
@@ -466,6 +472,32 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
     return true;
 }
 
+// drop (cached in VRAM) or prefetch (evicted, the CPU needs it again) an expert's mmap'd pages
+void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop) {
+#ifndef _WIN32
+    if (!mc->drop_cached || expert < 0) {
+        return;
+    }
+    static const size_t pg = (size_t) sysconf(_SC_PAGESIZE);
+    for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) {
+        const uintptr_t a   = (uintptr_t) t->data + (size_t) expert*t->nb[2];
+        const uintptr_t beg = (a + pg - 1) & ~(uintptr_t) (pg - 1);
+        const uintptr_t end = (a + t->nb[2]) & ~(uintptr_t) (pg - 1);
+        if (end <= beg) {
+            continue;
+        }
+#ifdef MADV_PAGEOUT
+        const int advice = drop ? MADV_PAGEOUT : MADV_WILLNEED;
+#else
+        const int advice = drop ? MADV_DONTNEED : MADV_WILLNEED;
+#endif
+        madvise((void *) beg, end - beg, advice);
+    }
+#else
+    GGML_UNUSED(mc); GGML_UNUSED(ls); GGML_UNUSED(expert); GGML_UNUSED(drop);
+#endif
+}
+
 void upload_slice(ggml_tensor * dst_c, const ggml_tensor * src, int32_t expert, int32_t slot) {
     const size_t sz = src->nb[2];
     if ((size_t) slot*dst_c->nb[2] + sz > ggml_nbytes(dst_c) || (size_t) expert*sz + sz > ggml_nbytes(src)) {
@@ -809,6 +841,19 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         });
 
         mc->profile = profile_path(model);
+#ifndef _WIN32
+        {
+            const char * e = getenv("LLAMA_MOE_CACHE_DROP");
+            const double ram = (double) sysconf(_SC_PHYS_PAGES) * (double) sysconf(_SC_PAGESIZE);
+            ggml_backend_dev_t gpu = mc->bufs.empty() ? nullptr : ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mc->bufs.back()));
+            const bool mmapd = !mc->layers.empty() && ggml_backend_buffer_is_host(mc->layers[0].pub.up_src->buffer) &&
+                !(gpu && ggml_backend_buffer_get_type(mc->layers[0].pub.up_src->buffer) == ggml_backend_dev_host_buffer_type(gpu));
+            mc->drop_cached = e ? atoi(e) != 0 : (mmapd && (double) model.size() > 0.9 * ram);
+            if (mc->drop_cached) {
+                LLAMA_LOG_INFO("moe-cache: model bigger than RAM: VRAM-cached experts' pages are dropped from RAM\n");
+            }
+        }
+#endif
         if (const size_t n = profile_preload(mc, model)) {
             LLAMA_LOG_INFO("moe-cache: preloading %zu experts (usage profile)\n", n);
         }
@@ -883,6 +928,7 @@ void llama_moe_cache_step() {
             ls.slot_last_use[j.slot]   = ++mc->clock;
             ls.slot_in_flight[j.slot]  = false;
             set_table_entry(ls.pub, j.expert, j.slot);
+            page_hint(mc, ls, j.expert, true);
         }
         mc->done.clear();
 
@@ -892,6 +938,7 @@ void llama_moe_cache_step() {
         for (auto & ls : mc->layers) {
             for (int32_t v : ls.adopt_victims) {
                 set_table_entry(ls.pub, v, ls.pub.n_slots);
+                page_hint(mc, ls, v, false);
             }
             ls.adopt_victims.clear();
             for (int32_t e : ls.adopted) {
@@ -901,6 +948,7 @@ void llama_moe_cache_step() {
                     ls.expert_slot[e]      = slot;
                     ls.slot_last_use[slot] = ++mc->clock;
                     set_table_entry(ls.pub, e, slot);
+                    page_hint(mc, ls, e, true);
                     n_adopt++;
                 }
                 ls.slot_in_flight[slot] = false;
@@ -1030,6 +1078,7 @@ void llama_moe_cache_step() {
                 ls.expert_slot[victim] = -1;
                 ls.slot_expert[slot]   = -1;
                 set_table_entry(ls.pub, victim, ls.pub.n_slots);
+                page_hint(mc, ls, victim, false);
             }
             ls.slot_in_flight[slot] = true;
 
