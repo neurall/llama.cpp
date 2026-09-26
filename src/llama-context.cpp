@@ -333,8 +333,13 @@ llama_context::llama_context(
     }
 
     if (!hparams.vocab_only) {
-        // GPU backends
-        for (const auto & dev : model.devices) {
+        // GPU backends; the offload GPU goes first: the scheduler offloads big-batch
+        // ops on host weights to the first backend that accepts them
+        std::vector<llama_device> devs = model.devices;
+        if (model.dev_offload < devs.size()) {
+            std::rotate(devs.begin(), devs.begin() + model.dev_offload, devs.begin() + model.dev_offload + 1);
+        }
+        for (const auto & dev : devs) {
             ggml_backend_t backend = ggml_backend_dev_init(dev.dev, nullptr);
             if (backend == nullptr) {
                 throw std::runtime_error(format("failed to initialize %s backend", ggml_backend_dev_name(dev.dev)));
@@ -413,8 +418,8 @@ llama_context::llama_context(
             auto backend_type = ggml_backend_dev_type(ggml_backend_get_device(backend.get()));
 
             if (backend_type == GGML_BACKEND_DEVICE_TYPE_CPU && !model.devices.empty()) {
-                // use the host buffer of the first device CPU for faster transfer of the intermediate state
-                const auto & dev = model.devices[0];
+                // use the host buffer of the offload device CPU for faster transfer of the intermediate state
+                const auto & dev = model.devices[model.dev_offload < model.devices.size() ? model.dev_offload : 0];
                 auto * host_buft = ggml_backend_dev_host_buffer_type(dev.dev);
                 if (host_buft) {
                     buft = host_buft;

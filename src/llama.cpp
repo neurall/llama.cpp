@@ -274,11 +274,12 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
             }
         }
 
-        // fastest host->GPU upload first: big-batch ops on host weights (e.g. MoE
-        // experts with --cpu-moe) are offloaded to the first GPU, so its upload
-        // bandwidth bounds prompt processing, and GPUs are numbered by bus order,
-        // not slot speed. Measured, so x4/x16, PCIe gen and chipset sharing all
-        // count, on any OS and backend. Pass --device to force an order.
+        // big-batch ops on host weights (e.g. MoE experts with --cpu-moe) are offloaded
+        // to one GPU, so its upload bandwidth bounds prompt processing. GPUs are numbered
+        // by bus order, not slot speed: measure host->GPU upload and offload to the
+        // fastest (x4/x16, PCIe gen and chipset sharing all count, on any OS and
+        // backend). Layers keep bus order: moving them measured ~7% slower decode.
+        size_t gpu_offload = 0;
         if (gpus.size() > 1) {
             constexpr size_t n_bytes = 64u << 20;
             std::vector<uint8_t> host(n_bytes, 1);
@@ -300,16 +301,15 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
                 ggml_free(ctx);
                 return best;
             };
-            std::vector<std::pair<double, llama_device>> bw;
-            for (const auto & d : gpus) {
-                bw.push_back({ h2d_gbs(d.dev), d });
-                LLAMA_LOG_INFO("%s: %s host->device upload %.1f GB/s\n", __func__, ggml_backend_dev_name(d.dev), bw.back().first);
-            }
-            // within 15% counts as equal: identical setups keep their order
-            // (ponytail: not a strict weak order for long chains of near-equal GPUs; fine for 2-8)
-            std::stable_sort(bw.begin(), bw.end(), [](const auto & a, const auto & b) { return a.first > 1.15*b.first; });
+            double best = 0.0;
             for (size_t i = 0; i < gpus.size(); ++i) {
-                gpus[i] = bw[i].second;
+                const double gbs = h2d_gbs(gpus[i].dev);
+                LLAMA_LOG_INFO("%s: %s host->device upload %.1f GB/s\n", __func__, ggml_backend_dev_name(gpus[i].dev), gbs);
+                // within 15% counts as equal: identical setups keep the first GPU
+                if (i == 0 || gbs > 1.15*best) {
+                    gpu_offload = i;
+                    best = gbs;
+                }
             }
         }
 
@@ -317,6 +317,7 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
         model->devices.insert(model->devices.begin(), rpc_servers.begin(), rpc_servers.end());
 
         // add GPUs
+        model->dev_offload = model->devices.size() + gpu_offload;
         model->devices.insert(model->devices.end(), gpus.begin(), gpus.end());
 
         // add integrated GPUs only if no discrete GPUs were found
@@ -336,6 +337,7 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
                 return false;
             }
             llama_device main_gpu = model->devices[params.main_gpu];
+            model->dev_offload = 0;
             model->devices.clear();
             model->devices.push_back(main_gpu);
         }

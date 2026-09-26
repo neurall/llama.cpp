@@ -356,9 +356,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             // default 384 MiB: measured peak growth after load is ~170 MiB per GPU (GLM, chat + 12k prefill)
             size_t margin = (size_t) (m ? atoll(m) : 384) * 1024 * 1024;
             // --prefetch-experts-slots: the scheduler lazily allocates N full expert
-            // tensors on the device big batches are offloaded to (the model's first device)
+            // tensors on the device big batches are offloaded to
             if (prefetch_slots >= 2) {
-                if (!model.devices.empty() && dev == model.devices[0].dev) {
+                if (model.dev_offload < model.devices.size() && dev == model.devices[model.dev_offload].dev) {
                     size_t max_tensor = 0;
                     for (const auto & c : all) {
                         max_tensor = std::max({max_tensor, ggml_nbytes(c.l->ffn_up_exps), ggml_nbytes(c.l->ffn_gate_exps), ggml_nbytes(c.l->ffn_down_exps)});
