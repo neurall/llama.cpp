@@ -32,15 +32,16 @@ memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned
 | | long: prompt processing † | [**136**](tools/moe-bench/) | 133 (0.98x) | | - | - |
 | | long: decode | 4.2 | [**8.3 (1.98x)**](tools/moe-bench/) | | - | - |
 | Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB; `llama-server` default: pinned | short: decode | 27.7 | 47.1 (1.70x) | 58.3 (2.11x) | 46.5 (1.68x) | [**60.4 (2.18x)**](tools/moe-bench/) |
-| | long: prompt processing † | 500 | 372 (0.74x) | 347 (0.69x) | [**538 (1.08x)**](tools/moe-bench/) | 501 (1.00x) |
-| | long: decode | 25.3 | 38.4 (1.52x) | 38.2 (1.51x) § | [**42.3 (1.67x)**](tools/moe-bench/) | 33.6 (1.33x) § |
+| | long: prompt processing † | 500 | 372 (0.74x) | 353 (0.71x) | [**538 (1.08x)**](tools/moe-bench/) | 500 (1.00x) |
+| | long: decode | 25.3 | 38.4 (1.52x) | 40.1 (1.59x) § | [**42.3 (1.67x)**](tools/moe-bench/) | 28.0 (1.11x) § |
 | Qwen3.8-27B IQ4_NL (dense, fits VRAM), 16 GB | short / long prompt | 44.7 / 1726 | 44.8 / 1811 (no cache needed) | | ||
 | OLMoE-1B-7B Q4_K_M (fits VRAM), 4 GB | short: decode | 504 | 504 (no cache needed) | | ||
 
 ¶ MiMo's built-in MTP (3 dense layers, no experts): 9.7 vs 8.9 t/s without in the same session
 (+9%); MiMo's numbers vary between sessions because the model is bigger than RAM.
-§ The 12k test generates only 32 tokens: too few for the MTP depth tuner to settle, so MTP
-mostly adds overhead there; it pays off on longer replies (short-prompt row).
+§ The 12k test generates only 32 tokens: too few for the MTP depth tuner to finish a comparison,
+so these decode numbers are mostly probing overhead and vary a lot (28-40 t/s); MTP pays off on
+longer replies (short-prompt row).
 \* Model already in RAM (OS page cache), as on a server after its first request. The
 first run after switching to another large model is slower, once, while the file is
 read from disk. MiMo (132 GB) can't fully stay in 125 GB RAM, so it always reads part of
