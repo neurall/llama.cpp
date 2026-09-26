@@ -453,8 +453,8 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         mc->n_slots = n_slots;
         if (max_inserts > 0) {
             mc->max_inserts = max_inserts;
-            mc->window      = std::max(1, window);
         }
+        mc->window = std::max(1, window);
 
         // collect the host-resident expert layers, grouped by the device buffer
         // type of that layer's router (the cache lives next to the router)
