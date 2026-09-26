@@ -103,6 +103,17 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   tips matter far more than either build.
 - Cache hit rate is ~66% on chat replies, 79-87% when the output repeats itself,
   ~44% right after a long unrelated input.
+- **Output varies between runs even at temperature 0.** Each expert is computed
+  on the GPU when it is cached and on the CPU when it is not, and which experts
+  are cached at a given token depends on when the asynchronous PCIe uploads
+  finish. GPU and CPU round slightly differently, so near-tied tokens can flip
+  and the text diverges from there (stock llama.cpp places experts the same way
+  every run, so it repeats itself). For benchmarks and regression tests set
+  `LLAMA_MOE_CACHE_DETERMINISTIC=1`: each step publishes exactly the uploads of
+  the previous step with a fixed swap budget (`LLAMA_MOE_CACHE_DET_BUDGET`,
+  default 8) and margin (`LLAMA_MOE_CACHE_DET_MARGIN`, default 4), so a given
+  build repeats its output. It is slightly slower and its hit rate differs from
+  the normal adaptive mode, so compare builds within the same mode.
   `LLAMA_MOE_CACHE_STATS=1` logs it.
 - Tuning: `LLAMA_MOE_CACHE_POLICY` (`add` default, `halve`, `window`),
   `LLAMA_MOE_CACHE_MARGIN_MB` (VRAM left free, default 1024),
