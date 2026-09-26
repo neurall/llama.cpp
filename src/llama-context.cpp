@@ -476,6 +476,7 @@ llama_context::llama_context(
         // e.g. a speculative draft model the server loads after this context
         cparams.moe_cache_slots   = params.n_moe_cache_slots;
         cparams.moe_cache_inserts = params.n_moe_cache_inserts;
+        cparams.moe_cache_window  = params.n_moe_cache_window > 0 ? params.n_moe_cache_window : 64;
 
         if (!cparams.flash_attn) {
             if (ggml_is_quantized(params.type_v)) {
@@ -1794,7 +1795,7 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
 int llama_context::decode(const llama_batch_ext & batch_inp) {
     if (cparams.moe_cache && !cparams.moe_cache_started && !moe_cache_defer) {
         cparams.moe_cache_started = true;
-        llama_moe_cache_init(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots);
+        llama_moe_cache_init(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots, cparams.moe_cache_window);
         sched_reserve(); // the compute graph now includes the cache chain
     }
     if (!memory) {
@@ -3871,6 +3872,7 @@ llama_context_params llama_context_default_params() {
         /*.defrag_thold                =*/ -1.0f,
         /*.n_moe_cache_slots           =*/ 0,
         /*.n_moe_cache_inserts         =*/ 2,
+        /*.n_moe_cache_window          =*/ 64,
         /*.cb_eval                     =*/ nullptr,
         /*.cb_eval_user_data           =*/ nullptr,
         /*.type_k                      =*/ GGML_TYPE_F16,

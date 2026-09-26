@@ -2557,6 +2557,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.n_moe_cache_inserts = value;
         }
     ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE_INSERTS"));
+    add_opt(common_arg(
+        {"--moe-cache-window"}, "N",
+        string_format("tokens of recent expert usage the MoE expert cache scores by, next to lifetime usage (default: %d)", params.n_moe_cache_window),
+        [](common_params & params, int value) {
+            params.n_moe_cache_window = value;
+        }
+    ).set_env("LLAMA_ARG_MOE_CACHE_WINDOW"));
     if (ex == LLAMA_EXAMPLE_SERVER) {
         // this is to make sure this option appears in the server-specific section of the help message
         add_opt(common_arg(
