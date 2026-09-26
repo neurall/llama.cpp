@@ -54,6 +54,7 @@ struct llama_cparams {
     bool kv_unified;
     bool pipeline_parallel;
 
+    bool moe_cache = false; // --moe-expert-cache requested: the graph gets the cache chain
     int prefetch_experts_slots = 0; // --prefetch-experts-slots: MoE expert H2D staging slots (0 = off, >=2 enables full-tensor lookahead prefetch; capped at 4)
 
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer

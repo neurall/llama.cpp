@@ -274,6 +274,7 @@ llama_context::llama_context(
 
     cparams.op_offload = params.op_offload;
     cparams.prefetch_experts_slots = params.prefetch_experts_slots;
+    cparams.moe_cache = params.n_moe_cache_slots != 0;
     cparams.kv_unified = params.kv_unified;
 
     // initialized later
@@ -2424,6 +2425,14 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
     const uint32_t n_sampling_outputs_max = std::min<uint64_t>(
             std::min(n_tokens, cparams.n_outputs_max),
             (uint64_t) cparams.n_seq_max * cparams.n_outputs_max_per_seq);
+
+    // MoE expert cache chain, per layer: slot lookup and CPU pinning, plus up/gate/
+    // activation/down/concat per 4-token chunk of batches up to max_batch. The
+    // scheduler is sized before the cache exists, so budget for it up front.
+    if (cparams.moe_cache) {
+        const uint32_t nt = (uint32_t) std::min<int64_t>(n_tokens, llama_moe_cache_max_batch());
+        res += model.hparams.n_layer() * (16u + 12u * ((nt + 3) / 4));
+    }
 
     res += n_sampling_nodes;
     if (n_sampling_outputs_max > 1) {
