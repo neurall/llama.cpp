@@ -1608,7 +1608,9 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
             tmp.push_back(decoder_start_token_id);
         }
         if (llama_model_has_decoder(model)) {
+            llama_moe_cache_defer(lctx, true); // start the cache on the first real decode
             llama_decode(lctx, llama_batch_get_one(tmp.data(), std::min(tmp.size(), (size_t) params.n_batch)));
+            llama_moe_cache_defer(lctx, false);
         }
         llama_memory_clear(llama_get_memory(lctx), true);
         llama_synchronize(lctx);

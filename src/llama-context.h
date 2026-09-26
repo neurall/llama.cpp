@@ -41,6 +41,7 @@ struct llama_memory_buffer {
 using llama_memory_buffers = std::map<ggml_backend_buffer_type_t, llama_memory_buffer>;
 
 struct llama_context {
+    bool moe_cache_defer = false; // see llama_moe_cache_defer()
     // init scheduler and compute buffers, reserve worst-case graphs
     llama_context(
             const llama_model & model,
