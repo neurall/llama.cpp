@@ -96,6 +96,50 @@ own placement (`-ngl`, `-ot`, `--cpu-moe`) the cache stays off unless you also p
 cached experts, fewer CPU misses and faster decode, up to the point where every
 expert fits. Reports from 3+ GPU setups are welcome.
 
+### Pinned weights (automatic when the model fits in RAM)
+
+Added in release PINNED_VER. When `llama-server` runs a MoE model bigger than VRAM that fits in
+the RAM available at startup, the fork loads its weights into pinned (page-locked) memory instead of
+memory-mapping the file (`--load-mode pin` does it by hand, `--load-mode mmap` turns it off).
+The GPUs then read experts straight from RAM by DMA, for prompt processing and for the cache's
+uploads during decode. Only the server does this by default: it starts once and serves many
+requests, so the longer startup pays off. `llama-cli` and the other tools keep mmap (fast
+startup for one-off runs); pass `--load-mode pin` to pin there too.
+
+| GLM-5.3-Flash 3.0-bit Q4_K attn, 2x RTX 3090 | mmap | pinned |
+|---|---|---|
+| 12k prompt processing t/s | PIN_PP_MMAP | **PIN_PP** |
+| 12k decode t/s | PIN_DEC_MMAP | PIN_DEC |
+| chat decode t/s | PIN_CHAT_MMAP | PIN_CHAT |
+| startup until the server answers (model in page cache) | 38 s | ~100 s |
+
+**Why the server pins by default:** the extra startup is paid once, every request after it is
+faster. On GLM-5.3-Flash it costs ~60 s more at startup and saves ~22 s on every 12k-token
+prompt (12,302 tokens at 179 vs 261 t/s) plus a few seconds per chat reply, so it pays back
+after about 3 long prompts; a server usually runs for hours. To keep mmap on the server
+(faster startup, RAM stays free for other programs):
+
+```sh
+llama-server -m model.gguf --load-mode mmap
+```
+
+To pin with `llama-cli` (or another tool), e.g. for a long session with big prompts:
+
+```sh
+llama-cli -m model.gguf --load-mode pin
+```
+
+(an explicit `--load-mode` is used as given: there is no automatic fallback to mmap if the
+model doesn't fit in RAM.)
+
+Pros: much faster prompt processing, slightly faster decode, and no page-fault stalls on the
+first requests (the whole model is read once at startup).
+Cons: startup takes longer (pinning ~100 GB runs at the NVIDIA driver's speed, ~2.5 GB/s),
+the model's RAM stays locked while the server runs (other programs can't use it), and it only
+works when the model fits in RAM. Models bigger than RAM (MiMo-V2.6 here) keep mmap, which pages
+experts in from disk on demand. If pinning makes the system swap anyway, the fork reloads with
+mmap and says so.
+
 ### MTP (multi-token prediction)
 
 Added in release b11327: Qwen3.8-Flash-Next MTP from PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243)
@@ -123,7 +167,7 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   generation speed and moves the depth up or down in doubles, then by 1, re-checking every
   4096 tokens. The max depth is 2 when the model is bigger than VRAM (the rollback buffers of
   hybrid models are sized by it and cost cache VRAM), 5 when it fits.
-- Measured here: Qwen3.8-Flash-Next (1.9x VRAM, 95% cache hits) 47.1 -> **57.0 t/s (1.21x)**
+- Measured here: Qwen3.8-Flash-Next (1.9x VRAM, 95% cache hits) **57.0 t/s with MTP vs 47.1 without (1.21x)**
   at depth 2. GLM-5.3-Flash (2.3x VRAM, ~70% hits) is slower with MTP (17.6 vs 20.2 t/s), so
   the fork doesn't load the draft there (a warning says so; `--spec-draft-n-max N` forces it).
   More VRAM should make GLM MTP worth it: with 3x 24 GB, GLM is ~1.5x VRAM (less than

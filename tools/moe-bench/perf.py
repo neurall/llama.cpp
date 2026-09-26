@@ -61,12 +61,12 @@ def _die_with_parent():
 
 def kill_leftovers():
     """Kill every llama-* process (server, perplexity, cli, ...) by process name, in a loop until
-    none is left: TERM, then KILL if still there after 15 s. Name matching (no -f) never hits
+    none is left: TERM, escalating to KILL after 2 s. Name matching (no -f) never hits
     the calling shell; exiting processes (freeing ~100 GB pinned RAM) are waited for."""
     left = lambda: subprocess.run(["pgrep", "^llama-"], capture_output=True).stdout.split()
     t0 = time.time()
     while left():
-        subprocess.run(["pkill", "-KILL" if time.time() - t0 > 15 else "-TERM", "^llama-"])
+        subprocess.run(["pkill", "-KILL" if time.time() - t0 > 2 else "-TERM", "^llama-"])
         time.sleep(1)
 
 
