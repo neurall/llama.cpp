@@ -17,18 +17,26 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 CPU frequency governor `performance`, single stream, temp 0.** Short = 1500-token chat reply to "write smallest html tetris game". Long =
 12k-token code prompt (llama.cpp sources): prompt processing, then decode.
 
-| model | size | short: decode t/s | long: prefill t/s | long: decode t/s |
-|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 13.8 -> **21.5 (1.56x)*** | 217 -> 181* | 12.3 -> **15.7 (1.28x)*** |
-| MiMo-V2.6-Flash-RL IQ3_XXS | 132 GB | 4.0 -> **10.1 (2.54x)**** | 136 -> 133** | 4.2 -> **8.3 (1.98x)**** |
-| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 27.7 -> **46.4 (1.68x)*** | 500 -> 390* | 25.3 -> **38.7 (1.53x)*** |
-| Qwen3.8-27B IQ4_NL (dense, fits VRAM) | 16 GB | 44.7 -> 44.8 | 1726 -> 1811 | |
-| OLMoE-1B-7B Q4_K_M (fits VRAM) | 4 GB | 504 -> 504 | | |
+| model | size | short: decode t/s | short: decode with MTP | long: prefill t/s † | long: decode t/s |
+|---|---|---|---|---|---|
+| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 13.8 -> **21.5 (1.56x)*** | 17.6, slower ‡ | 217 -> 181* | 12.3 -> **15.7 (1.28x)*** |
+| MiMo-V2.6-Flash-RL IQ3_XXS | 132 GB | 4.0 -> **10.1 (2.54x)**** | no MTP head | 136 -> 133** | 4.2 -> **8.3 (1.98x)**** |
+| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 27.7 -> **46.4 (1.68x)*** | **57.0 (2.06x vs stock)*** | 500 -> 390* | 25.3 -> **38.7 (1.53x)*** |
+| Qwen3.8-27B IQ4_NL (dense, fits VRAM) | 16 GB | 44.7 -> 44.8 | | 1726 -> 1811 | |
+| OLMoE-1B-7B Q4_K_M (fits VRAM) | 4 GB | 504 -> 504 | | | |
 
 \* Model already in RAM (OS page cache), as on a server after its first request. The
 first run after switching to another large model is slower, once, while the file is
 read from disk. \*\* MiMo (132 GB) can't fully stay cached in 125 GB RAM, so it always
 reads part of the model from disk.
+† Prompt processing streams the experts over PCIe to one GPU, so the slot limits it (here a
+PCIe 4.0 x16 CPU slot; the second card sits in an X570 chipset x4 slot). A board with more
+x16 slots, or another GPU, should raise it; splitting prompt processing across both GPUs'
+links is the next milestone.
+‡ MTP on GLM-5.3-Flash is slower on this box (17.6 vs 20.2 t/s without, same session; the model is 2.3x
+the VRAM, so verifying drafts adds CPU work and the draft takes cache VRAM). The fork
+doesn't load the draft here by default. Another GPU (more VRAM) should make it pay off,
+as it does for Qwen (1.9x VRAM).
 
 stock llama.cpp -> this fork. The fork numbers match a plain `llama-server -m model` within ~4%
 (auto mode, see Run). Stock can't load GLM-5.3-Flash, so its stock column is
