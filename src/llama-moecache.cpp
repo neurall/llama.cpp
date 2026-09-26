@@ -411,7 +411,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, void * ud) {
 // Prefill preheat: the scheduler just copied the used experts of `weight` to `dev` for a prompt
 // batch. Keep the ones this prompt uses more than what is cached: they are copied device-to-device
 // into a slot (no extra PCIe traffic) and published at the next step. Up to LLAMA_MOE_CACHE_ADOPT
-// (default 1/16) of a layer's slots per batch; only layers whose cache is on `dev`.
+// (default 1.0) of a layer's slots per batch; only layers whose cache is on `dev`.
 bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t dev,
                 void ** data, ggml_backend_buffer_t * buffer, void * ud) {
     moe_cache * mc = (moe_cache *) ud;
@@ -428,7 +428,7 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
     }
     static const double frac = [] {
         const char * e = getenv("LLAMA_MOE_CACHE_ADOPT");
-        return e ? atof(e) : 1.0/16;
+        return e ? atof(e) : 1.0; // measured: 1/16 +0.3 hit pts, 1/4 +3.8, 1 +11.4 (GLM 12k, 1 GPU)
     }();
     std::lock_guard<std::mutex> lock(mc->mtx);
     if (expert < 0 || expert >= (int32_t) ls.expert_slot.size()) {
