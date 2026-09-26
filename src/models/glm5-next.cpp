@@ -59,6 +59,19 @@ void llama_model_glm5_next::load_arch_hparams(llama_model_loader & ml) {
     }
 }
 
+// an MTP-only draft borrows token_embd / output_norm / output from its target (cparams.ctx_other)
+static const llama_model & glm5_next_target(const llama_cparams & cparams, const llama_model & model, const char * name) {
+    if (cparams.ctx_other == nullptr) {
+        throw std::runtime_error(format("GLM5-Next MTP: this draft head has no '%s' of its own; "
+                                        "load it as a draft of its target model (-md), not on its own", name));
+    }
+    const llama_model & other = *llama_get_model(cparams.ctx_other);
+    if (other.hparams.n_embd != model.hparams.n_embd || other.vocab.n_tokens() != model.vocab.n_tokens()) {
+        throw std::runtime_error(format("GLM5-Next MTP: draft and target disagree on the shape of '%s'", name));
+    }
+    return other;
+}
+
 void llama_model_glm5_next::load_arch_tensors(llama_model_loader & ml) {
     LLAMA_LOAD_LOCALS;
 
@@ -77,13 +90,21 @@ void llama_model_glm5_next::load_arch_tensors(llama_model_loader & ml) {
         mtp_flags |= TENSOR_SKIP;
     }
 
-    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
+    // an MTP-only GGUF (-md) has just the NextN block; the graph borrows the rest from the target
+    const bool mtp_only  = (n_layer_nextn > 0) && (ml.get_weight("blk.0.attn_norm.weight") == nullptr);
+    const int  top_flags = mtp_only ? TENSOR_NOT_REQUIRED : 0;
 
-    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
-    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, 0);
+    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, top_flags);
+
+    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, top_flags);
+    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, top_flags);
 
     for (int i = 0; i < n_layer_all; ++i) {
         auto & layer = layers[i];
+
+        if (mtp_only && i < n_layer) {
+            continue;
+        }
 
         const int flags = (i >= n_layer) ? mtp_flags : 0;
 
@@ -883,6 +904,9 @@ llama_model_glm5_next::graph_mtp::graph_mtp(const llama_model & model, const llm
     ggml_tensor * tok_embd;
     if (ubatch.token) {
         ggml_tensor * tok_embd_w = layer.nextn.embed_tokens ? layer.nextn.embed_tokens : model.tok_embd;
+        if (tok_embd_w == nullptr) {
+            tok_embd_w = glm5_next_target(cparams, model, "token_embd.weight").tok_embd;
+        }
         tok_embd = ggml_get_rows(ctx0, tok_embd_w, inp->tokens);
     } else {
         tok_embd = inp->embd;
@@ -952,6 +976,9 @@ llama_model_glm5_next::graph_mtp::graph_mtp(const llama_model & model, const llm
 
     // shared_head.norm, then the post-norm hidden state.
     ggml_tensor * head_norm_w = layer.nextn.shared_head_norm ? layer.nextn.shared_head_norm : model.output_norm;
+    if (head_norm_w == nullptr) {
+        head_norm_w = glm5_next_target(cparams, model, "output_norm.weight").output_norm;
+    }
     cur = build_norm(cur, head_norm_w, nullptr, LLM_NORM_RMS, -1);
     cb(cur, "h_nextn", -1);
     res->t_h_nextn = cur;
@@ -959,6 +986,9 @@ llama_model_glm5_next::graph_mtp::graph_mtp(const llama_model & model, const llm
     cur = ggml_get_rows(ctx0, cur, inp_out_ids);
 
     ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
+    if (head_w == nullptr) {
+        head_w = glm5_next_target(cparams, model, "output.weight").output;
+    }
     cur = ggml_mul_mat(ctx0, head_w, cur);
     cb(cur, "result_output", -1);
 
