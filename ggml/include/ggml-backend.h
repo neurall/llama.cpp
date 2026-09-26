@@ -123,6 +123,13 @@ extern "C" {
                                              const void ** data, ggml_backend_buffer_t * buffer, void * user_data);
     GGML_API void ggml_backend_set_moe_src_callback(ggml_backend_moe_src_cb_t cb, void * user_data);
 
+    // MoE expert cache fill: after the used experts of `weight` were copied to `dev` for an
+    // offloaded matmul, the scheduler asks for each one whether the cache wants to keep it; if this
+    // returns true it copies the expert device-to-device (same stream) to `*data` in `*buffer`
+    typedef bool (*ggml_backend_moe_fill_cb_t)(const struct ggml_tensor * weight, int32_t expert, ggml_backend_dev_t dev,
+                                              void ** data, ggml_backend_buffer_t * buffer, void * user_data);
+    GGML_API void ggml_backend_set_moe_fill_callback(ggml_backend_moe_fill_cb_t cb, void * user_data);
+
     GGML_API ggml_backend_dev_t ggml_backend_get_device(ggml_backend_t backend);
 
     //

@@ -49,6 +49,13 @@ struct layer_state {
     uint64_t              glob_max = 1;
     std::vector<bool>     sticky;         // expert id -> never evicted (most-used by lifetime count)
 
+    // prefill preheat: experts adopted from a GPU-offloaded prompt batch (copied device-to-device
+    // from the scheduler's expert copy), published at the next step once up/gate/down all arrived
+    std::vector<int32_t>  adopt_slot;     // expert id -> slot being filled, -1 none
+    std::vector<uint8_t>  adopt_mask;     // expert id -> bit per tensor copied (1 up, 2 gate, 4 down)
+    std::vector<int32_t>  adopted;        // expert ids with adopt_slot set, this batch
+    std::vector<int32_t>  adopt_victims;  // experts evicted for them (table entry reset at the step)
+
     uint64_t n_hit  = 0;
     uint64_t n_miss = 0;
 };
@@ -77,6 +84,7 @@ struct moe_cache {
     // big-batch prefill: experts served device-to-device from the cache vs over PCIe
     uint64_t n_src_hit   = 0;
     uint64_t n_src_query = 0;
+    uint64_t n_adopted   = 0; // prefill preheat: experts kept from prompt batches
 
     std::vector<ggml_context *>         ctxs;
     std::vector<ggml_backend_buffer_t>  bufs;
@@ -394,6 +402,70 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, void * ud) {
     }
 }
 
+// Prefill preheat: the scheduler just copied the used experts of `weight` to `dev` for a prompt
+// batch. Keep the ones this prompt uses more than what is cached: they are copied device-to-device
+// into a slot (no extra PCIe traffic) and published at the next step. Up to LLAMA_MOE_CACHE_ADOPT
+// (default 1/16) of a layer's slots per batch; only layers whose cache is on `dev`.
+bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t dev,
+                void ** data, ggml_backend_buffer_t * buffer, void * ud) {
+    moe_cache * mc = (moe_cache *) ud;
+    auto it = mc->by_src.find(weight);
+    if (it == mc->by_src.end()) {
+        return false;
+    }
+    layer_state & ls = mc->layers[it->second.first];
+    const int kind = it->second.second;
+    ggml_tensor * c = kind == 0 ? ls.pub.up_c : kind == 1 ? ls.pub.gate_c : ls.pub.down_c;
+    if (!c || !c->buffer || c->nb[2] != weight->nb[2] ||
+        ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
+        return false;
+    }
+    static const double frac = [] {
+        const char * e = getenv("LLAMA_MOE_CACHE_ADOPT");
+        return e ? atof(e) : 1.0/16;
+    }();
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    if (expert < 0 || expert >= (int32_t) ls.expert_slot.size()) {
+        return false;
+    }
+    int32_t slot = ls.adopt_slot[expert];
+    if (slot < 0) {
+        if (ls.expert_slot[expert] >= 0 || (int32_t) ls.adopted.size() >= (int32_t) (frac * ls.pub.n_slots)) {
+            return false;
+        }
+        // victim: empty slot, else the non-sticky cached expert with the least lifetime use,
+        // and only if this expert (whose use this prompt just counted) was used more
+        uint64_t least = UINT64_MAX;
+        for (int32_t sl = 0; sl < ls.pub.n_slots; ++sl) {
+            if (ls.slot_in_flight[sl]) {
+                continue;
+            }
+            const int32_t v = ls.slot_expert[sl];
+            if (v < 0) { slot = sl; least = 0; break; }
+            if (ls.sticky[v]) {
+                continue;
+            }
+            if (ls.glob_count[v] < least) { least = ls.glob_count[v]; slot = sl; }
+        }
+        if (slot < 0 || least >= ls.glob_count[expert]) {
+            return false;
+        }
+        const int32_t victim = ls.slot_expert[slot];
+        if (victim >= 0) {
+            ls.expert_slot[victim] = -1; // no later batch reads the slot as the victim
+            ls.slot_expert[slot]   = -1;
+            ls.adopt_victims.push_back(victim);
+        }
+        ls.slot_in_flight[slot] = true;
+        ls.adopt_slot[expert]   = slot;
+        ls.adopted.push_back(expert);
+    }
+    ls.adopt_mask[expert] |= (uint8_t) (1 << kind);
+    *data   = (uint8_t *) c->data + (size_t) slot*c->nb[2];
+    *buffer = c->buffer;
+    return true;
+}
+
 void upload_slice(ggml_tensor * dst_c, const ggml_tensor * src, int32_t expert, int32_t slot) {
     const size_t sz = src->nb[2];
     if ((size_t) slot*dst_c->nb[2] + sz > ggml_nbytes(dst_c) || (size_t) expert*sz + sz > ggml_nbytes(src)) {
@@ -650,6 +722,8 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
             ls.glob_count.assign(n_expert, 0);
             ls.sticky.assign(n_expert, false);
+            ls.adopt_slot.assign(n_expert, -1);
+            ls.adopt_mask.assign(n_expert, 0);
 
             std::vector<int32_t> dummy(n_expert, ns);
             ggml_backend_tensor_set(ls.pub.dev_table,  dummy.data(), 0, n_expert*sizeof(int32_t));
@@ -744,6 +818,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             const char * e = getenv("LLAMA_MOE_CACHE_PREFILL_D2D");
             if (!e || e[0] != '0') {
                 ggml_backend_set_moe_src_callback(moe_src_cb, mc);
+                ggml_backend_set_moe_fill_callback(moe_fill_cb, mc);
             }
         }
         g_cache = mc;
@@ -810,6 +885,31 @@ void llama_moe_cache_step() {
             set_table_entry(ls.pub, j.expert, j.slot);
         }
         mc->done.clear();
+
+        // prefill preheat: the scheduler's device-to-device copies are done (the decode step syncs
+        // the GPU first); publish experts whose up/gate/down all arrived, free the rest
+        size_t n_adopt = 0;
+        for (auto & ls : mc->layers) {
+            for (int32_t v : ls.adopt_victims) {
+                set_table_entry(ls.pub, v, ls.pub.n_slots);
+            }
+            ls.adopt_victims.clear();
+            for (int32_t e : ls.adopted) {
+                const int32_t slot = ls.adopt_slot[e];
+                if (ls.adopt_mask[e] == 7) {
+                    ls.slot_expert[slot]   = e;
+                    ls.expert_slot[e]      = slot;
+                    ls.slot_last_use[slot] = ++mc->clock;
+                    set_table_entry(ls.pub, e, slot);
+                    n_adopt++;
+                }
+                ls.slot_in_flight[slot] = false;
+                ls.adopt_slot[e] = -1;
+                ls.adopt_mask[e] = 0;
+            }
+            ls.adopted.clear();
+        }
+        mc->n_adopted += n_adopt;
     }
 
     // swap budget for this step, from measured costs: keep upload time within
@@ -1002,6 +1102,7 @@ void llama_moe_cache_free() {
     }
     ggml_set_moe_obs_callback(nullptr, nullptr);
     ggml_backend_set_moe_src_callback(nullptr, nullptr);
+    ggml_backend_set_moe_fill_callback(nullptr, nullptr);
     {
         std::lock_guard<std::mutex> lk(mc->wmtx);
         mc->stop = true;
@@ -1013,8 +1114,8 @@ void llama_moe_cache_free() {
     profile_save(mc);
     uint64_t h = 0, m = 0;
     for (auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
-    LLAMA_LOG_WARN("moe-cache: steps=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " hit-rate=%.1f%%, prefill experts from cache %" PRIu64 "/%" PRIu64 "\n",
-            mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0, mc->n_src_hit, mc->n_src_query);
+    LLAMA_LOG_WARN("moe-cache: steps=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " hit-rate=%.1f%%, prefill experts from cache %" PRIu64 "/%" PRIu64 ", kept from prefill %" PRIu64 "\n",
+            mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0, mc->n_src_hit, mc->n_src_query, mc->n_adopted);
     for (auto * b : mc->staging) { if (b) { ggml_backend_buffer_free(b); } }
     for (auto * b : mc->bufs) { ggml_backend_buffer_free(b); }
     for (auto * c : mc->ctxs) { ggml_free(c); }

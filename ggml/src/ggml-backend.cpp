@@ -516,6 +516,14 @@ void ggml_backend_set_moe_src_callback(ggml_backend_moe_src_cb_t cb, void * user
     g_moe_src_ud = user_data;
 }
 
+static ggml_backend_moe_fill_cb_t g_moe_fill_cb = NULL;
+static void *                     g_moe_fill_ud = NULL;
+
+void ggml_backend_set_moe_fill_callback(ggml_backend_moe_fill_cb_t cb, void * user_data) {
+    g_moe_fill_cb = cb;
+    g_moe_fill_ud = user_data;
+}
+
 void ggml_backend_tensor_copy_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const struct ggml_tensor * src, struct ggml_tensor * dst) {
     GGML_ASSERT(ggml_are_same_layout(src, dst) && "cannot copy tensors with different layouts");
 
@@ -2114,6 +2122,23 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     }
                     if (first_id >= 0) {
                         copy_experts(first_id, last_id);
+                    }
+
+                    // the used experts are on the device now: let the expert cache keep some of
+                    // them (device-to-device, queued after the copies above on the same stream)
+                    if (g_moe_fill_cb) {
+                        for (int32_t id = 0; id < n_expert; ++id) {
+                            if (!ggml_bitset_get(used_ids.data(), id)) {
+                                continue;
+                            }
+                            void *                dst_data = NULL;
+                            ggml_backend_buffer_t dst_buf  = NULL;
+                            if (g_moe_fill_cb(input, id, split_dev, &dst_data, &dst_buf, g_moe_fill_ud)) {
+                                ggml_tensor s = bytes_view(input_cpy->buffer, (uint8_t *) input_cpy->data + (size_t) id*expert_size, expert_size);
+                                ggml_tensor d = bytes_view(dst_buf, dst_data, expert_size);
+                                ggml_backend_tensor_copy_async(split_backend, split_backend, &s, &d);
+                            }
+                        }
                     }
                 } else {
                     // try async copy, but if not possible, we can still use a sync copy without synchronizing the dst backend, since we handle the synchronization here with multiple copies and events
