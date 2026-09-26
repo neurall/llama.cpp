@@ -241,8 +241,8 @@ struct server_batch {
 // costs up to k times the CPU work, so the best depth depends on the setup and can be 0.
 // Starts at `start` (a guess from model size vs VRAM), compares it with the doubled depth
 // (or the halved one, if doubling is slower), keeps doubling/halving while faster, then
-// refines by 1 between the known-slower bounds. Each comparison alternates the two depths step
-// by step (text and cache warm-up affect both alike) for `probe` tokens each. Re-checks every
+// refines by 1 between the known-slower bounds. Each comparison alternates the two depths in blocks
+// of 8 steps (text and cache warm-up affect both alike) for `probe` tokens each. Re-checks every
 // `recheck` tokens. LLAMA_SPEC_DEPTH=N pins the depth (0 = never draft).
 struct spec_depth_tuner {
     static constexpr int probe   = 128;
@@ -258,6 +258,7 @@ struct spec_depth_tuner {
     int     hi      = 1 << 30;    // smallest depth known slower above cur
     bool    moved   = false;
     int     arm     = 0;          // 0 = cur, 1 = cand
+    int     steps   = 0;          // steps on the current arm (switch in blocks: changing depth has a cost)
     int     since   = 0;
     double  t[2]    = {0, 0};
     int     n[2]    = {0, 0};
@@ -348,7 +349,10 @@ struct spec_depth_tuner {
                 return cur;
             }
         }
-        arm = n[0] <= n[1] ? 0 : 1;
+        if (++steps >= 8) {
+            steps = 0;
+            arm   = n[0] <= n[1] ? 0 : 1;
+        }
         return arm ? cand : cur;
     }
 };

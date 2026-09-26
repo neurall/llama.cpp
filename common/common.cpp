@@ -1289,7 +1289,8 @@ static void common_gpu_free(size_t & total, size_t & max, int & n) {
 // the max draft depth (recurrent-state rollback buffers are sized by it, so it costs VRAM)
 static void common_spec_auto(common_params & params) {
     auto & dft = params.speculative.draft;
-    if (params.speculative.types.empty() || params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+    if (std::none_of(params.speculative.types.begin(), params.speculative.types.end(),
+                     [](auto t) { return t != COMMON_SPECULATIVE_TYPE_NONE; })) {
         return;
     }
     size_t vram, vram_max;
