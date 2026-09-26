@@ -603,11 +603,12 @@ void llama_moe_cache_step() {
         const char * e = getenv("LLAMA_MOE_CACHE_DETERMINISTIC");
         return e && atoi(e) != 0;
     }();
-    // LLAMA_MOE_CACHE_WAIT=1: only the wait-and-publish part of deterministic mode,
-    // keeping the adaptive swap budget and margin
+    // wait for and publish the previous step's uploads (default; LLAMA_MOE_CACHE_WAIT=0
+    // disables): a cache that is current every step beats the time the wait costs,
+    // fixed-text decode +16%, hit rate 66% -> 77%
     static const bool wait_publish = det || [] {
         const char * e = getenv("LLAMA_MOE_CACHE_WAIT");
-        return e && atoi(e) != 0;
+        return !e || atoi(e) != 0;
     }();
 
     // 1) publish completed uploads (sync point: no graph is executing)
