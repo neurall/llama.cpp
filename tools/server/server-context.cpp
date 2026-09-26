@@ -331,7 +331,11 @@ struct spec_depth_tuner {
             return cur;
         }
         if (n[0] >= probe && n[1] >= probe) {
-            const bool better = n[1] / t[1] > n[0] / t[0];
+            // hysteresis: keep the current depth (the model-size guess at first) unless the other is
+            // clearly faster; early in a reply (reasoning) depths measure near-tied and noise decided
+            const bool better = n[1] / t[1] > 1.05 * (n[0] / t[0]);
+            LOG_INF("spec depth tuner: depth %d %.1f t/s vs depth %d %.1f t/s -> %d\n",
+                cur, n[0] * 1e6 / t[0], cand, n[1] * 1e6 / t[1], better ? cand : cur);
             if (better) {
                 (cand > cur ? lo : hi) = cur;
                 cur   = cand;

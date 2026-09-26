@@ -21,7 +21,7 @@ reproduce these tests are in [`tools/moe-bench/`](tools/moe-bench/).
 **Stock llama.cpp vs this fork**, tokens/s, model already in RAM (*). "mmap": weights
 memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned RAM, what
 `llama-server` does by itself when the model fits in RAM; "+ MTP": plus the model's MTP draft head
-(`-md`, automatic draft depth; the server then keeps mmap, which measured faster with MTP). Multipliers vs stock; best number per row in bold (links to how to reproduce it).
+(`-md`, automatic draft depth). Multipliers vs stock; best number per row in bold (links to how to reproduce it).
 
 | model | test | stock | fork, mmap | fork, mmap + MTP | fork, pinned |
 |---|---|---|---|---|---|
@@ -120,8 +120,7 @@ the RAM available at startup, the fork loads its weights into pinned (page-locke
 memory-mapping the file (`--load-mode pin` does it by hand, `--load-mode mmap` turns it off).
 The GPUs then read experts straight from RAM by DMA, for prompt processing and for the cache's
 uploads during decode. Only the server does this by default: it starts once and serves many
-requests, so the longer startup pays off. Not with a separate MTP draft (`-md`): Qwen + MTP chat
-measured 57.5 t/s with mmap vs ~51 pinned (cause not known yet), so the server keeps mmap then. `llama-cli` and the other tools keep mmap (fast
+requests, so the longer startup pays off. `llama-cli` and the other tools keep mmap (fast
 startup for one-off runs); pass `--load-mode pin` to pin there too.
 
 | 2x RTX 3090, model in RAM | mmap | pinned |
@@ -199,9 +198,10 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   work (estimate ~1.2-1.3x from MTP); with 4 cards nearly all experts fit. A third card on
   a chipset x4 slot slows cache uploads and prompt processing, not decode.
 - Since release b11365: built-in MTP (MiMo-V2.6) is used on models bigger than VRAM too (the tuner
-  measures it: MiMo +9%), and `llama-server` keeps mmap with a `-md` draft (Qwen + MTP 57.5-59.4 t/s).
-- MTP with pinned weights measured slower than MTP with mmap (Qwen chat ~51 vs 57.5 t/s, 3-4 runs
-  each; the cause is not known yet), so `llama-server` keeps mmap when a `-md` draft is loaded.
+  measures it: MiMo +9%).
+- The depth tuner keeps its current depth (at first the model-size guess) unless another depth is
+  at least 5% faster: early in a reply (the model's reasoning) depths measure near-tied, and
+  without that margin noise sometimes picked depth 1 on Qwen (~51 instead of ~60 t/s).
 - `LLAMA_SPEC_DEPTH=N` pins the depth for benchmarks.
 
 ## What's in it
