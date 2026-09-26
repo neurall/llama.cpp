@@ -18,6 +18,18 @@ CPU frequency governor `performance`, single stream, temp 0.** Short = 1500-toke
 12k-token code prompt (llama.cpp sources): prompt processing, then decode. The prompts and a script to
 reproduce these tests are in [`tools/moe-bench/`](tools/moe-bench/).
 
+**Stock llama.cpp -> this fork**, tokens/s, `llama-server` with its defaults (just `-m`), model
+already in RAM (*):
+
+| model (size) | short prompt: decode | 12k-token prompt: processing † | 12k-token prompt: decode |
+|---|---|---|---|
+| **GLM-5.3-Flash** 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) (106 GB) | 13.8 -> **21.1 (1.53x)** | 217 -> **262 (1.21x)** | 12.3 -> **16.3 (1.33x)** |
+| **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) | 27.7 -> **57.0 (2.06x)** with its MTP head (`-md`), 47.1 (1.70x) without | 500 -> 435 (0.87x) | 25.3 -> **39.0 (1.54x)** |
+| **MiMo-V2.6-Flash-RL** IQ3_XXS (132 GB, bigger than RAM) | 4.0 -> **10.1 (2.54x)** | 136 -> 133 (0.98x) | 4.2 -> **8.3 (1.98x)** |
+| Qwen3.8-27B, OLMoE (fit in VRAM) | unchanged (44.8, 504) | unchanged | unchanged |
+
+Details per setup:
+
 t/s, stock llama.cpp vs this fork. "mmap" = weights memory-mapped (models bigger than RAM,
 `llama-cli`); "pinned" = weights in pinned RAM, what `llama-server` does when the model fits;
 "+ MTP" = pinned plus the model's MTP draft head (automatic draft depth). All with the model
