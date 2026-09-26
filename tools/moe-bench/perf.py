@@ -60,19 +60,16 @@ def _die_with_parent():
 
 
 def kill_leftovers():
-    """Stop any llama-server / llama-perplexity left running (TERM, then KILL after 15 s)."""
-    import signal
-    for sig, wait_s in ((signal.SIGTERM, 15), (signal.SIGKILL, 10)):
-        pids = subprocess.run(["pgrep", "-x", "llama-server|llama-perplexit"], capture_output=True, text=True).stdout.split()
-        if not pids:
+    """Stop every llama-server / llama-perplexity by binary name (pkill -x: exact process name,
+    never matches the calling shell); TERM, then KILL after 15 s."""
+    names = ["llama-server", "llama-perplexit"]  # process names are cut to 15 chars
+    for sig, wait_s in (("TERM", 15), ("KILL", 10)):
+        if not any(subprocess.run(["pgrep", "-x", n], capture_output=True).stdout for n in names):
             return
-        for pid in pids:
-            try:
-                os.kill(int(pid), sig)
-            except ProcessLookupError:
-                pass
+        for n in names:
+            subprocess.run(["pkill", "-" + sig, "-x", n])
         for _ in range(wait_s):
-            if not subprocess.run(["pgrep", "-x", "llama-server|llama-perplexit"], capture_output=True).stdout:
+            if not any(subprocess.run(["pgrep", "-x", n], capture_output=True).stdout for n in names):
                 return
             time.sleep(1)
 
