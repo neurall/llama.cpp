@@ -249,17 +249,16 @@ def cmd_run(a):
     fits = size < 0.85 * ram
     if fits:
         subprocess.run(["dd", f"if={MODEL}", "of=/dev/null", "bs=16M"], stderr=subprocess.DEVNULL)
-    last = c.execute("select model from runs order by id desc limit 1").fetchone()
-    # every model switch: one discarded run (dd alone left the first Qwen run after GLM 12% low)
-    if not last or last[0] != os.path.basename(MODEL):
-        print(f"model switch -> {os.path.basename(MODEL)}: throwaway run", flush=True)
-        try:
-            run_one(a.builds[0].rstrip("/"), a.test, extra, a.plain, a.args.split() if a.args else ())
-        except Exception as e:
-            print(f"throwaway run failed: {e}", flush=True)
     for i in range(a.n):
         for build in a.builds:
             build = build.rstrip("/")
+            # every measured run is preceded by a discarded run with the same build and settings:
+            # model switches, a previous pinned load (drops the page cache) and cache/tuner warm-up
+            # all showed 5-12% swings on the first run
+            try:
+                run_one(build, a.test, extra, a.plain, a.args.split() if a.args else ())
+            except Exception as e:
+                print(f"throwaway run failed: {e}", flush=True)
             try:
                 row = run_one(build, a.test, extra, a.plain, a.args.split() if a.args else ())
             except Exception as e:
