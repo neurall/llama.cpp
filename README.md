@@ -20,7 +20,7 @@ reproduce these tests are in [`tools/moe-bench/`](tools/moe-bench/).
 
 | model | size | short: decode t/s | short: decode with MTP | long: prefill t/s † | long: decode t/s |
 |---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 13.8 -> **21.5 (1.56x)*** | 17.6, slower ‡ | 217 -> **261** pinned (181 mmap)* | 12.3 -> **15.7 (1.28x)*** |
+| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 13.8 -> **21.5 (1.56x)*** | 17.6, slower ‡ | 217 -> **262** pinned (181 mmap)* | 12.3 -> **16.3 (1.33x)** pinned (15.7 mmap)* |
 | MiMo-V2.6-Flash-RL IQ3_XXS | 132 GB | 4.0 -> **10.1 (2.54x)**** | built-in MTP, not measured yet | 136 -> 133 (mmap only, bigger than RAM)** | 4.2 -> **8.3 (1.98x)**** |
 | Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 27.7 -> **46.4 (1.68x)*** | **57.0 (2.06x vs stock)*** | 500 -> 435 pinned (390 mmap)* | 25.3 -> **38.7 (1.53x)*** |
 | Qwen3.8-27B IQ4_NL (dense, fits VRAM) | 16 GB | 44.7 -> 44.8 | | 1726 -> 1811 | |
