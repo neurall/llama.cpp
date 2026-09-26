@@ -198,6 +198,8 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   Qwen's 1.9x here), cache hits should reach 90%+ and verifying drafts would cost little CPU
   work (estimate ~1.2-1.3x from MTP); with 4 cards nearly all experts fit. A third card on
   a chipset x4 slot slows cache uploads and prompt processing, not decode.
+- Since release b11365: built-in MTP (MiMo-V2.6) is used on models bigger than VRAM too (the tuner
+  measures it: MiMo +9%), and `llama-server` keeps mmap with a `-md` draft (Qwen + MTP 57.5-59.4 t/s).
 - MTP with pinned weights measured slower than MTP with mmap (Qwen chat ~51 vs 57.5 t/s, 3-4 runs
   each; the cause is not known yet), so `llama-server` keeps mmap when a `-md` draft is loaded.
 - `LLAMA_SPEC_DEPTH=N` pins the depth for benchmarks.
