@@ -185,7 +185,10 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
 - MTP heads: Qwen3.8-Flash-Next from [unsloth/Qwen3.8-Flash-Next-GGUF](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF)
   (`MTP/`, the `shared` files reuse the main model's embeddings); GLM-5.3-Flash from
   [neuralll/GLM-5.3-Flash-MTP-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-MTP-GGUF)
-  (4.3 GiB, works with any `glm5-next` GLM-5.3-Flash GGUF).
+  (4.3 GiB, works with any `glm5-next` GLM-5.3-Flash GGUF). We made it: no GLM MTP GGUF
+  existed, so `tools/moe-bench/glm_splice_mtp.py` pulls just the MTP tensors out of unsloth's
+  UD-Q4_K_XL GGUF with HTTP range requests (~4.3 GiB instead of the whole model) and writes
+  them as a draft file; see [`tools/moe-bench/`](tools/moe-bench/) to rebuild it.
 - **Why depth is automatic:** every drafted token has to be verified, and each token picks
   its own experts. Experts that miss the VRAM cache run on the CPU at the same cost per
   drafted token as per generated one, so the best depth depends on how much of the model the

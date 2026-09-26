@@ -50,3 +50,12 @@ before measuring, perf.py drops other models under `$PERF_MODELS_DIR` from the O
 reads the model file once if it fits in RAM, and on every model switch does one discarded
 run. Compare decode speed only between runs of the same test; chat and tetris vary by a
 few percent between runs, so use `-n 2` or more.
+
+## GLM-5.3-Flash MTP head
+
+`glm_splice_mtp.py --mtp-only <any glm5-next GLM-5.3-Flash.gguf> GLM-5.3-Flash-MTP-Q4_K.gguf`
+rebuilds [neuralll/GLM-5.3-Flash-MTP-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-MTP-GGUF):
+it reads the header of unsloth's UD-Q4_K_XL GLM-5.3-Flash GGUF over HTTP range requests
+(`gguf_remote.py`), downloads only the 29 NextN (MTP) tensors (~4.3 GiB instead of ~200 GB),
+and writes them with your model's metadata as a small GGUF for `-md`. Without `--mtp-only`
+it writes a full model with the MTP block added.
