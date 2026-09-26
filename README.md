@@ -89,6 +89,10 @@ expert fits. Reports from 3+ GPU setups are welcome.
 
 ### MTP (multi-token prediction)
 
+Added in release b11327: Qwen3.8-Flash-Next MTP from PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243)
+([@danielhanchen](https://github.com/danielhanchen)), GLM-5.3-Flash MTP from PR
+[#27917](https://github.com/ggml-org/llama.cpp/pull/27917) (timkhronos).
+
 Load a model's MTP draft head with `-md` and the fork picks the draft depth itself:
 
 ```sh
@@ -110,7 +114,7 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   generation speed and moves the depth up or down in doubles, then by 1, re-checking every
   4096 tokens. The max depth is 2 when the model is bigger than VRAM (the rollback buffers of
   hybrid models are sized by it and cost cache VRAM), 5 when it fits.
-- Measured here: Qwen3.8-Flash-Next (1.9x VRAM, 95% cache hits) 46.5 -> **56.4 t/s (1.21x)**
+- Measured here: Qwen3.8-Flash-Next (1.9x VRAM, 95% cache hits) 47.1 -> **57.0 t/s (1.21x)**
   at depth 2. GLM-5.3-Flash (2.3x VRAM, ~70% hits) is slower with MTP (17.6 vs 20.2 t/s), so
   the fork doesn't load the draft there (a warning says so; `--spec-draft-n-max N` forces it).
   More VRAM should make GLM MTP worth it: with 3x 24 GB, GLM is ~1.5x VRAM (less than
