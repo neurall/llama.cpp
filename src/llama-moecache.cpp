@@ -209,12 +209,20 @@ void profile_save(const moe_cache * mc) {
     if (!f) {
         return;
     }
-    const uint32_t hdr[2] = { PROFILE_MAGIC, (uint32_t) mc->layers.size() };
+    // v1: per layer n_expert + lifetime counts; v2 adds the last-64-token window (expert ids per token)
+    const uint32_t hdr[3] = { PROFILE_MAGIC, (uint32_t) mc->layers.size(), 2 };
     fwrite(hdr, sizeof(hdr), 1, f);
     for (const auto & ls : mc->layers) {
         const uint32_t n = (uint32_t) ls.glob_count.size();
         fwrite(&n, sizeof(n), 1, f);
         fwrite(ls.glob_count.data(), sizeof(uint64_t), n, f);
+        const uint32_t n_tok = (uint32_t) ls.recent.size();
+        fwrite(&n_tok, sizeof(n_tok), 1, f);
+        for (const auto & tok : ls.recent) {
+            const uint32_t k = (uint32_t) tok.size();
+            fwrite(&k, sizeof(k), 1, f);
+            fwrite(tok.data(), sizeof(int32_t), k, f);
+        }
     }
     fclose(f);
 }
@@ -254,14 +262,38 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     const char * from = mc->profile.c_str();
     bool ok = f != nullptr;
     if (f) {
-        uint32_t hdr[2] = {};
-        ok = fread(hdr, sizeof(hdr), 1, f) == 1 && hdr[0] == PROFILE_MAGIC && hdr[1] == mc->layers.size();
+        uint32_t hdr[3] = {};
+        ok = fread(hdr, sizeof(uint32_t), 3, f) == 3 && hdr[0] == PROFILE_MAGIC && hdr[1] == mc->layers.size() && hdr[2] == 2;
         for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
+            auto & ls = mc->layers[il];
             uint32_t n = 0;
-            ok = fread(&n, sizeof(n), 1, f) == 1 && n == mc->layers[il].glob_count.size();
+            ok = fread(&n, sizeof(n), 1, f) == 1 && n == ls.glob_count.size();
             if (ok) {
                 counts.emplace_back(n);
                 ok = fread(counts.back().data(), sizeof(uint64_t), n, f) == n;
+            }
+            uint32_t n_tok = 0;
+            ok = ok && fread(&n_tok, sizeof(n_tok), 1, f) == 1 && n_tok <= 64;
+            ls.recent.clear();
+            std::fill(ls.win_count.begin(), ls.win_count.end(), 0);
+            for (uint32_t t = 0; ok && t < n_tok; ++t) {
+                uint32_t k = 0;
+                ok = fread(&k, sizeof(k), 1, f) == 1 && k <= 64;
+                std::vector<int32_t> ids(k);
+                ok = ok && fread(ids.data(), sizeof(int32_t), k, f) == k;
+                for (int32_t id : ids) {
+                    ok = ok && id >= 0 && id < (int32_t) n;
+                    if (ok) {
+                        ls.win_count[id]++; // rebuilt from the window so it keeps decaying correctly
+                    }
+                }
+                ls.recent.push_back(std::move(ids));
+            }
+        }
+        if (!ok) {
+            for (auto & ls : mc->layers) {
+                ls.recent.clear();
+                std::fill(ls.win_count.begin(), ls.win_count.end(), 0);
             }
         }
         fclose(f);
