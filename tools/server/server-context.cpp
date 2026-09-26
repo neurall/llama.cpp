@@ -236,6 +236,63 @@ struct server_batch {
     }
 };
 
+// Picks the draft depth by measured generation speed, not acceptance: when part of the model
+// runs on the CPU (e.g. MoE experts not in the VRAM expert cache), verifying k drafted tokens
+// costs up to k times the CPU work, so the best depth depends on the setup and can be 0.
+// Tries depths 0, 1, 2, ... for `window` generated tokens each, keeps the fastest (stops
+// climbing at the first slower depth) and re-checks every `recheck` tokens.
+// LLAMA_SPEC_DEPTH=N pins the depth (0 = never draft).
+struct spec_depth_tuner {
+    static constexpr int window  = 64;
+    static constexpr int recheck = 2048;
+
+    int     depth    = 0;
+    int     best     = 0;
+    bool    probing  = true;
+    double  prev_tps = 0.0;
+    int     n0       = 0;
+    int64_t t0       = 0;
+
+    void reset() { *this = {}; }
+
+    int get(int n_gen, int d_max) {
+        static const int pinned = getenv("LLAMA_SPEC_DEPTH") ? atoi(getenv("LLAMA_SPEC_DEPTH")) : -1;
+        if (pinned >= 0) {
+            return std::min(pinned, d_max);
+        }
+        const int64_t now = ggml_time_us();
+        if (t0 == 0) {
+            n0 = n_gen;
+            t0 = now;
+        }
+        const int n = n_gen - n0;
+        if (probing && n >= window) {
+            const double tps = n * 1e6 / std::max<int64_t>(1, now - t0);
+            if (depth > 0 && tps < prev_tps) {
+                best    = depth - 1;
+                probing = false;
+            } else if (depth >= d_max) {
+                best    = depth;
+                probing = false;
+            } else {
+                prev_tps = tps;
+                depth++;
+            }
+            if (!probing) {
+                depth = best;
+                LOG_INF("spec depth tuner: using draft depth %d\n", best);
+            }
+            n0 = n_gen;
+            t0 = now;
+        } else if (!probing && n >= recheck) {
+            *this = {};
+            n0 = n_gen;
+            t0 = now;
+        }
+        return depth;
+    }
+};
+
 struct server_slot {
     int id;
 
@@ -257,6 +314,7 @@ struct server_slot {
     common_prompt_checkpoint spec_ckpt;
     bool spec_is_replay = false;
     std::mt19937 spec_synth_rng;
+    mutable spec_depth_tuner spec_tune;
 
     // TODO: move members that belong to the task (such as `generated_text`, `has_new_line`) to task_results_state
     //       see https://github.com/ggml-org/llama.cpp/pull/18283#issuecomment-3710175837
@@ -370,6 +428,7 @@ struct server_slot {
         SLT_DBG(*this, "%s", "\n");
 
         spec_is_replay = false;
+        spec_tune.reset();
 
         last_nl_pos    = 0;
         generated_text = "";
@@ -494,6 +553,10 @@ struct server_slot {
 
         if (n_remaining() > 0) {
             n_draft_max = std::min(n_draft_max, n_remaining() - 1);
+        }
+
+        if (spec) {
+            n_draft_max = std::min(n_draft_max, spec_tune.get(stats.n_gen, common_speculative_n_max(spec)));
         }
 
         SLT_DBG(*this, "max possible draft: %d\n", n_draft_max);
