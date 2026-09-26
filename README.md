@@ -110,8 +110,8 @@ startup for one-off runs); pass `--load-mode pin` to pin there too.
 
 | 2x RTX 3090, model in RAM | mmap | pinned |
 |---|---|---|
-| GLM-5.3-Flash: 12k prompt processing t/s | 179 | **261 (+46%)** |
-| GLM-5.3-Flash: 12k decode t/s | 15.3 | 16.0 |
+| GLM-5.3-Flash: 12k prompt processing t/s | 180 | **262 (+45%)** |
+| GLM-5.3-Flash: 12k decode t/s | 15.6 | 16.3 (+5%) |
 | GLM-5.3-Flash: chat decode t/s | 20.4 | same (decode isn't limited by uploads) |
 | Qwen3.8-Flash-Next: 12k prompt processing t/s | 372 | **435 (+17%)** |
 | Qwen3.8-Flash-Next: 12k decode t/s | 38.4 | 39.0 |
