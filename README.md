@@ -13,7 +13,7 @@ compute cached experts while the CPU computes the rest, in parallel.
 
 llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf -np 1 -c 16384 -t 6 --cpu-moe -nr --moe-expert-cache -1 -ub 2048 -b 2048
 
-**Results, 2x RTX 3090 (one CPU x16, one chipset x4 slot) + Ryzen 7 3700X + 125 GB DDR4,
+**Results, 2x RTX 3090 (one am4 CPU pcie4 x16, one chipset x4 slot) + Ryzen 7 3700X + 125 GB DDR4,
 CPU frequency governor `performance`, single stream, temp 0.** Short = 1500-token chat reply to "write smallest html tetris game". Long =
 12k-token code prompt (llama.cpp sources): prompt processing, then decode.
 
