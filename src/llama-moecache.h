@@ -52,7 +52,7 @@ struct llama_moe_cache_layer {
 
 // build the cache for every host-resident expert layer of the model.
 // Safe to call more than once; only the first call does work.
-void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots = 0);
+void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots = 0, int32_t window = 64);
 void llama_moe_cache_free();
 
 // largest batch (tokens) that uses the cache; bigger ones take the stock path
