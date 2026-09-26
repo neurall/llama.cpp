@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <cctype>
 #include <map>
 #include <mutex>
 #include <string>
@@ -45,6 +47,7 @@ struct layer_state {
 
     std::vector<uint64_t> glob_count;     // expert id -> lifetime uses
     uint64_t              glob_max = 1;
+    std::vector<bool>     sticky;         // expert id -> never evicted (most-used by lifetime count)
 
     uint64_t n_hit  = 0;
     uint64_t n_miss = 0;
@@ -60,6 +63,7 @@ struct upload_job {
 struct moe_cache {
     int32_t n_slots     = 0;
     int32_t max_inserts = 2;
+    int32_t window      = 64; // recent-usage window in tokens (--moe-cache-window)
 
     uint64_t clock   = 0;
     uint64_t n_steps = 0;
@@ -101,6 +105,9 @@ struct moe_cache {
 
     // pinned staging per upload worker, for file-backed uploads (pread -> pinned -> DMA)
     std::vector<ggml_backend_buffer_t> staging;
+
+    // hot-set profile: per-expert lifetime uses saved at shutdown, preloaded at the next start
+    std::string profile;
 };
 
 // Where a tensor's raw GGUF bytes live (recorded by the model loader).
@@ -163,6 +170,160 @@ double score(const layer_state & ls, int32_t id) {
     return 0;
 }
 
+// Hot-set profile: which experts this model used, so the next start preloads them into VRAM
+// instead of warming the cache over the first requests. Keyed by model name + file size.
+// LLAMA_MOE_CACHE_PROFILE=<path> overrides the location, =0 disables.
+std::string profile_path(const llama_model & model) {
+    const char * e = getenv("LLAMA_MOE_CACHE_PROFILE");
+    if (e) {
+        return strcmp(e, "0") == 0 ? "" : e;
+    }
+#ifdef _WIN32
+    const char * base = getenv("LOCALAPPDATA");
+    const std::string dir = base ? std::string(base) + "\\llama.cpp" : "";
+#else
+    const char * xdg  = getenv("XDG_CACHE_HOME");
+    const char * home = getenv("HOME");
+    const std::string dir = xdg ? std::string(xdg) + "/llama.cpp" : home ? std::string(home) + "/.cache/llama.cpp" : "";
+#endif
+    if (dir.empty()) {
+        return "";
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    std::string name = model.name;
+    for (char & c : name) {
+        if (!isalnum((unsigned char) c) && c != '-' && c != '.') {
+            c = '_';
+        }
+    }
+    return dir + "/moe-hot-" + name + "-" + std::to_string(model.size()) + ".bin";
+}
+
+constexpr uint32_t PROFILE_MAGIC = 0x3448454d; // "MEH4": u32 counts
+
+void profile_save(const moe_cache * mc) {
+    if (mc->profile.empty() || mc->n_steps < 64) { // too little use to be worth keeping
+        return;
+    }
+    FILE * f = fopen(mc->profile.c_str(), "wb");
+    if (!f) {
+        return;
+    }
+    // raw lifetime activation counts per expert, u32 (the cache normalizes by the layer max when
+    // scoring); a layer is halved while its max exceeds 2^31, which keeps the ratios
+    const uint32_t hdr[2] = { PROFILE_MAGIC, (uint32_t) mc->layers.size() };
+    fwrite(hdr, sizeof(hdr), 1, f);
+    for (const auto & ls : mc->layers) {
+        const uint32_t n = (uint32_t) ls.glob_count.size();
+        int shift = 0;
+        while ((ls.glob_max >> shift) > (1ull << 31)) {
+            shift++;
+        }
+        std::vector<uint32_t> c(n);
+        for (uint32_t e = 0; e < n; ++e) {
+            c[e] = (uint32_t) (ls.glob_count[e] >> shift);
+        }
+        fwrite(&n, sizeof(n), 1, f);
+        fwrite(c.data(), sizeof(uint32_t), n, f);
+    }
+    fclose(f);
+}
+
+// seed usage from the profile and queue the most-used experts of each layer for upload;
+// the first step() waits for them and publishes them. Returns the number queued.
+// Always-hot experts (formatting, common tokens) stay in VRAM: the most-used experts by lifetime
+// count, up to LLAMA_MOE_CACHE_STICKY (default 0, e.g. 0.3) of each layer's slots, are never evicted.
+void refresh_sticky(layer_state & ls) {
+    static const double frac = [] {
+        const char * e = getenv("LLAMA_MOE_CACHE_STICKY");
+        return e ? atof(e) : 0.0; // off: +1.6% on GLM chat, within noise
+    }();
+    ls.sticky.assign(ls.glob_count.size(), false);
+    const int32_t k = (int32_t) (frac * ls.pub.n_slots);
+    if (k <= 0) {
+        return;
+    }
+    std::vector<int32_t> ids;
+    for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) {
+        if (ls.glob_count[e] > 0) {
+            ids.push_back(e);
+        }
+    }
+    const int32_t n = std::min<int32_t>(k, (int32_t) ids.size());
+    std::partial_sort(ids.begin(), ids.begin() + n, ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
+    for (int32_t i = 0; i < n; ++i) {
+        ls.sticky[ids[i]] = true;
+    }
+}
+
+int parse_layer_from_name(const char * name);
+
+size_t profile_preload(moe_cache * mc, const llama_model & model) {
+    std::vector<std::vector<uint64_t>> counts;
+    FILE * f = mc->profile.empty() ? nullptr : fopen(mc->profile.c_str(), "rb");
+    const char * from = mc->profile.c_str();
+    bool ok = f != nullptr;
+    if (f) {
+        uint32_t hdr[2] = {};
+        ok = fread(hdr, sizeof(hdr), 1, f) == 1 && hdr[0] == PROFILE_MAGIC && hdr[1] == mc->layers.size();
+        for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
+            uint32_t n = 0;
+            ok = fread(&n, sizeof(n), 1, f) == 1 && n == mc->layers[il].glob_count.size();
+            if (ok) {
+                std::vector<uint32_t> c(n);
+                ok = fread(c.data(), sizeof(uint32_t), n, f) == n;
+                counts.emplace_back(c.begin(), c.end());
+            }
+        }
+        fclose(f);
+        if (!ok) {
+            LLAMA_LOG_WARN("moe-cache: ignoring profile %s (other model or cache layout)\n", from);
+        }
+    }
+    if (!ok && !model.moe_expert_usage.empty()) {
+        // no local profile: the model's own usage table (GGUF key moe_cache.expert_usage)
+        const size_t n_expert = mc->layers.empty() ? 0 : mc->layers[0].glob_count.size();
+        counts.clear();
+        ok = n_expert > 0;
+        for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
+            const size_t layer = (size_t) parse_layer_from_name(mc->layers[il].pub.up_src->name);
+            ok = mc->layers[il].glob_count.size() == n_expert && (layer + 1)*n_expert <= model.moe_expert_usage.size();
+            if (ok) {
+                const uint32_t * u = model.moe_expert_usage.data() + layer*n_expert;
+                counts.emplace_back(u, u + n_expert);
+            }
+        }
+        from = "GGUF moe_cache.expert_usage";
+    }
+    if (!ok) {
+        return 0;
+    }
+    LLAMA_LOG_INFO("moe-cache: usage profile from %s\n", from);
+    size_t queued = 0;
+    std::lock_guard<std::mutex> lk(mc->wmtx);
+    for (size_t il = 0; il < mc->layers.size(); ++il) {
+        auto & ls = mc->layers[il];
+        ls.glob_count = counts[il];
+        ls.glob_max   = std::max<uint64_t>(1, *std::max_element(ls.glob_count.begin(), ls.glob_count.end()));
+        refresh_sticky(ls);
+        std::vector<int32_t> ids;
+        for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) {
+            if (ls.glob_count[e] > 0) {
+                ids.push_back(e);
+            }
+        }
+        std::sort(ids.begin(), ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
+        for (int32_t s = 0; s < std::min<int32_t>(ls.pub.n_slots, (int32_t) ids.size()); ++s) {
+            ls.slot_in_flight[s] = true;
+            mc->todo.push_back({ il, ids[s], s });
+            queued++;
+        }
+    }
+    mc->wcv.notify_all();
+    return queued;
+}
+
 moe_cache * g_cache = nullptr;
 std::mutex g_init_mtx;
 bool g_init_done = false;
@@ -199,7 +360,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, void * ud) {
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     for (int64_t t = 0; t < n_tokens; ++t) {
-        if (ls->recent.size() >= 64) {
+        if ((int32_t) ls->recent.size() >= mc->window) {
             for (int32_t old : ls->recent.front()) {
                 ls->win_count[old]--;
             }
@@ -263,12 +424,19 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
         return false;
     }
     layer_state & ls = mc->layers[it->second.first];
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    // GPU-offloaded prompt batches never reach the CPU observer (moe_obs_cb): count the prompt's
+    // experts here (once per expert and batch, on up) for the lifetime usage and the saved profile.
+    // Not queued for upload: extra uploads after a long prompt measured slower (they compete with decode)
+    if (it->second.second == 0 && expert >= 0 && expert < (int32_t) ls.expert_slot.size()) {
+        ls.expert_count[expert]++;
+        ls.glob_max = std::max(ls.glob_max, ++ls.glob_count[expert]);
+    }
     ggml_tensor * c = it->second.second == 0 ? ls.pub.up_c : it->second.second == 1 ? ls.pub.gate_c : ls.pub.down_c;
     if (!c || !c->buffer || c->nb[2] != weight->nb[2] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(mc->mtx);
     mc->n_src_query++;
     if (expert < 0 || expert >= (int32_t) ls.expert_slot.size() || ls.expert_slot[expert] < 0) {
         return false;
@@ -279,7 +447,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     return true;
 }
 
-void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots) {
+void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots, int32_t window) {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
     if (g_init_done) {
         return;
@@ -295,6 +463,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         if (max_inserts > 0) {
             mc->max_inserts = max_inserts;
         }
+        mc->window = std::max(1, window);
 
         // collect the host-resident expert layers, grouped by the device buffer
         // type of that layer's router (the cache lives next to the router)
@@ -480,6 +649,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 }
             }
             ls.glob_count.assign(n_expert, 0);
+            ls.sticky.assign(n_expert, false);
 
             std::vector<int32_t> dummy(n_expert, ns);
             ggml_backend_tensor_set(ls.pub.dev_table,  dummy.data(), 0, n_expert*sizeof(int32_t));
@@ -563,6 +733,11 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 mc->dcv.notify_all();
             }
         });
+
+        mc->profile = profile_path(model);
+        if (const size_t n = profile_preload(mc, model)) {
+            LLAMA_LOG_INFO("moe-cache: preloading %zu experts (usage profile)\n", n);
+        }
 
         ggml_set_moe_obs_callback(moe_obs_cb, mc);
         {
@@ -698,6 +873,11 @@ void llama_moe_cache_step() {
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->n_steps++;
+    if (mc->n_steps % 4096 == 0) { // follow the workload: re-pick the always-hot set from lifetime counts
+        for (auto & ls : mc->layers) {
+            refresh_sticky(ls);
+        }
+    }
 
     // 2) schedule new uploads: evict at a sync point (clear the victim's table
     //    entry now), then hand the slice copies to the worker
@@ -732,6 +912,9 @@ void llama_moe_cache_step() {
                     continue;
                 }
                 if (ls.slot_expert[s] < 0) { slot = s; break; }
+                if (ls.sticky[ls.slot_expert[s]]) {
+                    continue;
+                }
                 const double c = score(ls, ls.slot_expert[s]);
                 if (c < best) { best = c; slot = s; }
             }
@@ -827,6 +1010,7 @@ void llama_moe_cache_free() {
     for (auto & t : mc->workers) {
         t.join();
     }
+    profile_save(mc);
     uint64_t h = 0, m = 0;
     for (auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
     LLAMA_LOG_WARN("moe-cache: steps=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " hit-rate=%.1f%%, prefill experts from cache %" PRIu64 "/%" PRIu64 "\n",

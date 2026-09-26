@@ -723,6 +723,10 @@ struct llama_model {
     // moe-cache can upload experts even when host memory holds a repacked copy
     struct tensor_file_loc { int fd; size_t offs; };
     std::unordered_map<const ggml_tensor *, tensor_file_loc> exps_file_locs;
+
+    // optional GGUF key moe_cache.expert_usage: per-expert usage counts, n_layer x n_expert, layer-major
+    // (0 for dense layers); the expert cache preloads the most-used experts when no local profile exists
+    std::vector<uint32_t> moe_expert_usage;
     std::vector<int> exps_fds;
 
     //Dense linear projections for SentenceTransformers models like embeddinggemma
