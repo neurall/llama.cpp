@@ -93,6 +93,18 @@ expert fits. Reports from 3+ GPU setups are welcome.
 - Every change is benchmarked against the previous release binary on fixed inputs
   before it ships.
 
+## Known limits and next steps
+
+- Prompt processing is 10-35% slower than stock on these models. Next milestone: use
+  both GPUs' PCIe links for it (split each layer's experts by measured bandwidth).
+- Qwen3.8-Flash-Next prompt processing may be ~5% below release b11214 (313 vs 331 t/s,
+  12k prompt); not settled yet, because switching between large models evicts part of
+  the model from the OS page cache and skews the next run.
+- MTP speculative decoding (PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243))
+  is not merged yet. The path it uses is already tested: with 3-token batches the cache
+  gives Qwen3.8-Flash-Next 80.4 vs 44.9 t/s and GLM-5.3-Flash 27.7 vs 19.6 t/s, with
+  perplexity matching the no-cache run within normal variation.
+
 **About the author of this fork**: I'm actively looking for an AI engineering/research
 role and open to relocating out of Eastern Europe. If this work is useful to you or
 your team, reach out: [linkedin.com/in/neuralll](https://www.linkedin.com/in/neuralll/)
