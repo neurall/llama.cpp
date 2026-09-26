@@ -220,27 +220,48 @@ void profile_save(const moe_cache * mc) {
 
 // seed usage from the profile and queue the most-used experts of each layer for upload;
 // the first step() waits for them and publishes them. Returns the number queued.
-size_t profile_preload(moe_cache * mc) {
-    FILE * f = mc->profile.empty() ? nullptr : fopen(mc->profile.c_str(), "rb");
-    if (!f) {
-        return 0;
-    }
+int parse_layer_from_name(const char * name);
+
+size_t profile_preload(moe_cache * mc, const llama_model & model) {
     std::vector<std::vector<uint64_t>> counts;
-    uint32_t hdr[2] = {};
-    bool ok = fread(hdr, sizeof(hdr), 1, f) == 1 && hdr[0] == PROFILE_MAGIC && hdr[1] == mc->layers.size();
-    for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
-        uint32_t n = 0;
-        ok = fread(&n, sizeof(n), 1, f) == 1 && n == mc->layers[il].glob_count.size();
-        if (ok) {
-            counts.emplace_back(n);
-            ok = fread(counts.back().data(), sizeof(uint64_t), n, f) == n;
+    FILE * f = mc->profile.empty() ? nullptr : fopen(mc->profile.c_str(), "rb");
+    const char * from = mc->profile.c_str();
+    bool ok = f != nullptr;
+    if (f) {
+        uint32_t hdr[2] = {};
+        ok = fread(hdr, sizeof(hdr), 1, f) == 1 && hdr[0] == PROFILE_MAGIC && hdr[1] == mc->layers.size();
+        for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
+            uint32_t n = 0;
+            ok = fread(&n, sizeof(n), 1, f) == 1 && n == mc->layers[il].glob_count.size();
+            if (ok) {
+                counts.emplace_back(n);
+                ok = fread(counts.back().data(), sizeof(uint64_t), n, f) == n;
+            }
+        }
+        fclose(f);
+        if (!ok) {
+            LLAMA_LOG_WARN("moe-cache: ignoring profile %s (other model or cache layout)\n", from);
         }
     }
-    fclose(f);
+    if (!ok && !model.moe_expert_usage.empty()) {
+        // no local profile: the model's own usage table (GGUF key moe_cache.expert_usage)
+        const size_t n_expert = mc->layers.empty() ? 0 : mc->layers[0].glob_count.size();
+        counts.clear();
+        ok = n_expert > 0;
+        for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
+            const size_t layer = (size_t) parse_layer_from_name(mc->layers[il].pub.up_src->name);
+            ok = mc->layers[il].glob_count.size() == n_expert && (layer + 1)*n_expert <= model.moe_expert_usage.size();
+            if (ok) {
+                const uint32_t * u = model.moe_expert_usage.data() + layer*n_expert;
+                counts.emplace_back(u, u + n_expert);
+            }
+        }
+        from = "GGUF moe_cache.expert_usage";
+    }
     if (!ok) {
-        LLAMA_LOG_WARN("moe-cache: ignoring profile %s (other model or cache layout)\n", mc->profile.c_str());
         return 0;
     }
+    LLAMA_LOG_INFO("moe-cache: usage profile from %s\n", from);
     size_t queued = 0;
     std::lock_guard<std::mutex> lk(mc->wmtx);
     for (size_t il = 0; il < mc->layers.size(); ++il) {
@@ -364,12 +385,21 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
         return false;
     }
     layer_state & ls = mc->layers[it->second.first];
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    // GPU-offloaded prompt batches never reach the CPU observer (moe_obs_cb): record the prompt's
+    // experts here, once per expert and batch (on up), so they warm the cache before decode
+    if (it->second.second == 0 && expert >= 0 && expert < (int32_t) ls.expert_slot.size()) {
+        ls.expert_count[expert]++;
+        ls.glob_max = std::max(ls.glob_max, ++ls.glob_count[expert]);
+        if (ls.expert_slot[expert] < 0 && std::find(ls.pending.begin(), ls.pending.end(), expert) == ls.pending.end()) {
+            ls.pending.push_back(expert);
+        }
+    }
     ggml_tensor * c = it->second.second == 0 ? ls.pub.up_c : it->second.second == 1 ? ls.pub.gate_c : ls.pub.down_c;
     if (!c || !c->buffer || c->nb[2] != weight->nb[2] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(mc->mtx);
     mc->n_src_query++;
     if (expert < 0 || expert >= (int32_t) ls.expert_slot.size() || ls.expert_slot[expert] < 0) {
         return false;
@@ -666,8 +696,8 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         });
 
         mc->profile = profile_path(model);
-        if (const size_t n = profile_preload(mc)) {
-            LLAMA_LOG_INFO("moe-cache: preloading %zu experts from %s\n", n, mc->profile.c_str());
+        if (const size_t n = profile_preload(mc, model)) {
+            LLAMA_LOG_INFO("moe-cache: preloading %zu experts (usage profile)\n", n);
         }
 
         ggml_set_moe_obs_callback(moe_obs_cb, mc);

@@ -1335,6 +1335,14 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_BLOCK_COUNT,             hparams.n_layer_all);
     GGML_ASSERT(hparams.n_layer_all > 0 && hparams.n_layer_all <= LLAMA_MAX_LAYERS);
     ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS,    hparams.n_layer_nextn,   false);
+    {
+        const int kid = gguf_find_key(ml.metadata, "moe_cache.expert_usage");
+        if (kid >= 0 && gguf_get_kv_type(ml.metadata, kid) == GGUF_TYPE_ARRAY &&
+                gguf_get_arr_type(ml.metadata, kid) == GGUF_TYPE_UINT32) {
+            const uint32_t * d = (const uint32_t *) gguf_get_arr_data(ml.metadata, kid);
+            moe_expert_usage.assign(d, d + gguf_get_arr_n(ml.metadata, kid));
+        }
+    }
     GGML_ASSERT(hparams.n_layer_nextn <= hparams.n_layer_all);
     ml.get_key(LLM_KV_EXPERT_COUNT,            hparams.n_expert,        false);
     std::fill(hparams.n_expert_used_arr.begin(), hparams.n_expert_used_arr.end(), 0);
