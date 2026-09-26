@@ -15,7 +15,8 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 **Results, 2x RTX 3090 (one AM4 CPU PCIe 4.0 x16, one X570 chipset x4 slot) + Ryzen 7 3700X + 125 GB DDR4,
 CPU frequency governor `performance`, single stream, temp 0.** Short = 1500-token chat reply to "write smallest html tetris game". Long =
-12k-token code prompt (llama.cpp sources): prompt processing, then decode.
+12k-token code prompt (llama.cpp sources): prompt processing, then decode. The prompts and a script to
+reproduce these tests are in [`bench/moe-cache/`](bench/moe-cache/).
 
 | model | size | short: decode t/s | short: decode with MTP | long: prefill t/s † | long: decode t/s |
 |---|---|---|---|---|---|
