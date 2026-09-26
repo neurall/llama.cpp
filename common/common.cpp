@@ -1287,7 +1287,7 @@ static void common_gpu_free(size_t & total, size_t & max, int & n) {
 
 // speculative defaults from model size vs free VRAM: the tuner's starting depth and, unless set,
 // the max draft depth (recurrent-state rollback buffers are sized by it, so it costs VRAM)
-static void common_spec_auto(common_params & params) {
+void common_spec_auto(common_params & params) {
     auto & dft = params.speculative.draft;
     if (std::none_of(params.speculative.types.begin(), params.speculative.types.end(),
                      [](auto t) { return t != COMMON_SPECULATIVE_TYPE_NONE; })) {
@@ -1301,6 +1301,15 @@ static void common_spec_auto(common_params & params) {
     dft.n_start = ratio <= 1 ? 3 : ratio <= 2 ? 2 : 0;
     if (!dft.n_max_user) {
         dft.n_max = ratio <= 1 ? 5 : 2; // bigger than VRAM: 2 measured best (Qwen); --spec-draft-n-max raises it
+    }
+    if (dft.n_start == 0 && !dft.n_max_user) {
+        // measured (GLM-5.3-Flash, 2.3x VRAM): the loaded draft's VRAM costs the expert cache more
+        // than drafting gains, even at depth 0; --spec-draft-n-max N loads it anyway
+        LOG_WRN("%s: model is %.1fx free VRAM: speculative decoding would be slower here, not loading it "
+                "(--spec-draft-n-max N to force)\n", __func__, ratio);
+        params.speculative.types = { COMMON_SPECULATIVE_TYPE_NONE };
+        dft.mparams = {};
+        return;
     }
     LOG_INF("%s: model %.1fx free VRAM: draft depth starts at %d, max %d\n", __func__, ratio, dft.n_start, dft.n_max);
 }
