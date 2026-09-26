@@ -64,4 +64,4 @@ bool    llama_moe_cache_active();
 const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps);
 
 // apply throttled LRU updates; call between graph executions only
-void llama_moe_cache_step();
+void llama_moe_cache_step(int64_t n_tokens = 1); // n_tokens of the batch that just ran
