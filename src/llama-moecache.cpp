@@ -63,6 +63,7 @@ struct upload_job {
 struct moe_cache {
     int32_t n_slots     = 0;
     int32_t max_inserts = 2;
+    int32_t window      = 64; // recent-usage window in tokens (--moe-cache-window)
 
     uint64_t clock   = 0;
     uint64_t n_steps = 0;
@@ -348,7 +349,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, void * ud) {
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     for (int64_t t = 0; t < n_tokens; ++t) {
-        if (ls->recent.size() >= 64) {
+        if ((int32_t) ls->recent.size() >= mc->window) {
             for (int32_t old : ls->recent.front()) {
                 ls->win_count[old]--;
             }
@@ -437,7 +438,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     return true;
 }
 
-void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots) {
+void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots, int32_t window) {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
     if (g_init_done) {
         return;
@@ -452,6 +453,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         mc->n_slots = n_slots;
         if (max_inserts > 0) {
             mc->max_inserts = max_inserts;
+            mc->window      = std::max(1, window);
         }
 
         // collect the host-resident expert layers, grouped by the device buffer

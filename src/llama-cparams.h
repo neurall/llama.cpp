@@ -57,6 +57,7 @@ struct llama_cparams {
     bool moe_cache = false; // --moe-expert-cache requested: the graph gets the cache chain
     int  moe_cache_slots   = 0; // cache size (-1 = auto), started on the first non-warmup decode
     int  moe_cache_inserts = 2;
+    int  moe_cache_window  = 64;
     bool moe_cache_started = false;
     int prefetch_experts_slots = 0; // --prefetch-experts-slots: MoE expert H2D staging slots (0 = off, >=2 enables full-tensor lookahead prefetch; capped at 4)
 
