@@ -239,57 +239,68 @@ struct server_batch {
 // Picks the draft depth by measured generation speed, not acceptance: when part of the model
 // runs on the CPU (e.g. MoE experts not in the VRAM expert cache), verifying k drafted tokens
 // costs up to k times the CPU work, so the best depth depends on the setup and can be 0.
-// Tries depths 0, 1, 2, ... for `window` generated tokens each, keeps the fastest (stops
-// climbing at the first slower depth) and re-checks every `recheck` tokens.
+// Climbs from 0: alternates depth d and d+1 step by step (so text and cache warm-up affect
+// both alike) until each produced `probe` tokens, moves up while d+1 is faster, keeps the
+// best, and re-checks best-1 vs best (and up) every `recheck` tokens.
 // LLAMA_SPEC_DEPTH=N pins the depth (0 = never draft).
 struct spec_depth_tuner {
-    static constexpr int window  = 64;
+    static constexpr int probe   = 48;
     static constexpr int recheck = 2048;
 
-    int     depth    = 0;
-    int     best     = 0;
-    bool    probing  = true;
-    double  prev_tps = 0.0;
-    int     n0       = 0;
-    int64_t t0       = 0;
+    bool    probing = true;
+    int     lo      = 0;          // comparing lo (arm 0) with lo + 1 (arm 1)
+    int     arm     = 0;
+    int     best    = 0;
+    int     since   = 0;          // tokens since the last probe finished
+    double  t[2]    = {0, 0};
+    int     n[2]    = {0, 0};
+    int     last_n  = 0;
+    int64_t last_t  = 0;
 
     void reset() { *this = {}; }
 
     int get(int n_gen, int d_max) {
         static const int pinned = getenv("LLAMA_SPEC_DEPTH") ? atoi(getenv("LLAMA_SPEC_DEPTH")) : -1;
-        if (pinned >= 0) {
-            return std::min(pinned, d_max);
+        if (pinned >= 0 || d_max <= 0) {
+            return std::max(0, std::min(pinned, d_max));
         }
         const int64_t now = ggml_time_us();
-        if (t0 == 0) {
-            n0 = n_gen;
-            t0 = now;
-        }
-        const int n = n_gen - n0;
-        if (probing && n >= window) {
-            const double tps = n * 1e6 / std::max<int64_t>(1, now - t0);
-            if (depth > 0 && tps < prev_tps) {
-                best    = depth - 1;
-                probing = false;
-            } else if (depth >= d_max) {
-                best    = depth;
-                probing = false;
+        if (last_t != 0) {  // credit the step that just finished to the depth it used
+            if (probing) {
+                t[arm] += now - last_t;
+                n[arm] += n_gen - last_n;
             } else {
-                prev_tps = tps;
-                depth++;
+                since += n_gen - last_n;
             }
-            if (!probing) {
-                depth = best;
-                LOG_INF("spec depth tuner: using draft depth %d\n", best);
-            }
-            n0 = n_gen;
-            t0 = now;
-        } else if (!probing && n >= recheck) {
-            *this = {};
-            n0 = n_gen;
-            t0 = now;
         }
-        return depth;
+        last_t = now;
+        last_n = n_gen;
+
+        if (!probing) {
+            if (since < recheck) {
+                return best;
+            }
+            probing = true;
+            lo      = std::max(0, best - 1);
+            t[0] = t[1] = 0;
+            n[0] = n[1] = 0;
+        }
+        if (n[0] >= probe && n[1] >= probe) {
+            const bool up = n[1] / t[1] > n[0] / t[0];
+            if (up && lo + 2 <= d_max) {
+                lo++;
+                t[0] = t[1] = 0;
+                n[0] = n[1] = 0;
+            } else {
+                best    = up ? lo + 1 : lo;
+                probing = false;
+                since   = 0;
+                LOG_INF("spec depth tuner: draft depth %d\n", best);
+                return best;
+            }
+        }
+        arm = n[0] <= n[1] ? 0 : 1;
+        return std::min(lo + arm, d_max);
     }
 };
 
