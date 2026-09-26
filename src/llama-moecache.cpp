@@ -200,7 +200,7 @@ std::string profile_path(const llama_model & model) {
     return dir + "/moe-hot-" + name + "-" + std::to_string(model.size()) + ".bin";
 }
 
-constexpr uint32_t PROFILE_MAGIC = 0x484f454d; // "MOEH"
+constexpr uint32_t PROFILE_MAGIC = 0x3448454d; // "MEH4": u32 counts
 
 void profile_save(const moe_cache * mc) {
     if (mc->profile.empty() || mc->n_steps < 64) { // too little use to be worth keeping
@@ -210,12 +210,22 @@ void profile_save(const moe_cache * mc) {
     if (!f) {
         return;
     }
+    // raw lifetime activation counts per expert, u32 (the cache normalizes by the layer max when
+    // scoring); a layer is halved while its max exceeds 2^31, which keeps the ratios
     const uint32_t hdr[2] = { PROFILE_MAGIC, (uint32_t) mc->layers.size() };
     fwrite(hdr, sizeof(hdr), 1, f);
     for (const auto & ls : mc->layers) {
         const uint32_t n = (uint32_t) ls.glob_count.size();
+        int shift = 0;
+        while ((ls.glob_max >> shift) > (1ull << 31)) {
+            shift++;
+        }
+        std::vector<uint32_t> c(n);
+        for (uint32_t e = 0; e < n; ++e) {
+            c[e] = (uint32_t) (ls.glob_count[e] >> shift);
+        }
         fwrite(&n, sizeof(n), 1, f);
-        fwrite(ls.glob_count.data(), sizeof(uint64_t), n, f);
+        fwrite(c.data(), sizeof(uint32_t), n, f);
     }
     fclose(f);
 }
@@ -261,8 +271,9 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             uint32_t n = 0;
             ok = fread(&n, sizeof(n), 1, f) == 1 && n == mc->layers[il].glob_count.size();
             if (ok) {
-                counts.emplace_back(n);
-                ok = fread(counts.back().data(), sizeof(uint64_t), n, f) == n;
+                std::vector<uint32_t> c(n);
+                ok = fread(c.data(), sizeof(uint32_t), n, f) == n;
+                counts.emplace_back(c.begin(), c.end());
             }
         }
         fclose(f);
