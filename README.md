@@ -31,7 +31,7 @@ memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned
 | MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB; `llama-server` default: mmap (bigger than RAM) | short: decode | 4.0 | [**10.1 (2.54x)**](tools/moe-bench/) | 9.7 (2.42x) ¶ | - (bigger than RAM) | - |
 | | long: prompt processing † | [**136**](tools/moe-bench/) | 133 (0.98x) | | - | - |
 | | long: decode | 4.2 | [**8.3 (1.98x)**](tools/moe-bench/) | | - | - |
-| Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB; `llama-server` default: pinned | short: decode | 27.7 | 47.1 (1.70x) | 57.5 (2.08x) | 46.5 (1.68x) | [**60.4 (2.18x)**](tools/moe-bench/) |
+| Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB; `llama-server` default: pinned | short: decode | 27.7 | 47.1 (1.70x) | 58.3 (2.11x) | 46.5 (1.68x) | [**60.4 (2.18x)**](tools/moe-bench/) |
 | | long: prompt processing † | 500 | 372 (0.74x) | 347 (0.69x) | [**538 (1.08x)**](tools/moe-bench/) | 501 (1.00x) |
 | | long: decode | 25.3 | 38.4 (1.52x) | 38.2 (1.51x) § | [**42.3 (1.67x)**](tools/moe-bench/) | 33.6 (1.33x) § |
 | Qwen3.8-27B IQ4_NL (dense, fits VRAM), 16 GB | short / long prompt | 44.7 / 1726 | 44.8 / 1811 (no cache needed) | | ||
