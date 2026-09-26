@@ -765,7 +765,7 @@ const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps
     return &g_cache->layers[it->second].pub;
 }
 
-void llama_moe_cache_step() {
+void llama_moe_cache_step(int64_t n_tokens) {
     moe_cache * mc = g_cache;
     if (!mc) {
         return;
@@ -879,7 +879,8 @@ void llama_moe_cache_step() {
     // 1b) after a long prompt: upload the prompt's most-used uncached experts in one burst (up to
     //     LLAMA_MOE_CACHE_BURST of each layer's slots, default 0.25), so decode starts with them cached
     //     instead of gaining ~2 per layer per step; the next step waits for them once
-    if (mc->prompt_burst) {
+    // only once the prompt is done (a decode-size batch), not between the prompt's own chunks
+    if (mc->prompt_burst && n_tokens <= llama_moe_cache_max_batch()) {
         static const double burst = [] {
             const char * e = getenv("LLAMA_MOE_CACHE_BURST");
             return e ? atof(e) : 0.25;

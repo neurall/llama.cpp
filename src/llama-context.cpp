@@ -2231,7 +2231,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         if (mc_sync && llama_moe_cache_active()) {
             ggml_backend_sched_synchronize(sched.get());
         }
-        llama_moe_cache_step();
+        llama_moe_cache_step(n_tokens_all);
     }
 
     return 0;
