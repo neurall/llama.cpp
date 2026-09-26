@@ -177,8 +177,18 @@ experts are already on the GPU). Steady-state speed is unchanged.
   `LLAMA_MOE_CACHE_STICKY=0.3` (never evict the most-used 30% of each layer's slots; off by
   default, +1.6% measured, within noise).
 - Tried and dropped: uploading a long prompt's hot experts right after it. It raised the hit
-  rate (67% -> 72%) but the extra uploads compete with decode (32-token answers -6% to -20%).
-  Next: copy them GPU-to-GPU while the prompt is processed, when they are on the GPU anyway.
+  rate (67% -> 72%) but the extra uploads compete with decode (32-token answers -6% to -20%);
+  the prefill preheat below does it device-to-device instead.
+
+### Prefill preheat
+
+Added in release b11397. While a long prompt is processed, the experts it uses are copied to the
+GPU anyway (for the offloaded matmuls). The expert cache now keeps the prompt's most-used ones
+from those copies, device-to-device (no extra PCIe traffic), in place of cached experts the prompt
+used less. Decode after the prompt then starts with the prompt's experts in VRAM. GLM-5.3-Flash,
+12k-token code prompt then 256 tokens, 1 GPU: decode 13.5 -> **15.3 t/s (+12.7%)**, cache hits
+43% -> 55%; prompt processing -1%; short answers and chat unchanged.
+`LLAMA_MOE_CACHE_ADOPT` = share of a layer's slots that one prompt batch may replace (default 1.0, 0 = off).
 
 ### MTP (multi-token prediction)
 
@@ -239,6 +249,7 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
 - Pinned weights in `llama-server` when the model fits in RAM: experts are uploaded by direct
   DMA (prompt processing GLM +45%, Qwen +45%); `--load-mode pin` / `mmap` to choose.
 - Persistent hot experts: the cache's usage is saved at shutdown and preloaded at the next start.
+- Prefill preheat: a long prompt's hot experts stay in the cache (device-to-device, no extra PCIe).
 - Automatic defaults for MoE models bigger than free VRAM (see Run): experts in RAM,
   cache, no repack, `-ub` by VRAM, 32k context, one core per GPU left free.
 - Startup upload-bandwidth probe that sends prompt processing to the fastest-link GPU.
