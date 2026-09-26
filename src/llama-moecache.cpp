@@ -48,7 +48,6 @@ struct layer_state {
     std::vector<uint64_t> glob_count;     // expert id -> lifetime uses
     uint64_t              glob_max = 1;
     std::vector<bool>     sticky;         // expert id -> never evicted (most-used by lifetime count)
-    std::vector<uint32_t> prompt_count;   // expert id -> uses in the last GPU-offloaded prompt batch(es)
 
     uint64_t n_hit  = 0;
     uint64_t n_miss = 0;
@@ -109,8 +108,6 @@ struct moe_cache {
 
     // hot-set profile: per-expert lifetime uses saved at shutdown, preloaded at the next start
     std::string profile;
-
-    bool prompt_burst = false; // a GPU-offloaded prompt batch ran: upload its hottest experts at the next step
 };
 
 // Where a tensor's raw GGUF bytes live (recorded by the model loader).
@@ -420,8 +417,6 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     // GPU-offloaded prompt batches never reach the CPU observer (moe_obs_cb): record the prompt's
     // experts here, once per expert and batch (on up), so they warm the cache before decode
     if (it->second.second == 0 && expert >= 0 && expert < (int32_t) ls.expert_slot.size()) {
-        ls.prompt_count[expert]++;
-        mc->prompt_burst = true;
         ls.expert_count[expert]++;
         ls.glob_max = std::max(ls.glob_max, ++ls.glob_count[expert]);
         if (ls.expert_slot[expert] < 0 && std::find(ls.pending.begin(), ls.pending.end(), expert) == ls.pending.end()) {
@@ -646,7 +641,6 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
             ls.glob_count.assign(n_expert, 0);
             ls.sticky.assign(n_expert, false);
-            ls.prompt_count.assign(n_expert, 0);
 
             std::vector<int32_t> dummy(n_expert, ns);
             ggml_backend_tensor_set(ls.pub.dev_table,  dummy.data(), 0, n_expert*sizeof(int32_t));
@@ -873,67 +867,6 @@ void llama_moe_cache_step() {
     if (mc->n_steps % 4096 == 0) { // follow the workload: re-pick the always-hot set from lifetime counts
         for (auto & ls : mc->layers) {
             refresh_sticky(ls);
-        }
-    }
-
-    // 1b) after a long prompt: upload the prompt's most-used uncached experts in one burst (up to
-    //     LLAMA_MOE_CACHE_BURST of each layer's slots, default 0.25), so decode starts with them cached
-    //     instead of gaining ~2 per layer per step; the next step waits for them once
-    if (mc->prompt_burst) {
-        static const double burst = [] {
-            const char * e = getenv("LLAMA_MOE_CACHE_BURST");
-            return e ? atof(e) : 0.25;
-        }();
-        size_t n_burst = 0;
-        for (size_t li = 0; li < mc->layers.size(); ++li) {
-            auto & ls = mc->layers[li];
-            std::vector<int32_t> ids;
-            for (int32_t e = 0; e < (int32_t) ls.prompt_count.size(); ++e) {
-                if (ls.prompt_count[e] > 0 && ls.expert_slot[e] < 0) {
-                    ids.push_back(e);
-                }
-            }
-            std::sort(ids.begin(), ids.end(), [&](int32_t a, int32_t b) { return ls.prompt_count[a] > ls.prompt_count[b]; });
-            const int32_t cap = std::min<int32_t>((int32_t) ids.size(), (int32_t) (burst * ls.pub.n_slots));
-            for (int32_t i = 0; i < cap; ++i) {
-                // victim: empty slot, else a non-sticky expert the prompt didn't use, lowest score first
-                int32_t slot = -1;
-                double best = 1e300;
-                for (int32_t sl = 0; sl < ls.pub.n_slots; ++sl) {
-                    if (ls.slot_in_flight[sl]) {
-                        continue;
-                    }
-                    const int32_t v = ls.slot_expert[sl];
-                    if (v < 0) { slot = sl; break; }
-                    if (ls.sticky[v] || ls.prompt_count[v] > 0) {
-                        continue;
-                    }
-                    const double c = score(ls, v);
-                    if (c < best) { best = c; slot = sl; }
-                }
-                if (slot < 0) {
-                    break;
-                }
-                const int32_t victim = ls.slot_expert[slot];
-                if (victim >= 0) {
-                    ls.expert_slot[victim] = -1;
-                    ls.slot_expert[slot]   = -1;
-                    set_table_entry(ls.pub, victim, ls.pub.n_slots);
-                }
-                ls.slot_in_flight[slot] = true;
-                std::lock_guard<std::mutex> wlk(mc->wmtx);
-                mc->todo.push_back({li, ids[i], slot});
-                n_burst++;
-            }
-            std::fill(ls.prompt_count.begin(), ls.prompt_count.end(), 0);
-        }
-        mc->prompt_burst = false;
-        if (n_burst) {
-            mc->wcv.notify_all();
-            static const bool stats = getenv("LLAMA_MOE_CACHE_STATS") != nullptr;
-            if (stats) {
-                LLAMA_LOG_INFO("moe-cache: prompt burst: %zu experts\n", n_burst);
-            }
         }
     }
 
