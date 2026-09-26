@@ -161,6 +161,25 @@ works when the model fits in RAM. Models bigger than RAM (MiMo-V2.6 here) keep m
 experts in from disk on demand. If pinning makes the system swap anyway, the fork reloads with
 mmap and says so.
 
+### Persistent hot experts
+
+Added in release b11391. When the server stops, the expert cache saves how often each expert was
+used (lifetime activation counts, ~50 KB per model) to `~/.cache/llama.cpp/`; the next start
+preloads each layer's most-used experts into VRAM before the first request, instead of warming up
+over the first answers. Measured on GLM-5.3-Flash, first request after a restart: decode +4-6%
+(20.5-20.9 -> 21.8 t/s), cache hits +2-4 points, short-prompt processing ~3x (5.6 -> 17 t/s, its
+experts are already on the GPU). Steady-state speed is unchanged.
+
+- `LLAMA_MOE_CACHE_PROFILE=<file>` uses another profile file, `=0` turns it off.
+- A GGUF can carry the counts itself (u32 array `moe_cache.expert_usage`, n_layer x n_expert);
+  it is used when there is no local profile yet. The model file is never written to.
+- Also new: `--moe-cache-window N` (tokens of recent usage the cache scores by, default 64) and
+  `LLAMA_MOE_CACHE_STICKY=0.3` (never evict the most-used 30% of each layer's slots; off by
+  default, +1.6% measured, within noise).
+- Tried and dropped: uploading a long prompt's hot experts right after it. It raised the hit
+  rate (67% -> 72%) but the extra uploads compete with decode (32-token answers -6% to -20%).
+  Next: copy them GPU-to-GPU while the prompt is processed, when they are on the GPU anyway.
+
 ### MTP (multi-token prediction)
 
 Added in release b11327: Qwen3.8-Flash-Next MTP from PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243)
@@ -219,6 +238,7 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   in big prefill batches, cached experts are copied GPU-to-GPU instead of over PCIe.
 - Pinned weights in `llama-server` when the model fits in RAM: experts are uploaded by direct
   DMA (prompt processing GLM +45%, Qwen +45%); `--load-mode pin` / `mmap` to choose.
+- Persistent hot experts: the cache's usage is saved at shutdown and preloaded at the next start.
 - Automatic defaults for MoE models bigger than free VRAM (see Run): experts in RAM,
   cache, no repack, `-ub` by VRAM, 32k context, one core per GPU left free.
 - Startup upload-bandwidth probe that sends prompt processing to the fastest-link GPU.
