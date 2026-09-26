@@ -496,7 +496,9 @@ llama_context::llama_context(
 }
 
 llama_context::~llama_context() {
-    llama_moe_cache_free();
+    if (cparams.moe_cache) {
+        llama_moe_cache_free();
+    }
     // wait for any pending asynchronous copies into the output buffers before they are freed
     synchronize();
 
@@ -2111,10 +2113,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     // apply throttled MoE expert-cache updates between graph executions; wait for
     // the GPU first so no queued read of a slot races the worker refilling it
     static const bool mc_sync = !getenv("LLAMA_MOE_CACHE_SYNC") || atoi(getenv("LLAMA_MOE_CACHE_SYNC")) != 0;
-    if (mc_sync && llama_moe_cache_active()) {
-        ggml_backend_sched_synchronize(sched.get());
+    // only the context that owns the cache steps it (not e.g. an MTP draft context)
+    if (cparams.moe_cache) {
+        if (mc_sync && llama_moe_cache_active()) {
+            ggml_backend_sched_synchronize(sched.get());
+        }
+        llama_moe_cache_step();
     }
-    llama_moe_cache_step();
 
     return 0;
 }
