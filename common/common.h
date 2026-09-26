@@ -325,7 +325,9 @@ struct common_params_model {
 
 // draft-model-based speculative decoding parameters
 struct common_params_speculative_draft {
-    int32_t n_max = 16; // maximum number of tokens to draft; the server's depth tuner picks the depth up to this
+    int32_t n_max = 3; // maximum number of tokens to draft; the server's depth tuner picks the depth up to this
+    bool    n_max_user = false; // --spec-draft-n-max given (otherwise set from model size vs VRAM)
+    int32_t n_start = 1; // depth tuner starting point (set from model size vs VRAM)
     int32_t n_min = 0; // minimum number of draft tokens to use for speculative decoding
 
     float p_split = 0.1f; // speculative decoding split probability

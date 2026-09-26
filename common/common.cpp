@@ -1244,6 +1244,66 @@ struct common_init_result::impl {
 // --moe-expert-cache default (-2): a MoE model whose weights don't fit in free VRAM gets the
 // expert cache setup (experts in RAM, no repack, auto-sized cache, 2048 ubatch) so a plain
 // `-m model` runs the fast path; explicit user settings are kept
+// model file size, all splits (0 if unknown)
+static size_t common_model_file_size(const std::string & path_model) {
+    gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+    gguf_context * gguf = gguf_init_from_file(path_model.c_str(), gp);
+    if (!gguf) {
+        return 0;
+    }
+    const int64_t id = gguf_find_key(gguf, "split.count");
+    const uint32_t n_split = id < 0 ? 1 : std::max<uint32_t>(1, gguf_get_val_u16(gguf, id));
+    gguf_free(gguf);
+    size_t size = 0;
+    char prefix[4096], path[4096];
+    const bool split = n_split > 1 && llama_split_prefix(prefix, sizeof(prefix), path_model.c_str(), 0, n_split);
+    for (uint32_t i = 0; i < n_split; i++) {
+        if (split) {
+            llama_split_path(path, sizeof(path), prefix, i, n_split);
+        }
+        std::error_code ec;
+        const size_t s = std::filesystem::file_size(split ? std::string(path) : path_model, ec);
+        size += ec ? 0 : s;
+    }
+    return size;
+}
+
+// free memory summed over GPUs, of the largest GPU, and the GPU count
+static void common_gpu_free(size_t & total, size_t & max, int & n) {
+    total = max = 0;
+    n = 0;
+    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
+            continue;
+        }
+        size_t free, tot;
+        ggml_backend_dev_memory(dev, &free, &tot);
+        total += free;
+        max    = std::max(max, free);
+        n++;
+    }
+}
+
+// speculative defaults from model size vs free VRAM: the tuner's starting depth and, unless set,
+// the max draft depth (recurrent-state rollback buffers are sized by it, so it costs VRAM)
+static void common_spec_auto(common_params & params) {
+    auto & dft = params.speculative.draft;
+    if (params.speculative.types.empty() || params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+        return;
+    }
+    size_t vram, vram_max;
+    int    n_gpu;
+    common_gpu_free(vram, vram_max, n_gpu);
+    const double ratio = vram ? (double) common_model_file_size(params.model.path) / vram : 1e9;
+    // measured: Qwen3.8-Flash-Next (1.9x VRAM, 95% cache hits) is fastest at 2, GLM-5.3-Flash (2.3x) at 0
+    dft.n_start = ratio <= 1 ? 3 : ratio <= 2 ? 2 : 0;
+    if (!dft.n_max_user) {
+        dft.n_max = ratio <= 1 ? 5 : 2; // bigger than VRAM: 2 measured best (Qwen); --spec-draft-n-max raises it
+    }
+    LOG_INF("%s: model %.1fx free VRAM: draft depth starts at %d, max %d\n", __func__, ratio, dft.n_start, dft.n_max);
+}
+
 static void common_moe_cache_auto_impl(common_params & params);
 
 static void common_moe_cache_auto(common_params & params) {
@@ -1288,43 +1348,16 @@ static void common_moe_cache_auto_impl(common_params & params) {
     const int64_t arch_id = gguf_find_key(gguf, "general.architecture");
     const std::string arch = arch_id < 0 ? "" : gguf_get_val_str(gguf, arch_id);
     const uint32_t n_expert = get_uint(arch + ".expert_count");
-    const uint32_t n_split  = std::max<uint32_t>(1, get_uint("split.count"));
     gguf_free(gguf);
     if (n_expert == 0) {
         COM_DBG("%s\n", "not a MoE model, no expert cache");
         return;
     }
 
-    size_t model_size = 0;
-    if (n_split == 1) {
-        std::error_code ec;
-        model_size = std::filesystem::file_size(params.model.path, ec);
-    } else {
-        char prefix[4096], path[4096];
-        if (!llama_split_prefix(prefix, sizeof(prefix), params.model.path.c_str(), 0, n_split)) {
-            return;
-        }
-        for (uint32_t i = 0; i < n_split; i++) {
-            llama_split_path(path, sizeof(path), prefix, i, n_split);
-            std::error_code ec;
-            model_size += std::filesystem::file_size(path, ec);
-        }
-    }
-
-    size_t vram_free = 0;
-    size_t vram_max  = 0; // largest single GPU: prompt processing is offloaded to one GPU
-    int    n_gpu     = 0;
-    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
-        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
-            continue;
-        }
-        size_t free, total;
-        ggml_backend_dev_memory(dev, &free, &total);
-        vram_free += free;
-        vram_max   = std::max(vram_max, free);
-        n_gpu++;
-    }
+    const size_t model_size = common_model_file_size(params.model.path);
+    size_t vram_free, vram_max;
+    int    n_gpu;
+    common_gpu_free(vram_free, vram_max, n_gpu);
     // ponytail: weights vs free VRAM minus 1 GiB per GPU for context/compute; fit handles the borderline rest
     const size_t reserve = (size_t) n_gpu << 30;
     if (n_gpu == 0 || model_size + reserve <= vram_free) {
@@ -1361,6 +1394,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
 common_init_result::common_init_result(common_params & params, bool model_only) :
     pimpl(new impl{}) {
     common_moe_cache_auto(params);
+    common_spec_auto(params);
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
 

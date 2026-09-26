@@ -239,25 +239,67 @@ struct server_batch {
 // Picks the draft depth by measured generation speed, not acceptance: when part of the model
 // runs on the CPU (e.g. MoE experts not in the VRAM expert cache), verifying k drafted tokens
 // costs up to k times the CPU work, so the best depth depends on the setup and can be 0.
-// Climbs from 0: alternates depth d and d+1 step by step (so text and cache warm-up affect
-// both alike) until each produced `probe` tokens, moves up while d+1 is faster, keeps the
-// best, and re-checks best-1 vs best (and up) every `recheck` tokens.
-// LLAMA_SPEC_DEPTH=N pins the depth (0 = never draft).
+// Starts at `start` (a guess from model size vs VRAM), compares it with the doubled depth
+// (or the halved one, if doubling is slower), keeps doubling/halving while faster, then
+// refines by 1 between the known-slower bounds. Each comparison alternates the two depths step
+// by step (text and cache warm-up affect both alike) for `probe` tokens each. Re-checks every
+// `recheck` tokens. LLAMA_SPEC_DEPTH=N pins the depth (0 = never draft).
 struct spec_depth_tuner {
-    static constexpr int probe   = 48;
-    static constexpr int recheck = 2048;
+    static constexpr int probe   = 128;
+    static constexpr int recheck = 4096;
+    static inline int start = 1;  // set from common_params_speculative_draft::n_start
 
-    bool    probing = true;
-    int     lo      = 0;          // comparing lo (arm 0) with lo + 1 (arm 1)
-    int     arm     = 0;
-    int     best    = 0;
-    int     since   = 0;          // tokens since the last probe finished
+    enum phase_t { UP, DOWN, REFINE, DONE };
+
+    phase_t phase   = UP;
+    int     cur     = -1;         // best so far
+    int     cand    = -1;         // depth compared against cur
+    int     lo      = -1;         // largest depth known slower below cur
+    int     hi      = 1 << 30;    // smallest depth known slower above cur
+    bool    moved   = false;
+    int     arm     = 0;          // 0 = cur, 1 = cand
+    int     since   = 0;
     double  t[2]    = {0, 0};
     int     n[2]    = {0, 0};
     int     last_n  = 0;
     int64_t last_t  = 0;
 
     void reset() { *this = {}; }
+
+    // next depth to compare with cur, or -1 when done
+    int next(int d_max) {
+        if (phase == UP) {
+            const int c = std::min(cur == 0 ? 1 : 2 * cur, d_max);
+            if (c > cur && c < hi) {
+                return c;
+            }
+            phase = REFINE;
+        }
+        if (phase == DOWN) {
+            if (cur > 0 && cur / 2 > lo) {
+                return cur / 2;
+            }
+            phase = REFINE;
+        }
+        if (cur + 1 < hi && cur + 1 <= d_max) {
+            return cur + 1;
+        }
+        if (cur - 1 > lo && cur - 1 >= 0) {
+            return cur - 1;
+        }
+        return -1;
+    }
+
+    void begin(int d_max) {
+        t[0] = t[1] = 0;
+        n[0] = n[1] = 0;
+        cand = next(d_max);
+        if (cand < 0) {
+            phase = DONE;
+            since = 0;
+            LOG_INF("spec depth tuner: draft depth %d\n", cur);
+        }
+    }
 
     int get(int n_gen, int d_max) {
         static const int pinned = getenv("LLAMA_SPEC_DEPTH") ? atoi(getenv("LLAMA_SPEC_DEPTH")) : -1;
@@ -266,41 +308,48 @@ struct spec_depth_tuner {
         }
         const int64_t now = ggml_time_us();
         if (last_t != 0) {  // credit the step that just finished to the depth it used
-            if (probing) {
+            if (phase == DONE) {
+                since += n_gen - last_n;
+            } else {
                 t[arm] += now - last_t;
                 n[arm] += n_gen - last_n;
-            } else {
-                since += n_gen - last_n;
             }
         }
         last_t = now;
         last_n = n_gen;
 
-        if (!probing) {
-            if (since < recheck) {
-                return best;
-            }
-            probing = true;
-            lo      = std::max(0, best - 1);
-            t[0] = t[1] = 0;
-            n[0] = n[1] = 0;
+        if (cur < 0 || (phase == DONE && since >= recheck)) {  // (re)start from the guess / last best
+            cur   = cur < 0 ? std::min(start, d_max) : cur;
+            phase = UP;
+            lo    = -1;
+            hi    = 1 << 30;
+            moved = false;
+            begin(d_max);
+        }
+        if (phase == DONE) {
+            return cur;
         }
         if (n[0] >= probe && n[1] >= probe) {
-            const bool up = n[1] / t[1] > n[0] / t[0];
-            if (up && lo + 2 <= d_max) {
-                lo++;
-                t[0] = t[1] = 0;
-                n[0] = n[1] = 0;
+            const bool better = n[1] / t[1] > n[0] / t[0];
+            if (better) {
+                (cand > cur ? lo : hi) = cur;
+                cur   = cand;
+                moved = true;
             } else {
-                best    = up ? lo + 1 : lo;
-                probing = false;
-                since   = 0;
-                LOG_INF("spec depth tuner: draft depth %d\n", best);
-                return best;
+                (cand > cur ? hi : lo) = cand;
+                if (phase == UP) {
+                    phase = moved ? REFINE : DOWN;  // doubling was slower right away: try halving
+                } else if (phase == DOWN) {
+                    phase = REFINE;
+                }
+            }
+            begin(d_max);
+            if (phase == DONE) {
+                return cur;
             }
         }
         arm = n[0] <= n[1] ? 0 : 1;
-        return std::min(lo + arm, d_max);
+        return arm ? cand : cur;
     }
 };
 
@@ -1171,6 +1220,7 @@ private:
         }
 
         llama_init = common_init_from_params(params_base);
+        spec_depth_tuner::start = params_base.speculative.draft.n_start;
 
         model_tgt = llama_init->model();
         ctx_tgt   = llama_init->context();
