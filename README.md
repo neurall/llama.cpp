@@ -18,35 +18,22 @@ CPU frequency governor `performance`, single stream, temp 0.** Short = 1500-toke
 12k-token code prompt (llama.cpp sources): prompt processing, then decode. The prompts and a script to
 reproduce these tests are in [`tools/moe-bench/`](tools/moe-bench/).
 
-**Stock llama.cpp -> this fork**, tokens/s. Fork = `llama-server` with its defaults (just `-m`):
-pinned weights when the model fits in RAM (GLM, Qwen), mmap when it doesn't (MiMo). Model
-already in RAM (*):
-
-| model (size) | short prompt: decode | 12k-token prompt: processing † | 12k-token prompt: decode |
-|---|---|---|---|
-| **GLM-5.3-Flash** 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) (106 GB) | 13.8 -> **21.1 (1.53x)** | 217 -> **262 (1.21x)** | 12.3 -> **16.3 (1.33x)** |
-| **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) | 27.7 -> **57.0 (2.06x)** with its MTP head (`-md`), 47.1 (1.70x) without | 500 -> 435 (0.87x) | 25.3 -> **39.0 (1.54x)** |
-| **MiMo-V2.6-Flash-RL** IQ3_XXS (132 GB, bigger than RAM) | 4.0 -> **10.1 (2.54x)** | 136 -> 133 (0.98x) | 4.2 -> **8.3 (1.98x)** |
-| Qwen3.8-27B, OLMoE (fit in VRAM) | unchanged (44.8, 504) | unchanged | unchanged |
-
-Details per setup:
-
-t/s, stock llama.cpp vs this fork. "mmap" = weights memory-mapped (models bigger than RAM,
-`llama-cli`); "pinned" = weights in pinned RAM, what `llama-server` does when the model fits;
-"+ MTP" = pinned plus the model's MTP draft head (automatic draft depth). All with the model
-already in RAM (*). Best number per row in bold.
+**Stock llama.cpp vs this fork**, tokens/s, model already in RAM (*). "mmap": weights
+memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned RAM, what
+`llama-server` does by itself when the model fits in RAM; "+ MTP": the model's MTP draft head
+(`-md`, automatic draft depth). Multipliers vs stock, best number per row in bold.
 
 | model | test | stock | fork, mmap | fork, pinned (server default) | fork, pinned + MTP |
 |---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB | short: decode | 13.8 | 20.4 | **21.1 (1.53x)** | 18.8, slower ‡ |
-| | long: prompt processing † | 217 | 180 | **262 (1.21x)** | |
-| | long: decode | 12.3 | 15.6 | **16.3 (1.33x)** | |
+| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB | short: decode | 13.8 | 20.4 (1.48x) | **21.1 (1.53x)** | 18.8 (1.36x), slower than without ‡ |
+| | long: prompt processing † | 217 | 180 (0.83x) | **262 (1.21x)** | |
+| | long: decode | 12.3 | 15.6 (1.27x) | **16.3 (1.33x)** | |
 | MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB | short: decode | 4.0 | **10.1 (2.54x)** | - (bigger than RAM) | pending (built-in MTP) |
-| | long: prompt processing † | **136** | 133 | - | |
+| | long: prompt processing † | **136** | 133 (0.98x) | - | |
 | | long: decode | 4.2 | **8.3 (1.98x)** | - | |
 | Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB | short: decode | 27.7 | 47.1 (1.70x) | pending | **57.0 (2.06x)** (mmap + MTP; pinned pending) |
-| | long: prompt processing † | **500** | 372 | 435 (0.87x) | pending |
-| | long: decode | 25.3 | 38.4 | **39.0 (1.54x)** | pending |
+| | long: prompt processing † | **500** | 372 (0.74x) | 435 (0.87x) | pending |
+| | long: decode | 25.3 | 38.4 (1.52x) | **39.0 (1.54x)** | pending |
 | Qwen3.8-27B IQ4_NL (dense, fits VRAM), 16 GB | short / long prompt | 44.7 / 1726 | 44.8 / 1811 (no cache needed) | | |
 | OLMoE-1B-7B Q4_K_M (fits VRAM), 4 GB | short: decode | 504 | 504 (no cache needed) | | |
 
