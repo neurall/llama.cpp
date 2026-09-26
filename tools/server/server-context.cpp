@@ -1137,6 +1137,7 @@ private:
 
         const bool is_resume = sleeping;
 
+        common_spec_auto(params); // may skip drafting where it would be slower
         params_base = params;
         const auto output_limits = server_output_limits(params_base);
         params_base.n_outputs_max = output_limits.total;

@@ -946,6 +946,10 @@ bool tty_can_use_colors();
 struct common_sampler;
 
 // note: defines the model, context, samplers, ets. lifetimes
+// speculative defaults from model size vs free VRAM (tuner start depth, max depth; skips drafting
+// where it would be slower); idempotent, call before deciding whether to load a draft model
+void common_spec_auto(common_params & params);
+
 struct common_init_result {
     common_init_result(common_params & params, bool model_only = false);
     ~common_init_result();
