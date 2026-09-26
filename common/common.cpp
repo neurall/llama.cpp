@@ -1331,7 +1331,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
         return;
     }
 
-    LOG_INF("%s: MoE model (%.1f GiB) exceeds free VRAM (%.1f GiB), enabling expert cache: experts in RAM, no repack, auto cache size, 2048 ubatch, 32k ctx, cores-2 threads unless set\n",
+    LOG_INF("%s: MoE model (%.1f GiB) exceeds free VRAM (%.1f GiB), enabling expert cache: experts in RAM, no repack, auto cache size, 2048 ubatch, 32k ctx, 1 core per GPU left free unless set\n",
         __func__, model_size / 1073741824.0, vram_free / 1073741824.0);
     auto & tbo = params.tensor_buft_overrides;
     tbo.insert(std::find_if(tbo.begin(), tbo.end(), [](const auto & o) { return o.pattern == nullptr; }), llm_ffn_exps_cpu_override());
@@ -1340,10 +1340,10 @@ static void common_moe_cache_auto_impl(common_params & params) {
     if (params.n_ubatch == 512 && params.n_batch == 2048) {
         params.n_ubatch = 2048; // big ubatch: experts are uploaded once per ubatch in prompt processing
     }
-    // leave 2 cores to drive the GPUs and the upload thread (measured: 6 of 8 cores beats 8)
+    // leave one core per GPU to drive it (measured on 2 GPUs: 6 of 8 cores beats 8)
     for (auto * cp : { &params.cpuparams, &params.cpuparams_batch }) {
-        if (cp->auto_threads && cp->n_threads > 4) {
-            cp->n_threads -= 2;
+        if (cp->auto_threads) {
+            cp->n_threads = std::max(2, cp->n_threads - n_gpu);
         }
     }
     if (params.n_ctx == 0) {

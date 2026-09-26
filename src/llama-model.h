@@ -733,6 +733,7 @@ struct llama_model {
 
     // list of devices used in this model
     std::vector<llama_device> devices;
+    size_t dev_offload = 0; // index in devices of the GPU big-batch host-weight ops are offloaded to (fastest upload)
 
     // for quantize-stats only
     std::vector<std::pair<std::string, struct ggml_tensor *>> tensors_by_name;
