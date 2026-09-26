@@ -353,7 +353,8 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             size_t free = 0, total = 0;
             ggml_backend_dev_memory(dev, &free, &total);
             const char * m = getenv("LLAMA_MOE_CACHE_MARGIN_MB");
-            size_t margin = (size_t) (m ? atoll(m) : 1024) * 1024 * 1024;
+            // default 384 MiB: measured peak growth after load is ~170 MiB per GPU (GLM, chat + 12k prefill)
+            size_t margin = (size_t) (m ? atoll(m) : 384) * 1024 * 1024;
             // --prefetch-experts-slots: the scheduler lazily allocates N full expert
             // tensors on the device big batches are offloaded to (the model's first device)
             if (prefetch_slots >= 2) {

@@ -121,7 +121,7 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   `LLAMA_MOE_CACHE_STATS=1` logs it.
 - The defaults need no environment variables. Optional tuning:
   `LLAMA_MOE_CACHE_POLICY` (`add` default, `halve`, `window`),
-  `LLAMA_MOE_CACHE_MARGIN_MB` (VRAM left free, default 1024),
+  `LLAMA_MOE_CACHE_MARGIN_MB` (VRAM left free, default 384),
   `LLAMA_MOE_CACHE_SWAP_FRAC` (share of token time for uploads, default 0.25),
   `LLAMA_MOE_CACHE_WAIT=0` (don't wait for the previous step's uploads; the wait is
   on by default and keeps the cache current: +16% decode on long code prompts),
