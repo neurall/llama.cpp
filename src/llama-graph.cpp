@@ -2225,8 +2225,12 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         constexpr int64_t mc_chunk = 4;
         for (int64_t t0 = 0; t0 < n_tokens; t0 += mc_chunk) {
             const int64_t nt = std::min<int64_t>(mc_chunk, n_tokens - t0);
-            ggml_tensor * inp_c = ggml_view_3d(ctx0, mc_inp, n_embd, 1, nt, mc_inp->nb[1], mc_inp->nb[2], t0*mc_inp->nb[2]);
-            ggml_tensor * ids_c = ggml_view_2d(ctx0, mc_slot_ids, n_expert_used, nt, mc_slot_ids->nb[1], t0*mc_slot_ids->nb[1]);
+            // a single chunk (every decode step) takes the tensors as-is: views here
+            // measured ~1.7% slower decode (likely they block CUDA backend fusion)
+            ggml_tensor * inp_c = n_tokens <= mc_chunk ? mc_inp :
+                ggml_view_3d(ctx0, mc_inp, n_embd, 1, nt, mc_inp->nb[1], mc_inp->nb[2], t0*mc_inp->nb[2]);
+            ggml_tensor * ids_c = n_tokens <= mc_chunk ? mc_slot_ids :
+                ggml_view_2d(ctx0, mc_slot_ids, n_expert_used, nt, mc_slot_ids->nb[1], t0*mc_slot_ids->nb[1]);
 
             ggml_tensor * up_g   = ggml_mul_mat_id(ctx0, mcache->up_c,   inp_c, ids_c);
             ggml_tensor * gate_g = ggml_mul_mat_id(ctx0, mcache->gate_c, inp_c, ids_c);
