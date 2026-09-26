@@ -13,18 +13,23 @@ used. The GPUs compute cached experts while the CPU computes the rest, in parall
 
 **Results, 2x RTX 3090 (48 GB) + 125 GB RAM, single stream, temp 0:**
 
-| model | size | stock t/s | fork t/s, chat | gain | fork t/s, repetitive | PPL (stock -> fork) |
+| model | size | stock t/s | fork t/s, short prompt + chat reply | gain | fork t/s, short prompt + raw completion | PPL (stock -> fork) |
 |---|---|---|---|---|---|---|
 | GLM-5.3-Flash 3.0-bit, original GGUF | 117 GB | 12.4 | **17.2** | 1.4x | ~25 | 3.5534 -> 3.5534 |
 | GLM-5.3-Flash 3.0-bit, [Q4_K attention GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 12.4 | **18.5** | 1.5x | 27.7 | 3.5534 -> 3.5871 (+0.95%) |
 | MiMo-2.6-Flash-RL IQ3_XXS | 132 GB | 4.7 | not measured | | 9.9 | unchanged (no requant) |
 | Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 29.7 | not measured | | 32.1 | unchanged (no requant) |
 
-Chat: a 1500-token reply via /v1/chat/completions, realistic text, ~66% cache hit
-rate. This is the number to expect. Repetitive: raw-completion prompt "generate
-smallest html tetris game." whose output loops (~87% hit rate), a best case; MiMo
-and Qwen were only measured this way, so their real-text gain is likely lower
-(stock speed doesn't depend on the text). PPL: wikitext-2, 40 x 512-token chunks
+Decode speed depends on how often the generated tokens reuse cached experts (hit
+rate), i.e. on the input and on what the model writes. Short prompt + chat reply:
+"write smallest html tetris game" via /v1/chat/completions, 1500-token answer
+(reasoning + code), ~66% hit rate: the most common interactive case. Short prompt +
+raw completion: "generate smallest html tetris game." as a plain completion, where
+the model keeps repeating itself, 79-87% hit rate: the best case (23-27.5 t/s
+depending on the exact text). Long input (12k-token document): the first ~100
+generated tokens run at ~14 t/s (~44% hit) while the cache adapts to the new text.
+MiMo and Qwen were only measured with raw completion, so their chat-reply gain is
+likely lower (stock speed doesn't depend on the text). PPL: wikitext-2, 40 x 512-token chunks
 (GLM only).
 MiMo needed `-fitt 8000` on both stock and fork to avoid autofit OOM-ing on this
 arch/quant combo; the others loaded fine with default fit.
@@ -49,8 +54,8 @@ differs is what it holds. Each token uses only 8 of the 288 experts in each laye
   token doesn't touch, so only ~33% of each token's expert work runs on GPU and the
   CPU does ~67%, one after the other.
 - This fork fills the same VRAM with the ~100 most-used experts of every layer.
-  Usage is skewed, so those cover ~66% of what tokens actually pick in real text
-  (up to ~87% on repetitive output): ~66% of expert work runs on GPU and the CPU
+  Usage is skewed, so those cover ~66% of what tokens actually pick in chat replies
+  (up to ~87% when the output repeats itself): ~66% of expert work runs on GPU and the CPU
   does ~34%, at the same time as the GPUs.
 
 | | expert work on GPU | expert work on CPU | decode t/s |
@@ -96,7 +101,8 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   experts in RAM and serves only ~26% of prefill expert copies from its cache. The
   fork's gain is decode (12.4 to 18.5 t/s); for long prompts the batch and slot
   tips matter far more than either build.
-- Cache hit rate is ~66% on real text, 85%+ on repetitive output.
+- Cache hit rate is ~66% on chat replies, 79-87% when the output repeats itself,
+  ~44% right after a long unrelated input.
   `LLAMA_MOE_CACHE_STATS=1` logs it.
 - Tuning: `LLAMA_MOE_CACHE_POLICY` (`add` default, `halve`, `window`),
   `LLAMA_MOE_CACHE_MARGIN_MB` (VRAM left free, default 1024),
@@ -106,10 +112,10 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
 **More GPUs (estimate, only 2 tested).** Nothing assumes two GPUs: each GPU gets
 its own cache, sized from its free VRAM. Each extra GPU adds cache room, so more
 of every token's experts are hits and less work falls to the CPU. For this model,
-per token today on real text: ~20 ms GPU work on non-expert layers, ~23 ms CPU on
+per token today on chat replies: ~20 ms GPU work on non-expert layers, ~23 ms CPU on
 missed experts, ~7 ms other. Hit rates for 3+ GPUs are rough guesses.
 
-| GPUs (24 GB each) | cache room | slots/layer (of 288) | hit rate (real text) | CPU miss time | decode t/s |
+| GPUs (24 GB each) | cache room | slots/layer (of 288) | hit rate (chat replies) | CPU miss time | decode t/s |
 |---|---|---|---|---|---|
 | 2 (measured) | ~34 GB | ~100 | ~66% | ~23 ms | 18.5 |
 | 3 | ~58 GB | ~170 | ~80% | ~13 ms | ~25 |
