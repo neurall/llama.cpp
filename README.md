@@ -185,7 +185,8 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   its own experts. Experts that miss the VRAM cache run on the CPU at the same cost per
   drafted token as per generated one, so the best depth depends on how much of the model the
   GPUs hold, not only on how often drafts are accepted. The fork starts from a guess (model
-  size vs free VRAM: up to 1x → 3, up to 2x → 2, more → no drafting), then measures real
+  size vs free VRAM: up to 1x → 3, up to 2x → 2, more → 0; a separate `-md` draft is then not
+  loaded at all, built-in MTP layers are kept and measured from depth 0), then measures real
   generation speed and moves the depth up or down in doubles, then by 1, re-checking every
   4096 tokens. The max depth is 2 when the model is bigger than VRAM (the rollback buffers of
   hybrid models are sized by it and cost cache VRAM), 5 when it fits.
