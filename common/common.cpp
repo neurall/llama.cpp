@@ -1240,8 +1240,97 @@ struct common_init_result::impl {
     std::vector<llama_sampler_seq_config> samplers_seq_config;
 };
 
+// --moe-expert-cache default (-2): a MoE model whose weights don't fit in free VRAM gets the
+// expert cache setup (experts in RAM, no repack, auto-sized cache, 2048 ubatch) so a plain
+// `-m model` runs the fast path; explicit user settings are kept
+static void common_moe_cache_auto(common_params & params) {
+    if (params.n_moe_cache_slots != -2) {
+        return;
+    }
+    params.n_moe_cache_slots = 0;
+
+    const bool user_placement = params.n_gpu_layers != -1 ||
+        (!params.tensor_buft_overrides.empty() && params.tensor_buft_overrides[0].pattern != nullptr);
+    if (user_placement) {
+        return;
+    }
+
+    gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+    gguf_context * gguf = gguf_init_from_file(params.model.path.c_str(), gp);
+    if (!gguf) {
+        return;
+    }
+    auto get_uint = [&](const std::string & key) -> uint32_t {
+        const int64_t id = gguf_find_key(gguf, key.c_str());
+        if (id < 0) {
+            return 0;
+        }
+        switch (gguf_get_kv_type(gguf, id)) {
+            case GGUF_TYPE_UINT16: return gguf_get_val_u16(gguf, id);
+            case GGUF_TYPE_UINT32: return gguf_get_val_u32(gguf, id);
+            default:               return 0;
+        }
+    };
+    const int64_t arch_id = gguf_find_key(gguf, "general.architecture");
+    const std::string arch = arch_id < 0 ? "" : gguf_get_val_str(gguf, arch_id);
+    const uint32_t n_expert = get_uint(arch + ".expert_count");
+    const uint32_t n_split  = std::max<uint32_t>(1, get_uint("split.count"));
+    gguf_free(gguf);
+    if (n_expert == 0) {
+        return;
+    }
+
+    size_t model_size = 0;
+    if (n_split == 1) {
+        std::error_code ec;
+        model_size = std::filesystem::file_size(params.model.path, ec);
+    } else {
+        char prefix[4096], path[4096];
+        if (!llama_split_prefix(prefix, sizeof(prefix), params.model.path.c_str(), 0, n_split)) {
+            return;
+        }
+        for (uint32_t i = 0; i < n_split; i++) {
+            llama_split_path(path, sizeof(path), prefix, i, n_split);
+            std::error_code ec;
+            model_size += std::filesystem::file_size(path, ec);
+        }
+    }
+
+    size_t vram_free = 0;
+    int    n_gpu     = 0;
+    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
+            continue;
+        }
+        size_t free, total;
+        ggml_backend_dev_memory(dev, &free, &total);
+        vram_free += free;
+        n_gpu++;
+    }
+    // ponytail: weights vs free VRAM minus 1 GiB per GPU for context/compute; fit handles the borderline rest
+    const size_t reserve = (size_t) n_gpu << 30;
+    if (n_gpu == 0 || model_size + reserve <= vram_free) {
+        return;
+    }
+
+    LOG_INF("%s: MoE model (%.1f GiB) exceeds free VRAM (%.1f GiB), enabling expert cache: experts in RAM, no repack, auto cache size, 2048 ubatch, 32k ctx unless set\n",
+        __func__, model_size / 1073741824.0, vram_free / 1073741824.0);
+    auto & tbo = params.tensor_buft_overrides;
+    tbo.insert(std::find_if(tbo.begin(), tbo.end(), [](const auto & o) { return o.pattern == nullptr; }), llm_ffn_exps_cpu_override());
+    params.no_extra_bufts    = true;
+    params.n_moe_cache_slots = -1;
+    if (params.n_ubatch == 512 && params.n_batch == 2048) {
+        params.n_ubatch = 2048; // big ubatch: experts are uploaded once per ubatch in prompt processing
+    }
+    if (params.n_ctx == 0) {
+        params.n_ctx = 32768; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more
+    }
+}
+
 common_init_result::common_init_result(common_params & params, bool model_only) :
     pimpl(new impl{}) {
+    common_moe_cache_auto(params);
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
 
@@ -1678,7 +1767,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.n_outputs_max_per_seq = std::max(params.n_outputs_max_per_seq, 0);
     cparams.n_batch           = params.n_batch;
     cparams.n_ubatch          = params.n_ubatch;
-    cparams.n_moe_cache_slots   = params.n_moe_cache_slots;
+    cparams.n_moe_cache_slots   = params.n_moe_cache_slots == -2 ? 0 : params.n_moe_cache_slots;
     cparams.n_moe_cache_inserts = params.n_moe_cache_inserts;
     cparams.n_threads         = params.cpuparams.n_threads;
     cparams.n_threads_batch   = params.cpuparams_batch.n_threads == -1 ?
