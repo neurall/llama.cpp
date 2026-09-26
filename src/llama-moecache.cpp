@@ -47,6 +47,7 @@ struct layer_state {
 
     std::vector<uint64_t> glob_count;     // expert id -> lifetime uses
     uint64_t              glob_max = 1;
+    std::vector<bool>     sticky;         // expert id -> never evicted (most-used by lifetime count)
 
     uint64_t n_hit  = 0;
     uint64_t n_miss = 0;
@@ -220,6 +221,31 @@ void profile_save(const moe_cache * mc) {
 
 // seed usage from the profile and queue the most-used experts of each layer for upload;
 // the first step() waits for them and publishes them. Returns the number queued.
+// Always-hot experts (formatting, common tokens) stay in VRAM: the most-used experts by lifetime
+// count, up to LLAMA_MOE_CACHE_STICKY (default 0.3) of each layer's slots, are never evicted.
+void refresh_sticky(layer_state & ls) {
+    static const double frac = [] {
+        const char * e = getenv("LLAMA_MOE_CACHE_STICKY");
+        return e ? atof(e) : 0.3;
+    }();
+    ls.sticky.assign(ls.glob_count.size(), false);
+    const int32_t k = (int32_t) (frac * ls.pub.n_slots);
+    if (k <= 0) {
+        return;
+    }
+    std::vector<int32_t> ids;
+    for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) {
+        if (ls.glob_count[e] > 0) {
+            ids.push_back(e);
+        }
+    }
+    const int32_t n = std::min<int32_t>(k, (int32_t) ids.size());
+    std::partial_sort(ids.begin(), ids.begin() + n, ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
+    for (int32_t i = 0; i < n; ++i) {
+        ls.sticky[ids[i]] = true;
+    }
+}
+
 int parse_layer_from_name(const char * name);
 
 size_t profile_preload(moe_cache * mc, const llama_model & model) {
@@ -268,6 +294,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
         auto & ls = mc->layers[il];
         ls.glob_count = counts[il];
         ls.glob_max   = std::max<uint64_t>(1, *std::max_element(ls.glob_count.begin(), ls.glob_count.end()));
+        refresh_sticky(ls);
         std::vector<int32_t> ids;
         for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) {
             if (ls.glob_count[e] > 0) {
@@ -611,6 +638,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 }
             }
             ls.glob_count.assign(n_expert, 0);
+            ls.sticky.assign(n_expert, false);
 
             std::vector<int32_t> dummy(n_expert, ns);
             ggml_backend_tensor_set(ls.pub.dev_table,  dummy.data(), 0, n_expert*sizeof(int32_t));
@@ -834,6 +862,11 @@ void llama_moe_cache_step() {
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->n_steps++;
+    if (mc->n_steps % 4096 == 0) { // follow the workload: re-pick the always-hot set from lifetime counts
+        for (auto & ls : mc->layers) {
+            refresh_sticky(ls);
+        }
+    }
 
     // 2) schedule new uploads: evict at a sync point (clear the victim's table
     //    entry now), then hand the slice copies to the worker
@@ -868,6 +901,9 @@ void llama_moe_cache_step() {
                     continue;
                 }
                 if (ls.slot_expert[s] < 0) { slot = s; break; }
+                if (ls.sticky[ls.slot_expert[s]]) {
+                    continue;
+                }
                 const double c = score(ls, ls.slot_expert[s]);
                 if (c < best) { best = c; slot = s; }
             }
