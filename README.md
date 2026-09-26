@@ -20,9 +20,9 @@ reproduce these tests are in [`tools/moe-bench/`](tools/moe-bench/).
 
 | model | size | short: decode t/s | short: decode with MTP | long: prefill t/s † | long: decode t/s |
 |---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 13.8 -> **21.5 (1.56x)*** | 17.6, slower ‡ | 217 -> 181* | 12.3 -> **15.7 (1.28x)*** |
-| MiMo-V2.6-Flash-RL IQ3_XXS | 132 GB | 4.0 -> **10.1 (2.54x)**** | no MTP head | 136 -> 133** | 4.2 -> **8.3 (1.98x)**** |
-| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 27.7 -> **46.4 (1.68x)*** | **57.0 (2.06x vs stock)*** | 500 -> 390* | 25.3 -> **38.7 (1.53x)*** |
+| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 13.8 -> **21.5 (1.56x)*** | 17.6, slower ‡ | 217 -> **261** pinned (181 mmap)* | 12.3 -> **15.7 (1.28x)*** |
+| MiMo-V2.6-Flash-RL IQ3_XXS | 132 GB | 4.0 -> **10.1 (2.54x)**** | built-in MTP, not measured yet | 136 -> 133 (mmap only, bigger than RAM)** | 4.2 -> **8.3 (1.98x)**** |
+| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 27.7 -> **46.4 (1.68x)*** | **57.0 (2.06x vs stock)*** | 500 -> 435 pinned (390 mmap)* | 25.3 -> **38.7 (1.53x)*** |
 | Qwen3.8-27B IQ4_NL (dense, fits VRAM) | 16 GB | 44.7 -> 44.8 | | 1726 -> 1811 | |
 | OLMoE-1B-7B Q4_K_M (fits VRAM) | 4 GB | 504 -> 504 | | | |
 
@@ -43,8 +43,10 @@ stock llama.cpp -> this fork. The fork numbers match a plain `llama-server -m mo
 (auto mode, see Run). Stock can't load GLM-5.3-Flash, so its stock column is
 this fork without the cache. Models that fit in VRAM don't use the cache and run the
 same (identical output). With the default `schedutil`/`powersave` governor, decode can
-be lower, mostly where the CPU computes missed experts. Prompt processing is slower than stock: stock keeps whole
-layers in VRAM and never uploads them, this fork trades that VRAM for the decode gain.
+be lower, mostly where the CPU computes missed experts. Prompt processing: stock keeps whole layers in VRAM and
+never uploads them, this fork uploads experts, so it depends on upload speed. With pinned
+weights (the server default when the model fits in RAM) GLM-5.3-Flash is 1.20x stock, Qwen
+0.87x; with mmap both are ~20% below stock.
 Decode speed depends on how often generated tokens reuse cached experts: ~75% of
 experts are hits on GLM chat, ~95% on Qwen.
 
@@ -98,7 +100,7 @@ expert fits. Reports from 3+ GPU setups are welcome.
 
 ### Pinned weights (automatic when the model fits in RAM)
 
-Added in release PINNED_VER. When `llama-server` runs a MoE model bigger than VRAM that fits in
+Added in release b11341. When `llama-server` runs a MoE model bigger than VRAM that fits in
 the RAM available at startup, the fork loads its weights into pinned (page-locked) memory instead of
 memory-mapping the file (`--load-mode pin` does it by hand, `--load-mode mmap` turns it off).
 The GPUs then read experts straight from RAM by DMA, for prompt processing and for the cache's
@@ -106,12 +108,14 @@ uploads during decode. Only the server does this by default: it starts once and 
 requests, so the longer startup pays off. `llama-cli` and the other tools keep mmap (fast
 startup for one-off runs); pass `--load-mode pin` to pin there too.
 
-| GLM-5.3-Flash 3.0-bit Q4_K attn, 2x RTX 3090 | mmap | pinned |
+| 2x RTX 3090, model in RAM | mmap | pinned |
 |---|---|---|
-| 12k prompt processing t/s | PIN_PP_MMAP | **PIN_PP** |
-| 12k decode t/s | PIN_DEC_MMAP | PIN_DEC |
-| chat decode t/s | PIN_CHAT_MMAP | PIN_CHAT |
-| startup until the server answers (model in page cache) | 38 s | ~100 s |
+| GLM-5.3-Flash: 12k prompt processing t/s | 179 | **261 (+46%)** |
+| GLM-5.3-Flash: 12k decode t/s | 15.3 | 16.0 |
+| GLM-5.3-Flash: chat decode t/s | 20.4 | same (decode isn't limited by uploads) |
+| Qwen3.8-Flash-Next: 12k prompt processing t/s | 372 | **435 (+17%)** |
+| Qwen3.8-Flash-Next: 12k decode t/s | 38.4 | 39.0 |
+| GLM-5.3-Flash: startup until the server answers (model in page cache) | 38 s | ~100 s |
 
 **Why the server pins by default:** the extra startup is paid once, every request after it is
 faster. On GLM-5.3-Flash it costs ~60 s more at startup and saves ~22 s on every 12k-token
@@ -187,6 +191,8 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
 - Prefill: experts the prompt selects warm the cache before the first token
   ([@sdroege](https://github.com/sdroege) explored the same idea in the PR thread);
   in big prefill batches, cached experts are copied GPU-to-GPU instead of over PCIe.
+- Pinned weights in `llama-server` when the model fits in RAM: experts are uploaded by direct
+  DMA (prompt processing GLM +46%, Qwen +17%); `--load-mode pin` / `mmap` to choose.
 - Automatic defaults for MoE models bigger than free VRAM (see Run): experts in RAM,
   cache, no repack, `-ub` by VRAM, 32k context, one core per GPU left free.
 - Startup upload-bandwidth probe that sends prompt processing to the fastest-link GPU.
@@ -209,8 +215,9 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
 
 ## Known limits and next steps
 
-- Prompt processing is up to ~22% slower than stock on these models. Next milestone: use
-  both GPUs' PCIe links for it (split each layer's experts by measured bandwidth).
+- Prompt processing with mmap (models bigger than RAM, or `--load-mode mmap`) is ~20% below
+  stock. Next milestone: use both GPUs' PCIe links for it (split each layer's experts by
+  measured bandwidth), and pin what fits for models bigger than RAM.
 - GPU order, ongoing research. On this box decode is ~7% faster (tetris 28.6 vs
   26.7 t/s, cache hits 90% vs 87%, same cache size) when the layers stay in bus order
   (x4 GPU first) than when the x16 GPU takes the first layers, while prompt processing
