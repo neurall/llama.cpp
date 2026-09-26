@@ -87,6 +87,38 @@ own placement (`-ngl`, `-ot`, `--cpu-moe`) the cache stays off unless you also p
 cached experts, fewer CPU misses and faster decode, up to the point where every
 expert fits. Reports from 3+ GPU setups are welcome.
 
+### MTP (multi-token prediction)
+
+Load a model's MTP draft head with `-md` and the fork picks the draft depth itself:
+
+```sh
+llama-server -m Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf \
+    -md mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf --spec-type draft-mtp
+llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
+    -md GLM-5.3-Flash-MTP-Q4_K.gguf --spec-type draft-mtp
+```
+
+- MTP heads: Qwen3.8-Flash-Next from [unsloth/Qwen3.8-Flash-Next-GGUF](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF)
+  (`MTP/`, the `shared` files reuse the main model's embeddings); GLM-5.3-Flash from
+  [neuralll/GLM-5.3-Flash-MTP-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-MTP-GGUF)
+  (4.3 GiB, works with any `glm5-next` GLM-5.3-Flash GGUF).
+- **Why depth is automatic:** every drafted token has to be verified, and each token picks
+  its own experts. Experts that miss the VRAM cache run on the CPU at the same cost per
+  drafted token as per generated one, so the best depth depends on how much of the model the
+  GPUs hold, not only on how often drafts are accepted. The fork starts from a guess (model
+  size vs free VRAM: up to 1x → 3, up to 2x → 2, more → no drafting), then measures real
+  generation speed and moves the depth up or down in doubles, then by 1, re-checking every
+  4096 tokens. The max depth is 2 when the model is bigger than VRAM (the rollback buffers of
+  hybrid models are sized by it and cost cache VRAM), 5 when it fits.
+- Measured here: Qwen3.8-Flash-Next (1.9x VRAM, 95% cache hits) 46.5 -> **56.4 t/s (1.21x)**
+  at depth 2. GLM-5.3-Flash (2.3x VRAM, ~70% hits) is slower with MTP (17.6 vs 20.2 t/s), so
+  the fork doesn't load the draft there (a warning says so; `--spec-draft-n-max N` forces it).
+  More VRAM should make GLM MTP worth it: with 3x 24 GB, GLM is ~1.5x VRAM (less than
+  Qwen's 1.9x here), cache hits should reach 90%+ and verifying drafts would cost little CPU
+  work (estimate ~1.2-1.3x from MTP); with 4 cards nearly all experts fit. A third card on
+  a chipset x4 slot slows cache uploads and prompt processing, not decode.
+- `LLAMA_SPEC_DEPTH=N` pins the depth for benchmarks.
+
 ## What's in it
 
 - The GPU expert cache from PR [#27861](https://github.com/ggml-org/llama.cpp/pull/27861)
@@ -107,6 +139,12 @@ expert fits. Reports from 3+ GPU setups are welcome.
 - Scheduler fixes (no host barrier between GPU splits that don't read host memory,
   splits inserted exactly where another GPU's result is needed), fused CUDA gate
   kernels, repacked CPU experts stay cacheable, `GGML_SCHED_PROF=1` profiling.
+- MTP: Qwen3.8-Flash-Next MTP from PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243)
+  ([@danielhanchen](https://github.com/danielhanchen)); GLM-5.3-Flash MTP from PR
+  [#27917](https://github.com/ggml-org/llama.cpp/pull/27917) (timkhronos), plus loading GLM's
+  MTP head as a separate small file; the expert cache stays with the main model (the draft
+  never builds or frees it, and the cache sizes itself after the draft is loaded); automatic
+  draft depth from measured speed.
 - GLM-5.3-Flash support from PRs [#27773](https://github.com/ggml-org/llama.cpp/pull/27773)
   and [#27917](https://github.com/ggml-org/llama.cpp/pull/27917) (timkhronos).
 - Every change is benchmarked against the previous release binary on fixed inputs
@@ -127,10 +165,9 @@ expert fits. Reports from 3+ GPU setups are welcome.
   as much as the PCIe link. Next: log clocks and throttle reasons per GPU during
   decode, and in auto mode choose the order per request (prompt length, measured
   speeds).
-- MTP speculative decoding (PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243))
-  is not merged yet. The path it uses is already tested: with 3-token batches the cache
-  gives Qwen3.8-Flash-Next 80.4 vs 44.9 t/s and GLM-5.3-Flash 27.7 vs 19.6 t/s, with
-  perplexity matching the no-cache run within normal variation.
+- MTP on models much bigger than VRAM (GLM-5.3-Flash here) is slower: verifying drafts
+  multiplies the CPU's expert work. Next: let the draft use the expert cache, and verify
+  drafts with the experts the main token already selected where possible.
 
 **About the author of this fork**: I'm actively looking for an AI engineering/research
 role and open to relocating out of Eastern Europe. If this work is useful to you or
