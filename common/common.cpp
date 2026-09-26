@@ -1417,10 +1417,11 @@ static void common_moe_cache_auto_impl(common_params & params) {
     tbo.insert(std::find_if(tbo.begin(), tbo.end(), [](const auto & o) { return o.pattern == nullptr; }), llm_ffn_exps_cpu_override());
     params.no_extra_bufts    = true;
     params.n_moe_cache_slots = -1;
-    // pinned weights (no mmap): cache uploads and prompt processing read them by direct DMA,
+    // pinned weights (no mmap, llama-server only: startup takes longer, pays off over many requests):
+    // cache uploads and prompt processing read them by direct DMA,
     // measured +46% prompt processing, +3-5% decode on GLM-5.3-Flash; used whenever the model fits
     // in RAM available now (no margin); common_init_result reloads with mmap if loading swaps
-    if (params.load_mode == LLAMA_LOAD_MODE_AUTO) {
+    if (params.auto_pin && params.load_mode == LLAMA_LOAD_MODE_AUTO) {
         const size_t avail = common_ram_available();
         if (avail && model_size <= avail) {
             params.load_mode        = LLAMA_LOAD_MODE_NONE;
