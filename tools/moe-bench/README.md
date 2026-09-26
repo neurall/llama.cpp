@@ -59,3 +59,9 @@ it reads the header of unsloth's UD-Q4_K_XL GLM-5.3-Flash GGUF over HTTP range r
 (`gguf_remote.py`), downloads only the 29 NextN (MTP) tensors (~4.3 GiB instead of ~200 GB),
 and writes them with your model's metadata as a small GGUF for `-md`. Without `--mtp-only`
 it writes a full model with the MTP block added.
+
+## Our results
+
+`perf.db` holds every run behind the fork's README numbers (build, test, settings, speed, cache
+hit rate, generated text). Read it with `PERF_DB=tools/moe-bench/perf.db python3 tools/moe-bench/perf.py show`
+or any sqlite client (`select build, test, env, tps, pp_tps, hit_rate from runs`).
