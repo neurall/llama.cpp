@@ -23,12 +23,12 @@ memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned
 `llama-server` does by itself when the model fits in RAM; "+ MTP": plus the model's MTP draft head
 (`-md`, automatic draft depth). Multipliers vs stock; best number per row in bold (links to how to reproduce it).
 
-| model | test | stock | fork, mmap | fork, mmap + MTP | fork, pinned | fork, pinned + MTP |
+| model | test | stock (b11041) | fork, mmap (b11327-b11367) | fork, mmap + MTP (b11367) | fork, pinned (b11341) | fork, pinned + MTP (b11367) |
 |---|---|---|---|---|---|---|
 | GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB; `llama-server` default: pinned | short: decode | 13.8 | 20.4 (1.48x) | 18.2 (1.32x) ‡ | [**21.1 (1.53x)**](tools/moe-bench/) | 18.2 (1.32x) ‡ |
 | | long: prompt processing † | 217 | 180 (0.83x) | | [**262 (1.21x)**](tools/moe-bench/) ||
 | | long: decode | 12.3 | 15.6 (1.27x) | | [**16.3 (1.33x)**](tools/moe-bench/) ||
-| MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB; `llama-server` default: mmap (bigger than RAM) | short: decode | 4.0 | [**10.1 (2.54x)**](tools/moe-bench/) | 9.7 (2.42x) ¶ | - (bigger than RAM) | - |
+| MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB; `llama-server` default: mmap (bigger than RAM) | short: decode | 4.0 | [**10.1 (2.54x)**](tools/moe-bench/) | no gain ¶ | - (bigger than RAM) | - |
 | | long: prompt processing † | [**136**](tools/moe-bench/) | 133 (0.98x) | | - | - |
 | | long: decode | 4.2 | [**8.3 (1.98x)**](tools/moe-bench/) | | - | - |
 | Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB; `llama-server` default: pinned | short: decode | 27.7 | 47.1 (1.70x) | 58.3 (2.11x) | 46.5 (1.68x) | [**60.4 (2.18x)**](tools/moe-bench/) |
@@ -37,8 +37,9 @@ memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned
 | Qwen3.8-27B IQ4_NL (dense, fits VRAM), 16 GB | short / long prompt | 44.7 / 1726 | 44.8 / 1811 (no cache needed) | | ||
 | OLMoE-1B-7B Q4_K_M (fits VRAM), 4 GB | short: decode | 504 | 504 (no cache needed) | | ||
 
-¶ MiMo's built-in MTP (3 dense layers, no experts): 9.7 vs 8.9 t/s without in the same session
-(+9%); MiMo's numbers vary between sessions because the model is bigger than RAM.
+¶ MiMo's built-in MTP (3 dense layers, no experts): the depth tuner keeps depth 0 (drafting was
+not 5% faster in its probes), so no measurable gain; MiMo's numbers vary between sessions (8.9-10.1)
+because the model is bigger than RAM.
 § The 12k test generates only 32 tokens: too few for the MTP depth tuner to finish a comparison,
 so these decode numbers are mostly probing overhead and vary a lot (28-40 t/s); MTP pays off on
 longer replies (short-prompt row).
@@ -198,8 +199,8 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   Qwen's 1.9x here), cache hits should reach 90%+ and verifying drafts would cost little CPU
   work (estimate ~1.2-1.3x from MTP); with 4 cards nearly all experts fit. A third card on
   a chipset x4 slot slows cache uploads and prompt processing, not decode.
-- Since release b11365: built-in MTP (MiMo-V2.6) is used on models bigger than VRAM too (the tuner
-  measures it: MiMo +9%).
+- Since release b11367: built-in MTP (MiMo-V2.6) is loaded on models bigger than VRAM too, and the
+  tuner decides; on MiMo here it keeps depth 0 (no measurable gain).
 - The depth tuner keeps its current depth (at first the model-size guess) unless another depth is
   at least 5% faster: early in a reply (the model's reasoning) depths measure near-tied, and
   without that margin noise sometimes picked depth 1 on Qwen (~51 instead of ~60 t/s).
