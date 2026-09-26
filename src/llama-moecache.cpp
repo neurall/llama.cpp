@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <cctype>
 #include <map>
 #include <mutex>
 #include <string>
@@ -101,6 +103,9 @@ struct moe_cache {
 
     // pinned staging per upload worker, for file-backed uploads (pread -> pinned -> DMA)
     std::vector<ggml_backend_buffer_t> staging;
+
+    // hot-set profile: per-expert lifetime uses saved at shutdown, preloaded at the next start
+    std::string profile;
 };
 
 // Where a tensor's raw GGUF bytes live (recorded by the model loader).
@@ -161,6 +166,102 @@ double score(const layer_state & ls, int32_t id) {
         case policy::halve:  return ls.expert_count[id];
     }
     return 0;
+}
+
+// Hot-set profile: which experts this model used, so the next start preloads them into VRAM
+// instead of warming the cache over the first requests. Keyed by model name + file size.
+// LLAMA_MOE_CACHE_PROFILE=<path> overrides the location, =0 disables.
+std::string profile_path(const llama_model & model) {
+    const char * e = getenv("LLAMA_MOE_CACHE_PROFILE");
+    if (e) {
+        return strcmp(e, "0") == 0 ? "" : e;
+    }
+#ifdef _WIN32
+    const char * base = getenv("LOCALAPPDATA");
+    const std::string dir = base ? std::string(base) + "\\llama.cpp" : "";
+#else
+    const char * xdg  = getenv("XDG_CACHE_HOME");
+    const char * home = getenv("HOME");
+    const std::string dir = xdg ? std::string(xdg) + "/llama.cpp" : home ? std::string(home) + "/.cache/llama.cpp" : "";
+#endif
+    if (dir.empty()) {
+        return "";
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    std::string name = model.name;
+    for (char & c : name) {
+        if (!isalnum((unsigned char) c) && c != '-' && c != '.') {
+            c = '_';
+        }
+    }
+    return dir + "/moe-hot-" + name + "-" + std::to_string(model.size()) + ".bin";
+}
+
+constexpr uint32_t PROFILE_MAGIC = 0x484f454d; // "MOEH"
+
+void profile_save(const moe_cache * mc) {
+    if (mc->profile.empty() || mc->n_steps < 64) { // too little use to be worth keeping
+        return;
+    }
+    FILE * f = fopen(mc->profile.c_str(), "wb");
+    if (!f) {
+        return;
+    }
+    const uint32_t hdr[2] = { PROFILE_MAGIC, (uint32_t) mc->layers.size() };
+    fwrite(hdr, sizeof(hdr), 1, f);
+    for (const auto & ls : mc->layers) {
+        const uint32_t n = (uint32_t) ls.glob_count.size();
+        fwrite(&n, sizeof(n), 1, f);
+        fwrite(ls.glob_count.data(), sizeof(uint64_t), n, f);
+    }
+    fclose(f);
+}
+
+// seed usage from the profile and queue the most-used experts of each layer for upload;
+// the first step() waits for them and publishes them. Returns the number queued.
+size_t profile_preload(moe_cache * mc) {
+    FILE * f = mc->profile.empty() ? nullptr : fopen(mc->profile.c_str(), "rb");
+    if (!f) {
+        return 0;
+    }
+    std::vector<std::vector<uint64_t>> counts;
+    uint32_t hdr[2] = {};
+    bool ok = fread(hdr, sizeof(hdr), 1, f) == 1 && hdr[0] == PROFILE_MAGIC && hdr[1] == mc->layers.size();
+    for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
+        uint32_t n = 0;
+        ok = fread(&n, sizeof(n), 1, f) == 1 && n == mc->layers[il].glob_count.size();
+        if (ok) {
+            counts.emplace_back(n);
+            ok = fread(counts.back().data(), sizeof(uint64_t), n, f) == n;
+        }
+    }
+    fclose(f);
+    if (!ok) {
+        LLAMA_LOG_WARN("moe-cache: ignoring profile %s (other model or cache layout)\n", mc->profile.c_str());
+        return 0;
+    }
+    size_t queued = 0;
+    std::lock_guard<std::mutex> lk(mc->wmtx);
+    for (size_t il = 0; il < mc->layers.size(); ++il) {
+        auto & ls = mc->layers[il];
+        ls.glob_count = counts[il];
+        ls.glob_max   = std::max<uint64_t>(1, *std::max_element(ls.glob_count.begin(), ls.glob_count.end()));
+        std::vector<int32_t> ids;
+        for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) {
+            if (ls.glob_count[e] > 0) {
+                ids.push_back(e);
+            }
+        }
+        std::sort(ids.begin(), ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
+        for (int32_t s = 0; s < std::min<int32_t>(ls.pub.n_slots, (int32_t) ids.size()); ++s) {
+            ls.slot_in_flight[s] = true;
+            mc->todo.push_back({ il, ids[s], s });
+            queued++;
+        }
+    }
+    mc->wcv.notify_all();
+    return queued;
 }
 
 moe_cache * g_cache = nullptr;
@@ -564,6 +665,11 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
         });
 
+        mc->profile = profile_path(model);
+        if (const size_t n = profile_preload(mc)) {
+            LLAMA_LOG_INFO("moe-cache: preloading %zu experts from %s\n", n, mc->profile.c_str());
+        }
+
         ggml_set_moe_obs_callback(moe_obs_cb, mc);
         {
             const char * e = getenv("LLAMA_MOE_CACHE_PREFILL_D2D");
@@ -827,6 +933,7 @@ void llama_moe_cache_free() {
     for (auto & t : mc->workers) {
         t.join();
     }
+    profile_save(mc);
     uint64_t h = 0, m = 0;
     for (auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
     LLAMA_LOG_WARN("moe-cache: steps=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " hit-rate=%.1f%%, prefill experts from cache %" PRIu64 "/%" PRIu64 "\n",
