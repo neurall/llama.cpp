@@ -117,7 +117,8 @@ expert fits. Reports from 3+ GPU setups are welcome.
   wants the x16 GPU. So since this release prompt processing goes to the fastest-link
   GPU and layers keep bus order, which gets both. Why the layer order matters is not
   known yet: the two cards differ (x16: Gainward 3-slot 370 W with partly blocked
-  airflow, x4: Dell OEM 2-slot 350 W), so clocks or memory hotspot throttling may count
+  airflow, x4: Dell OEM 2-slot 350 W; a budget build, these were the cards available
+  at a good price), so clocks or memory hotspot throttling may count
   as much as the PCIe link. Next: log clocks and throttle reasons per GPU during
   decode, and in auto mode choose the order per request (prompt length, measured
   speeds).
