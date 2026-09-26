@@ -2583,6 +2583,7 @@ common_params common_base_params_to_speculative(const common_params & params) {
     }
 
     result.n_moe_cache_slots = 0; // the expert cache belongs to the target context
+    result.n_ubatch = std::min(result.n_ubatch, 512); // drafts are tiny batches; a big ubatch only grows the compute buffer
     result.cache_type_k  = params_spec.cache_type_k;
     result.cache_type_v  = params_spec.cache_type_v;
     result.n_outputs_max = params.n_parallel;
