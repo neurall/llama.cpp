@@ -18,18 +18,29 @@ CPU frequency governor `performance`, single stream, temp 0.** Short = 1500-toke
 12k-token code prompt (llama.cpp sources): prompt processing, then decode. The prompts and a script to
 reproduce these tests are in [`tools/moe-bench/`](tools/moe-bench/).
 
-| model | size | short: decode t/s | short: decode with MTP | long: prefill t/s † | long: decode t/s |
+t/s, stock llama.cpp vs this fork. "mmap" = weights memory-mapped (models bigger than RAM,
+`llama-cli`); "pinned" = weights in pinned RAM, what `llama-server` does when the model fits;
+"+ MTP" = pinned plus the model's MTP draft head (automatic draft depth). All with the model
+already in RAM (*).
+
+| model | test | stock | fork, mmap | fork, pinned (server default) | fork, pinned + MTP |
 |---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF) | 106 GB | 13.8 -> **21.5 (1.56x)*** | 17.6, slower ‡ | 217 -> **262** pinned (181 mmap)* | 12.3 -> **16.3 (1.33x)** pinned (15.7 mmap)* |
-| MiMo-V2.6-Flash-RL IQ3_XXS | 132 GB | 4.0 -> **10.1 (2.54x)**** | built-in MTP, not measured yet | 136 -> 133 (mmap only, bigger than RAM)** | 4.2 -> **8.3 (1.98x)**** |
-| Qwen3.8-Flash-Next UD-IQ4_XS | 88 GB | 27.7 -> **46.4 (1.68x)*** | **57.0 (2.06x vs stock)*** | 500 -> 435 pinned (390 mmap)* | 25.3 -> **38.7 (1.53x)*** |
-| Qwen3.8-27B IQ4_NL (dense, fits VRAM) | 16 GB | 44.7 -> 44.8 | | 1726 -> 1811 | |
-| OLMoE-1B-7B Q4_K_M (fits VRAM) | 4 GB | 504 -> 504 | | | |
+| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB | short: decode | 13.8 | 20.4 | **21.1 (1.53x)** | pending (mmap + MTP: 17.6, slower ‡) |
+| | long: prompt processing † | 217 | 180 | **262 (1.21x)** | |
+| | long: decode | 12.3 | 15.6 | **16.3 (1.33x)** | |
+| MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB | short: decode | 4.0 | **10.1 (2.54x)** | - (bigger than RAM) | pending (built-in MTP) |
+| | long: prompt processing † | 136 | 133 | - | |
+| | long: decode | 4.2 | **8.3 (1.98x)** | - | |
+| Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB | short: decode | 27.7 | 47.1 | pending | **57.0 (2.06x)** (mmap + MTP; pinned pending) |
+| | long: prompt processing † | 500 | 372 | 435 (0.87x) | pending |
+| | long: decode | 25.3 | 38.4 | **39.0 (1.54x)** | pending |
+| Qwen3.8-27B IQ4_NL (dense, fits VRAM), 16 GB | short / long prompt | 44.7 / 1726 | 44.8 / 1811 (no cache needed) | | |
+| OLMoE-1B-7B Q4_K_M (fits VRAM), 4 GB | short: decode | 504 | 504 (no cache needed) | | |
 
 \* Model already in RAM (OS page cache), as on a server after its first request. The
 first run after switching to another large model is slower, once, while the file is
-read from disk. \*\* MiMo (132 GB) can't fully stay cached in 125 GB RAM, so it always
-reads part of the model from disk.
+read from disk. MiMo (132 GB) can't fully stay in 125 GB RAM, so it always reads part of
+the model from disk. Multipliers are vs stock.
 † Prompt processing streams the experts over PCIe to one GPU, so the slot limits it (here a
 PCIe 4.0 x16 CPU slot; the second card sits in an X570 chipset x4 slot). A board with more
 x16 slots, or another GPU, should raise it; splitting prompt processing across both GPUs'
