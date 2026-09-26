@@ -1285,6 +1285,43 @@ static void common_gpu_free(size_t & total, size_t & max, int & n) {
     }
 }
 
+// RAM that can be used without swapping: Linux MemAvailable (free + reclaimable page cache), 0 if unknown
+static size_t common_ram_available() {
+#if defined(_WIN32)
+    MEMORYSTATUSEX st = {};
+    st.dwLength = sizeof(st);
+    return GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
+#elif defined(__linux__)
+    std::ifstream f("/proc/meminfo");
+    std::string key;
+    size_t kb = 0;
+    while (f >> key >> kb) {
+        if (key == "MemAvailable:") {
+            return kb * 1024;
+        }
+        f.ignore(256, '\n');
+    }
+    return 0;
+#else
+    return 0;
+#endif
+}
+
+// bytes swapped out since boot (Linux), to notice when pinning the weights pushed the system into swap
+static size_t common_swap_out_bytes() {
+#if defined(__linux__)
+    std::ifstream f("/proc/vmstat");
+    std::string key;
+    size_t n = 0;
+    while (f >> key >> n) {
+        if (key == "pswpout") {
+            return n * 4096;
+        }
+    }
+#endif
+    return 0;
+}
+
 // speculative defaults from model size vs free VRAM: the tuner's starting depth and, unless set,
 // the max draft depth (recurrent-state rollback buffers are sized by it, so it costs VRAM)
 void common_spec_auto(common_params & params) {
@@ -1380,6 +1417,16 @@ static void common_moe_cache_auto_impl(common_params & params) {
     tbo.insert(std::find_if(tbo.begin(), tbo.end(), [](const auto & o) { return o.pattern == nullptr; }), llm_ffn_exps_cpu_override());
     params.no_extra_bufts    = true;
     params.n_moe_cache_slots = -1;
+    // pinned weights (no mmap): cache uploads and prompt processing read them by direct DMA,
+    // measured +46% prompt processing, +3-5% decode on GLM-5.3-Flash; used whenever the model fits
+    // in RAM available now (no margin); common_init_result reloads with mmap if loading swaps
+    if (params.load_mode == LLAMA_LOAD_MODE_AUTO) {
+        const size_t avail = common_ram_available();
+        if (avail && model_size <= avail) {
+            params.load_mode        = LLAMA_LOAD_MODE_NONE;
+            params.load_pinned_auto = true;
+        }
+    }
     if (!params.ubatch_user) {
         // experts are uploaded once per ubatch in prompt processing: 2048 is ~2x faster on long
         // prompts than 512; its compute buffer (~0.7 GiB on GLM-5.3-Flash) comes out of the cache
@@ -1397,8 +1444,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
         params.n_ctx = 32768; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more
     }
     LOG_INF("%s: MoE model (%.1f GiB) exceeds free VRAM (%.1f GiB): experts in RAM + GPU expert cache, no repack, "
-        "ctx %d, ubatch %d, threads %d (settings you pass win)\n", __func__, model_size / 1073741824.0, vram_free / 1073741824.0,
-        params.n_ctx, params.n_ubatch, params.cpuparams.n_threads);
+        "ctx %d, ubatch %d, threads %d, weights %s (settings you pass win)\n", __func__, model_size / 1073741824.0, vram_free / 1073741824.0,
+        params.n_ctx, params.n_ubatch, params.cpuparams.n_threads, params.load_pinned_auto ? "pinned" : "mmap");
 }
 
 common_init_result::common_init_result(common_params & params, bool model_only) :
@@ -1442,7 +1489,17 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
             params.verbosity >= LOG_LEVEL_DEBUG ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR);
     }
 
+    const size_t swap0 = params.load_pinned_auto ? common_swap_out_bytes() : 0;
     llama_model * model = llama_model_load_from_file(params.model.path.c_str(), mparams);
+    if (params.load_pinned_auto && (model == NULL || common_swap_out_bytes() - swap0 > (256u << 20))) {
+        // pinning didn't fit after all (allocation failed or the system started swapping): use mmap
+        LOG_WRN("%s: pinned weights %s, reloading with mmap\n", __func__, model ? "made the system swap" : "failed to load");
+        llama_model_free(model);
+        params.load_mode        = LLAMA_LOAD_MODE_AUTO;
+        params.load_pinned_auto = false;
+        mparams = common_model_params_to_llama(params);
+        model = llama_model_load_from_file(params.model.path.c_str(), mparams);
+    }
     if (model == NULL) {
         return;
     }

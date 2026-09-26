@@ -489,6 +489,7 @@ struct common_params {
 
     enum llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER; // how to split the model across GPUs
     enum llama_load_mode  load_mode  = LLAMA_LOAD_MODE_AUTO; // how to load the model
+    bool load_pinned_auto = false; // auto mode chose pinned weights (load mode none); falls back to mmap if loading swaps
 
     enum llama_lazy_mode lazy_mode = LLAMA_LAZY_MODE_AUTO; // on-demand reading of tensors marked by the arch
 
