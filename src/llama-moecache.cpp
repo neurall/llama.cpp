@@ -848,7 +848,10 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             ggml_backend_dev_t gpu = mc->bufs.empty() ? nullptr : ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mc->bufs.back()));
             const bool mmapd = !mc->layers.empty() && ggml_backend_buffer_is_host(mc->layers[0].pub.up_src->buffer) &&
                 !(gpu && ggml_backend_buffer_get_type(mc->layers[0].pub.up_src->buffer) == ggml_backend_dev_host_buffer_type(gpu));
-            mc->drop_cached = e ? atoi(e) != 0 : (mmapd && (double) model.size() > 0.9 * ram);
+            // opt-in: MiMo on 1 GPU measured -9% (a small, churning cache drops and re-reads too often);
+            // next: drop only experts that stayed cached long
+            mc->drop_cached = e && atoi(e) != 0 && mmapd;
+            GGML_UNUSED(ram);
             if (mc->drop_cached) {
                 LLAMA_LOG_INFO("moe-cache: model bigger than RAM: VRAM-cached experts' pages are dropped from RAM\n");
             }
