@@ -603,11 +603,17 @@ void llama_moe_cache_step() {
         const char * e = getenv("LLAMA_MOE_CACHE_DETERMINISTIC");
         return e && atoi(e) != 0;
     }();
+    // LLAMA_MOE_CACHE_WAIT=1: only the wait-and-publish part of deterministic mode,
+    // keeping the adaptive swap budget and margin
+    static const bool wait_publish = det || [] {
+        const char * e = getenv("LLAMA_MOE_CACHE_WAIT");
+        return e && atoi(e) != 0;
+    }();
 
     // 1) publish completed uploads (sync point: no graph is executing)
     {
         std::unique_lock<std::mutex> wlk(mc->wmtx);
-        if (det) {
+        if (wait_publish) {
             mc->dcv.wait(wlk, [mc]() { return mc->todo.empty() && mc->in_flight == 0; });
             std::sort(mc->done.begin(), mc->done.end(), [](const upload_job & a, const upload_job & b) {
                 return a.layer_idx != b.layer_idx ? a.layer_idx < b.layer_idx : a.slot < b.slot;
