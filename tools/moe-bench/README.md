@@ -47,8 +47,8 @@ adds server arguments; `-e KEY=VALUE` sets environment variables (e.g.
 
 Measurements are made with the model in RAM, as on a server after its first request:
 before measuring, perf.py drops other models under `$PERF_MODELS_DIR` from the OS page cache,
-reads the model file once if it fits in RAM, and on every model switch does one discarded
-run. Compare decode speed only between runs of the same test; chat and tetris vary by a
+reads the model file once if it fits in RAM, and runs every test once, discarded, right before
+the measured run with the same build and settings. Compare decode speed only between runs of the same test; chat and tetris vary by a
 few percent between runs, so use `-n 2` or more.
 
 ## GLM-5.3-Flash MTP head

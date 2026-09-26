@@ -120,7 +120,8 @@ the RAM available at startup, the fork loads its weights into pinned (page-locke
 memory-mapping the file (`--load-mode pin` does it by hand, `--load-mode mmap` turns it off).
 The GPUs then read experts straight from RAM by DMA, for prompt processing and for the cache's
 uploads during decode. Only the server does this by default: it starts once and serves many
-requests, so the longer startup pays off. `llama-cli` and the other tools keep mmap (fast
+requests, so the longer startup pays off. Not with a separate MTP draft (`-md`): Qwen + MTP chat
+measured 57.5 t/s with mmap vs ~51 pinned (cause not known yet), so the server keeps mmap then. `llama-cli` and the other tools keep mmap (fast
 startup for one-off runs); pass `--load-mode pin` to pin there too.
 
 | 2x RTX 3090, model in RAM | mmap | pinned |
