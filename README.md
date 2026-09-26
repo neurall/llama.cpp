@@ -37,7 +37,7 @@ already in RAM (*).
 
 | model | test | stock | fork, mmap | fork, pinned (server default) | fork, pinned + MTP |
 |---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB | short: decode | 13.8 | 20.4 | **21.1 (1.53x)** | pending (mmap + MTP: 17.6, slower ‡) |
+| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB | short: decode | 13.8 | 20.4 | **21.1 (1.53x)** | 18.8, slower ‡ |
 | | long: prompt processing † | 217 | 180 | **262 (1.21x)** | |
 | | long: decode | 12.3 | 15.6 | **16.3 (1.33x)** | |
 | MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB | short: decode | 4.0 | **10.1 (2.54x)** | - (bigger than RAM) | pending (built-in MTP) |
@@ -57,7 +57,7 @@ the model from disk. Multipliers are vs stock.
 PCIe 4.0 x16 CPU slot; the second card sits in an X570 chipset x4 slot). A board with more
 x16 slots, or another GPU, should raise it; splitting prompt processing across both GPUs'
 links is the next milestone.
-‡ MTP on GLM-5.3-Flash is slower on this box (17.6 vs 20.2 t/s without, same session; the model is 2.3x
+‡ MTP on GLM-5.3-Flash is slower on this box (pinned: 18.8 vs 21.1 t/s without; mmap: 17.6 vs 20.2; the model is 2.3x
 the VRAM, so verifying drafts adds CPU work and the draft takes cache VRAM). The fork
 doesn't load the draft here by default. Another GPU (more VRAM) should make it pay off,
 as it does for Qwen (1.9x VRAM).
