@@ -1723,7 +1723,7 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
 }
 
 int llama_context::decode(const llama_batch_ext & batch_inp) {
-    if (cparams.moe_cache && !cparams.moe_cache_started && !cparams.warmup) {
+    if (cparams.moe_cache && !cparams.moe_cache_started && !moe_cache_defer) {
         cparams.moe_cache_started = true;
         llama_moe_cache_init(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots);
         sched_reserve(); // the compute graph now includes the cache chain
@@ -3971,6 +3971,10 @@ void llama_set_causal_attn(llama_context * ctx, bool causal_attn) {
 
 void llama_set_warmup(llama_context * ctx, bool warmup) {
     ctx->set_warmup(warmup);
+}
+
+void llama_moe_cache_defer(llama_context * ctx, bool defer) {
+    ctx->moe_cache_defer = defer;
 }
 
 void llama_synchronize(llama_context * ctx) {

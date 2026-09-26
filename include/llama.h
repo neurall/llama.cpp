@@ -1126,6 +1126,10 @@ extern "C" {
     DEPRECATED(LLAMA_API void llama_set_warmup(struct llama_context * ctx, bool warmup),
             "user code should do warmup runs manually [TAG_LLAMA_GRAPH_NO_WARMUP]");
 
+    // MoE expert cache: while deferred, decodes don't start the cache (warmup runs), so its
+    // auto size sees the VRAM left after models loaded later (speculative draft, mmproj)
+    LLAMA_API void llama_moe_cache_defer(struct llama_context * ctx, bool defer);
+
     // Set abort callback
     LLAMA_API void llama_set_abort_callback(struct llama_context * ctx, ggml_abort_callback abort_callback, void * abort_callback_data);
 
