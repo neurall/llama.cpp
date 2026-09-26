@@ -470,12 +470,11 @@ llama_context::llama_context(
 
         sched_reserve();
 
-        // after KV/compute buffers so auto sizing (-1) sees the real free VRAM;
-        // re-reserve so the compute graph includes the cache chain
-        if (params.n_moe_cache_slots != 0) {
-            llama_moe_cache_init(model, params.n_moe_cache_slots, params.n_moe_cache_inserts, cparams.prefetch_experts_slots);
-            sched_reserve();
-        }
+        // the expert cache starts on the first non-warmup decode (moe_cache_start), so auto
+        // sizing (-1) sees the free VRAM left after every model and context is loaded,
+        // e.g. a speculative draft model the server loads after this context
+        cparams.moe_cache_slots   = params.n_moe_cache_slots;
+        cparams.moe_cache_inserts = params.n_moe_cache_inserts;
 
         if (!cparams.flash_attn) {
             if (ggml_is_quantized(params.type_v)) {
@@ -1724,6 +1723,11 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
 }
 
 int llama_context::decode(const llama_batch_ext & batch_inp) {
+    if (cparams.moe_cache && !cparams.moe_cache_started && !cparams.warmup) {
+        cparams.moe_cache_started = true;
+        llama_moe_cache_init(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots);
+        sched_reserve(); // the compute graph now includes the cache chain
+    }
     if (!memory) {
         LLAMA_LOG_DEBUG("%s: cannot decode batches with this context (calling encode() instead)\n", __func__);
         return encode(batch_inp);
