@@ -7,9 +7,21 @@ rounds=$1; shift
 R=${R:-/tmp/moe-ab}; mkdir -p $R; D=$(dirname "$(readlink -f "$0")")
 cd /p/bw/llama.cpp/.claude/worktrees/partial-pin
 CTL=$R/ctl.txt; : > $CTL
+# a previous server's pinned weights take a while to be released: starting before that makes auto mode fall back
+# to pageable (mmap) uploads and the run doesn't compare; wait until MemAvailable is back (MIN_AVAIL_GB, default 110)
+for i in $(seq 120); do
+  avail=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
+  [ "$avail" -ge "${MIN_AVAIL_GB:-110}" ] && break
+  sleep 2
+done
 LLAMA_MOE_CACHE_STATS=1 LLAMA_MOE_CACHE_PREDICT_FILE=0 LLAMA_MOE_CACHE_CTL=$CTL ./${BIN:-build-link}/bin/llama-server \
   -m ${MODEL:-/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf} --port 8234 $ARGS > $R/ctl.log 2>&1 &
 for i in $(seq 600); do curl -sf localhost:8234/health >/dev/null && break; sleep 1; done
+if grep -q "from pageable host memory" $R/ctl.log; then
+  echo "ctl_bench: weights not pinned (pageable uploads), results would not compare -- aborting" >&2
+  for i in 1 2 3 4 5; do pkill -x llama-server; sleep 2; pgrep -x llama-server >/dev/null || break; done
+  exit 1
+fi
 P=(
 "Write a Python function that parses a CSV file and returns the average of each column."
 "Write a short story about a lighthouse keeper who finds a message in a bottle."

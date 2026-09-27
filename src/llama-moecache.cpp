@@ -293,7 +293,7 @@ struct moe_cache {
     bool                    pred_stop   = false;
     int64_t                 gpu_started = -1; // layer idx whose GPU split may have started this step (mtx)
     int64_t                 last_obs    = -1; // layer idx of the last CPU expert op this step (mtx)
-    uint64_t n_pred_up = 0, n_pred_pub = 0, n_pred_used = 0, n_pred_late = 0, n_stream_stale = 0, n_promoted = 0;
+    uint64_t n_pred_up = 0, n_pred_pub = 0, n_pred_used = 0, n_pred_late = 0, n_stream_stale = 0, n_promoted = 0, n_tbp = 0;
 
     // learned predictors (in-graph NLMS, see llama_moe_cache_layer::pred_m): trained every pred_train
     // tokens (--lrn-prd N, 0 = frozen) with step size pred_mu; weights persist in pred_file
@@ -353,6 +353,10 @@ struct knobs_t {
     double link      = 1;   // pay-back margin per upload link (0: one margin from the average upload)
     double gate      = 0;   // uploads wait (up to GATE_MAX_US per tensor) while the CPU computes uncached experts: no DDR4 contention
     double gate_max_us = 2000;
+    double big         = 0;    // an expert may only evict one with at most its lifetime use (no weaklings evicting big boys)
+    double tbp         = 0;    // token-boundary prefetch: per early layer, stream up to this many of the last token's misses
+    double tbp_layers  = 6;    // ... for the first N MoE layers (their uploads run while the output head, sampling and the
+                               //     dense layers keep DDR idle, ~7-10 ms on GLM)
     double auto_tune   = 1;    // adjust stream lead and STREAM_M per link from the measured late share and precision
     double wait        = 1;    // the step waits for queued cache swaps (0: never; finished uploads are published at splits)
     double chunk_kb    = 0;    // GATE=3: copy in chunks of this size, re-checking the DDR budget before each (0: whole tensor)
@@ -370,7 +374,8 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
         { "HOT_FRAC", &knobs_t::hot_frac }, { "STICKY", &knobs_t::sticky }, { "SLOW_STAY", &knobs_t::slow_stay },
         { "MARGIN", &knobs_t::margin }, { "BUDGET", &knobs_t::budget }, { "CPU_GBS", &knobs_t::cpu_gbs }, { "LINK", &knobs_t::link },
         { "GATE", &knobs_t::gate }, { "GATE_MAX_US", &knobs_t::gate_max_us }, { "DDR_GBS", &knobs_t::ddr_gbs },
-        { "WAIT", &knobs_t::wait }, { "AUTO", &knobs_t::auto_tune }, { "CHUNK_KB", &knobs_t::chunk_kb },
+        { "WAIT", &knobs_t::wait }, { "AUTO", &knobs_t::auto_tune },
+        { "BIG", &knobs_t::big }, { "TBP", &knobs_t::tbp }, { "TBP_LAYERS", &knobs_t::tbp_layers }, { "CHUNK_KB", &knobs_t::chunk_kb },
         { "STREAM", &knobs_t::stream }, { "STREAM_M", &knobs_t::stream_m },
         { "OFFSET", &knobs_t::offset }, { "STREAM_SLOW", &knobs_t::stream_slow },
         { "TRACE", &knobs_t::trace }, { "TRACE_AFTER", &knobs_t::trace_after },
@@ -387,7 +392,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO" }) {
+        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
             }
@@ -2312,6 +2317,9 @@ void llama_moe_cache_step() {
             if (s_vic < 0 || score(ls, id) <= best) {
                 continue;
             }
+            if (knobs().big != 0 && ls.slot_expert[s_vic] >= 0 && ls.glob_count[id] < ls.glob_count[ls.slot_expert[s_vic]]) {
+                continue;
+            }
             const int32_t v = ls.slot_expert[s_vic];
             if (v >= 0) {
                 ls.expert_slot[v]     = -1;
@@ -2359,6 +2367,64 @@ void llama_moe_cache_step() {
         }
     }
 
+    // 1d) token-boundary prefetch: the first MoE layers' misses of the token that just ended go to stream slots now,
+    //     while the output head, sampling and the dense layers leave DDR idle; consecutive tokens share many experts
+    if (knobs().tbp > 0 && knobs().stream > 0) {
+        std::vector<upload_job> bj;
+        const size_t nb = std::min(mc->layers.size(), (size_t) knobs().tbp_layers);
+        for (size_t li = 0; li < nb; ++li) {
+            auto & ls = mc->layers[li];
+            const int32_t n_ss = std::min<int32_t>((int32_t) knobs().stream, (int32_t) ls.stream_slots.size());
+            if (n_ss <= 0) {
+                continue;
+            }
+            std::vector<int32_t> c = ls.pending;
+            std::sort(c.begin(), c.end(), [&](int32_t a, int32_t b) { return score(ls, a) > score(ls, b); });
+            int n = 0;
+            for (int32_t id : c) {
+                if (n >= (int) knobs().tbp || n >= n_ss) {
+                    break;
+                }
+                if (ls.expert_slot[id] >= 0 || ls.queued[id] || ls.adopt_slot[id] >= 0) {
+                    continue;
+                }
+                int32_t slot = -1;
+                for (int32_t t = 0; t < n_ss && slot < 0; ++t) {
+                    const int32_t sl = ls.stream_slots[ls.stream_next++ % n_ss];
+                    slot = ls.slot_in_flight[sl] ? -1 : sl;
+                }
+                if (slot < 0) {
+                    break;
+                }
+                const int32_t victim = ls.slot_expert[slot];
+                if (victim >= 0) {
+                    ls.expert_slot[victim] = -1;
+                    ls.slot_expert[slot]   = -1;
+                    set_table_entry(ls.pub, victim, ls.pub.n_slots);
+                    ls.cached_since[victim] = 0;
+                    ls.prefetched[victim]   = 0;
+                }
+                ls.slot_in_flight[slot] = true;
+                ls.queued[id]           = 1;
+                upload_job j { li, id, slot };
+                j.urgent   = true;
+                j.stream   = true;
+                j.step     = mc->n_steps;
+                j.t_queued = ggml_time_us();
+                bj.push_back(j);
+                n++;
+            }
+        }
+        if (!bj.empty()) {
+            std::lock_guard<std::mutex> wlk(mc->wmtx);
+            for (auto it = bj.rbegin(); it != bj.rend(); ++it) {
+                mc->todo.push_front(*it);
+            }
+            mc->n_tbp += bj.size();
+            mc->wcv.notify_all();
+        }
+    }
+
     // 2) schedule new uploads: evict at a sync point (clear the victim's table
     //    entry now), then hand the slice copies to the worker
     const size_t n_layers = mc->layers.size();
@@ -2380,7 +2446,7 @@ void llama_moe_cache_step() {
         int & budget = budget_total;
         for (auto it = ls.pending.begin(); it != ls.pending.end(); ++it) {
             const int32_t id = *it;
-            if (ls.expert_slot[id] >= 0 || score(ls, id) <= 0) {
+            if (ls.expert_slot[id] >= 0 || ls.queued[id] || score(ls, id) <= 0) {
                 continue;
             }
 
@@ -2404,6 +2470,9 @@ void llama_moe_cache_step() {
 
             const int32_t victim = ls.slot_expert[slot];
             if (victim >= 0) {
+                if (knobs().big != 0 && ls.glob_count[id] < ls.glob_count[victim]) {
+                    continue; // lifetime regular stays; a later candidate may still fit
+                }
                 if (score(ls, id) < score(ls, victim) + link_margin[ls.slow] || budget-- <= 0) {
                     break; // candidates are sorted: nothing hotter than what's cached
                 }
@@ -2563,8 +2632,8 @@ void llama_moe_cache_free() {
     }
     pred_save(mc);
     if (mc->n_pred_up) {
-        LLAMA_LOG_WARN("moe-cache: router prediction: %" PRIu64 " uploads, %" PRIu64 " published before their layer, %" PRIu64 " used, %" PRIu64 " too late to start, %" PRIu64 " dropped in the queue (layer started), %" PRIu64 " promoted into the cache\n",
-                mc->n_pred_up, mc->n_pred_pub, mc->n_pred_used, mc->n_pred_late, mc->n_stream_stale, mc->n_promoted);
+        LLAMA_LOG_WARN("moe-cache: router prediction: %" PRIu64 " uploads, %" PRIu64 " published before their layer, %" PRIu64 " used, %" PRIu64 " too late to start, %" PRIu64 " dropped in the queue (layer started), %" PRIu64 " promoted into the cache, %" PRIu64 " token-boundary prefetches\n",
+                mc->n_pred_up, mc->n_pred_pub, mc->n_pred_used, mc->n_pred_late, mc->n_stream_stale, mc->n_promoted, mc->n_tbp);
     }
     for (auto * b : mc->staging) { if (b) { ggml_backend_buffer_free(b); } }
     for (auto * b : mc->pbufs) { ggml_backend_buffer_free(b); }
