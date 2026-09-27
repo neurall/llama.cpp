@@ -52,6 +52,12 @@ struct llama_moe_cache_layer {
     // router prediction (LLAMA_MOE_CACHE_PREDICT): the next layer's router weights; the graph applies
     // them to this layer's MoE input and hands the logits to the CPU expert op (src[4])
     ggml_tensor * pred_w = nullptr;
+    // learned predictors: pred_m[k] (F32 [n_embd, n_expert], initialized from the router of layer
+    // il+1+k) predicts that layer's router logits from this layer's MoE input and is trained in the
+    // graph by NLMS with step size pred_mu (1 element, set per token by the cache; 0 = no training)
+    int           pred_ahead = 0;
+    ggml_tensor * pred_m[4]  = {};
+    ggml_tensor * pred_mu    = nullptr;
 };
 
 // build the cache for every host-resident expert layer of the model.

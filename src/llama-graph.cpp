@@ -2046,6 +2046,28 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             ggml_prec_set_acc(logits, GGML_PREC_F32);
         }
         cb(logits, "ffn_moe_logits", il);
+
+        // MoE expert cache: train the predictors that targeted this layer (NLMS on the router logits):
+        // w += mu/|x|^2 * x (x) (logits - pred), on the predictor's GPU, no host work
+        auto it = moe_pred_todo.find(il);
+        if (it != moe_pred_todo.end()) {
+            for (const auto & e : it->second) {
+                if (e.pred->ne[0] != logits->ne[0] || e.pred->ne[1] != logits->ne[1]) {
+                    continue;
+                }
+                ggml_tensor * err = ggml_sub(ctx0, logits, e.pred);                    // [n_expert, n_tokens]
+                ggml_tensor * nrm = ggml_sum_rows(ctx0, ggml_sqr(ctx0, e.x));          // [1, n_tokens]
+                ggml_tensor * g   = ggml_mul(ctx0, ggml_div(ctx0, err, nrm), e.mu);
+                ggml_tensor * dw  = ggml_out_prod(ctx0, e.x, g);                       // [n_embd, n_expert]
+                ggml_tensor * sum = ggml_add(ctx0, e.w, dw);
+                ggml_tensor * upd = ggml_cpy(ctx0, sum, e.w);
+                for (ggml_tensor * t : { err, nrm, nrm->src[0], g, g->src[0], dw, sum, upd }) {
+                    ggml_backend_sched_set_tensor_backend(sched, t, e.backend);
+                }
+                ggml_build_forward_expand(gf, upd);
+            }
+            moe_pred_todo.erase(it);
+        }
     } else {
         logits = probs_in;
     }
@@ -2216,15 +2238,29 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
         }
         mc_cpu_backend = cpu_backend;
-        if (mcache->pred_w && mcache->pred_w->buffer) {
-            // next layer's router logits from this layer's input, on the router's GPU in the split before
-            // the CPU copy; handed to the CPU gate op as src[4], where the cache's observer reads them
-            ggml_backend_dev_t wdev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mcache->pred_w->buffer));
+        ggml_tensor * pw = mcache->pred_m[0] ? mcache->pred_m[0] : mcache->pred_w;
+        if (pw && pw->buffer) {
+            // the next layers' router logits from this layer's input (learned predictors, else the next
+            // router), on their GPU in the split before the CPU copy; handed to the CPU gate op as src[4]
+            // ([n_expert*ahead, n_tokens]), where the cache's observer reads them
+            ggml_backend_dev_t wdev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(pw->buffer));
             for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
                 ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
                 if (wdev && ggml_backend_get_device(b) == wdev && b != cpu_backend) {
-                    mc_pred = ggml_mul_mat(ctx0, mcache->pred_w, ggml_reshape_2d(ctx0, mc_inp, n_embd, n_tokens));
-                    ggml_backend_sched_set_tensor_backend(sched, mc_pred, b);
+                    ggml_tensor * x2 = ggml_reshape_2d(ctx0, mc_inp, n_embd, n_tokens);
+                    if (!mcache->pred_m[0]) {
+                        mc_pred = ggml_mul_mat(ctx0, pw, x2);
+                        ggml_backend_sched_set_tensor_backend(sched, mc_pred, b);
+                    }
+                    for (int k = 0; k < mcache->pred_ahead && mcache->pred_m[k]; ++k) {
+                        ggml_tensor * p = ggml_mul_mat(ctx0, mcache->pred_m[k], x2);
+                        ggml_backend_sched_set_tensor_backend(sched, p, b);
+                        if (mcache->pred_mu) {
+                            moe_pred_todo[il + 1 + k].push_back({ mcache->pred_m[k], x2, p, mcache->pred_mu, b });
+                        }
+                        mc_pred = mc_pred ? ggml_concat(ctx0, mc_pred, p, 0) : p;
+                        ggml_backend_sched_set_tensor_backend(sched, mc_pred, b);
+                    }
                     cb(mc_pred, "ffn_moe_pred", il);
                     if (cpu_backend) {
                         // copied with the CPU chain's inputs, so the gate op doesn't wait for the GPU chain

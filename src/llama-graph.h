@@ -12,6 +12,7 @@
 #include <set>
 #include <functional>
 #include <map>
+#include <map>
 
 struct ggml_cgraph;
 struct ggml_context;
@@ -1028,6 +1029,17 @@ struct llm_graph_context {
     ggml_backend_sched_t sched;
 
     ggml_backend_t backend_cpu; // TODO: needed by build_attn_mha, figure out a way to remove?
+
+    // MoE expert cache router predictor: predictions made at an earlier layer, keyed by target layer;
+    // trained (in the graph) once the target layer's router logits exist
+    struct moe_pred_pending {
+        ggml_tensor *  w;
+        ggml_tensor *  x;
+        ggml_tensor *  pred;
+        ggml_tensor *  mu;
+        ggml_backend_t backend;
+    };
+    mutable std::map<int, std::vector<moe_pred_pending>> moe_pred_todo;
 
     const llama_adapter_cvec     * cvec;
     const llama_adapter_loras    * loras;

@@ -140,12 +140,13 @@ struct moe_cache {
     int32_t pred_max = 2;
     float   pred_margin = 0.1f; // min score lead over the M-th prediction (LLAMA_MOE_CACHE_PREDICT_MARGIN)
     bool    pred_ra     = false; // LLAMA_MOE_CACHE_PREDICT_RA=1: readahead of predicted uncached experts (mmap'd weights)
-    std::vector<std::vector<float>> pred_b;  // layer idx -> next layer's selection bias (empty: raw logits)
+    std::vector<std::vector<float>> pred_b;  // layer idx -> its selection bias (empty: raw logits)
     struct pred_req {
         size_t             li;
         uint64_t           step;
         int64_t            n_tok;
-        std::vector<float> x;
+        int64_t            n_blk; // predicted layers li+1 .. li+n_blk
+        std::vector<float> x;     // [n_tok][n_blk][n_expert] logits
     };
     std::deque<pred_req>    preq;
     std::mutex              pmtx;
@@ -155,6 +156,22 @@ struct moe_cache {
     int64_t                 gpu_started = -1; // layer idx whose GPU split may have started this step (mtx)
     int64_t                 last_obs    = -1; // layer idx of the last CPU expert op this step (mtx)
     uint64_t n_pred_up = 0, n_pred_pub = 0, n_pred_used = 0, n_pred_late = 0;
+
+    // learned predictors (in-graph NLMS, see llama_moe_cache_layer::pred_m): trained every pred_train
+    // tokens (--lrn-prd N, 0 = frozen) with step size pred_mu; weights persist in pred_file
+    int32_t  pred_ahead = 0;
+    int32_t  pred_train = 0;
+    float    pred_mu    = 0.5f;
+    float    cur_mu     = 0.0f;
+    uint64_t n_train    = 0;
+    std::string pred_file;
+    std::vector<std::vector<float>> last_pred; // layer idx -> last token-0 prediction [n_blk][n_expert]
+    std::vector<uint64_t>           last_pred_step;
+    std::vector<int64_t>            last_pred_blk;
+    uint64_t acc_hit[4] = {}, acc_tot[4] = {}; // top-k overlap per lookahead, lifetime
+    uint64_t win_hit[4] = {}, win_tot[4] = {}; // same, since the last report
+    std::vector<ggml_context *>        pctxs;
+    std::vector<ggml_backend_buffer_t> pbufs;
 };
 
 // Where a tensor's raw GGUF bytes live (recorded by the model loader).
@@ -220,11 +237,7 @@ double score(const layer_state & ls, int32_t id) {
 // Hot-set profile: which experts this model used, so the next start preloads them into VRAM
 // instead of warming the cache over the first requests. Keyed by model name + file size.
 // LLAMA_MOE_CACHE_PROFILE=<path> overrides the location, =0 disables.
-std::string profile_path(const llama_model & model) {
-    const char * e = getenv("LLAMA_MOE_CACHE_PROFILE");
-    if (e) {
-        return strcmp(e, "0") == 0 ? "" : e;
-    }
+std::string cache_file(const llama_model & model, const char * prefix, const std::string & suffix = "") {
 #ifdef _WIN32
     const char * base = getenv("LOCALAPPDATA");
     const std::string dir = base ? std::string(base) + "\\llama.cpp" : "";
@@ -244,7 +257,15 @@ std::string profile_path(const llama_model & model) {
             c = '_';
         }
     }
-    return dir + "/moe-hot-" + name + "-" + std::to_string(model.size()) + ".bin";
+    return dir + "/" + prefix + name + "-" + std::to_string(model.size()) + suffix + ".bin";
+}
+
+std::string profile_path(const llama_model & model) {
+    const char * e = getenv("LLAMA_MOE_CACHE_PROFILE");
+    if (e) {
+        return strcmp(e, "0") == 0 ? "" : e;
+    }
+    return cache_file(model, "moe-hot-");
 }
 
 constexpr uint32_t PROFILE_MAGIC = 0x3448454d; // "MEH4": u32 counts
@@ -386,7 +407,7 @@ int parse_layer_from_name(const char * name) {
     return atoi(name + 4);
 }
 
-void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct ggml_tensor * pred, void * ud) {
+void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct ggml_tensor * op, void * ud) {
     moe_cache * mc = (moe_cache *) ud;
 
     const int64_t n_ids    = ids->ne[0];
@@ -447,14 +468,43 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
         }
     }
 
-    // router prediction for the next layer, off this thread (the other CPU threads wait at a barrier)
+    // router prediction for the next layers, off this thread (the other CPU threads wait at a barrier)
     const size_t li = ls - mc->layers.data();
-    if (!prefill && mc->pred_m > 0 && pred && pred->type == GGML_TYPE_F32 && pred->ne[1] == n_tokens && li + 1 < mc->layers.size()) {
-        const int64_t ne = pred->ne[0];
-        moe_cache::pred_req r { li, mc->n_steps, n_tokens, std::vector<float>(ne*n_tokens) };
-        for (int64_t t = 0; t < n_tokens; ++t) {
-            memcpy(r.x.data() + t*ne, (const char *) pred->data + t*pred->nb[1], ne*sizeof(float));
+    const ggml_tensor * pred = op ? op->src[4] : nullptr;
+    if (!prefill && mc->pred_m > 0) {
+        // this layer's real choice (token 0) scores the predictions made for it at earlier layers
+        const auto & b = mc->pred_b[li];
+        const int64_t ne = (int64_t) ls->expert_slot.size();
+        std::vector<int32_t> idx(ne);
+        for (int k = 0; k < 4 && (size_t) k + 1 <= li; ++k) {
+            const size_t src = li - 1 - k;
+            if (mc->last_pred_step[src] != mc->n_steps || mc->last_pred_blk[src] <= k) {
+                continue;
+            }
+            const float * lg = mc->last_pred[src].data() + k*ne;
+            auto sc = [&](int32_t e) { return b.empty() ? lg[e] : 1.0f/(1.0f + expf(-lg[e])) + b[e]; };
+            for (int32_t e = 0; e < ne; ++e) { idx[e] = e; }
+            std::partial_sort(idx.begin(), idx.begin() + n_ids, idx.end(), [&](int32_t x, int32_t y) { return sc(x) > sc(y); });
+            uint64_t hit = 0;
+            for (int64_t i = 0; i < n_ids; ++i) {
+                for (int64_t j = 0; j < n_ids; ++j) {
+                    hit += idx[i] == *(const int32_t *) ((const char *) ids->data + j*ids->nb[0]);
+                }
+            }
+            mc->acc_hit[k] += hit; mc->acc_tot[k] += n_ids;
+            mc->win_hit[k] += hit; mc->win_tot[k] += n_ids;
         }
+    }
+    if (!prefill && mc->pred_m > 0 && pred && pred->type == GGML_TYPE_F32 && pred->ne[1] == n_tokens && li + 1 < mc->layers.size()) {
+        const int64_t ne    = (int64_t) mc->layers[li + 1].expert_slot.size();
+        const int64_t n_blk = pred->ne[0] / ne;
+        moe_cache::pred_req r { li, mc->n_steps, n_tokens, n_blk, std::vector<float>(n_blk*ne*n_tokens) };
+        for (int64_t t = 0; t < n_tokens; ++t) {
+            memcpy(r.x.data() + t*n_blk*ne, (const char *) pred->data + t*pred->nb[1], n_blk*ne*sizeof(float));
+        }
+        mc->last_pred[li].assign(r.x.begin(), r.x.begin() + n_blk*ne);
+        mc->last_pred_step[li] = mc->n_steps;
+        mc->last_pred_blk[li]  = n_blk;
         mc->last_obs = (int64_t) li;
         {
             std::lock_guard<std::mutex> plk(mc->pmtx);
@@ -490,9 +540,79 @@ void readahead(const layer_state & ls, int32_t expert) {
 #endif
 }
 
+constexpr uint32_t PRED_MAGIC = 0x3252504d; // "MPR2"
+
+// learned predictors: for every layer and lookahead, the [n_embd, n_expert] F32 matrix
+void pred_save(const moe_cache * mc) {
+    if (mc->pred_file.empty() || mc->n_train == 0) {
+        return;
+    }
+    const std::string tmp = mc->pred_file + ".tmp";
+    FILE * f = fopen(tmp.c_str(), "wb");
+    if (!f) {
+        return;
+    }
+    const uint32_t hdr[3] = { PRED_MAGIC, (uint32_t) mc->layers.size(), (uint32_t) mc->pred_ahead };
+    bool ok = fwrite(hdr, sizeof(hdr), 1, f) == 1;
+    std::vector<float> buf;
+    for (const auto & ls : mc->layers) {
+        for (int k = 0; ok && k < mc->pred_ahead; ++k) {
+            const ggml_tensor * t = ls.pub.pred_m[k];
+            const uint64_t n = t ? (uint64_t) ggml_nelements(t) : 0;
+            ok = fwrite(&n, sizeof(n), 1, f) == 1;
+            if (ok && n) {
+                buf.resize(n);
+                ggml_backend_tensor_get(t, buf.data(), 0, n*sizeof(float));
+                ok = fwrite(buf.data(), sizeof(float), n, f) == n;
+            }
+        }
+    }
+    ok = fclose(f) == 0 && ok;
+    std::error_code ec;
+    if (ok) {
+        std::filesystem::rename(tmp, mc->pred_file, ec);
+        LLAMA_LOG_INFO("moe-cache: saved the router predictors (%" PRIu64 " training steps) to %s\n", mc->n_train, mc->pred_file.c_str());
+    } else {
+        std::filesystem::remove(tmp, ec);
+    }
+}
+
+bool pred_load(const moe_cache * mc) {
+    FILE * f = mc->pred_file.empty() ? nullptr : fopen(mc->pred_file.c_str(), "rb");
+    if (!f) {
+        return false;
+    }
+    uint32_t hdr[3] = {};
+    bool ok = fread(hdr, sizeof(hdr), 1, f) == 1 && hdr[0] == PRED_MAGIC && hdr[1] == mc->layers.size() && hdr[2] == (uint32_t) mc->pred_ahead;
+    std::vector<std::vector<float>> data;
+    for (const auto & ls : mc->layers) {
+        for (int k = 0; ok && k < mc->pred_ahead; ++k) {
+            const ggml_tensor * t = ls.pub.pred_m[k];
+            uint64_t n = 0;
+            ok = fread(&n, sizeof(n), 1, f) == 1 && n == (t ? (uint64_t) ggml_nelements(t) : 0);
+            data.emplace_back(n);
+            ok = ok && fread(data.back().data(), sizeof(float), n, f) == n;
+        }
+    }
+    fclose(f);
+    if (!ok) {
+        LLAMA_LOG_WARN("moe-cache: ignoring router predictors %s (other model or lookahead)\n", mc->pred_file.c_str());
+        return false;
+    }
+    size_t i = 0;
+    for (const auto & ls : mc->layers) {
+        for (int k = 0; k < mc->pred_ahead; ++k, ++i) {
+            if (ls.pub.pred_m[k]) {
+                ggml_backend_tensor_set(ls.pub.pred_m[k], data[i].data(), 0, data[i].size()*sizeof(float));
+            }
+        }
+    }
+    return true;
+}
+
 void pred_loop(moe_cache * mc) {
     std::vector<float>   lg;
-    std::vector<int32_t> idx, cand;
+    std::vector<int32_t> idx;
     for (;;) {
         moe_cache::pred_req r;
         {
@@ -504,43 +624,42 @@ void pred_loop(moe_cache * mc) {
             r = std::move(mc->preq.front());
             mc->preq.pop_front();
         }
-        const auto & b  = mc->pred_b[r.li];
-        auto & ls = mc->layers[r.li + 1];
-        const int64_t ne = (int64_t) ls.expert_slot.size();
-        lg.resize(ne);
-        idx.resize(ne);
-        cand.clear();
-        for (int64_t t = 0; t < r.n_tok; ++t) {
-            std::copy(r.x.begin() + t*ne, r.x.begin() + (t + 1)*ne, lg.begin());
-            if (!b.empty()) {
+        const int64_t ne = (int64_t) mc->layers[r.li + 1].expert_slot.size();
+        // candidates per predicted layer, nearest first
+        std::vector<std::vector<int32_t>> cands(r.n_blk);
+        for (int64_t k = 0; k < r.n_blk && r.li + 1 + k < mc->layers.size(); ++k) {
+            const size_t tl = r.li + 1 + k;
+            auto & ls = mc->layers[tl];
+            const auto & b = mc->pred_b[tl];
+            auto & cand = cands[k];
+            lg.resize(ne);
+            idx.resize(ne);
+            for (int64_t t = 0; t < r.n_tok; ++t) {
+                const float * src = r.x.data() + (t*r.n_blk + k)*ne;
                 for (int64_t e = 0; e < ne; ++e) {
-                    lg[e] = 1.0f/(1.0f + expf(-lg[e])) + b[e];
+                    lg[e] = b.empty() ? src[e] : 1.0f/(1.0f + expf(-src[e])) + b[e];
                 }
-            }
-            for (int32_t e = 0; e < ne; ++e) { idx[e] = e; }
-            const int32_t m = std::min<int32_t>(mc->pred_m, (int32_t) ne);
-            std::partial_sort(idx.begin(), idx.begin() + m, idx.end(), [&](int32_t a, int32_t c) { return lg[a] > lg[c]; });
-            // only confident predictions: precision 0.28 near the cut, 0.88 with a 0.1 lead (GLM, offline)
-            if (mc->pred_ra) {
-                // model bigger than RAM: start reading the predicted experts the CPU will compute
-                for (int32_t k = 0; k < m; ++k) {
-                    if (ls.expert_slot[idx[k]] < 0) {
-                        readahead(ls, idx[k]);
+                for (int32_t e = 0; e < ne; ++e) { idx[e] = e; }
+                const int32_t m = std::min<int32_t>(mc->pred_m, (int32_t) ne);
+                std::partial_sort(idx.begin(), idx.begin() + m, idx.end(), [&](int32_t a, int32_t c) { return lg[a] > lg[c]; });
+                if (mc->pred_ra) {
+                    // model bigger than RAM: start reading the predicted experts the CPU will compute
+                    for (int32_t j = 0; j < m; ++j) {
+                        if (ls.expert_slot[idx[j]] < 0) {
+                            readahead(ls, idx[j]);
+                        }
+                    }
+                }
+                // only confident predictions: precision 0.28 near the cut, 0.88 with a 0.1 lead (GLM, offline)
+                for (int32_t j = 0; j < m; ++j) {
+                    if (lg[idx[j]] - lg[idx[m - 1]] < mc->pred_margin) {
+                        break;
+                    }
+                    if (std::find(cand.begin(), cand.end(), idx[j]) == cand.end()) {
+                        cand.push_back(idx[j]);
                     }
                 }
             }
-            for (int32_t k = 0; k < m; ++k) {
-                if (lg[idx[k]] - lg[idx[m - 1]] < mc->pred_margin) {
-                    break;
-                }
-                if (std::find(cand.begin(), cand.end(), idx[k]) == cand.end()) {
-                    cand.push_back(idx[k]);
-                }
-            }
-        }
-
-        if (cand.empty()) {
-            continue;
         }
         {
             // a backlog would finish too late and delay the step's own uploads
@@ -552,50 +671,61 @@ void pred_loop(moe_cache * mc) {
         std::vector<upload_job> jobs;
         {
             std::lock_guard<std::mutex> lock(mc->mtx);
-            // too late (layer L+1 may be running) or a stale request from an earlier step
-            if (r.step != mc->n_steps || mc->gpu_started >= (int64_t) (r.li + 1)) {
+            if (r.step != mc->n_steps) {
                 mc->n_pred_late++;
                 continue;
             }
-            for (int32_t id : cand) {
-                if ((int32_t) jobs.size() >= mc->pred_max) {
-                    break;
-                }
-                if (ls.expert_slot[id] >= 0 || ls.queued[id] || ls.adopt_slot[id] >= 0) {
+            for (int64_t k = 0; k < r.n_blk; ++k) {
+                const size_t tl = r.li + 1 + k;
+                // too late: that layer's GPU split may be running
+                if (cands[k].empty() || mc->gpu_started >= (int64_t) tl) {
+                    mc->n_pred_late += !cands[k].empty();
                     continue;
                 }
-                // victim: an empty slot, else the lowest-scored cached expert not predicted now
-                int32_t slot = -1;
-                double best = 1e300;
-                for (int32_t s = 0; s < ls.pub.n_slots; ++s) {
-                    if (ls.slot_in_flight[s]) {
+                auto & ls = mc->layers[tl];
+                const auto & cand = cands[k];
+                int32_t n_job = 0;
+                for (int32_t id : cand) {
+                    if (n_job >= mc->pred_max) {
+                        break;
+                    }
+                    if (ls.expert_slot[id] >= 0 || ls.queued[id] || ls.adopt_slot[id] >= 0) {
                         continue;
                     }
-                    const int32_t v = ls.slot_expert[s];
-                    if (v < 0) { slot = s; break; }
-                    if (ls.sticky[v] || std::find(cand.begin(), cand.end(), v) != cand.end()) {
-                        continue;
+                    // victim: an empty slot, else the lowest-scored cached expert not predicted now
+                    int32_t slot = -1;
+                    double best = 1e300;
+                    for (int32_t sl = 0; sl < ls.pub.n_slots; ++sl) {
+                        if (ls.slot_in_flight[sl]) {
+                            continue;
+                        }
+                        const int32_t v = ls.slot_expert[sl];
+                        if (v < 0) { slot = sl; break; }
+                        if (ls.sticky[v] || std::find(cand.begin(), cand.end(), v) != cand.end()) {
+                            continue;
+                        }
+                        const double c = score(ls, v);
+                        if (c < best) { best = c; slot = sl; }
                     }
-                    const double c = score(ls, v);
-                    if (c < best) { best = c; slot = s; }
+                    if (slot < 0) {
+                        break;
+                    }
+                    const int32_t victim = ls.slot_expert[slot];
+                    if (victim >= 0) {
+                        ls.expert_slot[victim] = -1;
+                        ls.slot_expert[slot]   = -1;
+                        set_table_entry(ls.pub, victim, ls.pub.n_slots);
+                        ls.cached_since[victim] = 0;
+                        ls.prefetched[victim]   = 0;
+                        if (ls.dropped[victim]) { page_hint(mc, ls, victim, false); ls.dropped[victim] = false; }
+                    }
+                    ls.slot_in_flight[slot] = true;
+                    ls.queued[id]           = 1;
+                    upload_job j { tl, id, slot };
+                    j.urgent = true;
+                    jobs.push_back(j);
+                    n_job++;
                 }
-                if (slot < 0) {
-                    break;
-                }
-                const int32_t victim = ls.slot_expert[slot];
-                if (victim >= 0) {
-                    ls.expert_slot[victim] = -1;
-                    ls.slot_expert[slot]   = -1;
-                    set_table_entry(ls.pub, victim, ls.pub.n_slots);
-                    ls.cached_since[victim] = 0;
-                    ls.prefetched[victim]   = 0;
-                    if (ls.dropped[victim]) { page_hint(mc, ls, victim, false); ls.dropped[victim] = false; }
-                }
-                ls.slot_in_flight[slot] = true;
-                ls.queued[id]           = 1;
-                upload_job j { r.li + 1, id, slot };
-                j.urgent = true;
-                jobs.push_back(j);
             }
         }
         if (!jobs.empty()) {
@@ -609,6 +739,7 @@ void pred_loop(moe_cache * mc) {
             mc->wcv.notify_all();
         }
     }
+
 }
 
 // Prefill preheat: the scheduler just copied the used experts of `weight` to `dev` for a prompt
@@ -1109,25 +1240,92 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             if (const char * g = getenv("LLAMA_MOE_CACHE_PREDICT_MARGIN")) {
                 mc->pred_margin = (float) atof(g);
             }
-            mc->pred_b.resize(mc->layers.size());
-            size_t n_pred = 0;
-            for (size_t li = 0; mc->pred_m > 0 && li + 1 < mc->layers.size(); ++li) {
-                const int il = mc->layers[li + 1].pub.il;
-                if (il != mc->layers[li].pub.il + 1 || il >= (int) model.layers.size()) {
+            {
+                const char * a  = getenv("LLAMA_MOE_CACHE_PREDICT_AHEAD");
+                const char * tt = getenv("LLAMA_MOE_CACHE_PREDICT_TRAIN");
+                const char * mu = getenv("LLAMA_MOE_CACHE_PREDICT_MU");
+                mc->pred_ahead = std::max(0, std::min(4, a ? atoi(a) : 2));
+                mc->pred_train = tt ? atoi(tt) : 0;
+                if (mu) { mc->pred_mu = (float) atof(mu); }
+                const char * pf = getenv("LLAMA_MOE_CACHE_PREDICT_FILE");
+                mc->pred_file = pf ? (strcmp(pf, "0") == 0 ? "" : pf) : cache_file(model, "moe-pred-", "-a" + std::to_string(mc->pred_ahead));
+            }
+            const size_t nl = mc->layers.size();
+            mc->pred_b.assign(nl, {});
+            mc->last_pred.assign(nl, {});
+            mc->last_pred_step.assign(nl, UINT64_MAX);
+            mc->last_pred_blk.assign(nl, 0);
+            for (size_t li = 0; mc->pred_m > 0 && li < nl; ++li) {
+                const int il = mc->layers[li].pub.il;
+                const ggml_tensor * b = il < (int) model.layers.size() ? model.layers[il].ffn_exp_probs_b : nullptr;
+                if (b && b->buffer && b->type == GGML_TYPE_F32 && ggml_nelements(b) == (int64_t) mc->layers[li].expert_slot.size()) {
+                    mc->pred_b[li].resize(ggml_nelements(b));
+                    ggml_backend_tensor_get(b, mc->pred_b[li].data(), 0, ggml_nbytes(b));
+                }
+            }
+            size_t n_pred = 0, n_learn = 0;
+            for (size_t li = 0; mc->pred_m > 0 && li + 1 < nl; ++li) {
+                auto & pub = mc->layers[li].pub;
+                const int64_t n_embd = pub.up_src->ne[0];
+                std::vector<ggml_tensor *> routers;
+                for (int k = 0; k < std::max(1, mc->pred_ahead) && li + 1 + k < nl; ++k) {
+                    const int il = mc->layers[li + 1 + k].pub.il;
+                    if (il != pub.il + 1 + k || il >= (int) model.layers.size()) {
+                        break;
+                    }
+                    ggml_tensor * w = model.layers[il].ffn_gate_inp;
+                    if (!w || !w->buffer || w->ne[0] != n_embd || w->ne[1] != (int64_t) mc->layers[li + 1 + k].expert_slot.size()) {
+                        break;
+                    }
+                    routers.push_back(w);
+                }
+                if (routers.empty()) {
                     continue;
                 }
-                ggml_tensor * w = model.layers[il].ffn_gate_inp;
-                const ggml_tensor * b = model.layers[il].ffn_exp_probs_b;
-                const int64_t ne = (int64_t) mc->layers[li + 1].expert_slot.size();
-                if (!w || w->ne[1] != ne || w->ne[0] != mc->layers[li].pub.up_src->ne[0]) {
-                    continue;
-                }
-                mc->layers[li].pub.pred_w = w;
-                if (b && b->buffer && b->type == GGML_TYPE_F32 && ggml_nelements(b) == ne) {
-                    mc->pred_b[li].resize(ne);
-                    ggml_backend_tensor_get(b, mc->pred_b[li].data(), 0, ne*sizeof(float));
-                }
+                pub.pred_w = routers[0];
                 n_pred++;
+                if (mc->pred_ahead == 0) {
+                    continue;
+                }
+                // learned predictors start as the target layers' routers, next to them on their device
+                ggml_init_params ip = { ggml_tensor_overhead()*(routers.size() + 2), nullptr, true };
+                ggml_context * pctx = ggml_init(ip);
+                mc->pctxs.push_back(pctx);
+                for (size_t k = 0; k < routers.size(); ++k) {
+                    pub.pred_m[k] = ggml_new_tensor_2d(pctx, GGML_TYPE_F32, n_embd, routers[k]->ne[1]);
+                    ggml_format_name(pub.pred_m[k], "moe_pred-%d-%zu", pub.il, k + 1);
+                }
+                pub.pred_mu = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, 1);
+                ggml_set_name(pub.pred_mu, "moe_pred_mu");
+                ggml_backend_buffer_t pbuf = ggml_backend_alloc_ctx_tensors_from_buft(pctx, ggml_backend_buffer_get_type(routers[0]->buffer));
+                if (!pbuf) {
+                    std::fill(std::begin(pub.pred_m), std::end(pub.pred_m), nullptr);
+                    pub.pred_mu = nullptr;
+                    continue;
+                }
+                mc->pbufs.push_back(pbuf);
+                for (size_t k = 0; k < routers.size(); ++k) {
+                    const ggml_tensor * w = routers[k];
+                    std::vector<uint8_t> raw(ggml_nbytes(w));
+                    ggml_backend_tensor_get(w, raw.data(), 0, raw.size());
+                    std::vector<float> f(ggml_nelements(w));
+                    if (w->type == GGML_TYPE_F32) {
+                        memcpy(f.data(), raw.data(), raw.size());
+                    } else {
+                        ggml_get_type_traits(w->type)->to_float(raw.data(), f.data(), (int64_t) f.size());
+                    }
+                    ggml_backend_tensor_set(pub.pred_m[k], f.data(), 0, f.size()*sizeof(float));
+                }
+                const float zero = 0.0f;
+                ggml_backend_tensor_set(pub.pred_mu, &zero, 0, sizeof(float));
+                pub.pred_ahead = (int) routers.size();
+                n_learn++;
+            }
+            if (n_learn > 0) {
+                const bool loaded = pred_load(mc);
+                LLAMA_LOG_WARN("moe-cache: learned router predictors for %zu layers, %d layers ahead, %s, training %s\n",
+                        n_learn, mc->pred_ahead, loaded ? ("loaded " + mc->pred_file).c_str() : "new (= the routers)",
+                        mc->pred_train > 0 ? ("every " + std::to_string(mc->pred_train) + " tokens").c_str() : "off (--lrn-prd N)");
             }
             if (n_pred > 0) {
                 mc->pred_thr = std::thread(pred_loop, mc);
@@ -1296,6 +1494,27 @@ void llama_moe_cache_step() {
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->n_steps++;
+    // learned predictors: this token trains them (in the graph) when mu > 0
+    if (mc->pred_ahead > 0 && mc->pred_m > 0) {
+        const float want = mc->pred_train > 0 && mc->n_steps % mc->pred_train == 0 ? mc->pred_mu : 0.0f;
+        if (want != mc->cur_mu) {
+            for (auto & ls : mc->layers) {
+                if (ls.pub.pred_mu) {
+                    ggml_backend_tensor_set(ls.pub.pred_mu, &want, 0, sizeof(float));
+                }
+            }
+            mc->cur_mu = want;
+        }
+        mc->n_train += want > 0;
+    }
+    if (mc->pred_m > 0 && mc->n_steps % 1024 == 0 && mc->win_tot[0] > 0) {
+        std::string msg;
+        for (int k = 0; k < 4 && mc->win_tot[k] > 0; ++k) {
+            msg += format(" L+%d %.1f%%", k + 1, 100.0*mc->win_hit[k]/mc->win_tot[k]);
+            mc->win_hit[k] = mc->win_tot[k] = 0;
+        }
+        LLAMA_LOG_INFO("moe-cache: predicted top-k overlap, last 1024 tokens:%s (%" PRIu64 " training steps)\n", msg.c_str(), mc->n_train);
+    }
     mc->last_obs    = -1;
     mc->gpu_started = -1;
     // drop-cached: only experts that stayed in VRAM for LLAMA_MOE_CACHE_DROP_STAY steps (default 1024)
@@ -1470,11 +1689,21 @@ void llama_moe_cache_free() {
     for (auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
     LLAMA_LOG_WARN("moe-cache: steps=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " hit-rate=%.1f%%, prefill experts from cache %" PRIu64 "/%" PRIu64 ", kept from prefill %" PRIu64 "\n",
             mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0, mc->n_src_hit, mc->n_src_query, mc->n_adopted);
+    if (mc->acc_tot[0]) {
+        std::string msg;
+        for (int k = 0; k < 4 && mc->acc_tot[k] > 0; ++k) {
+            msg += format(" L+%d %.1f%%", k + 1, 100.0*mc->acc_hit[k]/mc->acc_tot[k]);
+        }
+        LLAMA_LOG_WARN("moe-cache: predicted top-k overlap:%s (%" PRIu64 " training steps)\n", msg.c_str(), mc->n_train);
+    }
+    pred_save(mc);
     if (mc->n_pred_up) {
         LLAMA_LOG_WARN("moe-cache: router prediction: %" PRIu64 " uploads, %" PRIu64 " published before their layer, %" PRIu64 " used, %" PRIu64 " too late to start\n",
                 mc->n_pred_up, mc->n_pred_pub, mc->n_pred_used, mc->n_pred_late);
     }
     for (auto * b : mc->staging) { if (b) { ggml_backend_buffer_free(b); } }
+    for (auto * b : mc->pbufs) { ggml_backend_buffer_free(b); }
+    for (auto * c : mc->pctxs) { ggml_free(c); }
     for (auto * b : mc->bufs) { ggml_backend_buffer_free(b); }
     for (auto * c : mc->ctxs) { ggml_free(c); }
     delete mc;
