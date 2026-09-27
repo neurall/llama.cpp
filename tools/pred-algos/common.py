@@ -15,7 +15,9 @@ MODEL = "/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf"
 TOKENIZE = os.path.join(os.path.dirname(__file__), "..", "..", "build-cuda", "bin", "llama-tokenize")
 DATA = os.path.expandvars("$CLAUDE_JOB_DIR/tmp/olmo")
 REF = None  # per-token hits of the reference algos (ref_<data>.npz from nlms.py --save), set by load()
-SETS = {"simcity": ("simcity.pt", "S*.txt"), "session": ("session.pt", "L*.txt")}
+SETS = {"simcity": ("simcity.pt", "S*.txt"), "session": ("session.pt", "L*.txt"),
+        "tiny": ("tiny.pt", "T*.txt"),    # TinyStories prefill (no chat prompt: every token counts)
+        "story": ("story.pt", "Y*.txt")}  # OLMoE's own "Write a short story." answers, temp 1
 
 
 def tokenize(path):
@@ -43,10 +45,12 @@ def load(name, need_x=False):
             if i < len(lens) and len(t := tokenize(f)) == lens[i]:
                 # the prompt ends with the assistant tag: tokens after it were generated
                 text = open(f).read()
-                head = text[:text.index("<|assistant|>\n") + len("<|assistant|>\n")]
-                with open(os.path.join(DATA, "_head.txt"), "w") as h:
-                    h.write(head)
-                n_prompt = len(tokenize(os.path.join(DATA, "_head.txt")))
+                n_prompt = 0
+                if "<|assistant|>\n" in text:
+                    head = text[:text.index("<|assistant|>\n") + len("<|assistant|>\n")]
+                    with open(os.path.join(DATA, "_head.txt"), "w") as h:
+                        h.write(head)
+                    n_prompt = len(tokenize(os.path.join(DATA, "_head.txt")))
                 toks += t
                 gen += [False] * n_prompt + [True] * (len(t) - n_prompt)
                 i += 1
@@ -110,6 +114,8 @@ class Run:
         os.makedirs(a.ckpt_dir, exist_ok=True)
         self.path = os.path.join(a.ckpt_dir, f"{algo}{a.tag}.{a.data}.pt")
         self.state, self.start, self.hits, self.touched = {}, 0, {}, set()
+        if a.init_from and not os.path.exists(self.path):
+            self.state = torch.load(a.init_from, weights_only=False)["state"]   # learned state only: new stream, new hits
         if not a.fresh and os.path.exists(self.path):
             ck = torch.load(self.path, weights_only=False)
             self.state, self.start, self.hits = ck["state"], ck["pos"] % T, ck["hits"]
@@ -155,6 +161,7 @@ def cli(desc):
     ap.add_argument("--ckpt-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ckpt"))
     ap.add_argument("--tag", default="", help="checkpoint name suffix, to keep variants apart")
     ap.add_argument("--fresh", action="store_true", help="ignore the checkpoint, start over")
+    ap.add_argument("--init-from", default=None, help="start from another run's learned state (e.g. pretrained on tiny)")
     return ap
 
 

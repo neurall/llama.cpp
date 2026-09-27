@@ -18,8 +18,10 @@ def main():
     ap.add_argument("--ahead", type=int, default=3)
     ap.add_argument("--bits", type=int, default=16, help="sign bits per hashed vector")
     ap.add_argument("--prev", choices=["last", "target"], default="target")
-    ap.add_argument("--history", type=int, default=1,
+    ap.add_argument("--history", type=int, default=6,
                     help="key on the previous N tokens at the target layer (+ current x_L), backing off N..1 like an n-gram cache")
+    ap.add_argument("--store", choices=["first", "latest"], default="first",
+                    help="latest: overwrite with the newest picks; first: keep the first picks stored for a key (hit counter per entry)")
     ap.add_argument("--prev-bits", type=int, default=None, help="bits for the previous token's vector (default --bits, 0: current only)")
     a = parse(ap)
     pb = a.bits if a.prev_bits is None else a.prev_bits
@@ -37,11 +39,11 @@ def main():
     pc = codes(X, Pp, pb).numpy()
     # prevs[j]: codes of the token j+1 back, every layer (-1 before the stream start)
     prevs = [np.concatenate([np.full((NL, j + 1), -1), pc[:, :T - j - 1]], 1) for j in range(a.history)]
-    run = Run(a, f"hashmem-{a.prev}-{pb}+{a.bits}-h{a.history}", T)
+    run = Run(a, f"hashmem-{a.prev}-{pb}+{a.bits}-h{a.history}-{a.store}", T)
     ks = range(1, a.ahead + 1)
     mem = run.state.get("mem") or {k: [dict() for _ in range(NL - k)] for k in ks}   # one dict per layer, keys of every order
     router = {k: torch.topk(torch.einsum("led,ltd->lte", W[k:], X[:NL - k]), K, dim=-1).indices.numpy() for k in ks}
-    name = f"hashmem {a.prev} {pb}+{a.bits}b h{a.history}"
+    name = f"hashmem {a.prev} {pb}+{a.bits}b h{a.history} {a.store}"
     for t in range(run.start, T):
         if run.expired(t):
             break
@@ -56,12 +58,16 @@ def main():
                     got = mem[k][L].get(key)
                     if got is not None:
                         break
-                h = np.isin(real[tgt, t], got if got is not None else router[k][L, t]).mean()
+                ids = got[0] if got is not None else router[k][L, t]
+                h = np.isin(real[tgt, t], ids).mean()
+                if got is not None:
+                    got[1] += h                                          # hit counter of this entry
                 h_all[tgt, t] = h
                 if got is not None:
                     h_rec[tgt, t] = h
                 for key in keys:
-                    mem[k][L][key] = real[tgt, t]
+                    if a.store == "latest" or key not in mem[k][L]:
+                        mem[k][L][key] = [real[tgt, t], 0.0]
     run.save(mem=mem)
     if common.REF is not None:
         # recalled key -> stored experts, otherwise NLMS (reference run)
