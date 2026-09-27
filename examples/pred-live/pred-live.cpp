@@ -63,6 +63,7 @@ struct counters { double tok = 0, router = 0, nlms = 0, hash_rec = 0, hash_rec_h
 
 static int n_layer = 0, n_expert = 0, n_embd = 0, top_k = 0, ahead = 8;
 static bool with_router = false;
+static bool merge1 = false;        // --merge1: length-1 recalls merged with NLMS (tried: 0.84 vs 0.90 stored alone, worse)
 static bool with_coarse = false;   // coarse rungs: <0.2% of recalls once NLMS is strong, but double the stored entries (--coarse)
 static uint32_t hash_ttl = 20000, clock_tok = 0;
 
@@ -259,6 +260,16 @@ static void process(bool score) {
                 double h_hash = h_nlms;
                 if (got) {
                     h_hash = overlap(got->ids.data(), real);
+                    if (got_rung == 0 && merge1) {
+                        // length-1 recall (hit ~0.90): experts both agree on first, then the rest of the union in NLMS logit order
+                        const float * lg = pv.data() + (size_t) j * n_expert;
+                        int32_t cand[16]; int nc = 0;
+                        for (int i = 0; i < top_k; ++i) cand[nc++] = got->ids[i];
+                        for (int i = 0; i < top_k; ++i) if (std::find(cand, cand + nc, pred[i]) == cand + nc) cand[nc++] = pred[i];
+                        auto both = [&](int32_t e) { return std::find(pred, pred + top_k, e) != pred + top_k && std::find(got->ids.begin(), got->ids.end(), e) != got->ids.end(); };
+                        std::sort(cand, cand + nc, [&](int32_t a, int32_t b) { return both(a) != both(b) ? both(a) : lg[a] > lg[b]; });
+                        h_hash = overlap(cand, real);
+                    }
                     got->hits_x8 += (uint32_t) std::lround(h_hash * top_k);
                     got->uses++;
                     got->last = clock_tok;
@@ -500,6 +511,7 @@ int main(int argc, char ** argv) {
         else if (a == "--ahead" && i + 1 < argc) ahead = std::min(MAXK, atoi(argv[++i]));
         else if (a == "--router") with_router = true;
         else if (a == "--coarse") with_coarse = true;
+        else if (a == "--merge1") merge1 = true;
         else if (a == "--hash-ttl" && i + 1 < argc) hash_ttl = (uint32_t) atoi(argv[++i]);
         else if (a == "--report-file" && i + 1 < argc) report_path = argv[++i];
         else if (a == "--state" && i + 1 < argc) state_path = argv[++i];
