@@ -1,0 +1,6 @@
+ckpt/
+*.log
+*.npz
+*.txt
+stop_*
+__pycache__/
