@@ -7,13 +7,14 @@ State s [H] runs alongside the model. Block L mixes in 1-3 layers of current and
 Head (L, k) predicts a residual on the router of L+k applied to x_L (zero-init). Loss: MSE to the real
 router logits of every target, backprop through the whole stack each token.
 """
+import os
 import time
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from common import cli, load, report
+from common import cli, load, report, parse
 
 
 def rms(x):
@@ -25,9 +26,10 @@ def main():
     ap.add_argument("--ahead", type=int, default=3)
     ap.add_argument("--hidden", type=int, default=256)
     ap.add_argument("--lr", type=float, default=1e-3)
-    a = ap.parse_args()
+    ap.add_argument("--ckpt", default=None, help="path to save/resume weights+optimizer across reruns")
+    a = parse(ap)
     d = load(a.data, need_x=True)
-    dev = "cuda"
+    dev = a.device
     X = d["X"].to(dev)
     Y, W, real, K = d["Y"].to(dev), d["W"].to(dev), d["real"].to(dev), d["k"]
     NL, T, D = X.shape
@@ -35,11 +37,18 @@ def main():
 
     def p(*shape, scale):
         return (torch.randn(*shape, device=dev) * scale).requires_grad_()
-    proj = p(NL, 4 * D, H, scale=(4 * D) ** -0.5)
-    up, gate = p(NL, 2 * H, 2 * H, scale=(2 * H) ** -0.5), p(NL, 2 * H, 2 * H, scale=(2 * H) ** -0.5)
-    down = p(NL, 2 * H, H, scale=0.0)
-    head = torch.zeros(NL, A, H, E, device=dev, requires_grad=True)
-    opt = torch.optim.Adam([proj, up, gate, down, head], lr=a.lr)
+    if a.ckpt and os.path.exists(a.ckpt):
+        ck = torch.load(a.ckpt, map_location=dev)
+        proj, up, gate, down, head = (ck[n].to(dev).requires_grad_() for n in ("proj", "up", "gate", "down", "head"))
+        opt = torch.optim.Adam([proj, up, gate, down, head], lr=a.lr)
+        opt.load_state_dict(ck["opt"])
+        print(f"  resumed from {a.ckpt} ({ck.get('tokens_seen', '?')} tokens seen before)")
+    else:
+        proj = p(NL, 4 * D, H, scale=(4 * D) ** -0.5)
+        up, gate = p(NL, 2 * H, 2 * H, scale=(2 * H) ** -0.5), p(NL, 2 * H, 2 * H, scale=(2 * H) ** -0.5)
+        down = p(NL, 2 * H, H, scale=0.0)
+        head = torch.zeros(NL, A, H, E, device=dev, requires_grad=True)
+        opt = torch.optim.Adam([proj, up, gate, down, head], lr=a.lr)
     # (source L, lookahead k) pairs with a target inside the model
     pairs = [(L, k) for k in range(1, A + 1) for L in range(NL - k)]
     Ls = torch.tensor([L for L, _ in pairs], device=dev)
@@ -73,6 +82,10 @@ def main():
         sel = (ks == k).cpu().numpy()
         hm[k:] = hit[sel]
         report(f"L+{k} stack h{H} lr {a.lr}", hm, d["bounds"], f"  ({time.time() - t0:.1f} s total)", d["gen"])
+    if a.ckpt:
+        torch.save({"proj": proj.detach().cpu(), "up": up.detach().cpu(), "gate": gate.detach().cpu(),
+                    "down": down.detach().cpu(), "head": head.detach().cpu(),
+                    "opt": opt.state_dict(), "tokens_seen": T}, a.ckpt)
 
 
 if __name__ == "__main__":
