@@ -64,8 +64,8 @@ struct counters { double tok = 0, router = 0, nlms = 0, hash_rec = 0, hash_rec_h
 static int n_layer = 0, n_expert = 0, n_embd = 0, top_k = 0, ahead = 8;
 static bool with_router = false;
 static bool merge1 = false;        // --merge1: length-1 recalls merged with NLMS (tried: 0.84 vs 0.90 stored alone, worse)
-static bool with_coarse = false;
-static bool with_hash = false;     // --hash: the hash ladder on top of NLMS (off: +0.003..+0.005 top-8 hit on stories, <1% time, not worth its memory)   // coarse rungs: <0.2% of recalls once NLMS is strong, but double the stored entries (--coarse)
+static bool with_coarse = false;   // --coarse: coarse rungs (<0.2% of recalls once NLMS is strong, but double the stored entries)
+static bool with_hash = false;     // --hash: the hash ladder on top of NLMS (off: +0.003..+0.005 top-8 hit on stories, <1% time, not worth its memory)
 static uint32_t hash_ttl = 20000, clock_tok = 0;
 
 // per-ubatch capture
