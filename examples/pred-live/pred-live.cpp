@@ -217,11 +217,11 @@ static void process(bool score) {
                     h = mix(h, ring[T][n]);
                     keys[n] = mix(h, n);
                 }
-                // coarse rung: the same ladder on an 8-bit current code, trusted only once proven (hit >= 7/8 on average)
+                // coarse rung: the same ladder on 8-bit codes (current and previous), trusted only once proven (hit >= 7/8 on average)
                 uint64_t ckeys[HIST];
                 uint64_t hc = mix(0x5bd1e995ull, cur_code[L][j] >> 8);
                 for (int n = 0; n < HIST; ++n) {
-                    hc = mix(hc, ring[T][n]);
+                    hc = mix(hc, ring[T][n] >> 8);                          // previous tokens' codes coarse too: more repeats across texts
                     ckeys[n] = mix(hc, n);
                 }
                 entry * got = nullptr;
