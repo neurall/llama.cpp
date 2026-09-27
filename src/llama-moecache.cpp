@@ -349,14 +349,14 @@ struct knobs_t {
     double slow_stay = 1024;
     double margin    = -1;  // fixed pay-back margin, -1: from upload timing
     double budget    = -1;  // fixed swaps per step, -1: from upload timing
-    double cpu_gbs   = 36;  // CPU expert read rate for the pay-back margin (dev box DDR4-3200 ECC measured 36)
+    double cpu_gbs   = 38;  // CPU read rate alone (ddrbw, 6 threads, DDR4-3200 ECC); pay-back margin, DDR demand before measured
     double link      = 1;   // pay-back margin per upload link (0: one margin from the average upload)
     double gate      = 0;   // uploads wait (up to GATE_MAX_US per tensor) while the CPU computes uncached experts: no DDR4 contention
     double gate_max_us = 2000;
     double auto_tune   = 1;    // adjust stream lead and STREAM_M per link from the measured late share and precision
     double wait        = 1;    // the step waits for queued cache swaps (0: never; finished uploads are published at splits)
     double chunk_kb    = 0;    // GATE=3: copy in chunks of this size, re-checking the DDR budget before each (0: whole tensor)
-    double ddr_gbs     = 36;   // measured max on the dev box (DDR4-3200 ECC); GATE=3: an upload starts only while DDR demand + its link rate stays under this
+    double ddr_gbs     = 44;   // tools/moe-bench/ddrbw: CPU + both DMAs together peak at 44-45 GB/s (DDR4-3200 ECC, 2 ch); GATE=3: an upload starts only while DDR demand + its link rate stays under this
     double stream    = 1e9; // predicted uploads use up to this many stream slots per layer (0: evict cache slots, old path)
     double stream_m  = 12;  // candidates per target layer in stream mode (over-predict; no confidence cut)
     double offset      = 1; // predicted uploads only for layers far enough ahead to land in time on their link
