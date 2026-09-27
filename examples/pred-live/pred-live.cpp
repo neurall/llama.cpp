@@ -58,7 +58,7 @@ struct pair_state {                // predictor of layer L+k from layer L
 struct counters { double tok = 0, router = 0, base = 0, nlms = 0, hash_rec = 0, hash_rec_hit = 0, nlms_on_rec = 0, combo = 0, coarse = 0; };
 
 static int n_layer = 0, n_expert = 0, n_embd = 0, top_k = 0, ahead = 8;
-static float mu = 0.5f, mu2 = 0.1f, mu3 = 0.1f, mu_fast = 1.0f;
+static float mu = 0.5f, mu2 = 0.1f, mu3 = 0.5f, mu_fast = 1.0f;
 
 // per-ubatch capture
 static std::vector<std::vector<float>>   cap_x, cap_logits;
@@ -235,7 +235,7 @@ static void process(bool score) {
                         auto it = ps.mem.find(ckeys[n]);
                         if (it == ps.mem.end()) continue;
                         entry & ce = it->second;
-                        if (ce.uses > 0 && ce.hits_x8 >= 7 * ce.uses) {
+                        if (ce.uses >= 3 && ce.hits_x8 >= 7 * ce.uses) {         // proven: >= 3 uses at >= 7/8 (one lucky use is not enough)
                             got = &ce;
                             coarse = true;
                         } else {                                            // unproven: score silently so it can earn trust
