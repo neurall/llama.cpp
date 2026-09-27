@@ -35,6 +35,8 @@ MODELS_DIR = os.environ.get("PERF_MODELS_DIR", "")  # other models' pages are dr
 PPL_TEXT = os.path.join(PROMPTS, "longsrc.cpp")  # frozen snapshot of llama.cpp common/json-schema-to-grammar.cpp (code, like agent prompts)
 BARE = False
 COMMON_ALL = ["-t", "6", "--cpu-moe", "-nr", "--moe-expert-cache", "-1", "-dev", "CUDA0,CUDA1"]
+if "," not in os.environ.get("CUDA_VISIBLE_DEVICES", ","):  # one visible GPU: no device order to pin
+    COMMON_ALL = COMMON_ALL[:-2]
 COMMON = COMMON_ALL
 PORT = 8099
 GREEDY = {"temperature": 0, "top_k": 1, "top_p": 1}
