@@ -48,17 +48,17 @@ struct entry {
 };
 
 struct pair_state {                // predictor of layer L+k from layer L
-    std::vector<float> M, M2;      // [E][D] linear map on x_L, and on the previous token's x_{L+k}
+    std::vector<float> M, M2;      // [E][D] linear map on x_L (plain NLMS, also the fixed baseline), and on the previous token's x_{L+k}
     std::vector<float> M3;         // [E][E] on the previous token's real picks at L+k (one-hot): expert persistence
-    std::vector<float> M0;         // [E][D] fixed baseline: plain NLMS on x_L, never changed, to score every improvement
-    float gain = 0;                // running (EMA) hit gain of adding the M2/M3 inputs; they are used only while it is > 0
+    std::vector<float> MF;         // [E][D] same as M with a faster step (mu_fast): step size picked per pair by results
+    float ema[3] = {};             // running hit rate of the candidates: main, main + extras, fast; the best one predicts
     std::unordered_map<uint64_t, entry> mem;
 };
 
 struct counters { double tok = 0, router = 0, base = 0, nlms = 0, hash_rec = 0, hash_rec_hit = 0, nlms_on_rec = 0, combo = 0, coarse = 0; };
 
 static int n_layer = 0, n_expert = 0, n_embd = 0, top_k = 0, ahead = 8;
-static float mu = 0.5f, mu2 = 0.1f, mu3 = 0.1f;
+static float mu = 0.5f, mu2 = 0.1f, mu3 = 0.1f, mu_fast = 1.0f;
 
 // per-ubatch capture
 static std::vector<std::vector<float>>   cap_x, cap_logits;
@@ -188,10 +188,6 @@ static void process(bool score) {
                 matvec(routers[T].data(), x, r.data());
                 topk_of(r.data(), pred);
                 const double h_router = overlap(pred, real);
-                std::vector<float> p0(n_expert);
-                matvec(ps.M0.data(), x, p0.data());
-                topk_of(p0.data(), pred);
-                const double h_base = overlap(pred, real);
                 const int32_t * pids = prev_ids[T].data();
                 matvec(ps.M.data(), x, p.data());                          // main map: trained exactly like the baseline
                 std::vector<float> px(p);                                   // + extra inputs (previous token at L+k, its picks)
@@ -202,12 +198,17 @@ static void process(bool score) {
                         for (int i = 0; i < top_k; ++i) px[e] += ps.M3[(size_t) e * n_expert + pids[i]];
                     }
                 }
-                topk_of(p.data(), pred);
-                const double h_main = overlap(pred, real);
-                topk_of(px.data(), pred);
-                const double h_extra = overlap(pred, real);
-                const double h_nlms = ps.gain > 0 ? h_extra : h_main;       // the extras only once they have proven a gain
-                ps.gain = 0.99f * ps.gain + 0.01f * (float) (h_extra - h_main);
+                std::vector<float> pf(n_expert);
+                matvec(ps.MF.data(), x, pf.data());
+                double hcand[3];
+                topk_of(p.data(), pred);  hcand[0] = overlap(pred, real);
+                const double h_base = hcand[0];                             // plain NLMS = the fixed baseline
+                topk_of(px.data(), pred); hcand[1] = overlap(pred, real);
+                topk_of(pf.data(), pred); hcand[2] = overlap(pred, real);
+                // the candidate with the best running hit rate predicts (decided before seeing this token's picks)
+                const int best = ps.ema[1] > ps.ema[0] && ps.ema[1] >= ps.ema[2] ? 1 : ps.ema[2] > ps.ema[0] ? 2 : 0;
+                const double h_nlms = hcand[best];
+                for (int c = 0; c < 3; ++c) ps.ema[c] = 0.99f * ps.ema[c] + 0.01f * (float) hcand[c];
 
                 // hash ladder: longest key first
                 uint64_t keys[HIST];
@@ -278,9 +279,9 @@ static void process(bool score) {
                         const float g3 = mu3 * err_x / top_k;                 // one-hot input: |x|^2 = k
                         for (int i = 0; i < top_k; ++i) ps.M3[(size_t) e * n_expert + pids[i]] += g3;
                     }
-                    float * m0 = ps.M0.data() + (size_t) e * n_embd;          // fixed baseline
-                    const float g0 = mu * (y[e] - p0[e]) / nx;
-                    for (int d = 0; d < n_embd; ++d) m0[d] += g0 * x[d];
+                    float * mf = ps.MF.data() + (size_t) e * n_embd;          // faster-step candidate
+                    const float gf = mu_fast * (y[e] - pf[e]) / nx;
+                    for (int d = 0; d < n_embd; ++d) mf[d] += gf * x[d];
                 }
 
                 if (score) {
@@ -410,7 +411,7 @@ static bool load_routers(const std::string & path) {
 }
 
 // ---- resumable state: run --time-limit seconds, save everything, exit; the next run continues ----
-static constexpr uint32_t STATE_VERSION = 2;   // bump when the saved layout changes
+static constexpr uint32_t STATE_VERSION = 4;   // bump when the saved layout changes
 
 struct progress {                 // phase 0 pretrain, 1 stories, 2 finished
     int32_t phase = 0; uint64_t at = 0; int32_t done = 0, story = 0;
@@ -435,7 +436,7 @@ static void save_state(const std::string & path, const progress & pr) {
     for (auto & x : prev_x) wrv(f, x);
     for (auto & x : prev_ids) wrv(f, x);
     for (auto & ps : pairs) {
-        wrv(f, ps.M); wrv(f, ps.M2); wrv(f, ps.M3); wrv(f, ps.M0); wr(f, ps.gain);
+        wrv(f, ps.M); wrv(f, ps.M2); wrv(f, ps.M3); wrv(f, ps.MF); wr(f, ps.ema);
         uint64_t n = ps.mem.size(); wr(f, n);
         for (auto & kv : ps.mem) { wr(f, kv.first); wr(f, kv.second); }
     }
@@ -457,7 +458,7 @@ static bool load_state(const std::string & path, progress & pr) {
         for (auto & x : prev_x) rdv(f, x);
         for (auto & x : prev_ids) rdv(f, x);
         for (auto & ps : pairs) {
-            rdv(f, ps.M); rdv(f, ps.M2); rdv(f, ps.M3); rdv(f, ps.M0); rd(f, ps.gain);
+            rdv(f, ps.M); rdv(f, ps.M2); rdv(f, ps.M3); rdv(f, ps.MF); rd(f, ps.ema);
             uint64_t n; rd(f, n); ps.mem.clear(); ps.mem.reserve(n);
             for (uint64_t i = 0; i < n; ++i) { uint64_t k; entry e; rd(f, k); rd(f, e); ps.mem.emplace(k, e); }
         }
@@ -486,6 +487,7 @@ int main(int argc, char ** argv) {
         else if (a == "--mu" && i + 1 < argc) mu = (float) atof(argv[++i]);
         else if (a == "--mu2" && i + 1 < argc) mu2 = (float) atof(argv[++i]);
         else if (a == "--mu3" && i + 1 < argc) mu3 = (float) atof(argv[++i]);
+        else if (a == "--mu-fast" && i + 1 < argc) mu_fast = (float) atof(argv[++i]);
         else if (a == "--report-file" && i + 1 < argc) report_path = argv[++i];
         else if (a == "--state" && i + 1 < argc) state_path = argv[++i];
         else if (a == "--time-limit" && i + 1 < argc) time_limit = atof(argv[++i]);
@@ -536,7 +538,7 @@ int main(int argc, char ** argv) {
             ps.M = routers[L + k];
             ps.M2.assign((size_t) n_expert * n_embd, 0.0f);
             ps.M3.assign((size_t) n_expert * n_expert, 0.0f);
-            ps.M0 = routers[L + k];
+            ps.MF = routers[L + k];
         }
     }
     ring.assign(n_layer, std::vector<uint16_t>(HIST, 0));
