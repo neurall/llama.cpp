@@ -1034,6 +1034,7 @@ struct llm_graph_context {
     // trained (in the graph) once the target layer's router logits exist
     struct moe_pred_src {
         ggml_tensor *  w;                 // stacked [n_embd, n_expert * K]
+        ggml_tensor *  q;                 // its Q8_0 prediction copy (nullptr: predict from w)
         ggml_tensor *  x;                 // the source layer's MoE input [n_embd, n_tokens]
         ggml_tensor *  pred;              // stacked prediction [n_expert * K, n_tokens]
         ggml_tensor *  mu;

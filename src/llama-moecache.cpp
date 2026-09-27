@@ -958,6 +958,21 @@ void pred_save(const moe_cache * mc) {
     }
 }
 
+// Q8_0 prediction copy <- fp16 master (at start and after loading saved weights; the graph re-quantizes after updates)
+void pred_requant(llama_moe_cache_layer & pub) {
+    if (!pub.pred_q || !pub.pred_all) {
+        return;
+    }
+    const int64_t n_per_row = pub.pred_all->ne[0], nrows = pub.pred_all->ne[1];
+    std::vector<ggml_fp16_t> h(n_per_row * nrows);
+    ggml_backend_tensor_get(pub.pred_all, h.data(), 0, h.size()*sizeof(ggml_fp16_t));
+    std::vector<float> f(h.size());
+    ggml_fp16_to_fp32_row(h.data(), f.data(), (int64_t) f.size());
+    std::vector<uint8_t> q(ggml_nbytes(pub.pred_q));
+    ggml_quantize_chunk(GGML_TYPE_Q8_0, f.data(), q.data(), 0, nrows, n_per_row, nullptr);
+    ggml_backend_tensor_set(pub.pred_q, q.data(), 0, q.size());
+}
+
 bool pred_load(const moe_cache * mc) {
     FILE * f = mc->pred_file.empty() ? nullptr : fopen(mc->pred_file.c_str(), "rb");
     if (!f) {
@@ -1473,7 +1488,10 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 const int64_t ahead = std::max(0, std::min(8, a ? atoi(a) : 2));
                 if (p && atoi(p) > 0 && ahead > 0 && !cands.empty()) {
                     const int64_t n_embd = cands[0].l->ffn_up_exps->ne[0];
-                    margin += (size_t) cands.size() * n_embd * n_expert * ahead * sizeof(ggml_fp16_t) + 64u * 1024 * 1024;
+                    const char * st = getenv("LLAMA_MOE_CACHE_PREDICT_STRIDE");
+                    const size_t n_src = (cands.size() + std::max(1, st ? atoi(st) : 1) - 1) / std::max(1, st ? atoi(st) : 1);
+                    // fp16 master + Q8_0 prediction copy (34 bytes per 32 values)
+                    margin += (size_t) (n_src * n_embd * n_expert * ahead * (sizeof(ggml_fp16_t) + 34.0/32)) + 64u * 1024 * 1024;
                 }
             }
             if (free <= margin + per_slot) {
@@ -1901,7 +1919,16 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 }
             }
             size_t n_pred = 0, n_learn = 0;
+            // LLAMA_MOE_CACHE_PREDICT_STRIDE=N: predict only from every Nth layer (each covers its next `ahead`
+            // layers, so ahead >= N keeps every layer predicted): N times fewer predictor matmuls and weights
+            const char * pst = getenv("LLAMA_MOE_CACHE_PREDICT_STRIDE");
+            const size_t stride = (size_t) std::max(1, pst ? atoi(pst) : 1);
+            const char * pq8 = getenv("LLAMA_MOE_CACHE_PREDICT_Q8");
+            const bool use_q8 = !(pq8 && pq8[0] == '0');
             for (size_t li = 0; mc->pred_m > 0 && li + 1 < nl; ++li) {
+                if (li % stride != 0) {
+                    continue;
+                }
                 auto & pub = mc->layers[li].pub;
                 const int64_t n_embd = pub.up_src->ne[0];
                 std::vector<ggml_tensor *> routers;
@@ -1930,17 +1957,22 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 while (!routers.empty() && routers.back()->ne[1] != ne_x) {
                     routers.pop_back();
                 }
-                ggml_init_params ip = { ggml_tensor_overhead()*2, nullptr, true };
+                ggml_init_params ip = { ggml_tensor_overhead()*3, nullptr, true };
                 ggml_context * pctx = ggml_init(ip);
                 mc->pctxs.push_back(pctx);
                 pub.pred_all = ggml_new_tensor_2d(pctx, GGML_TYPE_F16, n_embd, ne_x * (int64_t) routers.size());
                 ggml_format_name(pub.pred_all, "moe_pred-%d", pub.il);
                 pub.pred_mu = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, 1);
                 ggml_set_name(pub.pred_mu, "moe_pred_mu");
+                if (use_q8 && n_embd % 32 == 0) { // Q8_0 blocks of 32
+                    pub.pred_q = ggml_new_tensor_2d(pctx, GGML_TYPE_Q8_0, n_embd, ne_x * (int64_t) routers.size());
+                    ggml_format_name(pub.pred_q, "moe_pred_q8-%d", pub.il);
+                }
                 ggml_backend_buffer_t pbuf = ggml_backend_alloc_ctx_tensors_from_buft(pctx, ggml_backend_buffer_get_type(routers[0]->buffer));
                 if (!pbuf) {
                     pub.pred_all = nullptr;
                     pub.pred_mu  = nullptr;
+                    pub.pred_q   = nullptr;
                     continue;
                 }
                 mc->pbufs.push_back(pbuf);
@@ -1969,8 +2001,11 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
             if (n_learn > 0) {
                 const bool loaded = pred_load(mc);
-                LLAMA_LOG_WARN("moe-cache: learned router predictors for %zu layers, %d layers ahead, %s, training %s\n",
-                        n_learn, mc->pred_ahead, loaded ? ("loaded " + mc->pred_file).c_str() : "new (= the routers)",
+                for (auto & ls : mc->layers) {
+                    pred_requant(ls.pub);
+                }
+                LLAMA_LOG_WARN("moe-cache: learned router predictors for %zu layers (every %zu%s), %d layers ahead, %s, training %s\n",
+                        n_learn, stride, use_q8 ? ", Q8_0 copy" : ", fp16", mc->pred_ahead, loaded ? ("loaded " + mc->pred_file).c_str() : "new (= the routers)",
                         mc->pred_train > 0 ? ("every " + std::to_string(mc->pred_train) + " tokens").c_str() : "off (--lrn-prd N)");
             }
             if (n_pred > 0) {

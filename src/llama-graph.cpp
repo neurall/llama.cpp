@@ -2077,10 +2077,21 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 for (ggml_tensor * t : { err, nrm, nrm->src[0], g, g->src[0], dw, sum, upd }) {
                     nodes.push_back(t);
                 }
+                ggml_tensor * requant = nullptr;
+                if (e.q) {
+                    // refresh the Q8_0 prediction copy from the updated weights
+                    ggml_tensor * f32 = ggml_cast(ctx0, sum, GGML_TYPE_F32);
+                    requant = ggml_cpy(ctx0, f32, e.q);
+                    nodes.push_back(f32);
+                    nodes.push_back(requant);
+                }
                 for (ggml_tensor * t : nodes) {
                     ggml_backend_sched_set_tensor_backend(sched, t, e.backend);
                 }
                 ggml_build_forward_expand(gf, upd);
+                if (requant) {
+                    ggml_build_forward_expand(gf, requant);
+                }
             }
             moe_pred_todo.erase(it);
         }
@@ -2265,11 +2276,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 if (wdev && ggml_backend_get_device(b) == wdev && b != cpu_backend) {
                     ggml_tensor * x2 = ggml_reshape_2d(ctx0, mc_inp, n_embd, n_tokens);
                     // all lookaheads in one matmul ([n_expert * K, n_tokens], the stacked layout the cache reads)
-                    mc_pred = ggml_mul_mat(ctx0, pw, x2);
+                    mc_pred = ggml_mul_mat(ctx0, mcache->pred_q ? mcache->pred_q : pw, x2);
                     ggml_backend_sched_set_tensor_backend(sched, mc_pred, b);
                     // train on decode and small batches only: a big prefill batch would sum too many steps
                     if (mcache->pred_all && mcache->pred_mu && n_tokens <= 8 && llama_moe_cache_pred_train_now()) {
-                        moe_pred_srcs[il] = { mcache->pred_all, x2, mc_pred, mcache->pred_mu, b, mcache->pred_ahead, {} };
+                        moe_pred_srcs[il] = { mcache->pred_all, mcache->pred_q, x2, mc_pred, mcache->pred_mu, b, mcache->pred_ahead, {} };
                         for (int k = 0; k < mcache->pred_ahead; ++k) {
                             moe_pred_todo[il + 1 + k].push_back(il);
                         }

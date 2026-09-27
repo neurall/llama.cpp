@@ -59,6 +59,7 @@ struct llama_moe_cache_layer {
     bool          pred_on    = true;    // predict from this layer: one of its target layers misses often enough (updated every 256 steps)
     ggml_tensor * pred_all   = nullptr; // [n_embd, n_expert * pred_ahead] fp16: the predictors of the next layers, stacked
     ggml_tensor * pred_mu    = nullptr;
+    ggml_tensor * pred_q     = nullptr; // Q8_0 copy of pred_all used for predicting (half the bytes, same accuracy); re-quantized after each update
 };
 
 // build the cache for every host-resident expert layer of the model.
