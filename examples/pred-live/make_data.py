@@ -10,13 +10,15 @@ starcoderdata are gated: accept their terms on huggingface.co first.
   cosmopedia  : HuggingFaceTB/cosmopedia-20k, all 20,000 'text' docs, shuffled (seed 0)
   tiny-codes  : nampdn-ai/tiny-codes, all 9 parquet files (1,632,309 rows), shuffled (seed 0),
                 first 20,000 'prompt' + blank line + 'response'
-  starcoder   : bigcode/starcoderdata, shard train-00000 of python, javascript, typescript, java,
-                cpp, go, rust; per language shuffled (seed 0), first 3,000 files with > 200 chars,
-                each cut to 6,000 chars; all 21,000 shuffled together (seed 1)
+  starcoder   : bigcode/starcoderdata, shard train-00000 of html, css, python, javascript,
+                c, cpp (html, css, python, javascript, c, cpp); per language shuffled (seed 0), first 3,000 files with > 200 chars,
+                each cut to 6,000 chars; all 18,000 shuffled together (seed 1)
+  mix         : starcoder-mix + cosmopedia-20k interleaved so both have used the same number of characters at
+                every point (the first 50k tokens are ~25k code + ~25k cosmopedia); needs both built first
 """
 import glob, os, random, subprocess, sys
 
-STAR_SHARDS = {"python": 59, "javascript": 65, "typescript": 27, "java": 87, "cpp": 48, "go": 24, "rust": 9}
+STAR_SHARDS = {"html": 29, "css": 12, "python": 59, "javascript": 65, "c": 53, "cpp": 48}
 
 
 def hf(repo, files, local):
@@ -69,10 +71,23 @@ def starcoder(out):
     write(out, "starcoder-mix.txt", docs)
 
 
+def mix(out):
+    def docs(name):
+        return open(os.path.join(out, name)).read().split("\n<|endoftext|>\n")
+    a, b = docs("starcoder-mix.txt"), docs("cosmopedia-20k.txt")
+    res, ca, cb, ia, ib = [], 0, 0, 0, 0
+    while ia < len(a) or ib < len(b):
+        if ib >= len(b) or (ia < len(a) and ca <= cb):
+            res.append(a[ia]); ca += len(a[ia]); ia += 1
+        else:
+            res.append(b[ib]); cb += len(b[ib]); ib += 1
+    write(out, "code-cosmo-mix.txt", res)
+
+
 if __name__ == "__main__":
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
-    steps = {"tinystories": tinystories, "cosmopedia": cosmopedia, "tiny-codes": tiny_codes, "starcoder": starcoder}
+    steps = {"tinystories": tinystories, "cosmopedia": cosmopedia, "tiny-codes": tiny_codes, "starcoder": starcoder, "mix": mix}
     for a in sys.argv[2:]:
         if a in steps:
             steps[a](out)
