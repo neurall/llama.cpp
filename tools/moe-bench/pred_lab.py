@@ -86,14 +86,40 @@ def evaluate(a):
         ov_router = overlap(topk(base, tl[:, None]), real[tl])            # [NL-k, T]
         M = W[tl].clone()                                                 # learned: starts as the router
         xs = X[src]
+        if a.input == "pool":
+            # current token's layers 0..L plus the previous token's layers L+1..end, averaged
+            cum = torch.cumsum(X, 0)
+            tot = X.sum(0)
+            prev_tot = torch.cat([torch.zeros_like(tot[:1]), tot[:-1]])
+            prev_cum = torch.cat([torch.zeros_like(cum[:, :1]), cum[:, :-1]], 1)
+            xs = ((cum + prev_tot - prev_cum) / NL)[src]
+            M = torch.zeros_like(M)                                       # new input space: learn from zero
+            M_base = base
+        elif a.input == "concat":
+            M_base = base
+        else:
+            M_base = None
+        if a.input == "concat":
+            # every layer's input in one vector: current token for layers 0..L, previous one above
+            M = torch.zeros(len(src), W.shape[1], NL * D, device=dev)
+            mask = (torch.arange(NL, device=dev)[None, :] <= src[:, None]).float().unsqueeze(-1)  # [NL-k, NL, 1]
+            def xin(t):
+                prev = X[:, t - 1] if t > 0 else torch.zeros_like(X[:, 0])
+                return (mask * X[:, t][None] + (1 - mask) * prev[None]).reshape(len(src), NL * D)
+        else:
+            def xin(t):
+                return xs[:, t]
         nrm = (xs * xs).sum(-1)                                           # [NL-k, T]
         pred = torch.empty_like(base)
         for t in range(T):
-            p = torch.einsum("led,ld->le", M, xs[:, t])
+            xt = xin(t)
+            p = torch.einsum("led,ld->le", M, xt)
+            if M_base is not None:
+                p = p + M_base[:, t]                                      # pool learns the router's error
             pred[:, t] = p
             if a.every > 0 and t % a.every == 0:
-                g = (Y[tl, t] - p) * (a.mu / (nrm[:, t:t + 1] + 1e-6))
-                M += g.unsqueeze(-1) * xs[:, t].unsqueeze(1)
+                g = (Y[tl, t] - p) * (a.mu / ((xt * xt).sum(-1, keepdim=True) + 1e-6))
+                M += g.unsqueeze(-1) * xt.unsqueeze(1)
         ov_learn = overlap(topk(pred, tl[:, None]), real[tl])
         per = lambda ov: " ".join(f"{ov[:, bounds[i]:bounds[i + 1]].mean().item():.3f}" for i in range(len(bounds) - 1))
         print(f"L+{k}: router {ov_router.mean().item():.3f}  learned {ov_learn.mean().item():.3f}   per sample: router [{per(ov_router)}]  learned [{per(ov_learn)}]")
@@ -111,6 +137,7 @@ def main():
     e.add_argument("--ahead", type=int, default=2)
     e.add_argument("--mu", type=float, default=0.5)
     e.add_argument("--every", type=int, default=1)
+    e.add_argument("--input", choices=["x", "pool", "concat"], default="x", help="x: this layer's MoE input; pool: layer-pooled input; concat: all layers concatenated")
     a = ap.parse_args()
     build(a) if a.cmd == "build" else evaluate(a)
 
