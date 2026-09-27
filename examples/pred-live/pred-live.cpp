@@ -63,6 +63,7 @@ struct counters { double tok = 0, router = 0, nlms = 0, hash_rec = 0, hash_rec_h
 
 static int n_layer = 0, n_expert = 0, n_embd = 0, top_k = 0, ahead = 8;
 static bool with_router = false;
+static bool with_coarse = false;   // coarse rungs: <0.2% of recalls once NLMS is strong, but double the stored entries (--coarse)
 static uint32_t hash_ttl = 20000, clock_tok = 0;
 
 // per-ubatch capture
@@ -239,7 +240,7 @@ static void process(bool score) {
                         had[r] = it != ps.mem.end();
                         if (had[r]) { got = &it->second; got_rung = r; }       // ascending: ends at the longest match
                     }
-                    for (int n = 0; n < HIST; ++n) chad[n] = ps.mem.count(ckeys[n]) > 0;
+                    if (with_coarse) for (int n = 0; n < HIST; ++n) chad[n] = ps.mem.count(ckeys[n]) > 0;
                     for (int n = HIST - 1; n >= 1 && !got; --n) {             // coarse length 1 hit 0.70 < NLMS 0.86: not used
                         if (!chad[n]) continue;
                         entry & ce = ps.mem.find(ckeys[n])->second;
@@ -279,7 +280,7 @@ static void process(bool score) {
                         ps.mem.emplace(key, e);
                     };
                     for (int r = 0; r < N_LADDER; ++r) if (!had[r] && (r == 0 || had[r - 1])) store(keys[r]);
-                    for (int n = 0; n < HIST; ++n) if (!chad[n] && (n == 0 || chad[n - 1])) store(ckeys[n]);
+                    if (with_coarse) for (int n = 0; n < HIST; ++n) if (!chad[n] && (n == 0 || chad[n - 1])) store(ckeys[n]);
                 }
 
                 if (score) {
@@ -498,6 +499,7 @@ int main(int argc, char ** argv) {
         else if (a == "--n-stories" && i + 1 < argc) n_stories = atoi(argv[++i]);
         else if (a == "--ahead" && i + 1 < argc) ahead = std::min(MAXK, atoi(argv[++i]));
         else if (a == "--router") with_router = true;
+        else if (a == "--coarse") with_coarse = true;
         else if (a == "--hash-ttl" && i + 1 < argc) hash_ttl = (uint32_t) atoi(argv[++i]);
         else if (a == "--report-file" && i + 1 < argc) report_path = argv[++i];
         else if (a == "--state" && i + 1 < argc) state_path = argv[++i];
