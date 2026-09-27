@@ -139,6 +139,7 @@ struct moe_cache {
     int32_t pred_m   = 0;
     int32_t pred_max = 2;
     float   pred_margin = 0.1f; // min score lead over the M-th prediction (LLAMA_MOE_CACHE_PREDICT_MARGIN)
+    bool    pred_ra     = false; // LLAMA_MOE_CACHE_PREDICT_RA=1: readahead of predicted uncached experts (mmap'd weights)
     std::vector<std::vector<float>> pred_b;  // layer idx -> next layer's selection bias (empty: raw logits)
     struct pred_req {
         size_t             li;
@@ -476,6 +477,19 @@ void publish_job(moe_cache * mc, const upload_job & j) {
     ls.cached_since[j.expert] = mc->n_steps + 1;
 }
 
+void readahead(const layer_state & ls, int32_t expert) {
+#ifndef _WIN32
+    static const size_t pg = (size_t) sysconf(_SC_PAGESIZE);
+    for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) {
+        const uintptr_t a   = (uintptr_t) t->data + (size_t) expert*t->nb[2];
+        const uintptr_t beg = a & ~(uintptr_t) (pg - 1);
+        madvise((void *) beg, a + t->nb[2] - beg, MADV_WILLNEED);
+    }
+#else
+    GGML_UNUSED(ls); GGML_UNUSED(expert);
+#endif
+}
+
 void pred_loop(moe_cache * mc) {
     std::vector<float>   lg;
     std::vector<int32_t> idx, cand;
@@ -507,6 +521,14 @@ void pred_loop(moe_cache * mc) {
             const int32_t m = std::min<int32_t>(mc->pred_m, (int32_t) ne);
             std::partial_sort(idx.begin(), idx.begin() + m, idx.end(), [&](int32_t a, int32_t c) { return lg[a] > lg[c]; });
             // only confident predictions: precision 0.28 near the cut, 0.88 with a 0.1 lead (GLM, offline)
+            if (mc->pred_ra) {
+                // model bigger than RAM: start reading the predicted experts the CPU will compute
+                for (int32_t k = 0; k < m; ++k) {
+                    if (ls.expert_slot[idx[k]] < 0) {
+                        readahead(ls, idx[k]);
+                    }
+                }
+            }
             for (int32_t k = 0; k < m; ++k) {
                 if (lg[idx[k]] - lg[idx[m - 1]] < mc->pred_margin) {
                     break;
@@ -1077,6 +1099,13 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             const char * x = getenv("LLAMA_MOE_CACHE_PREDICT_MAX");
             mc->pred_m   = e ? atoi(e) : 0;
             mc->pred_max = x ? atoi(x) : 2;
+            {
+                const char * ra = getenv("LLAMA_MOE_CACHE_PREDICT_RA");
+                ggml_backend_dev_t gpu = mc->bufs.empty() ? nullptr : ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mc->bufs.back()));
+                const auto * src = mc->layers.empty() ? nullptr : mc->layers[0].pub.up_src;
+                mc->pred_ra = ra && atoi(ra) != 0 && src && ggml_backend_buffer_is_host(src->buffer) &&
+                    !(gpu && ggml_backend_buffer_get_type(src->buffer) == ggml_backend_dev_host_buffer_type(gpu));
+            }
             if (const char * g = getenv("LLAMA_MOE_CACHE_PREDICT_MARGIN")) {
                 mc->pred_margin = (float) atof(g);
             }
