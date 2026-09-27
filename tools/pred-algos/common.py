@@ -5,7 +5,7 @@ plus the token ids of each sample, re-tokenized from its source text and cached 
 Every algorithm streams the tokens in order (one user session, online learning) and reports a hit matrix
 hits[l, t] = fraction of layer l's real top-k it predicted for token t (NaN where it made no prediction).
 """
-import ast, glob, os, subprocess, sys, warnings
+import ast, glob, os, re, subprocess, sys, warnings
 warnings.filterwarnings("ignore", "Mean of empty slice")
 
 import numpy as np
@@ -14,6 +14,7 @@ import torch
 MODEL = "/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf"
 TOKENIZE = os.path.join(os.path.dirname(__file__), "..", "..", "build-cuda", "bin", "llama-tokenize")
 DATA = os.path.expandvars("$CLAUDE_JOB_DIR/tmp/olmo")
+REF = None  # per-token hits of the reference algos (ref_<data>.npz from nlms.py --save), set by load()
 SETS = {"simcity": ("simcity.pt", "S*.txt"), "session": ("session.pt", "L*.txt")}
 
 
@@ -25,7 +26,10 @@ def tokenize(path):
 
 def load(name, need_x=False):
     """-> dict(tokens [T] int64, real [NL,T,k] int64, bounds, and X/W when need_x)"""
+    global REF
     pt, pattern = SETS[name]
+    ref = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"ref_{name}.npz")
+    REF = dict(np.load(ref)) if os.path.exists(ref) else None
     d = torch.load(os.path.join(DATA, pt), mmap=True)
     bounds, k = d["bounds"], d["k"]
     cache = os.path.join(DATA, name + ".tokens.pt")
@@ -72,6 +76,12 @@ def report(name, hits, bounds, extra="", gen=None, cols=None):
     cov = np.isfinite(h[:, cols] if cols is not None else h).mean()  # over the reported tokens
     print(f"{name}: all {avg(0, T):.3f}  0-256 {avg(0, 256):.3f}  0-1024 {avg(0, 1024):.3f}  "
           f"last4k {avg(T - 4096, T):.3f}  coverage {cov:.3f}{extra}")
+    m = re.match(r"L\+(\d)", name)
+    if REF is not None and m and f"nlms_k{m.group(1)}" in REF:
+        # the reference algos on exactly the tokens this run predicted (segments differ in difficulty)
+        mask = np.isfinite(h)
+        same = {r: np.nanmean(np.where(mask, REF[f"{r}_k{m.group(1)}"], np.nan)) for r in ("nlms", "router")}
+        print(f"  same tokens: nlms {same['nlms']:.3f}  router {same['router']:.3f}  -> vs nlms {np.nanmean(h) - same['nlms']:+.3f}")
     win = [avg(a, a + 1024) for a in range(0, T, 1024)]
     print("  per 1024 tok: " + " ".join(f"{w:.2f}" for w in win))
     lay = np.nanmean(h, 1)
@@ -87,4 +97,12 @@ def cli(desc):
     import argparse
     ap = argparse.ArgumentParser(description=desc)
     ap.add_argument("--data", default="simcity", choices=list(SETS))
+    ap.add_argument("--device", default="cuda", help="cuda (pick the GPU with CUDA_VISIBLE_DEVICES) or cpu")
+    ap.add_argument("--threads", type=int, default=4, help="CPU threads (several runs share the 16)")
     return ap
+
+
+def parse(ap):
+    a = ap.parse_args()
+    torch.set_num_threads(a.threads)
+    return a

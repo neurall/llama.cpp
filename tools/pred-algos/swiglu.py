@@ -60,7 +60,7 @@ def main():
         pred = torch.full((n, T, E), float("nan"), device=dev)
         t_stop = T
         for t in range(start, T):
-            if a.time_limit and t % 64 == 0 and t > start and time.time() - t0 > a.time_limit:
+            if a.time_limit and t % 64 == 0 and t > start and time.time() - t0 > a.time_limit / a.ahead:  # round budget split over the lookaheads
                 t_stop = t
                 break
             xs = X[src, t].float()

@@ -19,7 +19,8 @@ def run(algo, data, extra, lr, ckpt, burst, device):
            "--time-limit", str(burst), "--lr", str(lr)] + extra
     out = subprocess.run(cmd, capture_output=True, text=True).stdout
     print(out.strip())
-    hits = [float(m) for m in re.findall(r"all (\d\.\d+)", out)]
+    # score = gain over NLMS on the same tokens when the reference exists (segment-independent), else raw hit rate
+    hits = [float(m) for m in re.findall(r"vs nlms ([+-]\d\.\d+)", out)] or [float(m) for m in re.findall(r"all (\d\.\d+)", out)]
     return sum(hits) / len(hits) if hits else None
 
 
