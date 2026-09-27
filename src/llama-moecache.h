@@ -75,3 +75,9 @@ const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps
 
 // apply throttled LRU updates; call between graph executions only
 void llama_moe_cache_step();
+
+// learned predictors: the next decode trains them (the graph holds the update nodes only then, so a
+// non-training step costs just the prediction); graph reuse must not cross a change of this
+bool llama_moe_cache_pred_train_now();
+bool llama_moe_cache_graph_reusable();
+void llama_moe_cache_graph_built();

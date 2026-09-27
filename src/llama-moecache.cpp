@@ -27,6 +27,9 @@
 #include <sys/mman.h>
 #endif
 
+// learned predictors: this decode trains them / the current graph was built with the update nodes
+static bool g_pred_train_now = false, g_pred_train_built = false;
+
 namespace {
 
 struct layer_state {
@@ -471,7 +474,8 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
     // router prediction for the next layers, off this thread (the other CPU threads wait at a barrier)
     const size_t li = ls - mc->layers.data();
     const ggml_tensor * pred = op ? op->src[4] : nullptr;
-    if (!prefill && mc->pred_m > 0) {
+    // (sampled: 1 token in 16 -- this runs while the other CPU threads wait at the barrier)
+    if (!prefill && mc->pred_m > 0 && mc->n_steps % 16 == 0) {
         // this layer's real choice (token 0) scores the predictions made for it at earlier layers
         const auto & b = mc->pred_b[li];
         const int64_t ne = (int64_t) ls->expert_slot.size();
@@ -1000,6 +1004,16 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 per_slot += c.l->ffn_up_exps->nb[2] + c.l->ffn_gate_exps->nb[2] + c.l->ffn_down_exps->nb[2];
                 n_expert = c.l->ffn_up_exps->ne[2];
             }
+            // the learned predictors (fp16 [n_embd, n_expert * ahead] per layer, allocated after the cache) need room too
+            {
+                const char * p = getenv("LLAMA_MOE_CACHE_PREDICT");
+                const char * a = getenv("LLAMA_MOE_CACHE_PREDICT_AHEAD");
+                const int64_t ahead = std::max(0, std::min(8, a ? atoi(a) : 2));
+                if (p && atoi(p) > 0 && ahead > 0 && !cands.empty()) {
+                    const int64_t n_embd = cands[0].l->ffn_up_exps->ne[0];
+                    margin += (size_t) cands.size() * n_embd * n_expert * ahead * sizeof(ggml_fp16_t) + 64u * 1024 * 1024;
+                }
+            }
             if (free <= margin + per_slot) {
                 return 0;
             }
@@ -1302,6 +1316,10 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     continue;
                 }
                 mc->pbufs.push_back(pbuf);
+                if (n_learn == 0) {
+                    LLAMA_LOG_WARN("moe-cache: predictor weights in %s (router %s in %s)\n", ggml_backend_buffer_name(pbuf),
+                            routers[0]->name, ggml_backend_buffer_name(routers[0]->buffer));
+                }
                 std::vector<ggml_fp16_t> h(n_embd * ne_x * routers.size());
                 for (size_t k = 0; k < routers.size(); ++k) {
                     const ggml_tensor * w = routers[k];
@@ -1497,6 +1515,7 @@ void llama_moe_cache_step() {
     // learned predictors: this token trains them (in the graph) when mu > 0
     if (mc->pred_ahead > 0 && mc->pred_m > 0) {
         const float want = mc->pred_train > 0 && mc->n_steps % mc->pred_train == 0 ? mc->pred_mu : 0.0f;
+        g_pred_train_now = want > 0;
         if (want != mc->cur_mu) {
             for (auto & ls : mc->layers) {
                 if (ls.pub.pred_mu) {
@@ -1709,4 +1728,16 @@ void llama_moe_cache_free() {
     delete mc;
     g_cache     = nullptr;
     g_init_done = false;
+}
+
+bool llama_moe_cache_pred_train_now() {
+    return g_pred_train_now;
+}
+
+bool llama_moe_cache_graph_reusable() {
+    return g_pred_train_now == g_pred_train_built;
+}
+
+void llama_moe_cache_graph_built() {
+    g_pred_train_built = g_pred_train_now;
 }

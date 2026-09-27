@@ -2268,7 +2268,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     mc_pred = ggml_mul_mat(ctx0, pw, x2);
                     ggml_backend_sched_set_tensor_backend(sched, mc_pred, b);
                     // train on decode and small batches only: a big prefill batch would sum too many steps
-                    if (mcache->pred_all && mcache->pred_mu && n_tokens <= 8) {
+                    if (mcache->pred_all && mcache->pred_mu && n_tokens <= 8 && llama_moe_cache_pred_train_now()) {
                         moe_pred_srcs[il] = { mcache->pred_all, x2, mc_pred, mcache->pred_mu, b, mcache->pred_ahead, {} };
                         for (int k = 0; k < mcache->pred_ahead; ++k) {
                             moe_pred_todo[il + 1 + k].push_back(il);
@@ -2401,7 +2401,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
             if (mcache) {
                 if (mc_pred) {
-                    cur->src[4] = mc_pred;
+                    static const bool no_handoff = getenv("LLAMA_MOE_CACHE_PREDICT_NOHANDOFF") != nullptr;   // diagnostic: predict, don't hand to the CPU op
+                    if (!no_handoff) {
+                        cur->src[4] = mc_pred;
+                    }
                 }
                 cur->src[3] = mcache->host_table;
                 cur->op_params[0] = mcache->n_slots;
