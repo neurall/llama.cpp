@@ -2158,13 +2158,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 continue;
             }
             if (llama_pred_train_now()) {
-                s.err[k - 1] = ggml_sub(ctx0, logits_raw, ggml_cont(ctx0, pred));
+                s.err[k - 1] = logits_raw;                                                // collect the real logits
                 // after the last target: NLMS on all lookaheads at once, w += mu/|x|^2 * x (x) (logits - pred)
                 if (++s.n_err == s.K) {
-                    ggml_tensor * err = s.err[0];
+                    ggml_tensor * real_all = s.err[0];
                     for (int i = 1; i < s.K; ++i) {
-                        err = ggml_concat(ctx0, err, s.err[i], 0);                        // [n_expert * K, n_tokens]
+                        real_all = ggml_concat(ctx0, real_all, s.err[i], 0);              // [n_expert * K, n_tokens]
                     }
+                    ggml_tensor * err = ggml_sub(ctx0, real_all, s.p);                    // one subtraction for all lookaheads
                     ggml_tensor * nrm = ggml_sum_rows(ctx0, ggml_sqr(ctx0, s.x));             // [1, n_tokens]
                     ggml_tensor * g   = ggml_mul(ctx0, ggml_div(ctx0, err, nrm), llama_pred_mu());
                     ggml_tensor * dw  = ggml_out_prod(ctx0, s.x, g);                          // [n_embd, n_expert * K]
