@@ -11,14 +11,14 @@ starcoderdata are gated: accept their terms on huggingface.co first.
   tiny-codes  : nampdn-ai/tiny-codes, all 9 parquet files (1,632,309 rows), shuffled (seed 0),
                 first 20,000 'prompt' + blank line + 'response'
   starcoder   : bigcode/starcoderdata, shard train-00000 of html, css, python, javascript,
-                c, cpp (html, css, python, javascript, c, cpp); per language shuffled (seed 0), first 3,000 files with > 200 chars,
-                each cut to 6,000 chars; all 18,000 shuffled together (seed 1)
+                c, cpp, shell; per language shuffled (seed 0), first 3,000 files with > 200 chars,
+                each cut to 6,000 chars; all 21,000 shuffled together (seed 1)
   mix         : starcoder-mix + cosmopedia-20k interleaved so both have used the same number of characters at
                 every point (the first 50k tokens are ~25k code + ~25k cosmopedia); needs both built first
 """
 import glob, os, random, subprocess, sys
 
-STAR_SHARDS = {"html": 29, "css": 12, "python": 59, "javascript": 65, "c": 53, "cpp": 48}
+STAR_SHARDS = {"html": 29, "css": 12, "python": 59, "javascript": 65, "c": 53, "cpp": 48, "shell": 4}
 
 
 def hf(repo, files, local):
