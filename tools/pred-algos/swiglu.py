@@ -26,6 +26,7 @@ def main():
     ap.add_argument("--loss", choices=["mse", "bce"], default="mse")
     ap.add_argument("--input", choices=["pool", "x"], default="pool")
     ap.add_argument("--ckpt", default=None, help="path to save/resume weights+optimizer across reruns")
+    ap.add_argument("--time-limit", type=float, default=None, help="stop this pass after N seconds (mid-stream), for short tune-and-resume rounds")
     a = parse(ap)
     d = load(a.data, need_x=True)
     dev = a.device
@@ -52,8 +53,12 @@ def main():
             opt = torch.optim.Adam([up, gate, down], lr=a.lr)
         Wt = W[tl]
         mask = (torch.arange(NL, device=dev)[None, :] <= src[:, None]).float().unsqueeze(-1)  # [n, NL, 1]
-        pred = torch.empty(n, T, E, device=dev)
+        pred = torch.full((n, T, E), float("nan"), device=dev)
+        t_stop = T
         for t in range(T):
+            if a.time_limit and t % 64 == 0 and t > 0 and time.time() - t0 > a.time_limit:
+                t_stop = t
+                break
             xs = X[src, t].float()
             if a.input == "pool":
                 cur, prev = X[:, t].float(), (X[:, t - 1].float() if t else torch.zeros(NL, D, device=dev))
@@ -74,14 +79,15 @@ def main():
             opt.zero_grad()
             loss.backward()
             opt.step()
-        pi = torch.topk(pred, K, dim=-1).indices
+        pred_v = pred[:, :t_stop]
+        pi = torch.topk(pred_v, K, dim=-1).indices
         hm = np.full((NL, T), np.nan)
-        hm[k:] = (pi.unsqueeze(-1) == real[tl].unsqueeze(-2)).any(-1).float().mean(-1).cpu().numpy()
+        hm[k:, :t_stop] = (pi.unsqueeze(-1) == real[tl, :t_stop].unsqueeze(-2)).any(-1).float().mean(-1).cpu().numpy()
         name = f"L+{k} swiglu {a.input} h{a.hidden} {a.loss} lr {a.lr} decay {a.lr_decay}"
-        report(name, hm, d["bounds"], f"  ({time.time() - t0:.1f} s)", d["gen"])
+        report(name, hm, d["bounds"], f"  ({time.time() - t0:.1f} s, {t_stop}/{T} tokens)", None if a.time_limit else d["gen"])
         if ckpt_path:
             torch.save({"up": up.detach().cpu(), "gate": gate.detach().cpu(), "down": down.detach().cpu(),
-                        "opt": opt.state_dict(), "tokens_seen": T}, ckpt_path)
+                        "opt": opt.state_dict(), "tokens_seen": t_stop}, ckpt_path)
 
 
 if __name__ == "__main__":

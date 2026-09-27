@@ -27,6 +27,7 @@ def main():
     ap.add_argument("--hidden", type=int, default=256)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--ckpt", default=None, help="path to save/resume weights+optimizer across reruns")
+    ap.add_argument("--time-limit", type=float, default=None, help="stop this pass after N seconds (mid-stream)")
     a = parse(ap)
     d = load(a.data, need_x=True)
     dev = a.device
@@ -53,10 +54,14 @@ def main():
     pairs = [(L, k) for k in range(1, A + 1) for L in range(NL - k)]
     Ls = torch.tensor([L for L, _ in pairs], device=dev)
     ks = torch.tensor([k for _, k in pairs], device=dev)
-    pred = torch.empty(len(pairs), T, E, device=dev)
+    pred = torch.full((len(pairs), T, E), float("nan"), device=dev)
     zero = torch.zeros(D, device=dev)
     t0 = time.time()
+    t_stop = T
     for t in range(T):
+        if a.time_limit and t % 64 == 0 and t > 0 and time.time() - t0 > a.time_limit:
+            t_stop = t
+            break
         cur = rms(X[:, t].float())
         prev = rms(X[:, t - 1].float()) if t else torch.zeros(NL, D, device=dev)
         s = torch.zeros(H, device=dev)
@@ -75,17 +80,18 @@ def main():
         opt.zero_grad()
         loss.backward()
         opt.step()
-    pi = torch.topk(pred, K, dim=-1).indices
-    hit = (pi.unsqueeze(-1) == real[Ls + ks].unsqueeze(-2)).any(-1).float().mean(-1).cpu().numpy()
+    pred_v = pred[:, :t_stop]
+    pi = torch.topk(pred_v, K, dim=-1).indices
+    hit = (pi.unsqueeze(-1) == real[Ls + ks, :t_stop].unsqueeze(-2)).any(-1).float().mean(-1).cpu().numpy()
     for k in range(1, A + 1):
         hm = np.full((NL, T), np.nan)
         sel = (ks == k).cpu().numpy()
-        hm[k:] = hit[sel]
-        report(f"L+{k} stack h{H} lr {a.lr}", hm, d["bounds"], f"  ({time.time() - t0:.1f} s total)", d["gen"])
+        hm[k:, :t_stop] = hit[sel]
+        report(f"L+{k} stack h{H} lr {a.lr}", hm, d["bounds"], f"  ({time.time() - t0:.1f} s, {t_stop}/{T} tokens)", None if a.time_limit else d["gen"])
     if a.ckpt:
         torch.save({"proj": proj.detach().cpu(), "up": up.detach().cpu(), "gate": gate.detach().cpu(),
                     "down": down.detach().cpu(), "head": head.detach().cpu(),
-                    "opt": opt.state_dict(), "tokens_seen": T}, a.ckpt)
+                    "opt": opt.state_dict(), "tokens_seen": t_stop}, a.ckpt)
 
 
 if __name__ == "__main__":
