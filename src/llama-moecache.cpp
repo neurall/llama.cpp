@@ -147,9 +147,10 @@ struct moe_cache {
     int      link_margin[2] = { 1, 1 }; // pay-back margin per upload link
     double   read_link[2] = { 0, 0 };     // EMA of the read part of one upload, per link
     double   copy_link[2] = { 0, 0 };     // EMA of the PCIe copy part, per link
-    double   cpu_eval_us  = 0;            // one expert evaluated on the CPU instead (bytes / LLAMA_MOE_CACHE_CPU_GBS)
+    double   gbs_all      = 0;            // EMA of upload throughput, GB/s (expert sizes differ per layer, times don't compare)
+    double   gbs_link[2]  = { 0, 0 };     // same, per link
     // evicted uploads, per link: count, decode hits served, uploads whose hits*cpu_eval_us covered their cost, lifetime
-    uint64_t ev_n[2] = { 0, 0 }, ev_hits[2] = { 0, 0 }, ev_paid[2] = { 0, 0 };
+    uint64_t ev_n[2] = { 0, 0 }, ev_hits[2] = { 0, 0 }, ev_paid[2] = { 0, 0 }; // paid: hits x CPU eval time (layer bytes / CPU_GBS) >= upload time
     double   ev_life_us[2] = { 0, 0 }, ev_cost_us[2] = { 0, 0 };
 
     // LLAMA_MOE_CACHE_CTL: settings file re-read on change; stats are reported per segment between changes
@@ -658,7 +659,8 @@ void note_evict(moe_cache * mc, layer_state & ls, int32_t e) {
     const int k = ls.slow;
     mc->ev_n[k]++;
     mc->ev_hits[k]    += ls.up_hits[e];
-    mc->ev_paid[k]    += ls.up_hits[e] * mc->cpu_eval_us >= ls.up_cost[e];
+    const double cpu_us = (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]) / (knobs().cpu_gbs * 1e3);
+    mc->ev_paid[k]    += ls.up_hits[e] * cpu_us >= ls.up_cost[e];
     mc->ev_life_us[k] += (double) (ggml_time_us() - ls.up_t[e]);
     mc->ev_cost_us[k] += ls.up_cost[e];
     ls.up_t[e] = 0;
@@ -1419,6 +1421,10 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     double & lc = mc->copy_link[ls.slow];
                     lr = first ? j.read_us : 0.9*lr + 0.1*j.read_us;
                     lc = first ? j.copy_us : 0.9*lc + 0.1*j.copy_us;
+                    const double gbs = (double) (srcs[0]->nb[2] + srcs[1]->nb[2] + srcs[2]->nb[2]) / std::max(1.0, dt) / 1e3;
+                    double & lg = mc->gbs_link[ls.slow];
+                    lg = first ? gbs : 0.9*lg + 0.1*gbs;
+                    mc->gbs_all = mc->n_uploads == 1 ? gbs : 0.9*mc->gbs_all + 0.1*gbs;
                     j.done = true;
                     mc->done.push_back(j);
                     mc->in_flight--;
@@ -1722,14 +1728,11 @@ void llama_moe_cache_step() {
     // per upload link: a slow (x4) link pays more per swap, so its experts are only replaced by clearly hotter ones
     uint32_t margin = 1;
     int link_margin[2] = { 1, 1 };
-    if (mc->upload_us > 0 && !mc->layers.empty()) {
-        const auto & l0 = mc->layers[0].pub;
-        const double bytes  = (double) (l0.up_src->nb[2] + l0.gate_src->nb[2] + l0.down_src->nb[2]);
-        const double cpu_us = bytes / (cpu_gbs * 1e3); // GB/s -> bytes per us
-        mc->cpu_eval_us = cpu_us;
-        margin = (uint32_t) std::max(1.0, std::ceil(mc->upload_us / cpu_us));
+    // upload time / CPU eval time of the same expert = CPU GB/s / link GB/s, whatever the layer's expert size
+    if (mc->gbs_all > 0) {
+        margin = (uint32_t) std::max(1.0, std::ceil(cpu_gbs / mc->gbs_all));
         for (int k = 0; k < 2; ++k) {
-            link_margin[k] = mc->link_us[k] > 0 && knobs().link != 0 ? (int) std::max(1.0, std::ceil(mc->link_us[k] / cpu_us)) : (int) margin;
+            link_margin[k] = mc->gbs_link[k] > 0 && knobs().link != 0 ? (int) std::max(1.0, std::ceil(cpu_gbs / mc->gbs_link[k])) : (int) margin;
         }
     }
     // static pay-back margin: LLAMA_MOE_CACHE_MARGIN (deterministic mode: default 4)
@@ -1931,8 +1934,8 @@ void llama_moe_cache_step() {
                 continue;
             }
             const double n = (double) std::max<uint64_t>(1, mc->ev_n[k]);
-            LLAMA_LOG_WARN("moe-cache: %s link: upload %.2f ms = read %.2f + copy %.2f, cpu eval %.2f ms | evicted %" PRIu64 ": %.1f hits each, paid back %.0f%%, cost %.2f ms, lived %.1f s\n",
-                    k ? "slow" : "fast", mc->link_us[k]/1e3, mc->read_link[k]/1e3, mc->copy_link[k]/1e3, mc->cpu_eval_us/1e3,
+            LLAMA_LOG_WARN("moe-cache: %s link: upload %.2f ms = read %.2f + copy %.2f, %.1f GB/s (CPU %.0f GB/s) | evicted %" PRIu64 ": %.1f hits each, paid back %.0f%%, cost %.2f ms, lived %.1f s\n",
+                    k ? "slow" : "fast", mc->link_us[k]/1e3, mc->read_link[k]/1e3, mc->copy_link[k]/1e3, mc->gbs_link[k], knobs().cpu_gbs,
                     mc->ev_n[k], mc->ev_hits[k]/n, 100.0*mc->ev_paid[k]/n, mc->ev_cost_us[k]/n/1e3, mc->ev_life_us[k]/n/1e6);
         }
     }
