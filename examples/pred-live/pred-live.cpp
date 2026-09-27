@@ -29,8 +29,10 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -290,23 +292,42 @@ static void report(const char * phase) {
     scored = 0;
 }
 
-static bool decode_all(llama_context * ctx, const std::vector<llama_token> & toks, int pos0, int n_batch, bool score) {
+static void report_so_far(const char * phase) {
+    const std::vector<counters> keep = cnt;
+    const double keep_scored = scored;
+    report(phase);
+    cnt = keep;
+    scored = keep_scored;
+}
+
+static std::function<bool()> g_stop = [] { return false; };
+
+// decodes toks[from..]; returns the index reached (toks.size() when done, earlier when g_stop fired), -1 on error
+static int decode_from(llama_context * ctx, const std::vector<llama_token> & toks, size_t from, int n_batch, bool score) {
     llama_batch batch = llama_batch_init(n_batch, 0, 1);
-    for (size_t i = 0; i < toks.size(); i += n_batch) {
+    for (size_t i = from; i < toks.size(); i += n_batch) {
+        if (i > from && g_stop()) {
+            llama_batch_free(batch);
+            return (int) i;
+        }
         common_batch_clear(batch);
         const size_t n = std::min((size_t) n_batch, toks.size() - i);
         for (size_t j = 0; j < n; ++j) {
-            common_batch_add(batch, toks[i + j], pos0 + (llama_pos) (i + j), { 0 }, true);   // all outputs: the last layer runs for every token
+            common_batch_add(batch, toks[i + j], (llama_pos) (i + j), { 0 }, true);   // all outputs: the last layer runs for every token
         }
         if (llama_decode(ctx, batch)) {
             llama_batch_free(batch);
-            return false;
+            return -1;
         }
         if (getenv("PRED_DEBUG")) LOG("decode %zu tokens, captured %d rows (x0 %zu, topk15 %zu)\n", n, cap_n, cap_x[0].size() / n_embd, cap_topk[n_layer - 1].size() / top_k);
         process(score);
     }
     llama_batch_free(batch);
-    return true;
+    return (int) toks.size();
+}
+
+static bool decode_all(llama_context * ctx, const std::vector<llama_token> & toks, int n_batch, bool score) {
+    return decode_from(ctx, toks, 0, n_batch, score) == (int) toks.size();
 }
 
 static bool load_routers(const std::string & path) {
@@ -332,11 +353,67 @@ static bool load_routers(const std::string & path) {
     return true;
 }
 
+// ---- resumable state: run --time-limit seconds, save everything, exit; the next run continues ----
+struct progress {                 // phase 0 pretrain, 1 stories, 2 finished
+    int32_t phase = 0; uint64_t at = 0; int32_t done = 0, story = 0;
+    uint64_t chunk_end = 0; int32_t chunk_pos = 0;   // mid-chunk pause: chunk text [at, chunk_end), tokens decoded, KV in <state>.kv
+};
+
+template <typename T> static void wr(FILE * f, const T & v) { fwrite(&v, sizeof(T), 1, f); }
+template <typename T> static void rd(FILE * f, T & v) { if (fread(&v, sizeof(T), 1, f) != 1) throw std::runtime_error("short state file"); }
+template <typename T> static void wrv(FILE * f, const std::vector<T> & v) { uint64_t n = v.size(); wr(f, n); fwrite(v.data(), sizeof(T), n, f); }
+template <typename T> static void rdv(FILE * f, std::vector<T> & v) {
+    uint64_t n; rd(f, n); v.resize(n);
+    if (n && fread(v.data(), sizeof(T), n, f) != n) throw std::runtime_error("short state file");
+}
+
+static void save_state(const std::string & path, const progress & pr) {
+    const std::string tmp = path + ".tmp";
+    FILE * f = fopen(tmp.c_str(), "wb");
+    if (!f) return;
+    wr(f, pr); wr(f, ahead); wr(f, have_prev); wr(f, scored);
+    for (auto & c : cnt) wr(f, c);
+    for (auto & r : ring) wrv(f, r);
+    for (auto & x : prev_x) wrv(f, x);
+    for (auto & ps : pairs) {
+        wrv(f, ps.M); wrv(f, ps.M2);
+        uint64_t n = ps.mem.size(); wr(f, n);
+        for (auto & kv : ps.mem) { wr(f, kv.first); wr(f, kv.second); }
+    }
+    fclose(f);
+    rename(tmp.c_str(), path.c_str());
+}
+
+static bool load_state(const std::string & path, progress & pr) {
+    FILE * f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    try {
+        int a; rd(f, pr); rd(f, a);
+        if (a != ahead) throw std::runtime_error("--ahead differs from the saved state");
+        rd(f, have_prev); rd(f, scored);
+        for (auto & c : cnt) rd(f, c);
+        for (auto & r : ring) rdv(f, r);
+        for (auto & x : prev_x) rdv(f, x);
+        for (auto & ps : pairs) {
+            rdv(f, ps.M); rdv(f, ps.M2);
+            uint64_t n; rd(f, n); ps.mem.clear(); ps.mem.reserve(n);
+            for (uint64_t i = 0; i < n; ++i) { uint64_t k; entry e; rd(f, k); rd(f, e); ps.mem.emplace(k, e); }
+        }
+    } catch (const std::exception & e) {
+        LOG_ERR("state %s: %s\n", path.c_str(), e.what());
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+    return true;
+}
+
 int main(int argc, char ** argv) {
     std::setlocale(LC_NUMERIC, "C");
     // our own flags first, the rest goes to common_params
-    std::string pretrain, report_path = "pred-live.log";
-    int pretrain_tokens = 50000, n_stories = 20;
+    std::string pretrain, report_path = "pred-live.log", state_path;
+    int pretrain_tokens = 50000, n_stories = 20, chunk_chars = 2000;
+    double time_limit = 0;
     std::vector<char *> rest = { argv[0] };
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -347,6 +424,9 @@ int main(int argc, char ** argv) {
         else if (a == "--mu" && i + 1 < argc) mu = (float) atof(argv[++i]);
         else if (a == "--mu2" && i + 1 < argc) mu2 = (float) atof(argv[++i]);
         else if (a == "--report-file" && i + 1 < argc) report_path = argv[++i];
+        else if (a == "--state" && i + 1 < argc) state_path = argv[++i];
+        else if (a == "--time-limit" && i + 1 < argc) time_limit = atof(argv[++i]);
+        else if (a == "--chunk-chars" && i + 1 < argc) chunk_chars = atoi(argv[++i]);
         else rest.push_back(argv[i]);
     }
     common_params params;
@@ -402,19 +482,34 @@ int main(int argc, char ** argv) {
     llama_memory_t mem = llama_get_memory(ctx);
     const llama_vocab * vocab = llama_model_get_vocab(model);
 
-    if (!pretrain.empty()) {
+    progress pr;
+    if (!state_path.empty() && load_state(state_path, pr)) {
+        LOG("resumed %s: phase %d, pretrain %d tokens, story %d\n", state_path.c_str(), pr.phase, pr.done, pr.story);
+    }
+    if (pretrain.empty() && pr.phase == 0) pr.phase = 1;
+    const int64_t t_start = ggml_time_us();
+    auto out_of_time = [&]() { return time_limit > 0 && (ggml_time_us() - t_start) / 1e6 > time_limit; };
+    auto pause = [&]() {
+        if (!state_path.empty()) save_state(state_path, pr);
+        LOG("\npaused after %.1f s (phase %d, pretrain %d tokens, story %d), state saved\n", (ggml_time_us() - t_start) / 1e6, pr.phase, pr.done, pr.story);
+        report_so_far(pr.phase == 0 ? "pretrain so far" : "stories so far");
+        llama_backend_free();
+        return 3;
+    };
+
+    if (pr.phase == 0) {
         std::ifstream f(pretrain);
         std::stringstream ss;
         ss << f.rdbuf();
         const std::string text = ss.str();
         phase_name = "pretrain";
-        const int64_t t0 = ggml_time_us();
-        int done = 0;
-        size_t at = 0;
-        while (done < pretrain_tokens && at < text.size()) {
-            // one chunk of whole stories up to the context
+        g_stop = out_of_time;
+        while ((pr.chunk_pos > 0 || pr.done < pretrain_tokens) && pr.at < text.size()) {   // a paused chunk is always finished
+            if (pr.chunk_pos == 0 && out_of_time()) return pause();
+            // one chunk of whole stories; a pause inside it saves the KV cache and resumes at the exact token
+            size_t at = pr.at;
             std::string chunk;
-            while (at < text.size() && chunk.size() < (size_t) (n_ctx * 3)) {
+            while (at < text.size() && (pr.chunk_pos ? at < pr.chunk_end : chunk.size() < (size_t) chunk_chars)) {
                 size_t end = text.find("<|endoftext|>", at);
                 if (end == std::string::npos) end = text.size();
                 chunk += text.substr(at, end - at) + "\n";
@@ -423,21 +518,42 @@ int main(int argc, char ** argv) {
             auto toks = common_tokenize(ctx, chunk, true, false);
             if ((int) toks.size() > n_ctx) toks.resize(n_ctx);
             llama_memory_clear(mem, true);
-            if (!decode_all(ctx, toks, 0, n_batch, true)) return 1;
-            done += (int) toks.size();
+            size_t from = 0;
+            if (pr.chunk_pos > 0) {
+                std::vector<llama_token> kv_toks(toks.size());
+                size_t n_kv = 0;
+                if (!llama_state_load_file(ctx, (state_path + ".kv").c_str(), kv_toks.data(), kv_toks.size(), &n_kv) || (int) n_kv != pr.chunk_pos) {
+                    LOG_ERR("could not restore the KV cache of the paused chunk\n");
+                    return 1;
+                }
+                from = pr.chunk_pos;
+            }
+            const int reached = decode_from(ctx, toks, from, n_batch, true);
+            if (reached < 0) return 1;
+            if (reached < (int) toks.size()) {                       // paused mid-chunk
+                pr.done += reached - (int) from;
+                pr.chunk_pos = reached;
+                pr.chunk_end = at;
+                llama_state_save_file(ctx, (state_path + ".kv").c_str(), toks.data(), reached);
+                return pause();
+            }
+            pr.done += (int) toks.size() - (int) from;
+            pr.chunk_pos = 0;
+            pr.at = at;
         }
-        LOG("\npretrain: %d tokens in %.1f s\n", done, (ggml_time_us() - t0) / 1e6);
+        g_stop = [] { return false; };
+        LOG("\npretrain: %d tokens\n", pr.done);
         report("pretrain (TinyStories prefill, learning as it goes)");
+        pr.phase = 1;
     }
 
     phase_name = "stories";
-    const int64_t t0 = ggml_time_us();
-    int n_gen = 0;
-    for (int s = 0; s < n_stories; ++s) {
+    for (; pr.story < n_stories; ++pr.story) {
+        if (out_of_time()) return pause();
         llama_memory_clear(mem, true);
         auto prompt = common_tokenize(ctx, params.prompt, false, true);
-        if (!decode_all(ctx, prompt, 0, n_batch, false)) return 1;
-        params.sampling.seed = s;
+        if (!decode_all(ctx, prompt, n_batch, false)) return 1;
+        params.sampling.seed = pr.story;
         common_sampler * smpl = common_sampler_init(model, params.sampling);
         int pos = (int) prompt.size();
         llama_batch batch = llama_batch_init(1, 0, 1);
@@ -449,13 +565,13 @@ int main(int argc, char ** argv) {
             common_batch_add(batch, id, pos++, { 0 }, true);
             if (llama_decode(ctx, batch)) return 1;
             process(true);
-            n_gen++;
         }
         llama_batch_free(batch);
         common_sampler_free(smpl);
     }
-    LOG("\nstories: %d generated tokens in %.1f s\n", n_gen, (ggml_time_us() - t0) / 1e6);
+    pr.phase = 2;
     report(pretrain.empty() ? "stories, cold start" : "stories, after TinyStories pretrain");
+    if (!state_path.empty()) save_state(state_path, pr);
     llama_backend_free();
     return 0;
 }
