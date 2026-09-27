@@ -2051,17 +2051,33 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // w += mu/|x|^2 * x (x) (logits - pred), on the predictor's GPU, no host work
         auto it = moe_pred_todo.find(il);
         if (it != moe_pred_todo.end()) {
-            for (const auto & e : it->second) {
-                if (e.pred->ne[0] != logits->ne[0] || e.pred->ne[1] != logits->ne[1]) {
+            for (int src : it->second) {
+                auto & e = moe_pred_srcs[src];
+                if (logits->ne[1] != e.pred->ne[1] || logits->ne[0] * e.K != e.pred->ne[0]) {
+                    e.K = -1;   // rows don't match (output-only last layer): no update for this source
                     continue;
                 }
-                ggml_tensor * err = ggml_sub(ctx0, logits, e.pred);                    // [n_expert, n_tokens]
-                ggml_tensor * nrm = ggml_sum_rows(ctx0, ggml_sqr(ctx0, e.x));          // [1, n_tokens]
+                e.real.push_back(logits);
+                if ((int) e.real.size() != e.K) {
+                    continue;
+                }
+                // all targets seen: one stacked update, w += mu/|x|^2 * x (x) (logits - pred)
+                std::vector<ggml_tensor *> nodes;
+                ggml_tensor * real = e.real[0];
+                for (size_t i = 1; i < e.real.size(); ++i) {
+                    real = ggml_concat(ctx0, real, e.real[i], 0);                        // [n_expert * K, n_tokens]
+                    nodes.push_back(real);
+                }
+                ggml_tensor * err = ggml_sub(ctx0, real, e.pred);
+                ggml_tensor * nrm = ggml_sum_rows(ctx0, ggml_sqr(ctx0, e.x));            // [1, n_tokens]
                 ggml_tensor * g   = ggml_mul(ctx0, ggml_div(ctx0, err, nrm), e.mu);
-                ggml_tensor * dw  = ggml_out_prod(ctx0, e.x, g);                       // [n_embd, n_expert]
+                ggml_tensor * dw  = ggml_out_prod(ctx0, e.x, g);                         // [n_embd, n_expert * K]
                 ggml_tensor * sum = ggml_add(ctx0, e.w, dw);
                 ggml_tensor * upd = ggml_cpy(ctx0, sum, e.w);
                 for (ggml_tensor * t : { err, nrm, nrm->src[0], g, g->src[0], dw, sum, upd }) {
+                    nodes.push_back(t);
+                }
+                for (ggml_tensor * t : nodes) {
                     ggml_backend_sched_set_tensor_backend(sched, t, e.backend);
                 }
                 ggml_build_forward_expand(gf, upd);
@@ -2238,7 +2254,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
         }
         mc_cpu_backend = cpu_backend;
-        ggml_tensor * pw = mcache->pred_m[0] ? mcache->pred_m[0] : mcache->pred_w;
+        ggml_tensor * pw = mcache->pred_all ? mcache->pred_all : mcache->pred_w;
         if (pw && pw->buffer) {
             // the next layers' router logits from this layer's input (learned predictors, else the next
             // router), on their GPU in the split before the CPU copy; handed to the CPU gate op as src[4]
@@ -2248,18 +2264,15 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
                 if (wdev && ggml_backend_get_device(b) == wdev && b != cpu_backend) {
                     ggml_tensor * x2 = ggml_reshape_2d(ctx0, mc_inp, n_embd, n_tokens);
-                    if (!mcache->pred_m[0]) {
-                        mc_pred = ggml_mul_mat(ctx0, pw, x2);
-                        ggml_backend_sched_set_tensor_backend(sched, mc_pred, b);
-                    }
-                    for (int k = 0; k < mcache->pred_ahead && mcache->pred_m[k]; ++k) {
-                        ggml_tensor * p = ggml_mul_mat(ctx0, mcache->pred_m[k], x2);
-                        ggml_backend_sched_set_tensor_backend(sched, p, b);
-                        if (mcache->pred_mu) {
-                            moe_pred_todo[il + 1 + k].push_back({ mcache->pred_m[k], x2, p, mcache->pred_mu, b });
+                    // all lookaheads in one matmul ([n_expert * K, n_tokens], the stacked layout the cache reads)
+                    mc_pred = ggml_mul_mat(ctx0, pw, x2);
+                    ggml_backend_sched_set_tensor_backend(sched, mc_pred, b);
+                    // train on decode and small batches only: a big prefill batch would sum too many steps
+                    if (mcache->pred_all && mcache->pred_mu && n_tokens <= 8) {
+                        moe_pred_srcs[il] = { mcache->pred_all, x2, mc_pred, mcache->pred_mu, b, mcache->pred_ahead, {} };
+                        for (int k = 0; k < mcache->pred_ahead; ++k) {
+                            moe_pred_todo[il + 1 + k].push_back(il);
                         }
-                        mc_pred = mc_pred ? ggml_concat(ctx0, mc_pred, p, 0) : p;
-                        ggml_backend_sched_set_tensor_backend(sched, mc_pred, b);
                     }
                     cb(mc_pred, "ffn_moe_pred", il);
                     if (cpu_backend) {

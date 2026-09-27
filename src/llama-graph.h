@@ -1032,14 +1032,17 @@ struct llm_graph_context {
 
     // MoE expert cache router predictor: predictions made at an earlier layer, keyed by target layer;
     // trained (in the graph) once the target layer's router logits exist
-    struct moe_pred_pending {
-        ggml_tensor *  w;
-        ggml_tensor *  x;
-        ggml_tensor *  pred;
+    struct moe_pred_src {
+        ggml_tensor *  w;                 // stacked [n_embd, n_expert * K]
+        ggml_tensor *  x;                 // the source layer's MoE input [n_embd, n_tokens]
+        ggml_tensor *  pred;              // stacked prediction [n_expert * K, n_tokens]
         ggml_tensor *  mu;
         ggml_backend_t backend;
+        int            K;
+        std::vector<ggml_tensor *> real;  // the target layers' router logits, collected in order
     };
-    mutable std::map<int, std::vector<moe_pred_pending>> moe_pred_todo;
+    mutable std::map<int, moe_pred_src> moe_pred_srcs;                      // source layer ->
+    mutable std::map<int, std::vector<int>> moe_pred_todo;                  // target layer -> source layers
 
     const llama_adapter_cvec     * cvec;
     const llama_adapter_loras    * loras;

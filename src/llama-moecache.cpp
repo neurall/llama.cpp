@@ -168,8 +168,8 @@ struct moe_cache {
     std::vector<std::vector<float>> last_pred; // layer idx -> last token-0 prediction [n_blk][n_expert]
     std::vector<uint64_t>           last_pred_step;
     std::vector<int64_t>            last_pred_blk;
-    uint64_t acc_hit[4] = {}, acc_tot[4] = {}; // top-k overlap per lookahead, lifetime
-    uint64_t win_hit[4] = {}, win_tot[4] = {}; // same, since the last report
+    uint64_t acc_hit[8] = {}, acc_tot[8] = {}; // top-k overlap per lookahead, lifetime
+    uint64_t win_hit[8] = {}, win_tot[8] = {}; // same, since the last report
     std::vector<ggml_context *>        pctxs;
     std::vector<ggml_backend_buffer_t> pbufs;
 };
@@ -476,7 +476,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
         const auto & b = mc->pred_b[li];
         const int64_t ne = (int64_t) ls->expert_slot.size();
         std::vector<int32_t> idx(ne);
-        for (int k = 0; k < 4 && (size_t) k + 1 <= li; ++k) {
+        for (int k = 0; k < 8 && (size_t) k + 1 <= li; ++k) {
             const size_t src = li - 1 - k;
             if (mc->last_pred_step[src] != mc->n_steps || mc->last_pred_blk[src] <= k) {
                 continue;
@@ -542,7 +542,7 @@ void readahead(const layer_state & ls, int32_t expert) {
 
 constexpr uint32_t PRED_MAGIC = 0x3252504d; // "MPR2"
 
-// learned predictors: for every layer and lookahead, the [n_embd, n_expert] F32 matrix
+// learned predictors: per layer, the stacked [n_embd, n_expert * lookahead] fp16 matrix
 void pred_save(const moe_cache * mc) {
     if (mc->pred_file.empty() || mc->n_train == 0) {
         return;
@@ -554,17 +554,15 @@ void pred_save(const moe_cache * mc) {
     }
     const uint32_t hdr[3] = { PRED_MAGIC, (uint32_t) mc->layers.size(), (uint32_t) mc->pred_ahead };
     bool ok = fwrite(hdr, sizeof(hdr), 1, f) == 1;
-    std::vector<float> buf;
+    std::vector<uint8_t> buf;
     for (const auto & ls : mc->layers) {
-        for (int k = 0; ok && k < mc->pred_ahead; ++k) {
-            const ggml_tensor * t = ls.pub.pred_m[k];
-            const uint64_t n = t ? (uint64_t) ggml_nelements(t) : 0;
-            ok = fwrite(&n, sizeof(n), 1, f) == 1;
-            if (ok && n) {
-                buf.resize(n);
-                ggml_backend_tensor_get(t, buf.data(), 0, n*sizeof(float));
-                ok = fwrite(buf.data(), sizeof(float), n, f) == n;
-            }
+        const ggml_tensor * t = ls.pub.pred_all;
+        const uint64_t n = t ? (uint64_t) ggml_nbytes(t) : 0;
+        ok = ok && fwrite(&n, sizeof(n), 1, f) == 1;
+        if (ok && n) {
+            buf.resize(n);
+            ggml_backend_tensor_get(t, buf.data(), 0, n);
+            ok = fwrite(buf.data(), 1, n, f) == n;
         }
     }
     ok = fclose(f) == 0 && ok;
@@ -584,15 +582,13 @@ bool pred_load(const moe_cache * mc) {
     }
     uint32_t hdr[3] = {};
     bool ok = fread(hdr, sizeof(hdr), 1, f) == 1 && hdr[0] == PRED_MAGIC && hdr[1] == mc->layers.size() && hdr[2] == (uint32_t) mc->pred_ahead;
-    std::vector<std::vector<float>> data;
+    std::vector<std::vector<uint8_t>> data;
     for (const auto & ls : mc->layers) {
-        for (int k = 0; ok && k < mc->pred_ahead; ++k) {
-            const ggml_tensor * t = ls.pub.pred_m[k];
-            uint64_t n = 0;
-            ok = fread(&n, sizeof(n), 1, f) == 1 && n == (t ? (uint64_t) ggml_nelements(t) : 0);
-            data.emplace_back(n);
-            ok = ok && fread(data.back().data(), sizeof(float), n, f) == n;
-        }
+        const ggml_tensor * t = ls.pub.pred_all;
+        uint64_t n = 0;
+        ok = ok && fread(&n, sizeof(n), 1, f) == 1 && n == (t ? (uint64_t) ggml_nbytes(t) : 0);
+        data.emplace_back(n);
+        ok = ok && fread(data.back().data(), 1, n, f) == n;
     }
     fclose(f);
     if (!ok) {
@@ -601,11 +597,10 @@ bool pred_load(const moe_cache * mc) {
     }
     size_t i = 0;
     for (const auto & ls : mc->layers) {
-        for (int k = 0; k < mc->pred_ahead; ++k, ++i) {
-            if (ls.pub.pred_m[k]) {
-                ggml_backend_tensor_set(ls.pub.pred_m[k], data[i].data(), 0, data[i].size()*sizeof(float));
-            }
+        if (ls.pub.pred_all && !data[i].empty()) {
+            ggml_backend_tensor_set(ls.pub.pred_all, data[i].data(), 0, data[i].size());
         }
+        ++i;
     }
     return true;
 }
@@ -1244,7 +1239,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 const char * a  = getenv("LLAMA_MOE_CACHE_PREDICT_AHEAD");
                 const char * tt = getenv("LLAMA_MOE_CACHE_PREDICT_TRAIN");
                 const char * mu = getenv("LLAMA_MOE_CACHE_PREDICT_MU");
-                mc->pred_ahead = std::max(0, std::min(4, a ? atoi(a) : 2));
+                mc->pred_ahead = std::max(0, std::min(8, a ? atoi(a) : 2));
                 mc->pred_train = tt ? atoi(tt) : 0;
                 if (mu) { mc->pred_mu = (float) atof(mu); }
                 const char * pf = getenv("LLAMA_MOE_CACHE_PREDICT_FILE");
@@ -1288,22 +1283,26 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     continue;
                 }
                 // learned predictors start as the target layers' routers, next to them on their device
-                ggml_init_params ip = { ggml_tensor_overhead()*(routers.size() + 2), nullptr, true };
+                // all lookaheads stacked in one fp16 tensor: one matmul predicts them, one update trains them
+                const int64_t ne_x = routers[0]->ne[1];
+                while (!routers.empty() && routers.back()->ne[1] != ne_x) {
+                    routers.pop_back();
+                }
+                ggml_init_params ip = { ggml_tensor_overhead()*2, nullptr, true };
                 ggml_context * pctx = ggml_init(ip);
                 mc->pctxs.push_back(pctx);
-                for (size_t k = 0; k < routers.size(); ++k) {
-                    pub.pred_m[k] = ggml_new_tensor_2d(pctx, GGML_TYPE_F32, n_embd, routers[k]->ne[1]);
-                    ggml_format_name(pub.pred_m[k], "moe_pred-%d-%zu", pub.il, k + 1);
-                }
+                pub.pred_all = ggml_new_tensor_2d(pctx, GGML_TYPE_F16, n_embd, ne_x * (int64_t) routers.size());
+                ggml_format_name(pub.pred_all, "moe_pred-%d", pub.il);
                 pub.pred_mu = ggml_new_tensor_1d(pctx, GGML_TYPE_F32, 1);
                 ggml_set_name(pub.pred_mu, "moe_pred_mu");
                 ggml_backend_buffer_t pbuf = ggml_backend_alloc_ctx_tensors_from_buft(pctx, ggml_backend_buffer_get_type(routers[0]->buffer));
                 if (!pbuf) {
-                    std::fill(std::begin(pub.pred_m), std::end(pub.pred_m), nullptr);
-                    pub.pred_mu = nullptr;
+                    pub.pred_all = nullptr;
+                    pub.pred_mu  = nullptr;
                     continue;
                 }
                 mc->pbufs.push_back(pbuf);
+                std::vector<ggml_fp16_t> h(n_embd * ne_x * routers.size());
                 for (size_t k = 0; k < routers.size(); ++k) {
                     const ggml_tensor * w = routers[k];
                     std::vector<uint8_t> raw(ggml_nbytes(w));
@@ -1314,8 +1313,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     } else {
                         ggml_get_type_traits(w->type)->to_float(raw.data(), f.data(), (int64_t) f.size());
                     }
-                    ggml_backend_tensor_set(pub.pred_m[k], f.data(), 0, f.size()*sizeof(float));
+                    ggml_fp32_to_fp16_row(f.data(), h.data() + k * n_embd * ne_x, (int64_t) f.size());   // rows k*E.. = layer +k's router
                 }
+                ggml_backend_tensor_set(pub.pred_all, h.data(), 0, h.size()*sizeof(ggml_fp16_t));
                 const float zero = 0.0f;
                 ggml_backend_tensor_set(pub.pred_mu, &zero, 0, sizeof(float));
                 pub.pred_ahead = (int) routers.size();
@@ -1509,7 +1509,7 @@ void llama_moe_cache_step() {
     }
     if (mc->pred_m > 0 && mc->n_steps % 1024 == 0 && mc->win_tot[0] > 0) {
         std::string msg;
-        for (int k = 0; k < 4 && mc->win_tot[k] > 0; ++k) {
+        for (int k = 0; k < 8 && mc->win_tot[k] > 0; ++k) {
             msg += format(" L+%d %.1f%%", k + 1, 100.0*mc->win_hit[k]/mc->win_tot[k]);
             mc->win_hit[k] = mc->win_tot[k] = 0;
         }
@@ -1691,7 +1691,7 @@ void llama_moe_cache_free() {
             mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0, mc->n_src_hit, mc->n_src_query, mc->n_adopted);
     if (mc->acc_tot[0]) {
         std::string msg;
-        for (int k = 0; k < 4 && mc->acc_tot[k] > 0; ++k) {
+        for (int k = 0; k < 8 && mc->acc_tot[k] > 0; ++k) {
             msg += format(" L+%d %.1f%%", k + 1, 100.0*mc->acc_hit[k]/mc->acc_tot[k]);
         }
         LLAMA_LOG_WARN("moe-cache: predicted top-k overlap:%s (%" PRIu64 " training steps)\n", msg.c_str(), mc->n_train);
