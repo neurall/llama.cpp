@@ -49,7 +49,7 @@ static constexpr int BITS = 16;                              // sign bits per ha
 static constexpr int MAXK = 8;
 
 struct entry {
-    std::array<int32_t, 8> ids;
+    std::array<int32_t, 16> ids;
     uint32_t hits_x8 = 0;          // hit counter (overlap * 8, summed over recalls)
     uint32_t uses = 0;
     uint32_t last = 0;             // token clock of the last store / use (LRU prune)
@@ -67,6 +67,8 @@ static bool merge1 = false;        // --merge1: length-1 recalls merged with NLM
 static bool with_coarse = false;   // --coarse: coarse rungs (<0.2% of recalls once NLMS is strong, but double the stored entries)
 static bool with_hash = false;     // --hash: the hash ladder on top of NLMS (off: +0.003..+0.005 top-8 hit on stories, <1% time, not worth its memory)
 static uint32_t hash_ttl = 20000, clock_tok = 0;
+static double plateau = 0;         // --plateau eps: end pretraining once the windowed NLMS hit gains < eps twice in a row
+static double win_tok = 0, win_hit = 0, prev_win = -1; static int flat = 0;   // plateau window state (pretraining only)
 
 // per-ubatch capture
 static std::vector<std::vector<float>>   cap_x;
@@ -124,9 +126,9 @@ static bool capture_cb(struct ggml_tensor * t, bool ask, void *) {
         cap_pred_k[il] = (int) (t->ne[0] / n_expert);
     } else if (strncmp(t->name, "ffn_norm", 8) == 0) {
         get(cap_x[il]);
-        cap_n = (int) n;
     } else {
         get(cap_topk[il]);
+        cap_n = (int) n;
     }
     return true;
 }
@@ -150,7 +152,7 @@ static uint64_t mix(uint64_t h, uint64_t v) {       // splitmix-style combine
 }
 
 static void topk_of(const float * v, int32_t * out) {
-    int idx[64];
+    int idx[512];
     for (int e = 0; e < n_expert; ++e) idx[e] = e;
     std::partial_sort(idx, idx + top_k, idx + n_expert, [&](int a, int b) { return v[a] > v[b]; });
     for (int i = 0; i < top_k; ++i) out[i] = idx[i];
@@ -182,6 +184,7 @@ static void process(bool score) {
     #pragma omp parallel for collapse(2)
     for (int L = 0; L < n_layer; ++L) {
         for (int j = 0; j < cap_n; ++j) {
+            if (!with_hash || cap_x[L].size() < (size_t) (j + 1) * n_embd) continue;
             const float * x = cap_x[L].data() + (size_t) j * n_embd;
             cur_code[L][j] = sign_code(proj_cur[L].data(), x);
             tgt_code[L][j] = sign_code(proj_prev[L].data(), x);
@@ -197,11 +200,11 @@ static void process(bool score) {
                 if (T >= n_layer) continue;
                 pair_state & ps = pairs[(size_t) (k - 1) * n_layer + L];
                 const int32_t * real = cap_topk[T].data() + (size_t) j * top_k;
-                int32_t pred[8];
+                int32_t pred[16];
 
                 double h_router = 0;
                 if (with_router) {
-                    float r[64];
+                    float r[512];
                     matvec(routers[T].data(), cap_x[L].data() + (size_t) j * n_embd, r);
                     topk_of(r, pred);
                     h_router = overlap(pred, real);
@@ -259,7 +262,7 @@ static void process(bool score) {
                     if (got_rung == 0 && merge1) {
                         // length-1 recall (hit ~0.90): experts both agree on first, then the rest of the union in NLMS logit order
                         const float * lg = pl;
-                        int32_t cand[16]; int nc = 0;
+                        int32_t cand[32]; int nc = 0;
                         for (int i = 0; i < top_k; ++i) cand[nc++] = got->ids[i];
                         for (int i = 0; i < top_k; ++i) if (std::find(cand, cand + nc, pred[i]) == cand + nc) cand[nc++] = pred[i];
                         auto both = [&](int32_t e) { return std::find(pred, pred + top_k, e) != pred + top_k && std::find(got->ids.begin(), got->ids.end(), e) != got->ids.end(); };
@@ -439,7 +442,7 @@ static bool load_routers(const std::string & path) {
 }
 
 // ---- resumable state: run --time-limit seconds, save everything, exit; the next run continues ----
-static constexpr uint32_t STATE_VERSION = 5;   // bump when the saved layout changes
+static constexpr uint32_t STATE_VERSION = 6;   // bump when the saved layout changes
 
 struct progress {                 // phase 0 pretrain, 1 stories, 2 finished
     int32_t phase = 0; uint64_t at = 0; int32_t done = 0, story = 0;
@@ -509,6 +512,7 @@ int main(int argc, char ** argv) {
         else if (a == "--router") with_router = true;
         else if (a == "--coarse") with_coarse = true;
         else if (a == "--hash") with_hash = true;
+        else if (a == "--plateau" && i + 1 < argc) plateau = atof(argv[++i]);
         else if (a == "--merge1") merge1 = true;
         else if (a == "--hash-ttl" && i + 1 < argc) hash_ttl = (uint32_t) atoi(argv[++i]);
         else if (a == "--report-file" && i + 1 < argc) report_path = argv[++i];
@@ -542,15 +546,17 @@ int main(int argc, char ** argv) {
     }
     n_layer = llama_model_n_layer(model);
     n_embd = llama_model_n_embd(model);
-    char buf[64];
-    llama_model_meta_val_str(model, "olmoe.expert_count", buf, sizeof(buf));
+    char arch[64], buf[64];
+    llama_model_meta_val_str(model, "general.architecture", arch, sizeof(arch));
+    llama_model_meta_val_str(model, (std::string(arch) + ".expert_count").c_str(), buf, sizeof(buf));
     n_expert = atoi(buf);
-    llama_model_meta_val_str(model, "olmoe.expert_used_count", buf, sizeof(buf));
+    llama_model_meta_val_str(model, (std::string(arch) + ".expert_used_count").c_str(), buf, sizeof(buf));
     top_k = atoi(buf);
-    if (n_expert <= 0 || n_expert > 64 || top_k != 8 || (with_router && !load_routers(params.model.path))) {
-        LOG_ERR("needs an OLMoE-style model with top-8 routing of <= 64 experts (experts %d, used %d)\n", n_expert, top_k);
+    if (n_expert <= 0 || n_expert > 512 || top_k <= 0 || top_k > 16 || (with_router && !load_routers(params.model.path))) {
+        LOG_ERR("needs a MoE model with <= 512 experts and top-k <= 16 (%s: experts %d, used %d)\n", arch, n_expert, top_k);
         return 1;
     }
+    LOG("%s: %d layers, %d experts, top-%d\n", arch, n_layer, n_expert, top_k);
     cap_x.assign(n_layer, {}); cap_topk.assign(n_layer, {}); cap_pred.assign(n_layer, {}); cap_pred_k.assign(n_layer, 0);
     std::mt19937 rng(0);
     std::normal_distribution<float> nd;
@@ -627,6 +633,21 @@ int main(int argc, char ** argv) {
             pr.done += (int) toks.size() - (int) from;
             pr.chunk_pos = 0;
             pr.at = at;
+            if (plateau > 0) {
+                // windowed NLMS hit rate over all lookaheads; stop when it stops improving
+                double tok = 0, hit = 0;
+                for (auto & c : cnt) { tok += c.tok; hit += c.nlms; }
+                if (tok - win_tok >= 2000.0 * (n_layer - 1)) {
+                    const double w = (hit - win_hit) / (tok - win_tok);
+                    LOG("[pretrain %d tokens] window NLMS hit %.4f (%+.4f)\n", pr.done, w, prev_win < 0 ? 0.0 : w - prev_win);
+                    flat = prev_win >= 0 && w - prev_win < plateau ? flat + 1 : 0;
+                    prev_win = w; win_tok = tok; win_hit = hit;
+                    if (flat >= 2) {
+                        LOG("pretraining plateaued after %d tokens (gain < %.4f twice)\n", pr.done, plateau);
+                        break;
+                    }
+                }
+            }
         }
         g_stop = [] { return false; };
         LOG("\npretrain: %d tokens\n", pr.done);
