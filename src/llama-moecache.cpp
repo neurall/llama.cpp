@@ -230,6 +230,13 @@ struct moe_cache {
     double   read_link[2] = { 0, 0 };     // EMA of the read part of one upload, per link
     double   copy_link[2] = { 0, 0 };     // EMA of the PCIe copy part, per link
     // DDR4 phases: the CPU computing uncached experts (ggml moe phase callback)
+    // stream self-tuning per link (AUTO): extra lead in layers, candidates per layer, off; window counters
+    int                  lead_extra[2] = { 0, 0 };
+    int                  auto_m[2]     = { 0, 0 };   // 0: STREAM_M
+    bool                 stream_off[2] = { false, false };
+    std::atomic<uint64_t> st_up[2]   { {0}, {0} };
+    std::atomic<uint64_t> st_late[2] { {0}, {0} };
+    std::atomic<uint64_t> st_hit[2]  { {0}, {0} };
     std::atomic<bool>    cpu_busy{false};
     // DDR4 load meter: demand now (MB/s: the CPU phase at its measured rate + each running upload at its link rate)
     // and bytes read, CPU expert matmuls vs uploads
@@ -346,6 +353,9 @@ struct knobs_t {
     double link      = 1;   // pay-back margin per upload link (0: one margin from the average upload)
     double gate      = 0;   // uploads wait (up to GATE_MAX_US per tensor) while the CPU computes uncached experts: no DDR4 contention
     double gate_max_us = 2000;
+    double auto_tune   = 1;    // adjust stream lead and STREAM_M per link from the measured late share and precision
+    double wait        = 1;    // the step waits for queued cache swaps (0: never; finished uploads are published at splits)
+    double chunk_kb    = 0;    // GATE=3: copy in chunks of this size, re-checking the DDR budget before each (0: whole tensor)
     double ddr_gbs     = 36;   // measured max on the dev box (DDR4-3200 ECC); GATE=3: an upload starts only while DDR demand + its link rate stays under this
     double stream    = 1e9; // predicted uploads use up to this many stream slots per layer (0: evict cache slots, old path)
     double stream_m  = 12;  // candidates per target layer in stream mode (over-predict; no confidence cut)
@@ -360,6 +370,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
         { "HOT_FRAC", &knobs_t::hot_frac }, { "STICKY", &knobs_t::sticky }, { "SLOW_STAY", &knobs_t::slow_stay },
         { "MARGIN", &knobs_t::margin }, { "BUDGET", &knobs_t::budget }, { "CPU_GBS", &knobs_t::cpu_gbs }, { "LINK", &knobs_t::link },
         { "GATE", &knobs_t::gate }, { "GATE_MAX_US", &knobs_t::gate_max_us }, { "DDR_GBS", &knobs_t::ddr_gbs },
+        { "WAIT", &knobs_t::wait }, { "AUTO", &knobs_t::auto_tune }, { "CHUNK_KB", &knobs_t::chunk_kb },
         { "STREAM", &knobs_t::stream }, { "STREAM_M", &knobs_t::stream_m },
         { "OFFSET", &knobs_t::offset }, { "STREAM_SLOW", &knobs_t::stream_slow },
         { "TRACE", &knobs_t::trace }, { "TRACE_AFTER", &knobs_t::trace_after },
@@ -376,7 +387,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS" }) {
+        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
             }
@@ -718,6 +729,9 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
                 if (!prefill && ls->is_stream[slot] &&
                         std::find(ls->stream_hit.begin(), ls->stream_hit.end(), id) == ls->stream_hit.end()) {
                     ls->stream_hit.push_back(id);
+                    if (ls->prefetched[id]) {
+                        mc->st_hit[ls->slow]++;
+                    }
                 }
                 ls->n_hit += !prefill;
                 ls->up_hits[id] += !prefill;
@@ -882,6 +896,9 @@ void ctl_poll(moe_cache * mc) {
     }
     const bool resort = k.hot_frac != knobs().hot_frac || k.sticky != knobs().sticky;
     knobs() = k;
+    for (int i = 0; i < 2; ++i) { // new settings: fresh measurement window (the learned lead / M are kept)
+        mc->st_up[i] = mc->st_late[i] = mc->st_hit[i] = 0;
+    }
     if (applied.find(" TRACE=") != std::string::npos && !g_tr.prefix.empty()) {
         g_tr.skip = (int64_t) k.trace_after;
         g_tr.left = (int64_t) k.trace;
@@ -1004,7 +1021,8 @@ void pred_loop(moe_cache * mc) {
                 for (int32_t e = 0; e < ne; ++e) { idx[e] = e; }
                 // stream slots: over-predict (a wrong guess costs idle bandwidth only, never a cached expert)
                 const bool stream = knobs().stream > 0 && !ls.stream_slots.empty();
-                const int32_t m = std::min<int32_t>(stream ? (int32_t) knobs().stream_m : mc->pred_m, (int32_t) ne);
+                const int32_t sm = knobs().auto_tune != 0 && mc->auto_m[ls.slow] > 0 ? mc->auto_m[ls.slow] : (int32_t) knobs().stream_m;
+                const int32_t m = std::min<int32_t>(stream ? sm : mc->pred_m, (int32_t) ne);
                 std::partial_sort(idx.begin(), idx.begin() + m, idx.end(), [&](int32_t a, int32_t c) { return lg[a] > lg[c]; });
                 if (mc->pred_ra) {
                     // model bigger than RAM: start reading the predicted experts the CPU will compute
@@ -1052,12 +1070,12 @@ void pred_loop(moe_cache * mc) {
                 // smart offset: the upload must land before the layer; it is k+1 layers ahead, a layer takes ~token/layers
                 if (knobs().offset != 0 && mc->step_us_idle > 0 && mc->link_us[ls.slow] > 0) {
                     const double layer_us = mc->step_us_idle / (double) mc->layers.size();
-                    if ((double) (k + 1) * layer_us < mc->link_us[ls.slow]) {
+                    if ((double) (k + 1) < std::ceil(mc->link_us[ls.slow] / layer_us) + (knobs().auto_tune != 0 ? mc->lead_extra[ls.slow] : 0)) {
                         mc->n_pred_late += !cand.empty();
                         continue;
                     }
                 }
-                if (ls.slow && knobs().stream > 0 && knobs().stream_slow == 0) {
+                if (knobs().stream > 0 && ((ls.slow && knobs().stream_slow == 0) || (knobs().auto_tune != 0 && mc->stream_off[ls.slow]))) {
                     continue;
                 }
                 const int32_t n_ss = knobs().stream > 0 ? std::min<int32_t>((int32_t) knobs().stream, (int32_t) ls.stream_slots.size()) : 0;
@@ -1296,7 +1314,7 @@ static void moe_split_cb(ggml_backend_t backend, void * ud) {
     {
         std::lock_guard<std::mutex> wlk(mc->wmtx);
         for (size_t i = 0; i < mc->done.size(); ) {
-            if (mc->done[i].urgent) {
+            if (mc->done[i].urgent || knobs().wait == 0) {
                 ready.push_back(mc->done[i]);
                 mc->done[i] = mc->done.back();
                 mc->done.pop_back();
@@ -1687,6 +1705,8 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     mc->in_flight--;
                     mc->in_flight_stream -= j.stream;
                     mc->n_stream_stale++;
+                    mc->st_up[ls.slow]++;
+                    mc->st_late[ls.slow]++;
                     mc->dcv.notify_all();
                     if (tr_on()) {
                         tr(TR_WORKER + (int) w, tr_fmt("drop L%zu e%d (layer started)", j.layer_idx, j.expert), ggml_time_us());
@@ -1733,12 +1753,31 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                         t_read += ggml_time_us() - tr;
                         ggml_backend_tensor_set(dsts[k], staging_ptr, (size_t) j.slot*dsts[k]->nb[2], sz);
                     } else if (ggml_backend_buffer_is_host(srcs[k]->buffer)) {
-                        upload_slice(dsts[k], srcs[k], j.expert, j.slot);
+                        const size_t ch = knobs().gate >= 3 && knobs().chunk_kb > 0 ? (size_t) knobs().chunk_kb * 1024 : 0;
+                        if (ch == 0 || ch >= sz) {
+                            upload_slice(dsts[k], srcs[k], j.expert, j.slot);
+                        } else {
+                            // re-check the DDR budget per chunk: a CPU phase that started meanwhile makes the rest wait
+                            const char * src = (const char *) srcs[k]->data + (size_t) j.expert*sz;
+                            const size_t dst = (size_t) j.slot*dsts[k]->nb[2];
+                            for (size_t off = 0; off < sz; off += ch) {
+                                const int64_t tw = ggml_time_us();
+                                while (mc->ddr_mbs > (int64_t) (knobs().ddr_gbs * 1e3) && ggml_time_us() - tw < (int64_t) knobs().gate_max_us) {
+                                    std::this_thread::yield();
+                                }
+                                mc->gate_wait_us += ggml_time_us() - tw;
+                                ggml_backend_tensor_set(dsts[k], src + off, dst + off, std::min(ch, sz - off));
+                            }
+                        }
                     } else {
                         LLAMA_LOG_ERROR("moe-cache: can't upload repacked '%s' without its file location\n", srcs[k]->name);
                     }
                 }
                 j.t_done  = ggml_time_us();
+                if (j.stream) {
+                    mc->st_up[ls.slow]++;
+                    mc->st_late[ls.slow] += mc->gpu_started >= (int64_t) j.layer_idx;
+                }
                 if (tr_on()) {
                     const int64_t gs = mc->gpu_started;
                     tr(TR_WORKER + (int) w, tr_fmt("L%zu e%d %s%s", j.layer_idx, j.expert, j.stream ? "stream" : j.urgent ? "predicted" : "swap",
@@ -1995,10 +2034,7 @@ void llama_moe_cache_step() {
     // wait for and publish the previous step's uploads (default; LLAMA_MOE_CACHE_WAIT=0
     // disables): a cache that is current every step beats the time the wait costs,
     // fixed-text decode +16%, hit rate 66% -> 77%
-    static const bool wait_publish = det || [] {
-        const char * e = getenv("LLAMA_MOE_CACHE_WAIT");
-        return !e || atoi(e) != 0;
-    }();
+    const bool wait_publish = det || knobs().wait != 0; // LLAMA_MOE_CACHE_WAIT / ctl WAIT
 
     // 1) publish completed uploads (sync point: no graph is executing)
     {
@@ -2259,6 +2295,35 @@ void llama_moe_cache_step() {
             mc->n_promoted++;
         }
         ls.stream_hit.clear();
+    }
+
+    // 1c) stream self-tuning per link, every 64 steps: lead from the late share, candidates from the precision
+    if (knobs().auto_tune != 0 && knobs().stream > 0 && mc->n_steps % 64 == 0) {
+        for (int k = 0; k < 2; ++k) {
+            const uint64_t up = mc->st_up[k], late = mc->st_late[k], hit = mc->st_hit[k];
+            if (up < 16 || mc->stream_off[k]) {
+                continue;
+            }
+            int & m = mc->auto_m[k];
+            if (m == 0) {
+                m = (int) knobs().stream_m;
+            }
+            const double fl = (double) late / up, pr = (double) hit / up;
+            if (fl > 0.25) {
+                mc->lead_extra[k] = std::min(mc->lead_extra[k] + 1, 6);
+            } else if (fl < 0.05 && mc->lead_extra[k] > 0) {
+                mc->lead_extra[k]--;
+            }
+            if (pr < 0.35) {
+                m = std::max(2, m - 1);
+            } else if (pr > 0.6) {
+                m = std::min(12, m + 1);
+            }
+            mc->stream_off[k] = m == 2 && pr < 0.2;
+            LLAMA_LOG_WARN("moe-cache: auto: %s link %llu streams, %.0f%% late, %.0f%% used -> lead +%d, M %d%s\n", k ? "slow" : "fast",
+                    (unsigned long long) up, 100*fl, 100*pr, mc->lead_extra[k], m, mc->stream_off[k] ? ", streaming off" : "");
+            mc->st_up[k] = mc->st_late[k] = mc->st_hit[k] = 0;
+        }
     }
 
     // 2) schedule new uploads: evict at a sync point (clear the victim's table
