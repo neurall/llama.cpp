@@ -2052,7 +2052,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 break;
             }
             ggml_tensor * p = ggml_mul_mat(ctx0, w, cur); // [n_expert, n_tokens]
-            cb(p, "pred_logits", il);
+            cb(p, ("pred_logits_k" + std::to_string(k)).c_str(), il);   // one name per lookahead: callbacks can tell them apart
             pred_todo[il + k].push_back({ w, cur, p, k });
         }
     }
