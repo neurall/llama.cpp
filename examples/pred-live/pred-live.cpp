@@ -71,7 +71,8 @@ static uint32_t hash_ttl = 20000, clock_tok = 0;
 // per-ubatch capture
 static std::vector<std::vector<float>>   cap_x;
 static std::vector<std::vector<int32_t>> cap_topk;
-static std::vector<std::vector<float>>   cap_pred;           // [(k-1)*n_layer + L][E * n]
+static std::vector<std::vector<float>>   cap_pred;           // [L][E*K_L * n]: layer L's stacked predictions of L+1..L+K_L
+static std::vector<int>                  cap_pred_k;         // [L] K_L
 static int cap_n = 0;
 
 // state
@@ -97,20 +98,12 @@ static int layer_of(const char * name, const char * prefix) {
     return end != name + n + 1 && *end == '\0' ? (int) il : -1;
 }
 
-static int pred_k_of(const char * name, int & il) {        // "pred_logits_k<k>-<L>" -> k, L
-    if (strncmp(name, "pred_logits_k", 13) != 0) return -1;
-    char * end = nullptr;
-    const long k = strtol(name + 13, &end, 10);
-    if (end == name + 13 || *end != '-') return -1;
-    char * end2 = nullptr;
-    il = (int) strtol(end + 1, &end2, 10);
-    return end2 != end + 1 && *end2 == '\0' ? (int) k : -1;
-}
 
 static bool capture_cb(struct ggml_tensor * t, bool ask, void *) {
-    int il = -1, k = -1;
+    int il = -1;
+    bool pred = false;
     const bool want = (il = layer_of(t->name, "ffn_norm")) >= 0 || (il = layer_of(t->name, "ffn_moe_topk")) >= 0 ||
-                      (k = pred_k_of(t->name, il)) >= 1;
+                      (pred = (il = layer_of(t->name, "pred_logits_all")) >= 0);
     if (ask) {
         return want;
     }
@@ -126,8 +119,9 @@ static bool capture_cb(struct ggml_tensor * t, bool ask, void *) {
             ggml_backend_tensor_get(t, dst.data() + i * t->ne[0], i * t->nb[1], t->ne[0] * sizeof(T));
         }
     };
-    if (k >= 1) {
-        if (k <= ahead) get(cap_pred[(size_t) (k - 1) * n_layer + il]);
+    if (pred) {
+        get(cap_pred[il]);
+        cap_pred_k[il] = (int) (t->ne[0] / n_expert);
     } else if (strncmp(t->name, "ffn_norm", 8) == 0) {
         get(cap_x[il]);
         cap_n = (int) n;
@@ -212,9 +206,10 @@ static void process(bool score) {
                     topk_of(r, pred);
                     h_router = overlap(pred, real);
                 }
-                const std::vector<float> & pv = cap_pred[(size_t) (k - 1) * n_layer + L];
-                if (pv.size() < (size_t) (j + 1) * n_expert) continue;        // no prediction captured for this pair
-                topk_of(pv.data() + (size_t) j * n_expert, pred);
+                const int KL = cap_pred_k[L];
+                if (k > KL || cap_pred[L].size() < (size_t) (j + 1) * KL * n_expert) continue;   // no prediction captured
+                const float * pl = cap_pred[L].data() + ((size_t) j * KL + (k - 1)) * n_expert;    // token j, lookahead k
+                topk_of(pl, pred);
                 const double h_nlms = overlap(pred, real);
 
                 // fine ladder: keys at every length 1..12, longest first
@@ -263,7 +258,7 @@ static void process(bool score) {
                     h_hash = overlap(got->ids.data(), real);
                     if (got_rung == 0 && merge1) {
                         // length-1 recall (hit ~0.90): experts both agree on first, then the rest of the union in NLMS logit order
-                        const float * lg = pv.data() + (size_t) j * n_expert;
+                        const float * lg = pl;
                         int32_t cand[16]; int nc = 0;
                         for (int i = 0; i < top_k; ++i) cand[nc++] = got->ids[i];
                         for (int i = 0; i < top_k; ++i) if (std::find(cand, cand + nc, pred[i]) == cand + nc) cand[nc++] = pred[i];
@@ -343,6 +338,7 @@ static void process(bool score) {
 }
 
 static void print_table(const char * phase, const std::vector<counters> & cs) {
+    if (scored > 0 && cs[0].tok == 0) LOG("\n%s: WARNING no predictions scored: are the pred_logits_all tensors captured?\n", phase);
     // "+nlms": hash + NLMS minus NLMS alone, on the same tokens
     LOG("\n%s: top-%d hit rate per lookahead (scored tokens x layers)\n", phase, top_k);
     if (report_file) fprintf(report_file, "\n%s\n", phase);
@@ -555,7 +551,7 @@ int main(int argc, char ** argv) {
         LOG_ERR("needs an OLMoE-style model with top-8 routing of <= 64 experts (experts %d, used %d)\n", n_expert, top_k);
         return 1;
     }
-    cap_x.assign(n_layer, {}); cap_topk.assign(n_layer, {}); cap_pred.assign((size_t) ahead * n_layer, {});
+    cap_x.assign(n_layer, {}); cap_topk.assign(n_layer, {}); cap_pred.assign(n_layer, {}); cap_pred_k.assign(n_layer, 0);
     std::mt19937 rng(0);
     std::normal_distribution<float> nd;
     proj_cur.assign(n_layer, std::vector<float>((size_t) BITS * n_embd));
