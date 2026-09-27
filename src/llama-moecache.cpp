@@ -1705,8 +1705,6 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     mc->in_flight--;
                     mc->in_flight_stream -= j.stream;
                     mc->n_stream_stale++;
-                    mc->st_up[ls.slow]++;
-                    mc->st_late[ls.slow]++;
                     mc->dcv.notify_all();
                     if (tr_on()) {
                         tr(TR_WORKER + (int) w, tr_fmt("drop L%zu e%d (layer started)", j.layer_idx, j.expert), ggml_time_us());
@@ -2310,7 +2308,7 @@ void llama_moe_cache_step() {
             }
             const double fl = (double) late / up, pr = (double) hit / up;
             if (fl > 0.25) {
-                mc->lead_extra[k] = std::min(mc->lead_extra[k] + 1, 6);
+                mc->lead_extra[k] = std::min(mc->lead_extra[k] + 1, 2); // late share counts finished copies only (not queue drops)
             } else if (fl < 0.05 && mc->lead_extra[k] > 0) {
                 mc->lead_extra[k]--;
             }
