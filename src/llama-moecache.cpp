@@ -14,6 +14,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <cctype>
 #include <map>
 #include <mutex>
@@ -71,6 +72,12 @@ struct layer_state {
     std::vector<uint8_t>  queued;
     std::vector<uint8_t>  prefetched;
 
+    // swap pay-back accounting, per expert: when its current copy finished uploading (0: not uploaded,
+    // e.g. adopted from prefill), what that upload cost, and the decode hits it served since
+    std::vector<int64_t>  up_t;
+    std::vector<float>    up_cost;
+    std::vector<uint32_t> up_hits;
+
     uint64_t n_hit  = 0;
     uint64_t pred_seen_hit = 0, pred_seen_miss = 0; // n_hit / n_miss at the last predictor on/off decision
     uint64_t n_miss = 0;
@@ -82,6 +89,9 @@ struct upload_job {
     int32_t slot;
     bool    done = false;
     bool    urgent = false; // router prediction: published between layers, not at the next step
+    float   read_us = 0;    // disk / page-cache read into staging (0 when copied straight from host memory)
+    float   copy_us = 0;    // host -> device copy over the layer's PCIe link
+    int64_t t_done  = 0;    // ggml_time_us() when the upload finished
 };
 
 struct moe_cache {
@@ -126,12 +136,26 @@ struct moe_cache {
     // swap cost accounting (guarded by wmtx for the upload side)
     double   upload_us    = 0;  // EMA of one expert upload (up+gate+down)
     uint64_t n_uploads    = 0;
+    double   link_us[2]   = { 0, 0 }; // same, per upload link: [0] fastest GPU, [1] slower ones (layer_state::slow)
+    uint64_t n_link[2]    = { 0, 0 };
     int64_t  last_step_us = 0;
     double   step_us_busy = 0;  // EMA of token time while uploads were in flight
     double   step_us_idle = 0;  // EMA of token time with no uploads in flight
     size_t   rr           = 0;  // round-robin start layer for the swap budget
     int      last_budget  = 0;
     int      last_margin  = 0;
+    int      link_margin[2] = { 1, 1 }; // pay-back margin per upload link
+    double   read_link[2] = { 0, 0 };     // EMA of the read part of one upload, per link
+    double   copy_link[2] = { 0, 0 };     // EMA of the PCIe copy part, per link
+    double   cpu_eval_us  = 0;            // one expert evaluated on the CPU instead (bytes / LLAMA_MOE_CACHE_CPU_GBS)
+    // evicted uploads, per link: count, decode hits served, uploads whose hits*cpu_eval_us covered their cost, lifetime
+    uint64_t ev_n[2] = { 0, 0 }, ev_hits[2] = { 0, 0 }, ev_paid[2] = { 0, 0 };
+    double   ev_life_us[2] = { 0, 0 }, ev_cost_us[2] = { 0, 0 };
+
+    // LLAMA_MOE_CACHE_CTL: settings file re-read on change; stats are reported per segment between changes
+    std::string                     ctl;
+    std::filesystem::file_time_type ctl_mtime{};
+    uint64_t seg_steps = 0, seg_hit = 0, seg_miss = 0, seg_up = 0;
 
     // pinned staging per upload worker, for file-backed uploads (pread -> pinned -> DMA)
     std::vector<ggml_backend_buffer_t> staging;
@@ -210,6 +234,44 @@ bool pread_full(int fd, void * dst, size_t n, size_t off) {
 #endif
 }
 
+// tunables, from LLAMA_MOE_CACHE_<NAME> at start; with LLAMA_MOE_CACHE_CTL=<file> also re-read from that file
+// (NAME=value lines, checked every 16 steps when it changes) so one server can A/B settings without a reload
+struct knobs_t {
+    double hot_frac  = 0.75;
+    double sticky    = 0.0; // off: +1.6% on GLM chat, within noise
+    double slow_stay = 1024;
+    double margin    = -1;  // fixed pay-back margin, -1: from upload timing
+    double budget    = -1;  // fixed swaps per step, -1: from upload timing
+    double cpu_gbs   = 50;
+    double link      = 1;   // pay-back margin per upload link (0: one margin from the average upload)
+};
+
+bool knob_set(knobs_t & k, const std::string & name, double v) {
+    static const std::pair<const char *, double knobs_t::*> fields[] = {
+        { "HOT_FRAC", &knobs_t::hot_frac }, { "STICKY", &knobs_t::sticky }, { "SLOW_STAY", &knobs_t::slow_stay },
+        { "MARGIN", &knobs_t::margin }, { "BUDGET", &knobs_t::budget }, { "CPU_GBS", &knobs_t::cpu_gbs }, { "LINK", &knobs_t::link },
+    };
+    for (const auto & f : fields) {
+        if (name == f.first) {
+            k.*f.second = v;
+            return true;
+        }
+    }
+    return false;
+}
+
+knobs_t & knobs() {
+    static knobs_t k = [] {
+        knobs_t r;
+        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK" }) {
+            if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
+                knob_set(r, n, atof(e));
+            }
+        }
+        return r;
+    }();
+    return k;
+}
 
 enum class policy { halve, window, hybrid, add };
 
@@ -327,10 +389,7 @@ bool pinned(const moe_cache * mc, const layer_state & ls, int32_t e);
 // count, up to LLAMA_MOE_CACHE_STICKY (default 0, e.g. 0.3) of each layer's slots, are never evicted.
 // the always-hot set: the fewest experts (by lifetime count) covering LLAMA_MOE_CACHE_HOT_FRAC (default 0.75) of the picks
 void refresh_hot(layer_state & ls) {
-    static const double hot_frac = [] {
-        const char * e = getenv("LLAMA_MOE_CACHE_HOT_FRAC");
-        return e ? atof(e) : 0.75;
-    }();
+    const double hot_frac = knobs().hot_frac;
     ls.hot.assign(ls.glob_count.size(), false);
     std::vector<int32_t> ids(ls.glob_count.size());
     uint64_t tot = 0;
@@ -350,10 +409,7 @@ void refresh_hot(layer_state & ls) {
 }
 
 void refresh_sticky(layer_state & ls) {
-    static const double frac = [] {
-        const char * e = getenv("LLAMA_MOE_CACHE_STICKY");
-        return e ? atof(e) : 0.0; // off: +1.6% on GLM chat, within noise
-    }();
+    const double frac = knobs().sticky;
     refresh_hot(ls);
     ls.sticky.assign(ls.glob_count.size(), false);
     if (ls.slow) {
@@ -512,6 +568,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             const int32_t slot = ls->expert_slot[id];
             if (slot >= 0) {
                 ls->n_hit += !prefill;
+                ls->up_hits[id] += !prefill;
                 ls->slot_last_use[slot] = ++mc->clock;
                 if (ls->prefetched[id] && !prefill) {
                     mc->n_pred_used++;
@@ -588,6 +645,77 @@ void publish_job(moe_cache * mc, const upload_job & j) {
     ls.prefetched[j.expert]    = j.urgent;
     set_table_entry(ls.pub, j.expert, j.slot);
     ls.cached_since[j.expert] = mc->n_steps + 1;
+    ls.up_t[j.expert]    = j.t_done;
+    ls.up_cost[j.expert] = j.read_us + j.copy_us;
+    ls.up_hits[j.expert] = 0;
+}
+
+// an expert leaves VRAM: did its upload pay back (decode hits x CPU eval time saved >= upload time)?
+void note_evict(moe_cache * mc, layer_state & ls, int32_t e) {
+    if (ls.up_t[e] == 0) {
+        return;
+    }
+    const int k = ls.slow;
+    mc->ev_n[k]++;
+    mc->ev_hits[k]    += ls.up_hits[e];
+    mc->ev_paid[k]    += ls.up_hits[e] * mc->cpu_eval_us >= ls.up_cost[e];
+    mc->ev_life_us[k] += (double) (ggml_time_us() - ls.up_t[e]);
+    mc->ev_cost_us[k] += ls.up_cost[e];
+    ls.up_t[e] = 0;
+}
+
+// LLAMA_MOE_CACHE_CTL: apply the file's NAME=value lines when it changed, report the segment that just ended
+void ctl_poll(moe_cache * mc) {
+    std::error_code ec;
+    const auto t = std::filesystem::last_write_time(mc->ctl, ec);
+    if (ec || t == mc->ctl_mtime) {
+        return;
+    }
+    mc->ctl_mtime = t;
+    knobs_t k = knobs();
+    std::string line, applied;
+    std::ifstream f(mc->ctl);
+    while (std::getline(f, line)) {
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+        std::string name = line.substr(0, eq);
+        if (name.rfind("LLAMA_MOE_CACHE_", 0) == 0) {
+            name = name.substr(16);
+        }
+        if (knob_set(k, name, atof(line.c_str() + eq + 1))) {
+            applied += " " + line;
+        }
+    }
+    // uploads still in VRAM count too (evictions alone would bias pay-back low: the good ones stay)
+    for (auto & ls : mc->layers) {
+        for (int32_t e = 0; e < (int32_t) ls.up_t.size(); ++e) {
+            if (ls.up_t[e] && ls.expert_slot[e] >= 0) {
+                note_evict(mc, ls, e); // settled here with its hits so far; not tracked in the next segment
+            }
+        }
+    }
+    uint64_t h = 0, m = 0;
+    for (const auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
+    const uint64_t dh = h - mc->seg_hit, dm = m - mc->seg_miss;
+    LLAMA_LOG_WARN("moe-cache: ctl: segment of %" PRIu64 " steps: hit-rate %.1f%%, %" PRIu64 " uploads, uploads settled fast %" PRIu64 " (%.1f hits, paid %.0f%%) slow %" PRIu64 " (%.1f hits, paid %.0f%%) | now%s\n",
+            mc->n_steps - mc->seg_steps, dh + dm ? 100.0*dh/(dh + dm) : 0.0, mc->n_uploads - mc->seg_up,
+            mc->ev_n[0], mc->ev_n[0] ? (double) mc->ev_hits[0]/mc->ev_n[0] : 0.0, mc->ev_n[0] ? 100.0*mc->ev_paid[0]/mc->ev_n[0] : 0.0,
+            mc->ev_n[1], mc->ev_n[1] ? (double) mc->ev_hits[1]/mc->ev_n[1] : 0.0, mc->ev_n[1] ? 100.0*mc->ev_paid[1]/mc->ev_n[1] : 0.0,
+            applied.c_str());
+    mc->seg_steps = mc->n_steps; mc->seg_hit = h; mc->seg_miss = m; mc->seg_up = mc->n_uploads;
+    for (int i = 0; i < 2; ++i) {
+        mc->ev_n[i] = mc->ev_hits[i] = mc->ev_paid[i] = 0;
+        mc->ev_life_us[i] = mc->ev_cost_us[i] = 0;
+    }
+    const bool resort = k.hot_frac != knobs().hot_frac || k.sticky != knobs().sticky;
+    knobs() = k;
+    if (resort) {
+        for (auto & ls : mc->layers) {
+            refresh_sticky(ls);
+        }
+    }
 }
 
 void readahead(const layer_state & ls, int32_t expert) {
@@ -773,6 +901,7 @@ void pred_loop(moe_cache * mc) {
                         ls.expert_slot[victim] = -1;
                         ls.slot_expert[slot]   = -1;
                         set_table_entry(ls.pub, victim, ls.pub.n_slots);
+                        note_evict(mc, ls, victim);
                         ls.cached_since[victim] = 0;
                         ls.prefetched[victim]   = 0;
                         if (ls.dropped[victim]) { page_hint(mc, ls, victim, false); ls.dropped[victim] = false; }
@@ -1110,9 +1239,6 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     ls->pub.up_src   = c.l->ffn_up_exps;
                     ls->pub.gate_src = c.l->ffn_gate_exps;
                     ls->pub.down_src = c.l->ffn_down_exps;
-                    // slower upload link than the fastest GPU (the one prompt processing is sent to)
-                    ggml_backend_dev_t d = ggml_backend_buft_get_device(buft);
-                    ls->slow = groups.size() > 1 && model.dev_offload < model.devices.size() && d && d != model.devices[model.dev_offload].dev;
                 }
 
                 if (tables_only) {
@@ -1123,6 +1249,10 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     const ggml_tensor * g = c.l->ffn_gate_exps;
                     const ggml_tensor * d = c.l->ffn_down_exps;
                     ls->pub.n_slots = slots;
+                    // slower upload link than the fastest GPU (the one prompt processing is sent to); set here,
+                    // not when the layer is created: that is the tables-only pass on the CPU buffer type
+                    ggml_backend_dev_t dv = ggml_backend_buft_get_device(buft);
+                    ls->slow = groups.size() > 1 && model.dev_offload < model.devices.size() && dv && dv != model.devices[model.dev_offload].dev;
                     ls->pub.up_c   = ggml_new_tensor_3d(ctx, u->type, u->ne[0], u->ne[1], slots + 1);
                     ls->pub.gate_c = ggml_new_tensor_3d(ctx, g->type, g->ne[0], g->ne[1], slots + 1);
                     ls->pub.down_c = ggml_new_tensor_3d(ctx, d->type, d->ne[0], d->ne[1], slots + 1);
@@ -1150,6 +1280,12 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             return true;
         };
 
+        for (auto & g : groups) {
+            ggml_backend_dev_t d = ggml_backend_buft_get_device(g.first);
+            LLAMA_LOG_WARN("moe-cache: %zu expert layers cached on %s (%s), upload link %s\n", g.second.size(), ggml_backend_buft_name(g.first),
+                    d ? ggml_backend_dev_name(d) : "?",
+                    groups.size() > 1 && model.dev_offload < model.devices.size() && d && d != model.devices[model.dev_offload].dev ? "slower" : "fastest");
+        }
         bool ok = alloc_group(ggml_backend_cpu_buffer_type(), all, /*tables_only=*/true);
         for (auto & g : groups) {
             if (!ok) {
@@ -1187,6 +1323,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             ls.sticky.assign(n_expert, false);
             ls.adopt_slot.assign(n_expert, -1);
             ls.cached_since.assign(n_expert, 0);
+            ls.up_t.assign(n_expert, 0);
+            ls.up_cost.assign(n_expert, 0.0f);
+            ls.up_hits.assign(n_expert, 0);
             ls.dropped.assign(n_expert, false);
             ls.queued.assign(n_expert, 0);
             ls.prefetched.assign(n_expert, 0);
@@ -1252,10 +1391,13 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 const int64_t t0 = ggml_time_us();
                 ggml_tensor *       dsts[3] = { ls.pub.up_c,   ls.pub.gate_c,   ls.pub.down_c   };
                 const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
+                int64_t t_read = 0;
                 for (int k = 0; k < 3; ++k) {
                     const size_t sz = srcs[k]->nb[2];
+                    const int64_t tr = ggml_time_us();
                     if (staging_ptr && ls.src_fd[k] >= 0 &&
                             pread_full(ls.src_fd[k], staging_ptr, sz, ls.src_offs[k] + (size_t) j.expert*sz)) {
+                        t_read += ggml_time_us() - tr;
                         ggml_backend_tensor_set(dsts[k], staging_ptr, (size_t) j.slot*dsts[k]->nb[2], sz);
                     } else if (ggml_backend_buffer_is_host(srcs[k]->buffer)) {
                         upload_slice(dsts[k], srcs[k], j.expert, j.slot);
@@ -1263,10 +1405,20 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                         LLAMA_LOG_ERROR("moe-cache: can't upload repacked '%s' without its file location\n", srcs[k]->name);
                     }
                 }
-                const double dt = (double) (ggml_time_us() - t0);
+                j.t_done  = ggml_time_us();
+                const double dt = (double) (j.t_done - t0);
+                j.read_us = (float) t_read;
+                j.copy_us = (float) (dt - t_read);
                 {
                     std::lock_guard<std::mutex> lk(mc->wmtx);
                     mc->upload_us = mc->n_uploads++ ? 0.9*mc->upload_us + 0.1*dt : dt;
+                    double & lu = mc->link_us[ls.slow];
+                    const bool first = mc->n_link[ls.slow]++ == 0;
+                    lu = first ? dt : 0.9*lu + 0.1*dt;
+                    double & lr = mc->read_link[ls.slow];
+                    double & lc = mc->copy_link[ls.slow];
+                    lr = first ? j.read_us : 0.9*lr + 0.1*j.read_us;
+                    lc = first ? j.copy_us : 0.9*lc + 0.1*j.copy_us;
                     j.done = true;
                     mc->done.push_back(j);
                     mc->in_flight--;
@@ -1276,6 +1428,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         });
 
         mc->profile = profile_path(model);
+        if (const char * c = getenv("LLAMA_MOE_CACHE_CTL")) {
+            mc->ctl = c;
+        }
 #ifndef _WIN32
         {
             const char * e = getenv("LLAMA_MOE_CACHE_DROP");
@@ -1306,7 +1461,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
             if (n_slow > 0) {
                 LLAMA_LOG_WARN("moe-cache: %zu layers on slower-link GPUs: always-hot experts %.1f/layer, pinned %.1f/layer, min stay %s steps\n",
-                        n_slow, (double) n_hot / n_slow, (double) n_stk / n_slow, getenv("LLAMA_MOE_CACHE_SLOW_STAY") ? getenv("LLAMA_MOE_CACHE_SLOW_STAY") : "1024");
+                        n_slow, (double) n_hot / n_slow, (double) n_stk / n_slow, std::to_string((int64_t) knobs().slow_stay).c_str());
             }
         }
 
@@ -1504,6 +1659,7 @@ void llama_moe_cache_step() {
         for (auto & ls : mc->layers) {
             for (int32_t v : ls.adopt_victims) {
                 set_table_entry(ls.pub, v, ls.pub.n_slots);
+                note_evict(mc, ls, v);
                 ls.cached_since[v] = 0;
                 if (ls.dropped[v]) { page_hint(mc, ls, v, false); ls.dropped[v] = false; }
             }
@@ -1552,10 +1708,7 @@ void llama_moe_cache_step() {
             budget_total = (int) (frac*step_us*mc->workers.size()/mc->upload_us) - (int) mc->todo.size();
         }
         // static budget: LLAMA_MOE_CACHE_BUDGET swaps per step (deterministic mode: default 8)
-        static const int fixed_budget = [] {
-            const char * e = getenv("LLAMA_MOE_CACHE_BUDGET");
-            return e ? atoi(e) : -1;
-        }();
+        const int fixed_budget = (int) knobs().budget;
         if (fixed_budget >= 0 || det) {
             budget_total = fixed_budget >= 0 ? fixed_budget : 8;
         }
@@ -1565,29 +1718,37 @@ void llama_moe_cache_step() {
 
     // a swap must pay for itself: over the count's horizon the candidate saves
     // (count_c - count_v) CPU expert evals of t_cpu each, and costs one upload
-    static const double cpu_gbs = [] {
-        const char * g = getenv("LLAMA_MOE_CACHE_CPU_GBS");
-        return g ? atof(g) : 50.0;
-    }();
+    const double cpu_gbs = knobs().cpu_gbs;
+    // per upload link: a slow (x4) link pays more per swap, so its experts are only replaced by clearly hotter ones
     uint32_t margin = 1;
+    int link_margin[2] = { 1, 1 };
     if (mc->upload_us > 0 && !mc->layers.empty()) {
         const auto & l0 = mc->layers[0].pub;
         const double bytes  = (double) (l0.up_src->nb[2] + l0.gate_src->nb[2] + l0.down_src->nb[2]);
         const double cpu_us = bytes / (cpu_gbs * 1e3); // GB/s -> bytes per us
+        mc->cpu_eval_us = cpu_us;
         margin = (uint32_t) std::max(1.0, std::ceil(mc->upload_us / cpu_us));
+        for (int k = 0; k < 2; ++k) {
+            link_margin[k] = mc->link_us[k] > 0 && knobs().link != 0 ? (int) std::max(1.0, std::ceil(mc->link_us[k] / cpu_us)) : (int) margin;
+        }
     }
     // static pay-back margin: LLAMA_MOE_CACHE_MARGIN (deterministic mode: default 4)
-    static const int fixed_margin = [] {
-        const char * e = getenv("LLAMA_MOE_CACHE_MARGIN");
-        return e ? atoi(e) : -1;
-    }();
+    const int fixed_margin = (int) knobs().margin;
     if (fixed_margin >= 0 || det) {
         margin = (uint32_t) (fixed_margin >= 0 ? fixed_margin : 4);
     }
+    if (fixed_margin >= 0 || det) {
+        link_margin[0] = link_margin[1] = (int) margin;
+    }
     mc->last_margin = (int) margin;
+    mc->link_margin[0] = link_margin[0];
+    mc->link_margin[1] = link_margin[1];
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->n_steps++;
+    if (!mc->ctl.empty() && mc->n_steps % 16 == 0) {
+        ctl_poll(mc);
+    }
     // learned predictors: this token trains them (in the graph) when mu > 0
     if (mc->pred_ahead > 0 && mc->pred_m > 0) {
         const float want = mc->pred_train > 0 && mc->n_steps % mc->pred_train == 0 ? mc->pred_mu : 0.0f;
@@ -1712,12 +1873,13 @@ void llama_moe_cache_step() {
 
             const int32_t victim = ls.slot_expert[slot];
             if (victim >= 0) {
-                if (score(ls, id) < score(ls, victim) + margin || budget-- <= 0) {
+                if (score(ls, id) < score(ls, victim) + link_margin[ls.slow] || budget-- <= 0) {
                     break; // candidates are sorted: nothing hotter than what's cached
                 }
                 ls.expert_slot[victim] = -1;
                 ls.slot_expert[slot]   = -1;
                 set_table_entry(ls.pub, victim, ls.pub.n_slots);
+                note_evict(mc, ls, victim);
                 ls.cached_since[victim] = 0;
                 if (ls.dropped[victim]) { page_hint(mc, ls, victim, false); ls.dropped[victim] = false; }
             }
@@ -1760,9 +1922,19 @@ void llama_moe_cache_step() {
         }
         const uint64_t dh = h - ph, dm = m - pm;
         ph = h; pm = m;
-        LLAMA_LOG_WARN("moe-cache: step %" PRIu64 " filled %" PRIu64 "/%" PRIu64 " inflight %" PRIu64 " queued %zu window-hit %.1f%% | upload %.2f ms/expert, token %.1f ms idle / %.1f ms busy, swap budget %d, min count gain %d\n",
+        LLAMA_LOG_WARN("moe-cache: step %" PRIu64 " filled %" PRIu64 "/%" PRIu64 " inflight %" PRIu64 " queued %zu window-hit %.1f%% | upload %.2f ms/expert, token %.1f ms idle / %.1f ms busy, swap budget %d, min count gain %d (fast link %.2f ms -> %d, slow link %.2f ms -> %d)\n",
                 mc->n_steps, filled, total, inflight, queued, dh + dm ? 100.0*dh/(dh + dm) : 0.0,
-                mc->upload_us/1e3, mc->step_us_idle/1e3, mc->step_us_busy/1e3, mc->last_budget, mc->last_margin);
+                mc->upload_us/1e3, mc->step_us_idle/1e3, mc->step_us_busy/1e3, mc->last_budget, mc->last_margin,
+                mc->link_us[0]/1e3, mc->link_margin[0], mc->link_us[1]/1e3, mc->link_margin[1]);
+        for (int k = 0; k < 2; ++k) {
+            if (!mc->n_link[k]) {
+                continue;
+            }
+            const double n = (double) std::max<uint64_t>(1, mc->ev_n[k]);
+            LLAMA_LOG_WARN("moe-cache: %s link: upload %.2f ms = read %.2f + copy %.2f, cpu eval %.2f ms | evicted %" PRIu64 ": %.1f hits each, paid back %.0f%%, cost %.2f ms, lived %.1f s\n",
+                    k ? "slow" : "fast", mc->link_us[k]/1e3, mc->read_link[k]/1e3, mc->copy_link[k]/1e3, mc->cpu_eval_us/1e3,
+                    mc->ev_n[k], mc->ev_hits[k]/n, 100.0*mc->ev_paid[k]/n, mc->ev_cost_us[k]/n/1e3, mc->ev_life_us[k]/n/1e6);
+        }
     }
 
     if (mc->n_steps % 512 == 0) {
@@ -1853,10 +2025,7 @@ void llama_moe_cache_graph_built() {
 
 namespace {
 bool pinned(const moe_cache * mc, const layer_state & ls, int32_t e) {
-    static const uint64_t stay = [] {
-        const char * v = getenv("LLAMA_MOE_CACHE_SLOW_STAY");
-        return (uint64_t) (v ? atoll(v) : 1024);
-    }();
+    const uint64_t stay = (uint64_t) knobs().slow_stay;
     return ls.sticky[e] || (ls.slow && ls.cached_since[e] && mc->n_steps + 1 - ls.cached_since[e] < stay);
 }
 } // namespace
