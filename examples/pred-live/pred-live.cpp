@@ -240,7 +240,7 @@ static void process(bool score) {
                         if (had[r]) { got = &it->second; got_rung = r; }       // ascending: ends at the longest match
                     }
                     for (int n = 0; n < HIST; ++n) chad[n] = ps.mem.count(ckeys[n]) > 0;
-                    for (int n = HIST - 1; n >= 0 && !got; --n) {
+                    for (int n = HIST - 1; n >= 1 && !got; --n) {             // coarse length 1 hit 0.70 < NLMS 0.86: not used
                         if (!chad[n]) continue;
                         entry & ce = ps.mem.find(ckeys[n])->second;
                         if (ce.uses >= 3 && ce.hits_x8 >= 7 * ce.uses) {
