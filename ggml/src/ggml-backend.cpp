@@ -519,6 +519,14 @@ void ggml_backend_set_moe_src_callback(ggml_backend_moe_src_cb_t cb, void * user
 static ggml_backend_moe_fill_cb_t g_moe_fill_cb = NULL;
 static void *                     g_moe_fill_ud = NULL;
 
+static ggml_backend_split_cb_t g_split_cb = NULL;
+static void *                  g_split_ud = NULL;
+
+void ggml_backend_set_split_callback(ggml_backend_split_cb_t cb, void * user_data) {
+    g_split_cb = cb;
+    g_split_ud = user_data;
+}
+
 void ggml_backend_set_moe_fill_callback(ggml_backend_moe_fill_cb_t cb, void * user_data) {
     g_moe_fill_cb = cb;
     g_moe_fill_ud = user_data;
@@ -2043,7 +2051,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         if (obs_cb && strstr(input->name, "ffn_gate_exps")) {
                             ggml_tensor ids_host = *ids_tensor;
                             ids_host.data = ids.data();
-                            obs_cb(input->name, &ids_host, obs_ud);
+                            obs_cb(input->name, &ids_host, NULL, obs_ud);
                         }
 
                         // find the used experts
@@ -2170,6 +2178,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     pending_prefetch_slots.push_back(split_prefetch_slot);
                     last_prefetch_split_backend = split_backend;
                 }
+            }
+            if (g_split_cb && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+                g_split_cb(split_backend, g_split_ud);
             }
             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
             if (split_prefetch_slot != -1) {

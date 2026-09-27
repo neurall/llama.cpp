@@ -2183,6 +2183,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     const llama_moe_cache_layer * mcache = nullptr;
     ggml_tensor * mc_slot_ids = nullptr;
     ggml_backend_t mc_cpu_backend = nullptr;
+    ggml_tensor *  mc_pred        = nullptr;
     if (cparams.moe_cache && n_tokens > 0 && n_tokens <= llama_moe_cache_max_batch() && !gate_up_exps && gate_exps && down_exps &&
         !up_exps_b && !gate_exps_b && !down_exps_b &&
         !up_exps_s && !gate_exps_s && !down_exps_s &&
@@ -2215,6 +2216,27 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
         }
         mc_cpu_backend = cpu_backend;
+        if (mcache->pred_w && mcache->pred_w->buffer) {
+            // next layer's router logits from this layer's input, on the router's GPU in the split before
+            // the CPU copy; handed to the CPU gate op as src[4], where the cache's observer reads them
+            ggml_backend_dev_t wdev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mcache->pred_w->buffer));
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+                ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+                if (wdev && ggml_backend_get_device(b) == wdev && b != cpu_backend) {
+                    mc_pred = ggml_mul_mat(ctx0, mcache->pred_w, ggml_reshape_2d(ctx0, mc_inp, n_embd, n_tokens));
+                    ggml_backend_sched_set_tensor_backend(sched, mc_pred, b);
+                    cb(mc_pred, "ffn_moe_pred", il);
+                    if (cpu_backend) {
+                        // copied with the CPU chain's inputs, so the gate op doesn't wait for the GPU chain
+                        mc_pred = ggml_cont(ctx0, mc_pred);
+                        ggml_backend_sched_set_tensor_backend(sched, mc_pred, cpu_backend);
+                        cb(mc_pred, "ffn_moe_pred_cpu", il);
+                    }
+                    ggml_build_forward_expand(gf, mc_pred);
+                    break;
+                }
+            }
+        }
         if (cpu_backend) {
             cur = ggml_cont(ctx0, cur);
             selected_experts = ggml_cont(ctx0, selected_experts);
@@ -2329,6 +2351,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             cb(cur, "ffn_moe_gate", il);
 
             if (mcache) {
+                if (mc_pred) {
+                    cur->src[4] = mc_pred;
+                }
                 cur->src[3] = mcache->host_table;
                 cur->op_params[0] = mcache->n_slots;
                 if (mc_cpu_backend) {

@@ -4875,7 +4875,7 @@ template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS, ggml_type PAR
             void * moe_obs_ud = nullptr;
             ggml_moe_obs_cb_t moe_obs_cb = ggml_get_moe_obs_callback(&moe_obs_ud);
             if (moe_obs_cb && strstr(src0->name, "ffn_gate_exps")) {
-                moe_obs_cb(src0->name, ids, moe_obs_ud);
+                moe_obs_cb(src0->name, ids, dst->src[4], moe_obs_ud);
             }
         }
 

@@ -356,8 +356,9 @@ extern "C" {
 
     // MoE expert-routing observation callback: invoked by the CPU mul_mat_id
     // with the op's expert-id tensor (I32 [n_expert_used, n_tokens]). Used by
-    // the llama MoE expert cache to drive LRU placement decisions.
-    typedef void (*ggml_moe_obs_cb_t)(const char * tensor_name, const struct ggml_tensor * ids, void * ud);
+    // the llama MoE expert cache to drive LRU placement decisions. `pred` is the op's
+    // src[4] (the cache's next-layer router logits, F32 on host) or NULL.
+    typedef void (*ggml_moe_obs_cb_t)(const char * tensor_name, const struct ggml_tensor * ids, const struct ggml_tensor * pred, void * ud);
     GGML_API void            ggml_set_moe_obs_callback(ggml_moe_obs_cb_t cb, void * ud);
     GGML_API ggml_moe_obs_cb_t ggml_get_moe_obs_callback(void ** ud);
 

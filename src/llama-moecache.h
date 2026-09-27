@@ -48,6 +48,10 @@ struct llama_moe_cache_layer {
     // expert id -> slot (or n_slots when uncached); I32 [1, n_expert]
     ggml_tensor * dev_table  = nullptr;
     ggml_tensor * host_table = nullptr;
+
+    // router prediction (LLAMA_MOE_CACHE_PREDICT): the next layer's router weights; the graph applies
+    // them to this layer's MoE input and hands the logits to the CPU expert op (src[4])
+    ggml_tensor * pred_w = nullptr;
 };
 
 // build the cache for every host-resident expert layer of the model.
