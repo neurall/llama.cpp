@@ -265,6 +265,21 @@ ggml_moe_obs_cb_t ggml_get_moe_obs_callback(void ** ud) {
     return g_moe_obs_cb;
 }
 
+static ggml_moe_phase_cb_t g_moe_phase_cb = NULL;
+static void *              g_moe_phase_ud = NULL;
+
+void ggml_set_moe_phase_callback(ggml_moe_phase_cb_t cb, void * ud) {
+    g_moe_phase_cb = cb;
+    g_moe_phase_ud = ud;
+}
+
+ggml_moe_phase_cb_t ggml_get_moe_phase_callback(void ** ud) {
+    if (ud) {
+        *ud = g_moe_phase_ud;
+    }
+    return g_moe_phase_cb;
+}
+
 void ggml_abort(const char * file, int line, const char * fmt, ...) {
     fflush(stdout);
 

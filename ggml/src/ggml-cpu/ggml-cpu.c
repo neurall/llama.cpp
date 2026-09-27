@@ -1547,7 +1547,7 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
     return ptr;
 }
 
-static void ggml_compute_forward_mul_mat_id(
+static void ggml_compute_forward_mul_mat_id_impl(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
 
@@ -1796,6 +1796,29 @@ static void ggml_compute_forward_mul_mat_id(
 
             current_chunk = atomic_fetch_add_explicit(current_chunk_ctr, 1, memory_order_relaxed);
         }
+    }
+}
+
+// llama MoE expert cache: the host matmuls of uncached experts (src[3] = slot table) are the phases
+// where decode reads DDR4 for expert weights; the first thread in reports busy, the last one out idle,
+// so uploads can be timed around them
+static atomic_int g_moe_cpu_active;
+
+static void ggml_compute_forward_mul_mat_id(
+        const struct ggml_compute_params * params,
+              struct ggml_tensor * dst) {
+    if (!dst->src[3]) {
+        ggml_compute_forward_mul_mat_id_impl(params, dst);
+        return;
+    }
+    void * ud = NULL;
+    ggml_moe_phase_cb_t cb = ggml_get_moe_phase_callback(&ud);
+    if (cb && atomic_fetch_add(&g_moe_cpu_active, 1) == 0) {
+        cb(1, ud);
+    }
+    ggml_compute_forward_mul_mat_id_impl(params, dst);
+    if (cb && atomic_fetch_sub(&g_moe_cpu_active, 1) == 1) {
+        cb(0, ud);
     }
 }
 

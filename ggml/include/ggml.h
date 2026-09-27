@@ -361,6 +361,10 @@ extern "C" {
     typedef void (*ggml_moe_obs_cb_t)(const char * tensor_name, const struct ggml_tensor * ids, const struct ggml_tensor * op, void * ud);
     GGML_API void            ggml_set_moe_obs_callback(ggml_moe_obs_cb_t cb, void * ud);
     GGML_API ggml_moe_obs_cb_t ggml_get_moe_obs_callback(void ** ud);
+    // called with busy=1 when the CPU starts a MoE-cache host expert matmul, busy=0 when none runs any more
+    typedef void (*ggml_moe_phase_cb_t)(int busy, void * ud);
+    GGML_API void              ggml_set_moe_phase_callback(ggml_moe_phase_cb_t cb, void * ud);
+    GGML_API ggml_moe_phase_cb_t ggml_get_moe_phase_callback(void ** ud);
 
     GGML_NORETURN GGML_ATTRIBUTE_FORMAT(3, 4)
     GGML_API void ggml_abort(const char * file, int line, const char * fmt, ...);

@@ -8,7 +8,7 @@ R=${R:-/tmp/moe-ab}; mkdir -p $R; D=$(dirname "$(readlink -f "$0")")
 cd /p/bw/llama.cpp/.claude/worktrees/partial-pin
 CTL=$R/ctl.txt; : > $CTL
 LLAMA_MOE_CACHE_STATS=1 LLAMA_MOE_CACHE_PREDICT_FILE=0 LLAMA_MOE_CACHE_CTL=$CTL ./${BIN:-build-link}/bin/llama-server \
-  -m ${MODEL:-/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf} --port 8234 > $R/ctl.log 2>&1 &
+  -m ${MODEL:-/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf} --port 8234 $ARGS > $R/ctl.log 2>&1 &
 for i in $(seq 600); do curl -sf localhost:8234/health >/dev/null && break; sleep 1; done
 P=(
 "Write a Python function that parses a CSV file and returns the average of each column."
@@ -44,4 +44,4 @@ for r in $(seq $rounds); do
 done
 for v in "$@"; do name=${v%%:*}; echo "$name mean $(python3 -c "print(round(${sum[$name]} / $rounds, 2))") t/s"; done
 for i in 1 2 3 4 5; do pkill -x llama-server; sleep 2; pgrep -x llama-server >/dev/null || break; done
-grep -E "cached on|ctl: segment" $R/ctl.log | cut -c1-250
+grep -E "cached on|ctl: segment|phases:" $R/ctl.log | cut -c1-250

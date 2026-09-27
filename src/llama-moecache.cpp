@@ -7,6 +7,7 @@
 #include "ggml-backend.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
 #include <cmath>
 #include <condition_variable>
@@ -147,6 +148,15 @@ struct moe_cache {
     int      link_margin[2] = { 1, 1 }; // pay-back margin per upload link
     double   read_link[2] = { 0, 0 };     // EMA of the read part of one upload, per link
     double   copy_link[2] = { 0, 0 };     // EMA of the PCIe copy part, per link
+    // DDR4 phases: the CPU computing uncached experts (ggml moe phase callback)
+    std::atomic<bool>    cpu_busy{false};
+    std::atomic<int64_t> busy_t0{0};
+    std::atomic<int64_t> busy_us{0};      // total busy time
+    std::atomic<int64_t> busy_n{0};       // busy phases
+    uint64_t up_overlap = 0;              // uploads that ran while the CPU was busy (at start or end)
+    std::atomic<int64_t> gate_wait_us{0}; // time workers waited for the CPU phase to end (GATE=1)
+    int64_t  seg_gate_us = 0;
+    int64_t  seg_busy_us = 0, seg_busy_n = 0; uint64_t seg_overlap = 0, seg_up2 = 0, seg_steps2 = 0; int64_t seg_t0 = 0;
     double   gbs_all      = 0;            // EMA of upload throughput, GB/s (expert sizes differ per layer, times don't compare)
     double   gbs_link[2]  = { 0, 0 };     // same, per link
     // evicted uploads, per link: count, decode hits served, uploads whose hits*cpu_eval_us covered their cost, lifetime
@@ -245,12 +255,15 @@ struct knobs_t {
     double budget    = -1;  // fixed swaps per step, -1: from upload timing
     double cpu_gbs   = 50;
     double link      = 1;   // pay-back margin per upload link (0: one margin from the average upload)
+    double gate      = 0;   // uploads wait (up to GATE_MAX_US per tensor) while the CPU computes uncached experts: no DDR4 contention
+    double gate_max_us = 2000;
 };
 
 bool knob_set(knobs_t & k, const std::string & name, double v) {
     static const std::pair<const char *, double knobs_t::*> fields[] = {
         { "HOT_FRAC", &knobs_t::hot_frac }, { "STICKY", &knobs_t::sticky }, { "SLOW_STAY", &knobs_t::slow_stay },
         { "MARGIN", &knobs_t::margin }, { "BUDGET", &knobs_t::budget }, { "CPU_GBS", &knobs_t::cpu_gbs }, { "LINK", &knobs_t::link },
+        { "GATE", &knobs_t::gate }, { "GATE_MAX_US", &knobs_t::gate_max_us },
     };
     for (const auto & f : fields) {
         if (name == f.first) {
@@ -264,7 +277,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK" }) {
+        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
             }
@@ -524,6 +537,19 @@ int parse_layer_from_name(const char * name) {
         return -1;
     }
     return atoi(name + 4);
+}
+
+void moe_phase_cb(int busy, void * ud) {
+    auto * mc = (moe_cache *) ud;
+    const int64_t t = ggml_time_us();
+    if (busy) {
+        mc->busy_t0 = t;
+        mc->cpu_busy = true;
+    } else {
+        mc->cpu_busy = false;
+        mc->busy_us += t - mc->busy_t0;
+        mc->busy_n++;
+    }
 }
 
 void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct ggml_tensor * op, void * ud) {
@@ -1391,11 +1417,20 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 }
                 auto & ls = mc->layers[j.layer_idx];
                 const int64_t t0 = ggml_time_us();
+                const bool busy_start = mc->cpu_busy;
                 ggml_tensor *       dsts[3] = { ls.pub.up_c,   ls.pub.gate_c,   ls.pub.down_c   };
                 const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
                 int64_t t_read = 0;
                 for (int k = 0; k < 3; ++k) {
                     const size_t sz = srcs[k]->nb[2];
+                    if (knobs().gate != 0 && mc->cpu_busy) {
+                        // ponytail: spin-yield; a condition variable if waits get long
+                        const int64_t tw = ggml_time_us();
+                        while (mc->cpu_busy && ggml_time_us() - tw < (int64_t) knobs().gate_max_us) {
+                            std::this_thread::yield();
+                        }
+                        mc->gate_wait_us += ggml_time_us() - tw;
+                    }
                     const int64_t tr = ggml_time_us();
                     if (staging_ptr && ls.src_fd[k] >= 0 &&
                             pread_full(ls.src_fd[k], staging_ptr, sz, ls.src_offs[k] + (size_t) j.expert*sz)) {
@@ -1408,12 +1443,14 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     }
                 }
                 j.t_done  = ggml_time_us();
+                const bool overlap = busy_start || mc->cpu_busy;
                 const double dt = (double) (j.t_done - t0);
                 j.read_us = (float) t_read;
                 j.copy_us = (float) (dt - t_read);
                 {
                     std::lock_guard<std::mutex> lk(mc->wmtx);
                     mc->upload_us = mc->n_uploads++ ? 0.9*mc->upload_us + 0.1*dt : dt;
+                    mc->up_overlap += overlap;
                     double & lu = mc->link_us[ls.slow];
                     const bool first = mc->n_link[ls.slow]++ == 0;
                     lu = first ? dt : 0.9*lu + 0.1*dt;
@@ -1592,6 +1629,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
         }
         ggml_set_moe_obs_callback(moe_obs_cb, mc);
+        ggml_set_moe_phase_callback(moe_phase_cb, mc);
         {
             const char * e = getenv("LLAMA_MOE_CACHE_PREFILL_D2D");
             if (!e || e[0] != '0') {
@@ -1938,6 +1976,34 @@ void llama_moe_cache_step() {
                     k ? "slow" : "fast", mc->link_us[k]/1e3, mc->read_link[k]/1e3, mc->copy_link[k]/1e3, mc->gbs_link[k], knobs().cpu_gbs,
                     mc->ev_n[k], mc->ev_hits[k]/n, 100.0*mc->ev_paid[k]/n, mc->ev_cost_us[k]/n/1e3, mc->ev_life_us[k]/n/1e6);
         }
+        {
+            // DDR4 phases over the last 64 steps: CPU busy on uncached experts vs wall time, and uploads colliding with it
+            const int64_t now = ggml_time_us();
+            const int64_t bu = mc->busy_us, bn = mc->busy_n;
+            const double  st = (double) std::max<uint64_t>(1, mc->n_steps - mc->seg_steps2);
+            const uint64_t up = mc->n_uploads - mc->seg_up2, ov = mc->up_overlap - mc->seg_overlap;
+            if (mc->seg_t0) {
+                LLAMA_LOG_WARN("moe-cache: phases: token %.1f ms wall, CPU expert matmuls %.1f ms in %.1f phases (%.0f%%) | %.1f uploads/token, %.0f%% overlapping CPU phases, gate waits %.2f ms/token\n",
+                        (now - mc->seg_t0)/st/1e3, (bu - mc->seg_busy_us)/st/1e3, (bn - mc->seg_busy_n)/st,
+                        100.0*(bu - mc->seg_busy_us)/std::max<int64_t>(1, now - mc->seg_t0), up/st, up ? 100.0*ov/up : 0.0,
+                        (mc->gate_wait_us - mc->seg_gate_us)/st/1e3);
+            }
+            mc->seg_t0 = now; mc->seg_busy_us = bu; mc->seg_busy_n = bn; mc->seg_steps2 = mc->n_steps; mc->seg_up2 = mc->n_uploads; mc->seg_overlap = mc->up_overlap;
+            mc->seg_gate_us = mc->gate_wait_us;
+        }
+        {
+            // DDR4 phases over the last 64 steps: CPU busy on uncached experts vs wall time, and uploads colliding with it
+            const int64_t now = ggml_time_us();
+            const int64_t bu = mc->busy_us, bn = mc->busy_n;
+            const double  st = (double) std::max<uint64_t>(1, mc->n_steps - mc->seg_steps2);
+            const uint64_t up = mc->n_uploads - mc->seg_up2, ov = mc->up_overlap - mc->seg_overlap;
+            if (mc->seg_t0) {
+                LLAMA_LOG_WARN("moe-cache: phases: token %.1f ms wall, CPU expert matmuls %.1f ms in %.1f phases (%.0f%%) | %.1f uploads/token, %.0f%% overlapping CPU phases\n",
+                        (now - mc->seg_t0)/st/1e3, (bu - mc->seg_busy_us)/st/1e3, (bn - mc->seg_busy_n)/st,
+                        100.0*(bu - mc->seg_busy_us)/std::max<int64_t>(1, now - mc->seg_t0), up/st, up ? 100.0*ov/up : 0.0);
+            }
+            mc->seg_t0 = now; mc->seg_busy_us = bu; mc->seg_busy_n = bn; mc->seg_steps2 = mc->n_steps; mc->seg_up2 = mc->n_uploads; mc->seg_overlap = mc->up_overlap;
+        }
     }
 
     if (mc->n_steps % 512 == 0) {
@@ -1967,6 +2033,7 @@ void llama_moe_cache_free() {
         return;
     }
     ggml_set_moe_obs_callback(nullptr, nullptr);
+    ggml_set_moe_phase_callback(nullptr, nullptr);
     ggml_backend_set_moe_src_callback(nullptr, nullptr);
     ggml_backend_set_moe_fill_callback(nullptr, nullptr);
     ggml_backend_set_split_callback(nullptr, nullptr);
