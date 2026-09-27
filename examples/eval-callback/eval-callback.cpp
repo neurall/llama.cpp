@@ -56,7 +56,14 @@ static bool run(llama_context * ctx, const common_params & params) {
         LOG_INF("  %d\n", tokens[i]);
     }
 
-    if (llama_decode(ctx, llama_batch_get_one(tokens.data(), tokens.size()))) {
+    // router dump: every token's output, so the last layer runs for all tokens too
+    llama_batch batch = llama_batch_init((int32_t) tokens.size(), 0, 1);
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        common_batch_add(batch, tokens[i], (llama_pos) i, { 0 }, g_dump != nullptr || i + 1 == tokens.size());
+    }
+    const int ret = llama_decode(ctx, batch);
+    llama_batch_free(batch);
+    if (ret) {
         LOG_ERR("%s : failed to eval\n", __func__);
         return false;
     }
