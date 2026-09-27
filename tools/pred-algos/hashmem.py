@@ -18,6 +18,8 @@ def main():
     ap.add_argument("--ahead", type=int, default=3)
     ap.add_argument("--bits", type=int, default=16, help="sign bits per hashed vector")
     ap.add_argument("--prev", choices=["last", "target"], default="target")
+    ap.add_argument("--history", type=int, default=1,
+                    help="key on the previous N tokens at the target layer (+ current x_L), backing off N..1 like an n-gram cache")
     ap.add_argument("--prev-bits", type=int, default=None, help="bits for the previous token's vector (default --bits, 0: current only)")
     a = parse(ap)
     pb = a.bits if a.prev_bits is None else a.prev_bits
@@ -33,12 +35,13 @@ def main():
         return ((v @ P[:b].T > 0).long() * (2 ** torch.arange(b))).sum(-1)
     cur = codes(X, Pc, a.bits).numpy()                                   # [NL, T]
     pc = codes(X, Pp, pb).numpy()
-    prev = np.concatenate([np.full((NL, 1), -1), pc[:, :-1]], 1)         # previous token's codes, every layer
-    run = Run(a, f"hashmem-{a.prev}-{pb}+{a.bits}", T)
+    # prevs[j]: codes of the token j+1 back, every layer (-1 before the stream start)
+    prevs = [np.concatenate([np.full((NL, j + 1), -1), pc[:, :T - j - 1]], 1) for j in range(a.history)]
+    run = Run(a, f"hashmem-{a.prev}-{pb}+{a.bits}-h{a.history}", T)
     ks = range(1, a.ahead + 1)
-    mem = run.state.get("mem") or {k: [dict() for _ in range(NL - k)] for k in ks}
+    mem = run.state.get("mem") or {k: [dict() for _ in range(NL - k)] for k in ks}   # one dict per layer, keys of every order
     router = {k: torch.topk(torch.einsum("led,ltd->lte", W[k:], X[:NL - k]), K, dim=-1).indices.numpy() for k in ks}
-    name = f"hashmem {a.prev} {pb}+{a.bits}b"
+    name = f"hashmem {a.prev} {pb}+{a.bits}b h{a.history}"
     for t in range(run.start, T):
         if run.expired(t):
             break
@@ -46,19 +49,26 @@ def main():
             h_rec, h_all = run.hit(f"L+{k} {name} recalled only", NL), run.hit(f"L+{k} {name} + router fallback", NL)
             for L in range(NL - k):
                 tgt = L + k
-                key = (int(prev[tgt if a.prev == "target" else NL - 1, t]) << a.bits) | int(cur[L, t])
-                got = mem[k][L].get(key)
+                row = tgt if a.prev == "target" else NL - 1
+                keys = [(int(cur[L, t]),) + tuple(int(prevs[j][row, t]) for j in range(n)) for n in range(1, a.history + 1)]
+                got = None
+                for key in reversed(keys):                               # longest history first
+                    got = mem[k][L].get(key)
+                    if got is not None:
+                        break
                 h = np.isin(real[tgt, t], got if got is not None else router[k][L, t]).mean()
                 h_all[tgt, t] = h
                 if got is not None:
                     h_rec[tgt, t] = h
-                mem[k][L][key] = real[tgt, t]
+                for key in keys:
+                    mem[k][L][key] = real[tgt, t]
     run.save(mem=mem)
     if common.REF is not None:
         # recalled key -> stored experts, otherwise NLMS (reference run)
         for k in ks:
             h_rec = run.hits[f"L+{k} {name} recalled only"]
             seen = np.isfinite(run.hits[f"L+{k} {name} + router fallback"])
+            run.touched.add(f"L+{k} {name} + NLMS fallback")
             run.hits[f"L+{k} {name} + NLMS fallback"] = np.where(np.isfinite(h_rec), h_rec, np.where(seen, common.REF[f"nlms_k{k}"], np.nan))
     for k in ks:
         n = f"L+{k} {name} recalled only"

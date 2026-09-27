@@ -20,6 +20,9 @@ def main():
     ap.add_argument("--every", type=int, default=1)
     ap.add_argument("--input", choices=["x", "wpool"], default="x")
     ap.add_argument("--decay", type=float, default=0.7)
+    ap.add_argument("--prev-target", type=float, default=1.0,
+                    help="also feed the previous token's activation at the target layer L+k (scale; 0 off)")
+    ap.add_argument("--mu2", type=float, default=0.1, help="NLMS step of the previous-token weights (own normaliser, so M keeps its plain step)")
     ap.add_argument("--save", default=None, help="save the hits {nlms_k, router_k: [NL, T]} to this .npz")
     a = parse(ap)
     d = load(a.data, need_x=True)
@@ -41,19 +44,26 @@ def main():
     ks = range(1, a.ahead + 1)
     pairs = {k: (torch.arange(NL - k, device=dev), torch.arange(k, NL, device=dev)) for k in ks}
     M = {k: m.to(dev) for k, m in run.state["M"].items()} if "M" in run.state else {k: W[pairs[k][1]].clone() for k in ks}
-    tag = f"nlms {a.input}{' d' + str(a.decay) if a.input == 'wpool' else ''} mu {a.mu}"
+    E = W.shape[1]
+    M2 = {k: m.to(dev) for k, m in run.state["M2"].items()} if "M2" in run.state else {k: torch.zeros(len(pairs[k][0]), E, X.shape[2], device=dev) for k in ks}
+    tag = f"nlms {a.input}{' d' + str(a.decay) if a.input == 'wpool' else ''} mu {a.mu} prevtgt {a.prev_target} mu2 {a.mu2}"
     for t in range(run.start, T):
         if run.expired(t):
             break
         for k in ks:
             src, tl = pairs[k]
             x = Xin[src, t]
-            p = torch.einsum("ned,nd->ne", M[k], x)
+            xp = a.prev_target * (X[tl, t - 1] if t else torch.zeros_like(x))    # previous token at the target layer
+            p = torch.einsum("ned,nd->ne", M[k], x) + torch.einsum("ned,nd->ne", M2[k], xp)
             run.hit(f"L+{k} {tag}", NL)[k:, t] = topk_hit(p, real[tl, t])
             run.hit(f"L+{k} router", NL)[k:, t] = topk_hit(torch.einsum("ned,nd->ne", W[tl], X[src, t]), real[tl, t])
             if a.every > 0 and t % a.every == 0:
-                M[k] += ((Y[tl, t] - p) * (a.mu / (x.square().sum(-1, keepdim=True) + 1e-6))).unsqueeze(-1) * x.unsqueeze(1)
-    run.save(M={k: m.cpu() for k, m in M.items()})
+                err = Y[tl, t] - p
+                # separate normalisers: a joint one halved M's step and slowed the early learning
+                M[k] += (err * (a.mu / (x.square().sum(-1, keepdim=True) + 1e-6))).unsqueeze(-1) * x.unsqueeze(1)
+                if a.prev_target:
+                    M2[k] += (err * (a.mu2 / (xp.square().sum(-1, keepdim=True) + 1e-6))).unsqueeze(-1) * xp.unsqueeze(1)
+    run.save(M={k: m.cpu() for k, m in M.items()}, M2={k: m.cpu() for k, m in M2.items()})
     run.report(d)
     if a.save:
         np.savez(a.save, **{f"{'router' if 'router' in n else 'nlms'}_k{n[2]}": h for n, h in run.hits.items()})

@@ -109,7 +109,7 @@ class Run:
         self.a, self.T, self._time = a, T, time.time
         os.makedirs(a.ckpt_dir, exist_ok=True)
         self.path = os.path.join(a.ckpt_dir, f"{algo}{a.tag}.{a.data}.pt")
-        self.state, self.start, self.hits = {}, 0, {}
+        self.state, self.start, self.hits, self.touched = {}, 0, {}, set()
         if not a.fresh and os.path.exists(self.path):
             ck = torch.load(self.path, weights_only=False)
             self.state, self.start, self.hits = ck["state"], ck["pos"] % T, ck["hits"]
@@ -125,6 +125,7 @@ class Run:
 
     def hit(self, name, NL):
         """the cumulative hit matrix [NL, T] for this name"""
+        self.touched.add(name)
         if name not in self.hits:
             self.hits[name] = np.full((NL, self.T), np.nan)
         return self.hits[name]
@@ -136,6 +137,8 @@ class Run:
         """every hit matrix over all tokens so far, then this run's window alone"""
         span = f"  (this run: tokens {self.start}-{self.stop} of {self.T}, {self._time() - self.t0:.1f} s)"
         for name, h in self.hits.items():
+            if name not in self.touched:
+                continue                            # a variant that did not run this time
             report(name, h, d["bounds"], span, d["gen"])
             w = np.full_like(h, np.nan)
             w[:, self.start:self.stop] = h[:, self.start:self.stop]
