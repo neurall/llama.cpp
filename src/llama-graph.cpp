@@ -1,5 +1,7 @@
 #include "llama-graph.h"
 
+#include <typeinfo>
+
 #include "llama-moecache.h"
 
 #include "llama-impl.h"
@@ -359,6 +361,11 @@ bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
     res &= head == mctx->get_head();
     res &= rs_z == mctx->get_rs_z();
 
+    static const bool why = getenv("LLAMA_GRAPH_REUSE_WHY") != nullptr;
+    if (why && !res) {
+        LLAMA_LOG_WARN("%s: n_rs %lld/%u, head %d/%d, rs_z %d/%d\n", __func__, (long long) s_copy->ne[0], mctx->get_n_rs(),
+                (int) head, (int) mctx->get_head(), (int) rs_z, (int) mctx->get_rs_z());
+    }
     return res;
 }
 
@@ -1428,8 +1435,12 @@ bool llm_graph_result::can_reuse(const llm_graph_params & params) {
 
     bool res = true;
 
+    static const bool why = getenv("LLAMA_GRAPH_REUSE_WHY") != nullptr;
     for (auto & input : inputs) {
         const bool cur = input->can_reuse(params);
+        if (why && !cur) {
+            LLAMA_LOG_WARN("%s: input %s blocks graph reuse\n", __func__, typeid(*input).name());
+        }
 
         if (debug > 1) {
             LLAMA_LOG_DEBUG("%s: can_reuse = %d\n", "placeholder", cur);

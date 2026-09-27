@@ -299,7 +299,7 @@ public:
         // The scatter mask shape follows n_kv.
         res &= n_kv              == idx->get_n_kv();
         // The new pool path is sized exactly
-        res &= n_new             == mctx->get_n_kpool_new();
+        res &= n_new             == mctx->get_n_kpool_new_graph();
         res &= cache_safe        == mctx->get_kpool_cache_safe();
         const bool share = params.cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP && mctx->get_mtp_dsa_index_share();
         const size_t saved = mctx->get_mtp_dsa_selection_size();
@@ -307,6 +307,13 @@ public:
         res &= mtp_share == share;
         res &= (reuse_sel != nullptr) == reuse;
 
+        static const bool why = getenv("LLAMA_GRAPH_REUSE_WHY") != nullptr;
+        if (why && !res) {
+            LLAMA_LOG_WARN("kpool can_reuse: k_idxs %lld/%u pool_cells %lld/%u n_kv %u/%u n_new %u/%u cache_safe %d/%d share %d/%d sel %d/%d\n",
+                (long long) k_idxs->ne[0], params.ubatch.n_tokens, (long long) pool_cells->ne[0], mctx->get_n_kpool(),
+                n_kv, idx->get_n_kv(), n_new, mctx->get_n_kpool_new_graph(), (int) cache_safe, (int) mctx->get_kpool_cache_safe(),
+                (int) mtp_share, (int) share, (int) (reuse_sel != nullptr), (int) reuse);
+        }
         return res;
     }
 
@@ -337,7 +344,7 @@ llama_model_glm5_next::llm_graph_input_kpool * llama_model_glm5_next::graph::bui
     const uint32_t kpool  = hparams.indexer_kpool;
     const uint32_t n_pool = mctx_hyb->get_n_kpool();
     const uint32_t n_kv   = mctx_idx->get_n_kv();
-    const uint32_t n_new  = mctx_hyb->get_n_kpool_new();
+    const uint32_t n_new  = mctx_hyb->get_n_kpool_new_graph();
     const bool cache_safe = mctx_hyb->get_kpool_cache_safe();
 
     // the fused lightning indexer wants an f16 mask

@@ -940,6 +940,12 @@ uint32_t llama_memory_hybrid_idx_context::get_n_kpool_new() const {
     return kpool_cur().n_new;
 }
 
+uint32_t llama_memory_hybrid_idx_context::get_n_kpool_new_graph() const {
+    static const bool pad = [] { const char * e = getenv("LLAMA_KPOOL_PAD"); return !(e && e[0] == '0'); }();
+    const auto & st = kpool_cur();
+    return pad && st.cache_safe ? std::max<uint32_t>(st.n_new, 1) : st.n_new;
+}
+
 bool llama_memory_hybrid_idx_context::get_kpool_cache_safe() const {
     return kpool_cur().cache_safe;
 }
@@ -968,7 +974,8 @@ void llama_memory_hybrid_idx_context::set_input_kpool(ggml_tensor * pool_cells, 
 
     const uint32_t n_tokens = ubatch->n_tokens;
     const uint32_t n_pool   = (uint32_t) pool_cells->ne[0];
-    const uint32_t n_new    = st.n_new;
+    const uint32_t n_new    = new_pool_idxs != nullptr ? (uint32_t) new_pool_idxs->ne[1] : 0; // graph count (padded)
+    GGML_ASSERT(n_new == get_n_kpool_new_graph());
 
     GGML_ASSERT(n_pool == kpool_pad(st.n_pool_real));
     GGML_ASSERT(pool_mask->ne[0] == (int64_t) n_pool && pool_mask->ne[1] == (int64_t) n_tokens);
@@ -1074,7 +1081,17 @@ void llama_memory_hybrid_idx_context::set_input_kpool(ggml_tensor * pool_cells, 
             pool_end.push_back(sq.cells[j + kpool - 1].first);
         }
     }
-    GGML_ASSERT(i_new == n_new);
+    GGML_ASSERT(i_new == st.n_new);
+    // padding entries (no pool completed): pool the current token's own cell and write its pooled slot, which is
+    // never read (only a completed pool's last member row is), so the graph keeps its shape
+    for (; i_new < n_new; ++i_new) {
+        for (uint32_t k = 0; k < kpool; ++k) {
+            nidx[(size_t) i_new*kpool + k] = (int32_t) dummy_cell;
+        }
+        if (nrep != nullptr) {
+            nrep[i_new] = dummy_cell;
+        }
+    }
 
     const uint32_t n_pool_real = (uint32_t) pool_end.size();
     for (uint32_t ip = n_pool_real; ip < n_pool; ++ip) {
