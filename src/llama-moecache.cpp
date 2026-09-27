@@ -57,6 +57,10 @@ struct layer_state {
     std::vector<int32_t>  adopted;        // expert ids with adopt_slot set, this batch
     std::vector<int32_t>  adopt_victims;  // experts evicted for them (table entry reset at the step)
 
+    // drop-cached (LLAMA_MOE_CACHE_DROP): RAM pages are dropped only for experts that stayed in VRAM
+    std::vector<uint64_t> cached_since;   // expert id -> step it was published (0: not cached)
+    std::vector<bool>     dropped;        // expert id -> its RAM pages were dropped
+
     uint64_t n_hit  = 0;
     uint64_t n_miss = 0;
 };
@@ -755,6 +759,8 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             ls.glob_count.assign(n_expert, 0);
             ls.sticky.assign(n_expert, false);
             ls.adopt_slot.assign(n_expert, -1);
+            ls.cached_since.assign(n_expert, 0);
+            ls.dropped.assign(n_expert, false);
             ls.adopt_mask.assign(n_expert, 0);
 
             std::vector<int32_t> dummy(n_expert, ns);
@@ -931,7 +937,7 @@ void llama_moe_cache_step() {
             ls.slot_last_use[j.slot]   = ++mc->clock;
             ls.slot_in_flight[j.slot]  = false;
             set_table_entry(ls.pub, j.expert, j.slot);
-            page_hint(mc, ls, j.expert, true);
+            ls.cached_since[j.expert] = mc->n_steps + 1;
         }
         mc->done.clear();
 
@@ -941,7 +947,8 @@ void llama_moe_cache_step() {
         for (auto & ls : mc->layers) {
             for (int32_t v : ls.adopt_victims) {
                 set_table_entry(ls.pub, v, ls.pub.n_slots);
-                page_hint(mc, ls, v, false);
+                ls.cached_since[v] = 0;
+                if (ls.dropped[v]) { page_hint(mc, ls, v, false); ls.dropped[v] = false; }
             }
             ls.adopt_victims.clear();
             for (int32_t e : ls.adopted) {
@@ -951,7 +958,7 @@ void llama_moe_cache_step() {
                     ls.expert_slot[e]      = slot;
                     ls.slot_last_use[slot] = ++mc->clock;
                     set_table_entry(ls.pub, e, slot);
-                    page_hint(mc, ls, e, true);
+                    ls.cached_since[e] = mc->n_steps + 1;
                     n_adopt++;
                 }
                 ls.slot_in_flight[slot] = false;
@@ -1024,6 +1031,23 @@ void llama_moe_cache_step() {
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->n_steps++;
+    // drop-cached: only experts that stayed in VRAM for LLAMA_MOE_CACHE_DROP_STAY steps (default 1024)
+    // lose their RAM pages; churning ones never do (dropping and re-reading them cost more than it saved)
+    if (mc->drop_cached && mc->n_steps % 256 == 0) {
+        static const uint64_t stay = [] {
+            const char * e = getenv("LLAMA_MOE_CACHE_DROP_STAY");
+            return (uint64_t) (e ? atoll(e) : 1024);
+        }();
+        for (auto & ls : mc->layers) {
+            for (int32_t sl = 0; sl < ls.pub.n_slots; ++sl) {
+                const int32_t e = ls.slot_expert[sl];
+                if (e >= 0 && !ls.dropped[e] && ls.cached_since[e] && mc->n_steps - ls.cached_since[e] >= stay) {
+                    page_hint(mc, ls, e, true);
+                    ls.dropped[e] = true;
+                }
+            }
+        }
+    }
     if (mc->n_steps % 4096 == 0) { // follow the workload: re-pick the always-hot set from lifetime counts
         for (auto & ls : mc->layers) {
             refresh_sticky(ls);
@@ -1081,7 +1105,8 @@ void llama_moe_cache_step() {
                 ls.expert_slot[victim] = -1;
                 ls.slot_expert[slot]   = -1;
                 set_table_entry(ls.pub, victim, ls.pub.n_slots);
-                page_hint(mc, ls, victim, false);
+                ls.cached_since[victim] = 0;
+                if (ls.dropped[victim]) { page_hint(mc, ls, victim, false); ls.dropped[victim] = false; }
             }
             ls.slot_in_flight[slot] = true;
 
