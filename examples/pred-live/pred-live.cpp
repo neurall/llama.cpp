@@ -64,7 +64,8 @@ struct counters { double tok = 0, router = 0, nlms = 0, hash_rec = 0, hash_rec_h
 static int n_layer = 0, n_expert = 0, n_embd = 0, top_k = 0, ahead = 8;
 static bool with_router = false;
 static bool merge1 = false;        // --merge1: length-1 recalls merged with NLMS (tried: 0.84 vs 0.90 stored alone, worse)
-static bool with_coarse = false;   // coarse rungs: <0.2% of recalls once NLMS is strong, but double the stored entries (--coarse)
+static bool with_coarse = false;
+static bool with_hash = false;     // --hash: the hash ladder on top of NLMS (off: +0.003..+0.005 top-8 hit on stories, <1% time, not worth its memory)   // coarse rungs: <0.2% of recalls once NLMS is strong, but double the stored entries (--coarse)
 static uint32_t hash_ttl = 20000, clock_tok = 0;
 
 // per-ubatch capture
@@ -235,7 +236,7 @@ static void process(bool score) {
                 entry * got = nullptr;
                 bool coarse = false;
                 int got_rung = -1;
-                if (have_prev) {
+                if (have_prev && with_hash) {
                     for (int r = 0; r < N_LADDER; ++r) {
                         auto it = ps.mem.find(keys[r]);
                         had[r] = it != ps.mem.end();
@@ -282,7 +283,7 @@ static void process(bool score) {
                         rung_nlms[got_rung] += h_nlms;
                     }
                 }
-                if (have_prev) {
+                if (have_prev && with_hash) {
                     // store the first time only, and a length-n key only if the length n-1 key already existed
                     auto store = [&](uint64_t key) {
                         entry e;
@@ -511,6 +512,7 @@ int main(int argc, char ** argv) {
         else if (a == "--ahead" && i + 1 < argc) ahead = std::min(MAXK, atoi(argv[++i]));
         else if (a == "--router") with_router = true;
         else if (a == "--coarse") with_coarse = true;
+        else if (a == "--hash") with_hash = true;
         else if (a == "--merge1") merge1 = true;
         else if (a == "--hash-ttl" && i + 1 < argc) hash_ttl = (uint32_t) atoi(argv[++i]);
         else if (a == "--report-file" && i + 1 < argc) report_path = argv[++i];
