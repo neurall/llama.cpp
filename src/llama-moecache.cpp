@@ -29,6 +29,7 @@
 
 // learned predictors: this decode trains them / the current graph was built with the update nodes
 static bool g_pred_train_now = false, g_pred_train_built = false;
+static uint64_t g_pred_epoch = 0, g_pred_epoch_built = 0;   // bumped when a layer's predictor is switched on or off
 
 namespace {
 
@@ -52,6 +53,8 @@ struct layer_state {
     std::vector<uint64_t> glob_count;     // expert id -> lifetime uses
     uint64_t              glob_max = 1;
     std::vector<bool>     sticky;         // expert id -> never evicted (most-used by lifetime count)
+    std::vector<bool>     hot;            // expert id -> always hot: the fewest experts covering LLAMA_MOE_CACHE_HOT_FRAC of the layer's picks
+    bool                  slow = false;   // this layer's cache sits on a GPU with a slower upload link than the fastest one
 
     // prefill preheat: experts adopted from a GPU-offloaded prompt batch (copied device-to-device
     // from the scheduler's expert copy), published at the next step once up/gate/down all arrived
@@ -69,6 +72,7 @@ struct layer_state {
     std::vector<uint8_t>  prefetched;
 
     uint64_t n_hit  = 0;
+    uint64_t pred_seen_hit = 0, pred_seen_miss = 0; // n_hit / n_miss at the last predictor on/off decision
     uint64_t n_miss = 0;
 };
 
@@ -298,19 +302,74 @@ void profile_save(const moe_cache * mc) {
         fwrite(&n, sizeof(n), 1, f);
         fwrite(c.data(), sizeof(uint32_t), n, f);
     }
+    // trailer: the always-hot marks per layer (1 byte per expert), for tools and for the placement
+    const uint32_t hot_magic = 0x31544f48; // "HOT1"
+    fwrite(&hot_magic, sizeof(hot_magic), 1, f);
+    for (const auto & ls : mc->layers) {
+        std::vector<uint8_t> h(ls.glob_count.size());
+        for (size_t e = 0; e < h.size() && e < ls.hot.size(); ++e) {
+            h[e] = ls.hot[e];
+        }
+        const uint32_t n = (uint32_t) h.size();
+        fwrite(&n, sizeof(n), 1, f);
+        fwrite(h.data(), 1, n, f);
+    }
     fclose(f);
 }
+
+// not evictable: sticky, or cached on a slow-link layer for less than LLAMA_MOE_CACHE_SLOW_STAY steps (default 1024):
+// on a slow link a swap costs more, so an expert must stay long enough to pay for its upload
+bool pinned(const moe_cache * mc, const layer_state & ls, int32_t e);
 
 // seed usage from the profile and queue the most-used experts of each layer for upload;
 // the first step() waits for them and publishes them. Returns the number queued.
 // Always-hot experts (formatting, common tokens) stay in VRAM: the most-used experts by lifetime
 // count, up to LLAMA_MOE_CACHE_STICKY (default 0, e.g. 0.3) of each layer's slots, are never evicted.
+// the always-hot set: the fewest experts (by lifetime count) covering LLAMA_MOE_CACHE_HOT_FRAC (default 0.75) of the picks
+void refresh_hot(layer_state & ls) {
+    static const double hot_frac = [] {
+        const char * e = getenv("LLAMA_MOE_CACHE_HOT_FRAC");
+        return e ? atof(e) : 0.75;
+    }();
+    ls.hot.assign(ls.glob_count.size(), false);
+    std::vector<int32_t> ids(ls.glob_count.size());
+    uint64_t tot = 0;
+    for (int32_t e = 0; e < (int32_t) ids.size(); ++e) { ids[e] = e; tot += ls.glob_count[e]; }
+    if (tot == 0) {
+        return;
+    }
+    std::sort(ids.begin(), ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
+    uint64_t acc = 0;
+    for (int32_t e : ids) {
+        if (acc >= hot_frac * tot) {
+            break;
+        }
+        ls.hot[e] = true;
+        acc += ls.glob_count[e];
+    }
+}
+
 void refresh_sticky(layer_state & ls) {
     static const double frac = [] {
         const char * e = getenv("LLAMA_MOE_CACHE_STICKY");
         return e ? atof(e) : 0.0; // off: +1.6% on GLM chat, within noise
     }();
+    refresh_hot(ls);
     ls.sticky.assign(ls.glob_count.size(), false);
+    if (ls.slow) {
+        // slow upload link: its always-hot experts stay (the most-used first, up to the slots), swaps are rare
+        std::vector<int32_t> ids;
+        for (int32_t e = 0; e < (int32_t) ls.hot.size(); ++e) {
+            if (ls.hot[e]) {
+                ids.push_back(e);
+            }
+        }
+        std::sort(ids.begin(), ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
+        for (int32_t i = 0; i < (int32_t) ids.size() && i < ls.pub.n_slots; ++i) {
+            ls.sticky[ids[i]] = true;
+        }
+        return;
+    }
     const int32_t k = (int32_t) (frac * ls.pub.n_slots);
     if (k <= 0) {
         return;
@@ -700,7 +759,7 @@ void pred_loop(moe_cache * mc) {
                         }
                         const int32_t v = ls.slot_expert[sl];
                         if (v < 0) { slot = sl; break; }
-                        if (ls.sticky[v] || std::find(cand.begin(), cand.end(), v) != cand.end()) {
+                        if (pinned(mc, ls, v) || std::find(cand.begin(), cand.end(), v) != cand.end()) {
                             continue;
                         }
                         const double c = score(ls, v);
@@ -781,7 +840,7 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
             }
             const int32_t v = ls.slot_expert[sl];
             if (v < 0) { slot = sl; least = 0; break; }
-            if (ls.sticky[v]) {
+            if (pinned(mc, ls, v)) {
                 continue;
             }
             if (ls.glob_count[v] < least) { least = ls.glob_count[v]; slot = sl; }
@@ -1051,6 +1110,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     ls->pub.up_src   = c.l->ffn_up_exps;
                     ls->pub.gate_src = c.l->ffn_gate_exps;
                     ls->pub.down_src = c.l->ffn_down_exps;
+                    // slower upload link than the fastest GPU (the one prompt processing is sent to)
+                    ggml_backend_dev_t d = ggml_backend_buft_get_device(buft);
+                    ls->slow = groups.size() > 1 && model.dev_offload < model.devices.size() && d && d != model.devices[model.dev_offload].dev;
                 }
 
                 if (tables_only) {
@@ -1232,6 +1294,20 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
 #endif
         if (const size_t n = profile_preload(mc, model)) {
             LLAMA_LOG_INFO("moe-cache: preloading %zu experts (usage profile)\n", n);
+        }
+        {
+            size_t n_slow = 0, n_hot = 0, n_stk = 0;
+            for (auto & ls : mc->layers) {
+                if (ls.slow) {
+                    n_slow++;
+                    for (bool h : ls.hot) n_hot += h;
+                    for (bool k : ls.sticky) n_stk += k;
+                }
+            }
+            if (n_slow > 0) {
+                LLAMA_LOG_WARN("moe-cache: %zu layers on slower-link GPUs: always-hot experts %.1f/layer, pinned %.1f/layer, min stay %s steps\n",
+                        n_slow, (double) n_hot / n_slow, (double) n_stk / n_slow, getenv("LLAMA_MOE_CACHE_SLOW_STAY") ? getenv("LLAMA_MOE_CACHE_SLOW_STAY") : "1024");
+            }
         }
 
         {
@@ -1553,6 +1629,38 @@ void llama_moe_cache_step() {
             }
         }
     }
+    // predict only where it can pay: a layer's predictor runs while one of its target layers misses
+    // more than LLAMA_MOE_CACHE_PREDICT_MISS (default 0.05) of its expert uses (windows of 256 steps)
+    if (mc->pred_ahead > 0 && mc->n_steps % 256 == 0) {
+        static const double thr = [] {
+            const char * e = getenv("LLAMA_MOE_CACHE_PREDICT_MISS");
+            return e ? atof(e) : 0.05;
+        }();
+        const size_t nl = mc->layers.size();
+        std::vector<double> miss(nl, 0.0);
+        for (size_t li = 0; li < nl; ++li) {
+            auto & ls = mc->layers[li];
+            const uint64_t h = ls.n_hit - ls.pred_seen_hit, m = ls.n_miss - ls.pred_seen_miss;
+            miss[li] = h + m ? (double) m / (h + m) : 0.0;
+            ls.pred_seen_hit = ls.n_hit; ls.pred_seen_miss = ls.n_miss;
+        }
+        size_t n_on = 0;
+        for (size_t li = 0; li < nl; ++li) {
+            auto & pub = mc->layers[li].pub;
+            bool on = false;
+            for (int k = 1; k <= std::max(1, pub.pred_ahead) && li + k < nl; ++k) {
+                on = on || miss[li + k] > thr;
+            }
+            if (on != pub.pred_on) {
+                pub.pred_on = on;
+                g_pred_epoch++;
+            }
+            n_on += on;
+        }
+        if (mc->n_steps % 4096 == 0) {
+            LLAMA_LOG_INFO("moe-cache: predicting from %zu of %zu layers (target miss rate > %.2f)\n", n_on, nl, thr);
+        }
+    }
     if (mc->n_steps % 4096 == 0) { // follow the workload: re-pick the always-hot set from lifetime counts
         for (auto & ls : mc->layers) {
             refresh_sticky(ls);
@@ -1592,7 +1700,7 @@ void llama_moe_cache_step() {
                     continue;
                 }
                 if (ls.slot_expert[s] < 0) { slot = s; break; }
-                if (ls.sticky[ls.slot_expert[s]]) {
+                if (pinned(mc, ls, ls.slot_expert[s])) {
                     continue;
                 }
                 const double c = score(ls, ls.slot_expert[s]);
@@ -1735,9 +1843,20 @@ bool llama_moe_cache_pred_train_now() {
 }
 
 bool llama_moe_cache_graph_reusable() {
-    return g_pred_train_now == g_pred_train_built;
+    return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built;
 }
 
 void llama_moe_cache_graph_built() {
     g_pred_train_built = g_pred_train_now;
+    g_pred_epoch_built = g_pred_epoch;
 }
+
+namespace {
+bool pinned(const moe_cache * mc, const layer_state & ls, int32_t e) {
+    static const uint64_t stay = [] {
+        const char * v = getenv("LLAMA_MOE_CACHE_SLOW_STAY");
+        return (uint64_t) (v ? atoll(v) : 1024);
+    }();
+    return ls.sticky[e] || (ls.slow && ls.cached_since[e] && mc->n_steps + 1 - ls.cached_since[e] < stay);
+}
+} // namespace

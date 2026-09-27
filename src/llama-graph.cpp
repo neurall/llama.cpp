@@ -2255,7 +2255,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
         mc_cpu_backend = cpu_backend;
         ggml_tensor * pw = mcache->pred_all ? mcache->pred_all : mcache->pred_w;
-        if (pw && pw->buffer) {
+        if (pw && pw->buffer && mcache->pred_on) {
             // the next layers' router logits from this layer's input (learned predictors, else the next
             // router), on their GPU in the split before the CPU copy; handed to the CPU gate op as src[4]
             // ([n_expert*ahead, n_tokens]), where the cache's observer reads them

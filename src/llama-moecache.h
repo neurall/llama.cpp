@@ -56,6 +56,7 @@ struct llama_moe_cache_layer {
     // il+1+k) predicts that layer's router logits from this layer's MoE input and is trained in the
     // graph by NLMS with step size pred_mu (1 element, set per token by the cache; 0 = no training)
     int           pred_ahead = 0;
+    bool          pred_on    = true;    // predict from this layer: one of its target layers misses often enough (updated every 256 steps)
     ggml_tensor * pred_all   = nullptr; // [n_embd, n_expert * pred_ahead] fp16: the predictors of the next layers, stacked
     ggml_tensor * pred_mu    = nullptr;
 };
