@@ -45,18 +45,22 @@ def main():
             up, gate, down = ck["up"].to(dev).requires_grad_(), ck["gate"].to(dev).requires_grad_(), ck["down"].to(dev).requires_grad_()
             opt = torch.optim.Adam([up, gate, down], lr=a.lr)
             opt.load_state_dict(ck["opt"])
-            print(f"  resumed L+{k} from {ckpt_path} ({ck.get('tokens_seen', '?')} tokens seen before)")
+            for g in opt.param_groups:
+                g["lr"] = a.lr                      # the saved state would override the lr this round asks for
+            start = ck.get("tokens_seen", 0) % T    # continue the stream where the last round stopped
+            print(f"  resumed L+{k} from {ckpt_path} at token {start}")
         else:
             up = (torch.randn(n, D, a.hidden, device=dev) / D ** 0.5).requires_grad_()
             gate = (torch.randn(n, D, a.hidden, device=dev) / D ** 0.5).requires_grad_()
             down = torch.zeros(n, a.hidden, E, device=dev, requires_grad=True)
             opt = torch.optim.Adam([up, gate, down], lr=a.lr)
+            start = 0
         Wt = W[tl]
         mask = (torch.arange(NL, device=dev)[None, :] <= src[:, None]).float().unsqueeze(-1)  # [n, NL, 1]
         pred = torch.full((n, T, E), float("nan"), device=dev)
         t_stop = T
-        for t in range(T):
-            if a.time_limit and t % 64 == 0 and t > 0 and time.time() - t0 > a.time_limit:
+        for t in range(start, T):
+            if a.time_limit and t % 64 == 0 and t > start and time.time() - t0 > a.time_limit:
                 t_stop = t
                 break
             xs = X[src, t].float()
@@ -79,15 +83,15 @@ def main():
             opt.zero_grad()
             loss.backward()
             opt.step()
-        pred_v = pred[:, :t_stop]
+        pred_v = pred[:, start:t_stop]
         pi = torch.topk(pred_v, K, dim=-1).indices
         hm = np.full((NL, T), np.nan)
-        hm[k:, :t_stop] = (pi.unsqueeze(-1) == real[tl, :t_stop].unsqueeze(-2)).any(-1).float().mean(-1).cpu().numpy()
+        hm[k:, start:t_stop] = (pi.unsqueeze(-1) == real[tl, start:t_stop].unsqueeze(-2)).any(-1).float().mean(-1).cpu().numpy()
         name = f"L+{k} swiglu {a.input} h{a.hidden} {a.loss} lr {a.lr} decay {a.lr_decay}"
-        report(name, hm, d["bounds"], f"  ({time.time() - t0:.1f} s, {t_stop}/{T} tokens)", None if a.time_limit else d["gen"])
+        report(name, hm, d["bounds"], f"  ({time.time() - t0:.1f} s, tokens {start}-{t_stop} of {T})", None if a.time_limit else d["gen"])
         if ckpt_path:
             torch.save({"up": up.detach().cpu(), "gate": gate.detach().cpu(), "down": down.detach().cpu(),
-                        "opt": opt.state_dict(), "tokens_seen": t_stop}, ckpt_path)
+                        "opt": opt.state_dict(), "tokens_seen": t_stop % T}, ckpt_path)
 
 
 if __name__ == "__main__":

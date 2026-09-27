@@ -43,13 +43,17 @@ def main():
         proj, up, gate, down, head = (ck[n].to(dev).requires_grad_() for n in ("proj", "up", "gate", "down", "head"))
         opt = torch.optim.Adam([proj, up, gate, down, head], lr=a.lr)
         opt.load_state_dict(ck["opt"])
-        print(f"  resumed from {a.ckpt} ({ck.get('tokens_seen', '?')} tokens seen before)")
+        for g in opt.param_groups:
+            g["lr"] = a.lr                      # the saved state would override the lr this round asks for
+        start = ck.get("tokens_seen", 0) % T    # continue the stream where the last round stopped
+        print(f"  resumed from {a.ckpt} at token {start}")
     else:
         proj = p(NL, 4 * D, H, scale=(4 * D) ** -0.5)
         up, gate = p(NL, 2 * H, 2 * H, scale=(2 * H) ** -0.5), p(NL, 2 * H, 2 * H, scale=(2 * H) ** -0.5)
         down = p(NL, 2 * H, H, scale=0.0)
         head = torch.zeros(NL, A, H, E, device=dev, requires_grad=True)
         opt = torch.optim.Adam([proj, up, gate, down, head], lr=a.lr)
+        start = 0
     # (source L, lookahead k) pairs with a target inside the model
     pairs = [(L, k) for k in range(1, A + 1) for L in range(NL - k)]
     Ls = torch.tensor([L for L, _ in pairs], device=dev)
@@ -58,8 +62,8 @@ def main():
     zero = torch.zeros(D, device=dev)
     t0 = time.time()
     t_stop = T
-    for t in range(T):
-        if a.time_limit and t % 64 == 0 and t > 0 and time.time() - t0 > a.time_limit:
+    for t in range(start, T):
+        if a.time_limit and t % 64 == 0 and t > start and time.time() - t0 > a.time_limit:
             t_stop = t
             break
         cur = rms(X[:, t].float())
@@ -80,18 +84,18 @@ def main():
         opt.zero_grad()
         loss.backward()
         opt.step()
-    pred_v = pred[:, :t_stop]
+    pred_v = pred[:, start:t_stop]
     pi = torch.topk(pred_v, K, dim=-1).indices
-    hit = (pi.unsqueeze(-1) == real[Ls + ks, :t_stop].unsqueeze(-2)).any(-1).float().mean(-1).cpu().numpy()
+    hit = (pi.unsqueeze(-1) == real[Ls + ks, start:t_stop].unsqueeze(-2)).any(-1).float().mean(-1).cpu().numpy()
     for k in range(1, A + 1):
         hm = np.full((NL, T), np.nan)
         sel = (ks == k).cpu().numpy()
-        hm[k:, :t_stop] = hit[sel]
-        report(f"L+{k} stack h{H} lr {a.lr}", hm, d["bounds"], f"  ({time.time() - t0:.1f} s, {t_stop}/{T} tokens)", None if a.time_limit else d["gen"])
+        hm[k:, start:t_stop] = hit[sel]
+        report(f"L+{k} stack h{H} lr {a.lr}", hm, d["bounds"], f"  ({time.time() - t0:.1f} s, tokens {start}-{t_stop} of {T})", None if a.time_limit else d["gen"])
     if a.ckpt:
         torch.save({"proj": proj.detach().cpu(), "up": up.detach().cpu(), "gate": gate.detach().cpu(),
                     "down": down.detach().cpu(), "head": head.detach().cpu(),
-                    "opt": opt.state_dict(), "tokens_seen": t_stop}, a.ckpt)
+                    "opt": opt.state_dict(), "tokens_seen": t_stop % T}, a.ckpt)
 
 
 if __name__ == "__main__":

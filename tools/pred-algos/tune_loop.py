@@ -32,6 +32,7 @@ def main():
     ap.add_argument("--rounds", type=int, default=20)
     ap.add_argument("--lr0", type=float, default=1e-3)
     ap.add_argument("--ckpt", default=None)
+    ap.add_argument("--patience", type=int, default=0, help="stop after N stalled rounds (0: never; slow learners need many passes)")
     a, extra = ap.parse_known_args()
     if extra and extra[0] == "--":
         extra = extra[1:]
@@ -48,7 +49,8 @@ def main():
         else:
             stall += 1
             lr *= 0.6   # stalled or worse: back off
-        if stall >= 3:
+        lr = min(max(lr, a.lr0 / 10), a.lr0 * 10)   # round scores cover different stream segments: keep noise from running lr away
+        if a.patience and stall >= a.patience:
             print(f"stalled {stall} rounds at best {best:.3f}, stopping")
             break
     print(f"final best avg hit: {best}")
