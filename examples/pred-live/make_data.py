@@ -13,6 +13,8 @@ starcoderdata are gated: accept their terms on huggingface.co first.
   starcoder   : bigcode/starcoderdata, shard train-00000 of html, css, python, javascript,
                 c, cpp, shell; per language shuffled (seed 0), first 3,000 files with > 200 chars,
                 each cut to 6,000 chars; all 21,000 shuffled together (seed 1)
+  python      : the starcoderdata python shard only: shuffled (seed 0), first 10,000 files with > 200 chars,
+                each cut to 6,000 chars (needs the starcoder step's download)
   mix         : starcoder-mix + cosmopedia-20k interleaved so both have used the same number of characters at
                 every point (the first 50k tokens are ~25k code + ~25k cosmopedia); needs both built first
 """
@@ -71,6 +73,13 @@ def starcoder(out):
     write(out, "starcoder-mix.txt", docs)
 
 
+def python(out):
+    import pyarrow.parquet as pq
+    rows = pq.read_table(f"{out}/raw-starcoder/python/train-00000-of-00059.parquet", columns=["content"]).column("content").to_pylist()
+    random.Random(0).shuffle(rows)
+    write(out, "starcoder-python.txt", [r[:6000] for r in rows if r and len(r) > 200][:10000])
+
+
 def mix(out):
     def docs(name):
         return open(os.path.join(out, name)).read().split("\n<|endoftext|>\n")
@@ -87,7 +96,7 @@ def mix(out):
 if __name__ == "__main__":
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
-    steps = {"tinystories": tinystories, "cosmopedia": cosmopedia, "tiny-codes": tiny_codes, "starcoder": starcoder, "mix": mix}
+    steps = {"tinystories": tinystories, "cosmopedia": cosmopedia, "tiny-codes": tiny_codes, "starcoder": starcoder, "python": python, "mix": mix}
     for a in sys.argv[2:]:
         if a in steps:
             steps[a](out)
