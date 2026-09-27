@@ -1814,11 +1814,28 @@ static void ggml_compute_forward_mul_mat_id(
     void * ud = NULL;
     ggml_moe_phase_cb_t cb = ggml_get_moe_phase_callback(&ud);
     if (cb && atomic_fetch_add(&g_moe_cpu_active, 1) == 0) {
-        cb(1, ud);
+        // bytes this op reads from RAM: one src0 matrix per distinct uncached expert
+        const struct ggml_tensor * ids = dst->src[2];
+        const int32_t * tbl   = (const int32_t *) dst->src[3]->data;
+        const int32_t   dummy = ggml_get_op_params_i32(dst, 0);
+        size_t bytes = 0;
+        for (int64_t t = 0; t < ids->ne[1]; ++t) {
+            for (int64_t i = 0; i < ids->ne[0]; ++i) {
+                const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+                bool seen = false;
+                for (int64_t t2 = 0; t2 <= t && !seen; ++t2) {
+                    for (int64_t i2 = 0; i2 < (t2 == t ? i : ids->ne[0]); ++i2) {
+                        if (*(const int32_t *) ((const char *) ids->data + t2*ids->nb[1] + i2*ids->nb[0]) == e) { seen = true; break; }
+                    }
+                }
+                bytes += (!seen && tbl[e] == dummy) ? dst->src[0]->nb[2] : 0;
+            }
+        }
+        cb(1, bytes, ud);
     }
     ggml_compute_forward_mul_mat_id_impl(params, dst);
     if (cb && atomic_fetch_sub(&g_moe_cpu_active, 1) == 1) {
-        cb(0, ud);
+        cb(0, 0, ud);
     }
 }
 

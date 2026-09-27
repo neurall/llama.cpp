@@ -6,6 +6,7 @@ from collections import defaultdict
 ev = json.load(open(sys.argv[1]))["traceEvents"]
 names = {e["tid"]: e["args"]["name"] for e in ev if e.get("ph") == "M"}
 ev = [e for e in ev if e.get("ph") != "M"]
+evx = [e for e in ev if e.get("ph") != "C"]
 tok = [e for e in ev if e["name"].startswith("token ")]
 n = max(1, len(tok))
 T = sum(e["dur"] for e in tok)
@@ -32,3 +33,10 @@ sh = sum(e["args"].get("streamed hits", 0) for e in r)
 print(f"router: {sum(miss)/n:.1f} misses/token, {sh/n:.1f} streamed hits/token")
 pub = [e for e in ev if e["name"].startswith("publish")]
 print(f"publishes {len(pub)/n:.1f}/token, LATE {sum('LATE' in e['name'] for e in pub)/n:.1f}/token")
+# DDR demand counter: time-weighted average and share of time near the limit
+c = sorted((e["ts"], e["args"]["GB/s"]) for e in ev if e.get("ph") == "C")
+if len(c) > 1:
+    tot = sum(v * (c[i + 1][0] - t) for i, (t, v) in enumerate(c[:-1]))
+    span = c[-1][0] - c[0][0]
+    hi = sum(c[i + 1][0] - t for i, (t, v) in enumerate(c[:-1]) if v > 30)
+    print(f"DDR demand: avg {tot/max(span,1):.1f} GB/s, peak {max(v for _, v in c):.1f}, >30 GB/s {100*hi/max(span,1):.0f}% of the time")

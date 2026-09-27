@@ -51,7 +51,7 @@ struct tracer {
     int64_t                t_step  = 0;
 };
 tracer g_tr;
-enum { TR_SCHED = 1, TR_CPU = 2, TR_PRED = 3, TR_WORKER = 10 };
+enum { TR_SCHED = 1, TR_CPU = 2, TR_PRED = 3, TR_DDR = 4, TR_WORKER = 10 };
 
 inline bool tr_on() { return g_tr.left > 0 && g_tr.skip == 0; }
 
@@ -84,6 +84,8 @@ void tr_dump() {
         fprintf(f, "{\"name\":\"%s\",\"pid\":1,\"tid\":%d,\"ts\":%" PRId64 ",", e.name.c_str(), e.tid, e.ts - t0);
         if (e.dur >= 0) {
             fprintf(f, "\"ph\":\"X\",\"dur\":%" PRId64, e.dur);
+        } else if (e.dur == -2) {
+            fprintf(f, "\"ph\":\"C\"");
         } else {
             fprintf(f, "\"ph\":\"i\",\"s\":\"t\"");
         }
@@ -125,8 +127,11 @@ struct layer_state {
     std::vector<bool>     sticky;         // expert id -> never evicted (most-used by lifetime count)
     std::vector<bool>     hot;            // expert id -> always hot: the fewest experts covering LLAMA_MOE_CACHE_HOT_FRAC of the layer's picks
     bool                  slow = false;   // this layer's cache sits on a GPU with a slower upload link than the fastest one
-    int32_t               n_cache = 0;    // slots [0, n_cache) are the cache; [n_cache, pub.n_slots) stream predicted experts
-    int32_t               stream_next = 0; // round robin over the stream slots
+    int32_t               n_cache = 0;    // cache slots (the rest stream predicted experts)
+    std::vector<uint8_t>  is_stream;      // slot -> holds streamed (predicted) experts, not the cache
+    std::vector<int32_t>  stream_slots;   // those slots, round robin
+    int32_t               stream_next = 0;
+    std::vector<int32_t>  stream_hit;     // experts used from a stream slot this step (promotion candidates)
 
     // prefill preheat: experts adopted from a GPU-offloaded prompt batch (copied device-to-device
     // from the scheduler's expert copy), published at the next step once up/gate/down all arrived
@@ -207,6 +212,7 @@ struct moe_cache {
     std::vector<upload_job>  done;
     bool                     stop = false;
     int                      in_flight = 0; // jobs popped by a worker, not yet in done
+    int                      in_flight_stream = 0; // of those, stream jobs (the step doesn't wait for them)
     std::condition_variable  dcv;           // signalled when a job lands in done
 
     // swap cost accounting (guarded by wmtx for the upload side)
@@ -225,6 +231,14 @@ struct moe_cache {
     double   copy_link[2] = { 0, 0 };     // EMA of the PCIe copy part, per link
     // DDR4 phases: the CPU computing uncached experts (ggml moe phase callback)
     std::atomic<bool>    cpu_busy{false};
+    // DDR4 load meter: demand now (MB/s: the CPU phase at its measured rate + each running upload at its link rate)
+    // and bytes read, CPU expert matmuls vs uploads
+    std::atomic<int64_t> ddr_mbs{0};
+    int64_t              cpu_mbs_on = 0;     // what the running CPU phase added
+    double               cpu_gbs_meas = 0;   // EMA of the CPU phases' read rate
+    std::atomic<int64_t> cpu_bytes_phase{0};
+    std::atomic<int64_t> cpu_bytes{0}, up_bytes{0};
+    int64_t              seg_cpu_bytes = 0, seg_up_bytes = 0;
     std::atomic<int64_t> busy_t0{0};
     std::atomic<int64_t> busy_us{0};      // total busy time
     std::atomic<int64_t> busy_n{0};       // busy phases
@@ -272,7 +286,7 @@ struct moe_cache {
     bool                    pred_stop   = false;
     int64_t                 gpu_started = -1; // layer idx whose GPU split may have started this step (mtx)
     int64_t                 last_obs    = -1; // layer idx of the last CPU expert op this step (mtx)
-    uint64_t n_pred_up = 0, n_pred_pub = 0, n_pred_used = 0, n_pred_late = 0, n_stream_stale = 0;
+    uint64_t n_pred_up = 0, n_pred_pub = 0, n_pred_used = 0, n_pred_late = 0, n_stream_stale = 0, n_promoted = 0;
 
     // learned predictors (in-graph NLMS, see llama_moe_cache_layer::pred_m): trained every pred_train
     // tokens (--lrn-prd N, 0 = frozen) with step size pred_mu; weights persist in pred_file
@@ -328,10 +342,11 @@ struct knobs_t {
     double slow_stay = 1024;
     double margin    = -1;  // fixed pay-back margin, -1: from upload timing
     double budget    = -1;  // fixed swaps per step, -1: from upload timing
-    double cpu_gbs   = 50;
+    double cpu_gbs   = 36;  // CPU expert read rate for the pay-back margin (dev box DDR4-3200 ECC measured 36)
     double link      = 1;   // pay-back margin per upload link (0: one margin from the average upload)
     double gate      = 0;   // uploads wait (up to GATE_MAX_US per tensor) while the CPU computes uncached experts: no DDR4 contention
     double gate_max_us = 2000;
+    double ddr_gbs     = 36;   // measured max on the dev box (DDR4-3200 ECC); GATE=3: an upload starts only while DDR demand + its link rate stays under this
     double stream    = 1e9; // predicted uploads use up to this many stream slots per layer (0: evict cache slots, old path)
     double stream_m  = 12;  // candidates per target layer in stream mode (over-predict; no confidence cut)
     double offset      = 1; // predicted uploads only for layers far enough ahead to land in time on their link
@@ -344,7 +359,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
     static const std::pair<const char *, double knobs_t::*> fields[] = {
         { "HOT_FRAC", &knobs_t::hot_frac }, { "STICKY", &knobs_t::sticky }, { "SLOW_STAY", &knobs_t::slow_stay },
         { "MARGIN", &knobs_t::margin }, { "BUDGET", &knobs_t::budget }, { "CPU_GBS", &knobs_t::cpu_gbs }, { "LINK", &knobs_t::link },
-        { "GATE", &knobs_t::gate }, { "GATE_MAX_US", &knobs_t::gate_max_us },
+        { "GATE", &knobs_t::gate }, { "GATE_MAX_US", &knobs_t::gate_max_us }, { "DDR_GBS", &knobs_t::ddr_gbs },
         { "STREAM", &knobs_t::stream }, { "STREAM_M", &knobs_t::stream_m },
         { "OFFSET", &knobs_t::offset }, { "STREAM_SLOW", &knobs_t::stream_slow },
         { "TRACE", &knobs_t::trace }, { "TRACE_AFTER", &knobs_t::trace_after },
@@ -361,7 +376,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW" }) {
+        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
             }
@@ -625,20 +640,37 @@ int parse_layer_from_name(const char * name) {
     return atoi(name + 4);
 }
 
-void moe_phase_cb(int busy, void * ud) {
+void ddr_trace(moe_cache * mc, int64_t t) {
+    if (tr_on()) {
+        tr(TR_DDR, "DDR demand", t, -2, tr_fmt("\"GB/s\":%.1f", mc->ddr_mbs / 1e3));
+    }
+}
+
+void moe_phase_cb(int busy, size_t bytes, void * ud) {
     auto * mc = (moe_cache *) ud;
     const int64_t t = ggml_time_us();
     if (busy) {
         mc->busy_t0 = t;
         mc->cpu_busy = true;
+        mc->cpu_bytes += (int64_t) bytes;
+        mc->cpu_bytes_phase = (int64_t) bytes;
+        mc->cpu_mbs_on = (int64_t) ((mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs) * 1e3);
+        mc->ddr_mbs += mc->cpu_mbs_on;
     } else {
         mc->cpu_busy = false;
         mc->busy_us += t - mc->busy_t0;
         mc->busy_n++;
+        mc->ddr_mbs -= mc->cpu_mbs_on;
+        const int64_t dt = t - mc->busy_t0;
+        if (mc->cpu_bytes_phase > 0 && dt > 0) {
+            const double gbs = (double) mc->cpu_bytes_phase / dt / 1e3;
+            mc->cpu_gbs_meas = mc->cpu_gbs_meas > 0 ? 0.95*mc->cpu_gbs_meas + 0.05*gbs : gbs;
+        }
         if (tr_on()) {
-            tr(TR_CPU, "cpu experts", mc->busy_t0, t - mc->busy_t0);
+            tr(TR_CPU, "cpu experts", mc->busy_t0, dt, tr_fmt("\"MB\":%.1f", mc->cpu_bytes_phase / 1e6));
         }
     }
+    ddr_trace(mc, t);
 }
 
 void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct ggml_tensor * op, void * ud) {
@@ -683,6 +715,10 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             ls->glob_max = std::max(ls->glob_max, ++ls->glob_count[id]);
             const int32_t slot = ls->expert_slot[id];
             if (slot >= 0) {
+                if (!prefill && ls->is_stream[slot] &&
+                        std::find(ls->stream_hit.begin(), ls->stream_hit.end(), id) == ls->stream_hit.end()) {
+                    ls->stream_hit.push_back(id);
+                }
                 ls->n_hit += !prefill;
                 ls->up_hits[id] += !prefill;
                 ls->slot_last_use[slot] = ++mc->clock;
@@ -712,8 +748,8 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             const int32_t id = *(const int32_t *) ((const char *) ids->data + i*ids->nb[0]);
             const int32_t sl = ls->expert_slot[id];
             n_miss += sl < 0;
-            n_str  += sl >= ls->n_cache;
-            idl += tr_fmt("%s%d%s", i ? " " : "", id, sl < 0 ? "-" : sl >= ls->n_cache ? "+" : "");
+            n_str  += sl >= 0 && ls->is_stream[sl];
+            idl += tr_fmt("%s%d%s", i ? " " : "", id, sl < 0 ? "-" : ls->is_stream[sl] ? "+" : "");
         }
         tr(TR_CPU, tr_fmt("router L%zu: %d miss", li, n_miss), ggml_time_us(), -1,
                 tr_fmt("\"ids (- miss, + streamed)\":\"%s\",\"streamed hits\":%d", idl.c_str(), n_str));
@@ -967,7 +1003,7 @@ void pred_loop(moe_cache * mc) {
                 }
                 for (int32_t e = 0; e < ne; ++e) { idx[e] = e; }
                 // stream slots: over-predict (a wrong guess costs idle bandwidth only, never a cached expert)
-                const bool stream = knobs().stream > 0 && ls.n_cache < ls.pub.n_slots;
+                const bool stream = knobs().stream > 0 && !ls.stream_slots.empty();
                 const int32_t m = std::min<int32_t>(stream ? (int32_t) knobs().stream_m : mc->pred_m, (int32_t) ne);
                 std::partial_sort(idx.begin(), idx.begin() + m, idx.end(), [&](int32_t a, int32_t c) { return lg[a] > lg[c]; });
                 if (mc->pred_ra) {
@@ -1024,7 +1060,7 @@ void pred_loop(moe_cache * mc) {
                 if (ls.slow && knobs().stream > 0 && knobs().stream_slow == 0) {
                     continue;
                 }
-                const int32_t n_ss = knobs().stream > 0 ? std::min<int32_t>((int32_t) knobs().stream, ls.pub.n_slots - ls.n_cache) : 0;
+                const int32_t n_ss = knobs().stream > 0 ? std::min<int32_t>((int32_t) knobs().stream, (int32_t) ls.stream_slots.size()) : 0;
                 for (int32_t id : cand) {
                     if (n_job >= (n_ss > 0 ? n_ss : mc->pred_max)) {
                         break;
@@ -1036,7 +1072,7 @@ void pred_loop(moe_cache * mc) {
                         // next free stream slot, round robin; its previous (streamed) expert leaves
                         int32_t slot = -1;
                         for (int32_t t = 0; t < n_ss && slot < 0; ++t) {
-                            const int32_t sl = ls.n_cache + (ls.stream_next++ % n_ss);
+                            const int32_t sl = ls.stream_slots[ls.stream_next++ % n_ss];
                             slot = ls.slot_in_flight[sl] ? -1 : sl;
                         }
                         if (slot < 0) {
@@ -1154,8 +1190,8 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
         // victim: empty slot, else the non-sticky cached expert with the least lifetime use,
         // and only if this expert (whose use this prompt just counted) was used more
         uint64_t least = UINT64_MAX;
-        for (int32_t sl = 0; sl < ls.n_cache; ++sl) {
-            if (ls.slot_in_flight[sl]) {
+        for (int32_t sl = 0; sl < ls.pub.n_slots; ++sl) {
+            if (ls.slot_in_flight[sl] || ls.is_stream[sl]) {
                 continue;
             }
             const int32_t v = ls.slot_expert[sl];
@@ -1220,10 +1256,29 @@ void upload_slice(ggml_tensor * dst_c, const ggml_tensor * src, int32_t expert, 
     ggml_backend_tensor_set(dst_c, (const char *) src->data + (size_t) expert*sz, (size_t) slot*dst_c->nb[2], sz);
 }
 
+// table writes go to the host table (host memory, read by the CPU expert op) and mark the layer; the device
+// copy is flushed in one transfer per dirty layer at the next sync point (split callback, end of step) instead of
+// one synchronous 4-byte copy per entry
+std::mutex                                g_tbl_mtx;
+std::vector<llama_moe_cache_layer *>      g_tbl_dirty;
+
 void set_table_entry(llama_moe_cache_layer & pub, int32_t expert, int32_t slot_or_dummy) {
-    const int32_t v = slot_or_dummy;
-    ggml_backend_tensor_set(pub.dev_table,  &v, (size_t) expert*sizeof(int32_t), sizeof(int32_t));
-    ggml_backend_tensor_set(pub.host_table, &v, (size_t) expert*sizeof(int32_t), sizeof(int32_t));
+    ((int32_t *) pub.host_table->data)[expert] = slot_or_dummy;
+    std::lock_guard<std::mutex> lk(g_tbl_mtx);
+    if (std::find(g_tbl_dirty.begin(), g_tbl_dirty.end(), &pub) == g_tbl_dirty.end()) {
+        g_tbl_dirty.push_back(&pub);
+    }
+}
+
+void flush_tables() {
+    std::vector<llama_moe_cache_layer *> d;
+    {
+        std::lock_guard<std::mutex> lk(g_tbl_mtx);
+        d.swap(g_tbl_dirty);
+    }
+    for (auto * pub : d) {
+        ggml_backend_tensor_set(pub->dev_table, pub->host_table->data, 0, ggml_nbytes(pub->dev_table));
+    }
 }
 
 } // namespace
@@ -1265,6 +1320,7 @@ static void moe_split_cb(ggml_backend_t backend, void * ud) {
                     tr_fmt("\"ahead (layers)\":%lld", (long long) j.layer_idx - mc->gpu_started));
         }
     }
+    flush_tables();
 }
 
 static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t dev,
@@ -1516,6 +1572,12 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             const int64_t n_expert = ls.pub.up_src->ne[2];
             const int32_t ns = ls.pub.n_slots;
             ls.n_cache = ns > 2*n_stream ? ns - n_stream : ns;
+            ls.is_stream.assign(ns, 0);
+            ls.stream_slots.clear();
+            for (int32_t sl = ls.n_cache; sl < ns; ++sl) {
+                ls.is_stream[sl] = 1;
+                ls.stream_slots.push_back(sl);
+            }
             ls.slot_expert.assign(ns, -1);
             ls.expert_slot.assign(n_expert, -1);
             ls.slot_last_use.assign(ns, 0);
@@ -1613,6 +1675,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     j = *it;
                     mc->todo.erase(it);
                     mc->in_flight++;
+                    mc->in_flight_stream += j.stream;
                 }
                 auto & ls = mc->layers[j.layer_idx];
                 // ponytail: unlocked reads of gpu_started / n_steps; a race only delays or keeps one stale job
@@ -1622,6 +1685,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     j.done    = true;
                     mc->done.push_back(j);
                     mc->in_flight--;
+                    mc->in_flight_stream -= j.stream;
                     mc->n_stream_stale++;
                     mc->dcv.notify_all();
                     if (tr_on()) {
@@ -1636,7 +1700,23 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 int64_t t_read = 0;
                 for (int k = 0; k < 3; ++k) {
                     const size_t sz = srcs[k]->nb[2];
-                    if ((knobs().gate >= 2 || (knobs().gate >= 1 && j.stream)) && mc->cpu_busy) {
+                    const int64_t link_mbs = (int64_t) ((mc->gbs_link[ls.slow] > 0 ? mc->gbs_link[ls.slow] : (ls.slow ? 5.0 : 20.0)) * 1e3);
+                    if (knobs().gate >= 3 && mc->ddr_mbs + link_mbs > (int64_t) (knobs().ddr_gbs * 1e3)) {
+                        // budget gate: wait until DDR demand leaves room for this copy
+                        const int64_t tw = ggml_time_us();
+                        while (mc->ddr_mbs + link_mbs > (int64_t) (knobs().ddr_gbs * 1e3) && ggml_time_us() - tw < (int64_t) knobs().gate_max_us) {
+                            std::this_thread::yield();
+                        }
+                        mc->gate_wait_us += ggml_time_us() - tw;
+                        if (tr_on()) {
+                            tr(TR_WORKER + (int) w, "DDR budget wait", tw, ggml_time_us() - tw);
+                        }
+                    }
+                    mc->ddr_mbs += link_mbs;
+                    mc->up_bytes += (int64_t) sz;
+                    ddr_trace(mc, ggml_time_us());
+                    struct ddr_release { moe_cache * mc; int64_t v; ~ddr_release() { mc->ddr_mbs -= v; ddr_trace(mc, ggml_time_us()); } } rel { mc, link_mbs };
+                    if ((knobs().gate == 2 || (knobs().gate == 1 && j.stream)) && mc->cpu_busy) {
                         // ponytail: spin-yield; a condition variable if waits get long
                         const int64_t tw = ggml_time_us();
                         while (mc->cpu_busy && ggml_time_us() - tw < (int64_t) knobs().gate_max_us) {
@@ -1688,6 +1768,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     j.done = true;
                     mc->done.push_back(j);
                     mc->in_flight--;
+                    mc->in_flight_stream -= j.stream;
                 }
                 mc->dcv.notify_all();
             }
@@ -1702,6 +1783,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             g_tr.names[TR_SCHED] = "sched: tokens, GPU splits, publishes";
             g_tr.names[TR_CPU]   = "CPU experts + router";
             g_tr.names[TR_PRED]  = "predictor";
+            g_tr.names[TR_DDR]   = "DDR demand";
             for (size_t w = 0; w < mc->worker_link.size(); ++w) {
                 const int l = mc->worker_link[w];
                 g_tr.names[TR_WORKER + (int) w] = tr_fmt("upload worker %zu (%s link)", w, l < 0 ? "any" : l ? "slow x4" : "fast x16");
@@ -1899,6 +1981,7 @@ void llama_moe_cache_step() {
     if (!mc) {
         return;
     }
+    struct flush_at_exit { ~flush_at_exit() { flush_tables(); } } flush_guard; // table changes reach the GPU before the next graph
 
     // LLAMA_MOE_CACHE_DETERMINISTIC=1 (benchmarks): publish exactly the uploads
     // scheduled by the previous step, in a fixed order, with a fixed swap budget
@@ -1920,8 +2003,25 @@ void llama_moe_cache_step() {
     // 1) publish completed uploads (sync point: no graph is executing)
     {
         std::unique_lock<std::mutex> wlk(mc->wmtx);
+        // queued stream jobs were for the token that just ended: drop them (their slots are freed at publish)
+        for (auto it = mc->todo.begin(); it != mc->todo.end(); ) {
+            if (it->stream) {
+                upload_job j = *it;
+                j.skipped = true;
+                j.done    = true;
+                mc->done.push_back(j);
+                mc->n_stream_stale++;
+                it = mc->todo.erase(it);
+            } else {
+                ++it;
+            }
+        }
         if (wait_publish) {
-            mc->dcv.wait(wlk, [mc]() { return mc->todo.empty() && mc->in_flight == 0; });
+            // wait for the cache swaps only; a stream copy still running lands later and is published at a split
+            mc->dcv.wait(wlk, [mc]() {
+                return mc->in_flight == mc->in_flight_stream &&
+                    std::none_of(mc->todo.begin(), mc->todo.end(), [](const upload_job & j) { return !j.stream; });
+            });
             std::sort(mc->done.begin(), mc->done.end(), [](const upload_job & a, const upload_job & b) {
                 return a.layer_idx != b.layer_idx ? a.layer_idx < b.layer_idx : a.slot < b.slot;
             });
@@ -2118,6 +2218,49 @@ void llama_moe_cache_step() {
         }
     }
 
+    // 1b) promotion: a streamed expert that was used and outscores the weakest evictable cached expert takes its
+    //     place by swapping the two slots' roles (no copy): its slot joins the cache, the victim's becomes a stream slot
+    for (auto & ls : mc->layers) {
+        for (int32_t id : ls.stream_hit) {
+            const int32_t s_str = ls.expert_slot[id];
+            if (s_str < 0 || !ls.is_stream[s_str]) {
+                continue;
+            }
+            int32_t s_vic = -1;
+            double best = 1e300;
+            for (int32_t s = 0; s < ls.pub.n_slots; ++s) {
+                if (ls.slot_in_flight[s] || ls.is_stream[s]) {
+                    continue;
+                }
+                const int32_t v = ls.slot_expert[s];
+                if (v < 0) { s_vic = s; best = -1; break; }
+                if (pinned(mc, ls, v)) {
+                    continue;
+                }
+                const double c = score(ls, v);
+                if (c < best) { best = c; s_vic = s; }
+            }
+            if (s_vic < 0 || score(ls, id) <= best) {
+                continue;
+            }
+            const int32_t v = ls.slot_expert[s_vic];
+            if (v >= 0) {
+                ls.expert_slot[v]     = -1;
+                ls.slot_expert[s_vic] = -1;
+                set_table_entry(ls.pub, v, ls.pub.n_slots);
+                note_evict(mc, ls, v);
+                ls.cached_since[v] = 0;
+                if (ls.dropped[v]) { page_hint(mc, ls, v, false); ls.dropped[v] = false; }
+            }
+            ls.is_stream[s_str] = 0;
+            ls.is_stream[s_vic] = 1;
+            std::replace(ls.stream_slots.begin(), ls.stream_slots.end(), s_str, s_vic);
+            ls.prefetched[id] = 0;
+            mc->n_promoted++;
+        }
+        ls.stream_hit.clear();
+    }
+
     // 2) schedule new uploads: evict at a sync point (clear the victim's table
     //    entry now), then hand the slice copies to the worker
     const size_t n_layers = mc->layers.size();
@@ -2146,8 +2289,8 @@ void llama_moe_cache_step() {
             // victim: an empty non-in-flight slot if any, else the least-called cached expert
             int32_t slot = -1;
             double best = 1e300;
-            for (int32_t s = 0; s < ls.n_cache; ++s) {
-                if (ls.slot_in_flight[s]) {
+            for (int32_t s = 0; s < ls.pub.n_slots; ++s) {
+                if (ls.slot_in_flight[s] || ls.is_stream[s]) {
                     continue;
                 }
                 if (ls.slot_expert[s] < 0) { slot = s; break; }
@@ -2234,6 +2377,9 @@ void llama_moe_cache_step() {
             const double  st = (double) std::max<uint64_t>(1, mc->n_steps - mc->seg_steps2);
             const uint64_t up = mc->n_uploads - mc->seg_up2, ov = mc->up_overlap - mc->seg_overlap;
             if (mc->seg_t0) {
+                LLAMA_LOG_WARN("moe-cache: DDR: CPU experts %.0f MB/token at %.1f GB/s in their phases, uploads %.0f MB/token | avg %.1f GB/s\n",
+                        (mc->cpu_bytes - mc->seg_cpu_bytes)/st/1e6, mc->cpu_gbs_meas, (mc->up_bytes - mc->seg_up_bytes)/st/1e6,
+                        (double) (mc->cpu_bytes - mc->seg_cpu_bytes + mc->up_bytes - mc->seg_up_bytes) / std::max<int64_t>(1, now - mc->seg_t0) / 1e3);
                 LLAMA_LOG_WARN("moe-cache: phases: token %.1f ms wall, CPU expert matmuls %.1f ms in %.1f phases (%.0f%%) | %.1f uploads/token, %.0f%% overlapping CPU phases, gate waits %.2f ms/token\n",
                         (now - mc->seg_t0)/st/1e3, (bu - mc->seg_busy_us)/st/1e3, (bn - mc->seg_busy_n)/st,
                         100.0*(bu - mc->seg_busy_us)/std::max<int64_t>(1, now - mc->seg_t0), up/st, up ? 100.0*ov/up : 0.0,
@@ -2241,6 +2387,7 @@ void llama_moe_cache_step() {
             }
             mc->seg_t0 = now; mc->seg_busy_us = bu; mc->seg_busy_n = bn; mc->seg_steps2 = mc->n_steps; mc->seg_up2 = mc->n_uploads; mc->seg_overlap = mc->up_overlap;
             mc->seg_gate_us = mc->gate_wait_us;
+            mc->seg_cpu_bytes = mc->cpu_bytes; mc->seg_up_bytes = mc->up_bytes;
         }
         {
             // DDR4 phases over the last 64 steps: CPU busy on uncached experts vs wall time, and uploads colliding with it
@@ -2318,8 +2465,8 @@ void llama_moe_cache_free() {
     }
     pred_save(mc);
     if (mc->n_pred_up) {
-        LLAMA_LOG_WARN("moe-cache: router prediction: %" PRIu64 " uploads, %" PRIu64 " published before their layer, %" PRIu64 " used, %" PRIu64 " too late to start, %" PRIu64 " dropped in the queue (layer started)\n",
-                mc->n_pred_up, mc->n_pred_pub, mc->n_pred_used, mc->n_pred_late, mc->n_stream_stale);
+        LLAMA_LOG_WARN("moe-cache: router prediction: %" PRIu64 " uploads, %" PRIu64 " published before their layer, %" PRIu64 " used, %" PRIu64 " too late to start, %" PRIu64 " dropped in the queue (layer started), %" PRIu64 " promoted into the cache\n",
+                mc->n_pred_up, mc->n_pred_pub, mc->n_pred_used, mc->n_pred_late, mc->n_stream_stale, mc->n_promoted);
     }
     for (auto * b : mc->staging) { if (b) { ggml_backend_buffer_free(b); } }
     for (auto * b : mc->pbufs) { ggml_backend_buffer_free(b); }
