@@ -34,6 +34,7 @@ bool          llama_pred_train_now();      // this step trains
 bool          llama_pred_score_now();      // this step counts hits
 bool          llama_pred_graph_reusable(); // the graph was built for this step's train/score mode
 void          llama_pred_graph_built();
-ggml_tensor * llama_pred_w(int il, int k); // predicts layer il+k from layer il (k >= 1), or nullptr
+ggml_tensor * llama_pred_w(int il);        // [n_embd, n_expert * K]: layer il's predictors of layers il+1..il+K stacked, or nullptr
+int           llama_pred_nk(int il);       // K for layer il
 ggml_tensor * llama_pred_mu();             // [1]
-ggml_tensor * llama_pred_stats();          // [4]: summed top-k hits per lookahead
+ggml_tensor * llama_pred_stats();          // [8]: summed top-k hits per lookahead

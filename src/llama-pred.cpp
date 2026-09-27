@@ -31,7 +31,8 @@ struct pred_state {
     int64_t max_batch = 512;
     std::string file;                       // LLAMA_PRED_FILE: weights loaded at init, saved at free
 
-    std::map<std::pair<int, int>, ggml_tensor *> w; // (il, k) -> predictor
+    std::map<int, ggml_tensor *> w;                 // il -> layer il's predictors of il+1..il+K stacked [n_embd, n_expert * K]
+    std::map<int, int>           nk;                // il -> K
     ggml_tensor * mu_t    = nullptr;
     ggml_tensor * stats_t = nullptr;
     int           n_pairs[MAXK] = {};               // predictors per lookahead
@@ -49,7 +50,7 @@ pred_state * g_pred = nullptr;
 bool         g_pred_init = false;
 
 // weights file: magic, count, then per predictor (il, k, type, nbytes, data)
-constexpr uint32_t PRED_MAGIC = 0x33525050; // "PPR3"
+constexpr uint32_t PRED_MAGIC = 0x34525050; // "PPR4": stacked per source layer
 
 void pred_save(const pred_state * ps) {
     const std::string tmp = ps->file + ".tmp";
@@ -62,7 +63,7 @@ void pred_save(const pred_state * ps) {
     fwrite(&n, 4, 1, f);
     std::vector<uint8_t> buf;
     for (const auto & [key, t] : ps->w) {
-        const int32_t hdr[3] = { key.first, key.second, (int32_t) t->type };
+        const int32_t hdr[3] = { key, ps->nk.at(key), (int32_t) t->type };
         const uint64_t nb = ggml_nbytes(t);
         buf.resize(nb);
         ggml_backend_tensor_get(t, buf.data(), 0, nb);
@@ -86,8 +87,8 @@ bool pred_load(pred_state * ps) {
         int32_t hdr[3];
         uint64_t nb;
         ok = fread(hdr, sizeof(hdr), 1, f) == 1 && fread(&nb, sizeof(nb), 1, f) == 1;
-        auto it = ok ? ps->w.find({ hdr[0], hdr[1] }) : ps->w.end();
-        ok = ok && it != ps->w.end() && (int32_t) it->second->type == hdr[2] && nb == ggml_nbytes(it->second);
+        auto it = ok ? ps->w.find(hdr[0]) : ps->w.end();
+        ok = ok && it != ps->w.end() && ps->nk[hdr[0]] == hdr[1] && (int32_t) it->second->type == hdr[2] && nb == ggml_nbytes(it->second);
         if (ok) {
             buf.resize(nb);
             ok = fread(buf.data(), 1, nb, f) == nb;
@@ -140,43 +141,55 @@ void llama_pred_init(const llama_model & model) {
         if (!r0 || !r0->buffer) {
             continue;
         }
-        for (int k = 1; k <= ahead && il + k < n_layer; ++k) {
+        // K = how many of the next layers have a router of the same input size
+        int K = 0;
+        while (K < ahead && il + K + 1 < n_layer) {
+            const ggml_tensor * r = model.layers[il + K + 1].ffn_gate_inp;
+            if (!r || !r->buffer || r->ne[0] != r0->ne[0] || r->ne[1] != r0->ne[1]) {
+                break;
+            }
+            K++;
+        }
+        if (K == 0) {
+            continue;
+        }
+        const int64_t D = r0->ne[0], E = r0->ne[1];
+        ggml_init_params ip = { ggml_tensor_overhead(), nullptr, true };
+        ggml_context * ctx = ggml_init(ip);
+        ggml_tensor * w = ggml_new_tensor_2d(ctx, wtype, D, E * K);
+        ggml_format_name(w, "pred-%d", il);
+        ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(r0->buffer);
+        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
+        if (!buf) {
+            ggml_free(ctx);
+            continue;
+        }
+        buft0 = buft0 ? buft0 : buft;
+        ps->ctxs.push_back(ctx);
+        ps->bufs.push_back(buf);
+        // rows (k-1)*E .. k*E-1 start as layer il+k's router
+        std::vector<float> f(D * E * K);
+        for (int k = 1; k <= K; ++k) {
             const ggml_tensor * r = model.layers[il + k].ffn_gate_inp;
-            if (!r || !r->buffer || r->ne[0] != r0->ne[0]) {
-                break;
-            }
-            ggml_init_params ip = { ggml_tensor_overhead(), nullptr, true };
-            ggml_context * ctx = ggml_init(ip);
-            ggml_tensor * w = ggml_new_tensor_2d(ctx, wtype, r->ne[0], r->ne[1]);
-            ggml_format_name(w, "pred-%d-%d", il, k);
-            ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(r->buffer);
-            ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
-            if (!buf) {
-                ggml_free(ctx);
-                break;
-            }
-            buft0 = buft0 ? buft0 : buft;
-            ps->ctxs.push_back(ctx);
-            ps->bufs.push_back(buf);
-            // start as the target layer's router
             std::vector<uint8_t> raw(ggml_nbytes(r));
             ggml_backend_tensor_get(r, raw.data(), 0, raw.size());
-            std::vector<float> f(ggml_nelements(r));
+            float * dst = f.data() + (size_t) (k - 1) * D * E;
             if (r->type == GGML_TYPE_F32) {
-                memcpy(f.data(), raw.data(), raw.size());
+                memcpy(dst, raw.data(), raw.size());
             } else {
-                ggml_get_type_traits(r->type)->to_float(raw.data(), f.data(), (int64_t) f.size());
+                ggml_get_type_traits(r->type)->to_float(raw.data(), dst, D * E);
             }
-            if (wtype == GGML_TYPE_F16) {
-                std::vector<ggml_fp16_t> h(f.size());
-                ggml_fp32_to_fp16_row(f.data(), h.data(), (int64_t) f.size());
-                ggml_backend_tensor_set(w, h.data(), 0, h.size()*sizeof(ggml_fp16_t));
-            } else {
-                ggml_backend_tensor_set(w, f.data(), 0, f.size()*sizeof(float));
-            }
-            ps->w[{il, k}] = w;
             ps->n_pairs[k - 1]++;
         }
+        if (wtype == GGML_TYPE_F16) {
+            std::vector<ggml_fp16_t> h(f.size());
+            ggml_fp32_to_fp16_row(f.data(), h.data(), (int64_t) f.size());
+            ggml_backend_tensor_set(w, h.data(), 0, h.size()*sizeof(ggml_fp16_t));
+        } else {
+            ggml_backend_tensor_set(w, f.data(), 0, f.size()*sizeof(float));
+        }
+        ps->w[il] = w;
+        ps->nk[il] = K;
     }
     if (ps->w.empty()) {
         delete ps;
@@ -194,8 +207,10 @@ void llama_pred_init(const llama_model & model) {
     ggml_backend_tensor_set(ps->stats_t, zero, 0, sizeof(zero));
     const bool loaded = !ps->file.empty() && pred_load(ps);
     g_pred = ps;
-    LLAMA_LOG_WARN("%s: next-layer router predictors: %zu (lookahead %d, %s), training every %d steps, scoring every %d steps (0: off), "
-            "mu %.2f, batches up to %" PRId64 " tokens%s\n", __func__, ps->w.size(), ahead, ggml_type_name(wtype), ps->train, ps->score,
+    int n_pred = 0;
+    for (int k = 0; k < MAXK; ++k) n_pred += ps->n_pairs[k];
+    LLAMA_LOG_WARN("%s: next-layer router predictors: %d in %zu stacks (lookahead %d, %s), training every %d steps, scoring every %d steps (0: off), "
+            "mu %.2f, batches up to %" PRId64 " tokens%s\n", __func__, n_pred, ps->w.size(), ahead, ggml_type_name(wtype), ps->train, ps->score,
             ps->mu, ps->max_batch, loaded ? ", weights loaded" : "");
 }
 
@@ -300,12 +315,20 @@ int llama_pred_ahead() {
     return g_pred ? g_pred->ahead : 0;
 }
 
-ggml_tensor * llama_pred_w(int il, int k) {
+ggml_tensor * llama_pred_w(int il) {
     if (!g_pred) {
         return nullptr;
     }
-    auto it = g_pred->w.find({il, k});
+    auto it = g_pred->w.find(il);
     return it == g_pred->w.end() ? nullptr : it->second;
+}
+
+int llama_pred_nk(int il) {
+    if (!g_pred) {
+        return 0;
+    }
+    auto it = g_pred->nk.find(il);
+    return it == g_pred->nk.end() ? 0 : it->second;
 }
 
 ggml_tensor * llama_pred_mu() {

@@ -2046,14 +2046,15 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     const bool pred_on = llama_pred_ahead() > 0 && probs_in == nullptr && n_tokens <= llama_pred_max_batch();
     ggml_tensor * logits_raw = logits;
     if (pred_on) {
-        for (int k = 1; k <= llama_pred_ahead(); ++k) {
-            ggml_tensor * w = llama_pred_w(il, k);
-            if (!w) {
-                break;
+        if (ggml_tensor * w = llama_pred_w(il)) {
+            // all lookaheads of this layer in one matmul: [n_expert * K, n_tokens]
+            const int K = llama_pred_nk(il);
+            ggml_tensor * p = ggml_mul_mat(ctx0, w, cur);
+            cb(p, "pred_logits_all", il);
+            pred_srcs[il] = { w, cur, p, K, std::vector<ggml_tensor *>(K, nullptr), 0 };
+            for (int k = 1; k <= K; ++k) {
+                pred_todo[il + k].push_back({ il, k });
             }
-            ggml_tensor * p = ggml_mul_mat(ctx0, w, cur); // [n_expert, n_tokens]
-            cb(p, ("pred_logits_k" + std::to_string(k)).c_str(), il);   // one name per lookahead: callbacks can tell them apart
-            pred_todo[il + k].push_back({ w, cur, p, k });
         }
     }
 
@@ -2149,23 +2150,32 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             return ggml_step(ctx0, ggml_scale_bias(ctx0, ggml_sub(ctx0, v, kth), 1.0f, 1e-6f));
         };
         ggml_tensor * real = plain && llama_pred_score_now() ? onehot(selection_probs, selected_experts) : nullptr;
-        for (const auto & e : pred_todo[il]) {
-            if (e.pred->ne[1] != n_tokens) {
-                continue; // the last layer keeps only the output rows
+        for (const auto & [src, k] : pred_todo[il]) {
+            pred_src & s = pred_srcs[src];
+            ggml_tensor * pred = ggml_view_2d(ctx0, s.p, n_expert, s.p->ne[1], s.p->nb[1], (size_t) (k - 1) * n_expert * ggml_element_size(s.p));
+            if (s.p->ne[1] != n_tokens) {
+                s.n_err = -s.K;  // the last layer keeps only the output rows: no update for this source
+                continue;
             }
-            // NLMS: w += mu/|x|^2 * x (x) (logits - pred)
             if (llama_pred_train_now()) {
-                ggml_tensor * err = ggml_sub(ctx0, logits_raw, e.pred);
-                ggml_tensor * nrm = ggml_sum_rows(ctx0, ggml_sqr(ctx0, e.x));                 // [1, n_tokens]
-                ggml_tensor * g   = ggml_mul(ctx0, ggml_div(ctx0, err, nrm), llama_pred_mu());
-                ggml_tensor * dw  = ggml_out_prod(ctx0, e.x, g);                              // [n_embd, n_expert]
-                ggml_build_forward_expand(gf, ggml_cpy(ctx0, ggml_add(ctx0, e.w, dw), e.w));
+                s.err[k - 1] = ggml_sub(ctx0, logits_raw, ggml_cont(ctx0, pred));
+                // after the last target: NLMS on all lookaheads at once, w += mu/|x|^2 * x (x) (logits - pred)
+                if (++s.n_err == s.K) {
+                    ggml_tensor * err = s.err[0];
+                    for (int i = 1; i < s.K; ++i) {
+                        err = ggml_concat(ctx0, err, s.err[i], 0);                        // [n_expert * K, n_tokens]
+                    }
+                    ggml_tensor * nrm = ggml_sum_rows(ctx0, ggml_sqr(ctx0, s.x));             // [1, n_tokens]
+                    ggml_tensor * g   = ggml_mul(ctx0, ggml_div(ctx0, err, nrm), llama_pred_mu());
+                    ggml_tensor * dw  = ggml_out_prod(ctx0, s.x, g);                          // [n_embd, n_expert * K]
+                    ggml_build_forward_expand(gf, ggml_cpy(ctx0, ggml_add(ctx0, s.w, dw), s.w));
+                }
             }
             if (!real) {
                 continue;
             }
             // score the prediction the way this layer selects (gating + selection bias)
-            ggml_tensor * ps = e.pred;
+            ggml_tensor * ps = ggml_cont(ctx0, pred);
             switch (gating_op) {
                 case LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX:       ps = ggml_soft_max(ctx0, ps); break;
                 case LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID:       ps = ggml_sigmoid(ctx0, ps); break;
@@ -2177,7 +2187,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
             ggml_tensor * pids = ggml_argsort_top_k(ctx0, ps, n_expert_used);
             ggml_tensor * hits = ggml_sum(ctx0, ggml_mul(ctx0, onehot(ps, pids), real));
-            ggml_tensor * st   = ggml_view_1d(ctx0, llama_pred_stats(), 1, (e.k - 1)*sizeof(float));
+            ggml_tensor * st   = ggml_view_1d(ctx0, llama_pred_stats(), 1, (k - 1)*sizeof(float));
             ggml_build_forward_expand(gf, ggml_cpy(ctx0, ggml_add(ctx0, st, hits), st));
         }
         pred_todo.erase(il);
