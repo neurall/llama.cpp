@@ -12,7 +12,7 @@ import time
 import numpy as np
 import torch
 
-from common import cli, load, report
+from common import cli, load, report, parse
 
 
 def main():
@@ -22,9 +22,9 @@ def main():
     ap.add_argument("--b", type=float, default=1.0)
     ap.add_argument("--decay", type=float, default=1.0, help="multiply counts by this every token (1: none)")
     ap.add_argument("--no-router", action="store_true")
-    a = ap.parse_args()
+    a = parse(ap)
     d = load(a.data, need_x=not a.no_router)
-    dev = "cuda"
+    dev = a.device
     real, K, E = d["real"].to(dev), d["k"], d["n_expert"]
     NL, T, _ = real.shape
     oh = torch.zeros(NL, T, E, device=dev).scatter_(2, real, 1.0)            # one-hot picks [NL, T, E]

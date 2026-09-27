@@ -93,12 +93,65 @@ def overlap(pred, real):
     return (np.asarray(real)[..., :, None] == np.asarray(pred)[..., None, :]).any(-1).mean(-1)
 
 
+def topk_hit(logits, real):
+    """logits [..., E], real [..., k] ids (torch) -> fraction of real in the predicted top-k, as numpy [...]"""
+    p = torch.topk(logits, real.shape[-1], dim=-1).indices
+    return (p.unsqueeze(-1) == real.unsqueeze(-2)).any(-1).float().mean(-1).cpu().numpy()
+
+
+class Run:
+    """Built-in timer + checkpoint shared by every algo: resume the saved state and stream position, stop after
+    --time-limit seconds, save state, position and the per-token hits accumulated over all runs (so each report
+    shows the whole convergence curve so far). --fresh starts over."""
+
+    def __init__(self, a, algo, T):
+        import time
+        self.a, self.T, self._time = a, T, time.time
+        os.makedirs(a.ckpt_dir, exist_ok=True)
+        self.path = os.path.join(a.ckpt_dir, f"{algo}{a.tag}.{a.data}.pt")
+        self.state, self.start, self.hits = {}, 0, {}
+        if not a.fresh and os.path.exists(self.path):
+            ck = torch.load(self.path, weights_only=False)
+            self.state, self.start, self.hits = ck["state"], ck["pos"] % T, ck["hits"]
+        self.stop = T
+        self.t0 = self._time()
+
+    def expired(self, t):
+        """call at the top of the token loop; True (and records where it stopped) once the time is up"""
+        if self.a.time_limit and t > self.start and t % 16 == 0 and self._time() - self.t0 > self.a.time_limit:
+            self.stop = t
+            return True
+        return False
+
+    def hit(self, name, NL):
+        """the cumulative hit matrix [NL, T] for this name"""
+        if name not in self.hits:
+            self.hits[name] = np.full((NL, self.T), np.nan)
+        return self.hits[name]
+
+    def save(self, **state):
+        torch.save({"state": state, "pos": self.stop % self.T, "hits": self.hits}, self.path)
+
+    def report(self, d):
+        """every hit matrix over all tokens so far, then this run's window alone"""
+        span = f"  (this run: tokens {self.start}-{self.stop} of {self.T}, {self._time() - self.t0:.1f} s)"
+        for name, h in self.hits.items():
+            report(name, h, d["bounds"], span, d["gen"])
+            w = np.full_like(h, np.nan)
+            w[:, self.start:self.stop] = h[:, self.start:self.stop]
+            report(name + " [this run]", w, d["bounds"])
+
+
 def cli(desc):
     import argparse
     ap = argparse.ArgumentParser(description=desc)
     ap.add_argument("--data", default="simcity", choices=list(SETS))
     ap.add_argument("--device", default="cuda", help="cuda (pick the GPU with CUDA_VISIBLE_DEVICES) or cpu")
     ap.add_argument("--threads", type=int, default=4, help="CPU threads (several runs share the 16)")
+    ap.add_argument("--time-limit", type=float, default=20, help="save and exit after N seconds (0: run the whole stream)")
+    ap.add_argument("--ckpt-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ckpt"))
+    ap.add_argument("--tag", default="", help="checkpoint name suffix, to keep variants apart")
+    ap.add_argument("--fresh", action="store_true", help="ignore the checkpoint, start over")
     return ap
 
 

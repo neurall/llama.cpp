@@ -10,7 +10,7 @@ import time
 import numpy as np
 import torch
 
-from common import cli, load, report
+from common import cli, load, report, parse
 
 
 def main():
@@ -18,9 +18,9 @@ def main():
     ap.add_argument("--ahead", type=int, default=3)
     ap.add_argument("--mu", type=float, default=0.5)
     ap.add_argument("--g0", type=float, default=0.0, help="initial gain")
-    a = ap.parse_args()
+    a = parse(ap)
     d = load(a.data, need_x=True)
-    dev = "cuda"
+    dev = a.device
     X, Y, W = d["X"].to(dev).float(), d["Y"].to(dev), d["W"].to(dev)
     real, K = d["real"].to(dev), d["k"]
     NL, T, D = X.shape

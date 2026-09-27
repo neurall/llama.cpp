@@ -10,7 +10,7 @@ import time
 import numpy as np
 import torch
 
-from common import cli, load, report
+from common import cli, load, report, parse
 
 
 def main():
@@ -20,9 +20,9 @@ def main():
     ap.add_argument("--tables", type=int, default=4)
     ap.add_argument("--a", type=float, default=0.3)
     ap.add_argument("--no-router", action="store_true")
-    a = ap.parse_args()
+    a = parse(ap)
     d = load(a.data, need_x=True)
-    dev = "cuda"
+    dev = a.device
     X, W, real, K, E = d["X"], d["W"].to(dev), d["real"].to(dev), d["k"], d["n_expert"]
     NL, T, D = X.shape
     oh = torch.zeros(NL, T, E, device=dev).scatter_(2, real, 1.0)

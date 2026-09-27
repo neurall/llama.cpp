@@ -9,7 +9,7 @@ import time
 
 import numpy as np
 
-from common import cli, load, overlap, report
+from common import cli, load, overlap, report, parse
 
 
 def main():
@@ -17,7 +17,7 @@ def main():
     ap.add_argument("--min-n", type=int, default=1)
     ap.add_argument("--max-n", type=int, default=6)
     ap.add_argument("--decay", type=float, default=1.0, help="count decay per sighting of the same key (1: none)")
-    a = ap.parse_args()
+    a = parse(ap)
     d = load(a.data)
     tokens, real, K, E = d["tokens"].numpy(), d["real"].numpy(), d["k"], d["n_expert"]
     NL, T, _ = real.shape
