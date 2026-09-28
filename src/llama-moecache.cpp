@@ -508,9 +508,14 @@ void upload_slice(ggml_tensor * dst_c, const ggml_tensor * src, int32_t expert, 
     ggml_backend_tensor_set(dst_c, (const char *) src->data + (size_t) expert*sz, (size_t) slot*dst_c->nb[2], sz);
 }
 
+// the device table marks uncached experts -1 instead of the dummy slot when every expert type goes through the
+// quantized mat-vec kernels, which skip negative ids (no read of the dummy slot's weights for every miss)
+bool g_neg_ids = false;
+
 void set_table_entry(llama_moe_cache_layer & pub, int32_t expert, int32_t slot_or_dummy) {
     const int32_t v = slot_or_dummy;
-    ggml_backend_tensor_set(pub.dev_table,  &v, (size_t) expert*sizeof(int32_t), sizeof(int32_t));
+    const int32_t d = g_neg_ids && v == pub.n_slots ? -1 : v;
+    ggml_backend_tensor_set(pub.dev_table,  &d, (size_t) expert*sizeof(int32_t), sizeof(int32_t));
     ggml_backend_tensor_set(pub.host_table, &v, (size_t) expert*sizeof(int32_t), sizeof(int32_t));
 }
 
@@ -735,6 +740,15 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             return;
         }
 
+        {
+            const char * ng = getenv("LLAMA_MOE_CACHE_NEG_IDS");
+            g_neg_ids = !(ng && ng[0] == '0');
+            for (auto & ls : mc->layers) {
+                for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) {
+                    g_neg_ids = g_neg_ids && ggml_is_quantized(t->type);
+                }
+            }
+        }
         // init LRU state + tables (everything uncached -> dummy slot n_slots)
         size_t vram = 0;
         for (auto & ls : mc->layers) {
@@ -758,7 +772,8 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             ls.adopt_mask.assign(n_expert, 0);
 
             std::vector<int32_t> dummy(n_expert, ns);
-            ggml_backend_tensor_set(ls.pub.dev_table,  dummy.data(), 0, n_expert*sizeof(int32_t));
+            const std::vector<int32_t> dev_dummy(n_expert, g_neg_ids ? -1 : ns);
+            ggml_backend_tensor_set(ls.pub.dev_table,  dev_dummy.data(), 0, n_expert*sizeof(int32_t));
             ggml_backend_tensor_set(ls.pub.host_table, dummy.data(), 0, n_expert*sizeof(int32_t));
 
             mc->by_up_src[ls.pub.up_src] = &ls - mc->layers.data();

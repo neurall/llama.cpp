@@ -162,6 +162,9 @@ public:
     // glm5-next, complete pools of kpool consecutive positions per sequence, scored as whole pools.
     uint32_t get_n_kpool    () const; // Padded pool count, where the last pool is always unused.
     uint32_t get_n_kpool_new() const; // Exact count of pools completed by the current ubatch.
+    // Pools the graph pools: at least 1 when the pooled keys are cached, so single-token decode keeps one graph
+    // topology whether or not a pool completes (the extra entry writes the current token's unread pooled slot).
+    uint32_t get_n_kpool_new_graph() const;
     bool get_kpool_cache_safe() const;
     bool get_mtp_dsa_index_share() const;
     size_t get_mtp_dsa_selection_size() const;
