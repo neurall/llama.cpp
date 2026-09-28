@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <pthread.h>
 #include <sched.h>
@@ -23,6 +24,13 @@ static void pin(int cpu) {
 }
 
 struct matrix { const uint8_t * data; int rows, cols; size_t row_bytes; };
+
+static std::vector<int> cpus(const char * env, const char * def) {
+    const char * v = getenv(env);
+    std::vector<int> r;
+    for (const char * p = v ? v : def; *p; ) { r.push_back(atoi(p)); while (*p && *p != ',') ++p; if (*p) ++p; }
+    return r;
+}
 
 int main() {
     const int n_embd = 4096, n_ff = 2048, n_exp = 64; // 64 experts ~530 MB: far bigger than the 32 MB of L3
@@ -56,15 +64,18 @@ int main() {
                                     { p + 2 * n_ff * rb_up, n_embd, n_ff, rb_dn } };
     };
 
-    const int comp_cpu[6] = { 0, 1, 2, 4, 5, 6 };
+    // L3P_C0 / L3P_C1: compute CPUs on CCX0 / CCX1 (same count), L3P_PF: prefetch CPU on CCX0,CCX1
+    const std::vector<int> c0 = cpus("L3P_C0", "0,1,2"), c1 = cpus("L3P_C1", "4,5,6"), pf = cpus("L3P_PF", "3,7");
+    std::vector<int> comp_cpu = c0; comp_cpu.insert(comp_cpu.end(), c1.begin(), c1.end());
+    const int NT = (int) comp_cpu.size(), per = (int) c0.size();
     std::atomic<int> go{0}, done{0}, stop{0};
     std::atomic<int> cur_e{0};
-    std::vector<double> sink(6);
+    std::vector<double> sink(NT);
     std::vector<std::thread> th;
-    for (int t = 0; t < 6; ++t) {
+    for (int t = 0; t < NT; ++t) {
         th.emplace_back([&, t] {
             pin(comp_cpu[t]);
-            const int ccx = t / 3, lt = t % 3;
+            const int ccx = t / per, lt = t % per;
             int seen = 0;
             while (!stop) {
                 while (go.load() == seen && !stop) {}
@@ -74,7 +85,7 @@ int main() {
                 for (const auto & m : mats(cur_e)) {
                     // CCX half of the rows, then this thread's third of that half
                     const int h0 = ccx * m.rows / 2, h1 = (ccx + 1) * m.rows / 2;
-                    const int r0 = h0 + lt * (h1 - h0) / 3, r1 = h0 + (lt + 1) * (h1 - h0) / 3;
+                    const int r0 = h0 + lt * (h1 - h0) / per, r1 = h0 + (lt + 1) * (h1 - h0) / per;
                     const void * y = m.cols == n_embd ? (const void *) y_up.data() : (const void *) y_dn.data();
                     for (int r = r0; r < r1; ++r) {
                         tt->vec_dot(m.cols, &s, 0, m.data + r * m.row_bytes, 0, y, 0, 1);
@@ -102,7 +113,7 @@ int main() {
             cur_e = e;
             if (mode > 0) {
                 const double t0 = now_us();
-                const int c0 = mode == 1 ? 3 : 7, c1 = mode == 1 ? 7 : 3; // mode 2: each half into the other CCX
+                const int c0 = mode == 1 ? pf[0] : pf[1], c1 = mode == 1 ? pf[1] : pf[0]; // mode 2: each half into the other CCX
                 std::thread p0(prefetch, e, 0, c0), p1(prefetch, e, 1, c1);
                 p0.join(); p1.join();
                 tp += now_us() - t0;
@@ -110,7 +121,7 @@ int main() {
             done = 0;
             const double t0 = now_us();
             go++;
-            while (done.load() < 6) {}
+            while (done.load() < NT) {}
             tc += now_us() - t0;
         }
         printf("%-26s compute %6.0f us/expert = %5.1f GB/s", name, tc / N, exp_bytes / (tc / N) / 1e3);

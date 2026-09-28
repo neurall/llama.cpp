@@ -312,6 +312,11 @@ struct moe_cache {
     bool                    l3_stop = false;
     std::vector<std::thread> l3_thr;
     std::atomic<uint64_t>   l3_n_ex{0}, l3_done{0}, l3_late{0}, l3_dropped{0};
+    // live A/B slices (AUTO_L3): state 0 = off, 1 = on; token time sums per state; decided value
+    int      ab_state = 0, ab_slices = 0, ab_decided = -1;
+    double   ab_sum[2] = { 0, 0 };
+    uint64_t ab_n[2] = { 0, 0 }, ab_since = 0;
+    double   l3pf_set = 0; // the configured L3PF the slices test against 0
     int64_t                 gpu_started = -1; // layer idx whose GPU split may have started this step (mtx)
     int64_t                 last_obs    = -1; // layer idx of the last CPU expert op this step (mtx)
     uint64_t n_pred_up = 0, n_pred_pub = 0, n_pred_used = 0, n_pred_late = 0, n_stream_stale = 0, n_promoted = 0, n_tbp = 0;
@@ -378,7 +383,8 @@ struct knobs_t {
     double gate      = 0;   // uploads wait (up to GATE_MAX_US per tensor) while the CPU computes uncached experts: no DDR4 contention
     double gate_max_us = -1;  // max wait for DDR room per tensor copy; -1: the measured mean layer time
     double big         = 0;    // an expert may only evict one with at most its lifetime use (no weaklings evicting big boys)
-    double l3pf        = 0;    // L3 prefetch: experts per layer (0 off); needs GGML_MOE_CCX_SPLIT=1 and bound OpenMP threads
+    double l3pf        = 0;    // L3 prefetch: experts per layer (0 off); needs GGML_MOE_CCX_SPLIT=<domains> and placed threads
+    double auto_l3     = 0;    // live A/B: alternate L3PF on/off every 64 tokens, keep the faster (the CPU kernel may be compute-bound)
     double tbp         = 0;    // token-boundary prefetch: per early layer, stream up to this many of the last token's misses
     double tbp_layers  = 6;    // ... for the first N MoE layers (their uploads run while the output head, sampling and the
                                //     dense layers keep DDR idle, ~7-10 ms on GLM)
@@ -400,7 +406,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
         { "MARGIN", &knobs_t::margin }, { "BUDGET", &knobs_t::budget }, { "CPU_GBS", &knobs_t::cpu_gbs }, { "LINK", &knobs_t::link },
         { "GATE", &knobs_t::gate }, { "GATE_MAX_US", &knobs_t::gate_max_us }, { "DDR_GBS", &knobs_t::ddr_gbs },
         { "WAIT", &knobs_t::wait }, { "AUTO", &knobs_t::auto_tune },
-        { "BIG", &knobs_t::big }, { "L3PF", &knobs_t::l3pf }, { "TBP", &knobs_t::tbp }, { "TBP_LAYERS", &knobs_t::tbp_layers }, { "CHUNK_KB", &knobs_t::chunk_kb },
+        { "BIG", &knobs_t::big }, { "L3PF", &knobs_t::l3pf }, { "AUTO_L3", &knobs_t::auto_l3 }, { "TBP", &knobs_t::tbp }, { "TBP_LAYERS", &knobs_t::tbp_layers }, { "CHUNK_KB", &knobs_t::chunk_kb },
         { "STREAM", &knobs_t::stream }, { "STREAM_M", &knobs_t::stream_m },
         { "OFFSET", &knobs_t::offset }, { "STREAM_SLOW", &knobs_t::stream_slow },
         { "TRACE", &knobs_t::trace }, { "TRACE_AFTER", &knobs_t::trace_after },
@@ -417,7 +423,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF" }) {
+        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF", "AUTO_L3" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
             }
@@ -1257,7 +1263,7 @@ std::vector<int> l3_prefetch_cpus() {
 // L3 prefetch thread for one CCX (side 0: first half of every expert matrix's rows, side 1: second half, matching
 // GGML_MOE_CCX_SPLIT): waits for the current CPU expert phase to end, then reads the predicted experts' rows
 void l3pf_loop(moe_cache * mc, int side, int n_dom, int cpu) {
-#ifndef _WIN32
+#ifdef __linux__ // ponytail: no pinning on Windows / macOS yet (one unpinned domain; AUTO_L3 turns it off if it doesn't pay)
     if (cpu >= 0) {
         cpu_set_t cs;
         CPU_ZERO(&cs);
@@ -2525,7 +2531,31 @@ void llama_moe_cache_step() {
             if (dt < 5e6) { // ignore idle gaps between requests
                 double & ema = mc->todo.empty() ? mc->step_us_idle : mc->step_us_busy;
                 ema = ema ? 0.9*ema + 0.1*dt : dt;
+                if (knobs().auto_l3 != 0) {
+                    mc->ab_sum[mc->ab_state] += dt;
+                    mc->ab_n[mc->ab_state]++;
+                }
             }
+        }
+        // AUTO_L3: alternate L3PF off/on every 64 tokens; after 8 slices each keep the faster, re-test every 4096 tokens
+        if (knobs().auto_l3 != 0) {
+            if (mc->l3pf_set <= 0) { mc->l3pf_set = knobs().l3pf > 0 ? knobs().l3pf : 2; }
+            if (mc->ab_decided >= 0 && mc->n_steps - mc->ab_since > 4096) {
+                mc->ab_decided = -1; mc->ab_slices = 0; mc->ab_sum[0] = mc->ab_sum[1] = 0; mc->ab_n[0] = mc->ab_n[1] = 0;
+            }
+            if (mc->ab_decided < 0 && mc->n_steps % 64 == 0) {
+                if (++mc->ab_slices >= 16 && mc->ab_n[0] && mc->ab_n[1]) {
+                    const double t0 = mc->ab_sum[0] / mc->ab_n[0], t1 = mc->ab_sum[1] / mc->ab_n[1];
+                    mc->ab_decided = t1 < t0 ? 1 : 0;
+                    mc->ab_since = mc->n_steps;
+                    LLAMA_LOG_WARN("moe-cache: auto L3 prefetch: off %.2f ms/token, on (%g experts) %.2f ms/token -> %s\n",
+                        t0/1e3, mc->l3pf_set, t1/1e3, mc->ab_decided ? "on" : "off");
+                } else {
+                    mc->ab_state ^= 1;
+                }
+            }
+            const int st = mc->ab_decided >= 0 ? mc->ab_decided : mc->ab_state;
+            knobs().l3pf = st ? mc->l3pf_set : 0;
         }
         mc->last_step_us = now;
         const double step_us = std::max(mc->step_us_idle, mc->step_us_busy);
