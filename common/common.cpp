@@ -1515,7 +1515,10 @@ static void common_moe_cache_auto_impl(common_params & params) {
                     cp->mask_valid = true;
                     cp->strict_cpu = true;
                 }
-                if (!getenv("GGML_MOE_CCX_SPLIT")) {
+                // the static per-L3 row split only serves the L3 prefetch: alone it lost 19% on GLM (3700X, fixed rows
+                // per thread lose the dynamic chunking's load balance), while pinning itself was neutral (21.73 vs 21.53)
+                const char * l3pf = getenv("LLAMA_MOE_CACHE_L3PF");
+                if (!getenv("GGML_MOE_CCX_SPLIT") && l3pf && atof(l3pf) > 0) {
 #if defined(_WIN32)
                     _putenv_s("GGML_MOE_CCX_SPLIT", std::to_string(n_dom).c_str());
 #else
