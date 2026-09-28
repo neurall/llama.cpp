@@ -3234,6 +3234,46 @@ static int ggml_cpu_try_fuse_ops(
     return 0;
 }
 
+// GGML_CPU_OP_PROF=1: wall time per node (thread 0, after the node's barrier), summed by op + tensor name stem (the
+// "-<layer>" suffix dropped), top entries printed every 64 graphs
+static int     op_prof_on = -1;
+static struct { char key[64]; double us; int64_t n; } op_prof[256];
+static int     op_prof_n = 0, op_prof_graphs = 0;
+static double  op_prof_total = 0;
+
+static void op_prof_add(const struct ggml_tensor * node, double us) {
+    char key[64];
+    const char * nm = node->name;
+    const char * dash = strrchr(nm, '-');
+    const int stem = dash && dash[1] >= '0' && dash[1] <= '9' ? (int) (dash - nm) : (int) strlen(nm);
+    snprintf(key, sizeof(key), "%s %.*s", ggml_op_desc(node), stem > 40 ? 40 : stem, nm);
+    int i = 0;
+    for (; i < op_prof_n; ++i) {
+        if (strcmp(op_prof[i].key, key) == 0) { break; }
+    }
+    if (i == op_prof_n) {
+        if (op_prof_n == 256) { return; }
+        snprintf(op_prof[i].key, sizeof(op_prof[i].key), "%s", key);
+        op_prof[i].us = 0; op_prof[i].n = 0; op_prof_n++;
+    }
+    op_prof[i].us += us; op_prof[i].n++;
+    op_prof_total += us;
+}
+
+static void op_prof_report(void) {
+    if (++op_prof_graphs % 64 != 0) { return; }
+    // top 15 by time
+    for (int k = 0; k < 15 && k < op_prof_n; ++k) {
+        int b = k;
+        for (int i = k + 1; i < op_prof_n; ++i) { if (op_prof[i].us > op_prof[b].us) { b = i; } }
+        if (b != k) { __typeof__(op_prof[0]) t = op_prof[k]; op_prof[k] = op_prof[b]; op_prof[b] = t; }
+        GGML_LOG_WARN("cpu op prof: %5.1f%% %8.2f ms/graph %6lld x  %s\n", 100*op_prof[k].us/op_prof_total,
+            op_prof[k].us/1e3/64, (long long) op_prof[k].n/64, op_prof[k].key);
+    }
+    GGML_LOG_WARN("cpu op prof: total %.2f ms/graph over the last 64 graphs\n", op_prof_total/1e3/64);
+    op_prof_n = 0; op_prof_total = 0;
+}
+
 static thread_ret_t ggml_graph_compute_thread(void * data) {
     struct ggml_compute_state * state = (struct ggml_compute_state *) data;
     struct ggml_threadpool    * tp    = state->threadpool;
@@ -3261,6 +3301,12 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 #else
     GGML_PRINT_DEBUG("thread #%d compute-start cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
 #endif
+
+    if (op_prof_on < 0) {
+        op_prof_on = getenv("GGML_CPU_OP_PROF") != NULL;
+    }
+    const bool prof = op_prof_on && state->ith == 0;
+    int64_t prof_t = prof ? ggml_time_us() : 0;
 
     for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
         struct ggml_tensor * node = cgraph->nodes[node_n];
@@ -3292,6 +3338,14 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         if (node_n + 1 < cgraph->n_nodes) {
             ggml_barrier(state->threadpool);
         }
+        if (prof) {
+            const int64_t t = ggml_time_us();
+            op_prof_add(node, (double) (t - prof_t));
+            prof_t = t;
+        }
+    }
+    if (prof) {
+        op_prof_report();
     }
 
 #ifdef GGML_USE_OPENMP
