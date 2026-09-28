@@ -31,7 +31,7 @@ int main(int argc, char ** argv) {
             std::vector<std::thread> th;
             for (int t = 0; t < nt; ++t) {
                 th.emplace_back([&, t] {
-                    const size_t s0 = n / nt * t, len = (n / nt) & ~(size_t) 4095;
+                    const size_t len = (n / nt) & ~(size_t) 4095, s0 = len * t; // 4 KB aligned slices (aligned AVX2 loads)
                     uint64_t x = 0;
                     while (!stop) {
                         const uint8_t * p = a + s0;
