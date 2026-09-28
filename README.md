@@ -190,6 +190,15 @@ used less. Decode after the prompt then starts with the prompt's experts in VRAM
 43% -> 55%; prompt processing -1%; short answers and chat unchanged.
 `LLAMA_MOE_CACHE_ADOPT` = share of a layer's slots that one prompt batch may replace (default 1.0, 0 = off).
 
+### GLM-5-next graph reuse
+
+Fixed in release b11399. GLM-5-next's sparse indexer completes a pooled key every second token,
+which changed the compute graph's shape, so decode rebuilt the graph (and lost its CUDA graphs) on
+half the tokens. The pool input now keeps a fixed shape and decode reuses the graph every token.
+GLM-5.3-Flash, 2 GPUs: chat decode 19.98 -> **21.41 t/s (+7.2%)**, perplexity unchanged.
+Also: experts not in VRAM have id -1 and the CUDA MoE kernels skip them. `LLAMA_KPOOL_PAD=0` /
+`LLAMA_MOE_CACHE_NEG_IDS=0` restore the old behaviour; `LLAMA_GRAPH_REUSE_WHY=1` logs graph rebuilds.
+
 ### MTP (multi-token prediction)
 
 Added in release b11327: Qwen3.8-Flash-Next MTP from PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243)
@@ -250,6 +259,7 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   DMA (prompt processing GLM +45%, Qwen +45%); `--load-mode pin` / `mmap` to choose.
 - Persistent hot experts: the cache's usage is saved at shutdown and preloaded at the next start.
 - Prefill preheat: a long prompt's hot experts stay in the cache (device-to-device, no extra PCIe).
+- GLM-5-next decode reuses its compute graph every token (fixed-shape key pool input).
 - Automatic defaults for MoE models bigger than free VRAM (see Run): experts in RAM,
   cache, no repack, `-ub` by VRAM, 32k context, one core per GPU left free.
 - Startup upload-bandwidth probe that sends prompt processing to the fastest-link GPU.
