@@ -330,6 +330,9 @@ struct moe_cache {
     int64_t  lv_slice_n = 0;
     double   lv_slice_sum = 0;
     uint64_t lv_rest_until = 0;
+    uint64_t lv_rest = 0;          // tokens between cycles: doubles while cycles confirm their decisions
+    bool     lv_changed = false;   // a decision in this cycle differs from the previous cycle's
+    std::vector<double> lv_prev;   // previous cycle's decisions per tunable
     std::vector<std::vector<double>> lv_samples;
     bool     last_prefill = false; // the last observed batch was a prompt batch (not a decode token)
     double   ab_sum[2] = { 0, 0 };
@@ -414,7 +417,7 @@ struct knobs_t {
     double stream    = 1e9; // predicted uploads use up to this many stream slots per layer (0: evict cache slots, old path)
     double stream_m  = 12;  // candidates per target layer in stream mode (over-predict; no confidence cut)
     double slotkeep  = 0;   // a prediction may only replace a stream slot holding a lower-scored one of this step
-    double self_tune = 0;   // self-tuner: A/B the streaming knobs one at a time on real decode token time (self_tune())
+    double self_tune = 1;   // self-tuner: A/B the streaming knobs one at a time on real decode token time (self_tune())
     double offset      = 1; // predicted uploads only for layers far enough ahead to land in time on their link
     double stream_slow = 1; // stream onto slow-link (x4) layers too
     double trace       = 0; // LLAMA_MOE_CACHE_TRACE set: record this many steps (re-armed whenever a ctl file sets it)
@@ -2587,17 +2590,29 @@ const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps
 // SELF_TUNE=1: the streaming knobs are found on the running system, one at a time: candidate values alternate every SLICE
 // decode tokens, each slice's mean token time is one sample; a knob is decided when the fastest candidate beats every
 // other by two standard errors (or after MAX_S slices each), then the next knob; the whole cycle repeats after REST
-// tokens so a changed workload is followed. (SLICE, MAX_S, REST, 2 SE are the test's parameters, not tuning thresholds.)
+// tokens so a changed workload is followed (4096, doubling up to 65536 while cycles confirm themselves). SLICE, MAX_S and
+// 2 SE are the test's parameters, not tuning thresholds. On by default; LLAMA_MOE_CACHE_SELF_TUNE=0 / ctl SELF_TUNE=0: off.
 static void self_tune(moe_cache * mc) {
     struct tunable { const char * name; double knobs_t::* f; std::vector<double> vals; };
-    static const std::vector<tunable> T = {
+    // the streaming knobs only matter with the predictor; the swap path's are always live
+    static const std::vector<tunable> T_stream = {
         { "STREAM_M", &knobs_t::stream_m,  { 4, 6, 8, 12 } },
-        { "AUTO",     &knobs_t::auto_tune, { 0, 1, 2 } },
-        { "SLOTKEEP", &knobs_t::slotkeep,  { 0, 1 } },
+        { "AUTO",     &knobs_t::auto_tune, { 0, 1 } },
         { "TBP",      &knobs_t::tbp,       { 0, 2 } },
-        { "GATE",     &knobs_t::gate,      { 0, 3 } },
     };
-    const int64_t SLICE = 36, WARM = 4; const size_t MIN_S = 3, MAX_S = 8; const uint64_t REST = 4096;
+    static const std::vector<tunable> T_swap = {
+        { "GATE",     &knobs_t::gate,      { 0, 3 } },
+        { "WAIT",     &knobs_t::wait,      { 0, 1 } },
+        { "BIG",      &knobs_t::big,       { 0, 1 } },
+    };
+    static const std::vector<tunable> T = [&] {
+        std::vector<tunable> t;
+        if (mc->pred_m > 0 && knobs().stream > 0) { t = T_stream; }
+        t.insert(t.end(), T_swap.begin(), T_swap.end());
+        return t;
+    }();
+    const int64_t SLICE = 36, WARM = 4; const size_t MIN_S = 3, MAX_S = 8;
+    const uint64_t REST_MIN = 4096, REST_MAX = 65536;
     auto begin = [&](int k) {
         mc->lv_k = k; mc->lv_c = 0;
         mc->lv_samples.assign(T[k].vals.size(), {});
@@ -2639,13 +2654,20 @@ static void self_tune(moe_cache * mc) {
             for (size_t c = 0; c < nv; ++c) { res += tr_fmt(" %g:%.2f", t.vals[c], mean[c]/1e3); }
             LLAMA_LOG_WARN("moe-cache: self-tune: %s ms/token%s -> %g (%s, %zu slices each)\n", t.name, res.c_str(), t.vals[b],
                 sure ? "clear" : "best mean", n_min);
+            if (mc->lv_prev.size() != T.size()) { mc->lv_prev.assign(T.size(), -1e300); }
+            mc->lv_changed |= mc->lv_prev[mc->lv_k] != t.vals[b];
+            mc->lv_prev[mc->lv_k] = t.vals[b];
             if (mc->lv_k + 1 < (int) T.size()) {
                 const double keep = knobs().*t.f;
                 begin(mc->lv_k + 1);
                 knobs().*t.f = keep;
             } else {
+                // exploring costs tokens on worse settings: when a cycle confirms the last one, re-check half as often
+                mc->lv_rest = mc->lv_changed ? REST_MIN : std::min(REST_MAX, std::max(REST_MIN, 2*mc->lv_rest));
+                mc->lv_changed = false;
                 mc->lv_k = -1;
-                mc->lv_rest_until = mc->n_steps + REST;
+                mc->lv_rest_until = mc->n_steps + mc->lv_rest;
+                LLAMA_LOG_WARN("moe-cache: self-tune: next check in %llu tokens\n", (unsigned long long) mc->lv_rest);
             }
             return;
         }
