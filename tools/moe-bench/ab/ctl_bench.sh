@@ -41,17 +41,22 @@ req() { python3 -c 'import json,sys; print(json.dumps({"messages":[{"role":"user
 req 64 "Hello, who are you?" > /dev/null
 V=$#
 declare -A sum
+VS=("$@")
+declare -A last
 for r in $(seq $rounds); do
-  line="round $r:"
-  i=0
-  for v in "$@"; do
+  # run order rotates each round (variant i runs at position (i - r + 1) mod V): no variant always runs first or last,
+  # which matters on machines that heat up during a round; each variant keeps its own prompt schedule
+  for j in $(seq 0 $((V-1))); do
+    i=$(( (j + r - 1) % V )); v=${VS[$i]}
     name=${v%%:*}; tr ',' '\n' <<< "${v#*:}" > $CTL
-    p=${P[$(( ( (r-1)/V*V + (r-1+i)%V ) % ${#P[@]} ))]}; i=$((i+1))
+    p=${P[$(( ( (r-1)/V*V + (r-1+i)%V ) % ${#P[@]} ))]}
     req ${WARM:-32} "Say hi in one short sentence." > /dev/null
     t=$(req ${N:-200} "$p" | grep -o '[0-9.]* t/s' | cut -d' ' -f1)
     sum[$name]=$(python3 -c "print(${sum[$name]:-0} + ${t:-0})")
-    line="$line $name $t"
+    last[$name]=$t
   done
+  line="round $r:"
+  for v in "$@"; do name=${v%%:*}; line="$line $name ${last[$name]}"; done
   echo "$line"
 done
 for v in "$@"; do name=${v%%:*}; echo "$name mean $(python3 -c "print(round(${sum[$name]} / $rounds, 2))") t/s"; done
