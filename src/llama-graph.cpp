@@ -2549,13 +2549,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         return experts;
     };
 
-    // 2-GPU prefill (LLAMA_PREFILL_SPLIT=<share of the experts for the second GPU>, big batches, no MoE cache chain): experts
+    // 2-GPU prefill (share of the experts for the second GPU: measured by the MoE cache's prefill tuner, or fixed by
+    // LLAMA_PREFILL_SPLIT; big batches, no MoE cache chain): experts
     // [0, k) run on the first GPU, [k, n_expert) on the second, each streaming its own experts over its own PCIe link;
     // ids outside a GPU's range are -1 (skipped, zero rows) and the two outputs are added
     ggml_backend_t split_gpu[2] = { nullptr, nullptr };
     int64_t split_k = 0;
     if (!mcache && n_tokens >= 32 && sched && !up_exps_b && !gate_exps_b && !down_exps_b && !gate_up_exps_b && loras->empty()) {
-        static const float split_share = [] { const char * e = getenv("LLAMA_PREFILL_SPLIT"); return e ? (float) atof(e) : 0.0f; }();
+        const float split_share = llama_moe_cache_prefill_split(); // LLAMA_PREFILL_SPLIT fixes it, else measured
         if (split_share > 0.0f && split_share < 1.0f) {
             int n_gpu = 0;
             for (int i = 0; i < ggml_backend_sched_get_n_backends(sched) && n_gpu < 2; ++i) {

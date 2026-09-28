@@ -70,6 +70,8 @@ void llama_moe_cache_free();
 // largest batch (tokens) that uses the cache; bigger ones take the stock path
 // (LLAMA_MOE_CACHE_MAX_BATCH, default 31: below the CUDA op-offload threshold)
 int64_t llama_moe_cache_max_batch();
+// 2-GPU prefill: the second GPU's expert share in big batches (0: one GPU), measured by the prefill tuner
+float llama_moe_cache_prefill_split();
 bool    llama_moe_cache_active();
 
 // nullptr when the cache is disabled or this tensor has no cached layer

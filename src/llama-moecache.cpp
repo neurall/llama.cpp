@@ -43,6 +43,10 @@
 // learned predictors: this decode trains them / the current graph was built with the update nodes
 static bool g_pred_train_now = false, g_pred_train_built = false;
 static uint64_t g_pred_epoch = 0, g_pred_epoch_built = 0;   // bumped when a layer's predictor is switched on or off
+// 2-GPU prefill: the second GPU's share of the experts in big batches (0: one GPU); set by the prefill tuner, baked into
+// the graph, so a change bumps the epoch and the next graph is rebuilt
+static float    g_split_share = 0.0f;
+static uint64_t g_split_epoch = 0, g_split_epoch_built = 0;
 
 namespace {
 
@@ -335,6 +339,15 @@ struct moe_cache {
     std::vector<double> lv_prev;   // previous cycle's decisions per tunable
     std::vector<std::vector<double>> lv_samples;
     bool     last_prefill = false; // the last observed batch was a prompt batch (not a decode token)
+    int64_t  last_tokens  = 0;     // its token count
+    bool     prev_prefill = false; // the batch before it was one too (its step time is then pure batch time, no idle gap)
+    // prefill split tuner: candidate shares, per-candidate ubatch throughputs (t/s), the candidate in use, rest period
+    std::vector<float>               ps_vals;
+    std::vector<std::vector<double>> ps_samples;
+    int      ps_c = 0;
+    bool     ps_done = false;
+    int64_t  ps_full = 0;          // largest prompt batch seen: only full batches are compared
+    int      ps_rest = 0, ps_rest_left = 0;
     double   ab_sum[2] = { 0, 0 };
     uint64_t ab_n[2] = { 0, 0 }, ab_since = 0;
     double   l3pf_set = 0; // the configured L3PF the slices test against 0
@@ -769,6 +782,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->last_prefill = prefill;
+    mc->last_tokens  = n_tokens;
     for (int64_t t = 0; t < n_tokens; ++t) {
         if ((int32_t) ls->recent.size() >= mc->window) {
             for (int32_t old : ls->recent.front()) {
@@ -2593,6 +2607,90 @@ const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps
 // other by two standard errors (or after MAX_S slices each), then the next knob; the whole cycle repeats after REST
 // tokens so a changed workload is followed (4096, doubling up to 65536 while cycles confirm themselves). SLICE, MAX_S and
 // 2 SE are the test's parameters, not tuning thresholds. On by default; LLAMA_MOE_CACHE_SELF_TUNE=0 / ctl SELF_TUNE=0: off.
+// 2-GPU prefill split, measured (LLAMA_PREFILL_SPLIT unset): full prompt batches rotate over the candidate shares
+// {0 = one GPU, 0.6 s0, s0, 1.4 s0}, s0 = the slower link's share of the measured link bandwidth; each batch's
+// tokens/s is one sample; decided like the self-tuner (fastest mean beats every other by 2 SE, or after MAX_S
+// batches each), then held for a rest period that doubles while re-checks confirm it. A box where splitting doesn't
+// pay settles on 0.
+static void prefill_split_tune(moe_cache * mc, double batch_us) {
+    static const char * env = getenv("LLAMA_PREFILL_SPLIT");
+    if (env) {
+        g_split_share = (float) atof(env);
+        return;
+    }
+    if (mc->n_links < 2 || batch_us <= 0) {
+        return;
+    }
+    if (mc->ps_vals.empty()) {
+        double fast = 0, slow = 1e30;
+        for (int k = 0; k < mc->n_links; ++k) {
+            if (mc->gbs_link[k] > 0) { fast = std::max(fast, mc->gbs_link[k]); slow = std::min(slow, mc->gbs_link[k]); }
+        }
+        if (fast <= 0 || slow >= 1e30) {
+            return; // no link measurements (probe off): stay on one GPU
+        }
+        const float s0 = (float) (slow / (fast + slow));
+        mc->ps_vals = { 0.0f, 0.6f*s0, s0, std::min(0.5f, 1.4f*s0) };
+        mc->ps_samples.assign(mc->ps_vals.size(), {});
+        mc->ps_c = 0;
+        g_split_share = mc->ps_vals[0]; g_split_epoch++;
+        return; // this batch ran before the tuner started
+    }
+    mc->ps_full = std::max(mc->ps_full, mc->last_tokens);
+    if (mc->last_tokens < mc->ps_full) {
+        return; // a prompt's last, partial batch
+    }
+    if (mc->ps_done) {
+        if (--mc->ps_rest_left > 0) {
+            return;
+        }
+        mc->ps_done = false; // re-check
+        mc->ps_samples.assign(mc->ps_vals.size(), {});
+        mc->ps_c = 0;
+        g_split_share = mc->ps_vals[0]; g_split_epoch++;
+        return;
+    }
+    mc->ps_samples[mc->ps_c].push_back((double) mc->last_tokens / (batch_us / 1e6));
+    const size_t nv = mc->ps_vals.size(), MIN_S = 3, MAX_S = 6;
+    size_t n_min = SIZE_MAX;
+    for (const auto & v : mc->ps_samples) { n_min = std::min(n_min, v.size()); }
+    if (n_min >= MIN_S) {
+        std::vector<double> mean(nv), se(nv);
+        for (size_t c = 0; c < nv; ++c) {
+            const auto & v = mc->ps_samples[c];
+            double m = 0, q = 0;
+            for (double x : v) { m += x; }
+            m /= v.size();
+            for (double x : v) { q += (x - m)*(x - m); }
+            mean[c] = m; se[c] = sqrt(q / (v.size() - 1) / v.size());
+        }
+        size_t b = 0;
+        for (size_t c = 1; c < nv; ++c) { if (mean[c] > mean[b]) { b = c; } }
+        bool sure = true;
+        for (size_t c = 0; c < nv; ++c) {
+            if (c != b && mean[c] + 2*se[c] >= mean[b] - 2*se[b]) { sure = false; }
+        }
+        if (sure || n_min >= MAX_S) {
+            const bool same = g_split_share == mc->ps_vals[b];
+            g_split_share = mc->ps_vals[b]; g_split_epoch++;
+            mc->ps_done = true;
+            mc->ps_rest = mc->ps_rest == 0 ? 64 : (same ? std::min(4096, 2*mc->ps_rest) : 64);
+            mc->ps_rest_left = mc->ps_rest;
+            std::string res;
+            for (size_t c = 0; c < nv; ++c) { res += tr_fmt(" %.2f:%.0f", mc->ps_vals[c], mean[c]); }
+            LLAMA_LOG_WARN("moe-cache: prefill split (second GPU's expert share: prompt t/s)%s -> %.2f (%s), re-check after %d batches\n",
+                res.c_str(), g_split_share, sure ? "clear" : "best mean", mc->ps_rest);
+            return;
+        }
+    }
+    mc->ps_c = (mc->ps_c + 1) % (int) nv;
+    g_split_share = mc->ps_vals[mc->ps_c]; g_split_epoch++;
+}
+
+float llama_moe_cache_prefill_split() {
+    return g_split_share;
+}
+
 // PREDICT switched: every layer's predictor off (or on, until the per-layer miss rule runs again), graph rebuilt once
 static void apply_predict(moe_cache * mc) {
     const bool on = knobs().predict != 0;
@@ -2794,6 +2892,10 @@ void llama_moe_cache_step() {
     {
         std::lock_guard<std::mutex> wlk(mc->wmtx);
         const int64_t now = ggml_time_us();
+        if (mc->last_step_us && mc->last_prefill && mc->prev_prefill) {
+            prefill_split_tune(mc, (double) (now - mc->last_step_us));
+        }
+        mc->prev_prefill = mc->last_prefill;
         if (mc->last_step_us) {
             const double dt = (double) (now - mc->last_step_us);
             if (dt < 5e6) { // ignore idle gaps between requests
@@ -3353,12 +3455,13 @@ bool llama_moe_cache_pred_train_now() {
 }
 
 bool llama_moe_cache_graph_reusable() {
-    return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built;
+    return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built && g_split_epoch == g_split_epoch_built;
 }
 
 void llama_moe_cache_graph_built() {
     g_pred_train_built = g_pred_train_now;
     g_pred_epoch_built = g_pred_epoch;
+    g_split_epoch_built = g_split_epoch;
 }
 
 namespace {
