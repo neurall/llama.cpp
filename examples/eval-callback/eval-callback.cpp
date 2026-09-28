@@ -12,14 +12,15 @@
 #include <vector>
 
 // ROUTER_DUMP=<file>: instead of printing every tensor, append each MoE layer's router input
-// (ffn_norm-<il>) and router logits (ffn_moe_logits*-<il>) as records: u32 name length, name,
+// (ffn_norm-<il>, or attn_post_norm-<il> in the qwen35 graphs) and router logits (ffn_moe_logits*-<il>) as records: u32 name length, name,
 // i64 ne0, i64 ne1, ne0*ne1 f32. Used to measure how well layer L+1's router predicts from layer L.
 static FILE * g_dump = nullptr;
 
 static bool router_dump_cb(struct ggml_tensor * t, bool ask, void * user_data) {
     (void) user_data;
     const bool want = t->type == GGML_TYPE_F32 &&
-        (strncmp(t->name, "ffn_norm-", 9) == 0 || strncmp(t->name, "ffn_moe_logits", 14) == 0);
+        (strncmp(t->name, "ffn_norm-", 9) == 0 || strncmp(t->name, "attn_post_norm-", 15) == 0 ||
+         strncmp(t->name, "ffn_moe_logits", 14) == 0);
     if (ask) {
         return want;
     }
