@@ -23,17 +23,17 @@ memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned
 `llama-server` does by itself when the model fits in RAM; "+ MTP": plus the model's MTP draft head
 (`-md`, automatic draft depth). Multipliers vs stock; best number per row in bold (links to how to reproduce it).
 
-| model | test | stock (b11041) | fork, mmap (b11327-b11367) | fork, mmap + MTP (b11367) | fork, pinned (b11341) | fork, pinned + MTP (b11367) |
+| model | test | stock (b11041) | fork, mmap (b11327-b11367) | fork, mmap + MTP (b11367) | fork, pinned (b11399) | fork, pinned + MTP (b11367) |
 |---|---|---|---|---|---|---|
 | GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB; `llama-server` default: pinned | short: decode | 13.8 | 20.4 (1.48x) | 18.2 (1.32x) ‡ | [**21.1 (1.53x)**](tools/moe-bench/) | 18.2 (1.32x) ‡ |
 | | long: prompt processing † | 217 | 180 (0.83x) | | [**262 (1.21x)**](tools/moe-bench/) ||
-| | long: decode | 12.3 | 15.6 (1.27x) | | [**16.3 (1.33x)**](tools/moe-bench/) ||
+| | long: decode | 12.3 | 15.6 (1.27x) | | [**17.6 (1.43x)**](tools/moe-bench/) ||
 | MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB; `llama-server` default: mmap (bigger than RAM) | short: decode | 4.0 | [**10.1 (2.54x)**](tools/moe-bench/) | no gain ¶ | - (bigger than RAM) | - |
 | | long: prompt processing † | [**136**](tools/moe-bench/) | 133 (0.98x) | | - | - |
 | | long: decode | 4.2 | [**8.3 (1.98x)**](tools/moe-bench/) | | - | - |
-| Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB; `llama-server` default: pinned | short: decode | 27.7 | 47.1 (1.70x) | 58.3 (2.11x) | 46.5 (1.68x) | [**60.4 (2.18x)**](tools/moe-bench/) |
-| | long: prompt processing † | 500 | 372 (0.74x) | 353 (0.71x) | [**538 (1.08x)**](tools/moe-bench/) | 500 (1.00x) |
-| | long: decode | 25.3 | 38.4 (1.52x) | 40.1 (1.59x) § | [**42.3 (1.67x)**](tools/moe-bench/) | 28.0 (1.11x) § |
+| Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB; `llama-server` default: pinned | short: decode | 27.7 | 47.1 (1.70x) | 58.3 (2.11x) | 45.6 (1.65x) | [**60.4 (2.18x)**](tools/moe-bench/) |
+| | long: prompt processing † | 500 | 372 (0.74x) | 353 (0.71x) | [**581 (1.16x)**](tools/moe-bench/) | 500 (1.00x) |
+| | long: decode | 25.3 | 38.4 (1.52x) | 40.1 (1.59x) § | [**42.9 (1.70x)**](tools/moe-bench/) | 28.0 (1.11x) § |
 | Qwen3.8-27B IQ4_NL (dense, fits VRAM), 16 GB | short / long prompt | 44.7 / 1726 | 44.8 / 1811 (no cache needed) | | ||
 | OLMoE-1B-7B Q4_K_M (fits VRAM), 4 GB | short: decode | 504 | 504 (no cache needed) | | ||
 
