@@ -89,6 +89,7 @@ uint64_t ggml_graph_next_uid(void) {
 #include <sys/wait.h>
 #if defined(__linux__)
 #include <sys/prctl.h>
+#include <sys/mman.h>
 #endif
 
 #if defined(__ANDROID__)
@@ -395,7 +396,24 @@ void * ggml_aligned_malloc(size_t size) {
             break;
     }
   #else
+  #if defined(__linux__)
+    // GGML_HUGEPAGES=1: big buffers (model weights loaded without mmap, KV cache) 2 MB aligned and marked for transparent
+    // huge pages (THP mode "madvise"): streaming GBs per token through 4 KB pages costs TLB misses
+    static int hugepages = -1;
+    if (hugepages < 0) {
+        const char * e = getenv("GGML_HUGEPAGES");
+        hugepages = e && atoi(e) != 0;
+    }
+    if (hugepages && size >= (2u << 20)) {
+        alignment = alignment > (2u << 20) ? alignment : (2u << 20);
+    }
+  #endif
     int result = posix_memalign(&aligned_memory, alignment, size);
+  #if defined(__linux__)
+    if (result == 0 && hugepages && size >= (2u << 20)) {
+        madvise(aligned_memory, size, MADV_HUGEPAGE);
+    }
+  #endif
   #endif
     if (result != 0) {
         // Handle allocation failure
