@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -1800,6 +1801,11 @@ static bool ggml_backend_sched_prefetch_init(ggml_backend_sched_t sched, ggml_ba
 }
 
 static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
+    // GGML_SCHED_MMID_DEBUG=1: per graph, bytes of host weights copied per backend (used experts only / whole tensor,
+    // the latter synchronous) and host time blocked in the input-copy synchronizations
+    static const bool mmid_dbg = getenv("GGML_SCHED_MMID_DEBUG") != NULL;
+    double dbg_sub[GGML_SCHED_MAX_BACKENDS] = {}, dbg_full[GGML_SCHED_MAX_BACKENDS] = {};
+    int64_t dbg_sync_in = 0, dbg_sync_ids = 0, dbg_sync_full = 0;
     GGML_ASSERT(sched);
     struct ggml_backend_sched_split * splits = sched->splits;
 
@@ -1967,7 +1973,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
                     ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
                 } else {
+                    const int64_t ts = mmid_dbg ? ggml_time_us() : 0;
                     ggml_backend_synchronize(split_backend);
+                    if (mmid_dbg) { dbg_sync_in += ggml_time_us() - ts; }
                 }
 
                 // mindcontrol-port: full-tensor prefetch for MoE expert weights during prefill.
@@ -2044,7 +2052,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     if (ids_tensor != prev_ids_tensor) {
                         ids.resize(ggml_nbytes(ids_tensor) / sizeof(int32_t));
                         ggml_backend_tensor_get_async(ids_backend, ids_tensor, ids.data(), 0, ggml_nbytes(ids_tensor));
+                        const int64_t ts = mmid_dbg ? ggml_time_us() : 0;
                         ggml_backend_synchronize(ids_backend);
+                        if (mmid_dbg) { dbg_sync_ids += ggml_time_us() - ts; }
 
                         // let an expert cache see which experts offloaded batches use
                         void * obs_ud = NULL;
@@ -2134,6 +2144,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     if (first_id >= 0) {
                         copy_experts(first_id, last_id);
                     }
+                    if (mmid_dbg) {
+                        int n_used = 0;
+                        for (int32_t id = 0; id < n_expert; ++id) { n_used += ggml_bitset_get(used_ids.data(), id); }
+                        dbg_sub[split_backend_id] += (double) n_used * expert_size;
+                    }
 
                     // the used experts are on the device now: let the expert cache keep some of
                     // them (device-to-device, queued after the copies above on the same stream)
@@ -2166,6 +2181,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             d2h_pending.push_back(input_backend);
                         }
                     } else if (!split_backend->iface.cpy_tensor_async || !split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
+                        const int64_t ts = mmid_dbg ? ggml_time_us() : 0;
+                        if (mmid_dbg && input->buffer && ggml_backend_buffer_is_host(input->buffer) &&
+                                ggml_backend_buffer_get_usage(input->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
+                            dbg_full[split_backend_id] += (double) ggml_nbytes(input);
+                        }
+                        struct dbg_t { bool on; int64_t ts; int64_t * acc; ~dbg_t() { if (on) { *acc += ggml_time_us() - ts; } } } dbg_scope { mmid_dbg, ts, &dbg_sync_full };
                         ggml_backend_synchronize(input_backend);
                         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
                             ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
@@ -2291,6 +2312,19 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
     }
 
+    if (mmid_dbg) {
+        std::string per;
+        for (int b = 0; b < sched->n_backends; ++b) {
+            if (dbg_sub[b] > 0 || dbg_full[b] > 0) {
+                per += " " + std::string(ggml_backend_name(sched->backends[b])) + ": used experts " + std::to_string((int) (dbg_sub[b] / 1e6)) +
+                       " MB, whole tensors " + std::to_string((int) (dbg_full[b] / 1e6)) + " MB;";
+            }
+        }
+        if (!per.empty()) {
+            GGML_LOG_WARN("sched: host weights copied%s host sync ms: before inputs %.0f, ids %.0f, whole-tensor copies %.0f\n",
+                per.c_str(), dbg_sync_in / 1e3, dbg_sync_ids / 1e3, dbg_sync_full / 1e3);
+        }
+    }
     return GGML_STATUS_SUCCESS;
 }
 
