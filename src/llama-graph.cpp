@@ -2549,47 +2549,62 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         return experts;
     };
 
-    // 2-GPU prefill (share of the experts for the second GPU: measured by the MoE cache's prefill tuner, or fixed by
-    // LLAMA_PREFILL_SPLIT; big batches, no MoE cache chain): experts
-    // [0, k) run on the first GPU, [k, n_expert) on the second, each streaming its own experts over its own PCIe link;
-    // ids outside a GPU's range are -1 (skipped, zero rows) and the two outputs are added
-    ggml_backend_t split_gpu[2] = { nullptr, nullptr };
-    int64_t split_k = 0;
+    // multi-GPU prefill (big batches, no MoE cache chain): the routed experts are split over the GPUs in contiguous id
+    // ranges, each GPU streams its own range over its own PCIe link and computes it; ids outside a GPU's range are -1
+    // (skipped, zero rows); each GPU weights and sums its experts and the partial outputs are added. Shares:
+    // (1 - alpha) * [fastest link] + alpha * (link GB/s / sum), alpha measured by the MoE cache's prefill tuner
+    // (1 = all GPUs by bandwidth, 0 = fastest only) or fixed by LLAMA_PREFILL_SPLIT
+    struct split_part { ggml_backend_t b; double gbs; int64_t lo, hi; };
+    std::vector<split_part> parts;
     if (!mcache && n_tokens >= 32 && sched && !up_exps_b && !gate_exps_b && !down_exps_b && !gate_up_exps_b && loras->empty()) {
-        const float split_share = llama_moe_cache_prefill_split(); // LLAMA_PREFILL_SPLIT fixes it, else measured
-        if (split_share > 0.0f && split_share < 1.0f) {
-            int n_gpu = 0;
-            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched) && n_gpu < 2; ++i) {
+        const float alpha = llama_moe_cache_prefill_alpha();
+        if (alpha > 0.0f) {
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
                 ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
-                if (ggml_backend_dev_type(ggml_backend_get_device(b)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
-                    split_gpu[n_gpu++] = b;
+                ggml_backend_dev_t d = ggml_backend_get_device(b);
+                if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                    const double g = llama_moe_cache_link_gbs(d);
+                    if (g > 0) { parts.push_back({ b, g, 0, 0 }); }
                 }
             }
-            split_k = (int64_t) llroundf((1.0f - split_share) * (float) n_expert);
-            if (n_gpu < 2 || split_k <= 0 || split_k >= n_expert) {
-                split_gpu[0] = split_gpu[1] = nullptr;
+            if (parts.size() >= 2) {
+                double sum = 0; size_t fast = 0;
+                for (size_t i = 0; i < parts.size(); ++i) { sum += parts[i].gbs; if (parts[i].gbs > parts[fast].gbs) { fast = i; } }
+                // slowest first: their chains are issued first, so they stream while the faster GPUs work
+                const ggml_backend_t fast_b = parts[fast].b;
+                std::sort(parts.begin(), parts.end(), [](const split_part & x, const split_part & y) { return x.gbs < y.gbs; });
+                int64_t lo = 0;
+                std::vector<split_part> kept;
+                for (size_t i = 0; i < parts.size(); ++i) {
+                    const double share = (1.0 - alpha) * (parts[i].b == fast_b) + alpha * parts[i].gbs / sum;
+                    const int64_t hi = i + 1 == parts.size() ? n_expert : std::min<int64_t>(n_expert, lo + llround(share * n_expert));
+                    if (hi > lo) { kept.push_back({ parts[i].b, parts[i].gbs, lo, hi }); }
+                    lo = hi;
+                }
+                parts = kept;
+            }
+            if (parts.size() < 2) {
+                parts.clear();
             }
         }
     }
     ggml_tensor * experts = nullptr;
-    if (split_gpu[1]) {
-        // ids >= k -> m = 1 (clamp(id - k + 1, 0, 1) on the integer-valued floats); kept ids stay, others become -1
+    if (!parts.empty()) {
+        // id in [lo, hi) -> kept, else -1 (on the integer-valued floats: clamp(id - lo + 1, 0, 1) * clamp(hi - id, 0, 1))
         ggml_tensor * f  = ggml_cast(ctx0, ggml_cont(ctx0, selected_experts), GGML_TYPE_F32);
-        ggml_tensor * mb = ggml_clamp(ctx0, ggml_scale_bias(ctx0, f, 1.0f, (float) (1 - split_k)), 0.0f, 1.0f);
-        ggml_tensor * ma = ggml_scale_bias(ctx0, mb, -1.0f, 1.0f);
         ggml_tensor * f1 = ggml_scale_bias(ctx0, f, 1.0f, 1.0f);
-        ggml_tensor * ids_a = ggml_cast(ctx0, ggml_scale_bias(ctx0, ggml_mul(ctx0, ma, f1), 1.0f, -1.0f), GGML_TYPE_I32);
-        ggml_tensor * ids_b = ggml_cast(ctx0, ggml_scale_bias(ctx0, ggml_mul(ctx0, mb, f1), 1.0f, -1.0f), GGML_TYPE_I32);
-        cb(ids_a, "ffn_moe_ids_gpu0", il);
-        cb(ids_b, "ffn_moe_ids_gpu1", il);
-        // both id sets before either chain: the scheduler copies only the used experts of a host weight when the
-        // MUL_MAT_ID is the first node of its split (the ids must exist before the split starts); left for later,
-        // ids_a's ops would open the first GPU's split and it would copy every expert
-        ggml_build_forward_expand(gf, ids_a);
-        ggml_build_forward_expand(gf, ids_b);
-        // each GPU weights and sums its experts ([n_embd, n_tokens] crosses between the GPUs, not
-        // [n_embd, n_expert_used, n_tokens]); chain B is built first so the second GPU streams and computes its share
-        // while the first one works on its own
+        std::vector<ggml_tensor *> ids(parts.size());
+        for (size_t i = 0; i < parts.size(); ++i) {
+            ggml_tensor * m = ggml_mul(ctx0,
+                ggml_clamp(ctx0, ggml_scale_bias(ctx0, f,  1.0f, (float) (1 - parts[i].lo)), 0.0f, 1.0f),
+                ggml_clamp(ctx0, ggml_scale_bias(ctx0, f, -1.0f, (float) parts[i].hi),       0.0f, 1.0f));
+            ids[i] = ggml_cast(ctx0, ggml_scale_bias(ctx0, ggml_mul(ctx0, m, f1), 1.0f, -1.0f), GGML_TYPE_I32);
+            cb(ids[i], "ffn_moe_ids_part", il);
+            // all id sets before any chain: the scheduler copies only the used experts of a host weight when the
+            // MUL_MAT_ID is the first node of its split (the ids must exist before the split starts)
+            ggml_build_forward_expand(gf, ids[i]);
+        }
+        // each GPU weights and sums its experts ([n_embd, n_tokens] crosses between the GPUs, not [n_embd, n_expert_used, n_tokens])
         auto reduce = [&](ggml_tensor * e, ggml_backend_t b) {
             if (!weight_before_ffn) {
                 e = ggml_mul(ctx0, e, weights);
@@ -2606,12 +2621,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
             return sum;
         };
-        mm_id_backend = split_gpu[1];
-        ggml_tensor * pb = reduce(expert_chain(cur, ids_b), split_gpu[1]);
-        mm_id_backend = split_gpu[0];
-        ggml_tensor * pa = reduce(expert_chain(cur, ids_a), split_gpu[0]);
-        mm_id_backend = nullptr;
-        ggml_tensor * moe_out = ggml_add(ctx0, pb, pa);
+        ggml_tensor * moe_out = nullptr;
+        for (size_t i = 0; i < parts.size(); ++i) {
+            mm_id_backend = parts[i].b;
+            ggml_tensor * p = reduce(expert_chain(cur, ids[i]), parts[i].b);
+            mm_id_backend = nullptr;
+            ggml_build_forward_expand(gf, p); // in this order: slowest link's chain issued first
+            moe_out = moe_out ? ggml_add(ctx0, moe_out, p) : p;
+        }
         cb(moe_out, "ffn_moe_out", il);
         return moe_out;
     } else {
