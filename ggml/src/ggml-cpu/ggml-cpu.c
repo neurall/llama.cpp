@@ -1774,21 +1774,24 @@ static void ggml_compute_forward_mul_mat_id_impl(
 
         atomic_int * current_chunk_ctr = (atomic_int *)(atomic_current_chunk + cur_a);
 
-        // GGML_MOE_CCX_SPLIT=1, MoE-cache host experts only: fixed rows per thread instead of dynamic chunks. The first
+        // GGML_MOE_CCX_SPLIT=D (L3 domains), MoE-cache host experts only: fixed rows per thread instead of dynamic chunks. The first
         // half of the threads computes the first half of the rows, the rest the second half, so with threads bound per
         // CCX (OMP_PLACES) each half is read by one L3, which a prefetch thread on that CCX can warm beforehand
         static int ccx_split = -1;
         if (ccx_split < 0) {
             const char * e = getenv("GGML_MOE_CCX_SPLIT");
-            ccx_split = e && atoi(e) != 0;
+            ccx_split = e ? atoi(e) : 0;
         }
-        if (ccx_split && dst->src[3] && nth >= 2) {
-            const int     half = nth / 2;
-            const int     side = ith < half ? 0 : 1;
-            const int     lt   = side ? ith - half : ith;
-            const int     nt   = side ? nth - half : half;
-            const int64_t h0   = side ? nr0 / 2 : 0;
-            const int64_t h1   = side ? nr0 : nr0 / 2;
+        if (ccx_split > 0 && dst->src[3] && nth >= ccx_split) {
+            // GGML_MOE_CCX_SPLIT=D: D L3 domains; threads [d*nth/D, (d+1)*nth/D) compute rows [d*nr0/D, (d+1)*nr0/D)
+            const int     D    = ccx_split;
+            const int     side = ith * D / nth;
+            const int     t0   = (side * nth + D - 1) / D;
+            const int     t1   = ((side + 1) * nth + D - 1) / D;
+            const int     lt   = ith - t0;
+            const int     nt   = t1 - t0;
+            const int64_t h0   = nr0 * side / D;
+            const int64_t h1   = nr0 * (side + 1) / D;
             const int64_t r0   = h0 + (h1 - h0) * lt / nt;
             const int64_t r1   = h0 + (h1 - h0) * (lt + 1) / nt;
             if (r0 < r1) {

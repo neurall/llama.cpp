@@ -1808,6 +1808,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     std::vector<ggml_bitset_t> used_ids;
 
     int prev_backend_id = -1;
+    std::vector<ggml_backend_t> d2h_pending; // GGML_SCHED_D2H_ASYNC: GPU backends with async input fetches to wait for
 
     // GGML_SCHED_PROF=1: host-side time per graph, averaged over 64 graphs:
     // waiting before CPU/GPU splits (barriers, input copies = syncs), CPU split
@@ -2151,7 +2152,18 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 } else {
                     // try async copy, but if not possible, we can still use a sync copy without synchronizing the dst backend, since we handle the synchronization here with multiple copies and events
                     // TODO: add public function to facilitate this, since applications do not have direct access to the backend interface
-                    if (!split_backend->iface.cpy_tensor_async || !split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
+                    // GGML_SCHED_D2H_ASYNC=1: a CPU split's inputs from a GPU are fetched async (ordered after their
+                    // producers on that GPU's stream) and each source backend is synced once below, instead of a
+                    // synchronous copy + sync per input tensor
+                    static const bool d2h_async = getenv("GGML_SCHED_D2H_ASYNC") && atoi(getenv("GGML_SCHED_D2H_ASYNC")) != 0;
+                    if (d2h_async && input_cpy->buffer && ggml_backend_buffer_is_host(input_cpy->buffer) &&
+                            ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU &&
+                            input_backend->iface.get_tensor_async && ggml_is_contiguous(input) && ggml_is_contiguous(input_cpy)) {
+                        ggml_backend_tensor_get_async(input_backend, input, input_cpy->data, 0, ggml_nbytes(input));
+                        if (std::find(d2h_pending.begin(), d2h_pending.end(), input_backend) == d2h_pending.end()) {
+                            d2h_pending.push_back(input_backend);
+                        }
+                    } else if (!split_backend->iface.cpy_tensor_async || !split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
                         ggml_backend_synchronize(input_backend);
                         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
                             ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
@@ -2163,6 +2175,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 }
             }
         }
+
+        for (ggml_backend_t b : d2h_pending) {
+            ggml_backend_synchronize(b);
+        }
+        d2h_pending.clear();
 
         if (prof) {
             p_t1 = ggml_time_us();
