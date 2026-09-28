@@ -30,6 +30,14 @@
 #include <sys/mman.h>
 #include <pthread.h>
 #include <sched.h>
+#else
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 
 // learned predictors: this decode trains them / the current graph was built with the update nodes
@@ -1213,15 +1221,42 @@ void resource_probe(moe_cache * mc) {
         n_cpu, cpu_alone, links.c_str(), cpu_mixed, knobs().ddr_gbs);
 }
 
-std::vector<int> l3_prefetch_cpus() {
-    std::vector<int> out;
-#ifdef __linux__
-    auto read = [](const std::string & path) {
-        std::ifstream f(path);
-        std::string v;
-        std::getline(f, v);
-        return v;
-    };
+// physical cores (first SMT thread of each) per L3 domain, domains in order of their first CPU; empty if unknown
+std::vector<std::vector<int>> l3_domain_cores() {
+    std::vector<std::vector<int>> dom;
+#if defined(_WIN32)
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationAll, nullptr, &len);
+    std::vector<char> buf(len);
+    if (len == 0 || !GetLogicalProcessorInformationEx(RelationAll, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) buf.data(), &len)) {
+        return dom;
+    }
+    std::vector<KAFFINITY> l3, cores; // processor group 0 only (<= 64 logical CPUs)
+    for (DWORD off = 0; off < len; ) {
+        auto * e = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) (buf.data() + off);
+        if (e->Relationship == RelationCache && e->Cache.Level == 3 && e->Cache.GroupMask.Group == 0) {
+            l3.push_back(e->Cache.GroupMask.Mask);
+        }
+        if (e->Relationship == RelationProcessorCore && e->Processor.GroupMask[0].Group == 0) {
+            cores.push_back(e->Processor.GroupMask[0].Mask);
+        }
+        off += e->Size;
+    }
+    for (KAFFINITY m : l3) {
+        std::vector<int> d;
+        for (KAFFINITY c : cores) {
+            if (c != 0 && (c & m) == c) {
+                int first = 0;
+                while (!((c >> first) & 1)) { ++first; }
+                d.push_back(first);
+            }
+        }
+        std::sort(d.begin(), d.end());
+        if (!d.empty()) { dom.push_back(d); }
+    }
+    std::sort(dom.begin(), dom.end());
+#elif defined(__linux__)
+    auto read = [](const std::string & path) { std::ifstream f(path); std::string v; std::getline(f, v); return v; };
     auto parse = [](const std::string & list) {
         std::vector<int> r;
         size_t i = 0;
@@ -1241,21 +1276,24 @@ std::vector<int> l3_prefetch_cpus() {
     std::vector<std::string> seen;
     for (int cpu = 0; cpu < 1024; ++cpu) {
         const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(cpu);
+        const std::string sib = read(base + "/topology/thread_siblings_list");
+        if (sib.empty()) { break; }
+        const std::vector<int> sl = parse(sib);
+        if (sl.empty() || sl[0] != cpu) { continue; }
         const std::string l3 = read(base + "/cache/index3/shared_cpu_list");
-        if (l3.empty()) {
-            if (read(base + "/topology/core_id").empty()) break; // no such CPU
-            continue;
-        }
-        if (std::find(seen.begin(), seen.end(), l3) != seen.end()) continue;
-        seen.push_back(l3);
-        int best = -1;
-        for (int c : parse(l3)) {
-            const std::vector<int> sib = parse(read("/sys/devices/system/cpu/cpu" + std::to_string(c) + "/topology/thread_siblings_list"));
-            if (!sib.empty() && sib[0] == c) best = std::max(best, c); // first SMT thread of its core
-        }
-        if (best >= 0) out.push_back(best);
+        auto it = std::find(seen.begin(), seen.end(), l3);
+        if (it == seen.end()) { seen.push_back(l3); dom.emplace_back(); it = seen.end() - 1; }
+        dom[it - seen.begin()].push_back(cpu);
     }
 #endif
+    return dom;
+}
+
+std::vector<int> l3_prefetch_cpus() {
+    std::vector<int> out;
+    for (const auto & d : l3_domain_cores()) {
+        out.push_back(d.back()); // the domain's highest physical core
+    }
     if (out.empty()) out.push_back(-1);
     return out;
 }
@@ -1263,14 +1301,18 @@ std::vector<int> l3_prefetch_cpus() {
 // L3 prefetch thread for one CCX (side 0: first half of every expert matrix's rows, side 1: second half, matching
 // GGML_MOE_CCX_SPLIT): waits for the current CPU expert phase to end, then reads the predicted experts' rows
 void l3pf_loop(moe_cache * mc, int side, int n_dom, int cpu) {
-#ifdef __linux__ // ponytail: no pinning on Windows / macOS yet (one unpinned domain; AUTO_L3 turns it off if it doesn't pay)
+#if defined(__linux__)
     if (cpu >= 0) {
         cpu_set_t cs;
         CPU_ZERO(&cs);
         CPU_SET(cpu, &cs);
         pthread_setaffinity_np(pthread_self(), sizeof(cs), &cs);
     }
-#endif
+#elif defined(_WIN32)
+    if (cpu >= 0 && cpu < 64) {
+        SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR) 1 << cpu);
+    }
+#endif // ponytail: macOS has no thread pinning (AUTO_L3 turns the prefetch off if it doesn't pay)
     uint64_t seen = 0;
     volatile uint64_t sink = 0;
     for (;;) {
