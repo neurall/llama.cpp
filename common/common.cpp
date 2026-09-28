@@ -1443,6 +1443,64 @@ static void common_moe_cache_auto_impl(common_params & params) {
             cp->n_threads = std::max(2, cp->n_threads - n_gpu);
         }
     }
+    // resource saturator: compute threads on physical cores only (SMT siblings add no memory bandwidth), filled L3 domain
+    // by domain so each domain's threads compute its rows (GGML_MOE_CCX_SPLIT), leaving each domain's highest core to its
+    // L3 prefetch thread. Linux sysfs; only without a user CPU mask. ponytail: no NUMA-node awareness yet
+#ifdef __linux__
+    if (!params.cpuparams.mask_valid && params.cpuparams.auto_threads && getenv("LLAMA_AUTO_PLACE") && atoi(getenv("LLAMA_AUTO_PLACE")) != 0) {
+        auto rd = [](const std::string & path) { std::ifstream f(path); std::string v; std::getline(f, v); return v; };
+        auto parse = [](const std::string & list) {
+            std::vector<int> r;
+            std::stringstream ss(list);
+            std::string part;
+            while (std::getline(ss, part, ',')) {
+                const size_t d = part.find('-');
+                const int a0 = atoi(part.c_str()), b0 = d == std::string::npos ? a0 : atoi(part.c_str() + d + 1);
+                for (int k = a0; k <= b0; ++k) { r.push_back(k); }
+            }
+            return r;
+        };
+        std::vector<std::vector<int>> dom; // physical cores (first SMT thread) per L3 domain
+        std::vector<std::string> seen;
+        for (int cpu = 0; cpu < GGML_MAX_N_THREADS; ++cpu) {
+            const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(cpu);
+            const std::string sib = rd(base + "/topology/thread_siblings_list");
+            if (sib.empty()) { break; }
+            const std::vector<int> sl = parse(sib);
+            if (sl.empty() || sl[0] != cpu) { continue; }
+            std::string l3 = rd(base + "/cache/index3/shared_cpu_list");
+            auto it = std::find(seen.begin(), seen.end(), l3);
+            if (it == seen.end()) { seen.push_back(l3); dom.emplace_back(); it = seen.end() - 1; }
+            dom[it - seen.begin()].push_back(cpu);
+        }
+        const int n_dom = (int) dom.size();
+        const int nt = params.cpuparams.n_threads;
+        int avail = 0;
+        for (auto & d : dom) { avail += std::max<int>(0, (int) d.size() - 1); }
+        if (n_dom >= 1 && avail >= nt) {
+            // nt threads over the domains, contiguous per domain: domain d gets threads [d*nt/D, (d+1)*nt/D)
+            std::vector<int> places;
+            for (int d = 0; d < n_dom; ++d) {
+                const int want = (d + 1) * nt / n_dom - d * nt / n_dom;
+                for (int i = 0; i < want && i < (int) dom[d].size() - 1; ++i) { places.push_back(dom[d][i]); }
+            }
+            if ((int) places.size() == nt) {
+                for (auto * cp : { &params.cpuparams, &params.cpuparams_batch }) {
+                    std::fill(std::begin(cp->cpumask), std::end(cp->cpumask), false);
+                    for (int c : places) { cp->cpumask[c] = true; }
+                    cp->mask_valid = true;
+                    cp->strict_cpu = true;
+                }
+                if (!getenv("GGML_MOE_CCX_SPLIT")) {
+                    setenv("GGML_MOE_CCX_SPLIT", std::to_string(n_dom).c_str(), 0);
+                }
+                std::string pl;
+                for (int c : places) { pl += " " + std::to_string(c); }
+                LOG_INF("%s: %d compute threads on physical cores%s (%d L3 domains)\n", __func__, nt, pl.c_str(), n_dom);
+            }
+        }
+    }
+#endif
     if (params.n_ctx == 0) {
         params.n_ctx = 32768; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more
     }
