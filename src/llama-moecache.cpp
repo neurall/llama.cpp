@@ -1130,18 +1130,18 @@ double mean_cpu_phase_us(const moe_cache * mc) {
 // same memory decode reads) with CPU threads, DMA-copies them into a still-empty cache slot of every GPU, alone and
 // all at once. Sets CPU_GBS (CPU read rate), DDR_GBS (CPU + all links together) unless given, and seeds each link's
 // GB/s. LLAMA_MOE_CACHE_PROBE=0 skips it.
+std::vector<std::vector<int>> l3_domain_cores();
+
 void resource_probe(moe_cache * mc) {
     const char * pe = getenv("LLAMA_MOE_CACHE_PROBE");
     if ((pe && pe[0] == '0') || mc->layers.empty()) {
         return;
     }
     // physical cores (first SMT thread of each), minus one per link like the default thread count
+    // (Linux sysfs / Windows; other platforms: logical CPU count)
     int n_phys = 0;
-    for (int cpu = 0; cpu < 1024; ++cpu) {
-        std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings_list");
-        if (!f) { break; }
-        std::string v; std::getline(f, v);
-        n_phys += atoi(v.c_str()) == cpu;
+    for (const auto & d : l3_domain_cores()) {
+        n_phys += (int) d.size();
     }
     const int n_cpu = std::max(1, (n_phys > 0 ? n_phys : (int) std::thread::hardware_concurrency()) - mc->n_links);
     // source chunks: whole experts across layers, far more than any L3
