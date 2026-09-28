@@ -41,6 +41,10 @@ req() { python3 -c 'import json,sys; print(json.dumps({"messages":[{"role":"user
 req 64 "Hello, who are you?" > /dev/null
 # PREWARM=n: n long answers first (a self-tuning server converges before it is measured)
 for w in $(seq ${PREWARM:-0}); do req 1500 "${P[$((w % ${#P[@]}))]}" > /dev/null; echo "prewarm $w done"; done
+# PREWARM_UNTIL=<pattern>: keep answering (max 16) until the server log shows it (e.g. a finished self-tune cycle)
+if [ -n "$PREWARM_UNTIL" ]; then
+  for w in $(seq 16); do grep -q "$PREWARM_UNTIL" $R/ctl.log && break; req 1500 "${P[$((w % ${#P[@]}))]}" > /dev/null; echo "prewarm-until $w"; done
+fi
 V=$#
 declare -A sum
 VS=("$@")

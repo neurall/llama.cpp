@@ -2674,10 +2674,17 @@ static void self_tune(moe_cache * mc) {
             if (mc->lv_prev.size() != T.size()) { mc->lv_prev.assign(T.size(), -1e300); }
             mc->lv_changed |= mc->lv_prev[mc->lv_k] != t.vals[b];
             mc->lv_prev[mc->lv_k] = t.vals[b];
-            if (mc->lv_k + 1 < (int) T.size()) {
+            // next tunable; with the predictor off the streaming knobs change nothing: skip them this cycle
+            int next = mc->lv_k + 1;
+            while (next < (int) T.size() && knobs().predict == 0 &&
+                    (T[next].f == &knobs_t::stream_m || T[next].f == &knobs_t::auto_tune || T[next].f == &knobs_t::tbp)) {
+                next++;
+            }
+            if (next < (int) T.size()) {
                 const double keep = knobs().*t.f;
-                begin(mc->lv_k + 1);
+                begin(next);
                 knobs().*t.f = keep;
+                apply_predict(mc);
             } else {
                 // exploring costs tokens on worse settings: when a cycle confirms the last one, re-check half as often
                 mc->lv_rest = mc->lv_changed ? REST_MIN : std::min(REST_MAX, std::max(REST_MIN, 2*mc->lv_rest));
