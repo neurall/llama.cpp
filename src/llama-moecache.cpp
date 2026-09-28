@@ -1130,6 +1130,30 @@ double mean_cpu_phase_us(const moe_cache * mc) {
 // same memory decode reads) with CPU threads, DMA-copies them into a still-empty cache slot of every GPU, alone and
 // all at once. Sets CPU_GBS (CPU read rate), DDR_GBS (CPU + all links together) unless given, and seeds each link's
 // GB/s. LLAMA_MOE_CACHE_PROBE=0 skips it.
+// Helper threads (probe, upload workers, predictor) run anywhere the process may: on Linux a new thread inherits its
+// creator's affinity, and with strict CPU placement ggml pins the main thread to one compute core. Measured with
+// LLAMA_AUTO_PLACE=1 before this: probe CPU 26 instead of 39 GB/s, uploads 12 / 3.4 instead of 24 / 5.2 GB/s.
+// The mask is taken at library load, before any pinning (a user's taskset still applies). Windows threads start with
+// the process mask; other platforms have no thread pinning.
+#if defined(__linux__)
+static cpu_set_t g_proc_mask = [] {
+    cpu_set_t cs;
+    CPU_ZERO(&cs);
+    if (sched_getaffinity(0, sizeof(cs), &cs) != 0) {
+        CPU_ZERO(&cs);
+    }
+    return cs;
+}();
+#endif
+
+void unpin_helper() {
+#if defined(__linux__)
+    if (CPU_COUNT(&g_proc_mask) > 0) {
+        pthread_setaffinity_np(pthread_self(), sizeof(g_proc_mask), &g_proc_mask);
+    }
+#endif
+}
+
 std::vector<std::vector<int>> l3_domain_cores();
 
 void resource_probe(moe_cache * mc) {
@@ -1168,6 +1192,7 @@ void resource_probe(moe_cache * mc) {
         if (cpu) {
             for (int t = 0; t < n_cpu; ++t) {
                 th.emplace_back([&, t] {
+                    unpin_helper();
                     uint64_t x = 0;
                     while (!stop) {
                         const chunk & c = src[next.fetch_add(1) % src.size()];
@@ -1182,6 +1207,7 @@ void resource_probe(moe_cache * mc) {
             for (int k = 0; k < mc->n_links; ++k) {
                 if (link_layer[k] < 0) { continue; }
                 th.emplace_back([&, k] {
+                    unpin_helper();
                     auto & ls = mc->layers[link_layer[k]];
                     size_t i = (size_t) k * 977;
                     while (!stop) {
@@ -1301,6 +1327,7 @@ std::vector<int> l3_prefetch_cpus() {
 // L3 prefetch thread for one CCX (side 0: first half of every expert matrix's rows, side 1: second half, matching
 // GGML_MOE_CCX_SPLIT): waits for the current CPU expert phase to end, then reads the predicted experts' rows
 void l3pf_loop(moe_cache * mc, int side, int n_dom, int cpu) {
+    unpin_helper();
 #if defined(__linux__)
     if (cpu >= 0) {
         cpu_set_t cs;
@@ -1370,6 +1397,7 @@ void l3pf_loop(moe_cache * mc, int side, int n_dom, int cpu) {
 }
 
 void pred_loop(moe_cache * mc) {
+    unpin_helper();
     std::vector<float>   lg;
     std::vector<int32_t> idx;
     for (;;) {
@@ -2093,6 +2121,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
 
         for (size_t w = 0; w < mc->staging.size(); ++w)
         mc->workers.emplace_back([mc, w]() {
+            unpin_helper();
             uint8_t * staging_ptr = mc->staging[w] ? (uint8_t *) ggml_backend_buffer_get_base(mc->staging[w]) : nullptr;
             for (;;) {
                 upload_job j;
