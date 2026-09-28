@@ -215,6 +215,11 @@ struct moe_cache {
     std::deque<upload_job>   todo;
     std::vector<int>         worker_link; // worker -> upload link it serves (layer_state::link), -1: all
     int                      n_links = 1; // GPUs holding cache layers
+    // layer clock (resource saturator deadlines): EMA of the time from layer i's CPU expert op to layer i+1's
+    std::vector<double>      layer_dt;
+    int64_t                  clk_t  = 0;
+    int64_t                  clk_li = -1;
+    uint64_t                 clk_step = 0;
     std::vector<upload_job>  done;
     bool                     stop = false;
     int                      in_flight = 0; // jobs popped by a worker, not yet in done
@@ -857,6 +862,18 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
         mc->last_pred_step[li] = mc->n_steps;
         mc->last_pred_blk[li]  = n_blk;
         mc->last_obs = (int64_t) li;
+        {
+            const int64_t t = ggml_time_us();
+            if (mc->layer_dt.size() != mc->layers.size()) {
+                mc->layer_dt.assign(mc->layers.size(), 0.0);
+            }
+            if (mc->clk_step == mc->n_steps && mc->clk_li == (int64_t) li - 1 && li > 0) {
+                double & d = mc->layer_dt[li - 1];
+                const double dt = (double) (t - mc->clk_t);
+                d = d > 0 ? 0.95*d + 0.05*dt : dt;
+            }
+            mc->clk_t = t; mc->clk_li = (int64_t) li; mc->clk_step = mc->n_steps;
+        }
         if (knobs().l3pf > 0 && !mc->l3_thr.empty()) {
             // top-M predicted experts of layer li+1 that aren't cached (block 0 = one layer ahead)
             auto & tl = mc->layers[li + 1];
@@ -1275,8 +1292,15 @@ void pred_loop(moe_cache * mc) {
                 int32_t n_job = 0;
                 // smart offset: the upload must land before the layer; it is k+1 layers ahead, a layer takes ~token/layers
                 if (knobs().offset != 0 && mc->step_us_idle > 0 && mc->link_us[ls.link] > 0) {
-                    const double layer_us = mc->step_us_idle / (double) mc->layers.size();
-                    if ((double) (k + 1) < std::ceil(mc->link_us[ls.link] / layer_us) + (knobs().auto_tune != 0 ? mc->lead_extra[ls.link] : 0)) {
+                    // time until layer tl's experts are needed: the measured layer clock from the predicting layer on
+                    // (falls back to token time / layers before the clock has samples)
+                    double until = 0;
+                    const double avg = mc->step_us_idle / (double) mc->layers.size();
+                    for (size_t q = r.li; q < tl; ++q) {
+                        until += q < mc->layer_dt.size() && mc->layer_dt[q] > 0 ? mc->layer_dt[q] : avg;
+                    }
+                    const double need = mc->link_us[ls.link] * (1 + (knobs().auto_tune != 0 ? mc->lead_extra[ls.link] : 0));
+                    if (until < need) {
                         mc->n_pred_late += !cand.empty();
                         continue;
                     }
