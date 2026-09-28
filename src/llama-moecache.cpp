@@ -143,6 +143,8 @@ struct layer_state {
     int32_t               n_cache = 0;    // cache slots (the rest stream predicted experts)
     std::vector<uint8_t>  is_stream;      // slot -> holds streamed (predicted) experts, not the cache
     std::vector<int32_t>  stream_slots;   // those slots, round robin
+    std::vector<float>    stream_score;   // slot -> predictor score of the streamed expert (SLOTKEEP)
+    std::vector<uint64_t> stream_step;    // slot -> step it was streamed for
     int32_t               stream_next = 0;
     std::vector<int32_t>  stream_hit;     // experts used from a stream slot this step (promotion candidates)
 
@@ -404,6 +406,7 @@ struct knobs_t {
     double ddr_gbs     = 44;   // tools/moe-bench/ddrbw: CPU + both DMAs together peak at 44-45 GB/s (DDR4-3200 ECC, 2 ch); GATE=3: an upload starts only while DDR demand + its link rate stays under this
     double stream    = 1e9; // predicted uploads use up to this many stream slots per layer (0: evict cache slots, old path)
     double stream_m  = 12;  // candidates per target layer in stream mode (over-predict; no confidence cut)
+    double slotkeep  = 0;   // a prediction may only replace a stream slot holding a lower-scored one of this step
     double offset      = 1; // predicted uploads only for layers far enough ahead to land in time on their link
     double stream_slow = 1; // stream onto slow-link (x4) layers too
     double trace       = 0; // LLAMA_MOE_CACHE_TRACE set: record this many steps (re-armed whenever a ctl file sets it)
@@ -417,7 +420,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
         { "GATE", &knobs_t::gate }, { "GATE_MAX_US", &knobs_t::gate_max_us }, { "DDR_GBS", &knobs_t::ddr_gbs },
         { "WAIT", &knobs_t::wait }, { "AUTO", &knobs_t::auto_tune },
         { "BIG", &knobs_t::big }, { "L3PF", &knobs_t::l3pf }, { "AUTO_L3", &knobs_t::auto_l3 }, { "TBP", &knobs_t::tbp }, { "TBP_LAYERS", &knobs_t::tbp_layers }, { "CHUNK_KB", &knobs_t::chunk_kb },
-        { "STREAM", &knobs_t::stream }, { "STREAM_M", &knobs_t::stream_m },
+        { "STREAM", &knobs_t::stream }, { "STREAM_M", &knobs_t::stream_m }, { "SLOTKEEP", &knobs_t::slotkeep },
         { "OFFSET", &knobs_t::offset }, { "STREAM_SLOW", &knobs_t::stream_slow },
         { "TRACE", &knobs_t::trace }, { "TRACE_AFTER", &knobs_t::trace_after },
     };
@@ -433,7 +436,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF", "AUTO_L3" }) {
+        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF", "AUTO_L3", "SLOTKEEP" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
             }
@@ -1438,6 +1441,7 @@ void pred_loop(moe_cache * mc) {
         const int64_t ne = (int64_t) mc->layers[r.li + 1].expert_slot.size();
         // candidates per predicted layer, nearest first
         std::vector<std::vector<int32_t>> cands(r.n_blk);
+        std::vector<std::vector<float>>   cscore(r.n_blk); // the candidates' predictor scores
         for (int64_t k = 0; k < r.n_blk && r.li + 1 + k < mc->layers.size(); ++k) {
             const size_t tl = r.li + 1 + k;
             auto & ls = mc->layers[tl];
@@ -1471,6 +1475,7 @@ void pred_loop(moe_cache * mc) {
                     }
                     if (std::find(cand.begin(), cand.end(), idx[j]) == cand.end()) {
                         cand.push_back(idx[j]);
+                        cscore[k].push_back(lg[idx[j]]);
                     }
                 }
             }
@@ -1532,7 +1537,9 @@ void pred_loop(moe_cache * mc) {
                     continue;
                 }
                 const int32_t n_ss = knobs().stream > 0 ? std::min<int32_t>((int32_t) knobs().stream, (int32_t) ls.stream_slots.size()) : 0;
-                for (int32_t id : cand) {
+                for (size_t ci = 0; ci < cand.size(); ++ci) {
+                    const int32_t id = cand[ci];
+                    const float   sc = cscore[k][ci];
                     if (n_job >= (n_ss > 0 ? n_ss : mc->pred_max) || n_job >= link_cap) {
                         break;
                     }
@@ -1542,13 +1549,38 @@ void pred_loop(moe_cache * mc) {
                     if (n_ss > 0) {
                         // next free stream slot, round robin; its previous (streamed) expert leaves
                         int32_t slot = -1;
-                        for (int32_t t = 0; t < n_ss && slot < 0; ++t) {
-                            const int32_t sl = ls.stream_slots[ls.stream_next++ % n_ss];
-                            slot = ls.slot_in_flight[sl] ? -1 : sl;
+                        if (knobs().slotkeep != 0) {
+                            // an empty slot or one streamed for an earlier step first, else the lowest-scored one, and only
+                            // if this candidate scores higher (candidates come best first: a refusal ends this layer)
+                            float lo = 0;
+                            for (int32_t t = 0; t < n_ss; ++t) {
+                                const int32_t sl = ls.stream_slots[t];
+                                if (ls.slot_in_flight[sl]) {
+                                    continue;
+                                }
+                                if (ls.slot_expert[sl] < 0 || ls.stream_step[sl] != r.step) {
+                                    slot = sl;
+                                    break;
+                                }
+                                if (slot < 0 || ls.stream_score[sl] < lo) {
+                                    slot = sl;
+                                    lo   = ls.stream_score[sl];
+                                }
+                            }
+                            if (slot >= 0 && ls.slot_expert[slot] >= 0 && ls.stream_step[slot] == r.step && lo >= sc) {
+                                slot = -1;
+                            }
+                        } else {
+                            for (int32_t t = 0; t < n_ss && slot < 0; ++t) {
+                                const int32_t sl = ls.stream_slots[ls.stream_next++ % n_ss];
+                                slot = ls.slot_in_flight[sl] ? -1 : sl;
+                            }
                         }
                         if (slot < 0) {
                             break;
                         }
+                        ls.stream_score[slot] = sc;
+                        ls.stream_step[slot]  = r.step;
                         const int32_t victim = ls.slot_expert[slot];
                         if (victim >= 0) {
                             ls.expert_slot[victim] = -1;
@@ -2077,6 +2109,8 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             const int32_t ns = ls.pub.n_slots;
             ls.n_cache = ns > 2*n_stream ? ns - n_stream : ns;
             ls.is_stream.assign(ns, 0);
+            ls.stream_score.assign(ns, 0.0f);
+            ls.stream_step.assign(ns, 0);
             ls.stream_slots.clear();
             for (int32_t sl = ls.n_cache; sl < ns; ++sl) {
                 ls.is_stream[sl] = 1;
