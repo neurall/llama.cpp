@@ -325,7 +325,7 @@ struct moe_cache {
     // live A/B slices (AUTO_L3): state 0 = off, 1 = on; token time sums per state; decided value
     int      ab_state = 0, ab_slices = 0, ab_decided = -1;
     int      cpu_sat_threads = 0; // startup probe: reader threads that reach 95% of the CPU's RAM read rate
-    // LIVE=1 tuner (live_tune): the knob under test, its candidate in use, the running slice, per-candidate slice means
+    // SELF_TUNE=1 (self_tune): the knob under test, its candidate in use, the running slice, per-candidate slice means
     int      lv_k = -1, lv_c = 0;
     int64_t  lv_slice_n = 0;
     double   lv_slice_sum = 0;
@@ -414,7 +414,7 @@ struct knobs_t {
     double stream    = 1e9; // predicted uploads use up to this many stream slots per layer (0: evict cache slots, old path)
     double stream_m  = 12;  // candidates per target layer in stream mode (over-predict; no confidence cut)
     double slotkeep  = 0;   // a prediction may only replace a stream slot holding a lower-scored one of this step
-    double live      = 0;   // live tuner: A/B the streaming knobs one at a time on real decode token time (live_tune)
+    double self_tune = 0;   // self-tuner: A/B the streaming knobs one at a time on real decode token time (live_tune)
     double offset      = 1; // predicted uploads only for layers far enough ahead to land in time on their link
     double stream_slow = 1; // stream onto slow-link (x4) layers too
     double trace       = 0; // LLAMA_MOE_CACHE_TRACE set: record this many steps (re-armed whenever a ctl file sets it)
@@ -428,7 +428,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
         { "GATE", &knobs_t::gate }, { "GATE_MAX_US", &knobs_t::gate_max_us }, { "DDR_GBS", &knobs_t::ddr_gbs },
         { "WAIT", &knobs_t::wait }, { "AUTO", &knobs_t::auto_tune },
         { "BIG", &knobs_t::big }, { "L3PF", &knobs_t::l3pf }, { "AUTO_L3", &knobs_t::auto_l3 }, { "TBP", &knobs_t::tbp }, { "TBP_LAYERS", &knobs_t::tbp_layers }, { "CHUNK_KB", &knobs_t::chunk_kb },
-        { "STREAM", &knobs_t::stream }, { "STREAM_M", &knobs_t::stream_m }, { "SLOTKEEP", &knobs_t::slotkeep }, { "LIVE", &knobs_t::live },
+        { "STREAM", &knobs_t::stream }, { "STREAM_M", &knobs_t::stream_m }, { "SLOTKEEP", &knobs_t::slotkeep }, { "SELF_TUNE", &knobs_t::self_tune },
         { "OFFSET", &knobs_t::offset }, { "STREAM_SLOW", &knobs_t::stream_slow },
         { "TRACE", &knobs_t::trace }, { "TRACE_AFTER", &knobs_t::trace_after },
     };
@@ -444,7 +444,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF", "AUTO_L3", "SLOTKEEP", "LIVE" }) {
+        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF", "AUTO_L3", "SLOTKEEP", "SELF_TUNE" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
             }
@@ -2584,11 +2584,11 @@ const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps
     return &g_cache->layers[it->second].pub;
 }
 
-// LIVE=1: the streaming knobs are found on the running system, one at a time: candidate values alternate every SLICE
+// SELF_TUNE=1: the streaming knobs are found on the running system, one at a time: candidate values alternate every SLICE
 // decode tokens, each slice's mean token time is one sample; a knob is decided when the fastest candidate beats every
 // other by two standard errors (or after MAX_S slices each), then the next knob; the whole cycle repeats after REST
 // tokens so a changed workload is followed. (SLICE, MAX_S, REST, 2 SE are the test's parameters, not tuning thresholds.)
-static void live_tune(moe_cache * mc) {
+static void self_tune(moe_cache * mc) {
     struct tunable { const char * name; double knobs_t::* f; std::vector<double> vals; };
     static const std::vector<tunable> T = {
         { "STREAM_M", &knobs_t::stream_m,  { 4, 6, 8, 12 } },
@@ -2637,7 +2637,7 @@ static void live_tune(moe_cache * mc) {
             knobs().*t.f = t.vals[b];
             std::string res;
             for (size_t c = 0; c < nv; ++c) { res += tr_fmt(" %g:%.2f", t.vals[c], mean[c]/1e3); }
-            LLAMA_LOG_WARN("moe-cache: live: %s ms/token%s -> %g (%s, %zu slices each)\n", t.name, res.c_str(), t.vals[b],
+            LLAMA_LOG_WARN("moe-cache: self-tune: %s ms/token%s -> %g (%s, %zu slices each)\n", t.name, res.c_str(), t.vals[b],
                 sure ? "clear" : "best mean", n_min);
             if (mc->lv_k + 1 < (int) T.size()) {
                 const double keep = knobs().*t.f;
@@ -2756,7 +2756,7 @@ void llama_moe_cache_step() {
                     mc->ab_sum[mc->ab_state] += dt;
                     mc->ab_n[mc->ab_state]++;
                 }
-                if (knobs().live != 0 && mc->lv_k >= 0 && !mc->last_prefill) {
+                if (knobs().self_tune != 0 && mc->lv_k >= 0 && !mc->last_prefill) {
                     if (++mc->lv_slice_n > 4) { // the first tokens after a switch still run on the previous setting's slots
                         mc->lv_slice_sum += dt;
                     }
@@ -2783,8 +2783,8 @@ void llama_moe_cache_step() {
             const int st = mc->ab_decided >= 0 ? mc->ab_decided : mc->ab_state;
             knobs().l3pf = st ? mc->l3pf_set : 0;
         }
-        if (knobs().live != 0) {
-            live_tune(mc);
+        if (knobs().self_tune != 0) {
+            self_tune(mc);
         }
         mc->last_step_us = now;
         const double step_us = std::max(mc->step_us_idle, mc->step_us_busy);
