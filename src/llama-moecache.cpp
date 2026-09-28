@@ -368,15 +368,15 @@ bool pread_full(int fd, void * dst, size_t n, size_t off) {
 // tunables, from LLAMA_MOE_CACHE_<NAME> at start; with LLAMA_MOE_CACHE_CTL=<file> also re-read from that file
 // (NAME=value lines, checked every 16 steps when it changes) so one server can A/B settings without a reload
 struct knobs_t {
-    double hot_frac  = 0.75;
+    double hot_frac  = 0;     // tier: pin the always-hot set on slower links; off: never won in A/B
     double sticky    = 0.0; // off: +1.6% on GLM chat, within noise
-    double slow_stay = 1024;
+    double slow_stay = 0;     // tier min stay (steps); off: never won in A/B
     double margin    = -1;  // fixed pay-back margin, -1: from upload timing
     double budget    = -1;  // fixed swaps per step, -1: from upload timing
     double cpu_gbs   = 38;  // CPU read rate alone (ddrbw, 6 threads, DDR4-3200 ECC); pay-back margin, DDR demand before measured
     double link      = 1;   // pay-back margin per upload link (0: one margin from the average upload)
     double gate      = 0;   // uploads wait (up to GATE_MAX_US per tensor) while the CPU computes uncached experts: no DDR4 contention
-    double gate_max_us = 2000;
+    double gate_max_us = -1;  // max wait for DDR room per tensor copy; -1: the measured mean layer time
     double big         = 0;    // an expert may only evict one with at most its lifetime use (no weaklings evicting big boys)
     double l3pf        = 0;    // L3 prefetch: experts per layer (0 off); needs GGML_MOE_CCX_SPLIT=1 and bound OpenMP threads
     double tbp         = 0;    // token-boundary prefetch: per early layer, stream up to this many of the last token's misses
@@ -384,7 +384,7 @@ struct knobs_t {
                                //     dense layers keep DDR idle, ~7-10 ms on GLM)
     double auto_tune   = 1;    // adjust stream lead and STREAM_M per link from the measured late share and precision
     double wait        = 1;    // the step waits for queued cache swaps (0: never; finished uploads are published at splits)
-    double chunk_kb    = 0;    // GATE=3: copy in chunks of this size, re-checking the DDR budget before each (0: whole tensor)
+    double chunk_kb    = -1;    // GATE=3: copy in chunks of this size, re-checking the DDR budget before each (0: whole tensor)
     double ddr_gbs     = 44;   // tools/moe-bench/ddrbw: CPU + both DMAs together peak at 44-45 GB/s (DDR4-3200 ECC, 2 ch); GATE=3: an upload starts only while DDR demand + its link rate stays under this
     double stream    = 1e9; // predicted uploads use up to this many stream slots per layer (0: evict cache slots, old path)
     double stream_m  = 12;  // candidates per target layer in stream mode (over-predict; no confidence cut)
@@ -1097,6 +1097,116 @@ bool pred_load(const moe_cache * mc) {
 
 // L3 domains from sysfs (cpuN/cache/index3/shared_cpu_list), in order of first CPU; for each the highest CPU that is
 // the first SMT thread of its core. Linux only; elsewhere (or on failure) one domain, no pinning.
+// measured mean layer time (layer clock), else token time / layers, else 1 ms before anything was measured
+double mean_layer_us(const moe_cache * mc) {
+    double sum = 0; int n = 0;
+    for (double d : mc->layer_dt) { if (d > 0) { sum += d; n++; } }
+    if (n > 0) { return sum / n; }
+    if (mc->step_us_idle > 0 && !mc->layers.empty()) { return mc->step_us_idle / (double) mc->layers.size(); }
+    return 1000.0;
+}
+
+// measured mean CPU expert phase (phase callback), else a quarter layer
+double mean_cpu_phase_us(const moe_cache * mc) {
+    const int64_t n = mc->busy_n;
+    return n > 16 ? (double) mc->busy_us / (double) n : mean_layer_us(mc) / 4;
+}
+
+// resource saturator, startup probe (~0.5 s): measured instead of assumed. Reads the model's expert weights (the
+// same memory decode reads) with CPU threads, DMA-copies them into a still-empty cache slot of every GPU, alone and
+// all at once. Sets CPU_GBS (CPU read rate), DDR_GBS (CPU + all links together) unless given, and seeds each link's
+// GB/s. LLAMA_MOE_CACHE_PROBE=0 skips it.
+void resource_probe(moe_cache * mc) {
+    const char * pe = getenv("LLAMA_MOE_CACHE_PROBE");
+    if ((pe && pe[0] == '0') || mc->layers.empty()) {
+        return;
+    }
+    // physical cores (first SMT thread of each), minus one per link like the default thread count
+    int n_phys = 0;
+    for (int cpu = 0; cpu < 1024; ++cpu) {
+        std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings_list");
+        if (!f) { break; }
+        std::string v; std::getline(f, v);
+        n_phys += atoi(v.c_str()) == cpu;
+    }
+    const int n_cpu = std::max(1, (n_phys > 0 ? n_phys : (int) std::thread::hardware_concurrency()) - mc->n_links);
+    // source chunks: whole experts across layers, far more than any L3
+    struct chunk { const uint8_t * p; size_t n; };
+    std::vector<chunk> src;
+    for (auto & ls : mc->layers) {
+        for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) {
+            if (!ggml_backend_buffer_is_host(t->buffer)) { return; }
+            for (int64_t e = 0; e < t->ne[2]; e += 7) {
+                src.push_back({ (const uint8_t *) t->data + (size_t) e*t->nb[2], t->nb[2] });
+            }
+        }
+    }
+    // one target per link: slot 0 of the first layer on it (empty now; the preload fills it after the probe)
+    std::vector<int> link_layer(mc->n_links, -1);
+    for (size_t li = 0; li < mc->layers.size(); ++li) {
+        if (link_layer[mc->layers[li].link] < 0 && mc->layers[li].pub.n_slots > 0) { link_layer[mc->layers[li].link] = (int) li; }
+    }
+    auto run = [&](bool cpu, bool dma, double secs, double & cpu_gbs, std::vector<double> & link_gbs) {
+        std::atomic<bool> stop{false};
+        std::atomic<size_t> next{0};
+        std::vector<double> got(n_cpu + mc->n_links, 0.0);
+        std::vector<std::thread> th;
+        if (cpu) {
+            for (int t = 0; t < n_cpu; ++t) {
+                th.emplace_back([&, t] {
+                    uint64_t x = 0;
+                    while (!stop) {
+                        const chunk & c = src[next.fetch_add(1) % src.size()];
+                        for (size_t o = 0; o < c.n; o += 64) { x += *(const volatile uint64_t *) (c.p + o); }
+                        got[t] += (double) c.n;
+                    }
+                    got[t] += (double) (x & 1);
+                });
+            }
+        }
+        if (dma) {
+            for (int k = 0; k < mc->n_links; ++k) {
+                if (link_layer[k] < 0) { continue; }
+                th.emplace_back([&, k] {
+                    auto & ls = mc->layers[link_layer[k]];
+                    size_t i = (size_t) k * 977;
+                    while (!stop) {
+                        const ggml_tensor * t = ls.pub.up_src;
+                        const int64_t e = (int64_t) (i++ % (size_t) t->ne[2]);
+                        ggml_backend_tensor_set(ls.pub.up_c, (const uint8_t *) t->data + (size_t) e*t->nb[2], 0, t->nb[2]);
+                        got[n_cpu + k] += (double) t->nb[2];
+                    }
+                });
+            }
+        }
+        const int64_t t0 = ggml_time_us();
+        std::this_thread::sleep_for(std::chrono::duration<double>(secs));
+        stop = true;
+        for (auto & x : th) { x.join(); }
+        const double dt = (double) (ggml_time_us() - t0);
+        cpu_gbs = 0;
+        for (int t = 0; t < n_cpu; ++t) { cpu_gbs += got[t] / dt / 1e3; }
+        link_gbs.assign(mc->n_links, 0.0);
+        for (int k = 0; k < mc->n_links; ++k) { link_gbs[k] = got[n_cpu + k] / dt / 1e3; }
+    };
+    double cpu_alone = 0, cpu_mixed = 0, dummy = 0;
+    std::vector<double> link_alone, link_mixed, tmp;
+    run(true, false, 0.15, cpu_alone, tmp);
+    run(false, true, 0.15, dummy, link_alone);
+    run(true, true, 0.2, cpu_mixed, link_mixed);
+    double total = cpu_mixed;
+    for (double g : link_mixed) { total += g; }
+    if (!getenv("LLAMA_MOE_CACHE_CPU_GBS")) { knobs().cpu_gbs = cpu_alone; }
+    if (!getenv("LLAMA_MOE_CACHE_DDR_GBS")) { knobs().ddr_gbs = std::max(cpu_alone, total); }
+    std::string links;
+    for (int k = 0; k < mc->n_links; ++k) {
+        mc->gbs_link[k] = link_alone[k];
+        links += tr_fmt(" link %d %.1f", k, link_alone[k]);
+    }
+    LLAMA_LOG_WARN("moe-cache: probe (%d CPU threads): CPU %.1f GB/s,%s GB/s alone; together CPU %.1f + links -> RAM budget %.1f GB/s\n",
+        n_cpu, cpu_alone, links.c_str(), cpu_mixed, knobs().ddr_gbs);
+}
+
 std::vector<int> l3_prefetch_cpus() {
     std::vector<int> out;
 #ifdef __linux__
@@ -1170,7 +1280,7 @@ void l3pf_loop(moe_cache * mc, int side, int n_dom, int cpu) {
         }
         // the posting layer's CPU phase still reads DDR: start after it (bounded wait)
         const int64_t t0 = ggml_time_us();
-        while (mc->cpu_busy && ggml_time_us() - t0 < 3000) {
+        while (mc->cpu_busy && ggml_time_us() - t0 < (int64_t) (2*mean_layer_us(mc))) {
             std::this_thread::yield();
         }
         const auto & ls = mc->layers[job.li];
@@ -1986,7 +2096,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     if (knobs().gate >= 3 && mc->ddr_mbs + link_mbs > (int64_t) (knobs().ddr_gbs * 1e3)) {
                         // budget gate: wait until DDR demand leaves room for this copy
                         const int64_t tw = ggml_time_us();
-                        while (mc->ddr_mbs + link_mbs > (int64_t) (knobs().ddr_gbs * 1e3) && ggml_time_us() - tw < (int64_t) knobs().gate_max_us) {
+                        while (mc->ddr_mbs + link_mbs > (int64_t) (knobs().ddr_gbs * 1e3) && ggml_time_us() - tw < (int64_t) (knobs().gate_max_us >= 0 ? knobs().gate_max_us : mean_layer_us(mc))) {
                             std::this_thread::yield();
                         }
                         mc->gate_wait_us += ggml_time_us() - tw;
@@ -2001,7 +2111,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     if ((knobs().gate == 2 || (knobs().gate == 1 && j.stream)) && mc->cpu_busy) {
                         // ponytail: spin-yield; a condition variable if waits get long
                         const int64_t tw = ggml_time_us();
-                        while (mc->cpu_busy && ggml_time_us() - tw < (int64_t) knobs().gate_max_us) {
+                        while (mc->cpu_busy && ggml_time_us() - tw < (int64_t) (knobs().gate_max_us >= 0 ? knobs().gate_max_us : mean_layer_us(mc))) {
                             std::this_thread::yield();
                         }
                         mc->gate_wait_us += ggml_time_us() - tw;
@@ -2015,7 +2125,11 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                         t_read += ggml_time_us() - tr;
                         ggml_backend_tensor_set(dsts[k], staging_ptr, (size_t) j.slot*dsts[k]->nb[2], sz);
                     } else if (ggml_backend_buffer_is_host(srcs[k]->buffer)) {
-                        const size_t ch = knobs().gate >= 3 && knobs().chunk_kb > 0 ? (size_t) knobs().chunk_kb * 1024 : 0;
+                        // chunk: set, or the bytes this link moves in a quarter of the measured mean CPU phase (the budget is
+                        // re-checked ~4 times per phase)
+                        const size_t ch = knobs().gate < 3 || knobs().chunk_kb == 0 ? 0 :
+                            knobs().chunk_kb > 0 ? (size_t) knobs().chunk_kb * 1024 :
+                            (size_t) std::max(64.0*1024, (mc->gbs_link[ls.link] > 0 ? mc->gbs_link[ls.link] : 1.0) * 1e3 * mean_cpu_phase_us(mc) / 4);
                         if (ch == 0 || ch >= sz) {
                             upload_slice(dsts[k], srcs[k], j.expert, j.slot);
                         } else {
@@ -2024,7 +2138,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                             const size_t dst = (size_t) j.slot*dsts[k]->nb[2];
                             for (size_t off = 0; off < sz; off += ch) {
                                 const int64_t tw = ggml_time_us();
-                                while (mc->ddr_mbs > (int64_t) (knobs().ddr_gbs * 1e3) && ggml_time_us() - tw < (int64_t) knobs().gate_max_us) {
+                                while (mc->ddr_mbs > (int64_t) (knobs().ddr_gbs * 1e3) && ggml_time_us() - tw < (int64_t) (knobs().gate_max_us >= 0 ? knobs().gate_max_us : mean_layer_us(mc))) {
                                     std::this_thread::yield();
                                 }
                                 mc->gate_wait_us += ggml_time_us() - tw;
@@ -2108,6 +2222,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
         }
 #endif
+        resource_probe(mc);
         if (const size_t n = profile_preload(mc, model)) {
             LLAMA_LOG_INFO("moe-cache: preloading %zu experts (usage profile)\n", n);
         }
