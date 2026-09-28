@@ -1445,9 +1445,33 @@ static void common_moe_cache_auto_impl(common_params & params) {
     }
     // resource saturator: compute threads on physical cores only (SMT siblings add no memory bandwidth), filled L3 domain
     // by domain so each domain's threads compute its rows (GGML_MOE_CCX_SPLIT), leaving each domain's highest core to its
-    // L3 prefetch thread. Linux sysfs; only without a user CPU mask. ponytail: no NUMA-node awareness yet
-#ifdef __linux__
+    // L3 prefetch thread. Linux sysfs / Windows GetLogicalProcessorInformationEx; only without a user CPU mask (LLAMA_AUTO_PLACE=1).
+    // ponytail: no NUMA-node awareness yet, Windows processor group 0 only
     if (!params.cpuparams.mask_valid && params.cpuparams.auto_threads && getenv("LLAMA_AUTO_PLACE") && atoi(getenv("LLAMA_AUTO_PLACE")) != 0) {
+        std::vector<std::vector<int>> dom; // physical cores (first SMT thread) per L3 domain
+#if defined(_WIN32)
+        DWORD len = 0;
+        GetLogicalProcessorInformationEx(RelationAll, nullptr, &len);
+        std::vector<char> buf(len);
+        if (len && GetLogicalProcessorInformationEx(RelationAll, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) buf.data(), &len)) {
+            std::vector<KAFFINITY> l3, cores; // processor group 0 only (<= 64 logical CPUs)
+            for (DWORD off = 0; off < len; ) {
+                auto * e = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) (buf.data() + off);
+                if (e->Relationship == RelationCache && e->Cache.Level == 3 && e->Cache.GroupMask.Group == 0) { l3.push_back(e->Cache.GroupMask.Mask); }
+                if (e->Relationship == RelationProcessorCore && e->Processor.GroupMask[0].Group == 0) { cores.push_back(e->Processor.GroupMask[0].Mask); }
+                off += e->Size;
+            }
+            for (KAFFINITY m : l3) {
+                std::vector<int> d;
+                for (KAFFINITY c : cores) {
+                    if (c != 0 && (c & m) == c) { int b = 0; while (!((c >> b) & 1)) { ++b; } d.push_back(b); }
+                }
+                std::sort(d.begin(), d.end());
+                if (!d.empty()) { dom.push_back(d); }
+            }
+            std::sort(dom.begin(), dom.end());
+        }
+#elif defined(__linux__)
         auto rd = [](const std::string & path) { std::ifstream f(path); std::string v; std::getline(f, v); return v; };
         auto parse = [](const std::string & list) {
             std::vector<int> r;
@@ -1460,7 +1484,6 @@ static void common_moe_cache_auto_impl(common_params & params) {
             }
             return r;
         };
-        std::vector<std::vector<int>> dom; // physical cores (first SMT thread) per L3 domain
         std::vector<std::string> seen;
         for (int cpu = 0; cpu < GGML_MAX_N_THREADS; ++cpu) {
             const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(cpu);
@@ -1473,6 +1496,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
             if (it == seen.end()) { seen.push_back(l3); dom.emplace_back(); it = seen.end() - 1; }
             dom[it - seen.begin()].push_back(cpu);
         }
+#endif
         const int n_dom = (int) dom.size();
         const int nt = params.cpuparams.n_threads;
         int avail = 0;
@@ -1492,7 +1516,11 @@ static void common_moe_cache_auto_impl(common_params & params) {
                     cp->strict_cpu = true;
                 }
                 if (!getenv("GGML_MOE_CCX_SPLIT")) {
+#if defined(_WIN32)
+                    _putenv_s("GGML_MOE_CCX_SPLIT", std::to_string(n_dom).c_str());
+#else
                     setenv("GGML_MOE_CCX_SPLIT", std::to_string(n_dom).c_str(), 0);
+#endif
                 }
                 std::string pl;
                 for (int c : places) { pl += " " + std::to_string(c); }
@@ -1500,7 +1528,6 @@ static void common_moe_cache_auto_impl(common_params & params) {
             }
         }
     }
-#endif
     if (params.n_ctx == 0) {
         params.n_ctx = 32768; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more
     }
