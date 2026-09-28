@@ -39,6 +39,8 @@ P=(
 req() { python3 -c 'import json,sys; print(json.dumps({"messages":[{"role":"user","content":sys.argv[1]}],"max_tokens":int(sys.argv[2]),"temperature":0,"chat_template_kwargs":{"enable_thinking":False}}))' "$2" "$1" \
   | curl -s localhost:8234/v1/chat/completions -d @- | python3 "$D/tps.py"; }
 req 64 "Hello, who are you?" > /dev/null
+# PREWARM=n: n long answers first (a self-tuning server converges before it is measured)
+for w in $(seq ${PREWARM:-0}); do req 1500 "${P[$((w % ${#P[@]}))]}" > /dev/null; echo "prewarm $w done"; done
 V=$#
 declare -A sum
 VS=("$@")
