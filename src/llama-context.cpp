@@ -470,6 +470,16 @@ llama_context::llama_context(
             LLAMA_LOG_INFO("%s: pipeline parallelism enabled\n", __func__);
         }
 
+        if (cparams.moe_cache) {
+            // multi-GPU prefill split: decided (and reserved) before the first compute-buffer reserve
+            std::vector<ggml_backend_dev_t> gpus;
+            for (auto & backend : backends) {
+                ggml_backend_dev_t d = ggml_backend_get_device(backend.get());
+                if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpus.push_back(d); }
+            }
+            llama_moe_cache_prefill_decide(gpus);
+        }
+
         sched_reserve();
 
         // the expert cache starts on the first non-warmup decode (moe_cache_start), so auto

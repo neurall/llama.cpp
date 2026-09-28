@@ -29,6 +29,8 @@
 
 #include "ggml-backend.h"
 
+#include <vector>
+
 struct llama_model;
 struct ggml_tensor;
 
@@ -76,6 +78,8 @@ int64_t llama_moe_cache_max_batch();
 float llama_moe_cache_prefill_alpha();
 // a GPU's measured upload link GB/s (startup probe, refined by uploads); 0 if unknown
 double llama_moe_cache_link_gbs(ggml_backend_dev_t dev);
+// before the first compute-buffer reserve: time each GPU's host link, reserve the prefill split only when it can pay
+void llama_moe_cache_prefill_decide(const std::vector<ggml_backend_dev_t> & gpus);
 bool    llama_moe_cache_active();
 
 // nullptr when the cache is disabled or this tensor has no cached layer

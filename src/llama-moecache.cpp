@@ -47,6 +47,8 @@ static uint64_t g_pred_epoch = 0, g_pred_epoch_built = 0;   // bumped when a lay
 // the graph, so a change bumps the epoch and the next graph is rebuilt
 static float    g_split_share = 0.0f; // alpha: 1 = all GPUs by link bandwidth, 0 = fastest GPU only
 static uint64_t g_split_epoch = 0, g_split_epoch_built = 0;
+static bool     g_split_enabled = false; // the compute buffers were reserved for a split (decided before the first reserve)
+static std::vector<std::pair<ggml_backend_dev_t, double>> g_early_gbs; // early link probe, until the cache's own probe
 
 namespace {
 
@@ -2616,9 +2618,8 @@ const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps
 // confirm it). Works for any GPU count and link widths; a box where splitting doesn't pay ends at 0.
 static void prefill_split_tune(moe_cache * mc, double batch_us) {
     static const char * env = getenv("LLAMA_PREFILL_SPLIT");
-    if (env) {
-        g_split_share = (float) atof(env);
-        return;
+    if (env || !g_split_enabled) {
+        return; // fixed by LLAMA_PREFILL_SPLIT, or the buffers weren't reserved for a split
     }
     int n_known = 0;
     for (int k = 0; k < mc->n_links; ++k) { n_known += mc->gbs_link[k] > 0 && mc->link_dev[k]; }
@@ -2697,15 +2698,66 @@ float llama_moe_cache_prefill_alpha() {
 
 double llama_moe_cache_link_gbs(ggml_backend_dev_t dev) {
     moe_cache * mc = g_cache; // set once at init
-    if (!mc || !dev) {
-        return 0;
+    if (mc && dev) {
+        for (int k = 0; k < mc->n_links; ++k) {
+            if (mc->link_dev[k] == dev && mc->gbs_link[k] > 0) {
+                return mc->gbs_link[k];
+            }
+        }
     }
-    for (int k = 0; k < mc->n_links; ++k) {
-        if (mc->link_dev[k] == dev) {
-            return mc->gbs_link[k];
+    for (const auto & e : g_early_gbs) {
+        if (e.first == dev) {
+            return e.second;
         }
     }
     return 0;
+}
+
+// Before the first compute-buffer reserve: the multi-GPU prefill split needs its compute buffers on every GPU, and they
+// can't be taken back from the expert cache later, so the split is reserved only when it can pay: an early probe times
+// 64 MB pinned-host -> device copies per GPU, and splitting's best transfer speedup is (sum of link GB/s) / (fastest).
+// Reserved at >= 1.25x (2 x16: 2x; x16 + x4: 1.22x, where the split measured slower); alpha then starts at 1 and the
+// tuner measures. LLAMA_PREFILL_SPLIT=<alpha> overrides (0: never).
+void llama_moe_cache_prefill_decide(const std::vector<ggml_backend_dev_t> & gpus) {
+    if (const char * e = getenv("LLAMA_PREFILL_SPLIT")) {
+        g_split_share   = (float) atof(e);
+        g_split_enabled = g_split_share > 0;
+    }
+    if (gpus.size() < 2) {
+        return;
+    }
+    const size_t n = 64u << 20;
+    double sum = 0, best = 0;
+    std::string log;
+    for (ggml_backend_dev_t d : gpus) {
+        ggml_backend_buffer_type_t hb = ggml_backend_dev_host_buffer_type(d);
+        ggml_backend_buffer_t hbuf = hb ? ggml_backend_buft_alloc_buffer(hb, n) : nullptr;
+        ggml_backend_buffer_t dbuf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(d), n);
+        double gbs = 0;
+        if (hbuf && dbuf) {
+            ggml_tensor t = {};
+            t.type = GGML_TYPE_I8; t.buffer = dbuf; t.data = ggml_backend_buffer_get_base(dbuf);
+            t.ne[0] = (int64_t) n; t.ne[1] = t.ne[2] = t.ne[3] = 1; t.nb[0] = 1; t.nb[1] = t.nb[2] = t.nb[3] = n;
+            const void * src = ggml_backend_buffer_get_base(hbuf);
+            ggml_backend_tensor_set(&t, src, 0, n); // warm-up
+            const int64_t t0 = ggml_time_us();
+            for (int r = 0; r < 4; ++r) { ggml_backend_tensor_set(&t, src, 0, n); }
+            gbs = 4.0 * n / (double) std::max<int64_t>(1, ggml_time_us() - t0) / 1e3;
+        }
+        if (hbuf) { ggml_backend_buffer_free(hbuf); }
+        if (dbuf) { ggml_backend_buffer_free(dbuf); }
+        g_early_gbs.push_back({ d, gbs });
+        sum += gbs; best = std::max(best, gbs);
+        log += tr_fmt(" %s %.1f", ggml_backend_dev_name(d), gbs);
+    }
+    if (getenv("LLAMA_PREFILL_SPLIT")) {
+        return;
+    }
+    const double speedup = best > 0 ? sum / best : 1.0;
+    g_split_enabled = speedup >= 1.25;
+    g_split_share   = g_split_enabled ? 1.0f : 0.0f;
+    LLAMA_LOG_WARN("moe-cache: prefill links (GB/s):%s -> split's transfer speedup %.2fx: %s\n", log.c_str(), speedup,
+        g_split_enabled ? "reserved, alpha measured on prompt batches" : "one GPU (the split's compute buffers would cost more cache)");
 }
 
 // PREDICT switched: every layer's predictor off (or on, until the per-layer miss rule runs again), graph rebuilt once
