@@ -249,6 +249,12 @@ void ggml_cuda_mul_mat_q(
         const int si1  = ids->nb[1] / ggml_element_size(ids);
         const int sis1 = nb12 / nb11;
 
+        if (dst->op_params[1] != 0) {
+            // ids may be -1 (skipped experts): the helper writes no entries for them; row 0 is a safe target (it lies
+            // in the unused compact range below expert 0, which holds the skipped slots)
+            CUDA_CHECK(cudaMemsetAsync(ids_src1.get(), 0, ne_get_rows*sizeof(int32_t), stream));
+            CUDA_CHECK(cudaMemsetAsync(ids_dst.get(),  0, ne_get_rows*sizeof(int32_t), stream));
+        }
         ggml_cuda_launch_mm_ids_helper((const int32_t *) ids->data, ids_src1.get(), ids_dst.get(), expert_bounds.get(),
             ne02, ne12, n_expert_used, ne11, si1, sis1, /*write_inverse =*/ dedup_bcast, stream);
         CUDA_CHECK(cudaGetLastError());

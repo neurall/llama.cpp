@@ -1665,9 +1665,10 @@ static void ggml_compute_forward_mul_mat_id_impl(
             for (int id = 0; id < n_ids; ++id) {
                 const int32_t i02 = *(const int32_t *) ((const char *) ids->data + iid1*ids->nb[1] + id*ids->nb[0]);
 
-                assert(i02 >= 0 && i02 < n_as);
+                assert(i02 < n_as);
 
-                if (moe_tbl && moe_tbl[i02] != moe_dummy) {
+                // negative id: skipped expert (2-GPU prefill split, MoE cache), zero output row
+                if (i02 < 0 || (moe_tbl && moe_tbl[i02] != moe_dummy)) {
                     memset((char *) dst->data + id*nb1 + iid1*nb2, 0, ne0*sizeof(float));
                     continue;
                 }

@@ -1574,6 +1574,10 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
           ggml_tensor * ids,
           ggml_tensor * w_s) const {
     ggml_tensor * res = ggml_mul_mat_id(ctx0, w, cur, ids);
+    if (mm_id_backend) {
+        res->op_params[1] = 1; // ids may be -1: zero the output first
+        ggml_backend_sched_set_tensor_backend(sched, res, mm_id_backend);
+    }
 
     if (prec_policy) {
         prec_policy->apply(res);
@@ -2372,173 +2376,241 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         cb(cur, "ffn_moe_weighted", il);
     }
 
-    ggml_tensor * up = nullptr;
-    ggml_tensor * experts = nullptr;
+    // the routed experts' chain (up/gate, activation, down) for expert ids ids_x
+    auto expert_chain = [&](ggml_tensor * cur_in, ggml_tensor * ids_x) -> ggml_tensor * {
+        ggml_tensor * cur = cur_in;
+        ggml_tensor * up = nullptr;
+        ggml_tensor * experts = nullptr;
 
-    if (gate_up_exps) {
-        // merged gate_up path: one mul_mat_id, then split into gate and up views
-        ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, selected_experts, up_exps_s); // [n_ff*2, n_expert_used, n_tokens]
-        cb(gate_up, "ffn_moe_gate_up", il);
+        if (gate_up_exps) {
+            // merged gate_up path: one mul_mat_id, then split into gate and up views
+            ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, ids_x, up_exps_s); // [n_ff*2, n_expert_used, n_tokens]
+            cb(gate_up, "ffn_moe_gate_up", il);
 
-        if (up_exps_s) {
-            cb(gate_up, "ffn_moe_gate_up_scaled", il);
-        }
-
-        if (gate_up_exps_b) {
-            gate_up = ggml_add_id(ctx0, gate_up, gate_up_exps_b, selected_experts);
-            cb(gate_up, "ffn_moe_gate_up_biased", il);
-        }
-
-        const int64_t n_ff = gate_up->ne[0] / 2;
-        cur = ggml_view_3d(ctx0, gate_up, n_ff, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], 0);
-        cb(cur, "ffn_moe_gate", il);
-        up  = ggml_view_3d(ctx0, gate_up, n_ff, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], n_ff * gate_up->nb[0]);
-        cb(up, "ffn_moe_up", il);
-    } else {
-        // separate gate and up path
-        up = build_lora_mm_id(up_exps, cur, selected_experts, up_exps_s); // [n_ff, n_expert_used, n_tokens]
-        cb(up, "ffn_moe_up", il);
-
-        if (mcache) {
-            up->src[3] = mcache->host_table;
-            up->op_params[0] = mcache->n_slots;
-            if (mc_cpu_backend) {
-                // must run where the skip table is honored (CPU), never op-offloaded
-                ggml_backend_sched_set_tensor_backend(sched, up, mc_cpu_backend);
+            if (up_exps_s) {
+                cb(gate_up, "ffn_moe_gate_up_scaled", il);
             }
-        }
 
-        if (up_exps_s) {
-            cb(up, "ffn_moe_up_scaled", il);
-        }
+            if (gate_up_exps_b) {
+                gate_up = ggml_add_id(ctx0, gate_up, gate_up_exps_b, ids_x);
+                cb(gate_up, "ffn_moe_gate_up_biased", il);
+            }
 
-        if (up_exps_b) {
-            up = ggml_add_id(ctx0, up, up_exps_b, selected_experts);
-            cb(up, "ffn_moe_up_biased", il);
-        }
-
-        if (gate_exps) {
-            cur = build_lora_mm_id(gate_exps, cur, selected_experts, gate_exps_s); // [n_ff, n_expert_used, n_tokens]
+            const int64_t n_ff = gate_up->ne[0] / 2;
+            cur = ggml_view_3d(ctx0, gate_up, n_ff, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], 0);
             cb(cur, "ffn_moe_gate", il);
+            up  = ggml_view_3d(ctx0, gate_up, n_ff, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], n_ff * gate_up->nb[0]);
+            cb(up, "ffn_moe_up", il);
+        } else {
+            // separate gate and up path
+            up = build_lora_mm_id(up_exps, cur, ids_x, up_exps_s); // [n_ff, n_expert_used, n_tokens]
+            cb(up, "ffn_moe_up", il);
 
             if (mcache) {
-                if (mc_pred) {
-                    static const bool no_handoff = getenv("LLAMA_MOE_CACHE_PREDICT_NOHANDOFF") != nullptr;   // diagnostic: predict, don't hand to the CPU op
-                    if (!no_handoff) {
-                        cur->src[4] = mc_pred;
-                    }
-                }
-                cur->src[3] = mcache->host_table;
-                cur->op_params[0] = mcache->n_slots;
+                up->src[3] = mcache->host_table;
+                up->op_params[0] = mcache->n_slots;
                 if (mc_cpu_backend) {
-                    ggml_backend_sched_set_tensor_backend(sched, cur, mc_cpu_backend);
+                    // must run where the skip table is honored (CPU), never op-offloaded
+                    ggml_backend_sched_set_tensor_backend(sched, up, mc_cpu_backend);
                 }
             }
-        } else {
-            cur = up;
-        }
 
-        if (gate_exps_s) {
-            cb(cur, "ffn_moe_gate_scaled", il);
-        }
+            if (up_exps_s) {
+                cb(up, "ffn_moe_up_scaled", il);
+            }
 
-        if (gate_exps_b) {
-            cur = ggml_add_id(ctx0, cur, gate_exps_b, selected_experts);
-            cb(cur, "ffn_moe_gate_biased", il);
-        }
-    }
+            if (up_exps_b) {
+                up = ggml_add_id(ctx0, up, up_exps_b, ids_x);
+                cb(up, "ffn_moe_up_biased", il);
+            }
 
-    const bool has_gate = gate_exps || gate_up_exps;
-
-    switch (type_op) {
-        case LLM_FFN_SILU:
             if (gate_exps) {
-                if (il >= 0) {
-                    const float limit = hparams.swiglu_clamp_exp[il];
-                    constexpr float eps = 1e-6f;
-                    if (limit > eps) {
-                        if (arch == LLM_ARCH_MAPLE || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_GLM5_NEXT || (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0) || arch == LLM_ARCH_HY_V4) {
-                            cur = ggml_swiglu_clamp(ctx0, cur, up, limit);
-                        } else {
-                            up = ggml_clamp(ctx0, up, -limit, limit);
-                            cb(up, "ffn_moe_up_clamped", il);
-                            ggml_tensor * gate_act = ggml_silu(ctx0, cur);
-                            cb(gate_act, "ffn_moe_silu", il);
-                            gate_act = ggml_clamp(ctx0, gate_act, -INFINITY, limit);
-                            cb(gate_act, "ffn_moe_silu_clamped", il);
-                            cur = ggml_mul(ctx0, gate_act, up);
+                cur = build_lora_mm_id(gate_exps, cur, ids_x, gate_exps_s); // [n_ff, n_expert_used, n_tokens]
+                cb(cur, "ffn_moe_gate", il);
+
+                if (mcache) {
+                    if (mc_pred) {
+                        static const bool no_handoff = getenv("LLAMA_MOE_CACHE_PREDICT_NOHANDOFF") != nullptr;   // diagnostic: predict, don't hand to the CPU op
+                        if (!no_handoff) {
+                            cur->src[4] = mc_pred;
                         }
-                        cb(cur, "ffn_moe_swiglu_limited", il);
-                        break;
+                    }
+                    cur->src[3] = mcache->host_table;
+                    cur->op_params[0] = mcache->n_slots;
+                    if (mc_cpu_backend) {
+                        ggml_backend_sched_set_tensor_backend(sched, cur, mc_cpu_backend);
                     }
                 }
+            } else {
+                cur = up;
             }
 
-            if (has_gate) {
-                cur = ggml_swiglu_split(ctx0, cur, up);
-                cb(cur, "ffn_moe_swiglu", il);
-            } else {
-                cur = ggml_silu(ctx0, cur);
-                cb(cur, "ffn_moe_silu", il);
-            } break;
-        case LLM_FFN_SITU:
-            {
-                // situ(gate, up) = beta*tanh(gate/beta)*sigmoid(gate) * lb*tanh(up/lb)
-                GGML_ASSERT(has_gate);
-                const float beta = hparams.situ_beta;
-                const float lb   = hparams.situ_linear_beta;
+            if (gate_exps_s) {
+                cb(cur, "ffn_moe_gate_scaled", il);
+            }
 
-                ggml_tensor * act = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, cur, 1.0f/beta)), beta);
-                act = ggml_mul(ctx0, act, ggml_sigmoid(ctx0, cur));
-                if (lb > 0.0f) {
-                    up = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, up, 1.0f/lb)), lb);
+            if (gate_exps_b) {
+                cur = ggml_add_id(ctx0, cur, gate_exps_b, ids_x);
+                cb(cur, "ffn_moe_gate_biased", il);
+            }
+        }
+
+        const bool has_gate = gate_exps || gate_up_exps;
+
+        switch (type_op) {
+            case LLM_FFN_SILU:
+                if (gate_exps) {
+                    if (il >= 0) {
+                        const float limit = hparams.swiglu_clamp_exp[il];
+                        constexpr float eps = 1e-6f;
+                        if (limit > eps) {
+                            if (arch == LLM_ARCH_MAPLE || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_GLM5_NEXT || (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0) || arch == LLM_ARCH_HY_V4) {
+                                cur = ggml_swiglu_clamp(ctx0, cur, up, limit);
+                            } else {
+                                up = ggml_clamp(ctx0, up, -limit, limit);
+                                cb(up, "ffn_moe_up_clamped", il);
+                                ggml_tensor * gate_act = ggml_silu(ctx0, cur);
+                                cb(gate_act, "ffn_moe_silu", il);
+                                gate_act = ggml_clamp(ctx0, gate_act, -INFINITY, limit);
+                                cb(gate_act, "ffn_moe_silu_clamped", il);
+                                cur = ggml_mul(ctx0, gate_act, up);
+                            }
+                            cb(cur, "ffn_moe_swiglu_limited", il);
+                            break;
+                        }
+                    }
                 }
-                cur = ggml_mul(ctx0, act, up);
-                cb(cur, "ffn_moe_situ", il);
-            } break;
-        case LLM_FFN_GELU:
-            if (has_gate) {
-                cur = ggml_geglu_split(ctx0, cur, up);
-                cb(cur, "ffn_moe_geglu", il);
-            } else {
-                cur = ggml_gelu(ctx0, cur);
-                cb(cur, "ffn_moe_gelu", il);
-            } break;
-        case LLM_FFN_SWIGLU_OAI_MOE:
-            {
-                // TODO: move to hparams?
-                constexpr float alpha = 1.702f;
-                constexpr float limit = 7.0f;
-                cur = ggml_swiglu_oai(ctx0, cur, up, alpha, limit);
-                cb(cur, "ffn_moe_swiglu_oai", il);
-            } break;
-        case LLM_FFN_RELU:
-            if (has_gate) {
-                cur = ggml_reglu_split(ctx0, cur, up);
-                cb(cur, "ffn_moe_reglu", il);
-            } else {
-                cur = ggml_relu(ctx0, cur);
-                cb(cur, "ffn_moe_relu", il);
-            } break;
-        case LLM_FFN_RELU_SQR:
-            if (has_gate) {
-                // TODO: add support for gated squared relu
-                GGML_ABORT("fatal error: gated squared relu not implemented");
-            } else {
-                cur = ggml_relu(ctx0, cur);
-                cur = ggml_sqr(ctx0, cur);
-                cb(cur, "ffn_moe_relu_sqr", il);
-            } break;
-        default:
-            GGML_ABORT("fatal error");
-    }
 
-    experts = build_lora_mm_id(down_exps, cur, selected_experts, down_exps_s); // [n_embd, n_expert_used, n_tokens]
-    if (arch == LLM_ARCH_MISTRAL4) {
-        // src1 can exceed F16 range
-        ggml_prec_set_src(experts, GGML_PREC_F32, 1);
+                if (has_gate) {
+                    cur = ggml_swiglu_split(ctx0, cur, up);
+                    cb(cur, "ffn_moe_swiglu", il);
+                } else {
+                    cur = ggml_silu(ctx0, cur);
+                    cb(cur, "ffn_moe_silu", il);
+                } break;
+            case LLM_FFN_SITU:
+                {
+                    // situ(gate, up) = beta*tanh(gate/beta)*sigmoid(gate) * lb*tanh(up/lb)
+                    GGML_ASSERT(has_gate);
+                    const float beta = hparams.situ_beta;
+                    const float lb   = hparams.situ_linear_beta;
+
+                    ggml_tensor * act = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, cur, 1.0f/beta)), beta);
+                    act = ggml_mul(ctx0, act, ggml_sigmoid(ctx0, cur));
+                    if (lb > 0.0f) {
+                        up = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, up, 1.0f/lb)), lb);
+                    }
+                    cur = ggml_mul(ctx0, act, up);
+                    cb(cur, "ffn_moe_situ", il);
+                } break;
+            case LLM_FFN_GELU:
+                if (has_gate) {
+                    cur = ggml_geglu_split(ctx0, cur, up);
+                    cb(cur, "ffn_moe_geglu", il);
+                } else {
+                    cur = ggml_gelu(ctx0, cur);
+                    cb(cur, "ffn_moe_gelu", il);
+                } break;
+            case LLM_FFN_SWIGLU_OAI_MOE:
+                {
+                    // TODO: move to hparams?
+                    constexpr float alpha = 1.702f;
+                    constexpr float limit = 7.0f;
+                    cur = ggml_swiglu_oai(ctx0, cur, up, alpha, limit);
+                    cb(cur, "ffn_moe_swiglu_oai", il);
+                } break;
+            case LLM_FFN_RELU:
+                if (has_gate) {
+                    cur = ggml_reglu_split(ctx0, cur, up);
+                    cb(cur, "ffn_moe_reglu", il);
+                } else {
+                    cur = ggml_relu(ctx0, cur);
+                    cb(cur, "ffn_moe_relu", il);
+                } break;
+            case LLM_FFN_RELU_SQR:
+                if (has_gate) {
+                    // TODO: add support for gated squared relu
+                    GGML_ABORT("fatal error: gated squared relu not implemented");
+                } else {
+                    cur = ggml_relu(ctx0, cur);
+                    cur = ggml_sqr(ctx0, cur);
+                    cb(cur, "ffn_moe_relu_sqr", il);
+                } break;
+            default:
+                GGML_ABORT("fatal error");
+        }
+
+        experts = build_lora_mm_id(down_exps, cur, ids_x, down_exps_s); // [n_embd, n_expert_used, n_tokens]
+        if (arch == LLM_ARCH_MISTRAL4) {
+            // src1 can exceed F16 range
+            ggml_prec_set_src(experts, GGML_PREC_F32, 1);
+        }
+        cb(experts, "ffn_moe_down", il);
+        return experts;
+    };
+
+    // 2-GPU prefill (LLAMA_PREFILL_SPLIT=<share of the experts for the second GPU>, big batches, no MoE cache chain): experts
+    // [0, k) run on the first GPU, [k, n_expert) on the second, each streaming its own experts over its own PCIe link;
+    // ids outside a GPU's range are -1 (skipped, zero rows) and the two outputs are added
+    ggml_backend_t split_gpu[2] = { nullptr, nullptr };
+    int64_t split_k = 0;
+    if (!mcache && n_tokens >= 32 && sched && !up_exps_b && !gate_exps_b && !down_exps_b && !gate_up_exps_b && loras->empty()) {
+        static const float split_share = [] { const char * e = getenv("LLAMA_PREFILL_SPLIT"); return e ? (float) atof(e) : 0.0f; }();
+        if (split_share > 0.0f && split_share < 1.0f) {
+            int n_gpu = 0;
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched) && n_gpu < 2; ++i) {
+                ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+                if (ggml_backend_dev_type(ggml_backend_get_device(b)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                    split_gpu[n_gpu++] = b;
+                }
+            }
+            split_k = (int64_t) llroundf((1.0f - split_share) * (float) n_expert);
+            if (n_gpu < 2 || split_k <= 0 || split_k >= n_expert) {
+                split_gpu[0] = split_gpu[1] = nullptr;
+            }
+        }
     }
-    cb(experts, "ffn_moe_down", il);
+    ggml_tensor * experts = nullptr;
+    if (split_gpu[1]) {
+        // ids >= k -> m = 1 (clamp(id - k + 1, 0, 1) on the integer-valued floats); kept ids stay, others become -1
+        ggml_tensor * f  = ggml_cast(ctx0, ggml_cont(ctx0, selected_experts), GGML_TYPE_F32);
+        ggml_tensor * mb = ggml_clamp(ctx0, ggml_scale_bias(ctx0, f, 1.0f, (float) (1 - split_k)), 0.0f, 1.0f);
+        ggml_tensor * ma = ggml_scale_bias(ctx0, mb, -1.0f, 1.0f);
+        ggml_tensor * f1 = ggml_scale_bias(ctx0, f, 1.0f, 1.0f);
+        ggml_tensor * ids_a = ggml_cast(ctx0, ggml_scale_bias(ctx0, ggml_mul(ctx0, ma, f1), 1.0f, -1.0f), GGML_TYPE_I32);
+        ggml_tensor * ids_b = ggml_cast(ctx0, ggml_scale_bias(ctx0, ggml_mul(ctx0, mb, f1), 1.0f, -1.0f), GGML_TYPE_I32);
+        cb(ids_a, "ffn_moe_ids_gpu0", il);
+        cb(ids_b, "ffn_moe_ids_gpu1", il);
+        // each GPU weights and sums its experts ([n_embd, n_tokens] crosses between the GPUs, not
+        // [n_embd, n_expert_used, n_tokens]); chain B is built first so the second GPU streams and computes its share
+        // while the first one works on its own
+        auto reduce = [&](ggml_tensor * e, ggml_backend_t b) {
+            if (!weight_before_ffn) {
+                e = ggml_mul(ctx0, e, weights);
+                ggml_backend_sched_set_tensor_backend(sched, e, b);
+            }
+            ggml_tensor * sum = ggml_view_2d(ctx0, e, n_embd, n_tokens, e->nb[2], 0);
+            for (int64_t i = 1; i < (int64_t) hparams.n_expert_used(il); ++i) {
+                sum = ggml_add(ctx0, sum, ggml_view_2d(ctx0, e, n_embd, n_tokens, e->nb[2], i*e->nb[1]));
+                ggml_backend_sched_set_tensor_backend(sched, sum, b);
+            }
+            if (hparams.n_expert_used(il) == 1) {
+                sum = ggml_cont(ctx0, sum);
+                ggml_backend_sched_set_tensor_backend(sched, sum, b);
+            }
+            return sum;
+        };
+        mm_id_backend = split_gpu[1];
+        ggml_tensor * pb = reduce(expert_chain(cur, ids_b), split_gpu[1]);
+        mm_id_backend = split_gpu[0];
+        ggml_tensor * pa = reduce(expert_chain(cur, ids_a), split_gpu[0]);
+        mm_id_backend = nullptr;
+        ggml_tensor * moe_out = ggml_add(ctx0, pb, pa);
+        cb(moe_out, "ffn_moe_out", il);
+        return moe_out;
+    } else {
+        experts = expert_chain(cur, selected_experts);
+    }
 
     if (mcache) {
         experts->src[3] = mcache->host_table;

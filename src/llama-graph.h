@@ -990,6 +990,10 @@ struct llm_graph_qkv {
 };
 
 struct llm_graph_context {
+    // 2-GPU prefill (LLAMA_PREFILL_SPLIT): while set, build_lora_mm_id pins its MUL_MAT_ID to this backend and marks it as
+    // taking negative (skipped) expert ids, whose output rows are zeroed
+    mutable ggml_backend_t mm_id_backend = nullptr;
+
     const llm_arch arch;
 
     const llama_hparams & hparams;
