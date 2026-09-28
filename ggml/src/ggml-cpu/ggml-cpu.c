@@ -1861,7 +1861,7 @@ static void ggml_compute_forward_mul_mat_id(
         cb(1, bytes, ud);
     }
     ggml_compute_forward_mul_mat_id_impl(params, dst);
-    if (cb && atomic_fetch_sub(&g_moe_cpu_active, 1) == 1) {
+    if (cb && atomic_fetch_add(&g_moe_cpu_active, -1) == 1) { // fetch_add(-1): MSVC has only the add shim
         cb(0, 0, ud);
     }
 }
