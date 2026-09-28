@@ -397,12 +397,13 @@ void * ggml_aligned_malloc(size_t size) {
     }
   #else
   #if defined(__linux__)
-    // GGML_HUGEPAGES=1: big buffers (model weights loaded without mmap, KV cache) 2 MB aligned and marked for transparent
-    // huge pages (THP mode "madvise"): streaming GBs per token through 4 KB pages costs TLB misses
+    // big buffers (model weights loaded without mmap, KV cache) 2 MB aligned and marked for transparent huge pages
+    // (THP mode "madvise"): streaming GBs per token through 4 KB pages costs TLB misses. Measured on a CPU-only Qwen3.6-35B
+    // decode (Ryzen 3600): 9.50 -> 9.73 t/s. GGML_HUGEPAGES=0 turns it off.
     static int hugepages = -1;
     if (hugepages < 0) {
         const char * e = getenv("GGML_HUGEPAGES");
-        hugepages = e && atoi(e) != 0;
+        hugepages = !(e && atoi(e) == 0);
     }
     const size_t align_hp = hugepages && size >= (2u << 20) && alignment < (2u << 20) ? (2u << 20) : alignment;
   #else
