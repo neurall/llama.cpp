@@ -2359,7 +2359,11 @@ ggml_backend_sched_t ggml_backend_sched_new(
         sched->bufts[b] = bufts ? bufts[b] : ggml_backend_get_default_buffer_type(backends[b]);
         GGML_ASSERT(ggml_backend_supports_buft(backends[b], sched->bufts[b]));
 
-        if (sched->n_copies > 1) {
+        // GGML_SCHED_EVENTS=1: events also without pipeline copies, so "wait until the split backend is done with
+        // this input" is a stream wait instead of a host synchronize; with several GPUs driven by one thread a host
+        // sync on one GPU keeps the other GPU from getting new work (2-GPU prefill: 1% overlap, 46k syncs = 121 s)
+        static const bool events_always = getenv("GGML_SCHED_EVENTS") && atoi(getenv("GGML_SCHED_EVENTS")) != 0;
+        if (sched->n_copies > 1 || events_always) {
             for (int c = 0; c < sched->n_copies; c++) {
                 sched->events[b][c] = ggml_backend_event_new(backends[b]->device);
             }

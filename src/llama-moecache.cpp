@@ -397,7 +397,8 @@ struct knobs_t {
     double tbp         = 0;    // token-boundary prefetch: per early layer, stream up to this many of the last token's misses
     double tbp_layers  = 6;    // ... for the first N MoE layers (their uploads run while the output head, sampling and the
                                //     dense layers keep DDR idle, ~7-10 ms on GLM)
-    double auto_tune   = 1;    // adjust stream lead and STREAM_M per link from the measured late share and precision
+    double auto_tune   = 1;    // 1: adjust stream lead and STREAM_M per link from the measured late share and precision (thresholds);
+                               // 2: uploads per target layer = measured time until it / measured link time per expert
     double wait        = 1;    // the step waits for queued cache swaps (0: never; finished uploads are published at splits)
     double chunk_kb    = -1;    // GATE=3: copy in chunks of this size, re-checking the DDR budget before each (0: whole tensor)
     double ddr_gbs     = 44;   // tools/moe-bench/ddrbw: CPU + both DMAs together peak at 44-45 GB/s (DDR4-3200 ECC, 2 ch); GATE=3: an upload starts only while DDR demand + its link rate stays under this
@@ -1162,13 +1163,11 @@ void resource_probe(moe_cache * mc) {
     if ((pe && pe[0] == '0') || mc->layers.empty()) {
         return;
     }
-    // physical cores (first SMT thread of each), minus one per link like the default thread count
-    // (Linux sysfs / Windows; other platforms: logical CPU count)
+    // physical cores (first SMT thread of each): the ramp's upper bound (Linux sysfs / Windows; else logical CPUs)
     int n_phys = 0;
     for (const auto & d : l3_domain_cores()) {
         n_phys += (int) d.size();
     }
-    const int n_cpu = std::max(1, (n_phys > 0 ? n_phys : (int) std::thread::hardware_concurrency()) - mc->n_links);
     // source chunks: whole experts across layers, far more than any L3
     struct chunk { const uint8_t * p; size_t n; };
     std::vector<chunk> src;
@@ -1454,7 +1453,7 @@ void pred_loop(moe_cache * mc) {
                 for (int32_t e = 0; e < ne; ++e) { idx[e] = e; }
                 // stream slots: over-predict (a wrong guess costs idle bandwidth only, never a cached expert)
                 const bool stream = knobs().stream > 0 && !ls.stream_slots.empty();
-                const int32_t sm = knobs().auto_tune != 0 && mc->auto_m[ls.link] > 0 ? mc->auto_m[ls.link] : (int32_t) knobs().stream_m;
+                const int32_t sm = knobs().auto_tune == 1 && mc->auto_m[ls.link] > 0 ? mc->auto_m[ls.link] : (int32_t) knobs().stream_m;
                 const int32_t m = std::min<int32_t>(stream ? sm : mc->pred_m, (int32_t) ne);
                 std::partial_sort(idx.begin(), idx.begin() + m, idx.end(), [&](int32_t a, int32_t c) { return lg[a] > lg[c]; });
                 if (mc->pred_ra) {
@@ -1500,6 +1499,7 @@ void pred_loop(moe_cache * mc) {
                 auto & ls = mc->layers[tl];
                 const auto & cand = cands[k];
                 int32_t n_job = 0;
+                int32_t link_cap = INT32_MAX; // AUTO=2: uploads this link can land before layer tl
                 // smart offset: the upload must land before the layer; it is k+1 layers ahead, a layer takes ~token/layers
                 if (knobs().offset != 0 && mc->step_us_idle > 0 && mc->link_us[ls.link] > 0) {
                     // time until layer tl's experts are needed: the measured layer clock from the predicting layer on
@@ -1509,18 +1509,31 @@ void pred_loop(moe_cache * mc) {
                     for (size_t q = r.li; q < tl; ++q) {
                         until += q < mc->layer_dt.size() && mc->layer_dt[q] > 0 ? mc->layer_dt[q] : avg;
                     }
-                    const double need = mc->link_us[ls.link] * (1 + (knobs().auto_tune != 0 ? mc->lead_extra[ls.link] : 0));
+                    const bool cap_mode = knobs().auto_tune >= 2;
+                    const double need = mc->link_us[ls.link] * (1 + (knobs().auto_tune == 1 ? mc->lead_extra[ls.link] : 0));
                     if (until < need) {
                         mc->n_pred_late += !cand.empty();
                         continue;
                     }
+                    if (cap_mode) {
+                        // AUTO=2: as many uploads as this link can finish before the layer, from measured times only (no
+                        // thresholds): (time until the layer) / (one expert on this link), minus what the link has queued
+                        int64_t queued = 0;
+                        {
+                            std::lock_guard<std::mutex> wlk(mc->wmtx);
+                            for (const auto & q : mc->todo) {
+                                queued += mc->layers[q.layer_idx].link == ls.link;
+                            }
+                        }
+                        link_cap = (int32_t) std::max<int64_t>(0, (int64_t) (until / mc->link_us[ls.link]) - queued);
+                    }
                 }
-                if (knobs().stream > 0 && ((ls.slow && knobs().stream_slow == 0) || (knobs().auto_tune != 0 && mc->stream_off[ls.link]))) {
+                if (knobs().stream > 0 && ((ls.slow && knobs().stream_slow == 0) || (knobs().auto_tune == 1 && mc->stream_off[ls.link]))) {
                     continue;
                 }
                 const int32_t n_ss = knobs().stream > 0 ? std::min<int32_t>((int32_t) knobs().stream, (int32_t) ls.stream_slots.size()) : 0;
                 for (int32_t id : cand) {
-                    if (n_job >= (n_ss > 0 ? n_ss : mc->pred_max)) {
+                    if (n_job >= (n_ss > 0 ? n_ss : mc->pred_max) || n_job >= link_cap) {
                         break;
                     }
                     if (ls.expert_slot[id] >= 0 || ls.queued[id] || ls.adopt_slot[id] >= 0) {
@@ -2838,7 +2851,7 @@ void llama_moe_cache_step() {
     }
 
     // 1c) stream self-tuning per link, every 64 steps: lead from the late share, candidates from the precision
-    if (knobs().auto_tune != 0 && knobs().stream > 0 && mc->n_steps % 64 == 0) {
+    if (knobs().auto_tune == 1 && knobs().stream > 0 && mc->n_steps % 64 == 0) {
         for (int k = 0; k < mc->n_links; ++k) {
             const uint64_t up = mc->st_up[k], late = mc->st_late[k], hit = mc->st_hit[k];
             if (up < 16 || mc->stream_off[k]) {

@@ -2581,6 +2581,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         ggml_tensor * ids_b = ggml_cast(ctx0, ggml_scale_bias(ctx0, ggml_mul(ctx0, mb, f1), 1.0f, -1.0f), GGML_TYPE_I32);
         cb(ids_a, "ffn_moe_ids_gpu0", il);
         cb(ids_b, "ffn_moe_ids_gpu1", il);
+        // both id sets before either chain: the scheduler copies only the used experts of a host weight when the
+        // MUL_MAT_ID is the first node of its split (the ids must exist before the split starts); left for later,
+        // ids_a's ops would open the first GPU's split and it would copy every expert
+        ggml_build_forward_expand(gf, ids_a);
+        ggml_build_forward_expand(gf, ids_b);
         // each GPU weights and sums its experts ([n_embd, n_tokens] crosses between the GPUs, not
         // [n_embd, n_expert_used, n_tokens]); chain B is built first so the second GPU streams and computes its share
         // while the first one works on its own
