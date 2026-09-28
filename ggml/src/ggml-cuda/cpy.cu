@@ -4,12 +4,13 @@
 #if defined(GGML_USE_MUSA) && defined(GGML_MUSA_MUDNN_COPY)
 #include "ggml-musa/mudnn.cuh"
 
+#endif // GGML_USE_MUSA && GGML_MUSA_MUDNN_COPY
+
 static __global__ void k_copy_u4(const uint4 * __restrict__ src, uint4 * __restrict__ dst, const size_t n) {
     for (size_t i = (size_t) blockIdx.x*blockDim.x + threadIdx.x; i < n; i += (size_t) gridDim.x*blockDim.x) {
         dst[i] = src[i];
     }
 }
-#endif // GGML_USE_MUSA && GGML_MUSA_MUDNN_COPY
 
 typedef void (*cpy_kernel_t)(const char * cx, char * cdst);
 
