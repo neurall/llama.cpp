@@ -699,7 +699,50 @@ void ggml_vec_dot_q1_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
 }
 
 void ggml_vec_dot_q2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
-#if defined(__AVX2__)
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VNNI__)
+    const int qk = QK2_0;
+    const int nb = n / qk;
+
+    assert(n % qk == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_q2_0 * GGML_RESTRICT x = vx;
+    const block_q8_0 * GGML_RESTRICT y = vy;
+
+    // one 512-bit register per Q2_0 block: 128-bit lanes 0/1 hold the first half (bytes 0-3 / 4-7, each repeated in the
+    // four dwords), lanes 2/3 the second half (bytes 8-11 / 12-15); dword d shifted right by 2d and masked gives weight
+    // 4p+d at lane byte 4d+p (as in the AVX2 path); vpdpbusd sums u8 weights x s8 activations per dword
+    const __m512i xidx = _mm512_set_epi8(
+        15,14,13,12,15,14,13,12,15,14,13,12,15,14,13,12, 11,10,9,8,11,10,9,8,11,10,9,8,11,10,9,8,
+        7,6,5,4,7,6,5,4,7,6,5,4,7,6,5,4, 3,2,1,0,3,2,1,0,3,2,1,0,3,2,1,0);
+    const __m512i yidx = _mm512_set_epi8(
+        15,11,7,3,14,10,6,2,13,9,5,1,12,8,4,0, 15,11,7,3,14,10,6,2,13,9,5,1,12,8,4,0,
+        15,11,7,3,14,10,6,2,13,9,5,1,12,8,4,0, 15,11,7,3,14,10,6,2,13,9,5,1,12,8,4,0);
+    const __m512i shifts = _mm512_set_epi32(6,4,2,0, 6,4,2,0, 6,4,2,0, 6,4,2,0);
+    const __m512i m3     = _mm512_set1_epi8(3);
+    const __m512i ones   = _mm512_set1_epi8(1);
+
+    __m512 acc = _mm512_setzero_ps();
+    for (int i = 0; i < nb; ++i) {
+        const __m512i qq = _mm512_broadcast_i32x4(_mm_loadu_si128((const __m128i *) x[i].qs));
+        const __m512i xv = _mm512_and_si512(_mm512_srlv_epi32(_mm512_shuffle_epi8(qq, xidx), shifts), m3); // {0..3}
+        const __m512i yr = _mm512_inserti64x4(_mm512_castsi256_si512(_mm256_loadu_si256((const __m256i *) y[2*i].qs)),
+                                              _mm256_loadu_si256((const __m256i *) y[2*i + 1].qs), 1);
+        const __m512i yv = _mm512_shuffle_epi8(yr, yidx);
+        // sum((q - 1) * y) = sum(q * y) - sum(y)
+        const __m512i dot = _mm512_sub_epi32(_mm512_dpbusd_epi32(_mm512_setzero_si512(), xv, yv),
+                                             _mm512_dpbusd_epi32(_mm512_setzero_si512(), ones, yv));
+        const float d0 = GGML_CPU_FP16_TO_FP32(x[i].d);
+        const __m512 d = _mm512_insertf32x8(_mm512_castps256_ps512(_mm256_set1_ps(d0 * GGML_CPU_FP16_TO_FP32(y[2*i].d))),
+                                            _mm256_set1_ps(d0 * GGML_CPU_FP16_TO_FP32(y[2*i + 1].d)), 1);
+        acc = _mm512_fmadd_ps(_mm512_cvtepi32_ps(dot), d, acc);
+    }
+    *s = _mm512_reduce_add_ps(acc);
+#elif defined(__AVX2__)
     const int qk = QK2_0;
     const int nb = n / qk;
 
