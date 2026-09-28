@@ -3,6 +3,12 @@
 #include "cpy-utils.cuh"
 #if defined(GGML_USE_MUSA) && defined(GGML_MUSA_MUDNN_COPY)
 #include "ggml-musa/mudnn.cuh"
+
+static __global__ void k_copy_u4(const uint4 * __restrict__ src, uint4 * __restrict__ dst, const size_t n) {
+    for (size_t i = (size_t) blockIdx.x*blockDim.x + threadIdx.x; i < n; i += (size_t) gridDim.x*blockDim.x) {
+        dst[i] = src[i];
+    }
+}
 #endif // GGML_USE_MUSA && GGML_MUSA_MUDNN_COPY
 
 typedef void (*cpy_kernel_t)(const char * cx, char * cdst);
@@ -471,7 +477,16 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         } else
 #endif // GGML_USE_MUSA && GGML_MUSA_MUDNN_COPY
         {
-            CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, ggml_nbytes(src0), cudaMemcpyDeviceToDevice, main_stream));
+            const size_t nbytes = ggml_nbytes(src0);
+            // small copies (e.g. recurrent conv states, ~100 KB per layer and token): a kernel costs ~2 us where a
+            // device-to-device memcpy node in a CUDA graph costs ~7 us
+            if (nbytes <= (4u << 20) && nbytes % 16 == 0 && (uintptr_t) src0_ddc % 16 == 0 && (uintptr_t) src1_ddc % 16 == 0) {
+                const size_t n16 = nbytes / 16;
+                const int nb = (int) std::min<size_t>((n16 + 255) / 256, 1024);
+                k_copy_u4<<<nb, 256, 0, main_stream>>>((const uint4 *) src0_ddc, (uint4 *) src1_ddc, n16);
+            } else {
+                CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, nbytes, cudaMemcpyDeviceToDevice, main_stream));
+            }
         }
     } else if (ggml_cuda_cpy_as_memcpy_2d(src0, src1, mc_width, mc_height, mc_spitch, mc_dpitch)) {
         CUDA_CHECK(cudaMemcpy2DAsync(src1_ddc, mc_dpitch, src0_ddc, mc_spitch,

@@ -28,6 +28,8 @@
 #ifndef _WIN32
 #include <unistd.h>
 #include <sys/mman.h>
+#include <pthread.h>
+#include <sched.h>
 #endif
 
 // learned predictors: this decode trains them / the current graph was built with the update nodes
@@ -291,6 +293,16 @@ struct moe_cache {
     std::condition_variable pcv;
     std::thread             pred_thr;
     bool                    pred_stop   = false;
+
+    // L3 prefetch (L3PF=M): after layer L's CPU phase, one thread per CCX reads that CCX's half of the rows of the
+    // top-M predicted uncached experts of layer L+1 into its L3, while the GPU runs L+1's attention (DDR idle)
+    struct l3pf_job { size_t li = 0; std::vector<int32_t> ex; uint64_t gen = 0; };
+    std::mutex              l3_mtx;
+    std::condition_variable l3_cv;
+    l3pf_job                l3_job;
+    bool                    l3_stop = false;
+    std::vector<std::thread> l3_thr;
+    std::atomic<uint64_t>   l3_n_ex{0}, l3_done{0}, l3_late{0}, l3_dropped{0};
     int64_t                 gpu_started = -1; // layer idx whose GPU split may have started this step (mtx)
     int64_t                 last_obs    = -1; // layer idx of the last CPU expert op this step (mtx)
     uint64_t n_pred_up = 0, n_pred_pub = 0, n_pred_used = 0, n_pred_late = 0, n_stream_stale = 0, n_promoted = 0, n_tbp = 0;
@@ -307,6 +319,9 @@ struct moe_cache {
     std::vector<uint64_t>           last_pred_step;
     std::vector<int64_t>            last_pred_blk;
     uint64_t acc_hit[8] = {}, acc_tot[8] = {}; // top-k overlap per lookahead, lifetime
+    // prefetch candidates, L+1: the top-M predicted experts among those not cached, M = 1..3: how many the router
+    // then picked (precision), and how many of the real misses they cover (recall)
+    uint64_t pm_pick[3] = {}, pm_hit[3] = {}, pm_miss = 0, pm_cov[3] = {};
     uint64_t win_hit[8] = {}, win_tot[8] = {}; // same, since the last report
     std::vector<ggml_context *>        pctxs;
     std::vector<ggml_backend_buffer_t> pbufs;
@@ -354,6 +369,7 @@ struct knobs_t {
     double gate      = 0;   // uploads wait (up to GATE_MAX_US per tensor) while the CPU computes uncached experts: no DDR4 contention
     double gate_max_us = 2000;
     double big         = 0;    // an expert may only evict one with at most its lifetime use (no weaklings evicting big boys)
+    double l3pf        = 0;    // L3 prefetch: experts per layer (0 off); needs GGML_MOE_CCX_SPLIT=1 and bound OpenMP threads
     double tbp         = 0;    // token-boundary prefetch: per early layer, stream up to this many of the last token's misses
     double tbp_layers  = 6;    // ... for the first N MoE layers (their uploads run while the output head, sampling and the
                                //     dense layers keep DDR idle, ~7-10 ms on GLM)
@@ -375,7 +391,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
         { "MARGIN", &knobs_t::margin }, { "BUDGET", &knobs_t::budget }, { "CPU_GBS", &knobs_t::cpu_gbs }, { "LINK", &knobs_t::link },
         { "GATE", &knobs_t::gate }, { "GATE_MAX_US", &knobs_t::gate_max_us }, { "DDR_GBS", &knobs_t::ddr_gbs },
         { "WAIT", &knobs_t::wait }, { "AUTO", &knobs_t::auto_tune },
-        { "BIG", &knobs_t::big }, { "TBP", &knobs_t::tbp }, { "TBP_LAYERS", &knobs_t::tbp_layers }, { "CHUNK_KB", &knobs_t::chunk_kb },
+        { "BIG", &knobs_t::big }, { "L3PF", &knobs_t::l3pf }, { "TBP", &knobs_t::tbp }, { "TBP_LAYERS", &knobs_t::tbp_layers }, { "CHUNK_KB", &knobs_t::chunk_kb },
         { "STREAM", &knobs_t::stream }, { "STREAM_M", &knobs_t::stream_m },
         { "OFFSET", &knobs_t::offset }, { "STREAM_SLOW", &knobs_t::stream_slow },
         { "TRACE", &knobs_t::trace }, { "TRACE_AFTER", &knobs_t::trace_after },
@@ -392,7 +408,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG" }) {
+        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
             }
@@ -797,6 +813,33 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             }
             mc->acc_hit[k] += hit; mc->acc_tot[k] += n_ids;
             mc->win_hit[k] += hit; mc->win_tot[k] += n_ids;
+            if (k == 0) {
+                // uncached experts ranked by predicted score: what an L3 / stream prefetch of M experts would fetch
+                std::vector<int32_t> unc;
+                for (int32_t e = 0; e < ne; ++e) {
+                    if (ls->expert_slot[e] < 0) { unc.push_back(e); }
+                }
+                const int32_t m = std::min<int32_t>(3, (int32_t) unc.size());
+                std::partial_sort(unc.begin(), unc.begin() + m, unc.end(), [&](int32_t x, int32_t y) { return sc(x) > sc(y); });
+                auto used = [&](int32_t e) {
+                    for (int64_t j = 0; j < n_ids; ++j) {
+                        if (*(const int32_t *) ((const char *) ids->data + j*ids->nb[0]) == e) { return true; }
+                    }
+                    return false;
+                };
+                uint64_t n_miss = 0;
+                for (int64_t j = 0; j < n_ids; ++j) {
+                    n_miss += ls->expert_slot[*(const int32_t *) ((const char *) ids->data + j*ids->nb[0])] < 0;
+                }
+                mc->pm_miss += n_miss;
+                uint64_t h = 0;
+                for (int32_t M = 1; M <= 3; ++M) {
+                    if (M <= m) { h += used(unc[M - 1]); }
+                    mc->pm_pick[M - 1] += std::min<int32_t>(M, m);
+                    mc->pm_hit[M - 1]  += h;
+                    mc->pm_cov[M - 1]  += h;
+                }
+            }
         }
     }
     if (!prefill && mc->pred_m > 0 && pred && pred->type == GGML_TYPE_F32 && pred->ne[1] == n_tokens && li + 1 < mc->layers.size()) {
@@ -810,6 +853,27 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
         mc->last_pred_step[li] = mc->n_steps;
         mc->last_pred_blk[li]  = n_blk;
         mc->last_obs = (int64_t) li;
+        if (knobs().l3pf > 0 && !mc->l3_thr.empty()) {
+            // top-M predicted experts of layer li+1 that aren't cached (block 0 = one layer ahead)
+            auto & tl = mc->layers[li + 1];
+            const auto & b = mc->pred_b[li + 1];
+            const float * lg = r.x.data();
+            auto sc = [&](int32_t e) { return b.empty() ? lg[e] : 1.0f/(1.0f + expf(-lg[e])) + b[e]; };
+            std::vector<int32_t> unc;
+            for (int32_t e = 0; e < (int32_t) ne; ++e) {
+                if (tl.expert_slot[e] < 0 && !tl.queued[e]) { unc.push_back(e); }
+            }
+            const int32_t m = std::min<int32_t>((int32_t) knobs().l3pf, (int32_t) unc.size());
+            std::partial_sort(unc.begin(), unc.begin() + m, unc.end(), [&](int32_t x, int32_t y) { return sc(x) > sc(y); });
+            unc.resize(m);
+            {
+                std::lock_guard<std::mutex> lk(mc->l3_mtx);
+                mc->l3_job.li = li + 1;
+                mc->l3_job.ex = std::move(unc);
+                mc->l3_job.gen++;
+            }
+            mc->l3_cv.notify_all();
+        }
         {
             std::lock_guard<std::mutex> plk(mc->pmtx);
             mc->preq.push_back(std::move(r));
@@ -1006,6 +1070,73 @@ bool pred_load(const moe_cache * mc) {
         ++i;
     }
     return true;
+}
+
+// L3 prefetch thread for one CCX (side 0: first half of every expert matrix's rows, side 1: second half, matching
+// GGML_MOE_CCX_SPLIT): waits for the current CPU expert phase to end, then reads the predicted experts' rows
+void l3pf_loop(moe_cache * mc, int side, int cpu) {
+#ifndef _WIN32
+    if (cpu >= 0) {
+        cpu_set_t cs;
+        CPU_ZERO(&cs);
+        CPU_SET(cpu, &cs);
+        pthread_setaffinity_np(pthread_self(), sizeof(cs), &cs);
+    }
+#endif
+    uint64_t seen = 0;
+    volatile uint64_t sink = 0;
+    for (;;) {
+        moe_cache::l3pf_job job;
+        {
+            std::unique_lock<std::mutex> lk(mc->l3_mtx);
+            mc->l3_cv.wait(lk, [&]() { return mc->l3_stop || mc->l3_job.gen != seen; });
+            if (mc->l3_stop) {
+                return;
+            }
+            job  = mc->l3_job;
+            seen = job.gen;
+        }
+        // the posting layer's CPU phase still reads DDR: start after it (bounded wait)
+        const int64_t t0 = ggml_time_us();
+        while (mc->cpu_busy && ggml_time_us() - t0 < 3000) {
+            std::this_thread::yield();
+        }
+        const auto & ls = mc->layers[job.li];
+        bool dropped = false;
+        for (int32_t e : job.ex) {
+            for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) {
+                const int64_t  rows = t->ne[1];
+                const uint8_t * base = (const uint8_t *) t->data + (size_t) e*t->nb[2];
+                const uint8_t * a = base + (size_t) (side*rows/2)*t->nb[1];
+                const uint8_t * b = base + (size_t) ((side + 1)*rows/2)*t->nb[1];
+                uint64_t x = 0;
+                for (const uint8_t * q = a; q < b; q += 64) {
+                    x += *(const volatile uint64_t *) q;
+                }
+                sink = sink + x;
+                if (mc->l3_job.gen != seen) { // ponytail: unlocked read, a newer job only makes this one stop early
+                    dropped = true;
+                    break;
+                }
+            }
+            if (dropped) {
+                break;
+            }
+            if (side == 0) {
+                mc->l3_n_ex++;
+            }
+        }
+        if (side == 0) {
+            // the target layer's CPU expert op has run its observer: the phase started before we finished
+            if (dropped) {
+                mc->l3_dropped++;
+            } else if (mc->last_obs >= (int64_t) job.li) {
+                mc->l3_late++;
+            } else {
+                mc->l3_done++;
+            }
+        }
+    }
 }
 
 void pred_loop(moe_cache * mc) {
@@ -2041,6 +2172,14 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
             if (n_pred > 0) {
                 mc->pred_thr = std::thread(pred_loop, mc);
+                {
+                    // L3 prefetch threads, idle until L3PF > 0 (LLAMA_MOE_L3PF_CPUS: CPU for CCX0,CPU for CCX1)
+                    const char * c = getenv("LLAMA_MOE_L3PF_CPUS");
+                    int c0 = 3, c1 = 7;
+                    if (c) { sscanf(c, "%d,%d", &c0, &c1); }
+                    mc->l3_thr.emplace_back(l3pf_loop, mc, 0, c0);
+                    mc->l3_thr.emplace_back(l3pf_loop, mc, 1, c1);
+                }
                 ggml_backend_set_split_callback(moe_split_cb, mc);
                 LLAMA_LOG_WARN("moe-cache: router prediction for %zu layers: top-%d, up to %d uploads per layer\n",
                         n_pred, mc->pred_m, mc->pred_max);
@@ -2628,6 +2767,20 @@ void llama_moe_cache_free() {
     ggml_backend_set_moe_src_callback(nullptr, nullptr);
     ggml_backend_set_moe_fill_callback(nullptr, nullptr);
     ggml_backend_set_split_callback(nullptr, nullptr);
+    if (!mc->l3_thr.empty()) {
+        {
+            std::lock_guard<std::mutex> lk(mc->l3_mtx);
+            mc->l3_stop = true;
+        }
+        mc->l3_cv.notify_all();
+        for (auto & t : mc->l3_thr) { t.join(); }
+        mc->l3_thr.clear();
+        if (mc->l3_n_ex) {
+            LLAMA_LOG_WARN("moe-cache: L3 prefetch: %llu experts, %llu read before their layer's CPU phase, %llu late, %llu dropped (newer job)\n",
+                (unsigned long long) mc->l3_n_ex.load(), (unsigned long long) mc->l3_done.load(),
+                (unsigned long long) mc->l3_late.load(), (unsigned long long) mc->l3_dropped.load());
+        }
+    }
     if (mc->pred_thr.joinable()) {
         {
             std::lock_guard<std::mutex> plk(mc->pmtx);
@@ -2649,6 +2802,14 @@ void llama_moe_cache_free() {
     for (auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
     LLAMA_LOG_WARN("moe-cache: steps=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " hit-rate=%.1f%%, prefill experts from cache %" PRIu64 "/%" PRIu64 ", kept from prefill %" PRIu64 "\n",
             mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0, mc->n_src_hit, mc->n_src_query, mc->n_adopted);
+    if (mc->pm_pick[0]) {
+        LLAMA_LOG_WARN("moe-cache: prefetch candidates L+1 (top-M predicted uncached): M=1 %.0f%% used, M=2 %.0f%%, M=3 %.0f%%; "
+                "they cover %.0f%% / %.0f%% / %.0f%% of the real misses (%.2f misses per layer)\n",
+                100.0*mc->pm_hit[0]/mc->pm_pick[0], 100.0*mc->pm_hit[1]/std::max<uint64_t>(1, mc->pm_pick[1]),
+                100.0*mc->pm_hit[2]/std::max<uint64_t>(1, mc->pm_pick[2]),
+                100.0*mc->pm_cov[0]/std::max<uint64_t>(1, mc->pm_miss), 100.0*mc->pm_cov[1]/std::max<uint64_t>(1, mc->pm_miss),
+                100.0*mc->pm_cov[2]/std::max<uint64_t>(1, mc->pm_miss), (double) mc->pm_miss/std::max<uint64_t>(1, mc->acc_tot[0]/8));
+    }
     if (mc->acc_tot[0]) {
         std::string msg;
         for (int k = 0; k < 8 && mc->acc_tot[k] > 0; ++k) {
