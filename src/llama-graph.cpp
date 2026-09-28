@@ -21,6 +21,7 @@
 #include "llama-memory-recurrent.h"
 
 #include <cassert>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <numeric>
