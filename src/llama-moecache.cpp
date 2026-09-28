@@ -414,7 +414,7 @@ struct knobs_t {
     double stream    = 1e9; // predicted uploads use up to this many stream slots per layer (0: evict cache slots, old path)
     double stream_m  = 12;  // candidates per target layer in stream mode (over-predict; no confidence cut)
     double slotkeep  = 0;   // a prediction may only replace a stream slot holding a lower-scored one of this step
-    double self_tune = 0;   // self-tuner: A/B the streaming knobs one at a time on real decode token time (live_tune)
+    double self_tune = 0;   // self-tuner: A/B the streaming knobs one at a time on real decode token time (self_tune())
     double offset      = 1; // predicted uploads only for layers far enough ahead to land in time on their link
     double stream_slow = 1; // stream onto slow-link (x4) layers too
     double trace       = 0; // LLAMA_MOE_CACHE_TRACE set: record this many steps (re-armed whenever a ctl file sets it)
