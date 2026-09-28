@@ -404,11 +404,11 @@ void * ggml_aligned_malloc(size_t size) {
         const char * e = getenv("GGML_HUGEPAGES");
         hugepages = e && atoi(e) != 0;
     }
-    if (hugepages && size >= (2u << 20)) {
-        alignment = alignment > (2u << 20) ? alignment : (2u << 20);
-    }
+    const size_t align_hp = hugepages && size >= (2u << 20) && alignment < (2u << 20) ? (2u << 20) : alignment;
+  #else
+    const size_t align_hp = alignment;
   #endif
-    int result = posix_memalign(&aligned_memory, alignment, size);
+    int result = posix_memalign(&aligned_memory, align_hp, size);
   #if defined(__linux__)
     if (result == 0 && hugepages && size >= (2u << 20)) {
         madvise(aligned_memory, size, MADV_HUGEPAGE);
