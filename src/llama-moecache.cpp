@@ -322,6 +322,7 @@ struct moe_cache {
     std::atomic<uint64_t>   l3_n_ex{0}, l3_done{0}, l3_late{0}, l3_dropped{0};
     // live A/B slices (AUTO_L3): state 0 = off, 1 = on; token time sums per state; decided value
     int      ab_state = 0, ab_slices = 0, ab_decided = -1;
+    int      cpu_sat_threads = 0; // startup probe: reader threads that reach 95% of the CPU's RAM read rate
     double   ab_sum[2] = { 0, 0 };
     uint64_t ab_n[2] = { 0, 0 }, ab_since = 0;
     double   l3pf_set = 0; // the configured L3PF the slices test against 0
@@ -1184,13 +1185,13 @@ void resource_probe(moe_cache * mc) {
     for (size_t li = 0; li < mc->layers.size(); ++li) {
         if (link_layer[mc->layers[li].link] < 0 && mc->layers[li].pub.n_slots > 0) { link_layer[mc->layers[li].link] = (int) li; }
     }
-    auto run = [&](bool cpu, bool dma, double secs, double & cpu_gbs, std::vector<double> & link_gbs) {
+    auto run = [&](int n_thr, bool dma, double secs, double & cpu_gbs, std::vector<double> & link_gbs) {
         std::atomic<bool> stop{false};
         std::atomic<size_t> next{0};
-        std::vector<double> got(n_cpu + mc->n_links, 0.0);
+        std::vector<double> got(n_thr + mc->n_links, 0.0);
         std::vector<std::thread> th;
-        if (cpu) {
-            for (int t = 0; t < n_cpu; ++t) {
+        {
+            for (int t = 0; t < n_thr; ++t) {
                 th.emplace_back([&, t] {
                     unpin_helper();
                     uint64_t x = 0;
@@ -1214,7 +1215,7 @@ void resource_probe(moe_cache * mc) {
                         const ggml_tensor * t = ls.pub.up_src;
                         const int64_t e = (int64_t) (i++ % (size_t) t->ne[2]);
                         ggml_backend_tensor_set(ls.pub.up_c, (const uint8_t *) t->data + (size_t) e*t->nb[2], 0, t->nb[2]);
-                        got[n_cpu + k] += (double) t->nb[2];
+                        got[n_thr + k] += (double) t->nb[2];
                     }
                 });
             }
@@ -1225,26 +1226,49 @@ void resource_probe(moe_cache * mc) {
         for (auto & x : th) { x.join(); }
         const double dt = (double) (ggml_time_us() - t0);
         cpu_gbs = 0;
-        for (int t = 0; t < n_cpu; ++t) { cpu_gbs += got[t] / dt / 1e3; }
+        for (int t = 0; t < n_thr; ++t) { cpu_gbs += got[t] / dt / 1e3; }
         link_gbs.assign(mc->n_links, 0.0);
-        for (int k = 0; k < mc->n_links; ++k) { link_gbs[k] = got[n_cpu + k] / dt / 1e3; }
+        for (int k = 0; k < mc->n_links; ++k) { link_gbs[k] = got[n_thr + k] / dt / 1e3; }
     };
-    double cpu_alone = 0, cpu_mixed = 0, dummy = 0;
-    std::vector<double> link_alone, link_mixed, tmp;
-    run(true, false, 0.15, cpu_alone, tmp);
-    run(false, true, 0.15, dummy, link_alone);
-    run(true, true, 0.2, cpu_mixed, link_mixed);
-    double total = cpu_mixed;
-    for (double g : link_mixed) { total += g; }
+    // one ramp: step 0 runs the links alone, then each step adds a CPU reader thread and measures it alone and
+    // together with every link, until neither rises (< 3% twice in a row). Peak CPU alone = the CPU's RAM read rate,
+    // the thread count reaching 95% of it = cores that saturate RAM; peak CPU + links = the RAM budget
+    double cpu_alone = 0, total = 0;
+    std::vector<double> link_alone, link_mixed, tmp, ramp, ramp_all;
+    const int n_max = std::max(1, n_phys > 0 ? n_phys : (int) std::thread::hardware_concurrency());
+    int flat = 0;
+    for (int nt = 0; nt <= n_max && flat < 2; ++nt) {
+        double g = 0, gm = 0;
+        if (nt == 0) {
+            run(0, true, 0.15, g, link_alone);
+            continue;
+        }
+        run(nt, false, 0.08, g, tmp);
+        run(nt, true, 0.08, gm, link_mixed);
+        for (double l : link_mixed) { gm += l; }
+        flat = g < cpu_alone * 1.03 && gm < total * 1.03 ? flat + 1 : 0;
+        cpu_alone = std::max(cpu_alone, g);
+        total     = std::max(total, gm);
+        ramp.push_back(g);
+        ramp_all.push_back(gm);
+    }
+    int n_sat = (int) ramp.size();
+    for (int i = 0; i < (int) ramp.size(); ++i) {
+        if (ramp[i] >= 0.95 * cpu_alone) { n_sat = i + 1; break; }
+    }
+    mc->cpu_sat_threads = n_sat;
     if (!getenv("LLAMA_MOE_CACHE_CPU_GBS")) { knobs().cpu_gbs = cpu_alone; }
     if (!getenv("LLAMA_MOE_CACHE_DDR_GBS")) { knobs().ddr_gbs = std::max(cpu_alone, total); }
-    std::string links;
+    std::string links, rs;
     for (int k = 0; k < mc->n_links; ++k) {
         mc->gbs_link[k] = link_alone[k];
         links += tr_fmt(" link %d %.1f", k, link_alone[k]);
     }
-    LLAMA_LOG_WARN("moe-cache: probe (%d CPU threads): CPU %.1f GB/s,%s GB/s alone; together CPU %.1f + links -> RAM budget %.1f GB/s\n",
-        n_cpu, cpu_alone, links.c_str(), cpu_mixed, knobs().ddr_gbs);
+    for (size_t i = 0; i < ramp.size(); ++i) {
+        rs += tr_fmt("%s%zu:%.1f/%.1f", i ? " " : "", i + 1, ramp[i], ramp_all[i]);
+    }
+    LLAMA_LOG_WARN("moe-cache: probe: links alone%s GB/s; CPU threads:GB/s alone/with links %s -> CPU %.1f GB/s "
+        "(saturated by %d threads), RAM budget %.1f GB/s\n", links.c_str(), rs.c_str(), cpu_alone, n_sat, knobs().ddr_gbs);
 }
 
 // physical cores (first SMT thread of each) per L3 domain, domains in order of their first CPU; empty if unknown
