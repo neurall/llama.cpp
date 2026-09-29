@@ -5,7 +5,7 @@
 #   NEW_BIN / OLD_BIN: directories on W10 holding llama-server.exe, e.g. N:\llama.cpp\build-cuda-dl\bin and N:\rel\b11399
 #   env: W10=user@host (o@192.168.1.2)  MODEL=N:\m\qwen36.gguf  PORT=18080  TOL=0.95 (new must reach 95% of old)
 # Per variant and round (alternating order to cancel thermal/position bias): server start, 500-token warmup, README "short"
-# test (1500 tokens), 2 chats (300 tokens). Prints HB heartbeat lines, a summary table and REGRESSION / OK, appends
+# test (1500 tokens), 2 chats (300 tokens), and a LONG prompt (12k tokens: prefill t/s is the metric). Prints HB heartbeat lines, a summary table and REGRESSION / OK, appends
 # tools/moe-bench/w10_reg_history.csv, and ends with W10REG_DONE. Needs AC power (battery caps the GPU at ~600 MHz).
 NEW=${1:?NEW_BIN}; OLD=${2:?OLD_BIN}; shift 2; ROUNDS=2; if [[ "${1:-}" =~ ^[0-9]+$ ]]; then ROUNDS=$1; shift; fi; XARGS="$*"
 W10=${W10:-o@192.168.1.2}; MODEL=${MODEL:-N:\\m\\qwen36.gguf}; PORT=${PORT:-18080}; TOL=${TOL:-0.95}
@@ -33,6 +33,7 @@ run_variant() { # tag dir round
     PIDX=0 python3 "$CLIENT" "http://127.0.0.1:$PORT" short 500 > /dev/null
     echo "$round $tag short $(PIDX=1 timeout 600 python3 "$CLIENT" "http://127.0.0.1:$PORT" short 1500)" >> "$OUT/raw.txt"
     for i in 2 3; do echo "$round $tag chat $(PIDX=$i timeout 300 python3 "$CLIENT" "http://127.0.0.1:$PORT" chat 300)" >> "$OUT/raw.txt"; done
+    echo "$round $tag long $(timeout 900 python3 "$CLIENT" "http://127.0.0.1:$PORT" 12k 32)" >> "$OUT/raw.txt"   # 12k-token prompt: pp = prefill t/s
     hb "round $round $tag: $(tail -3 "$OUT/raw.txt" | sed -E 's/.*"tg": ([0-9.]+).*/\1/' | tr '\n' ' ') t/s"
   else
     echo "$round $tag FAIL" >> "$OUT/raw.txt"; hb "round $round $tag: server failed to start"
@@ -53,11 +54,12 @@ d = {}
 for l in open(raw):
     m = re.match(r"(\d+) (\w+) (\w+) (\{.*\})", l)
     if m:
-        try: d.setdefault((m.group(2), m.group(3)), []).append(json.loads(m.group(4))["tg"])
+        try:
+            j = json.loads(m.group(4)); d.setdefault((m.group(2), m.group(3)), []).append(j["pp"] if m.group(3) == "long" else j["tg"])
         except Exception: pass
-print("\nW10 (RTX 4060, Windows) decode t/s, mean of runs (n)          old        new      new/old")
+print("\nW10 (RTX 4060, Windows), mean of runs (n); short/chat = decode t/s, long = 12k-prompt prefill t/s      old        new      new/old")
 bad = False
-for test in ("short", "chat"):
+for test in ("short", "chat", "long"):
     o, n = d.get(("old", test), []), d.get(("new", test), [])
     if not o or not n: print(f"  {test:6s} missing data (old {len(o)}, new {len(n)})"); bad = True; continue
     ro = st.mean(o); rn = st.mean(n)
