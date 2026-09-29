@@ -5905,6 +5905,7 @@ static __global__ void k_wait_host_flag(const volatile uint32_t * f, uint32_t v)
         __nanosleep(256);
 #endif
         if (clock64() - t0 > 1000000000LL) { // ~0.6 s
+            atomicAdd((unsigned int *) (f + 1), 1u); // f[1]: timeouts, read by the host (the queued split ran early)
             break;
         }
     }

@@ -1378,10 +1378,16 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                 continue;
             }
             std::unordered_set<const ggml_tensor *> tainted, reads;
+            // pure views don't write: only the view itself is the run's, not the tensor it looks at
+            auto taint = [&](ggml_tensor * t) {
+                tainted.insert(t);
+                if (!ggml_is_view_op(t->op)) {
+                    tainted.insert(base(t));
+                }
+            };
             for (int k = a; k < b; k++) {
                 ggml_tensor * t = graph->nodes[k];
-                tainted.insert(t);
-                tainted.insert(base(t));
+                taint(t);
                 for (int j = 0; j < GGML_MAX_SRC; j++) {
                     if (t->src[j]) { reads.insert(base(t->src[j])); }
                 }
@@ -1397,12 +1403,14 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                 // writes into a tensor that the run or a node staying behind reads: must keep its place
                 const bool war = t->view_src && reads.count(t->view_src);
                 if (!dep && !war && !ggml_is_view_op(t->op) && is_cpu(t)) {
-                    break; // next independent host node: stop here
+                    if (t->op == GGML_OP_MUL_MAT_ID) {
+                        break; // next host expert run: it gets its own pass
+                    }
+                    dep = true; // other host node: keeps its place, and so do its dependents
                 }
                 if (dep || war) {
                     stay.push_back(t);
-                    tainted.insert(t);
-                    tainted.insert(base(t));
+                    taint(t);
                     for (int j = 0; j < GGML_MAX_SRC; j++) {
                         if (t->src[j]) { reads.insert(base(t->src[j])); }
                     }
@@ -2010,7 +2018,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         if (reg) {
             auto fa = (flags_alloc_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_host_flags_alloc");
             wait_flag = (wait_flag_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_wait_host_flag");
-            pl_flag   = fa ? fa(1) : nullptr;
+            pl_flag   = fa ? fa(2) : nullptr; // [0] release counter, [1] device-side wait timeouts
             signal_flag = (signal_flag_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_signal_host_flag");
             d2h_flags   = fa ? fa(GGML_SCHED_MAX_BACKENDS) : nullptr;
         }
@@ -2420,7 +2428,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 for (int j = 0; j < split->graph.n_nodes && !mmid; j++) {
                     mmid = split->graph.nodes[j]->op == GGML_OP_MUL_MAT_ID;
                 }
-                if (mmid && can_prelaunch(split_id + 1)) {
+                // decode-size host runs only (few tokens): prompt batches can block the host inside the split
+                bool small = mmid;
+                for (int j = 0; j < split->graph.n_nodes && small; j++) {
+                    const ggml_tensor * t = split->graph.nodes[j];
+                    small = t->op != GGML_OP_MUL_MAT_ID || t->src[2]->ne[1] <= 8;
+                }
+                if (small && can_prelaunch(split_id + 1)) {
                     struct ggml_backend_sched_split * nx = &splits[split_id + 1];
                     ggml_backend_t nbe = sched->backends[nx->backend_id];
                     if (wait_flag(nbe, (const uint32_t *) pl_flag, pl_seq + 1)) {
@@ -2525,6 +2539,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         prev_backend_id = split_backend_id;
     }
 
+    if (pl_flag) {
+        static uint32_t pl_timeouts = 0;
+        if (pl_flag[1] != pl_timeouts) {
+            pl_timeouts = pl_flag[1];
+            GGML_LOG_WARN("%s: GGML_SCHED_PRELAUNCH: %u device-side waits timed out (a queued split ran before its host input)\n", __func__, pl_timeouts);
+        }
+    }
     if (tl_on && !tl.empty()) {
         const int64_t b = tl[0].t0;
         fprintf(stderr, "sched-timeline: %zu splits, graph %.2f ms (start, +barrier, +inputs, +launch/compute us; backend nodes inputs first..last)\n",
