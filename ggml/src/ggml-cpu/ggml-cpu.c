@@ -1547,6 +1547,94 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
     return ptr;
 }
 
+// GGML_MOE_PHASE_PROF=1: where the host-expert matmuls (MoE cache misses) lose time vs the RAM's read rate.
+// Per op: thread arrival skew, pre-barrier work (src1 quantize + row grouping + barrier), per-thread compute,
+// imbalance (slowest vs mean thread), gap to the previous op; printed every 4096 ops. Diagnostic only.
+static int     g_mp_on = -1;
+static int64_t g_mp_enter[GGML_MAX_N_THREADS], g_mp_tbar[GGML_MAX_N_THREADS], g_mp_exit[GGML_MAX_N_THREADS];
+static atomic_int g_mp_in, g_mp_out;
+static struct {
+    int64_t n, n0, bytes, wall, wall0, skew, pre, comp_mean, comp_max, tail, gap_near, n_near, gap_far, n_far, last_exit;
+    int64_t gk[3], nk[3]; // gap before gate / up / down ops (near gaps only)
+} g_mp;
+
+static inline int64_t ggml_mp_ns(void) {
+#if defined(_WIN32)
+    static LARGE_INTEGER f = {0};
+    LARGE_INTEGER c;
+    if (f.QuadPart == 0) { QueryPerformanceFrequency(&f); }
+    QueryPerformanceCounter(&c);
+    return (int64_t) ((double) c.QuadPart * 1e9 / (double) f.QuadPart);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
+#endif
+}
+
+// bytes one host-expert MUL_MAT_ID reads from RAM: one src0 matrix per distinct uncached expert
+static size_t ggml_moe_host_bytes(const struct ggml_tensor * dst) {
+    const struct ggml_tensor * ids = dst->src[2];
+    const int32_t * tbl   = (const int32_t *) dst->src[3]->data;
+    const int32_t   dummy = ggml_get_op_params_i32(dst, 0);
+    size_t bytes = 0;
+    for (int64_t t = 0; t < ids->ne[1]; ++t) {
+        for (int64_t i = 0; i < ids->ne[0]; ++i) {
+            const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+            if (e < 0) { continue; }
+            bool seen = false;
+            for (int64_t t2 = 0; t2 <= t && !seen; ++t2) {
+                for (int64_t i2 = 0; i2 < (t2 == t ? i : ids->ne[0]); ++i2) {
+                    if (*(const int32_t *) ((const char *) ids->data + t2*ids->nb[1] + i2*ids->nb[0]) == e) { seen = true; break; }
+                }
+            }
+            bytes += (!seen && tbl[e] == dummy) ? dst->src[0]->nb[2] : 0;
+        }
+    }
+    return bytes;
+}
+
+static void ggml_mp_done(const struct ggml_tensor * dst, int nth) { // last thread out of one op
+    int64_t e0 = INT64_MAX, e1 = 0, b0 = INT64_MAX, x1 = 0, xs = 0, cs = 0, cm = 0;
+    for (int i = 0; i < nth; ++i) {
+        e0 = MIN(e0, g_mp_enter[i]); e1 = MAX(e1, g_mp_enter[i]);
+        b0 = MIN(b0, g_mp_tbar[i]);  x1 = MAX(x1, g_mp_exit[i]); xs += g_mp_exit[i];
+        const int64_t c = g_mp_exit[i] - g_mp_tbar[i];
+        cs += c; cm = MAX(cm, c);
+    }
+    const size_t bytes = ggml_moe_host_bytes(dst);
+    if (g_mp.last_exit) {
+        const int64_t gap = e0 - g_mp.last_exit;
+        if (gap < 2000000) {
+            g_mp.gap_near += gap; g_mp.n_near++;
+            const char * nm = dst->src[0]->name;
+            const int k = strstr(nm, "gate") ? 0 : strstr(nm, "up") ? 1 : 2;
+            g_mp.gk[k] += gap; g_mp.nk[k]++;
+        } else { g_mp.gap_far += gap; g_mp.n_far++; }
+    }
+    g_mp.last_exit = x1;
+    if (bytes == 0) { g_mp.n0++; g_mp.wall0 += x1 - e0; }
+    else {
+        g_mp.n++; g_mp.bytes += bytes; g_mp.wall += x1 - e0; g_mp.skew += e1 - e0; g_mp.pre += b0 - e0;
+        g_mp.comp_mean += cs / nth; g_mp.comp_max += cm; g_mp.tail += x1 - xs / nth;
+    }
+    if (g_mp.n + g_mp.n0 >= 4096) {
+        const double n = (double) MAX(g_mp.n, 1);
+        fprintf(stderr, "moe-phase-prof: %" PRId64 " ops (%d threads), %.2f MB/op, wall %.1f us = %.1f GB/s | skew %.1f, pre-barrier %.1f, "
+                      "compute mean %.1f / max %.1f (%.1f GB/s on max), tail %.1f us | %" PRId64 " zero-byte ops %.1f us | "
+                      "gap to prev op: near %.1f us (%" PRId64 "), far %.1f us (%" PRId64 ") | before gate %.1f up %.1f down %.1f us\n",
+            g_mp.n, nth, g_mp.bytes / n / 1e6, g_mp.wall / n / 1e3, g_mp.bytes / (double) MAX(g_mp.wall, 1),
+            g_mp.skew / n / 1e3, g_mp.pre / n / 1e3, g_mp.comp_mean / n / 1e3, g_mp.comp_max / n / 1e3,
+            g_mp.bytes / (double) MAX(g_mp.comp_max, 1), g_mp.tail / n / 1e3,
+            g_mp.n0, g_mp.wall0 / (double) MAX(g_mp.n0, 1) / 1e3,
+            g_mp.gap_near / (double) MAX(g_mp.n_near, 1) / 1e3, g_mp.n_near, g_mp.gap_far / (double) MAX(g_mp.n_far, 1) / 1e3, g_mp.n_far,
+            g_mp.gk[0] / (double) MAX(g_mp.nk[0], 1) / 1e3, g_mp.gk[1] / (double) MAX(g_mp.nk[1], 1) / 1e3, g_mp.gk[2] / (double) MAX(g_mp.nk[2], 1) / 1e3);
+        const int64_t le = g_mp.last_exit;
+        memset(&g_mp, 0, sizeof(g_mp));
+        g_mp.last_exit = le;
+    }
+}
+
 static void ggml_compute_forward_mul_mat_id_impl(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
@@ -1731,6 +1819,10 @@ static void ggml_compute_forward_mul_mat_id_impl(
 
     ggml_barrier(params->threadpool);
 
+    if (g_mp_on == 1 && dst->src[3]) {
+        g_mp_tbar[ith] = ggml_mp_ns();
+    }
+
     for (int cur_a = 0; cur_a < n_as; ++cur_a) {
         const int64_t cne1 = matrix_row_counts[cur_a];
 
@@ -1839,31 +1931,30 @@ static void ggml_compute_forward_mul_mat_id(
         ggml_compute_forward_mul_mat_id_impl(params, dst);
         return;
     }
+    if (g_mp_on < 0) {
+        const char * e = getenv("GGML_MOE_PHASE_PROF");
+        g_mp_on = e && atoi(e) != 0;
+    }
+    if (g_mp_on == 1) {
+        g_mp_enter[params->ith] = ggml_mp_ns();
+        atomic_fetch_add(&g_mp_in, 1);
+    }
     void * ud = NULL;
     ggml_moe_phase_cb_t cb = ggml_get_moe_phase_callback(&ud);
     if (cb && atomic_fetch_add(&g_moe_cpu_active, 1) == 0) {
-        // bytes this op reads from RAM: one src0 matrix per distinct uncached expert
-        const struct ggml_tensor * ids = dst->src[2];
-        const int32_t * tbl   = (const int32_t *) dst->src[3]->data;
-        const int32_t   dummy = ggml_get_op_params_i32(dst, 0);
-        size_t bytes = 0;
-        for (int64_t t = 0; t < ids->ne[1]; ++t) {
-            for (int64_t i = 0; i < ids->ne[0]; ++i) {
-                const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
-                bool seen = false;
-                for (int64_t t2 = 0; t2 <= t && !seen; ++t2) {
-                    for (int64_t i2 = 0; i2 < (t2 == t ? i : ids->ne[0]); ++i2) {
-                        if (*(const int32_t *) ((const char *) ids->data + t2*ids->nb[1] + i2*ids->nb[0]) == e) { seen = true; break; }
-                    }
-                }
-                bytes += (!seen && tbl[e] == dummy) ? dst->src[0]->nb[2] : 0;
-            }
-        }
-        cb(1, bytes, ud);
+        cb(1, ggml_moe_host_bytes(dst), ud);
     }
     ggml_compute_forward_mul_mat_id_impl(params, dst);
     if (cb && atomic_fetch_add(&g_moe_cpu_active, -1) == 1) { // fetch_add(-1): MSVC has only the add shim
         cb(0, 0, ud);
+    }
+    if (g_mp_on == 1) {
+        g_mp_exit[params->ith] = ggml_mp_ns();
+        if (atomic_fetch_add(&g_mp_out, 1) == params->nth - 1) { // last thread out: all timestamps written
+            ggml_mp_done(dst, params->nth);
+            atomic_store(&g_mp_out, 0);
+            atomic_store(&g_mp_in, 0);
+        }
     }
 }
 

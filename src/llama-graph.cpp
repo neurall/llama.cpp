@@ -2255,13 +2255,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         type_op == LLM_FFN_SILU && !weight_before_ffn && loras->empty()) {
         mcache = llama_moe_cache_lookup(up_exps);
     }
-    if (mcache) {
-        // get_rows batches over ids->ne[1] only when the table has matching ne[2]: flatten
-        ggml_tensor * ids_flat = ggml_reshape_1d(ctx0, ggml_cont(ctx0, selected_experts), n_expert_used*n_tokens);
-        mc_slot_ids = ggml_get_rows(ctx0, mcache->dev_table, ids_flat); // [1, n_expert_used*n_tokens]
-        mc_slot_ids = ggml_reshape_2d(ctx0, mc_slot_ids, n_expert_used, n_tokens);
-        cb(mc_slot_ids, "ffn_moe_cache_slots", il);
-    }
 
     cur = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
     ggml_tensor * mc_inp = cur;
@@ -2313,6 +2306,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 }
             }
         }
+        ggml_tensor * sel_dev = selected_experts;
         if (cpu_backend) {
             cur = ggml_cont(ctx0, cur);
             selected_experts = ggml_cont(ctx0, selected_experts);
@@ -2321,6 +2315,28 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             cb(cur, "ffn_moe_cpu_inp", il);
             ggml_build_forward_expand(gf, cur);
             ggml_build_forward_expand(gf, selected_experts);
+            // JIT miss offload: with the ids on the host (this CPU split), the cache may upload some of this layer's
+            // misses on the chain's stream before the chain below is launched (llama_moe_cache_jit)
+            ggml_tensor * jit = ggml_map_custom1(ctx0, selected_experts,
+                    [](ggml_tensor * dst, const ggml_tensor * a, int ith, int nth, void * ud) {
+                        GGML_UNUSED(nth);
+                        if (ith == 0) {
+                            llama_moe_cache_jit((const llama_moe_cache_layer *) ud, a);
+                            memcpy(dst->data, a->data, ggml_nbytes(a));
+                        }
+                    }, 1, (void *) mcache);
+            ggml_backend_sched_set_tensor_backend(sched, jit, cpu_backend);
+            cb(jit, "ffn_moe_cache_jit", il);
+            ggml_build_forward_expand(gf, jit);
+        }
+
+        // slot ids from the device table, after the CPU split above so they see the JIT's table updates;
+        // get_rows batches over ids->ne[1] only when the table has matching ne[2]: flatten
+        {
+            ggml_tensor * ids_flat = ggml_reshape_1d(ctx0, ggml_cont(ctx0, sel_dev), n_expert_used*n_tokens);
+            mc_slot_ids = ggml_get_rows(ctx0, mcache->dev_table, ids_flat); // [1, n_expert_used*n_tokens]
+            mc_slot_ids = ggml_reshape_2d(ctx0, mc_slot_ids, n_expert_used, n_tokens);
+            cb(mc_slot_ids, "ffn_moe_cache_slots", il);
         }
 
         // device-side chain over the cached experts, mirroring the LLM_FFN_SILU

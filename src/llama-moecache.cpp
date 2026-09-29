@@ -232,6 +232,8 @@ struct moe_cache {
     std::vector<int>         worker_link; // worker -> upload link it serves (layer_state::link), -1: all
     int                      n_links = 1; // GPUs holding cache layers
     ggml_backend_dev_t       link_dev[MAX_LINKS] = {}; // the GPU behind each link
+    ggml_backend_t           link_be[MAX_LINKS]  = {}; // its compute backend (seen at the split callback): JIT uploads go on its stream
+    uint64_t                 n_jit = 0, n_jit_layers = 0, n_jit_miss = 0; // JIT: experts uploaded, layer calls that uploaded, misses seen
     // layer clock (resource saturator deadlines): EMA of the time from layer i's CPU expert op to layer i+1's
     std::vector<double>      layer_dt;
     int64_t                  clk_t  = 0;
@@ -439,6 +441,9 @@ struct knobs_t {
     double stream_slow = 1; // stream onto slow-link (x4) layers too
     double trace       = 0; // LLAMA_MOE_CACHE_TRACE set: record this many steps (re-armed whenever a ctl file sets it)
     double trace_after = 0; // ... starting after this many steps
+    double jit         = 1; // JIT miss offload (JIT=0 off): once a layer's router ids reach the host, upload the k misses (k from the
+                            // measured link / CPU / combined RAM rates) that make CPU + link finish soonest into cache slots on
+                            // the chain's stream, so the GPU computes them this token while the CPU computes the rest
 };
 
 bool knob_set(knobs_t & k, const std::string & name, double v) {
@@ -450,7 +455,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
         { "BIG", &knobs_t::big }, { "L3PF", &knobs_t::l3pf }, { "AUTO_L3", &knobs_t::auto_l3 }, { "TBP", &knobs_t::tbp }, { "TBP_LAYERS", &knobs_t::tbp_layers }, { "CHUNK_KB", &knobs_t::chunk_kb },
         { "STREAM", &knobs_t::stream }, { "STREAM_M", &knobs_t::stream_m }, { "SLOTKEEP", &knobs_t::slotkeep }, { "SELF_TUNE", &knobs_t::self_tune }, { "PREDICT", &knobs_t::predict },
         { "OFFSET", &knobs_t::offset }, { "STREAM_SLOW", &knobs_t::stream_slow },
-        { "TRACE", &knobs_t::trace }, { "TRACE_AFTER", &knobs_t::trace_after },
+        { "TRACE", &knobs_t::trace }, { "TRACE_AFTER", &knobs_t::trace_after }, { "JIT", &knobs_t::jit },
     };
     for (const auto & f : fields) {
         if (name == f.first) {
@@ -464,7 +469,7 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF", "AUTO_L3", "SLOTKEEP", "SELF_TUNE", "PREDICT" }) {
+        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF", "AUTO_L3", "SLOTKEEP", "SELF_TUNE", "PREDICT", "JIT" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
             }
@@ -1835,8 +1840,15 @@ void flush_tables() {
 // Router prediction: before a GPU split launches, publish the predicted experts whose upload
 // finished. No split is executing (the previous CPU split synchronized), so tables can change.
 static void moe_split_cb(ggml_backend_t backend, void * ud) {
-    GGML_UNUSED(backend);
     moe_cache * mc = (moe_cache *) ud;
+    for (int k = 0; k < mc->n_links; ++k) { // main thread only; read by the JIT op on the same thread
+        if (!mc->link_be[k] && mc->link_dev[k] == ggml_backend_get_device(backend)) {
+            mc->link_be[k] = backend;
+        }
+    }
+    if (mc->pred_m == 0 && knobs().jit == 0) {
+        return;
+    }
     std::vector<upload_job> ready;
     {
         std::lock_guard<std::mutex> wlk(mc->wmtx);
@@ -2573,6 +2585,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                         n_pred, mc->pred_m, mc->pred_max);
             } else {
                 mc->pred_m = 0;
+                ggml_backend_set_split_callback(moe_split_cb, mc); // JIT: the GPU backends and the table flush before chains
             }
         }
         ggml_set_moe_obs_callback(moe_obs_cb, mc);
@@ -2593,6 +2606,117 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 std::max_element(mc->layers.begin(), mc->layers.end(), [](auto & a, auto & b) { return a.pub.n_slots < b.pub.n_slots; })->pub.n_slots,
                 mc->max_inserts, vram/1024.0/1024.0);
     }();
+}
+
+// JIT miss offload. Runs on the CPU (graph custom op) as soon as layer `pub`'s router ids are on the host, before the
+// cache chain of that layer is launched. For m uncached experts of size S, CPU alone takes m*S/rc. Uploading k of them
+// over the layer's link (rate rl) while the CPU computes the rest at the contended rate rcc = min(rc, ram - rl) (then rc
+// once the link is done) finishes at T(k); the k with the smallest T wins, 0 when nothing beats the CPU alone. All rates
+// are measured (link and CPU phase rates live, RAM budget by the startup probe). Uploaded experts become cache entries
+// (same eviction score as the step's swaps), so the upload also serves later tokens.
+void llama_moe_cache_jit(const llama_moe_cache_layer * pub, const ggml_tensor * ids) {
+    moe_cache * mc = g_cache;
+    if (!mc || knobs().jit == 0 || ids->ne[1] > 4) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    layer_state * lsp = nullptr;
+    for (auto & l : mc->layers) {
+        if (&l.pub == pub) { lsp = &l; break; }
+    }
+    if (!lsp) {
+        return;
+    }
+    layer_state & ls = *lsp;
+    ggml_backend_t be = mc->link_be[ls.link];
+    const double rl = mc->gbs_link[ls.link];
+    if (!be || rl <= 0) {
+        return;
+    }
+    std::vector<int32_t> cur, miss;
+    for (int64_t t = 0; t < ids->ne[1]; ++t) {
+        for (int64_t i = 0; i < ids->ne[0]; ++i) {
+            const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+            if (e < 0 || e >= (int32_t) ls.expert_slot.size() || std::find(cur.begin(), cur.end(), e) != cur.end()) {
+                continue;
+            }
+            cur.push_back(e);
+            if (ls.expert_slot[e] < 0 && !ls.queued[e]) {
+                miss.push_back(e);
+            }
+        }
+    }
+    mc->n_jit_miss += miss.size();
+    if (miss.empty()) {
+        return;
+    }
+    const double S   = (double) (pub->up_src->nb[2] + pub->gate_src->nb[2] + pub->down_src->nb[2]);
+    const double rc  = (mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs) * 1e3; // bytes/us
+    const double rcc = std::min(rc, std::max(0.0, knobs().ddr_gbs * 1e3 - rl * 1e3));
+    const double rlb = rl * 1e3;
+    const int    m   = (int) miss.size();
+    auto T = [&](int k) {
+        const double tl = k * S / rlb, bc = (m - k) * S;
+        if (k == 0) { return bc / rc; }
+        return bc <= tl * rcc ? std::max(tl, rcc > 0 ? bc / rcc : 1e300) : tl + (bc - tl * rcc) / rc;
+    };
+    int kb = 0;
+    for (int k = 1; k <= m; ++k) {
+        if (T(k) < T(kb)) { kb = k; }
+    }
+    if (kb == 0) {
+        return;
+    }
+    std::sort(miss.begin(), miss.end(), [&](int32_t a, int32_t b) { return score(ls, a) > score(ls, b); });
+    int n_up = 0;
+    for (int i = 0; i < kb; ++i) {
+        const int32_t id = miss[i];
+        // slot: an empty one, else the lowest-scored cached expert this token doesn't use
+        int32_t slot = -1;
+        double best = 1e300;
+        for (int32_t s = 0; s < ls.pub.n_slots; ++s) {
+            if (ls.slot_in_flight[s] || ls.is_stream[s]) {
+                continue;
+            }
+            const int32_t x = ls.slot_expert[s];
+            if (x < 0) { slot = s; break; }
+            if (pinned(mc, ls, x) || std::find(cur.begin(), cur.end(), x) != cur.end()) {
+                continue;
+            }
+            const double c = score(ls, x);
+            if (c < best) { best = c; slot = s; }
+        }
+        if (slot < 0) {
+            break;
+        }
+        const int32_t victim = ls.slot_expert[slot];
+        if (victim >= 0) {
+            ls.expert_slot[victim] = -1;
+            set_table_entry(ls.pub, victim, ls.pub.n_slots);
+            note_evict(mc, ls, victim);
+            ls.cached_since[victim] = 0;
+            if (ls.dropped[victim]) { page_hint(mc, ls, victim, false); ls.dropped[victim] = false; }
+        }
+        // async on the chain's stream: the chain (launched next) runs after the copies
+        const ggml_tensor * srcs[3] = { pub->up_src, pub->gate_src, pub->down_src };
+        ggml_tensor *       dsts[3] = { pub->up_c,   pub->gate_c,   pub->down_c   };
+        for (int k = 0; k < 3; ++k) {
+            const size_t sz = srcs[k]->nb[2];
+            ggml_backend_tensor_set_async(be, dsts[k], (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
+        }
+        ls.slot_expert[slot]    = id;
+        ls.expert_slot[id]      = slot;
+        ls.slot_last_use[slot]  = ++mc->clock;
+        set_table_entry(ls.pub, id, slot); // host table now: the CPU op skips it; device table flushed before the chain
+        ls.cached_since[id] = mc->n_steps + 1;
+        ls.up_t[id]    = ggml_time_us();
+        ls.up_cost[id] = (float) (S / rlb);
+        ls.up_hits[id] = 0;
+        mc->up_bytes  += (int64_t) S;
+        ++n_up;
+    }
+    mc->n_jit += n_up;
+    mc->n_jit_layers += n_up > 0;
 }
 
 const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps) {
@@ -3380,6 +3504,12 @@ void llama_moe_cache_step() {
                 mc->n_steps, filled, total, inflight, queued, dh + dm ? 100.0*dh/(dh + dm) : 0.0,
                 mc->upload_us/1e3, mc->step_us_idle/1e3, mc->step_us_busy/1e3, mc->last_budget, mc->last_margin,
                 mc->link_us[0]/1e3, mc->link_margin[0], mc->link_us[1]/1e3, mc->link_margin[1]);
+        if (knobs().jit != 0) {
+            static uint64_t pj = 0, pl = 0, pmiss = 0;
+            LLAMA_LOG_WARN("moe-cache: JIT: %.2f experts/token uploaded for immediate use in %.2f layers/token, of %.2f misses/token\n",
+                    (mc->n_jit - pj)/64.0, (mc->n_jit_layers - pl)/64.0, (mc->n_jit_miss - pmiss)/64.0);
+            pj = mc->n_jit; pl = mc->n_jit_layers; pmiss = mc->n_jit_miss;
+        }
         for (int k = 0; k < mc->n_links; ++k) {
             if (!mc->n_link[k]) {
                 continue;

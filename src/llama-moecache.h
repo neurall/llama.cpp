@@ -84,6 +84,8 @@ bool    llama_moe_cache_active();
 
 // nullptr when the cache is disabled or this tensor has no cached layer
 const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps);
+// JIT miss offload (LLAMA_MOE_CACHE_JIT): called with a layer's router ids on the host before its cache chain launches
+void llama_moe_cache_jit(const llama_moe_cache_layer * pub, const ggml_tensor * ids);
 
 // apply throttled LRU updates; call between graph executions only
 void llama_moe_cache_step();
