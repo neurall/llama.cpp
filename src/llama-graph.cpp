@@ -2258,6 +2258,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     const llama_moe_cache_layer * mcache = nullptr;
     ggml_tensor * mc_ids_all = nullptr; // LLAMA_MOE_DEFER: full ids (router observation) and the deferred ids
     ggml_tensor * mc_ids_def = nullptr;
+    ggml_tensor * mc_w_host  = nullptr;
     ggml_tensor * mc_slot_ids = nullptr;
     ggml_backend_t mc_cpu_backend = nullptr;
     ggml_tensor *  mc_pred        = nullptr;
@@ -2363,6 +2364,12 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 };
                 mc_ids_all = selected_experts;
                 mc_ids_def = split(false, "ffn_moe_defer_ids");
+                // router weights on the host with this split's inputs: the deferred chain then has no GPU input, so it
+                // doesn't wait (sync) for the GPU work queued after this layer (the next layer's attention)
+                mc_w_host = ggml_cont(ctx0, weights);
+                ggml_backend_sched_set_tensor_backend(sched, mc_w_host, cpu_backend);
+                cb(mc_w_host, "ffn_moe_defer_w", il);
+                ggml_build_forward_expand(gf, mc_w_host);
                 selected_experts = split(true, "ffn_moe_imm_ids");
                 ggml_build_forward_expand(gf, selected_experts);
             }
@@ -2734,13 +2741,24 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             ggml_format_name(t, "ffn_moe_defer_%s-%d", kind, il);
             ggml_backend_sched_set_tensor_backend(sched, t, mc_cpu_backend);
         });
-        dexp = ggml_mul(ctx0, dexp, weights);
-        ggml_backend_sched_set_tensor_backend(sched, dexp, mc_cpu_backend);
-        ggml_tensor * dsum = ggml_view_2d(ctx0, dexp, n_embd, n_tokens, dexp->nb[2], 0);
-        for (int64_t i = 1; i < n_expert_used; ++i) {
-            dsum = ggml_add(ctx0, dsum, ggml_view_2d(ctx0, dexp, n_embd, n_tokens, dexp->nb[2], i*dexp->nb[1]));
-            ggml_backend_sched_set_tensor_backend(sched, dsum, mc_cpu_backend);
-        }
+        // weighted sum over the deferred experts in one host op (rows of cached / immediate experts are zero; the
+        // per-op dispatch of a mul + n adds cost more than the math)
+        ggml_tensor * dsum = ggml_map_custom3(ctx0, ggml_view_2d(ctx0, dexp, n_embd, n_tokens, dexp->nb[2], 0), dexp, mc_w_host,
+                [](ggml_tensor * dst, const ggml_tensor *, const ggml_tensor * x, const ggml_tensor * w, int ith, int nth, void *) {
+                    const int64_t ne = x->ne[0], nu = x->ne[1], nt = x->ne[2];
+                    const int64_t r0 = ne*ith/nth, r1 = ne*(ith + 1)/nth;
+                    for (int64_t t = 0; t < nt; ++t) {
+                        float * d = (float *) ((char *) dst->data + t*dst->nb[1]);
+                        for (int64_t i = r0; i < r1; ++i) { d[i] = 0.0f; }
+                        for (int64_t e = 0; e < nu; ++e) {
+                            const float we = *(const float *) ((const char *) w->data + e*w->nb[1] + t*w->nb[2]);
+                            const float * xe = (const float *) ((const char *) x->data + e*x->nb[1] + t*x->nb[2]);
+                            if (we == 0.0f) { continue; }
+                            for (int64_t i = r0; i < r1; ++i) { d[i] += we*xe[i]; }
+                        }
+                    }
+                }, GGML_N_TASKS_MAX, nullptr);
+        ggml_backend_sched_set_tensor_backend(sched, dsum, mc_cpu_backend);
         cb(dsum, "ffn_moe_defer_out", il);
         moe_defer_pending = dsum; // expanded at the next MoE layer, after its attention
     }
