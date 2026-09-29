@@ -2262,6 +2262,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_tensor * mc_w_host  = nullptr;
     intptr_t      mc_defer_pk = 0;      // protected (immediate) experts per token
     ggml_tensor * mc_defer_tbl = nullptr;
+    ggml_tensor * mc_defer_mask = nullptr;
     ggml_tensor * mc_slot_ids = nullptr;
     ggml_backend_t mc_cpu_backend = nullptr;
     ggml_tensor *  mc_pred        = nullptr;
@@ -2337,43 +2338,62 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             static const int defer_n = [] { const char * e = getenv("LLAMA_MOE_DEFER"); return e ? atoi(e) : 0; }();
             if (defer_n > 0 && defer_n < n_expert_used && n_tokens == 1 && il < (int) n_layer - 1 && !selected_experts_in &&
                     !up_exps_b && !gate_exps_b && !down_exps_b && !gate_up_exps && !weight_before_ffn) {
-                const intptr_t pk = n_expert_used - defer_n;
-                auto split = [&](bool keep_protected, const char * name) {
-                    ggml_tensor * t = ggml_map_custom1(ctx0, selected_experts,
-                            keep_protected ?
-                            (ggml_custom1_op_t) [](ggml_tensor * dst, const ggml_tensor * a, int ith, int, void * ud) {
-                                if (ith != 0) { return; }
-                                const int64_t k = (int64_t) (intptr_t) ud;
-                                for (int64_t t = 0; t < a->ne[1]; ++t) {
-                                    for (int64_t i = 0; i < a->ne[0]; ++i) {
-                                        const int32_t v = *(const int32_t *) ((const char *) a->data + t*a->nb[1] + i*a->nb[0]);
-                                        *(int32_t *) ((char *) dst->data + t*dst->nb[1] + i*dst->nb[0]) = i < k ? v : -1;
-                                    }
-                                }
-                            } :
-                            (ggml_custom1_op_t) [](ggml_tensor * dst, const ggml_tensor * a, int ith, int, void * ud) {
-                                if (ith != 0) { return; }
-                                const int64_t k = (int64_t) (intptr_t) ud;
-                                for (int64_t t = 0; t < a->ne[1]; ++t) {
-                                    for (int64_t i = 0; i < a->ne[0]; ++i) {
-                                        const int32_t v = *(const int32_t *) ((const char *) a->data + t*a->nb[1] + i*a->nb[0]);
-                                        *(int32_t *) ((char *) dst->data + t*dst->nb[1] + i*dst->nb[0]) = i < k ? -1 : v;
-                                    }
-                                }
-                            }, 1, (void *) pk);
-                    ggml_backend_sched_set_tensor_backend(sched, t, cpu_backend);
-                    cb(t, name, il);
-                    return t;
-                };
                 mc_ids_all = selected_experts;
-                mc_defer_pk = pk;
+                mc_defer_pk = 1; // deferral on for this layer
                 // router weights on the host with this split's inputs: the deferred chain then has no GPU input, so it
                 // doesn't wait (sync) for the GPU work queued after this layer (the next layer's attention)
                 mc_w_host = ggml_cont(ctx0, weights);
                 ggml_backend_sched_set_tensor_backend(sched, mc_w_host, cpu_backend);
                 cb(mc_w_host, "ffn_moe_defer_w", il);
                 ggml_build_forward_expand(gf, mc_w_host);
-                selected_experts = split(true, "ffn_moe_imm_ids");
+                // deferral mask, decided once, before the JIT and from the same table the GPU chain uses: host misses in
+                // ascending router weight while the count stays <= LLAMA_MOE_DEFER and their summed weight stays <=
+                // LLAMA_MOE_DEFER_MASS of the layer's total (default 1: count only). Cheap-in-quality misses first.
+                mc_defer_mask = ggml_map_custom2(ctx0, selected_experts, mc_w_host,
+                        [](ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor * w, int ith, int, void * ud) {
+                            if (ith != 0) { return; }
+                            const llama_moe_cache_layer * mc = (const llama_moe_cache_layer *) ud;
+                            static const int   dn   = [] { const char * e = getenv("LLAMA_MOE_DEFER"); return e ? atoi(e) : 0; }();
+                            static const float mass = [] { const char * e = getenv("LLAMA_MOE_DEFER_MASS"); return e ? (float) atof(e) : 1.0f; }();
+                            const int32_t * tbl = (const int32_t *) mc->host_table->data;
+                            for (int64_t t = 0; t < a->ne[1]; ++t) {
+                                std::vector<std::pair<float, int64_t>> miss; // (weight, slot i)
+                                float total = 0.0f;
+                                for (int64_t i = 0; i < a->ne[0]; ++i) {
+                                    const int32_t v = *(const int32_t *) ((const char *) a->data + t*a->nb[1] + i*a->nb[0]);
+                                    const float   x = *(const float *) ((const char *) w->data + i*w->nb[1] + t*w->nb[2]);
+                                    total += x;
+                                    *(int32_t *) ((char *) dst->data + t*dst->nb[1] + i*dst->nb[0]) = 0;
+                                    if (v >= 0 && tbl[v] == mc->n_slots) { miss.emplace_back(x, i); }
+                                }
+                                std::sort(miss.begin(), miss.end());
+                                float cum = 0.0f;
+                                int   cnt = 0;
+                                for (const auto & m : miss) {
+                                    if (cnt >= dn || cum + m.first > mass*total) { break; }
+                                    cum += m.first;
+                                    cnt++;
+                                    *(int32_t *) ((char *) dst->data + t*dst->nb[1] + m.second*dst->nb[0]) = 1;
+                                }
+                            }
+                        }, 1, (void *) mcache);
+                ggml_backend_sched_set_tensor_backend(sched, mc_defer_mask, cpu_backend);
+                cb(mc_defer_mask, "ffn_moe_defer_mask", il);
+                ggml_build_forward_expand(gf, mc_defer_mask);
+                // immediate ids: the layer's selection without the deferred experts
+                selected_experts = ggml_map_custom2(ctx0, selected_experts, mc_defer_mask,
+                        [](ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor * m, int ith, int, void *) {
+                            if (ith != 0) { return; }
+                            for (int64_t t = 0; t < a->ne[1]; ++t) {
+                                for (int64_t i = 0; i < a->ne[0]; ++i) {
+                                    const int32_t v = *(const int32_t *) ((const char *) a->data + t*a->nb[1] + i*a->nb[0]);
+                                    const int32_t d = *(const int32_t *) ((const char *) m->data + t*m->nb[1] + i*m->nb[0]);
+                                    *(int32_t *) ((char *) dst->data + t*dst->nb[1] + i*dst->nb[0]) = d ? -1 : v;
+                                }
+                            }
+                        }, 1, nullptr);
+                ggml_backend_sched_set_tensor_backend(sched, selected_experts, cpu_backend);
+                cb(selected_experts, "ffn_moe_imm_ids", il);
                 ggml_build_forward_expand(gf, selected_experts);
             }
             // JIT miss offload: with the ids on the host (this CPU split), the cache may upload some of this layer's
@@ -2730,17 +2750,16 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // chain computes exactly the host misses among the deferred experts, whatever gets published before it runs
         // the immediate host run's down op (before the merge with the GPU chain) orders this after that run
         ggml_tensor * imm_dep = (experts->op == GGML_OP_ADD && experts->src[0]->op == GGML_OP_MUL_MAT_ID) ? experts->src[0] : experts;
-        mc_ids_def = ggml_map_custom2(ctx0, mc_ids_all, imm_dep,
-                [](ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor *, int ith, int, void * ud) {
+        mc_ids_def = ggml_map_custom3(ctx0, mc_ids_all, mc_defer_mask, imm_dep,
+                [](ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor * m, const ggml_tensor *, int ith, int, void * ud) {
                     if (ith != 0) { return; }
                     const llama_moe_cache_layer * mc = (const llama_moe_cache_layer *) ud;
-                    static const int defer = [] { const char * e = getenv("LLAMA_MOE_DEFER"); return e ? atoi(e) : 0; }();
-                    const int64_t pk = a->ne[0] - defer;
                     const int32_t * tbl = (const int32_t *) mc->host_table->data;
                     for (int64_t t = 0; t < a->ne[1]; ++t) {
                         for (int64_t i = 0; i < a->ne[0]; ++i) {
                             const int32_t v = *(const int32_t *) ((const char *) a->data + t*a->nb[1] + i*a->nb[0]);
-                            const bool keep = i >= pk && v >= 0 && tbl[v] == mc->n_slots; // deferred and uncached now
+                            const int32_t d = *(const int32_t *) ((const char *) m->data + t*m->nb[1] + i*m->nb[0]);
+                            const bool keep = d && v >= 0 && tbl[v] == mc->n_slots; // deferred and still uncached
                             *(int32_t *) ((char *) dst->data + t*dst->nb[1] + i*dst->nb[0]) = keep ? v : -1;
                         }
                     }
