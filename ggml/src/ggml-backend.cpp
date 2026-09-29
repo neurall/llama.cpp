@@ -1996,7 +1996,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     // flag: no sync, copy or launch on the critical path. Needs a backend with host flags (CUDA); others fall back.
     typedef uint32_t * (*flags_alloc_t)(int);
     typedef bool       (*wait_flag_t)(ggml_backend_t, const uint32_t *, uint32_t);
-    static const bool       prelaunch_env = !(getenv("GGML_SCHED_PRELAUNCH") && atoi(getenv("GGML_SCHED_PRELAUNCH")) == 0); // default on
+    // default off: on a cold start (Windows, first request) a host split can outlast the device-side wait's safety timeout,
+    // the queued GPU split then runs on stale input and the first answer is empty; +0.6% on GLM is not worth that
+    static const bool       prelaunch_env = getenv("GGML_SCHED_PRELAUNCH") && atoi(getenv("GGML_SCHED_PRELAUNCH")) != 0;
     static wait_flag_t      wait_flag     = nullptr;
     static volatile uint32_t * pl_flag    = nullptr;
     static uint32_t         pl_seq        = 0;
