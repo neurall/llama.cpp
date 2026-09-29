@@ -1996,7 +1996,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     // flag: no sync, copy or launch on the critical path. Needs a backend with host flags (CUDA); others fall back.
     typedef uint32_t * (*flags_alloc_t)(int);
     typedef bool       (*wait_flag_t)(ggml_backend_t, const uint32_t *, uint32_t);
-    static const bool       prelaunch_env = getenv("GGML_SCHED_PRELAUNCH") && atoi(getenv("GGML_SCHED_PRELAUNCH")) != 0;
+    static const bool       prelaunch_env = !(getenv("GGML_SCHED_PRELAUNCH") && atoi(getenv("GGML_SCHED_PRELAUNCH")) == 0); // default on
     static wait_flag_t      wait_flag     = nullptr;
     static volatile uint32_t * pl_flag    = nullptr;
     static uint32_t         pl_seq        = 0;
@@ -2022,7 +2022,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             signal_flag = (signal_flag_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_signal_host_flag");
             d2h_flags   = fa ? fa(GGML_SCHED_MAX_BACKENDS) : nullptr;
         }
-        GGML_LOG_WARN("%s: GGML_SCHED_PRELAUNCH %s\n", __func__, pl_flag && wait_flag ? "on" : "unavailable (no host flags), off");
+        if (getenv("GGML_SCHED_PRELAUNCH")) { // quiet by default (CPU-only / non-CUDA setups just don't use it)
+            GGML_LOG_WARN("%s: GGML_SCHED_PRELAUNCH %s\n", __func__, pl_flag && wait_flag ? "on" : "unavailable (no host flags), off");
+        }
     }
     const bool prelaunch = prelaunch_env && pl_flag && wait_flag && !sched->callback_eval;
     int prelaunched = -1; // split already queued behind the flag
@@ -2354,7 +2356,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     // GGML_SCHED_D2H_ASYNC=1: a CPU split's inputs from a GPU are fetched async (ordered after their
                     // producers on that GPU's stream) and each source backend is synced once below, instead of a
                     // synchronous copy + sync per input tensor
-                    static const bool d2h_async = getenv("GGML_SCHED_D2H_ASYNC") && atoi(getenv("GGML_SCHED_D2H_ASYNC")) != 0;
+                    static const bool d2h_async = !(getenv("GGML_SCHED_D2H_ASYNC") && atoi(getenv("GGML_SCHED_D2H_ASYNC")) == 0); // default on
                     if (d2h_async && input_cpy->buffer && ggml_backend_buffer_is_host(input_cpy->buffer) &&
                             ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU &&
                             input_backend->iface.get_tensor_async && ggml_is_contiguous(input) && ggml_is_contiguous(input_cpy)) {
@@ -2474,7 +2476,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         prelaunched = split_id + 1;
                         pl_now = true;
                         static int n_logged = 0;
-                        if (n_logged < 3 && split_id + 1 > 0) {
+                        if (n_logged < 3 && getenv("GGML_SCHED_PRELAUNCH")) {
                             n_logged++;
                             GGML_LOG_WARN("%s: prelaunched split %d (%s, %d nodes) behind host split %d\n", __func__, split_id + 1,
                                     ggml_backend_name(nbe), nx->graph.n_nodes, split_id);
