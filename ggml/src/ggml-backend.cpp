@@ -1820,6 +1820,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     // waiting before CPU/GPU splits (barriers, input copies = syncs), CPU split
     // compute (synchronous), GPU split launch
     static const bool prof = getenv("GGML_SCHED_PROF") != NULL;
+    // GGML_SCHED_PROF=2: also the split timeline of one decode graph in 512 (host us: start, barrier, inputs, launch/compute)
+    static const bool prof_tl = prof && atoi(getenv("GGML_SCHED_PROF")) >= 2;
+    static int64_t    tl_graph = 0;
+    struct tl_rec { int be, nn, ni; const char * n0; const char * n1; int64_t t0, tb, t1, t2; };
+    std::vector<tl_rec> tl;
+    const bool tl_on = prof_tl && sched->n_splits > 8 && (tl_graph++ % 512) == 100;
     static int64_t pw_cpu = 0, pw_gpu = 0, pc_cpu = 0, pl_gpu = 0, p_total = 0, p_n = 0, p_splits = 0;
     static int64_t pb_cpu = 0, pb_gpu = 0, pc_tiny = 0, n_tiny = 0; // barrier waits; CPU splits of <= 2 nodes (input copies only)
     const int64_t p_graph_t0 = prof ? ggml_time_us() : 0;
@@ -1949,8 +1955,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
 
+        const int64_t p_tb = prof ? ggml_time_us() : 0;
         if (prof) {
-            (p_is_cpu ? pb_cpu : pb_gpu) += ggml_time_us() - p_t0;
+            (p_is_cpu ? pb_cpu : pb_gpu) += p_tb - p_t0;
         }
 
         // copy the input tensors to the split backend
@@ -1969,8 +1976,17 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 }
                 ggml_backend_tensor_copy(input, input_cpy);
             } else {
+                // GGML_SCHED_H2D_ASYNC=1: host input -> GPU split, queued on the split's stream (see below); the stream
+                // orders the copy after the split backend's earlier use of input_cpy, so no host wait is needed
+                static const bool h2d_async = getenv("GGML_SCHED_H2D_ASYNC") && atoi(getenv("GGML_SCHED_H2D_ASYNC")) != 0;
+                const bool h2d_fast = h2d_async && input->buffer && ggml_backend_buffer_is_host(input->buffer) && input_cpy->buffer &&
+                        !ggml_backend_buffer_is_host(input_cpy->buffer) && split_backend->iface.set_tensor_async &&
+                        ggml_backend_buffer_get_usage(input->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
+                        ggml_is_contiguous(input) && ggml_is_contiguous(input_cpy);
                 // wait for the split backend to finish using the input before overwriting it
-                if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+                if (h2d_fast) {
+                    // nothing: stream-ordered
+                } else if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
                     ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
                 } else {
                     const int64_t ts = mmid_dbg ? ggml_time_us() : 0;
@@ -2180,6 +2196,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         if (std::find(d2h_pending.begin(), d2h_pending.end(), input_backend) == d2h_pending.end()) {
                             d2h_pending.push_back(input_backend);
                         }
+                    } else if (h2d_fast) {
+                        // GGML_SCHED_H2D_ASYNC=1: a GPU split's input from host memory (a CPU split's result) is queued on the
+                        // split backend's stream, ordered before its kernels, instead of two syncs + a blocking copy. The
+                        // host data stays valid: the next split that writes host memory syncs on this GPU first.
+                        ggml_backend_tensor_set_async(split_backend, input_cpy, input->data, 0, ggml_nbytes(input));
                     } else if (!split_backend->iface.cpy_tensor_async || !split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
                         const int64_t ts = mmid_dbg ? ggml_time_us() : 0;
                         if (mmid_dbg && input->buffer && ggml_backend_buffer_is_host(input->buffer) &&
@@ -2279,6 +2300,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
         if (prof) {
             const int64_t p_t2 = ggml_time_us();
+            if (tl_on) {
+                tl.push_back({ split_backend_id, split->graph.n_nodes, split->n_inputs,
+                        split->graph.n_nodes ? split->graph.nodes[0]->name : "", split->graph.n_nodes ? split->graph.nodes[split->graph.n_nodes - 1]->name : "",
+                        p_t0, p_tb, p_t1, p_t2 });
+            }
             (p_is_cpu ? pw_cpu : pw_gpu) += p_t1 - p_t0;
             (p_is_cpu ? pc_cpu : pl_gpu) += p_t2 - p_t1;
             if (p_is_cpu && split->graph.n_nodes <= 2) {
@@ -2290,6 +2316,16 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         prev_backend_id = split_backend_id;
     }
 
+    if (tl_on && !tl.empty()) {
+        const int64_t b = tl[0].t0;
+        fprintf(stderr, "sched-timeline: %zu splits, graph %.2f ms (start, +barrier, +inputs, +launch/compute us; backend nodes inputs first..last)\n",
+                tl.size(), (ggml_time_us() - b)/1e3);
+        for (size_t i = 0; i < tl.size(); ++i) {
+            const auto & r = tl[i];
+            fprintf(stderr, "  %3zu %8lld %6lld %6lld %6lld  %-6s %4d %2d %s .. %s\n", i, (long long) (r.t0 - b), (long long) (r.tb - r.t0),
+                    (long long) (r.t1 - r.tb), (long long) (r.t2 - r.t1), ggml_backend_name(sched->backends[r.be]), r.nn, r.ni, r.n0, r.n1);
+        }
+    }
     if (prof && sched->n_splits > 8) {
         p_total  += ggml_time_us() - p_graph_t0;
         p_splits += sched->n_splits;
