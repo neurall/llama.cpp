@@ -5910,6 +5910,28 @@ static __global__ void k_wait_host_flag(const volatile uint32_t * f, uint32_t v)
     }
 }
 
+static __global__ void k_signal_host_flag(volatile uint32_t * f, uint32_t v) {
+    __threadfence_system();
+    *f = v;
+    __threadfence_system();
+}
+
+// queued after the host-bound copies: the host polls the flag instead of a stream sync (lower wake-up latency)
+static bool ggml_backend_cuda_signal_host_flag(ggml_backend_t backend, uint32_t * flag, uint32_t value) {
+    if (!ggml_backend_is_cuda(backend)) {
+        return false;
+    }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(ctx->device);
+    void * dptr = nullptr;
+    if (cudaHostGetDevicePointer(&dptr, (void *) flag, 0) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    k_signal_host_flag<<<1, 1, 0, ctx->stream()>>>((volatile uint32_t *) dptr, value);
+    return cudaGetLastError() == cudaSuccess;
+}
+
 static uint32_t * ggml_backend_cuda_host_flags_alloc(int n) {
     void * p = nullptr;
     if (cudaHostAlloc(&p, (size_t) n*sizeof(uint32_t), cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
@@ -5960,6 +5982,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_wait_host_flag") == 0) {
         return (void *)ggml_backend_cuda_wait_host_flag;
+    }
+    if (strcmp(name, "ggml_backend_signal_host_flag") == 0) {
+        return (void *)ggml_backend_cuda_signal_host_flag;
     }
     return nullptr;
 }

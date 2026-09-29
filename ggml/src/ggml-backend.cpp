@@ -1992,6 +1992,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     static wait_flag_t      wait_flag     = nullptr;
     static volatile uint32_t * pl_flag    = nullptr;
     static uint32_t         pl_seq        = 0;
+    typedef bool       (*signal_flag_t)(ggml_backend_t, uint32_t *, uint32_t);
+    static signal_flag_t    signal_flag   = nullptr;
+    static uint32_t *       d2h_flags     = nullptr; // one per backend: GPU writes it after a CPU split's input fetches
+    static uint32_t         d2h_seq       = 0;
     static bool             pl_init       = false;
     if (prelaunch_env && !pl_init) {
         pl_init = true;
@@ -2000,6 +2004,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             auto fa = (flags_alloc_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_host_flags_alloc");
             wait_flag = (wait_flag_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_wait_host_flag");
             pl_flag   = fa ? fa(1) : nullptr;
+            signal_flag = (signal_flag_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_signal_host_flag");
+            d2h_flags   = fa ? fa(GGML_SCHED_MAX_BACKENDS) : nullptr;
         }
         GGML_LOG_INFO("%s: GGML_SCHED_PRELAUNCH %s\n", __func__, pl_flag && wait_flag ? "on" : "unavailable (no host flags), off");
     }
@@ -2355,8 +2361,31 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
 
-        for (ggml_backend_t b : d2h_pending) {
-            ggml_backend_synchronize(b);
+        if (prelaunch && signal_flag && d2h_flags && !d2h_pending.empty()) {
+            // GGML_SCHED_PRELAUNCH: the GPU raises a host flag after the fetches; poll it instead of a stream sync
+            const uint32_t want = ++d2h_seq;
+            std::vector<int> spin;
+            for (size_t i = 0; i < d2h_pending.size(); i++) {
+                if (signal_flag(d2h_pending[i], &d2h_flags[i], want)) {
+                    spin.push_back((int) i);
+                } else {
+                    ggml_backend_synchronize(d2h_pending[i]);
+                }
+            }
+            for (int i : spin) {
+                const int64_t t0 = ggml_time_us();
+                while (((volatile uint32_t *) d2h_flags)[i] < want) {
+                    if (ggml_time_us() - t0 > 2000) { // long GPU phase: stop burning a core
+                        ggml_backend_synchronize(d2h_pending[i]);
+                        break;
+                    }
+                }
+                std::atomic_thread_fence(std::memory_order_acquire);
+            }
+        } else {
+            for (ggml_backend_t b : d2h_pending) {
+                ggml_backend_synchronize(b);
+            }
         }
         d2h_pending.clear();
 
