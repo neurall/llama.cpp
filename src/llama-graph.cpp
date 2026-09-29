@@ -2338,6 +2338,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             mc_slot_ids = ggml_reshape_2d(ctx0, mc_slot_ids, n_expert_used, n_tokens);
             cb(mc_slot_ids, "ffn_moe_cache_slots", il);
         }
+        // JIT pool (layer cached on a slower-link GPU): the pool's slot ids, on the fastest-link GPU
+        ggml_tensor * mc_pool_ids = nullptr;
+        if (mcache->jit_n > 0) {
+            ggml_tensor * ids_flat = ggml_reshape_1d(ctx0, ggml_cont(ctx0, sel_dev), n_expert_used*n_tokens);
+            mc_pool_ids = ggml_get_rows(ctx0, mcache->jit_table, ids_flat);
+            mc_pool_ids = ggml_reshape_2d(ctx0, mc_pool_ids, n_expert_used, n_tokens);
+            cb(mc_pool_ids, "ffn_moe_jit_slots", il);
+        }
 
         // device-side chain over the cached experts, mirroring the LLM_FFN_SILU
         // activation above (the only type_op the cache path is enabled for).
@@ -2380,6 +2388,28 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
             ggml_tensor * down_c = ggml_mul_mat_id(ctx0, mcache->down_c, act_g, ids_c); // [n_embd, n_expert_used, nt]
             cb(down_c, "ffn_moe_cache_down", il);
+            if (mc_pool_ids) {
+                ggml_tensor * ids_p = n_tokens <= mc_chunk ? mc_pool_ids :
+                    ggml_view_2d(ctx0, mc_pool_ids, n_expert_used, nt, mc_pool_ids->nb[1], t0*mc_pool_ids->nb[1]);
+                ggml_tensor * up_p   = ggml_mul_mat_id(ctx0, mcache->jit_up_c,   inp_c, ids_p);
+                ggml_tensor * gate_p = ggml_mul_mat_id(ctx0, mcache->jit_gate_c, inp_c, ids_p);
+                const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
+                ggml_tensor * act_p = nullptr;
+                if (limit > 1e-6f) {
+                    if (arch == LLM_ARCH_MAPLE || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_GLM5_NEXT || (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0) || arch == LLM_ARCH_HY_V4) {
+                        act_p = ggml_swiglu_clamp(ctx0, gate_p, up_p, limit);
+                    } else {
+                        up_p = ggml_clamp(ctx0, up_p, -limit, limit);
+                        ggml_tensor * ga = ggml_clamp(ctx0, ggml_silu(ctx0, gate_p), -INFINITY, limit);
+                        act_p = ggml_mul(ctx0, ga, up_p);
+                    }
+                } else {
+                    act_p = ggml_swiglu_split(ctx0, gate_p, up_p);
+                }
+                ggml_tensor * down_p = ggml_mul_mat_id(ctx0, mcache->jit_down_c, act_p, ids_p);
+                cb(down_p, "ffn_moe_jit_down", il);
+                down_c = ggml_add(ctx0, down_c, down_p);
+            }
             down_g = down_g ? ggml_concat(ctx0, down_g, down_c, 2) : down_c;
         }
 

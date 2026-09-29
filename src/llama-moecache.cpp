@@ -175,6 +175,12 @@ struct layer_state {
     std::vector<float>    up_cost;
     std::vector<uint32_t> up_hits;
 
+    // JIT pool on the fastest-link GPU (pub.jit_n slots): pool slot -> expert, expert -> pool slot; the host table marks
+    // pool experts n_slots + 1 (the CPU op skips them, the main device table maps them to "uncached")
+    std::vector<int32_t>  pool_expert;
+    std::vector<int32_t>  pool_slot;
+    bool                  pool_dirty = false;
+
     uint64_t n_hit  = 0;
     uint64_t pred_seen_hit = 0, pred_seen_miss = 0; // n_hit / n_miss at the last predictor on/off decision
     uint64_t n_miss = 0;
@@ -233,7 +239,7 @@ struct moe_cache {
     int                      n_links = 1; // GPUs holding cache layers
     ggml_backend_dev_t       link_dev[MAX_LINKS] = {}; // the GPU behind each link
     ggml_backend_t           link_be[MAX_LINKS]  = {}; // its compute backend (seen at the split callback): JIT uploads go on its stream
-    uint64_t                 n_jit = 0, n_jit_layers = 0, n_jit_miss = 0; // JIT: experts uploaded, layer calls that uploaded, misses seen
+    uint64_t                 n_jit = 0, n_jit_layers = 0, n_jit_miss = 0, n_pool_up = 0, n_pool_hit = 0; // JIT: experts uploaded, layer calls that uploaded, misses seen
     // layer clock (resource saturator deadlines): EMA of the time from layer i's CPU expert op to layer i+1's
     std::vector<double>      layer_dt;
     int64_t                  clk_t  = 0;
@@ -1801,6 +1807,20 @@ std::mutex                                g_tbl_mtx;
 std::vector<llama_moe_cache_layer *>      g_tbl_dirty;
 
 void set_table_entry(llama_moe_cache_layer & pub, int32_t expert, int32_t slot_or_dummy) {
+    if (pub.jit_n > 0 && slot_or_dummy != pub.n_slots + 1 && g_cache) {
+        // the main cache takes (or drops) this expert: it leaves the JIT pool, or the pool chain would add it twice
+        for (auto & l : g_cache->layers) {
+            if (&l.pub == &pub) {
+                const int32_t ps = l.pool_slot.empty() ? -1 : l.pool_slot[expert];
+                if (ps >= 0) {
+                    l.pool_slot[expert] = -1;
+                    l.pool_expert[ps]   = -1;
+                    l.pool_dirty        = true;
+                }
+                break;
+            }
+        }
+    }
     ((int32_t *) pub.host_table->data)[expert] = slot_or_dummy;
     std::lock_guard<std::mutex> lk(g_tbl_mtx);
     if (std::find(g_tbl_dirty.begin(), g_tbl_dirty.end(), &pub) == g_tbl_dirty.end()) {
@@ -1822,12 +1842,23 @@ void flush_tables() {
     for (auto * pub : d) {
         const int32_t * h = (const int32_t *) pub->host_table->data;
         v.assign(h, h + ggml_nelements(pub->dev_table));
-        if (g_neg_ids) {
-            for (auto & x : v) {
-                x = x == pub->n_slots ? -1 : x;
-            }
+        for (auto & x : v) {
+            x = x >= pub->n_slots ? (g_neg_ids ? -1 : pub->n_slots) : x; // n_slots + 1: JIT pool expert, uncached here
         }
         ggml_backend_tensor_set(pub->dev_table, v.data(), 0, v.size()*sizeof(int32_t));
+    }
+    if (g_cache) {
+        for (auto & l : g_cache->layers) {
+            if (!l.pool_dirty) {
+                continue;
+            }
+            l.pool_dirty = false;
+            std::vector<int32_t> t(l.pool_slot.size());
+            for (size_t e = 0; e < t.size(); ++e) {
+                t[e] = l.pool_slot[e] >= 0 ? l.pool_slot[e] : (g_neg_ids ? -1 : l.pub.jit_n);
+            }
+            ggml_backend_tensor_set(l.pub.jit_table, t.data(), 0, t.size()*sizeof(int32_t));
+        }
     }
 }
 
@@ -1972,6 +2003,11 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             all.insert(all.end(), g.second.begin(), g.second.end());
         }
 
+        // LLAMA_MOE_CACHE_JIT_POOL=n: JIT pool slots per slower-link layer on the fastest-link GPU. Default 0: the pool
+        // chain's cross-GPU input/output copies cost ~10% on GLM (2x3090, 20 x4 layers) even with nothing in the pool
+        const int32_t jit_pool = [] { const char * e = getenv("LLAMA_MOE_CACHE_JIT_POOL"); return e ? std::max(0, atoi(e)) : 0; }();
+        // LLAMA_MOE_CACHE_JIT_POOL_ALL=1: every layer gets a pool (JIT never evicts the main cache)
+        const bool jit_pool_all = [] { const char * e = getenv("LLAMA_MOE_CACHE_JIT_POOL_ALL"); return e && atoi(e) != 0; }();
         // n_slots < 0: fill each device's free VRAM (called after KV/compute buffers
         // exist), leaving a margin for the compute graph growing by the cache chain.
         // ponytail: one slot count per device, uniform over that device's layers.
@@ -1997,6 +2033,17 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                         max_tensor = std::max({max_tensor, ggml_nbytes(c.l->ffn_up_exps), ggml_nbytes(c.l->ffn_gate_exps), ggml_nbytes(c.l->ffn_down_exps)});
                     }
                     margin += (size_t) std::min(prefetch_slots, 4) * max_tensor;
+                }
+            }
+            // JIT pools of the slower-link GPUs' layers live on the fastest-link (offload) GPU
+            if (jit_pool > 0 && model.dev_offload < model.devices.size() && dev == model.devices[model.dev_offload].dev) {
+                for (const auto & g2 : groups) {
+                    if (ggml_backend_buft_get_device(g2.first) == dev && !jit_pool_all) {
+                        continue;
+                    }
+                    for (const auto & c : g2.second) {
+                        margin += (size_t) (jit_pool + 1) * (c.l->ffn_up_exps->nb[2] + c.l->ffn_gate_exps->nb[2] + c.l->ffn_down_exps->nb[2]);
+                    }
                 }
             }
             size_t per_slot = 0;
@@ -2120,6 +2167,46 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             ok = alloc_group(g.first, g.second, /*tables_only=*/false);
         }
 
+        if (ok && jit_pool > 0 && (groups.size() > 1 || jit_pool_all) && model.dev_offload < model.devices.size()) {
+            ggml_backend_dev_t fd = model.devices[model.dev_offload].dev;
+            ggml_backend_buffer_type_t fb = nullptr;
+            for (auto & g : groups) {
+                if (ggml_backend_buft_get_device(g.first) == fd) { fb = g.first; }
+            }
+            std::vector<layer_state *> slow_ls;
+            for (auto & l : mc->layers) {
+                if ((l.link != 0 || jit_pool_all) && l.pub.up_c) { slow_ls.push_back(&l); }
+            }
+            if (fb && !slow_ls.empty()) {
+                ggml_init_params ip = { ggml_tensor_overhead()*(slow_ls.size()*4 + 8), nullptr, true };
+                ggml_context * ctx = ggml_init(ip);
+                for (auto * l : slow_ls) {
+                    const ggml_tensor * u = l->pub.up_src, * g = l->pub.gate_src, * d = l->pub.down_src;
+                    l->pub.jit_up_c   = ggml_new_tensor_3d(ctx, u->type, u->ne[0], u->ne[1], jit_pool + 1);
+                    l->pub.jit_gate_c = ggml_new_tensor_3d(ctx, g->type, g->ne[0], g->ne[1], jit_pool + 1);
+                    l->pub.jit_down_c = ggml_new_tensor_3d(ctx, d->type, d->ne[0], d->ne[1], jit_pool + 1);
+                    l->pub.jit_table  = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, u->ne[2]);
+                    ggml_format_name(l->pub.jit_up_c,   "moe_jit_up.%d",   l->pub.il);
+                    ggml_format_name(l->pub.jit_gate_c, "moe_jit_gate.%d", l->pub.il);
+                    ggml_format_name(l->pub.jit_down_c, "moe_jit_down.%d", l->pub.il);
+                    ggml_format_name(l->pub.jit_table,  "moe_jit_tbl.%d",  l->pub.il);
+                }
+                ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, fb);
+                if (buf) {
+                    ggml_backend_buffer_clear(buf, 0);
+                    ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+                    mc->bufs.push_back(buf);
+                    mc->ctxs.push_back(ctx);
+                    for (auto * l : slow_ls) { l->pub.jit_n = jit_pool; }
+                    LLAMA_LOG_INFO("moe-cache: JIT pool %d slots x %zu slower-link layers on %s (%.0f MiB)\n", jit_pool, slow_ls.size(),
+                            ggml_backend_dev_name(fd), ggml_backend_buffer_get_size(buf)/1048576.0);
+                } else {
+                    for (auto * l : slow_ls) { l->pub.jit_up_c = l->pub.jit_gate_c = l->pub.jit_down_c = l->pub.jit_table = nullptr; }
+                    ggml_free(ctx);
+                }
+            }
+        }
+
         if (!ok) {
             for (auto * b : mc->bufs) { ggml_backend_buffer_free(b); }
             for (auto * c : mc->ctxs) { ggml_free(c); }
@@ -2191,6 +2278,12 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 ggml_backend_tensor_set(ls.pub.dev_table, dummy.data(), 0, n_expert*sizeof(int32_t));
             }
             ggml_backend_tensor_set(ls.pub.host_table, dummy.data(), 0, n_expert*sizeof(int32_t));
+            if (ls.pub.jit_n > 0) {
+                ls.pool_expert.assign(ls.pub.jit_n, -1);
+                ls.pool_slot.assign(n_expert, -1);
+                std::vector<int32_t> none(n_expert, g_neg_ids ? -1 : ls.pub.jit_n);
+                ggml_backend_tensor_set(ls.pub.jit_table, none.data(), 0, n_expert*sizeof(int32_t));
+            }
 
             mc->by_up_src[ls.pub.up_src] = &ls - mc->layers.data();
             mc->by_src[ls.pub.up_src]   = { (size_t) (&ls - mc->layers.data()), 0 };
@@ -2628,8 +2721,10 @@ void llama_moe_cache_jit(const llama_moe_cache_layer * pub, const ggml_tensor * 
         return;
     }
     layer_state & ls = *lsp;
-    ggml_backend_t be = mc->link_be[ls.link];
-    const double rl = mc->gbs_link[ls.link];
+    const bool pool = ls.pub.jit_n > 0; // slower-link layer: the pool on the fastest-link GPU instead of its own cache
+    const int  lk   = pool ? 0 : ls.link;
+    ggml_backend_t be = mc->link_be[lk];
+    const double rl = mc->gbs_link[lk];
     if (!be || rl <= 0) {
         return;
     }
@@ -2641,7 +2736,9 @@ void llama_moe_cache_jit(const llama_moe_cache_layer * pub, const ggml_tensor * 
                 continue;
             }
             cur.push_back(e);
-            if (ls.expert_slot[e] < 0 && !ls.queued[e]) {
+            if (pool && ls.pool_slot[e] >= 0) {
+                mc->n_pool_hit++;
+            } else if (ls.expert_slot[e] < 0 && !ls.queued[e]) {
                 miss.push_back(e);
             }
         }
@@ -2669,6 +2766,48 @@ void llama_moe_cache_jit(const llama_moe_cache_layer * pub, const ggml_tensor * 
     }
     std::sort(miss.begin(), miss.end(), [&](int32_t a, int32_t b) { return score(ls, a) > score(ls, b); });
     int n_up = 0;
+    if (pool) {
+        for (int i = 0; i < kb; ++i) {
+            const int32_t id = miss[i];
+            // pool slot: an empty one, else the lowest-scored pool expert this token doesn't use
+            int32_t ps = -1;
+            double best = 1e300;
+            for (int32_t s = 0; s < ls.pub.jit_n; ++s) {
+                const int32_t x = ls.pool_expert[s];
+                if (x < 0) { ps = s; break; }
+                if (std::find(cur.begin(), cur.end(), x) != cur.end()) {
+                    continue;
+                }
+                const double c = score(ls, x);
+                if (c < best) { best = c; ps = s; }
+            }
+            if (ps < 0) {
+                break;
+            }
+            const int32_t old = ls.pool_expert[ps];
+            if (old >= 0) {
+                ls.pool_slot[old] = -1;
+                ls.pool_expert[ps] = -1;
+                set_table_entry(ls.pub, old, ls.pub.n_slots); // back to the CPU
+            }
+            const ggml_tensor * srcs[3] = { pub->up_src,   pub->gate_src,   pub->down_src   };
+            ggml_tensor *       dsts[3] = { pub->jit_up_c, pub->jit_gate_c, pub->jit_down_c };
+            for (int k = 0; k < 3; ++k) {
+                const size_t sz = srcs[k]->nb[2];
+                ggml_backend_tensor_set_async(be, dsts[k], (const char *) srcs[k]->data + (size_t) id*sz, (size_t) ps*dsts[k]->nb[2], sz);
+            }
+            ls.pool_expert[ps] = id;
+            ls.pool_slot[id]   = ps;
+            ls.pool_dirty      = true;
+            set_table_entry(ls.pub, id, ls.pub.n_slots + 1); // CPU skips it, the pool chain computes it
+            mc->up_bytes += (int64_t) S;
+            ++n_up;
+        }
+        mc->n_pool_up += n_up;
+        mc->n_jit += n_up;
+        mc->n_jit_layers += n_up > 0;
+        return;
+    }
     for (int i = 0; i < kb; ++i) {
         const int32_t id = miss[i];
         // slot: an empty one, else the lowest-scored cached expert this token doesn't use
@@ -2691,6 +2830,12 @@ void llama_moe_cache_jit(const llama_moe_cache_layer * pub, const ggml_tensor * 
         }
         const int32_t victim = ls.slot_expert[slot];
         if (victim >= 0) {
+            // JIT=1: admitted only as the step's swap would be (no churn): hotter than the victim by the link's pay-back
+            // margin; JIT=2: any miss may evict the lowest-scored expert this token doesn't use
+            if (knobs().jit < 2 && ((knobs().big != 0 && ls.glob_count[id] < ls.glob_count[victim]) ||
+                    score(ls, id) < score(ls, victim) + mc->link_margin[ls.link])) {
+                continue;
+            }
             ls.expert_slot[victim] = -1;
             set_table_entry(ls.pub, victim, ls.pub.n_slots);
             note_evict(mc, ls, victim);
@@ -3506,9 +3651,10 @@ void llama_moe_cache_step() {
                 mc->link_us[0]/1e3, mc->link_margin[0], mc->link_us[1]/1e3, mc->link_margin[1]);
         if (knobs().jit != 0) {
             static uint64_t pj = 0, pl = 0, pmiss = 0;
-            LLAMA_LOG_WARN("moe-cache: JIT: %.2f experts/token uploaded for immediate use in %.2f layers/token, of %.2f misses/token\n",
-                    (mc->n_jit - pj)/64.0, (mc->n_jit_layers - pl)/64.0, (mc->n_jit_miss - pmiss)/64.0);
-            pj = mc->n_jit; pl = mc->n_jit_layers; pmiss = mc->n_jit_miss;
+            static uint64_t ppu = 0, pph = 0;
+            LLAMA_LOG_WARN("moe-cache: JIT: %.2f experts/token uploaded for immediate use in %.2f layers/token, of %.2f misses/token; pool %.2f uploads, %.2f hits/token\n",
+                    (mc->n_jit - pj)/64.0, (mc->n_jit_layers - pl)/64.0, (mc->n_jit_miss - pmiss)/64.0, (mc->n_pool_up - ppu)/64.0, (mc->n_pool_hit - pph)/64.0);
+            pj = mc->n_jit; pl = mc->n_jit_layers; pmiss = mc->n_jit_miss; ppu = mc->n_pool_up; pph = mc->n_pool_hit;
         }
         for (int k = 0; k < mc->n_links; ++k) {
             if (!mc->n_link[k]) {

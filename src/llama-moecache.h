@@ -64,6 +64,14 @@ struct llama_moe_cache_layer {
     ggml_tensor * pred_all   = nullptr; // [n_embd, n_expert * pred_ahead] fp16: the predictors of the next layers, stacked
     ggml_tensor * pred_mu    = nullptr;
     ggml_tensor * pred_q     = nullptr; // Q8_0 copy of pred_all used for predicting (half the bytes, same accuracy); re-quantized after each update
+
+    // JIT pool (layers cached on a slower-link GPU): jit_n expert slots (+1 zero slot) on the fastest-link GPU, filled
+    // just in time with this token's misses and computed there by a second small chain; jit_table maps expert -> pool slot
+    int32_t       jit_n      = 0;
+    ggml_tensor * jit_up_c   = nullptr;
+    ggml_tensor * jit_gate_c = nullptr;
+    ggml_tensor * jit_down_c = nullptr;
+    ggml_tensor * jit_table  = nullptr;
 };
 
 // build the cache for every host-resident expert layer of the model.
