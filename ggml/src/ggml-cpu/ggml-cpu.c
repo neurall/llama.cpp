@@ -1770,8 +1770,9 @@ static void ggml_compute_forward_mul_mat_id_impl(
         {
             void * moe_obs_ud = NULL;
             ggml_moe_obs_cb_t moe_obs_cb = ggml_get_moe_obs_callback(&moe_obs_ud);
-            if (moe_obs_cb && strstr(src0->name, "ffn_gate_exps")) {
-                moe_obs_cb(src0->name, ids, dst, moe_obs_ud);
+            // LLAMA_MOE_DEFER: the immediate op carries the layer's full ids in src[5]; deferred ops don't observe
+            if (moe_obs_cb && strstr(src0->name, "ffn_gate_exps") && strncmp(dst->name, "ffn_moe_defer", 13) != 0) {
+                moe_obs_cb(src0->name, dst->src[5] ? dst->src[5] : ids, dst, moe_obs_ud);
             }
         }
 
@@ -1944,7 +1945,37 @@ static void ggml_compute_forward_mul_mat_id(
     if (cb && atomic_fetch_add(&g_moe_cpu_active, 1) == 0) {
         cb(1, ggml_moe_host_bytes(dst), ud);
     }
-    ggml_compute_forward_mul_mat_id_impl(params, dst);
+    // nothing on the host (every id cached, skipped or negative: fully cached layers, empty deferred runs): each thread
+    // zeroes its slice and returns, without quantizing src1 or the op's barriers (the graph barrier follows anyway);
+    // the router observation still happens
+    bool host_work = false;
+    {
+        const struct ggml_tensor * ids = dst->src[2];
+        const int32_t * tbl   = (const int32_t *) dst->src[3]->data;
+        const int32_t   dummy = ggml_get_op_params_i32(dst, 0);
+        for (int64_t t = 0; t < ids->ne[1] && !host_work; ++t) {
+            for (int64_t i = 0; i < ids->ne[0] && !host_work; ++i) {
+                const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+                host_work = e >= 0 && tbl[e] == dummy;
+            }
+        }
+    }
+    if (!host_work && ggml_is_contiguous(dst)) {
+        const size_t n = ggml_nbytes(dst), a = n*params->ith/params->nth, b = n*(params->ith + 1)/params->nth;
+        memset((char *) dst->data + a, 0, b - a);
+        if (g_mp_on == 1) {
+            g_mp_tbar[params->ith] = ggml_mp_ns();
+        }
+        if (params->ith == 0) {
+            void * moe_obs_ud = NULL;
+            ggml_moe_obs_cb_t moe_obs_cb = ggml_get_moe_obs_callback(&moe_obs_ud);
+            if (moe_obs_cb && strstr(dst->src[0]->name, "ffn_gate_exps") && strncmp(dst->name, "ffn_moe_defer", 13) != 0) {
+                moe_obs_cb(dst->src[0]->name, dst->src[5] ? dst->src[5] : dst->src[2], dst, moe_obs_ud);
+            }
+        }
+    } else {
+        ggml_compute_forward_mul_mat_id_impl(params, dst);
+    }
     if (cb && atomic_fetch_add(&g_moe_cpu_active, -1) == 1) { // fetch_add(-1): MSVC has only the add shim
         cb(0, 0, ud);
     }
