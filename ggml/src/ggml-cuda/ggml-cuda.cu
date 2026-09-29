@@ -5895,6 +5895,46 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
     GGML_UNUSED(reg);
 }
 
+// async graph walker (GGML_SCHED_PRELAUNCH): a GPU split queued before the host produced its input waits on the
+// device for a flag in mapped pinned host memory, set by the host when its split is done. A one-thread kernel spins
+// on it (portable, unlike stream memory ops); it gives up after ~10 s so a missed flag can't hang the device.
+static __global__ void k_wait_host_flag(const volatile uint32_t * f, uint32_t v) {
+    long long t0 = clock64();
+    while (*f < v) {
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= 700
+        __nanosleep(256);
+#endif
+        if (clock64() - t0 > 20000000000LL) {
+            break;
+        }
+    }
+}
+
+static uint32_t * ggml_backend_cuda_host_flags_alloc(int n) {
+    void * p = nullptr;
+    if (cudaHostAlloc(&p, (size_t) n*sizeof(uint32_t), cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return nullptr;
+    }
+    memset(p, 0, (size_t) n*sizeof(uint32_t));
+    return (uint32_t *) p;
+}
+
+static bool ggml_backend_cuda_wait_host_flag(ggml_backend_t backend, const uint32_t * flag, uint32_t value) {
+    if (!ggml_backend_is_cuda(backend)) {
+        return false;
+    }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(ctx->device);
+    void * dptr = nullptr;
+    if (cudaHostGetDevicePointer(&dptr, (void *) flag, 0) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    k_wait_host_flag<<<1, 1, 0, ctx->stream()>>>((const volatile uint32_t *) dptr, value);
+    return cudaGetLastError() == cudaSuccess;
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
     if (strcmp(name, "ggml_backend_comm_init") == 0) {
@@ -5914,6 +5954,12 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;
+    }
+    if (strcmp(name, "ggml_backend_host_flags_alloc") == 0) {
+        return (void *)ggml_backend_cuda_host_flags_alloc;
+    }
+    if (strcmp(name, "ggml_backend_wait_host_flag") == 0) {
+        return (void *)ggml_backend_cuda_wait_host_flag;
     }
     return nullptr;
 }
