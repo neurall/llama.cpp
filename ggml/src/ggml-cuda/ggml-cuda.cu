@@ -5897,14 +5897,14 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
 
 // async graph walker (GGML_SCHED_PRELAUNCH): a GPU split queued before the host produced its input waits on the
 // device for a flag in mapped pinned host memory, set by the host when its split is done. A one-thread kernel spins
-// on it (portable, unlike stream memory ops); it gives up after ~10 s so a missed flag can't hang the device.
+// on it (portable, unlike stream memory ops); it gives up after ~0.6 s so a missed flag (or a sync inside the queued split) can't hang the device.
 static __global__ void k_wait_host_flag(const volatile uint32_t * f, uint32_t v) {
     long long t0 = clock64();
     while (*f < v) {
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= 700
         __nanosleep(256);
 #endif
-        if (clock64() - t0 > 20000000000LL) {
+        if (clock64() - t0 > 1000000000LL) { // ~0.6 s
             break;
         }
     }
