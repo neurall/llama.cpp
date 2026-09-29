@@ -1999,7 +1999,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     static bool             pl_init       = false;
     if (prelaunch_env && !pl_init) {
         pl_init = true;
-        ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+        // the registry of the first GPU backend (ggml-base can't call the registry lookup in ggml)
+        ggml_backend_reg_t reg = nullptr;
+        for (int b = 0; b < sched->n_backends && !reg; b++) {
+            ggml_backend_dev_t d = ggml_backend_get_device(sched->backends[b]);
+            if (d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                reg = ggml_backend_dev_backend_reg(d);
+            }
+        }
         if (reg) {
             auto fa = (flags_alloc_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_host_flags_alloc");
             wait_flag = (wait_flag_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_wait_host_flag");
