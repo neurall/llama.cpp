@@ -1353,6 +1353,41 @@ void common_spec_auto(common_params & params) {
     LOG_INF("%s: model %.1fx free VRAM: draft depth starts at %d, max %d\n", __func__, ratio, dft.n_start, dft.n_max);
 }
 
+// Measured choice between the MoE expert cache and stock placement (the model fitter's layers, no cache), per model,
+// GPU set and build, without loading twice: one start runs stock placement, the next runs the cache, each records its prompt
+// and generation time per token at exit; then the faster mode is kept (file in the cache dir). The cache is kept only when
+// its generation is not slower than stock and its prompt time per token is below LLAMA_MOE_AUTO_PREFILL_SLOWDOWN (2) x stock.
+// LLAMA_MOE_AUTO_MODE=stock|cache forces a mode, =retest forgets the decision.
+struct moe_auto_rec { bool have = false; double p_ms = 0, g_ms = 0; };
+static std::string g_moe_auto_file;  // decision file of this run (empty: auto choice not involved)
+static std::string g_moe_auto_mode;  // mode this run explores: "stock" or "cache" (empty: decided already)
+
+static std::string moe_auto_path(const common_params & params, size_t model_size, int n_gpu, size_t vram_max) {
+    std::string name = params.model.path;
+    const size_t sl = name.find_last_of("/\\");
+    if (sl != std::string::npos) { name = name.substr(sl + 1); }
+    for (auto & c : name) { if (!isalnum((unsigned char) c) && c != '.' && c != '-' && c != '_') { c = '_'; } }
+    return fs_get_cache_directory() + "moe-mode-" + name + "-" + std::to_string(model_size) + "-g" + std::to_string(n_gpu) +
+           "x" + std::to_string(vram_max >> 20) + "-b" + std::to_string(llama_build_number()) + ".txt";
+}
+
+static void moe_auto_read(const std::string & path, moe_auto_rec & st, moe_auto_rec & ca, std::string & decided) {
+    std::ifstream f(path);
+    std::string k;
+    while (f >> k) {
+        if (k == "decided") { f >> decided; continue; }
+        moe_auto_rec & r = k == "stock" ? st : ca;
+        f >> r.p_ms >> r.g_ms;
+        r.have = true;
+    }
+}
+
+static std::string moe_auto_decide(const moe_auto_rec & st, const moe_auto_rec & ca) {
+    const char * e = getenv("LLAMA_MOE_AUTO_PREFILL_SLOWDOWN");
+    const double max_p = e ? atof(e) : 2.0;
+    return ca.g_ms <= st.g_ms && ca.p_ms < max_p * st.p_ms ? "cache" : "stock";
+}
+
 static void common_moe_cache_auto_impl(common_params & params);
 
 static void common_moe_cache_auto(common_params & params) {
@@ -1413,6 +1448,33 @@ static void common_moe_cache_auto_impl(common_params & params) {
         COM_DBG("MoE model (%.1f GiB) fits free VRAM (%.1f GiB on %d GPUs), no expert cache\n",
             model_size / 1073741824.0, vram_free / 1073741824.0, n_gpu);
         return;
+    }
+
+    {
+        const std::string path = moe_auto_path(params, model_size, n_gpu, vram_max);
+        const char * force = getenv("LLAMA_MOE_AUTO_MODE");
+        const std::string f = force ? force : "";
+        if (f == "retest") { std::remove(path.c_str()); }
+        moe_auto_rec st, ca;
+        std::string decided;
+        moe_auto_read(path, st, ca, decided);
+        std::string mode;
+        if (f == "stock" || f == "cache") {
+            mode = f;
+        } else if (!decided.empty()) {
+            mode = decided;
+            LOG_INF("%s: MoE placement: %s (measured: stock %.2f/%.2f, cache %.2f/%.2f ms per prompt/generated token; %s)\n", __func__,
+                mode.c_str(), st.p_ms, st.g_ms, ca.p_ms, ca.g_ms, path.c_str());
+        } else {
+            mode = !st.have ? "stock" : "cache";
+            g_moe_auto_file = path;
+            g_moe_auto_mode = mode;
+            LOG_INF("%s: MoE placement: measuring %s this run (next run measures %s, then the faster one is kept; %s)\n", __func__,
+                mode.c_str(), mode == "stock" ? "the expert cache" : "nothing more", path.c_str());
+        }
+        if (mode == "stock") {
+            return; // stock placement: the model fitter places layers, no expert cache
+        }
     }
 
     auto & tbo = params.tensor_buft_overrides;
@@ -1822,7 +1884,33 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
     return res;
 }
 
-common_init_result::~common_init_result() = default;
+common_init_result::~common_init_result() {
+    if (g_moe_auto_mode.empty() || !pimpl || !pimpl->context) {
+        return;
+    }
+    const llama_perf_context_data pd = llama_perf_context(pimpl->context.get());
+    if (pd.n_p_eval < 8 || pd.n_eval < 32) {
+        LOG_INF("%s: MoE placement: too few tokens this run to record %s (%d prompt, %d generated)\n", __func__,
+            g_moe_auto_mode.c_str(), pd.n_p_eval, pd.n_eval);
+        return;
+    }
+    moe_auto_rec st, ca;
+    std::string decided;
+    moe_auto_read(g_moe_auto_file, st, ca, decided);
+    moe_auto_rec & r = g_moe_auto_mode == "stock" ? st : ca;
+    r.have = true;
+    r.p_ms = pd.t_p_eval_ms / pd.n_p_eval;
+    r.g_ms = pd.t_eval_ms / pd.n_eval;
+    std::ofstream f(g_moe_auto_file, std::ios::trunc);
+    if (st.have) { f << "stock " << st.p_ms << " " << st.g_ms << "\n"; }
+    if (ca.have) { f << "cache " << ca.p_ms << " " << ca.g_ms << "\n"; }
+    if (st.have && ca.have) {
+        decided = moe_auto_decide(st, ca);
+        f << "decided " << decided << "\n";
+        LOG_INF("%s: MoE placement decided: %s (stock %.2f/%.2f, cache %.2f/%.2f ms per prompt/generated token)\n", __func__,
+            decided.c_str(), st.p_ms, st.g_ms, ca.p_ms, ca.g_ms);
+    }
+}
 
 std::string common_get_model_endpoint() {
     std::string endpoint = common_get_env("MODEL_ENDPOINT");
