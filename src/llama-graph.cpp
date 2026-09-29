@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -2259,6 +2260,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_tensor * mc_ids_all = nullptr; // LLAMA_MOE_DEFER: full ids (router observation) and the deferred ids
     ggml_tensor * mc_ids_def = nullptr;
     ggml_tensor * mc_w_host  = nullptr;
+    intptr_t      mc_defer_pk = 0;      // protected (immediate) experts per token
+    ggml_tensor * mc_defer_tbl = nullptr;
     ggml_tensor * mc_slot_ids = nullptr;
     ggml_backend_t mc_cpu_backend = nullptr;
     ggml_tensor *  mc_pred        = nullptr;
@@ -2363,7 +2366,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     return t;
                 };
                 mc_ids_all = selected_experts;
-                mc_ids_def = split(false, "ffn_moe_defer_ids");
+                mc_defer_pk = pk;
                 // router weights on the host with this split's inputs: the deferred chain then has no GPU input, so it
                 // doesn't wait (sync) for the GPU work queued after this layer (the next layer's attention)
                 mc_w_host = ggml_cont(ctx0, weights);
@@ -2721,6 +2724,42 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         cb(experts, "ffn_moe_cache_merged", il);
     }
 
+    if (mc_defer_pk > 0) {
+        // deferred ids resolved inside this layer's immediate host split, where the tables can't change (they only
+        // change in split callbacks and step()) and match what the GPU chain used: cached ids -> -1, so the deferred
+        // chain computes exactly the host misses among the deferred experts, whatever gets published before it runs
+        // the immediate host run's down op (before the merge with the GPU chain) orders this after that run
+        ggml_tensor * imm_dep = (experts->op == GGML_OP_ADD && experts->src[0]->op == GGML_OP_MUL_MAT_ID) ? experts->src[0] : experts;
+        mc_ids_def = ggml_map_custom2(ctx0, mc_ids_all, imm_dep,
+                [](ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor *, int ith, int, void * ud) {
+                    if (ith != 0) { return; }
+                    const llama_moe_cache_layer * mc = (const llama_moe_cache_layer *) ud;
+                    static const int defer = [] { const char * e = getenv("LLAMA_MOE_DEFER"); return e ? atoi(e) : 0; }();
+                    const int64_t pk = a->ne[0] - defer;
+                    const int32_t * tbl = (const int32_t *) mc->host_table->data;
+                    for (int64_t t = 0; t < a->ne[1]; ++t) {
+                        for (int64_t i = 0; i < a->ne[0]; ++i) {
+                            const int32_t v = *(const int32_t *) ((const char *) a->data + t*a->nb[1] + i*a->nb[0]);
+                            const bool keep = i >= pk && v >= 0 && tbl[v] == mc->n_slots; // deferred and uncached now
+                            *(int32_t *) ((char *) dst->data + t*dst->nb[1] + i*dst->nb[0]) = keep ? v : -1;
+                        }
+                    }
+                }, 1, (void *) mcache);
+        ggml_backend_sched_set_tensor_backend(sched, mc_ids_def, mc_cpu_backend);
+        cb(mc_ids_def, "ffn_moe_defer_ids", il);
+        ggml_build_forward_expand(gf, mc_ids_def);
+        // frozen "nothing cached" table for the deferred chain (the live table may change before it runs)
+        const int32_t n_slots_c = mcache->n_slots;
+        ggml_tensor * frozen = ggml_map_custom1(ctx0, mcache->host_table,
+                [](ggml_tensor * dst, const ggml_tensor *, int ith, int, void * ud) {
+                    if (ith != 0) { return; }
+                    const int32_t v = (int32_t) (intptr_t) ud;
+                    for (int64_t i = 0; i < ggml_nelements(dst); ++i) { ((int32_t *) dst->data)[i] = v; }
+                }, 1, (void *) (intptr_t) n_slots_c);
+        ggml_backend_sched_set_tensor_backend(sched, frozen, mc_cpu_backend);
+        cb(frozen, "ffn_moe_defer_tbl", il);
+        mc_defer_tbl = frozen;
+    }
     if (mc_ids_def) {
         // host MUL_MAT_IDs of an expert chain, found from its down op
         std::function<void(ggml_tensor *, int, const std::function<void(ggml_tensor *)> &)> each_mmid =
@@ -2734,9 +2773,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             if (t->src[2] == selected_experts && strstr(t->src[0]->name, "gate_exps")) { t->src[5] = mc_ids_all; }
         });
         ggml_tensor * dexp = expert_chain(cur, mc_ids_def);
-        dexp->src[3] = mcache->host_table;
-        dexp->op_params[0] = mcache->n_slots;
         each_mmid(dexp, 0, [&](ggml_tensor * t) {
+            t->src[3] = mc_defer_tbl;
+            t->op_params[0] = mcache->n_slots;
+            t->src[4] = nullptr; // no predictor handoff on the deferred gate op
             const char * kind = strstr(t->src[0]->name, "gate_exps") ? "gate" : strstr(t->src[0]->name, "up_exps") ? "up" : "down";
             ggml_format_name(t, "ffn_moe_defer_%s-%d", kind, il);
             ggml_backend_sched_set_tensor_backend(sched, t, mc_cpu_backend);
