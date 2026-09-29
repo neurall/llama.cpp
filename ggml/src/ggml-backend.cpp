@@ -2026,6 +2026,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     }
     const bool prelaunch = prelaunch_env && pl_flag && wait_flag && !sched->callback_eval;
     int prelaunched = -1; // split already queued behind the flag
+    // GGML_SCHED_INPUT_EVENTS=1 (on with PRELAUNCH): per GPU backend, an event recorded after a split's input copies;
+    // a host split right after a GPU split that read host memory waits for the copies only, not the whole GPU split
+    static const bool inp_events_on = prelaunch_env ||
+            (getenv("GGML_SCHED_INPUT_EVENTS") && atoi(getenv("GGML_SCHED_INPUT_EVENTS")) != 0);
+    static ggml_backend_event_t inp_event[GGML_SCHED_MAX_BACKENDS] = {};
+    static bool inp_event_tried[GGML_SCHED_MAX_BACKENDS] = {};
     auto can_prelaunch = [&](int id) {
         if (id >= sched->n_splits || lookahead[id].slot != -1) {
             return false;
@@ -2104,7 +2110,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         };
         if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id &&
                 !(is_gpu(sched->backends[prev_backend_id]) && (is_gpu(split_backend) || !prev_reads_host()))) {
-            if (sched->events[prev_backend_id][sched->cur_copy] != NULL) {
+            if (inp_events_on && inp_event[prev_backend_id] && !is_gpu(split_backend)) {
+                // only the GPU split's host reads (its input copies) matter here: wait for those, not for its compute,
+                // so host work that follows (e.g. deferred experts) overlaps the GPU split
+                ggml_backend_event_synchronize(inp_event[prev_backend_id]);
+            } else if (sched->events[prev_backend_id][sched->cur_copy] != NULL) {
                 ggml_backend_event_synchronize(sched->events[prev_backend_id][sched->cur_copy]);
             } else {
                 ggml_backend_synchronize(sched->backends[prev_backend_id]);
@@ -2403,6 +2413,21 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
         d2h_pending.clear();
+
+        if (inp_events_on && is_gpu(split_backend) && split_backend_id < GGML_SCHED_MAX_BACKENDS) {
+            bool host_in = false;
+            for (int j = 0; j < split->n_inputs && !host_in; j++) {
+                ggml_backend_buffer_t b = split->inputs[j]->view_src ? split->inputs[j]->view_src->buffer : split->inputs[j]->buffer;
+                host_in = !b || ggml_backend_buffer_is_host(b);
+            }
+            if (!inp_event_tried[split_backend_id]) {
+                inp_event_tried[split_backend_id] = true;
+                inp_event[split_backend_id] = ggml_backend_event_new(ggml_backend_get_device(split_backend));
+            }
+            if (host_in && inp_event[split_backend_id]) {
+                ggml_backend_event_record(inp_event[split_backend_id], split_backend);
+            }
+        }
 
         if (prof) {
             p_t1 = ggml_time_us();
