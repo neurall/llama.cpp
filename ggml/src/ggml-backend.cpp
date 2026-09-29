@@ -1421,7 +1421,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
         static int logged = 0;
         if (n_moved > 0 && logged < 2) {
             logged++;
-            GGML_LOG_INFO("%s: GGML_SCHED_REORDER moved %d nodes ahead of host expert matmuls\n", __func__, n_moved);
+            GGML_LOG_WARN("%s: GGML_SCHED_REORDER moved %d nodes ahead of host expert matmuls\n", __func__, n_moved);
         }
     }
 
@@ -2014,7 +2014,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             signal_flag = (signal_flag_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_signal_host_flag");
             d2h_flags   = fa ? fa(GGML_SCHED_MAX_BACKENDS) : nullptr;
         }
-        GGML_LOG_INFO("%s: GGML_SCHED_PRELAUNCH %s\n", __func__, pl_flag && wait_flag ? "on" : "unavailable (no host flags), off");
+        GGML_LOG_WARN("%s: GGML_SCHED_PRELAUNCH %s\n", __func__, pl_flag && wait_flag ? "on" : "unavailable (no host flags), off");
     }
     const bool prelaunch = prelaunch_env && pl_flag && wait_flag && !sched->callback_eval;
     int prelaunched = -1; // split already queued behind the flag
@@ -2437,7 +2437,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         static int n_logged = 0;
                         if (n_logged < 3 && split_id + 1 > 0) {
                             n_logged++;
-                            GGML_LOG_INFO("%s: prelaunched split %d (%s, %d nodes) behind host split %d\n", __func__, split_id + 1,
+                            GGML_LOG_WARN("%s: prelaunched split %d (%s, %d nodes) behind host split %d\n", __func__, split_id + 1,
                                     ggml_backend_name(nbe), nx->graph.n_nodes, split_id);
                         }
                     }
