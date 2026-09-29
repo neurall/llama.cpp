@@ -2445,7 +2445,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
             if (pl_now) {
-                // host results are in memory: release the queued GPU split (set even on failure so the GPU can't hang)
+                // the queued split hasn't run yet (it waits for the flag): its pre-split callback (MoE cache table
+                // publish/flush) goes here, where it would have run, then release it (set even on failure: no GPU hang)
+                if (g_split_cb) {
+                    g_split_cb(sched->backends[splits[prelaunched].backend_id], g_split_ud);
+                }
                 std::atomic_thread_fence(std::memory_order_seq_cst);
                 *pl_flag = ++pl_seq;
             }
