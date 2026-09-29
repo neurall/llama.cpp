@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -2054,6 +2055,15 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     const int64_t n_tokens = cur->ne[1];
     const bool weight_before_ffn = arch == LLM_ARCH_LLAMA4; // for llama4, we apply the sigmoid-ed weights before the FFN
 
+    // LLAMA_MOE_DEFER: the previous MoE layer's deferred host experts go into the graph here, after this layer's
+    // attention and before its router, so the host computes them while the GPU runs the attention
+    ggml_tensor * defer_prev = moe_defer_pending;
+    moe_defer_pending = nullptr;
+    if (defer_prev) {
+        ggml_build_forward_expand(gf, cur);
+        ggml_build_forward_expand(gf, defer_prev);
+    }
+
     ggml_tensor * logits = nullptr;
 
     if (probs_in == nullptr) {
@@ -2246,6 +2256,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // outputs sum to the exact result. Larger batches keep the stock path, where
     // the scheduler streams the used experts to the GPU instead.
     const llama_moe_cache_layer * mcache = nullptr;
+    ggml_tensor * mc_ids_all = nullptr; // LLAMA_MOE_DEFER: full ids (router observation) and the deferred ids
+    ggml_tensor * mc_ids_def = nullptr;
     ggml_tensor * mc_slot_ids = nullptr;
     ggml_backend_t mc_cpu_backend = nullptr;
     ggml_tensor *  mc_pred        = nullptr;
@@ -2315,6 +2327,45 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             cb(cur, "ffn_moe_cpu_inp", il);
             ggml_build_forward_expand(gf, cur);
             ggml_build_forward_expand(gf, selected_experts);
+            // LLAMA_MOE_DEFER=n (decode, not the last layer): the host misses among the n lowest-scored of the
+            // n_expert_used selected experts (argsort order: best first) are computed while the next layer's attention
+            // runs, and their output joins the next MoE layer's output (ktransformers' expert deferral)
+            static const int defer_n = [] { const char * e = getenv("LLAMA_MOE_DEFER"); return e ? atoi(e) : 0; }();
+            if (defer_n > 0 && defer_n < n_expert_used && n_tokens == 1 && il < (int) n_layer - 1 && !selected_experts_in &&
+                    !up_exps_b && !gate_exps_b && !down_exps_b && !gate_up_exps && !weight_before_ffn) {
+                const intptr_t pk = n_expert_used - defer_n;
+                auto split = [&](bool keep_protected, const char * name) {
+                    ggml_tensor * t = ggml_map_custom1(ctx0, selected_experts,
+                            keep_protected ?
+                            (ggml_custom1_op_t) [](ggml_tensor * dst, const ggml_tensor * a, int ith, int, void * ud) {
+                                if (ith != 0) { return; }
+                                const int64_t k = (int64_t) (intptr_t) ud;
+                                for (int64_t t = 0; t < a->ne[1]; ++t) {
+                                    for (int64_t i = 0; i < a->ne[0]; ++i) {
+                                        const int32_t v = *(const int32_t *) ((const char *) a->data + t*a->nb[1] + i*a->nb[0]);
+                                        *(int32_t *) ((char *) dst->data + t*dst->nb[1] + i*dst->nb[0]) = i < k ? v : -1;
+                                    }
+                                }
+                            } :
+                            (ggml_custom1_op_t) [](ggml_tensor * dst, const ggml_tensor * a, int ith, int, void * ud) {
+                                if (ith != 0) { return; }
+                                const int64_t k = (int64_t) (intptr_t) ud;
+                                for (int64_t t = 0; t < a->ne[1]; ++t) {
+                                    for (int64_t i = 0; i < a->ne[0]; ++i) {
+                                        const int32_t v = *(const int32_t *) ((const char *) a->data + t*a->nb[1] + i*a->nb[0]);
+                                        *(int32_t *) ((char *) dst->data + t*dst->nb[1] + i*dst->nb[0]) = i < k ? -1 : v;
+                                    }
+                                }
+                            }, 1, (void *) pk);
+                    ggml_backend_sched_set_tensor_backend(sched, t, cpu_backend);
+                    cb(t, name, il);
+                    return t;
+                };
+                mc_ids_all = selected_experts;
+                mc_ids_def = split(false, "ffn_moe_defer_ids");
+                selected_experts = split(true, "ffn_moe_imm_ids");
+                ggml_build_forward_expand(gf, selected_experts);
+            }
             // JIT miss offload: with the ids on the host (this CPU split), the cache may upload some of this layer's
             // misses on the chain's stream before the chain below is launched (llama_moe_cache_jit)
             ggml_tensor * jit = ggml_map_custom1(ctx0, selected_experts,
@@ -2663,6 +2714,37 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         cb(experts, "ffn_moe_cache_merged", il);
     }
 
+    if (mc_ids_def) {
+        // host MUL_MAT_IDs of an expert chain, found from its down op
+        std::function<void(ggml_tensor *, int, const std::function<void(ggml_tensor *)> &)> each_mmid =
+                [&](ggml_tensor * t, int depth, const std::function<void(ggml_tensor *)> & f) {
+            if (!t || depth > 4) { return; }
+            if (t->op == GGML_OP_MUL_MAT_ID) { f(t); }
+            for (int j = 0; j < 2; ++j) { each_mmid(t->src[j], depth + 1, f); }
+        };
+        // the immediate gate op observes the layer's full selection for the cache (its own ids hide the deferred ones)
+        each_mmid(experts, 0, [&](ggml_tensor * t) {
+            if (t->src[2] == selected_experts && strstr(t->src[0]->name, "gate_exps")) { t->src[5] = mc_ids_all; }
+        });
+        ggml_tensor * dexp = expert_chain(cur, mc_ids_def);
+        dexp->src[3] = mcache->host_table;
+        dexp->op_params[0] = mcache->n_slots;
+        each_mmid(dexp, 0, [&](ggml_tensor * t) {
+            const char * kind = strstr(t->src[0]->name, "gate_exps") ? "gate" : strstr(t->src[0]->name, "up_exps") ? "up" : "down";
+            ggml_format_name(t, "ffn_moe_defer_%s-%d", kind, il);
+            ggml_backend_sched_set_tensor_backend(sched, t, mc_cpu_backend);
+        });
+        dexp = ggml_mul(ctx0, dexp, weights);
+        ggml_backend_sched_set_tensor_backend(sched, dexp, mc_cpu_backend);
+        ggml_tensor * dsum = ggml_view_2d(ctx0, dexp, n_embd, n_tokens, dexp->nb[2], 0);
+        for (int64_t i = 1; i < n_expert_used; ++i) {
+            dsum = ggml_add(ctx0, dsum, ggml_view_2d(ctx0, dexp, n_embd, n_tokens, dexp->nb[2], i*dexp->nb[1]));
+            ggml_backend_sched_set_tensor_backend(sched, dsum, mc_cpu_backend);
+        }
+        cb(dsum, "ffn_moe_defer_out", il);
+        moe_defer_pending = dsum; // expanded at the next MoE layer, after its attention
+    }
+
     if (down_exps_s) {
         cb(experts, "ffn_moe_down_scaled", il);
     }
@@ -2706,6 +2788,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     if (n_expert_used_il == 1) {
         // avoid returning a non-contiguous tensor
         moe_out = ggml_cont(ctx0, moe_out);
+    }
+
+    if (defer_prev) {
+        moe_out = ggml_add(ctx0, moe_out, defer_prev);
+        cb(moe_out, "ffn_moe_out_with_deferred", il);
     }
 
     cb(moe_out, "ffn_moe_out", il);

@@ -2918,6 +2918,11 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
     // add backend sampling layers (if any)
     llm->build_sampling();
 
+    if (llm->moe_defer_pending) {
+        // LLAMA_MOE_DEFER: deferred experts of the last MoE layer were never added (last MoE layer != n_layer - 1)
+        LLAMA_LOG_ERROR("%s: LLAMA_MOE_DEFER: deferred expert output left unmerged at graph end, results are wrong; unset LLAMA_MOE_DEFER\n", __func__);
+    }
+
     // if the gguf model was converted with --sentence-transformers-dense-modules
     // there will be two additional dense projection layers
     // dense linear projections are applied after pooling

@@ -1770,8 +1770,9 @@ static void ggml_compute_forward_mul_mat_id_impl(
         {
             void * moe_obs_ud = NULL;
             ggml_moe_obs_cb_t moe_obs_cb = ggml_get_moe_obs_callback(&moe_obs_ud);
-            if (moe_obs_cb && strstr(src0->name, "ffn_gate_exps")) {
-                moe_obs_cb(src0->name, ids, dst, moe_obs_ud);
+            // LLAMA_MOE_DEFER: the immediate op carries the layer's full ids in src[5]; deferred ops don't observe
+            if (moe_obs_cb && strstr(src0->name, "ffn_gate_exps") && strncmp(dst->name, "ffn_moe_defer", 13) != 0) {
+                moe_obs_cb(src0->name, dst->src[5] ? dst->src[5] : ids, dst, moe_obs_ud);
             }
         }
 

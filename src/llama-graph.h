@@ -1048,6 +1048,8 @@ struct llm_graph_context {
     };
     mutable std::map<int, moe_pred_src> moe_pred_srcs;                      // source layer ->
     mutable std::map<int, std::vector<int>> moe_pred_todo;                  // target layer -> source layers
+    // LLAMA_MOE_DEFER: layer L's deferred host experts (weighted sum), added to the next MoE layer's output
+    mutable ggml_tensor * moe_defer_pending = nullptr;
 
     const llama_adapter_cvec     * cvec;
     const llama_adapter_loras    * loras;
