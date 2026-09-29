@@ -23,6 +23,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <unordered_set>
 
 #ifdef __APPLE__
 #include <sys/types.h>
@@ -1339,6 +1340,88 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
             ggml_backend_sched_set_if_supported(sched, node, b, cur_backend_id);
         }
         GGML_ASSERT(*cur_backend_id != -1);
+    }
+
+    // GGML_SCHED_REORDER=1: dependency order instead of the model's build order around host expert matmuls. The graph
+    // is built depth-first, so GPU work that doesn't need a CPU MUL_MAT_ID run's result (e.g. a shared expert, built
+    // after the routed experts) sits after that run and executes only once the host finished. Such nodes are moved to
+    // just before the run: they join the preceding GPU split, launched async, and overlap the host matmuls.
+    static const bool sched_reorder = getenv("GGML_SCHED_REORDER") && atoi(getenv("GGML_SCHED_REORDER")) != 0;
+    if (sched_reorder) {
+        auto is_cpu = [&](ggml_tensor * t) {
+            const int b = tensor_backend_id(t);
+            return b >= 0 && ggml_backend_dev_type(ggml_backend_get_device(sched->backends[b])) == GGML_BACKEND_DEVICE_TYPE_CPU;
+        };
+        auto base = [](const ggml_tensor * t) { return t->view_src ? t->view_src : t; };
+        std::vector<ggml_tensor *> out;
+        out.reserve(graph->n_nodes);
+        int n_moved = 0;
+        int i = 0;
+        while (i < graph->n_nodes) {
+            ggml_tensor * node = graph->nodes[i];
+            if (ggml_is_view_op(node->op) || !is_cpu(node)) {
+                out.push_back(node);
+                i++;
+                continue;
+            }
+            // a run of host nodes [a, b) (views inside included)
+            const int a = i;
+            bool has_mmid = false;
+            while (i < graph->n_nodes && (ggml_is_view_op(graph->nodes[i]->op) || is_cpu(graph->nodes[i]))) {
+                has_mmid |= graph->nodes[i]->op == GGML_OP_MUL_MAT_ID;
+                i++;
+            }
+            const int b = i;
+            if (!has_mmid) {
+                out.insert(out.end(), graph->nodes + a, graph->nodes + b);
+                continue;
+            }
+            std::unordered_set<const ggml_tensor *> tainted, reads;
+            for (int k = a; k < b; k++) {
+                ggml_tensor * t = graph->nodes[k];
+                tainted.insert(t);
+                tainted.insert(base(t));
+                for (int j = 0; j < GGML_MAX_SRC; j++) {
+                    if (t->src[j]) { reads.insert(base(t->src[j])); }
+                }
+            }
+            std::vector<ggml_tensor *> hoist, stay;
+            int k = b;
+            for (; k < graph->n_nodes; k++) {
+                ggml_tensor * t = graph->nodes[k];
+                bool dep = tainted.count(base(t)) > 0;
+                for (int j = 0; j < GGML_MAX_SRC && !dep; j++) {
+                    dep = t->src[j] && (tainted.count(t->src[j]) || tainted.count(base(t->src[j])));
+                }
+                // writes into a tensor that the run or a node staying behind reads: must keep its place
+                const bool war = t->view_src && reads.count(t->view_src);
+                if (!dep && !war && !ggml_is_view_op(t->op) && is_cpu(t)) {
+                    break; // next independent host node: stop here
+                }
+                if (dep || war) {
+                    stay.push_back(t);
+                    tainted.insert(t);
+                    tainted.insert(base(t));
+                    for (int j = 0; j < GGML_MAX_SRC; j++) {
+                        if (t->src[j]) { reads.insert(base(t->src[j])); }
+                    }
+                } else {
+                    hoist.push_back(t);
+                }
+            }
+            n_moved += (int) hoist.size();
+            out.insert(out.end(), hoist.begin(), hoist.end());
+            out.insert(out.end(), graph->nodes + a, graph->nodes + b);
+            out.insert(out.end(), stay.begin(), stay.end());
+            i = k;
+        }
+        GGML_ASSERT((int) out.size() == graph->n_nodes);
+        std::copy(out.begin(), out.end(), graph->nodes);
+        static int logged = 0;
+        if (n_moved > 0 && logged < 2) {
+            logged++;
+            GGML_LOG_INFO("%s: GGML_SCHED_REORDER moved %d nodes ahead of host expert matmuls\n", __func__, n_moved);
+        }
     }
 
     // pass 5: split graph, find tensors that need to be copied
