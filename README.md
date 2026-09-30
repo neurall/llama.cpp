@@ -14,6 +14,8 @@ llama-cli    -m model.gguf -p "hello"
 Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock llama.cpp.
 Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.
 Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.
+Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.
+Every number is a hot run (same model run again, files in the page cache, what the engine learned kept), build b11648 against upstream 05af0d2b1.
 
 | model (size) | machine | test | upstream | this fork | |
 |---|---|---|---|---|---|
@@ -23,7 +25,14 @@ Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.
 | | | 12k-token prompt, processing | 156 | 112 | 0.7x |
 | **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) * | A | short chat, decode | 27.7 | **46.5** | **1.7x** |
 | | | 12k-token prompt, decode / processing | 25.3 / 500 | **42.3 / 538** | 1.7x / 1.1x |
-| **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) * | B | short chat, decode | 31.0 | **56.3** | **1.8x** |
+| **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short tetris prompt, 100 tokens, decode | 44.6 | **50.6** | **1.1x** |
+| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | same | 69.1 | 69.1 (keeps stock) | 1.0x |
+| | B | same | 11.4 | **13.5** | **1.2x** |
+| | B | same, prompt processing | 15.5 | 5.9 | 0.4x |
+| **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) | B | short tetris prompt, 100 tokens, decode | 29.2 | **59.3** | **2.0x** |
+| | C | same, CPU only (AVX Q2_0 kernels) | 6.3 | **11.3** | **1.8x** |
+| Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | same | 45.1 | 45.0 | 1.0x |
+| Qwen3.8-27B IQ3_S, dense, CPU only | C | same | 1.7 | 1.6 | 1.0x |
 | | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x |
 | Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) |
 
