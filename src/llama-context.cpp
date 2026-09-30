@@ -1248,7 +1248,7 @@ void llama_context::detach_threadpool() {
 // Decode thread autotune. The default count is a formula (cores minus one per GPU); the best count depends on the CPU, its
 // memory and how much of the model runs on it. Every `hold` tokens: candidates {base, base-2, base+2} in interleaved
 // 32-token slices (3 rounds, 8 warm-up tokens each). Decode times are noisy and correlated, so the decision uses slice means
-// paired by round: a candidate must beat the base by 3% in EVERY round, the cycle is void when the base's own slices differ by
+// paired by round: a candidate must beat the base in EVERY round (by half the base's own spread, 0.5-3%), the cycle is void when the base's own slices differ by
 // more than 25%, and a candidate must win two cycles in a row before it replaces the base. The interval doubles (4096 ..
 // 65536 tokens) while the base is confirmed. LLAMA_THREAD_AUTOTUNE=0 turns it off.
 void llama_context::set_thread_autotune(bool on) {
@@ -1301,18 +1301,19 @@ void llama_context::thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens) {
         set(thrb.cand[(size_t) thrb.slot % thrb.cand.size()]);
         return;
     }
-    // decide on paired rounds: a candidate must beat the base by 3% in EVERY round; two winning cycles in a row to replace it
+    // decide on paired rounds: a candidate must beat the base in EVERY round; two winning cycles in a row to replace it
     auto mean = [&](size_t i) { double m = 0; for (double x : thrb.slice[i]) { m += x; } return m/std::max<size_t>(1, thrb.slice[i].size()); };
     const auto & b0 = thrb.slice[0];
     const double bmin = *std::min_element(b0.begin(), b0.end()), bmax = *std::max_element(b0.begin(), b0.end());
     const bool noisy = bmax > 1.25*bmin;
-    // same rule as the decode tuner: more threads must win by 3% in every round, fewer threads must not lose by more than 1%
+    // same rule as the decode tuner: more threads must win in every round by the noise-scaled bar, fewer threads must not lose by more than 1%
     int best = -1, fewest = -1;
+    const double win = std::min(0.03, std::max(0.005, 0.5*(bmax/bmin - 1))); // noise-scaled bar for more threads, 0.5% to 3%
     if (!noisy) {
         for (size_t i = 1; i < thrb.cand.size(); ++i) {
             const bool fewer = thrb.cand[i] < thrb.cand[0];
             bool all = thrb.slice[i].size() == b0.size();
-            for (size_t r = 0; all && r < b0.size(); ++r) { all = thrb.slice[i][r] < (fewer ? 1.01 : 0.97)*b0[r]; }
+            for (size_t r = 0; all && r < b0.size(); ++r) { all = thrb.slice[i][r] < (fewer ? 1.01 : 1.0 - win)*b0[r]; }
             if (!all) { continue; }
             if (fewer) { if (fewest < 0 || thrb.cand[i] < thrb.cand[(size_t) fewest]) { fewest = (int) i; } }
             else if (best < 0 || mean(i) < mean((size_t) best)) { best = (int) i; }
@@ -1372,14 +1373,16 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     const auto & b0 = thr.slice[0];
     const double bmin = *std::min_element(b0.begin(), b0.end()), bmax = *std::max_element(b0.begin(), b0.end());
     const bool noisy = bmax > 1.25*bmin;
-    // more threads must win by 3% in every round; fewer threads only must not lose by more than 1% (a tie favors fewer: less power,
+    // more threads must win in every round by a noise-scaled bar (0.5-3%); fewer threads only must not lose by more than 1% (a tie favors fewer: less power,
     // cores left for launches and uploads). The fastest winner with more threads beats the lowest count among the ties.
     int best = -1, fewest = -1;
+    // the bar for more threads follows the measured noise: half the base's own round-to-round spread, between 0.5% and 3%
+    const double win = std::min(0.03, std::max(0.005, 0.5*(bmax/bmin - 1)));
     if (!noisy) {
         for (size_t i = 1; i < thr.cand.size(); ++i) {
             const bool fewer = thr.cand[i] < thr.cand[0];
             bool all = thr.slice[i].size() == b0.size();
-            for (size_t r = 0; all && r < b0.size(); ++r) { all = thr.slice[i][r] < (fewer ? 1.01 : 0.97)*b0[r]; }
+            for (size_t r = 0; all && r < b0.size(); ++r) { all = thr.slice[i][r] < (fewer ? 1.01 : 1.0 - win)*b0[r]; }
             if (!all) { continue; }
             if (fewer) { if (fewest < 0 || thr.cand[i] < thr.cand[(size_t) fewest]) { fewest = (int) i; } }
             else if (best < 0 || mean(i) < mean((size_t) best)) { best = (int) i; }
