@@ -416,6 +416,8 @@ private:
     struct thread_tune {
         bool   on = false;
         int    base = 0;                 // current best count
+        int    base0 = 0;                // the default the count started from (a saved decision is valid while it is unchanged)
+        bool   try_lo2 = false;          // base-2 was within 3% of the base last cycle: base-4 is worth a cycle too
         std::vector<int> cand;           // candidates of this cycle (base first)
         int    slot = 0, tok = 0, warm = 0, hold = 0, hold_len = 4096;
         std::vector<double> cur_sum;                 // running sum of the current slice
@@ -437,6 +439,7 @@ private:
         int    pending = -1;
         int    hold = 0, hold_len = 4;               // full batches to wait before the next cycle
         int    n_max = 0;                            // threads the batch pool has
+        int    base0 = 0;                            // the default the count started from
         int64_t last_us = 0, last_tokens = 0;        // start and size of the previous prompt ubatch
     } thrb;
     void thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens);

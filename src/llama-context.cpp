@@ -2,6 +2,7 @@
 #include <thread>
 
 #include "llama-moecache.h"
+#include "llama-moestate.h"
 
 #include "ggml.h"
 #include "llama-arch.h"
@@ -1251,12 +1252,32 @@ void llama_context::detach_threadpool() {
 // paired by round: a candidate must beat the base in EVERY round (by half the base's own spread, 0.5-3%), the cycle is void when the base's own slices differ by
 // more than 25%, and a candidate must win two cycles in a row before it replaces the base. The interval doubles (4096 ..
 // 65536 tokens) while the base is confirmed. LLAMA_THREAD_AUTOTUNE=0 turns it off.
+// the tuned thread counts of this model on this machine are kept in the state file as "<default> <tuned>", valid while the default
+// is unchanged: a short session (one reply, no time for a cycle) starts from what an earlier one found
+static int threads_saved(const llama_model & model, const char * key, int dflt) {
+    std::string v;
+    int d = 0, t = 0;
+    return moe_state_get(moe_state_section(model), key, v) && sscanf(v.c_str(), "%d %d", &d, &t) == 2 && d == dflt && t >= 2 ? t : 0;
+}
+
+static void threads_save(const llama_model & model, const char * key, int dflt, int tuned) {
+    moe_state_set(moe_state_section(model), { { key, std::to_string(dflt) + " " + std::to_string(tuned) } });
+}
+
 void llama_context::set_thread_autotune(bool on) {
     const char * e = getenv("LLAMA_THREAD_AUTOTUNE");
     if (e && atoi(e) == 0) { on = false; }
-    thr.on   = on;
-    thr.base = (int) cparams.n_threads;
-    thr.hold = 512; // let the first tokens run before the first cycle
+    thr.on    = on;
+    thr.base0 = (int) cparams.n_threads;
+    thr.base  = thr.base0;
+    thr.hold  = 128; // a few replies run on the default first (the counter runs across requests)
+    // the thread pool is created for the default count after this call: a saved count above it cannot run, so only lower ones apply
+    if (on) {
+        if (const int s = threads_saved(model, "threads", thr.base0)) {
+            thr.base = std::min(s, thr.base0);
+            cparams.n_threads = (uint32_t) thr.base;
+        }
+    }
 }
 
 void llama_context::set_batch_thread_autotune(bool on, int32_t n_max) {
@@ -1264,7 +1285,14 @@ void llama_context::set_batch_thread_autotune(bool on, int32_t n_max) {
     if (e && atoi(e) == 0) { on = false; }
     thrb.on    = on;
     thrb.n_max = n_max;
-    thrb.base  = (int) cparams.n_threads_batch;
+    thrb.base0 = (int) cparams.n_threads_batch;
+    thrb.base  = thrb.base0;
+    if (on) {
+        if (const int s = threads_saved(model, "threads_batch", thrb.base0)) {
+            thrb.base = std::min(s, std::max(n_max, thrb.base0));
+            cparams.n_threads_batch = (uint32_t) thrb.base;
+        }
+    }
     thrb.hold = 2;  // the first full batches run on the default
 }
 
@@ -1326,7 +1354,7 @@ void llama_context::thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens) {
     for (size_t i = 1; i < thrb.cand.size(); ++i) { msg += " | " + std::to_string(thrb.cand[i]) + ": " + std::to_string(1e6/mean(i)).substr(0, 6); }
     LLAMA_LOG_INFO("%s: batch thread autotune: base %d %.1f tokens/s%s%s -> %d%s\n", __func__, thrb.cand[0], 1e6/mean(0), msg.c_str(),
             noisy ? " (noisy, void)" : "", adopt ? cand_best : thrb.cand[0], (cand_best >= 0 && !adopt) ? " (leads, confirming)" : "");
-    if (adopt) { thrb.base = cand_best; thrb.pending = -1; thrb.hold_len = 8; thrb.hold = thrb.hold_len; }
+    if (adopt) { thrb.base = cand_best; thrb.pending = -1; thrb.hold_len = 8; thrb.hold = thrb.hold_len; threads_save(model, "threads_batch", thrb.base0, cand_best); }
     else if (cand_best >= 0) { thrb.pending = cand_best; thrb.hold = 1; }   // confirm at the next full batch
     else { thrb.pending = -1; thrb.hold_len = std::min(thrb.hold_len*2, 64); thrb.hold = thrb.hold_len; }
     set(thrb.base);
@@ -1349,7 +1377,8 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         const int cap = (threadpool || threadpool_batch) ? base : hw;
         const int lo = std::max(2, base - 2), hi = std::min(cap, base + 2), lo2 = std::max(2, base - 4);
         if (lo != base) { c.push_back(lo); }
-        if (lo2 != lo && lo2 != base) { c.push_back(lo2); } // decode is memory-bound: a few threads already reach the RAM ceiling
+        // a far lower count costs a slow slice per round: only when the nearer one looked close to the base
+        if (thr.try_lo2 && lo2 != lo && lo2 != base) { c.push_back(lo2); }
         if (hi != base) { c.push_back(hi); }
         if (c.size() < 2) { thr.hold = thr.hold_len; return; }
         thr.cand = c; thr.slot = 0; thr.tok = 0; thr.warm = 8;
@@ -1389,14 +1418,21 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         }
     }
     if (best < 0) { best = fewest; }
+    thr.try_lo2 = false;
+    for (size_t i = 1; i < thr.cand.size(); ++i) {
+        if (thr.cand[i] >= thr.cand[0] || thr.slice[i].size() != b0.size()) { continue; }
+        bool close = true;
+        for (size_t r = 0; r < b0.size(); ++r) { close = close && thr.slice[i][r] < 1.03*b0[r]; }
+        thr.try_lo2 = thr.try_lo2 || close;
+    }
     const int cand_best = best >= 0 ? thr.cand[(size_t) best] : -1;
     const bool adopt = cand_best >= 0 && cand_best == thr.pending;
     std::string msg;
     for (size_t i = 1; i < thr.cand.size(); ++i) { msg += " | " + std::to_string(thr.cand[i]) + ": " + std::to_string(mean(i)/1000.0).substr(0, 5); }
     LLAMA_LOG_INFO("%s: thread autotune: base %d %.2f ms/token%s%s -> %d%s\n", __func__, thr.cand[0], mean(0)/1000.0, msg.c_str(),
             noisy ? " (noisy, void)" : "", adopt ? cand_best : thr.cand[0], (cand_best >= 0 && !adopt) ? " (leads, confirming)" : "");
-    if (adopt) { thr.base = cand_best; thr.hold_len = 4096; thr.pending = -1; thr.hold = thr.hold_len; }
-    else if (cand_best >= 0) { thr.pending = cand_best; thr.hold = 512; }   // second cycle soon
+    if (adopt) { thr.base = cand_best; thr.hold_len = 4096; thr.pending = -1; thr.hold = thr.hold_len; threads_save(model, "threads", thr.base0, cand_best); }
+    else if (cand_best >= 0) { thr.pending = cand_best; thr.hold = 128; }   // second cycle soon
     else { thr.pending = -1; thr.hold_len = noisy ? 4096 : std::min(thr.hold_len*2, 65536); thr.hold = noisy ? 1024 : thr.hold_len; }
     set(thr.base);
     thr.cand.clear();
