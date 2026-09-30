@@ -1479,7 +1479,9 @@ static void common_moe_cache_auto_impl(common_params & params) {
             // first run, nothing measured yet (PC1 IQ3_S 83 GB on one 24 GB GPU: stock 23.6 vs cache 42-49 t/s): the cache when the model is clearly bigger than the free VRAM (PC1 IQ1_M 54 GB on 2 x 24 GB: stock 108.9/60.4 vs cache 80.4/54.4 prompt/gen t/s); a prompt of thousands of tokens starts with stock, where the cache's slow prompt
             // processing costs more than its faster generation gains; the measured runs then keep stock only where it is faster)
             const size_t est_prompt = params.prompt.size() / 4;
-            const std::string first = model_size * 10 > vram_free * 13 && est_prompt < 3000 ? "cache" : "stock";
+            const size_t est_gen = params.n_predict > 0 ? params.n_predict : 1000;
+            const bool prefill_heavy = est_prompt >= 3000 || est_prompt > 8 * est_gen;
+            const std::string first = model_size * 10 > vram_free * 13 && !prefill_heavy ? "cache" : "stock";
             mode = !st.have && !ca.have ? first : (st.have ? "cache" : "stock");
             g_moe_auto_file = path;
             g_moe_auto_mode = mode;
