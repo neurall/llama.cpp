@@ -1284,9 +1284,9 @@ void llama_context::thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens) {
         // an attached thread pool has a fixed size: never ask for more threads than it has (the caller says how many)
         const int cap = threadpool_batch ? std::max(base, thrb.n_max) : hw;
         std::vector<int> c = { base };
-        for (int n : { base + 2, base + 4, hw }) {
+        for (int n : { base - 2, base + 2, base + 4, hw }) {
             n = std::min(n, cap);
-            if (n > base && std::find(c.begin(), c.end(), n) == c.end()) { c.push_back(n); }
+            if (n >= 2 && n != base && std::find(c.begin(), c.end(), n) == c.end()) { c.push_back(n); }
         }
         if (c.size() < 2) { thrb.hold = thrb.hold_len; return; }
         thrb.cand = c; thrb.slot = 0;
@@ -1306,14 +1306,19 @@ void llama_context::thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens) {
     const auto & b0 = thrb.slice[0];
     const double bmin = *std::min_element(b0.begin(), b0.end()), bmax = *std::max_element(b0.begin(), b0.end());
     const bool noisy = bmax > 1.25*bmin;
-    int best = -1;
+    // same rule as the decode tuner: more threads must win by 3% in every round, fewer threads must not lose by more than 1%
+    int best = -1, fewest = -1;
     if (!noisy) {
         for (size_t i = 1; i < thrb.cand.size(); ++i) {
+            const bool fewer = thrb.cand[i] < thrb.cand[0];
             bool all = thrb.slice[i].size() == b0.size();
-            for (size_t r = 0; all && r < b0.size(); ++r) { all = thrb.slice[i][r] < 0.97*b0[r]; }
-            if (all && (best < 0 || mean(i) < mean((size_t) best))) { best = (int) i; }
+            for (size_t r = 0; all && r < b0.size(); ++r) { all = thrb.slice[i][r] < (fewer ? 1.01 : 0.97)*b0[r]; }
+            if (!all) { continue; }
+            if (fewer) { if (fewest < 0 || thrb.cand[i] < thrb.cand[(size_t) fewest]) { fewest = (int) i; } }
+            else if (best < 0 || mean(i) < mean((size_t) best)) { best = (int) i; }
         }
     }
+    if (best < 0) { best = fewest; }
     const int cand_best = best >= 0 ? thrb.cand[(size_t) best] : -1;
     const bool adopt = cand_best >= 0 && cand_best == thrb.pending;
     std::string msg;
