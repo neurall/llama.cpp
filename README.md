@@ -27,7 +27,7 @@ Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.
 | | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x |
 | Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) |
 
-\* from the previous release. Every run behind these numbers (commit, build, machine, settings) is in
+\* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
 [`tools/moe-bench/perf.db`](tools/moe-bench/); [`docs/research-notes.md`](docs/research-notes.md) has the method and the rest.
 
 ## Nothing to configure
