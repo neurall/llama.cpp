@@ -1270,7 +1270,7 @@ void llama_context::set_thread_autotune(bool on) {
     thr.on    = on;
     thr.base0 = (int) cparams.n_threads;
     thr.base  = thr.base0;
-    thr.hold  = 128; // a few replies run on the default first (the counter runs across requests)
+    thr.hold  = 40;  // the first tokens run on the default (the counter runs across requests)
     // the thread pool is created for the default count after this call: a saved count above it cannot run, so only lower ones apply
     if (on) {
         if (const int s = threads_saved(model, "threads", thr.base0)) {
@@ -1381,7 +1381,9 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         if (thr.try_lo2 && lo2 != lo && lo2 != base) { c.push_back(lo2); }
         if (hi != base) { c.push_back(hi); }
         if (c.size() < 2) { thr.hold = thr.hold_len; return; }
-        thr.cand = c; thr.slot = 0; thr.tok = 0; thr.warm = 8;
+        // the first cycle of a session is short (12-token slices, 3 skipped) so one-shot runs get a decision; later ones use 32 / 8
+        thr.slice_len = thr.cycles == 0 ? 12 : 32; thr.warm_len = thr.cycles == 0 ? 3 : 8;
+        thr.cand = c; thr.slot = 0; thr.tok = 0; thr.warm = thr.warm_len;
         thr.cur_sum.assign(1, 0.0);
         thr.slice.assign(c.size(), {});
         set(c[0]);
@@ -1389,10 +1391,10 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     }
     if (thr.warm > 0) { --thr.warm; return; }
     thr.cur_sum[0] += (double) dt_us;
-    if (++thr.tok < 32) { return; }
+    if (++thr.tok < thr.slice_len) { return; }
     const size_t k = (size_t) thr.slot % thr.cand.size();
-    thr.slice[k].push_back(thr.cur_sum[0]/32.0);
-    thr.cur_sum[0] = 0.0; thr.tok = 0; thr.warm = 8;
+    thr.slice[k].push_back(thr.cur_sum[0]/(double) thr.slice_len);
+    thr.cur_sum[0] = 0.0; thr.tok = 0; thr.warm = thr.warm_len;
     if (++thr.slot < (int) thr.cand.size()*3) {
         set(thr.cand[(size_t) thr.slot % thr.cand.size()]);
         return;
@@ -1435,6 +1437,7 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     else if (cand_best >= 0) { thr.pending = cand_best; thr.hold = 128; }   // second cycle soon
     else { thr.pending = -1; thr.hold_len = noisy ? 4096 : std::min(thr.hold_len*2, 65536); thr.hold = noisy ? 1024 : thr.hold_len; }
     set(thr.base);
+    thr.cycles++;
     thr.cand.clear();
 }
 
