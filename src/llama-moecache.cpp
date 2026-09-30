@@ -345,7 +345,7 @@ struct moe_cache {
     // SELF_TUNE=1 (self_tune): the knob under test, its candidate in use, the running slice, per-candidate slice means
     int      lv_k = -1, lv_c = 0;
     int64_t  lv_slice_len = 36, lv_warm = 4; // slice length and skipped tokens of the knob under test (state-carrying knobs need long ones)
-    std::string tuned_text;        // the self-tuner's decisions (NAME=value lines), kept in kept in the state file: the next start begins from them
+    std::string tuned_text;        // the self-tuner's decisions (NAME=value lines), kept in the state file: the next start begins from them
     uint64_t lv_cycle = 0;         // cycles finished: the candidate order rotates so no candidate always runs first (cold cache)
     int64_t  lv_slice_n = 0;
     double   lv_slice_sum = 0;
