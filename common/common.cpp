@@ -1476,11 +1476,17 @@ static void common_moe_cache_auto_impl(common_params & params) {
             LOG_INF("%s: MoE placement: %s (measured: stock %.2f/%.2f, cache %.2f/%.2f ms per prompt/generated token; %s)\n", __func__,
                 mode.c_str(), st.p_ms, st.g_ms, ca.p_ms, ca.g_ms, path.c_str());
         } else {
-            mode = !st.have ? "stock" : "cache";
+            // first measurement: the placement more likely to win, so the run nobody chose is not the slow one (PC1 IQ3_S 83 GB
+            // on one 24 GB GPU: stock 23.6 vs cache 48.6 t/s); a model clearly bigger than the VRAM starts with the cache
+            // (an unmeasured start; a model close to the VRAM size or a prompt of thousands of tokens starts with stock, where the cache's
+            // slow prompt processing costs more than its faster generation gains)
+            const size_t est_prompt = params.prompt.size() / 4;
+            const std::string first = model_size * 10 > vram_free * 13 && est_prompt < 3000 ? "cache" : "stock";
+            mode = !st.have && !ca.have ? first : (st.have ? "cache" : "stock");
             g_moe_auto_file = path;
             g_moe_auto_mode = mode;
             LOG_INF("%s: MoE placement: measuring %s this run (next run measures %s, then the faster one is kept; %s)\n", __func__,
-                mode.c_str(), mode == "stock" ? "the expert cache" : "nothing more", path.c_str());
+                mode.c_str(), (st.have || ca.have) ? "nothing more" : mode == "stock" ? "the expert cache" : "stock placement", path.c_str());
         }
         use_cache = mode != "stock";
     }
