@@ -35,6 +35,8 @@ MODELS_DIR = os.environ.get("PERF_MODELS_DIR", "")  # other models' pages are dr
 PPL_TEXT = os.path.join(PROMPTS, "longsrc.cpp")  # frozen snapshot of llama.cpp common/json-schema-to-grammar.cpp (code, like agent prompts)
 BARE = False
 COMMON_ALL = ["-t", "6", "--cpu-moe", "-nr", "--moe-expert-cache", "-1", "-dev", "CUDA0,CUDA1"]
+if "," not in os.environ.get("CUDA_VISIBLE_DEVICES", ","):  # one visible GPU: no device order to pin
+    COMMON_ALL = COMMON_ALL[:-2]
 COMMON = COMMON_ALL
 PORT = 8099
 GREEDY = {"temperature": 0, "top_k": 1, "top_p": 1}
@@ -50,6 +52,13 @@ def db():
     if "model" not in [r[1] for r in c.execute("pragma table_info(runs)")]:
         c.execute("alter table runs add column model text")
         c.execute("update runs set model='GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf'")
+    if "commit_sha" not in [r[1] for r in c.execute("pragma table_info(runs)")]:
+        c.execute("alter table runs add column commit_sha text")
+    if "build_no" not in [r[1] for r in c.execute("pragma table_info(runs)")]:
+        c.execute("alter table runs add column build_no integer")
+    if "hw" not in [r[1] for r in c.execute("pragma table_info(runs)")]:
+        c.execute("alter table runs add column hw text")
+    c.execute("create table if not exists hw (id text primary key, hostname text, cpu text, ram_gb integer, ram_type text, gpus text, links text, os text, note text)")
     return c
 
 
@@ -163,7 +172,8 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         [x for i, x in enumerate(COMMON_ALL) if x not in ("--cpu-moe", "--moe-expert-cache")
          and not (x == "-1" and COMMON_ALL[i - 1] == "--moe-expert-cache")]) + list(extra_args)  # stock/plain: autofit, no cache
     wait_vram_free()
-    env = {**os.environ, **extra_env, "LD_LIBRARY_PATH": os.path.join(HERE, build), "LLAMA_MOE_CACHE_STATS": "1"}
+    env = {**os.environ, **extra_env, "LD_LIBRARY_PATH": os.path.join(HERE, build), "LLAMA_MOE_CACHE_STATS": "1",
+           "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
     row = {}
     if test in ("ppl", "ppl3"):
         nb = "1" if test == "ppl" else "3"
@@ -181,6 +191,8 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         if test in ("pf12k", "pf12k-stock"):
             dev = ["-t", "6", "-dev", "CUDA1,CUDA0", "-c", "16384", "-ub", "2048", "-b", "2048"]
             args = list(extra_args) if BARE else dev + ((["--moe-expert-cache", "0"] if test == "pf12k-stock" and not build.startswith("stock") else []) if test == "pf12k-stock" or plain or build.startswith("stock") else ["--cpu-moe", "-nr", "--moe-expert-cache", "-1"]) + list(extra_args)
+            if BARE and (plain or build.startswith("stock")) and "-c" not in args:
+                args += ["-c", "16384"]  # stock's default context (4096) rejects the 12k prompt (HTTP 400); the fork sets 32k itself
             res, logf = server_run(build, env, args, "/completion",
                                    {"prompt": open(os.path.join(PROMPTS, "src_12k.cpp")).read(), "n_predict": int(os.environ.get("PERF_NPRED", 32)),
                                     "cache_prompt": False, **GREEDY})
@@ -264,6 +276,11 @@ def cmd_run(a):
             except Exception as e:
                 row = {"ok": 0, "note": str(e)[:300]}
             rec = {**extra, **({"bare": "1"} if a.bare else {}), **({"plain": "1"} if a.plain else {}), **({"args": a.args} if a.args else {})}
+            mc = re.search(r"commit (\w+)", row.get("version") or "")  # the exact commit the binary was built from (llama-server --version)
+            row.update(commit_sha=os.environ.get("PERF_COMMIT") or (mc.group(1) if mc else None))  # PERF_COMMIT: a build of a dirty tree, e.g. <sha>+patch
+            mb = re.search(r"build (\d+)", row.get("version") or "")  # llama.cpp build number (= commit count of the checkout)
+            row.update(build_no=int(mb.group(1)) if mb else None)
+            row.update(hw=os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename))  # rows of table hw
             row.update(model=os.path.basename(MODEL), ts=time.strftime("%F %T"), build=build, version=version(build), test=a.test,
                        env=json.dumps(rec, sort_keys=True),
                        note=" | ".join(x for x in (a.note, row.get("note")) if x) or None)

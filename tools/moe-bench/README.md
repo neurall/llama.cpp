@@ -17,6 +17,24 @@ Run each test twice and keep the second: the first request after starting the se
 reads the model from disk. With the cache off (`--moe-expert-cache 0`) the same binary
 behaves like stock llama.cpp, for comparison. Token counts are for the GLM-5.3-Flash tokenizer; other models tokenize them differently.
 
+## perf.db: every dev and test run
+
+All development and test runs of this fork are in `perf.db` (sqlite, committed here; `perf.py` writes it, `dbfill.py` backfills it).
+No number in the README or the release notes exists only in a log.
+
+- `runs`: one row per measured run: date and time (`ts`), `build` (directory), `commit_sha` and `build_no` (from the binary's own
+  `--version`; older rows were recovered from the build directory name, 14 early `dev-mixed` rows have none), `hw` (machine, see below),
+  `origin` (`upstream` stock build, `fork`, or `fork (cache off, --plain)`), `model`, `test`, the `env` and `args` of the run,
+  decode `tps`, prompt `pp_tps`, cache `hit_rate`, output `md5`, `ok` (failures are kept with their error in `note`).
+- `hw`: the machines. `pc1` 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200; `pc2` CPU-only Ryzen 5 3600,
+  64 GB DDR4-3200 (no ECC on its A520 board), PCIe 3.0 only; `pc3` RTX 4060 laptop 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.
+- `campaigns`: a named comparison with its start time, `conclusion` and `why`; `reruns`: runs repeated because results disagreed;
+  `tune_log`: the self-tuner's decisions per run.
+
+```sh
+sqlite3 tools/moe-bench/perf.db "select hw, build, test, round(avg(tps),2), count(*) from runs where ok=1 group by 1,2,3"
+```
+
 ## Regression testing with perf.py
 
 `perf.py` runs the same tests against several builds and stores every run (speed, cache hit
