@@ -2207,6 +2207,22 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
         }
 
+        // unquantized (F16/BF16/F32) experts: uncached routes share one dummy slot, and the batched mul_mat_id paths
+        // for those types (and MMQ/mmf, host sort) break on duplicate ids: only quantized mmvq/mmvf are dup-safe
+        if (ok) {
+            for (auto & ls : mc->layers) {
+                for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) {
+                    if (!ggml_is_quantized(t->type)) {
+                        LLAMA_LOG_WARN("%s: expert cache disabled: %s experts are not quantized (duplicate dummy slots are unsafe)\n",
+                                __func__, ggml_type_name(t->type));
+                        ok = false;
+                    }
+                    if (!ok) { break; }
+                }
+                if (!ok) { break; }
+            }
+        }
+
         if (!ok) {
             for (auto * b : mc->bufs) { ggml_backend_buffer_free(b); }
             for (auto * c : mc->ctxs) { ggml_free(c); }
