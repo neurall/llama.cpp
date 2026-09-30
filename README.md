@@ -67,6 +67,29 @@ weights (the server default when the model fits in RAM) GLM-5.3-Flash is 1.21x s
 Decode speed depends on how often generated tokens reuse cached experts: ~75% of
 experts are hits on GLM chat, ~95% on Qwen.
 
+**Three machines, Qwen3.6-35B-A3B (Q2_0 GSQ hybrid, 12 GB), stock llama.cpp vs this fork b11509 `avx-kernels`.** Single stream, temp 0, `-n 100`,
+`-c 4096`, second (warm) run of two; prompt processing / decode t/s. Short prompt = "write smallest html tetris game", long = about 2.2k tokens of text.
+Stock = upstream b11235 (Ryzen 5 3600: `llama-completion`; laptop: b11261 `llama-cli`; 3090s: b11235 `llama-completion`).
+
+| machine | prompt | stock | fork | fork vs stock (prompt / decode) |
+|---|---|---|---|---|
+| Ryzen 5 3600 (AVX2), CPU only, 60 GB DDR4 [fork build 183d5ee65] | short | 10.3 / 6.3 | **36.8 / 11.5** | 3.6x / 1.8x |
+| | long | 11.0 / 6.1 | **46.0 / 10.9** | 4.2x / 1.8x |
+| Ryzen 9 8945HS + RTX 4060 8 GB (PCIe 4.0 x8), 32 GB LPDDR5X, Windows [build 11506] | short | 40.4 / 31.0 | **91.8 / 56.3** | 2.3x / 1.8x |
+| | long | 599 / 31.3 | **792 / 51.1** | 1.3x / 1.6x |
+| 2x RTX 3090 (model fits in VRAM, no cache) [build 11509] | short | 97.4 / **161.8** | **114.1** / 154.0 | 1.17x / 0.95x |
+| | long | **3689** / **158.4** | 3144 / 151.7 | 0.85x / 0.96x |
+
+The CPU rows come from the AVX2 / AVX-512 VNNI kernels for 2-bit (Q2_0) experts; earlier builds ran those matmuls on a scalar fallback
+(CPU-only laptop: 5.79 -> 13.39 t/s). On the 3090s, where the model fits in VRAM, the fork is 4-5% behind stock on decode and 15% behind on a
+long prompt (`llama-cli` against `llama-completion`, so part of the gap may be the tool); that is not fixed yet.
+
+**Predictive prefetch (first version, work in progress, first shipped in b11509).** A small learned predictor guesses which experts the next layers
+will need and streams them into the GPU cache while the CPU works. **It paid off on one of three machines**: on the 8 GB laptop, before the AVX kernels,
+in the b11399-era build, Qwen3.6 decode went 28.2 -> 35.9-37.8 t/s (stock 30.5). On the 2x RTX 3090 machine the CPU already saturates RAM during misses,
+so it gives nothing there, and the third machine has no GPU. With the AVX kernels the laptop's gain from it is now about zero, so `--moe-predict 4`
+stays opt-in and experimental. Better prediction and per-machine tuning are next.
+
 Models: GLM original 3.0-bit GGUF [pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF](https://huggingface.co/pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF)
 works as-is (reference quality); the Q4_K attention variant above (same experts,
 non-expert Q8_0 weights at Q4_K, +0.95% perplexity) decodes ~10% faster.
