@@ -1480,50 +1480,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         }
     }
 
-    bool capture_dsa_index_share(const llama_batch & current) {
-        size_t n = 0;
-        const int32_t * sel = llama_get_mtp_dsa_selection(params.ctx_dft, &n);
-        if (sel == nullptr || current.n_tokens <= 0 || n == 0 || n % (size_t) current.n_tokens != 0) {
-            return false;
-        }
-
-        const size_t width = n / (size_t) current.n_tokens;
-        for (auto & row : dsa_sel) {
-            row.clear();
-        }
-        for (int32_t k = 0; k < current.n_tokens; ++k) {
-            if (current.n_seq_id[k] != 1) {
-                return false;
-            }
-            const llama_seq_id seq_id = current.seq_id[k][0];
-            if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq || !dsa_sel[seq_id].empty()) {
-                return false;
-            }
-            dsa_sel[seq_id].assign(sel + (size_t) k*width, sel + (size_t) (k + 1)*width);
-        }
-        dsa_sel_width = width;
-        return true;
-    }
-
-    bool stage_dsa_index_share(const llama_batch & current) {
-        if (dsa_sel_width == 0 || current.n_tokens <= 0) {
-            return false;
-        }
-
-        dsa_sel_batch.resize(dsa_sel_width*(size_t) current.n_tokens);
-        for (int32_t k = 0; k < current.n_tokens; ++k) {
-            if (current.n_seq_id[k] != 1) {
-                return false;
-            }
-            const llama_seq_id seq_id = current.seq_id[k][0];
-            if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq || dsa_sel[seq_id].size() != dsa_sel_width) {
-                return false;
-            }
-            std::copy(dsa_sel[seq_id].begin(), dsa_sel[seq_id].end(), dsa_sel_batch.begin() + (size_t) k*dsa_sel_width);
-        }
-
-        return llama_set_mtp_dsa_selection(params.ctx_dft, dsa_sel_batch.data(), dsa_sel_batch.size());
-    }
+    // GLM5-Next draft index sharing is inert without the MTP follow-up (llama_set_mtp_dsa_index_share() returns false)
+    bool capture_dsa_index_share(const common_batch &) { return false; }
+    bool stage_dsa_index_share(const common_batch &) { return false; }
 
     void begin(llama_seq_id seq_id, const llama_tokens & prompt) override {
         const int32_t N = (int32_t) prompt.size();

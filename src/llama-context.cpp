@@ -1069,72 +1069,23 @@ float * llama_context::get_embeddings_nextn_ith(int32_t i) {
     }
 }
 
+// GLM5-Next MTP draft index sharing: not part of upstream's GLM5-Next (the MTP follow-up is PR #27917), so these are inert here
 bool llama_context::set_mtp_dsa_index_share(bool enabled) {
-    if (model.arch != LLM_ARCH_GLM5_NEXT || cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP || memory == nullptr) {
-        return false;
-    }
-
-    enabled = enabled && model.hparams.indexer_index_share_mtp;
-
-    auto * mem = static_cast<llama_memory_hybrid_idx *>(memory.get());
-    if (mem->get_mtp_dsa_index_share() != enabled) {
-        mem->set_mtp_dsa_index_share(enabled);
-        sched_need_reserve = true;
-    }
-
-    return enabled;
+    GGML_UNUSED(enabled);
+    return false;
 }
 
 bool llama_context::set_mtp_dsa_selection(const int32_t * data, size_t size) {
-    if (model.arch != LLM_ARCH_GLM5_NEXT || cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP || memory == nullptr) {
-        return false;
-    }
-
-    auto * mem = static_cast<llama_memory_hybrid_idx *>(memory.get());
-    if (!mem->get_mtp_dsa_index_share()) {
-        return false;
-    }
-
-    mem->set_mtp_dsa_selection(data, size);
-    return true;
+    GGML_UNUSED(data);
+    GGML_UNUSED(size);
+    return false;
 }
 
 const int32_t * llama_context::get_mtp_dsa_selection(size_t * size) {
     if (size != nullptr) {
         *size = 0;
     }
-    if (mtp_dsa_sel_raw.empty() || mtp_dsa_sel_raw.size() != mtp_dsa_sel_mask.size() || mtp_dsa_sel_width == 0) {
-        return nullptr;
-    }
-    GGML_ASSERT(memory != nullptr && model.arch == LLM_ARCH_GLM5_NEXT);
-    GGML_ASSERT(mtp_dsa_sel_raw.size() == mtp_dsa_sel_width*mtp_dsa_sel_seq.size());
-
-    auto * mem = static_cast<llama_memory_hybrid_idx *>(memory.get());
-    auto * mem_idx = mem->get_mem_idx();
-    GGML_ASSERT(mem_idx != nullptr);
-
-    mtp_dsa_sel.resize(mtp_dsa_sel_raw.size());
-    for (size_t row = 0; row < mtp_dsa_sel_seq.size(); ++row) {
-        const llama_seq_id seq_id = mtp_dsa_sel_seq[row];
-        GGML_ASSERT(seq_id >= 0);
-        const auto & cells = mem_idx->get_cells(seq_id);
-
-        for (size_t j = 0; j < mtp_dsa_sel_width; ++j) {
-            const size_t i = row*mtp_dsa_sel_width + j;
-            const int32_t cell = mtp_dsa_sel_raw[i];
-            if (mtp_dsa_sel_mask[i] != 0.0f) {
-                mtp_dsa_sel[i] = -1;
-                continue;
-            }
-            GGML_ASSERT(cell >= 0 && (uint32_t) cell < cells.size());
-            GGML_ASSERT(!cells.is_empty((uint32_t) cell) && cells.seq_has((uint32_t) cell, seq_id));
-            mtp_dsa_sel[i] = cells.pos_get((uint32_t) cell);
-        }
-    }
-    if (size != nullptr) {
-        *size = mtp_dsa_sel.size();
-    }
-    return mtp_dsa_sel.data();
+    return nullptr;
 }
 
 float * llama_context::get_embeddings_layer_inp(uint32_t lid) {

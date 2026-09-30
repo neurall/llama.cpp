@@ -1319,8 +1319,8 @@ static std::string moe_auto_path(const common_params & params, size_t model_size
     const size_t sl = name.find_last_of("/\\");
     if (sl != std::string::npos) { name = name.substr(sl + 1); }
     for (auto & c : name) { if (!isalnum((unsigned char) c) && c != '.' && c != '-' && c != '_') { c = '_'; } }
-    return fs_get_cache_directory() + "moe-mode-" + name + "-" + std::to_string(model_size) + "-g" + std::to_string(n_gpu) +
-           "x" + std::to_string(vram_max >> 20) + "-b" + std::to_string(llama_build_number()) + ".txt";
+    return (fs_get_cache_directory() / ("moe-mode-" + name + "-" + std::to_string(model_size) + "-g" + std::to_string(n_gpu) +
+           "x" + std::to_string(vram_max >> 20) + "-b" + std::to_string(llama_build_number()) + ".txt")).string();
 }
 
 static void moe_auto_read(const std::string & path, moe_auto_rec & st, moe_auto_rec & ca, std::string & decided) {
