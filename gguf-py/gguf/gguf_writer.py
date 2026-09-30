@@ -836,9 +836,6 @@ class GGUFWriter:
     def add_indexer_kpool_select_tail(self, value: bool) -> None:
         self.add_bool(Keys.Attention.Indexer.KPOOL_SELECT_TAIL.format(arch=self.arch), value)
 
-    def add_indexer_index_share_mtp(self, value: bool) -> None:
-        self.add_bool(Keys.Attention.Indexer.INDEX_SHARE_MTP.format(arch=self.arch), value)
-
     def add_max_alibi_bias(self, bias: float) -> None:
         self.add_float32(Keys.Attention.MAX_ALIBI_BIAS.format(arch=self.arch), bias)
 
@@ -1339,6 +1336,9 @@ class GGUFWriter:
 
     def add_classifier_output_labels(self, labels: Sequence[str]) -> None:
         self.add_array(Keys.Classifier.OUTPUT_LABELS.format(arch=self.arch), labels)
+
+    def add_classifier_pooling_type(self, value: PoolingType) -> None:
+        self.add_uint32(Keys.Classifier.POOLING_TYPE.format(arch=self.arch), value.value)
 
     # for vision models
 

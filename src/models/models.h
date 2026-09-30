@@ -1196,19 +1196,9 @@ struct llama_model_deepseek4 : public llama_model_base {
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
-    // manifold-constrained hyper-connections (mHC), shared by deepseek4 and derived model graphs like glm5-next.
-    template <typename Base = llm_graph_context>
-    struct graph_base : public Base {
-        graph_base(const llm_graph_params & params) : Base(params) {}
-
-        // members of the dependent base used by the mHC helpers
-        using Base::ctx0;
-        using Base::res;
-        using Base::hparams;
-        using Base::cparams;
-        using Base::n_embd;
-        using Base::norm_rms_eps;
-        using Base::cb;
+    struct graph : public llm_graph_context {
+        graph(const llm_graph_params & params) : llm_graph_context(params) {}
+        graph(const llama_model & model, const llm_graph_params & params);
 
         // collapse the hc streams with per-stream weights
         ggml_tensor * build_hc_pre(
@@ -1239,11 +1229,6 @@ struct llama_model_deepseek4 : public llama_model_base {
         ggml_tensor * build_hc_sinkhorn(
                 ggml_tensor * comb,
                 int il) const;
-    };
-
-    struct graph : public graph_base<> {
-        graph(const llm_graph_params & params) : graph_base<>(params) {}
-        graph(const llama_model & model, const llm_graph_params & params);
 
         ggml_tensor * build_hc_head(
                 ggml_tensor * x,
@@ -2627,18 +2612,44 @@ struct llama_model_kimi_k3 : public llama_model_base {
 
 struct llama_model_glm5_next : public llama_model_base {
     llama_model_glm5_next(const struct llama_model_params & params) : llama_model_base(params) {}
-
-    // False for trunk only GGUFs and no_mtp loads.
-    bool mtp_ready = false;
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
     // k-pool indexer inputs on top of the generic hybrid input
     class llm_graph_input_kpool;
 
-    // mHC helpers from deepseek4, stacked on the delta net helpers
-    struct graph : public llama_model_deepseek4::graph_base<llm_build_delta_net_base> {
+    struct graph : public llm_build_delta_net_base {
         graph(const llama_model & model, const llm_graph_params & params);
+
+        // collapse the hc streams with per-stream weights
+        ggml_tensor * build_hc_pre(
+                ggml_tensor * x,
+                ggml_tensor * weights,
+                int il) const;
+
+        // mean over the hyper-connection streams: [n_embd, hc, n_tokens] -> [n_embd, n_tokens]
+        ggml_tensor * build_hc_mean(ggml_tensor * x) const;
+
+        // returns the collapsed input and fills the post / comb weights
+        ggml_tensor * build_hc_pre(
+                ggml_tensor * x,
+                ggml_tensor * hc_fn,
+                ggml_tensor * hc_scale,
+                ggml_tensor * hc_base,
+                ggml_tensor ** post,
+                ggml_tensor ** comb,
+                int il) const;
+
+        ggml_tensor * build_hc_post(
+                ggml_tensor * x,
+                ggml_tensor * residual,
+                ggml_tensor * post,
+                ggml_tensor * comb,
+                int il) const;
+
+        ggml_tensor * build_hc_sinkhorn(
+                ggml_tensor * comb,
+                int il) const;
 
         const llama_model & model;
 
@@ -2656,16 +2667,6 @@ struct llama_model_glm5_next : public llama_model_base {
                                       const llama_memory_hybrid_idx_context * mctx_hyb, llm_graph_input_attn_k * inp_attn,
                                       llm_graph_input_kpool * inp_kpool, ggml_tensor ** prev_sel, int il);
 
-    protected:
-        // for graph_mtp
-        struct no_trunk_t {};
-        graph(const llama_model & model, const llm_graph_params & params, no_trunk_t) :
-            llama_model_deepseek4::graph_base<llm_build_delta_net_base>(params), model(model) {}
-    };
-
-    // Draft head, the Nextn block as a non hyper connected DSA layer
-    struct graph_mtp : public graph {
-        graph_mtp(const llama_model & model, const llm_graph_params & params);
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;

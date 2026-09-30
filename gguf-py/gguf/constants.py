@@ -231,7 +231,6 @@ class Keys:
             LOCAL_BLOCKS = "{arch}.attention.indexer.local_blocks"  # MSA
             TYPES      = "{arch}.attention.indexer.types"
             KPOOL             = "{arch}.attention.indexer.kpool"              # GLM5-Next
-            INDEX_SHARE_MTP   = "{arch}.attention.indexer.index_share_mtp"    # GLM5-Next
             KPOOL_SELECT_TAIL = "{arch}.attention.indexer.kpool_select_tail"  # GLM5-Next
 
     class HyperConnection:
@@ -316,6 +315,7 @@ class Keys:
 
     class Classifier:
         OUTPUT_LABELS = "{arch}.classifier.output_labels"
+        POOLING_TYPE  = "{arch}.classifier.pooling_type"
 
     class ShortConv:
         L_CACHE = "{arch}.shortconv.l_cache"

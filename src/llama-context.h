@@ -107,6 +107,8 @@ struct llama_context {
     const int32_t * get_mtp_dsa_selection(size_t * size);
     size_t get_sampled_candidates_count(int32_t idx);
 
+    bool get_causal_attn() const;
+
     void attach_threadpool(
             ggml_threadpool_t threadpool,
             ggml_threadpool_t threadpool_batch);
