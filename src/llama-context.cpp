@@ -819,7 +819,6 @@ void llama_context::synchronize() {
         if (!cparams.no_perf) {
             t_p_eval_us += ggml_time_us() - t_compute_start_us;
         }
-        thread_tune_feed_batch(ggml_time_us() - t_compute_start_us, n_queued_tokens);
         n_p_eval += n_queued_tokens;
     }
 
@@ -2096,6 +2095,17 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         }
 
         ggml_status status;
+
+        if (thrb.on) {
+            // batch thread tuner: the time from the start of the previous prompt ubatch to the start of this one is the previous one's cost
+            // (prompt-only batches are not synchronized one by one, so the compute time itself is not observable here)
+            const int64_t now = ggml_time_us();
+            if (thrb.last_tokens >= 64 && now - thrb.last_us < 20*1000*1000) {
+                thread_tune_feed_batch(now - thrb.last_us, thrb.last_tokens);
+            }
+            thrb.last_us = now;
+            thrb.last_tokens = ubatch.n_tokens > 1 ? ubatch.n_tokens : 0;
+        }
 
         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
 

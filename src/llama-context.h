@@ -437,6 +437,7 @@ private:
         int    pending = -1;
         int    hold = 0, hold_len = 4;               // full batches to wait before the next cycle
         int    n_max = 0;                            // threads the batch pool has
+        int64_t last_us = 0, last_tokens = 0;        // start and size of the previous prompt ubatch
     } thrb;
     void thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens);
     mutable int64_t n_queued_tokens    = 0;
