@@ -1489,6 +1489,9 @@ static void common_moe_cache_auto_impl(common_params & params) {
             mode = f;
         } else if (!decided.empty()) {
             mode = st.have && ca.have ? moe_auto_decide_for(st, ca, params) : decided;
+            // keep recording this placement: a cold first run (page cache, mmap) is replaced by any faster later run
+            g_moe_auto_file = path;
+            g_moe_auto_mode = mode;
             LOG_INF("%s: MoE placement: %s (measured: stock %.2f/%.2f, cache %.2f/%.2f ms per prompt/generated token; %s)\n", __func__,
                 mode.c_str(), st.p_ms, st.g_ms, ca.p_ms, ca.g_ms, path.c_str());
         } else {
@@ -1936,9 +1939,11 @@ common_init_result::~common_init_result() {
     std::string decided;
     moe_auto_read(g_moe_auto_file, st, ca, decided);
     moe_auto_rec & r = g_moe_auto_mode == "stock" ? st : ca;
+    // the fastest per-token times seen: a cold run (model not in the page cache yet) never outweighs a warm one
+    const double p_ms = pd.t_p_eval_ms / pd.n_p_eval, g_ms = pd.t_eval_ms / pd.n_eval;
+    r.p_ms = r.have ? std::min(r.p_ms, p_ms) : p_ms;
+    r.g_ms = r.have ? std::min(r.g_ms, g_ms) : g_ms;
     r.have = true;
-    r.p_ms = pd.t_p_eval_ms / pd.n_p_eval;
-    r.g_ms = pd.t_eval_ms / pd.n_eval;
     std::ofstream f(g_moe_auto_file, std::ios::trunc);
     if (st.have) { f << "stock " << st.p_ms << " " << st.g_ms << "\n"; }
     if (ca.have) { f << "cache " << ca.p_ms << " " << ca.g_ms << "\n"; }
