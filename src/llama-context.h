@@ -115,6 +115,9 @@ struct llama_context {
 
     void set_n_threads(int32_t n_threads, int32_t n_threads_batch);
 
+    // decode thread-count autotune (single-token decode only): A/B slices of candidate thread counts on measured token time
+    void set_thread_autotune(bool on);
+
     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);
 
     void set_embeddings (bool value);
@@ -406,6 +409,16 @@ private:
     mutable int64_t t_eval_us   = 0;
 
     mutable int64_t t_compute_start_us = 0;
+
+    struct thread_tune {
+        bool   on = false;
+        int    base = 0;                 // current best count
+        std::vector<int> cand;           // candidates of this cycle (base first)
+        int    slot = 0, tok = 0, warm = 0, hold = 0, hold_len = 4096;
+        std::vector<double> sum, sum2;
+        std::vector<int>    cnt;
+    } thr;
+    void thread_tune_feed(int64_t dt_us);
     mutable int64_t n_queued_tokens    = 0;
 
     mutable int32_t n_p_eval = 0; // number of tokens in eval calls for the prompt (with batch size > 1)

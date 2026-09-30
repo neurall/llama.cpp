@@ -1450,6 +1450,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
         return;
     }
 
+    bool use_cache = true;
     {
         const std::string path = moe_auto_path(params, model_size, n_gpu, vram_max);
         const char * force = getenv("LLAMA_MOE_AUTO_MODE");
@@ -1472,15 +1473,17 @@ static void common_moe_cache_auto_impl(common_params & params) {
             LOG_INF("%s: MoE placement: measuring %s this run (next run measures %s, then the faster one is kept; %s)\n", __func__,
                 mode.c_str(), mode == "stock" ? "the expert cache" : "nothing more", path.c_str());
         }
-        if (mode == "stock") {
-            return; // stock placement: the model fitter places layers, no expert cache
-        }
+        use_cache = mode != "stock";
     }
 
-    auto & tbo = params.tensor_buft_overrides;
-    tbo.insert(std::find_if(tbo.begin(), tbo.end(), [](const auto & o) { return o.pattern == nullptr; }), llm_ffn_exps_cpu_override());
-    params.no_extra_bufts    = true;
-    params.n_moe_cache_slots = -1;
+    // stock placement (the model fitter places layers): only the expert cache and what exists for it stays off (experts on the
+    // CPU, repack disabled, cache slots, the big prompt batch that its uploads want); pinned weights and the thread choice stay
+    if (use_cache) {
+        auto & tbo = params.tensor_buft_overrides;
+        tbo.insert(std::find_if(tbo.begin(), tbo.end(), [](const auto & o) { return o.pattern == nullptr; }), llm_ffn_exps_cpu_override());
+        params.no_extra_bufts    = true;
+        params.n_moe_cache_slots = -1;
+    }
     // pinned weights (no mmap, llama-server only: startup takes longer, pays off over many requests):
     // cache uploads and prompt processing read them by direct DMA,
     // measured +46% prompt processing, +3-5% decode on GLM-5.3-Flash; used whenever the model fits
@@ -1493,6 +1496,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
         }
     }
     if (!params.ubatch_user) {
+        // (also in stock placement: IQ1_M on 2x24 GB, 12k prompt 646 -> 1199 t/s at 2048 vs 512, decode unchanged)
         // experts are uploaded once per ubatch in prompt processing: 2048 is ~2x faster on long
         // prompts than 512; its compute buffer (~0.7 GiB on GLM-5.3-Flash) comes out of the cache
         // ponytail: VRAM tiers, measured on 24 GB; estimate the buffer from n_embd if small GPUs need finer steps
@@ -1729,6 +1733,9 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
 
     llama_context * lctx = llama_init_from_model(model, cparams);
+    if (lctx && params.cpuparams.auto_threads) {
+        llama_set_thread_autotune(lctx, true); // the count came from the default, not from the user: tune it on measured decode time
+    }
     if (lctx == NULL) {
         COM_ERR("failed to create context with model '%s'\n", params.model.path.c_str());
         return;

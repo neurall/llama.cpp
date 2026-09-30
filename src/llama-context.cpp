@@ -1,4 +1,5 @@
 #include "llama-context.h"
+#include <thread>
 
 #include "llama-moecache.h"
 
@@ -813,6 +814,7 @@ void llama_context::synchronize() {
         if (!cparams.no_perf) {
             t_eval_us += ggml_time_us() - t_compute_start_us;
         }
+        thread_tune_feed(ggml_time_us() - t_compute_start_us);
         n_eval++;
     } else if (n_queued_tokens > 1) {
         if (!cparams.no_perf) {
@@ -1291,6 +1293,63 @@ void llama_context::detach_threadpool() {
 
     this->threadpool       = nullptr;
     this->threadpool_batch = nullptr;
+}
+
+// Decode thread autotune. The default count is a formula (cores minus one per GPU); the best count depends on the CPU, its
+// memory and how much of the model runs on it. Every `hold` tokens: candidates {base, base-2, base+2} in interleaved
+// 32-token slices (3 rounds, 8 warm-up tokens each), the best replaces the base if it is faster by 1.5% and 2 standard
+// errors; the interval doubles (4096 .. 65536 tokens) while the base is confirmed. LLAMA_THREAD_AUTOTUNE=0 turns it off.
+void llama_context::set_thread_autotune(bool on) {
+    const char * e = getenv("LLAMA_THREAD_AUTOTUNE");
+    if (e && atoi(e) == 0) { on = false; }
+    thr.on   = on;
+    thr.base = (int) cparams.n_threads;
+    thr.hold = 512; // let the first tokens run before the first cycle
+}
+
+void llama_context::thread_tune_feed(int64_t dt_us) {
+    if (!thr.on || cparams.n_threads < 2) {
+        return;
+    }
+    auto set = [&](int n) { cparams.n_threads = (uint32_t) n; };
+    if (thr.cand.empty()) {
+        if (thr.hold > 0) {
+            if (--thr.hold > 0) { return; }
+        }
+        const int hw   = std::max(2, (int) std::thread::hardware_concurrency());
+        const int base = thr.base;
+        std::vector<int> c = { base };
+        const int lo = std::max(2, base - 2), hi = std::min(hw, base + 2);
+        if (lo != base) { c.push_back(lo); }
+        if (hi != base) { c.push_back(hi); }
+        if (c.size() < 2) { thr.hold = thr.hold_len; return; }
+        thr.cand = c; thr.slot = 0; thr.tok = 0; thr.warm = 8;
+        thr.sum.assign(c.size(), 0.0); thr.sum2.assign(c.size(), 0.0); thr.cnt.assign(c.size(), 0);
+        set(c[0]);
+        return;
+    }
+    if (thr.warm > 0) { --thr.warm; return; }
+    const size_t k = (size_t) thr.slot % thr.cand.size();
+    thr.sum[k] += (double) dt_us; thr.sum2[k] += (double) dt_us*(double) dt_us; thr.cnt[k]++;
+    if (++thr.tok < 32) { return; }
+    thr.tok = 0; thr.warm = 8;
+    if (++thr.slot < (int) thr.cand.size()*3) {
+        set(thr.cand[(size_t) thr.slot % thr.cand.size()]);
+        return;
+    }
+    // decide
+    auto mean = [&](size_t i) { return thr.sum[i]/std::max(1, thr.cnt[i]); };
+    auto se   = [&](size_t i) { const double n = std::max(2, thr.cnt[i]); const double m = mean(i); return std::sqrt(std::max(0.0, thr.sum2[i]/n - m*m)/n); };
+    size_t best = 0;
+    for (size_t i = 1; i < thr.cand.size(); ++i) { if (mean(i) < mean(best)) { best = i; } }
+    const bool win = best != 0 && mean(best) < 0.985*mean(0) && mean(0) - mean(best) > 2.0*std::sqrt(se(0)*se(0) + se(best)*se(best));
+    LLAMA_LOG_INFO("%s: thread autotune: base %d %.2f ms/token%s -> %d\n", __func__, thr.cand[0], mean(0)/1000.0,
+            [&] { static thread_local char b[160]; std::string t; for (size_t i = 1; i < thr.cand.size(); ++i) { t += " | " + std::to_string(thr.cand[i]) + ": " + std::to_string(mean(i)/1000.0).substr(0, 5); } snprintf(b, sizeof b, "%s", t.c_str()); return (const char *) b; }(),
+            win ? thr.cand[best] : thr.cand[0]);
+    if (win) { thr.base = thr.cand[best]; thr.hold_len = 4096; } else { thr.hold_len = std::min(thr.hold_len*2, 65536); }
+    set(thr.base);
+    thr.cand.clear();
+    thr.hold = thr.hold_len;
 }
 
 void llama_context::set_n_threads(int32_t n_threads, int32_t n_threads_batch) {
@@ -4065,6 +4124,10 @@ void llama_attach_threadpool(
 
 void llama_detach_threadpool(llama_context * ctx) {
     ctx->detach_threadpool();
+}
+
+void llama_set_thread_autotune(llama_context * ctx, bool on) {
+    ctx->set_thread_autotune(on);
 }
 
 void llama_set_n_threads(llama_context * ctx, int32_t n_threads, int32_t n_threads_batch) {
