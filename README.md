@@ -55,6 +55,29 @@ The defaults are chosen on your machine, not hard-coded:
 - **It tells you what it does.** `llama-server` logs, and `llama-cli -lv 3` prints after each reply, whether the cache is on,
   the hit rate, the tuned settings, threads and batch sizes.
 
+## MTP speculative decoding
+
+Qwen3.8-Flash-Next MTP from PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243)
+([@danielhanchen](https://github.com/danielhanchen)), GLM-5.3-Flash MTP from PR
+[#27917](https://github.com/ggml-org/llama.cpp/pull/27917) (timkhronos), both in this build. Load a model's MTP draft head
+with `-md`:
+
+```sh
+llama-server -m Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf \
+    -md mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf --spec-type draft-mtp
+llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
+    -md GLM-5.3-Flash-MTP-Q4_K.gguf --spec-type draft-mtp --spec-draft-n-max 3
+```
+
+- MTP heads: Qwen3.8-Flash-Next from [unsloth/Qwen3.8-Flash-Next-GGUF](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF)
+  (`MTP/`, the `shared` files reuse the main model's embeddings); GLM-5.3-Flash from
+  [neuralll/GLM-5.3-Flash-MTP-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-MTP-GGUF)
+  (4.3 GiB, works with any `glm5-next` GLM-5.3-Flash GGUF). We made it: no GLM MTP GGUF existed, so
+  `tools/moe-bench/glm_splice_mtp.py` pulls just the MTP tensors out of unsloth's UD-Q4_K_XL GGUF with HTTP range requests
+  (~4.3 GiB instead of the whole model) and writes them as a draft file; see [`tools/moe-bench/`](tools/moe-bench/) to rebuild it.
+- GLM MTP: 89% of drafts accepted in our test, output identical to plain decoding. For a model far bigger than VRAM the draft
+  is not loaded unless you pass `--spec-draft-n-max`.
+
 ## Your settings win
 
 Anything you pass is used as given and is never auto-tuned:
@@ -74,9 +97,6 @@ Anything you pass is used as given and is never auto-tuned:
 - Output can differ slightly from stock at temperature 0: a cached expert runs on the GPU, a missed one on the CPU.
 - Prompt processing of models bigger than RAM (mmap) is 20-30% below stock: the experts stream over PCIe.
 - A second GPU on a slow slot helps less; prompt processing goes to the fastest link.
-- GLM MTP is included (upstream PR #27917's commits on top of upstream's GLM5-Next): `-md GLM-5.3-Flash-...-mtp.gguf
-  --spec-type draft-mtp --spec-draft-n-max 3`. 89% of its drafts were accepted in our test, output identical to plain decoding.
-  For models far bigger than VRAM the draft is not loaded unless you pass `--spec-draft-n-max`.
 
 ## Credits and contact
 
