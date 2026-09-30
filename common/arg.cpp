@@ -2553,7 +2553,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE"));
     add_opt(common_arg(
         {"--moe"}, "KEY=VAL,...",
-        "MoE expert cache options, comma separated. cache=N (slots per expert layer, same as --moe-expert-cache), prefetch-slots=N (H2D prefetch staging slots, same as --prefetch-experts-slots), inserts=N (max expert uploads per layer and decode step), window=N (tokens of recent usage "
+        "MoE expert cache options, comma separated. cache=N (slots per expert layer, same as --moe-expert-cache: 0 = off, -1 = size from free VRAM, unset = automatic), prefetch-slots=N (H2D prefetch staging slots, same as --prefetch-experts-slots), inserts=N (max expert uploads per layer and decode step), window=N (tokens of recent usage "
         "the cache scores by, default 64), predict=M (prefetch confident experts among the top M predicted for the next layers, 0 = off), "
         "train=N (train the learned predictor every N decoded tokens; implies predict=8), or any tuner knob: MARGIN, GATE, WAIT, BIG, "
         "SWAP_FRAC, ... A knob given here is never self-tuned",
