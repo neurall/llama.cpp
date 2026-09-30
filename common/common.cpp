@@ -1310,7 +1310,7 @@ void common_spec_auto(common_params & params) {
 // and generation time per token at exit; then the faster mode is kept (file in the cache dir). The cache is kept only when
 // its generation is not slower than stock and its prompt time per token is below LLAMA_MOE_AUTO_PREFILL_SLOWDOWN (2) x stock.
 // LLAMA_MOE_AUTO_MODE=stock|cache forces a mode, =retest forgets the decision.
-struct moe_auto_rec { bool have = false; double p_ms = 0, g_ms = 0; int n = 0; }; // n: recorded runs
+struct moe_auto_rec { bool have = false; double p_ms = -1, g_ms = 0; int n = 0; }; // n: recorded runs; p_ms < 0: no prompt of real size measured yet
 static std::string g_moe_auto_file;  // decision file of this run (empty: auto choice not involved)
 static std::string g_moe_auto_mode;  // mode this run explores: "stock" or "cache" (empty: decided already)
 
@@ -1349,7 +1349,7 @@ static void moe_auto_write(const std::string & path, const moe_auto_rec & st, co
     std::string section, prefix;
     moe_auto_split(path, section, prefix);
     auto put = [&](const char * k, const moe_auto_rec & r) {
-        if (r.have) { llama_state_set(section.c_str(), (prefix + k).c_str(), string_format("%.4f %.4f %d", r.p_ms, r.g_ms, r.n).c_str()); }
+        if (r.have) { llama_state_set(section.c_str(), (prefix + k).c_str(), string_format("%.4f %.4f %d", r.p_ms, r.g_ms, r.n).c_str()); } // p_ms -1: unknown
     };
     put(".stock", st);
     put(".cache", ca);
@@ -1369,28 +1369,32 @@ static double moe_auto_est_gen(const common_params & params) {
 // expected time of one request: cache wins when the generation it saves outweighs the prompt time it costs; prompt tokens are
 // estimated from the -p text (4 chars/token) and -n, else the agentic coding turn above, so a prompt of several thousand
 // tokens with a short answer picks stock and a short prompt with a long answer picks the cache
+// the prompt cost per token is only comparable once both placements measured a real prompt: a few tokens time the fixed setup cost,
+// and scaled to a server-sized prompt that picked stock for a cache that prefills 10x faster. Until then the prompt term drops out.
+static bool moe_auto_p_known(const moe_auto_rec & st, const moe_auto_rec & ca) { return st.p_ms >= 0 && ca.p_ms >= 0; }
+
 static std::string moe_auto_decide_for(const moe_auto_rec & st, const moe_auto_rec & ca, const common_params & params) {
-    const double np = moe_auto_est_prompt(params);
+    const double np = moe_auto_p_known(st, ca) ? moe_auto_est_prompt(params) : 0.0;
     const double ng = moe_auto_est_gen(params);
     const bool cache = np * ca.p_ms + ng * ca.g_ms <= np * st.p_ms + ng * st.g_ms;
     // switchover: the prompt length below which the cache wins for this many generated tokens
     const double dp = ca.p_ms - st.p_ms, dg = st.g_ms - ca.g_ms;
-    const double breakeven = dp <= 0 ? INFINITY : dg <= 0 ? 0.0 : ng * dg / dp;
+    const double breakeven = !moe_auto_p_known(st, ca) || dp <= 0 ? INFINITY : dg <= 0 ? 0.0 : ng * dg / dp;
     LOG_INF("%s: MoE placement: request ~%.0f prompt + %.0f generated tokens; the cache wins for prompts under ~%.0f tokens at that answer length\n",
         __func__, np, ng, breakeven);
     return cache ? "cache" : "stock";
 }
 
-// the cache wins the estimated request (same estimate as above) by at least 10% on one run of each placement
+// the cache wins the estimated request (same estimate as above) by at least 3% on one run of each placement
 static bool moe_auto_cache_clear_win(const moe_auto_rec & st, const moe_auto_rec & ca, const common_params & params) {
-    const double np = moe_auto_est_prompt(params), ng = moe_auto_est_gen(params);
-    return np * ca.p_ms + ng * ca.g_ms <= 0.9 * (np * st.p_ms + ng * st.g_ms);
+    const double np = moe_auto_p_known(st, ca) ? moe_auto_est_prompt(params) : 0.0, ng = moe_auto_est_gen(params);
+    return np * ca.p_ms + ng * ca.g_ms <= 0.97 * (np * st.p_ms + ng * st.g_ms);
 }
 
 static std::string moe_auto_decide(const moe_auto_rec & st, const moe_auto_rec & ca) {
     const char * e = getenv("LLAMA_MOE_AUTO_PREFILL_SLOWDOWN");
     const double max_p = e ? atof(e) : 2.0;
-    return ca.g_ms <= st.g_ms && ca.p_ms < max_p * st.p_ms ? "cache" : "stock";
+    return ca.g_ms <= st.g_ms && (!moe_auto_p_known(st, ca) || ca.p_ms < max_p * st.p_ms) ? "cache" : "stock";
 }
 
 static void common_moe_cache_auto_impl(common_params & params);
@@ -1939,8 +1943,11 @@ common_init_result::~common_init_result() {
     moe_auto_read(g_moe_auto_file, st, ca, decided);
     moe_auto_rec & r = g_moe_auto_mode == "stock" ? st : ca;
     // the fastest per-token times seen: a cold run (model not in the page cache yet) never outweighs a warm one
-    const double p_ms = pd.t_p_eval_ms / pd.n_p_eval, g_ms = pd.t_eval_ms / pd.n_eval;
-    r.p_ms = r.have ? std::min(r.p_ms, p_ms) : p_ms;
+    const double g_ms = pd.t_eval_ms / pd.n_eval;
+    if (pd.n_p_eval >= 128) { // a real prompt: per-token prompt cost (a few tokens would only time the fixed setup)
+        const double p_ms = pd.t_p_eval_ms / pd.n_p_eval;
+        r.p_ms = r.p_ms >= 0 ? std::min(r.p_ms, p_ms) : p_ms;
+    }
     r.g_ms = r.have ? std::min(r.g_ms, g_ms) : g_ms;
     r.have = true;
     r.n++;
