@@ -1398,7 +1398,13 @@ static double moe_auto_est_gen(const common_params & params) {
 static std::string moe_auto_decide_for(const moe_auto_rec & st, const moe_auto_rec & ca, const common_params & params) {
     const double np = moe_auto_est_prompt(params);
     const double ng = moe_auto_est_gen(params);
-    return np * ca.p_ms + ng * ca.g_ms <= np * st.p_ms + ng * st.g_ms ? "cache" : "stock";
+    const bool cache = np * ca.p_ms + ng * ca.g_ms <= np * st.p_ms + ng * st.g_ms;
+    // switchover: the prompt length below which the cache wins for this many generated tokens
+    const double dp = ca.p_ms - st.p_ms, dg = st.g_ms - ca.g_ms;
+    const double breakeven = dp <= 0 ? INFINITY : dg <= 0 ? 0.0 : ng * dg / dp;
+    LOG_INF("%s: MoE placement: request ~%.0f prompt + %.0f generated tokens; the cache wins for prompts under ~%.0f tokens at that answer length\n",
+        __func__, np, ng, breakeven);
+    return cache ? "cache" : "stock";
 }
 
 static std::string moe_auto_decide(const moe_auto_rec & st, const moe_auto_rec & ca) {
