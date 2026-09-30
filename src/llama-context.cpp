@@ -1319,7 +1319,9 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         const int hw   = std::max(2, (int) std::thread::hardware_concurrency());
         const int base = thr.base;
         std::vector<int> c = { base };
-        const int lo = std::max(2, base - 2), hi = std::min(hw, base + 2);
+        // an attached thread pool (llama-cli) has a fixed size: never ask for more threads than it has
+        const int cap = (threadpool || threadpool_batch) ? base : hw;
+        const int lo = std::max(2, base - 2), hi = std::min(cap, base + 2);
         if (lo != base) { c.push_back(lo); }
         if (hi != base) { c.push_back(hi); }
         if (c.size() < 2) { thr.hold = thr.hold_len; return; }
