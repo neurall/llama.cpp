@@ -1,0 +1,29 @@
+#pragma once
+
+// What the engine learns per model, kept in ONE flat INI file (default <cache dir>/llama.cpp/moe-state.ini):
+//   [<model file name> <bytes>]
+//   hot.<layer> = <lifetime expert counts, space separated>   expert usage profile (the next start preloads the hottest)
+//   tuned.l<links> = NAME=value NAME=value ...                 the live self-tuner's decisions
+//   place.g<gpus>x<MiB>.b<build>.stock|cache = <ms/prompt token> <ms/generated token> <runs>, .decided = stock|cache
+// LLAMA_MOE_STATE=<file> moves it, =0 (or the older LLAMA_MOE_CACHE_PROFILE=0) turns all of it off.
+
+#include <string>
+#include <utility>
+#include <vector>
+
+struct llama_model;
+
+// the section of a model: set once by the tool that knows the file (common), else the GGUF name and tensor bytes
+void        moe_state_set_model(const std::string & section);
+std::string moe_state_section(const llama_model & model);
+
+bool moe_state_enabled();
+
+// false: no such key or the state is off
+bool moe_state_get(const std::string & section, const std::string & key, std::string & value);
+// every key of a section (one file read)
+bool moe_state_section_kv(const std::string & section, std::vector<std::pair<std::string, std::string>> & kv);
+// read-modify-write of the whole file through a temporary file and rename; several keys in one write
+bool moe_state_set(const std::string & section, const std::vector<std::pair<std::string, std::string>> & kv);
+// drop every key of the section that starts with prefix
+bool moe_state_erase(const std::string & section, const std::string & prefix);

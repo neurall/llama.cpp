@@ -393,6 +393,8 @@ extern "C" {
         int32_t  n_moe_cache_slots;   // cache slots per host-resident expert layer (0 = disabled)
         int32_t  n_moe_cache_inserts; // max expert uploads per layer per decode step
         int32_t  n_moe_cache_window;  // recent-usage window of the expert cache, in tokens
+        int32_t  n_moe_predict;       // expert cache router prediction: prefetch confident experts among the top M (0 = off)
+        int32_t  n_moe_predict_train; // train the learned predictor every N decoded tokens (0 = frozen)
 
         ggml_backend_sched_eval_callback cb_eval;
         void * cb_eval_user_data;
@@ -1138,6 +1140,13 @@ extern "C" {
     // MoE expert cache: while deferred, decodes don't start the cache (warmup runs), so its
     // auto size sees the VRAM left after models loaded later (speculative draft, mmproj)
     LLAMA_API void llama_moe_cache_defer(struct llama_context * ctx, bool defer);
+
+    // One flat INI file for what the engine learns per model (hot experts, tuner decisions, MoE placement): [section] key = value.
+    // LLAMA_MOE_STATE=<file> moves it, =0 turns it off. The section of the running model is set once with llama_state_set_model().
+    LLAMA_API bool llama_state_get(const char * section, const char * key, char * value, size_t n); // false: missing / off / too small
+    LLAMA_API bool llama_state_set(const char * section, const char * key, const char * value);
+    LLAMA_API bool llama_state_erase(const char * section, const char * key_prefix);              // every key of the section starting with it
+    LLAMA_API void llama_state_set_model(const char * section);
 
     // What the engine runs with right now, for logs and the server: MoE cache state and hit counters (decode only, since start),
     // the live values of the self-tuned knobs, thread counts and batch sizes. -1 = not applicable.

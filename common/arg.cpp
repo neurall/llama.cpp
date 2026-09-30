@@ -1389,14 +1389,6 @@ static std::vector<std::string> parse_csv_row(const std::string& input) {
 }
 
 // options the MoE expert cache reads from the environment at its first decode
-static void arg_setenv(const char * k, const std::string & v) {
-#ifdef _WIN32
-    _putenv_s(k, v.c_str());
-#else
-    setenv(k, v.c_str(), 1);
-#endif
-}
-
 common_params_context common_params_parser_init(common_params & params, llama_example ex, void(*print_usage)(int, char **)) {
     // per-example default params
     // we define here to make sure it's included in llama-gen-docs
@@ -2576,18 +2568,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--moe-predict"}, "M",
         "MoE expert cache: predict the next layer's experts and prefetch confident ones among the top M (default: 0 = off)",
-        [](common_params &, int value) {
-            arg_setenv("LLAMA_MOE_CACHE_PREDICT", std::to_string(value));
+        [](common_params & params, int value) {
+            params.n_moe_predict = value;
         }
     ));
     add_opt(common_arg(
         {"--lrn-prd"}, "N",
         "MoE expert cache: train the learned router predictor every N decoded tokens (1 while untrained, raise as it learns; 0 = frozen). "
         "Implies --moe-predict 8. Weights persist in the cache dir",
-        [](common_params &, int value) {
-            arg_setenv("LLAMA_MOE_CACHE_PREDICT_TRAIN", std::to_string(value));
-            if (!getenv("LLAMA_MOE_CACHE_PREDICT")) {
-                arg_setenv("LLAMA_MOE_CACHE_PREDICT", "8");
+        [](common_params & params, int value) {
+            params.n_moe_predict_train = value;
+            if (params.n_moe_predict <= 0) {
+                params.n_moe_predict = 8;
             }
         }
     ));

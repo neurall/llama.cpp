@@ -1,4 +1,5 @@
 #include "llama-moecache.h"
+#include "llama-moestate.h"
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -343,7 +344,7 @@ struct moe_cache {
     // SELF_TUNE=1 (self_tune): the knob under test, its candidate in use, the running slice, per-candidate slice means
     int      lv_k = -1, lv_c = 0;
     int64_t  lv_slice_len = 36, lv_warm = 4; // slice length and skipped tokens of the knob under test (state-carrying knobs need long ones)
-    std::string tuned_text;        // the self-tuner's decisions (NAME=value lines), kept in the profile file's footer: the next start begins from them
+    std::string tuned_text;        // the self-tuner's decisions (NAME=value lines), kept in kept in the state file: the next start begins from them
     uint64_t lv_cycle = 0;         // cycles finished: the candidate order rotates so no candidate always runs first (cold cache)
     int64_t  lv_slice_n = 0;
     double   lv_slice_sum = 0;
@@ -544,76 +545,37 @@ std::string cache_file(const llama_model & model, const char * prefix, const std
     return dir + "/" + prefix + name + "-" + std::to_string(model.size()) + suffix + ".bin";
 }
 
+// the model's section in the state file; empty when the state is off (LLAMA_MOE_STATE=0 / LLAMA_MOE_CACHE_PROFILE=0)
 std::string profile_path(const llama_model & model) {
-    const char * e = getenv("LLAMA_MOE_CACHE_PROFILE");
-    if (e) {
-        return strcmp(e, "0") == 0 ? "" : e;
-    }
-    return cache_file(model, "moe-hot-");
+    return moe_state_enabled() ? moe_state_section(model) : "";
 }
-
-constexpr uint32_t PROFILE_MAGIC = 0x3448454d; // "MEH4": u32 counts
 
 void profile_save(const moe_cache * mc) {
     if (mc->profile.empty() || mc->n_steps < 64) { // too little use to be worth keeping
         return;
     }
-    FILE * f = fopen(mc->profile.c_str(), "wb");
-    if (!f) {
-        return;
-    }
-    // raw lifetime activation counts per expert, u32 (the cache normalizes by the layer max when
-    // scoring); a layer is halved while its max exceeds 2^31, which keeps the ratios
-    const uint32_t hdr[2] = { PROFILE_MAGIC, (uint32_t) mc->layers.size() };
-    fwrite(hdr, sizeof(hdr), 1, f);
-    for (const auto & ls : mc->layers) {
-        const uint32_t n = (uint32_t) ls.glob_count.size();
+    // raw lifetime activation counts per expert (the cache normalizes by the layer max when scoring); a layer is halved
+    // while its max exceeds 2^31, which keeps the ratios. One line per layer: hot.<layer> = c0 c1 c2 ...
+    std::vector<std::pair<std::string, std::string>> kv;
+    for (size_t il = 0; il < mc->layers.size(); ++il) {
+        const auto & ls = mc->layers[il];
         int shift = 0;
         while ((ls.glob_max >> shift) > (1ull << 31)) {
             shift++;
         }
-        std::vector<uint32_t> c(n);
-        for (uint32_t e = 0; e < n; ++e) {
-            c[e] = (uint32_t) (ls.glob_count[e] >> shift);
+        std::string v;
+        for (size_t e = 0; e < ls.glob_count.size(); ++e) {
+            v += (e ? " " : "") + std::to_string((uint32_t) (ls.glob_count[e] >> shift));
         }
-        fwrite(&n, sizeof(n), 1, f);
-        fwrite(c.data(), sizeof(uint32_t), n, f);
+        kv.emplace_back("hot." + std::to_string(il), v);
     }
-    // trailer: the always-hot marks per layer (1 byte per expert), for tools and for the placement
-    const uint32_t hot_magic = 0x31544f48; // "HOT1"
-    fwrite(&hot_magic, sizeof(hot_magic), 1, f);
-    for (const auto & ls : mc->layers) {
-        std::vector<uint8_t> h(ls.glob_count.size());
-        for (size_t e = 0; e < h.size() && e < ls.hot.size(); ++e) {
-            h[e] = ls.hot[e];
-        }
-        const uint32_t n = (uint32_t) h.size();
-        fwrite(&n, sizeof(n), 1, f);
-        fwrite(h.data(), 1, n, f);
-    }
-    // footer: the self-tuner's decisions as text, [text][u32 length]["TUN1"], so the loader finds it from the end of the file
     if (!mc->tuned_text.empty()) {
-        const uint32_t len = (uint32_t) mc->tuned_text.size(), tun_magic = 0x314e5554; // "TUN1"
-        fwrite(mc->tuned_text.data(), 1, len, f);
-        fwrite(&len, sizeof(len), 1, f);
-        fwrite(&tun_magic, sizeof(tun_magic), 1, f);
+        // the self-tuner's decisions of this GPU count: tuned.l<links> = NAME=value NAME=value ...
+        std::string v = mc->tuned_text;
+        for (char & c : v) { if (c == '\n') { c = ' '; } }
+        kv.emplace_back("tuned.l" + std::to_string(mc->n_links), v);
     }
-    fclose(f);
-}
-
-// the tuner's decisions from the profile file's footer (empty when there is none)
-std::string tuned_read(const std::string & path) {
-    std::string txt;
-    if (FILE * f = path.empty() ? nullptr : fopen(path.c_str(), "rb")) {
-        uint32_t tail[2] = {};
-        if (fseek(f, -(long) sizeof(tail), SEEK_END) == 0 && fread(tail, sizeof(tail), 1, f) == 1 && tail[1] == 0x314e5554 && tail[0] > 0 && tail[0] < (1u << 16) &&
-                fseek(f, -(long) (sizeof(tail) + tail[0]), SEEK_END) == 0) {
-            txt.resize(tail[0]);
-            if (fread(&txt[0], 1, tail[0], f) != tail[0]) { txt.clear(); }
-        }
-        fclose(f);
-    }
-    return txt;
+    moe_state_set(mc->profile, kv);
 }
 
 // not evictable: sticky, or cached on a slow-link layer for less than LLAMA_MOE_CACHE_SLOW_STAY steps (default 1024):
@@ -686,25 +648,29 @@ void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, boo
 
 size_t profile_preload(moe_cache * mc, const llama_model & model) {
     std::vector<std::vector<uint64_t>> counts;
-    FILE * f = mc->profile.empty() ? nullptr : fopen(mc->profile.c_str(), "rb");
     const char * from = mc->profile.c_str();
-    bool ok = f != nullptr;
-    if (f) {
-        uint32_t hdr[2] = {};
-        ok = fread(hdr, sizeof(hdr), 1, f) == 1 && hdr[0] == PROFILE_MAGIC && hdr[1] == mc->layers.size();
-        for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
-            uint32_t n = 0;
-            ok = fread(&n, sizeof(n), 1, f) == 1 && n == mc->layers[il].glob_count.size();
-            if (ok) {
-                std::vector<uint32_t> c(n);
-                ok = fread(c.data(), sizeof(uint32_t), n, f) == n;
-                counts.emplace_back(c.begin(), c.end());
-            }
+    bool ok = !mc->profile.empty();
+    std::vector<std::pair<std::string, std::string>> sect;
+    ok = ok && moe_state_section_kv(mc->profile, sect);
+    for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
+        const std::string key = "hot." + std::to_string(il);
+        const auto it = std::find_if(sect.begin(), sect.end(), [&](const auto & p) { return p.first == key; });
+        ok = it != sect.end();
+        const std::string v = ok ? it->second : "";
+        if (ok) {
+            std::vector<uint64_t> c;
+            const char * p = v.c_str();
+            char * end = nullptr;
+            for (unsigned long long x = strtoull(p, &end, 10); end != p; x = strtoull(p, &end, 10)) { c.push_back(x); p = end; }
+            ok = c.size() == mc->layers[il].glob_count.size();
+            counts.push_back(std::move(c));
         }
-        fclose(f);
-        if (!ok) {
-            LLAMA_LOG_WARN("moe-cache: ignoring profile %s (other model or cache layout)\n", from);
+    }
+    if (!ok) {
+        if (!mc->profile.empty() && moe_state_enabled()) {
+            LLAMA_LOG_INFO("moe-cache: no usage profile for [%s] (or another cache layout)\n", from);
         }
+        counts.clear();
     }
     if (!ok && !model.moe_expert_usage.empty()) {
         // no local profile: the model's own usage table (GGUF key moe_cache.expert_usage)
@@ -1967,7 +1933,8 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     return true;
 }
 
-void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots, int32_t window) {
+void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots, int32_t window,
+                          int32_t predict, int32_t predict_train) {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
     if (g_init_done) {
         return;
@@ -2079,10 +2046,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
             // the learned predictors (fp16 [n_embd, n_expert * ahead] per layer, allocated after the cache) need room too
             {
-                const char * p = getenv("LLAMA_MOE_CACHE_PREDICT");
                 const char * a = getenv("LLAMA_MOE_CACHE_PREDICT_AHEAD");
                 const int64_t ahead = std::max(0, std::min(8, a ? atoi(a) : 2));
-                if (p && atoi(p) > 0 && ahead > 0 && !cands.empty()) {
+                if (predict > 0 && ahead > 0 && !cands.empty()) {
                     const int64_t n_embd = cands[0].l->ffn_up_exps->ne[0];
                     const char * st = getenv("LLAMA_MOE_CACHE_PREDICT_STRIDE");
                     const size_t n_src = (cands.size() + std::max(1, st ? atoi(st) : 1) - 1) / std::max(1, st ? atoi(st) : 1);
@@ -2270,9 +2236,8 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         // predicted uploads, so a wrong guess never evicts a cached expert
         int32_t n_stream = 0;
         {
-            const char * p  = getenv("LLAMA_MOE_CACHE_PREDICT");
             const char * ss = getenv("LLAMA_MOE_CACHE_STREAM_SLOTS");
-            n_stream = p && atoi(p) > 0 ? std::max(0, ss ? atoi(ss) : 4) : 0;
+            n_stream = predict > 0 ? std::max(0, ss ? atoi(ss) : 4) : 0;
         }
         size_t vram = 0;
         for (auto & ls : mc->layers) {
@@ -2519,7 +2484,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             // decisions of the last self-tune on this machine for this model (the profile file's footer): start from them (an explicit
             // LLAMA_MOE_CACHE_<NAME> wins) and check again after a while instead of exploring right away
             const char * te = getenv("LLAMA_MOE_CACHE_TUNED");
-            const std::string txt = !te || atoi(te) != 0 ? tuned_read(mc->profile) : "";
+            std::string txt;
+            if ((!te || atoi(te) != 0) && !mc->profile.empty()) { moe_state_get(mc->profile, "tuned.l" + std::to_string(mc->n_links), txt); }
+            for (char & c : txt) { if (c == ' ') { c = '\n'; } }
             int n = 0;
             size_t pos = 0;
             while (pos < txt.size()) {
@@ -2589,9 +2556,8 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         }
 
         {
-            const char * e = getenv("LLAMA_MOE_CACHE_PREDICT");
             const char * x = getenv("LLAMA_MOE_CACHE_PREDICT_MAX");
-            mc->pred_m   = e ? atoi(e) : 0;
+            mc->pred_m   = predict;
             mc->pred_max = x ? atoi(x) : 2;
             {
                 const char * ra = getenv("LLAMA_MOE_CACHE_PREDICT_RA");
@@ -2605,10 +2571,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
             {
                 const char * a  = getenv("LLAMA_MOE_CACHE_PREDICT_AHEAD");
-                const char * tt = getenv("LLAMA_MOE_CACHE_PREDICT_TRAIN");
                 const char * mu = getenv("LLAMA_MOE_CACHE_PREDICT_MU");
                 mc->pred_ahead = std::max(0, std::min(8, a ? atoi(a) : 2));
-                mc->pred_train = tt ? atoi(tt) : 0;
+                mc->pred_train = predict_train;
                 if (mu) { mc->pred_mu = (float) atof(mu); }
                 const char * pf = getenv("LLAMA_MOE_CACHE_PREDICT_FILE");
                 mc->pred_file = pf ? (strcmp(pf, "0") == 0 ? "" : pf) : cache_file(model, "moe-pred-", "-a" + std::to_string(mc->pred_ahead));
@@ -3121,17 +3086,20 @@ static void self_tune(moe_cache * mc) {
     };
     static const std::vector<tunable> T = [&] {
         std::vector<tunable> t;
-        if (mc->pred_m > 0) {
-            t.push_back({ "PREDICT", &knobs_t::predict, { 0, 1 } }); // first: the streaming knobs are tuned with it on
-        }
-        if (mc->pred_m > 0 && knobs().stream > 0) { t.insert(t.end(), T_stream.begin(), T_stream.end()); }
-        // the swap margin: 0 = any hotter expert may enter, -2 = pay-back margin from measured upload / CPU time. Which one wins depends
-        // on the machine (slow link, RAM headroom), so it is tuned live; a MARGIN set by the user and deterministic mode keep theirs
+        // whatever the user set (LLAMA_MOE_CACHE_<NAME> in the environment) is theirs: never tuned. Deterministic mode fixes them all.
         const char * dm = getenv("LLAMA_MOE_CACHE_DETERMINISTIC");
-        if (!getenv("LLAMA_MOE_CACHE_MARGIN") && !(dm && atoi(dm) != 0)) {
-            t.push_back({ "MARGIN", &knobs_t::margin, { 0, -2 }, true });
+        const bool det_mode = dm && atoi(dm) != 0;
+        auto add = [&](const tunable & x) {
+            if (!det_mode && !getenv((std::string("LLAMA_MOE_CACHE_") + x.name).c_str())) { t.push_back(x); }
+        };
+        if (mc->pred_m > 0) {
+            add({ "PREDICT", &knobs_t::predict, { 0, 1 } }); // first: the streaming knobs are tuned with it on
         }
-        t.insert(t.end(), T_swap.begin(), T_swap.end());
+        if (mc->pred_m > 0 && knobs().stream > 0) { for (const auto & x : T_stream) { add(x); } }
+        // the swap margin: 0 = any hotter expert may enter, -2 = pay-back margin from measured upload / CPU time. Which one wins depends
+        // on the machine (slow link, RAM headroom), so it is tuned live; a state-carrying knob, hence the long slices
+        add({ "MARGIN", &knobs_t::margin, { 0, -2 }, true });
+        for (const auto & x : T_swap) { add(x); }
         return t;
     }();
     const size_t MIN_S = 3, MAX_S = 8;

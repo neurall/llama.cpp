@@ -1314,24 +1314,46 @@ struct moe_auto_rec { bool have = false; double p_ms = 0, g_ms = 0; int n = 0; }
 static std::string g_moe_auto_file;  // decision file of this run (empty: auto choice not involved)
 static std::string g_moe_auto_mode;  // mode this run explores: "stock" or "cache" (empty: decided already)
 
+// The placement records live in the engine's state file (llama_state_*, one INI section per model):
+//   [<model file> <bytes>]  place.g<gpus>x<MiB>.b<build>.stock|cache = <ms/prompt token> <ms/generated token> <runs>  and  .decided
+// moe_auto_path() returns "<section>\x1f<key prefix>"; the same section is handed to the engine for its own keys (hot experts, tuner)
 static std::string moe_auto_path(const common_params & params, size_t model_size, int n_gpu, size_t vram_max) {
     std::string name = params.model.path;
     const size_t sl = name.find_last_of("/\\");
     if (sl != std::string::npos) { name = name.substr(sl + 1); }
-    for (auto & c : name) { if (!isalnum((unsigned char) c) && c != '.' && c != '-' && c != '_') { c = '_'; } }
-    return (fs_get_cache_directory() / ("moe-mode-" + name + "-" + std::to_string(model_size) + "-g" + std::to_string(n_gpu) +
-           "x" + std::to_string(vram_max >> 20) + "-b" + std::to_string(llama_build_number()) + ".txt")).string();
+    for (auto & c : name) { if (c == '[' || c == ']' || c == '\n' || c == '\r') { c = '_'; } }
+    const std::string section = name + " " + std::to_string(model_size);
+    llama_state_set_model(section.c_str());
+    return section + "\x1f" + "place.g" + std::to_string(n_gpu) + "x" + std::to_string(vram_max >> 20) + ".b" + std::to_string(llama_build_number());
+}
+
+static void moe_auto_split(const std::string & path, std::string & section, std::string & prefix) {
+    const size_t p = path.find('\x1f');
+    section = path.substr(0, p);
+    prefix  = p == std::string::npos ? "" : path.substr(p + 1);
 }
 
 static void moe_auto_read(const std::string & path, moe_auto_rec & st, moe_auto_rec & ca, std::string & decided) {
-    std::ifstream f(path);
-    std::string k;
-    while (f >> k) {
-        if (k == "decided") { f >> decided; continue; }
-        moe_auto_rec & r = k == "stock" ? st : ca;
-        f >> r.p_ms >> r.g_ms >> r.n;
-        r.have = true;
+    std::string section, prefix;
+    moe_auto_split(path, section, prefix);
+    char buf[128];
+    for (moe_auto_rec * r : { &st, &ca }) {
+        if (llama_state_get(section.c_str(), (prefix + (r == &st ? ".stock" : ".cache")).c_str(), buf, sizeof buf)) {
+            r->have = sscanf(buf, "%lf %lf %d", &r->p_ms, &r->g_ms, &r->n) == 3;
+        }
     }
+    if (llama_state_get(section.c_str(), (prefix + ".decided").c_str(), buf, sizeof buf)) { decided = buf; }
+}
+
+static void moe_auto_write(const std::string & path, const moe_auto_rec & st, const moe_auto_rec & ca, const std::string & decided) {
+    std::string section, prefix;
+    moe_auto_split(path, section, prefix);
+    auto put = [&](const char * k, const moe_auto_rec & r) {
+        if (r.have) { llama_state_set(section.c_str(), (prefix + k).c_str(), string_format("%.4f %.4f %d", r.p_ms, r.g_ms, r.n).c_str()); }
+    };
+    put(".stock", st);
+    put(".cache", ca);
+    if (!decided.empty()) { llama_state_set(section.c_str(), (prefix + ".decided").c_str(), decided.c_str()); }
 }
 
 // typical agentic coding turn when the command line says nothing (server, chat): the system prompt and tool definitions come from
@@ -1432,7 +1454,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
         const std::string path = moe_auto_path(params, model_size, n_gpu, vram_max);
         const char * force = getenv("LLAMA_MOE_AUTO_MODE");
         const std::string f = force ? force : "";
-        if (f == "retest") { std::remove(path.c_str()); }
+        if (f == "retest") { std::string sec, pre; moe_auto_split(path, sec, pre); llama_state_erase(sec.c_str(), pre.c_str()); }
         moe_auto_rec st, ca;
         std::string decided;
         moe_auto_read(path, st, ca, decided);
@@ -1905,15 +1927,12 @@ common_init_result::~common_init_result() {
     r.g_ms = r.have ? std::min(r.g_ms, g_ms) : g_ms;
     r.have = true;
     r.n++;
-    std::ofstream f(g_moe_auto_file, std::ios::trunc);
-    if (st.have) { f << "stock " << st.p_ms << " " << st.g_ms << " " << st.n << "\n"; }
-    if (ca.have) { f << "cache " << ca.p_ms << " " << ca.g_ms << " " << ca.n << "\n"; }
     if (st.have && ca.have) {
         decided = moe_auto_decide(st, ca);
-        f << "decided " << decided << "\n";
         LOG_INF("%s: MoE placement decided: %s (stock %.2f/%.2f, cache %.2f/%.2f ms per prompt/generated token)\n", __func__,
             decided.c_str(), st.p_ms, st.g_ms, ca.p_ms, ca.g_ms);
     }
+    moe_auto_write(g_moe_auto_file, st, ca, decided);
 }
 
 std::string common_get_model_endpoint() {
@@ -2097,6 +2116,8 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.n_moe_cache_slots   = params.n_moe_cache_slots == -2 ? 0 : params.n_moe_cache_slots;
     cparams.n_moe_cache_inserts = params.n_moe_cache_inserts;
     cparams.n_moe_cache_window  = params.n_moe_cache_window;
+    cparams.n_moe_predict       = params.n_moe_predict;
+    cparams.n_moe_predict_train = params.n_moe_predict_train;
     cparams.n_threads         = params.cpuparams.n_threads;
     cparams.n_threads_batch   = params.cpuparams_batch.n_threads == -1 ?
                                 params.cpuparams.n_threads : params.cpuparams_batch.n_threads;
