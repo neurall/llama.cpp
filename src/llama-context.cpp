@@ -1341,8 +1341,9 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         std::vector<int> c = { base };
         // an attached thread pool (llama-cli) has a fixed size: never ask for more threads than it has
         const int cap = (threadpool || threadpool_batch) ? base : hw;
-        const int lo = std::max(2, base - 2), hi = std::min(cap, base + 2);
+        const int lo = std::max(2, base - 2), hi = std::min(cap, base + 2), lo2 = std::max(2, base - 4);
         if (lo != base) { c.push_back(lo); }
+        if (lo2 != lo && lo2 != base) { c.push_back(lo2); } // decode is memory-bound: a few threads already reach the RAM ceiling
         if (hi != base) { c.push_back(hi); }
         if (c.size() < 2) { thr.hold = thr.hold_len; return; }
         thr.cand = c; thr.slot = 0; thr.tok = 0; thr.warm = 8;
@@ -1366,14 +1367,20 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     const auto & b0 = thr.slice[0];
     const double bmin = *std::min_element(b0.begin(), b0.end()), bmax = *std::max_element(b0.begin(), b0.end());
     const bool noisy = bmax > 1.25*bmin;
-    int best = -1;
+    // more threads must win by 3% in every round; fewer threads only must not lose by more than 1% (a tie favors fewer: less power,
+    // cores left for launches and uploads). The fastest winner with more threads beats the lowest count among the ties.
+    int best = -1, fewest = -1;
     if (!noisy) {
         for (size_t i = 1; i < thr.cand.size(); ++i) {
+            const bool fewer = thr.cand[i] < thr.cand[0];
             bool all = thr.slice[i].size() == b0.size();
-            for (size_t r = 0; all && r < b0.size(); ++r) { all = thr.slice[i][r] < 0.97*b0[r]; }
-            if (all && (best < 0 || mean(i) < mean((size_t) best))) { best = (int) i; }
+            for (size_t r = 0; all && r < b0.size(); ++r) { all = thr.slice[i][r] < (fewer ? 1.01 : 0.97)*b0[r]; }
+            if (!all) { continue; }
+            if (fewer) { if (fewest < 0 || thr.cand[i] < thr.cand[(size_t) fewest]) { fewest = (int) i; } }
+            else if (best < 0 || mean(i) < mean((size_t) best)) { best = (int) i; }
         }
     }
+    if (best < 0) { best = fewest; }
     const int cand_best = best >= 0 ? thr.cand[(size_t) best] : -1;
     const bool adopt = cand_best >= 0 && cand_best == thr.pending;
     std::string msg;
