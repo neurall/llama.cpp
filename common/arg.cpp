@@ -2553,7 +2553,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE"));
     add_opt(common_arg(
         {"--moe"}, "KEY=VAL,...",
-        "MoE expert cache options, comma separated. cache=N (slots per expert layer, same as --moe-expert-cache), slots=N (H2D prefetch staging slots, same as --prefetch-experts-slots), inserts=N (max expert uploads per layer and decode step), window=N (tokens of recent usage "
+        "MoE expert cache options, comma separated. cache=N (slots per expert layer, same as --moe-expert-cache), prefetch-slots=N (H2D prefetch staging slots, same as --prefetch-experts-slots), inserts=N (max expert uploads per layer and decode step), window=N (tokens of recent usage "
         "the cache scores by, default 64), predict=M (prefetch confident experts among the top M predicted for the next layers, 0 = off), "
         "train=N (train the learned predictor every N decoded tokens; implies predict=8), or any tuner knob: MARGIN, GATE, WAIT, BIG, "
         "SWAP_FRAC, ... A knob given here is never self-tuned",
@@ -2567,10 +2567,10 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                     throw std::invalid_argument("--moe: expected KEY=VAL, got '" + kv + "'");
                 }
                 std::string key = kv.substr(0, eq);
-                for (char & c : key) { c = (char) tolower((unsigned char) c); }
+                for (char & c : key) { c = c == '_' ? '-' : (char) tolower((unsigned char) c); }
                 const int v = atoi(kv.c_str() + eq + 1);
                 if      (key == "cache")   { params.n_moe_cache_slots       = v; } // = --moe-expert-cache
-                else if (key == "slots")   { params.prefetch_experts_slots  = v; } // = --prefetch-experts-slots
+                else if (key == "prefetch-slots") { params.prefetch_experts_slots  = v; } // = --prefetch-experts-slots
                 else if (key == "inserts") { params.n_moe_cache_inserts = v; }
                 else if (key == "window")  { params.n_moe_cache_window  = v; }
                 else if (key == "predict") { params.n_moe_predict       = v; }
