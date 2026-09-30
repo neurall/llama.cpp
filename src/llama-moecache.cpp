@@ -3734,6 +3734,26 @@ bool llama_moe_cache_active() {
     return g_cache != nullptr;
 }
 
+bool llama_moe_cache_get_info(struct llama_tuning_info * info) {
+    moe_cache * mc = g_cache;
+    if (!mc) {
+        return false;
+    }
+    info->moe_hits = info->moe_misses = 0;
+    for (auto & ls : mc->layers) { info->moe_hits += ls.n_hit; info->moe_misses += ls.n_miss; }
+    info->moe_uploads = mc->n_uploads;
+    info->moe_layers  = (int32_t) mc->layers.size();
+    info->moe_slots_min = INT32_MAX; info->moe_slots_max = 0;
+    for (auto & ls : mc->layers) {
+        info->moe_slots_min = std::min(info->moe_slots_min, ls.pub.n_slots);
+        info->moe_slots_max = std::max(info->moe_slots_max, ls.pub.n_slots);
+    }
+    info->margin = mc->last_margin; // the value in use (the tuner's pick, a fixed MARGIN, or the timing rule's)
+    info->gate = (int32_t) knobs().gate; info->wait = (int32_t) knobs().wait; info->big = (int32_t) knobs().big;
+    info->predict = (int32_t) knobs().predict; info->self_tune = (int32_t) knobs().self_tune;
+    return true;
+}
+
 int64_t llama_moe_cache_max_batch() {
     static const int64_t v = [] {
         const char * e = getenv("LLAMA_MOE_CACHE_MAX_BATCH");

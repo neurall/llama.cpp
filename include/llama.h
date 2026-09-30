@@ -1134,6 +1134,17 @@ extern "C" {
     // auto size sees the VRAM left after models loaded later (speculative draft, mmproj)
     LLAMA_API void llama_moe_cache_defer(struct llama_context * ctx, bool defer);
 
+    // What the engine runs with right now, for logs and the server: MoE cache state and hit counters (decode only, since start),
+    // the live values of the self-tuned knobs, thread counts and batch sizes. -1 = not applicable.
+    struct llama_tuning_info {
+        bool     moe_active;
+        uint64_t moe_hits, moe_misses, moe_uploads;
+        int32_t  moe_layers, moe_slots_min, moe_slots_max;
+        int32_t  margin, gate, wait, big, predict, self_tune;
+        int32_t  n_threads, n_threads_batch, n_batch, n_ubatch;
+    };
+    LLAMA_API void llama_get_tuning_info(const struct llama_context * ctx, struct llama_tuning_info * info);
+
     // Set abort callback
     LLAMA_API void llama_set_abort_callback(struct llama_context * ctx, ggml_abort_callback abort_callback, void * abort_callback_data);
 

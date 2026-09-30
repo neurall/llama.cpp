@@ -4635,6 +4635,8 @@ llama_perf_context_data llama_perf_context(const llama_context * ctx) {
     return data;
 }
 
+static void llama_log_tuning(const char * fn, const llama_context * ctx);
+
 void llama_perf_context_print(const llama_context * ctx) {
     const auto data = llama_perf_context(ctx);
 
@@ -4647,6 +4649,34 @@ void llama_perf_context_print(const llama_context * ctx) {
             __func__, data.t_eval_ms, data.n_eval, data.t_eval_ms / data.n_eval, 1e3 / data.t_eval_ms * data.n_eval);
     LLAMA_LOG_INFO("%s:       total time = %10.2f ms / %5d tokens\n", __func__, (t_end_ms - data.t_start_ms), (data.n_p_eval + data.n_eval));
     LLAMA_LOG_INFO("%s:    graphs reused = %10d\n", __func__, data.n_reused);
+    llama_log_tuning(__func__, ctx);
+}
+
+void llama_get_tuning_info(const llama_context * ctx, llama_tuning_info * info) {
+    *info = {};
+    info->margin = info->gate = info->wait = info->big = info->predict = info->self_tune = -1;
+    info->moe_slots_min = info->moe_slots_max = info->moe_layers = -1;
+    info->moe_active = llama_moe_cache_get_info(info);
+    info->n_threads       = (int32_t) ctx->get_cparams().n_threads;
+    info->n_threads_batch = (int32_t) ctx->get_cparams().n_threads_batch;
+    info->n_batch         = (int32_t) ctx->n_batch();
+    info->n_ubatch        = (int32_t) ctx->n_ubatch();
+}
+
+static void llama_log_tuning(const char * fn, const llama_context * ctx) {
+    llama_tuning_info t;
+    llama_get_tuning_info(ctx, &t);
+    if (t.moe_active) {
+        const uint64_t n = t.moe_hits + t.moe_misses;
+        LLAMA_LOG_INFO("%s:    moe cache = on, hit %.1f%% (%llu/%llu experts), %d layers, %d..%d slots/layer, %llu uploads\n", fn,
+                n ? 100.0*t.moe_hits/n : 0.0, (unsigned long long) t.moe_hits, (unsigned long long) n, t.moe_layers, t.moe_slots_min,
+                t.moe_slots_max, (unsigned long long) t.moe_uploads);
+        LLAMA_LOG_INFO("%s:    tuned     = margin %d, gate %d, wait %d, big %d, predict %d, self-tune %s\n", fn, t.margin, t.gate, t.wait, t.big,
+                t.predict, t.self_tune ? "on" : "off");
+    } else {
+        LLAMA_LOG_INFO("%s:    moe cache = off\n", fn);
+    }
+    LLAMA_LOG_INFO("%s:    threads   = %d decode / %d batch, batch %d, ubatch %d\n", fn, t.n_threads, t.n_threads_batch, t.n_batch, t.n_ubatch);
 }
 
 void llama_perf_context_reset(llama_context * ctx) {

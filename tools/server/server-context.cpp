@@ -786,6 +786,27 @@ struct server_slot {
                 "   graphs reused = %10d\n",
                 llama_perf_context(ctx_tgt).n_reused);
 
+        {
+            llama_tuning_info ti;
+            llama_get_tuning_info(ctx_tgt, &ti);
+            server_slot_stats st_now = stats;
+            st_now.tuning_end(ti);
+            const json & tj = st_now.tuning;
+            if (!tj.is_null()) {
+                const json & m = tj["moe_cache"];
+                if (m.value("active", false)) {
+                    const json & tu = m["tuned"];
+                    SLT_INF(*this, "       moe cache = on, hit %.1f%% this request / %.1f%% overall, %d..%d slots/layer, margin %d gate %d wait %d big %d predict %d\n",
+                            m.value("hit_rate_request", 0.0), m.value("hit_rate_total", 0.0), m.value("slots_min", 0), m.value("slots_max", 0),
+                            tu.value("margin", -1), tu.value("gate", -1), tu.value("wait", -1), tu.value("big", -1), tu.value("predict", -1));
+                } else {
+                    SLT_INF(*this, "       moe cache = %s\n", "off");
+                }
+                SLT_INF(*this, "         threads = %d decode / %d batch, batch %d, ubatch %d\n",
+                        tj.value("n_threads", 0), tj.value("n_threads_batch", 0), tj.value("n_batch", 0), tj.value("n_ubatch", 0));
+            }
+        }
+
         const int32_t n_draft_total       = stats.n_draft_tokens;
         const int32_t n_draft_accepted    = stats.n_draft_accepted;
         const int32_t n_draft_verif_steps = stats.n_draft_verif_steps;
@@ -2213,6 +2234,7 @@ private:
 
         // populate timings if this is final response or timings_per_token is enabled
         if (slot.stop != STOP_TYPE_NONE || slot.task->params.timings_per_token) {
+            { llama_tuning_info ti; llama_get_tuning_info(ctx_tgt, &ti); slot.stats.tuning_end(ti); }
             res->stats = slot.stats;
         }
 
@@ -2240,6 +2262,7 @@ private:
             res->content     = std::move(slot.generated_text);
             res->tokens      = std::move(slot.generated_tokens);
         }
+        { llama_tuning_info ti; llama_get_tuning_info(ctx_tgt, &ti); slot.stats.tuning_end(ti); }
         res->stats           = slot.stats;
         res->prompt          = slot.task->tokens.detokenize(ctx_tgt, true);
         res->response_fields = std::move(slot.task->params.response_fields);
@@ -3274,6 +3297,7 @@ private:
                     // TODO: maybe move branch to outside of this loop in the future
                     if (slot.state == SLOT_STATE_STARTED) {
                         slot.stats.update_prompt_start();
+                        { llama_tuning_info ti; llama_get_tuning_info(ctx_tgt, &ti); slot.stats.tuning_begin(ti); }
 
                         slot.state = SLOT_STATE_PROCESSING_PROMPT;
 

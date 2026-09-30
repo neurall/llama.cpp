@@ -89,6 +89,8 @@ double llama_moe_cache_link_gbs(ggml_backend_dev_t dev);
 // before the first compute-buffer reserve: time each GPU's host link, reserve the prefill split only when it can pay
 void llama_moe_cache_prefill_decide(const std::vector<ggml_backend_dev_t> & gpus);
 bool    llama_moe_cache_active();
+// live cache state for llama_get_tuning_info(): false when the cache is off
+bool    llama_moe_cache_get_info(struct llama_tuning_info * info);
 
 // nullptr when the cache is disabled or this tensor has no cached layer
 const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps);
