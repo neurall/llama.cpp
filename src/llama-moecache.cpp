@@ -1302,6 +1302,8 @@ void resource_probe(moe_cache * mc) {
     mc->cpu_sat_threads = n_sat;
     if (!getenv("LLAMA_MOE_CACHE_CPU_GBS")) { knobs().cpu_gbs = cpu_alone; }
     if (!getenv("LLAMA_MOE_CACHE_DDR_GBS")) { knobs().ddr_gbs = std::max(cpu_alone, total); }
+    // the DDR budget gate (GATE=3) needs the budget just measured: on by default then (GLM short chat +6%, MiMo +16% in a pair); the tuner can turn it off
+    if (!user_knobs().count("GATE")) { knobs().gate = 3; }
     std::string links, rs;
     for (int k = 0; k < mc->n_links; ++k) {
         mc->gbs_link[k] = link_alone[k];
