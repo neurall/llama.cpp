@@ -510,20 +510,17 @@ static std::vector<float> get_logits(
     const uint32_t n_vocab  = llama_vocab_n_tokens(llama_model_get_vocab(model));
     const uint32_t n_ctx    = llama_n_ctx(lctx);
     const uint32_t n_tokens = tokens.size();
-    llama_batch batch = llama_batch_init(n_ctx, 0, 1);
+    common_batch batch(lctx);
     GGML_ASSERT(n_tokens <= n_ctx);
     for (uint32_t pos = 0; pos < n_tokens; pos++) {
-        common_batch_add(batch, tokens[pos], pos, {0}, true);
+        batch.add(tokens[pos], pos, 0, true);
     }
-    batch.n_tokens = n_tokens;
     if (encode) {
-        if (llama_encode(lctx, batch)) {
-            llama_batch_free(batch);
+        if (llama_process(lctx, LLAMA_PROCESS_TYPE_ENCODE, batch.get())) {
             throw std::runtime_error("failed to encode batch");
         }
     }
-    if (llama_decode(lctx, batch)) {
-        llama_batch_free(batch);
+    if (llama_process(lctx, LLAMA_PROCESS_TYPE_DECODE, batch.get())) {
         throw std::runtime_error("failed to decode batch");
     }
 
@@ -535,8 +532,52 @@ static std::vector<float> get_logits(
             ret.push_back(logits_ith[j]);
         }
     }
-    llama_batch_free(batch);
     return ret;
+}
+
+static bool check_causal_attn_toggle(
+        llama_model * model, llama_context * lctx, const std::vector<llama_token> & tokens) {
+    const uint32_t n_vocab  = llama_vocab_n_tokens(llama_model_get_vocab(model));
+    const uint32_t n_past   = tokens.size();
+    const uint32_t n_ubatch = llama_n_ubatch(lctx);
+
+    GGML_ASSERT(n_past + n_ubatch/2 + n_ubatch <= llama_n_ctx(lctx));
+
+    llama_set_causal_attn(lctx, false);
+
+    common_batch batch(lctx);
+
+    bool ok = true;
+    uint32_t pos = n_past;
+    for (const uint32_t n_tokens : { n_ubatch/2, n_ubatch }) {
+        batch.clear();
+        for (uint32_t i = 0; i < n_tokens; i++) {
+            batch.add(tokens[i], pos++, 0, true);
+        }
+
+        const int32_t rc = llama_process(lctx, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+        if (rc != 0) {
+            LOG_ERR("%s: n_tokens=%u: llama_process returned %d\n", __func__, n_tokens, rc);
+            ok = false;
+            break;
+        }
+
+        const float * logits = llama_get_logits_ith(lctx, n_tokens - 1);
+        if (logits == nullptr) {
+            LOG_ERR("%s: n_tokens=%u: no logits\n", __func__, n_tokens);
+            ok = false;
+            break;
+        }
+        for (uint32_t j = 0; j < n_vocab; j++) {
+            if (std::isnan(logits[j])) {
+                LOG_ERR("%s: n_tokens=%u: nan logit\n", __func__, n_tokens);
+                ok = false;
+                break;
+            }
+        }
+    }
+
+    return ok;
 }
 
 static bool moe_mandatory(const llm_arch arch) {
@@ -865,6 +906,12 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
                         if (nmse_val > 1e-4) {
                             test_ok = false;
                             status_nmse = "\033[1;31mFAIL\033[0m";
+                        }
+                        if (!encode && !check_causal_attn_toggle(model_and_ctx_dev.first.get(), model_and_ctx_dev.second.get(), tokens)) {
+                            if (test_ok) {
+                                status_nmse = "\033[1;31mFAIL\033[0m (toggle)";
+                            }
+                            test_ok = false;
                         }
                     }
 
