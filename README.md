@@ -67,22 +67,38 @@ weights (the server default when the model fits in RAM) GLM-5.3-Flash is 1.21x s
 Decode speed depends on how often generated tokens reuse cached experts: ~75% of
 experts are hits on GLM chat, ~95% on Qwen.
 
-**Three machines, Qwen3.6-35B-A3B (Q2_0 GSQ hybrid, 12 GB), stock llama.cpp vs this fork b11509 `avx-kernels`.** Single stream, temp 0, `-n 100`,
-`-c 4096`, second (warm) run of two; prompt processing / decode t/s. Short prompt = "write smallest html tetris game", long = about 2.2k tokens of text.
-Stock = upstream b11235 (Ryzen 5 3600: `llama-completion`; laptop: b11261 `llama-cli`; 3090s: b11235 `llama-completion`).
+**Gains vs stock llama.cpp, build b11509 `avx-kernels`, per model and machine.** Single stream, temp 0, `-n 100`, `-c 4096`, second (warm) run,
+prompt processing / decode t/s. Short prompt = "write smallest html tetris game", long = about 2.2k tokens of text. Stock = upstream b11235
+(`llama-completion`; the laptop: b11261 `llama-cli`), the fork = its `llama-cli` (auto mode, weights pinned when the model fits in RAM). "x" = fork / stock.
+More rows are added as they are measured.
 
-| machine | prompt | stock | fork | fork vs stock (prompt / decode) |
-|---|---|---|---|---|
-| Ryzen 5 3600 (AVX2), CPU only, 60 GB DDR4 [fork build 183d5ee65] | short | 10.3 / 6.3 | **36.8 / 11.5** | 3.6x / 1.8x |
-| | long | 11.0 / 6.1 | **46.0 / 10.9** | 4.2x / 1.8x |
-| Ryzen 9 8945HS + RTX 4060 8 GB (PCIe 4.0 x8), 32 GB LPDDR5X, Windows [build 11506] | short | 40.4 / 31.0 | **91.8 / 56.3** | 2.3x / 1.8x |
-| | long | 599 / 31.3 | **792 / 51.1** | 1.3x / 1.6x |
-| 2x RTX 3090 (model fits in VRAM, no cache) [build 11509] | short | 97.4 / **161.8** | **114.1** / 154.0 | 1.17x / 0.95x |
-| | long | **3689** / **158.4** | 3144 / 151.7 | 0.85x / 0.96x |
+| model | machine [fork build] | prompt | stock | fork | prompt x | decode x | fork path |
+|---|---|---|---|---|---|---|---|
+| Qwen3.6-35B-A3B Q2_0 GSQ, 12 GB | Ryzen 5 3600, CPU only [183d5ee65] | short | 10.3 / 6.3 | **36.8 / 11.5** | 3.6x | 1.8x | CPU, AVX2 Q2_0 kernel |
+| | | long | 11.0 / 6.1 | **46.0 / 10.9** | 4.2x | 1.8x | same |
+| | 8945HS + RTX 4060 8 GB, Windows [11506] | short | 40.4 / 31.0 | **91.8 / 56.3** | 2.3x | 1.8x | expert cache |
+| | | long | 599 / 31.3 | **792 / 51.1** | 1.3x | 1.6x | expert cache |
+| | 2x RTX 3090 (fits VRAM) [11509] | short | 97.4 / **161.8** | **114.1** / 154.0 | 1.17x | 0.95x | stock placement |
+| | | long | **3689** / **158.4** | 3144 / 151.7 | 0.85x | 0.96x | stock placement |
+| Qwen3.8-Flash-Next GSQ IQ1_M, 58 GB (bigger than the laptop's RAM) | 8945HS + RTX 4060 [11506] | short | 18.4 / 13.4 | **21.0 / 15.7** | 1.14x | 1.17x | expert cache |
+| | | long | **62.7** / 12.6 | 59.8 / **15.2** | 0.95x | 1.21x | expert cache |
 
-The CPU rows come from the AVX2 / AVX-512 VNNI kernels for Q2_0 (2-bit) weights: Q2_0 was the one dot-product type without an x86 SIMD kernel
-(scalar loop; CPU-only laptop: 5.79 -> 13.39 t/s). Q1_0 and IQ1_S / IQ1_M already had upstream kernels, so they are unchanged. On the 3090s, where the model fits in VRAM, the fork is 4-5% behind stock on decode and 15% behind on a
-long prompt (`llama-cli` against `llama-completion`, so part of the gap may be the tool); that is not fixed yet.
+**The two cases where the fork is not ahead on both.**
+- *Slower prompt, faster decode* (expert cache on a model bigger than VRAM): the cache keeps the hot experts in VRAM, so decode is faster (1.1x to 2x), but
+  every big prompt batch streams the other experts over PCIe. Per prompt token the cache measured 2.5x slower than stock placement on the laptop
+  (Qwen3.6: 32.9 vs 13.0 ms) and up to 6x on the 3090s (IQ1_M), so long prompts with short answers lose (laptop IQ1_M long: 0.95x prompt, 1.21x decode).
+- *Prompt about level, decode slightly slower* (model fits VRAM, no cache): the fork uses stock placement and the same kernels, but on the 3090s Qwen3.6
+  decodes 4-5% slower than stock and a long prompt is 15% slower (measured `llama-cli` against `llama-completion`, so part of the gap may be the tool). Not fixed yet.
+
+**Which path the fork takes, and when.** The cache or stock placement is chosen when the model loads, per model, GPU set and build:
+- *Model fits in VRAM*: stock placement, no cache.
+- *First run of a bigger model* (nothing measured): cache when the model is more than 1.3x the free VRAM, the prompt is under about 3k tokens and not more than 8x
+  the answer length; otherwise stock placement. `llama-cli` reads the prompt from `-p` / `-f` and the answer from `-n`; `llama-server` has neither at load, so it assumes a
+  typical agentic coding turn (2000 new prompt tokens, 600 generated; the system prompt and tool definitions come from the KV cache).
+- *Later runs*: each placement is recorded on two runs (the first can be cold; the fastest per-token times are kept), then every start compares the expected time of a
+  request, prompt tokens x prompt ms + generated tokens x decode ms, and takes the smaller; the log line says up to which prompt length the cache wins.
+  `LLAMA_MOE_AUTO_MODE=stock|cache|retest` overrides it. Either way the AVX kernels, pinned weights, huge pages, batch tier and thread autotune stay on;
+  only the expert cache is switched off. Inside the cache placement a batch of 31 tokens or fewer uses the cache graph (decode) and bigger batches stream experts (prompt).
 
 **Predictive prefetch (first version, work in progress, first shipped in b11509).** A small learned predictor guesses which experts the next layers
 will need and streams them into the GPU cache while the CPU works. **It paid off on one of three machines**: on the 8 GB laptop, before the AVX kernels,
