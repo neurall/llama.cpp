@@ -421,7 +421,7 @@ struct knobs_t {
     double hot_frac  = 0;     // tier: pin the always-hot set on slower links; off: never won in A/B
     double sticky    = 0.0; // off: +1.6% on GLM chat, within noise
     double slow_stay = 0;     // tier min stay (steps); off: never won in A/B
-    double margin    = -1;  // fixed pay-back margin, -1: from upload timing
+    double margin    = -1;  // fixed pay-back margin; -1: 0 (deterministic mode 4); -2: from upload timing (CPU GB/s / link GB/s)
     double budget    = -1;  // fixed swaps per step, -1: from upload timing
     double cpu_gbs   = 38;  // CPU read rate alone (ddrbw, 6 threads, DDR4-3200 ECC); pay-back margin, DDR demand before measured
     double link      = 1;   // pay-back margin per upload link (0: one margin from the average upload)
@@ -3076,6 +3076,12 @@ static void self_tune(moe_cache * mc) {
             t.push_back({ "PREDICT", &knobs_t::predict, { 0, 1 } }); // first: the streaming knobs are tuned with it on
         }
         if (mc->pred_m > 0 && knobs().stream > 0) { t.insert(t.end(), T_stream.begin(), T_stream.end()); }
+        // the swap margin: 0 = any hotter expert may enter, -2 = pay-back margin from measured upload / CPU time. Which one wins depends
+        // on the machine (slow link, RAM headroom), so it is tuned live; a MARGIN set by the user and deterministic mode keep theirs
+        const char * dm = getenv("LLAMA_MOE_CACHE_DETERMINISTIC");
+        if (!getenv("LLAMA_MOE_CACHE_MARGIN") && !(dm && atoi(dm) != 0)) {
+            t.push_back({ "MARGIN", &knobs_t::margin, { 0, -2 } });
+        }
         t.insert(t.end(), T_swap.begin(), T_swap.end());
         return t;
     }();
@@ -3319,12 +3325,12 @@ void llama_moe_cache_step() {
             link_margin[k] = mc->gbs_link[k] > 0 && knobs().link != 0 ? (int) std::max(1.0, std::ceil(cpu_gbs / mc->gbs_link[k])) : (int) margin;
         }
     }
-    // static pay-back margin: LLAMA_MOE_CACHE_MARGIN (deterministic mode: default 4)
-    const int fixed_margin = (int) knobs().margin;
-    if (fixed_margin >= 0 || det) {
-        margin = (uint32_t) (fixed_margin >= 0 ? fixed_margin : 4);
-    }
-    if (fixed_margin >= 0 || det) {
+    // static pay-back margin: LLAMA_MOE_CACHE_MARGIN, default 0 (deterministic mode: 4). The timing margin above (-2)
+    // charges an upload as CPU time, but the DMA runs beside the CPU and only costs DDR contention: on GLM topic-switching
+    // chats (PC1, x4 link margin 9-11) it held the cache at 64.7% hit / 19.93 t/s vs 71.2% / 21.26 t/s with 0
+    const int fixed_margin = knobs().margin == -1 ? (det ? 4 : 0) : (int) knobs().margin;
+    if (fixed_margin >= 0) {
+        margin = (uint32_t) fixed_margin;
         link_margin[0] = link_margin[1] = (int) margin;
     }
     mc->last_margin = (int) margin;
