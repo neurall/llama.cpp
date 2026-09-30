@@ -14,6 +14,7 @@
 struct cli_timings {
     double prompt_per_second    = 0.0;
     double predicted_per_second = 0.0;
+    std::string tuning;   // MoE cache state, tuned knobs, threads and batch sizes (one line), empty when the engine sent none
 };
 
 struct cli_context_impl;

@@ -376,6 +376,22 @@ bool cli_context::generate_completion(generated_content & content_out, cli_timin
             const auto & t = chunk.at("timings");
             timings.prompt_per_second    = t.value("prompt_per_second",    0.0);
             timings.predicted_per_second = t.value("predicted_per_second", 0.0);
+            if (t.contains("tuning")) {
+                const auto & u = t.at("tuning");
+                const auto & m = u.at("moe_cache");
+                std::string l;
+                if (m.value("active", false)) {
+                    const auto & tu = m.at("tuned");
+                    l = string_format("moe cache on, hit %.1f%% this reply / %.1f%% overall, margin %d gate %d wait %d big %d predict %d",
+                            m.value("hit_rate_request", 0.0), m.value("hit_rate_total", 0.0), tu.value("margin", -1), tu.value("gate", -1),
+                            tu.value("wait", -1), tu.value("big", -1), tu.value("predict", -1));
+                } else {
+                    l = "moe cache off";
+                }
+                l += string_format(" | threads %d decode / %d batch, batch %d, ubatch %d", u.value("n_threads", 0), u.value("n_threads_batch", 0),
+                        u.value("n_batch", 0), u.value("n_ubatch", 0));
+                timings.tuning = l;
+            }
         }
         if (!chunk.contains("choices") || !chunk.at("choices").is_array() || chunk.at("choices").empty()) {
             return;
@@ -653,6 +669,9 @@ int cli_context::run() {
                 timings.prompt_per_second,
                 timings.predicted_per_second
             ));
+            if (!timings.tuning.empty() && params.verbosity >= LOG_LEVEL_INFO) {
+                ui::show_info("[ " + timings.tuning + " ]");
+            }
         }
 
         if (params.single_turn) {
