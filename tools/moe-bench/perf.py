@@ -16,6 +16,7 @@ Tests:
   ppl3    same as ppl with -b 3 -ub 3: 3-token decode batches, the path MTP/speculative verify
           uses (small-batch cache chain); compare PPL with --plain for correctness
   tetris  raw completion "generate smallest html tetris game.", -c 1024, until full
+  t100    raw completion "write smallest html tetris game", -c 1024, 100 tokens, temperature 0: the short one-shot run most people benchmark
   chat    /v1/chat/completions "write smallest html tetris game", 1500 tokens
   pf12k   12k-token prefill: src_12k.cpp as a raw completion prompt, 32 tokens generated,
           x16 GPU first (-dev CUDA1,CUDA0), -ub 2048 -b 2048; pf12k-stock: same, no cache flags
@@ -214,10 +215,12 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             row.update(cache_stats(log))
             row.update(ok=1 if row.get("tps") else 0, args=" ".join(args))
             return row
-        if test == "tetris":
+        if test in ("tetris", "t100"):
+            # t100: what most people run on a CLI: one short prompt, 100 tokens, -c 1024, temperature 0 (GREEDY)
             args = COMMON + ["-c", "1024"]
             res, logf = server_run(build, env, args, "/completion",
-                                   {"prompt": "generate smallest html tetris game.", "n_predict": -1, **GREEDY})
+                                   {"prompt": "generate smallest html tetris game." if test == "tetris" else "write smallest html tetris game",
+                                    "n_predict": -1 if test == "tetris" else 100, **GREEDY})
             text = res["content"]
         else:
             args = COMMON + ["-c", "4096"]
@@ -350,7 +353,7 @@ if __name__ == "__main__":
     sp = ap.add_subparsers(dest="cmd", required=True)
     r = sp.add_parser("run")
     r.add_argument("builds", nargs="+")
-    r.add_argument("-t", "--test", default="ppl", choices=["ppl", "ppl3", "tetris", "chat", "agent", "pf12k", "pf12k-stock"])
+    r.add_argument("-t", "--test", default="ppl", choices=["ppl", "ppl3", "tetris", "t100", "chat", "agent", "pf12k", "pf12k-stock"])
     r.add_argument("-n", type=int, default=1)
     r.add_argument("-e", "--env", action="append", default=[])
     r.add_argument("--note")
