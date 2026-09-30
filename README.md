@@ -25,6 +25,7 @@ Every number is a hot run (same model run again, files in the page cache, what t
 | | | 12k-token prompt, processing | 156 | 112 | 0.7x |
 | **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) * | A | short chat, decode | 27.7 | **46.5** | **1.7x** |
 | | | 12k-token prompt, decode / processing | 25.3 / 500 | **42.3 / 538** | 1.7x / 1.1x |
+| **GLM-5.3-Flash** 3.5-bit (137 GB, bigger than RAM) | A | short tetris prompt, 100 tokens, decode | 8.6 | **10.3** | **1.2x** |
 | **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short tetris prompt, 100 tokens, decode | 44.6 | **50.6** | **1.1x** |
 | **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | same | 69.1 | 69.1 (keeps stock) | 1.0x |
 | | B | same | 11.4 | **13.5** | **1.2x** |
@@ -33,6 +34,7 @@ Every number is a hot run (same model run again, files in the page cache, what t
 | | C | same, CPU only (AVX Q2_0 kernels) | 6.3 | **11.3** | **1.8x** |
 | Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | same | 45.1 | 45.0 | 1.0x |
 | Qwen3.8-27B IQ3_S, dense, CPU only | C | same | 1.7 | 1.6 | 1.0x |
+| Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`), fits VRAM | A | same | 78.3 | 77.0 | 1.0x (38.6 without MTP) |
 | | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x |
 | Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) |
 
@@ -72,8 +74,9 @@ Anything you pass is used as given and is never auto-tuned:
 - Output can differ slightly from stock at temperature 0: a cached expert runs on the GPU, a missed one on the CPU.
 - Prompt processing of models bigger than RAM (mmap) is 20-30% below stock: the experts stream over PCIe.
 - A second GPU on a slow slot helps less; prompt processing goes to the fastest link.
-- MTP speculative decoding is slower than plain decode on models far bigger than VRAM, and GLM MTP is not in this fork
-  (upstream PR #27917).
+- MTP speculative decoding is slower than plain decode on models far bigger than VRAM (GLM MTP on 2x RTX 3090: 20.4 vs 22.0 t/s,
+  89% of drafts accepted), so it stays off there unless you pass `--spec-draft-n-max`. GLM MTP is included (upstream PR #27917's
+  commits on top of upstream's GLM5-Next): `-md GLM-5.3-Flash-...-mtp.gguf --spec-type draft-mtp`.
 
 ## Credits and contact
 
