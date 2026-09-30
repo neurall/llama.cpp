@@ -78,17 +78,16 @@ More rows are added as they are measured.
 | | | long | 11.0 / 6.1 | **46.0 / 10.9** | 4.2x | 1.8x | same |
 | | 8945HS + RTX 4060 8 GB, Windows [11506] | short | 40.4 / 31.0 | **91.8 / 56.3** | 2.3x | 1.8x | expert cache |
 | | | long | 599 / 31.3 | **792 / 51.1** | 1.3x | 1.6x | expert cache |
-| | 2x RTX 3090 (fits VRAM) [11509] | short | 97.4 / **161.8** | **114.1** / 154.0 | 1.17x | 0.95x | stock placement |
-| | | long | **3689** / **158.4** | 3144 / 151.7 | 0.85x | 0.96x | stock placement |
+| | 2x RTX 3090 (fits VRAM) [11509], `llama-completion` on both | short | 97.4 / 161.8 | 94.7 / 161.8 | 0.97x | 1.00x | stock placement |
+| | | long | 3689 / 158.4 | 3677 / 159.2 | 1.00x | 1.01x | stock placement |
 | Qwen3.8-Flash-Next GSQ IQ1_M, 58 GB (bigger than the laptop's RAM) | 8945HS + RTX 4060 [11506] | short | 18.4 / 13.4 | **21.0 / 15.7** | 1.14x | 1.17x | expert cache |
 | | | long | **62.7** / 12.6 | 59.8 / **15.2** | 0.95x | 1.21x | expert cache |
 
-**The two cases where the fork is not ahead on both.**
+**Where the fork is not ahead on both.**
 - *Slower prompt, faster decode* (expert cache on a model bigger than VRAM): the cache keeps the hot experts in VRAM, so decode is faster (1.1x to 2x), but
   every big prompt batch streams the other experts over PCIe. Per prompt token the cache measured 2.5x slower than stock placement on the laptop
   (Qwen3.6: 32.9 vs 13.0 ms) and up to 6x on the 3090s (IQ1_M), so long prompts with short answers lose (laptop IQ1_M long: 0.95x prompt, 1.21x decode).
-- *Prompt about level, decode slightly slower* (model fits VRAM, no cache): the fork uses stock placement and the same kernels, but on the 3090s Qwen3.6
-  decodes 4-5% slower than stock and a long prompt is 15% slower (measured `llama-cli` against `llama-completion`, so part of the gap may be the tool). Not fixed yet.
+- *Model fits VRAM, no cache*: the fork uses stock placement and the same kernels and matches stock (3090s, Qwen3.6, same tool on both sides: 0.97x / 1.00x short, 1.00x / 1.01x long). Note that `llama-cli`'s chat template makes it look 4-15% slower against `llama-completion` (a tool difference, not the engine).
 
 **Which path the fork takes, and when.** The cache or stock placement is chosen when the model loads, per model, GPU set and build:
 - *Model fits in VRAM*: stock placement, no cache.
