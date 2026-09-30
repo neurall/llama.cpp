@@ -1382,12 +1382,22 @@ static void moe_auto_read(const std::string & path, moe_auto_rec & st, moe_auto_
     }
 }
 
+// typical agentic coding turn when the command line says nothing (server, chat): the system prompt and tool definitions come from
+// the KV cache, so a turn adds ~2000 new prompt tokens (tool output, file contents) and generates ~600 (edits, tool calls)
+static double moe_auto_est_prompt(const common_params & params) {
+    return params.prompt.empty() ? 2000.0 : std::max(1.0, params.prompt.size() / 4.0);
+}
+
+static double moe_auto_est_gen(const common_params & params) {
+    return params.n_predict > 0 ? params.n_predict : 600.0;
+}
+
 // expected time of one request: cache wins when the generation it saves outweighs the prompt time it costs; prompt tokens are
-// estimated from the -p text (4 chars/token, else 500), generated tokens from -n (else 1000), so a prompt of several thousand
+// estimated from the -p text (4 chars/token) and -n, else the agentic coding turn above, so a prompt of several thousand
 // tokens with a short answer picks stock and a short prompt with a long answer picks the cache
 static std::string moe_auto_decide_for(const moe_auto_rec & st, const moe_auto_rec & ca, const common_params & params) {
-    const double np = params.prompt.empty() ? 500.0 : std::max(1.0, params.prompt.size() / 4.0);
-    const double ng = params.n_predict > 0 ? params.n_predict : 1000.0;
+    const double np = moe_auto_est_prompt(params);
+    const double ng = moe_auto_est_gen(params);
     return np * ca.p_ms + ng * ca.g_ms <= np * st.p_ms + ng * st.g_ms ? "cache" : "stock";
 }
 
@@ -1478,8 +1488,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
         } else {
             // first run, nothing measured yet (PC1 IQ3_S 83 GB on one 24 GB GPU: stock 23.6 vs cache 42-49 t/s): the cache when the model is clearly bigger than the free VRAM (PC1 IQ1_M 54 GB on 2 x 24 GB: stock 108.9/60.4 vs cache 80.4/54.4 prompt/gen t/s); a prompt of thousands of tokens starts with stock, where the cache's slow prompt
             // processing costs more than its faster generation gains; the measured runs then keep stock only where it is faster)
-            const size_t est_prompt = params.prompt.size() / 4;
-            const size_t est_gen = params.n_predict > 0 ? params.n_predict : 1000;
+            const size_t est_prompt = (size_t) moe_auto_est_prompt(params);
+            const size_t est_gen = (size_t) moe_auto_est_gen(params);
             const bool prefill_heavy = est_prompt >= 3000 || est_prompt > 8 * est_gen;
             const std::string first = model_size * 10 > vram_free * 13 && !prefill_heavy ? "cache" : "stock";
             mode = !st.have && !ca.have ? first : (st.have ? "cache" : "stock");
