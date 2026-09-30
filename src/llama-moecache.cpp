@@ -2996,7 +2996,7 @@ void llama_moe_cache_prefill_decide(const std::vector<ggml_backend_dev_t> & gpus
         return;
     }
     const size_t n = 64u << 20;
-    double sum = 0, best = 0;
+    double sum = 0, best = 0, worst = 1e30;
     std::string log;
     for (ggml_backend_dev_t d : gpus) {
         ggml_backend_buffer_type_t hb = ggml_backend_dev_host_buffer_type(d);
@@ -3016,14 +3016,15 @@ void llama_moe_cache_prefill_decide(const std::vector<ggml_backend_dev_t> & gpus
         if (hbuf) { ggml_backend_buffer_free(hbuf); }
         if (dbuf) { ggml_backend_buffer_free(dbuf); }
         g_early_gbs.push_back({ d, gbs });
-        sum += gbs; best = std::max(best, gbs);
+        sum += gbs; best = std::max(best, gbs); worst = std::min(worst, gbs);
         log += tr_fmt(" %s %.1f", ggml_backend_dev_name(d), gbs);
     }
     if (getenv("LLAMA_PREFILL_SPLIT")) {
         return;
     }
     const double speedup = best > 0 ? sum / best : 1.0;
-    g_split_enabled = speedup >= 1.25;
+    // only GPUs on equally fast links (x16 with x16): a x4 or chipset-shared link (PC1 IQ3_S: 6.2 vs 25.5 GB/s, speedup 1.24x) never splits
+    g_split_enabled = speedup >= 1.25 && worst >= 0.7 * best;
     g_split_share   = g_split_enabled ? 1.0f : 0.0f;
     LLAMA_LOG_WARN("moe-cache: prefill links (GB/s):%s -> split's transfer speedup %.2fx: %s\n", log.c_str(), speedup,
         g_split_enabled ? "reserved, alpha measured on prompt batches" : "one GPU (the split's compute buffers would cost more cache)");
