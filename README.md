@@ -80,8 +80,8 @@ Stock = upstream b11235 (Ryzen 5 3600: `llama-completion`; laptop: b11261 `llama
 | 2x RTX 3090 (model fits in VRAM, no cache) [build 11509] | short | 97.4 / **161.8** | **114.1** / 154.0 | 1.17x / 0.95x |
 | | long | **3689** / **158.4** | 3144 / 151.7 | 0.85x / 0.96x |
 
-The CPU rows come from the AVX2 / AVX-512 VNNI kernels for 2-bit (Q2_0) experts; earlier builds ran those matmuls on a scalar fallback
-(CPU-only laptop: 5.79 -> 13.39 t/s). On the 3090s, where the model fits in VRAM, the fork is 4-5% behind stock on decode and 15% behind on a
+The CPU rows come from the AVX2 / AVX-512 VNNI kernels for Q2_0 (2-bit) weights: Q2_0 was the one dot-product type without an x86 SIMD kernel
+(scalar loop; CPU-only laptop: 5.79 -> 13.39 t/s). Q1_0 and IQ1_S / IQ1_M already had upstream kernels, so they are unchanged. On the 3090s, where the model fits in VRAM, the fork is 4-5% behind stock on decode and 15% behind on a
 long prompt (`llama-cli` against `llama-completion`, so part of the gap may be the tool); that is not fixed yet.
 
 **Predictive prefetch (first version, work in progress, first shipped in b11509).** A small learned predictor guesses which experts the next layers
