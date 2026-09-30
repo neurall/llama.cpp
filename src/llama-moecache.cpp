@@ -423,6 +423,7 @@ bool pread_full(int fd, void * dst, size_t n, size_t off) {
 // tunables, from LLAMA_MOE_CACHE_<NAME> at start; with LLAMA_MOE_CACHE_CTL=<file> also re-read from that file
 // (NAME=value lines, checked every 16 steps when it changes) so one server can A/B settings without a reload
 struct knobs_t {
+    double swap_frac = 0.25;  // upload time per step as a fraction of the token time (the swap budget); tuned live
     double hot_frac  = 0;     // tier: pin the always-hot set on slower links; off: never won in A/B
     double sticky    = 0.0; // off: +1.6% on GLM chat, within noise
     double slow_stay = 0;     // tier min stay (steps); off: never won in A/B
@@ -459,7 +460,7 @@ struct knobs_t {
 
 bool knob_set(knobs_t & k, const std::string & name, double v) {
     static const std::pair<const char *, double knobs_t::*> fields[] = {
-        { "HOT_FRAC", &knobs_t::hot_frac }, { "STICKY", &knobs_t::sticky }, { "SLOW_STAY", &knobs_t::slow_stay },
+        { "SWAP_FRAC", &knobs_t::swap_frac }, { "HOT_FRAC", &knobs_t::hot_frac }, { "STICKY", &knobs_t::sticky }, { "SLOW_STAY", &knobs_t::slow_stay },
         { "MARGIN", &knobs_t::margin }, { "BUDGET", &knobs_t::budget }, { "CPU_GBS", &knobs_t::cpu_gbs }, { "LINK", &knobs_t::link },
         { "GATE", &knobs_t::gate }, { "GATE_MAX_US", &knobs_t::gate_max_us }, { "DDR_GBS", &knobs_t::ddr_gbs },
         { "WAIT", &knobs_t::wait }, { "AUTO", &knobs_t::auto_tune },
@@ -486,7 +487,7 @@ std::set<std::string> & user_knobs() {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF", "AUTO_L3", "SLOTKEEP", "SELF_TUNE", "PREDICT", "JIT" }) {
+        for (const char * n : { "SWAP_FRAC", "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF", "AUTO_L3", "SLOTKEEP", "SELF_TUNE", "PREDICT", "JIT" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
                 user_knobs().insert(n);
@@ -2508,8 +2509,8 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
             if (n > 0) {
                 mc->tuned_text = txt;
-                mc->lv_rest = 4096; mc->lv_rest_until = 4096;
-                LLAMA_LOG_WARN("moe-cache: self-tune: %d saved settings loaded from the profile, next check after 4096 tokens\n", n);
+                mc->lv_rest = 16384; mc->lv_rest_until = 16384;
+                LLAMA_LOG_WARN("moe-cache: self-tune: %d saved settings loaded from the state file, next check after 16384 tokens\n", n);
             }
         }
         if (const char * c = getenv("LLAMA_MOE_CACHE_CTL")) {
@@ -3089,6 +3090,7 @@ static void self_tune(moe_cache * mc) {
     };
     static const std::vector<tunable> T_swap = {
         { "GATE",     &knobs_t::gate,      { 0, 3 } },
+        { "SWAP_FRAC", &knobs_t::swap_frac, { 0.25, 0.5 }, true }, // the upload budget: more uploads need DDR headroom, which differs per machine
         { "WAIT",     &knobs_t::wait,      { 0, 1 } },
         { "BIG",      &knobs_t::big,       { 0, 1 } },
     };
@@ -3111,7 +3113,8 @@ static void self_tune(moe_cache * mc) {
         return t;
     }();
     const size_t MIN_S = 3, MAX_S = 8;
-    const uint64_t REST_MIN = 4096, REST_MAX = 65536;
+    // a cycle costs ~2k tokens per state-carrying knob (half of them on the worse candidate): rest long enough to keep that under ~10%
+    const uint64_t REST_MIN = 16384, REST_MAX = 131072;
     auto begin = [&](int k) {
         mc->lv_k = k; mc->lv_c = (int) (mc->lv_cycle % T[k].vals.size());
         mc->lv_slice_len = T[k].slow ? 320 : 36; mc->lv_warm = T[k].slow ? 96 : 4;
@@ -3274,10 +3277,7 @@ void llama_moe_cache_step() {
 
     // swap budget for this step, from measured costs: keep upload time within
     // LLAMA_MOE_CACHE_SWAP_FRAC of the token time, minus what is still queued
-    static const double frac = [] {
-        const char * f = getenv("LLAMA_MOE_CACHE_SWAP_FRAC");
-        return f ? atof(f) : 0.25;
-    }();
+    const double frac = knobs().swap_frac;
     int budget_total;
     {
         std::lock_guard<std::mutex> wlk(mc->wmtx);
