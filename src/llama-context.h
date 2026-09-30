@@ -119,7 +119,7 @@ struct llama_context {
 
     // decode thread-count autotune (single-token decode only): A/B slices of candidate thread counts on measured token time
     void set_thread_autotune(bool on);
-    void set_batch_thread_autotune(bool on);
+    void set_batch_thread_autotune(bool on, int32_t n_max);
 
     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);
 
@@ -436,6 +436,7 @@ private:
         std::vector<std::vector<double>> slice;      // [candidate][round] us/token
         int    pending = -1;
         int    hold = 0, hold_len = 4;               // full batches to wait before the next cycle
+        int    n_max = 0;                            // threads the batch pool has
     } thrb;
     void thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens);
     mutable int64_t n_queued_tokens    = 0;

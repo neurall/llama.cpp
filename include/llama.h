@@ -1110,7 +1110,8 @@ extern "C" {
     // decode thread-count autotune (A/B slices on measured token time; LLAMA_THREAD_AUTOTUNE=0 off)
     LLAMA_API void llama_set_thread_autotune(struct llama_context * ctx, bool on);
     // same for the batch (prompt) thread count, on full prompt batches scored in tokens/s; off unless asked
-    LLAMA_API void llama_set_batch_thread_autotune(struct llama_context * ctx, bool on);
+    // n_max: the size of the attached batch thread pool (the most threads a candidate may use), 0 = the current count
+    LLAMA_API void llama_set_batch_thread_autotune(struct llama_context * ctx, bool on, int32_t n_max);
 
     // Get the number of threads used for generation of a single token.
     LLAMA_API int32_t llama_n_threads(struct llama_context * ctx);

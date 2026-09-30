@@ -459,6 +459,7 @@ struct common_params {
     int32_t n_moe_cache_slots     = -2;   // GPU cache slots per host-resident MoE expert layer (0 = disabled, -1 = auto size, -2 = on when a MoE model does not fit VRAM)
     int32_t n_moe_cache_inserts   = 2;    // max expert uploads per layer per decode step
     int32_t n_moe_cache_window    = 64;   // tokens of recent expert usage the cache scores by
+    bool threads_batch_set = false;       // -tb was given: the batch thread count is the user's, never tuned
     std::string moe_opts;                 // --moe NAME=value,... tuner knobs, handed to the engine
     int32_t n_moe_predict         = 0;    // router prediction: prefetch confident experts among the top M (0 = off)
     int32_t n_moe_predict_train   = 0;    // train the learned predictor every N decoded tokens (0 = frozen)

@@ -1260,11 +1260,12 @@ void llama_context::set_thread_autotune(bool on) {
     thr.hold = 512; // let the first tokens run before the first cycle
 }
 
-void llama_context::set_batch_thread_autotune(bool on) {
+void llama_context::set_batch_thread_autotune(bool on, int32_t n_max) {
     const char * e = getenv("LLAMA_THREAD_AUTOTUNE");
     if (e && atoi(e) == 0) { on = false; }
-    thrb.on   = on;
-    thrb.base = (int) cparams.n_threads_batch;
+    thrb.on    = on;
+    thrb.n_max = n_max;
+    thrb.base  = (int) cparams.n_threads_batch;
     thrb.hold = 2;  // the first full batches run on the default
 }
 
@@ -1281,8 +1282,8 @@ void llama_context::thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens) {
         if (thrb.hold > 0 && --thrb.hold > 0) { return; }
         const int hw   = std::max(2, (int) std::thread::hardware_concurrency());
         const int base = thrb.base;
-        // an attached thread pool (llama-cli) has a fixed size: never ask for more threads than it has
-        const int cap = threadpool_batch ? base : hw;
+        // an attached thread pool has a fixed size: never ask for more threads than it has (the caller says how many)
+        const int cap = threadpool_batch ? std::max(base, thrb.n_max) : hw;
         std::vector<int> c = { base };
         for (int n : { base + 2, base + 4, hw }) {
             n = std::min(n, cap);
@@ -4184,8 +4185,8 @@ void llama_set_thread_autotune(llama_context * ctx, bool on) {
     ctx->set_thread_autotune(on);
 }
 
-void llama_set_batch_thread_autotune(llama_context * ctx, bool on) {
-    ctx->set_batch_thread_autotune(on);
+void llama_set_batch_thread_autotune(llama_context * ctx, bool on, int32_t n_max) {
+    ctx->set_batch_thread_autotune(on, n_max);
 }
 
 void llama_set_n_threads(llama_context * ctx, int32_t n_threads, int32_t n_threads_batch) {

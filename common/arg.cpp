@@ -1526,6 +1526,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "number of threads to use during batch and prompt processing (default: same as --threads)",
         [](common_params & params, int value) {
             params.cpuparams_batch.n_threads = value;
+            params.threads_batch_set = true;
             if (params.cpuparams_batch.n_threads <= 0) {
                 params.cpuparams_batch.n_threads = std::thread::hardware_concurrency();
             }

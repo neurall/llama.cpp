@@ -1746,8 +1746,9 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     llama_context * lctx = llama_init_from_model(model, cparams);
     if (lctx && params.cpuparams.auto_threads) {
         llama_set_thread_autotune(lctx, true); // the count came from the default, not from the user: tune it on measured decode time
-        if (params.cpuparams_batch.n_threads == -1) {
-            llama_set_batch_thread_autotune(lctx, true); // likewise the batch count, on measured prompt batches
+        if (!params.threads_batch_set) {
+            // likewise the batch count, on measured prompt batches, up to the logical cores (the batch pool is created that big)
+            llama_set_batch_thread_autotune(lctx, true, (int32_t) std::thread::hardware_concurrency());
         }
     }
     if (lctx == NULL) {
@@ -2194,6 +2195,11 @@ void common_threadpools::init(llama_context * ctx, const common_params & params)
 
     struct ggml_threadpool_params tpp_batch =
             ggml_threadpool_params_from_cpu_params(params.cpuparams_batch);
+    if (params.cpuparams.auto_threads && !params.threads_batch_set) {
+        // the batch tuner may use up to the logical cores: size the batch pool for it, so it differs from the decode pool
+        // (graph_compute uses n_threads_batch of them, the rest idle)
+        tpp_batch.n_threads = std::max(tpp_batch.n_threads, (int) std::thread::hardware_concurrency());
+    }
     struct ggml_threadpool_params tpp =
             ggml_threadpool_params_from_cpu_params(params.cpuparams);
 
