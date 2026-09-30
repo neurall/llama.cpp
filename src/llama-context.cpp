@@ -1297,8 +1297,10 @@ void llama_context::detach_threadpool() {
 
 // Decode thread autotune. The default count is a formula (cores minus one per GPU); the best count depends on the CPU, its
 // memory and how much of the model runs on it. Every `hold` tokens: candidates {base, base-2, base+2} in interleaved
-// 32-token slices (3 rounds, 8 warm-up tokens each), the best replaces the base if it is faster by 1.5% and 2 standard
-// errors; the interval doubles (4096 .. 65536 tokens) while the base is confirmed. LLAMA_THREAD_AUTOTUNE=0 turns it off.
+// 32-token slices (3 rounds, 8 warm-up tokens each). Decode times are noisy and correlated, so the decision uses slice means
+// paired by round: a candidate must beat the base by 3% in EVERY round, the cycle is void when the base's own slices differ by
+// more than 25%, and a candidate must win two cycles in a row before it replaces the base. The interval doubles (4096 ..
+// 65536 tokens) while the base is confirmed. LLAMA_THREAD_AUTOTUNE=0 turns it off.
 void llama_context::set_thread_autotune(bool on) {
     const char * e = getenv("LLAMA_THREAD_AUTOTUNE");
     if (e && atoi(e) == 0) { on = false; }
@@ -1326,32 +1328,45 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         if (hi != base) { c.push_back(hi); }
         if (c.size() < 2) { thr.hold = thr.hold_len; return; }
         thr.cand = c; thr.slot = 0; thr.tok = 0; thr.warm = 8;
-        thr.sum.assign(c.size(), 0.0); thr.sum2.assign(c.size(), 0.0); thr.cnt.assign(c.size(), 0);
+        thr.cur_sum.assign(1, 0.0);
+        thr.slice.assign(c.size(), {});
         set(c[0]);
         return;
     }
     if (thr.warm > 0) { --thr.warm; return; }
-    const size_t k = (size_t) thr.slot % thr.cand.size();
-    thr.sum[k] += (double) dt_us; thr.sum2[k] += (double) dt_us*(double) dt_us; thr.cnt[k]++;
+    thr.cur_sum[0] += (double) dt_us;
     if (++thr.tok < 32) { return; }
-    thr.tok = 0; thr.warm = 8;
+    const size_t k = (size_t) thr.slot % thr.cand.size();
+    thr.slice[k].push_back(thr.cur_sum[0]/32.0);
+    thr.cur_sum[0] = 0.0; thr.tok = 0; thr.warm = 8;
     if (++thr.slot < (int) thr.cand.size()*3) {
         set(thr.cand[(size_t) thr.slot % thr.cand.size()]);
         return;
     }
-    // decide
-    auto mean = [&](size_t i) { return thr.sum[i]/std::max(1, thr.cnt[i]); };
-    auto se   = [&](size_t i) { const double n = std::max(2, thr.cnt[i]); const double m = mean(i); return std::sqrt(std::max(0.0, thr.sum2[i]/n - m*m)/n); };
-    size_t best = 0;
-    for (size_t i = 1; i < thr.cand.size(); ++i) { if (mean(i) < mean(best)) { best = i; } }
-    const bool win = best != 0 && mean(best) < 0.985*mean(0) && mean(0) - mean(best) > 2.0*std::sqrt(se(0)*se(0) + se(best)*se(best));
-    LLAMA_LOG_INFO("%s: thread autotune: base %d %.2f ms/token%s -> %d\n", __func__, thr.cand[0], mean(0)/1000.0,
-            [&] { static thread_local char b[160]; std::string t; for (size_t i = 1; i < thr.cand.size(); ++i) { t += " | " + std::to_string(thr.cand[i]) + ": " + std::to_string(mean(i)/1000.0).substr(0, 5); } snprintf(b, sizeof b, "%s", t.c_str()); return (const char *) b; }(),
-            win ? thr.cand[best] : thr.cand[0]);
-    if (win) { thr.base = thr.cand[best]; thr.hold_len = 4096; } else { thr.hold_len = std::min(thr.hold_len*2, 65536); }
+    // decide on paired slice means
+    auto mean = [&](size_t i) { double m = 0; for (double x : thr.slice[i]) { m += x; } return m/std::max<size_t>(1, thr.slice[i].size()); };
+    const auto & b0 = thr.slice[0];
+    const double bmin = *std::min_element(b0.begin(), b0.end()), bmax = *std::max_element(b0.begin(), b0.end());
+    const bool noisy = bmax > 1.25*bmin;
+    int best = -1;
+    if (!noisy) {
+        for (size_t i = 1; i < thr.cand.size(); ++i) {
+            bool all = thr.slice[i].size() == b0.size();
+            for (size_t r = 0; all && r < b0.size(); ++r) { all = thr.slice[i][r] < 0.97*b0[r]; }
+            if (all && (best < 0 || mean(i) < mean((size_t) best))) { best = (int) i; }
+        }
+    }
+    const int cand_best = best >= 0 ? thr.cand[(size_t) best] : -1;
+    const bool adopt = cand_best >= 0 && cand_best == thr.pending;
+    std::string msg;
+    for (size_t i = 1; i < thr.cand.size(); ++i) { msg += " | " + std::to_string(thr.cand[i]) + ": " + std::to_string(mean(i)/1000.0).substr(0, 5); }
+    LLAMA_LOG_INFO("%s: thread autotune: base %d %.2f ms/token%s%s -> %d%s\n", __func__, thr.cand[0], mean(0)/1000.0, msg.c_str(),
+            noisy ? " (noisy, void)" : "", adopt ? cand_best : thr.cand[0], (cand_best >= 0 && !adopt) ? " (leads, confirming)" : "");
+    if (adopt) { thr.base = cand_best; thr.hold_len = 4096; thr.pending = -1; thr.hold = thr.hold_len; }
+    else if (cand_best >= 0) { thr.pending = cand_best; thr.hold = 512; }   // second cycle soon
+    else { thr.pending = -1; thr.hold_len = noisy ? 4096 : std::min(thr.hold_len*2, 65536); thr.hold = noisy ? 1024 : thr.hold_len; }
     set(thr.base);
     thr.cand.clear();
-    thr.hold = thr.hold_len;
 }
 
 void llama_context::set_n_threads(int32_t n_threads, int32_t n_threads_batch) {

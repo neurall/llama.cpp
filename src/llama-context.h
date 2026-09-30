@@ -415,8 +415,9 @@ private:
         int    base = 0;                 // current best count
         std::vector<int> cand;           // candidates of this cycle (base first)
         int    slot = 0, tok = 0, warm = 0, hold = 0, hold_len = 4096;
-        std::vector<double> sum, sum2;
-        std::vector<int>    cnt;
+        std::vector<double> cur_sum;                 // running sum of the current slice
+        std::vector<std::vector<double>> slice;      // [candidate][round] slice means (us/token)
+        int    pending = -1;                         // candidate that won the previous cycle (needs a second win)
     } thr;
     void thread_tune_feed(int64_t dt_us);
     mutable int64_t n_queued_tokens    = 0;
