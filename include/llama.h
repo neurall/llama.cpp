@@ -1141,6 +1141,9 @@ extern "C" {
     // auto size sees the VRAM left after models loaded later (speculative draft, mmproj)
     LLAMA_API void llama_moe_cache_defer(struct llama_context * ctx, bool defer);
 
+    // Expert cache tuning knobs as "NAME=value,NAME=value" (MARGIN, GATE, WAIT, BIG, ...; see --moe). A knob named here is never self-tuned.
+    LLAMA_API void llama_moe_set_options(const char * opts);
+
     // One flat INI file for what the engine learns per model (hot experts, tuner decisions, MoE placement): [section] key = value.
     // LLAMA_MOE_STATE=<file> moves it, =0 turns it off. The section of the running model is set once with llama_state_set_model().
     LLAMA_API bool llama_state_get(const char * section, const char * key, char * value, size_t n); // false: missing / off / too small

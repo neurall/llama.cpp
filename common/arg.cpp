@@ -2552,37 +2552,31 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE"));
     add_opt(common_arg(
-        {"--moe-expert-cache-inserts"}, "N",
-        string_format("max expert uploads per layer per decode step for the MoE expert cache (default: %d)", params.n_moe_cache_inserts),
-        [](common_params & params, int value) {
-            params.n_moe_cache_inserts = value;
-        }
-    ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE_INSERTS"));
-    add_opt(common_arg(
-        {"--moe-cache-window"}, "N",
-        string_format("tokens of recent expert usage the MoE expert cache scores by, next to lifetime usage (default: %d)", params.n_moe_cache_window),
-        [](common_params & params, int value) {
-            params.n_moe_cache_window = value;
-        }
-    ).set_env("LLAMA_ARG_MOE_CACHE_WINDOW"));
-    add_opt(common_arg(
-        {"--moe-predict"}, "M",
-        "MoE expert cache: predict the next layer's experts and prefetch confident ones among the top M (default: 0 = off)",
-        [](common_params & params, int value) {
-            params.n_moe_predict = value;
-        }
-    ));
-    add_opt(common_arg(
-        {"--lrn-prd"}, "N",
-        "MoE expert cache: train the learned router predictor every N decoded tokens (1 while untrained, raise as it learns; 0 = frozen). "
-        "Implies --moe-predict 8. Weights persist in the cache dir",
-        [](common_params & params, int value) {
-            params.n_moe_predict_train = value;
-            if (params.n_moe_predict <= 0) {
-                params.n_moe_predict = 8;
+        {"--moe"}, "KEY=VAL,...",
+        "MoE expert cache options, comma separated. inserts=N (max expert uploads per layer and decode step), window=N (tokens of recent usage "
+        "the cache scores by, default 64), predict=M (prefetch confident experts among the top M predicted for the next layers, 0 = off), "
+        "train=N (train the learned predictor every N decoded tokens; implies predict=8), or any tuner knob: MARGIN, GATE, WAIT, BIG, "
+        "SWAP_FRAC, ... A knob given here is never self-tuned",
+        [](common_params & params, const std::string & value) {
+            for (size_t pos = 0; pos < value.size();) {
+                const size_t comma = value.find(',', pos);
+                const std::string kv = value.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+                pos = comma == std::string::npos ? value.size() : comma + 1;
+                const size_t eq = kv.find('=');
+                if (eq == std::string::npos) {
+                    throw std::invalid_argument("--moe: expected KEY=VAL, got '" + kv + "'");
+                }
+                std::string key = kv.substr(0, eq);
+                for (char & c : key) { c = (char) tolower((unsigned char) c); }
+                const int v = atoi(kv.c_str() + eq + 1);
+                if      (key == "inserts") { params.n_moe_cache_inserts = v; }
+                else if (key == "window")  { params.n_moe_cache_window  = v; }
+                else if (key == "predict") { params.n_moe_predict       = v; }
+                else if (key == "train")   { params.n_moe_predict_train = v; if (params.n_moe_predict <= 0) { params.n_moe_predict = 8; } }
+                else { params.moe_opts += (params.moe_opts.empty() ? "" : ",") + kv; } // a tuner knob: the engine checks the name
             }
         }
-    ));
+    ).set_env("LLAMA_ARG_MOE"));
     if (ex == LLAMA_EXAMPLE_SERVER) {
         // this is to make sure this option appears in the server-specific section of the help message
         add_opt(common_arg(

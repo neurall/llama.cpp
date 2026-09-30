@@ -21,6 +21,7 @@
 #include <cstdarg>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <chrono>
 #include <thread>
@@ -476,12 +477,19 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
     return false;
 }
 
+// knobs the user set (LLAMA_MOE_CACHE_<NAME> or --moe NAME=value): the self-tuner and the saved tuner state leave them alone
+std::set<std::string> & user_knobs() {
+    static std::set<std::string> s;
+    return s;
+}
+
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
         for (const char * n : { "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF", "AUTO_L3", "SLOTKEEP", "SELF_TUNE", "PREDICT", "JIT" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
+                user_knobs().insert(n);
             }
         }
         return r;
@@ -2496,7 +2504,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 const size_t eq = line.find('=');
                 if (eq == std::string::npos) { continue; }
                 const std::string name = line.substr(0, eq);
-                if (!getenv(("LLAMA_MOE_CACHE_" + name).c_str()) && knob_set(knobs(), name, atof(line.c_str() + eq + 1))) { n++; }
+                if (!user_knobs().count(name) && knob_set(knobs(), name, atof(line.c_str() + eq + 1))) { n++; }
             }
             if (n > 0) {
                 mc->tuned_text = txt;
@@ -3090,7 +3098,7 @@ static void self_tune(moe_cache * mc) {
         const char * dm = getenv("LLAMA_MOE_CACHE_DETERMINISTIC");
         const bool det_mode = dm && atoi(dm) != 0;
         auto add = [&](const tunable & x) {
-            if (!det_mode && !getenv((std::string("LLAMA_MOE_CACHE_") + x.name).c_str())) { t.push_back(x); }
+            if (!det_mode && !user_knobs().count(x.name)) { t.push_back(x); }
         };
         if (mc->pred_m > 0) {
             add({ "PREDICT", &knobs_t::predict, { 0, 1 } }); // first: the streaming knobs are tuned with it on
@@ -3748,6 +3756,26 @@ void llama_moe_cache_step() {
         for (auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
         LLAMA_LOG_DEBUG("moe-cache: steps=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " hit-rate=%.1f%%\n",
                 mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0);
+    }
+}
+
+void llama_moe_set_options(const char * opts) {
+    // "NAME=value,NAME=value": tuner knobs (MARGIN, GATE, WAIT, BIG, ...); a name given here is never tuned
+    knobs(); // environment first
+    std::string s = opts ? opts : "";
+    for (size_t pos = 0; pos < s.size();) {
+        const size_t comma = s.find(',', pos);
+        const std::string kv = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        pos = comma == std::string::npos ? s.size() : comma + 1;
+        const size_t eq = kv.find('=');
+        if (eq == std::string::npos) { continue; }
+        std::string name = kv.substr(0, eq);
+        for (char & c : name) { c = (char) toupper((unsigned char) c); }
+        if (knob_set(knobs(), name, atof(kv.c_str() + eq + 1))) {
+            user_knobs().insert(name);
+        } else {
+            LLAMA_LOG_WARN("moe-cache: --moe: unknown key '%s'\n", name.c_str());
+        }
     }
 }
 

@@ -1742,6 +1742,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         cparams.n_samplers = pimpl->samplers_seq_config.size();
     }
 
+    llama_moe_set_options(params.moe_opts.c_str());
     llama_context * lctx = llama_init_from_model(model, cparams);
     if (lctx && params.cpuparams.auto_threads) {
         llama_set_thread_autotune(lctx, true); // the count came from the default, not from the user: tune it on measured decode time
