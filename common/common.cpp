@@ -1723,6 +1723,9 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     llama_context * lctx = llama_init_from_model(model, cparams);
     if (lctx && params.cpuparams.auto_threads) {
         llama_set_thread_autotune(lctx, true); // the count came from the default, not from the user: tune it on measured decode time
+        if (params.cpuparams_batch.n_threads == -1) {
+            llama_set_batch_thread_autotune(lctx, true); // likewise the batch count, on measured prompt batches
+        }
     }
     if (lctx == NULL) {
         COM_ERR("failed to create context with model '%s'\n", params.model.path.c_str());

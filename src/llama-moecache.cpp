@@ -342,6 +342,9 @@ struct moe_cache {
     int      cpu_sat_threads = 0; // startup probe: reader threads that reach 95% of the CPU's RAM read rate
     // SELF_TUNE=1 (self_tune): the knob under test, its candidate in use, the running slice, per-candidate slice means
     int      lv_k = -1, lv_c = 0;
+    int64_t  lv_slice_len = 36, lv_warm = 4; // slice length and skipped tokens of the knob under test (state-carrying knobs need long ones)
+    std::string tuned_text;        // the self-tuner's decisions (NAME=value lines), kept in the profile file's footer: the next start begins from them
+    uint64_t lv_cycle = 0;         // cycles finished: the candidate order rotates so no candidate always runs first (cold cache)
     int64_t  lv_slice_n = 0;
     double   lv_slice_sum = 0;
     uint64_t lv_rest_until = 0;
@@ -588,7 +591,29 @@ void profile_save(const moe_cache * mc) {
         fwrite(&n, sizeof(n), 1, f);
         fwrite(h.data(), 1, n, f);
     }
+    // footer: the self-tuner's decisions as text, [text][u32 length]["TUN1"], so the loader finds it from the end of the file
+    if (!mc->tuned_text.empty()) {
+        const uint32_t len = (uint32_t) mc->tuned_text.size(), tun_magic = 0x314e5554; // "TUN1"
+        fwrite(mc->tuned_text.data(), 1, len, f);
+        fwrite(&len, sizeof(len), 1, f);
+        fwrite(&tun_magic, sizeof(tun_magic), 1, f);
+    }
     fclose(f);
+}
+
+// the tuner's decisions from the profile file's footer (empty when there is none)
+std::string tuned_read(const std::string & path) {
+    std::string txt;
+    if (FILE * f = path.empty() ? nullptr : fopen(path.c_str(), "rb")) {
+        uint32_t tail[2] = {};
+        if (fseek(f, -(long) sizeof(tail), SEEK_END) == 0 && fread(tail, sizeof(tail), 1, f) == 1 && tail[1] == 0x314e5554 && tail[0] > 0 && tail[0] < (1u << 16) &&
+                fseek(f, -(long) (sizeof(tail) + tail[0]), SEEK_END) == 0) {
+            txt.resize(tail[0]);
+            if (fread(&txt[0], 1, tail[0], f) != tail[0]) { txt.clear(); }
+        }
+        fclose(f);
+    }
+    return txt;
 }
 
 // not evictable: sticky, or cached on a slow-link layer for less than LLAMA_MOE_CACHE_SLOW_STAY steps (default 1024):
@@ -2490,6 +2515,28 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         });
 
         mc->profile = profile_path(model);
+        {
+            // decisions of the last self-tune on this machine for this model (the profile file's footer): start from them (an explicit
+            // LLAMA_MOE_CACHE_<NAME> wins) and check again after a while instead of exploring right away
+            const char * te = getenv("LLAMA_MOE_CACHE_TUNED");
+            const std::string txt = !te || atoi(te) != 0 ? tuned_read(mc->profile) : "";
+            int n = 0;
+            size_t pos = 0;
+            while (pos < txt.size()) {
+                const size_t nl = txt.find('\n', pos);
+                const std::string line = txt.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+                pos = nl == std::string::npos ? txt.size() : nl + 1;
+                const size_t eq = line.find('=');
+                if (eq == std::string::npos) { continue; }
+                const std::string name = line.substr(0, eq);
+                if (!getenv(("LLAMA_MOE_CACHE_" + name).c_str()) && knob_set(knobs(), name, atof(line.c_str() + eq + 1))) { n++; }
+            }
+            if (n > 0) {
+                mc->tuned_text = txt;
+                mc->lv_rest = 4096; mc->lv_rest_until = 4096;
+                LLAMA_LOG_WARN("moe-cache: self-tune: %d saved settings loaded from the profile, next check after 4096 tokens\n", n);
+            }
+        }
         if (const char * c = getenv("LLAMA_MOE_CACHE_CTL")) {
             mc->ctl = c;
         }
@@ -3058,7 +3105,9 @@ static void apply_predict(moe_cache * mc) {
 }
 
 static void self_tune(moe_cache * mc) {
-    struct tunable { const char * name; double knobs_t::* f; std::vector<double> vals; };
+    // slow: the knob changes what the cache holds, and its effect builds up over hundreds of tokens, so a candidate needs a long
+    // slice (its first tokens run on the previous candidate's contents) instead of the 36-token slice of the transient knobs
+    struct tunable { const char * name; double knobs_t::* f; std::vector<double> vals; bool slow = false; };
     // the streaming knobs only matter with the predictor; the swap path's are always live
     static const std::vector<tunable> T_stream = {
         { "STREAM_M", &knobs_t::stream_m,  { 4, 6, 8, 12 } },
@@ -3080,29 +3129,30 @@ static void self_tune(moe_cache * mc) {
         // on the machine (slow link, RAM headroom), so it is tuned live; a MARGIN set by the user and deterministic mode keep theirs
         const char * dm = getenv("LLAMA_MOE_CACHE_DETERMINISTIC");
         if (!getenv("LLAMA_MOE_CACHE_MARGIN") && !(dm && atoi(dm) != 0)) {
-            t.push_back({ "MARGIN", &knobs_t::margin, { 0, -2 } });
+            t.push_back({ "MARGIN", &knobs_t::margin, { 0, -2 }, true });
         }
         t.insert(t.end(), T_swap.begin(), T_swap.end());
         return t;
     }();
-    const int64_t SLICE = 36, WARM = 4; const size_t MIN_S = 3, MAX_S = 8;
+    const size_t MIN_S = 3, MAX_S = 8;
     const uint64_t REST_MIN = 4096, REST_MAX = 65536;
     auto begin = [&](int k) {
-        mc->lv_k = k; mc->lv_c = 0;
+        mc->lv_k = k; mc->lv_c = (int) (mc->lv_cycle % T[k].vals.size());
+        mc->lv_slice_len = T[k].slow ? 320 : 36; mc->lv_warm = T[k].slow ? 96 : 4;
         mc->lv_samples.assign(T[k].vals.size(), {});
         mc->lv_slice_n = 0; mc->lv_slice_sum = 0;
-        knobs().*T[k].f = T[k].vals[0];
+        knobs().*T[k].f = T[k].vals[mc->lv_c];
         apply_predict(mc);
     };
     if (mc->lv_k < 0) {
         if (mc->n_steps >= mc->lv_rest_until) { begin(0); }
         return;
     }
-    if (mc->lv_slice_n < SLICE) {
+    if (mc->lv_slice_n < mc->lv_slice_len) {
         return;
     }
     const tunable & t = T[mc->lv_k];
-    mc->lv_samples[mc->lv_c].push_back(mc->lv_slice_sum / (double) (mc->lv_slice_n - WARM));
+    mc->lv_samples[mc->lv_c].push_back(mc->lv_slice_sum / (double) (mc->lv_slice_n - mc->lv_warm));
     mc->lv_slice_n = 0; mc->lv_slice_sum = 0;
     const size_t nv = t.vals.size();
     size_t n_min = SIZE_MAX;
@@ -3149,8 +3199,11 @@ static void self_tune(moe_cache * mc) {
                 mc->lv_rest = mc->lv_changed ? REST_MIN : std::min(REST_MAX, std::max(REST_MIN, 2*mc->lv_rest));
                 mc->lv_changed = false;
                 mc->lv_k = -1;
+                mc->lv_cycle++;
                 mc->lv_rest_until = mc->n_steps + mc->lv_rest;
                 LLAMA_LOG_WARN("moe-cache: self-tune: next check in %llu tokens\n", (unsigned long long) mc->lv_rest);
+                mc->tuned_text.clear();
+                for (const auto & tt : T) { mc->tuned_text += std::string(tt.name) + "=" + tr_fmt("%g\n", knobs().*tt.f); }
             }
             return;
         }
@@ -3267,7 +3320,7 @@ void llama_moe_cache_step() {
                     mc->ab_n[mc->ab_state]++;
                 }
                 if (knobs().self_tune != 0 && mc->lv_k >= 0 && !mc->last_prefill) {
-                    if (++mc->lv_slice_n > 4) { // the first tokens after a switch still run on the previous setting's slots
+                    if (++mc->lv_slice_n > mc->lv_warm) { // the first tokens after a switch still run on the previous setting's slots
                         mc->lv_slice_sum += dt;
                     }
                 }

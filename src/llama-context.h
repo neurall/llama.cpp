@@ -119,6 +119,7 @@ struct llama_context {
 
     // decode thread-count autotune (single-token decode only): A/B slices of candidate thread counts on measured token time
     void set_thread_autotune(bool on);
+    void set_batch_thread_autotune(bool on);
 
     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);
 
@@ -422,6 +423,21 @@ private:
         int    pending = -1;                         // candidate that won the previous cycle (needs a second win)
     } thr;
     void thread_tune_feed(int64_t dt_us);
+
+    // Batch (prompt) thread autotune: the same paired-slice test as the decode tuner, on full prompt batches scored in us/token.
+    // Prompt processing is compute-bound on the CPU side (unlike decode, which is memory-bound), so more threads than decode
+    // uses, up to the logical cores, often win. One batch per slice, 3 rounds per cycle, spread over as many prompts as it takes.
+    struct thread_tune_batch {
+        bool   on = false;
+        int    base = 0;
+        std::vector<int> cand;
+        int    slot = 0;
+        int64_t n_full = 0;                          // largest batch seen: only near-full batches are compared
+        std::vector<std::vector<double>> slice;      // [candidate][round] us/token
+        int    pending = -1;
+        int    hold = 0, hold_len = 4;               // full batches to wait before the next cycle
+    } thrb;
+    void thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens);
     mutable int64_t n_queued_tokens    = 0;
 
     mutable int32_t n_p_eval = 0; // number of tokens in eval calls for the prompt (with batch size > 1)

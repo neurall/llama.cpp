@@ -817,6 +817,7 @@ void llama_context::synchronize() {
         if (!cparams.no_perf) {
             t_p_eval_us += ggml_time_us() - t_compute_start_us;
         }
+        thread_tune_feed_batch(ggml_time_us() - t_compute_start_us, n_queued_tokens);
         n_p_eval += n_queued_tokens;
     }
 
@@ -1255,6 +1256,73 @@ void llama_context::set_thread_autotune(bool on) {
     thr.on   = on;
     thr.base = (int) cparams.n_threads;
     thr.hold = 512; // let the first tokens run before the first cycle
+}
+
+void llama_context::set_batch_thread_autotune(bool on) {
+    const char * e = getenv("LLAMA_THREAD_AUTOTUNE");
+    if (e && atoi(e) == 0) { on = false; }
+    thrb.on   = on;
+    thrb.base = (int) cparams.n_threads_batch;
+    thrb.hold = 2;  // the first full batches run on the default
+}
+
+void llama_context::thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens) {
+    if (!thrb.on || cparams.n_threads_batch < 2 || n_tokens < 64) {
+        return;
+    }
+    thrb.n_full = std::max(thrb.n_full, n_tokens);
+    if (n_tokens < thrb.n_full*9/10) {
+        return; // a short tail batch: its per-token time is not comparable
+    }
+    auto set = [&](int n) { cparams.n_threads_batch = (uint32_t) n; };
+    if (thrb.cand.empty()) {
+        if (thrb.hold > 0 && --thrb.hold > 0) { return; }
+        const int hw   = std::max(2, (int) std::thread::hardware_concurrency());
+        const int base = thrb.base;
+        // an attached thread pool (llama-cli) has a fixed size: never ask for more threads than it has
+        const int cap = threadpool_batch ? base : hw;
+        std::vector<int> c = { base };
+        for (int n : { base + 2, base + 4, hw }) {
+            n = std::min(n, cap);
+            if (n > base && std::find(c.begin(), c.end(), n) == c.end()) { c.push_back(n); }
+        }
+        if (c.size() < 2) { thrb.hold = thrb.hold_len; return; }
+        thrb.cand = c; thrb.slot = 0;
+        thrb.slice.assign(c.size(), {});
+        set(c[0]);
+        return;
+    }
+    // this batch ran on cand[slot % n]
+    const size_t k = (size_t) thrb.slot % thrb.cand.size();
+    thrb.slice[k].push_back((double) dt_us / (double) n_tokens);
+    if (++thrb.slot < (int) thrb.cand.size()*3) {
+        set(thrb.cand[(size_t) thrb.slot % thrb.cand.size()]);
+        return;
+    }
+    // decide on paired rounds: a candidate must beat the base by 3% in EVERY round; two winning cycles in a row to replace it
+    auto mean = [&](size_t i) { double m = 0; for (double x : thrb.slice[i]) { m += x; } return m/std::max<size_t>(1, thrb.slice[i].size()); };
+    const auto & b0 = thrb.slice[0];
+    const double bmin = *std::min_element(b0.begin(), b0.end()), bmax = *std::max_element(b0.begin(), b0.end());
+    const bool noisy = bmax > 1.25*bmin;
+    int best = -1;
+    if (!noisy) {
+        for (size_t i = 1; i < thrb.cand.size(); ++i) {
+            bool all = thrb.slice[i].size() == b0.size();
+            for (size_t r = 0; all && r < b0.size(); ++r) { all = thrb.slice[i][r] < 0.97*b0[r]; }
+            if (all && (best < 0 || mean(i) < mean((size_t) best))) { best = (int) i; }
+        }
+    }
+    const int cand_best = best >= 0 ? thrb.cand[(size_t) best] : -1;
+    const bool adopt = cand_best >= 0 && cand_best == thrb.pending;
+    std::string msg;
+    for (size_t i = 1; i < thrb.cand.size(); ++i) { msg += " | " + std::to_string(thrb.cand[i]) + ": " + std::to_string(1e6/mean(i)).substr(0, 6); }
+    LLAMA_LOG_INFO("%s: batch thread autotune: base %d %.1f tokens/s%s%s -> %d%s\n", __func__, thrb.cand[0], 1e6/mean(0), msg.c_str(),
+            noisy ? " (noisy, void)" : "", adopt ? cand_best : thrb.cand[0], (cand_best >= 0 && !adopt) ? " (leads, confirming)" : "");
+    if (adopt) { thrb.base = cand_best; thrb.pending = -1; thrb.hold_len = 8; thrb.hold = thrb.hold_len; }
+    else if (cand_best >= 0) { thrb.pending = cand_best; thrb.hold = 1; }   // confirm at the next full batch
+    else { thrb.pending = -1; thrb.hold_len = std::min(thrb.hold_len*2, 64); thrb.hold = thrb.hold_len; }
+    set(thrb.base);
+    thrb.cand.clear();
 }
 
 void llama_context::thread_tune_feed(int64_t dt_us) {
@@ -4109,6 +4177,10 @@ void llama_detach_threadpool(llama_context * ctx) {
 
 void llama_set_thread_autotune(llama_context * ctx, bool on) {
     ctx->set_thread_autotune(on);
+}
+
+void llama_set_batch_thread_autotune(llama_context * ctx, bool on) {
+    ctx->set_batch_thread_autotune(on);
 }
 
 void llama_set_n_threads(llama_context * ctx, int32_t n_threads, int32_t n_threads_batch) {
