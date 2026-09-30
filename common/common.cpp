@@ -1358,7 +1358,7 @@ void common_spec_auto(common_params & params) {
 // and generation time per token at exit; then the faster mode is kept (file in the cache dir). The cache is kept only when
 // its generation is not slower than stock and its prompt time per token is below LLAMA_MOE_AUTO_PREFILL_SLOWDOWN (2) x stock.
 // LLAMA_MOE_AUTO_MODE=stock|cache forces a mode, =retest forgets the decision.
-struct moe_auto_rec { bool have = false; double p_ms = 0, g_ms = 0; };
+struct moe_auto_rec { bool have = false; double p_ms = 0, g_ms = 0; int n = 0; }; // n: recorded runs
 static std::string g_moe_auto_file;  // decision file of this run (empty: auto choice not involved)
 static std::string g_moe_auto_mode;  // mode this run explores: "stock" or "cache" (empty: decided already)
 
@@ -1377,7 +1377,7 @@ static void moe_auto_read(const std::string & path, moe_auto_rec & st, moe_auto_
     while (f >> k) {
         if (k == "decided") { f >> decided; continue; }
         moe_auto_rec & r = k == "stock" ? st : ca;
-        f >> r.p_ms >> r.g_ms;
+        f >> r.p_ms >> r.g_ms >> r.n;
         r.have = true;
     }
 }
@@ -1487,8 +1487,9 @@ static void common_moe_cache_auto_impl(common_params & params) {
         std::string mode;
         if (f == "stock" || f == "cache") {
             mode = f;
-        } else if (!decided.empty()) {
-            mode = st.have && ca.have ? moe_auto_decide_for(st, ca, params) : decided;
+        } else if (st.n >= 2 && ca.n >= 2) {
+            // both placements measured on at least two runs (the first of each may be cold): decide for this request
+            mode = moe_auto_decide_for(st, ca, params);
             // keep recording this placement: a cold first run (page cache, mmap) is replaced by any faster later run
             g_moe_auto_file = path;
             g_moe_auto_mode = mode;
@@ -1501,11 +1502,12 @@ static void common_moe_cache_auto_impl(common_params & params) {
             const size_t est_gen = (size_t) moe_auto_est_gen(params);
             const bool prefill_heavy = est_prompt >= 3000 || est_prompt > 8 * est_gen;
             const std::string first = model_size * 10 > vram_free * 13 && !prefill_heavy ? "cache" : "stock";
-            mode = !st.have && !ca.have ? first : (st.have ? "cache" : "stock");
+            // measuring: the placement with fewer recorded runs (ties: the first), so each gets two runs before it decides
+            mode = st.n == ca.n ? first : (st.n < ca.n ? "stock" : "cache");
             g_moe_auto_file = path;
             g_moe_auto_mode = mode;
-            LOG_INF("%s: MoE placement: measuring %s this run (next run measures %s, then the faster one is kept; %s)\n", __func__,
-                mode.c_str(), (st.have || ca.have) ? "nothing more" : mode == "stock" ? "the expert cache" : "stock placement", path.c_str());
+            LOG_INF("%s: MoE placement: measuring %s this run (stock %d runs, cache %d runs recorded; both need 2 before the faster one is kept; %s)\n", __func__,
+                mode.c_str(), st.n, ca.n, path.c_str());
         }
         use_cache = mode != "stock";
     }
@@ -1944,9 +1946,10 @@ common_init_result::~common_init_result() {
     r.p_ms = r.have ? std::min(r.p_ms, p_ms) : p_ms;
     r.g_ms = r.have ? std::min(r.g_ms, g_ms) : g_ms;
     r.have = true;
+    r.n++;
     std::ofstream f(g_moe_auto_file, std::ios::trunc);
-    if (st.have) { f << "stock " << st.p_ms << " " << st.g_ms << "\n"; }
-    if (ca.have) { f << "cache " << ca.p_ms << " " << ca.g_ms << "\n"; }
+    if (st.have) { f << "stock " << st.p_ms << " " << st.g_ms << " " << st.n << "\n"; }
+    if (ca.have) { f << "cache " << ca.p_ms << " " << ca.g_ms << " " << ca.n << "\n"; }
     if (st.have && ca.have) {
         decided = moe_auto_decide(st, ca);
         f << "decided " << decided << "\n";
