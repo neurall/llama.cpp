@@ -1,6 +1,8 @@
 #include "llama-context.h"
+#include <thread>
 
 #include "llama-moecache.h"
+#include "llama-moestate.h"
 
 #include "ggml.h"
 #include "llama-arch.h"
@@ -16,6 +18,7 @@
 #include "llama-sampler.h"
 #include "llama.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
@@ -469,6 +472,16 @@ llama_context::llama_context(
             LLAMA_LOG_INFO("%s: pipeline parallelism enabled\n", __func__);
         }
 
+        if (cparams.moe_cache) {
+            // multi-GPU prefill split: decided (and reserved) before the first compute-buffer reserve
+            std::vector<ggml_backend_dev_t> gpus;
+            for (auto & backend : backends) {
+                ggml_backend_dev_t d = ggml_backend_get_device(backend.get());
+                if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpus.push_back(d); }
+            }
+            llama_moe_cache_prefill_decide(gpus);
+        }
+
         sched_reserve();
 
         // the expert cache starts on the first non-warmup decode (moe_cache_start), so auto
@@ -477,6 +490,8 @@ llama_context::llama_context(
         cparams.moe_cache_slots   = params.n_moe_cache_slots;
         cparams.moe_cache_inserts = params.n_moe_cache_inserts;
         cparams.moe_cache_window  = params.n_moe_cache_window > 0 ? params.n_moe_cache_window : 64;
+        cparams.moe_predict       = std::max(0, params.n_moe_predict);
+        cparams.moe_predict_train = std::max(0, params.n_moe_predict_train);
 
         if (!cparams.flash_attn) {
             if (ggml_is_quantized(params.type_v)) {
@@ -619,10 +634,7 @@ static int llama_graph_n_input_tensors(ggml_cgraph * gf) {
     }
 
     for (const auto & [tensor, nodes] : users) {
-        if (tensor->op != GGML_OP_NONE) {
-            LLAMA_LOG_WARN("%s: input tensor '%32s' has op %s, expected GGML_OP_NONE\n",
-                    __func__, tensor->name, ggml_op_name(tensor->op));
-        }
+        GGML_ASSERT(tensor->op == GGML_OP_NONE);
         for (const ggml_tensor * node : nodes) {
             LLAMA_LOG_DEBUG("%s: input tensor '%32s' [%s, ne = { %5" PRId64 ", %5" PRId64 ", %5" PRId64 ", %5" PRId64 " }] is used by node '%s' (%s)\n",
                     __func__, tensor->name, ggml_type_name(tensor->type),
@@ -802,6 +814,7 @@ void llama_context::synchronize() {
         if (!cparams.no_perf) {
             t_eval_us += ggml_time_us() - t_compute_start_us;
         }
+        thread_tune_feed(ggml_time_us() - t_compute_start_us);
         n_eval++;
     } else if (n_queued_tokens > 1) {
         if (!cparams.no_perf) {
@@ -1059,72 +1072,23 @@ float * llama_context::get_embeddings_nextn_ith(int32_t i) {
     }
 }
 
+// GLM5-Next MTP draft index sharing: not part of upstream's GLM5-Next (the MTP follow-up is PR #27917), so these are inert here
 bool llama_context::set_mtp_dsa_index_share(bool enabled) {
-    if (model.arch != LLM_ARCH_GLM5_NEXT || cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP || memory == nullptr) {
-        return false;
-    }
-
-    enabled = enabled && model.hparams.indexer_index_share_mtp;
-
-    auto * mem = static_cast<llama_memory_hybrid_idx *>(memory.get());
-    if (mem->get_mtp_dsa_index_share() != enabled) {
-        mem->set_mtp_dsa_index_share(enabled);
-        sched_need_reserve = true;
-    }
-
-    return enabled;
+    GGML_UNUSED(enabled);
+    return false;
 }
 
 bool llama_context::set_mtp_dsa_selection(const int32_t * data, size_t size) {
-    if (model.arch != LLM_ARCH_GLM5_NEXT || cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP || memory == nullptr) {
-        return false;
-    }
-
-    auto * mem = static_cast<llama_memory_hybrid_idx *>(memory.get());
-    if (!mem->get_mtp_dsa_index_share()) {
-        return false;
-    }
-
-    mem->set_mtp_dsa_selection(data, size);
-    return true;
+    GGML_UNUSED(data);
+    GGML_UNUSED(size);
+    return false;
 }
 
 const int32_t * llama_context::get_mtp_dsa_selection(size_t * size) {
     if (size != nullptr) {
         *size = 0;
     }
-    if (mtp_dsa_sel_raw.empty() || mtp_dsa_sel_raw.size() != mtp_dsa_sel_mask.size() || mtp_dsa_sel_width == 0) {
-        return nullptr;
-    }
-    GGML_ASSERT(memory != nullptr && model.arch == LLM_ARCH_GLM5_NEXT);
-    GGML_ASSERT(mtp_dsa_sel_raw.size() == mtp_dsa_sel_width*mtp_dsa_sel_seq.size());
-
-    auto * mem = static_cast<llama_memory_hybrid_idx *>(memory.get());
-    auto * mem_idx = mem->get_mem_idx();
-    GGML_ASSERT(mem_idx != nullptr);
-
-    mtp_dsa_sel.resize(mtp_dsa_sel_raw.size());
-    for (size_t row = 0; row < mtp_dsa_sel_seq.size(); ++row) {
-        const llama_seq_id seq_id = mtp_dsa_sel_seq[row];
-        GGML_ASSERT(seq_id >= 0);
-        const auto & cells = mem_idx->get_cells(seq_id);
-
-        for (size_t j = 0; j < mtp_dsa_sel_width; ++j) {
-            const size_t i = row*mtp_dsa_sel_width + j;
-            const int32_t cell = mtp_dsa_sel_raw[i];
-            if (mtp_dsa_sel_mask[i] != 0.0f) {
-                mtp_dsa_sel[i] = -1;
-                continue;
-            }
-            GGML_ASSERT(cell >= 0 && (uint32_t) cell < cells.size());
-            GGML_ASSERT(!cells.is_empty((uint32_t) cell) && cells.seq_has((uint32_t) cell, seq_id));
-            mtp_dsa_sel[i] = cells.pos_get((uint32_t) cell);
-        }
-    }
-    if (size != nullptr) {
-        *size = mtp_dsa_sel.size();
-    }
-    return mtp_dsa_sel.data();
+    return nullptr;
 }
 
 float * llama_context::get_embeddings_layer_inp(uint32_t lid) {
@@ -1282,6 +1246,201 @@ void llama_context::detach_threadpool() {
     this->threadpool_batch = nullptr;
 }
 
+// Decode thread autotune. The default count is a formula (cores minus one per GPU); the best count depends on the CPU, its
+// memory and how much of the model runs on it. Every `hold` tokens: candidates {base, base-2, base+2} in interleaved
+// 32-token slices (3 rounds, 8 warm-up tokens each). Decode times are noisy and correlated, so the decision uses slice means
+// paired by round: a candidate must beat the base in EVERY round (by half the base's own spread, 0.5-3%), the cycle is void when the base's own slices differ by
+// more than 25%, and a candidate must win two cycles in a row before it replaces the base. The interval doubles (4096 ..
+// 65536 tokens) while the base is confirmed. LLAMA_THREAD_AUTOTUNE=0 turns it off.
+// the tuned thread counts of this model on this machine are kept in the state file as "<default> <tuned>", valid while the default
+// is unchanged: a short session (one reply, no time for a cycle) starts from what an earlier one found
+static int threads_saved(const llama_model & model, const char * key, int dflt) {
+    std::string v;
+    int d = 0, t = 0;
+    return moe_state_get(moe_state_section(model), key, v) && sscanf(v.c_str(), "%d %d", &d, &t) == 2 && d == dflt && t >= 2 ? t : 0;
+}
+
+static void threads_save(const llama_model & model, const char * key, int dflt, int tuned) {
+    moe_state_set(moe_state_section(model), { { key, std::to_string(dflt) + " " + std::to_string(tuned) } });
+}
+
+void llama_context::set_thread_autotune(bool on) {
+    const char * e = getenv("LLAMA_THREAD_AUTOTUNE");
+    if (e && atoi(e) == 0) { on = false; }
+    thr.on    = on;
+    thr.base0 = (int) cparams.n_threads;
+    thr.base  = thr.base0;
+    thr.hold  = 40;  // the first tokens run on the default (the counter runs across requests)
+    // the thread pool is created for the default count after this call: a saved count above it cannot run, so only lower ones apply
+    if (on) {
+        if (const int s = threads_saved(model, "threads", thr.base0)) {
+            thr.base = std::min(s, thr.base0);
+            cparams.n_threads = (uint32_t) thr.base;
+        }
+    }
+}
+
+void llama_context::set_batch_thread_autotune(bool on, int32_t n_max) {
+    const char * e = getenv("LLAMA_THREAD_AUTOTUNE");
+    if (e && atoi(e) == 0) { on = false; }
+    thrb.on    = on;
+    thrb.n_max = n_max;
+    thrb.base0 = (int) cparams.n_threads_batch;
+    thrb.base  = thrb.base0;
+    if (on) {
+        if (const int s = threads_saved(model, "threads_batch", thrb.base0)) {
+            thrb.base = std::min(s, std::max(n_max, thrb.base0));
+            cparams.n_threads_batch = (uint32_t) thrb.base;
+        }
+    }
+    thrb.hold = 2;  // the first full batches run on the default
+}
+
+void llama_context::thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens) {
+    if (!thrb.on || cparams.n_threads_batch < 2 || n_tokens < 64) {
+        return;
+    }
+    thrb.n_full = std::max(thrb.n_full, n_tokens);
+    if (n_tokens < thrb.n_full*9/10) {
+        return; // a short tail batch: its per-token time is not comparable
+    }
+    auto set = [&](int n) { cparams.n_threads_batch = (uint32_t) n; };
+    if (thrb.cand.empty()) {
+        if (thrb.hold > 0 && --thrb.hold > 0) { return; }
+        const int hw   = std::max(2, (int) std::thread::hardware_concurrency());
+        const int base = thrb.base;
+        // an attached thread pool has a fixed size: never ask for more threads than it has (the caller says how many)
+        const int cap = threadpool_batch ? std::max(base, thrb.n_max) : hw;
+        std::vector<int> c = { base };
+        for (int n : { base - 2, base + 2, base + 4, hw }) {
+            n = std::min(n, cap);
+            if (n >= 2 && n != base && std::find(c.begin(), c.end(), n) == c.end()) { c.push_back(n); }
+        }
+        if (c.size() < 2) { thrb.hold = thrb.hold_len; return; }
+        thrb.cand = c; thrb.slot = 0;
+        thrb.slice.assign(c.size(), {});
+        set(c[0]);
+        return;
+    }
+    // this batch ran on cand[slot % n]
+    const size_t k = (size_t) thrb.slot % thrb.cand.size();
+    thrb.slice[k].push_back((double) dt_us / (double) n_tokens);
+    if (++thrb.slot < (int) thrb.cand.size()*3) {
+        set(thrb.cand[(size_t) thrb.slot % thrb.cand.size()]);
+        return;
+    }
+    // decide on paired rounds: a candidate must beat the base in EVERY round; two winning cycles in a row to replace it
+    auto mean = [&](size_t i) { double m = 0; for (double x : thrb.slice[i]) { m += x; } return m/std::max<size_t>(1, thrb.slice[i].size()); };
+    const auto & b0 = thrb.slice[0];
+    const double bmin = *std::min_element(b0.begin(), b0.end()), bmax = *std::max_element(b0.begin(), b0.end());
+    const bool noisy = bmax > 1.25*bmin;
+    // same rule as the decode tuner: more threads must win in every round by the noise-scaled bar, fewer threads must not lose by more than 1%
+    int best = -1, fewest = -1;
+    const double win = std::min(0.03, std::max(0.005, 0.5*(bmax/bmin - 1))); // noise-scaled bar for more threads, 0.5% to 3%
+    if (!noisy) {
+        for (size_t i = 1; i < thrb.cand.size(); ++i) {
+            const bool fewer = thrb.cand[i] < thrb.cand[0];
+            bool all = thrb.slice[i].size() == b0.size();
+            for (size_t r = 0; all && r < b0.size(); ++r) { all = thrb.slice[i][r] < (fewer ? 1.01 : 1.0 - win)*b0[r]; }
+            if (!all) { continue; }
+            if (fewer) { if (fewest < 0 || thrb.cand[i] < thrb.cand[(size_t) fewest]) { fewest = (int) i; } }
+            else if (best < 0 || mean(i) < mean((size_t) best)) { best = (int) i; }
+        }
+    }
+    if (best < 0) { best = fewest; }
+    const int cand_best = best >= 0 ? thrb.cand[(size_t) best] : -1;
+    const bool adopt = cand_best >= 0 && cand_best == thrb.pending;
+    std::string msg;
+    for (size_t i = 1; i < thrb.cand.size(); ++i) { msg += " | " + std::to_string(thrb.cand[i]) + ": " + std::to_string(1e6/mean(i)).substr(0, 6); }
+    LLAMA_LOG_INFO("%s: batch thread autotune: base %d %.1f tokens/s%s%s -> %d%s\n", __func__, thrb.cand[0], 1e6/mean(0), msg.c_str(),
+            noisy ? " (noisy, void)" : "", adopt ? cand_best : thrb.cand[0], (cand_best >= 0 && !adopt) ? " (leads, confirming)" : "");
+    if (adopt) { thrb.base = cand_best; thrb.pending = -1; thrb.hold_len = 8; thrb.hold = thrb.hold_len; threads_save(model, "threads_batch", thrb.base0, cand_best); }
+    else if (cand_best >= 0) { thrb.pending = cand_best; thrb.hold = 1; }   // confirm at the next full batch
+    else { thrb.pending = -1; thrb.hold_len = std::min(thrb.hold_len*2, 64); thrb.hold = thrb.hold_len; }
+    set(thrb.base);
+    thrb.cand.clear();
+}
+
+void llama_context::thread_tune_feed(int64_t dt_us) {
+    if (!thr.on || cparams.n_threads < 2) {
+        return;
+    }
+    auto set = [&](int n) { cparams.n_threads = (uint32_t) n; };
+    if (thr.cand.empty()) {
+        if (thr.hold > 0) {
+            if (--thr.hold > 0) { return; }
+        }
+        const int hw   = std::max(2, (int) std::thread::hardware_concurrency());
+        const int base = thr.base;
+        std::vector<int> c = { base };
+        // an attached thread pool (llama-cli) has a fixed size: never ask for more threads than it has
+        const int cap = (threadpool || threadpool_batch) ? base : hw;
+        const int lo = std::max(2, base - 2), hi = std::min(cap, base + 2), lo2 = std::max(2, base - 4);
+        if (lo != base) { c.push_back(lo); }
+        // a far lower count costs a slow slice per round: only when the nearer one looked close to the base
+        if (thr.try_lo2 && lo2 != lo && lo2 != base) { c.push_back(lo2); }
+        if (hi != base) { c.push_back(hi); }
+        if (c.size() < 2) { thr.hold = thr.hold_len; return; }
+        // the first cycle of a session is short (12-token slices, 3 skipped) so one-shot runs get a decision; later ones use 32 / 8
+        thr.slice_len = thr.cycles == 0 ? 12 : 32; thr.warm_len = thr.cycles == 0 ? 3 : 8;
+        thr.cand = c; thr.slot = 0; thr.tok = 0; thr.warm = thr.warm_len;
+        thr.cur_sum.assign(1, 0.0);
+        thr.slice.assign(c.size(), {});
+        set(c[0]);
+        return;
+    }
+    if (thr.warm > 0) { --thr.warm; return; }
+    thr.cur_sum[0] += (double) dt_us;
+    if (++thr.tok < thr.slice_len) { return; }
+    const size_t k = (size_t) thr.slot % thr.cand.size();
+    thr.slice[k].push_back(thr.cur_sum[0]/(double) thr.slice_len);
+    thr.cur_sum[0] = 0.0; thr.tok = 0; thr.warm = thr.warm_len;
+    if (++thr.slot < (int) thr.cand.size()*3) {
+        set(thr.cand[(size_t) thr.slot % thr.cand.size()]);
+        return;
+    }
+    // decide on paired slice means
+    auto mean = [&](size_t i) { double m = 0; for (double x : thr.slice[i]) { m += x; } return m/std::max<size_t>(1, thr.slice[i].size()); };
+    const auto & b0 = thr.slice[0];
+    const double bmin = *std::min_element(b0.begin(), b0.end()), bmax = *std::max_element(b0.begin(), b0.end());
+    const bool noisy = bmax > 1.25*bmin;
+    // more threads must win in every round by a noise-scaled bar (0.5-3%); fewer threads only must not lose by more than 1% (a tie favors fewer: less power,
+    // cores left for launches and uploads). The fastest winner with more threads beats the lowest count among the ties.
+    int best = -1, fewest = -1;
+    // the bar for more threads follows the measured noise: half the base's own round-to-round spread, between 0.5% and 3%
+    const double win = std::min(0.03, std::max(0.005, 0.5*(bmax/bmin - 1)));
+    if (!noisy) {
+        for (size_t i = 1; i < thr.cand.size(); ++i) {
+            const bool fewer = thr.cand[i] < thr.cand[0];
+            bool all = thr.slice[i].size() == b0.size();
+            for (size_t r = 0; all && r < b0.size(); ++r) { all = thr.slice[i][r] < (fewer ? 1.01 : 1.0 - win)*b0[r]; }
+            if (!all) { continue; }
+            if (fewer) { if (fewest < 0 || thr.cand[i] < thr.cand[(size_t) fewest]) { fewest = (int) i; } }
+            else if (best < 0 || mean(i) < mean((size_t) best)) { best = (int) i; }
+        }
+    }
+    if (best < 0) { best = fewest; }
+    thr.try_lo2 = false;
+    for (size_t i = 1; i < thr.cand.size(); ++i) {
+        if (thr.cand[i] >= thr.cand[0] || thr.slice[i].size() != b0.size()) { continue; }
+        bool close = true;
+        for (size_t r = 0; r < b0.size(); ++r) { close = close && thr.slice[i][r] < 1.03*b0[r]; }
+        thr.try_lo2 = thr.try_lo2 || close;
+    }
+    const int cand_best = best >= 0 ? thr.cand[(size_t) best] : -1;
+    const bool adopt = cand_best >= 0 && cand_best == thr.pending;
+    std::string msg;
+    for (size_t i = 1; i < thr.cand.size(); ++i) { msg += " | " + std::to_string(thr.cand[i]) + ": " + std::to_string(mean(i)/1000.0).substr(0, 5); }
+    LLAMA_LOG_INFO("%s: thread autotune: base %d %.2f ms/token%s%s -> %d%s\n", __func__, thr.cand[0], mean(0)/1000.0, msg.c_str(),
+            noisy ? " (noisy, void)" : "", adopt ? cand_best : thr.cand[0], (cand_best >= 0 && !adopt) ? " (leads, confirming)" : "");
+    if (adopt) { thr.base = cand_best; thr.hold_len = 4096; thr.pending = -1; thr.hold = thr.hold_len; threads_save(model, "threads", thr.base0, cand_best); }
+    else if (cand_best >= 0) { thr.pending = cand_best; thr.hold = 128; }   // second cycle soon
+    else { thr.pending = -1; thr.hold_len = noisy ? 4096 : std::min(thr.hold_len*2, 65536); thr.hold = noisy ? 1024 : thr.hold_len; }
+    set(thr.base);
+    thr.cycles++;
+    thr.cand.clear();
+}
+
 void llama_context::set_n_threads(int32_t n_threads, int32_t n_threads_batch) {
     LLAMA_LOG_DEBUG("%s: n_threads = %d, n_threads_batch = %d\n", __func__, n_threads, n_threads_batch);
 
@@ -1346,7 +1505,12 @@ void llama_context::set_causal_attn(bool value) {
 
     cparams.causal_attn = value;
 
-    sched_need_reserve = true;
+    // no scheduler reserve needed because graph shapes must not depend on causal_attn, a flip only rebuilds the graph
+    //sched_need_reserve = true;
+}
+
+bool llama_context::get_causal_attn() const {
+    return cparams.causal_attn;
 }
 
 void llama_context::set_warmup(bool value) {
@@ -1492,7 +1656,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
     const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
-    if (!graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams)) {
+    if (!graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable()) {
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
 
         // with pipeline parallelism, the previous graph_compute_async may still be running
@@ -1513,6 +1677,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         //const auto t_start_us = ggml_time_us();
 
         gf = model.build_graph(gparams);
+        llama_moe_cache_graph_built();
 
         //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
 
@@ -1795,7 +1960,8 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
 int llama_context::decode(const llama_batch_ext & batch_inp) {
     if (cparams.moe_cache && !cparams.moe_cache_started && !moe_cache_defer) {
         cparams.moe_cache_started = true;
-        llama_moe_cache_init(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots, cparams.moe_cache_window);
+        llama_moe_cache_init(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots, cparams.moe_cache_window,
+                cparams.moe_predict, cparams.moe_predict_train);
         sched_reserve(); // the compute graph now includes the cache chain
     }
     if (!memory) {
@@ -1983,6 +2149,17 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         }
 
         ggml_status status;
+
+        if (thrb.on) {
+            // batch thread tuner: the time from the start of the previous prompt ubatch to the start of this one is the previous one's cost
+            // (prompt-only batches are not synchronized one by one, so the compute time itself is not observable here)
+            const int64_t now = ggml_time_us();
+            if (thrb.last_tokens >= 64 && now - thrb.last_us < 20*1000*1000) {
+                thread_tune_feed_batch(now - thrb.last_us, thrb.last_tokens);
+            }
+            thrb.last_us = now;
+            thrb.last_tokens = ubatch.n_tokens > 1 ? ubatch.n_tokens : 0;
+        }
 
         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
 
@@ -2889,6 +3066,10 @@ public:
         buf_size -= size;
     }
 
+    void discard() override {
+        rinfos.clear();
+    }
+
     size_t n_bytes() override {
         return size_read;
     }
@@ -3239,6 +3420,11 @@ public:
         rinfos.push_back({tensor, ptr, size, offset});
     }
 
+    void discard() override {
+        rinfos.clear();
+        buf_size = 0;
+    }
+
     size_t n_bytes() override {
         return size_read;
     }
@@ -3285,6 +3471,7 @@ size_t llama_context::state_set_data(const uint8_t * src, size_t size) {
         return state_read_data(io);
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: error loading state: %s\n", __func__, err.what());
+        io.discard();
         return 0;
     }
 }
@@ -3358,6 +3545,7 @@ size_t llama_context::state_seq_set_data(llama_seq_id seq_id, const uint8_t * sr
         return state_seq_read_data(*io, seq_id, flags);
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: error loading state: %s\n", __func__, err.what());
+        io->discard();
         return 0;
     }
 }
@@ -3873,6 +4061,8 @@ llama_context_params llama_context_default_params() {
         /*.n_moe_cache_slots           =*/ 0,
         /*.n_moe_cache_inserts         =*/ 2,
         /*.n_moe_cache_window          =*/ 64,
+        /*.n_moe_predict               =*/ 0,
+        /*.n_moe_predict_train         =*/ 0,
         /*.cb_eval                     =*/ nullptr,
         /*.cb_eval_user_data           =*/ nullptr,
         /*.type_k                      =*/ GGML_TYPE_F16,
@@ -4055,6 +4245,14 @@ void llama_detach_threadpool(llama_context * ctx) {
     ctx->detach_threadpool();
 }
 
+void llama_set_thread_autotune(llama_context * ctx, bool on) {
+    ctx->set_thread_autotune(on);
+}
+
+void llama_set_batch_thread_autotune(llama_context * ctx, bool on, int32_t n_max) {
+    ctx->set_batch_thread_autotune(on, n_max);
+}
+
 void llama_set_n_threads(llama_context * ctx, int32_t n_threads, int32_t n_threads_batch) {
     ctx->set_n_threads(n_threads, n_threads_batch);
 }
@@ -4077,6 +4275,10 @@ void llama_set_embeddings(llama_context * ctx, bool embeddings) {
 
 void llama_set_causal_attn(llama_context * ctx, bool causal_attn) {
     ctx->set_causal_attn(causal_attn);
+}
+
+bool llama_get_causal_attn(const llama_context * ctx) {
+    return ctx->get_causal_attn();
 }
 
 void llama_set_warmup(llama_context * ctx, bool warmup) {
@@ -4543,6 +4745,8 @@ llama_perf_context_data llama_perf_context(const llama_context * ctx) {
     return data;
 }
 
+static void llama_log_tuning(const char * fn, const llama_context * ctx);
+
 void llama_perf_context_print(const llama_context * ctx) {
     const auto data = llama_perf_context(ctx);
 
@@ -4555,6 +4759,34 @@ void llama_perf_context_print(const llama_context * ctx) {
             __func__, data.t_eval_ms, data.n_eval, data.t_eval_ms / data.n_eval, 1e3 / data.t_eval_ms * data.n_eval);
     LLAMA_LOG_INFO("%s:       total time = %10.2f ms / %5d tokens\n", __func__, (t_end_ms - data.t_start_ms), (data.n_p_eval + data.n_eval));
     LLAMA_LOG_INFO("%s:    graphs reused = %10d\n", __func__, data.n_reused);
+    llama_log_tuning(__func__, ctx);
+}
+
+void llama_get_tuning_info(const llama_context * ctx, llama_tuning_info * info) {
+    *info = {};
+    info->margin = info->gate = info->wait = info->big = info->predict = info->self_tune = -1;
+    info->moe_slots_min = info->moe_slots_max = info->moe_layers = -1;
+    info->moe_active = llama_moe_cache_get_info(info);
+    info->n_threads       = (int32_t) ctx->get_cparams().n_threads;
+    info->n_threads_batch = (int32_t) ctx->get_cparams().n_threads_batch;
+    info->n_batch         = (int32_t) ctx->n_batch();
+    info->n_ubatch        = (int32_t) ctx->n_ubatch();
+}
+
+static void llama_log_tuning(const char * fn, const llama_context * ctx) {
+    llama_tuning_info t;
+    llama_get_tuning_info(ctx, &t);
+    if (t.moe_active) {
+        const uint64_t n = t.moe_hits + t.moe_misses;
+        LLAMA_LOG_INFO("%s:    moe cache = on, hit %.1f%% (%llu/%llu experts), %d layers, %d..%d slots/layer, %llu uploads\n", fn,
+                n ? 100.0*t.moe_hits/n : 0.0, (unsigned long long) t.moe_hits, (unsigned long long) n, t.moe_layers, t.moe_slots_min,
+                t.moe_slots_max, (unsigned long long) t.moe_uploads);
+        LLAMA_LOG_INFO("%s:    tuned     = margin %d, gate %d, wait %d, big %d, predict %d, self-tune %s\n", fn, t.margin, t.gate, t.wait, t.big,
+                t.predict, t.self_tune ? "on" : "off");
+    } else {
+        LLAMA_LOG_INFO("%s:    moe cache = off\n", fn);
+    }
+    LLAMA_LOG_INFO("%s:    threads   = %d decode / %d batch, batch %d, ubatch %d\n", fn, t.n_threads, t.n_threads_batch, t.n_batch, t.n_ubatch);
 }
 
 void llama_perf_context_reset(llama_context * ctx) {

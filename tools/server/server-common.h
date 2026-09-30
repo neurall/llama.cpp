@@ -300,6 +300,15 @@ std::vector<server_tokens> tokenize_input_prompts(
                                         bool parse_special,
                                         const mtmd_helper_init_opt & init_opt);
 
+// tokenize a single prompt, see tokenize_input_prompts() for the supported shapes
+server_tokens tokenize_input_subprompt(
+                                        const llama_vocab * vocab,
+                                        mtmd_context * mctx,
+                                        const json & json_prompt,
+                                        bool add_special,
+                                        bool parse_special,
+                                        const mtmd_helper_init_opt & init_opt);
+
 //
 // OAI utils
 //
@@ -329,6 +338,16 @@ json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */
     const server_chat_params & opt,
     std::vector<raw_buffer> & out_files);
+
+// used by /embeddings endpoint, content has the same format as a chat message content array
+server_tokens tokenize_oai_content_array(
+    const llama_vocab * vocab,
+    mtmd_context * mctx,
+    const server_chat_params & opt,
+    json content,
+    bool add_special,
+    bool parse_special,
+    const mtmd_helper_init_opt & init_opt);
 
 // TODO: move it to server-task.cpp
 json format_embeddings_response_oaicompat(
@@ -361,6 +380,25 @@ struct server_slot_stats {
     uint64_t n_draft_tokens      = 0;
     uint64_t n_draft_accepted    = 0;
     uint64_t n_draft_verif_steps = 0;
+
+    // engine state for the report: cache hit counters at the start of this request, and the tuning/state JSON of the report
+    uint64_t moe_hits0 = 0, moe_miss0 = 0;
+    json     tuning;
+
+    // snapshot at request start
+    void tuning_begin(const llama_tuning_info & t) { moe_hits0 = t.moe_hits; moe_miss0 = t.moe_misses; }
+    // at report time: MoE cache on/off and hit rate of this request and overall, the live tuned knobs, threads and batch sizes
+    void tuning_end(const llama_tuning_info & t) {
+        json m = { {"active", t.moe_active} };
+        if (t.moe_active) {
+            const uint64_t dh = t.moe_hits - moe_hits0, dm = t.moe_misses - moe_miss0, h = t.moe_hits, n = t.moe_hits + t.moe_misses;
+            m["hit_rate_request"] = dh + dm ? 100.0 * dh / (dh + dm) : 0.0;
+            m["hit_rate_total"]   = n ? 100.0 * h / n : 0.0;
+            m["layers"] = t.moe_layers; m["slots_min"] = t.moe_slots_min; m["slots_max"] = t.moe_slots_max; m["uploads"] = t.moe_uploads;
+            m["tuned"] = { {"margin", t.margin}, {"gate", t.gate}, {"wait", t.wait}, {"big", t.big}, {"predict", t.predict}, {"self_tune", t.self_tune} };
+        }
+        tuning = { {"moe_cache", m}, {"n_threads", t.n_threads}, {"n_threads_batch", t.n_threads_batch}, {"n_batch", t.n_batch}, {"n_ubatch", t.n_ubatch} };
+    }
 
     // these are absolute timestamps (in us)
     // note: must be signed - they are subtracted before the later ones are set
@@ -643,7 +681,9 @@ struct server_subproc {
         void wait(const std::vector<server_subproc *> & procs, std::vector<bool> & ready, int64_t timeout_ms);
 
     private:
+#ifndef _WIN32
         intptr_t wake_fd[2] = { -1, -1 }; // POSIX self-pipe
+#endif
     };
 
 private:

@@ -27,6 +27,10 @@
 
 #include <cstdint>
 
+#include "ggml-backend.h"
+
+#include <vector>
+
 struct llama_model;
 struct ggml_tensor;
 
@@ -48,20 +52,57 @@ struct llama_moe_cache_layer {
     // expert id -> slot (or n_slots when uncached); I32 [1, n_expert]
     ggml_tensor * dev_table  = nullptr;
     ggml_tensor * host_table = nullptr;
+
+    // router prediction (LLAMA_MOE_CACHE_PREDICT): the next layer's router weights; the graph applies
+    // them to this layer's MoE input and hands the logits to the CPU expert op (src[4])
+    ggml_tensor * pred_w = nullptr;
+    // learned predictors: pred_all (fp16 [n_embd, n_expert * pred_ahead]; block k initialized from the router of layer
+    // il+1+k) predicts that layer's router logits from this layer's MoE input and is trained in the
+    // graph by NLMS with step size pred_mu (1 element, set per token by the cache; 0 = no training)
+    int           pred_ahead = 0;
+    bool          pred_on    = true;    // predict from this layer: one of its target layers misses often enough (updated every 256 steps)
+    ggml_tensor * pred_all   = nullptr; // [n_embd, n_expert * pred_ahead] fp16: the predictors of the next layers, stacked
+    ggml_tensor * pred_mu    = nullptr;
+    ggml_tensor * pred_q     = nullptr; // Q8_0 copy of pred_all used for predicting (half the bytes, same accuracy); re-quantized after each update
+
+    // JIT pool (layers cached on a slower-link GPU): jit_n expert slots (+1 zero slot) on the fastest-link GPU, filled
+    // just in time with this token's misses and computed there by a second small chain; jit_table maps expert -> pool slot
+    int32_t       jit_n      = 0;
+    ggml_tensor * jit_up_c   = nullptr;
+    ggml_tensor * jit_gate_c = nullptr;
+    ggml_tensor * jit_down_c = nullptr;
+    ggml_tensor * jit_table  = nullptr;
 };
 
 // build the cache for every host-resident expert layer of the model.
 // Safe to call more than once; only the first call does work.
-void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots = 0, int32_t window = 64);
+void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots = 0, int32_t window = 64,
+                          int32_t predict = 0, int32_t predict_train = 0);
 void llama_moe_cache_free();
 
 // largest batch (tokens) that uses the cache; bigger ones take the stock path
 // (LLAMA_MOE_CACHE_MAX_BATCH, default 31: below the CUDA op-offload threshold)
 int64_t llama_moe_cache_max_batch();
+// multi-GPU prefill: alpha (1 = experts over all GPUs by link bandwidth, 0 = fastest GPU only), measured or LLAMA_PREFILL_SPLIT
+float llama_moe_cache_prefill_alpha();
+// a GPU's measured upload link GB/s (startup probe, refined by uploads); 0 if unknown
+double llama_moe_cache_link_gbs(ggml_backend_dev_t dev);
+// before the first compute-buffer reserve: time each GPU's host link, reserve the prefill split only when it can pay
+void llama_moe_cache_prefill_decide(const std::vector<ggml_backend_dev_t> & gpus);
 bool    llama_moe_cache_active();
+// live cache state for llama_get_tuning_info(): false when the cache is off
+bool    llama_moe_cache_get_info(struct llama_tuning_info * info);
 
 // nullptr when the cache is disabled or this tensor has no cached layer
 const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps);
+// JIT miss offload (LLAMA_MOE_CACHE_JIT): called with a layer's router ids on the host before its cache chain launches
+void llama_moe_cache_jit(const llama_moe_cache_layer * pub, const ggml_tensor * ids);
 
 // apply throttled LRU updates; call between graph executions only
 void llama_moe_cache_step();
+
+// learned predictors: the next decode trains them (the graph holds the update nodes only then, so a
+// non-training step costs just the prediction); graph reuse must not cross a change of this
+bool llama_moe_cache_pred_train_now();
+bool llama_moe_cache_graph_reusable();
+void llama_moe_cache_graph_built();

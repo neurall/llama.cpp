@@ -3,7 +3,29 @@
 #include "cpy-utils.cuh"
 #if defined(GGML_USE_MUSA) && defined(GGML_MUSA_MUDNN_COPY)
 #include "ggml-musa/mudnn.cuh"
+
 #endif // GGML_USE_MUSA && GGML_MUSA_MUDNN_COPY
+
+static __global__ void k_copy_u4(const uint4 * __restrict__ src, uint4 * __restrict__ dst, const size_t n) {
+    for (size_t i = (size_t) blockIdx.x*blockDim.x + threadIdx.x; i < n; i += (size_t) gridDim.x*blockDim.x) {
+        dst[i] = src[i];
+    }
+}
+
+// small strided copies (e.g. the last d_conv-1 columns of a recurrent conv state, ~100 KB per layer and token):
+// one kernel instead of a 2D memcpy node (~7 us each in a CUDA graph)
+template <typename T>
+static __global__ void k_copy_2d(const char * __restrict__ src, char * __restrict__ dst, const size_t w, const size_t h,
+        const size_t spitch, const size_t dpitch) {
+    const size_t n = w / sizeof(T);
+    for (size_t r = blockIdx.y; r < h; r += gridDim.y) {
+        const T * s = (const T *) (src + r*spitch);
+        T * d = (T *) (dst + r*dpitch);
+        for (size_t i = (size_t) blockIdx.x*blockDim.x + threadIdx.x; i < n; i += (size_t) gridDim.x*blockDim.x) {
+            d[i] = s[i];
+        }
+    }
+}
 
 typedef void (*cpy_kernel_t)(const char * cx, char * cdst);
 
@@ -471,11 +493,31 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         } else
 #endif // GGML_USE_MUSA && GGML_MUSA_MUDNN_COPY
         {
-            CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, ggml_nbytes(src0), cudaMemcpyDeviceToDevice, main_stream));
+            const size_t nbytes = ggml_nbytes(src0);
+            // small copies (e.g. recurrent conv states, ~100 KB per layer and token): a kernel costs ~2 us where a
+            // device-to-device memcpy node in a CUDA graph costs ~7 us
+            if (nbytes <= (4u << 20) && nbytes % 16 == 0 && (uintptr_t) src0_ddc % 16 == 0 && (uintptr_t) src1_ddc % 16 == 0) {
+                const size_t n16 = nbytes / 16;
+                const int nb = (int) std::min<size_t>((n16 + 255) / 256, 1024);
+                k_copy_u4<<<nb, 256, 0, main_stream>>>((const uint4 *) src0_ddc, (uint4 *) src1_ddc, n16);
+            } else {
+                CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, nbytes, cudaMemcpyDeviceToDevice, main_stream));
+            }
         }
     } else if (ggml_cuda_cpy_as_memcpy_2d(src0, src1, mc_width, mc_height, mc_spitch, mc_dpitch)) {
-        CUDA_CHECK(cudaMemcpy2DAsync(src1_ddc, mc_dpitch, src0_ddc, mc_spitch,
-                                     mc_width, mc_height, cudaMemcpyDeviceToDevice, main_stream));
+        if (mc_width*mc_height <= (4u << 20)) {
+            const bool v16 = (mc_width | mc_spitch | mc_dpitch | (uintptr_t) src0_ddc | (uintptr_t) src1_ddc) % 16 == 0;
+            const size_t n = v16 ? mc_width/16 : mc_width;
+            const dim3 grid((unsigned) std::min<size_t>((n + 255)/256, 64), (unsigned) std::min<size_t>(mc_height, 1024));
+            if (v16) {
+                k_copy_2d<uint4><<<grid, 256, 0, main_stream>>>(src0_ddc, src1_ddc, mc_width, mc_height, mc_spitch, mc_dpitch);
+            } else {
+                k_copy_2d<uint8_t><<<grid, 256, 0, main_stream>>>(src0_ddc, src1_ddc, mc_width, mc_height, mc_spitch, mc_dpitch);
+            }
+        } else {
+            CUDA_CHECK(cudaMemcpy2DAsync(src1_ddc, mc_dpitch, src0_ddc, mc_spitch,
+                                         mc_width, mc_height, cudaMemcpyDeviceToDevice, main_stream));
+        }
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32) {
         if (can_be_transposed) {
             ggml_cpy_scalar_cuda<float, float, true>

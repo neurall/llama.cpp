@@ -12,6 +12,7 @@
 #include <set>
 #include <functional>
 #include <map>
+#include <map>
 
 struct ggml_cgraph;
 struct ggml_context;
@@ -989,6 +990,10 @@ struct llm_graph_qkv {
 };
 
 struct llm_graph_context {
+    // 2-GPU prefill (LLAMA_PREFILL_SPLIT): while set, build_lora_mm_id pins its MUL_MAT_ID to this backend and marks it as
+    // taking negative (skipped) expert ids, whose output rows are zeroed
+    mutable ggml_backend_t mm_id_backend = nullptr;
+
     const llm_arch arch;
 
     const llama_hparams & hparams;
@@ -1028,6 +1033,23 @@ struct llm_graph_context {
     ggml_backend_sched_t sched;
 
     ggml_backend_t backend_cpu; // TODO: needed by build_attn_mha, figure out a way to remove?
+
+    // MoE expert cache router predictor: predictions made at an earlier layer, keyed by target layer;
+    // trained (in the graph) once the target layer's router logits exist
+    struct moe_pred_src {
+        ggml_tensor *  w;                 // stacked [n_embd, n_expert * K]
+        ggml_tensor *  q;                 // its Q8_0 prediction copy (nullptr: predict from w)
+        ggml_tensor *  x;                 // the source layer's MoE input [n_embd, n_tokens]
+        ggml_tensor *  pred;              // stacked prediction [n_expert * K, n_tokens]
+        ggml_tensor *  mu;
+        ggml_backend_t backend;
+        int            K;
+        std::vector<ggml_tensor *> real;  // the target layers' router logits, collected in order
+    };
+    mutable std::map<int, moe_pred_src> moe_pred_srcs;                      // source layer ->
+    mutable std::map<int, std::vector<int>> moe_pred_todo;                  // target layer -> source layers
+    // LLAMA_MOE_DEFER: layer L's deferred host experts (weighted sum), added to the next MoE layer's output
+    mutable ggml_tensor * moe_defer_pending = nullptr;
 
     const llama_adapter_cvec     * cvec;
     const llama_adapter_loras    * loras;

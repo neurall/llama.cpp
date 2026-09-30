@@ -351,7 +351,7 @@ static bool parse_bool_value(const std::string & value) {
 static std::string get_default_local_path(const std::string & url) {
     auto f = string_split<std::string>(url, '#').front();
     f = string_split<std::string>(f, '?').front();
-    return fs_get_cache_file(string_split<std::string>(f, '/').back());
+    return fs_path_to_utf8(fs_get_cache_file(string_split<std::string>(f, '/').back()));
 }
 
 static bool spec_types_is_default(const common_params & params) {
@@ -717,24 +717,24 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
 // 1. system-wide: /etc/llama.cpp/config.ini (%PROGRAMDATA%\llama.cpp\config.ini on windows)
 // 2. user-level: ${XDG_CONFIG_HOME:-~/.config}/llama.cpp/config.ini (%APPDATA%\llama.cpp\config.ini on windows)
 static void common_params_apply_system_config(common_params & params, llama_example ex) {
-    std::vector<std::string> paths;
+    std::vector<std::filesystem::path> paths;
 
 #if defined(_WIN32)
-    const std::string program_data = common_get_env("PROGRAMDATA");
+    const std::filesystem::path program_data = common_get_path_from_env("PROGRAMDATA");
     if (!program_data.empty()) {
-        paths.push_back(program_data + "\\llama.cpp\\config.ini");
+        paths.push_back(program_data / "llama.cpp" / "config.ini");
     }
 #else
     paths.push_back("/etc/llama.cpp/config.ini");
 #endif
 
     try {
-        paths.push_back(fs_get_config_directory() + "config.ini");
+        paths.push_back(fs_get_config_directory() / "config.ini");
     } catch (const std::exception & e) {
         LOG_DBG("cannot read user-level config file, skipping: %s\n", e.what());
     }
 
-    std::vector<std::string> found;
+    std::vector<std::filesystem::path> found;
     for (const auto & path : paths) {
         std::error_code ec;
         if (std::filesystem::exists(path, ec)) {
@@ -748,7 +748,7 @@ static void common_params_apply_system_config(common_params & params, llama_exam
     common_preset_context ctx(ex);
     ctx.ignore_unknown_keys = true; // the same config file is shared by all programs
     for (const auto & path : found) {
-        LOG_INF("using config file: %s\n", path.c_str());
+        LOG_INF("using config file: %s\n", fs_path_to_utf8(path).c_str());
         common_preset global;
         common_presets presets = ctx.load_from_ini(path, global);
         global.apply_to_params(params);
@@ -1388,6 +1388,7 @@ static std::vector<std::string> parse_csv_row(const std::string& input) {
     return fields;
 }
 
+// options the MoE expert cache reads from the environment at its first decode
 common_params_context common_params_parser_init(common_params & params, llama_example ex, void(*print_usage)(int, char **)) {
     // per-example default params
     // we define here to make sure it's included in llama-gen-docs
@@ -1525,6 +1526,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "number of threads to use during batch and prompt processing (default: same as --threads)",
         [](common_params & params, int value) {
             params.cpuparams_batch.n_threads = value;
+            params.threads_batch_set = true;
             if (params.cpuparams_batch.n_threads <= 0) {
                 params.cpuparams_batch.n_threads = std::thread::hardware_concurrency();
             }
@@ -2551,19 +2553,33 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE"));
     add_opt(common_arg(
-        {"--moe-expert-cache-inserts"}, "N",
-        string_format("max expert uploads per layer per decode step for the MoE expert cache (default: %d)", params.n_moe_cache_inserts),
-        [](common_params & params, int value) {
-            params.n_moe_cache_inserts = value;
+        {"--moe"}, "KEY=VAL,...",
+        "MoE expert cache options, comma separated. cache=N (slots per expert layer, same as --moe-expert-cache: 0 = off, -1 = size from free VRAM, unset = automatic), prefetch-slots=N (H2D prefetch staging slots, same as --prefetch-experts-slots), inserts=N (max expert uploads per layer and decode step), window=N (tokens of recent usage "
+        "the cache scores by, default 64), predict=M (prefetch confident experts among the top M predicted for the next layers, 0 = off), "
+        "train=N (train the learned predictor every N decoded tokens; implies predict=8), or any tuner knob: MARGIN, GATE, WAIT, BIG, "
+        "SWAP_FRAC, ... A knob given here is never self-tuned",
+        [](common_params & params, const std::string & value) {
+            for (size_t pos = 0; pos < value.size();) {
+                const size_t comma = value.find(',', pos);
+                const std::string kv = value.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+                pos = comma == std::string::npos ? value.size() : comma + 1;
+                const size_t eq = kv.find('=');
+                if (eq == std::string::npos) {
+                    throw std::invalid_argument("--moe: expected KEY=VAL, got '" + kv + "'");
+                }
+                std::string key = kv.substr(0, eq);
+                for (char & c : key) { c = c == '_' ? '-' : (char) tolower((unsigned char) c); }
+                const int v = atoi(kv.c_str() + eq + 1);
+                if      (key == "cache")   { params.n_moe_cache_slots       = v; } // = --moe-expert-cache
+                else if (key == "prefetch-slots") { params.prefetch_experts_slots  = v; } // = --prefetch-experts-slots
+                else if (key == "inserts") { params.n_moe_cache_inserts = v; }
+                else if (key == "window")  { params.n_moe_cache_window  = v; }
+                else if (key == "predict") { params.n_moe_predict       = v; }
+                else if (key == "train")   { params.n_moe_predict_train = v; if (params.n_moe_predict <= 0) { params.n_moe_predict = 8; } }
+                else { params.moe_opts += (params.moe_opts.empty() ? "" : ",") + kv; } // a tuner knob: the engine checks the name
+            }
         }
-    ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE_INSERTS"));
-    add_opt(common_arg(
-        {"--moe-cache-window"}, "N",
-        string_format("tokens of recent expert usage the MoE expert cache scores by, next to lifetime usage (default: %d)", params.n_moe_cache_window),
-        [](common_params & params, int value) {
-            params.n_moe_cache_window = value;
-        }
-    ).set_env("LLAMA_ARG_MOE_CACHE_WINDOW"));
+    ).set_env("LLAMA_ARG_MOE"));
     if (ex == LLAMA_EXAMPLE_SERVER) {
         // this is to make sure this option appears in the server-specific section of the help message
         add_opt(common_arg(
@@ -2702,16 +2718,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.video_ffmpeg_bin_dir = value;
         }
     ).set_examples(mmproj_examples).set_env("LLAMA_ARG_VIDEO_FFMPEG_DIR"));
-    if (params.is_gen_docs || llama_supports_rpc()) {
-        add_opt(common_arg(
-            {"--rpc"}, "SERVERS",
-            "comma-separated list of RPC servers (host:port)",
-            [](common_params & params, const std::string & value) {
-                add_rpc_devices(value);
-                GGML_UNUSED(params);
+    add_opt(common_arg(
+        {"--rpc"}, "SERVERS",
+        "comma-separated list of RPC servers (host:port)",
+        [](common_params & params, const std::string & value) {
+            if (!llama_supports_rpc()) {
+                throw std::invalid_argument("RPC not supported in this build");
             }
-        ).set_env("LLAMA_ARG_RPC"));
-    }
+            add_rpc_devices(value);
+            GGML_UNUSED(params);
+        }
+    ).set_env("LLAMA_ARG_RPC"));
     add_opt(common_arg(
         {"-lm", "--load-mode"}, "MODE",
         "model loading mode (default: auto)\n"

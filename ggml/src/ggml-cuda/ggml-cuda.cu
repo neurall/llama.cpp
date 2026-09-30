@@ -1856,8 +1856,7 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     GGML_TENSOR_BINARY_OP_LOCALS
 
-    const int32_t hint = ggml_get_op_params_i32(dst, 1);
-    if (hint == GGML_HINT_SRC0_IS_HADAMARD && ggml_cuda_op_fwht(ctx, src1, dst)) {
+    if (ggml_cuda_op_mul_mat_use_fwht(dst) && ggml_cuda_op_fwht(ctx, src1, dst)) {
         return;
     }
 
@@ -1941,6 +1940,10 @@ static bool ggml_cuda_mul_mat_id_needs_sync(const ggml_tensor * dst, const int c
 }
 
 static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    if (dst->op_params[1] != 0) {
+        // ids may be -1 (skipped experts, 2-GPU prefill): the kernels leave those rows unwritten
+        CUDA_CHECK(cudaMemsetAsync(dst->data, 0, ggml_nbytes(dst), ctx.stream()));
+    }
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
     const ggml_tensor * ids  = dst->src[2];
@@ -3496,7 +3499,7 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
             return false;
         }
 
-        if (unary->type != GGML_TYPE_F32 && unary->type != GGML_TYPE_F16) {
+        if (unary->type != GGML_TYPE_F32 && unary->type != GGML_TYPE_F16 && unary->type != GGML_TYPE_BF16) {
             return false;
         }
 
@@ -3545,8 +3548,10 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
         const ggml_tensor *tanh   = cgraph->nodes[node_idx+1];
         const ggml_tensor *scale2 = cgraph->nodes[node_idx+2];
 
-        GGML_ASSERT(scale->src[0]->type == GGML_TYPE_F32);
-        GGML_ASSERT(scale->type == GGML_TYPE_F32);
+        // the fused softcap kernel is F32 only
+        if (scale->src[0]->type != GGML_TYPE_F32 || scale->type != GGML_TYPE_F32) {
+            return false;
+        }
 
         if (ggml_get_unary_op(tanh) != GGML_UNARY_OP_TANH) {
             return false;
@@ -5313,6 +5318,9 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 case GGML_UNARY_OP_CEIL:
                 case GGML_UNARY_OP_ROUND:
                 case GGML_UNARY_OP_TRUNC:
+                    if (op->src[0]->type == GGML_TYPE_BF16 && ggml_get_unary_op(op) == GGML_UNARY_OP_XIELU) {
+                        return false;
+                    }
                     // TODO: should become:
                     //return ggml_is_contiguous_rows(op->src[0]);
                     return ggml_is_contiguous(op->src[0]);
@@ -5329,6 +5337,10 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 case GGML_GLU_OP_GEGLU_ERF:
                 case GGML_GLU_OP_GEGLU_QUICK:
                 case GGML_GLU_OP_SWIGLU_CLAMP:
+                    if (op->src[0]->type == GGML_TYPE_BF16 &&
+                            (ggml_get_glu_op(op) == GGML_GLU_OP_SWIGLU_OAI || ggml_get_glu_op(op) == GGML_GLU_OP_SWIGLU_CLAMP)) {
+                        return false;
+                    }
                     return ggml_is_contiguous_1(op->src[0]);
                 default:
                     return false;
@@ -5342,7 +5354,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 if (a->nb[0] != ggml_element_size(a) || b->nb[0] != ggml_element_size(b)) {
                     return false; // TODO this could in principle be implemented though currently there is no use case.
                 }
-                if (b->type == GGML_TYPE_F16 && a->type != GGML_TYPE_F16) {
+                if (b->type == GGML_TYPE_F16 && a->type != GGML_TYPE_F16 && !ggml_cuda_op_mul_mat_use_fwht(op)) {
                     return false;
                 }
                 if (op->op == GGML_OP_MUL_MAT_ID && ggml_get_op_params_i32(op, 3) == GGML_PREC_F32) {
@@ -5598,7 +5610,6 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_TRANSPOSE:
         case GGML_OP_ADD_ID:
         case GGML_OP_ADD1:
-        case GGML_OP_SCALE:
         case GGML_OP_SQR:
         case GGML_OP_SQRT:
         case GGML_OP_SIN:
@@ -5606,10 +5617,16 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_CLAMP:
         case GGML_OP_LOG:
             return true;
+        case GGML_OP_SCALE:
+            return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_BF16) && op->type == op->src[0]->type;
         case GGML_OP_ADD:
         case GGML_OP_SUB:
         case GGML_OP_MUL:
         case GGML_OP_DIV:
+            if (op->src[0]->type == GGML_TYPE_BF16 || op->src[1]->type == GGML_TYPE_BF16 || op->type == GGML_TYPE_BF16) {
+                return op->src[0]->type == GGML_TYPE_BF16 && op->type == GGML_TYPE_BF16 &&
+                    (op->src[1]->type == GGML_TYPE_BF16 || op->src[1]->type == GGML_TYPE_F32);
+            }
             return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16) &&
                    (op->src[1]->type == GGML_TYPE_F32 || op->src[1]->type == GGML_TYPE_F16) &&
                    (op->type         == GGML_TYPE_F32 || op->type         == GGML_TYPE_F16);
@@ -5618,8 +5635,9 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
 
             if (op->src[3]->ne[0] == 1) {
                 // Mamba2
-                // (kernel only supports (d_state == 128 || d_state == 256) && d_head % 16 == 0)
-                return (op->src[0]->ne[0] == 128 || op->src[0]->ne[0] == 256) && op->src[0]->ne[1] % 16 == 0;
+                // (kernel only supports (d_state == 96 || d_state == 128 || d_state == 256) && d_head % 16 == 0)
+                const int64_t d_state = op->src[0]->ne[0];
+                return (d_state == 96 || d_state == 128 || d_state == 256) && op->src[0]->ne[1] % 16 == 0;
             } else {
                 if (K > 1) {
                     return false;
@@ -5683,7 +5701,14 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
 #endif // defined(GGML_USE_HIP) || defined(GGML_CUDA_USE_CUB)
         case GGML_OP_ARGSORT:
 #ifndef GGML_CUDA_USE_CUB
-            return op->src[0]->ne[0] <= 1024;
+            {
+                // bitonic path: the padded row must fit in shared memory
+                int64_t ncols_pad = 1;
+                while (ncols_pad < op->src[0]->ne[0]) {
+                    ncols_pad *= 2;
+                }
+                return ncols_pad * sizeof(int) <= ggml_cuda_info().devices[dev_ctx->device].smpb;
+            }
 #else
             return true;
 #endif
@@ -5891,6 +5916,69 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
     GGML_UNUSED(reg);
 }
 
+// async graph walker (GGML_SCHED_PRELAUNCH): a GPU split queued before the host produced its input waits on the
+// device for a flag in mapped pinned host memory, set by the host when its split is done. A one-thread kernel spins
+// on it (portable, unlike stream memory ops); it gives up after ~0.6 s so a missed flag (or a sync inside the queued split) can't hang the device.
+static __global__ void k_wait_host_flag(const volatile uint32_t * f, uint32_t v) {
+    long long t0 = clock64();
+    while (*f < v) {
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= 700
+        __nanosleep(256);
+#endif
+        if (clock64() - t0 > 1000000000LL) { // ~0.6 s
+            atomicAdd((unsigned int *) (f + 1), 1u); // f[1]: timeouts, read by the host (the queued split ran early)
+            break;
+        }
+    }
+}
+
+static __global__ void k_signal_host_flag(volatile uint32_t * f, uint32_t v) {
+    __threadfence_system();
+    *f = v;
+    __threadfence_system();
+}
+
+// queued after the host-bound copies: the host polls the flag instead of a stream sync (lower wake-up latency)
+static bool ggml_backend_cuda_signal_host_flag(ggml_backend_t backend, uint32_t * flag, uint32_t value) {
+    if (!ggml_backend_is_cuda(backend)) {
+        return false;
+    }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(ctx->device);
+    void * dptr = nullptr;
+    if (cudaHostGetDevicePointer(&dptr, (void *) flag, 0) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    k_signal_host_flag<<<1, 1, 0, ctx->stream()>>>((volatile uint32_t *) dptr, value);
+    return cudaGetLastError() == cudaSuccess;
+}
+
+static uint32_t * ggml_backend_cuda_host_flags_alloc(int n) {
+    void * p = nullptr;
+    if (cudaHostAlloc(&p, (size_t) n*sizeof(uint32_t), cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return nullptr;
+    }
+    memset(p, 0, (size_t) n*sizeof(uint32_t));
+    return (uint32_t *) p;
+}
+
+static bool ggml_backend_cuda_wait_host_flag(ggml_backend_t backend, const uint32_t * flag, uint32_t value) {
+    if (!ggml_backend_is_cuda(backend)) {
+        return false;
+    }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(ctx->device);
+    void * dptr = nullptr;
+    if (cudaHostGetDevicePointer(&dptr, (void *) flag, 0) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    k_wait_host_flag<<<1, 1, 0, ctx->stream()>>>((const volatile uint32_t *) dptr, value);
+    return cudaGetLastError() == cudaSuccess;
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
     if (strcmp(name, "ggml_backend_comm_init") == 0) {
@@ -5910,6 +5998,15 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;
+    }
+    if (strcmp(name, "ggml_backend_host_flags_alloc") == 0) {
+        return (void *)ggml_backend_cuda_host_flags_alloc;
+    }
+    if (strcmp(name, "ggml_backend_wait_host_flag") == 0) {
+        return (void *)ggml_backend_cuda_wait_host_flag;
+    }
+    if (strcmp(name, "ggml_backend_signal_host_flag") == 0) {
+        return (void *)ggml_backend_cuda_signal_host_flag;
     }
     return nullptr;
 }

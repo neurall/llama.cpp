@@ -393,6 +393,8 @@ extern "C" {
         int32_t  n_moe_cache_slots;   // cache slots per host-resident expert layer (0 = disabled)
         int32_t  n_moe_cache_inserts; // max expert uploads per layer per decode step
         int32_t  n_moe_cache_window;  // recent-usage window of the expert cache, in tokens
+        int32_t  n_moe_predict;       // expert cache router prediction: prefetch confident experts among the top M (0 = off)
+        int32_t  n_moe_predict_train; // train the learned predictor every N decoded tokens (0 = frozen)
 
         ggml_backend_sched_eval_callback cb_eval;
         void * cb_eval_user_data;
@@ -493,14 +495,14 @@ extern "C" {
     LLAMA_API struct llama_model_quantize_params llama_model_quantize_default_params(void);
 
     // Initialize the llama + ggml backend
-    // If numa is true, use NUMA optimizations
     // Call once at the start of the program
     LLAMA_API void llama_backend_init(void);
 
     // Call once at the end of the program - currently only used for MPI
     LLAMA_API void llama_backend_free(void);
 
-    //optional:
+    // Optional: enable numa optimizations
+    // TODO: deprecate and make part of llama_backend_init()
     LLAMA_API void llama_numa_init(enum ggml_numa_strategy numa);
 
     // Optional: an auto threadpool gets created in ggml if not passed explicitly
@@ -1105,6 +1107,12 @@ extern "C" {
     // n_threads_batch is the number of threads used for prompt and batch processing (multiple tokens)
     LLAMA_API void llama_set_n_threads(struct llama_context * ctx, int32_t n_threads, int32_t n_threads_batch);
 
+    // decode thread-count autotune (A/B slices on measured token time; LLAMA_THREAD_AUTOTUNE=0 off)
+    LLAMA_API void llama_set_thread_autotune(struct llama_context * ctx, bool on);
+    // same for the batch (prompt) thread count, on full prompt batches scored in tokens/s; off unless asked
+    // n_max: the size of the attached batch thread pool (the most threads a candidate may use), 0 = the current count
+    LLAMA_API void llama_set_batch_thread_autotune(struct llama_context * ctx, bool on, int32_t n_max);
+
     // Get the number of threads used for generation of a single token.
     LLAMA_API int32_t llama_n_threads(struct llama_context * ctx);
 
@@ -1119,6 +1127,9 @@ extern "C" {
     // If set to true, the model will only attend to the past tokens
     LLAMA_API void llama_set_causal_attn(struct llama_context * ctx, bool causal_attn);
 
+    // Returns whether the context is currently using causal attention
+    LLAMA_API bool llama_get_causal_attn(const struct llama_context * ctx);
+
     // Set whether the model is in warmup mode or not
     // If true, all model tensors are activated during llama_decode() to load and cache their weights.
     //
@@ -1130,6 +1141,27 @@ extern "C" {
     // MoE expert cache: while deferred, decodes don't start the cache (warmup runs), so its
     // auto size sees the VRAM left after models loaded later (speculative draft, mmproj)
     LLAMA_API void llama_moe_cache_defer(struct llama_context * ctx, bool defer);
+
+    // Expert cache tuning knobs as "NAME=value,NAME=value" (MARGIN, GATE, WAIT, BIG, ...; see --moe). A knob named here is never self-tuned.
+    LLAMA_API void llama_moe_set_options(const char * opts);
+
+    // One flat INI file for what the engine learns per model (hot experts, tuner decisions, MoE placement): [section] key = value.
+    // LLAMA_MOE_STATE=<file> moves it, =0 turns it off. The section of the running model is set once with llama_state_set_model().
+    LLAMA_API bool llama_state_get(const char * section, const char * key, char * value, size_t n); // false: missing / off / too small
+    LLAMA_API bool llama_state_set(const char * section, const char * key, const char * value);
+    LLAMA_API bool llama_state_erase(const char * section, const char * key_prefix);              // every key of the section starting with it
+    LLAMA_API void llama_state_set_model(const char * section);
+
+    // What the engine runs with right now, for logs and the server: MoE cache state and hit counters (decode only, since start),
+    // the live values of the self-tuned knobs, thread counts and batch sizes. -1 = not applicable.
+    struct llama_tuning_info {
+        bool     moe_active;
+        uint64_t moe_hits, moe_misses, moe_uploads;
+        int32_t  moe_layers, moe_slots_min, moe_slots_max;
+        int32_t  margin, gate, wait, big, predict, self_tune;
+        int32_t  n_threads, n_threads_batch, n_batch, n_ubatch;
+    };
+    LLAMA_API void llama_get_tuning_info(const struct llama_context * ctx, struct llama_tuning_info * info);
 
     // Set abort callback
     LLAMA_API void llama_set_abort_callback(struct llama_context * ctx, ggml_abort_callback abort_callback, void * abort_callback_data);

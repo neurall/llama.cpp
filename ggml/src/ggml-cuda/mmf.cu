@@ -84,6 +84,11 @@ void ggml_cuda_mul_mat_f(ggml_backend_cuda_context & ctx, const ggml_tensor * sr
 
         GGML_ASSERT(sis1 > 0);
 
+        if (dst->op_params[1] != 0) {
+            // ids may be -1 (skipped experts): no helper entries for them, keep the unused compact range valid
+            CUDA_CHECK(cudaMemsetAsync(ids_src_compact_dev.get(), 0, ne_get_rows*sizeof(int32_t), ctx.stream()));
+            CUDA_CHECK(cudaMemsetAsync(ids_dst_compact_dev.get(), 0, ne_get_rows*sizeof(int32_t), ctx.stream()));
+        }
         ggml_cuda_launch_mm_ids_helper(ids_d, ids_src_compact_dev.get(), ids_dst_compact_dev.get(), expert_bounds_dev.get(),
             static_cast<int>(n_experts), static_cast<int>(n_tokens), static_cast<int>(n_expert_used), static_cast<int>(ne11), si1, sis1, /*write_inverse =*/ false, ctx.stream());
         CUDA_CHECK(cudaGetLastError());

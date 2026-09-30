@@ -130,6 +130,11 @@ extern "C" {
                                               void ** data, ggml_backend_buffer_t * buffer, void * user_data);
     GGML_API void ggml_backend_set_moe_fill_callback(ggml_backend_moe_fill_cb_t cb, void * user_data);
 
+    // called before each non-CPU split is launched, while no split is executing on that backend
+    // (the MoE expert cache publishes prefetched experts here, between layers)
+    typedef void (*ggml_backend_split_cb_t)(ggml_backend_t backend, void * user_data);
+    GGML_API void ggml_backend_set_split_callback(ggml_backend_split_cb_t cb, void * user_data);
+
     GGML_API ggml_backend_dev_t ggml_backend_get_device(ggml_backend_t backend);
 
     //

@@ -1,5 +1,11 @@
 #include "concat.cuh"
 
+static __global__ void k_concat_copy_u4(const uint4 * __restrict__ src, uint4 * __restrict__ dst, const size_t n) {
+    for (size_t i = (size_t) blockIdx.x*blockDim.x + threadIdx.x; i < n; i += (size_t) gridDim.x*blockDim.x) {
+        dst[i] = src[i];
+    }
+}
+
 #include <stdint.h>
 
 // contiguous kernels
@@ -158,8 +164,15 @@ static void concat_cuda(const ggml_tensor * src0, const ggml_tensor * src1, ggml
         const size_t size0 = ggml_nbytes(src0);
         const size_t size1 = ggml_nbytes(src1);
 
-        CUDA_CHECK(cudaMemcpyAsync((char *) dst->data,         src0->data, size0, cudaMemcpyDeviceToDevice, stream));
-        CUDA_CHECK(cudaMemcpyAsync((char *) dst->data + size0, src1->data, size1, cudaMemcpyDeviceToDevice, stream));
+        if (size0 + size1 <= (4u << 20) && (size0 | size1 | (uintptr_t) dst->data | (uintptr_t) src0->data | (uintptr_t) src1->data) % 16 == 0) {
+            // small: two kernels instead of two memcpy nodes (~7 us each in a CUDA graph)
+            const size_t n0 = size0/16, n1 = size1/16;
+            k_concat_copy_u4<<<(unsigned) std::min<size_t>((n0 + 255)/256 + 1, 256), 256, 0, stream>>>((const uint4 *) src0->data, (uint4 *) dst->data, n0);
+            k_concat_copy_u4<<<(unsigned) std::min<size_t>((n1 + 255)/256 + 1, 256), 256, 0, stream>>>((const uint4 *) src1->data, (uint4 *) ((char *) dst->data + size0), n1);
+        } else {
+            CUDA_CHECK(cudaMemcpyAsync((char *) dst->data,         src0->data, size0, cudaMemcpyDeviceToDevice, stream));
+            CUDA_CHECK(cudaMemcpyAsync((char *) dst->data + size0, src1->data, size1, cudaMemcpyDeviceToDevice, stream));
+        }
     } else {
         GGML_ASSERT(!ggml_is_quantized(src0->type));
 

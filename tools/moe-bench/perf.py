@@ -16,6 +16,7 @@ Tests:
   ppl3    same as ppl with -b 3 -ub 3: 3-token decode batches, the path MTP/speculative verify
           uses (small-batch cache chain); compare PPL with --plain for correctness
   tetris  raw completion "generate smallest html tetris game.", -c 1024, until full
+  t100    raw completion "write smallest html tetris game", -c 1024, 100 tokens, temperature 0: the short one-shot run most people benchmark
   chat    /v1/chat/completions "write smallest html tetris game", 1500 tokens
   pf12k   12k-token prefill: src_12k.cpp as a raw completion prompt, 32 tokens generated,
           x16 GPU first (-dev CUDA1,CUDA0), -ub 2048 -b 2048; pf12k-stock: same, no cache flags
@@ -52,6 +53,13 @@ def db():
     if "model" not in [r[1] for r in c.execute("pragma table_info(runs)")]:
         c.execute("alter table runs add column model text")
         c.execute("update runs set model='GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf'")
+    if "commit_sha" not in [r[1] for r in c.execute("pragma table_info(runs)")]:
+        c.execute("alter table runs add column commit_sha text")
+    if "build_no" not in [r[1] for r in c.execute("pragma table_info(runs)")]:
+        c.execute("alter table runs add column build_no integer")
+    if "hw" not in [r[1] for r in c.execute("pragma table_info(runs)")]:
+        c.execute("alter table runs add column hw text")
+    c.execute("create table if not exists hw (id text primary key, hostname text, cpu text, ram_gb integer, ram_type text, gpus text, links text, os text, note text)")
     return c
 
 
@@ -165,7 +173,8 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         [x for i, x in enumerate(COMMON_ALL) if x not in ("--cpu-moe", "--moe-expert-cache")
          and not (x == "-1" and COMMON_ALL[i - 1] == "--moe-expert-cache")]) + list(extra_args)  # stock/plain: autofit, no cache
     wait_vram_free()
-    env = {**os.environ, **extra_env, "LD_LIBRARY_PATH": os.path.join(HERE, build), "LLAMA_MOE_CACHE_STATS": "1"}
+    env = {**os.environ, **extra_env, "LD_LIBRARY_PATH": os.path.join(HERE, build), "LLAMA_MOE_CACHE_STATS": "1",
+           "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
     row = {}
     if test in ("ppl", "ppl3"):
         nb = "1" if test == "ppl" else "3"
@@ -183,6 +192,8 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         if test in ("pf12k", "pf12k-stock"):
             dev = ["-t", "6", "-dev", "CUDA1,CUDA0", "-c", "16384", "-ub", "2048", "-b", "2048"]
             args = list(extra_args) if BARE else dev + ((["--moe-expert-cache", "0"] if test == "pf12k-stock" and not build.startswith("stock") else []) if test == "pf12k-stock" or plain or build.startswith("stock") else ["--cpu-moe", "-nr", "--moe-expert-cache", "-1"]) + list(extra_args)
+            if BARE and (plain or build.startswith("stock")) and "-c" not in args:
+                args += ["-c", "16384"]  # stock's default context (4096) rejects the 12k prompt (HTTP 400); the fork sets 32k itself
             res, logf = server_run(build, env, args, "/completion",
                                    {"prompt": open(os.path.join(PROMPTS, "src_12k.cpp")).read(), "n_predict": int(os.environ.get("PERF_NPRED", 32)),
                                     "cache_prompt": False, **GREEDY})
@@ -204,10 +215,12 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             row.update(cache_stats(log))
             row.update(ok=1 if row.get("tps") else 0, args=" ".join(args))
             return row
-        if test == "tetris":
+        if test in ("tetris", "t100"):
+            # t100: what most people run on a CLI: one short prompt, 100 tokens, -c 1024, temperature 0 (GREEDY)
             args = COMMON + ["-c", "1024"]
             res, logf = server_run(build, env, args, "/completion",
-                                   {"prompt": "generate smallest html tetris game.", "n_predict": -1, **GREEDY})
+                                   {"prompt": "generate smallest html tetris game." if test == "tetris" else "write smallest html tetris game",
+                                    "n_predict": -1 if test == "tetris" else 100, **GREEDY})
             text = res["content"]
         else:
             args = COMMON + ["-c", "4096"]
@@ -266,6 +279,11 @@ def cmd_run(a):
             except Exception as e:
                 row = {"ok": 0, "note": str(e)[:300]}
             rec = {**extra, **({"bare": "1"} if a.bare else {}), **({"plain": "1"} if a.plain else {}), **({"args": a.args} if a.args else {})}
+            mc = re.search(r"commit (\w+)", row.get("version") or "")  # the exact commit the binary was built from (llama-server --version)
+            row.update(commit_sha=os.environ.get("PERF_COMMIT") or (mc.group(1) if mc else None))  # PERF_COMMIT: a build of a dirty tree, e.g. <sha>+patch
+            mb = re.search(r"build (\d+)", row.get("version") or "")  # llama.cpp build number (= commit count of the checkout)
+            row.update(build_no=int(mb.group(1)) if mb else None)
+            row.update(hw=os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename))  # rows of table hw
             row.update(model=os.path.basename(MODEL), ts=time.strftime("%F %T"), build=build, version=version(build), test=a.test,
                        env=json.dumps(rec, sort_keys=True),
                        note=" | ".join(x for x in (a.note, row.get("note")) if x) or None)
@@ -335,7 +353,7 @@ if __name__ == "__main__":
     sp = ap.add_subparsers(dest="cmd", required=True)
     r = sp.add_parser("run")
     r.add_argument("builds", nargs="+")
-    r.add_argument("-t", "--test", default="ppl", choices=["ppl", "ppl3", "tetris", "chat", "agent", "pf12k", "pf12k-stock"])
+    r.add_argument("-t", "--test", default="ppl", choices=["ppl", "ppl3", "tetris", "t100", "chat", "agent", "pf12k", "pf12k-stock"])
     r.add_argument("-n", type=int, default=1)
     r.add_argument("-e", "--env", action="append", default=[])
     r.add_argument("--note")

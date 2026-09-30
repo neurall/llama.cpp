@@ -41,6 +41,12 @@ int llama_cli(int argc, char ** argv) {
         return 1;
     }
 
+    // pinned weights like llama-server when the model fits in RAM (auto mode only; -lm overrides): expert cache uploads
+    // read them by direct DMA (W10 Qwen3.6: CLI decode 47.4 t/s with mmap vs ~54 pinned in the server)
+    params.auto_pin = true;
+    llama_backend_init();
+    llama_numa_init(params.numa);
+
 #if defined (__unix__) || (defined (__APPLE__) && defined (__MACH__))
     struct sigaction sigint_action;
     sigint_action.sa_handler = signal_handler;
