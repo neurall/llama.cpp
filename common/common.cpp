@@ -1382,6 +1382,15 @@ static void moe_auto_read(const std::string & path, moe_auto_rec & st, moe_auto_
     }
 }
 
+// expected time of one request: cache wins when the generation it saves outweighs the prompt time it costs; prompt tokens are
+// estimated from the -p text (4 chars/token, else 500), generated tokens from -n (else 1000), so a prompt of several thousand
+// tokens with a short answer picks stock and a short prompt with a long answer picks the cache
+static std::string moe_auto_decide_for(const moe_auto_rec & st, const moe_auto_rec & ca, const common_params & params) {
+    const double np = params.prompt.empty() ? 500.0 : std::max(1.0, params.prompt.size() / 4.0);
+    const double ng = params.n_predict > 0 ? params.n_predict : 1000.0;
+    return np * ca.p_ms + ng * ca.g_ms <= np * st.p_ms + ng * st.g_ms ? "cache" : "stock";
+}
+
 static std::string moe_auto_decide(const moe_auto_rec & st, const moe_auto_rec & ca) {
     const char * e = getenv("LLAMA_MOE_AUTO_PREFILL_SLOWDOWN");
     const double max_p = e ? atof(e) : 2.0;
@@ -1463,7 +1472,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
         if (f == "stock" || f == "cache") {
             mode = f;
         } else if (!decided.empty()) {
-            mode = decided;
+            mode = st.have && ca.have ? moe_auto_decide_for(st, ca, params) : decided;
             LOG_INF("%s: MoE placement: %s (measured: stock %.2f/%.2f, cache %.2f/%.2f ms per prompt/generated token; %s)\n", __func__,
                 mode.c_str(), st.p_ms, st.g_ms, ca.p_ms, ca.g_ms, path.c_str());
         } else {
