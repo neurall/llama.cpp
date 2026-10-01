@@ -3,7 +3,7 @@
 #   bash pod.sh report                  system, PCIe topology and live links, host -> GPU bandwidth alone and all GPUs at once
 #   bash pod.sh setup                   fork binaries (latest GitHub release, or built from source) and upstream llama.cpp (built from source)
 #   bash pod.sh bench MODEL.gguf ...    short decode and 12k-prompt tests, stock vs fork, on 1, 2, 4 GPUs (as many as the box has)
-#   bash pod.sh matrix MODEL.gguf       fork cold / prewarm (saved state) / hot and stock, short and long prompts, with the server's autotune lines and hit rate
+#   bash pod.sh matrix MODEL.gguf       fork cold / hot (saved state) and every stock build, short and long prompts, with the server's autotune lines and hit rate
 #   bash pod.sh rebuild [NAME] [REF]    the fork from source at a branch or commit into builds/NAME (ccache: quick), bench it with FORK_NAME=NAME
 #   bash pod.sh pack                    one tarball of everything under $POD_DIR/results
 #   bash pod.sh all MODEL.gguf          report, setup, bench, pack
@@ -146,7 +146,7 @@ bench() {
   RUN_DATA="$RES" python3 "$POD/fork-src/tools/run.py" show 2>&1 | tee "$RES/summary.txt"
 }
 
-matrix() {   # matrix MODEL: per GPU count and test: fork cold / prewarm / hot and stock; server logs + the autotune parameters and hit rate from each
+matrix() {   # matrix MODEL: per GPU count and test: fork cold / hot and every stock build; server logs + the autotune parameters and hit rate from each
   [ $# -ge 1 ] || die "usage: pod.sh matrix MODEL.gguf"
   fork_src
   local m=$1 ngpu; ngpu=$(nvidia-smi -L | wc -l); local sn=${STOCK_BUILD:-$(ls "$POD/builds" | grep '^stock-' | head -1)} fk=${FORK_NAME:-fork}
@@ -166,10 +166,9 @@ matrix() {   # matrix MODEL: per GPU count and test: fork cold / prewarm / hot a
         cp "/tmp/perf-$b.log" "$RES/logs/$k-$t-$tag.log" 2>/dev/null
         { echo "== $k GPU(s) $t $tag"; grep -h -E 'moe cache = on|moe-cache: (MoE|auto|self-tune|placement)|common_moe_cache_auto|tuned|self-tune|threads  *=|ubatch|n_ubatch|expert cache enabled|prefill links' "/tmp/perf-$b.log" 2>/dev/null | tail -14 | cut -c1-230; } >> "$RES/params.txt"
       }
-      cell cold "$fk" --no-warm
-      cell prewarm "$fk" --no-warm
-      cell hot "$fk"
-      cell stock "$sn"
+      cell cold "$fk" --no-warm      # the first run: no saved state
+      cell hot "$fk" --no-warm       # the second run: starts from the state the first one saved
+      for sb in $(ls "$POD/builds" | grep '^stock-'); do cell "$sb" "$sb" --no-warm; done   # every upstream build here: the downloaded release binary and the source build
     done
   done
   RUN_DATA="$RES" python3 "$POD/fork-src/tools/run.py" show 2>&1 | tee "$RES/summary.txt"
