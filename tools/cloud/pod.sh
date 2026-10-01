@@ -5,7 +5,7 @@
 #   bash pod.sh bench MODEL.gguf ...    short decode and 12k-prompt tests, stock vs fork, on 1, 2, 4 GPUs (as many as the box has)
 #   bash pod.sh pack                    one tarball of everything under $POD_DIR/results
 #   bash pod.sh all MODEL.gguf          report, setup, bench, pack
-# Env: POD_DIR (/workspace/pod), STOCK_REF (upstream commit), GPUS ("1 2 4"), TESTS ("t100 pf12k"), RUNS (2), THREADS (half the cores, at most 24), FORK_BUILD=1 (never use the release binary), SKIP_STOCK=1 (no upstream build), STOCK_TAG=b11323 (a prebuilt upstream release instead of a source build)
+# Env: POD_DIR (/workspace/pod), STOCK_REF (upstream commit), GPUS ("1 2 4"), TESTS ("t100 pf12k"), RUNS (2), THREADS (half the cores, at most 24), FORK_BUILD=1 (never use the release binary), STOCK_BUILD=stock-NAME (which upstream build bench uses), SKIP_STOCK=1 (no upstream build), STOCK_TAG=b11323 (a prebuilt upstream release instead of a source build)
 set -uo pipefail
 POD=${POD_DIR:-/workspace/pod}; FORK=neurall/llama.cpp; STOCK=ggml-org/llama.cpp; STOCK_REF=${STOCK_REF:-def4d406ae2c2f39573120d68730fbb7760b24bf}
 mkdir -p "$POD/builds" "$POD/results"
@@ -109,7 +109,7 @@ PY
 bench() {
   [ $# -ge 1 ] || die "usage: pod.sh bench MODEL.gguf ..."
   fork_src
-  local ngpu; ngpu=$(nvidia-smi -L | wc -l); local sn; sn=$(ls "$POD/builds" | grep '^stock-' | head -1)
+  local ngpu; ngpu=$(nvidia-smi -L | wc -l); local sn; sn=${STOCK_BUILD:-$(ls "$POD/builds" | grep "^stock-" | head -1)}
   [ -n "$sn" ] && [ -x "$POD/builds/fork/llama-server" ] || die "run setup first"
   for m in "$@"; do
     for k in ${GPUS:-1 2 4}; do
