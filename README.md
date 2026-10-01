@@ -39,7 +39,7 @@ Every number is a hot run (same model run again, files in the page cache, what t
 | Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) |
 
 \* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
-[`tools/moe-bench/perf.db`](tools/moe-bench/); [`docs/moe-cache-development.md`](docs/moe-cache-development.md) has the method and the rest.
+[`tools/moe-bench/perf.db`](tools/moe-bench/).
 
 ## Nothing to configure
 
