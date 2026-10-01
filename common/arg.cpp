@@ -2560,8 +2560,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "MoE expert cache options, comma separated. cache=N (slots per expert layer, same as --moe-expert-cache: 0 = off, -1 = size from free VRAM, unset = automatic), prefetch-slots=N (H2D prefetch staging slots, same as --prefetch-experts-slots), inserts=N (max expert uploads per layer and decode step), window=N (tokens of recent usage "
         "the cache scores by, default 64), predict=M (prefetch confident experts among the top M predicted for the next layers, 0 = off), "
         "train=N (train the learned predictor every N decoded tokens; implies predict=8), or any tuner knob: MARGIN, GATE, WAIT, BIG, "
-        "SWAP_FRAC, ... A knob given here is never self-tuned",
+        "SWAP_FRAC, ... A knob given here is never self-tuned. autotune=0: no self-tuning (same as -at off). enabled=0: everything fork-specific off (cache 0, no tuning), stock behaviour",
         [](common_params & params, const std::string & value) {
+            bool fork_off = false; // enabled=0: wins over every other key, whatever the order
             for (size_t pos = 0; pos < value.size();) {
                 const size_t comma = value.find(',', pos);
                 const std::string kv = value.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
@@ -2579,8 +2580,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 else if (key == "window")  { params.n_moe_cache_window  = v; }
                 else if (key == "predict") { params.n_moe_predict       = v; }
                 else if (key == "autotune") { params.autotune = v != 0; }
+                else if (key == "enabled") { fork_off = fork_off || v == 0; }
                 else if (key == "train")   { params.n_moe_predict_train = v; if (params.n_moe_predict <= 0) { params.n_moe_predict = 8; } }
                 else { params.moe_opts += (params.moe_opts.empty() ? "" : ",") + kv; } // a tuner knob: the engine checks the name
+            }
+            if (fork_off) { // everything fork-specific off: no expert cache, nothing tuned or measured, i.e. stock behaviour
+                params.n_moe_cache_slots = 0;
+                params.autotune          = false;
             }
         }
     ).set_env("LLAMA_ARG_MOE"));
