@@ -10,7 +10,7 @@
 # Env: POD_DIR (/workspace/pod), STOCK_REF (upstream commit), GPUS ("1 2 4"), TESTS ("t100 pf12k"), RUNS (2), CACHE=force (fork cells with --cpu-moe --moe-expert-cache -1), RESULTS_DIR, THREADS (half the cores, at most 24), FORK_BUILD=1 (never use the release binary), STOCK_BUILD=stock-NAME (which upstream build bench uses), SKIP_STOCK=1 (no upstream build), STOCK_TAG=b11323 (a prebuilt upstream release instead of a source build)
 set -uo pipefail
 POD=${POD_DIR:-/workspace/pod}; FORK=neurall/llama.cpp; STOCK=ggml-org/llama.cpp; STOCK_REF=${STOCK_REF:-def4d406ae2c2f39573120d68730fbb7760b24bf}
-RES=${RESULTS_DIR:-$RES}
+RES=${RESULTS_DIR:-$POD/results}
 mkdir -p "$POD/builds" "$RES"
 log() { echo "[pod] $*"; }
 die() { echo "[pod] $*" >&2; exit 1; }
