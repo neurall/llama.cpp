@@ -15,3 +15,4 @@ runpy-w10,2026-10-01 10:54:31,"bench N:\m\qwen36.gguf builds ls,tmp\chk variants
 big-models-b11703,2026-10-01 10:59:54,b11703 ebb1774ee vs stock def4d406a,,
 big-models-cold-b11703,2026-10-01 11:00:59,"first runs, no discarded run; b11703 ebb1774ee vs stock def4d406a",,
 big-models-cold-b11703,2026-10-01 11:07:50,"resumed after the csv switch; first runs, no discarded run",,
+release-b11707-w10,2026-10-01 11:24:03,"bench N:\m\qwen36.gguf builds tmp\chk,ls variants default,atoff,cache0 test t100 n=1",,

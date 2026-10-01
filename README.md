@@ -15,7 +15,7 @@ Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock
 Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.
 Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.
 Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.
-Every number is a hot run (same model run again, files in the page cache, what the engine learned kept), build b11648 against upstream 05af0d2b1.
+GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a (no discarded run before it); the other rows are hot runs of earlier builds.
 
 | model (size) | machine | test | upstream | this fork | |
 |---|---|---|---|---|---|
@@ -25,9 +25,9 @@ Every number is a hot run (same model run again, files in the page cache, what t
 | | | 12k-token prompt, processing | 156 | 112 | 0.7x |
 | **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) * | A | short chat, decode | 27.7 | **46.5** | **1.7x** |
 | | | 12k-token prompt, decode / processing | 25.3 / 500 | **42.3 / 538** | 1.7x / 1.1x |
-| **GLM-5.3-Flash** 3.5-bit (137 GB, bigger than RAM) | A | short tetris prompt, 100 tokens, decode | 8.6 | **10.3** | **1.2x** |
-| **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short tetris prompt, 100 tokens, decode | 44.6 | **50.6** | **1.1x** |
-| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | same | 69.1 | 69.1 (keeps stock) | 1.0x |
+| **GLM-5.3-Flash** 3.5-bit (137 GB, bigger than RAM) | A | short tetris prompt, 100 tokens, decode (text-dependent) | 6.9 | **15.1** | **2.2x** |
+| **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short tetris prompt, 100 tokens, decode | 43.9 | **57.1** | **1.3x** |
+| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | same | 69.1 | 67.5 (picks stock) | 1.0x |
 | | B | same | 11.4 | **13.5** | **1.2x** |
 | | B | same, prompt processing | 15.5 | 5.9 | 0.4x |
 | **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) | B | short tetris prompt, 100 tokens, decode | 29.2 | **59.3** | **2.0x** |

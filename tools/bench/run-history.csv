@@ -601,3 +601,11 @@ warning: 360	../csu/libc-start.c: No such file or directory
 2026-10-01 11:19:26,c0e31629b,11705,154.507,49.178,,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,--moe cache=0,t100,pc1,1,autotune,65897ba9,release-b11705,,,,100,fork,"{""bare"":""1""}",--moe cache=0 -c 1024
 2026-10-01 11:19:37,c0e31629b,11705,154.381,48.007,,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,-at off,t100,pc1,1,autotune,65897ba9,release-b11705,,,,100,fork,"{""bare"":""1""}",-at off -c 1024
 2026-10-01 11:19:49,def4d406a,11325,154.906,48.577,,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,,t100,pc1,1,stock-def4d406a,65897ba9,release-b11705,,,,100,stock,"{""bare"":""1""}",-c 1024
+2026-10-01 11:24:16,49fe4b756,11707,55.6,91.2,,qwen36.gguf,,cli-t100,pc3,1,tmp\chk,,release-b11707-w10,,,,,fork,"{""bare"":""1""}",
+2026-10-01 11:24:27,49fe4b756,11707,55.6,96.9,,qwen36.gguf,-at off,cli-t100,pc3,1,tmp\chk,,release-b11707-w10,,,,,fork,"{""bare"":""1""}",-at off
+2026-10-01 11:24:40,49fe4b756,11707,45.2,22.5,,qwen36.gguf,--moe cache=0,cli-t100,pc3,1,tmp\chk,,release-b11707-w10,,,,,fork,"{""bare"":""1""}",--moe cache=0
+2026-10-01 11:25:12,b5cf8ce02,11261,29.6,38.3,,qwen36.gguf,,cli-t100,pc3,1,ls,,release-b11707-w10,,,,,fork,"{""bare"":""1""}",
+2026-10-01 11:25:13,b5cf8ce02,11261,,,,qwen36.gguf,-at off,cli-t100,pc3,0,ls,,release-b11707-w10,"error: invalid argument: -at
+",,,,fork,"{""bare"":""1""}",-at off
+2026-10-01 11:25:14,b5cf8ce02,11261,,,,qwen36.gguf,--moe cache=0,cli-t100,pc3,0,ls,,release-b11707-w10,"error: invalid argument: --moe
+",,,,fork,"{""bare"":""1""}",--moe cache=0
