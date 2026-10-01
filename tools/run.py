@@ -44,7 +44,9 @@ MODEL = os.environ.get("MODEL", "")
 MODELS_DIR = os.environ.get("PERF_MODELS_DIR", "")  # other models' pages are dropped from RAM before a run
 PPL_TEXT = os.path.join(PROMPTS, "longsrc.cpp")  # frozen snapshot of llama.cpp common/json-schema-to-grammar.cpp (code, like agent prompts)
 BARE = False
-COMMON_ALL = ["-t", "6", "--cpu-moe", "-nr", "--moe-expert-cache", "-1", "-dev", "CUDA0,CUDA1"]
+THREADS = os.environ.get("PERF_THREADS", "6")                  # decode threads of every run (tools/cloud/pod.sh sets both for rented boxes)
+DEVS = os.environ.get("PERF_DEV", "CUDA0,CUDA1")                # -dev list (the GPU order is pinned)
+COMMON_ALL = ["-t", THREADS, "--cpu-moe", "-nr", "--moe-expert-cache", "-1", "-dev", DEVS]
 if "," not in os.environ.get("CUDA_VISIBLE_DEVICES", ","):  # one visible GPU: no device order to pin
     COMMON_ALL = COMMON_ALL[:-2]
 COMMON = COMMON_ALL
@@ -245,7 +247,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             COMMON = list(extra_args)
         if test in ("pf12k", "pf12k-stock", "pf128k"):
             pf_ctx = str(OVR.get("ctx") or (131072 if test == "pf128k" else 16384))
-            dev = ["-t", "6", "-dev", "CUDA1,CUDA0", "-c", pf_ctx, "-ub", "2048", "-b", "2048"]
+            dev = ["-t", THREADS, "-dev", os.environ.get("PERF_PF_DEV") or ("CUDA1,CUDA0" if DEVS == "CUDA0,CUDA1" else DEVS), "-c", pf_ctx, "-ub", "2048", "-b", "2048"]
             args = list(extra_args) if BARE else dev + ((["--moe-expert-cache", "0"] if test == "pf12k-stock" and not build.startswith("stock") else []) if test == "pf12k-stock" or plain or build.startswith("stock") else ["--cpu-moe", "-nr", "--moe-expert-cache", "-1"]) + list(extra_args)
             if BARE and (plain or build.startswith("stock")) and "-c" not in args:
                 args += ["-c", pf_ctx]  # stock's default context (4096) rejects the 12k prompt (HTTP 400); the fork sets 32k itself
