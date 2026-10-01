@@ -3116,6 +3116,7 @@ static void self_tune(moe_cache * mc) {
         for (const auto & x : T_swap) { add(x); }
         return t;
     }();
+    if (T.empty()) { return; } // -at off, every knob set by the user or deterministic mode: nothing to tune
     const size_t MIN_S = 3, MAX_S = 8;
     // a cycle costs ~2k tokens per state-carrying knob (half of them on the worse candidate): rest long enough to keep that under ~10%
     const uint64_t REST_MIN = 16384, REST_MAX = 131072;
