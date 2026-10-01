@@ -59,3 +59,12 @@ python3 tools/run.py show -t t100          # mean/stdev per build   |   python3 
 
 `run.py ctl BUILD name:KEY=V,KEY=V ...` switches settings at runtime on one server (`LLAMA_MOE_CACHE_CTL`) with rotating prompts and
 run order: the A/B for knobs that need a warm cache.
+
+## Shared slot pool (tried, not kept)
+
+One slot pool shared by the layers of a quant type, with a victim chosen over the whole pool, was tested on GLM 3.5 (2 x RTX 3090), OLMoE and Qwen3.6-35B on the
+8 GB laptop. `pool-grid.csv` has every finished run (one row each: ratio, window, decay, learned weights, hit rate, t/s; append-only). No variant beat the per-layer
+cache: the best tied it within noise (GLM steady hit 63.6% vs 62.4-63.7% for pool off), the shared structure with the old score was 0.2-1.4 points lower, and scores that
+rely on recent use alone (window-only, exponential decay, hidden Markov model) were lower still. The simulator (`tools/sim/pool_sim.py`) had predicted gains of 1.7-2.5 points,
+so it is not a guide for tuning without async upload timing and stream slots. The engine code lives on the private branch `pool-experiment` of neurall/moe-net.
+
