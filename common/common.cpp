@@ -14,6 +14,7 @@
 #include <cinttypes>
 #include <climits>
 #include <cmath>
+#include <atomic>
 #include <chrono>
 #include <cstdarg>
 #include <cstring>
@@ -1458,6 +1459,13 @@ static void common_moe_cache_auto_impl(common_params & params);
 
 static void common_moe_cache_auto(common_params & params) {
     common_moe_cache_auto_impl(params);
+    // VRAM the cache leaves free for the growth of the CUDA pools after load, which scales with the batch: measured at -ub 2048 (cache
+    // sized with a margin, 12k prompt, other margins aborting with CUDA out of memory): 54 MiB OLMoE, 74 IQ3_S, 170 GLM; ~15 at 512.
+    // 0.1 MiB per ubatch token is 1.2x the worst of them (-at off keeps the 384 MiB default; --moe margin_mb=N overrides)
+    if (params.n_moe_cache_slots != 0 && common_autotune_on(params) && params.moe_opts.find("margin_mb") == std::string::npos &&
+        !getenv("LLAMA_MOE_CACHE_MARGIN_MB")) {
+        params.moe_opts += (params.moe_opts.empty() ? "" : ",") + std::string("margin_mb=") + std::to_string(std::max(48, (int) std::ceil(0.1 * params.n_ubatch)));
+    }
     COM_DBG("moe_cache_slots=%d ctx=%d batch=%d ubatch=%d threads=%d threads_batch=%d repack=%s ngl=%d tensor_overrides=%zu fit=%s\n",
         params.n_moe_cache_slots, params.n_ctx, params.n_batch, params.n_ubatch, params.cpuparams.n_threads,
         params.cpuparams_batch.n_threads, params.no_extra_bufts ? "off" : "on", params.n_gpu_layers,
@@ -1979,6 +1987,8 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
             tmp.resize(std::min(tmp.size(), (size_t) params.n_batch));
             common_batch batch = common_batch_get_one(lctx, tmp);
             llama_process(lctx, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+            llama_synchronize(lctx);
+            llama_memory_clear(llama_get_memory(lctx), true);
             llama_moe_cache_defer(lctx, false);
         }
         llama_memory_clear(llama_get_memory(lctx), true);
