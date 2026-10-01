@@ -1537,8 +1537,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
         if (f == "stock" || f == "cache") {
             mode = f;
         } else if (!common_autotune_on(params)) {
-            // no measuring: the static rule, cache only when the model is clearly bigger than the free VRAM; nothing is recorded
-            mode = model_size * 10 > vram_free * 13 && moe_auto_est_prompt(params) < 3000 ? "cache" : "stock";
+            // no measuring: the static rule, cache whenever the model does not fit (and the prompt is not long); nothing is recorded
+            mode = moe_auto_est_prompt(params) < 3000 ? "cache" : "stock";
             LOG_INF("%s: MoE placement: %s (autotune off: static rule, model %.1f GiB, free VRAM %.1f GiB)\n", __func__, mode.c_str(),
                 model_size / 1073741824.0, vram_free / 1073741824.0);
         } else if ((st.n >= 2 && ca.n >= 2) || (st.n >= 1 && ca.n >= 1 && moe_auto_cache_clear_win(st, ca, params))) {
@@ -1557,11 +1557,11 @@ static void common_moe_cache_auto_impl(common_params & params) {
             const size_t est_gen = (size_t) moe_auto_est_gen(params);
             const bool prefill_heavy = est_prompt >= 3000 || est_prompt > 8 * est_gen;
             const std::string first = model_size * 10 > vram_free * 13 && !prefill_heavy ? "cache" : "stock";
-            if (model_size >= 2 * vram_free && !prefill_heavy) {
-                // at least twice the free VRAM: the cache won every measurement there (2x RTX 3090: GLM 1.5x, MiMo 2.4x, Qwen3.8 1.7x,
-                // IQ3_S 83 GB on one GPU 2x), so there is no stock run to spend: nothing is recorded and every start takes the cache
+            if (!prefill_heavy) {
+                // the model does not fit: the cache (2x RTX 3090: GLM 1.5x, MiMo 2.4x, Qwen3.8 1.7x, IQ3_S 83 GB on one GPU 2x), no stock run to
+                // spend: nothing is recorded and every start takes the cache. Only a request that is mostly prompt is measured against stock.
                 mode = "cache";
-                LOG_INF("%s: MoE placement: cache (model %.1f GiB is over twice the free VRAM %.1f GiB, nothing to measure)\n", __func__,
+                LOG_INF("%s: MoE placement: cache (model %.1f GiB does not fit the free VRAM %.1f GiB, nothing to measure)\n", __func__,
                     model_size / 1073741824.0, vram_free / 1073741824.0);
             } else {
                 // measuring: the placement with fewer recorded runs (ties: the first), so each gets two runs before it decides

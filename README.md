@@ -45,9 +45,9 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 
 The defaults are chosen on your machine, not hard-coded:
 
-- **Cache or stock, measured.** If the model fits in VRAM, or the cache would not pay for what you run, it is placed exactly
-  like stock llama.cpp, so speed never drops below stock. A model more than twice your free VRAM takes the cache right away;
-  in between, the first two runs compare both and keep the faster one.
+- **Cache or stock.** If the model fits in VRAM it is placed exactly like stock llama.cpp. A model that does not fit takes
+  the cache right away. When what you run is mostly long prompts (processing them would cost more than the faster generation
+  gains), the first two runs compare both and keep the faster one.
 - **Self-tuning on real token times.** The cache policy, the upload schedule and the decode and prompt thread counts are
   adjusted while you use it. A setting that does not help is dropped, a setting you fix yourself is never touched.
 - **It remembers.** What it learned per model (hot experts, tuned settings, cache-or-stock) is kept in one file,
