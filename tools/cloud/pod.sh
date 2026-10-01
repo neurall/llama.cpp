@@ -3,6 +3,7 @@
 #   bash pod.sh report                  system, PCIe topology and live links, host -> GPU bandwidth alone and all GPUs at once
 #   bash pod.sh setup                   fork binaries (latest GitHub release, or built from source) and upstream llama.cpp (built from source)
 #   bash pod.sh bench MODEL.gguf ...    short decode and 12k-prompt tests, stock vs fork, on 1, 2, 4 GPUs (as many as the box has)
+#   bash pod.sh rebuild [NAME] [REF]    the fork from source at a branch or commit into builds/NAME (ccache: quick), bench it with FORK_NAME=NAME
 #   bash pod.sh pack                    one tarball of everything under $POD_DIR/results
 #   bash pod.sh all MODEL.gguf          report, setup, bench, pack
 # Env: POD_DIR (/workspace/pod), STOCK_REF (upstream commit), GPUS ("1 2 4"), TESTS ("t100 pf12k"), RUNS (2), THREADS (half the cores, at most 24), FORK_BUILD=1 (never use the release binary), STOCK_BUILD=stock-NAME (which upstream build bench uses), SKIP_STOCK=1 (no upstream build), STOCK_TAG=b11323 (a prebuilt upstream release instead of a source build)
@@ -43,10 +44,15 @@ report() {
 
 deps() {
   local miss=""; for t in git cmake curl python3; do command -v $t > /dev/null || miss="$miss $t"; done
+  command -v ccache > /dev/null || miss="$miss ccache"
   [ -z "$miss" ] && return 0
-  command -v apt-get > /dev/null && [ "$(id -u)" = 0 ] && { apt-get update -qq && apt-get install -y -qq git cmake build-essential curl python3 ccache; return; }
+  command -v apt-get > /dev/null && [ "$(id -u)" = 0 ] && { apt-get update -qq; apt-get install -y -qq git cmake build-essential curl python3 ccache; return 0; }
+  [ "$miss" = " ccache" ] && return 0   # only ccache missing and no way to install it: builds just take longer
   die "missing:$miss"
 }
+
+# ccache for every source build: one cache under POD_DIR, keyed by file content (CCACHE_BASEDIR / NOHASHDIR: the same sources in another directory still hit)
+export CCACHE_DIR="$POD/ccache" CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-30G}" CCACHE_BASEDIR="$POD" CCACHE_NOHASHDIR=1 CCACHE_COMPILERCHECK=content
 
 cuda_build() {   # cuda_build SRC_DIR NAME: cmake build of llama-server + llama-cli, binaries and libs into builds/NAME
   command -v nvcc > /dev/null || die "nvcc not found: use a CUDA -devel image (or the fork's release binary: no source build needed)"
@@ -55,7 +61,8 @@ cuda_build() {   # cuda_build SRC_DIR NAME: cmake build of llama-server + llama-
   [ "$(printf '%s\n3.31\n' "$cm" | sort -V | head -1)" = 3.31 ] || { pip install -q --break-system-packages cmake 2>/dev/null || pip install -q cmake; hash -r; }
   [ -e "$(dirname "$(dirname "$(command -v nvcc)")")/include/cublas_v2.h" ] || { v=$(nvcc --version | grep -o 'release [0-9]*\.[0-9]*' | grep -o '[0-9]*\.[0-9]*' | tr . -)
     apt-get install -y -qq "libcublas-dev-$v" "cuda-cudart-dev-$v" > /dev/null 2>&1 || log "no cuBLAS dev package for CUDA $v: the build may fail"; }
-  cmake -S "$1" -B "$1/build" -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DCMAKE_CUDA_ARCHITECTURES=native > "$POD/results/cmake-$2.log" 2>&1 \
+  cmake -S "$1" -B "$1/build" -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DCMAKE_CUDA_ARCHITECTURES=native \
+    $(command -v ccache > /dev/null && echo "-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache") > "$POD/results/cmake-$2.log" 2>&1 \
     && cmake --build "$1/build" -j "$CORES" --target llama-server llama-cli >> "$POD/results/cmake-$2.log" 2>&1 || die "build of $2 failed, see $POD/results/cmake-$2.log"
   rm -rf "$POD/builds/$2"; mkdir -p "$POD/builds/$2"; cp -a "$1/build/bin/." "$POD/builds/$2/"
 }
@@ -106,11 +113,17 @@ PY
   log "builds: $(ls "$POD/builds" | tr '\n' ' ')"
 }
 
+rebuild() {   # rebuild [NAME=fork-new] [REF=release]: the fork from source at a branch or commit into builds/NAME (ccache makes it quick after the first time)
+  deps; fork_src
+  [ -n "${FORK_SRC:-}" ] || { git -C "$POD/fork-src" fetch -q --depth 1 origin "${2:-release}" && git -C "$POD/fork-src" checkout -q FETCH_HEAD || die "cannot fetch ${2:-release}"; }
+  cuda_build "$POD/fork-src" "${1:-fork-new}" && works "${1:-fork-new}" && log "built builds/${1:-fork-new}; bench it with FORK_NAME=${1:-fork-new}"
+}
+
 bench() {
   [ $# -ge 1 ] || die "usage: pod.sh bench MODEL.gguf ..."
   fork_src
   local ngpu; ngpu=$(nvidia-smi -L | wc -l); local sn; sn=${STOCK_BUILD:-$(ls "$POD/builds" | grep "^stock-" | head -1)}
-  [ -n "$sn" ] && [ -x "$POD/builds/fork/llama-server" ] || die "run setup first"
+  local fk=${FORK_NAME:-fork}; [ -n "$sn" ] && [ -x "$POD/builds/$fk/llama-server" ] || die "run setup first"
   for m in "$@"; do
     for k in ${GPUS:-1 2 4}; do
       [ "$k" -le "$ngpu" ] || continue
@@ -118,7 +131,7 @@ bench() {
       for t in ${TESTS:-t100 pf12k}; do
         log "$(basename "$m"): $k GPU(s), test $t"
         CUDA_VISIBLE_DEVICES=$vis PERF_DEV=$devs PERF_THREADS=$THREADS PERF_BUILDS="$POD/builds" RUN_DATA="$POD/results" PERF_HW="pod-${k}gpu" MODEL="$m" \
-          python3 "$POD/fork-src/tools/run.py" run -t "$t" -n "${RUNS:-2}" --no-warm --bare --campaign pod fork "$sn" 2>&1 | tee -a "$POD/results/bench.log" | tail -4
+          python3 "$POD/fork-src/tools/run.py" run -t "$t" -n "${RUNS:-2}" --no-warm --bare --campaign pod "$fk" "$sn" 2>&1 | tee -a "$POD/results/bench.log" | tail -4
       done
     done
   done
@@ -133,6 +146,7 @@ pack() {
 case "${1:-help}" in
   report) report ;;
   setup) setup ;;
+  rebuild) shift; rebuild "$@" ;;
   bench) shift; bench "$@" ;;
   pack) pack ;;
   all) shift; report; setup; bench "$@"; pack ;;
