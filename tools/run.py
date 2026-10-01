@@ -659,6 +659,7 @@ if __name__ == "__main__":
     r.add_argument("-n", type=int, default=1)
     r.add_argument("-e", "--env", action="append", default=[])
     r.add_argument("--note")
+    r.add_argument("--campaign", help="name written to the campaign column of every row")
     r.add_argument("--bare", action="store_true", help="only -m (plus --args): the defaults a new user gets")
     r.add_argument("--plain", action="store_true", help="no cache flags (autofit), like stock")
     r.add_argument("--no-warm", action="store_true", help="no discarded run before the measured one: the first run as a user sees it")
