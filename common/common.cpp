@@ -1397,6 +1397,12 @@ static std::string moe_auto_decide(const moe_auto_rec & st, const moe_auto_rec &
     return ca.g_ms <= st.g_ms && (!moe_auto_p_known(st, ca) || ca.p_ms < max_p * st.p_ms) ? "cache" : "stock";
 }
 
+// --moe autotune=0 or LLAMA_AUTOTUNE=0: the kill switch for everything the engine tunes or measures by itself
+bool common_autotune_on(const common_params & params) {
+    const char * e = getenv("LLAMA_AUTOTUNE");
+    return params.autotune && !(e && atoi(e) == 0);
+}
+
 static void common_moe_cache_auto_impl(common_params & params);
 
 static void common_moe_cache_auto(common_params & params) {
@@ -1471,6 +1477,11 @@ static void common_moe_cache_auto_impl(common_params & params) {
         std::string mode;
         if (f == "stock" || f == "cache") {
             mode = f;
+        } else if (!common_autotune_on(params)) {
+            // no measuring: the static rule, cache only when the model is clearly bigger than the free VRAM; nothing is recorded
+            mode = model_size * 10 > vram_free * 13 && moe_auto_est_prompt(params) < 3000 ? "cache" : "stock";
+            LOG_INF("%s: MoE placement: %s (autotune off: static rule, model %.1f GiB, free VRAM %.1f GiB)\n", __func__, mode.c_str(),
+                model_size / 1073741824.0, vram_free / 1073741824.0);
         } else if ((st.n >= 2 && ca.n >= 2) || (st.n >= 1 && ca.n >= 1 && moe_auto_cache_clear_win(st, ca, params))) {
             // both placements measured on at least two runs (the first of each may be cold), or once each when the cache, whose run came
             // first and may be cold, already wins this request by 10%: decide for this request
@@ -1761,9 +1772,9 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         cparams.n_samplers = pimpl->samplers_seq_config.size();
     }
 
-    llama_moe_set_options(params.moe_opts.c_str());
+    llama_moe_set_options((params.moe_opts + (common_autotune_on(params) ? "" : (params.moe_opts.empty() ? "autotune=0" : ",autotune=0"))).c_str());
     llama_context * lctx = llama_init_from_model(model, cparams);
-    if (lctx && params.cpuparams.auto_threads) {
+    if (lctx && params.cpuparams.auto_threads && common_autotune_on(params)) {
         llama_set_thread_autotune(lctx, true); // the count came from the default, not from the user: tune it on measured decode time
         if (!params.threads_batch_set) {
             // likewise the batch count, on measured prompt batches, up to the logical cores (the batch pool is created that big)

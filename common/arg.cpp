@@ -2578,6 +2578,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 else if (key == "inserts") { params.n_moe_cache_inserts = v; }
                 else if (key == "window")  { params.n_moe_cache_window  = v; }
                 else if (key == "predict") { params.n_moe_predict       = v; }
+                else if (key == "autotune") { params.autotune = v != 0; }
                 else if (key == "train")   { params.n_moe_predict_train = v; if (params.n_moe_predict <= 0) { params.n_moe_predict = 8; } }
                 else { params.moe_opts += (params.moe_opts.empty() ? "" : ",") + kv; } // a tuner knob: the engine checks the name
             }

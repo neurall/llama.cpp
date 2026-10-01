@@ -3102,7 +3102,7 @@ static void self_tune(moe_cache * mc) {
         const char * dm = getenv("LLAMA_MOE_CACHE_DETERMINISTIC");
         const bool det_mode = dm && atoi(dm) != 0;
         auto add = [&](const tunable & x) {
-            if (!det_mode && !user_knobs().count(x.name)) { t.push_back(x); }
+            if (!det_mode && !g_autotune_off && !user_knobs().count(x.name)) { t.push_back(x); }
         };
         if (mc->pred_m > 0) {
             add({ "PREDICT", &knobs_t::predict, { 0, 1 } }); // first: the streaming knobs are tuned with it on
@@ -3761,6 +3761,8 @@ void llama_moe_cache_step() {
     }
 }
 
+static bool g_autotune_off = false; // --moe autotune=0: the tuner list stays empty, the knobs keep their defaults
+
 void llama_moe_set_options(const char * opts) {
     // "NAME=value,NAME=value": tuner knobs (MARGIN, GATE, WAIT, BIG, ...); a name given here is never tuned
     knobs(); // environment first
@@ -3773,7 +3775,9 @@ void llama_moe_set_options(const char * opts) {
         if (eq == std::string::npos) { continue; }
         std::string name = kv.substr(0, eq);
         for (char & c : name) { c = (char) toupper((unsigned char) c); }
-        if (knob_set(knobs(), name, atof(kv.c_str() + eq + 1))) {
+        if (name == "AUTOTUNE") {
+            g_autotune_off = atof(kv.c_str() + eq + 1) == 0;
+        } else if (knob_set(knobs(), name, atof(kv.c_str() + eq + 1))) {
             user_knobs().insert(name);
         } else {
             LLAMA_LOG_WARN("moe-cache: --moe: unknown key '%s'\n", name.c_str());
