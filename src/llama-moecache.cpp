@@ -479,6 +479,8 @@ bool knob_set(knobs_t & k, const std::string & name, double v) {
 }
 
 // knobs the user set (LLAMA_MOE_CACHE_<NAME> or --moe NAME=value): the self-tuner and the saved tuner state leave them alone
+static bool g_autotune_off = false; // -at off / --moe autotune=0 / cache=0: the tuner list stays empty, the knobs keep their defaults
+
 std::set<std::string> & user_knobs() {
     static std::set<std::string> s;
     return s;
@@ -3760,8 +3762,6 @@ void llama_moe_cache_step() {
                 mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0);
     }
 }
-
-static bool g_autotune_off = false; // --moe autotune=0: the tuner list stays empty, the knobs keep their defaults
 
 void llama_moe_set_options(const char * opts) {
     // "NAME=value,NAME=value": tuner knobs (MARGIN, GATE, WAIT, BIG, ...); a name given here is never tuned
