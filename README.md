@@ -90,6 +90,15 @@ Anything you pass is used as given and is never auto-tuned:
 | `--load-mode pin\|mmap` | pinned weights (the server default when the model fits in RAM, faster prompts) or mmap |
 | `LLAMA_MOE_AUTO_MODE=stock\|cache` | force the placement; `LLAMA_MOE_STATE=0` ignores and never writes the state file |
 
+## Turn it off
+
+| you pass | effect |
+|---|---|
+| `--moe cache=0` | the whole fork off: no expert cache, nothing tuned or measured, plain stock behaviour (same as `--moe-expert-cache 0`) |
+| `-at off` | only the self-tuning off (`--autotune off`, same as `--moe autotune=0`): the cache keeps working with fixed defaults, placement uses a static rule, nothing is measured or saved |
+
+Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_MOE=cache=0`.
+
 ## Good to know
 
 - **RAM is the limit.** Decode speed is bound by how fast the CPU reads the experts that are not in VRAM. More or faster RAM,
