@@ -1403,6 +1403,57 @@ bool common_autotune_on(const common_params & params) {
     return params.autotune && !(e && atoi(e) == 0);
 }
 
+// -ub from the request and the card, no VRAM tiers: the compute buffer of a ubatch is probed (no_alloc, per candidate) and what it
+// takes from the expert cache is weighed against the prefill time it saves.
+//   time per request, in decode-token units:  np / (PP_PER_TG * (ub/512)^PP_EXP)  +  ng * (1 + extra / cache_vram)
+// extra = compute buffer of this ubatch minus that of 512, cache_vram = VRAM left for cache slots; the decode loss is taken as
+// the share of cache slots lost. Constants measured: prefill grows with ub^0.6 (2.3x for 4x on a 16 GB card with experts in RAM,
+// 1.8x on 2x RTX 3090 and on OLMoE) and is ~11x the decode rate; np / ng are the request profile (-p / -n, else the agentic estimate).
+static uint32_t common_auto_ubatch(common_params & params) {
+    const double PP_EXP = 0.5, PP_PER_TG = 11.0;
+    const uint32_t cand[] = { 512, 1024, 2048 };
+    std::vector<size_t> compute(3, 0);
+    int64_t cache_vram = 0;
+    for (int i : { 0, 2 }) {  // the buffer is ~linear in ub: probe both ends, interpolate the middle
+        auto mp = common_model_params_to_llama(params);
+        auto cp = common_context_params_to_llama(params);
+        cp.n_ubatch = cand[i];
+        cp.n_batch  = std::max(cp.n_batch, cand[i]);
+        std::vector<ggml_backend_dev_t> devs;
+        uint32_t ngl = 0, nctx = 0, nexp = 0;
+        size_t sum = 0;
+        try {
+            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
+                sum += dmd[d].compute;
+                if (i == 0) {
+                    const int64_t target = d < params.fit_params_target.size() ? (int64_t) params.fit_params_target[d] : 0;
+                    cache_vram += std::max<int64_t>(0, dmd[d].free - (int64_t) (dmd[d].model + dmd[d].context + dmd[d].compute) - target);
+                }
+            }
+        } catch (const std::exception & e) {
+            COM_DBG("ubatch probe failed (%s), keeping %u\n", e.what(), cand[0]);
+            return cand[0];
+        }
+        compute[i] = sum;
+    }
+    if (cache_vram <= 0 || compute[2] <= compute[0]) {
+        return cand[0];
+    }
+    const double np = moe_auto_est_prompt(params), ng = moe_auto_est_gen(params);
+    uint32_t best = cand[0];
+    double t_best = 1e300;
+    for (uint32_t ub : cand) {
+        const double extra = (double) (compute[2] - compute[0]) * (ub - 512) / 1536.0;
+        const double t = np / (PP_PER_TG * std::pow(ub / 512.0, PP_EXP)) + ng * (1.0 + extra / (double) cache_vram);
+        COM_DBG("ubatch %u: extra buffer %.2f GiB of %.1f GiB cache VRAM, est. %.0f decode-token units\n", ub, extra / 1073741824.0, cache_vram / 1073741824.0, t);
+        if (t < t_best) { t_best = t; best = ub; }
+    }
+    LOG_INF("%s: ubatch %u (request ~%.0f prompt + %.0f generated tokens, compute buffer %.2f -> %.2f GiB at 512 -> 2048, %.1f GiB left for the cache)\n", __func__,
+        best, np, ng, compute[0] / 1073741824.0, compute[2] / 1073741824.0, cache_vram / 1073741824.0);
+    return best;
+}
+
 static void common_moe_cache_auto_impl(common_params & params);
 
 static void common_moe_cache_auto(common_params & params) {
@@ -1535,13 +1586,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
             params.load_pinned_auto = true;
         }
     }
-    if (!params.ubatch_user) {
-        // (also in stock placement: IQ1_M on 2x24 GB, 12k prompt 646 -> 1199 t/s at 2048 vs 512, decode unchanged)
-        // experts are uploaded once per ubatch in prompt processing: 2048 is ~2x faster on long
-        // prompts than 512; its compute buffer (~0.7 GiB on GLM-5.3-Flash) comes out of the cache
-        // ponytail: VRAM tiers, measured on 24 GB; estimate the buffer from n_embd if small GPUs need finer steps
-        const size_t GiB = 1ull << 30;
-        params.n_ubatch = std::min(params.n_batch, vram_max >= 20*GiB ? 2048 : vram_max >= 10*GiB ? 1024 : 512);
+    if (!params.ubatch_user && common_autotune_on(params)) {
+        params.n_ubatch = std::min<uint32_t>(params.n_batch, common_auto_ubatch(params));
     }
     // leave one core per GPU to drive it (measured on 2 GPUs: 6 of 8 cores beats 8)
     for (auto * cp : { &params.cpuparams, &params.cpuparams_batch }) {
@@ -1774,6 +1820,13 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
 
     llama_moe_set_options((params.moe_opts + (common_autotune_on(params) ? "" : (params.moe_opts.empty() ? "autotune=0" : ",autotune=0"))).c_str());
     llama_context * lctx = llama_init_from_model(model, cparams);
+    // the compute buffers did not fit (a card near its limit): a smaller ubatch needs a smaller buffer, retry halving it; only an
+    // ubatch of ours, the user's -ub is respected. (A GPU fault at run time, Xid 31, kills the CUDA context and cannot be retried.)
+    while (lctx == NULL && !params.ubatch_user && cparams.n_ubatch > 128) {
+        cparams.n_ubatch /= 2;
+        LOG_WRN("%s: context creation failed, retrying with ubatch %u\n", __func__, cparams.n_ubatch);
+        lctx = llama_init_from_model(model, cparams);
+    }
     if (lctx && params.cpuparams.auto_threads && common_autotune_on(params)) {
         llama_set_thread_autotune(lctx, true); // the count came from the default, not from the user: tune it on measured decode time
         if (!params.threads_batch_set) {

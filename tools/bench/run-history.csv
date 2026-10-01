@@ -609,3 +609,47 @@ warning: 360	../csu/libc-start.c: No such file or directory
 ",,,,fork,"{""bare"":""1""}",-at off
 2026-10-01 11:25:14,b5cf8ce02,11261,,,,qwen36.gguf,--moe cache=0,cli-t100,pc3,0,ls,,release-b11707-w10,"error: invalid argument: --moe
 ",,,,fork,"{""bare"":""1""}",--moe cache=0
+2026-10-01 13:37:24,49fe4b756,11707,54.6,67.5,,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,,cli-t100,pc1,1,b11707-49fe4b756,,ubatch-profile,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:38:22,49fe4b756,11707,55.1,73.1,,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,,cli-t100,pc1,1,b11707-49fe4b756,,ubatch-profile,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:39:24,9c92736e0+ub,11708,,,,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,,cli-t100,pc1,0,autotune,,ubatch-profile,"lash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf'
+0.21.614.915 E srv  llama_server: exiting due to model loading error
+llama_server exited with code 1
+-\ Error: the server exited before becoming ready
+",,,,fork,"{""bare"":""1""}",
+2026-10-01 13:39:29,9c92736e0+ub,11708,,,,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,,cli-t100,pc1,0,autotune,,ubatch-profile,"lash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf'
+0.05.055.732 E srv  llama_server: exiting due to model loading error
+llama_server exited with code 1
+\| Error: the server exited before becoming ready
+",,,,fork,"{""bare"":""1""}",
+2026-10-01 13:39:35,9c92736e0+ub,11708,,,,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,,cli-t100,pc1,0,autotune,,ubatch-profile,"lash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf'
+0.04.993.801 E srv  llama_server: exiting due to model loading error
+llama_server exited with code 1
+-\ Error: the server exited before becoming ready
+",,,,fork,"{""bare"":""1""}",
+2026-10-01 13:39:38,9c92736e0+ub,11708,,,,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,,cli-t100,pc1,0,autotune,,ubatch-profile,"del, '/m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf'
+0.03.186.911 E srv  llama_server: exiting due to model loading error
+llama_server exited with code 1
+| Error: the server exited before becoming ready
+",,,,fork,"{""bare"":""1""}",
+2026-10-01 13:39:42,9c92736e0+ub,11708,,,,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,,cli-t100,pc1,0,autotune,,ubatch-profile,"del, '/m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf'
+0.03.156.150 E srv  llama_server: exiting due to model loading error
+llama_server exited with code 1
+| Error: the server exited before becoming ready
+",,,,fork,"{""bare"":""1""}",
+2026-10-01 13:39:45,9c92736e0+ub,11708,,,,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,,cli-t100,pc1,0,autotune,,ubatch-profile,"del, '/m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf'
+0.03.165.199 E srv  llama_server: exiting due to model loading error
+llama_server exited with code 1
+| Error: the server exited before becoming ready
+",,,,fork,"{""bare"":""1""}",
+2026-10-01 13:47:34,49fe4b756,11707,55.7,71.5,,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,,cli-t100,pc1,1,b11707-49fe4b756,,ubatch-model,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:48:31,49fe4b756,11707,55.2,72.4,,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,,cli-t100,pc1,1,b11707-49fe4b756,,ubatch-model,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:49:29,49fe4b756,11707,56.4,72.5,,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,,cli-t100,pc1,1,b11707-49fe4b756,,ubatch-model,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:49:34,49fe4b756,11707,153.7,104.6,,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,,cli-t100,pc1,1,b11707-49fe4b756,,ubatch-model,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:49:39,49fe4b756,11707,153.5,106,,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,,cli-t100,pc1,1,b11707-49fe4b756,,ubatch-model,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:49:45,49fe4b756,11707,151.7,106,,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,,cli-t100,pc1,1,b11707-49fe4b756,,ubatch-model,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:50:43,9c92736e0+ubmodel,11708,57,72.6,,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,,cli-t100,pc1,1,autotune,,ubatch-model,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:51:42,9c92736e0+ubmodel,11708,56.2,72.8,,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,,cli-t100,pc1,1,autotune,,ubatch-model,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:52:41,9c92736e0+ubmodel,11708,56.7,72.7,,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,,cli-t100,pc1,1,autotune,,ubatch-model,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:52:47,9c92736e0+ubmodel,11708,153.4,106.7,,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,,cli-t100,pc1,1,autotune,,ubatch-model,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:52:52,9c92736e0+ubmodel,11708,153.8,108.7,,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,,cli-t100,pc1,1,autotune,,ubatch-model,,,,,fork,"{""bare"":""1""}",
+2026-10-01 13:52:57,9c92736e0+ubmodel,11708,153.2,105.9,,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,,cli-t100,pc1,1,autotune,,ubatch-model,,,,,fork,"{""bare"":""1""}",

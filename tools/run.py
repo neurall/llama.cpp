@@ -453,7 +453,8 @@ def remote_exe(m, build):
 
 
 def remote_sh(m, cmd, timeout=3600):
-    r = subprocess.run(["ssh", m["ssh"], cmd], capture_output=True, text=True, timeout=timeout)
+    argv = ["bash", "-c", cmd] if m["ssh"] == "local" else ["ssh", m["ssh"], cmd]   # ssh=local: llama-cli on this host (the CLI one-shot case)
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     return r.stdout + r.stderr
 
 
@@ -489,7 +490,7 @@ def remote_cell(mid, m, build, test, args, note, warm=True):
         remote_run(m, build, test, args)
     row = remote_run(m, build, test, args)
     rec = {"bare": "1", **({"args": args} if args else {}), **{k: str(v) for k, v in OVR.items() if k != "prompt"}}
-    store(row, build, "cli-" + test, rec, note, mid, remote_version(m, build))
+    store(row, build, "cli-" + test, rec, note, mid.split("-")[0], remote_version(m, build))   # pc1-cli rows are hw pc1
     show_row(row, build, "cli-" + test)
     IDX += 1
 
