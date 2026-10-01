@@ -5,7 +5,7 @@
 #   bash pod.sh bench MODEL.gguf ...    short decode and 12k-prompt tests, stock vs fork, on 1, 2, 4 GPUs (as many as the box has)
 #   bash pod.sh pack                    one tarball of everything under $POD_DIR/results
 #   bash pod.sh all MODEL.gguf          report, setup, bench, pack
-# Env: POD_DIR (/workspace/pod), STOCK_REF (upstream commit), GPUS ("1 2 4"), TESTS ("t100 pf12k"), RUNS (2), THREADS (half the cores, at most 24), FORK_BUILD=1 (never use the release binary), SKIP_STOCK=1 (no upstream build)
+# Env: POD_DIR (/workspace/pod), STOCK_REF (upstream commit), GPUS ("1 2 4"), TESTS ("t100 pf12k"), RUNS (2), THREADS (half the cores, at most 24), FORK_BUILD=1 (never use the release binary), SKIP_STOCK=1 (no upstream build), STOCK_TAG=b11323 (a prebuilt upstream release instead of a source build)
 set -uo pipefail
 POD=${POD_DIR:-/workspace/pod}; FORK=neurall/llama.cpp; STOCK=ggml-org/llama.cpp; STOCK_REF=${STOCK_REF:-def4d406ae2c2f39573120d68730fbb7760b24bf}
 mkdir -p "$POD/builds" "$POD/results"
@@ -50,6 +50,11 @@ deps() {
 
 cuda_build() {   # cuda_build SRC_DIR NAME: cmake build of llama-server + llama-cli, binaries and libs into builds/NAME
   command -v nvcc > /dev/null || die "nvcc not found: use a CUDA -devel image (or the fork's release binary: no source build needed)"
+  # an old cmake (Ubuntu 24.04: 3.28) cannot find the CUDA 13 libraries; the toolkit image may lack the cuBLAS headers and link
+  local cm; cm=$(cmake --version | head -1 | grep -o '[0-9]*\.[0-9]*' | head -1)
+  [ "$(printf '%s\n3.31\n' "$cm" | sort -V | head -1)" = 3.31 ] || { pip install -q --break-system-packages cmake 2>/dev/null || pip install -q cmake; hash -r; }
+  [ -e "$(dirname "$(dirname "$(command -v nvcc)")")/include/cublas_v2.h" ] || { v=$(nvcc --version | grep -o 'release [0-9]*\.[0-9]*' | grep -o '[0-9]*\.[0-9]*' | tr . -)
+    apt-get install -y -qq "libcublas-dev-$v" "cuda-cudart-dev-$v" > /dev/null 2>&1 || log "no cuBLAS dev package for CUDA $v: the build may fail"; }
   cmake -S "$1" -B "$1/build" -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DCMAKE_CUDA_ARCHITECTURES=native > "$POD/results/cmake-$2.log" 2>&1 \
     && cmake --build "$1/build" -j "$CORES" --target llama-server llama-cli >> "$POD/results/cmake-$2.log" 2>&1 || die "build of $2 failed, see $POD/results/cmake-$2.log"
   rm -rf "$POD/builds/$2"; mkdir -p "$POD/builds/$2"; cp -a "$1/build/bin/." "$POD/builds/$2/"
@@ -77,7 +82,22 @@ PY
   works fork || die "fork build does not see a GPU"
   local sn="stock-${STOCK_REF:0:9}"
   [ "${SKIP_STOCK:-0}" = 1 ] && { log "builds: $(ls "$POD/builds" | tr '\n' ' ')"; return; }
-  if [ ! -x "$POD/builds/$sn/llama-server" ]; then
+  if [ -n "${STOCK_TAG:-}" ] && [ ! -x "$POD/builds/stock-$STOCK_TAG/llama-server" ]; then
+    log "upstream $STOCK $STOCK_TAG: release binary"
+    local su; su=$(python3 - <<PY
+import json, re, urllib.request
+r = json.load(urllib.request.urlopen("https://api.github.com/repos/$STOCK/releases/tags/$STOCK_TAG"))
+a = {x["name"]: x["browser_download_url"] for x in r["assets"]}
+for pat in (r"^llama-.*bin-ubuntu-cuda.*-x64\.tar\.gz$", r"^cudart-llama-.*bin-ubuntu-cuda.*-x64\.tar\.gz$"):
+    m = [(tuple(int(v) for v in re.search(r"cuda-(\d+)\.(\d+)", n).groups()), u) for n, u in a.items() if re.match(pat, n)]
+    print(max(m)[1] if m else "")   # the newest CUDA version
+PY
+)
+    mkdir -p "$POD/builds/stock-$STOCK_TAG"
+    for u in $su; do [ -n "$u" ] && curl -fsSL --retry 3 "$u" | tar xz -C "$POD/builds/stock-$STOCK_TAG" --strip-components=1; done
+    works "stock-$STOCK_TAG" && sn="stock-$STOCK_TAG" || { log "upstream release binary cannot start CUDA here: source build"; rm -rf "$POD/builds/stock-$STOCK_TAG"; }
+  fi
+  if [ ! -x "$POD/builds/$sn/llama-server" ] && [ -z "$(ls "$POD/builds" | grep '^stock-')" ]; then
     log "upstream $STOCK ${STOCK_REF:0:9}: build from source"
     rm -rf "$POD/stock-src"; mkdir -p "$POD/stock-src"; git -C "$POD/stock-src" init -q
     git -C "$POD/stock-src" fetch -q --depth 1 "https://github.com/$STOCK" "$STOCK_REF" && git -C "$POD/stock-src" checkout -q FETCH_HEAD || die "cannot fetch upstream $STOCK_REF"
