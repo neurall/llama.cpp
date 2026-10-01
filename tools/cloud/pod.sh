@@ -3,6 +3,7 @@
 #   bash pod.sh report                  system, PCIe topology and live links, host -> GPU bandwidth alone and all GPUs at once
 #   bash pod.sh setup                   fork binaries (latest GitHub release, or built from source) and upstream llama.cpp (built from source)
 #   bash pod.sh bench MODEL.gguf ...    short decode and 12k-prompt tests, stock vs fork, on 1, 2, 4 GPUs (as many as the box has)
+#   bash pod.sh matrix MODEL.gguf       fork cold / prewarm (saved state) / hot and stock, short and long prompts, with the server's autotune lines and hit rate
 #   bash pod.sh rebuild [NAME] [REF]    the fork from source at a branch or commit into builds/NAME (ccache: quick), bench it with FORK_NAME=NAME
 #   bash pod.sh pack                    one tarball of everything under $POD_DIR/results
 #   bash pod.sh all MODEL.gguf          report, setup, bench, pack
@@ -138,6 +139,35 @@ bench() {
   RUN_DATA="$POD/results" python3 "$POD/fork-src/tools/run.py" show 2>&1 | tee "$POD/results/summary.txt"
 }
 
+matrix() {   # matrix MODEL: per GPU count and test: fork cold / prewarm / hot, stock first / hot; server logs + the autotune parameters and hit rate from each
+  [ $# -ge 1 ] || die "usage: pod.sh matrix MODEL.gguf"
+  fork_src
+  local m=$1 ngpu; ngpu=$(nvidia-smi -L | wc -l); local sn=${STOCK_BUILD:-$(ls "$POD/builds" | grep '^stock-' | head -1)} fk=${FORK_NAME:-fork}
+  [ -n "$sn" ] && [ -x "$POD/builds/$fk/llama-server" ] || die "run setup first"
+  mkdir -p "$POD/results/logs"
+  for k in ${GPUS:-4}; do
+    [ "$k" -le "$ngpu" ] || continue
+    local vis devs; vis=$(seq -s, 0 $((k - 1))); devs=$(seq -s, 0 $((k - 1)) | sed 's/[0-9][0-9]*/CUDA&/g')
+    for t in ${TESTS:-t100 chatv pf12k}; do
+      local st="$POD/state-$k-$t.ini"; rm -f "$st"
+      cell() {   # cell TAG BUILD [run.py flags]: one measured run; keeps its server log and pulls the cache and tuning lines out of it
+        local tag=$1 b=$2; shift 2
+        log "$(basename "$m") $k GPU(s) $t: $tag"
+        CUDA_VISIBLE_DEVICES=$vis PERF_DEV=$devs PERF_THREADS=$THREADS PERF_BUILDS="$POD/builds" RUN_DATA="$POD/results" PERF_HW="pod-${k}gpu" MODEL="$m" \
+          python3 "$POD/fork-src/tools/run.py" run -t "$t" -n 1 --bare --campaign pod --note "$tag" -e "LLAMA_MOE_STATE=$st" "$@" "$b" 2>&1 | tee -a "$POD/results/matrix.log" | tail -2
+        cp "/tmp/perf-$b.log" "$POD/results/logs/$k-$t-$tag.log" 2>/dev/null
+        { echo "== $k GPU(s) $t $tag"; grep -h -E 'moe cache = on|moe-cache: (MoE|auto|self-tune|placement)|common_moe_cache_auto|tuned|self-tune|threads  *=|ubatch|n_ubatch|expert cache enabled|prefill links' "/tmp/perf-$b.log" 2>/dev/null | tail -14 | cut -c1-230; } >> "$POD/results/params.txt"
+      }
+      cell cold "$fk" --no-warm
+      cell prewarm "$fk" --no-warm
+      cell hot "$fk"
+      cell stock-first "$sn" --no-warm
+      cell stock-hot "$sn"
+    done
+  done
+  RUN_DATA="$POD/results" python3 "$POD/fork-src/tools/run.py" show 2>&1 | tee "$POD/results/summary.txt"
+}
+
 pack() {
   local f="$POD/pod-results-$(date +%Y%m%d-%H%M).tar.gz"
   tar czf "$f" -C "$POD" results && log "results: $f (runpodctl send $f, or scp)"
@@ -148,6 +178,7 @@ case "${1:-help}" in
   setup) setup ;;
   rebuild) shift; rebuild "$@" ;;
   bench) shift; bench "$@" ;;
+  matrix) shift; matrix "$@" ;;
   pack) pack ;;
   all) shift; report; setup; bench "$@"; pack ;;
   *) sed -n '2,10p' "$0" ;;
