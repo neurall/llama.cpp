@@ -172,7 +172,7 @@ matrix() {   # matrix MODEL: per GPU count and test: fork cold / hot and every s
         { echo "== $k GPU(s) $t $tag"; grep -h -E 'moe cache = on|moe-cache: (MoE|auto|self-tune|placement)|common_moe_cache_auto|tuned|self-tune|threads  *=|ubatch|n_ubatch|expert cache enabled|prefill links' "/tmp/perf-$b.log" 2>/dev/null | tail -14 | cut -c1-230; } >> "$RES/params.txt"
       }
       has() { case " ${CELLS:-cold hot stock} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }   # CELLS picks the runs: any of cold hot stock
-      local fa=(); [ -n "${FORK_ARGS:-}" ] && fa=(--args "$FORK_ARGS")                               # extra server args for the fork cells (tags get TAGSUF)
+      local fa=(); [ -n "${FORK_ARGS:-}" ] && fa=("--args=$FORK_ARGS")                               # extra server args for the fork cells (tags get TAGSUF)
       if has cold || has hot; then
         if [ -n "${SEED:-}" ] && [ -f "$SEED" ]; then   # no cold run: the saved state of an earlier run (hot experts are per model, so any GPU count can use it)
           cp "$SEED" "$st"
