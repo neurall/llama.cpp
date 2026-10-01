@@ -30,6 +30,9 @@ report() {
     nvidia-smi --query-gpu=index,name,driver_version,memory.total,pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max --format=csv; echo
     nvidia-smi topo -m; echo
     lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Socket|NUMA node\(s\)|L3'; echo "nproc (cores this container may use): $CORES"
+    echo "board: $(cat /sys/class/dmi/id/board_vendor 2>/dev/null) $(cat /sys/class/dmi/id/board_name 2>/dev/null)"
+    e=/sys/devices/system/edac/mc/mc0   # populated memory channels, when the kernel exposes them (a container may not)
+    [ -d $e ] && echo "memory (EDAC): $(ls -d $e/rank* | wc -l) ranks, channels $(cat $e/rank*/dimm_location | grep -o 'channel [0-9]*' | sort -u | tr -d '\n'), controller max: $(cat $e/max_location)"
     [ -r /sys/fs/cgroup/cpu.max ] && echo "cgroup cpu.max: $(cat /sys/fs/cgroup/cpu.max)"
     [ -r /sys/fs/cgroup/memory.max ] && echo "cgroup memory.max: $(cat /sys/fs/cgroup/memory.max)"
     free -g | head -2; echo
@@ -39,6 +42,9 @@ report() {
   if command -v nvcc > /dev/null; then
     nvcc -O2 "$POD/fork-src/tools/cloud/h2d.cu" -o "$POD/h2d" >> "$out" 2>&1 && { echo "host -> GPU copy bandwidth (pinned):"; "$POD/h2d"; } >> "$out" 2>&1
     nvidia-smi --query-gpu=index,pcie.link.gen.current,pcie.link.width.current --format=csv >> "$out"   # right after the copies: the links are at full speed
+    { echo; echo "GPU <-> GPU:"; nvcc -O2 "$POD/fork-src/tools/cloud/p2p.cu" -o "$POD/p2p" 2>&1 && "$POD/p2p" 256 1
+      echo; echo "host memory: where it saturates, and how much is left for the GPUs:"
+      nvcc -O3 -Xcompiler "-O3 -mavx2 -pthread" "$POD/fork-src/tools/cloud/memsat.cu" -o "$POD/memsat" 2>&1 && "$POD/memsat" 16; } >> "$out" 2>&1
   else echo "no nvcc: pick a -devel CUDA image to get the bandwidth numbers" >> "$out"; fi
   cat "$out"
 }

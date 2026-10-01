@@ -29,6 +29,7 @@ Both builds run the way a user would start them (no flags), cold, `-n` runs each
 ## Reading `report`
 
 - `nvidia-smi topo -m`: `PIX`/`PXB` between GPUs means they sit behind a PCIe switch and share its uplink to the CPU; `PHB`/`NODE` means a host bridge; `SYS` means across CPU sockets.
+- GPU to GPU: "peer access 0" (GeForce) means copies go through host memory and share its bandwidth. `memsat` shows the thread count where host memory bandwidth saturates, and how a CPU-and-GPU load splits it.
 - The bandwidth table: a GPU on a good x16 gen4 link copies at about 25 GB/s (a x4 link about 6). "All at once" is what the cache does when GPUs upload misses together;
   a large drop from "alone" means a shared link, and more GPUs then add little for the cache.
 - Link gen and width are read right after the copies (an idle GPU drops to a lower generation).
