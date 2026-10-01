@@ -7,7 +7,7 @@
 #   bash pod.sh rebuild [NAME] [REF]    the fork from source at a branch or commit into builds/NAME (ccache: quick), bench it with FORK_NAME=NAME
 #   bash pod.sh pack                    one tarball of everything under $POD_DIR/results
 #   bash pod.sh all MODEL.gguf          report, setup, bench, pack
-# Env: POD_DIR (/workspace/pod), STOCK_REF (upstream commit), GPUS ("1 2 4"), TESTS ("t100 pf12k"), RUNS (2), CACHE=force (fork cells with --cpu-moe --moe-expert-cache -1), RESULTS_DIR, THREADS (half the cores, at most 24), FORK_BUILD=1 (never use the release binary), STOCK_BUILD=stock-NAME (which upstream build bench uses), SKIP_STOCK=1 (no upstream build), STOCK_TAG=b11323 (a prebuilt upstream release instead of a source build)
+# Env: POD_DIR (/workspace/pod), STOCK_REF (upstream commit), GPUS ("1 2 4"), TESTS ("t100 pf12k"), RUNS (2), SEED=/path/state.ini (start the fork from a saved state, no cold run), STOCK=0 (no upstream cells), CACHE=force (fork cells with --cpu-moe --moe-expert-cache -1), RESULTS_DIR, THREADS (half the cores, at most 24), FORK_BUILD=1 (never use the release binary), STOCK_BUILD=stock-NAME (which upstream build bench uses), SKIP_STOCK=1 (no upstream build), STOCK_TAG=b11323 (a prebuilt upstream release instead of a source build)
 set -uo pipefail
 POD=${POD_DIR:-/workspace/pod}; FORK=neurall/llama.cpp; STOCK=ggml-org/llama.cpp; STOCK_REF=${STOCK_REF:-def4d406ae2c2f39573120d68730fbb7760b24bf}
 RES=${RESULTS_DIR:-$POD/results}
@@ -168,9 +168,14 @@ matrix() {   # matrix MODEL: per GPU count and test: fork cold / hot and every s
         cp "/tmp/perf-$b.log" "$RES/logs/$k-$t-$tag.log" 2>/dev/null
         { echo "== $k GPU(s) $t $tag"; grep -h -E 'moe cache = on|moe-cache: (MoE|auto|self-tune|placement)|common_moe_cache_auto|tuned|self-tune|threads  *=|ubatch|n_ubatch|expert cache enabled|prefill links' "/tmp/perf-$b.log" 2>/dev/null | tail -14 | cut -c1-230; } >> "$RES/params.txt"
       }
-      cell cold "$fk" --no-warm      # the first run: no saved state
+      if [ -n "${SEED:-}" ] && [ -f "$SEED" ]; then   # HOT_ONLY: no cold run, the saved state of an earlier run (hot experts are per model, so any GPU count can use it)
+        cp "$SEED" "$st"
+      else
+        cell cold "$fk" --no-warm    # the first run: no saved state
+      fi
       cell hot "$fk" --no-warm       # the second run: starts from the state the first one saved
       # upstream: the downloaded release binary every time; the source build only while it differs from it (the first pair decides: within 5% decode speed = same, skipped from then on)
+      [ "${STOCK:-1}" = 0 ] && continue   # STOCK=0: no upstream cells
       [ -n "$dl" ] && cell "$dl" "$dl" --no-warm
       if [ -n "$bt" ] && [ "$same" != 1 ]; then
         cell "$bt" "$bt" --no-warm
