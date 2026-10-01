@@ -139,7 +139,7 @@ bench() {
   RUN_DATA="$POD/results" python3 "$POD/fork-src/tools/run.py" show 2>&1 | tee "$POD/results/summary.txt"
 }
 
-matrix() {   # matrix MODEL: per GPU count and test: fork cold / prewarm / hot, stock first / hot; server logs + the autotune parameters and hit rate from each
+matrix() {   # matrix MODEL: per GPU count and test: fork cold / prewarm / hot and stock; server logs + the autotune parameters and hit rate from each
   [ $# -ge 1 ] || die "usage: pod.sh matrix MODEL.gguf"
   fork_src
   local m=$1 ngpu; ngpu=$(nvidia-smi -L | wc -l); local sn=${STOCK_BUILD:-$(ls "$POD/builds" | grep '^stock-' | head -1)} fk=${FORK_NAME:-fork}
@@ -161,8 +161,7 @@ matrix() {   # matrix MODEL: per GPU count and test: fork cold / prewarm / hot, 
       cell cold "$fk" --no-warm
       cell prewarm "$fk" --no-warm
       cell hot "$fk"
-      cell stock-first "$sn" --no-warm
-      cell stock-hot "$sn"
+      cell stock "$sn"
     done
   done
   RUN_DATA="$POD/results" python3 "$POD/fork-src/tools/run.py" show 2>&1 | tee "$POD/results/summary.txt"
