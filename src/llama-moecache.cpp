@@ -3906,6 +3906,10 @@ bool llama_moe_cache_graph_reusable() {
     return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built && g_split_epoch == g_split_epoch_built;
 }
 
+int32_t llama_moe_cache_cpu_sat_threads() {
+    return g_cache ? g_cache->cpu_sat_threads : 0;
+}
+
 void llama_moe_cache_graph_built() {
     g_pred_train_built = g_pred_train_now;
     g_pred_epoch_built = g_pred_epoch;

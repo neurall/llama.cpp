@@ -1334,6 +1334,21 @@ void llama_context::set_thread_autotune(bool on) {
     }
 }
 
+// the startup probe knows how many reader threads saturate the RAM read rate; decode does arithmetic on every byte it reads (dequantizing), so it needs
+// a few times that many (PC1: saturated by 2, best decode 6) but not the cores-minus-GPUs formula's 60 on a 64-core host, where every thread adds a
+// barrier to each small expert matmul. A tuned count saved by an earlier session stands.
+void llama_context::thread_cap_from_probe(int32_t n_sat) {
+    if (!thr.on || n_sat <= 0 || thr.base != thr.base0) {
+        return;
+    }
+    const int cap = std::max(4, 3*(int) n_sat);
+    if (cap < thr.base) {
+        LLAMA_LOG_INFO("%s: decode threads %d -> %d (the RAM read rate is saturated by %d threads; the tuner starts from here)\n", __func__, thr.base, cap, (int) n_sat);
+        thr.base = cap;
+        cparams.n_threads = (uint32_t) cap;
+    }
+}
+
 void llama_context::set_batch_thread_autotune(bool on, int32_t n_max) {
     const char * e = getenv("LLAMA_THREAD_AUTOTUNE");
     if (e && atoi(e) == 0) { on = false; }
@@ -1429,7 +1444,9 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         std::vector<int> c = { base };
         // an attached thread pool (llama-cli) has a fixed size: never ask for more threads than it has
         const int cap = (threadpool || threadpool_batch) ? base : hw;
-        const int lo = std::max(2, base - 2), hi = std::min(cap, base + 2), lo2 = std::max(2, base - 4);
+        // the step is a quarter of the count (at least 2), so a count far from the best is not walked toward it two threads per cycle
+        const int step = std::max(2, base/4);
+        const int lo = std::max(2, base - step), hi = std::min(cap, base + step), lo2 = std::max(2, base - 2*step);
         if (lo != base) { c.push_back(lo); }
         // a far lower count costs a slow slice per round: only when the nearer one looked close to the base
         if (thr.try_lo2 && lo2 != lo && lo2 != base) { c.push_back(lo2); }
@@ -2016,6 +2033,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         cparams.moe_cache_started = true;
         llama_moe_cache_init(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots, cparams.moe_cache_window,
                 cparams.moe_predict, cparams.moe_predict_train);
+        thread_cap_from_probe(llama_moe_cache_cpu_sat_threads());
         sched_reserve(); // the compute graph now includes the cache chain
     }
     if (!memory) {

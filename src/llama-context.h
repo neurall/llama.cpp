@@ -119,6 +119,7 @@ struct llama_context {
 
     // decode thread-count autotune (single-token decode only): A/B slices of candidate thread counts on measured token time
     void set_thread_autotune(bool on);
+    void thread_cap_from_probe(int32_t n_sat);
     void set_batch_thread_autotune(bool on, int32_t n_max);
 
     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);

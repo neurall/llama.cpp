@@ -45,7 +45,9 @@ report() {
     nvidia-smi --query-gpu=index,pcie.link.gen.current,pcie.link.width.current --format=csv >> "$out"   # right after the copies: the links are at full speed
     { echo; echo "GPU <-> GPU:"; nvcc -O2 "$POD/fork-src/tools/cloud/p2p.cu" -o "$POD/p2p" 2>&1 && "$POD/p2p" 256 1
       echo; echo "host memory: where it saturates, and how much is left for the GPUs:"
-      nvcc -O3 -Xcompiler "-O3 -mavx2 -pthread" "$POD/fork-src/tools/cloud/memsat.cu" -o "$POD/memsat" 2>&1 && "$POD/memsat" 16; } >> "$out" 2>&1
+      nvcc -O3 -Xcompiler "-O3 -mavx2 -pthread" "$POD/fork-src/tools/cloud/memsat.cu" -o "$POD/memsat" 2>&1 && "$POD/memsat" 16
+      echo; echo "thread placement: how many threads, spread over the L3 groups or left to the OS, saturate memory:"
+      g++ -O3 -mavx2 -pthread "$POD/fork-src/tools/cloud/placement.cpp" -o "$POD/placement" 2>&1 && "$POD/placement" 16; } >> "$out" 2>&1
   else echo "no nvcc: pick a -devel CUDA image to get the bandwidth numbers" >> "$out"; fi
   cat "$out"
 }
