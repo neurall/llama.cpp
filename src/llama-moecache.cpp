@@ -221,6 +221,7 @@ struct moe_cache {
     uint64_t n_src_hit   = 0;
     uint64_t n_src_query = 0;
     uint64_t n_adopted   = 0; // prefill preheat: experts kept from prompt batches
+    uint64_t n_evictions = 0; // experts evicted from the cache (all kinds)
 
     // model bigger than RAM, weights mmap'd: an expert in VRAM doesn't need its RAM copy. Its pages
     // are dropped when it is cached and read back (async readahead) when it is evicted, so RAM holds
@@ -989,6 +990,7 @@ void publish_job(moe_cache * mc, const upload_job & j) {
 
 // an expert leaves VRAM: did its upload pay back (decode hits x CPU eval time saved >= upload time)?
 void note_evict(moe_cache * mc, layer_state & ls, int32_t e) {
+    mc->n_evictions++;
     if (ls.up_t[e] == 0) {
         return;
     }
@@ -3799,6 +3801,7 @@ bool llama_moe_cache_get_info(struct llama_tuning_info * info) {
     info->moe_hits = info->moe_misses = 0;
     for (auto & ls : mc->layers) { info->moe_hits += ls.n_hit; info->moe_misses += ls.n_miss; }
     info->moe_uploads = mc->n_uploads;
+    info->moe_evictions = mc->n_evictions; info->moe_up_bytes = (uint64_t) std::max<int64_t>(0, (int64_t) mc->up_bytes);
     info->moe_layers  = (int32_t) mc->layers.size();
     info->moe_slots_min = INT32_MAX; info->moe_slots_max = 0;
     for (auto & ls : mc->layers) {
