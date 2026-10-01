@@ -2584,6 +2584,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
         }
     ).set_env("LLAMA_ARG_MOE"));
+    add_opt(common_arg(
+        {"-at", "--autotune"}, "on|off",
+        "self-tuning on measured token times (expert cache knobs, decode and prompt thread counts, cache-or-stock placement measuring), default on; "
+        "off = fixed defaults and the static placement rule, nothing is measured or saved. Same as --moe autotune=0 or LLAMA_AUTOTUNE=0",
+        [](common_params & params, const std::string & value) {
+            if      (value == "on"  || value == "1" || value == "true")  { params.autotune = true;  }
+            else if (value == "off" || value == "0" || value == "false") { params.autotune = false; }
+            else { throw std::invalid_argument("-at: expected on or off, got '" + value + "'"); }
+        }
+    ).set_env("LLAMA_ARG_AUTOTUNE"));
     if (ex == LLAMA_EXAMPLE_SERVER) {
         // this is to make sure this option appears in the server-specific section of the help message
         add_opt(common_arg(
