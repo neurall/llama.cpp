@@ -152,6 +152,8 @@ matrix() {   # matrix MODEL: per GPU count and test: fork cold / hot and every s
   local m=$1 ngpu; ngpu=$(nvidia-smi -L | wc -l); local sn=${STOCK_BUILD:-$(ls "$POD/builds" | grep '^stock-' | head -1)} fk=${FORK_NAME:-fork}
   [ -n "$sn" ] && [ -x "$POD/builds/$fk/llama-server" ] || die "run setup first"
   mkdir -p "$RES/logs"
+  local dl bt same=0 decided=""
+  dl=$(ls "$POD/builds" | grep -E '^stock-b[0-9]{5}$' | head -1); bt=$(ls "$POD/builds" | grep '^stock-' | grep -v -E '^stock-b[0-9]{5}$' | head -1)
   for k in ${GPUS:-4}; do
     [ "$k" -le "$ngpu" ] || continue
     local vis devs; vis=$(seq -s, 0 $((k - 1))); devs=$(seq -s, 0 $((k - 1)) | sed 's/[0-9][0-9]*/CUDA&/g')
@@ -168,7 +170,23 @@ matrix() {   # matrix MODEL: per GPU count and test: fork cold / hot and every s
       }
       cell cold "$fk" --no-warm      # the first run: no saved state
       cell hot "$fk" --no-warm       # the second run: starts from the state the first one saved
-      for sb in $(ls "$POD/builds" | grep '^stock-'); do cell "$sb" "$sb" --no-warm; done   # every upstream build here: the downloaded release binary and the source build
+      # upstream: the downloaded release binary every time; the source build only while it differs from it (the first pair decides: within 5% decode speed = same, skipped from then on)
+      [ -n "$dl" ] && cell "$dl" "$dl" --no-warm
+      if [ -n "$bt" ] && [ "$same" != 1 ]; then
+        cell "$bt" "$bt" --no-warm
+        if [ -n "$dl" ] && [ -z "$decided" ]; then
+          decided=1
+          same=$(RUN_DATA="$RES" python3 - "$dl" "$bt" "$t" <<'PY'
+import csv, sys
+dl, bt, t = sys.argv[1:4]
+rows = [r for r in csv.DictReader(open(__import__("os").environ["RUN_DATA"] + "/run-history.csv")) if r["test"] == t and r.get("tps")]
+a = [float(r["tps"]) for r in rows if r["note"] == dl]; b = [float(r["tps"]) for r in rows if r["note"] == bt]
+print(1 if a and b and abs(a[-1] - b[-1]) / max(a[-1], b[-1]) < 0.05 else 0)
+PY
+)
+          log "upstream source build vs downloaded binary: $([ "$same" = 1 ] && echo "same (within 5%), not repeated" || echo "different, kept in the matrix")"
+        fi
+      fi
     done
   done
   RUN_DATA="$RES" python3 "$POD/fork-src/tools/run.py" show 2>&1 | tee "$RES/summary.txt"
