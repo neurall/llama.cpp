@@ -24,7 +24,7 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 | **GLM-5.3-Flash** 3.0-bit (117.5 GB file) | D | short chat, decode, first run | 24.7 | 25.2 | 1.0x |
 | | | same, second run (saved state) | 24.7 | **31.5** | **1.3x** |
 | | | same, second run, `-t 16` | 24.7 | **33.8** | **1.4x** |
-| | | same, 3 of the 4 GPUs, second run | 20.1 | **32.6** | **1.6x** |
+| | | same, 3 of the 4 GPUs, second run (best ratio) | 20.1 | **32.6** | **1.6x** |
 | **MiMo-V2.6-Flash** IQ3_XXS (132 GB, bigger than RAM) | A | short chat, decode | 4.6 | **10.9** | **2.4x** |
 | | | 12k-token prompt, decode | 4.2 | **9.1** | **2.2x** |
 | | | 12k-token prompt, processing | 156 | 112 | 0.7x |
