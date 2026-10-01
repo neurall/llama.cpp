@@ -1,0 +1,17 @@
+name,start,note,conclusion,why
+stockcmp-b11509,2026-09-30 15:50:52,"stock b11041 vs fork b11509 vs fork MARGIN=0, bare defaults, short (chat) and long (pf12k), bigger-than-VRAM models, PC1; script /p/bw/data/hcf/stockcmp.sh","PAUSED 2026-09-30 17:20 after MiMo (short+long fork), GLM short; to be redone after tuner changes (margin tuning, -tb, gate) and on the release candidate build","user: results would need redoing with the tuning changes anyway; tune first, retest and release later"
+autogate-d43c101,2026-09-30 17:17:39,"rc-next2 d43c101 live margin/gate tuner vs forced variants, GLM and MiMo, short+long, PC1","STOPPED early (13/24 runs). GLM: GATE=3 +6% on short chat (22.10 vs 20.87, n2), ties best on long; margin 0 wins short, timing rule wins long; the old 36-token-slice tuner picks MARGIN=-2 every time (slice mixing). MiMo: tuner 8.96 t/s (n1) only",enough signal on GLM; MiMo reduced to a gate on/off check on the tune-next build
+tunenext-160f65c8e,2026-09-30 19:06:17,"tune-next 160f65c8e: long-slice margin tuner vs the forced variants of autogate-d43c101, GLM short + long, PC1",,
+stockglm-upstream,2026-09-30 19:47:46,"upstream master 05af0d2b1 loads GLM-5.3-Flash: real stock leg for GLM, short + long, bare, PC1",,
+autotune-basic,2026-09-30 20:47:03,"release autotune vs upstream stock 05af0d2b1, PC1, Qwen3.6-35B-A3B GSQ-hybrid, perf.py t100: tetris prompt, 100 tokens, -c 1024, temp 0, bare",,
+autotune-models,2026-09-30 20:51:40,"release autotune b11648 vs upstream stock 05af0d2b1, PC1, t100 tetris -n100 -c1024 temp0 bare: Qwen3.8-Next IQ1_M/IQ3_S, GLM 3.5bit, Qwen3.8-27B IQ4_NL",,
+autotune-models2,2026-09-30 21:09:18,"release autotune b11648 vs upstream stock 05af0d2b1, PC1, t100 tetris -n100 -c1024 temp0 bare: Qwen3.8-Next IQ1_M/IQ3_S, GLM 3.5bit, Qwen3.8-27B IQ4_NL",,
+history-rewrite-2026-10-01,2026-10-01 08:00:00,commit_sha values before this date refer to pre-rewrite SHAs; old->new map in ~/sessions/claude-handover-2026-10-01/commit-map.txt,,
+autotune-switch,2026-10-01 10:22:09,"release b11665+ candidate: -at off and --moe cache=0 vs default vs stock, t100 tetris",,
+autotune-vs-stock-big,2026-10-01 10:44:21,"b11703 ebb1774ee candidate, models bigger than VRAM: default autotune (4 runs, hot = last 2) vs --moe cache=0 vs -at off vs stock, t100",,
+runpy-smoke,2026-10-01 10:50:09,"bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds autotune,stock-def4d406a variants default,cache0 test t100 n=2",,
+runpy-pc2,2026-10-01 10:52:51,"bench /home/o/qwen36.gguf builds autotune,stock variants default,cache0 test t100 n=1",,
+runpy-w10,2026-10-01 10:54:31,"bench N:\m\qwen36.gguf builds ls,tmp\chk variants default,cache0 test t100 n=1",,
+big-models-b11703,2026-10-01 10:59:54,b11703 ebb1774ee vs stock def4d406a,,
+big-models-cold-b11703,2026-10-01 11:00:59,"first runs, no discarded run; b11703 ebb1774ee vs stock def4d406a",,
+big-models-cold-b11703,2026-10-01 11:07:50,"resumed after the csv switch; first runs, no discarded run",,

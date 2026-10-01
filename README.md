@@ -39,7 +39,7 @@ Every number is a hot run (same model run again, files in the page cache, what t
 | Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) |
 
 \* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
-[`tools/moe-bench/perf.db`](tools/moe-bench/).
+[`tools/bench/run-history.csv`](tools/bench/run-history.csv).
 
 ## Nothing to configure
 
@@ -73,8 +73,8 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   (`MTP/`, the `shared` files reuse the main model's embeddings); GLM-5.3-Flash from
   [neuralll/GLM-5.3-Flash-MTP-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-MTP-GGUF)
   (4.3 GiB, works with any `glm5-next` GLM-5.3-Flash GGUF). We made it: no GLM MTP GGUF existed, so
-  `tools/moe-bench/glm_splice_mtp.py` pulls just the MTP tensors out of unsloth's UD-Q4_K_XL GGUF with HTTP range requests
-  (~4.3 GiB instead of the whole model) and writes them as a draft file; see [`tools/moe-bench/`](tools/moe-bench/) to rebuild it.
+  `tools/bench/glm_splice_mtp.py` pulls just the MTP tensors out of unsloth's UD-Q4_K_XL GGUF with HTTP range requests
+  (~4.3 GiB instead of the whole model) and writes them as a draft file; see [`tools/bench/`](tools/bench/) to rebuild it.
 - GLM MTP: 89% of drafts accepted in our test, output identical to plain decoding. For a model far bigger than VRAM the draft
   is not loaded unless you pass `--spec-draft-n-max`.
 

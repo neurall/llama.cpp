@@ -1,0 +1,7 @@
+ts,commit,line
+2026-09-30 17:25:02,d43c101e6,"moe-cache: self-tune: MARGIN ms/token 0:51.34 -2:44.18 -> -2 (clear, 3 slices each)"
+2026-09-30 17:25:02,d43c101e6,"moe-cache: self-tune: GATE ms/token 0:46.47 3:47.51 -> 0 (best mean, 8 slices each)"
+2026-09-30 17:25:02,d43c101e6,"moe-cache: self-tune: WAIT ms/token 0:47.92 1:48.51 -> 0 (best mean, 8 slices each)"
+2026-09-30 17:54:40,d43c101e6,"moe-cache: self-tune: MARGIN ms/token 0:48.08 -2:45.44 -> -2 (best mean, 8 slices each)"
+2026-09-30 17:54:40,d43c101e6,"moe-cache: self-tune: GATE ms/token 0:47.35 3:45.17 -> 3 (best mean, 8 slices each)"
+2026-09-30 18:47:22,d43c101e6,"moe-cache: self-tune: MARGIN ms/token 0:123.54 -2:101.76 -> -2 (best mean, 8 slices each)"
