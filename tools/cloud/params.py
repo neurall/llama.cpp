@@ -8,7 +8,7 @@ txt = open(log, errors="replace").read() if os.path.exists(log) else ""
 row = {}
 hist = os.path.join(res, "run-history.csv")
 if os.path.exists(hist):
-    rows = [r for r in csv.DictReader(open(hist)) if r.get("hw") == f"pod-{gpus}gpu" and r.get("test") == test and r.get("note") == tag]
+    rows = [r for r in csv.DictReader(open(hist)) if r.get("hw") == f"pod-{gpus}gpu" and r.get("test") == test and (r.get("note") or "").split(" | ")[0] == tag]
     if rows:
         row = rows[-1]
 g = lambda pat, i=1, flags=0: (lambda m: m.group(i) if m else "")(re.search(pat, txt, flags))

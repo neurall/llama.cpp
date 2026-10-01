@@ -9,7 +9,7 @@ for r in rows:
     if r.get("campaign") != "pod" or r.get("ok") == "0" or not r.get("tps"):
         continue
     n = int("".join(c for c in r["hw"].replace("pod-", "").split("gpu")[0] if c.isdigit()) or 0)
-    tag = r.get("note") or ("stock" if r["origin"] == "stock" else "fork")
+    tag = (r.get("note") or "").split(" | ")[0] or ("stock" if r["origin"] == "stock" else "fork")
     cell[(r["model"], r["test"])][(n, tag)] = r
 f = lambda r, k, fmt="%.1f": (fmt % float(r[k])) if r and r.get(k) not in (None, "") else "-"
 for (model, test), c in sorted(cell.items()):
