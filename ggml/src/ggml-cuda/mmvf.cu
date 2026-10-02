@@ -432,7 +432,7 @@ static __device__ __forceinline__ void mmvf_v16_unpack(const uint4 & v, float * 
     } else {
         const nv_bfloat162 * h = (const nv_bfloat162 *) &v;
 #pragma unroll
-        for (int k = 0; k < 4; ++k) { const float2 t = __bfloat1622float2(h[k]); f[2*k] = t.x; f[2*k + 1] = t.y; }
+        for (int k = 0; k < 4; ++k) { const float2 t = ggml_cuda_cast<float2>(h[k]); f[2*k] = t.x; f[2*k + 1] = t.y; }
     }
 }
 
