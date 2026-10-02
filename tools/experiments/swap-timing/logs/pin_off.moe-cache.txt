@@ -1,0 +1,131 @@
+1.49.505.804 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+1.55.483.387 W moe-cache: GPU link 0 link: upload 1.99 ms = read 0.00 + copy 1.99, 4.5 GB/s (CPU 41 GB/s) | evicted 274: 0.0 hits each, paid back 0%, cost 2.73 ms, lived 1.5 s
+1.55.483.391 W moe-cache: GPU link 1 link: upload 0.66 ms = read 0.00 + copy 0.66, 14.3 GB/s (CPU 41 GB/s) | evicted 0: 0.0 hits each, paid back 0%, cost 0.00 ms, lived 0.0 s
+1.58.259.176 W moe-cache: GPU link 0 link: upload 3.37 ms = read 0.00 + copy 3.37, 4.3 GB/s (CPU 41 GB/s) | evicted 678: 0.2 hits each, paid back 0%, cost 2.78 ms, lived 2.5 s
+1.58.259.179 W moe-cache: GPU link 1 link: upload 1.22 ms = read 0.00 + copy 1.22, 10.7 GB/s (CPU 41 GB/s) | evicted 280: 0.3 hits each, paid back 1%, cost 0.63 ms, lived 5.5 s
+1.58.265.355 W moe-cache: DDR: CPU experts 762 MB/token at 35.7 GB/s in their phases, uploads 185 MB/token | avg 21.9 GB/s
+1.58.265.364 W moe-cache: phases: token 43.4 ms wall, CPU expert matmuls 21.3 ms in 126.0 phases (49%) | 18.9 uploads/token, 34% overlapping CPU phases, gate waits 10.27 ms/token
+1.58.265.367 W moe-cache: phases: token 6.2 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+2.01.043.094 W moe-cache: GPU link 0 link: upload 2.68 ms = read 0.00 + copy 2.68, 4.2 GB/s (CPU 41 GB/s) | evicted 1053: 0.4 hits each, paid back 0%, cost 2.62 ms, lived 3.6 s
+2.01.043.097 W moe-cache: GPU link 1 link: upload 1.02 ms = read 0.00 + copy 1.02, 11.7 GB/s (CPU 41 GB/s) | evicted 710: 0.4 hits each, paid back 3%, cost 0.72 ms, lived 5.5 s
+2.01.043.099 W moe-cache: DDR: CPU experts 844 MB/token at 34.9 GB/s in their phases, uploads 114 MB/token | avg 22.1 GB/s
+2.01.043.103 W moe-cache: phases: token 43.4 ms wall, CPU expert matmuls 23.4 ms in 126.0 phases (54%) | 10.6 uploads/token, 56% overlapping CPU phases, gate waits 4.01 ms/token
+2.03.703.887 W moe-cache: GPU link 0 link: upload 2.61 ms = read 0.00 + copy 2.61, 4.5 GB/s (CPU 41 GB/s) | evicted 1369: 0.9 hits each, paid back 0%, cost 2.64 ms, lived 4.4 s
+2.03.703.891 W moe-cache: GPU link 1 link: upload 0.84 ms = read 0.00 + copy 0.84, 12.8 GB/s (CPU 41 GB/s) | evicted 1205: 1.0 hits each, paid back 10%, cost 0.76 ms, lived 6.0 s
+2.03.703.893 W moe-cache: DDR: CPU experts 749 MB/token at 34.6 GB/s in their phases, uploads 119 MB/token | avg 20.9 GB/s
+2.03.704.016 W moe-cache: phases: token 41.6 ms wall, CPU expert matmuls 20.8 ms in 126.0 phases (50%) | 11.1 uploads/token, 41% overlapping CPU phases, gate waits 4.23 ms/token
+2.06.250.311 W moe-cache: GPU link 0 link: upload 2.77 ms = read 0.00 + copy 2.77, 4.0 GB/s (CPU 41 GB/s) | evicted 1662: 1.2 hits each, paid back 1%, cost 2.56 ms, lived 5.0 s
+2.06.250.314 W moe-cache: GPU link 1 link: upload 1.21 ms = read 0.00 + copy 1.21, 8.4 GB/s (CPU 41 GB/s) | evicted 1741: 1.3 hits each, paid back 14%, cost 0.82 ms, lived 6.1 s
+2.06.250.316 W moe-cache: DDR: CPU experts 690 MB/token at 37.0 GB/s in their phases, uploads 113 MB/token | avg 20.2 GB/s
+2.06.250.318 W moe-cache: phases: token 39.8 ms wall, CPU expert matmuls 19.2 ms in 126.0 phases (48%) | 11.3 uploads/token, 40% overlapping CPU phases, gate waits 4.69 ms/token
+2.08.798.906 W moe-cache: GPU link 0 link: upload 3.31 ms = read 0.00 + copy 3.31, 3.6 GB/s (CPU 41 GB/s) | evicted 1687: 1.2 hits each, paid back 1%, cost 2.55 ms, lived 5.0 s
+2.08.798.909 W moe-cache: GPU link 1 link: upload 0.97 ms = read 0.00 + copy 0.97, 13.8 GB/s (CPU 41 GB/s) | evicted 1957: 1.2 hits each, paid back 13%, cost 0.83 ms, lived 5.8 s
+2.08.798.911 W moe-cache: DDR: CPU experts 733 MB/token at 36.4 GB/s in their phases, uploads 32 MB/token | avg 19.2 GB/s
+2.08.798.914 W moe-cache: phases: token 39.8 ms wall, CPU expert matmuls 19.6 ms in 126.0 phases (49%) | 3.7 uploads/token, 13% overlapping CPU phases, gate waits 1.14 ms/token
+2.11.434.162 W moe-cache: GPU link 0 link: upload 2.53 ms = read 0.00 + copy 2.53, 3.8 GB/s (CPU 41 GB/s) | evicted 1707: 1.2 hits each, paid back 1%, cost 2.55 ms, lived 5.0 s
+2.11.434.166 W moe-cache: GPU link 1 link: upload 0.65 ms = read 0.00 + copy 0.65, 16.5 GB/s (CPU 41 GB/s) | evicted 2164: 1.3 hits each, paid back 14%, cost 0.84 ms, lived 5.9 s
+2.11.434.167 W moe-cache: DDR: CPU experts 767 MB/token at 36.1 GB/s in their phases, uploads 32 MB/token | avg 19.4 GB/s
+2.11.434.170 W moe-cache: phases: token 41.2 ms wall, CPU expert matmuls 20.4 ms in 126.0 phases (50%) | 3.5 uploads/token, 10% overlapping CPU phases, gate waits 0.72 ms/token
+2.13.942.867 W moe-cache: GPU link 0 link: upload 2.46 ms = read 0.00 + copy 2.46, 4.1 GB/s (CPU 41 GB/s) | evicted 1758: 1.2 hits each, paid back 1%, cost 2.54 ms, lived 5.3 s
+2.13.942.870 W moe-cache: GPU link 1 link: upload 0.49 ms = read 0.00 + copy 0.49, 18.9 GB/s (CPU 41 GB/s) | evicted 2294: 1.3 hits each, paid back 14%, cost 0.84 ms, lived 6.0 s
+2.13.942.873 W moe-cache: DDR: CPU experts 681 MB/token at 34.1 GB/s in their phases, uploads 24 MB/token | avg 18.0 GB/s
+2.13.942.876 W moe-cache: phases: token 39.2 ms wall, CPU expert matmuls 18.2 ms in 126.0 phases (47%) | 2.8 uploads/token, 27% overlapping CPU phases, gate waits 0.14 ms/token
+2.16.665.027 W moe-cache: GPU link 0 link: upload 2.36 ms = read 0.00 + copy 2.36, 4.3 GB/s (CPU 41 GB/s) | evicted 1789: 1.3 hits each, paid back 1%, cost 2.54 ms, lived 5.5 s
+2.16.665.030 W moe-cache: GPU link 1 link: upload 0.46 ms = read 0.00 + copy 0.46, 19.0 GB/s (CPU 41 GB/s) | evicted 2489: 1.5 hits each, paid back 16%, cost 0.83 ms, lived 6.3 s
+2.16.665.031 W moe-cache: DDR: CPU experts 755 MB/token at 35.9 GB/s in their phases, uploads 30 MB/token | avg 18.5 GB/s
+2.16.665.034 W moe-cache: phases: token 42.5 ms wall, CPU expert matmuls 20.3 ms in 126.0 phases (48%) | 3.5 uploads/token, 6% overlapping CPU phases, gate waits 0.36 ms/token
+2.19.337.359 W moe-cache: GPU link 0 link: upload 2.37 ms = read 0.00 + copy 2.37, 4.2 GB/s (CPU 41 GB/s) | evicted 1838: 1.4 hits each, paid back 2%, cost 2.54 ms, lived 5.8 s
+2.19.337.362 W moe-cache: GPU link 1 link: upload 0.44 ms = read 0.00 + copy 0.44, 19.0 GB/s (CPU 41 GB/s) | evicted 2690: 1.7 hits each, paid back 18%, cost 0.81 ms, lived 6.6 s
+2.19.337.363 W moe-cache: DDR: CPU experts 764 MB/token at 36.4 GB/s in their phases, uploads 33 MB/token | avg 19.1 GB/s
+2.19.337.366 W moe-cache: phases: token 41.8 ms wall, CPU expert matmuls 20.4 ms in 126.0 phases (49%) | 3.8 uploads/token, 14% overlapping CPU phases, gate waits 0.25 ms/token
+2.21.936.701 W moe-cache: GPU link 0 link: upload 4.16 ms = read 0.00 + copy 4.16, 3.5 GB/s (CPU 41 GB/s) | evicted 2119: 2.4 hits each, paid back 7%, cost 2.54 ms, lived 7.9 s
+2.21.936.704 W moe-cache: GPU link 1 link: upload 0.63 ms = read 0.00 + copy 0.63, 16.5 GB/s (CPU 41 GB/s) | evicted 3212: 2.5 hits each, paid back 26%, cost 0.80 ms, lived 7.7 s
+2.21.936.706 W moe-cache: DDR: CPU experts 678 MB/token at 37.0 GB/s in their phases, uploads 114 MB/token | avg 19.5 GB/s
+2.21.936.708 W moe-cache: phases: token 40.6 ms wall, CPU expert matmuls 18.9 ms in 126.0 phases (47%) | 11.4 uploads/token, 36% overlapping CPU phases, gate waits 4.23 ms/token
+2.24.573.343 W moe-cache: GPU link 0 link: upload 1.88 ms = read 0.00 + copy 1.88, 4.4 GB/s (CPU 41 GB/s) | evicted 2477: 3.5 hits each, paid back 14%, cost 2.54 ms, lived 9.4 s
+2.24.573.348 W moe-cache: GPU link 1 link: upload 0.88 ms = read 0.00 + copy 0.88, 14.0 GB/s (CPU 41 GB/s) | evicted 3658: 2.9 hits each, paid back 28%, cost 0.80 ms, lived 7.9 s
+2.24.573.350 W moe-cache: DDR: CPU experts 698 MB/token at 35.5 GB/s in their phases, uploads 114 MB/token | avg 19.7 GB/s
+2.24.573.354 W moe-cache: phases: token 41.2 ms wall, CPU expert matmuls 19.6 ms in 126.0 phases (48%) | 9.8 uploads/token, 46% overlapping CPU phases, gate waits 3.09 ms/token
+2.26.999.030 W moe-cache: GPU link 0 link: upload 3.15 ms = read 0.00 + copy 3.15, 3.9 GB/s (CPU 41 GB/s) | evicted 2747: 3.9 hits each, paid back 16%, cost 2.56 ms, lived 9.6 s
+2.26.999.035 W moe-cache: GPU link 1 link: upload 1.19 ms = read 0.00 + copy 1.19, 11.8 GB/s (CPU 41 GB/s) | evicted 4128: 3.1 hits each, paid back 28%, cost 0.81 ms, lived 7.9 s
+2.26.999.036 W moe-cache: DDR: CPU experts 592 MB/token at 35.5 GB/s in their phases, uploads 106 MB/token | avg 18.4 GB/s
+2.26.999.039 W moe-cache: phases: token 37.9 ms wall, CPU expert matmuls 16.5 ms in 126.0 phases (44%) | 10.7 uploads/token, 37% overlapping CPU phases, gate waits 3.22 ms/token
+2.29.476.199 W moe-cache: GPU link 0 link: upload 2.02 ms = read 0.00 + copy 2.02, 4.2 GB/s (CPU 41 GB/s) | evicted 3095: 4.3 hits each, paid back 17%, cost 2.56 ms, lived 9.9 s
+2.29.476.203 W moe-cache: GPU link 1 link: upload 0.58 ms = read 0.00 + copy 0.58, 17.5 GB/s (CPU 41 GB/s) | evicted 4611: 3.3 hits each, paid back 29%, cost 0.80 ms, lived 7.9 s
+2.29.476.205 W moe-cache: DDR: CPU experts 627 MB/token at 31.2 GB/s in their phases, uploads 118 MB/token | avg 19.2 GB/s
+2.29.476.208 W moe-cache: phases: token 38.7 ms wall, CPU expert matmuls 17.7 ms in 126.0 phases (46%) | 9.9 uploads/token, 47% overlapping CPU phases, gate waits 1.91 ms/token
+2.31.931.420 W moe-cache: GPU link 0 link: upload 3.30 ms = read 0.00 + copy 3.30, 3.9 GB/s (CPU 41 GB/s) | evicted 3358: 4.5 hits each, paid back 18%, cost 2.56 ms, lived 10.0 s
+2.31.937.699 W moe-cache: GPU link 1 link: upload 0.65 ms = read 0.00 + copy 0.65, 15.5 GB/s (CPU 41 GB/s) | evicted 5249: 3.8 hits each, paid back 30%, cost 0.80 ms, lived 8.2 s
+2.31.937.704 W moe-cache: DDR: CPU experts 628 MB/token at 34.9 GB/s in their phases, uploads 127 MB/token | avg 19.6 GB/s
+2.31.937.708 W moe-cache: phases: token 38.5 ms wall, CPU expert matmuls 17.5 ms in 126.0 phases (45%) | 12.1 uploads/token, 32% overlapping CPU phases, gate waits 4.28 ms/token
+2.34.380.587 W moe-cache: GPU link 0 link: upload 2.83 ms = read 0.00 + copy 2.83, 4.1 GB/s (CPU 41 GB/s) | evicted 3361: 4.5 hits each, paid back 18%, cost 2.56 ms, lived 10.0 s
+2.34.380.591 W moe-cache: GPU link 1 link: upload 0.66 ms = read 0.00 + copy 0.66, 16.4 GB/s (CPU 41 GB/s) | evicted 5460: 3.7 hits each, paid back 30%, cost 0.80 ms, lived 8.0 s
+2.34.380.592 W moe-cache: DDR: CPU experts 626 MB/token at 35.4 GB/s in their phases, uploads 28 MB/token | avg 17.1 GB/s
+2.34.380.595 W moe-cache: phases: token 38.2 ms wall, CPU expert matmuls 16.8 ms in 126.0 phases (44%) | 3.2 uploads/token, 4% overlapping CPU phases, gate waits 0.22 ms/token
+2.37.074.458 W moe-cache: GPU link 0 link: upload 2.61 ms = read 0.00 + copy 2.61, 3.7 GB/s (CPU 41 GB/s) | evicted 3394: 4.5 hits each, paid back 18%, cost 2.56 ms, lived 9.9 s
+2.37.074.462 W moe-cache: GPU link 1 link: upload 0.48 ms = read 0.00 + copy 0.48, 19.2 GB/s (CPU 41 GB/s) | evicted 5718: 3.7 hits each, paid back 30%, cost 0.79 ms, lived 7.9 s
+2.37.074.464 W moe-cache: DDR: CPU experts 769 MB/token at 36.3 GB/s in their phases, uploads 38 MB/token | avg 19.2 GB/s
+2.37.074.466 W moe-cache: phases: token 42.1 ms wall, CPU expert matmuls 20.6 ms in 126.0 phases (49%) | 4.5 uploads/token, 10% overlapping CPU phases, gate waits 1.34 ms/token
+2.39.586.474 W moe-cache: GPU link 0 link: upload 2.52 ms = read 0.00 + copy 2.52, 3.9 GB/s (CPU 41 GB/s) | evicted 3404: 4.5 hits each, paid back 18%, cost 2.56 ms, lived 9.9 s
+2.39.586.477 W moe-cache: GPU link 1 link: upload 0.62 ms = read 0.00 + copy 0.62, 17.3 GB/s (CPU 41 GB/s) | evicted 5899: 3.7 hits each, paid back 31%, cost 0.79 ms, lived 7.9 s
+2.39.586.479 W moe-cache: DDR: CPU experts 707 MB/token at 37.0 GB/s in their phases, uploads 25 MB/token | avg 18.7 GB/s
+2.39.586.482 W moe-cache: phases: token 39.3 ms wall, CPU expert matmuls 19.0 ms in 126.0 phases (48%) | 2.9 uploads/token, 5% overlapping CPU phases, gate waits 0.44 ms/token
+2.42.071.675 W moe-cache: GPU link 0 link: upload 2.54 ms = read 0.00 + copy 2.54, 3.9 GB/s (CPU 41 GB/s) | evicted 3419: 4.5 hits each, paid back 18%, cost 2.56 ms, lived 9.9 s
+2.42.071.740 W moe-cache: GPU link 1 link: upload 0.57 ms = read 0.00 + copy 0.57, 17.9 GB/s (CPU 41 GB/s) | evicted 6084: 3.7 hits each, paid back 31%, cost 0.79 ms, lived 7.8 s
+2.42.071.742 W moe-cache: DDR: CPU experts 681 MB/token at 36.5 GB/s in their phases, uploads 26 MB/token | avg 18.2 GB/s
+2.42.071.746 W moe-cache: phases: token 38.8 ms wall, CPU expert matmuls 18.4 ms in 126.0 phases (47%) | 3.1 uploads/token, 8% overlapping CPU phases, gate waits 0.52 ms/token
+2.44.540.973 W moe-cache: GPU link 0 link: upload 2.56 ms = read 0.00 + copy 2.56, 3.9 GB/s (CPU 41 GB/s) | evicted 3429: 4.5 hits each, paid back 18%, cost 2.56 ms, lived 9.9 s
+2.44.540.976 W moe-cache: GPU link 1 link: upload 0.43 ms = read 0.00 + copy 0.43, 19.6 GB/s (CPU 41 GB/s) | evicted 6238: 3.7 hits each, paid back 31%, cost 0.78 ms, lived 7.8 s
+2.44.540.977 W moe-cache: DDR: CPU experts 677 MB/token at 35.4 GB/s in their phases, uploads 21 MB/token | avg 18.1 GB/s
+2.44.540.979 W moe-cache: phases: token 38.6 ms wall, CPU expert matmuls 18.2 ms in 126.0 phases (47%) | 2.5 uploads/token, 9% overlapping CPU phases, gate waits 0.40 ms/token
+2.47.090.074 W moe-cache: GPU link 0 link: upload 3.62 ms = read 0.00 + copy 3.62, 4.0 GB/s (CPU 41 GB/s) | evicted 3716: 5.1 hits each, paid back 20%, cost 2.58 ms, lived 10.6 s
+2.47.090.077 W moe-cache: GPU link 1 link: upload 0.91 ms = read 0.00 + copy 0.91, 12.4 GB/s (CPU 41 GB/s) | evicted 6675: 4.0 hits each, paid back 33%, cost 0.78 ms, lived 8.2 s
+2.47.096.323 W moe-cache: DDR: CPU experts 685 MB/token at 34.3 GB/s in their phases, uploads 106 MB/token | avg 19.9 GB/s
+2.47.096.329 W moe-cache: phases: token 39.8 ms wall, CPU expert matmuls 19.1 ms in 126.1 phases (48%) | 9.8 uploads/token, 45% overlapping CPU phases, gate waits 3.79 ms/token
+2.47.096.332 W moe-cache: phases: token 6.3 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+2.49.508.294 W moe-cache: GPU link 0 link: upload 3.48 ms = read 0.00 + copy 3.48, 3.2 GB/s (CPU 41 GB/s) | evicted 4024: 5.5 hits each, paid back 21%, cost 2.58 ms, lived 11.2 s
+2.49.508.297 W moe-cache: GPU link 1 link: upload 1.19 ms = read 0.00 + copy 1.19, 10.4 GB/s (CPU 41 GB/s) | evicted 7041: 4.1 hits each, paid back 33%, cost 0.78 ms, lived 8.2 s
+2.49.508.298 W moe-cache: DDR: CPU experts 613 MB/token at 36.3 GB/s in their phases, uploads 96 MB/token | avg 18.8 GB/s
+2.49.508.300 W moe-cache: phases: token 37.7 ms wall, CPU expert matmuls 17.3 ms in 126.0 phases (46%) | 9.1 uploads/token, 48% overlapping CPU phases, gate waits 2.84 ms/token
+2.51.820.116 W moe-cache: GPU link 0 link: upload 2.83 ms = read 0.00 + copy 2.83, 4.3 GB/s (CPU 41 GB/s) | evicted 4273: 5.7 hits each, paid back 22%, cost 2.61 ms, lived 11.3 s
+2.51.820.119 W moe-cache: GPU link 1 link: upload 0.63 ms = read 0.00 + copy 0.63, 15.4 GB/s (CPU 41 GB/s) | evicted 7431: 4.2 hits each, paid back 34%, cost 0.78 ms, lived 8.2 s
+2.51.820.120 W moe-cache: DDR: CPU experts 567 MB/token at 34.5 GB/s in their phases, uploads 96 MB/token | avg 18.4 GB/s
+2.51.826.342 W moe-cache: phases: token 36.1 ms wall, CPU expert matmuls 16.0 ms in 126.0 phases (44%) | 9.1 uploads/token, 43% overlapping CPU phases, gate waits 3.37 ms/token
+2.51.826.347 W moe-cache: phases: token 6.2 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+2.54.121.374 W moe-cache: GPU link 0 link: upload 2.78 ms = read 0.00 + copy 2.78, 4.0 GB/s (CPU 41 GB/s) | evicted 4556: 5.9 hits each, paid back 22%, cost 2.60 ms, lived 11.5 s
+2.54.121.377 W moe-cache: GPU link 1 link: upload 0.64 ms = read 0.00 + copy 0.64, 14.8 GB/s (CPU 41 GB/s) | evicted 7876: 4.2 hits each, paid back 34%, cost 0.79 ms, lived 8.2 s
+2.54.121.379 W moe-cache: DDR: CPU experts 558 MB/token at 34.8 GB/s in their phases, uploads 101 MB/token | avg 18.4 GB/s
+2.54.121.383 W moe-cache: phases: token 35.9 ms wall, CPU expert matmuls 15.7 ms in 126.0 phases (44%) | 10.2 uploads/token, 42% overlapping CPU phases, gate waits 3.10 ms/token
+2.56.538.706 W moe-cache: GPU link 0 link: upload 2.54 ms = read 0.00 + copy 2.54, 4.3 GB/s (CPU 41 GB/s) | evicted 4837: 6.0 hits each, paid back 22%, cost 2.61 ms, lived 11.4 s
+2.56.538.709 W moe-cache: GPU link 1 link: upload 0.63 ms = read 0.00 + copy 0.63, 14.9 GB/s (CPU 41 GB/s) | evicted 8293: 4.3 hits each, paid back 33%, cost 0.79 ms, lived 8.3 s
+2.56.538.710 W moe-cache: DDR: CPU experts 587 MB/token at 34.8 GB/s in their phases, uploads 103 MB/token | avg 18.3 GB/s
+2.56.538.712 W moe-cache: phases: token 37.8 ms wall, CPU expert matmuls 16.7 ms in 126.0 phases (44%) | 9.5 uploads/token, 42% overlapping CPU phases, gate waits 2.91 ms/token
+2.59.008.874 W moe-cache: GPU link 0 link: upload 2.25 ms = read 0.00 + copy 2.25, 4.3 GB/s (CPU 41 GB/s) | evicted 4838: 6.0 hits each, paid back 22%, cost 2.61 ms, lived 11.4 s
+2.59.008.877 W moe-cache: GPU link 1 link: upload 0.44 ms = read 0.00 + copy 0.44, 19.4 GB/s (CPU 41 GB/s) | evicted 8476: 4.3 hits each, paid back 33%, cost 0.79 ms, lived 8.2 s
+2.59.008.879 W moe-cache: DDR: CPU experts 663 MB/token at 36.9 GB/s in their phases, uploads 24 MB/token | avg 17.8 GB/s
+2.59.008.882 W moe-cache: phases: token 38.6 ms wall, CPU expert matmuls 17.8 ms in 126.0 phases (46%) | 2.8 uploads/token, 3% overlapping CPU phases, gate waits 0.34 ms/token
+3.01.474.533 W moe-cache: GPU link 0 link: upload 2.32 ms = read 0.00 + copy 2.32, 4.1 GB/s (CPU 41 GB/s) | evicted 4842: 6.0 hits each, paid back 22%, cost 2.61 ms, lived 11.4 s
+3.01.474.536 W moe-cache: GPU link 1 link: upload 0.44 ms = read 0.00 + copy 0.44, 19.0 GB/s (CPU 41 GB/s) | evicted 8645: 4.2 hits each, paid back 33%, cost 0.79 ms, lived 8.1 s
+3.01.474.537 W moe-cache: DDR: CPU experts 651 MB/token at 36.4 GB/s in their phases, uploads 22 MB/token | avg 17.5 GB/s
+3.01.474.540 W moe-cache: phases: token 38.5 ms wall, CPU expert matmuls 17.5 ms in 126.0 phases (45%) | 2.7 uploads/token, 4% overlapping CPU phases, gate waits 0.27 ms/token
+3.03.983.340 W moe-cache: GPU link 0 link: upload 2.30 ms = read 0.00 + copy 2.30, 4.0 GB/s (CPU 41 GB/s) | evicted 4846: 6.0 hits each, paid back 22%, cost 2.61 ms, lived 11.4 s
+3.03.983.344 W moe-cache: GPU link 1 link: upload 0.59 ms = read 0.00 + copy 0.59, 17.6 GB/s (CPU 41 GB/s) | evicted 8814: 4.2 hits each, paid back 33%, cost 0.79 ms, lived 8.1 s
+3.03.983.345 W moe-cache: DDR: CPU experts 668 MB/token at 36.5 GB/s in their phases, uploads 23 MB/token | avg 17.6 GB/s
+3.03.983.348 W moe-cache: phases: token 39.2 ms wall, CPU expert matmuls 17.9 ms in 126.0 phases (46%) | 2.7 uploads/token, 3% overlapping CPU phases, gate waits 0.30 ms/token
+3.06.885.507 W moe-cache: GPU link 0 link: upload 2.54 ms = read 0.00 + copy 2.54, 3.8 GB/s (CPU 41 GB/s) | evicted 4858: 6.0 hits each, paid back 22%, cost 2.61 ms, lived 11.4 s
+3.06.885.511 W moe-cache: GPU link 1 link: upload 0.62 ms = read 0.00 + copy 0.62, 17.0 GB/s (CPU 41 GB/s) | evicted 9040: 4.3 hits each, paid back 33%, cost 0.78 ms, lived 8.2 s
+3.06.885.512 W moe-cache: DDR: CPU experts 909 MB/token at 36.8 GB/s in their phases, uploads 31 MB/token | avg 20.7 GB/s
+3.06.885.514 W moe-cache: phases: token 45.3 ms wall, CPU expert matmuls 24.1 ms in 126.0 phases (53%) | 3.6 uploads/token, 5% overlapping CPU phases, gate waits 1.31 ms/token
+3.09.600.173 W moe-cache: GPU link 0 link: upload 3.08 ms = read 0.00 + copy 3.08, 3.4 GB/s (CPU 41 GB/s) | evicted 4889: 6.0 hits each, paid back 22%, cost 2.61 ms, lived 11.4 s
+3.09.600.176 W moe-cache: GPU link 1 link: upload 0.57 ms = read 0.00 + copy 0.57, 17.4 GB/s (CPU 41 GB/s) | evicted 9252: 4.3 hits each, paid back 34%, cost 0.78 ms, lived 8.1 s
+3.09.600.177 W moe-cache: DDR: CPU experts 793 MB/token at 35.7 GB/s in their phases, uploads 32 MB/token | avg 19.4 GB/s
+3.09.600.180 W moe-cache: phases: token 42.4 ms wall, CPU expert matmuls 21.2 ms in 126.0 phases (50%) | 3.7 uploads/token, 12% overlapping CPU phases, gate waits 1.56 ms/token
+3.12.047.321 W moe-cache: GPU link 0 link: upload 1.91 ms = read 0.00 + copy 1.91, 4.3 GB/s (CPU 41 GB/s) | evicted 5260: 6.6 hits each, paid back 24%, cost 2.62 ms, lived 12.2 s
+3.12.047.325 W moe-cache: GPU link 1 link: upload 0.65 ms = read 0.00 + copy 0.65, 15.0 GB/s (CPU 41 GB/s) | evicted 9557: 4.4 hits each, paid back 34%, cost 0.78 ms, lived 8.3 s
+3.12.047.327 W moe-cache: DDR: CPU experts 591 MB/token at 32.8 GB/s in their phases, uploads 100 MB/token | avg 18.1 GB/s
+3.12.047.330 W moe-cache: phases: token 38.2 ms wall, CPU expert matmuls 16.8 ms in 126.0 phases (44%) | 9.0 uploads/token, 55% overlapping CPU phases, gate waits 1.69 ms/token
+3.14.447.624 W moe-cache: GPU link 0 link: upload 4.04 ms = read 0.00 + copy 4.04, 3.5 GB/s (CPU 41 GB/s) | evicted 5546: 7.1 hits each, paid back 25%, cost 2.62 ms, lived 12.9 s
+3.14.447.630 W moe-cache: GPU link 1 link: upload 0.59 ms = read 0.00 + copy 0.59, 16.9 GB/s (CPU 41 GB/s) | evicted 9981: 4.6 hits each, paid back 35%, cost 0.78 ms, lived 8.4 s
+3.14.447.632 W moe-cache: DDR: CPU experts 571 MB/token at 36.0 GB/s in their phases, uploads 101 MB/token | avg 17.9 GB/s
+3.14.447.635 W moe-cache: phases: token 37.5 ms wall, CPU expert matmuls 16.1 ms in 126.0 phases (43%) | 9.8 uploads/token, 40% overlapping CPU phases, gate waits 3.31 ms/token
+3.14.509.260 W moe-cache: steps=2048 hits=539176 misses=148952 hit-rate=78.4%, prefill experts from cache 0/0, kept from prefill 0

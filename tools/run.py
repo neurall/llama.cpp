@@ -345,14 +345,14 @@ def power_limits(hw):
     return _PL["pl"] if hw == _PL["local"] else ""
 
 
-STATS_METRICS = ["tok_s", "hit_pct", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs"]
+STATS_METRICS = ["tok_s", "hit_pct", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs", "pred_up", "pred_pub", "pred_used", "pred_late", "layer_ms_avg", "layer_ms_min", "up_ms_l0", "up_ms_l1"]
 
 
 def stats_section(key, model, test, hw, w):
     """one [section] of stats.ini: the run key (ts + build, as in run-history.csv), then one line per metric with a value per statslog window"""
-    cols = [[x[2], x[3], x[4], x[5], x[6], x[7], x[8]] for x in w]
+    cols = [[x[2], x[3], x[4], x[5], x[6], x[7], x[8]] + (x[10:] if len(x) >= 14 else []) for x in w]
     lines = [f"[{key}]", f"model={model}", f"test={test}", f"hw={hw}", f"every={int(w[1][0] - w[0][0]) if len(w) > 1 else 32}  ; tokens per value"]
-    lines += [f"{m}=" + ",".join(("%.2f" if m in ("tok_s", "ddr_gbs", "pcie_gbs") else "%.1f" if m == "hit_pct" else "%.0f") % c[k] for c in cols) for k, m in enumerate(STATS_METRICS)]
+    lines += [f"{m}=" + ",".join(("%.2f" if m in ("tok_s", "ddr_gbs", "pcie_gbs", "layer_ms_avg", "layer_ms_min", "up_ms_l0", "up_ms_l1") else "%.1f" if m == "hit_pct" else "%.0f") % c[k] for c in cols) for k, m in enumerate(STATS_METRICS[:len(cols[0])])]
     return "\n".join(lines) + "\n\n"
 
 
@@ -361,7 +361,7 @@ def save_stats(build, ts, test, hw, model):
     f = f"/tmp/perf-{build}-stats.txt"
     if not os.path.exists(f):
         return
-    w = [[float(x) for x in l.split()] for l in open(f) if l[:1].isdigit() and len(l.split()) == 10]
+    w = [[float(x) for x in l.split()] for l in open(f) if l[:1].isdigit() and len(l.split()) in (10, 14, 18)]
     os.remove(f)  # the next run of this build must not re-save it
     if w:
         with open(os.path.join(DATA, "stats.ini"), "a") as out:
@@ -511,12 +511,29 @@ def remote_sh(m, cmd, timeout=3600):
     return r.stdout + r.stderr
 
 
-def remote_run(m, build, test, args):
+def remote_run(m, build, test, args, env=None):
     """The CLI version of a test (llama-cli, one prompt, greedy): what most people run. Returns a row like run_one."""
     exe, win = remote_exe(m, build), m["win"]
+    envp = "".join((f"set {k}={v}&& " if win else f"{k}={v} ") for k, v in (env or {}).items())  # variant environment (env: words)
+    if test in ("ppl", "ppl3"):  # the precise decode comparator on that machine: llama-perplexity, one token per call, longsrc.cpp (copy it to <root>\\<build>\\longsrc.cpp)
+        sep = "\\" if win else "/"
+        nb = "1" if test == "ppl" else "3"
+        stf = f'{m["root"]}{sep}perf-stats.txt'
+        envs = (f'set LLAMA_MOE_STATE=0&& set LLAMA_MOE_CACHE_TUNED=0&& set LLAMA_MOE_CACHE_STATS=1&& set LLAMA_MOE_CACHE_STATSLOG=32&& set LLAMA_MOE_STATSLOG={stf}&& ' if win else
+                f'LLAMA_MOE_STATE=0 LLAMA_MOE_CACHE_TUNED=0 LLAMA_MOE_CACHE_STATS=1 LLAMA_MOE_CACHE_STATSLOG=32 LLAMA_MOE_STATSLOG={stf} ')
+        cmd = envp + envs + f'{exe.replace("llama-cli", "llama-perplexity")} -m {MODEL} -f {m["root"]}{sep}{build}{sep}longsrc.cpp -c 1024 --chunks 2 -b {nb} -ub {nb} {args} ' + ("< nul 2>&1" if win else "< /dev/null 2>&1")
+        out = remote_sh(m, cmd)
+        sp_ = re.search(r"([\d.]+) seconds per pass", out)
+        pp_ = re.findall(r"PPL = ([\d.]+)", out)
+        row = {"s_per_pass": float(sp_.group(1)), "tps": 1024 / float(sp_.group(1)), "ppl": float(pp_[-1]) if pp_ else None, "ok": 1, "args": args} if sp_ else {"ok": 0, "note": out[-200:], "args": args}
+        row.update(cache_stats(out))
+        st = remote_sh(m, ("type " if win else "cat ") + stf + (" 2>nul" if win else " 2>/dev/null"))
+        if st.strip():  # the run's statslog goes to stats.ini like a local run's
+            open(f"/tmp/perf-{build}-stats.txt", "w").write(st)
+        return row
     prompt = ovr_prompt("generate smallest html tetris game." if test == "tetris" else "write smallest html tetris game").replace('"', "'")
     n = int(OVR.get("tokens") or (-1 if test == "tetris" else 100))
-    cmd = f'{exe} -m {MODEL} -c {OVR.get("ctx") or 1024} --temp 0 -n {n} --no-display-prompt -p "{prompt}" {args} ' \
+    cmd = envp + f'{exe} -m {MODEL} -c {OVR.get("ctx") or 1024} --temp 0 -n {n} --no-display-prompt -p "{prompt}" {args} ' \
           + ("< nul 2>&1" if win else "< /dev/null 2>&1")
     if not win:
         cmd = f'LD_LIBRARY_PATH={os.path.dirname(exe)} ' + cmd
@@ -534,15 +551,19 @@ def remote_version(m, build):
     return mv.group(1).strip() if mv else "?"
 
 
-def remote_cell(mid, m, build, test, args, note, warm=True):
+def env_rec(env):
+    return dict(env or {})
+
+
+def remote_cell(mid, m, build, test, args, note, warm=True, env=None):
     """Throwaway + measured run on another machine, recorded in the same db (hw = the machine's id)."""
     global IDX
     if m["win"] and remote_sh(m, 'powershell -c "(Get-CimInstance Win32_Battery).BatteryStatus"', 60).strip() not in ("2", ""):
         sys.exit(f"{mid} is not on AC power: the battery caps the GPU and results would be invalid")
     if warm:
-        remote_run(m, build, test, args)
-    row = remote_run(m, build, test, args)
-    rec = {"bare": "1", **({"args": args} if args else {}), **{k: str(v) for k, v in OVR.items() if k != "prompt"}}
+        remote_run(m, build, test, args, env)
+    row = remote_run(m, build, test, args, env)
+    rec = {"bare": "1", **env_rec(env), **({"args": args} if args else {}), **{k: str(v) for k, v in OVR.items() if k != "prompt"}}
     store(row, build, "cli-" + test, rec, note, mid.split("-")[0], remote_version(m, build))   # pc1-cli rows are hw pc1
     show_row(row, build, "cli-" + test)
     IDX += 1
@@ -591,7 +612,7 @@ def cmd_bench(a):
                     return cmd_report(argparse.Namespace(campaign=camp, since=None, last=None, tol=None, md=False))
                 warm = not a.no_warm and i == 0  # one discarded run per cell, before its first repetition
                 if m:
-                    remote_cell(a.machine, m, build, a.test, args, a.note, warm=warm)
+                    remote_cell(a.machine, m, build, a.test, args, a.note, warm=warm, env=env)
                 else:
                     run_cell(build, a.test, env, False, args, True, a.note, warm=warm)
     REP = None
