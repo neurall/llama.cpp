@@ -1,18 +1,18 @@
 # Fork options: flags, `--moe` settings, tuning knobs, environment variables, state file
 
-Everything this fork adds to stock llama.cpp. Settings you give are used as given and are never auto-tuned. Defaults are those of
+Everything this fork adds to stock llama.cpp. Settings you give are used as given and are never auto-tuned. Defaults are those of  
 the release this file ships with.
 
 ## What the fork does, in one minute
 
-A mixture-of-experts (MoE) model has many small "experts" in every layer and uses only a few of them (for example 8 of 256) for each token. When the model is
-bigger than the GPU's memory, upstream llama.cpp ("stock") keeps some layers on the GPU and computes the others on the CPU. This fork instead keeps the
-experts in RAM and turns the free VRAM into a **cache**: in each layer a number of **slots** on the GPU hold the experts used lately, the GPU computes the
-cached ones and the CPU the others at the same time, and an expert that keeps being used replaces one that is not (it is uploaded over PCIe). An expert that is
+A mixture-of-experts (MoE) model has many small "experts" in every layer and uses only a few of them (for example 8 of 256) for each token. When the model is  
+bigger than the GPU's memory, upstream llama.cpp ("stock") keeps some layers on the GPU and computes the others on the CPU. This fork instead keeps the  
+experts in RAM and turns the free VRAM into a **cache**: in each layer a number of **slots** on the GPU hold the experts used lately, the GPU computes the  
+cached ones and the CPU the others at the same time, and an expert that keeps being used replaces one that is not (it is uploaded over PCIe). An expert that is  
 needed and cached is a **hit**; the **hit rate** is the share of such experts.
 
-With no switches at all: the cache is on only when a MoE model does not fit in VRAM, the slots are sized from the free VRAM, and the fork measures token
-speeds and tunes its own settings (**autotune**) and picks the cache layout or the stock layout (**placement**) for the model and the GPUs. What it learns is kept in the
+With no switches at all: the cache is on only when a MoE model does not fit in VRAM, the slots are sized from the free VRAM, and the fork measures token  
+speeds and tunes its own settings (**autotune**) and picks the cache layout or the stock layout (**placement**) for the model and the GPUs. What it learns is kept in the  
 state file. Everything below is for overriding that, and a setting you give is never touched by the tuner.
 
 ### Which switch do I want?
@@ -54,7 +54,7 @@ With `--moe cache=0` the fork behaves as upstream apart from unrelated changes (
 
 ## `--moe` settings (command line)
 
-`--moe` takes comma separated `name=value` pairs, names are case-insensitive and `_` equals `-`; the same string works as
+`--moe` takes comma separated `name=value` pairs, names are case-insensitive and `_` equals `-`; the same string works as  
 `LLAMA_ARG_MOE=...`. A setting you give is used as given and never self-tuned.
 
 | key | default | meaning |
@@ -67,31 +67,31 @@ With `--moe cache=0` the fork behaves as upstream apart from unrelated changes (
 | `train=N` | `0` (the predictor is not trained while running) | train the predictor every N decoded tokens; implies `predict=8` if `predict` is not given |
 | `autotune=0` | autotune on | no self-tuning (same as `-at off`) |
 
-Any other name is a tuning knob of the cache engine (`--moe gate=3,margin=0`). A knob you set is never self-tuned; a name the
+Any other name is a tuning knob of the cache engine (`--moe gate=3,margin=0`). A knob you set is never self-tuned; a name the  
 engine does not know is logged as `unknown key` and ignored. Values are numbers; `0`/`1` are off/on.
 
-The cache keeps some experts in VRAM (the GPU computes those); any other expert is computed by the CPU or uploaded over PCIe first.
+The cache keeps some experts in VRAM (the GPU computes those); any other expert is computed by the CPU or uploaded over PCIe first.  
 The knobs trade CPU work against uploads. Every example below is a complete option: `llama-server -m model.gguf --moe <example>`.
 
-Evidence labels: **proven** = a paired measurement showed a gain (where and how much is given); **unproven, on the way out** = no
-measured gain, will be removed or folded into the tuner unless a test shows one; **no A/B** = never tested on its own, kept as a
+Evidence labels: **proven** = a paired measurement showed a gain (where and how much is given); **unproven, on the way out** = no  
+measured gain, will be removed or folded into the tuner unless a test shows one; **no A/B** = never tested on its own, kept as a  
 measurement input or a safety limit. Numbers are decode tokens/s unless stated; "chat" = short chat prompts.
 
 ### The three knobs that matter most, in plain words
 
-Each decode step a layer needs a few experts. The cached ones run on the GPU. For a missed one the engine can let the CPU compute it, or **upload** it into a
-cache slot so it is a hit next time. An upload costs PCIe time, RAM bandwidth (it reads the same RAM the CPU is reading) and an eviction (a cached expert
+Each decode step a layer needs a few experts. The cached ones run on the GPU. For a missed one the engine can let the CPU compute it, or **upload** it into a  
+cache slot so it is a hit next time. An upload costs PCIe time, RAM bandwidth (it reads the same RAM the CPU is reading) and an eviction (a cached expert  
 has to make room). The three knobs answer three questions about uploads:
 
-- **`MARGIN` (which swaps are worth it).** A missed expert only gets a slot if it beats the weakest cached expert by this many recent uses (over the last 64 tokens).
-  `0`: any expert used more than the weakest cached one gets in; the cache adapts fast and churns more. A high value: a stable cache that can go stale.
-  Default `-1` is 0; `-2` computes it from speeds (about the CPU read rate over the link rate: around 2 on an x16 link, 9 to 11 on a x4 link).
-  Measured on GLM (2 x 3090): the speed-derived margin capped the hit rate; margin 0 gave 71.2% against about 65% and 21.3 against 19.9 t/s (+6.7%).
+- **`MARGIN` (which swaps are worth it).** A missed expert only gets a slot if it beats the weakest cached expert by this many recent uses (over the last 64 tokens).  
+  `0`: any expert used more than the weakest cached one gets in; the cache adapts fast and churns more. A high value: a stable cache that can go stale.  
+  Default `-1` is 0; `-2` computes it from speeds (about the CPU read rate over the link rate: around 2 on an x16 link, 9 to 11 on a x4 link).  
+  Measured on GLM (2 x 3090): the speed-derived margin capped the hit rate; margin 0 gave 71.2% against about 65% and 21.3 against 19.9 t/s (+6.7%).  
   Short chats like margin 0, long prompts did better with the speed rule, so the tuner chooses.
-- **`GATE` (when an upload may run).** The CPU computing its experts and an upload both read system RAM and together reach its limit (on machine A about 38 GB/s for
-  the CPU alone, 44 with a DMA running). An upload that overlaps the CPU's reading slows the CPU, which is the critical path. `GATE=3` makes uploads wait, up to a limit,
+- **`GATE` (when an upload may run).** The CPU computing its experts and an upload both read system RAM and together reach its limit (on machine A about 38 GB/s for  
+  the CPU alone, 44 with a DMA running). An upload that overlaps the CPU's reading slows the CPU, which is the critical path. `GATE=3` makes uploads wait, up to a limit,  
   while the CPU computes, so they run in the gaps; `GATE=0` uploads any time. Measured: +6% on a short GLM chat (22.10 against 20.87 t/s). `gate=2` starved the uploads: never use it.
-- **`SWAP_FRAC` (how much).** The most time uploads may take per step, as a share of the token time (0.25 is a quarter). More uploads help the hit rate but risk stalling the step.
+- **`SWAP_FRAC` (how much).** The most time uploads may take per step, as a share of the token time (0.25 is a quarter). More uploads help the hit rate but risk stalling the step.  
   Measured: no benefit as a user setting (5 against the default gave the same hit rate, 64.6% against 64.7%; 0.5 with margin 0 was slower), so it is labelled "unproven, on the way out".
 
 The tuner sets all three while it runs. If you change one, change one at a time and use `LLAMA_MOE_STATE=0`, or the learned settings will mix into the comparison.
@@ -116,9 +116,9 @@ The tuner sets all three while it runs. If you change one, change one at a time 
 | `CPU_GBS`, `DDR_GBS` | `38`, `44` | Assumed RAM read rate in GB/s of the CPU alone, and of CPU plus uploads together; starting values until the start-up probe measures them, `DDR_GBS` is the ceiling for `GATE=3` | `cpu_gbs=22,ddr_gbs=28` for a slower RAM kit | Measurement inputs, not tunables (PC1 DDR4-3200: CPU alone 37-38 GB/s, with both DMAs 44-45) |
 | `WAIT` | `1` | The step waits for queued swaps to finish; `0` never waits and finished uploads appear at the next split | `wait=0` | No A/B recorded |
 
-**Predictor streaming (uploads ahead of need)**. The whole group is **unproven, on the way out unless the pending corrected A/B shows a
-win**: on GLM 2x3090 the predictor raised the hit rate (chat 46.6 to 56.1%) but not tokens/s (14.2 vs 13.9), and our PC1 experiment
-lost 3-10% (hit rate +0.4-0.7 points) because uploads arrived too late and compete with the CPU for RAM bandwidth. On the W10 laptop
+**Predictor streaming (uploads ahead of need)**. The whole group is **unproven, on the way out unless the pending corrected A/B shows a  
+win**: on GLM 2x3090 the predictor raised the hit rate (chat 46.6 to 56.1%) but not tokens/s (14.2 vs 13.9), and our PC1 experiment  
+lost 3-10% (hit rate +0.4-0.7 points) because uploads arrived too late and compete with the CPU for RAM bandwidth. On the W10 laptop  
 (RTX 4060, Qwen3.6-35B) an earlier +27-34% shrank to 0-3% once the AVX2 CPU kernels landed. Off by default (needs `predict=M` or `train=N`).
 
 | knob | default | what it does | example | evidence |
@@ -137,7 +137,7 @@ lost 3-10% (hit rate +0.4-0.7 points) because uploads arrived too late and compe
 |---|---|---|---|---|
 | `MARGIN_MB` | `0` (= 384, or from the batch size by autotune) | VRAM in MiB kept free per GPU after the cache takes its slots, so a longer context or batch does not run out of memory (not the same as `MARGIN`) | `margin_mb=1024` | Safety limit: measured post-load growth was 54-170 MiB per GPU |
 
-**Experimental knobs** (off by default; **unproven, on the way out**: none beat the default in our A/B tests, kept only for
+**Experimental knobs** (off by default; **unproven, on the way out**: none beat the default in our A/B tests, kept only for  
 experiments and probably removed in a later release; do not rely on them):
 
 | knob | default | what it does | example | evidence |
@@ -153,7 +153,7 @@ experiments and probably removed in a later release; do not rely on them):
 
 ## Environment variables
 
-Every knob above can also be given as `LLAMA_MOE_CACHE_<NAME>=value` (for example `LLAMA_MOE_CACHE_MARGIN=0`); the `--moe` form wins.
+Every knob above can also be given as `LLAMA_MOE_CACHE_<NAME>=value` (for example `LLAMA_MOE_CACHE_MARGIN=0`); the `--moe` form wins.  
 These are the other fork switches. Most exist for experiments; the default is what we ship.
 
 | variable | default | what it does |
@@ -206,8 +206,8 @@ With `--moe predict=M` (or `train=N`) a small predictor guesses which experts th
 
 ## Faster loading of pinned weights: huge pages, the pool and the cache
 
-With `--load-mode pin` (the `llama-server` default when the model fits in free RAM) the weights are read into pinned host memory so the GPU
-can copy them directly. Pinning 100 GiB is slow with ordinary 4 KiB pages. The loader has three levels, tried in this order; each falls through
+With `--load-mode pin` (the `llama-server` default when the model fits in free RAM) the weights are read into pinned host memory so the GPU  
+can copy them directly. Pinning 100 GiB is slow with ordinary 4 KiB pages. The loader has three levels, tried in this order; each falls through  
 to the next without an error, so nothing here is required.
 
 | level | needs | what it does |
@@ -224,9 +224,9 @@ to the next without an error, so nothing here is required.
 | hybrid (level 3) | 72.8 s (69.4 to 75.9), the pin step 60.5 s down to 44.1 s | same runs |
 | warm cache file (level 1) against the pool path (level 2), one-chunk perplexity run, `LLAMA_MOE_STATE=0` | 34.5 s (34.3 to 35.7) against 56.6 s (55.6 to 60.8); the whole run 41.1 s against 62.9 s | ABBA, n=4 each |
 
-The perplexity was identical in every run of the cache comparison (3.7227), and a cold fill, two warm loads and a no-cache load on a
-longer text all gave the same value (6.6026): the cache returns the same weights. One model, one machine, one kernel and driver: how much you gain elsewhere
-depends on how fragmented your free memory is and how fast your RAM is. The first load of a model still reads the disk (about 47 s here); only
+The perplexity was identical in every run of the cache comparison (3.7227), and a cold fill, two warm loads and a no-cache load on a  
+longer text all gave the same value (6.6026): the cache returns the same weights. One model, one machine, one kernel and driver: how much you gain elsewhere  
+depends on how fragmented your free memory is and how fast your RAM is. The first load of a model still reads the disk (about 47 s here); only  
 later starts are fast. Loading the pinned weights also holds that much RAM for as long as the process runs.
 
 ### One-time setup: `pool.sh`
@@ -239,10 +239,10 @@ sudo ./pool.sh mount 100G         # exactly that many GiB (a number with G), or 
 sudo ./pool.sh unmount            # delete the cached models, unmount, give the pages back
 ```
 
-It reserves the 1 GiB pages (it drops the page cache and compacts memory first so nothing has to be migrated), and mounts a hugetlbfs at
-`/mnt/huge1g` owned by you. Root is only needed to change the pool or the mount; with a big enough pool and the mount in place it runs as a normal user.
-The pool stays reserved until `unmount` (or a reboot), so that RAM is not available to other programs meanwhile: this is a setup for a machine
-that serves one model, not for a desktop. Reserve once; the loader never grows or shrinks it. For a model that only partly sits in host memory
+It reserves the 1 GiB pages (it drops the page cache and compacts memory first so nothing has to be migrated), and mounts a hugetlbfs at  
+`/mnt/huge1g` owned by you. Root is only needed to change the pool or the mount; with a big enough pool and the mount in place it runs as a normal user.  
+The pool stays reserved until `unmount` (or a reboot), so that RAM is not available to other programs meanwhile: this is a setup for a machine  
+that serves one model, not for a desktop. Reserve once; the loader never grows or shrinks it. For a model that only partly sits in host memory  
 (layers on the GPUs) the cache holds just that part, so give the size by hand if the model's file size exceeds the limit.
 
 Then start the fork with the cache on:
@@ -251,17 +251,17 @@ Then start the fork with the cache on:
 GGML_CUDA_HUGEFS=/mnt/huge1g llama-server -m model.gguf --load-mode pin
 ```
 
-The first load of a model creates `<key>.w.part`, fills it while reading the weights and renames it to `<key>.w` when complete. The key is made
-from the model file (device, inode, size, modification time) and the layout of the tensors in the buffer, so a changed file or a different
-split of layers between GPU and RAM gets its own cache file. When the pool is full, the next fill deletes the least recently used cache file
-that no process has mapped (a running process holds a lock on its file, so a model in use is never evicted); if there is still no room it
+The first load of a model creates `<key>.w.part`, fills it while reading the weights and renames it to `<key>.w` when complete. The key is made  
+from the model file (device, inode, size, modification time) and the layout of the tensors in the buffer, so a changed file or a different  
+split of layers between GPU and RAM gets its own cache file. When the pool is full, the next fill deletes the least recently used cache file  
+that no process has mapped (a running process holds a lock on its file, so a model in use is never evicted); if there is still no room it  
 silently uses level 2 or 3.
 
 ### Do not boot with `hugetlb_cma=`
 
-Huge pages taken from a CMA area cannot be pinned for the GPU: the NVIDIA driver pins with `pin_user_pages(FOLL_LONGTERM)`, the kernel refuses
-that for CMA pages unless it can migrate them, and a 1 GiB page inside the area has nowhere to go. `cudaHostRegister` then fails with
-`invalid argument` (we measured this for every flag and chunk size). `pool.sh mount` refuses to run if that option is on the kernel command
+Huge pages taken from a CMA area cannot be pinned for the GPU: the NVIDIA driver pins with `pin_user_pages(FOLL_LONGTERM)`, the kernel refuses  
+that for CMA pages unless it can migrate them, and a 1 GiB page inside the area has nowhere to go. `cudaHostRegister` then fails with  
+`invalid argument` (we measured this for every flag and chunk size). `pool.sh mount` refuses to run if that option is on the kernel command  
 line. Allocate the pool at run time, as the script does, from ordinary memory.
 
 ### Environment variables for loading
@@ -282,7 +282,7 @@ line. Allocate the pool at run time, as the script does, from ordinary memory.
 
 ## The state file
 
-`~/.cache/llama.cpp/moe-state.ini` (`LLAMA_MOE_STATE=PATH` moves it, `LLAMA_MOE_STATE=0` ignores it and never writes) holds one
+`~/.cache/llama.cpp/moe-state.ini` (`LLAMA_MOE_STATE=PATH` moves it, `LLAMA_MOE_STATE=0` ignores it and never writes) holds one  
 `[model name + size]` section per model:
 
 | line | content |
@@ -295,9 +295,9 @@ Counts only seed the start; during a run the cache scores by recent use. It is p
 
 ## Several GPUs and MTP
 
-- The cache is sized per GPU from its free VRAM and the experts spread over all GPUs; each GPU keeps its own slots and upload
-  link. A card on a slow slot (x4) helps less, its uploads take 4 to 7 times longer, and prompt processing goes to the fastest
+- The cache is sized per GPU from its free VRAM and the experts spread over all GPUs; each GPU keeps its own slots and upload  
+  link. A card on a slow slot (x4) helps less, its uploads take 4 to 7 times longer, and prompt processing goes to the fastest  
   link. `-ts`, `-dev` and `-sm` work as in stock; see [multi-GPU usage](docs/multi-gpu.md).
-- MTP works together with the cache: pass `-md` and `--spec-type draft-mtp` as in the MTP section above. The draft head is
+- MTP works together with the cache: pass `-md` and `--spec-type draft-mtp` as in the MTP section above. The draft head is  
   small and stays in VRAM, the cache serves the main model.
 
