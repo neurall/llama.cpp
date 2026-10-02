@@ -160,6 +160,82 @@ With `--moe predict=M` (or `train=N`) a small predictor guesses which experts th
 | `LLAMA_MOE_CACHE_PREDICT_FILE` | auto | where the learned predictor is saved between runs; `0` = not saved |
 | `LLAMA_MOE_CACHE_PREDICT_RA`, `..._NOHANDOFF` | | diagnostics |
 
+## Faster loading of pinned weights: huge pages, the pool and the cache
+
+With `--load-mode pin` (the `llama-server` default when the model fits in free RAM) the weights are read into pinned host memory so the GPU
+can copy them directly. Pinning 100 GiB is slow with ordinary 4 KiB pages. The loader has three levels, tried in this order; each falls through
+to the next without an error, so nothing here is required.
+
+| level | needs | what it does |
+|---|---|---|
+| **1. Cache file** (`GGML_CUDA_HUGEFS`) | the pool and the mount below, set up once with root | the weights of a model are kept in a file in RAM that outlives the process; a later start maps it and skips the disk read |
+| **2. Reserved pool pages** | the pool below | the buffer is placed on free 1 GiB (then 2 MiB) huge pages of the pool, no page-by-page work |
+| **3. Hybrid** (default, no setup) | nothing | the part of the buffer the kernel can back with 2 MiB transparent huge pages (70% of the free 2 MiB blocks in `/proc/buddyinfo`) uses them, the rest 4 KiB pages; one `cudaHostRegister` call over everything |
+
+### Measured (GLM-5.3-Flash 3.0-bit, 109.4 GiB, `--load-mode pin`, cold page cache, machine A: Ryzen 7 3700X, 125 GB DDR4-3200, 2x RTX 3090, kernel 7.1.5, driver 580.173.02)
+
+| comparison | time to ready | runs |
+|---|---|---|
+| plain 4 KiB pinning (16 read threads) | 91.3 s median (87.8 to 92.7) | ABBA, n=4 each |
+| hybrid (level 3) | 72.8 s (69.4 to 75.9), the pin step 60.5 s down to 44.1 s | same runs |
+| warm cache file (level 1) against the pool path (level 2), one-chunk perplexity run, `LLAMA_MOE_STATE=0` | 34.5 s (34.3 to 35.7) against 56.6 s (55.6 to 60.8); the whole run 41.1 s against 62.9 s | ABBA, n=4 each |
+
+The perplexity was identical in every run of the cache comparison (3.7227), and a cold fill, two warm loads and a no-cache load on a
+longer text all gave the same value (6.6026): the cache returns the same weights. One model, one machine, one kernel and driver: how much you gain elsewhere
+depends on how fragmented your free memory is and how fast your RAM is. The first load of a model still reads the disk (about 47 s here); only
+later starts are fast. Loading the pinned weights also holds that much RAM for as long as the process runs.
+
+### One-time setup: `pool.sh`
+
+Linux only (Windows uses the old path). The kernel needs 1 GiB huge pages (`CONFIG_CONTIG_ALLOC`, the CPU flag `pdpe1gb`); tested on kernel 7.1.5 only.
+
+```sh
+sudo ./pool.sh mount              # the most the machine can spare: total RAM minus a margin (default max(24 GiB, 20% of RAM), HUGEFS_MARGIN_GIB=N to change)
+sudo ./pool.sh mount 100G         # exactly that many GiB (a number with G), or --pages N, or the path of a model file to size it for that model
+sudo ./pool.sh unmount            # delete the cached models, unmount, give the pages back
+```
+
+It reserves the 1 GiB pages (it drops the page cache and compacts memory first so nothing has to be migrated), and mounts a hugetlbfs at
+`/mnt/huge1g` owned by you. Root is only needed to change the pool or the mount; with a big enough pool and the mount in place it runs as a normal user.
+The pool stays reserved until `unmount` (or a reboot), so that RAM is not available to other programs meanwhile: this is a setup for a machine
+that serves one model, not for a desktop. Reserve once; the loader never grows or shrinks it. For a model that only partly sits in host memory
+(layers on the GPUs) the cache holds just that part, so give the size by hand if the model's file size exceeds the limit.
+
+Then start the fork with the cache on:
+
+```sh
+GGML_CUDA_HUGEFS=/mnt/huge1g llama-server -m model.gguf --load-mode pin
+```
+
+The first load of a model creates `<key>.w.part`, fills it while reading the weights and renames it to `<key>.w` when complete. The key is made
+from the model file (device, inode, size, modification time) and the layout of the tensors in the buffer, so a changed file or a different
+split of layers between GPU and RAM gets its own cache file. When the pool is full, the next fill deletes the least recently used cache file
+that no process has mapped (a running process holds a lock on its file, so a model in use is never evicted); if there is still no room it
+silently uses level 2 or 3.
+
+### Do not boot with `hugetlb_cma=`
+
+Huge pages taken from a CMA area cannot be pinned for the GPU: the NVIDIA driver pins with `pin_user_pages(FOLL_LONGTERM)`, the kernel refuses
+that for CMA pages unless it can migrate them, and a 1 GiB page inside the area has nowhere to go. `cudaHostRegister` then fails with
+`invalid argument` (we measured this for every flag and chunk size). `pool.sh mount` refuses to run if that option is on the kernel command
+line. Allocate the pool at run time, as the script does, from ordinary memory.
+
+### Environment variables for loading
+
+| variable | default | what it does |
+|---|---|---|
+| `GGML_CUDA_HUGEFS` | off | mount point of the cache (`/mnt/huge1g`); unset or without a mount the loader uses level 2 or 3 |
+| `GGML_CUDA_THP_SHARE` | `0.7` | share of the free 2 MiB blocks used for transparent huge pages in level 3. `0.9` was faster (70 s) in five runs but once froze a load for more than 13 minutes while memory was heavily used; `0` is plain 4 KiB pages |
+| `GGML_CUDA_REG_CHUNK_MB` | whole buffer | register the buffer in chunks of this many MiB. **Do not use:** a tensor that straddles two registrations makes `cudaMemcpyAsync` fail with `invalid argument` at the first prompt batch (measured: perplexity crashed with 4 GiB chunks, ran with one registration) |
+| `GGML_CUDA_NO_PINNED` | off | never pin the weights |
+| `LLAMA_LOAD_THREADS` | half the CPU threads, at most 16 | threads that read the model file into the buffer; `1` keeps the sequential reader |
+
+### If something goes wrong
+
+- `only N of M pages could be allocated`: memory is too fragmented or too full; stop other programs, run `pool.sh unmount`, mount again with a smaller size, or reboot.
+- No `hugetlbfs cache` line in the log: the mount is missing, the pool is too small for the file, or another process is filling the same model; the load used level 2 or 3.
+- A load that stalls for minutes while the machine is swapping: lower `GGML_CUDA_THP_SHARE` (or set it to `0`), and do not load a second large model while a cache file holds most of the RAM.
+
 ## The state file
 
 `~/.cache/llama.cpp/moe-state.ini` (`LLAMA_MOE_STATE=PATH` moves it, `LLAMA_MOE_STATE=0` ignores it and never writes) holds one
