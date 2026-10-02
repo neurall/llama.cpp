@@ -151,6 +151,27 @@ Anything you pass is used as given and is never auto-tuned:
 
 Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_MOE=cache=0`.  
 
+## Options
+
+All fork options (flags, every `--moe` setting and tuning knob with defaults and examples, experimental ones marked, environment
+variables, the state file, multi-GPU and MTP use) are in [docs/fork-knobs.md](docs/fork-knobs.md). The key ones:
+
+| option | what it does |
+|---|---|
+| `--moe cache=N` | expert slots per layer in VRAM (`-1` from free VRAM, `0` fork off) |
+| `--moe margin=N` | uses an expert needs over the one it evicts before it is swapped in; `0` swaps eagerly, higher swaps less |
+| `--moe gate=3` | uploads wait while the CPU reads experts, so both do not fight for RAM bandwidth (`0` off) |
+| `--moe jit=0` | stop uploading this token's missed experts on the fly |
+| `--moe swap_frac=F` | share of the token time uploads may take (tuned live, default 0.25) |
+| `--moe predict=M,train=N` | prefetch the experts the next layers will probably need (top M); the predictor learns every N tokens |
+| `--moe window=N` | tokens of recent use the cache scores by (default 64) |
+| `-at off` | no self-tuning, fixed defaults |
+| `-lm pin\|mmap` | pinned or memory-mapped weights |
+| `LLAMA_MOE_STATE=0` | ignore and never write the state file |
+
+Experimental knobs (`BIG`, `HOT_FRAC`, `TBP`, `L3PF`, ...) are off by default, never beat the default in our tests and may be removed;
+they are listed in the document, not here.
+
 ## Good to know
 
 - **RAM is the limit.** Decode speed is bound by how fast the CPU reads the experts that are not in VRAM. More or faster RAM,
