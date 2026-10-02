@@ -3784,7 +3784,15 @@ void llama_moe_set_options(const char * opts) {
         } else if (knob_set(knobs(), name, atof(kv.c_str() + eq + 1))) {
             user_knobs().insert(name);
         } else {
-            LLAMA_LOG_WARN("moe-cache: --moe: unknown key '%s'\n", name.c_str());
+            // every other setting is an environment variable of the engine (POLICY, PREDICT_AHEAD, ...): --moe name=value sets LLAMA_MOE_CACHE_NAME, and wins over the environment
+            for (char & c : name) { if (c == '-') { c = '_'; } }
+            const std::string var = "LLAMA_MOE_CACHE_" + name, val = kv.substr(eq + 1);
+#ifdef _WIN32
+            _putenv_s(var.c_str(), val.c_str());
+#else
+            setenv(var.c_str(), val.c_str(), 1);
+#endif
+            LLAMA_LOG_INFO("moe-cache: --moe %s=%s sets %s\n", kv.substr(0, eq).c_str(), val.c_str(), var.c_str());
         }
     }
 }
