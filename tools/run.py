@@ -53,6 +53,7 @@ COMMON = COMMON_ALL
 PORT = 8099
 OVR = {}   # --prompt TEXT|@file, --tokens N, --ctx N override the test's own prompt, generated tokens and context
 CAMPAIGN = ""  # --campaign NAME: column campaign of every row of this invocation
+REP = None  # bench repetition (0-based) of the run being stored; None outside bench
 IDX = 0    # run counter: test chatv answers prompt IDX mod len(CHAT_PROMPTS) (a repeated temp-0 answer would reuse exactly the cached experts)
 CHAT_PROMPTS = [
     "Write a Python function that parses a CSV file and returns the average of each column.",
@@ -75,12 +76,17 @@ def ovr_prompt(default):
     if p and p.startswith("@"):
         return open(p[1:]).read()
     return p or default
-GREEDY = {"temperature": 0, "top_k": 1, "top_p": 1}
+GREEDY = {"temperature": 0, "top_p": 1, "top_k": 1}
+SEED = 424242
+FIXED = {"seed": SEED, "ignore_eos": True}  # protocol v2 (tests fix, fix12k): same prompt, seed and exact token count for every build
 
 
 # ---- storage: append-only csv files, key info first so a line reads at a glance ($RUN_DATA, default: the builds folder) ----
 RUN_COLS = ["ts", "commit", "bno", "tps", "pp", "hit", "model", "args", "test", "hw", "ok", "build", "md5", "campaign", "note",
-            "ppl", "spp", "n_gen", "origin", "env", "cmd"]
+            "ppl", "spp", "n_gen", "origin", "env", "cmd",
+            "pl", "proto", "rep", "seed", "branch", "patch"]  # pl: GPU power limits in W; proto: v2 = fixed workload (tests fix, fix12k), v1 = earlier; rep: repetition in a bench;
+                                          # seed: sampling seed of a v2 run; branch, patch: source branch of the build and the hash of its uncommitted diff (bin/BUILD_INFO,
+                                          # written by the build script; "commit" then is that commit, +patch when dirty). A run's statslog: section of stats.ini, row of stats.csv (ts + build)
 CAMP_COLS = ["name", "start", "note", "conclusion", "why"]
 MACH_COLS = ["id", "ssh", "root", "kind", "cpu", "ram_gb", "ram_type", "gpus", "links", "os", "hostname", "board", "storage",
              "mem_detail", "gpu_detail", "sw", "note"]
@@ -163,7 +169,7 @@ def wait_vram_free():
             t0 = time.time()
         out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True).stdout.split()
-        if out and max(int(x) for x in out) < 500:
+        if out and max(int(x) for x in out) < 500 + int(os.environ.get("PERF_HOLD_MB", 0)):  # PERF_HOLD_MB: VRAM a holder process keeps on purpose (simulated smaller card)
             return
         time.sleep(1)
 
@@ -230,6 +236,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
          and not (x == "-1" and COMMON_ALL[i - 1] == "--moe-expert-cache")]) + list(extra_args)  # stock/plain: autofit, no cache
     wait_vram_free()
     env = {**os.environ, **extra_env, "LD_LIBRARY_PATH": os.path.join(HERE, build), "LLAMA_MOE_CACHE_STATS": "1",
+           "LLAMA_MOE_CACHE_STATSLOG": "32", "LLAMA_MOE_STATSLOG": f"/tmp/perf-{build}-stats.txt",  # builds with statslog write a text line per 32 steps (moe-stats.csv)
            "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
     row = {}
     if test in ("ppl", "ppl3"):
@@ -245,18 +252,20 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
     else:
         if BARE:
             COMMON = list(extra_args)
-        if test in ("pf12k", "pf12k-stock", "pf128k"):
+        if test in ("pf12k", "pf12k-stock", "pf128k", "fix12k"):
             pf_ctx = str(OVR.get("ctx") or (131072 if test == "pf128k" else 16384))
             dev = ["-t", THREADS, "-dev", os.environ.get("PERF_PF_DEV") or ("CUDA1,CUDA0" if DEVS == "CUDA0,CUDA1" else DEVS), "-c", pf_ctx, "-ub", "2048", "-b", "2048"]
             args = list(extra_args) if BARE else dev + ((["--moe-expert-cache", "0"] if test == "pf12k-stock" and not build.startswith("stock") else []) if test == "pf12k-stock" or plain or build.startswith("stock") else ["--cpu-moe", "-nr", "--moe-expert-cache", "-1"]) + list(extra_args)
             if BARE and (plain or build.startswith("stock")) and "-c" not in args:
                 args += ["-c", pf_ctx]  # stock's default context (4096) rejects the 12k prompt (HTTP 400); the fork sets 32k itself
             res, logf = server_run(build, env, args, "/completion",
-                                   {"prompt": ovr_prompt(open(os.path.join(PROMPTS, "src_128k.cpp" if test == "pf128k" else "src_12k.cpp")).read()), "n_predict": int(OVR.get("tokens") or os.environ.get("PERF_NPRED", 64 if test == "pf128k" else 32)),
-                                    "cache_prompt": False, **GREEDY})
+                                   {"prompt": ovr_prompt(open(os.path.join(PROMPTS, "src_128k.cpp" if test == "pf128k" else "src_12k.cpp")).read()), "n_predict": int(OVR.get("tokens") or os.environ.get("PERF_NPRED", 64 if test == "pf128k" else 256 if test == "fix12k" else 32)),
+                                    "cache_prompt": False, **GREEDY, **(FIXED if test == "fix12k" else {})})
             t = res["timings"]
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
                    "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}"}
+            if test == "fix12k":
+                row["md5"] = hashlib.md5(res["content"].encode()).hexdigest()[:8]
             row.update(cache_stats(open(logf).read()))
             row.update(ok=1 if row.get("pp_tps") else 0, args=" ".join(args))
             return row
@@ -272,12 +281,12 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             row.update(cache_stats(log))
             row.update(ok=1 if row.get("tps") else 0, args=" ".join(args))
             return row
-        if test in ("tetris", "t100"):
+        if test in ("tetris", "t100", "fix"):
             # t100: what most people run on a CLI: one short prompt, 100 tokens, -c 1024, temperature 0 (GREEDY)
-            args = COMMON + ["-c", str(OVR.get("ctx") or 1024)]
+            args = COMMON + ["-c", str(OVR.get("ctx") or (2048 if test == "fix" else 1024))]
             res, logf = server_run(build, env, args, "/completion",
                                    {"prompt": ovr_prompt("generate smallest html tetris game." if test == "tetris" else "write smallest html tetris game"),
-                                    "n_predict": int(OVR.get("tokens") or (-1 if test == "tetris" else 100)), **GREEDY})
+                                    "n_predict": int(OVR.get("tokens") or (-1 if test == "tetris" else 1024 if test == "fix" else 100)), **GREEDY, **(FIXED if test == "fix" else {})})
             text = res["content"]
         else:
             args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
@@ -319,6 +328,74 @@ def prep_model():
         subprocess.run(["dd", f"if={MODEL}", "of=/dev/null", "bs=16M"], stderr=subprocess.DEVNULL)
 
 
+_PL = {}
+
+
+def power_limits(hw):
+    """GPU power limits in W of this host, like 350+370 (PERF_PL overrides); only for rows of the local machine, remote ones stay empty."""
+    if "pl" not in _PL:
+        local = os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
+        out = ""
+        if os.environ.get("PERF_PL") is None:
+            try:
+                out = subprocess.run(["nvidia-smi", "--query-gpu=power.limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
+            except Exception:
+                pass
+        _PL["pl"] = os.environ.get("PERF_PL") or "+".join(str(round(float(x))) for x in out.split() if x.replace(".", "").isdigit())
+        _PL["local"] = local
+    return _PL["pl"] if hw == _PL["local"] else ""
+
+
+def build_info(build):
+    """commit / branch / diff hash of a local build, from bin/BUILD_INFO (key=value lines); empty for stock and remote builds"""
+    try:
+        return dict(l.strip().split("=", 1) for l in open(os.path.join(HERE, build, "BUILD_INFO")) if "=" in l)
+    except OSError:
+        return {}
+
+
+STATS_CSV_COLS = ["ts", "build", "commit", "branch", "patch", "hw", "model", "test", "args", "env", "tps", "hit", "windows", "every", "tok_s_mean", "hit_mean", "uploads", "evictions", "up_mib",
+                  "ddr_gbs", "pcie_gbs", "pred_up", "pred_pub", "pred_used", "pred_late", "layer_ms_avg", "layer_ms_min", "up_ms_l0", "up_ms_l1"]
+
+
+def stats_csv_row(w):
+    """one run's statslog windows -> totals (uploads, evictions, MiB, predictor counters), means (t/s, hit, DDR, PCIe, layer time), min layer time, median upload time per link"""
+    col = lambda i: [x[i] for x in w if len(x) > i]
+    mean = lambda v: round(statistics.mean(v), 3) if v else ""
+    d = dict(windows=len(w), every=int(w[1][0] - w[0][0]) if len(w) > 1 else 32, tok_s_mean=mean(col(2)), hit_mean=mean(col(3)), uploads=int(sum(col(4))), evictions=int(sum(col(5))),
+             up_mib=int(sum(col(6))), ddr_gbs=mean(col(7)), pcie_gbs=mean(col(8)))
+    if len(w[0]) >= 14:
+        d.update(pred_up=int(sum(col(10))), pred_pub=int(sum(col(11))), pred_used=int(sum(col(12))), pred_late=int(sum(col(13))))
+    if len(w[0]) >= 18:
+        lm = [v for v in col(15) if v > 0]
+        d.update(layer_ms_avg=mean(col(14)), layer_ms_min=round(min(lm), 3) if lm else "", up_ms_l0=round(statistics.median(col(16)), 3), up_ms_l1=round(statistics.median(col(17)), 3))
+    return d
+
+
+STATS_METRICS = ["tok_s", "hit_pct", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs", "pred_up", "pred_pub", "pred_used", "pred_late", "layer_ms_avg", "layer_ms_min", "up_ms_l0", "up_ms_l1"]
+
+
+def stats_section(key, model, test, hw, w):
+    """one [section] of stats.ini: the run key (ts + build, as in run-history.csv), then one line per metric with a value per statslog window"""
+    cols = [[x[2], x[3], x[4], x[5], x[6], x[7], x[8]] + (x[10:] if len(x) >= 14 else []) for x in w]
+    lines = [f"[{key}]", f"model={model}", f"test={test}", f"hw={hw}", f"every={int(w[1][0] - w[0][0]) if len(w) > 1 else 32}  ; tokens per value"]
+    lines += [f"{m}=" + ",".join(("%.2f" if m in ("tok_s", "ddr_gbs", "pcie_gbs", "layer_ms_avg", "layer_ms_min", "up_ms_l0", "up_ms_l1") else "%.1f" if m == "hit_pct" else "%.0f") % c[k] for c in cols) for k, m in enumerate(STATS_METRICS[:len(cols[0])])]
+    return "\n".join(lines) + "\n\n"
+
+
+def save_stats(build, ts, test, hw, model):
+    """The server's statslog file of the measured run (a value per 32 steps: t/s, hit, uploads, evictions, MiB uploaded, DDR and PCIe GB/s) -> a section of stats.ini."""
+    f = f"/tmp/perf-{build}-stats.txt"
+    if not os.path.exists(f):
+        return None
+    w = [[float(x) for x in l.split()] for l in open(f) if l[:1].isdigit() and len(l.split()) in (10, 14, 18)]
+    os.remove(f)  # the next run of this build must not re-save it
+    if w:
+        with open(os.path.join(DATA, "stats.ini"), "a") as out:
+            out.write(stats_section(f"{ts} {build}", model, test, hw, w))
+    return w
+
+
 def store(row, build, test, rec, note, hw, vstr):
     """One csv row per run: date and commit first (the commit and build number come from the binary's own --version), host, model, settings."""
     mc = re.search(r"commit (\w+)", vstr or "")
@@ -327,12 +404,21 @@ def store(row, build, test, rec, note, hw, vstr):
                build_no=int(mb.group(1)) if mb else None, origin="stock" if build.startswith("stock") else "fork", hw=hw,
                model=model_name(), ts=time.strftime("%F %T"), build=build, test=test,
                env=json.dumps(rec, sort_keys=True), note=" | ".join(x for x in (note, row.get("note")) if x) or None)
+    w = save_stats(build, row["ts"], test, hw, row["model"])
     extra = {k: v for k, v in rec.items() if k != "args"}
+    bi = build_info(build)
+    if bi.get("commit"):
+        row["commit_sha"] = bi["commit"] + ("+" + bi["patch"] if bi.get("patch") and bi.get("patch") != "0" else "")   # the commit the binary was built from (+hash of an uncommitted diff)
+    if w:
+        csv_append("stats.csv", STATS_CSV_COLS, dict(ts=row["ts"], build=build, commit=row["commit_sha"], branch=bi.get("branch", ""), patch=bi.get("patch", ""), hw=hw, model=row["model"], test=test,
+                   args=rec.get("args", ""), env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", tps=row.get("tps"), hit=row.get("hit_rate"), **stats_csv_row(w)))
     csv_append("run-history.csv", RUN_COLS, dict(
         ts=row["ts"], commit=row["commit_sha"], hw=hw, test=test, tps=row.get("tps"), pp=row.get("pp_tps"), hit=row.get("hit_rate"),
         ok=row.get("ok", 1), model=row["model"], build=build, args=rec.get("args", ""), md5=row.get("md5"), campaign=CAMPAIGN,
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
-        env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args")))
+        env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
+        pl=power_limits(hw), proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
+        branch=bi.get("branch", ""), patch=bi.get("patch", "")))
 
 
 def show_row(row, build, test):
@@ -460,12 +546,29 @@ def remote_sh(m, cmd, timeout=3600):
     return r.stdout + r.stderr
 
 
-def remote_run(m, build, test, args):
+def remote_run(m, build, test, args, env=None):
     """The CLI version of a test (llama-cli, one prompt, greedy): what most people run. Returns a row like run_one."""
     exe, win = remote_exe(m, build), m["win"]
+    envp = "".join((f"set {k}={v}&& " if win else f"{k}={v} ") for k, v in (env or {}).items())  # variant environment (env: words)
+    if test in ("ppl", "ppl3"):  # the precise decode comparator on that machine: llama-perplexity, one token per call, longsrc.cpp (copy it to <root>\\<build>\\longsrc.cpp)
+        sep = "\\" if win else "/"
+        nb = "1" if test == "ppl" else "3"
+        stf = f'{m["root"]}{sep}perf-stats.txt'
+        envs = (f'set LLAMA_MOE_STATE=0&& set LLAMA_MOE_CACHE_TUNED=0&& set LLAMA_MOE_CACHE_STATS=1&& set LLAMA_MOE_CACHE_STATSLOG=32&& set LLAMA_MOE_STATSLOG={stf}&& ' if win else
+                f'LLAMA_MOE_STATE=0 LLAMA_MOE_CACHE_TUNED=0 LLAMA_MOE_CACHE_STATS=1 LLAMA_MOE_CACHE_STATSLOG=32 LLAMA_MOE_STATSLOG={stf} ')
+        cmd = envp + envs + f'{exe.replace("llama-cli", "llama-perplexity")} -m {MODEL} -f {m["root"]}{sep}{build}{sep}longsrc.cpp -c 1024 --chunks 2 -b {nb} -ub {nb} {args} ' + ("< nul 2>&1" if win else "< /dev/null 2>&1")
+        out = remote_sh(m, cmd)
+        sp_ = re.search(r"([\d.]+) seconds per pass", out)
+        pp_ = re.findall(r"PPL = ([\d.]+)", out)
+        row = {"s_per_pass": float(sp_.group(1)), "tps": 1024 / float(sp_.group(1)), "ppl": float(pp_[-1]) if pp_ else None, "ok": 1, "args": args} if sp_ else {"ok": 0, "note": out[-200:], "args": args}
+        row.update(cache_stats(out))
+        st = remote_sh(m, ("type " if win else "cat ") + stf + (" 2>nul" if win else " 2>/dev/null"))
+        if st.strip():  # the run's statslog goes to stats.ini like a local run's
+            open(f"/tmp/perf-{build}-stats.txt", "w").write(st)
+        return row
     prompt = ovr_prompt("generate smallest html tetris game." if test == "tetris" else "write smallest html tetris game").replace('"', "'")
     n = int(OVR.get("tokens") or (-1 if test == "tetris" else 100))
-    cmd = f'{exe} -m {MODEL} -c {OVR.get("ctx") or 1024} --temp 0 -n {n} --no-display-prompt -p "{prompt}" {args} ' \
+    cmd = envp + f'{exe} -m {MODEL} -c {OVR.get("ctx") or 1024} --temp 0 -n {n} --no-display-prompt -p "{prompt}" {args} ' \
           + ("< nul 2>&1" if win else "< /dev/null 2>&1")
     if not win:
         cmd = f'LD_LIBRARY_PATH={os.path.dirname(exe)} ' + cmd
@@ -483,15 +586,19 @@ def remote_version(m, build):
     return mv.group(1).strip() if mv else "?"
 
 
-def remote_cell(mid, m, build, test, args, note, warm=True):
+def env_rec(env):
+    return dict(env or {})
+
+
+def remote_cell(mid, m, build, test, args, note, warm=True, env=None):
     """Throwaway + measured run on another machine, recorded in the same db (hw = the machine's id)."""
     global IDX
     if m["win"] and remote_sh(m, 'powershell -c "(Get-CimInstance Win32_Battery).BatteryStatus"', 60).strip() not in ("2", ""):
         sys.exit(f"{mid} is not on AC power: the battery caps the GPU and results would be invalid")
     if warm:
-        remote_run(m, build, test, args)
-    row = remote_run(m, build, test, args)
-    rec = {"bare": "1", **({"args": args} if args else {}), **{k: str(v) for k, v in OVR.items() if k != "prompt"}}
+        remote_run(m, build, test, args, env)
+    row = remote_run(m, build, test, args, env)
+    rec = {"bare": "1", **env_rec(env), **({"args": args} if args else {}), **{k: str(v) for k, v in OVR.items() if k != "prompt"}}
     store(row, build, "cli-" + test, rec, note, mid.split("-")[0], remote_version(m, build))   # pc1-cli rows are hw pc1
     show_row(row, build, "cli-" + test)
     IDX += 1
@@ -519,26 +626,38 @@ def cmd_bench(a):
         deadline = time.mktime(time.strptime(time.strftime("%F ") + f"{hh}:{mm}", "%F %H:%M"))
         deadline += 86400 if deadline < time.time() else 0
     m = machine(a.machine) if a.machine != "pc1" else None
+    stock_variants = dict(kv.partition("=")[::2] for kv in a.stock_variant)
+    global REP
+    n = a.n or (3 if a.test.startswith("fix") else 2)
     for model in a.models.split(","):
         MODEL = model
         if not m:
             prep_model()
-        for i in range(a.n):
-            for build in a.builds.split(","):
-                for name in (["default"] if build.startswith("stock") else names):
-                    if deadline and time.time() > deadline:
-                        print("deadline reached: remaining cells skipped", flush=True)
-                        return cmd_report(argparse.Namespace(campaign=camp, since=None, last=None, tol=None))
-                    args = variants[name]
-                    if m:
-                        remote_cell(a.machine, m, build, a.test, args, a.note, warm=not a.no_warm)
-                    else:
-                        run_cell(build, a.test, {}, False, args, True, a.note, warm=not a.no_warm)
-    cmd_report(argparse.Namespace(campaign=camp, since=None, last=a.last, tol=a.tol))
+        cells = [(build, name, (stock_variants.get(name, "") if build.startswith("stock") else variants[name]))
+                 for build in a.builds.split(",") for name in (["default"] + list(stock_variants) if build.startswith("stock") else names)]
+        # a variant may set environment variables: "env:KEY=VALUE" words (e.g. lru='env:LLAMA_MOE_CACHE_POLICY=lru'), the rest are server args
+        for i in range(n):  # ABBA: odd repetitions run the cells backwards, so a drift (thermal, page cache) does not favour one cell
+            REP = i
+            for build, name, vargs in (cells if i % 2 == 0 else cells[::-1]):
+                words = vargs.split()
+                args = " ".join(w for w in words if not w.startswith("env:"))
+                env = dict(w[4:].split("=", 1) for w in words if w.startswith("env:"))
+                if deadline and time.time() > deadline:
+                    print("deadline reached: remaining cells skipped", flush=True)
+                    return cmd_report(argparse.Namespace(campaign=camp, since=None, last=None, tol=None, md=False))
+                warm = not a.no_warm and i == 0  # one discarded run per cell, before its first repetition
+                if m:
+                    remote_cell(a.machine, m, build, a.test, args, a.note, warm=warm, env=env)
+                else:
+                    run_cell(build, a.test, env, False, args, True, a.note, warm=warm)
+    REP = None
+    cmd_report(argparse.Namespace(campaign=camp, since=None, last=a.last, tol=a.tol, md=False))
 
 
 # ---- report: variants against stock per model / test / machine ----
 def cmd_report(a):
+    """Per cell: n, median and min-max of decode t/s, ratio to the stock median and to the best hand-tuned stock (stock builds with args), and the
+    flags that make a number unpublishable: n < 3, runs with different token counts, outputs that differ. --md prints README table rows."""
     rows = [r for r in csv_load("run-history.csv") if r["ok"] != "0" and num(r, "tps") is not None]
     if a.campaign:
         rows = [r for r in rows if r["campaign"] == a.campaign]
@@ -546,25 +665,41 @@ def cmd_report(a):
         rows = [r for r in rows if r["ts"] >= a.since]
     groups = {}
     for r in rows:
-        model, test, hw, build, args = r["model"], r["test"], r["hw"], r["build"], r["args"]
-        tps, pp, md5 = num(r, "tps"), num(r, "pp"), r["md5"]
-        label = build if build.startswith("stock") else f"{build} {args or 'default'}"
-        groups.setdefault((model or "?", test, hw or "?"), {}).setdefault(label, []).append((tps, pp, md5))
+        stock = r["build"].startswith("stock")
+        envs = " ".join(f"{k}={v}" for k, v in sorted(json.loads(r["env"] or "{}").items()) if k.startswith(("LLAMA_", "GGML_")))  # variants set by environment
+        label = r["build"] + (f" {r['args']}" if stock and r["args"] else "") if stock else f"{r['build']} {r['args'] or 'default'}{' ' + envs if envs else ''}"
+        groups.setdefault((r["model"] or "?", r["test"], r["hw"] or "?"), {}).setdefault(label, []).append(r)
     bad = 0
+    md = []
     for (model, test, hw), cells in sorted(groups.items()):
         print(f"\n{model[:46]}  {test}  {hw}")
-        last = lambda v: v[-a.last:] if a.last else v   # --last N: the hot runs of a learning autotune only
-        base = next((statistics.mean(x[0] for x in last(v)) for k, v in cells.items() if k.startswith("stock")), None)
+        stat = {}
         for label, v in cells.items():
-            v = last(v)
-            t = [x[0] for x in v]
-            m_ = statistics.mean(t)
-            pp = [x[1] for x in v if x[1]]
-            ratio = f"x{m_ / base:.2f}" if base else ""
-            flag = "  <-- REGRESSION" if a.tol and base and not label.startswith("stock") and m_ < a.tol * base else ""
-            bad += bool(flag)
-            print(f"  {label[:58]:58s} n={len(t):2d} {m_:8.2f} t/s sd {(statistics.stdev(t) if len(t) > 1 else 0):5.2f}"
-                  f"{(f'  pp {statistics.mean(pp):7.1f}' if pp else '')}  {ratio}{flag}  md5 {','.join(sorted({x[2] for x in v if x[2]}))}")
+            v = v[-a.last:] if a.last else v
+            t = [num(x, "tps") for x in v]
+            stat[label] = (statistics.median(t), min(t), max(t), len(t), v)
+        stock = [(k, st) for k, st in stat.items() if k.startswith("stock")]
+        is_tuned = lambda k: re.search(r"n-cpu-moe|-ncmoe|--cpu-moe|-ot\b|--override-tensor", k) is not None  # hand-placed stock: the matched-VRAM baseline
+        base = next((st[0] for k, st in stock if not is_tuned(k)), None)
+        tuned = max((st[0] for k, st in stock if is_tuned(k)), default=None)
+        for label, (med, lo, hi, n, v) in stat.items():
+            pp = [num(x, "pp") for x in v if num(x, "pp")]
+            ngen = {x["n_gen"] for x in v if x["n_gen"]}
+            md5s = [x["md5"] for x in v if x["md5"]]
+            same = max((md5s.count(h) for h in set(md5s)), default=0)
+            flags = [f for f, c in (("n<3", n < 3), ("n_gen differs", len(ngen) > 1), (f"md5 same {same}/{len(md5s)}", len(set(md5s)) > 1)) if c]
+            ratio = f"x{med / base:.2f} stock" if base else ""
+            ratio += f" x{med / tuned:.2f} tuned-stock" if tuned and not label.startswith("stock") else ""
+            regress = a.tol and base and not label.startswith("stock") and med < a.tol * base
+            bad += bool(regress)
+            print(f"  {label[:52]:52s} n={n:2d} {med:8.2f} t/s [{lo:.2f}-{hi:.2f}]{(f'  pp {statistics.median(pp):7.1f}' if pp else '')}  {ratio}"
+                  f"{'  <-- REGRESSION' if regress else ''}{('  ' + ', '.join(flags)) if flags else ''}")
+            md.append(f"| {model[:40]} | {test} | {hw} | {label} | {n} | {med:.2f} [{lo:.2f}-{hi:.2f}] | "
+                      f"{f'{med / base:.2f}x' if base and not label.startswith('stock') else ''} | {f'{med / tuned:.2f}x' if tuned and not label.startswith('stock') else ''} | "
+                      f"{'v2' if v[0].get('proto') == 'v2' else 'v1'} {v[0]['ts'][:16]} +{n - 1} |")
+    if getattr(a, "md", False):
+        print("\n| model | test | machine | build and settings | n | median [min-max] t/s | vs stock | vs tuned stock | protocol, first run |\n|---|---|---|---|---|---|---|---|---|")
+        print("\n".join(md))
     if a.tol:
         print("\nRESULT:", "REGRESSION" if bad else "OK")
 
@@ -655,7 +790,7 @@ if __name__ == "__main__":
         sys.argv.insert(1, "prompt")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "tetris", "t100", "chat", "chatv", "agent", "pf12k", "pf12k-stock", "pf128k"]
+    TESTS = ["ppl", "ppl3", "tetris", "t100", "chat", "chatv", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k"]
     r = sp.add_parser("run", help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", choices=TESTS)
@@ -673,8 +808,9 @@ if __name__ == "__main__":
     b.add_argument("--builds", required=True, help="comma separated build dirs; names starting with stock run the default variant only")
     b.add_argument("--variants", help="comma separated variant names (default: all of default,cache0,atoff and any --variant)")
     b.add_argument("--variant", action="append", default=[], help="NAME=ARGS: add or override a variant, e.g. gate3='--moe gate=3'")
-    b.add_argument("-t", "--test", default="t100", choices=["t100", "tetris"] + TESTS[4:])
-    b.add_argument("-n", type=int, default=2, help="measured runs per cell (each preceded by a discarded run)")
+    b.add_argument("-t", "--test", default="t100", choices=["ppl", "ppl3", "t100", "tetris"] + TESTS[4:])
+    b.add_argument("--stock-variant", action="append", default=[], help="NAME=ARGS: stock builds also run this placement (e.g. tuned='--n-cpu-moe 30'): the hand-tuned baseline")
+    b.add_argument("-n", type=int, help="measured runs per cell, interleaved ABBA (default 3 for fix/fix12k, else 2); the first run of a cell is preceded by a discarded one")
     b.add_argument("--machine", default="pc1", help="pc1 = this host (server tests); other ids from 'run.py machine' run llama-cli over ssh")
     b.add_argument("--campaign", help="name in table campaigns (default bench-<date>)")
     b.add_argument("--deadline", help="HH:MM: cells that would start later are skipped")
@@ -688,6 +824,7 @@ if __name__ == "__main__":
     rp.add_argument("--since", help="'YYYY-MM-DD HH:MM'")
     rp.add_argument("--last", type=int)
     rp.add_argument("--tol", type=float)
+    rp.add_argument("--md", action="store_true", help="also print README table rows (median, range, run ids)")
     m = sp.add_parser("machine", help="list machines, or add one: machine add ID --ssh user@host --root DIR --os linux|windows")
     m.add_argument("action", nargs="?", default="list", choices=["list", "add"])
     m.add_argument("id", nargs="?")

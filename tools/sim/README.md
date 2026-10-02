@@ -5,6 +5,7 @@ Offline tools for the expert cache, no GPU needed.
 - `cache_sim.py`, `cost_sim.py`, `alloc_sim.py`: per-layer cache policies (LRU, LFU, decayed counts, Belady ...), a link-rate-limited token
   cost model and slot allocation, replayed on `GGML_MOE_LOG` router traces (`--nexp` = the model's expert count).
 - `pred_lab.py`, `router_predict.py`, `expert_input_drift.py`: the expert predictor lab and its inputs.
+- `act_sparsity.py`: how sparse an expert's input becomes after subtracting a per-layer mean, and the output error of skipping the small components (negative result: `tools/experiments/act-sparsity`).
 - `replay.py`, `tl_layers.py`: trace replay and per-layer timelines.
 - `pool_sim.py`: policies for one slot pool shared by all layers (window / decayed use, lifetime share, churn stay, hidden Markov model, co-occurrence) against the
   per-layer score, replayed on router traces. It predicted gains that did not appear on hardware (see `tools/bench/README.md`, "Shared slot pool").
