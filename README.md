@@ -163,42 +163,60 @@ Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_MOE=
 Any other name is a tuning knob of the cache engine (`--moe gate=3,margin=0`). A knob you set is never self-tuned; a name the
 engine does not know is logged as `unknown key` and ignored. Values are numbers; `0`/`1` are off/on.
 
-**Working knobs** (on by default, these are what the tuner adjusts):
+The cache keeps some experts in VRAM (the GPU computes those); any other expert is computed by the CPU or uploaded over PCIe first.
+The knobs trade CPU work against uploads. Every example below is a complete option: `llama-server -m model.gguf --moe <example>`.
 
-| knob | default | what it does |
-|---|---|---|
-| `MARGIN` | `-1` | pay-back margin: a missed expert must out-score the one it evicts by this many recent uses. `-1` = 0, `-2` = derived from the measured link and CPU speed, `n` = fixed |
-| `BUDGET` | `-1` | fixed number of swaps per step; `-1` derives it from the measured upload time |
-| `SWAP_FRAC` | `0.25`, tuned | upload time per step as a share of the token time (the swap budget) |
-| `LINK` | `1` | pay-back margin per upload link; `0` uses one margin from the average upload |
-| `GATE` | `3` | uploads wait while the CPU reads uncached experts, so the CPU and the DMA do not fight for RAM bandwidth (`0` off) |
-| `GATE_MAX_US` | `-1` | longest wait for RAM room per tensor copy; `-1` = the measured mean layer time |
-| `CHUNK_KB` | `-1` | with `GATE=3`: copy in chunks of this size and re-check the RAM budget before each; `0` = whole tensor |
-| `CPU_GBS`, `DDR_GBS` | `38`, `44` | RAM read rate of the CPU alone, and of CPU plus uploads together (GB/s); starting values until measured, `DDR_GBS` is the cap for `GATE=3` |
-| `WAIT` | `1` | the step waits for queued swaps; `0` never waits, finished uploads are published at the next split |
-| `JIT` | `1` | when a layer's router ids are known, upload this token's misses to the GPU if that finishes sooner than the CPU alone |
-| `MARGIN_MB` | `0` (= 384, or set from the batch size by autotune) | VRAM in MiB kept free per GPU after the cache is sized |
-| `STREAM` | on | predicted uploads go into separate stream slots instead of evicting cache slots (`0` = old path) |
-| `STREAM_M` | `12` | predicted candidates per target layer (over-predicts on purpose, no confidence cut) |
-| `OFFSET` | `1` | predicted uploads only for layers far enough ahead to land in time on their link |
-| `STREAM_SLOW` | `1` | also stream onto layers on a slower link (x4 slot) |
-| `PREDICT` | `1` | the learned predictors run at all (they are allocated by `--moe predict=M`/`train=N`) |
-| `SELF_TUNE` | `1` | the tuner tries streaming knobs one at a time on real decode token times |
-| `AUTO` | `1` | `1`: adjust the stream lead and `STREAM_M` per link from the measured late share and precision; `2`: uploads per target layer = measured time until it divided by the measured link time per expert |
+**Swap decisions**
+
+| knob | default | what it does | example |
+|---|---|---|---|
+| `MARGIN` | `-1` | An upload costs link time and only pays back if the expert is used again, so a missed expert must beat the one it evicts by this many recent uses. `-1` = 0 (swap whenever it scores higher), `-2` = from speeds (CPU read rate / link rate is about the uses an upload needs to pay for itself), `n` = fixed | `margin=0` swaps eagerly; `margin=2` swaps rarely |
+| `BUDGET` | `-1` | Fixed swaps per step; `-1` derives it from the measured upload time | `budget=4` |
+| `SWAP_FRAC` | `0.25`, tuned live | Uploads may take at most this share of a token's time; uploads that outlast the token stall it | `swap_frac=0.5` lets uploads use half the token time |
+| `LINK` | `1` | Margin per upload link, so a GPU on a slow x4 slot gets a higher margin than one on x16; `0` uses one margin from the average upload | `link=0` |
+| `JIT` | `1` | When a layer's router ids are known, upload some of the missed experts right then, so the GPU computes them this token while the CPU does the rest; the number is chosen so CPU and link finish together | `jit=0` turns it off |
+
+**Not fighting for RAM bandwidth**
+
+| knob | default | what it does | example |
+|---|---|---|---|
+| `GATE` | `3` | The CPU reading experts and the upload DMA both read system RAM and together hit its limit. `3`: an upload waits while the CPU computes uncached experts; `0` off | `gate=0` uploads at any time |
+| `GATE_MAX_US` | `-1` | Longest wait per tensor copy, microseconds; `-1` = the measured mean layer time | `gate_max_us=800` |
+| `CHUNK_KB` | `-1` | With `GATE=3`: copy in chunks of this size and recheck the RAM budget before each; `0` = the whole tensor | `chunk_kb=512` |
+| `CPU_GBS`, `DDR_GBS` | `38`, `44` | Assumed RAM read rate in GB/s of the CPU alone, and of CPU plus uploads together; starting values until measured, `DDR_GBS` is the ceiling for `GATE=3` | `cpu_gbs=22,ddr_gbs=28` for a slower RAM kit |
+| `WAIT` | `1` | The step waits for queued swaps to finish; `0` never waits and finished uploads appear at the next split | `wait=0` |
+
+**Predictor streaming (uploads ahead of need)**
+
+| knob | default | what it does | example |
+|---|---|---|---|
+| `STREAM` | on | Predicted uploads go into separate stream slots, so a wrong guess evicts nothing useful; `0` = they evict cache slots (old path) | `stream=0` |
+| `STREAM_M` | `12` | Predicted candidates uploaded per target layer (over-guesses on purpose, no confidence cut) | `stream_m=6` |
+| `OFFSET` | `1` | Predict only layers far enough ahead that the upload lands in time on their link; a slow link needs more lead | `offset=0` |
+| `STREAM_SLOW` | `1` | Also stream onto layers served by a slower link | `stream_slow=0` |
+| `PREDICT` | `1` | The learned predictors run at all (they exist only with `--moe predict=M` or `train=N`) | `predict=8,train=64` enables them |
+| `SELF_TUNE` | `1` | The tuner tries one streaming knob at a time on real token times and keeps the faster setting | `self_tune=0` |
+| `AUTO` | `1` | `1`: adjust lead and `STREAM_M` per link from the measured late share and precision; `2`: uploads per target layer = time until that layer / measured upload time per expert; `0` off | `auto=2` |
+
+**Sizing**
+
+| knob | default | what it does | example |
+|---|---|---|---|
+| `MARGIN_MB` | `0` (= 384, or from the batch size by autotune) | VRAM in MiB kept free per GPU after the cache takes its slots, so a longer context or batch does not run out of memory (not the same as `MARGIN`) | `margin_mb=1024` |
 
 **Experimental knobs** (off by default; none beat the default in our A/B tests, kept only for experiments, and probably removed
 in a later release; do not rely on them):
 
-| knob | default | what it does |
-|---|---|---|
-| `BIG` | `0` | an expert may only evict one with at most its own lifetime use ("no weaklings evicting big ones"); never won, off and not tuned |
-| `HOT_FRAC` | `0` | pin the always-hot set of a layer on slower links |
-| `SLOW_STAY` | `0` | minimum stay (steps) of an expert in a slow-link layer's tier |
-| `STICKY` | `0` | bonus for staying in the cache; +1.6% on one chat run, within noise |
-| `SLOTKEEP` | `0` | a prediction may only replace a stream slot that holds a lower-scored one of this step |
-| `TBP`, `TBP_LAYERS` | `0`, `6` | token-boundary prefetch: stream up to `TBP` of the last token's misses into the first `TBP_LAYERS` layers while the output head and sampling keep RAM idle |
-| `L3PF`, `AUTO_L3` | `0`, `0` | L3 cache prefetch of `L3PF` experts per layer (needs `GGML_MOE_CCX_SPLIT` and pinned threads); `AUTO_L3` A/Bs it live |
-| `TRACE`, `TRACE_AFTER` | `0`, `0` | debug: record routing for this many steps, after this many steps |
+| knob | default | what it does | example |
+|---|---|---|---|
+| `BIG` | `0` | An expert may only evict one with at most its own lifetime use count; never won, off and not tuned | `big=1` |
+| `HOT_FRAC` | `0` | Pin the always-hot set of a layer on slower links | `hot_frac=0.5` |
+| `SLOW_STAY` | `0` | Minimum stay in steps of an expert in a slow-link layer's tier | `slow_stay=64` |
+| `STICKY` | `0` | Bonus for staying in the cache; +1.6% on one chat run, within noise | `sticky=1` |
+| `SLOTKEEP` | `0` | A prediction may only replace a stream slot holding a lower-scored expert of this step | `slotkeep=1` |
+| `TBP`, `TBP_LAYERS` | `0`, `6` | After a token ends, stream up to `TBP` of its misses into the first `TBP_LAYERS` layers while the output head and sampling keep RAM idle | `tbp=2,tbp_layers=6` |
+| `L3PF`, `AUTO_L3` | `0`, `0` | Prefetch `L3PF` experts per layer into the CPU's L3 cache (needs `GGML_MOE_CCX_SPLIT` and pinned threads); `AUTO_L3=1` tests it live | `l3pf=2,auto_l3=1` |
+| `TRACE`, `TRACE_AFTER` | `0`, `0` | Debug: record routing for this many steps, starting after this many | `trace=2000,trace_after=500` |
 
 ## The state file
 
