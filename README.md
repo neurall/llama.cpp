@@ -148,7 +148,7 @@ Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_MOE=
 
 ## Options
 
-All fork options (flags, every `--moe` setting and tuning knob with defaults and examples, experimental ones marked, environment
+All fork options (flags, every `--moe` setting and tuning knob with defaults and examples, experimental ones marked, environment  
 variables, the state file, multi-GPU and MTP use) are in [docs/fork-knobs.md](docs/fork-knobs.md). The key ones:
 
 | option | what it does |
@@ -164,7 +164,7 @@ variables, the state file, multi-GPU and MTP use) are in [docs/fork-knobs.md](do
 | `-lm pin\|mmap` | pinned or memory-mapped weights |
 | `LLAMA_MOE_STATE=0` | ignore and never write the state file |
 
-Experimental knobs (`BIG`, `HOT_FRAC`, `TBP`, `L3PF`, ...) are off by default, never beat the default in our tests and may be removed;
+Experimental knobs (`BIG`, `HOT_FRAC`, `TBP`, `L3PF`, ...) are off by default, never beat the default in our tests and may be removed;  
 they are listed in the document, not here.
 
 ## Good to know
