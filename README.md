@@ -1,15 +1,15 @@
 # llama.cpp fork: 1.7x to 2.4x faster decode on MoE models bigger than your VRAM
 
-The newest mixture-of-experts models (GLM-5.3-Flash, MiMo-V2.6-Flash, Qwen3.8-Flash-Next, Qwen3.6) are far bigger than a gaming GPU.
+The newest mixture-of-experts models (GLM-5.3-Flash, MiMo-V2.6-Flash, Qwen3.8-Flash-Next, Qwen3.6) are far bigger than a gaming GPU.  
 This fork keeps their experts in RAM and turns the free VRAM into a live cache of the experts the model is using; the GPUs compute
-the cached ones and the CPU the rest, at the same time. No special switches needed.
+the cached ones and the CPU the rest, at the same time. No special switches needed.  
 
 ```sh
 llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 llama-cli    -m model.gguf -p "hello"
 ```
 
-The decode speedup is largest when a third to a half of a MoE model fits in VRAM (1.9x to 2.4x), fades above about 55% and is 1.0x once it fits; dense models gain nothing.
+The decode speedup is largest when a third to a half of a MoE model fits in VRAM (1.9x to 2.4x), fades above about 55% and is 1.0x once it fits; dense models gain nothing.  
 Gain over stock llama.cpp by the share of the model that fits in VRAM (decode; the tables below have the machines and tests):
 
 | model on machine | share of the model in VRAM | gain |
@@ -25,16 +25,19 @@ Gain over stock llama.cpp by the share of the model that fits in VRAM (decode; t
 | Qwen3.6-35B Q2_0 on B (8 GB GPU), an exception: its CPU side is slow | about 73% | 2.0x |
 | any model that fits | 100% | 1.0x (cache off) |
 
-Prompt processing can be slower than stock on long prompts (0.4x to 0.7x in some rows below).
+Prompt processing can be slower than stock on long prompts (0.4x to 0.7x in some rows below).  
 
 ## What you get
 
-Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock llama.cpp.
-Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.
-Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.
-Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.
-Machine D, rented: 4x RTX 3090 (PCIe 4.0 x16 each), EPYC 7B12 (64 cores), 256 GB DDR4 on 4 of 8 memory channels (74 GB/s read measured).
-GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a (no discarded run before it); the other rows are hot runs of earlier builds.
+Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock llama.cpp.  
+
+Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.  
+Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.  
+Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.  
+Machine D, rented: 4x RTX 3090 (PCIe 4.0 x16 each), EPYC 7B12 (64 cores), 256 GB DDR4 on 4 of 8 memory channels (74 GB/s read measured).  
+
+GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a 
+(no discarded run before it); the other rows are hot runs of earlier builds.  
 
 | model (size) | machine | test | upstream | this fork | |
 |---|---|---|---|---|---|
@@ -61,11 +64,13 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 | | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x |
 | Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) |
 
-D: upstream is the downloaded release b11323 (a source build of def4d406a gave 24.8 and 20.1); the fork is b11707 with the placement change in this branch (any model that does not fit takes the cache);
-the model is 85% in VRAM on 4 GPUs, so the first run only matches stock placement. D numbers are from one session on a rented box (raw logs not kept, not in run-history.csv).
+D: upstream is the downloaded release b11323 (a source build of def4d406a gave 24.8 and 20.1).  
+the fork is b11707 with the placement change in this branch (any model that does not fit takes the cache);  
+the model is 85% in VRAM on 4 GPUs, so the first run only matches stock placement.  
+D numbers are from one session on a claud rented 4 gpu box (raw logs not kept, not in run-history.csv).  
 
 \* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
-[`tools/bench/run-history.csv`](tools/bench/run-history.csv).
+[`tools/bench/run-history.csv`](tools/bench/run-history.csv).  
 
 ### Why the gain depends on how much of the model fits
 
@@ -79,12 +84,12 @@ that does not fit in VRAM; the fork serves only its cache misses, and its hit ra
 | 2 (44%) | 57% | about 59 ms (about 17 t/s), modelled `34.0 + 44 x fraction`, not run | 87.9%: 32.9 ms measured (30.4 t/s), 33.9 modelled | about 1.7x |
 | 1 (22%) | 79% | about 68 ms (about 15 t/s), modelled, not run | 66.9%: 43.7 ms measured (22.9 t/s) | about 1.6x |
 
-- **The gain is the CPU reads the cache removes.** It is largest when stock leaves a large share of the model on a slow CPU: on machine A (2 GPUs, 44 GB/s RAM) a model 2 to 3 times the VRAM gives 1.9x to 2.4x.
-- **More fast memory has diminishing returns.** The slow-memory cost per unit is about the same for both (44 to 46 ms), so the fork's lead is only the difference between the share stock leaves on the CPU and its own miss rate. As the VRAM share grows both approach their floors (fork about 28 ms, stock about 34 ms, ratio about 1.2x). On 4 GPUs the fork is at 94% of its floor, and the 2, 3 and 4 GPU runs differ by 7%.
-- **A faster CPU lowers the gain,** because the slow-memory term shrinks (machine D reads 74 GB/s against 44 GB/s on machine A).
-- **A model that fits in VRAM gains nothing** (the cache is off, 1.0x).
+- **The gain is the CPU reads the cache removes.** It is largest when stock leaves a large share of the model on a slow CPU: on machine A (2 GPUs, 44 GB/s RAM) a model 2 to 3 times the VRAM gives 1.9x to 2.4x.  
+- **More fast memory has diminishing returns.** The slow-memory cost per unit is about the same for both (44 to 46 ms), so the fork's lead is only the difference between the share stock leaves on the CPU and its own miss rate. As the VRAM share grows both approach their floors (fork about 28 ms, stock about 34 ms, ratio about 1.2x). On 4 GPUs the fork is at 94% of its floor, and the 2, 3 and 4 GPU runs differ by 7%.  
+- **A faster CPU lowers the gain,** because the slow-memory term shrinks (machine D reads 74 GB/s against 44 GB/s on machine A).  
+- **A model that fits in VRAM gains nothing** (the cache is off, 1.0x).  
 
-Four points from one session with different output texts: a good explanation, not a proof. The 2 and 1 GPU stock figures are model predictions, not measurements.
+Four points from one session with different output texts: a good explanation, not a proof. The 2 and 1 GPU stock figures are model predictions, not measurements.  
 
 ## Too many knobs? Smart autotune picks them
 
@@ -93,14 +98,14 @@ fork measures your machine and tunes most of those while you use it. The default
 
 - **Cache or stock.** If the model fits in VRAM it is placed exactly like stock llama.cpp. A model that does not fit takes
   the cache right away. When what you run is mostly long prompts (processing them would cost more than the faster generation
-  gains), the first two runs compare both and keep the faster one.
+  gains), the first two runs compare both and keep the faster one.  
 - **Self-tuning on real token times.** The cache policy and the upload schedule are adjusted while you use it. The decode and prompt thread counts start from
   a formula (cores minus one per GPU) and the tuner moves them a few threads at a time; on a many-core host `-t 16` can be a better start (on a 64-core machine the
-  difference was under 2%). A setting that does not help is dropped, a setting you fix yourself is never touched.
+  difference was under 2%). A setting that does not help is dropped, a setting you fix yourself is never touched.  
 - **It remembers.** What it learned per model (hot experts, tuned settings, cache-or-stock) is kept in one file,
-  `~/.cache/llama.cpp/moe-state.ini`, so the next start, even a one-shot short prompt, begins from it. Delete the file to start over.
+  `~/.cache/llama.cpp/moe-state.ini`, so the next start, even a one-shot short prompt, begins from it. Delete the file to start over.  
 - **It tells you what it does.** `llama-server` logs, and `llama-cli -lv 3` prints after each reply, whether the cache is on,
-  the hit rate, the tuned settings, threads and batch sizes.
+  the hit rate, the tuned settings, threads and batch sizes.  
 
 ## MTP speculative decoding
 
@@ -121,9 +126,9 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   [neuralll/GLM-5.3-Flash-MTP-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-MTP-GGUF)
   (4.3 GiB, works with any `glm5-next` GLM-5.3-Flash GGUF). We made it: no GLM MTP GGUF existed, so
   `tools/bench/glm_splice_mtp.py` pulls just the MTP tensors out of unsloth's UD-Q4_K_XL GGUF with HTTP range requests
-  (~4.3 GiB instead of the whole model) and writes them as a draft file; see [`tools/bench/`](tools/bench/) to rebuild it.
+  (~4.3 GiB instead of the whole model) and writes them as a draft file; see [`tools/bench/`](tools/bench/) to rebuild it.  
 - GLM MTP: 89% of drafts accepted in our test, output identical to plain decoding. For a model far bigger than VRAM the draft
-  is not loaded unless you pass `--spec-draft-n-max`.
+  is not loaded unless you pass `--spec-draft-n-max`.  
 
 ## Your settings win
 
@@ -144,21 +149,21 @@ Anything you pass is used as given and is never auto-tuned:
 | `--moe cache=0` | the whole fork off: no expert cache, nothing tuned or measured, plain stock behaviour (same as `--moe-expert-cache 0`) |
 | `-at off` | only the self-tuning off (`--autotune off`, same as `--moe autotune=0`): the cache keeps working with fixed defaults, placement uses a static rule, nothing is measured or saved |
 
-Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_MOE=cache=0`.
+Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_MOE=cache=0`.  
 
 ## Good to know
 
 - **RAM is the limit.** Decode speed is bound by how fast the CPU reads the experts that are not in VRAM. More or faster RAM,
-  more VRAM or a faster GPU link all raise it.
-- Output can differ slightly from stock at temperature 0: a cached expert runs on the GPU, a missed one on the CPU.
-- Prompt processing of models bigger than RAM (mmap) is 20-30% below stock: the experts stream over PCIe.
-- A second GPU on a slow slot helps less; prompt processing goes to the fastest link.
+  more VRAM or a faster GPU link all raise it.  
+- Output can differ slightly from stock at temperature 0: a cached expert runs on the GPU, a missed one on the CPU.  
+- Prompt processing of models bigger than RAM (mmap) is 20-30% below stock: the experts stream over PCIe.  
+- A second GPU on a slow slot helps less; prompt processing goes to the fastest link.  
 
 ## Credits and contact
 
 The expert cache builds on [@csantiago78](https://github.com/csantiago78)'s llama.cpp PR
 [#27861](https://github.com/ggml-org/llama.cpp/pull/27861); GLM-5.3-Flash support is upstream
-([#27773](https://github.com/ggml-org/llama.cpp/pull/27773)).
+([#27773](https://github.com/ggml-org/llama.cpp/pull/27773)).  
 
 **About the author of this fork**: I'm actively looking for an AI engineering/research
 role and open to relocating out of Eastern Europe. If this work is useful to you or
@@ -220,7 +225,7 @@ llama serve -hf ggml-org/Qwen3.5-0.8B-GGUF
 ## Description
 
 The main goal of `llama.cpp` is to enable LLM (and VLM) inference with minimal setup and state-of-the-art performance on
-a wide range of hardware - locally and in the cloud.
+a wide range of hardware - locally and in the cloud.  
 
 - Plain C/C++ implementation without any dependencies
 - Apple silicon is a first-class citizen - optimized via ARM NEON, Accelerate and Metal frameworks
@@ -231,7 +236,7 @@ a wide range of hardware - locally and in the cloud.
 - Vulkan and SYCL backend support
 - CPU+GPU hybrid inference to partially accelerate models larger than the total VRAM capacity
 
-The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-org/ggml) library.
+The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-org/ggml) library.  
 
 ## Supported backends
 
