@@ -159,10 +159,9 @@ Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_MOE=
 | `window=N` | tokens of recent use the cache scores experts by (default 64) |
 | `predict=M`, `train=N` | prefetch the experts the router is likely to pick in the next layers (top M); `train=N` also trains the learned predictor every N tokens |
 | `autotune=0` | no self-tuning (same as `-at off`) |
-| `state=PATH\|0` | state file to use, `0` for none |
 
 Any other name is a tuning knob of the cache engine (`--moe gate=3,margin=0`). A knob you set is never self-tuned; a name the
-engine does not know is rejected at start. Values are numbers; `0`/`1` are off/on.
+engine does not know is logged as `unknown key` and ignored. Values are numbers; `0`/`1` are off/on.
 
 **Working knobs** (on by default, these are what the tuner adjusts):
 
@@ -178,7 +177,7 @@ engine does not know is rejected at start. Values are numbers; `0`/`1` are off/o
 | `CPU_GBS`, `DDR_GBS` | `38`, `44` | RAM read rate of the CPU alone, and of CPU plus uploads together (GB/s); starting values until measured, `DDR_GBS` is the cap for `GATE=3` |
 | `WAIT` | `1` | the step waits for queued swaps; `0` never waits, finished uploads are published at the next split |
 | `JIT` | `1` | when a layer's router ids are known, upload this token's misses to the GPU if that finishes sooner than the CPU alone |
-| `MARGIN_MB` | `0` (= 384) | VRAM kept free per GPU after the cache is sized |
+| `MARGIN_MB` | `0` (= 384, or set from the batch size by autotune) | VRAM in MiB kept free per GPU after the cache is sized |
 | `STREAM` | on | predicted uploads go into separate stream slots instead of evicting cache slots (`0` = old path) |
 | `STREAM_M` | `12` | predicted candidates per target layer (over-predicts on purpose, no confidence cut) |
 | `OFFSET` | `1` | predicted uploads only for layers far enough ahead to land in time on their link |
@@ -203,15 +202,14 @@ in a later release; do not rely on them):
 
 ## The state file
 
-`~/.cache/llama.cpp/moe-state.ini` (`--moe state=PATH`, `LLAMA_MOE_STATE=0` to ignore and never write) holds one
+`~/.cache/llama.cpp/moe-state.ini` (`LLAMA_MOE_STATE=PATH` moves it, `LLAMA_MOE_STATE=0` ignores it and never writes) holds one
 `[model name + size]` section per model:
 
 | line | content |
 |---|---|
 | `hot.N = c0 c1 ...` | lifetime use count of every expert of layer N. At start the most used experts are loaded into the cache first, so the first prompt is already warm |
 | `tuned.lK = NAME=value ...` | what the self-tuner settled on, for K upload links (GPUs) |
-| `place.<gpus>.cache`, `.stock`, `.decided` | measured prompt and decode speed of cache and stock placement for this GPU set, and which one won |
-| `vram.slope_kib` | measured VRAM growth per context token, used to size the cache |
+| `place.g<gpus>x<MiB>.v1.cache`, `.stock`, `.decided` | measured prompt and decode speed of cache and stock placement for this GPU set, and which one won |
 
 Counts only seed the start; during a run the cache scores by recent use. It is plain text, safe to edit or delete.
 
