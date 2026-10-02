@@ -1221,6 +1221,37 @@ static size_t common_model_file_size(const std::string & path_model) {
     return size;
 }
 
+// bytes of the routed-expert tensors (*_exps), over all splits: the rest of the file is what the GPU has to hold before a cache slot fits
+static size_t common_model_expert_bytes(const std::string & path_model) {
+    gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+    gguf_context * g0 = gguf_init_from_file(path_model.c_str(), gp);
+    if (!g0) {
+        return 0;
+    }
+    const int64_t id = gguf_find_key(g0, "split.count");
+    const uint32_t n_split = id < 0 ? 1 : std::max<uint32_t>(1, gguf_get_val_u16(g0, id));
+    gguf_free(g0);
+    char prefix[4096], path[4096];
+    const bool split = n_split > 1 && llama_split_prefix(prefix, sizeof(prefix), path_model.c_str(), 0, n_split);
+    size_t bytes = 0;
+    for (uint32_t k = 0; k < n_split; k++) {
+        if (split) {
+            llama_split_path(path, sizeof(path), prefix, k, n_split);
+        }
+        gguf_context * g = gguf_init_from_file(split ? path : path_model.c_str(), gp);
+        if (!g) {
+            continue;
+        }
+        for (int64_t t = 0; t < gguf_get_n_tensors(g); t++) {
+            if (strstr(gguf_get_tensor_name(g, t), "_exps")) {
+                bytes += gguf_get_tensor_size(g, t);
+            }
+        }
+        gguf_free(g);
+    }
+    return bytes;
+}
+
 // free memory summed over GPUs, of the largest GPU, and the GPU count
 static void common_gpu_free(size_t & total, size_t & max, int & n) {
     total = max = 0;
@@ -1311,9 +1342,10 @@ void common_spec_auto(common_params & params) {
 // and generation time per token at exit; then the faster mode is kept (file in the cache dir). The cache is kept only when
 // its generation is not slower than stock and its prompt time per token is below LLAMA_MOE_AUTO_PREFILL_SLOWDOWN (2) x stock.
 // LLAMA_MOE_AUTO_MODE=stock|cache forces a mode, =retest forgets the decision.
-struct moe_auto_rec { bool have = false; double p_ms = -1, g_ms = 0; int n = 0; }; // n: recorded runs; p_ms < 0: no prompt of real size measured yet
+struct moe_auto_rec { bool have = false; double p_ms = -1, g_ms = 0; int n = 0; int failed_mib = 0; }; // n: recorded runs; p_ms < 0: no prompt of real size measured yet; failed_mib: free VRAM (MiB) when it could not start (out of memory), 0: never
 static std::string g_moe_auto_file;  // decision file of this run (empty: auto choice not involved)
 static std::string g_moe_auto_mode;  // mode this run explores: "stock" or "cache" (empty: decided already)
+static size_t      g_moe_auto_vram_free = 0; // free VRAM when this run chose its placement
 
 // The placement records live in the engine's state file (llama_state_*, one INI section per model):
 //   [<model file> <bytes>]  place.g<gpus>x<MiB>.b<build>.stock|cache = <ms/prompt token> <ms/generated token> <runs>  and  .decided
@@ -1340,7 +1372,7 @@ static void moe_auto_read(const std::string & path, moe_auto_rec & st, moe_auto_
     char buf[128];
     for (moe_auto_rec * r : { &st, &ca }) {
         if (llama_state_get(section.c_str(), (prefix + (r == &st ? ".stock" : ".cache")).c_str(), buf, sizeof buf)) {
-            r->have = sscanf(buf, "%lf %lf %d", &r->p_ms, &r->g_ms, &r->n) == 3;
+            r->have = sscanf(buf, "%lf %lf %d %d", &r->p_ms, &r->g_ms, &r->n, &r->failed_mib) >= 3;
         }
     }
     if (llama_state_get(section.c_str(), (prefix + ".decided").c_str(), buf, sizeof buf)) { decided = buf; }
@@ -1350,11 +1382,27 @@ static void moe_auto_write(const std::string & path, const moe_auto_rec & st, co
     std::string section, prefix;
     moe_auto_split(path, section, prefix);
     auto put = [&](const char * k, const moe_auto_rec & r) {
-        if (r.have) { llama_state_set(section.c_str(), (prefix + k).c_str(), string_format("%.4f %.4f %d", r.p_ms, r.g_ms, r.n).c_str()); } // p_ms -1: unknown
+        if (r.have || r.failed_mib) { llama_state_set(section.c_str(), (prefix + k).c_str(), string_format("%.4f %.4f %d %d", r.p_ms, r.g_ms, r.n, r.failed_mib).c_str()); } // p_ms -1: unknown
     };
     put(".stock", st);
     put(".cache", ca);
     if (!decided.empty()) { llama_state_set(section.c_str(), (prefix + ".decided").c_str(), decided.c_str()); }
+}
+
+// the process could not start with the placement it was measuring (out of memory): record it with the free VRAM it saw, the other placement is used from the next start
+// on (until that much more VRAM is free than at the failure, e.g. another program that held it has gone)
+static void moe_auto_mark_failed() {
+    if (g_moe_auto_mode.empty()) {
+        return;
+    }
+    moe_auto_rec st, ca;
+    std::string decided;
+    moe_auto_read(g_moe_auto_file, st, ca, decided);
+    (g_moe_auto_mode == "stock" ? st : ca).failed_mib = std::max<int>(1, (int) (g_moe_auto_vram_free >> 20));
+    moe_auto_write(g_moe_auto_file, st, ca, decided);
+    LOG_ERR("%s: MoE placement: %s could not start with %.1f GiB of free VRAM, the other placement is used from the next start\n", __func__,
+        g_moe_auto_mode.c_str(), g_moe_auto_vram_free / 1073741824.0);
+    g_moe_auto_mode.clear();
 }
 
 // typical agentic coding turn when the command line says nothing (server, chat): the system prompt and tool definitions come from
@@ -1534,6 +1582,14 @@ static void common_moe_cache_auto_impl(common_params & params) {
         std::string decided;
         moe_auto_read(path, st, ca, decided);
         std::string mode;
+        g_moe_auto_vram_free = vram_free;
+        // a placement that could not start counts as failed until a good deal more VRAM is free than when it failed
+        const bool st_failed = st.failed_mib > 0 && (double) vram_free < 1.25 * ((double) st.failed_mib * 1048576.0);
+        const bool ca_failed = ca.failed_mib > 0 && (double) vram_free < 1.25 * ((double) ca.failed_mib * 1048576.0);
+        // can the cache fit at all? Its slots come after the non-expert weights, the KV cache and the compute buffers; when those alone do not fit in the free VRAM
+        // there is no cache to measure (GLM 3.0-bit on one 3090 with 10.9 GiB free: out of memory)
+        const size_t expert_bytes = common_model_expert_bytes(params.model.path);
+        const size_t cache_need   = expert_bytes && model_size > expert_bytes ? model_size - expert_bytes + ((size_t) 3 << 29) + ((size_t) n_gpu << 28) : 0; // + 1.5 GiB + 0.25 GiB per GPU
         if (f == "stock" || f == "cache") {
             mode = f;
         } else if (!common_autotune_on(params)) {
@@ -1541,6 +1597,13 @@ static void common_moe_cache_auto_impl(common_params & params) {
             mode = moe_auto_est_prompt(params) < 3000 ? "cache" : "stock";
             LOG_INF("%s: MoE placement: %s (autotune off: static rule, model %.1f GiB, free VRAM %.1f GiB)\n", __func__, mode.c_str(),
                 model_size / 1073741824.0, vram_free / 1073741824.0);
+        } else if (st_failed != ca_failed) {
+            mode = st_failed ? "cache" : "stock";
+            LOG_INF("%s: MoE placement: %s (the other placement could not start with this much free VRAM before; %s)\n", __func__, mode.c_str(), path.c_str());
+        } else if (cache_need > vram_free) {
+            mode = "stock";
+            LOG_INF("%s: MoE placement: stock (the cache cannot fit: about %.1f GiB for the non-expert weights, KV cache and compute buffers > free VRAM %.1f GiB)\n", __func__,
+                cache_need / 1073741824.0, vram_free / 1073741824.0);
         } else if ((st.n >= 2 && ca.n >= 2) || (st.n >= 1 && ca.n >= 1 && moe_auto_cache_clear_win(st, ca, params))) {
             // both placements measured on at least two runs (the first of each may be cold), or once each when the cache, whose run came
             // first and may be cold, already wins this request by 10%: decide for this request
@@ -1848,6 +1911,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         }
     }
     if (lctx == NULL) {
+        moe_auto_mark_failed();
         COM_ERR("failed to create context with model '%s'\n", params.model.path.c_str());
         return;
     }
@@ -1889,6 +1953,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
 
     llama_model * model = res->model();
     if (model == NULL) {
+        moe_auto_mark_failed();
         COM_ERR("failed to load model '%s'\n", params.model.path.c_str());
         return res;
     }
@@ -1899,6 +1964,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
 
     llama_context * lctx = res->context();
     if (lctx == NULL) {
+        moe_auto_mark_failed();
         COM_ERR("failed to create context with model '%s'\n", params.model.path.c_str());
         return res;
     }
