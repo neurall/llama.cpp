@@ -92,15 +92,17 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
-#include <unistd.h>
 #include <cstdlib>
 #include <string>
 #include <vector>
 #include <thread>
+#if defined(__linux__)
+#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <fcntl.h>
 #include <dirent.h>
+#endif
 
 static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
