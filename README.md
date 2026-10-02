@@ -49,6 +49,25 @@ the model is 85% in VRAM on 4 GPUs, so the first run only matches stock placemen
 \* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
 [`tools/bench/run-history.csv`](tools/bench/run-history.csv).
 
+### Why the gain depends on how much of the model fits
+
+Time per token is a fixed floor plus the cost of what is served from slow memory: `T = T0 + m x (fraction served from the CPU)`. Stock serves from the CPU every weight
+that does not fit in VRAM; the fork serves only its cache misses, and its hit rate is far above the cached fraction. Fitted on machine D, GLM 3.0-bit (ms per token):
+
+| GPUs (VRAM / model) | weights off VRAM | stock | fork: hit, model `28.3 + 46 x miss` | fork over stock |
+|---|---|---|---|---|
+| 4 (88%) | 15% | 40.5 ms (24.7 t/s) | 93.8%: 31.7 ms measured (31.5 t/s), 31.1 modelled | 1.3x |
+| 3 (66%) | 36% | 49.8 ms (20.1 t/s) | 94.9%: 30.6 ms measured (32.6 t/s) | 1.6x |
+| 2 (44%) | 57% | about 59 ms (about 17 t/s), modelled `34.0 + 44 x fraction`, not run | 87.9%: 32.9 ms measured (30.4 t/s), 33.9 modelled | about 1.7x |
+| 1 (22%) | 79% | about 68 ms (about 15 t/s), modelled, not run | 66.9%: 43.7 ms measured (22.9 t/s) | about 1.6x |
+
+- **The gain is the CPU reads the cache removes.** It is largest when stock leaves a large share of the model on a slow CPU: on machine A (2 GPUs, 44 GB/s RAM) a model 2 to 3 times the VRAM gives 1.9x to 2.4x.
+- **More fast memory has diminishing returns.** The slow-memory cost per unit is about the same for both (44 to 46 ms), so the fork's lead is only the difference between the share stock leaves on the CPU and its own miss rate. As the VRAM share grows both approach their floors (fork about 28 ms, stock about 34 ms, ratio about 1.2x). On 4 GPUs the fork is at 94% of its floor, and the 2, 3 and 4 GPU runs differ by 7%.
+- **A faster CPU lowers the gain,** because the slow-memory term shrinks (machine D reads 74 GB/s against 44 GB/s on machine A).
+- **A model that fits in VRAM gains nothing** (the cache is off, 1.0x).
+
+Four points from one session with different output texts: a good explanation, not a proof. The 2 and 1 GPU stock figures are model predictions, not measurements.
+
 ## Nothing to configure
 
 The defaults are chosen on your machine, not hard-coded:
