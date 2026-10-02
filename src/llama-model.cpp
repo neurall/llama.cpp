@@ -30,7 +30,9 @@
 #include "ggml-cpp.h"
 
 #include <algorithm>
+#if defined(__linux__)
 #include <sys/stat.h>
+#endif
 #include <cassert>
 #include <cfloat>
 #include <cstdint>
@@ -1898,6 +1900,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                     t->buffer = buf; // set dummy buffer for weights so that the backend scheduler won't try to allocate them
                 }
             } else {
+#if defined(__linux__) // the huge-page weights cache is Linux only (stat fields, file descriptors)
                 // weights cache (GGML_CUDA_HUGEFS): a pinned host buffer is keyed by the model files' identity and the tensor layout inside it
                 int (*host_cache)(int, void *) = nullptr;
                 std::string cache_key;
@@ -1925,8 +1928,11 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                     }
                 }
                 if (host_cache && !cache_key.empty()) { host_cache(0, (void *) cache_key.c_str()); }
+#endif
                 buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft); // real buffer
+#if defined(__linux__)
                 if (host_cache) { host_cache(0, nullptr); }
+#endif
             }
             if (buf == nullptr) {
                 throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
