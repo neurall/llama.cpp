@@ -1451,10 +1451,13 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         // a far lower count costs a slow slice per round: only when the nearer one looked close to the base
         if (thr.try_lo2 && lo2 != lo && lo2 != base) { c.push_back(lo2); }
         if (hi != base) { c.push_back(hi); }
-        // far candidates too (+4, +8, +16): a slow gradient (under the noise bar per step) shows at four to eight times the size, so a count that keeps paying is reached
-        for (int d : { 4, 8, 16 }) {
-            const int n = std::min(cap, base + d);
-            if (n > base && std::find(c.begin(), c.end(), n) == c.end()) { c.push_back(n); }
+        // far candidates (+4, +8, +16) only while the last cycle showed a trend (base+2 ahead in every round): a slow gradient shows at four to eight times the size,
+        // but a far count costs a slice per round, so it is not tried blindly
+        if (thr.try_far) {
+            for (int d : { 4, 8, 16 }) {
+                const int n = std::min(cap, base + d);
+                if (n > base && std::find(c.begin(), c.end(), n) == c.end()) { c.push_back(n); }
+            }
         }
         if (c.size() < 2) { thr.hold = thr.hold_len; return; }
         // the first cycle of a session is short (12-token slices, 3 skipped) so one-shot runs get a decision; later ones use 32 / 8
@@ -1488,14 +1491,23 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     if (!noisy) {
         for (size_t i = 1; i < thr.cand.size(); ++i) {
             const bool fewer = thr.cand[i] < thr.cand[0];
+            // more threads must pay for the cores they take: at least 0.25% per added thread (+2: 0.5%, +8: 2%, +16: 4%), on top of the noise bar
+            const double bar = fewer ? 0.0 : std::min(0.08, std::max(win, 0.0025*(thr.cand[i] - thr.cand[0])));
             bool all = thr.slice[i].size() == b0.size();
-            for (size_t r = 0; all && r < b0.size(); ++r) { all = thr.slice[i][r] < (fewer ? 1.01 : 1.0 - win)*b0[r]; }
+            for (size_t r = 0; all && r < b0.size(); ++r) { all = thr.slice[i][r] < (fewer ? 1.01 : 1.0 - bar)*b0[r]; }
             if (!all) { continue; }
             if (fewer) { if (fewest < 0 || thr.cand[i] < thr.cand[(size_t) fewest]) { fewest = (int) i; } }
             else if (best < 0 || mean(i) < mean((size_t) best)) { best = (int) i; }
         }
     }
     if (best < 0) { best = fewest; }
+    thr.try_far = false;
+    for (size_t i = 1; i < thr.cand.size(); ++i) {   // a trend: base+2 ahead of the base in every round, by any amount
+        if (thr.cand[i] != thr.cand[0] + 2 || thr.slice[i].size() != b0.size()) { continue; }
+        bool ahead = true;
+        for (size_t r = 0; r < b0.size(); ++r) { ahead = ahead && thr.slice[i][r] < b0[r]; }
+        thr.try_far = thr.try_far || ahead;
+    }
     thr.try_lo2 = false;
     for (size_t i = 1; i < thr.cand.size(); ++i) {
         if (thr.cand[i] >= thr.cand[0] || thr.slice[i].size() != b0.size()) { continue; }

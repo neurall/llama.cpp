@@ -421,6 +421,7 @@ private:
         int    base0 = 0;                // the default the count started from (a saved decision is valid while it is unchanged)
         int    cycles = 0, slice_len = 32, warm_len = 8; // the first cycle is short and quick (a one-shot run has no time for more)
         bool   try_lo2 = false;          // base-2 was within 3% of the base last cycle: base-4 is worth a cycle too
+        bool   try_far = false;          // base+2 beat the base in every round last cycle (any amount): +4, +8, +16 are worth a cycle too
         std::vector<int> cand;           // candidates of this cycle (base first)
         int    slot = 0, tok = 0, warm = 0, hold = 0, hold_len = 4096;
         std::vector<double> cur_sum;                 // running sum of the current slice
