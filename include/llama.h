@@ -1157,6 +1157,7 @@ extern "C" {
     struct llama_tuning_info {
         bool     moe_active;
         uint64_t moe_hits, moe_misses, moe_uploads;
+        uint64_t moe_evictions, moe_up_bytes, moe_pool_moved; // churn: experts evicted, bytes uploaded to the cache, pool slots that changed layer
         int32_t  moe_layers, moe_slots_min, moe_slots_max;
         int32_t  margin, gate, wait, big, predict, self_tune;
         int32_t  n_threads, n_threads_batch, n_batch, n_ubatch;
