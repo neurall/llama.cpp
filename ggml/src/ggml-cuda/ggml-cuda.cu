@@ -100,6 +100,7 @@
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <fcntl.h>
+#include <dirent.h>
 
 static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
@@ -1398,13 +1399,16 @@ static void ggml_backend_cuda_host_buffer_free_registered(ggml_backend_buffer_t 
     munmap(buffer->context, buffer->size);
 }
 
-// Registers the populated range in chunks: the first one here (so a failing registration still falls back to cudaMallocHost), the rest on a thread
-// while the loader reads the weights into the buffer. Keeps the state for the free function and the cache hooks.
+// Registers the populated range: by default in one call here (so a failing registration still falls back to cudaMallocHost); with
+// GGML_CUDA_REG_CHUNK_MB the first chunk here and the rest on a thread while the loader reads (do not use: see below). Keeps the state for the free
+// function and the cache hooks.
 static bool ggml_cuda_register_chunked(char * ptr, size_t size, std::unique_ptr<ggml_cuda_reg_state> & st, int64_t t_pop) {
     const unsigned reg_flags = cudaHostRegisterPortable | cudaHostRegisterMapped;
     st->base  = ptr;
     st->size  = size;
-    st->chunk = std::max<size_t>(2u << 20, getenv("GGML_CUDA_REG_CHUNK_MB") ? (size_t) atoll(getenv("GGML_CUDA_REG_CHUNK_MB")) << 20 : (4ull << 30));
+    // One registration by default. In chunks (GGML_CUDA_REG_CHUNK_MB) a tensor that straddles two registered ranges makes cudaMemcpyAsync fail with
+    // "invalid argument" at the first prompt batch (measured: 4 GiB chunks crash GLM 3.0 perplexity, one registration gives PPL 6.6026).
+    st->chunk = std::max<size_t>(2u << 20, getenv("GGML_CUDA_REG_CHUNK_MB") ? (size_t) atoll(getenv("GGML_CUDA_REG_CHUNK_MB")) << 20 : size);
     const size_t first = std::min(st->chunk, size);
     if (cudaHostRegister(ptr, first, reg_flags) != cudaSuccess) {
         (void) cudaGetLastError();
@@ -1437,6 +1441,49 @@ static bool ggml_cuda_register_chunked(char * ptr, size_t size, std::unique_ptr<
 // loader and renamed on commit. Any failure (no mount, pool too small, a second process filling) returns null and the normal path runs.
 static thread_local std::string g_host_cache_key;
 
+// Free pages of the 1 GiB pool that nobody has reserved, in bytes.
+static size_t ggml_cuda_hugefs_avail_bytes() {
+    size_t v[2] = { 0, 0 };
+    const char * names[2] = { "free_hugepages", "resv_hugepages" };
+    for (int i = 0; i < 2; i++) {
+        char path[128]; snprintf(path, sizeof(path), "/sys/kernel/mm/hugepages/hugepages-1048576kB/%s", names[i]);
+        if (FILE * f = fopen(path, "r")) { unsigned long long n = 0; if (fscanf(f, "%llu", &n) == 1) { v[i] = (size_t) n; } fclose(f); }
+    }
+    return v[0] > v[1] ? (v[0] - v[1]) << 30 : 0;
+}
+
+// Not enough free pages for a new cache file: delete the least recently used complete ones that nobody has mapped (a running process holds a shared
+// lock on its file, so a model in use is never evicted). Stale unfinished fills (no lock holder) go first.
+static void ggml_cuda_hugefs_evict(const std::string & dir, size_t need) {
+    if (ggml_cuda_hugefs_avail_bytes() >= need) {
+        return;
+    }
+    struct cand { std::string path; time_t t; bool part; };
+    std::vector<cand> c;
+    if (DIR * d = opendir(dir.c_str())) {
+        while (struct dirent * e = readdir(d)) {
+            const std::string n = e->d_name;
+            const bool part = n.size() > 7 && n.compare(n.size() - 7, 7, ".w.part") == 0;
+            if (!part && !(n.size() > 2 && n.compare(n.size() - 2, 2, ".w") == 0)) { continue; }
+            struct stat sb;
+            const std::string path = dir + "/" + n;
+            if (stat(path.c_str(), &sb) == 0) { c.push_back({ path, part ? 0 : sb.st_mtime, part }); }
+        }
+        closedir(d);
+    }
+    std::sort(c.begin(), c.end(), [](const cand & a, const cand & b) { return a.t < b.t; });
+    for (const auto & x : c) {
+        const int fd = open(x.path.c_str(), O_RDWR);
+        if (fd < 0) { continue; }
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) {                      // nobody maps it
+            fprintf(stderr, "ggml_cuda_host_malloc_registered: pool full, evicting %s\n", x.path.c_str());
+            unlink(x.path.c_str());
+        }
+        close(fd);                                                     // the pages return to the pool once the file is closed and unlinked
+        if (ggml_cuda_hugefs_avail_bytes() >= need) { return; }
+    }
+}
+
 static char * ggml_cuda_hugefs_map(size_t size, const std::string & key, std::unique_ptr<ggml_cuda_reg_state> & st) {
     const char * dir = getenv("GGML_CUDA_HUGEFS");
     if (!dir || !*dir || key.empty()) {
@@ -1449,9 +1496,15 @@ static char * ggml_cuda_hugefs_map(size_t size, const std::string & key, std::un
     bool warm = false;
     struct stat sb;
     if (fd >= 0) {
-        if (fstat(fd, &sb) == 0 && (size_t) sb.st_size == len) { warm = true; } else { close(fd); fd = -1; }
+        if (fstat(fd, &sb) == 0 && (size_t) sb.st_size == len && flock(fd, LOCK_SH | LOCK_NB) == 0) {   // held while mapped: keeps it from being evicted
+            warm = true;
+            futimens(fd, nullptr);                                                                      // most recently used
+        } else {
+            close(fd); fd = -1;
+        }
     }
     if (!warm) {
+        ggml_cuda_hugefs_evict(dir, len);
         fd = open(st->part.c_str(), O_RDWR | O_CREAT, 0664);
         if (fd < 0) { return nullptr; }
         if (flock(fd, LOCK_EX | LOCK_NB) != 0) { close(fd); return nullptr; }            // another process is filling it
