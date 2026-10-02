@@ -3,6 +3,30 @@
 Everything this fork adds to stock llama.cpp. Settings you give are used as given and are never auto-tuned. Defaults are those of
 the release this file ships with.
 
+## What the fork does, in one minute
+
+A mixture-of-experts (MoE) model has many small "experts" in every layer and uses only a few of them (for example 8 of 256) for each token. When the model is
+bigger than the GPU's memory, upstream llama.cpp ("stock") keeps some layers on the GPU and computes the others on the CPU. This fork instead keeps the
+experts in RAM and turns the free VRAM into a **cache**: in each layer a number of **slots** on the GPU hold the experts used lately, the GPU computes the
+cached ones and the CPU the others at the same time, and an expert that keeps being used replaces one that is not (it is uploaded over PCIe). An expert that is
+needed and cached is a **hit**; the **hit rate** is the share of such experts.
+
+With no switches at all: the cache is on only when a MoE model does not fit in VRAM, the slots are sized from the free VRAM, and the fork measures token
+speeds and tunes its own settings (**autotune**) and picks the cache layout or the stock layout (**placement**) for the model and the GPUs. What it learns is kept in the
+state file. Everything below is for overriding that, and a setting you give is never touched by the tuner.
+
+### Which switch do I want?
+
+| I want | type |
+|---|---|
+| exactly upstream behaviour, nothing of the fork | `--moe cache=0` |
+| the cache, but fixed settings and no self-tuning | `-at off` (and `--moe cache=N` for a fixed slot count) |
+| a reproducible benchmark | `LLAMA_MOE_STATE=0` so nothing learned earlier is used, plus `-at off` or explicit `--moe` settings; change one thing per run |
+| the cache even where the fork would choose stock (or the other way) | `LLAMA_MOE_AUTO_MODE=cache` (or `stock`) |
+| the fork to forget what it learned | delete `~/.cache/llama.cpp/moe-state.ini`, or run once with `LLAMA_MOE_AUTO_MODE=retest` |
+| to check whether the cache is what slows my machine down | run the same command with `--moe cache=0` and compare |
+| big pinned models to start faster | the section on loading pinned weights, below |
+
 ## Command-line flags
 
 | flag | environment form | what it does |
@@ -33,14 +57,15 @@ With `--moe cache=0` the fork behaves as upstream apart from unrelated changes (
 `--moe` takes comma separated `name=value` pairs, names are case-insensitive and `_` equals `-`; the same string works as
 `LLAMA_ARG_MOE=...`. A setting you give is used as given and never self-tuned.
 
-| key | meaning |
-|---|---|
-| `cache=N` | expert slots per layer in VRAM; `-1` sizes them from free VRAM, unset is automatic, `0` is the whole fork off (stock behaviour) |
-| `prefetch-slots=N` | staging slots for host-to-GPU prefetch |
-| `inserts=N` | most expert uploads per layer and decode step |
-| `window=N` | tokens of recent use the cache scores experts by (default 64) |
-| `predict=M`, `train=N` | prefetch the experts the router is likely to pick in the next layers (top M); `train=N` also trains the learned predictor every N tokens |
-| `autotune=0` | no self-tuning (same as `-at off`) |
+| key | default | meaning |
+|---|---|---|
+| `cache=N` | automatic: on when a MoE model does not fit in VRAM | expert slots per layer in VRAM; `-1` sizes them from the free VRAM, a number fixes them, `0` turns the whole fork off (stock behaviour) |
+| `prefetch-slots=N` | `0` (off) | staging slots for host-to-GPU prefetch of whole expert tensors for big batches (3 is recommended when used, at most 4) |
+| `inserts=N` | `2` | most expert uploads per layer and decode step; fewer means less PCIe and RAM traffic and a slower-changing cache |
+| `window=N` | `64` | how many recent tokens the cache looks at when it decides which experts to keep |
+| `predict=M` | `0` (off) | guess which experts the next layers will need and upload the likely ones early (the top M of the guessed ranking); experimental, see the evidence below |
+| `train=N` | `0` (the predictor is not trained while running) | train the predictor every N decoded tokens; implies `predict=8` if `predict` is not given |
+| `autotune=0` | autotune on | no self-tuning (same as `-at off`) |
 
 Any other name is a tuning knob of the cache engine (`--moe gate=3,margin=0`). A knob you set is never self-tuned; a name the
 engine does not know is logged as `unknown key` and ignored. Values are numbers; `0`/`1` are off/on.
