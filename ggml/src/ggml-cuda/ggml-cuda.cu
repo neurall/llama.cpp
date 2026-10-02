@@ -1352,8 +1352,34 @@ static void ggml_cuda_populate(char * p, size_t n) {
     for (auto & t : th) { t.join(); }
 }
 
+// The range is registered in chunks by a background thread while the loader reads the weights into it (reading into populated memory
+// does not need the pages pinned); the first chunk is registered synchronously so a failing registration still falls back to cudaMallocHost.
+struct ggml_cuda_reg_state {
+    char *              base  = nullptr;
+    size_t              size  = 0;
+    size_t              chunk = 0;
+    std::atomic<size_t> done{0};  // bytes registered, in whole chunks from the start
+    std::thread         th;
+};
+static std::mutex g_cuda_reg_mtx;
+static std::map<void *, std::unique_ptr<ggml_cuda_reg_state>> g_cuda_reg;
+
 static void ggml_backend_cuda_host_buffer_free_registered(ggml_backend_buffer_t buffer) {
-    CUDA_CHECK(cudaHostUnregister(buffer->context));
+    std::unique_ptr<ggml_cuda_reg_state> st;
+    {
+        std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
+        auto it = g_cuda_reg.find(buffer->context);
+        if (it != g_cuda_reg.end()) {
+            st = std::move(it->second);
+            g_cuda_reg.erase(it);
+        }
+    }
+    if (st) {
+        if (st->th.joinable()) { st->th.join(); }
+        for (size_t off = 0; off < st->done; off += st->chunk) {
+            CUDA_CHECK(cudaHostUnregister(st->base + off));
+        }
+    }
     munmap(buffer->context, buffer->size);
 }
 
@@ -1396,12 +1422,38 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     const int64_t t_pop = ggml_time_us();
     fprintf(stderr, "%s: %.1f GiB populated in %.1f s (%.1f reserved huge, %.1f THP, %.1f small)\n", __func__, size / 1073741824.0,
         (t_pop - t_start) / 1e6, reserved / 1073741824.0, huge / 1073741824.0, (rest_n - huge) / 1073741824.0);
-    if (cudaHostRegister(ptr, size, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
+    const unsigned reg_flags = cudaHostRegisterPortable | cudaHostRegisterMapped;
+    auto st = std::make_unique<ggml_cuda_reg_state>();
+    st->base  = ptr;
+    st->size  = size;
+    st->chunk = std::max<size_t>(two_mb, getenv("GGML_CUDA_REG_CHUNK_MB") ? (size_t) atoll(getenv("GGML_CUDA_REG_CHUNK_MB")) << 20 : (4ull << 30));
+    const size_t first = std::min(st->chunk, size);
+    if (cudaHostRegister(ptr, first, reg_flags) != cudaSuccess) {
         (void) cudaGetLastError();
         munmap(ptr, size);
         return nullptr;
     }
-    fprintf(stderr, "%s: registered in %.1f s\n", __func__, (ggml_time_us() - t_pop) / 1e6);
+    st->done = first;
+    ggml_cuda_reg_state * sp = st.get();
+    if (first < size) {
+        sp->th = std::thread([sp, reg_flags, t_pop] {
+            for (size_t off = sp->chunk; off < sp->size; off += sp->chunk) {
+                if (cudaHostRegister(sp->base + off, std::min(sp->chunk, sp->size - off), reg_flags) != cudaSuccess) {
+                    (void) cudaGetLastError();
+                    fprintf(stderr, "ggml_cuda_host_malloc_registered: registering chunk at %zu GiB failed, the rest stays unpinned\n", off >> 30);
+                    return;
+                }
+                sp->done = std::min(sp->size, off + sp->chunk);
+            }
+            fprintf(stderr, "ggml_cuda_host_malloc_registered: all registered %.1f s after populate\n", (ggml_time_us() - t_pop) / 1e6);
+        });
+    } else {
+        fprintf(stderr, "ggml_cuda_host_malloc_registered: registered in %.1f s\n", (ggml_time_us() - t_pop) / 1e6);
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
+        g_cuda_reg[ptr] = std::move(st);
+    }
     return ptr;
 }
 #endif
