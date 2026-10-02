@@ -460,7 +460,28 @@ struct knobs_t {
                             // the chain's stream, so the GPU computes them this token while the CPU computes the rest
 };
 
-bool knob_set(knobs_t & k, const std::string & name, double v) {
+// user-facing names of the tuner knobs (docs/fork-knobs.md) -> the engine's own names, which the state file, the logs and the tuner keep; both spellings are accepted
+// everywhere a knob is given (--moe, LLAMA_MOE_CACHE_<NAME>, the control file), case and '-'/'_' do not matter
+static const std::pair<const char *, const char *> knob_aliases[] = {
+    { "SWAP_LEAD", "MARGIN" }, { "VRAM_RESERVE_MB", "MARGIN_MB" }, { "UPLOAD_WAIT", "GATE" }, { "UPLOAD_SHARE", "SWAP_FRAC" },
+    { "SWAPS_PER_STEP", "BUDGET" }, { "SWAP_LEAD_PER_LINK", "LINK" }, { "UPLOAD_NOW", "JIT" }, { "UPLOAD_WAIT_MAX_US", "GATE_MAX_US" },
+    { "UPLOAD_CHUNK_KB", "CHUNK_KB" }, { "CPU_RAM_GBS", "CPU_GBS" }, { "RAM_CEILING_GBS", "DDR_GBS" }, { "WAIT_SWAPS", "WAIT" },
+    { "PRED", "PREDICT" }, { "PRED_ISO", "STREAM" }, { "PRED_N", "STREAM_M" }, { "PRED_LEAD", "OFFSET" }, { "PRED_SLOW", "STREAM_SLOW" },
+    { "PRED_TUNE", "SELF_TUNE" }, { "PRED_AUTO", "AUTO" }, { "PRED_KEEP", "SLOTKEEP" }, { "PRED_SLOTS", "STREAM_SLOTS" },
+    { "IDLE_UP", "TBP" }, { "IDLE_UP_N", "TBP_LAYERS" }, { "EV_CLD", "BIG" }, { "PIN_HOT", "HOT_FRAC" }, { "SLOW_MIN_STAY", "SLOW_STAY" },
+    { "STAY_BONUS", "STICKY" }, { "L3_PF", "L3PF" }, { "L3_AUTO", "AUTO_L3" }, { "TRACE_N", "TRACE" }, { "TRACE_SKIP", "TRACE_AFTER" },
+};
+
+std::string knob_canon(std::string name) {
+    for (char & c : name) { c = c == '-' ? '_' : (char) toupper((unsigned char) c); }
+    for (const auto & a : knob_aliases) {
+        if (name == a.first) { return a.second; }
+    }
+    return name;
+}
+
+bool knob_set(knobs_t & k, const std::string & name_in, double v) {
+    const std::string name = knob_canon(name_in);
     static const std::pair<const char *, double knobs_t::*> fields[] = {
         { "SWAP_FRAC", &knobs_t::swap_frac }, { "HOT_FRAC", &knobs_t::hot_frac }, { "STICKY", &knobs_t::sticky }, { "SLOW_STAY", &knobs_t::slow_stay },
         { "MARGIN", &knobs_t::margin }, { "BUDGET", &knobs_t::budget }, { "CPU_GBS", &knobs_t::cpu_gbs }, { "LINK", &knobs_t::link },
@@ -495,6 +516,11 @@ knobs_t & knobs() {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
                 user_knobs().insert(n);
+            }
+        }
+        for (const auto & a : knob_aliases) { // the user-facing spellings: LLAMA_MOE_CACHE_SWAP_LEAD=0 equals LLAMA_MOE_CACHE_MARGIN=0
+            if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + a.first).c_str())) {
+                if (knob_set(r, a.second, atof(e))) { user_knobs().insert(a.second); }
             }
         }
         return r;
@@ -3778,7 +3804,7 @@ void llama_moe_set_options(const char * opts) {
         const size_t eq = kv.find('=');
         if (eq == std::string::npos) { continue; }
         std::string name = kv.substr(0, eq);
-        for (char & c : name) { c = (char) toupper((unsigned char) c); }
+        name = knob_canon(name);
         if (name == "AUTOTUNE") {
             g_autotune_off = atof(kv.c_str() + eq + 1) == 0;
         } else if (knob_set(knobs(), name, atof(kv.c_str() + eq + 1))) {
