@@ -84,8 +84,9 @@ FIXED = {"seed": SEED, "ignore_eos": True}  # protocol v2 (tests fix, fix12k): s
 # ---- storage: append-only csv files, key info first so a line reads at a glance ($RUN_DATA, default: the builds folder) ----
 RUN_COLS = ["ts", "commit", "bno", "tps", "pp", "hit", "model", "args", "test", "hw", "ok", "build", "md5", "campaign", "note",
             "ppl", "spp", "n_gen", "origin", "env", "cmd",
-            "pl", "proto", "rep", "seed"]  # pl: GPU power limits in W; proto: v2 = fixed workload (tests fix, fix12k), v1 = earlier; rep: repetition in a bench;
-                                          # seed: sampling seed of a v2 run (a run's statslog is a section of stats.ini keyed by ts + build)
+            "pl", "proto", "rep", "seed", "branch", "patch"]  # pl: GPU power limits in W; proto: v2 = fixed workload (tests fix, fix12k), v1 = earlier; rep: repetition in a bench;
+                                          # seed: sampling seed of a v2 run; branch, patch: source branch of the build and the hash of its uncommitted diff (bin/BUILD_INFO,
+                                          # written by the build script; "commit" then is that commit, +patch when dirty). A run's statslog: section of stats.ini, row of stats.csv (ts + build)
 CAMP_COLS = ["name", "start", "note", "conclusion", "why"]
 MACH_COLS = ["id", "ssh", "root", "kind", "cpu", "ram_gb", "ram_type", "gpus", "links", "os", "hostname", "board", "storage",
              "mem_detail", "gpu_detail", "sw", "note"]
@@ -345,6 +346,32 @@ def power_limits(hw):
     return _PL["pl"] if hw == _PL["local"] else ""
 
 
+def build_info(build):
+    """commit / branch / diff hash of a local build, from bin/BUILD_INFO (key=value lines); empty for stock and remote builds"""
+    try:
+        return dict(l.strip().split("=", 1) for l in open(os.path.join(HERE, build, "BUILD_INFO")) if "=" in l)
+    except OSError:
+        return {}
+
+
+STATS_CSV_COLS = ["ts", "build", "commit", "branch", "patch", "hw", "model", "test", "args", "env", "tps", "hit", "windows", "every", "tok_s_mean", "hit_mean", "uploads", "evictions", "up_mib",
+                  "ddr_gbs", "pcie_gbs", "pred_up", "pred_pub", "pred_used", "pred_late", "layer_ms_avg", "layer_ms_min", "up_ms_l0", "up_ms_l1"]
+
+
+def stats_csv_row(w):
+    """one run's statslog windows -> totals (uploads, evictions, MiB, predictor counters), means (t/s, hit, DDR, PCIe, layer time), min layer time, median upload time per link"""
+    col = lambda i: [x[i] for x in w if len(x) > i]
+    mean = lambda v: round(statistics.mean(v), 3) if v else ""
+    d = dict(windows=len(w), every=int(w[1][0] - w[0][0]) if len(w) > 1 else 32, tok_s_mean=mean(col(2)), hit_mean=mean(col(3)), uploads=int(sum(col(4))), evictions=int(sum(col(5))),
+             up_mib=int(sum(col(6))), ddr_gbs=mean(col(7)), pcie_gbs=mean(col(8)))
+    if len(w[0]) >= 14:
+        d.update(pred_up=int(sum(col(10))), pred_pub=int(sum(col(11))), pred_used=int(sum(col(12))), pred_late=int(sum(col(13))))
+    if len(w[0]) >= 18:
+        lm = [v for v in col(15) if v > 0]
+        d.update(layer_ms_avg=mean(col(14)), layer_ms_min=round(min(lm), 3) if lm else "", up_ms_l0=round(statistics.median(col(16)), 3), up_ms_l1=round(statistics.median(col(17)), 3))
+    return d
+
+
 STATS_METRICS = ["tok_s", "hit_pct", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs", "pred_up", "pred_pub", "pred_used", "pred_late", "layer_ms_avg", "layer_ms_min", "up_ms_l0", "up_ms_l1"]
 
 
@@ -360,12 +387,13 @@ def save_stats(build, ts, test, hw, model):
     """The server's statslog file of the measured run (a value per 32 steps: t/s, hit, uploads, evictions, MiB uploaded, DDR and PCIe GB/s) -> a section of stats.ini."""
     f = f"/tmp/perf-{build}-stats.txt"
     if not os.path.exists(f):
-        return
+        return None
     w = [[float(x) for x in l.split()] for l in open(f) if l[:1].isdigit() and len(l.split()) in (10, 14, 18)]
     os.remove(f)  # the next run of this build must not re-save it
     if w:
         with open(os.path.join(DATA, "stats.ini"), "a") as out:
             out.write(stats_section(f"{ts} {build}", model, test, hw, w))
+    return w
 
 
 def store(row, build, test, rec, note, hw, vstr):
@@ -376,14 +404,21 @@ def store(row, build, test, rec, note, hw, vstr):
                build_no=int(mb.group(1)) if mb else None, origin="stock" if build.startswith("stock") else "fork", hw=hw,
                model=model_name(), ts=time.strftime("%F %T"), build=build, test=test,
                env=json.dumps(rec, sort_keys=True), note=" | ".join(x for x in (note, row.get("note")) if x) or None)
-    save_stats(build, row["ts"], test, hw, row["model"])
+    w = save_stats(build, row["ts"], test, hw, row["model"])
     extra = {k: v for k, v in rec.items() if k != "args"}
+    bi = build_info(build)
+    if bi.get("commit"):
+        row["commit_sha"] = bi["commit"] + ("+" + bi["patch"] if bi.get("patch") and bi.get("patch") != "0" else "")   # the commit the binary was built from (+hash of an uncommitted diff)
+    if w:
+        csv_append("stats.csv", STATS_CSV_COLS, dict(ts=row["ts"], build=build, commit=row["commit_sha"], branch=bi.get("branch", ""), patch=bi.get("patch", ""), hw=hw, model=row["model"], test=test,
+                   args=rec.get("args", ""), env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", tps=row.get("tps"), hit=row.get("hit_rate"), **stats_csv_row(w)))
     csv_append("run-history.csv", RUN_COLS, dict(
         ts=row["ts"], commit=row["commit_sha"], hw=hw, test=test, tps=row.get("tps"), pp=row.get("pp_tps"), hit=row.get("hit_rate"),
         ok=row.get("ok", 1), model=row["model"], build=build, args=rec.get("args", ""), md5=row.get("md5"), campaign=CAMPAIGN,
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
-        pl=power_limits(hw), proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None))
+        pl=power_limits(hw), proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
+        branch=bi.get("branch", ""), patch=bi.get("patch", "")))
 
 
 def show_row(row, build, test):
