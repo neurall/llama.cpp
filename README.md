@@ -146,98 +146,15 @@ Anything you pass is used as given and is never auto-tuned:
 
 Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_MOE=cache=0`.
 
-## `--moe` settings
+## Options
 
-`--moe` takes comma separated `name=value` pairs, names are case-insensitive and `_` equals `-`; the same string works as
-`LLAMA_ARG_MOE=...`. A setting you give is used as given and never self-tuned.
+Every fork option is documented in [docs/fork-knobs.md](docs/fork-knobs.md): the flags, every `--moe` setting and tuning knob
+(working ones with defaults and an example, experimental ones marked), the environment variables, the state file and multi-GPU /
+MTP use. The ones you will want first:
 
-| key | meaning |
-|---|---|
-| `cache=N` | expert slots per layer in VRAM; `-1` sizes them from free VRAM, unset is automatic, `0` is the whole fork off (stock behaviour) |
-| `prefetch-slots=N` | staging slots for host-to-GPU prefetch |
-| `inserts=N` | most expert uploads per layer and decode step |
-| `window=N` | tokens of recent use the cache scores experts by (default 64) |
-| `predict=M`, `train=N` | prefetch the experts the router is likely to pick in the next layers (top M); `train=N` also trains the learned predictor every N tokens |
-| `autotune=0` | no self-tuning (same as `-at off`) |
-
-Any other name is a tuning knob of the cache engine (`--moe gate=3,margin=0`). A knob you set is never self-tuned; a name the
-engine does not know is logged as `unknown key` and ignored. Values are numbers; `0`/`1` are off/on.
-
-The cache keeps some experts in VRAM (the GPU computes those); any other expert is computed by the CPU or uploaded over PCIe first.
-The knobs trade CPU work against uploads. Every example below is a complete option: `llama-server -m model.gguf --moe <example>`.
-
-**Swap decisions**
-
-| knob | default | what it does | example |
-|---|---|---|---|
-| `MARGIN` | `-1` | An upload costs link time and only pays back if the expert is used again, so a missed expert must beat the one it evicts by this many recent uses. `-1` = 0 (swap whenever it scores higher), `-2` = from speeds (CPU read rate / link rate is about the uses an upload needs to pay for itself), `n` = fixed | `margin=0` swaps eagerly; `margin=2` swaps rarely |
-| `BUDGET` | `-1` | Fixed swaps per step; `-1` derives it from the measured upload time | `budget=4` |
-| `SWAP_FRAC` | `0.25`, tuned live | Uploads may take at most this share of a token's time; uploads that outlast the token stall it | `swap_frac=0.5` lets uploads use half the token time |
-| `LINK` | `1` | Margin per upload link, so a GPU on a slow x4 slot gets a higher margin than one on x16; `0` uses one margin from the average upload | `link=0` |
-| `JIT` | `1` | When a layer's router ids are known, upload some of the missed experts right then, so the GPU computes them this token while the CPU does the rest; the number is chosen so CPU and link finish together | `jit=0` turns it off |
-
-**Not fighting for RAM bandwidth**
-
-| knob | default | what it does | example |
-|---|---|---|---|
-| `GATE` | `3` | The CPU reading experts and the upload DMA both read system RAM and together hit its limit. `3`: an upload waits while the CPU computes uncached experts; `0` off | `gate=0` uploads at any time |
-| `GATE_MAX_US` | `-1` | Longest wait per tensor copy, microseconds; `-1` = the measured mean layer time | `gate_max_us=800` |
-| `CHUNK_KB` | `-1` | With `GATE=3`: copy in chunks of this size and recheck the RAM budget before each; `0` = the whole tensor | `chunk_kb=512` |
-| `CPU_GBS`, `DDR_GBS` | `38`, `44` | Assumed RAM read rate in GB/s of the CPU alone, and of CPU plus uploads together; starting values until measured, `DDR_GBS` is the ceiling for `GATE=3` | `cpu_gbs=22,ddr_gbs=28` for a slower RAM kit |
-| `WAIT` | `1` | The step waits for queued swaps to finish; `0` never waits and finished uploads appear at the next split | `wait=0` |
-
-**Predictor streaming (uploads ahead of need)**
-
-| knob | default | what it does | example |
-|---|---|---|---|
-| `STREAM` | on | Predicted uploads go into separate stream slots, so a wrong guess evicts nothing useful; `0` = they evict cache slots (old path) | `stream=0` |
-| `STREAM_M` | `12` | Predicted candidates uploaded per target layer (over-guesses on purpose, no confidence cut) | `stream_m=6` |
-| `OFFSET` | `1` | Predict only layers far enough ahead that the upload lands in time on their link; a slow link needs more lead | `offset=0` |
-| `STREAM_SLOW` | `1` | Also stream onto layers served by a slower link | `stream_slow=0` |
-| `PREDICT` | `1` | The learned predictors run at all (they exist only with `--moe predict=M` or `train=N`) | `predict=8,train=64` enables them |
-| `SELF_TUNE` | `1` | The tuner tries one streaming knob at a time on real token times and keeps the faster setting | `self_tune=0` |
-| `AUTO` | `1` | `1`: adjust lead and `STREAM_M` per link from the measured late share and precision; `2`: uploads per target layer = time until that layer / measured upload time per expert; `0` off | `auto=2` |
-
-**Sizing**
-
-| knob | default | what it does | example |
-|---|---|---|---|
-| `MARGIN_MB` | `0` (= 384, or from the batch size by autotune) | VRAM in MiB kept free per GPU after the cache takes its slots, so a longer context or batch does not run out of memory (not the same as `MARGIN`) | `margin_mb=1024` |
-
-**Experimental knobs** (off by default; none beat the default in our A/B tests, kept only for experiments, and probably removed
-in a later release; do not rely on them):
-
-| knob | default | what it does | example |
-|---|---|---|---|
-| `BIG` | `0` | An expert may only evict one with at most its own lifetime use count; never won, off and not tuned | `big=1` |
-| `HOT_FRAC` | `0` | Pin the always-hot set of a layer on slower links | `hot_frac=0.5` |
-| `SLOW_STAY` | `0` | Minimum stay in steps of an expert in a slow-link layer's tier | `slow_stay=64` |
-| `STICKY` | `0` | Bonus for staying in the cache; +1.6% on one chat run, within noise | `sticky=1` |
-| `SLOTKEEP` | `0` | A prediction may only replace a stream slot holding a lower-scored expert of this step | `slotkeep=1` |
-| `TBP`, `TBP_LAYERS` | `0`, `6` | After a token ends, stream up to `TBP` of its misses into the first `TBP_LAYERS` layers while the output head and sampling keep RAM idle | `tbp=2,tbp_layers=6` |
-| `L3PF`, `AUTO_L3` | `0`, `0` | Prefetch `L3PF` experts per layer into the CPU's L3 cache (needs `GGML_MOE_CCX_SPLIT` and pinned threads); `AUTO_L3=1` tests it live | `l3pf=2,auto_l3=1` |
-| `TRACE`, `TRACE_AFTER` | `0`, `0` | Debug: record routing for this many steps, starting after this many | `trace=2000,trace_after=500` |
-
-## The state file
-
-`~/.cache/llama.cpp/moe-state.ini` (`LLAMA_MOE_STATE=PATH` moves it, `LLAMA_MOE_STATE=0` ignores it and never writes) holds one
-`[model name + size]` section per model:
-
-| line | content |
-|---|---|
-| `hot.N = c0 c1 ...` | lifetime use count of every expert of layer N. At start the most used experts are loaded into the cache first, so the first prompt is already warm |
-| `tuned.lK = NAME=value ...` | what the self-tuner settled on, for K upload links (GPUs) |
-| `place.g<gpus>x<MiB>.v1.cache`, `.stock`, `.decided` | measured prompt and decode speed of cache and stock placement for this GPU set, and which one won |
-
-Counts only seed the start; during a run the cache scores by recent use. It is plain text, safe to edit or delete.
-
-## Several GPUs and MTP
-
-- The cache is sized per GPU from its free VRAM and the experts spread over all GPUs; each GPU keeps its own slots and upload
-  link. A card on a slow slot (x4) helps less, its uploads take 4 to 7 times longer, and prompt processing goes to the fastest
-  link. `-ts`, `-dev` and `-sm` work as in stock; see [multi-GPU usage](docs/multi-gpu.md).
-- MTP works together with the cache: pass `-md` and `--spec-type draft-mtp` as in the MTP section above. The draft head is
-  small and stays in VRAM, the cache serves the main model.
+- `--moe cache=0` turns the fork off completely; `-at off` keeps the cache but stops self-tuning.
+- `--moe gate=3,margin=0` sets cache knobs by hand (a knob you set is never tuned).
+- `--load-mode pin|mmap` chooses pinned or memory-mapped weights.
 
 ## Good to know
 
