@@ -1557,9 +1557,14 @@ static void common_moe_cache_auto_impl(common_params & params) {
             const size_t est_gen = (size_t) moe_auto_est_gen(params);
             const bool prefill_heavy = est_prompt >= 3000 || est_prompt > 8 * est_gen;
             const std::string first = model_size * 10 > vram_free * 13 && !prefill_heavy ? "cache" : "stock";
-            if (!prefill_heavy) {
-                // the model does not fit: the cache (2x RTX 3090: GLM 1.5x, MiMo 2.4x, Qwen3.8 1.7x, IQ3_S 83 GB on one GPU 2x), no stock run to
-                // spend: nothing is recorded and every start takes the cache. Only a request that is mostly prompt is measured against stock.
+            // the cache gains most when a fifth to a half of the model fits (2 x RTX 3090: GLM 1.5x-2.2x, MiMo 2.4x, Qwen3.8 1.7x; 4 x RTX 3090 with 22% in VRAM: GLM 1.6x) and can
+            // lose on both sides of that band, depending on the machine. Above half (simulated 2 x 16 GB cards, Qwen3.8 IQ1_M 55 GB: 0.9x at 58% in VRAM, 0.78x at 83%, with a 99%
+            // hit rate; 4 x RTX 3090, GLM at 88%: 1.3x). Below a fifth (user report, RTX 2080 Ti 11 GB, MiMo IQ2_M 100 GB, ~10% in VRAM: 6.6 vs 15.5 t/s of the static split, hit
+            // 21%: a thin cache over every layer loses to whole resident layers; at 15% on an RX 9070 XT the two were equal). Outside the band the two placements are measured,
+            // like a request that is mostly prompt.
+            const bool uncertain = vram_free * 2 >= model_size || vram_free * 5 < model_size;
+            if (!prefill_heavy && !uncertain) {
+                // between a fifth and a half of the model fits: the cache, no stock run to spend: nothing is recorded and every start takes the cache.
                 mode = "cache";
                 LOG_INF("%s: MoE placement: cache (model %.1f GiB does not fit the free VRAM %.1f GiB, nothing to measure)\n", __func__,
                     model_size / 1073741824.0, vram_free / 1073741824.0);
