@@ -1,30 +1,31 @@
 #!/bin/bash
-# Prepare 1 GiB huge pages for the pinned-weights cache. Root (sudo) is needed only to change the pool or the mount (once per boot); with a big
-# enough pool and the mount in place it runs as a normal user.
+# The 1 GiB huge-page pool behind the pinned-weights cache. Allocate it once; the loader does the rest (it fills a cache file on the first load of
+# a model, maps it afterwards, and evicts the least recently used model that nobody has mapped when the pool is full).
 #
-#   ./preload.sh model.gguf [more.gguf ...]   reserve enough 1 GiB pages for the model(s) if the pool is too small, mount the cache, and load the
-#                                                  model(s) once with the fork's binary so the cache is warm (set LLAMA_BIN to choose it)
-#   ./preload.sh                                   reserve the most the machine can spare: total RAM minus a safety margin (default max(24 GiB, 20% of RAM),
-#                                                  HUGEFS_MARGIN_GIB=N to change), and mount the cache
-#   ./preload.sh 100G                              a number with G: reserve exactly that many GiB (manual pool size, no model; --pages N is the same)
-#   ./preload.sh --pages N                         reserve N pages
-#   sudo ./preload.sh --release                    delete the cached models, unmount, give the pages back
+#   sudo ./pool.sh mount              reserve the most the machine can spare (total RAM minus a margin: max(24 GiB, 20% of RAM), HUGEFS_MARGIN_GIB=N)
+#                                     and mount the cache at /mnt/huge1g
+#   sudo ./pool.sh mount 100G         reserve exactly that many GiB (--pages N is the same in pages)
+#   sudo ./pool.sh mount model.gguf   reserve what that model needs (split models: pass the first part)
+#   sudo ./pool.sh unmount            delete the cached models, unmount, give the pages back
 #
-# Afterwards start the fork with   GGML_CUDA_HUGEFS=/mnt/huge1g   (the first load fills the cache, later loads map it and skip the disk read).
-# Without the variable, or without a pool, the loader works as before. Needs a kernel with 1 GiB huge pages (CONFIG_CONTIG_ALLOC); do NOT
-# boot with hugetlb_cma= (pages inside a CMA area cannot be pinned for the GPU).
+# Root (sudo) is only needed to change the pool or the mount. Afterwards start the fork with   GGML_CUDA_HUGEFS=/mnt/huge1g   (the first load of a
+# model fills the cache, later loads map it and skip the disk read). Without the variable, or without a pool, the loader works as before.
+# Needs a kernel with 1 GiB huge pages (CONFIG_CONTIG_ALLOC); do NOT boot with hugetlb_cma= (pages inside a CMA area cannot be pinned for the GPU).
 set -eu
 MNT=${HUGEFS_MOUNT:-/mnt/huge1g}
 NR=/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages
 FREE=/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages
 [ -e "$NR" ] || { echo "this kernel has no 1 GiB huge pages ($NR missing)"; exit 1; }
-ARGS="$*"
+ARGS=""
 need_root() { [ "$(id -u)" = 0 ] || { echo "$1: the pool or the mount has to change, which needs root. Run:  sudo $0 $ARGS"; echo "(with a big enough pool and the mount in place no sudo is needed)"; exit 1; }; }
 
-if [ "${1:-}" = --release ]; then
-  need_root "release"
+cmd=${1:-}; [ $# -ge 1 ] && shift
+case "$cmd" in mount|unmount) ;; *) sed -n '2,14p' "$0"; exit 1;; esac
+ARGS="$cmd $*"
+if [ "$cmd" = unmount ]; then
+  need_root "unmount"
   if mountpoint -q "$MNT"; then rm -f "$MNT"/* 2>/dev/null || true; umount "$MNT"; fi
-  echo 0 > "$NR"; echo "released: mount removed, 1 GiB pool $(cat $NR) pages"; exit 0
+  echo 0 > "$NR"; echo "unmounted: cache files deleted, mount removed, 1 GiB pool $(cat $NR) pages"; exit 0
 fi
 grep -q hugetlb_cma /proc/cmdline && { echo "the kernel was booted with hugetlb_cma=: those pages cannot be pinned for the GPU, boot without it"; exit 1; }
 
@@ -73,19 +74,3 @@ if ! mountpoint -q "$MNT"; then
 fi
 echo "pool: $got x 1 GiB ($(cat $FREE) free of RAM $total_gib GiB, margin $margin GiB), mount: $MNT"
 echo "start the fork with:  GGML_CUDA_HUGEFS=$MNT llama-server -m ... -lm pin"
-
-# load each given model once (as the invoking user) so the cache is filled; a model whose cache file exists is only mapped
-if [ ${#models[@]} -gt 0 ]; then
-  here=$(cd "$(dirname "$0")" && pwd)
-  bin=${LLAMA_BIN:-$(ls "$here"/build*/bin/llama-cli "$here"/bin/llama-cli 2>/dev/null | head -1)}
-  [ -n "$bin" ] || bin=$(command -v llama-cli || true)
-  [ -x "${bin:-/nonexistent}" ] || { echo "no llama-cli found: set LLAMA_BIN=/path/to/llama-cli and run again to fill the cache"; exit 0; }
-  for m in "${models[@]}"; do
-    echo "loading $m once to fill the cache ($bin)"
-    asuser=(); [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && asuser=(sudo -u "$SUDO_USER")
-    "${asuser[@]}" env GGML_CUDA_HUGEFS="$MNT" "$bin" -m "$m" -lm pin -c 64 -n 1 -p "hi" -st --no-warmup </dev/null >/dev/null 2>"${TMPDIR:-/tmp}/preload-$$.log" || true
-    grep -h "hugetlbfs cache" "${TMPDIR:-/tmp}/preload-$$.log" 2>/dev/null | tail -1 || true
-    rm -f "${TMPDIR:-/tmp}/preload-$$.log"
-  done
-  ls -la "$MNT"
-fi
