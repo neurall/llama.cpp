@@ -31,9 +31,16 @@ export PERF_BUILDS=../rels
 python3 tools/run.py bench --models ../models/a.gguf,../models/b.gguf --builds mybuild,stock-abc1234 -n 2
 ```
 
+Protocol v2 (what a number in the main README should come from): `-t fix` (short prompt, `-c 2048`) or `-t fix12k` (12k-token prompt, 256 generated), each with a
+fixed seed (424242), `ignore_eos` and an exact token count, so every build generates the same number of tokens and equal outputs show equal `md5`; `-n 3`
+(the default for these tests) runs the cells interleaved ABBA (odd repetitions run backwards) so a drift cannot favour one cell, with one discarded
+run per cell before its first repetition. `--stock-variant tuned='--n-cpu-moe 30'` also runs a hand-placed stock (the baseline a cache has to beat at
+the same VRAM); a variant can set environment variables with `env:` words, e.g. `--variant lru='env:LLAMA_MOE_CACHE_POLICY=lru'`. `PERF_HOLD_MB=N` tells
+the harness N MiB of VRAM are held on purpose (a simulated smaller card, see `tools/experiments/vram-sim`).
+
 Per model it runs every build with the variants `default`, `cache0` (`--moe cache=0`) and `atoff` (`-at off`) (add or replace with
-`--variant gate3='--moe gate=3'`; builds named `stock*` run the default only), then prints the report: mean and spread per cell and
-the ratio to stock. Every measured run is preceded by a discarded run with the same settings, so the numbers are hot runs. `-t`
+`--variant gate3='--moe gate=3'`; builds named `stock*` run the default only), then prints the report: n, median and min-max per cell, the ratio to the stock median (and to the best hand-placed stock),
+and flags a cell with n < 3, different token counts or different outputs; `report --md` prints README table rows with the first run of each cell. Every measured run is preceded by a discarded run with the same settings, so the numbers are hot runs. `-t`
 picks the test: `t100` (default: one short prompt, 100 tokens, `-c 1024`, temperature 0, what most people run), `tetris`, `chat`,
 `chatv`, `pf12k`, `pf128k`; `run.py run` has the rest (`ppl`, `ppl3`, `agent`). `--deadline HH:MM` skips cells that would start
 later, `--tol 0.95` flags cells below 95% of stock, `--last N` reports only the last N runs of a cell (an autotune that is still learning).
@@ -47,7 +54,13 @@ One line per run, appended; the key columns come first so a line reads at a glan
 `ts` (date and time), `commit` and `bno` (commit and build number from the binary's own `--version`), `tps` (decode t/s), `pp` (prompt t/s),
 `hit` (expert cache hit %), `model`, `args` (the variant's command line, e.g. `--moe cache=0`), `test`, `hw` (machine), `ok` (failures are
 kept, error in `note`), `build`, `md5` (of the output text: compare t/s only between equal md5), `campaign`, `note`, then `ppl`, `spp`
-(seconds per pass), `n_gen`, `origin` (`stock` or `fork`), `env`, `cmd` (the full server arguments).
+(seconds per pass), `n_gen`, `origin` (`stock` or `fork`), `env`, `cmd` (the full server arguments), then `pl` (GPU power limits in W, e.g. `280+280`, local
+machine only), `proto` (`v2` = fixed workload above, `v1` = earlier runs), `rep` (repetition within a bench) and `seed`. Rows from before these columns
+existed have them empty.
+
+- `stats.ini`: the expert cache's own log of a run, one `[ts build]` section per run (the same key as its row): `every` tokens per value, then one line per
+  metric with a value per window: `tok_s`, `hit_pct`, `uploads`, `evictions`, `up_mib` (uploaded MiB) `ddr_gbs`, `pcie_gbs`. Written by builds that have
+  `--moe statslog=N` (a line every N steps, 1 means 32; `LLAMA_MOE_STATSLOG=path` for a text file of one process).
 
 - `machines.csv`: the machines (`pc1` 2x RTX 3090 on PCIe 4.0 x16 + chipset x4, Ryzen 7 3700X, 125 GB DDR4-3200; `pc2` CPU-only Ryzen 5 3600,
   64 GB DDR4-3200, PCIe 3.0; `pc3` RTX 4060 laptop 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400) and how to reach them.
