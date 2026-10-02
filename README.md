@@ -71,13 +71,14 @@ Four points from one session with different output texts: a good explanation, no
 ## Too many knobs? Smart autotune picks them
 
 Running a model bigger than your VRAM well means choosing placement, cache size, upload schedule, batch size, thread counts, the VRAM margin. Instead of a page of flags, the
-fork measures your machine and tunes those while you use it. The defaults are chosen on your machine, not hard-coded:
+fork measures your machine and tunes most of those while you use it. The defaults are chosen on your machine, not hard-coded:
 
 - **Cache or stock.** If the model fits in VRAM it is placed exactly like stock llama.cpp. A model that does not fit takes
   the cache right away. When what you run is mostly long prompts (processing them would cost more than the faster generation
   gains), the first two runs compare both and keep the faster one.
-- **Self-tuning on real token times.** The cache policy, the upload schedule and the decode and prompt thread counts are
-  adjusted while you use it. A setting that does not help is dropped, a setting you fix yourself is never touched.
+- **Self-tuning on real token times.** The cache policy and the upload schedule are adjusted while you use it. The decode and prompt thread counts start from
+  a formula (cores minus one per GPU) and the tuner moves them a few threads at a time; on a many-core host `-t 16` can be a better start (on a 64-core machine the
+  difference was under 2%). A setting that does not help is dropped, a setting you fix yourself is never touched.
 - **It remembers.** What it learned per model (hot experts, tuned settings, cache-or-stock) is kept in one file,
   `~/.cache/llama.cpp/moe-state.ini`, so the next start, even a one-shot short prompt, begins from it. Delete the file to start over.
 - **It tells you what it does.** `llama-server` logs, and `llama-cli -lv 3` prints after each reply, whether the cache is on,
