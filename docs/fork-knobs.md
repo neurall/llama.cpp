@@ -77,6 +77,25 @@ Evidence labels: **proven** = a paired measurement showed a gain (where and how 
 measured gain, will be removed or folded into the tuner unless a test shows one; **no A/B** = never tested on its own, kept as a
 measurement input or a safety limit. Numbers are decode tokens/s unless stated; "chat" = short chat prompts.
 
+### The three knobs that matter most, in plain words
+
+Each decode step a layer needs a few experts. The cached ones run on the GPU. For a missed one the engine can let the CPU compute it, or **upload** it into a
+cache slot so it is a hit next time. An upload costs PCIe time, RAM bandwidth (it reads the same RAM the CPU is reading) and an eviction (a cached expert
+has to make room). The three knobs answer three questions about uploads:
+
+- **`MARGIN` (which swaps are worth it).** A missed expert only gets a slot if it beats the weakest cached expert by this many recent uses (over the last 64 tokens).
+  `0`: any expert used more than the weakest cached one gets in; the cache adapts fast and churns more. A high value: a stable cache that can go stale.
+  Default `-1` is 0; `-2` computes it from speeds (about the CPU read rate over the link rate: around 2 on an x16 link, 9 to 11 on a x4 link).
+  Measured on GLM (2 x 3090): the speed-derived margin capped the hit rate; margin 0 gave 71.2% against about 65% and 21.3 against 19.9 t/s (+6.7%).
+  Short chats like margin 0, long prompts did better with the speed rule, so the tuner chooses.
+- **`GATE` (when an upload may run).** The CPU computing its experts and an upload both read system RAM and together reach its limit (on machine A about 38 GB/s for
+  the CPU alone, 44 with a DMA running). An upload that overlaps the CPU's reading slows the CPU, which is the critical path. `GATE=3` makes uploads wait, up to a limit,
+  while the CPU computes, so they run in the gaps; `GATE=0` uploads any time. Measured: +6% on a short GLM chat (22.10 against 20.87 t/s). `gate=2` starved the uploads: never use it.
+- **`SWAP_FRAC` (how much).** The most time uploads may take per step, as a share of the token time (0.25 is a quarter). More uploads help the hit rate but risk stalling the step.
+  Measured: no benefit as a user setting (5 against the default gave the same hit rate, 64.6% against 64.7%; 0.5 with margin 0 was slower), so it is labelled "unproven, on the way out".
+
+The tuner sets all three while it runs. If you change one, change one at a time and use `LLAMA_MOE_STATE=0`, or the learned settings will mix into the comparison.
+
 **Swap decisions**
 
 | knob | default | what it does | example | evidence |
