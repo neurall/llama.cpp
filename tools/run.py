@@ -613,7 +613,7 @@ def remote_cell(mid, m, build, test, args, note, warm=True, env=None):
 
 
 # ---- bench: models x builds x variants, every cell recorded, then the report ----
-VARIANTS = {"default": "", "cache0": "--moe cache=0", "atoff": "-at off"}  # --variant NAME=ARGS adds or overrides
+VARIANTS = {"default": "", "cache0": "--moe-expert-cache 0", "atoff": "-at off"}  # --variant NAME=ARGS adds or overrides
 
 
 def cmd_bench(a):
@@ -815,7 +815,7 @@ if __name__ == "__main__":
     b.add_argument("--models", required=True, help="comma separated model paths (on the machine that runs them)")
     b.add_argument("--builds", required=True, help="comma separated build dirs; names starting with stock run the default variant only")
     b.add_argument("--variants", help="comma separated variant names (default: all of default,cache0,atoff and any --variant)")
-    b.add_argument("--variant", action="append", default=[], help="NAME=ARGS: add or override a variant, e.g. gate3='--moe gate=3'")
+    b.add_argument("--variant", action="append", default=[], help="NAME=ARGS: add or override a variant, e.g. gate3='--moe upload-wait=3'")
     b.add_argument("-t", "--test", default="t100", choices=["ppl", "ppl3", "t100", "tetris"] + TESTS[4:])
     b.add_argument("--stock-variant", action="append", default=[], help="NAME=ARGS: stock builds also run this placement (e.g. tuned='--n-cpu-moe 30'): the hand-tuned baseline")
     b.add_argument("-n", type=int, help="measured runs per cell, interleaved ABBA (default 3 for fix/fix12k, else 2); the first run of a cell is preceded by a discarded one")

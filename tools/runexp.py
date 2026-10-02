@@ -35,7 +35,7 @@ sample = 1                       ; CPU/GPU/memory once a second, summarised in t
 
 [arm N]                          ; one section per arm
 bin = /p/bw/wt-release-next/build-dev/bin
-args = --moe cache=0
+args = --moe-expert-cache 0
 env = K=V
 origin = fork                    ; fork | stock
 tool = completion                ; optional, overrides workload tool

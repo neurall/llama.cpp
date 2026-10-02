@@ -67,7 +67,7 @@ With `--moe slots=0` the fork behaves as upstream apart from unrelated changes (
 | `train-every=N` | `0` (the predictor is not trained while running) | train the predictor every N decoded tokens; implies `pred-top=8` if `pred-top` is not given |
 | `autotune=0` | autotune on | no self-tuning (same as `-at off`) |
 
-**Names.** The settings were renamed to say what they do. The old names (`cache`, `inserts`, `window`, `prefetch-slots`, `predict`, `train`, and the knobs `MARGIN`, `GATE`, `SWAP_FRAC`, `BIG`, ...) still work everywhere, on `--moe`, as `LLAMA_MOE_CACHE_<NAME>` and in the control file; saved state files keep the old names. Case and `-` / `_` do not matter.  
+**Names.** The settings were renamed to say what they do. The old names (`cache`, `inserts`, `window`, `prefetch-slots`, `predict`, `train`, the knobs `MARGIN`, `GATE`, `SWAP_FRAC`, `BIG`, ... and their `LLAMA_MOE_CACHE_<OLD>` variables) no longer exist: an old `--moe` name is ignored, and an old state file entry is skipped, so the tuner relearns it. Case and `-` / `_` do not matter in the new names. `--moe-expert-cache N` (`LLAMA_ARG_MOE_EXPERT_CACHE`) is unchanged and works on every build.  
 
 | new name | old name | | new name | old name |
 |---|---|---|---|---|
@@ -175,7 +175,7 @@ experiments and probably removed in a later release; do not rely on them):
 
 ## Environment variables
 
-Every knob above can also be given as `LLAMA_MOE_CACHE_<NAME>=value` (for example `LLAMA_MOE_CACHE_MARGIN=0`); the `--moe` form wins.  
+Every knob above can also be given as `LLAMA_MOE_CACHE_<NAME>=value` (for example `LLAMA_MOE_CACHE_SWAP_LEAD=0`); the `--moe` form wins.  
 These are the other fork switches. Most exist for experiments; the default is what we ship.
 
 | variable | default | what it does |
@@ -188,7 +188,7 @@ These are the other fork switches. Most exist for experiments; the default is wh
 | `LLAMA_MOE_CACHE_HALVE_EVERY` | `64` | counts halve every N steps, so recent use dominates old use |
 | `LLAMA_MOE_CACHE_ADOPT` | `1` | share of each layer's cache slots that may keep experts the prompt pass already put on the GPU (`1` all, `0.0625` a sixteenth; measured on GLM 12k prompt: 1/16 +0.3 hit points, 1/4 +3.8, all +11.4) |
 | `LLAMA_MOE_CACHE_PROBE` | on | `0` skips the start-up probe that measures CPU read rate and each upload link |
-| `LLAMA_MOE_CACHE_CPU_GBS`, `..._DDR_GBS` | probe | override the probed RAM rates in GB/s (same as the knobs) |
+| `LLAMA_MOE_CACHE_CPU_RAM_GBS`, `..._RAM_CEILING_GBS` | probe | override the probed RAM rates in GB/s (same as the knobs) |
 | `LLAMA_MOE_CACHE_DETERMINISTIC` | `0` | `1` fixes every knob and disables tuning, for repeatable measurements |
 | `LLAMA_MOE_CACHE_TUNED` | state file | start from this tuner result instead of the saved one |
 | `LLAMA_MOE_CACHE_MAX_BATCH` | `31` | largest batch that still uses the cache path; bigger batches take the prompt path |
