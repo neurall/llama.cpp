@@ -1903,6 +1903,13 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         LOG_WRN("%s: context creation failed, retrying with ubatch %u\n", __func__, cparams.n_ubatch);
         lctx = llama_init_from_model(model, cparams);
     }
+    // still no room: offloading host-weight ops to the GPU needs a staging buffer the size of a weight tensor on top of the compute buffers, which
+    // a card near its limit does not have; without it the same graph needs less (and ran faster at low VRAM share in our tests)
+    if (lctx == NULL && cparams.op_offload && !params.no_op_offload) {
+        cparams.op_offload = false;
+        LOG_WRN("%s: context creation failed, retrying without op offload\n", __func__);
+        lctx = llama_init_from_model(model, cparams);
+    }
     if (lctx && params.cpuparams.auto_threads && common_autotune_on(params)) {
         llama_set_thread_autotune(lctx, true); // the count came from the default, not from the user: tune it on measured decode time
         if (!params.threads_batch_set) {
@@ -1949,7 +1956,21 @@ std::vector<llama_adapter_lora_ptr> & common_init_result::lora() {
 }
 
 common_init_result_ptr common_init_from_params(common_params & params, bool model_only) {
+    const common_params orig = params; // before the placement and tuning below change it
     common_init_result_ptr res(new common_init_result(params, model_only));
+
+    // last resort: the fork could not even load or create a context (out of memory) where upstream stock would run. Free everything and start over
+    // with the fork off exactly as --moe cache=0 does (cache off, autotune off, the placement of upstream); not when the user forced a placement
+    if ((res->model() == NULL || (!model_only && res->context() == NULL)) && !getenv("LLAMA_MOE_AUTO_MODE") &&
+        orig.n_moe_cache_slots != 0 && (orig.n_moe_cache_slots != -2 || common_autotune_on(orig))) {
+        moe_auto_mark_failed();
+        LOG_WRN("%s: initialisation failed, starting over with the fork off (as --moe cache=0)\n", __func__);
+        res.reset();                      // release the model and the memory before loading again
+        params = orig;
+        params.n_moe_cache_slots = 0;
+        params.autotune          = false;
+        res.reset(new common_init_result(params, model_only));
+    }
 
     llama_model * model = res->model();
     if (model == NULL) {
