@@ -2,6 +2,7 @@
 
 #if defined(__linux__)
 #include <fcntl.h>
+#include <unistd.h>
 #endif
 
 #include "ggml-alloc.h"
@@ -11,11 +12,18 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <set>
 #include <array>
 #include <cinttypes>
 #include <cstdint>
 #include <cstring>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <future>
+#include <mutex>
+#include <thread>
 #include <regex>
 
 static const size_t kiB = 1024;
@@ -1510,6 +1518,22 @@ bool llama_model_loader::load_all_data(
 
     std::vector<std::future<std::pair<ggml_tensor *, bool>>> validation_result;
 
+    // weights cache (GGML_CUDA_HUGEFS): a host buffer that is a complete cache file already holds the weights (skip reading), a fresh one is committed when filled
+    int (*host_cache)(int, void *) = nullptr;
+    std::set<ggml_backend_buffer_t> cache_warm, cache_cold;
+    if (getenv("GGML_CUDA_HUGEFS") && !use_mmap && !check_tensors) {
+        if (auto * reg = ggml_backend_reg_by_name("CUDA")) {
+            host_cache = (int (*)(int, void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_cache");
+        }
+        if (host_cache) {
+            for (auto & kv : bufs) {
+                const int st = host_cache(1, kv.second);
+                if (st == 2) { cache_warm.insert(kv.second); } else if (st == 1) { cache_cold.insert(kv.second); }
+            }
+            if (!cache_warm.empty()) { LLAMA_LOG_INFO("%s: weights are in the hugetlbfs cache, not reading them\n", __func__); }
+        }
+    }
+
     // 4 staging buffers for async uploads, each sized 1MB seems to be a good default for single NVMe drives.
     // NVMe raid configurations might require more / larger buffers.
     constexpr size_t n_buffers = 4;
@@ -1625,6 +1649,53 @@ bool llama_model_loader::load_all_data(
         });
     }
 
+#if defined(__linux__)
+    // Weights that land in host memory (with a GPU: the pinned buffer) are read by a pool of threads in 64 MB chunks with pread: one thread reading tensor after tensor
+    // reached ~1.5 GB/s of a 3+ GB/s NVMe. The pages just read are given back to the page cache right away (as the single-threaded path does), so the file copy never
+    // competes with the weights for RAM. LLAMA_LOAD_THREADS=1 (or direct IO, mmap, tensor validation) keeps the sequential path.
+    struct par_read { int fd; size_t off; void * dst; size_t n; };
+    std::mutex              pr_mtx;
+    std::condition_variable pr_cv;
+    std::deque<par_read>    pr_q;
+    bool                    pr_stop = false;
+    std::atomic<bool>       pr_fail{false};
+    std::vector<std::thread> pr_threads;
+    size_t n_load_threads = std::max<size_t>(1, std::min<size_t>(16, std::thread::hardware_concurrency() / 2));
+    if (const char * e = getenv("LLAMA_LOAD_THREADS")) { n_load_threads = std::max(1, atoi(e)); }
+    const bool par_load = !use_mmap && !use_direct_io && !check_tensors && n_load_threads > 1;
+    auto pr_worker = [&]() {
+        for (;;) {
+            par_read t;
+            {
+                std::unique_lock<std::mutex> lk(pr_mtx);
+                pr_cv.wait(lk, [&] { return pr_stop || !pr_q.empty(); });
+                if (pr_q.empty()) { return; }
+                t = pr_q.front();
+                pr_q.pop_front();
+            }
+            size_t done = 0;
+            while (done < t.n && !pr_fail) {
+                const ssize_t r = pread(t.fd, (char *) t.dst + done, t.n - done, (off_t) (t.off + done));
+                if (r < 0 && errno == EINTR) { continue; }
+                if (r <= 0) { pr_fail = true; break; }
+                done += (size_t) r;
+            }
+            posix_fadvise(t.fd, (off_t) t.off, (off_t) t.n, POSIX_FADV_DONTNEED);
+        }
+    };
+    auto pr_finish = [&]() {
+        {
+            std::lock_guard<std::mutex> lk(pr_mtx);
+            pr_stop = true;
+        }
+        pr_cv.notify_all();
+        for (auto & t : pr_threads) { t.join(); }
+        pr_threads.clear();
+    };
+    // the threads end on every way out of this function (cancelled loading, an exception)
+    struct pr_guard_t { std::function<void()> f; ~pr_guard_t() { f(); } } pr_guard{pr_finish};
+#endif
+
     for (struct ggml_tensor * cur : tensors) {
         const auto * weight = get_weight(ggml_get_name(cur));
         if (weight == nullptr) {
@@ -1676,6 +1747,25 @@ bool llama_model_loader::load_all_data(
             const auto & file = files.at(weight->idx);
 
             if (ggml_backend_buffer_is_host(cur->buffer)) {
+                if (cache_warm.count(cur->buffer)) {
+                    size_done += n_size;
+                    continue;
+                }
+#if defined(__linux__)
+                if (par_load) {
+                    constexpr size_t chunk = 64u << 20;
+                    {
+                        std::lock_guard<std::mutex> lk(pr_mtx);
+                        for (size_t o = 0; o < n_size; o += chunk) {
+                            pr_q.push_back({ file->file_id(), (size_t) weight->offs + o, (char *) cur->data + o, std::min(chunk, n_size - o) });
+                        }
+                    }
+                    while (pr_threads.size() < n_load_threads) { pr_threads.emplace_back(pr_worker); }
+                    pr_cv.notify_all();
+                    size_done += n_size;
+                    continue;
+                }
+#endif
                 file->seek(weight->offs, SEEK_SET);
                 file->read_raw(cur->data, n_size);
 #if defined(__linux__)
@@ -1756,6 +1846,15 @@ bool llama_model_loader::load_all_data(
 
         size_done += n_size;
     }
+
+#if defined(__linux__)
+    pr_finish();
+    if (pr_fail) {
+        throw std::runtime_error("failed to read tensor data from the model file");
+    }
+#endif
+
+    for (auto * b : cache_cold) { host_cache(2, b); } // the buffer is complete: make it a cache file
 
     // free temporary resources used for async uploads
     for (auto * event : events) {
