@@ -30,6 +30,7 @@
 #include "ggml-cpp.h"
 
 #include <algorithm>
+#include <sys/stat.h>
 #include <cassert>
 #include <cfloat>
 #include <cstdint>
@@ -1897,7 +1898,35 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                     t->buffer = buf; // set dummy buffer for weights so that the backend scheduler won't try to allocate them
                 }
             } else {
+                // weights cache (GGML_CUDA_HUGEFS): a pinned host buffer is keyed by the model files' identity and the tensor layout inside it
+                int (*host_cache)(int, void *) = nullptr;
+                std::string cache_key;
+                if (getenv("GGML_CUDA_HUGEFS") && !ml.use_mmap && strstr(ggml_backend_buft_name(buft), "Host") != nullptr) {
+                    if (auto * reg = ggml_backend_reg_by_name("CUDA")) {
+                        host_cache = (int (*)(int, void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_cache");
+                    }
+                    if (host_cache) {
+                        uint64_t h = 1469598103934665603ull; // FNV-1a
+                        auto mix = [&h](const void * d, size_t n) { for (size_t i = 0; i < n; i++) { h = (h ^ ((const uint8_t *) d)[i]) * 1099511628211ull; } };
+                        for (const auto & f : ml.files) {
+                            struct stat sb;
+                            if (fstat(f->file_id(), &sb) != 0) { host_cache = nullptr; break; }
+                            mix(&sb.st_dev, sizeof(sb.st_dev)); mix(&sb.st_ino, sizeof(sb.st_ino)); mix(&sb.st_size, sizeof(sb.st_size));
+                            mix(&sb.st_mtim, sizeof(sb.st_mtim));
+                        }
+                        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+                            const size_t nb = ggml_nbytes(t);
+                            mix(ggml_get_name(t), strlen(ggml_get_name(t))); mix(&nb, sizeof(nb));
+                            const auto * w = ml.get_weight(ggml_get_name(t));
+                            if (w) { mix(&w->idx, sizeof(w->idx)); mix(&w->offs, sizeof(w->offs)); }
+                        }
+                        char hex[24]; snprintf(hex, sizeof(hex), "%016llx", (unsigned long long) h);
+                        cache_key = hex;
+                    }
+                }
+                if (host_cache && !cache_key.empty()) { host_cache(0, (void *) cache_key.c_str()); }
                 buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft); // real buffer
+                if (host_cache) { host_cache(0, nullptr); }
             }
             if (buf == nullptr) {
                 throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));

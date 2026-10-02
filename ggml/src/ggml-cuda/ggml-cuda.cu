@@ -97,6 +97,9 @@
 #include <string>
 #include <vector>
 #include <thread>
+#include <sys/stat.h>
+#include <sys/file.h>
+#include <fcntl.h>
 
 static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
@@ -1360,6 +1363,12 @@ struct ggml_cuda_reg_state {
     size_t              chunk = 0;
     std::atomic<size_t> done{0};  // bytes registered, in whole chunks from the start
     std::thread         th;
+    // weights cache in a hugetlbfs file (GGML_CUDA_HUGEFS): the pages outlive the process, a later load maps the file and skips the read
+    int                 fd        = -1;
+    bool                warm      = false;  // the file was complete when mapped: the contents are valid
+    bool                committed = false;
+    size_t              map_len   = 0;
+    std::string         fin, part;
 };
 static std::mutex g_cuda_reg_mtx;
 static std::map<void *, std::unique_ptr<ggml_cuda_reg_state>> g_cuda_reg;
@@ -1379,8 +1388,84 @@ static void ggml_backend_cuda_host_buffer_free_registered(ggml_backend_buffer_t 
         for (size_t off = 0; off < st->done; off += st->chunk) {
             CUDA_CHECK(cudaHostUnregister(st->base + off));
         }
+        if (st->fd >= 0) {
+            munmap(buffer->context, st->map_len);
+            close(st->fd);
+            if (!st->warm && !st->committed) { unlink(st->part.c_str()); } // a fill that never finished leaves nothing behind
+            return;
+        }
     }
     munmap(buffer->context, buffer->size);
+}
+
+// Registers the populated range in chunks: the first one here (so a failing registration still falls back to cudaMallocHost), the rest on a thread
+// while the loader reads the weights into the buffer. Keeps the state for the free function and the cache hooks.
+static bool ggml_cuda_register_chunked(char * ptr, size_t size, std::unique_ptr<ggml_cuda_reg_state> & st, int64_t t_pop) {
+    const unsigned reg_flags = cudaHostRegisterPortable | cudaHostRegisterMapped;
+    st->base  = ptr;
+    st->size  = size;
+    st->chunk = std::max<size_t>(2u << 20, getenv("GGML_CUDA_REG_CHUNK_MB") ? (size_t) atoll(getenv("GGML_CUDA_REG_CHUNK_MB")) << 20 : (4ull << 30));
+    const size_t first = std::min(st->chunk, size);
+    if (cudaHostRegister(ptr, first, reg_flags) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    st->done = first;
+    ggml_cuda_reg_state * sp = st.get();
+    if (first < size) {
+        sp->th = std::thread([sp, reg_flags, t_pop] {
+            for (size_t off = sp->chunk; off < sp->size; off += sp->chunk) {
+                if (cudaHostRegister(sp->base + off, std::min(sp->chunk, sp->size - off), reg_flags) != cudaSuccess) {
+                    (void) cudaGetLastError();
+                    fprintf(stderr, "ggml_cuda_host_malloc_registered: registering chunk at %zu GiB failed, the rest stays unpinned\n", off >> 30);
+                    return;
+                }
+                sp->done = std::min(sp->size, off + sp->chunk);
+            }
+            fprintf(stderr, "ggml_cuda_host_malloc_registered: all registered %.1f s after populate\n", (ggml_time_us() - t_pop) / 1e6);
+        });
+    } else {
+        fprintf(stderr, "ggml_cuda_host_malloc_registered: registered in %.1f s\n", (ggml_time_us() - t_pop) / 1e6);
+    }
+    std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
+    g_cuda_reg[ptr] = std::move(st);
+    return true;
+}
+
+// Weights cache: the loader names the buffer by the model's fingerprint (op 0 of ggml_backend_cuda_host_cache); with GGML_CUDA_HUGEFS=<hugetlbfs mount,
+// pagesize=1G> the buffer is a file there. Complete file (<key>.w): mapped as is, the loader skips reading. Otherwise <key>.part is created, filled by the
+// loader and renamed on commit. Any failure (no mount, pool too small, a second process filling) returns null and the normal path runs.
+static thread_local std::string g_host_cache_key;
+
+static char * ggml_cuda_hugefs_map(size_t size, const std::string & key, std::unique_ptr<ggml_cuda_reg_state> & st) {
+    const char * dir = getenv("GGML_CUDA_HUGEFS");
+    if (!dir || !*dir || key.empty()) {
+        return nullptr;
+    }
+    const size_t gib = (size_t) 1 << 30, len = (size + gib - 1) & ~(gib - 1);
+    st->fin  = std::string(dir) + "/" + key + ".w";
+    st->part = st->fin + ".part";
+    int fd = open(st->fin.c_str(), O_RDWR);
+    bool warm = false;
+    struct stat sb;
+    if (fd >= 0) {
+        if (fstat(fd, &sb) == 0 && (size_t) sb.st_size == len) { warm = true; } else { close(fd); fd = -1; }
+    }
+    if (!warm) {
+        fd = open(st->part.c_str(), O_RDWR | O_CREAT, 0664);
+        if (fd < 0) { return nullptr; }
+        if (flock(fd, LOCK_EX | LOCK_NB) != 0) { close(fd); return nullptr; }            // another process is filling it
+        if (ftruncate(fd, 0) != 0 || ftruncate(fd, (off_t) len) != 0) { close(fd); unlink(st->part.c_str()); return nullptr; }
+    }
+    void * p = mmap(nullptr, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);       // reserves the pages now: ENOMEM if the pool is too small
+    if (p == MAP_FAILED) {
+        close(fd);
+        if (!warm) { unlink(st->part.c_str()); }
+        return nullptr;
+    }
+    st->fd = fd; st->warm = warm; st->map_len = len;
+    if (!warm) { ggml_cuda_populate((char *) p, len); }
+    return (char *) p;
 }
 
 static void * ggml_cuda_host_malloc_registered(size_t size) {
@@ -1388,6 +1473,19 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
         return nullptr;
     }
     const int64_t t_start = ggml_time_us();
+    {
+        auto st = std::make_unique<ggml_cuda_reg_state>();
+        if (char * hp = ggml_cuda_hugefs_map(size, g_host_cache_key, st)) {
+            const int64_t t_pop = ggml_time_us();
+            const bool warm = st->warm; const size_t len = st->map_len; const int fd = st->fd; const std::string part = st->part;
+            fprintf(stderr, "%s: %.1f GiB hugetlbfs cache %s mapped in %.1f s\n", __func__, size / 1073741824.0, warm ? "(warm)" : "(cold, filling)", (t_pop - t_start) / 1e6);
+            if (ggml_cuda_register_chunked(hp, size, st, t_pop)) {
+                return hp;
+            }
+            munmap(hp, len); close(fd);
+            if (!warm) { unlink(part.c_str()); }
+        }
+    }
     // the base is 1 GiB aligned so the whole buffer can sit on 1 GiB pages: map 1 GiB more, give back the slack on both sides (unused address space)
     const size_t gib = (size_t) 1 << 30;
     char * raw = (char *) mmap(nullptr, size + gib, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -1431,41 +1529,42 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     const int64_t t_pop = ggml_time_us();
     fprintf(stderr, "%s: %.1f GiB populated in %.1f s (%.1f reserved %zu MiB pages, %.1f THP, %.1f small)\n", __func__, size / 1073741824.0,
         (t_pop - t_start) / 1e6, reserved / 1073741824.0, rpage >> 20, huge / 1073741824.0, (rest_n - huge) / 1073741824.0);
-    const unsigned reg_flags = cudaHostRegisterPortable | cudaHostRegisterMapped;
     auto st = std::make_unique<ggml_cuda_reg_state>();
-    st->base  = ptr;
-    st->size  = size;
-    st->chunk = std::max<size_t>(two_mb, getenv("GGML_CUDA_REG_CHUNK_MB") ? (size_t) atoll(getenv("GGML_CUDA_REG_CHUNK_MB")) << 20 : (4ull << 30));
-    const size_t first = std::min(st->chunk, size);
-    if (cudaHostRegister(ptr, first, reg_flags) != cudaSuccess) {
-        (void) cudaGetLastError();
+    if (!ggml_cuda_register_chunked(ptr, size, st, t_pop)) {
         munmap(ptr, size);
         return nullptr;
-    }
-    st->done = first;
-    ggml_cuda_reg_state * sp = st.get();
-    if (first < size) {
-        sp->th = std::thread([sp, reg_flags, t_pop] {
-            for (size_t off = sp->chunk; off < sp->size; off += sp->chunk) {
-                if (cudaHostRegister(sp->base + off, std::min(sp->chunk, sp->size - off), reg_flags) != cudaSuccess) {
-                    (void) cudaGetLastError();
-                    fprintf(stderr, "ggml_cuda_host_malloc_registered: registering chunk at %zu GiB failed, the rest stays unpinned\n", off >> 30);
-                    return;
-                }
-                sp->done = std::min(sp->size, off + sp->chunk);
-            }
-            fprintf(stderr, "ggml_cuda_host_malloc_registered: all registered %.1f s after populate\n", (ggml_time_us() - t_pop) / 1e6);
-        });
-    } else {
-        fprintf(stderr, "ggml_cuda_host_malloc_registered: registered in %.1f s\n", (ggml_time_us() - t_pop) / 1e6);
-    }
-    {
-        std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
-        g_cuda_reg[ptr] = std::move(st);
     }
     return ptr;
 }
 #endif
+
+// ops: 0 = set the cache key of the next host buffer allocation on this thread (null: none); 1 = state of a buffer (0 none, 1 cold, being filled, 2 warm);
+//      2 = commit a filled buffer (renames <key>.w.part to <key>.w)
+static int ggml_backend_cuda_host_cache(int op, void * arg) {
+#if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (op == 0) {
+        g_host_cache_key = arg ? (const char *) arg : "";
+        return 0;
+    }
+    ggml_backend_buffer_t buffer = (ggml_backend_buffer_t) arg;
+    std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
+    auto it = g_cuda_reg.find(buffer->context);
+    if (it == g_cuda_reg.end() || it->second->fd < 0) {
+        return 0;
+    }
+    auto & st = *it->second;
+    if (op == 1) {
+        return st.warm ? 2 : 1;
+    }
+    if (!st.warm && !st.committed && rename(st.part.c_str(), st.fin.c_str()) == 0) {
+        st.committed = true;
+        return 1;
+    }
+#else
+    GGML_UNUSED(op); GGML_UNUSED(arg);
+#endif
+    return 0;
+}
 
 static ggml_backend_buffer_t ggml_backend_cuda_host_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
 #if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
@@ -6143,6 +6242,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_register_host_buffer") == 0) {
         return (void *)ggml_backend_cuda_register_host_buffer;
+    }
+    if (strcmp(name, "ggml_backend_cuda_host_cache") == 0) {
+        return (void *)ggml_backend_cuda_host_cache;
     }
     if (strcmp(name, "ggml_backend_unregister_host_buffer") == 0) {
         return (void *)ggml_backend_cuda_unregister_host_buffer;

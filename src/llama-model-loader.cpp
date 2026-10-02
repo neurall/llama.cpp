@@ -12,6 +12,7 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <set>
 #include <array>
 #include <cinttypes>
 #include <cstdint>
@@ -1517,6 +1518,22 @@ bool llama_model_loader::load_all_data(
 
     std::vector<std::future<std::pair<ggml_tensor *, bool>>> validation_result;
 
+    // weights cache (GGML_CUDA_HUGEFS): a host buffer that is a complete cache file already holds the weights (skip reading), a fresh one is committed when filled
+    int (*host_cache)(int, void *) = nullptr;
+    std::set<ggml_backend_buffer_t> cache_warm, cache_cold;
+    if (getenv("GGML_CUDA_HUGEFS") && !use_mmap && !check_tensors) {
+        if (auto * reg = ggml_backend_reg_by_name("CUDA")) {
+            host_cache = (int (*)(int, void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_cache");
+        }
+        if (host_cache) {
+            for (auto & kv : bufs) {
+                const int st = host_cache(1, kv.second);
+                if (st == 2) { cache_warm.insert(kv.second); } else if (st == 1) { cache_cold.insert(kv.second); }
+            }
+            if (!cache_warm.empty()) { LLAMA_LOG_INFO("%s: weights are in the hugetlbfs cache, not reading them\n", __func__); }
+        }
+    }
+
     // 4 staging buffers for async uploads, each sized 1MB seems to be a good default for single NVMe drives.
     // NVMe raid configurations might require more / larger buffers.
     constexpr size_t n_buffers = 4;
@@ -1730,6 +1747,10 @@ bool llama_model_loader::load_all_data(
             const auto & file = files.at(weight->idx);
 
             if (ggml_backend_buffer_is_host(cur->buffer)) {
+                if (cache_warm.count(cur->buffer)) {
+                    size_done += n_size;
+                    continue;
+                }
 #if defined(__linux__)
                 if (par_load) {
                     constexpr size_t chunk = 64u << 20;
@@ -1832,6 +1853,8 @@ bool llama_model_loader::load_all_data(
         throw std::runtime_error("failed to read tensor data from the model file");
     }
 #endif
+
+    for (auto * b : cache_cold) { host_cache(2, b); } // the buffer is complete: make it a cache file
 
     // free temporary resources used for async uploads
     for (auto * event : events) {
