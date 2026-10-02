@@ -68,9 +68,10 @@ that does not fit in VRAM; the fork serves only its cache misses, and its hit ra
 
 Four points from one session with different output texts: a good explanation, not a proof. The 2 and 1 GPU stock figures are model predictions, not measurements.
 
-## Nothing to configure
+## Too many knobs? Smart autotune picks them
 
-The defaults are chosen on your machine, not hard-coded:
+Running a model bigger than your VRAM well means choosing placement, cache size, upload schedule, batch size, thread counts, the VRAM margin. Instead of a page of flags, the
+fork measures your machine and tunes those while you use it. The defaults are chosen on your machine, not hard-coded:
 
 - **Cache or stock.** If the model fits in VRAM it is placed exactly like stock llama.cpp. A model that does not fit takes
   the cache right away. When what you run is mostly long prompts (processing them would cost more than the faster generation
