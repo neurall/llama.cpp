@@ -1299,7 +1299,8 @@ static void * ggml_cuda_host_malloc(size_t size) {
 // kernel has free 2 MiB blocks: past them every huge page needs compaction (0.4 GiB/s, 64 GiB took more than 5 minutes
 // on a machine with 120 GB free). So the first part, as large as the free 2 MiB blocks in /proc/buddyinfo (with a
 // margin), uses huge pages and the rest 4 KiB pages: 100 GiB in 35 s instead of 50 s (60 GiB huge, 40 GiB small).
-// Free blocks come back with `echo 1 > /proc/sys/vm/compact_memory` or vm.compaction_proactiveness=100.
+// Free blocks come back with `echo 1 > /proc/sys/vm/compact_memory` or vm.compaction_proactiveness=100. An administrator can
+// reserve huge pages (vm.nr_hugepages=N or boot hugepages=N, server setup): those are used first, the hybrid covers the rest.
 static size_t ggml_cuda_free_huge_bytes() {
     FILE * f = fopen("/proc/buddyinfo", "r");
     if (!f) {
@@ -1326,6 +1327,22 @@ static size_t ggml_cuda_free_huge_bytes() {
     return total * (size_t) page;
 }
 
+// Reserved huge pages (vm.nr_hugepages / boot hugepages=): free 2 MiB pages of the pool, in bytes; 0 if the pool uses another page size.
+static size_t ggml_cuda_free_reserved_huge_bytes() {
+    FILE * f = fopen("/proc/meminfo", "r");
+    if (!f) {
+        return 0;
+    }
+    unsigned long long free_pages = 0, page_kb = 0;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        sscanf(line, "HugePages_Free: %llu", &free_pages);
+        sscanf(line, "Hugepagesize: %llu kB", &page_kb);
+    }
+    fclose(f);
+    return page_kb == 2048 ? (size_t) free_pages * (2u << 20) : 0;
+}
+
 static void ggml_cuda_populate(char * p, size_t n) {
     const size_t nt = 16, ch = ((n / nt) + 4095) & ~(size_t) 4095;
     std::vector<std::thread> th;
@@ -1344,26 +1361,47 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     if (size < (1ull << 30) || getenv("GGML_CUDA_NO_PINNED") != nullptr) {
         return nullptr;
     }
+    const int64_t t_start = ggml_time_us();
     char * ptr = (char *) mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ptr == MAP_FAILED) {
         return nullptr;
     }
-    // huge pages for what the free 2 MiB blocks cover (90%: other processes allocate meanwhile), the rest 4 KiB pages
-    const size_t huge = std::min(size, (size_t) ((double) ggml_cuda_free_huge_bytes() * 0.9) & ~(size_t) ((2u << 20) - 1));
+    const size_t two_mb = 2u << 20;
+    // 1. reserved huge pages (an administrator's vm.nr_hugepages / hugepages=): taken whole, no compaction, no stall
+    size_t head = (two_mb - ((uintptr_t) ptr & (two_mb - 1))) & (two_mb - 1); // bytes before the first 2 MiB boundary
+    size_t reserved = 0;
+    if (size > head + two_mb) {
+        const size_t want = std::min(size - head, ggml_cuda_free_reserved_huge_bytes()) & ~(size_t) (two_mb - 1);
+        if (want > 0 && mmap(ptr + head, want, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_HUGETLB, -1, 0) != MAP_FAILED) {
+            reserved = want;
+            ggml_cuda_populate(ptr + head, reserved);
+        }
+    }
+    // 2. transparent huge pages for what the free 2 MiB blocks cover (70%: other processes allocate meanwhile, and the kernel keeps free blocks for its own use), 3. the rest 4 KiB pages
+    char * rest = ptr + (reserved ? head + reserved : 0);
+    const size_t rest_n = size - (reserved ? head + reserved : 0);
+    if (reserved && head > 0) {
+        madvise(ptr, head, MADV_NOHUGEPAGE);
+        ggml_cuda_populate(ptr, head);
+    }
+    const size_t huge = std::min(rest_n, (size_t) ((double) ggml_cuda_free_huge_bytes() * 0.7) & ~(size_t) (two_mb - 1));
     if (huge > 0) {
-        madvise(ptr, huge, MADV_HUGEPAGE);
-        ggml_cuda_populate(ptr, huge);
+        madvise(rest, huge, MADV_HUGEPAGE);
+        ggml_cuda_populate(rest, huge);
     }
-    if (huge < size) {
-        madvise(ptr + huge, size - huge, MADV_NOHUGEPAGE);
-        ggml_cuda_populate(ptr + huge, size - huge);
+    if (huge < rest_n) {
+        madvise(rest + huge, rest_n - huge, MADV_NOHUGEPAGE);
+        ggml_cuda_populate(rest + huge, rest_n - huge);
     }
-    GGML_LOG_INFO("%s: pinned %.1f GiB, %.1f GiB on huge pages\n", __func__, size / 1073741824.0, huge / 1073741824.0);
+    const int64_t t_pop = ggml_time_us();
+    fprintf(stderr, "%s: %.1f GiB populated in %.1f s (%.1f reserved huge, %.1f THP, %.1f small)\n", __func__, size / 1073741824.0,
+        (t_pop - t_start) / 1e6, reserved / 1073741824.0, huge / 1073741824.0, (rest_n - huge) / 1073741824.0);
     if (cudaHostRegister(ptr, size, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
         (void) cudaGetLastError();
         munmap(ptr, size);
         return nullptr;
     }
+    fprintf(stderr, "%s: registered in %.1f s\n", __func__, (ggml_time_us() - t_pop) / 1e6);
     return ptr;
 }
 #endif
