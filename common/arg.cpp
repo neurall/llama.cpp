@@ -2560,8 +2560,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--moe"}, "KEY=VAL,...",
         "MoE expert cache options, comma separated. cache=N (slots per expert layer, same as --moe-expert-cache: 0 = off, -1 = size from free VRAM, unset = automatic), prefetch-slots=N (H2D prefetch staging slots, same as --prefetch-experts-slots), inserts=N (max expert uploads per layer and decode step), window=N (tokens of recent usage "
         "the cache scores by, default 64), predict=M (prefetch confident experts among the top M predicted for the next layers, 0 = off), "
-        "train=N (train the learned predictor every N decoded tokens; implies predict=8), or any tuner knob: MARGIN, GATE, WAIT, BIG, "
-        "SWAP_FRAC, ... A knob given here is never self-tuned. autotune=0: no self-tuning (same as -at off). cache=0 (also --moe-expert-cache 0): expert cache off and nothing tuned, stock behaviour",
+        "train=N (train the learned predictor every N decoded tokens; implies predict=8), state=PATH|0 (the tuner state file), or any tuner knob: MARGIN, GATE, WAIT, BIG, "
+        "SWAP_FRAC, ... (and any other LLAMA_MOE_CACHE_<NAME> setting: POLICY, PREDICT_AHEAD, ...: --moe policy=lru). A knob given here is never self-tuned. autotune=0: no self-tuning (same as -at off). cache=0 (also --moe-expert-cache 0): expert cache off and nothing tuned, stock behaviour",
         [](common_params & params, const std::string & value) {
             bool fork_off = false; // cache=0: wins over every other key, whatever the order
             for (size_t pos = 0; pos < value.size();) {
@@ -2581,6 +2581,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 else if (key == "window")  { params.n_moe_cache_window  = v; }
                 else if (key == "predict") { params.n_moe_predict       = v; }
                 else if (key == "autotune") { params.autotune = v != 0; }
+                else if (key == "state")    { // the state file (a path, or 0 for none): read while the placement is decided, before the engine reads its options
+#ifdef _WIN32
+                    _putenv_s("LLAMA_MOE_STATE", kv.substr(eq + 1).c_str());
+#else
+                    setenv("LLAMA_MOE_STATE", kv.substr(eq + 1).c_str(), 1);
+#endif
+                }
                 else if (key == "train")   { params.n_moe_predict_train = v; if (params.n_moe_predict <= 0) { params.n_moe_predict = 8; } }
                 else { params.moe_opts += (params.moe_opts.empty() ? "" : ",") + kv; } // a tuner knob: the engine checks the name
             }
