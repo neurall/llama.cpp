@@ -148,13 +148,24 @@ Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_MOE=
 
 ## Options
 
-Every fork option is documented in [docs/fork-knobs.md](docs/fork-knobs.md): the flags, every `--moe` setting and tuning knob
-(working ones with defaults and an example, experimental ones marked), the environment variables, the state file and multi-GPU /
-MTP use. The ones you will want first:
+All fork options (flags, every `--moe` setting and tuning knob with defaults and examples, experimental ones marked, environment
+variables, the state file, multi-GPU and MTP use) are in [docs/fork-knobs.md](docs/fork-knobs.md). The key ones:
 
-- `--moe cache=0` turns the fork off completely; `-at off` keeps the cache but stops self-tuning.
-- `--moe gate=3,margin=0` sets cache knobs by hand (a knob you set is never tuned).
-- `--load-mode pin|mmap` chooses pinned or memory-mapped weights.
+| option | what it does |
+|---|---|
+| `--moe cache=N` | expert slots per layer in VRAM (`-1` from free VRAM, `0` fork off) |
+| `--moe margin=N` | uses an expert needs over the one it evicts before it is swapped in; `0` swaps eagerly, higher swaps less |
+| `--moe gate=3` | uploads wait while the CPU reads experts, so both do not fight for RAM bandwidth (`0` off) |
+| `--moe jit=0` | stop uploading this token's missed experts on the fly |
+| `--moe swap_frac=F` | share of the token time uploads may take (tuned live, default 0.25) |
+| `--moe predict=M,train=N` | prefetch the experts the next layers will probably need (top M); the predictor learns every N tokens |
+| `--moe window=N` | tokens of recent use the cache scores by (default 64) |
+| `-at off` | no self-tuning, fixed defaults |
+| `-lm pin\|mmap` | pinned or memory-mapped weights |
+| `LLAMA_MOE_STATE=0` | ignore and never write the state file |
+
+Experimental knobs (`BIG`, `HOT_FRAC`, `TBP`, `L3PF`, ...) are off by default, never beat the default in our tests and may be removed;
+they are listed in the document, not here.
 
 ## Good to know
 
