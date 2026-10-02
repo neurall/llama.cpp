@@ -146,6 +146,83 @@ Anything you pass is used as given and is never auto-tuned:
 
 Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_MOE=cache=0`.
 
+## `--moe` settings
+
+`--moe` takes comma separated `name=value` pairs, names are case-insensitive and `_` equals `-`; the same string works as
+`LLAMA_ARG_MOE=...`. A setting you give is used as given and never self-tuned.
+
+| key | meaning |
+|---|---|
+| `cache=N` | expert slots per layer in VRAM; `-1` sizes them from free VRAM, unset is automatic, `0` is the whole fork off (stock behaviour) |
+| `prefetch-slots=N` | staging slots for host-to-GPU prefetch |
+| `inserts=N` | most expert uploads per layer and decode step |
+| `window=N` | tokens of recent use the cache scores experts by (default 64) |
+| `predict=M`, `train=N` | prefetch the experts the router is likely to pick in the next layers (top M); `train=N` also trains the learned predictor every N tokens |
+| `autotune=0` | no self-tuning (same as `-at off`) |
+| `state=PATH\|0` | state file to use, `0` for none |
+
+Any other name is a tuning knob of the cache engine (`--moe gate=3,margin=0`). A knob you set is never self-tuned; a name the
+engine does not know is rejected at start. Values are numbers; `0`/`1` are off/on.
+
+**Working knobs** (on by default, these are what the tuner adjusts):
+
+| knob | default | what it does |
+|---|---|---|
+| `MARGIN` | `-1` | pay-back margin: a missed expert must out-score the one it evicts by this many recent uses. `-1` = 0, `-2` = derived from the measured link and CPU speed, `n` = fixed |
+| `BUDGET` | `-1` | fixed number of swaps per step; `-1` derives it from the measured upload time |
+| `SWAP_FRAC` | `0.25`, tuned | upload time per step as a share of the token time (the swap budget) |
+| `LINK` | `1` | pay-back margin per upload link; `0` uses one margin from the average upload |
+| `GATE` | `3` | uploads wait while the CPU reads uncached experts, so the CPU and the DMA do not fight for RAM bandwidth (`0` off) |
+| `GATE_MAX_US` | `-1` | longest wait for RAM room per tensor copy; `-1` = the measured mean layer time |
+| `CHUNK_KB` | `-1` | with `GATE=3`: copy in chunks of this size and re-check the RAM budget before each; `0` = whole tensor |
+| `CPU_GBS`, `DDR_GBS` | `38`, `44` | RAM read rate of the CPU alone, and of CPU plus uploads together (GB/s); starting values until measured, `DDR_GBS` is the cap for `GATE=3` |
+| `WAIT` | `1` | the step waits for queued swaps; `0` never waits, finished uploads are published at the next split |
+| `JIT` | `1` | when a layer's router ids are known, upload this token's misses to the GPU if that finishes sooner than the CPU alone |
+| `MARGIN_MB` | `0` (= 384) | VRAM kept free per GPU after the cache is sized |
+| `STREAM` | on | predicted uploads go into separate stream slots instead of evicting cache slots (`0` = old path) |
+| `STREAM_M` | `12` | predicted candidates per target layer (over-predicts on purpose, no confidence cut) |
+| `OFFSET` | `1` | predicted uploads only for layers far enough ahead to land in time on their link |
+| `STREAM_SLOW` | `1` | also stream onto layers on a slower link (x4 slot) |
+| `PREDICT` | `1` | the learned predictors run at all (they are allocated by `--moe predict=M`/`train=N`) |
+| `SELF_TUNE` | `1` | the tuner tries streaming knobs one at a time on real decode token times |
+| `AUTO` | `1` | `1`: adjust the stream lead and `STREAM_M` per link from the measured late share and precision; `2`: uploads per target layer = measured time until it divided by the measured link time per expert |
+
+**Experimental knobs** (off by default; none beat the default in our A/B tests, kept only for experiments, and probably removed
+in a later release; do not rely on them):
+
+| knob | default | what it does |
+|---|---|---|
+| `BIG` | `0` | an expert may only evict one with at most its own lifetime use ("no weaklings evicting big ones"); never won, off and not tuned |
+| `HOT_FRAC` | `0` | pin the always-hot set of a layer on slower links |
+| `SLOW_STAY` | `0` | minimum stay (steps) of an expert in a slow-link layer's tier |
+| `STICKY` | `0` | bonus for staying in the cache; +1.6% on one chat run, within noise |
+| `SLOTKEEP` | `0` | a prediction may only replace a stream slot that holds a lower-scored one of this step |
+| `TBP`, `TBP_LAYERS` | `0`, `6` | token-boundary prefetch: stream up to `TBP` of the last token's misses into the first `TBP_LAYERS` layers while the output head and sampling keep RAM idle |
+| `L3PF`, `AUTO_L3` | `0`, `0` | L3 cache prefetch of `L3PF` experts per layer (needs `GGML_MOE_CCX_SPLIT` and pinned threads); `AUTO_L3` A/Bs it live |
+| `TRACE`, `TRACE_AFTER` | `0`, `0` | debug: record routing for this many steps, after this many steps |
+
+## The state file
+
+`~/.cache/llama.cpp/moe-state.ini` (`--moe state=PATH`, `LLAMA_MOE_STATE=0` to ignore and never write) holds one
+`[model name + size]` section per model:
+
+| line | content |
+|---|---|
+| `hot.N = c0 c1 ...` | lifetime use count of every expert of layer N. At start the most used experts are loaded into the cache first, so the first prompt is already warm |
+| `tuned.lK = NAME=value ...` | what the self-tuner settled on, for K upload links (GPUs) |
+| `place.<gpus>.cache`, `.stock`, `.decided` | measured prompt and decode speed of cache and stock placement for this GPU set, and which one won |
+| `vram.slope_kib` | measured VRAM growth per context token, used to size the cache |
+
+Counts only seed the start; during a run the cache scores by recent use. It is plain text, safe to edit or delete.
+
+## Several GPUs and MTP
+
+- The cache is sized per GPU from its free VRAM and the experts spread over all GPUs; each GPU keeps its own slots and upload
+  link. A card on a slow slot (x4) helps less, its uploads take 4 to 7 times longer, and prompt processing goes to the fastest
+  link. `-ts`, `-dev` and `-sm` work as in stock; see [multi-GPU usage](docs/multi-gpu.md).
+- MTP works together with the cache: pass `-md` and `--spec-type draft-mtp` as in the MTP section above. The draft head is
+  small and stays in VRAM, the cache serves the main model.
+
 ## Good to know
 
 - **RAM is the limit.** Decode speed is bound by how fast the CPU reads the experts that are not in VRAM. More or faster RAM,
