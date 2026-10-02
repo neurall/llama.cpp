@@ -1451,7 +1451,7 @@ static void common_moe_cache_auto(common_params & params) {
     // sized with a margin, 12k prompt, other margins aborting with CUDA out of memory): 54 MiB OLMoE, 74 IQ3_S, 170 GLM; ~15 at 512.
     // 0.1 MiB per ubatch token is 1.2x the worst of them, floor 200: GLM aborted with out of memory at ub 512 with 51 (-at off keeps the 384 MiB default; --moe margin_mb=N overrides)
     if (params.n_moe_cache_slots != 0 && common_autotune_on(params) && params.moe_opts.find("margin_mb") == std::string::npos &&
-        !getenv("LLAMA_MOE_CACHE_MARGIN_MB")) {
+        !getenv("LLAMA_MOE_CACHE_VRAM_RESERVE_MB")) {
         params.moe_opts += (params.moe_opts.empty() ? "" : ",") + std::string("margin_mb=") + std::to_string(std::max(200, (int) std::ceil(0.1 * params.n_ubatch)));
     }
     COM_DBG("moe_cache_slots=%d ctx=%d batch=%d ubatch=%d threads=%d threads_batch=%d repack=%s ngl=%d tensor_overrides=%zu fit=%s\n",
@@ -1665,7 +1665,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 }
                 // the static per-L3 row split only serves the L3 prefetch: alone it lost 19% on GLM (3700X, fixed rows
                 // per thread lose the dynamic chunking's load balance), while pinning itself was neutral (21.73 vs 21.53)
-                const char * l3pf = getenv("LLAMA_MOE_CACHE_L3PF");
+                const char * l3pf = getenv("LLAMA_MOE_CACHE_L3_PF");
                 if (!getenv("GGML_MOE_CCX_SPLIT") && l3pf && atof(l3pf) > 0) {
 #if defined(_WIN32)
                     _putenv_s("GGML_MOE_CCX_SPLIT", std::to_string(n_dom).c_str());
