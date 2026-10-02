@@ -9,6 +9,24 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 llama-cli    -m model.gguf -p "hello"
 ```
 
+The decode speedup is largest when a third to a half of a MoE model fits in VRAM (1.9x to 2.4x), fades above about 55% and is 1.0x once it fits; dense models gain nothing.
+Gain over stock llama.cpp by the share of the model that fits in VRAM (decode; the tables below have the machines and tests):
+
+| model on machine | share of the model in VRAM | gain |
+|---|---|---|
+| MiMo IQ3_XXS 132 GB on A (2x24 GB) | 36% | **2.4x** |
+| GLM 3.5-bit 137 GB on A | 35% | **2.2x** |
+| GLM 3.0-bit on A | about 45% | 1.9x |
+| Qwen Next UD-IQ4_XS 88 GB on A | 55% | 1.7x |
+| GLM 3.0-bit on D, 3 of 4 GPUs | 66% | 1.6x |
+| Qwen Next IQ3_S 83 GB on A | 58% | 1.3x |
+| GLM 3.0-bit on D, 4 GPUs | 88% | 1.3x |
+| Qwen Next IQ1_M 55 GB on A | 87% | 1.0x (picks stock) |
+| Qwen3.6-35B Q2_0 on B (8 GB GPU), an exception: its CPU side is slow | about 73% | 2.0x |
+| any model that fits | 100% | 1.0x (cache off) |
+
+Prompt processing can be slower than stock on long prompts (0.4x to 0.7x in some rows below).
+
 ## What you get
 
 Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock llama.cpp.
