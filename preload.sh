@@ -53,7 +53,7 @@ else
   want=$(( (bytes >> 30) + 2 ))     # the pinned buffer holds at most the whole model, plus a page of slack for alignment
 fi
 if [ "$want" -gt "$max" ]; then
-  if [ ${#models[@]} -gt 0 ]; then echo "the model(s) need $want GiB but at most $max GiB can be spared (RAM $total_gib GiB, margin $margin GiB): the cache cannot hold them (lower HUGEFS_MARGIN_GIB at your own risk)"; exit 1; fi
+  if [ ${#models[@]} -gt 0 ]; then echo "the model(s) need $want GiB but at most $max GiB can be spared (RAM $total_gib GiB, margin $margin GiB): the cache cannot hold them. Only the part of the model that stays in host memory is cached (less than the file when layers go to the GPUs): give the size by hand, e.g. sudo $0 ${max}G, or lower HUGEFS_MARGIN_GIB at your own risk"; exit 1; fi
   want=$max
 fi
 have=$(cat "$NR")
