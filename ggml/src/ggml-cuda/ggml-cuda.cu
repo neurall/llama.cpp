@@ -1384,7 +1384,7 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
         madvise(ptr, head, MADV_NOHUGEPAGE);
         ggml_cuda_populate(ptr, head);
     }
-    const size_t huge = std::min(rest_n, (size_t) ((double) ggml_cuda_free_huge_bytes() * 0.7) & ~(size_t) (two_mb - 1));
+    const size_t huge = std::min(rest_n, (size_t) ((double) ggml_cuda_free_huge_bytes() * (getenv("GGML_CUDA_THP_SHARE") ? atof(getenv("GGML_CUDA_THP_SHARE")) : 0.7)) & ~(size_t) (two_mb - 1));
     if (huge > 0) {
         madvise(rest, huge, MADV_HUGEPAGE);
         ggml_cuda_populate(rest, huge);
