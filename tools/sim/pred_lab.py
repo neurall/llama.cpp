@@ -61,7 +61,7 @@ def build(a):
 
 
 def evaluate(a):
-    dev = "cuda"
+    dev = os.environ.get("PRED_DEV", "cuda")  # PRED_DEV=cpu when the GPUs are busy
     d = torch.load(a.data)
     X, Y, W, B = d["X"].to(dev).float(), d["Y"].to(dev), d["W"].to(dev), d["B"]
     B = B.to(dev) if B is not None else None

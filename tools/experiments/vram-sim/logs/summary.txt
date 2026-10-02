@@ -1,0 +1,8 @@
+1x16 fork run1:  md5 9fc6cd10
+1x16 fork run2:  md5 856d0638
+1x16 stock run1:  md5 a49f737f
+1x16 stock run2:  md5 25213c42
+2x16 fork run1: Generation: 30.4 t/s hit 98.7
+2x16 fork run2: Generation: 30.8 t/s hit 99.0
+2x16 stock run1: Generation: 33.2 t/s hit 
+2x16 stock run2: Generation: 34.9 t/s hit 
