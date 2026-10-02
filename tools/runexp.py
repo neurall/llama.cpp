@@ -49,7 +49,7 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
 import glob, shutil, hashlib, json, os, re, shlex, signal, statistics, subprocess, sys, threading, time
 
 EXP_COLS = ["exp", "arm", "ready_s", "wall_s", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs", "ddr_util", "pcie_util",
-            "cpu_util", "gpu_util", "placement", "rungs", "held_gib", "mem_limit", "cache_state", "state", "sys"]
+            "cpu_util", "gpu_util", "placement", "decisions", "rungs", "held_gib", "mem_limit", "cache_state", "state", "sys"]
 TOOLS = {"cli": "llama-cli", "perplexity": "llama-perplexity", "completion": "llama-completion"}
 HOLD = os.path.join(os.path.dirname(os.path.realpath(__file__)), "experiments", "vram-sim", "vramhold.py")
 
@@ -189,6 +189,10 @@ def parse_log(text, time_txt):
     m = re.search(r"MoE placement: ([^\n]{0,140})", t)
     if m:
         r["placement"] = m.group(1).strip()
+    dec = [re.sub(r"^\S+ [IWE] ", "", l).strip()[:200] for l in t.split("\n") if re.search(
+        r"ubatch \d+ \(|compute threads|decode threads|prompt threads|tuned|autotune|MoE placement|retrying|context creation failed|n_ubatch|threads:", l)]
+    if dec:
+        r["decisions"] = " || ".join(dict.fromkeys(dec))[:1500]
     rungs = sorted(set(re.findall(r"retrying with ubatch \d+|retrying without op offload|starting over with the fork off", t)))
     if rungs:
         r["rungs"] = ";".join(rungs)
@@ -255,13 +259,13 @@ def load_spec(path):
     c.read(path)
     e, w, s = dict(c["exp"]), dict(c["workload"]) if "workload" in c else {}, dict(c["setup"]) if "setup" in c else {}
     num = lambda v: float(v) if "." in v else int(v)
-    for k in ("n", "ctx", "chunks", "timeout"):
+    for k in ("n", "ctx", "chunks", "timeout", "log_verbosity"):
         if k in w:
             w[k] = int(w[k])
     w["extra"] = shlex.split(w.get("extra", ""))
     st = s.get("state", "keep")
     setup = {"state": st if st in ("off", "keep") else {"file": st, "reset": "start"}, "env": _kv(s.get("env", "")),
-             "guard": {k: num(v) for k, v in _kv(s.get("guard", "")).items()}, "drop_cache": s.get("drop_cache", "0") == "1",
+             "guard": {k: num(v) for k, v in _kv(s.get("guard", "")).items()}, "drop_cache": s.get("drop_cache", "0") == "1", "save_logs": s.get("save_logs", "1") == "1",
              "sample": s.get("sample", "1") == "1"}
     if s.get("cuda_visible_devices"):
         setup["cuda_visible_devices"] = s["cuda_visible_devices"]
@@ -357,6 +361,8 @@ def command_for(wl, setup, arm, mpath):
             a += ["-st"]
         if wl.get("ctx"):
             a += ["-c", str(wl["ctx"])]
+    if wl.get("log_verbosity") and tool in ("cli", "completion"):   # engine decisions (ubatch, threads, placement) are info messages
+        a += ["--log-verbosity", str(wl["log_verbosity"])]
     a += [str(x) for x in wl.get("extra", [])] + [str(x) for x in arm.get("args", [])]
     cmd = [exe] + a
     if setup.get("time", True):
@@ -402,6 +408,11 @@ def one_run(spec, wl, setup, arm, mname, mpath, rnd, base_env, lim, dry, state_f
     tm = re.search(r"Command being timed:.*", err)
     time_txt = err[tm.start():] if tm else ""
     r = parse_log(out + "\n" + err, time_txt)
+    if setup.get("save_logs", True):   # the whole output of every run, next to the data (a row is a summary, the log is the evidence)
+        ld = os.path.join(os.environ.get("RUN_DATA") or os.path.join(os.path.dirname(os.path.realpath(__file__)), "bench"), "logs", spec["name"])
+        os.makedirs(ld, exist_ok=True)
+        with open(os.path.join(ld, f"{mname}-r{rnd + 1}-{arm['name']}.log"), "w") as lf:
+            lf.write(out + "\n=== stderr ===\n" + err)
     r.update(wall_s=round(wall, 1), cache_state=cache_state, sys={**ms, **(sampler.summary() if sampler else {})})
     if guard.reason:
         r["note"] = guard.reason
@@ -430,7 +441,7 @@ def store_row(rs, spec, name, spec_sha, arm, mname, mpath, rnd, r, hw, setup, li
                pl=rs.power_limits(hw), proto="v2" if spec.get("rounds", 1) >= 3 else "v1", rep=rnd, branch=branch, patch=patch,
                exp=f"{name}@{spec_sha}", arm=arm["name"], ready_s=r.get("ready_s"), wall_s=r.get("wall_s"), rss_kb=r.get("rss_kb"), major_faults=r.get("major_faults"),
                uploads=r.get("uploads"), evictions=r.get("evictions"), up_mib=r.get("up_mib"), ddr_gbs=r.get("ddr_gbs"), pcie_gbs=r.get("pcie_gbs"),
-               ddr_util=r.get("ddr_util"), pcie_util=r.get("pcie_util"), cpu_util=sysd.get("cpu_util"), gpu_util=sysd.get("gpu_util"), placement=r.get("placement"),
+               ddr_util=r.get("ddr_util"), pcie_util=r.get("pcie_util"), cpu_util=sysd.get("cpu_util"), gpu_util=sysd.get("gpu_util"), placement=r.get("placement"), decisions=r.get("decisions"),
                rungs=r.get("rungs"), held_gib=held, mem_limit=setup.get("mem_limit"), cache_state=r.get("cache_state"),
                state=json.dumps(setup.get("state")) if setup.get("state") not in (None, "keep") else "", sys=json.dumps(sysd, sort_keys=True, separators=(",", ":")))
     rs.csv_append("run-history.csv", rs.RUN_COLS, row)
