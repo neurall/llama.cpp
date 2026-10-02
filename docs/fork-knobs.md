@@ -15,6 +15,19 @@ the release this file ships with.
 | `-md FILE --spec-type draft-mtp` | | MTP draft head (Qwen3.8-Flash-Next, GLM-5.3-Flash), see the README |
 | `-t N`, `-tb N` | | fixed decode / prompt thread counts (otherwise tuned) |
 
+## Turn the fork off and run stock
+
+| you want | pass | effect |
+|---|---|---|
+| plain stock behaviour | `--moe cache=0` (or `--moe-expert-cache 0`, `LLAMA_ARG_MOE=cache=0`) | no expert cache, nothing tuned, measured or saved; the same placement and kernels as upstream llama.cpp |
+| the cache, but no self-tuning | `-at off` (or `--moe autotune=0`, `LLAMA_AUTOTUNE=0`) | the cache works with fixed defaults, placement uses a static rule, nothing is measured or saved |
+| stock placement chosen by the fork | `LLAMA_MOE_AUTO_MODE=stock` | skips the cache-or-stock measurement and uses stock |
+| the cache forced on | `LLAMA_MOE_AUTO_MODE=cache` | skips the measurement and uses the cache |
+| a fresh start | `LLAMA_MOE_STATE=0`, or delete `~/.cache/llama.cpp/moe-state.ini` | ignore the learned state, write nothing |
+| the hand-tuned stock baseline | `--moe cache=0 --n-cpu-moe N` (or `-ot`) | keep the first layers' experts in VRAM, the rest on the CPU, as in upstream; the fair comparison for the cache |
+
+With `--moe cache=0` the fork behaves as upstream apart from unrelated changes (the loader, MTP, merged upstream commits).
+
 ## `--moe` settings (command line)
 
 `--moe` takes comma separated `name=value` pairs, names are case-insensitive and `_` equals `-`; the same string works as
