@@ -94,6 +94,7 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <thread>
 
 static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
@@ -1291,8 +1292,10 @@ static void * ggml_cuda_host_malloc(size_t size) {
 
 #if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 // cudaMallocHost pins at ~1.3 GiB/s (a 100 GiB model: ~70 s); anonymous memory + cudaHostRegister
-// pins ~2x faster. Used for big buffers (model weights kept in RAM). Transparent huge pages were
-// measured slower here: with RAM full of page cache the kernel has to compact to build them.
+// pins ~2x faster. Used for big buffers (model weights kept in RAM). With transparent huge pages and the
+// pages populated by a pool of threads before the register it pins ~3x faster again (24 GiB: 2.0 -> 6.8 GiB/s);
+// that needs free RAM not held by page cache (the loader releases the file cache per chunk), else the kernel
+// compacts and it is slower. GGML_CUDA_NO_THP=1 restores 4 KiB pages.
 static void ggml_backend_cuda_host_buffer_free_registered(ggml_backend_buffer_t buffer) {
     CUDA_CHECK(cudaHostUnregister(buffer->context));
     munmap(buffer->context, buffer->size);
@@ -1306,7 +1309,17 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     if (ptr == MAP_FAILED) {
         return nullptr;
     }
-    madvise(ptr, size, MADV_NOHUGEPAGE);
+    if (getenv("GGML_CUDA_NO_THP") != nullptr) {
+        madvise(ptr, size, MADV_NOHUGEPAGE);
+    } else {
+        madvise(ptr, size, MADV_HUGEPAGE);
+        const size_t nt = 16, ch = ((size / nt) + (2u << 20) - 1) & ~(size_t) ((2u << 20) - 1);
+        std::vector<std::thread> th;
+        for (size_t i = 0; i < nt && i * ch < size; i++) {
+            th.emplace_back([=] { madvise((char *) ptr + i * ch, std::min(ch, size - i * ch), 23 /* MADV_POPULATE_WRITE */); });
+        }
+        for (auto & t : th) { t.join(); }
+    }
     if (cudaHostRegister(ptr, size, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
         (void) cudaGetLastError();
         munmap(ptr, size);
