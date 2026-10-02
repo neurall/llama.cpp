@@ -1444,13 +1444,18 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         std::vector<int> c = { base };
         // an attached thread pool (llama-cli) has a fixed size: never ask for more threads than it has
         const int cap = (threadpool || threadpool_batch) ? base : hw;
-        // the step is a quarter of the count (at least 2), so a count far from the best is not walked toward it two threads per cycle
-        const int step = std::max(2, base/4);
+        // climb by 2: the start is already bounded by the probe (thread_cap_from_probe), a win is followed at once by the next step (below)
+        const int step = 2;
         const int lo = std::max(2, base - step), hi = std::min(cap, base + step), lo2 = std::max(2, base - 2*step);
         if (lo != base) { c.push_back(lo); }
         // a far lower count costs a slow slice per round: only when the nearer one looked close to the base
         if (thr.try_lo2 && lo2 != lo && lo2 != base) { c.push_back(lo2); }
         if (hi != base) { c.push_back(hi); }
+        // far candidates too (+4, +8, +16): a slow gradient (under the noise bar per step) shows at four to eight times the size, so a count that keeps paying is reached
+        for (int d : { 4, 8, 16 }) {
+            const int n = std::min(cap, base + d);
+            if (n > base && std::find(c.begin(), c.end(), n) == c.end()) { c.push_back(n); }
+        }
         if (c.size() < 2) { thr.hold = thr.hold_len; return; }
         // the first cycle of a session is short (12-token slices, 3 skipped) so one-shot runs get a decision; later ones use 32 / 8
         thr.slice_len = thr.cycles == 0 ? 12 : 32; thr.warm_len = thr.cycles == 0 ? 3 : 8;
@@ -1499,12 +1504,15 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         thr.try_lo2 = thr.try_lo2 || close;
     }
     const int cand_best = best >= 0 ? thr.cand[(size_t) best] : -1;
-    const bool adopt = cand_best >= 0 && cand_best == thr.pending;
+    // two cycles in a row must win in the same direction (a win at +8 and then at +4 is still a gain): the more conservative of the two is adopted
+    const bool adopt = cand_best >= 0 && thr.pending >= 0 && ((cand_best > thr.cand[0]) == (thr.pending > thr.cand[0]));
+    const int adopted = !adopt ? thr.cand[0] : (cand_best > thr.cand[0] ? std::min(cand_best, thr.pending) : std::max(cand_best, thr.pending));
     std::string msg;
     for (size_t i = 1; i < thr.cand.size(); ++i) { msg += " | " + std::to_string(thr.cand[i]) + ": " + std::to_string(mean(i)/1000.0).substr(0, 5); }
     LLAMA_LOG_INFO("%s: thread autotune: base %d %.2f ms/token%s%s -> %d%s\n", __func__, thr.cand[0], mean(0)/1000.0, msg.c_str(),
-            noisy ? " (noisy, void)" : "", adopt ? cand_best : thr.cand[0], (cand_best >= 0 && !adopt) ? " (leads, confirming)" : "");
-    if (adopt) { thr.base = cand_best; thr.hold_len = 4096; thr.pending = -1; thr.hold = thr.hold_len; threads_save(model, "threads", thr.base0, cand_best); }
+            noisy ? " (noisy, void)" : "", adopted, (cand_best >= 0 && !adopt) ? " (leads, confirming)" : "");
+    // an adopted step keeps climbing: the next cycle follows after 128 tokens; a cycle without a win is the plateau, then the rest grows as before
+    if (adopt) { thr.base = adopted; thr.hold_len = 4096; thr.pending = -1; thr.hold = 128; threads_save(model, "threads", thr.base0, adopted); }
     else if (cand_best >= 0) { thr.pending = cand_best; thr.hold = 128; }   // second cycle soon
     else { thr.pending = -1; thr.hold_len = noisy ? 4096 : std::min(thr.hold_len*2, 65536); thr.hold = noisy ? 1024 : thr.hold_len; }
     set(thr.base);
