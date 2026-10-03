@@ -175,7 +175,7 @@ variables, the state file, multi-GPU and MTP use) are in [docs/fork-knobs.md](do
 Experimental knobs (`ev-cld`, `pin-hot`, `idle-up`, `l3-pf`, ...) are off by default, never beat the default in our tests and may be removed;  
 they are listed in the document, not here.
 
-## Optional: a huge-page pool keeps pinned models resident
+## Resident pinned models (Optional)
 
 Nothing needs this. Without it the fork pins the weights at every start, exactly as described above.  
 With it, a big model that is pinned once stays resident in RAM between runs, so a restart skips the disk read and the pinning:  
