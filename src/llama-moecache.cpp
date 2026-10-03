@@ -626,6 +626,8 @@ void profile_save(const moe_cache * mc) {
             { "pred_late_pct", mc->n_pred_up + mc->n_pred_late ? 100.0*mc->n_pred_late/(mc->n_pred_up + mc->n_pred_late) : -1.0 },
             { "pred_cov1_pct", mc->pm_miss ? 100.0*mc->pm_cov[0]/mc->pm_miss : -1.0 },
             { "pred_cov2_pct", mc->pm_miss ? 100.0*mc->pm_cov[1]/mc->pm_miss : -1.0 },
+            // hit rate points the predictor added: each predicted upload used once is a miss that became a hit (estimate, no second run needed)
+            { "pred_boost_pts", mc->n_pred_up && h + m ? 100.0*mc->n_pred_used/(h + m) : -1.0 },
         };
         for (const auto & r : run) {
             if (r.second < 0) { continue; }   // no predictor this run: nothing to record
@@ -4143,8 +4145,11 @@ void llama_moe_cache_free() {
     pred_save(mc);
     if (mc->n_pred_up || mc->pm_miss) {
         // one line for the harness (tools/runexp.py): the predictor's result of this run
-        LLAMA_LOG_WARN("moe-pred: up=%" PRIu64 " pub=%" PRIu64 " used=%" PRIu64 " late=%" PRIu64 " stale=%" PRIu64 " cov1=%.1f cov2=%.1f cov3=%.1f miss_per_layer=%.2f\n",
-                mc->n_pred_up, mc->n_pred_pub, mc->n_pred_used, mc->n_pred_late, mc->n_stream_stale,
+        uint64_t hh = 0, mm = 0;
+        for (auto & ls : mc->layers) { hh += ls.n_hit; mm += ls.n_miss; }
+        const double hr = hh + mm ? 100.0*hh/(hh + mm) : 0.0, boost = hh + mm ? 100.0*mc->n_pred_used/(hh + mm) : 0.0;
+        LLAMA_LOG_WARN("moe-pred: hit=%.1f hit_without_est=%.1f boost_pts=%.1f up=%" PRIu64 " pub=%" PRIu64 " used=%" PRIu64 " late=%" PRIu64 " stale=%" PRIu64 " cov1=%.1f cov2=%.1f cov3=%.1f miss_per_layer=%.2f\n",
+                hr, hr - boost, boost, mc->n_pred_up, mc->n_pred_pub, mc->n_pred_used, mc->n_pred_late, mc->n_stream_stale,
                 100.0*mc->pm_cov[0]/std::max<uint64_t>(1, mc->pm_miss), 100.0*mc->pm_cov[1]/std::max<uint64_t>(1, mc->pm_miss),
                 100.0*mc->pm_cov[2]/std::max<uint64_t>(1, mc->pm_miss), (double) mc->pm_miss/std::max<uint64_t>(1, mc->acc_tot[0]/8));
     }
