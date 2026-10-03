@@ -397,6 +397,8 @@ def one_run(spec, wl, setup, arm, mname, mpath, rnd, base_env, lim, dry, state_f
     temp = "cold" if setup.get("drop_cache") else "hot"
     if setup.get("drop_cache"):
         drop_cache(mpath)
+    elif str(arm.get("free_cache", "0")) == "1":   # pinned arms: the file's page cache is released first (RAM for the pinned copy), the run is not marked cold
+        drop_cache(mpath)
     env = dict(base_env)
     t0 = time.time()
     sampler = Sampler() if setup.get("sample", True) else None
