@@ -179,7 +179,7 @@ they are listed in the document, not here.
 
 Everything that stays in host RAM is pinned now, because pinned weights are far faster than mmap: GLM-5.3-Flash 3.0-bit (109 GiB) on machine A  
 decodes at 12 to 15 tokens/s pinned and at 2 to 2.5 tokens/s when the load falls back to mmap, and a 12k-token prompt goes from 127 to 285 tokens/s once the state is learned.  
-That is why auto-pin is the default, and it needs nothing from you. **Add `-lm mmap` to any command to fall back to mmap.**  
+That is why auto-pin is the default, and it needs nothing from you. **Add `-lm mmap` to any command to fall back to mmap should you prefer to trade start speed for performance.**  
 
 The optional part is a pool of 1 GiB huge pages that keeps the pinned models resident in RAM between runs: the first load fills a cache file in the pool,  
 every later load maps that file instead of reading the model again, which roughly halves the load time (often about 100 s down to about 40 s for a 100 GB model).  
