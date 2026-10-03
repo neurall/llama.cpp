@@ -759,8 +759,11 @@ void ggml_vec_dot_q2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
     // a Q2_0 block (64 weights) pairs with two Q8_0 blocks; in each half, byte b holds weights 4b..4b+3 at bits 0/2/4/6.
     // Per 128-bit lane, bytes b..b+3 are repeated in all four dwords, dword d is shifted right by 2d and masked: lane byte
     // 4d+p then holds weight 4p+d; the Q8_0 values are shuffled into the same order.
-    const __m256i xidx0  = _mm256_setr_epi8(0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3, 4,5,6,7,4,5,6,7,4,5,6,7,4,5,6,7);
-    const __m256i xidx1  = _mm256_add_epi8(xidx0, _mm256_set1_epi8(8));
+    __m256i xidx0  = _mm256_setr_epi8(0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3, 4,5,6,7,4,5,6,7,4,5,6,7,4,5,6,7);
+    __m256i xidx1  = _mm256_add_epi8(xidx0, _mm256_set1_epi8(8));
+    // the index vectors are opaque to the optimizer: with the constants visible clang turns these byte shuffles into vpshufd + vpermq (cross-lane, slow on Zen 2:
+    // the Q2_0 dot ran 25% below gcc's, which keeps vpshufb)
+    __asm__("" : "+x"(xidx0), "+x"(xidx1));
     const __m256i shifts = _mm256_setr_epi32(0, 2, 4, 6, 0, 2, 4, 6);
     const __m256i yidx   = _mm256_setr_epi8(0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15, 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15);
     const __m256i m3     = _mm256_set1_epi8(3);
@@ -769,6 +772,27 @@ void ggml_vec_dot_q2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
     // the two Q8_0 halves are written out (no k loop with a run-time index choice): clang kept the loop rolled and was 25% slower than gcc, which unrolls it;
     // the order of the operations is unchanged, so the result is bit for bit the same
     __m256 acc = _mm256_setzero_ps();
+#if !defined(__AVXVNNI__)
+    // weights {0..3} are unsigned: sum((q - 1) * y) = sum(q * y) - sum(y), two vpmaddubsw and one subtraction instead of a sign flip of both operands
+    // and a separate - 1 on the weights (integer arithmetic, so the result is exactly the same)
+    const __m256i ones16 = _mm256_set1_epi16(1);
+    for (int i = 0; i < nb; ++i) {
+        const __m256i qq = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *) x[i].qs));
+        const float   d0 = GGML_CPU_FP16_TO_FP32(x[i].d);
+
+        const __m256i q0 = _mm256_and_si256(_mm256_srlv_epi32(_mm256_shuffle_epi8(qq, xidx0), shifts), m3); // {0..3}
+        const __m256i q1 = _mm256_and_si256(_mm256_srlv_epi32(_mm256_shuffle_epi8(qq, xidx1), shifts), m3);
+        const __m256i y0 = _mm256_shuffle_epi8(_mm256_loadu_si256((const __m256i *) y[2*i + 0].qs), yidx);
+        const __m256i y1 = _mm256_shuffle_epi8(_mm256_loadu_si256((const __m256i *) y[2*i + 1].qs), yidx);
+        const __m256i p0 = _mm256_sub_epi16(_mm256_maddubs_epi16(q0, y0), _mm256_maddubs_epi16(one, y0));
+        const __m256i p1 = _mm256_sub_epi16(_mm256_maddubs_epi16(q1, y1), _mm256_maddubs_epi16(one, y1));
+        const __m256  d_0 = _mm256_set1_ps(d0 * GGML_CPU_FP16_TO_FP32(y[2*i + 0].d));
+        const __m256  d_1 = _mm256_set1_ps(d0 * GGML_CPU_FP16_TO_FP32(y[2*i + 1].d));
+
+        acc = _mm256_fmadd_ps(d_0, _mm256_cvtepi32_ps(_mm256_madd_epi16(p0, ones16)), acc);
+        acc = _mm256_fmadd_ps(d_1, _mm256_cvtepi32_ps(_mm256_madd_epi16(p1, ones16)), acc);
+    }
+#else
     for (int i = 0; i < nb; ++i) {
         const __m256i qq = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *) x[i].qs));
         const float   d0 = GGML_CPU_FP16_TO_FP32(x[i].d);
@@ -783,6 +807,7 @@ void ggml_vec_dot_q2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
         acc = _mm256_fmadd_ps(d_0, mul_sum_i8_pairs_float(xv0, yv0), acc);
         acc = _mm256_fmadd_ps(d_1, mul_sum_i8_pairs_float(xv1, yv1), acc);
     }
+#endif
     *s = hsum_float_8(acc);
 #else
     ggml_vec_dot_q2_0_q8_0_generic(n, s, bs, vx, bx, vy, by, nrc);
