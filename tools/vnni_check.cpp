@@ -52,7 +52,7 @@ int main(int argc, char ** argv) {
     struct T { const char * name; enum ggml_type t; };
     std::vector<T> all = { {"q4_0",GGML_TYPE_Q4_0},{"q5_0",GGML_TYPE_Q5_0},{"q8_0",GGML_TYPE_Q8_0},{"q2_K",GGML_TYPE_Q2_K},{"q3_K",GGML_TYPE_Q3_K},{"q4_K",GGML_TYPE_Q4_K},
         {"q5_K",GGML_TYPE_Q5_K},{"q6_K",GGML_TYPE_Q6_K},{"iq2_xxs",GGML_TYPE_IQ2_XXS},{"iq2_xs",GGML_TYPE_IQ2_XS},{"iq2_s",GGML_TYPE_IQ2_S},{"iq3_xxs",GGML_TYPE_IQ3_XXS},
-        {"iq3_s",GGML_TYPE_IQ3_S},{"iq1_s",GGML_TYPE_IQ1_S},{"iq1_m",GGML_TYPE_IQ1_M},{"iq4_nl",GGML_TYPE_IQ4_NL},{"iq4_xs",GGML_TYPE_IQ4_XS} };
+        {"iq3_s",GGML_TYPE_IQ3_S},{"iq1_s",GGML_TYPE_IQ1_S},{"iq1_m",GGML_TYPE_IQ1_M},{"iq4_nl",GGML_TYPE_IQ4_NL},{"iq4_xs",GGML_TYPE_IQ4_XS},{"q2_0",GGML_TYPE_Q2_0} };
     std::vector<T> sel;
     for (int i = 3; i < argc; ++i) for (auto & x : all) if (!strcmp(argv[i], x.name)) sel.push_back(x);
     if (sel.empty()) sel = all;
