@@ -25,7 +25,7 @@ Gain over stock llama.cpp by the share of the model that fits in VRAM (decode; t
 | Qwen3.6-35B Q2_0 on B (8 GB GPU), an exception: its CPU side is slow | about 73% | 2.0x |
 | any model that fits | 100% | 1.0x (cache off) |
 
-Prompt processing can be slower than stock on long prompts (0.4x to 0.7x in some rows below).  
+Prompt processing can be slower than stock on long prompts (0.7x in one row below).  
 
 ## What you get
 
