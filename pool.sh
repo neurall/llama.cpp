@@ -2,10 +2,9 @@
 # The 1 GiB huge-page pool behind the pinned-weights cache. Allocate it once; the loader does the rest (it fills a cache file on the first load of
 # a model, maps it afterwards, and evicts the least recently used model that nobody has mapped when the pool is full).
 #
+#   sudo ./pool.sh 100g               reserve a 100 GiB pool, enough for any model under 100 GB, and mount the cache at /mnt/huge1g
+#   sudo ./pool.sh model.gguf         reserve what that model needs (split models: pass the first part)
 #   sudo ./pool.sh mount              reserve the most the machine can spare (total RAM minus a margin: max(24 GiB, 20% of RAM), HUGEFS_MARGIN_GIB=N)
-#                                     and mount the cache at /mnt/huge1g
-#   sudo ./pool.sh mount 100G         reserve exactly that many GiB (--pages N is the same in pages)
-#   sudo ./pool.sh mount model.gguf   reserve what that model needs (split models: pass the first part)
 #   sudo ./pool.sh unmount            delete the cached models, unmount, give the pages back
 #
 # Root (sudo) is only needed to change the pool or the mount. Afterwards start the fork with   GGML_CUDA_HUGEFS=/mnt/huge1g   (the first load of a
@@ -19,9 +18,13 @@ FREE=/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages
 ARGS=""
 need_root() { [ "$(id -u)" = 0 ] || { echo "$1: the pool or the mount has to change, which needs root. Run:  sudo $0 $ARGS"; echo "(with a big enough pool and the mount in place no sudo is needed)"; exit 1; }; }
 
-cmd=${1:-}; [ $# -ge 1 ] && shift
-case "$cmd" in mount|unmount) ;; *) sed -n '2,14p' "$0"; exit 1;; esac
-ARGS="$cmd $*"
+ARGS="$*"
+cmd=${1:-}
+case "$cmd" in
+  mount|unmount) shift;;
+  [0-9]*[Gg]|*.gguf|--pages) cmd=mount;;      # `./pool.sh 100g` or `./pool.sh model.gguf`: mount is implied
+  *) sed -n '2,13p' "$0"; exit 1;;
+esac
 if [ "$cmd" = unmount ]; then
   need_root "unmount"
   if mountpoint -q "$MNT"; then rm -f "$MNT"/* 2>/dev/null || true; umount "$MNT"; fi
