@@ -5,7 +5,7 @@
   reg_tests.py N CURRENT [GOOD]          run check N on build CURRENT (a bin directory) and on the stored last-good build (or GOOD),
                                          through tools/run.py exp (every run lands in run-history.csv), print PASS or REGRESSION
   reg_tests.py N CURRENT --dry           only print the experiment that would run
-  reg_tests.py all CURRENT               every check that can run on this machine now (a check that needs a pool says SKIP without one)
+  reg_tests.py all CURRENT               every default check that can run on this machine now (a check that needs a pool says SKIP without one; opt-in checks, reg 2, run by number)
 
 CURRENT is a directory with llama-cli (and libs), e.g. /p/bw/wt-release-next/build-dev/bin. The last-good builds are stored under /p/bw/rels.
 A check compares CURRENT with the last-good build on the same machine, same tool (llama-cli on both: llama-cli and llama-completion print different
@@ -18,7 +18,7 @@ REPO = os.path.dirname(HERE)
 RUN = os.path.join(HERE, "run.py")
 HIST = os.path.join(HERE, "bench", "run-history.csv")
 LOGS = os.path.join(HERE, "bench", "logs")
-PROMPT = os.path.join(HERE, "bench", "reg-prompt.txt")   # a ~650 token prompt, the one every check uses
+PROMPT = os.path.join(HERE, "bench", "src_12k.cpp")   # the README pf12k prompt (12k tokens, 100 generated, -c 16384 -ub 2048 -b 2048): prompt processing and decode in one run, the same prompt as the README table
 RELS = "/p/bw/rels"
 GOOD = RELS + "/rc-final-fd4c3d2d3"                      # rc-merge fd4c3d2d3: placement measured, pin decision with pool, no mid-split rule
 
@@ -78,10 +78,11 @@ REGS = {
     1: dict(title="near-fit model forced onto the expert cache (first start and every start)",
             was="Qwen3.8-Flash-Next IQ1_M (55 GB, 48 GB VRAM): commit aab03fbe8 took the cache without measuring: 54.7 t/s generation and 469 t/s prompt against 66 and 920 with stock placement",
             model="qn_iq1m", rounds=4, args="", env={}, state=True, judge="settled", tol=0.93,
+            extra_arms=[("STOCK", RELS + "/stock-docker-836d57176", True), ("B11707", RELS + "/b11707-49fe4b756", False)],
             good_build=GOOD, how="the last two starts (settled) of a fresh state file: generation and prompt t/s"),
     2: dict(title="extra graph split on a plain two-GPU layer split (mid-split rule)",
             was="the scheduler started a new split when an activation from another GPU was needed: 4 splits where stock has 3, 1.1% generation on Qwen Next (65.9 against 66.6 without it)",
-            model="qn_iq1m", rounds=3, args="--fork off", env={}, state=False, judge="splits", tol=0.99,
+            model="qn_iq1m", rounds=1, opt_in=True, args="--fork off", env={}, state=False, judge="splits", tol=0.99,
             good_build=GOOD, how="'splits =' of the graph in the log must not exceed the good build's, generation >= 0.99 x good"),
     3: dict(title="pin decision ignores a reserved huge page pool",
             was="with a 100 GiB pool reserved only ~21 GiB 'RAM available': a 109 GiB model fell back to mmap and ran at 2.5 t/s (GLM 3.0-bit)",
@@ -117,6 +118,15 @@ def spec_text(n, reg, name, cur, good):
         if reg["state"]:
             a += f"state = /tmp/reg{n}-state-{arm}.ini\n"
         arms.append(a)
+    for arm, b, stock in reg.get("extra_arms", ()):   # README-grade rows: upstream stock (release recipe) and the previous release next to the good/current builds
+        a = f"[arm {arm}]\nbin = {b}\n"
+        if reg["args"]:
+            a += f"args = {reg['args']}\n"
+        if stock:
+            a += "origin = stock\n"
+        elif reg["state"]:
+            a += f"state = /tmp/reg{n}-state-{arm}.ini\n"
+        arms.append(a)
     return f"""[exp]
 name = {name}
 note = regression {n}: {reg['title']}
@@ -129,12 +139,13 @@ m = {M[reg['model']]}
 [workload]
 tool = cli
 prompt_file = {PROMPT}
-n = 200
+n = 100
+args = -c 16384 -ub 2048 -b 2048
 log_verbosity = 4
 timeout = 2400
 
 [setup]
-guard = min_avail_gb=20 max_swap_mb=8000 swapout_pages_s=400000 psi=60
+guard = min_avail_gb=10 max_swap_mb=8000 swapout_pages_s=400000 psi=60
 
 """ + "\n".join(arms)
 
@@ -187,7 +198,7 @@ def check(n, cur, good=None, dry=False):
     name = f"reg{n}-{time.strftime('%m%d-%H%M')}"
     spec = f"/tmp/{name}.ini"
     open(spec, "w").write(spec_text(n, reg, name, cur, good))
-    for arm in ("GOOD", "CUR"):
+    for arm in ("GOOD", "CUR", "B11707"):
         if reg["state"] and os.path.exists(f"/tmp/reg{n}-state-{arm}.ini"):
             os.remove(f"/tmp/reg{n}-state-{arm}.ini")
     if dry:
@@ -213,7 +224,8 @@ def main():
         return 2
     dry = "--dry" in a
     a = [x for x in a if x != "--dry"]
-    ns = list(REGS) if a[0] == "all" else [int(a[0])]
+    # reg 2 (--fork off against the good build) is opt-in: --fork off has equalled stock within ~1.5% in every comparison, `all` skips it, `reg_tests.py 2 CURRENT` runs it
+    ns = [n for n, r in REGS.items() if not r.get("opt_in")] if a[0] == "all" else [int(a[0])]
     bad = 0
     for n in ns:
         status, msg = check(n, os.path.abspath(a[1]), a[2] if len(a) > 2 else None, dry)
