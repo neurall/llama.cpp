@@ -53,7 +53,7 @@ struct llama_moe_cache_layer {
     ggml_tensor * dev_table  = nullptr;
     ggml_tensor * host_table = nullptr;
 
-    // router prediction (LLAMA_MOE_CACHE_PREDICT): the next layer's router weights; the graph applies
+    // router prediction (LLAMA_MOE_CACHE_PRED): the next layer's router weights; the graph applies
     // them to this layer's MoE input and hands the logits to the CPU expert op (src[4])
     ggml_tensor * pred_w = nullptr;
     // learned predictors: pred_all (fp16 [n_embd, n_expert * pred_ahead]; block k initialized from the router of layer
@@ -97,7 +97,7 @@ bool    llama_moe_cache_get_info(struct llama_tuning_info * info);
 
 // nullptr when the cache is disabled or this tensor has no cached layer
 const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps);
-// JIT miss offload (LLAMA_MOE_CACHE_JIT): called with a layer's router ids on the host before its cache chain launches
+// JIT miss offload (LLAMA_MOE_CACHE_UPLOAD_NOW): called with a layer's router ids on the host before its cache chain launches
 void llama_moe_cache_jit(const llama_moe_cache_layer * pub, const ggml_tensor * ids);
 
 // apply throttled LRU updates; call between graph executions only
