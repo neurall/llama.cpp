@@ -22,7 +22,7 @@ Gain over stock llama.cpp by the share of the model that fits in VRAM (decode; t
 | Qwen Next IQ3_S 83 GB on A | 58% | 1.3x |
 | GLM 3.0-bit on D, 4 GPUs | 88% | 1.3x |
 | Qwen Next IQ1_M 55 GB on A | 87% | 1.0x (picks stock) |
-| Qwen3.6-35B Q2_0 on B (8 GB GPU), an exception: its CPU side is slow | about 73% | 1.9x |
+| Qwen3.6-35B Q2_0 on B (8 GB GPU), an exception: its CPU side is slow | about 73% | 2.0x |
 | any model that fits | 100% | 1.0x (cache off) |
 
 Prompt processing can be slower than stock on long prompts (0.4x to 0.7x in some rows below).  
@@ -58,8 +58,8 @@ the other rows keep their old numbers and are being re-measured, the build colum
 | **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | same | 69.1 | 67.5 (picks stock) | 1.0x | b11707 |
 | | B | same | 12.0 | **16.0** | **1.3x** | **b11988** |
 | | B | same, prompt processing | 18.1 | 19.6 | 1.1x | **b11988** |
-| **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) | B | short tetris prompt, 100 tokens, decode | 30.7 | **59.0** | **1.9x** | **b11988** |
-| | C | same, CPU only (AVX Q2_0 kernels) | 6.3 | **10.9** | **1.7x** | **b11988** |
+| **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) | B | short tetris prompt, 100 tokens, decode | 29.2 | **59.3** | **2.0x** | earlier |
+| | C | same, CPU only (AVX Q2_0 kernels) | 6.3 | **11.3** | **1.8x** | earlier |
 | Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | same | 45.1 | 45.0 | 1.0x | earlier |
 | Qwen3.8-27B IQ3_S, dense, CPU only | C | same | 1.7 | 1.6 | 1.0x | earlier |
 | Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`), fits VRAM | A | same | 78.3 | 77.0 | 1.0x (38.6 without MTP) | earlier |
