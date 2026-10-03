@@ -1457,10 +1457,44 @@ static std::string moe_auto_choose(const moe_auto_rec & st, const moe_auto_rec &
     return gap >= 0 ? "cache" : "stock";
 }
 
-static std::string moe_auto_decide_for(const moe_auto_rec & st, const moe_auto_rec & ca, const common_params & params, const std::string & prev) {
+// the placement that is faster at one phase, "prefill" (p_ms) or generation (g_ms); a gap inside the noise keeps prev
+static std::string moe_auto_pick(const moe_auto_rec & st, const moe_auto_rec & ca, bool gen, const std::string & prev) {
+    if (!gen && !moe_auto_p_known(st, ca)) { return prev; }
+    const double s = gen ? st.g_ms : st.p_ms, c = gen ? ca.g_ms : ca.p_ms;
+    const double bar = std::max(0.05, std::max(moe_auto_noise(st), moe_auto_noise(ca)));
+    const double gap = (s - c) / std::max(1e-9, std::min(s, c));
+    if ((prev == "cache" || prev == "stock") && std::fabs(gap) <= bar) { return prev; }
+    return gap >= 0 ? "cache" : "stock";
+}
+
+// each recorded run refreshes the two picks (better prefill, better generation); they only set where the next start begins, every run
+// then measures and decides again
+static void moe_auto_store_picks(const std::string & path, const moe_auto_rec & st, const moe_auto_rec & ca) {
+    std::string sec, pre; moe_auto_split(path, sec, pre);
+    char b[16] = {0};
+    for (int gen = 0; gen < 2; ++gen) {
+        const std::string key = pre + (gen ? ".pick_g" : ".pick_p");
+        const std::string prev = llama_state_get(sec.c_str(), key.c_str(), b, sizeof b) ? b : "";
+        const std::string pick = moe_auto_pick(st, ca, gen, prev);
+        if (!pick.empty()) { llama_state_set(sec.c_str(), key.c_str(), pick.c_str()); }
+    }
+}
+
+static std::string moe_auto_decide_for(const moe_auto_rec & st, const moe_auto_rec & ca, const common_params & params, const std::string & path, const std::string & prev) {
     const double np = moe_auto_p_known(st, ca) ? moe_auto_est_prompt(params) : 0.0;
     const double ng = moe_auto_est_gen(params);
-    const std::string mode = moe_auto_choose(st, ca, np, ng, prev);
+    std::string mode = moe_auto_choose(st, ca, np, ng, prev);
+    {   // the recorded picks: where the two differ, the request decides which one counts (generation-heavy: generation over 10% longer than the prompt)
+        std::string sec, pre; moe_auto_split(path, sec, pre);
+        char b[16] = {0}, c[16] = {0};
+        const bool hp = llama_state_get(sec.c_str(), (pre + ".pick_p").c_str(), b, sizeof b);
+        const bool hg = llama_state_get(sec.c_str(), (pre + ".pick_g").c_str(), c, sizeof c);
+        if (hp && hg) {
+            const bool gen_heavy = ng * st.g_ms > 1.1 * np * std::max(0.0, st.p_ms);
+            mode = strcmp(b, c) == 0 ? b : gen_heavy ? c : b;
+            LOG_INF("%s: MoE placement: picks: prefill %s, generation %s; this request is %s-heavy -> %s\n", __func__, b, c, gen_heavy ? "generation" : "prefill", mode.c_str());
+        }
+    }
     // switchover: the prompt length below which the cache wins for this many generated tokens
     const double dp = ca.p_ms - st.p_ms, dg = st.g_ms - ca.g_ms;
     const double breakeven = !moe_auto_p_known(st, ca) || dp <= 0 ? INFINITY : dg <= 0 ? 0.0 : ng * dg / dp;
@@ -1637,7 +1671,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
         } else if ((st.n >= 2 && ca.n >= 2) || (st.n >= 1 && ca.n >= 1 && moe_auto_clear_gap(st, ca, params))) {
             // both placements measured on at least two runs (the first of each may be cold), or once each when one of them wins this
             // request by more than 10%: decide for this request
-            mode = moe_auto_decide_for(st, ca, params, decided);
+            mode = moe_auto_decide_for(st, ca, params, path, decided);
             // while the cache wins, every 8th start measures stock again, so a changed machine or a lucky first run is found out
             {
                 std::string sec, pre; moe_auto_split(path, sec, pre);
@@ -2249,6 +2283,7 @@ common_init_result::~common_init_result() {
     r.have = true;
     r.n++;
     if (st.have && ca.have) {
+        moe_auto_store_picks(g_moe_auto_file, st, ca);
         decided = moe_auto_choose(st, ca, moe_auto_p_known(st, ca) ? g_moe_auto_np : 0.0, g_moe_auto_ng, decided);
         LOG_INF("%s: MoE placement decided: %s (stock %.2f/%.2f, cache %.2f/%.2f ms per prompt/generated token)\n", __func__,
             decided.c_str(), st.p_ms, st.g_ms, ca.p_ms, ca.g_ms);
