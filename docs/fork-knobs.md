@@ -262,7 +262,7 @@ Linux only (Windows uses the old path). The kernel needs 1 GiB huge pages (`CONF
 
 ```sh
 sudo ./pool.sh mount              # the most the machine can spare: total RAM minus a margin (default max(24 GiB, 20% of RAM), HUGEFS_MARGIN_GIB=N to change)
-sudo ./pool.sh mount 100G         # exactly that many GiB (a number with G), or --pages N, or the path of a model file to size it for that model
+sudo ./pool.sh 100g               # exactly that many GiB (a number with G), or --pages N, or the path of a model file to size it for that model
 sudo ./pool.sh unmount            # delete the cached models, unmount, give the pages back
 ```
 
