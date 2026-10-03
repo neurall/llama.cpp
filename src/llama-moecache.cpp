@@ -567,6 +567,8 @@ std::string cache_file(const llama_model & model, const char * prefix, const std
 }
 
 // the model's section in the state file; empty when the state is off (LLAMA_MOE_STATE=0 / LLAMA_MOE_CACHE_PROFILE=0)
+int parse_layer_from_name(const char * name);
+
 std::string profile_path(const llama_model & model) {
     return moe_state_enabled() ? moe_state_section(model) : "";
 }
@@ -588,7 +590,7 @@ void profile_save(const moe_cache * mc) {
         for (size_t e = 0; e < ls.glob_count.size(); ++e) {
             v += (e ? " " : "") + std::to_string((uint32_t) (ls.glob_count[e] >> shift));
         }
-        kv.emplace_back("hot." + std::to_string(il), v);
+        kv.emplace_back("hot." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), v);   // real layer: dense layers are not cache layers
     }
     if (!mc->tuned_text.empty()) {
         // the self-tuner's decisions of this GPU count: tuned.l<links> = NAME=value NAME=value ...
@@ -789,7 +791,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     std::vector<std::pair<std::string, std::string>> sect;
     ok = ok && moe_state_section_kv(mc->profile, sect);
     for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
-        const std::string key = "hot." + std::to_string(il);
+        const std::string key = "hot." + std::to_string(parse_layer_from_name(mc->layers[il].pub.up_src->name));
         const auto it = std::find_if(sect.begin(), sect.end(), [&](const auto & p) { return p.first == key; });
         ok = it != sect.end();
         const std::string v = ok ? it->second : "";
