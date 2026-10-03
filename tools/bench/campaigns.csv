@@ -38,3 +38,7 @@ pc3-pred-ppl,2026-10-02 14:50:23,"bench N:\m\qwen36.gguf builds pred variants de
 pc3-pred-next,2026-10-02 15:08:44,"bench N:\m\Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf builds pred variants default,cache0,early8,early8ra,learn12,learn4 test ppl n=3","invalid: killed, overlapped with another bench on the laptop",rerun as one clean run
 lru-ab-ppl2,2026-10-02 15:14:56,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds dev,stock-lc variants default,adm2,m0,lfua,lruk,adm2m0 test ppl n=3",,
 lead-ab-pin,2026-10-02 15:41:23,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf builds dev variants off,old2,lead,lead_s4,early test ppl n=3",,
+regress-quick,2026-10-03 09:26:49,"smoke test for big regressions: README protocol t100, one measured run per cell, final build fd4c3d2d3",,
+regress-quick,2026-10-03 09:27:14,"smoke test for big regressions: README protocol t100, final build fd4c3d2d3 only, one run per model, compare with the README table",,
+regress-quick-start2,2026-10-03 09:36:39,start 2 (same default state file): the cache trial,,
+regress-quick-start2,2026-10-03 09:37:18,start 2 (same default state file): the cache trial,,
