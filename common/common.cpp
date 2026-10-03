@@ -1281,6 +1281,14 @@ static size_t common_ram_available(bool with_pool = false) {
                     if (pf >> n) { pool += n * hp.second; }
                 }
             }
+            if (with_pool) {   // a warm weights cache (GGML_CUDA_HUGEFS) holds pool pages already: its files are the pinned buffer the load maps, so they count too
+                if (const char * hd = getenv("GGML_CUDA_HUGEFS")) {
+                    std::error_code ec;
+                    for (const auto & e : std::filesystem::directory_iterator(hd, ec)) {
+                        if (e.is_regular_file(ec) && e.path().extension() == ".w") { pool += (size_t) e.file_size(ec); }
+                    }
+                }
+            }
             return kb * 1024 + pool;
         }
         f.ignore(256, '\n');
