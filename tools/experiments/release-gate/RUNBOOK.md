@@ -1,5 +1,7 @@
 # Release runbook (final rerun of the README numbers)
 
+Clang recipe detail (checked 2026-10-03): clang 21.1.8 in `llama-rel-el8-clang` selects gcc-toolset-15 as its GCC installation (newest wins) and ignores `--gcc-toolchain=...toolset-13`; every clang build so far (including final-25ccd52d0) used the gcc 15 C++ headers and static libstdc++/libgcc. For the release pin it explicitly: `-DCMAKE_C_FLAGS=--gcc-install-dir=/opt/rh/gcc-toolset-15/root/usr/lib/gcc/x86_64-redhat-linux/15` (same for CXX) and print `clang --version` plus the selected installation in BUILD_INFO. gcc-toolset-13 (the old recipe) is the one with the code generation regression; 11 and 14 are fine (vfmadd counts 1291 / 1314 against 1087).
+
 Rule set (memory): never slower than stock, not consistently slower than the previous release (b11707), release recipe builds only, clang for the CPU backend on Linux and Windows if it is faster (it is: OLMoE CPU-only +8..16%), no OpenBLAS.
 
 ## Before the reboot (builds, nothing needs the pool)
