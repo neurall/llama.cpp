@@ -1620,7 +1620,9 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                 }
             }
 
-            if (node_backend_id == cur_backend_id && !need_new_split) {
+            // GGML_SCHED_NO_MIDSPLIT=1: skip the rule below (experiment: it adds a split, and a sync per token, on a plain two-GPU layer split)
+            static const bool no_midsplit = getenv("GGML_SCHED_NO_MIDSPLIT") && atoi(getenv("GGML_SCHED_NO_MIDSPLIT")) != 0;
+            if (node_backend_id == cur_backend_id && !need_new_split && !no_midsplit) {
                 for (int j = 0; j < GGML_MAX_SRC; j++) {
                     struct ggml_tensor * src = node->src[j];
                     if (src == NULL) {
