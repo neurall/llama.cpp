@@ -61,11 +61,25 @@ have=$(cat "$NR")
 if [ "$have" -lt "$want" ]; then
   need_root "reserving $want 1 GiB pages (now $have)"
   echo "reserving $want 1 GiB pages (now $have): dropping the page cache and compacting memory first"
-  sync; echo 3 > /proc/sys/vm/drop_caches; echo 1 > /proc/sys/vm/compact_memory
-  echo "$want" > "$NR"
+  # defragment, then allocate; pages a try gets are kept, so repeating the same request with compaction in between gets further each time (it stops when
+  # three tries in a row add nothing). Proactive compaction is switched to its most aggressive setting for the duration and restored afterwards.
+  pc=/proc/sys/vm/compaction_proactiveness
+  old_pc=""; [ -w "$pc" ] && { old_pc=$(cat "$pc"); echo 100 > "$pc"; }
+  sync; echo 3 > /proc/sys/vm/drop_caches
+  last=$have; idle=0; try=0
+  while [ "$(cat "$NR")" -lt "$want" ] && [ "$idle" -lt 3 ] && [ "$try" -lt 12 ]; do
+    try=$((try + 1))
+    echo 1 > /proc/sys/vm/compact_memory
+    echo "$want" > "$NR"
+    now=$(cat "$NR")
+    echo "  try $try: $now of $want pages"
+    if [ "$now" -gt "$last" ]; then idle=0; else idle=$((idle + 1)); sleep 2; fi
+    last=$now
+  done
+  [ -n "$old_pc" ] && echo "$old_pc" > "$pc"
 fi
 got=$(cat "$NR")
-[ "$got" -ge "$want" ] || { echo "only $got of $want pages could be allocated (memory too fragmented or too small); free memory and retry, or reboot"; exit 1; }
+[ "$got" -ge "$want" ] || { echo "only $got of $want pages could be allocated (memory too fragmented or too small, even after repeated compaction); free memory and retry, a smaller size may work, or reboot"; exit 1; }
 
 if ! mountpoint -q "$MNT"; then
   need_root "mounting $MNT"
