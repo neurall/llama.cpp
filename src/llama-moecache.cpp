@@ -676,6 +676,11 @@ struct stock_heat_t {
     uint64_t tokens = 0;                         // routed tokens seen (summed over observed layers)
 } g_heat;
 
+void * cuda_obs_proc(const char * name) {
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+    return reg ? ggml_backend_reg_get_proc_address(reg, name) : nullptr;
+}
+
 void stock_obs_cb(const char * name, const struct ggml_tensor * ids, const struct ggml_tensor *, void *) {
     const int il = parse_layer_from_name(name);
     if (il < 0 || ids->type != GGML_TYPE_I32) {
@@ -709,6 +714,9 @@ void llama_moe_observe_start(const llama_model & model) {
     g_heat.tokens = 0;
     g_heat.on = true;
     ggml_set_moe_obs_callback(stock_obs_cb, nullptr);
+    if (auto fn = (void (*)(bool)) cuda_obs_proc("ggml_backend_cuda_obs_enable")) {
+        fn(true);   // GPU-resident layers count on the device, read back once in llama_moe_observe_save
+    }
 }
 
 void llama_moe_observe_save() {
@@ -720,6 +728,21 @@ void llama_moe_observe_save() {
         }
         g_heat.on = false;
         ggml_set_moe_obs_callback(nullptr, nullptr);
+        if (auto en = (void (*)(bool)) cuda_obs_proc("ggml_backend_cuda_obs_enable")) {
+            en(false);
+        }
+        if (auto rd = (bool (*)(int, int, uint64_t *)) cuda_obs_proc("ggml_backend_cuda_obs_read")) {
+            const int nl = (int) g_heat.counts.size(), ne = (int) g_heat.counts[0].size();
+            std::vector<uint64_t> gpu((size_t) nl*ne, 0);
+            if (rd(nl, ne, gpu.data())) {
+                for (int il = 0; il < nl; ++il) {
+                    for (int e = 0; e < ne; ++e) {
+                        g_heat.counts[il][e] += gpu[(size_t) il*ne + e];
+                    }
+                }
+                g_heat.tokens += 64;   // GPU layers counted: keep even when the CPU saw few tokens
+            }
+        }
         if (g_heat.tokens < 64) {   // too little use to be worth keeping
             return;
         }

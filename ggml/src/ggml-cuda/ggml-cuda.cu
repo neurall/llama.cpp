@@ -2333,7 +2333,80 @@ static bool ggml_cuda_mul_mat_id_needs_sync(const ggml_tensor * dst, const int c
     return true;
 }
 
+// GPU-side expert use counters for the stock-placement observer: one histogram per (device, layer),
+// read back once at the end of the run (ggml_backend_cuda_obs_read).
+static std::atomic<bool> g_obs_on{false};
+static std::mutex g_obs_mtx;
+static std::map<std::pair<int,int>, std::pair<uint32_t *, int>> g_obs_counts;   // (device, layer) -> (device counts, n_expert)
+
+static __global__ void k_obs_count(const char * ids, int64_t ne0, int64_t nb0, int64_t nb1, int64_t n, uint32_t * counts, int n_expert) {
+    const int64_t k = (int64_t) blockIdx.x*blockDim.x + threadIdx.x;
+    if (k >= n) {
+        return;
+    }
+    const int32_t id = *(const int32_t *) (ids + (k/ne0)*nb1 + (k%ne0)*nb0);
+    if (id >= 0 && id < n_expert) {
+        atomicAdd(&counts[id], 1u);
+    }
+}
+
+static void ggml_cuda_obs_count(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * ids) {
+    const char * nm = src0->name;
+    if (strncmp(nm, "blk.", 4) != 0 || !strstr(nm, "ffn_gate_exps") || ids->type != GGML_TYPE_I32) {
+        return;
+    }
+    const int il = atoi(nm + 4);
+    const int n_expert = (int) src0->ne[2];
+    uint32_t * d = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_obs_mtx);
+        auto & e = g_obs_counts[{ctx.device, il}];
+        if (!e.first) {
+            cudaStreamCaptureStatus st = cudaStreamCaptureStatusNone;
+            cudaStreamIsCapturing(ctx.stream(), &st);
+            if (st != cudaStreamCaptureStatusNone || cudaMalloc(&e.first, n_expert*sizeof(uint32_t)) != cudaSuccess) {
+                e.first = nullptr;
+                return;
+            }
+            cudaMemset(e.first, 0, n_expert*sizeof(uint32_t));
+            e.second = n_expert;
+        }
+        d = e.first;
+    }
+    const int64_t n = ids->ne[0]*ids->ne[1];
+    k_obs_count<<<(unsigned) ((n + 127)/128), 128, 0, ctx.stream()>>>((const char *) ids->data, ids->ne[0], ids->nb[0], ids->nb[1], n, d, n_expert);
+}
+
+// counts[(layer)*n_expert + e] summed over devices; returns false when nothing was counted
+static bool ggml_backend_cuda_obs_read(int n_layer, int n_expert, uint64_t * out) {
+    bool any = false;
+    std::lock_guard<std::mutex> lk(g_obs_mtx);
+    std::vector<uint32_t> h;
+    for (auto & kv : g_obs_counts) {
+        if (!kv.second.first || kv.second.second != n_expert || kv.first.second >= n_layer) {
+            continue;
+        }
+        h.resize(n_expert);
+        ggml_cuda_set_device(kv.first.first);
+        if (cudaMemcpy(h.data(), kv.second.first, n_expert*sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess) {
+            continue;
+        }
+        for (int e = 0; e < n_expert; ++e) {
+            out[(size_t) kv.first.second*n_expert + e] += h[e];
+            any |= h[e] != 0;
+        }
+    }
+    return any;
+}
+
+static void ggml_backend_cuda_obs_enable(bool on) {
+    g_obs_on = on;
+}
+
 static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    if (g_obs_on.load(std::memory_order_relaxed)) {
+        ggml_cuda_obs_count(ctx, dst->src[0], dst->src[2]);
+    }
     if (dst->op_params[1] != 0) {
         // ids may be -1 (skipped experts, 2-GPU prefill): the kernels leave those rows unwritten
         CUDA_CHECK(cudaMemsetAsync(dst->data, 0, ggml_nbytes(dst), ctx.stream()));
@@ -6328,6 +6401,12 @@ static bool ggml_backend_cuda_wait_host_flag(ggml_backend_t backend, const uint3
 
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
+    if (strcmp(name, "ggml_backend_cuda_obs_enable") == 0) {
+        return (void *)ggml_backend_cuda_obs_enable;
+    }
+    if (strcmp(name, "ggml_backend_cuda_obs_read") == 0) {
+        return (void *)ggml_backend_cuda_obs_read;
+    }
     if (strcmp(name, "ggml_backend_comm_init") == 0) {
         return (void *)ggml_backend_cuda_comm_init;
     }
