@@ -1244,6 +1244,44 @@ static size_t common_model_expert_bytes(const std::string & path_model) {
 static std::string g_gpu_id;       // the GPUs' names and PCI bus ids, hashed: identifies the hardware (and the slot, so the link) in the placement record
 static size_t g_gpu_total_max = 0; // fallback identity when the backend has no PCI id; free VRAM is not used: it moves with every browser tab
 
+// the slot of a GPU, "x16g4": negotiated link width (idle cards keep their width, only the speed drops) and the highest speed the card and its parent port
+// both support (the card alone says x16 in an x4 slot). Linux sysfs; empty: unknown
+static std::string common_pci_slot(const char * bus_id) {
+#ifdef __linux__
+    if (!bus_id || strlen(bus_id) < 12) { return ""; }
+    std::string id = bus_id + (strlen(bus_id) - 12);   // "0000:01:00.0" whether the backend wrote 4 or 8 domain digits
+    for (char & c : id) { c = (char) tolower((unsigned char) c); }
+    const std::string dir = "/sys/bus/pci/devices/" + id;
+    auto rd = [](const std::string & f) {
+        std::string v;
+        if (FILE * fp = fopen(f.c_str(), "r")) {
+            char b[64] = {0};
+            if (fgets(b, sizeof b, fp)) { v = b; }
+            fclose(fp);
+        }
+        while (!v.empty() && isspace((unsigned char) v.back())) { v.pop_back(); }
+        return v;
+    };
+    const std::string w = rd(dir + "/current_link_width");
+    if (w.empty() || w == "0") { return ""; }
+    double gts = atof(rd(dir + "/max_link_speed").c_str());   // "16.0 GT/s PCIe"
+    char real[PATH_MAX];
+    if (realpath(dir.c_str(), real)) {
+        std::string r = real;
+        const size_t cut = r.find_last_of('/');
+        if (cut != std::string::npos && cut > 0) {
+            const double pg = atof(rd(r.substr(0, cut) + "/max_link_speed").c_str());   // the parent port: the slot
+            if (pg > 0 && (gts <= 0 || pg < gts)) { gts = pg; }
+        }
+    }
+    const int gen = gts >= 32 ? 5 : gts >= 16 ? 4 : gts >= 8 ? 3 : gts >= 5 ? 2 : gts > 0 ? 1 : 0;
+    return "x" + w + "g" + std::to_string(gen);
+#else
+    GGML_UNUSED(bus_id);
+    return "";
+#endif
+}
+
 static void common_gpu_free(size_t & total, size_t & max, int & n) {
     total = max = 0;
     n = 0;
@@ -1261,13 +1299,14 @@ static void common_gpu_free(size_t & total, size_t & max, int & n) {
         g_gpu_total_max = std::max(g_gpu_total_max, tot);
         ggml_backend_dev_props props;
         ggml_backend_dev_get_props(dev, &props);
-        ids.push_back(std::string(ggml_backend_dev_name(dev)) + "|" + (props.device_id ? props.device_id : "") + "|" + std::to_string(tot >> 30));
+        ids.push_back(std::string(ggml_backend_dev_name(dev)) + "|" + (props.device_id ? props.device_id : "") + "|" + common_pci_slot(props.device_id) + "|" + std::to_string(tot >> 30));
         n++;
     }
     std::sort(ids.begin(), ids.end());   // the order the backend lists them in does not matter
     uint32_t h = 2166136261u;            // FNV-1a: the same on every platform, so a state file can move with its machine
     for (const auto & id : ids) { for (char c : id) { h = (h ^ (uint8_t) c) * 16777619u; } h *= 16777619u; }
     g_gpu_id = string_format("%08x", h);
+    if (getenv("LLAMA_MOE_LOG_GPUID")) { for (const auto & id : ids) { LOG_INF("%s: GPU identity of the placement record: %s -> %s\n", __func__, id.c_str(), g_gpu_id.c_str()); } }
 }
 
 // RAM that can be used without swapping: Linux MemAvailable (free + reclaimable page cache), 0 if unknown
