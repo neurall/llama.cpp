@@ -1258,8 +1258,11 @@ static void common_gpu_free(size_t & total, size_t & max, int & n) {
 }
 
 // RAM that can be used without swapping: Linux MemAvailable (free + reclaimable page cache), 0 if unknown
-static size_t common_ram_available() {
+// with_pool: also the free pages of a reserved huge page pool (1 GiB and 2 MiB, Linux): MemAvailable does not count them, but the pinned weights buffer is taken
+// from exactly those pages, so for the decision to pin they are available RAM (a 100 GiB pool left 21 GiB "available" and a 109 GiB model fell back to mmap)
+static size_t common_ram_available(bool with_pool = false) {
 #if defined(_WIN32)
+    GGML_UNUSED(with_pool);
     MEMORYSTATUSEX st = {};
     st.dwLength = sizeof(st);
     return GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
@@ -1269,7 +1272,16 @@ static size_t common_ram_available() {
     size_t kb = 0;
     while (f >> key >> kb) {
         if (key == "MemAvailable:") {
-            return kb * 1024;
+            size_t pool = 0;
+            if (with_pool) {
+                for (const auto & hp : { std::make_pair("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", (size_t) 1 << 30),
+                                         std::make_pair("/sys/kernel/mm/hugepages/hugepages-2048kB/free_hugepages",    (size_t) 2 << 20) }) {
+                    std::ifstream pf(hp.first);
+                    size_t n = 0;
+                    if (pf >> n) { pool += n * hp.second; }
+                }
+            }
+            return kb * 1024 + pool;
         }
         f.ignore(256, '\n');
     }
@@ -1664,7 +1676,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     // measured +46% prompt processing, +3-5% decode on GLM-5.3-Flash; used whenever the model fits
     // in RAM available now (no margin); common_init_result reloads with mmap if loading swaps
     if (params.auto_pin && params.load_mode == LLAMA_LOAD_MODE_AUTO) {
-        const size_t avail = common_ram_available();
+        const size_t avail = common_ram_available(true);
         if (avail && model_size <= avail) {
             params.load_mode        = LLAMA_LOAD_MODE_NONE;
             params.load_pinned_auto = true;
