@@ -1364,6 +1364,10 @@ void llama_context::thread_cap_from_probe(int32_t n_sat) {
 void llama_context::set_batch_thread_autotune(bool on, int32_t n_max) {
     const char * e = getenv("LLAMA_THREAD_AUTOTUNE");
     if (e && atoi(e) == 0) { on = false; }
+    // off unless asked for (LLAMA_BATCH_THREAD_AUTOTUNE=1): a cycle needs 15 full batches after a two-batch hold, a prompt of up to ~16k tokens ends before it can decide
+    // (and so before anything is saved), so every start explored five thread counts, SMT siblings included, and paid ~5% of the prompt (CPU only, OLMoE, 4k tokens)
+    const char * b = getenv("LLAMA_BATCH_THREAD_AUTOTUNE");
+    if (!(b && atoi(b) != 0)) { on = false; }
     thrb.on    = on;
     thrb.n_max = n_max;
     thrb.base0 = (int) cparams.n_threads_batch;
