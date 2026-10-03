@@ -35,7 +35,7 @@ state file. Everything below is for overriding that, and a setting you give is n
 | `--moe-expert-cache N` | `LLAMA_ARG_MOE_EXPERT_CACHE` | expert slots per layer in VRAM; `-1` sizes them from free VRAM, `0` turns the whole fork off (same as `--moe cache=0`) |
 | `--prefetch-experts-slots N` | | staging slots for host-to-GPU prefetch of big batches (same as `--moe prefetch-slots=N`) |
 | `-at on\|off`, `--autotune` | `LLAMA_ARG_AUTOTUNE`, `LLAMA_AUTOTUNE=0` | self-tuning of cache knobs, thread counts and the cache-or-stock placement; `off` = fixed defaults, nothing measured or saved (same as `--moe autotune=0`) |
-| `-lm pin\|mmap\|dio`, `--load-mode` | `LLAMA_ARG_LOAD_MODE` | `pin`: weights in pinned RAM (server default when the model fits in RAM, faster prompts); `mmap`: memory-mapped, for models bigger than RAM; `dio`: direct IO |
+| `-lm pin\|mmap\|dio`, `--load-mode` | `LLAMA_ARG_LOAD_MODE` | `pin`: weights in pinned RAM (the default of every tool when part of the model stays in host RAM and the model fits in the RAM available now; faster prompts and uploads, the load takes longer; `-lm mmap` opts out); `mmap`: memory-mapped, for models bigger than RAM; `dio`: direct IO |
 | `-md FILE --spec-type draft-mtp` | | MTP draft head (Qwen3.8-Flash-Next, GLM-5.3-Flash), see the README |
 | `-t N`, `-tb N` | | fixed decode / prompt thread counts (otherwise tuned) |
 
