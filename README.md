@@ -175,6 +175,24 @@ variables, the state file, multi-GPU and MTP use) are in [docs/fork-knobs.md](do
 Experimental knobs (`ev-cld`, `pin-hot`, `idle-up`, `l3-pf`, ...) are off by default, never beat the default in our tests and may be removed;  
 they are listed in the document, not here.
 
+## Optional: a huge-page pool keeps pinned models resident
+
+Nothing needs this. Without it the fork pins the weights at every start, exactly as described above.  
+With it, a big model that is pinned once stays resident in RAM between runs, so a restart skips the disk read and the pinning:  
+typically about 40 s instead of about 100 s for a 100 GB model. It helps the command line most (every `llama-cli` run is a new process that loads the model again);  
+a server loads once and keeps running, so it does not need the pool.  
+
+```
+sudo ./pool.sh mount 100G                 # reserve 100 x 1 GiB huge pages and mount the weights cache at /mnt/huge1g
+GGML_CUDA_HUGEFS=/mnt/huge1g llama-cli -m model.gguf ...
+sudo ./pool.sh unmount                    # give the memory back
+```
+
+- `mount` alone reserves what the machine can spare (RAM minus a margin of the larger of 24 GiB and 20%); `mount model.gguf` reserves what that model needs.  
+- The first load of a model fills a cache file in the pool; later loads map it. Several models share the pool, the least recently used one goes when it is full.  
+- The pool is RAM nobody else can use while it is mounted. Reserve it right after boot: 1 GiB pages are hard to get once memory is fragmented.  
+- Without `GGML_CUDA_HUGEFS`, or without a pool, nothing changes.  
+
 ## Good to know
 
 - **RAM is the limit.** Decode speed is bound by how fast the CPU reads the experts that are not in VRAM. More or faster RAM,
