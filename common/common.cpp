@@ -1350,7 +1350,7 @@ void common_spec_auto(common_params & params) {
 // and generation time per token at exit; then the faster mode is kept (file in the cache dir). The cache is kept only when
 // its generation is not slower than stock and its prompt time per token is below LLAMA_MOE_AUTO_PREFILL_SLOWDOWN (2) x stock.
 // LLAMA_MOE_AUTO_MODE=stock|cache forces a mode, =retest forgets the decision.
-struct moe_auto_rec { bool have = false; double p_ms = -1, g_ms = 0, g_max = 0, p_max = 0; int n = 0; int failed_mib = 0; }; // fastest and slowest per-token times seen (the spread is the noise), n: recorded runs; p_ms < 0: no prompt of real size measured yet; failed_mib: free VRAM (MiB) when it could not start (out of memory)
+struct moe_auto_rec { bool have = false; double p_ms = -1, g_ms = 0, g_max = 0, p_max = 0; int n = 0; int failed_mib = 0; std::vector<double> pr, gr; double last_p = -1, last_g = -1; }; // fastest and slowest per-token times seen (the spread is the noise), n: recorded runs; p_ms < 0: no prompt of real size measured yet; failed_mib: free VRAM (MiB) when it could not start (out of memory)
 static std::string g_moe_auto_file;  // decision file of this run (empty: auto choice not involved)
 static double g_moe_auto_np = 0, g_moe_auto_ng = 600; // the request profile of the decision, for the one made when this run is recorded
 static std::string g_moe_auto_mode;  // mode this run explores: "stock" or "cache" (empty: decided already)
@@ -1375,6 +1375,39 @@ static void moe_auto_split(const std::string & path, std::string & section, std:
     prefix  = p == std::string::npos ? "" : path.substr(p + 1);
 }
 
+// per-token times of the last runs of a placement (oldest first, at most 9) are kept next to the record: the value a decision uses is their median once there are
+// three (fewer: the fastest, so a cold first run never decides), the slowest is the noise, the last one shows drift
+static void moe_auto_refresh(moe_auto_rec & r) {
+    auto med_or_min = [](const std::vector<double> & v) {
+        std::vector<double> t = v;
+        std::sort(t.begin(), t.end());
+        return t.size() >= 3 ? t[t.size()/2] : t.front();
+    };
+    if (!r.gr.empty()) {
+        r.g_ms = med_or_min(r.gr);
+        r.g_max = *std::max_element(r.gr.begin(), r.gr.end());
+        r.last_g = r.gr.back();
+    }
+    if (!r.pr.empty()) {
+        r.p_ms = med_or_min(r.pr);
+        r.p_max = *std::max_element(r.pr.begin(), r.pr.end());
+        r.last_p = r.pr.back();
+    }
+}
+
+static std::vector<double> moe_auto_parse_list(const char * s) {
+    std::vector<double> v;
+    char * end = nullptr;
+    for (double x = strtod(s, &end); end != s; x = strtod(s, &end)) { v.push_back(x); s = end; }
+    return v;
+}
+
+static std::string moe_auto_list(const std::vector<double> & v) {
+    std::string o;
+    for (size_t i = 0; i < v.size(); ++i) { o += string_format(i ? " %.4f" : "%.4f", v[i]); }
+    return o;
+}
+
 static void moe_auto_read(const std::string & path, moe_auto_rec & st, moe_auto_rec & ca, std::string & decided) {
     std::string section, prefix;
     moe_auto_split(path, section, prefix);
@@ -1384,6 +1417,11 @@ static void moe_auto_read(const std::string & path, moe_auto_rec & st, moe_auto_
             r->have = sscanf(buf, "%lf %lf %d %lf %lf %d", &r->p_ms, &r->g_ms, &r->n, &r->g_max, &r->p_max, &r->failed_mib) >= 3;
             if (r->have && r->g_max < r->g_ms) { r->g_max = r->g_ms; }
             if (r->have && r->p_max < r->p_ms) { r->p_max = r->p_ms; }
+            char lb[160];
+            const std::string base = prefix + (r == &st ? ".stock" : ".cache");
+            if (r->have && llama_state_get(section.c_str(), (base + ".g").c_str(), lb, sizeof lb)) { r->gr = moe_auto_parse_list(lb); }
+            if (r->have && llama_state_get(section.c_str(), (base + ".p").c_str(), lb, sizeof lb)) { r->pr = moe_auto_parse_list(lb); }
+            moe_auto_refresh(*r);
         }
     }
     if (llama_state_get(section.c_str(), (prefix + ".decided").c_str(), buf, sizeof buf)) { decided = buf; }
@@ -1397,6 +1435,10 @@ static void moe_auto_write(const std::string & path, const moe_auto_rec & st, co
     };
     put(".stock", st);
     put(".cache", ca);
+    for (const auto & kr : { std::make_pair(".stock", &st), std::make_pair(".cache", &ca) }) {
+        if (!kr.second->gr.empty()) { llama_state_set(section.c_str(), (prefix + kr.first + ".g").c_str(), moe_auto_list(kr.second->gr).c_str()); }
+        if (!kr.second->pr.empty()) { llama_state_set(section.c_str(), (prefix + kr.first + ".p").c_str(), moe_auto_list(kr.second->pr).c_str()); }
+    }
     if (!decided.empty()) { llama_state_set(section.c_str(), (prefix + ".decided").c_str(), decided.c_str()); }
 }
 
@@ -2273,14 +2315,14 @@ common_init_result::~common_init_result() {
         }
         llama_state_set(sec.c_str(), (pre + ".strikes").c_str(), std::to_string(strikes).c_str());
     }
-    if (pd.n_p_eval >= 128) { // a real prompt: per-token prompt cost (a few tokens would only time the fixed setup)
-        const double p_ms = pd.t_p_eval_ms / pd.n_p_eval;
-        r.p_ms = r.p_ms >= 0 ? std::min(r.p_ms, p_ms) : p_ms;
-    }
-    r.g_ms = r.have ? std::min(r.g_ms, g_ms) : g_ms;
-    r.g_max = r.have ? std::max(r.g_max, g_ms) : g_ms;
-    if (pd.n_p_eval >= 128) { r.p_max = std::max(r.p_max, pd.t_p_eval_ms / pd.n_p_eval); }
+    if (r.gr.empty() && r.have) { r.gr = { r.g_ms, r.g_max }; if (r.g_max == r.g_ms) { r.gr.pop_back(); } }   // a record from before the sample lists: its best and worst seed them
+    if (r.pr.empty() && r.have && r.p_ms >= 0) { r.pr = { r.p_ms, r.p_max }; if (r.p_max == r.p_ms) { r.pr.pop_back(); } }
+    if (pd.n_p_eval >= 128) { r.pr.push_back(pd.t_p_eval_ms / pd.n_p_eval); }   // a real prompt: per-token prompt cost (a few tokens would only time the fixed setup)
+    r.gr.push_back(g_ms);
+    if (r.pr.size() > 9) { r.pr.erase(r.pr.begin(), r.pr.end() - 9); }
+    if (r.gr.size() > 9) { r.gr.erase(r.gr.begin(), r.gr.end() - 9); }
     r.have = true;
+    moe_auto_refresh(r);
     r.n++;
     if (st.have && ca.have) {
         moe_auto_store_picks(g_moe_auto_file, st, ca);
