@@ -48,3 +48,5 @@ mimo-hostbuild,2026-10-03 09:44:58,MiMo: stock native build against stock built 
 mimo-hostbuild,2026-10-03 09:45:45,"MiMo: rc-final, 3 starts of one default state (the third is settled)",,
 mimo-ub,2026-10-03 10:03:44,MiMo rc-final with -ub 512 forced (same state file as the 2048 starts),,
 mimo-chat,2026-10-03 10:34:19,"MiMo rc-final, the README test: chat completion, 1500 tokens",,
+observer,2026-10-03 12:56:54,"bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds rc-obs-499914d7f variants obs_on,obs_off test t100 n=1",,
+observer,2026-10-03 12:58:20,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds rc-obs-499914d7f variants obs_on test t100 n=2,,
