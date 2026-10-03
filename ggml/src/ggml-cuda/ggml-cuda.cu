@@ -1526,7 +1526,7 @@ static char * ggml_cuda_hugefs_map(size_t size, const std::string & key, std::un
 }
 
 static void * ggml_cuda_host_malloc_registered(size_t size) {
-    if (size < (1ull << 30) || getenv("GGML_CUDA_NO_PINNED") != nullptr) {
+    if (size < (1ull << 30) || getenv("GGML_CUDA_NO_PINNED") != nullptr || getenv("GGML_CUDA_NO_REGISTERED") != nullptr) {   // NO_REGISTERED: plain cudaMallocHost (experiment)
         return nullptr;
     }
     const int64_t t_start = ggml_time_us();
