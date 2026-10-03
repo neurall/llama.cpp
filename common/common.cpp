@@ -1218,6 +1218,7 @@ static size_t common_model_file_size(const std::string & path_model) {
 }
 
 // bytes of the routed-expert tensors (*_exps), over all splits: the rest of the file is what the GPU has to hold before a cache slot fits
+// bytes of the tensors that need no VRAM for the expert cache to fit: the experts and the (per-layer) token embeddings
 static size_t common_model_expert_bytes(const std::string & path_model) {
     gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
     gguf_context * g0 = gguf_init_from_file(path_model.c_str(), gp);
@@ -1239,7 +1240,10 @@ static size_t common_model_expert_bytes(const std::string & path_model) {
             continue;
         }
         for (int64_t t = 0; t < gguf_get_n_tensors(g); t++) {
-            if (strstr(gguf_get_tensor_name(g, t), "_exps")) {
+            // the experts, and the token embeddings: they stay in host memory (a lookup, one row per token, e.g. the 26.8 GiB per_layer_token_embd of Qwen3.8-Flash-Next),
+            // so neither counts against the VRAM the cache needs besides the non-expert weights
+            const char * name = gguf_get_tensor_name(g, t);
+            if (strstr(name, "_exps") || strstr(name, "token_embd")) {
                 bytes += gguf_get_tensor_size(g, t);
             }
         }
