@@ -104,10 +104,9 @@ fork measures your machine and tunes most of those while you use it. The default
   difference was under 2%). A setting that does not help is dropped, a setting you fix yourself is never touched.  
 - **It remembers.** What it learned per model (hot experts, tuned settings, cache-or-stock) is kept in one file,
   `~/.cache/llama.cpp/moe-state.ini`, so the next start, even a one-shot short prompt, begins from it. Delete the file to start over.  
-- **The first runs of a model are for learning.** The first start of a model (and, for a model that does not fit in VRAM, the second one) is slower than
-  the later ones: the fork is measuring stock against the cache and capturing which experts are hot into the state file. Do the first runs with something short and
-  simple, a short prompt and `-n 100` at most, so they are quick. From the third start on it runs at its settled speed (Qwen3.8-Flash-Next IQ1_M on 2 x RTX 3090: first
-  start 66 t/s, the cache trial 54 t/s, then 66 t/s again with stock placement; where the cache wins it keeps the cache). Benchmark only after those runs.  
+- **Speed shows from the second or third start.** The first start of a model runs like stock while the fork captures which experts are hot into the state file
+  (`moe-state.ini`). If the cache is faster than stock on your machine, you will not see the gain on that first run but on the later ones, once the file exists
+  and the fork has measured both placements. Do the first runs short and simple, a short prompt and `-n 100` at most, then judge the speed after them.  
 - **It tells you what it does.** `llama-server` logs, and `llama-cli -lv 3` prints after each reply, whether the cache is on,
   the hit rate, the tuned settings, threads and batch sizes.  
 
