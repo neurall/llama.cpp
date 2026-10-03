@@ -105,7 +105,7 @@ fork measures your machine and tunes most of those while you use it. The default
 - **It remembers.** What it learned per model (hot experts, tuned settings, cache-or-stock) is kept in one file,
   `~/.cache/llama.cpp/moe-state.ini`, so the next start, even a one-shot short prompt, begins from it. Delete the file to start over.  
 - **Speed shows from the second or third start.** The first start of a model runs like stock while the fork captures which experts are hot into the state file
-  (`moe-state.ini`). If the cache is faster than stock on your machine, you will not see the gain on that first run but on the later ones, once the file exists
+  (`moe-state.ini`). If the cache is faster than stock on your machine, you will not see the maximum gain on the first run but on all the later ones, once the file exists
   and the fork has measured both placements. Do the first runs short and simple, a short prompt and `-n 100` at most, then judge the speed after them.  
 - **It tells you what it does.** `llama-server` logs, and `llama-cli -lv 3` prints after each reply, whether the cache is on,
   the hit rate, the tuned settings, threads and batch sizes.  
