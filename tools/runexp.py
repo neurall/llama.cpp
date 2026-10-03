@@ -324,16 +324,23 @@ def run_exp(spec_path, rs, dry=False, only=None, rounds=None):
             warm_done = set()
             for rnd in range(rounds):
                 for arm in order_arms(arms, rnd, spec.get("order", "fixed")):
-                    for attempt in range(1 + (spec.get("warm", 0) if arm["name"] not in warm_done else 0)):
-                        measured = attempt == spec.get("warm", 0) if arm["name"] not in warm_done else True
+                    # a discarded hot-up run (cold file read, never stored) only for arms that read the weights lazily (mmap, stock, fork off):
+                    # warm = N on the arm, else on [exp]; a pinned arm reads the whole file while loading and needs none
+                    warm_n = int(arm.get("warm", spec.get("warm", 0))) if arm["name"] not in warm_done else 0
+                    for attempt in range(1 + warm_n):
                         n_run += 1
                         row = one_run(spec, wl, setup, arm, mname, mpath, rnd, base_env, guard_lim, dry, state_file)
-                        if arm["name"] not in warm_done and spec.get("warm", 0) and attempt < spec["warm"]:
-                            print(f"  (warm-up of {arm['name']} discarded)", flush=True)
+                        if attempt < warm_n:
+                            print(f"  (cold hot-up run of {arm['name']} discarded, not recorded)", flush=True)
                             continue
                         warm_done.add(arm["name"])
                         if not dry:
                             store_row(rs, spec, name, spec_sha, arm, mname, mpath, rnd, row, hw, setup, guard_lim)
+                            if arm.get("state") and os.path.exists(arm["state"]):   # the tuner state after every run, so a run that deletes or rewrites it shows
+                                sd = os.path.join(rs.DATA, "logs", name); os.makedirs(sd, exist_ok=True)
+                                shutil.copy(arm["state"], os.path.join(sd, f"state-{arm['name']}-{mname}-r{rnd + 1}.ini"))
+                            elif arm.get("state"):
+                                print(f"  WARNING: state file of {arm['name']} is gone after the run ({arm['state']})", flush=True)
     finally:
         if holder:
             try:
