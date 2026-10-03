@@ -515,6 +515,8 @@ llama_context::llama_context(
 llama_context::~llama_context() {
     if (cparams.moe_cache) {
         llama_moe_cache_free();
+    } else if (moe_observe_started) {
+        llama_moe_observe_save();
     }
     // wait for any pending asynchronous copies into the output buffers before they are freed
     synchronize();
@@ -2049,6 +2051,10 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
 }
 
 int llama_context::decode(const llama_batch_ext & batch_inp) {
+    if (!cparams.moe_cache && !moe_observe_started && !moe_cache_defer) {
+        moe_observe_started = true;
+        llama_moe_observe_start(model);
+    }
     if (cparams.moe_cache && !cparams.moe_cache_started && !moe_cache_defer) {
         cparams.moe_cache_started = true;
         llama_moe_cache_init(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots, cparams.moe_cache_window,

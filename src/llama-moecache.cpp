@@ -21,6 +21,7 @@
 #include <cstdarg>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <set>
 #include <string>
 #include <chrono>
@@ -663,6 +664,98 @@ void refresh_sticky(layer_state & ls) {
 }
 
 int parse_layer_from_name(const char * name);
+
+}  // namespace (reopened below)
+
+namespace {
+struct stock_heat_t {
+    std::mutex mtx;
+    bool on = false;
+    std::string section;
+    std::vector<std::vector<uint64_t>> counts;   // [layer][expert]
+    uint64_t tokens = 0;                         // routed tokens seen (summed over observed layers)
+} g_heat;
+
+void stock_obs_cb(const char * name, const struct ggml_tensor * ids, const struct ggml_tensor *, void *) {
+    const int il = parse_layer_from_name(name);
+    if (il < 0 || ids->type != GGML_TYPE_I32) {
+        return;
+    }
+    std::lock_guard<std::mutex> lk(g_heat.mtx);
+    if ((size_t) il >= g_heat.counts.size()) {
+        return;
+    }
+    auto & c = g_heat.counts[il];
+    for (int64_t t = 0; t < ids->ne[1]; ++t) {
+        for (int64_t i = 0; i < ids->ne[0]; ++i) {
+            const int32_t id = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+            if (id >= 0 && (size_t) id < c.size()) {
+                c[id]++;
+            }
+        }
+    }
+    g_heat.tokens += ids->ne[1];
+}
+}  // namespace
+
+void llama_moe_observe_start(const llama_model & model) {
+    const char * off = getenv("LLAMA_MOE_OBSERVE");
+    if ((off && off[0] == '0') || model.hparams.n_expert == 0 || !moe_state_enabled() || g_cache) {
+        return;
+    }
+    std::lock_guard<std::mutex> lk(g_heat.mtx);
+    g_heat.section = moe_state_section(model);
+    g_heat.counts.assign(model.hparams.n_layer, std::vector<uint64_t>(model.hparams.n_expert, 0));
+    g_heat.tokens = 0;
+    g_heat.on = true;
+    ggml_set_moe_obs_callback(stock_obs_cb, nullptr);
+}
+
+void llama_moe_observe_save() {
+    std::vector<std::pair<std::string, std::string>> kv;
+    {
+        std::lock_guard<std::mutex> lk(g_heat.mtx);
+        if (!g_heat.on) {
+            return;
+        }
+        g_heat.on = false;
+        ggml_set_moe_obs_callback(nullptr, nullptr);
+        if (g_heat.tokens < 64) {   // too little use to be worth keeping
+            return;
+        }
+        for (size_t il = 0; il < g_heat.counts.size(); ++il) {
+            auto c = g_heat.counts[il];
+            uint64_t sum = 0;
+            for (auto x : c) { sum += x; }
+            if (sum == 0) {
+                continue;   // a layer whose experts run on the GPU: nothing was seen
+            }
+            std::string old;   // earlier runs' counts of this layer are added
+            if (moe_state_get(g_heat.section, "hot." + std::to_string(il), old)) {
+                std::istringstream is(old);
+                for (size_t e = 0; e < c.size(); ++e) {
+                    uint64_t v = 0;
+                    if (!(is >> v)) { break; }
+                    c[e] += v;
+                }
+            }
+            uint64_t mx = 0;
+            for (auto x : c) { mx = std::max(mx, x); }
+            int shift = 0;
+            while ((mx >> shift) > (1ull << 31)) { shift++; }
+            std::string v;
+            for (size_t e = 0; e < c.size(); ++e) {
+                v += (e ? " " : "") + std::to_string((uint32_t) (c[e] >> shift));
+            }
+            kv.emplace_back("hot." + std::to_string(il), v);
+        }
+    }
+    if (!kv.empty()) {
+        moe_state_set(g_heat.section, kv);
+    }
+}
+
+namespace {
 void set_table_entry(llama_moe_cache_layer & pub, int32_t expert, int32_t slot_or_dummy);
 void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop);
 

@@ -42,6 +42,7 @@ using llama_memory_buffers = std::map<ggml_backend_buffer_type_t, llama_memory_b
 
 struct llama_context {
     bool moe_cache_defer = false; // see llama_moe_cache_defer()
+    bool moe_observe_started = false; // the heat of a stock placement start is being counted (llama_moe_observe_start)
     // init scheduler and compute buffers, reserve worst-case graphs
     llama_context(
             const llama_model & model,
