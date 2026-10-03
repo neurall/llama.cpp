@@ -2194,6 +2194,23 @@ common_init_result::~common_init_result() {
     moe_auto_rec & r = g_moe_auto_mode == "stock" ? st : ca;
     // the fastest per-token times seen: a cold run (model not in the page cache yet) never outweighs a warm one
     const double g_ms = pd.t_eval_ms / pd.n_eval;
+    // stale state guard: what the cache learned (hot experts, tuner values) can go stale (another workload, state left by another build). A cache run
+    // whose generation is more than 15% slower than the best this placement ever did, twice in a row, erases the model's learned state, so the next
+    // starts relearn it. The stock record is kept; a single slow run (thermal, other load, a longer context) only counts a strike.
+    if (g_moe_auto_mode == "cache" && r.have && r.n >= 2 && pd.n_eval >= 64) {
+        std::string sec, pre; moe_auto_split(g_moe_auto_file, sec, pre);
+        char b[16] = {0};
+        int strikes = llama_state_get(sec.c_str(), (pre + ".strikes").c_str(), b, sizeof b) ? atoi(b) : 0;
+        strikes = g_ms > 1.15 * r.g_ms ? strikes + 1 : 0;
+        if (strikes >= 2) {
+            LOG_INF("%s: MoE state looked stale (generation %.2f ms per token, best %.2f, twice in a row): erasing what was learned for this model, it relearns from the next start\n",
+                __func__, g_ms, r.g_ms);
+            llama_state_erase(sec.c_str(), "");
+            moe_auto_write(g_moe_auto_file, st, moe_auto_rec(), "");
+            return;
+        }
+        llama_state_set(sec.c_str(), (pre + ".strikes").c_str(), std::to_string(strikes).c_str());
+    }
     if (pd.n_p_eval >= 128) { // a real prompt: per-token prompt cost (a few tokens would only time the fixed setup)
         const double p_ms = pd.t_p_eval_ms / pd.n_p_eval;
         r.p_ms = r.p_ms >= 0 ? std::min(r.p_ms, p_ms) : p_ms;
