@@ -17,6 +17,10 @@ struct llama_model;
 void        moe_state_set_model(const std::string & section);
 std::string moe_state_section(const llama_model & model);
 
+// the key prefix of this hardware's placement records ("place.g2.<GPU hash>.v3"), set once by the tool that knows the GPUs (common)
+void               moe_state_set_place(const std::string & prefix);
+const std::string & moe_state_place();
+
 bool moe_state_enabled();
 
 // false: no such key or the state is off

@@ -1508,6 +1508,27 @@ void resource_probe(moe_cache * mc) {
         mc->gbs_link[k] = link_alone[k];
         links += tr_fmt(" link %d %.1f", k, link_alone[k]);
     }
+    // the link bandwidth seen on this hardware, rounded to half octaves (x1.41), kept with its placement records: a probe that differs by a factor of 2 or more
+    // (a shared uplink, a throttled or reconfigured slot, a bifurcation the PCI ids do not show) drops those records, so the next start measures again
+    if (!mc->profile.empty() && !moe_state_place().empty()) {
+        const std::string pre = moe_state_place();
+        for (int k = 0; k < mc->n_links; ++k) {
+            if (link_alone[k] <= 0) { continue; }
+            const double seen = std::pow(2.0, std::round(2.0*std::log2(link_alone[k]))/2.0);
+            const std::string key = pre + ".link" + std::to_string(k);
+            std::string old;
+            const double o = moe_state_get(mc->profile, key, old) ? atof(old.c_str()) : 0.0;
+            if (o > 0 && (link_alone[k] >= 2*o || link_alone[k] <= o/2)) {
+                LLAMA_LOG_WARN("moe-cache: link %d now %.1f GB/s, it was %.1f when the placement was measured: those records are dropped, the next start measures again\n", k, link_alone[k], o);
+                moe_state_erase(mc->profile, pre);
+            }
+            if (o <= 0 || link_alone[k] >= 2*o || link_alone[k] <= o/2) {
+                char nb[32];
+                snprintf(nb, sizeof nb, "%.1f", seen);
+                moe_state_set(mc->profile, {{ key, nb }});
+            }
+        }
+    }
     for (size_t i = 0; i < ramp.size(); ++i) {
         rs += tr_fmt("%s%zu:%.1f/%.1f", i ? " " : "", i + 1, ramp[i], ramp_all[i]);
     }
