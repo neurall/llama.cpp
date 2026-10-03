@@ -317,6 +317,7 @@ line. Allocate the pool at run time, as the script does, from ordinary memory.
 | `hot.N = c0 c1 ...` | lifetime use count of every expert of layer N. At start the most used experts are loaded into the cache first, so the first prompt is already warm |
 | `tuned.lK = NAME=value ...` | what the self-tuner settled on, for K upload links (GPUs) |
 | `place.g<gpus>.<GPU hash>.v3.cache`, `.stock`, `.decided` | measured prompt and decode speed of cache and stock placement for this GPU set, and which one won |
+| `place.g<gpus>.<GPU hash>.v3.link<k>` | the link bandwidth (GB/s, rounded to half octaves) seen when the placement was measured; a later probe that differs by a factor of 2 or more drops this hardware's placement records |
 
 Counts only seed the start; during a run the cache scores by recent use. It is plain text, safe to edit or delete.
 
