@@ -62,3 +62,4 @@ readme-rerun,2026-10-04 00:46:04,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.ggu
 readme-rerun,2026-10-04 01:04:59,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-3db71c4ee variants default test t100 n=3",,
 final-w10c,2026-10-04 01:12:48,"bench N:\m\Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf builds stock-b11379,b11707-49fe4b756,final-win variants default test t100 n=3",,
 readme-rerun,2026-10-04 01:30:58,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-3db71c4ee variants default test chat n=3",,
+readme-rerun,2026-10-04 01:37:31,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds release-3db71c4ee variants default test chat n=3,,
