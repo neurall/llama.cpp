@@ -376,7 +376,8 @@ def command_for(wl, setup, arm, mpath):
     a += [str(x) for x in wl.get("extra", [])] + [str(x) for x in arm.get("args", [])]
     cmd = [exe] + a
     if setup.get("time", True):
-        cmd = ["/usr/bin/time", "-v"] + cmd
+        if os.path.exists("/usr/bin/time"):   # not on every box (pc2): then no rss or page-fault columns
+            cmd = ["/usr/bin/time", "-v"] + cmd
     cmd = ["timeout", str(wl.get("timeout", 1500))] + cmd
     env = {k: str(v) for k, v in arm.get("env", {}).items()}
     if arm.get("state"):   # a state file of its own: arms must not learn from each other's runs
