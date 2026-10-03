@@ -50,3 +50,4 @@ mimo-ub,2026-10-03 10:03:44,MiMo rc-final with -ub 512 forced (same state file a
 mimo-chat,2026-10-03 10:34:19,"MiMo rc-final, the README test: chat completion, 1500 tokens",,
 observer,2026-10-03 12:56:54,"bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds rc-obs-499914d7f variants obs_on,obs_off test t100 n=1",,
 observer,2026-10-03 12:58:20,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds rc-obs-499914d7f variants obs_on test t100 n=2,,
+readme-glm-picks,2026-10-03 15:31:50,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds stock-def4d406a,b11707-49fe4b756,rc-picks-f427df4ce variants default test t100 n=2",,

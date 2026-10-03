@@ -1244,9 +1244,12 @@ static size_t common_model_expert_bytes(const std::string & path_model) {
 }
 
 // free memory summed over GPUs, of the largest GPU, and the GPU count
+static size_t g_gpu_total_max = 0; // largest total VRAM of any GPU: identifies the hardware in the placement record (free VRAM moves with every browser tab)
+
 static void common_gpu_free(size_t & total, size_t & max, int & n) {
     total = max = 0;
     n = 0;
+    g_gpu_total_max = 0;
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
@@ -1256,6 +1259,7 @@ static void common_gpu_free(size_t & total, size_t & max, int & n) {
         ggml_backend_dev_memory(dev, &free, &tot);
         total += free;
         max    = std::max(max, free);
+        g_gpu_total_max = std::max(g_gpu_total_max, tot);
         n++;
     }
 }
@@ -1360,7 +1364,7 @@ static std::string g_moe_auto_mode;  // mode this run explores: "stock" or "cach
 static size_t      g_moe_auto_vram_free = 0; // free VRAM when this run chose its placement
 
 // The placement records live in the engine's state file (llama_state_*, one INI section per model):
-//   [<model file> <bytes>]  place.g<gpus>x<MiB>.b<build>.stock|cache = <ms/prompt token> <ms/generated token> <runs>  and  .decided
+//   [<model file> <bytes>]  place.g<gpus>x<GiB of the largest GPU>g.v2.stock|cache = <ms/prompt token> <ms/generated token> <runs>  and  .decided
 // moe_auto_path() returns "<section>\x1f<key prefix>"; the same section is handed to the engine for its own keys (hot experts, tuner)
 static std::string moe_auto_path(const common_params & params, size_t model_size, int n_gpu, size_t vram_max) {
     std::string name = params.model.path;
@@ -1369,7 +1373,7 @@ static std::string moe_auto_path(const common_params & params, size_t model_size
     for (auto & c : name) { if (c == '[' || c == ']' || c == '\n' || c == '\r') { c = '_'; } }
     const std::string section = name + " " + std::to_string(model_size);
     llama_state_set_model(section.c_str());
-    return section + "\x1f" + "place.g" + std::to_string(n_gpu) + "x" + std::to_string(vram_max >> 20) + ".v1"; // v1: the placement rule's epoch, not the build, so a new release does not re-measure (LLAMA_MOE_AUTO_MODE=retest forgets)
+    return section + "\x1f" + "place.g" + std::to_string(n_gpu) + "x" + std::to_string(((g_gpu_total_max ? g_gpu_total_max : vram_max) + ((size_t) 1 << 29)) >> 30) + "g.v2"; // v1: the placement rule's epoch, not the build, so a new release does not re-measure (LLAMA_MOE_AUTO_MODE=retest forgets)
 }
 
 static void moe_auto_split(const std::string & path, std::string & section, std::string & prefix) {
