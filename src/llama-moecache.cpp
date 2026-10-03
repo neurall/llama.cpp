@@ -620,8 +620,15 @@ void profile_save(const moe_cache * mc) {
             { "upload_step",   mc->n_uploads/steps },
             { "up_mib_step",   std::max<int64_t>(0, mc->up_bytes.load())/1048576.0/steps },
             { "prefill_hit_pct", mc->n_src_query ? 100.0*mc->n_src_hit/mc->n_src_query : 0.0 },
+            // the predictor's own result (only when it uploaded something): share of its uploads that were used, share of its candidates too late to start,
+            // and the share of the real misses its top-1 / top-2 candidates would have covered
+            { "pred_used_pct", mc->n_pred_up ? 100.0*mc->n_pred_used/mc->n_pred_up : -1.0 },
+            { "pred_late_pct", mc->n_pred_up + mc->n_pred_late ? 100.0*mc->n_pred_late/(mc->n_pred_up + mc->n_pred_late) : -1.0 },
+            { "pred_cov1_pct", mc->pm_miss ? 100.0*mc->pm_cov[0]/mc->pm_miss : -1.0 },
+            { "pred_cov2_pct", mc->pm_miss ? 100.0*mc->pm_cov[1]/mc->pm_miss : -1.0 },
         };
         for (const auto & r : run) {
+            if (r.second < 0) { continue; }   // no predictor this run: nothing to record
             std::vector<double> v;
             std::string old;
             if (moe_state_get(mc->profile, std::string("run.") + r.first, old)) {
@@ -4134,6 +4141,13 @@ void llama_moe_cache_free() {
         LLAMA_LOG_WARN("moe-cache: predicted top-k overlap:%s (%" PRIu64 " training steps)\n", msg.c_str(), mc->n_train);
     }
     pred_save(mc);
+    if (mc->n_pred_up || mc->pm_miss) {
+        // one line for the harness (tools/runexp.py): the predictor's result of this run
+        LLAMA_LOG_WARN("moe-pred: up=%" PRIu64 " pub=%" PRIu64 " used=%" PRIu64 " late=%" PRIu64 " stale=%" PRIu64 " cov1=%.1f cov2=%.1f cov3=%.1f miss_per_layer=%.2f\n",
+                mc->n_pred_up, mc->n_pred_pub, mc->n_pred_used, mc->n_pred_late, mc->n_stream_stale,
+                100.0*mc->pm_cov[0]/std::max<uint64_t>(1, mc->pm_miss), 100.0*mc->pm_cov[1]/std::max<uint64_t>(1, mc->pm_miss),
+                100.0*mc->pm_cov[2]/std::max<uint64_t>(1, mc->pm_miss), (double) mc->pm_miss/std::max<uint64_t>(1, mc->acc_tot[0]/8));
+    }
     if (mc->n_pred_up) {
         LLAMA_LOG_WARN("moe-cache: router prediction: %" PRIu64 " uploads, %" PRIu64 " published before their layer, %" PRIu64 " used, %" PRIu64 " too late to start, %" PRIu64 " dropped in the queue (layer started), %" PRIu64 " promoted into the cache, %" PRIu64 " token-boundary prefetches\n",
                 mc->n_pred_up, mc->n_pred_pub, mc->n_pred_used, mc->n_pred_late, mc->n_stream_stale, mc->n_promoted, mc->n_tbp);
