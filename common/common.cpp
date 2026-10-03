@@ -1299,8 +1299,9 @@ void common_spec_auto(common_params & params) {
 // and generation time per token at exit; then the faster mode is kept (file in the cache dir). The cache is kept only when
 // its generation is not slower than stock and its prompt time per token is below LLAMA_MOE_AUTO_PREFILL_SLOWDOWN (2) x stock.
 // LLAMA_MOE_AUTO_MODE=stock|cache forces a mode, =retest forgets the decision.
-struct moe_auto_rec { bool have = false; double p_ms = -1, g_ms = 0; int n = 0; }; // n: recorded runs; p_ms < 0: no prompt of real size measured yet
+struct moe_auto_rec { bool have = false; double p_ms = -1, g_ms = 0, g_max = 0, p_max = 0; int n = 0; }; // fastest and slowest per-token times seen (the spread is the noise), n: recorded runs; p_ms < 0: no prompt of real size measured yet
 static std::string g_moe_auto_file;  // decision file of this run (empty: auto choice not involved)
+static double g_moe_auto_np = 0, g_moe_auto_ng = 600; // the request profile of the decision, for the one made when this run is recorded
 static std::string g_moe_auto_mode;  // mode this run explores: "stock" or "cache" (empty: decided already)
 
 // The placement records live in the engine's state file (llama_state_*, one INI section per model):
@@ -1328,7 +1329,9 @@ static void moe_auto_read(const std::string & path, moe_auto_rec & st, moe_auto_
     char buf[128];
     for (moe_auto_rec * r : { &st, &ca }) {
         if (llama_state_get(section.c_str(), (prefix + (r == &st ? ".stock" : ".cache")).c_str(), buf, sizeof buf)) {
-            r->have = sscanf(buf, "%lf %lf %d", &r->p_ms, &r->g_ms, &r->n) == 3;
+            r->have = sscanf(buf, "%lf %lf %d %lf %lf", &r->p_ms, &r->g_ms, &r->n, &r->g_max, &r->p_max) >= 3;
+            if (r->have && r->g_max < r->g_ms) { r->g_max = r->g_ms; }
+            if (r->have && r->p_max < r->p_ms) { r->p_max = r->p_ms; }
         }
     }
     if (llama_state_get(section.c_str(), (prefix + ".decided").c_str(), buf, sizeof buf)) { decided = buf; }
@@ -1338,7 +1341,7 @@ static void moe_auto_write(const std::string & path, const moe_auto_rec & st, co
     std::string section, prefix;
     moe_auto_split(path, section, prefix);
     auto put = [&](const char * k, const moe_auto_rec & r) {
-        if (r.have) { llama_state_set(section.c_str(), (prefix + k).c_str(), string_format("%.4f %.4f %d", r.p_ms, r.g_ms, r.n).c_str()); } // p_ms -1: unknown
+        if (r.have) { llama_state_set(section.c_str(), (prefix + k).c_str(), string_format("%.4f %.4f %d %.4f %.4f", r.p_ms, r.g_ms, r.n, r.g_max, r.p_max).c_str()); } // p_ms -1: unknown
     };
     put(".stock", st);
     put(".cache", ca);
@@ -1362,28 +1365,47 @@ static double moe_auto_est_gen(const common_params & params) {
 // and scaled to a server-sized prompt that picked stock for a cache that prefills 10x faster. Until then the prompt term drops out.
 static bool moe_auto_p_known(const moe_auto_rec & st, const moe_auto_rec & ca) { return st.p_ms >= 0 && ca.p_ms >= 0; }
 
-static std::string moe_auto_decide_for(const moe_auto_rec & st, const moe_auto_rec & ca, const common_params & params) {
+// The decision is made again on every start from everything recorded, so it can change its mind. Per placement the fastest per-token times
+// seen are kept (a cold run never decides) and the slowest too: their spread is the noise of that placement. A gap smaller than the noise
+// (at least 5%, and the 10% a single run is assumed to scatter by) keeps the previous decision, a clear gap changes it.
+static double moe_auto_cost(const moe_auto_rec & r, double np, double ng, bool p_known) { return (p_known ? np * r.p_ms : 0.0) + ng * r.g_ms; }
+
+static double moe_auto_noise(const moe_auto_rec & r) {
+    return r.n >= 2 && r.g_ms > 0 ? std::min(0.25, (r.g_max - r.g_ms) / r.g_ms) : 0.10;
+}
+
+// relative gap between the placements' request costs (positive: the cache is faster) and the noise bar it has to beat
+static double moe_auto_gap(const moe_auto_rec & st, const moe_auto_rec & ca, double np, double ng, double & bar) {
+    const bool pk = moe_auto_p_known(st, ca);
+    const double c = moe_auto_cost(ca, np, ng, pk), s = moe_auto_cost(st, np, ng, pk);
+    bar = std::max(0.05, std::max(moe_auto_noise(st), moe_auto_noise(ca)));
+    return (s - c) / std::max(1e-9, std::min(c, s));
+}
+
+static std::string moe_auto_choose(const moe_auto_rec & st, const moe_auto_rec & ca, double np, double ng, const std::string & prev) {
+    double bar = 0;
+    const double gap = moe_auto_gap(st, ca, np, ng, bar);
+    if ((prev == "cache" || prev == "stock") && std::fabs(gap) <= bar) { return prev; }
+    return gap >= 0 ? "cache" : "stock";
+}
+
+static std::string moe_auto_decide_for(const moe_auto_rec & st, const moe_auto_rec & ca, const common_params & params, const std::string & prev) {
     const double np = moe_auto_p_known(st, ca) ? moe_auto_est_prompt(params) : 0.0;
     const double ng = moe_auto_est_gen(params);
-    const bool cache = np * ca.p_ms + ng * ca.g_ms <= np * st.p_ms + ng * st.g_ms;
+    const std::string mode = moe_auto_choose(st, ca, np, ng, prev);
     // switchover: the prompt length below which the cache wins for this many generated tokens
     const double dp = ca.p_ms - st.p_ms, dg = st.g_ms - ca.g_ms;
     const double breakeven = !moe_auto_p_known(st, ca) || dp <= 0 ? INFINITY : dg <= 0 ? 0.0 : ng * dg / dp;
     LOG_INF("%s: MoE placement: request ~%.0f prompt + %.0f generated tokens; the cache wins for prompts under ~%.0f tokens at that answer length\n",
         __func__, np, ng, breakeven);
-    return cache ? "cache" : "stock";
+    return mode;
 }
 
-// the cache wins the estimated request (same estimate as above) by at least 3% on one run of each placement
-static bool moe_auto_cache_clear_win(const moe_auto_rec & st, const moe_auto_rec & ca, const common_params & params) {
-    const double np = moe_auto_p_known(st, ca) ? moe_auto_est_prompt(params) : 0.0, ng = moe_auto_est_gen(params);
-    return np * ca.p_ms + ng * ca.g_ms <= 0.97 * (np * st.p_ms + ng * st.g_ms);
-}
-
-static std::string moe_auto_decide(const moe_auto_rec & st, const moe_auto_rec & ca) {
-    const char * e = getenv("LLAMA_MOE_AUTO_PREFILL_SLOWDOWN");
-    const double max_p = e ? atof(e) : 2.0;
-    return ca.g_ms <= st.g_ms && (!moe_auto_p_known(st, ca) || ca.p_ms < max_p * st.p_ms) ? "cache" : "stock";
+// one run of each placement decides when the gap beats the noise; otherwise a second run of each is taken
+static bool moe_auto_clear_gap(const moe_auto_rec & st, const moe_auto_rec & ca, const common_params & params) {
+    double bar = 0;
+    const double np = moe_auto_p_known(st, ca) ? moe_auto_est_prompt(params) : 0.0;
+    return std::fabs(moe_auto_gap(st, ca, np, moe_auto_est_gen(params), bar)) > bar;
 }
 
 // --moe autotune=0 or LLAMA_AUTOTUNE=0: the kill switch for everything the engine tunes or measures by itself
@@ -1529,10 +1551,21 @@ static void common_moe_cache_auto_impl(common_params & params) {
             mode = moe_auto_est_prompt(params) < 3000 ? "cache" : "stock";
             LOG_INF("%s: MoE placement: %s (autotune off: static rule, model %.1f GiB, free VRAM %.1f GiB)\n", __func__, mode.c_str(),
                 model_size / 1073741824.0, vram_free / 1073741824.0);
-        } else if ((st.n >= 2 && ca.n >= 2) || (st.n >= 1 && ca.n >= 1 && moe_auto_cache_clear_win(st, ca, params))) {
-            // both placements measured on at least two runs (the first of each may be cold), or once each when the cache, whose run came
-            // first and may be cold, already wins this request by 10%: decide for this request
-            mode = moe_auto_decide_for(st, ca, params);
+        } else if ((st.n >= 2 && ca.n >= 2) || (st.n >= 1 && ca.n >= 1 && moe_auto_clear_gap(st, ca, params))) {
+            // both placements measured on at least two runs (the first of each may be cold), or once each when one of them wins this
+            // request by more than 10%: decide for this request
+            mode = moe_auto_decide_for(st, ca, params, decided);
+            // the loser never gets a new measurement: every 8th start runs it again, so a changed machine or a lucky first run is found out
+            {
+                std::string sec, pre; moe_auto_split(path, sec, pre);
+                char b[32] = {0};
+                int since = llama_state_get(sec.c_str(), (pre + ".since").c_str(), b, sizeof b) ? atoi(b) : 0;
+                if (since >= 7) { mode = mode == "cache" ? "stock" : "cache"; since = 0; LOG_INF("%s: MoE placement: re-measuring %s this run (every 8th start)\n", __func__, mode.c_str()); }
+                else { since++; }
+                llama_state_set(sec.c_str(), (pre + ".since").c_str(), std::to_string(since).c_str());
+            }
+            g_moe_auto_np = moe_auto_p_known(st, ca) ? moe_auto_est_prompt(params) : 0.0;
+            g_moe_auto_ng = moe_auto_est_gen(params);
             // keep recording this placement: a cold first run (page cache, mmap) is replaced by any faster later run
             g_moe_auto_file = path;
             g_moe_auto_mode = mode;
@@ -1545,20 +1578,14 @@ static void common_moe_cache_auto_impl(common_params & params) {
             const size_t est_gen = (size_t) moe_auto_est_gen(params);
             const bool prefill_heavy = est_prompt >= 3000 || est_prompt > 8 * est_gen;
             const std::string first = model_size * 10 > vram_free * 13 && !prefill_heavy ? "cache" : "stock";
-            if (!prefill_heavy) {
-                // the model does not fit: the cache (2x RTX 3090: GLM 1.5x, MiMo 2.4x, Qwen3.8 1.7x, IQ3_S 83 GB on one GPU 2x), no stock run to
-                // spend: nothing is recorded and every start takes the cache. Only a request that is mostly prompt is measured against stock.
-                mode = "cache";
-                LOG_INF("%s: MoE placement: cache (model %.1f GiB does not fit the free VRAM %.1f GiB, nothing to measure)\n", __func__,
-                    model_size / 1073741824.0, vram_free / 1073741824.0);
-            } else {
-                // measuring: the placement with fewer recorded runs (ties: the first), so each gets two runs before it decides
-                mode = st.n == ca.n ? first : (st.n < ca.n ? "stock" : "cache");
-                g_moe_auto_file = path;
-                g_moe_auto_mode = mode;
-                LOG_INF("%s: MoE placement: measuring %s this run (stock %d runs, cache %d runs recorded; both need 2 before the faster one is kept; %s)\n", __func__,
-                    mode.c_str(), st.n, ca.n, path.c_str());
-            }
+            // nothing is assumed from the model's size: both placements are measured on real requests (the cache first when the model is
+            // clearly bigger than the free VRAM, it wins there on every measured model; stock first otherwise), one run each when the gap is clear
+            // measuring: the placement with fewer recorded runs (ties: the first), so each gets two runs before it decides
+            mode = st.n == ca.n ? first : (st.n < ca.n ? "stock" : "cache");
+            g_moe_auto_file = path;
+            g_moe_auto_mode = mode;
+            LOG_INF("%s: MoE placement: measuring %s this run (stock %d runs, cache %d runs recorded; both need 2 before the faster one is kept; %s)\n", __func__,
+                mode.c_str(), st.n, ca.n, path.c_str());
         }
         use_cache = mode != "stock";
     }
@@ -2055,10 +2082,12 @@ common_init_result::~common_init_result() {
         r.p_ms = r.p_ms >= 0 ? std::min(r.p_ms, p_ms) : p_ms;
     }
     r.g_ms = r.have ? std::min(r.g_ms, g_ms) : g_ms;
+    r.g_max = r.have ? std::max(r.g_max, g_ms) : g_ms;
+    if (pd.n_p_eval >= 128) { r.p_max = std::max(r.p_max, pd.t_p_eval_ms / pd.n_p_eval); }
     r.have = true;
     r.n++;
     if (st.have && ca.have) {
-        decided = moe_auto_decide(st, ca);
+        decided = moe_auto_choose(st, ca, moe_auto_p_known(st, ca) ? g_moe_auto_np : 0.0, g_moe_auto_ng, decided);
         LOG_INF("%s: MoE placement decided: %s (stock %.2f/%.2f, cache %.2f/%.2f ms per prompt/generated token)\n", __func__,
             decided.c_str(), st.p_ms, st.g_ms, ca.p_ms, ca.g_ms);
     }
