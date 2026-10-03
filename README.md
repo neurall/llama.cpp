@@ -181,9 +181,9 @@ Everything that stays in host RAM is pinned now, because pinned weights are far 
 decodes at 12 to 15 tokens/s pinned and at 2 to 2.5 tokens/s when the load falls back to mmap, and a 12k-token prompt goes from 127 to 285 tokens/s once the state is learned.  
 That is why auto-pin is the default (`-lm mmap` opts out), and it needs nothing from you.  
 
-The optional part is a pool of 1 GiB huge pages that keeps the pinned models resident in RAM between runs: a restart skips the disk read and the pinning,  
-typically about 40 s instead of about 100 s for a 100 GB model. It helps the command line most (every `llama-cli` run is a new process that loads the model again);  
-a server loads once and keeps running, so it does not need the pool.  
+The optional part is a pool of 1 GiB huge pages that keeps the pinned models resident in RAM between runs: the first load fills a cache file in the pool,  
+every later load maps that file instead of reading the model again, which roughly halves the load time (often about 100 s down to about 40 s for a 100 GB model).  
+It helps the command line most (every `llama-cli` run is a new process that loads the model again); a server loads once and keeps running, so it does not need the pool.  
 
 ```
 sudo ./pool.sh mount 100G                 # reserve 100 x 1 GiB huge pages and mount the weights cache at /mnt/huge1g
@@ -196,7 +196,7 @@ sudo ./pool.sh unmount                    # give the memory back
 - Without `GGML_CUDA_HUGEFS`, or without a pool, nothing changes.  
 
 The disadvantages:  
-- **The first start is slow.** Pinning 100 GB takes a while, and the first load of a model also fills the pool's cache file.  
+- **The first start is slow.** The first load of a model reads it from disk, pins it and fills the pool's cache file; only the later loads are fast.  
 - **It needs sudo and a reboot.** 1 GiB pages can only be reserved from memory that is not fragmented yet. Reboot, then run `sudo ./pool.sh mount` before anything else uses RAM, to get the biggest pool; after days of uptime it is no longer possible to reserve a big one.  
 - **The pool is RAM nobody else can use** while it is mounted (a 100 GiB pool leaves about 25 GiB for everything else).  
 
