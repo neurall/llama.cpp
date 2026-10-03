@@ -96,6 +96,32 @@ int main(int argc, char ** argv) {
         printf("%-8s %-9s %12.2f %12.2f %8.3f\n", ty.name, exact ? "yes" : "NO", ga, gb, gb/ga);
         if (!exact) bad++;
     }
+    // the activation quantization (float -> Q8_0) that runs once per token before every dot of prompt processing: speed in GB/s of float input
+    {
+        const auto * qa = ta(GGML_TYPE_Q8_0); const auto * qb = tb(GGML_TYPE_Q8_0);
+        if (qa && qb && qa->from_float && qb->from_float) {
+            qinit(GGML_TYPE_Q8_0);
+            std::vector<uint8_t> oa(rowsize(GGML_TYPE_Q8_0, n)), ob(rowsize(GGML_TYPE_Q8_0, n));
+            bool exact = true;
+            for (int r = 0; r < nrows; ++r) {
+                qa->from_float(src.data() + (size_t) r*n, oa.data(), n); qb->from_float(src.data() + (size_t) r*n, ob.data(), n);
+                if (memcmp(oa.data(), ob.data(), oa.size()) != 0) exact = false;
+            }
+            auto benchq = [&](const struct ggml_type_traits_cpu * tr) {
+                const int reps = 200;
+                auto t0 = std::chrono::steady_clock::now();
+                for (int k = 0; k < reps; ++k) for (int r = 0; r < nrows; ++r) tr->from_float(src.data() + (size_t) r*n, oa.data(), n);
+                double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                return (double) reps * nrows * n * sizeof(float) / sec / 1e9;
+            };
+            benchq(qa); benchq(qb);
+            double ga = 0, gb = 0;
+            const int blocks = getenv("VNNI_BLOCKS") ? atoi(getenv("VNNI_BLOCKS")) : 7;
+            for (int k = 0; k < blocks; ++k) { ga = std::max(ga, benchq(qa)); gb = std::max(gb, benchq(qb)); }
+            printf("%-8s %-9s %12.2f %12.2f %8.3f   (float -> Q8_0, GB/s of float input)\n", "quantq8", exact ? "yes" : "NO", ga, gb, gb/ga);
+            if (!exact) bad++;
+        }
+    }
     printf(bad ? "MISMATCH in %d type(s)\n" : "all bit-exact\n", bad);
     return bad ? 1 : 0;
 }

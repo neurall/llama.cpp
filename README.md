@@ -202,7 +202,7 @@ sudo ./pool.sh unmount                    # give the memory back
 The disadvantages:  
 - **The first start is slow.** The first load of a model reads it from disk, pins it and fills the pool's cache file; only the later loads are fast.  
 - **It needs sudo and a reboot.** 1 GiB pages can only be reserved from memory that is not fragmented yet. Reboot, then run `sudo ./pool.sh 100g` before anything else uses RAM, to get the biggest pool; after days of uptime it is no longer possible to reserve a big one.  
-- **The pool is RAM other programs cannot use while it is mounted** (a 100 GiB pool leaves about 25 GiB for everything else); `sudo ./pool.sh unmount` gives all of it back at once, so it is not a permanent cost.  
+- **The pool is RAM nobody else can use** while it is mounted (a 100 GiB pool leaves about 25 GiB for everything else).  
 
 ## Good to know
 
