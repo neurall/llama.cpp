@@ -1151,6 +1151,7 @@ extern "C" {
     LLAMA_API bool llama_state_set(const char * section, const char * key, const char * value);
     LLAMA_API bool llama_state_erase(const char * section, const char * key_prefix);              // every key of the section starting with it
     LLAMA_API void llama_state_set_model(const char * section);
+    LLAMA_API void llama_state_set_place(const char * prefix);                                    // key prefix of this hardware's placement records; the engine keeps the seen link bandwidth under it
     LLAMA_API void llama_state_suppress_writes(bool suppress);                                    // true: the state is marked for deletion, nothing more is written (the engine's exit save included)
 
     // What the engine runs with right now, for logs and the server: MoE cache state and hit counters (decode only, since start),
