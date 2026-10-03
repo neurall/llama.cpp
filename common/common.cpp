@@ -1400,14 +1400,11 @@ static void moe_auto_write(const std::string & path, const moe_auto_rec & st, co
     if (!decided.empty()) { llama_state_set(section.c_str(), (prefix + ".decided").c_str(), decided.c_str()); }
 }
 
-// "gen" or "prefill": the workload mix of this model, from the decayed total of the measured prompt and generation seconds of all recorded
-// runs (.mix = prompt_s gen_s); generation-heavy when generation took over 10% longer than the prompt. Empty: nothing recorded.
+// "gen" or "prefill": what the last recorded run was, by its measured prompt and generation times
 static std::string moe_auto_heavy(const std::string & path) {
     std::string sec, pre; moe_auto_split(path, sec, pre);
-    char b[64] = {0};
-    double tp = 0, tg = 0;
-    if (!llama_state_get(sec.c_str(), (pre + ".mix").c_str(), b, sizeof b) || sscanf(b, "%lf %lf", &tp, &tg) != 2) { return ""; }
-    return tg > 1.1 * tp ? "gen" : "prefill";
+    char b[16] = {0};
+    return llama_state_get(sec.c_str(), (pre + ".heavy").c_str(), b, sizeof b) ? b : "";
 }
 
 // the process could not start with the placement it was measuring (out of memory): record it with the free VRAM it saw, the other placement is used from the next start
@@ -1475,7 +1472,7 @@ static std::string moe_auto_decide_for(const moe_auto_rec & st, const moe_auto_r
     const double np = moe_auto_p_known(st, ca) ? moe_auto_est_prompt(params) : 0.0;
     const double ng = moe_auto_est_gen(params);
     const std::string mode = moe_auto_choose(st, ca, np, ng, heavy, prev);
-    LOG_INF("%s: MoE placement: the recorded workload is %s-heavy: decided on the better %s\n", __func__, heavy.empty() ? "?" : heavy.c_str(), heavy == "gen" ? "generation" : heavy == "prefill" ? "prefill" : "estimated request");
+    LOG_INF("%s: MoE placement: the last run was %s-heavy: decided on the better %s\n", __func__, heavy.empty() ? "?" : heavy.c_str(), heavy == "gen" ? "generation" : heavy == "prefill" ? "prefill" : "estimated request");
     // switchover: the prompt length below which the cache wins for this many generated tokens
     const double dp = ca.p_ms - st.p_ms, dg = st.g_ms - ca.g_ms;
     const double breakeven = !moe_auto_p_known(st, ca) || dp <= 0 ? INFINITY : dg <= 0 ? 0.0 : ng * dg / dp;
@@ -2264,17 +2261,12 @@ common_init_result::~common_init_result() {
     if (pd.n_p_eval >= 128) { r.p_max = std::max(r.p_max, pd.t_p_eval_ms / pd.n_p_eval); }
     r.have = true;
     r.n++;
-    // this run's measured prompt and generation seconds join the model's workload mix (older runs count 0.75 per run): we do not know the next request,
-    // so one run's ratio decides nothing alone
+    // this run's workload by its measured times: stored for the next start
+    const std::string heavy = pd.t_eval_ms > 1.1 * pd.t_p_eval_ms ? "gen" : "prefill";
     {
         std::string sec, pre; moe_auto_split(g_moe_auto_file, sec, pre);
-        char b[64] = {0};
-        double tp = 0, tg = 0;
-        if (llama_state_get(sec.c_str(), (pre + ".mix").c_str(), b, sizeof b) && sscanf(b, "%lf %lf", &tp, &tg) == 2) { tp *= 0.75; tg *= 0.75; }
-        tp += pd.t_p_eval_ms / 1000.0; tg += pd.t_eval_ms / 1000.0;
-        llama_state_set(sec.c_str(), (pre + ".mix").c_str(), string_format("%.2f %.2f", tp, tg).c_str());
+        llama_state_set(sec.c_str(), (pre + ".heavy").c_str(), heavy.c_str());
     }
-    const std::string heavy = moe_auto_heavy(g_moe_auto_file);
     if (st.have && ca.have) {
         decided = moe_auto_choose(st, ca, moe_auto_p_known(st, ca) ? g_moe_auto_np : 0.0, g_moe_auto_ng, heavy, decided);
         LOG_INF("%s: MoE placement decided: %s (stock %.2f/%.2f, cache %.2f/%.2f ms per prompt/generated token)\n", __func__,
