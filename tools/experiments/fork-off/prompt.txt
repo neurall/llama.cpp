@@ -1,0 +1,45 @@
+# llama.cpp fork: 1.7x to 2.4x faster decode on MoE models bigger than your VRAM
+
+The newest mixture-of-experts models (GLM-5.3-Flash, MiMo-V2.6-Flash, Qwen3.8-Flash-Next, Qwen3.6) are far bigger than a gaming GPU.
+This fork keeps their experts in RAM and turns the free VRAM into a live cache of the experts the model is using; the GPUs compute
+the cached ones and the CPU the rest, at the same time. No special switches needed.
+
+```sh
+llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
+llama-cli    -m model.gguf -p "hello"
+```
+
+The decode speedup is largest when a third to a half of a MoE model fits in VRAM (1.9x to 2.4x), fades above about 55% and is 1.0x once it fits; dense models gain nothing.
+Gain over stock llama.cpp by the share of the model that fits in VRAM (decode; the tables below have the machines and tests):
+
+| model on machine | share of the model in VRAM | gain |
+|---|---|---|
+| MiMo IQ3_XXS 132 GB on A (2x24 GB) | 36% | **2.4x** |
+| GLM 3.5-bit 137 GB on A | 35% | **2.2x** |
+| GLM 3.0-bit on A | about 45% | 1.9x |
+| Qwen Next UD-IQ4_XS 88 GB on A | 55% | 1.7x |
+| GLM 3.0-bit on D, 3 of 4 GPUs | 66% | 1.6x |
+| Qwen Next IQ3_S 83 GB on A | 58% | 1.3x |
+| GLM 3.0-bit on D, 4 GPUs | 88% | 1.3x |
+| Qwen Next IQ1_M 55 GB on A | 87% | 1.0x (picks stock) |
+| Qwen3.6-35B Q2_0 on B (8 GB GPU), an exception: its CPU side is slow | about 73% | 2.0x |
+| any model that fits | 100% | 1.0x (cache off) |
+
+Prompt processing can be slower than stock on long prompts (0.4x to 0.7x in some rows below).
+
+## What you get
+
+Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock llama.cpp.
+Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.
+Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.
+Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.
+Machine D, rented: 4x RTX 3090 (PCIe 4.0 x16 each), EPYC 7B12 (64 cores), 256 GB DDR4 on 4 of 8 memory channels (74 GB/s read measured).
+GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a (no discarded run before it); the other rows are hot runs of earlier builds.
+
+| model (size) | machine | test | upstream | this fork | |
+|---|---|---|---|---|---|
+| **GLM-5.3-Flash** 3.0-bit (106 GB) | A | short chat, decode | 11.9 | **22.4** | **1.9x** |
+| **GLM-5.3-Flash** 3.0-bit (117.5 GB file) | D | short chat, decode, first run | 24.7 | 25.2 | 1.0x |
+| | | same, second run (saved state) | 24.7 | **31.5** | **1.3x** |
+| | | same, second run, `-t 16` | 24.7 | **33.8** | **1.4x** |
+| | | same, 3 of the 4 GPUs, second
