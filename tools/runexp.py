@@ -48,7 +48,7 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
 """
 import glob, shutil, hashlib, json, os, re, shlex, signal, statistics, subprocess, sys, threading, time
 
-EXP_COLS = ["exp", "arm", "ready_s", "wall_s", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3", "miss_per_layer", "ddr_gbs", "pcie_gbs", "ddr_util", "pcie_util",
+EXP_COLS = ["exp", "arm", "ready_s", "wall_s", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3", "miss_per_layer", "ddr_gbs", "pcie_gbs", "ddr_util", "pcie_util",
             "cpu_util", "gpu_util", "placement", "decisions", "rungs", "held_gib", "mem_limit", "cache_state", "temp", "state", "sys"]
 TOOLS = {"cli": "llama-cli", "perplexity": "llama-perplexity", "completion": "llama-completion"}
 HOLD = os.path.join(os.path.dirname(os.path.realpath(__file__)), "experiments", "vram-sim", "vramhold.py")
@@ -198,10 +198,10 @@ def parse_log(text, time_txt):
         r["rungs"] = ";".join(rungs)
     if "out of memory" in t:
         r["oom"] = 1
-    m = re.search(r"moe-pred: up=(\d+) pub=(\d+) used=(\d+) late=(\d+) stale=(\d+) cov1=([\d.]+) cov2=([\d.]+) cov3=([\d.]+) miss_per_layer=([\d.]+)", t)
+    m = re.search(r"moe-pred: hit=([\d.]+) hit_without_est=([\d.]+) boost_pts=([\d.]+) up=(\d+) pub=(\d+) used=(\d+) late=(\d+) stale=(\d+) cov1=([\d.]+) cov2=([\d.]+) cov3=([\d.]+) miss_per_layer=([\d.]+)", t)
     if m:
-        up, pub, used, late, stale, c1, c2, c3, mpl = m.groups()
-        r.update(pred_up=int(up), pred_pub=int(pub), pred_used=int(used), pred_late=int(late), pred_stale=int(stale),
+        hw_, hwo, bp, up, pub, used, late, stale, c1, c2, c3, mpl = m.groups()
+        r.update(pred_hit_without=float(hwo), pred_boost_pts=float(bp), pred_up=int(up), pred_pub=int(pub), pred_used=int(used), pred_late=int(late), pred_stale=int(stale),
                  pred_cov1=float(c1), pred_cov2=float(c2), pred_cov3=float(c3), miss_per_layer=float(mpl))
     m = re.search(r"moe-summary: hit=([\d.]+)% uploads=(\d+) evictions=(\d+) up_mib=(\d+) ddr_gbs=([\d.]+) pcie_gbs=([\d.]+) ddr_peak=([\d.]+) pcie_peak=([\d.]+)", t)
     if m:
