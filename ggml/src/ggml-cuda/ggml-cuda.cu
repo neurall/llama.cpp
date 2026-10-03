@@ -3683,6 +3683,13 @@ static int ggml_cuda_try_fuse_mul_add_sigmoid_scale(ggml_backend_cuda_context & 
     memcpy(&k, (const float *) scl->op_params + 0, sizeof(float));
     memcpy(&c, (const float *) scl->op_params + 1, sizeof(float));
 
+    static bool fired_logged = false;   // once per process: this fusion fired (on which models it ever matches is not known)
+    if (!fired_logged) {
+        fired_logged = true;
+        GGML_LOG_INFO("%s: gate fusion (mul, %s, sigmoid, scale) fires: shape [%lld, %lld, %lld, %lld]\n", __func__, with_add ? "add" : "scale",
+            (long long) scl->ne[0], (long long) scl->ne[1], (long long) scl->ne[2], (long long) scl->ne[3]);
+    }
+
     const int64_t n = ggml_nelements(scl);
     const int block = 256;
     const int grid  = (int) std::min<int64_t>((n + block - 1)/block, 1024);
