@@ -22,7 +22,7 @@ Gain over stock llama.cpp by the share of the model that fits in VRAM (decode; t
 | Qwen Next IQ3_S 83 GB on A | 58% | 1.3x |
 | GLM 3.0-bit on D, 4 GPUs | 88% | 1.3x |
 | Qwen Next IQ1_M 55 GB on A | 87% | 1.0x (picks stock) |
-| Qwen3.6-35B Q2_0 on B (8 GB GPU), an exception: its CPU side is slow | about 73% | 2.0x |
+| Qwen3.6-35B Q2_0 on B (8 GB GPU), an exception: its CPU side is slow | about 73% | 1.9x |
 | any model that fits | 100% | 1.0x (cache off) |
 
 Prompt processing can be slower than stock on long prompts (0.4x to 0.7x in some rows below).  
@@ -38,31 +38,33 @@ Machine D, rented: 4x RTX 3090 (PCIe 4.0 x16 each), EPYC 7B12 (64 cores), 256 GB
 
 GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a 
 (no discarded run before it); the other rows are hot runs of earlier builds.  
+Rows marked **b11988** are re-measured on this release (commit 3db71c4ee): one discarded run, then the 4th start; upstream is the release b11379 on B and upstream 836d57176 built the same way as the fork on C;  
+the other rows keep their old numbers and are being re-measured, the build column says on which build each was taken.  
 
-| model (size) | machine | test | upstream | this fork | |
-|---|---|---|---|---|---|
-| **GLM-5.3-Flash** 3.0-bit (106 GB) | A | short chat, decode | 11.9 | **22.4** | **1.9x** |
-| **GLM-5.3-Flash** 3.0-bit (117.5 GB file) | D | short chat, decode, first run | 24.7 | 25.2 | 1.0x |
-| | | same, second run (saved state) | 24.7 | **31.5** | **1.3x** |
-| | | same, second run, `-t 16` | 24.7 | **33.8** | **1.4x** |
-| | | same, 3 of the 4 GPUs, second run (best ratio) | 20.1 | **32.6** | **1.6x** |
-| **MiMo-V2.6-Flash** IQ3_XXS (132 GB, bigger than RAM) | A | short chat, decode | 4.6 | **10.9** | **2.4x** |
-| | | 12k-token prompt, decode | 4.2 | **9.1** | **2.2x** |
-| | | 12k-token prompt, processing | 156 | 112 | 0.7x |
-| **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) * | A | short chat, decode | 27.7 | **46.5** | **1.7x** |
-| | | 12k-token prompt, decode / processing | 25.3 / 500 | **42.3 / 538** | 1.7x / 1.1x |
-| **GLM-5.3-Flash** 3.5-bit (137 GB, bigger than RAM) | A | short tetris prompt, 100 tokens, decode (text-dependent) | 6.9 | **15.1** | **2.2x** |
-| **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short tetris prompt, 100 tokens, decode | 43.9 | **57.1** | **1.3x** |
-| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | same | 69.1 | 67.5 (picks stock) | 1.0x |
-| | B | same | 11.4 | **13.5** | **1.2x** |
-| | B | same, prompt processing | 15.5 | 5.9 | 0.4x |
-| **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) | B | short tetris prompt, 100 tokens, decode | 29.2 | **59.3** | **2.0x** |
-| | C | same, CPU only (AVX Q2_0 kernels) | 6.3 | **11.3** | **1.8x** |
-| Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | same | 45.1 | 45.0 | 1.0x |
-| Qwen3.8-27B IQ3_S, dense, CPU only | C | same | 1.7 | 1.6 | 1.0x |
-| Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`), fits VRAM | A | same | 78.3 | 77.0 | 1.0x (38.6 without MTP) |
-| | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x |
-| Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) |
+| model (size) | machine | test | upstream | this fork | | build |
+|---|---|---|---|---|---|---|
+| **GLM-5.3-Flash** 3.0-bit (106 GB) | A | short chat, decode | 11.9 | **22.4** | **1.9x** | earlier |
+| **GLM-5.3-Flash** 3.0-bit (117.5 GB file) | D | short chat, decode, first run | 24.7 | 25.2 | 1.0x | b11707+ |
+| | | same, second run (saved state) | 24.7 | **31.5** | **1.3x** | b11707+ |
+| | | same, second run, `-t 16` | 24.7 | **33.8** | **1.4x** | b11707+ |
+| | | same, 3 of the 4 GPUs, second run (best ratio) | 20.1 | **32.6** | **1.6x** | b11707+ |
+| **MiMo-V2.6-Flash** IQ3_XXS (132 GB, bigger than RAM) | A | short chat, decode | 4.6 | **10.9** | **2.4x** | earlier |
+| | | 12k-token prompt, decode | 4.2 | **9.1** | **2.2x** | earlier |
+| | | 12k-token prompt, processing | 156 | 112 | 0.7x | earlier |
+| **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) * | A | short chat, decode | 27.7 | **46.5** | **1.7x** | earlier |
+| | | 12k-token prompt, decode / processing | 25.3 / 500 | **42.3 / 538** | 1.7x / 1.1x | earlier |
+| **GLM-5.3-Flash** 3.5-bit (137 GB, bigger than RAM) | A | short tetris prompt, 100 tokens, decode (text-dependent) | 6.9 | **15.1** | **2.2x** | b11707 |
+| **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short tetris prompt, 100 tokens, decode | 43.9 | **57.1** | **1.3x** | b11707 |
+| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | same | 69.1 | 67.5 (picks stock) | 1.0x | b11707 |
+| | B | same | 12.0 | **16.0** | **1.3x** | **b11988** |
+| | B | same, prompt processing | 18.1 | 19.6 | 1.1x | **b11988** |
+| **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) | B | short tetris prompt, 100 tokens, decode | 30.7 | **59.0** | **1.9x** | **b11988** |
+| | C | same, CPU only (AVX Q2_0 kernels) | 6.3 | **10.9** | **1.7x** | **b11988** |
+| Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | same | 45.1 | 45.0 | 1.0x | earlier |
+| Qwen3.8-27B IQ3_S, dense, CPU only | C | same | 1.7 | 1.6 | 1.0x | earlier |
+| Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`), fits VRAM | A | same | 78.3 | 77.0 | 1.0x (38.6 without MTP) | earlier |
+| | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x | earlier |
+| Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) | any |
 
 D: upstream is the downloaded release b11323 (a source build of def4d406a gave 24.8 and 20.1).  
 the fork is b11707 with the placement change in this branch (any model that does not fit takes the cache);  
