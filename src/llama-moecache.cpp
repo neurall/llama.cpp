@@ -1204,8 +1204,35 @@ static cpu_set_t g_proc_mask = [] {
 }();
 #endif
 
+#if defined(__linux__)
+static const cpu_set_t * helper_cpu_set_mc() {
+    static const cpu_set_t cs = [] {
+        cpu_set_t c;
+        CPU_ZERO(&c);
+        if (const char * e = getenv("LLAMA_HELPER_CPUS")) {   // see common: a user CPU mask -C, plus the SMT siblings of its cores
+            for (const char * p = e; *p; ) {
+                char * end = nullptr;
+                const long a = strtol(p, &end, 10);
+                if (end == p) { break; }
+                long b = a;
+                if (*end == '-') { p = end + 1; b = strtol(p, &end, 10); }
+                for (long i = a; i <= b && i < CPU_SETSIZE; ++i) { CPU_SET((int) i, &c); }
+                p = *end == ',' ? end + 1 : end;
+                if (end == p && *end != ',') { break; }
+            }
+        }
+        return c;
+    }();
+    return CPU_COUNT(&cs) > 0 ? &cs : nullptr;
+}
+#endif
+
 void unpin_helper() {
 #if defined(__linux__)
+    if (const cpu_set_t * hs = helper_cpu_set_mc()) {
+        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), hs);
+        return;
+    }
     if (CPU_COUNT(&g_proc_mask) > 0) {
         pthread_setaffinity_np(pthread_self(), sizeof(g_proc_mask), &g_proc_mask);
     }

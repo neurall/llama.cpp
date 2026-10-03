@@ -146,10 +146,10 @@ Anything you pass is used as given and is never auto-tuned:
 
 | you pass | effect |
 |---|---|
-| `--moe slots=0` | the whole fork off: no expert cache, nothing tuned or measured, plain stock behaviour (same as `--moe-expert-cache 0`) |
+| `--fork off` | the whole fork off: no expert cache, nothing tuned or measured, no auto-pinned weights, no thread tuner: plain stock behaviour (`LLAMA_ARG_FORK=off`) |
 | `-at off` | only the self-tuning off (`--autotune off`, same as `--moe autotune=0`): the cache keeps working with fixed defaults, placement uses a static rule, nothing is measured or saved |
 
-Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_MOE=slots=0`.  
+Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_FORK=off`.  
 
 ## Options
 
@@ -158,7 +158,7 @@ variables, the state file, multi-GPU and MTP use) are in [docs/fork-knobs.md](do
 
 | option | what it does |
 |---|---|
-| `--moe slots=N` | expert slots per layer in VRAM (`-1` from free VRAM, `0` fork off) |
+| `--moe slots=N` | expert slots per layer in VRAM (`-1` from free VRAM, `0` no cache) |
 | `--moe swap-lead=N` | uses an expert needs over the one it evicts before it is swapped in; `0` swaps eagerly, higher swaps less |
 | `--moe upload-wait=3` | uploads wait while the CPU reads experts, so both do not fight for RAM bandwidth (`0` off) |
 | `--moe upload-now=0` | stop uploading this token's missed experts on the fly |

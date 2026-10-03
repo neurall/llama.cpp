@@ -2,6 +2,8 @@
 
 #if defined(__linux__)
 #include <fcntl.h>
+#include <sched.h>
+#include <pthread.h>
 #include <unistd.h>
 #endif
 
@@ -1664,6 +1666,18 @@ bool llama_model_loader::load_all_data(
     if (const char * e = getenv("LLAMA_LOAD_THREADS")) { n_load_threads = std::max(1, atoi(e)); }
     const bool par_load = !use_mmap && !use_direct_io && !check_tensors && n_load_threads > 1;
     auto pr_worker = [&]() {
+#if defined(__linux__)
+        if (const char * hc = getenv("LLAMA_HELPER_CPUS")) { // a user CPU mask (-C): the loader threads stay on those cores and their siblings, so the pages are first touched on their die
+            cpu_set_t cs; CPU_ZERO(&cs);
+            for (const char * p = hc; *p; ) {
+                char * end = nullptr; const long a = strtol(p, &end, 10); if (end == p) { break; }
+                long b = a; if (*end == '-') { p = end + 1; b = strtol(p, &end, 10); }
+                for (long i = a; i <= b && i < CPU_SETSIZE; ++i) { CPU_SET((int) i, &cs); }
+                p = *end == ',' ? end + 1 : end; if (end == p && *end != ',') { break; }
+            }
+            if (CPU_COUNT(&cs) > 0) { pthread_setaffinity_np(pthread_self(), sizeof(cs), &cs); }
+        }
+#endif
         for (;;) {
             par_read t;
             {
