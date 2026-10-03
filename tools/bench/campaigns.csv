@@ -42,3 +42,5 @@ regress-quick,2026-10-03 09:26:49,"smoke test for big regressions: README protoc
 regress-quick,2026-10-03 09:27:14,"smoke test for big regressions: README protocol t100, final build fd4c3d2d3 only, one run per model, compare with the README table",,
 regress-quick-start2,2026-10-03 09:36:39,start 2 (same default state file): the cache trial,,
 regress-quick-start2,2026-10-03 09:37:18,start 2 (same default state file): the cache trial,,
+regress-quick-start3,2026-10-03 09:40:10,"IQ4_XS start 3, same default state file",,
+regress-quick-start4,2026-10-03 09:40:45,"IQ4_XS start 4, same default state file",,

@@ -22,6 +22,52 @@ PROMPT = os.path.join(HERE, "bench", "reg-prompt.txt")   # a ~650 token prompt, 
 RELS = "/p/bw/rels"
 GOOD = RELS + "/rc-final-fd4c3d2d3"                      # rc-merge fd4c3d2d3: placement measured, pin decision with pool, no mid-split rule
 
+# the stored builds: directory name under RELS -> the commit it is built from. A build that is missing is rebuilt from its commit in a separate temporary worktree
+# (the docker dev build, nothing touches the current tree), the binaries are stored under RELS with a BUILD_INFO, the temporary tree is removed.
+BUILDS = {
+    "rc-final-fd4c3d2d3":  {"ref": "fd4c3d2d3", "note": "rc-merge: placement measured, pin decision with pool, mid-split rule removed"},
+    "b11707-49fe4b756":    {"ref": "49fe4b756", "note": "release b11707 (the README numbers)"},
+    "stock-bed0a8566":     {"ref": "bed0a8566", "note": "upstream master, the stock floor"},
+    "stock-def4d406a":     {"ref": "def4d406a", "note": "upstream master, the older stock"},
+}
+BUILD_SCRIPT = "/p/bw/data/hcf/lrel/dev-build.sh"
+BUILD_TMP = "/p/bw/build-tmp"
+
+
+def ensure_build(path, dry=False):
+    """path: a build directory. Missing: build it from BUILDS[basename] in a temporary worktree and store it. Returns None or an error text."""
+    if os.path.exists(os.path.join(path, "llama-cli")):
+        return None
+    name = os.path.basename(path.rstrip("/"))
+    spec = BUILDS.get(name)
+    if not spec:
+        return f"no llama-cli in {path} and no recipe for '{name}' in BUILDS (add one: the commit it is built from)"
+    if dry:
+        print(f"[dry] would build {name} from {spec['ref']} in {BUILD_TMP}/{name} and store it in {path}")
+        return None
+    tmp = os.path.join(BUILD_TMP, name)
+    os.makedirs(BUILD_TMP, exist_ok=True)
+    print(f"building {name} from {spec['ref']} in {tmp} (docker dev build, several minutes)", flush=True)
+    for cmd in (["git", "-C", REPO, "worktree", "add", "--detach", "-f", tmp, spec["ref"]],):
+        r = run(cmd)
+        if r.returncode:
+            return f"git worktree failed: {r.stderr.strip()[:200]}"
+    try:
+        r = subprocess.run(["bash", BUILD_SCRIPT], env={**os.environ, "W": tmp}, text=True)
+        binp = os.path.join(tmp, "build-dev", "bin")
+        if not os.path.exists(os.path.join(binp, "llama-cli")):
+            return f"build of {name} failed (no llama-cli in {binp}, exit {r.returncode})"
+        os.makedirs(path, exist_ok=True)
+        subprocess.run(["cp", "-a", binp + "/.", path], check=True)
+        with open(os.path.join(path, "BUILD_INFO"), "w") as f:
+            f.write(f"commit={spec['ref']}\nbranch=reg_tests\npatch=0\nnote={spec.get('note', '')}\n")
+        print(f"stored {path}", flush=True)
+        return None
+    finally:
+        run(["git", "-C", REPO, "worktree", "remove", "--force", tmp])
+        subprocess.run(["rm", "-rf", tmp])
+
+
 M = {
     "qn_iq1m": "/m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
     "glm30":   "/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf",
@@ -133,9 +179,11 @@ def check(n, cur, good=None, dry=False):
     good = good or reg["good_build"]
     if reg.get("needs") == "pool" and pool_free_gib() < 100:
         return "SKIP", "needs a free 1 GiB hugepage pool of 100 pages (sudo pool.sh mount 100G right after boot)"
-    for b in (cur, good):
-        if not os.path.exists(os.path.join(b, "llama-cli")):
-            return "ERROR", f"no llama-cli in {b}"
+    if not os.path.exists(os.path.join(cur, "llama-cli")):
+        return "ERROR", f"no llama-cli in {cur}"
+    err = ensure_build(good, dry)   # the stored last-good build, rebuilt from its commit when missing
+    if err:
+        return "ERROR", err
     name = f"reg{n}-{time.strftime('%m%d-%H%M')}"
     spec = f"/tmp/{name}.ini"
     open(spec, "w").write(spec_text(n, reg, name, cur, good))
