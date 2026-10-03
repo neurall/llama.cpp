@@ -183,7 +183,8 @@ That is why auto-pin is the default (`-lm mmap` opts out), and it needs nothing 
 
 The optional part is a pool of 1 GiB huge pages that keeps the pinned models resident in RAM between runs: the first load fills a cache file in the pool,  
 every later load maps that file instead of reading the model again, which roughly halves the load time (often about 100 s down to about 40 s for a 100 GB model).  
-It helps the command line most (every `llama-cli` run is a new process that loads the model again); a server loads once and keeps running, so it does not need the pool.  
+It is worth the hassle below only if you reload models of 100 GB and up often, which is mostly the command line (every `llama-cli` run is a new process that loads the model again);  
+a server loads once and keeps running, and a smaller model reloads quickly anyway, so neither needs the pool.  
 
 ```
 sudo ./pool.sh mount 100G                 # reserve 100 x 1 GiB huge pages and mount the weights cache at /mnt/huge1g
