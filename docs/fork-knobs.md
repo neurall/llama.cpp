@@ -19,12 +19,12 @@ state file. Everything below is for overriding that, and a setting you give is n
 
 | I want | type |
 |---|---|
-| exactly upstream behaviour, nothing of the fork | `--moe cache=0` |
-| the cache, but fixed settings and no self-tuning | `-at off` (and `--moe cache=N` for a fixed slot count) |
+| exactly upstream behaviour, nothing of the fork | `--moe slots=0` |
+| the cache, but fixed settings and no self-tuning | `-at off` (and `--moe slots=N` for a fixed slot count) |
 | a reproducible benchmark | `LLAMA_MOE_STATE=0` so nothing learned earlier is used, plus `-at off` or explicit `--moe` settings; change one thing per run |
 | the cache even where the fork would choose stock (or the other way) | `LLAMA_MOE_AUTO_MODE=cache` (or `stock`) |
 | the fork to forget what it learned | delete `~/.cache/llama.cpp/moe-state.ini`, or run once with `LLAMA_MOE_AUTO_MODE=retest` |
-| to check whether the cache is what slows my machine down | run the same command with `--moe cache=0` and compare |
+| to check whether the cache is what slows my machine down | run the same command with `--moe slots=0` and compare |
 | big pinned models to start faster | the section on loading pinned weights, below |
 
 ## Command-line flags
@@ -32,8 +32,8 @@ state file. Everything below is for overriding that, and a setting you give is n
 | flag | environment form | what it does |
 |---|---|---|
 | `--moe KEY=VAL,...` | `LLAMA_ARG_MOE` | the expert cache settings and knobs, below |
-| `--moe-expert-cache N` | `LLAMA_ARG_MOE_EXPERT_CACHE` | expert slots per layer in VRAM; `-1` sizes them from free VRAM, `0` turns the whole fork off (same as `--moe cache=0`) |
-| `--prefetch-experts-slots N` | | staging slots for host-to-GPU prefetch of big batches (same as `--moe prefetch-slots=N`) |
+| `--moe-expert-cache N` | `LLAMA_ARG_MOE_EXPERT_CACHE` | expert slots per layer in VRAM; `-1` sizes them from free VRAM, `0` turns the whole fork off (same as `--moe slots=0`) |
+| `--prefetch-experts-slots N` | | staging slots for host-to-GPU prefetch of big batches (same as `--moe pf-slots=N`) |
 | `-at on\|off`, `--autotune` | `LLAMA_ARG_AUTOTUNE`, `LLAMA_AUTOTUNE=0` | self-tuning of cache knobs, thread counts and the cache-or-stock placement; `off` = fixed defaults, nothing measured or saved (same as `--moe autotune=0`) |
 | `-lm pin\|mmap\|dio`, `--load-mode` | `LLAMA_ARG_LOAD_MODE` | `pin`: weights in pinned RAM (the default of every tool when part of the model stays in host RAM and the model fits in the RAM available now; faster prompts and uploads, the load takes longer; `-lm mmap` opts out); `mmap`: memory-mapped, for models bigger than RAM; `dio`: direct IO |
 | `-md FILE --spec-type draft-mtp` | | MTP draft head (Qwen3.8-Flash-Next, GLM-5.3-Flash), see the README |
@@ -43,14 +43,14 @@ state file. Everything below is for overriding that, and a setting you give is n
 
 | you want | pass | effect |
 |---|---|---|
-| plain stock behaviour | `--moe cache=0` (or `--moe-expert-cache 0`, `LLAMA_ARG_MOE=cache=0`) | no expert cache, nothing tuned, measured or saved; the same placement and kernels as upstream llama.cpp |
+| plain stock behaviour | `--moe slots=0` (or `--moe-expert-cache 0`, `LLAMA_ARG_MOE=slots=0`) | no expert cache, nothing tuned, measured or saved; the same placement and kernels as upstream llama.cpp |
 | the cache, but no self-tuning | `-at off` (or `--moe autotune=0`, `LLAMA_AUTOTUNE=0`) | the cache works with fixed defaults, placement uses a static rule, nothing is measured or saved |
 | stock placement chosen by the fork | `LLAMA_MOE_AUTO_MODE=stock` | skips the cache-or-stock measurement and uses stock |
 | the cache forced on | `LLAMA_MOE_AUTO_MODE=cache` | skips the measurement and uses the cache |
 | a fresh start | `LLAMA_MOE_STATE=0`, or delete `~/.cache/llama.cpp/moe-state.ini` | ignore the learned state, write nothing |
-| the hand-tuned stock baseline | `--moe cache=0 --n-cpu-moe N` (or `-ot`) | keep the first layers' experts in VRAM, the rest on the CPU, as in upstream; the fair comparison for the cache |
+| the hand-tuned stock baseline | `--moe slots=0 --n-cpu-moe N` (or `-ot`) | keep the first layers' experts in VRAM, the rest on the CPU, as in upstream; the fair comparison for the cache |
 
-With `--moe cache=0` the fork behaves as upstream apart from unrelated changes (the loader, MTP, merged upstream commits).
+With `--moe slots=0` the fork behaves as upstream apart from unrelated changes (the loader, MTP, merged upstream commits).
 
 ## `--moe` settings (command line)
 
@@ -59,15 +59,37 @@ With `--moe cache=0` the fork behaves as upstream apart from unrelated changes (
 
 | key | default | meaning |
 |---|---|---|
-| `cache=N` | automatic: on when a MoE model does not fit in VRAM | expert slots per layer in VRAM; `-1` sizes them from the free VRAM, a number fixes them, `0` turns the whole fork off (stock behaviour) |
-| `prefetch-slots=N` | `0` (off) | staging slots for host-to-GPU prefetch of whole expert tensors for big batches (3 is recommended when used, at most 4) |
-| `inserts=N` | `2` | most expert uploads per layer and decode step; fewer means less PCIe and RAM traffic and a slower-changing cache |
-| `window=N` | `64` | how many recent tokens the cache looks at when it decides which experts to keep |
-| `predict=M` | `0` (off) | guess which experts the next layers will need and upload the likely ones early (the top M of the guessed ranking); experimental, see the evidence below |
-| `train=N` | `0` (the predictor is not trained while running) | train the predictor every N decoded tokens; implies `predict=8` if `predict` is not given |
+| `slots=N` | automatic: on when a MoE model does not fit in VRAM | expert slots per layer in VRAM; `-1` sizes them from the free VRAM, a number fixes them, `0` turns the whole fork off (stock behaviour) |
+| `pf-slots=N` | `0` (off) | staging slots for host-to-GPU prefetch of whole expert tensors for big batches (3 is recommended when used, at most 4) |
+| `up-max=N` | `2` | most expert uploads per layer and decode step; fewer means less PCIe and RAM traffic and a slower-changing cache |
+| `recent=N` | `64` | how many recent tokens the cache looks at when it decides which experts to keep |
+| `pred-top=M` | `0` (off) | guess which experts the next layers will need and upload the likely ones early (the top M of the guessed ranking); experimental, see the evidence below |
+| `train-every=N` | `0` (the predictor is not trained while running) | train the predictor every N decoded tokens; implies `pred-top=8` if `pred-top` is not given |
 | `autotune=0` | autotune on | no self-tuning (same as `-at off`) |
 
-Any other name is a tuning knob of the cache engine (`--moe gate=3,margin=0`). A knob you set is never self-tuned; a name the  
+**Names.** The settings were renamed to say what they do. The old names (`cache`, `inserts`, `window`, `prefetch-slots`, `predict`, `train`, the knobs `MARGIN`, `GATE`, `SWAP_FRAC`, `BIG`, ... and their `LLAMA_MOE_CACHE_<OLD>` variables) no longer exist: an old `--moe` name is ignored, and an old state file entry is skipped, so the tuner relearns it. Case and `-` / `_` do not matter in the new names. `--moe-expert-cache N` (`LLAMA_ARG_MOE_EXPERT_CACHE`) is unchanged and works on every build.  
+
+| new name | old name | | new name | old name |
+|---|---|---|---|---|
+| `slots` | `cache` | | `pred` | `PREDICT` |
+| `up-max` | `inserts` | | `pred-iso` | `STREAM` |
+| `recent` | `window` | | `pred-n` | `STREAM_M` |
+| `pf-slots` | `prefetch-slots` | | `pred-lead` | `OFFSET` |
+| `pred-top` | `predict` | | `pred-slow` | `STREAM_SLOW` |
+| `train-every` | `train` | | `pred-tune` | `SELF_TUNE` |
+| `swap-lead` | `MARGIN` | | `pred-auto` | `AUTO` |
+| `swap-lead-per-link` | `LINK` | | `pred-keep` | `SLOTKEEP` |
+| `swaps-per-step` | `BUDGET` | | `pred-slots` | `STREAM_SLOTS` (env only) |
+| `vram-reserve-mb` | `MARGIN_MB` | | `idle-up`, `idle-up-n` | `TBP`, `TBP_LAYERS` |
+| `upload-wait` | `GATE` | | `ev-cld` | `BIG` |
+| `upload-wait-max-us` | `GATE_MAX_US` | | `pin-hot` | `HOT_FRAC` |
+| `upload-chunk-kb` | `CHUNK_KB` | | `slow-min-stay` | `SLOW_STAY` |
+| `upload-share` | `SWAP_FRAC` | | `stay-bonus` | `STICKY` |
+| `upload-now` | `JIT` | | `l3-pf`, `l3-auto` | `L3PF`, `AUTO_L3` |
+| `cpu-ram-gbs`, `ram-ceiling-gbs` | `CPU_GBS`, `DDR_GBS` | | `trace-n`, `trace-skip` | `TRACE`, `TRACE_AFTER` |
+| `wait-swaps` | `WAIT` | | | |
+
+Any other name is a tuning knob of the cache engine (`--moe upload-wait=3,swap-lead=0`). A knob you set is never self-tuned; a name the  
 engine does not know is logged as `unknown key` and ignored. Values are numbers; `0`/`1` are off/on.
 
 The cache keeps some experts in VRAM (the GPU computes those); any other expert is computed by the CPU or uploaded over PCIe first.  
@@ -83,15 +105,15 @@ Each decode step a layer needs a few experts. The cached ones run on the GPU. Fo
 cache slot so it is a hit next time. An upload costs PCIe time, RAM bandwidth (it reads the same RAM the CPU is reading) and an eviction (a cached expert  
 has to make room). The three knobs answer three questions about uploads:
 
-- **`MARGIN` (which swaps are worth it).** A missed expert only gets a slot if it beats the weakest cached expert by this many recent uses (over the last 64 tokens).  
+- **`swap-lead` (which swaps are worth it).** A missed expert only gets a slot if it beats the weakest cached expert by this many recent uses (over the last 64 tokens).  
   `0`: any expert used more than the weakest cached one gets in; the cache adapts fast and churns more. A high value: a stable cache that can go stale.  
   Default `-1` is 0; `-2` computes it from speeds (about the CPU read rate over the link rate: around 2 on an x16 link, 9 to 11 on a x4 link).  
   Measured on GLM (2 x 3090): the speed-derived margin capped the hit rate; margin 0 gave 71.2% against about 65% and 21.3 against 19.9 t/s (+6.7%).  
   Short chats like margin 0, long prompts did better with the speed rule, so the tuner chooses.
-- **`GATE` (when an upload may run).** The CPU computing its experts and an upload both read system RAM and together reach its limit (on machine A about 38 GB/s for  
-  the CPU alone, 44 with a DMA running). An upload that overlaps the CPU's reading slows the CPU, which is the critical path. `GATE=3` makes uploads wait, up to a limit,  
-  while the CPU computes, so they run in the gaps; `GATE=0` uploads any time. Measured: +6% on a short GLM chat (22.10 against 20.87 t/s). `gate=2` starved the uploads: never use it.
-- **`SWAP_FRAC` (how much).** The most time uploads may take per step, as a share of the token time (0.25 is a quarter). More uploads help the hit rate but risk stalling the step.  
+- **`upload-wait` (when an upload may run).** The CPU computing its experts and an upload both read system RAM and together reach its limit (on machine A about 38 GB/s for  
+  the CPU alone, 44 with a DMA running). An upload that overlaps the CPU's reading slows the CPU, which is the critical path. `upload-wait=3` makes uploads wait, up to a limit,  
+  while the CPU computes, so they run in the gaps; `upload-wait=0` uploads any time. Measured: +6% on a short GLM chat (22.10 against 20.87 t/s). `upload-wait=2` starved the uploads: never use it.
+- **`upload-share` (how much).** The most time uploads may take per step, as a share of the token time (0.25 is a quarter). More uploads help the hit rate but risk stalling the step.  
   Measured: no benefit as a user setting (5 against the default gave the same hit rate, 64.6% against 64.7%; 0.5 with margin 0 was slower), so it is labelled "unproven, on the way out".
 
 The tuner sets all three while it runs. If you change one, change one at a time and use `LLAMA_MOE_STATE=0`, or the learned settings will mix into the comparison.
@@ -100,60 +122,60 @@ The tuner sets all three while it runs. If you change one, change one at a time 
 
 | knob | default | what it does | example | evidence |
 |---|---|---|---|---|
-| `MARGIN` | `-1` | An upload costs link time and only pays back if the expert is used again, so a missed expert must beat the one it evicts by this many recent uses. `-1` = 0 (swap whenever it scores higher), `-2` = from speeds (CPU read rate / link rate is about the uses an upload needs to pay for itself), `n` = fixed | `margin=0` swaps eagerly; `margin=2` swaps rarely | **Proven** on GLM-5.3-Flash 3.0-bit, 2x3090: the speed-derived margin (2 on x16, 9-11 on x4) capped the hit rate; `margin=0` gave 71.2% hit and 21.26 vs 19.93 t/s (+6.7%, 8 topic chats). Not universal: margin 0 wins short chats, the speed rule wins a long prompt, so the tuner picks |
-| `BUDGET` | `-1` | Fixed swaps per step; `-1` derives it from the measured upload time | `budget=4` | No A/B |
-| `SWAP_FRAC` | `0.25`, tuned live | Uploads may take at most this share of a token's time; uploads that outlast the token stall it | `swap_frac=0.5` | **Unproven, on the way out as a user knob**: GLM 2x3090, 5 vs default gave the same hit rate (64.6% vs 64.7%); `margin=0` with `swap_frac=0.5` was slower (20.62 vs 21.26 t/s) |
-| `LINK` | `1` | Margin per upload link, so a GPU on a slow x4 slot gets a higher margin than one on x16; `0` uses one margin from the average upload | `link=0` | No A/B |
-| `JIT` | `1` | When a layer's router ids are known, upload some of the missed experts right then, so the GPU computes them this token while the CPU does the rest | `jit=0` turns it off | **Unproven, on the way out**: GLM 2x3090, a first +4.5% was noise on a 6-round rerun (off 21.80, on 22.03 / 22.25, sd about 1); without admission it churns a cold cache (18.99 vs 20.70). W10 Qwen3.6: no change |
+| `swap-lead` | `-1` | An upload costs link time and only pays back if the expert is used again, so a missed expert must beat the one it evicts by this many recent uses. `-1` = 0 (swap whenever it scores higher), `-2` = from speeds (CPU read rate / link rate is about the uses an upload needs to pay for itself), `n` = fixed | `swap-lead=0` swaps eagerly; `swap-lead=2` swaps rarely | **Proven** on GLM-5.3-Flash 3.0-bit, 2x3090: the speed-derived margin (2 on x16, 9-11 on x4) capped the hit rate; `swap-lead=0` gave 71.2% hit and 21.26 vs 19.93 t/s (+6.7%, 8 topic chats). Not universal: margin 0 wins short chats, the speed rule wins a long prompt, so the tuner picks |
+| `swaps-per-step` | `-1` | Fixed swaps per step; `-1` derives it from the measured upload time | `swaps-per-step=4` | No A/B |
+| `upload-share` | `0.25`, tuned live | Uploads may take at most this share of a token's time; uploads that outlast the token stall it | `upload-share=0.5` | **Unproven, on the way out as a user knob**: GLM 2x3090, 5 vs default gave the same hit rate (64.6% vs 64.7%); `swap-lead=0` with `upload-share=0.5` was slower (20.62 vs 21.26 t/s) |
+| `swap-lead-per-link` | `1` | Margin per upload link, so a GPU on a slow x4 slot gets a higher margin than one on x16; `0` uses one margin from the average upload | `swap-lead-per-link=0` | No A/B |
+| `upload-now` | `1` | When a layer's router ids are known, upload some of the missed experts right then, so the GPU computes them this token while the CPU does the rest | `upload-now=0` turns it off | **Unproven, on the way out**: GLM 2x3090, a first +4.5% was noise on a 6-round rerun (off 21.80, on 22.03 / 22.25, sd about 1); without admission it churns a cold cache (18.99 vs 20.70). W10 Qwen3.6: no change |
 
 **Not fighting for RAM bandwidth**
 
 | knob | default | what it does | example | evidence |
 |---|---|---|---|---|
-| `GATE` | `3` | The CPU reading experts and the upload DMA both read system RAM and together hit its limit. `3`: an upload waits while the CPU computes uncached experts; `0` off | `gate=0` uploads at any time | **Proven** on GLM 3.0-bit 2x3090 short chat: `gate=3` 22.10 vs 20.87 t/s (+6%, n=2); ties on long prompts. `gate=2` starved uploads (19.24 t/s): never use it |
-| `GATE_MAX_US` | `-1` | Longest wait per tensor copy, microseconds; `-1` = the measured mean layer time | `gate_max_us=800` | No A/B |
-| `CHUNK_KB` | `-1` | With `GATE=3`: copy in chunks of this size and recheck the RAM budget before each; `0` = the whole tensor | `chunk_kb=512` | No A/B |
-| `CPU_GBS`, `DDR_GBS` | `38`, `44` | Assumed RAM read rate in GB/s of the CPU alone, and of CPU plus uploads together; starting values until the start-up probe measures them, `DDR_GBS` is the ceiling for `GATE=3` | `cpu_gbs=22,ddr_gbs=28` for a slower RAM kit | Measurement inputs, not tunables (PC1 DDR4-3200: CPU alone 37-38 GB/s, with both DMAs 44-45) |
-| `WAIT` | `1` | The step waits for queued swaps to finish; `0` never waits and finished uploads appear at the next split | `wait=0` | No A/B recorded |
+| `upload-wait` | `3` | The CPU reading experts and the upload DMA both read system RAM and together hit its limit. `3`: an upload waits while the CPU computes uncached experts; `0` off | `upload-wait=0` uploads at any time | **Proven** on GLM 3.0-bit 2x3090 short chat: `upload-wait=3` 22.10 vs 20.87 t/s (+6%, n=2); ties on long prompts. `upload-wait=2` starved uploads (19.24 t/s): never use it |
+| `upload-wait-max-us` | `-1` | Longest wait per tensor copy, microseconds; `-1` = the measured mean layer time | `upload-wait-max-us=800` | No A/B |
+| `upload-chunk-kb` | `-1` | With `upload-wait=3`: copy in chunks of this size and recheck the RAM budget before each; `0` = the whole tensor | `upload-chunk-kb=512` | No A/B |
+| `cpu-ram-gbs`, `ram-ceiling-gbs` | `38`, `44` | Assumed RAM read rate in GB/s of the CPU alone, and of CPU plus uploads together; starting values until the start-up probe measures them, `ram-ceiling-gbs` is the ceiling for `upload-wait=3` | `cpu-ram-gbs=22,ram-ceiling-gbs=28` for a slower RAM kit | Measurement inputs, not tunables (PC1 DDR4-3200: CPU alone 37-38 GB/s, with both DMAs 44-45) |
+| `wait-swaps` | `1` | The step waits for queued swaps to finish; `0` never waits and finished uploads appear at the next split | `wait-swaps=0` | No A/B recorded |
 
 **Predictor streaming (uploads ahead of need)**. The whole group is **unproven, on the way out unless the pending corrected A/B shows a  
 win**: on GLM 2x3090 the predictor raised the hit rate (chat 46.6 to 56.1%) but not tokens/s (14.2 vs 13.9), and our PC1 experiment  
 lost 3-10% (hit rate +0.4-0.7 points) because uploads arrived too late and compete with the CPU for RAM bandwidth. On the W10 laptop  
-(RTX 4060, Qwen3.6-35B) an earlier +27-34% shrank to 0-3% once the AVX2 CPU kernels landed. Off by default (needs `predict=M` or `train=N`).
+(RTX 4060, Qwen3.6-35B) an earlier +27-34% shrank to 0-3% once the AVX2 CPU kernels landed. Off by default (needs `pred-top=M` or `train-every=N`).
 
 | knob | default | what it does | example | evidence |
 |---|---|---|---|---|
-| `PREDICT` | `1` | The learned predictors run at all (they exist only with `--moe predict=M` or `train=N`) | `predict=8,train=64` enables them | see above |
-| `STREAM` | on | Predicted uploads go into separate stream slots, so a wrong guess evicts nothing useful; `0` = they evict cache slots (old path) | `stream=0` | see above |
-| `STREAM_M` | `12` | Predicted candidates uploaded per target layer (over-guesses on purpose, no confidence cut) | `stream_m=6` | W10: 6 was best; offline about 80% of the uploads at 12 are wasted |
-| `OFFSET` | `1` | Predict only layers far enough ahead that the upload lands in time on their link; a slow link needs more lead | `offset=0` | see above; the dynamic-lead version is still being tested |
-| `STREAM_SLOW` | `1` | Also stream onto layers served by a slower link | `stream_slow=0` | see above |
-| `SELF_TUNE` | `1` | The tuner tries one streaming knob at a time on real token times and keeps the faster setting | `self_tune=0` | It turns the predictor off where it does not pay (PC1 GLM) |
-| `AUTO` | `1` | `1`: adjust lead and `STREAM_M` per link from the measured late share and precision; `2`: uploads per target layer = time until that layer / measured upload time per expert; `0` off | `auto=2` | `auto=1` +22% on W10, -3% on PC1 (before the AVX kernels) |
+| `pred` | `1` | The learned predictors run at all (they exist only with `--moe pred-top=M` or `train-every=N`) | `pred-top=8,train-every=64` enables them | see above |
+| `pred-iso` | on | Predicted uploads go into separate stream slots, so a wrong guess evicts nothing useful; `0` = they evict cache slots (old path) | `pred-iso=0` | see above |
+| `pred-n` | `12` | Predicted candidates uploaded per target layer (over-guesses on purpose, no confidence cut) | `pred-n=6` | W10: 6 was best; offline about 80% of the uploads at 12 are wasted |
+| `pred-lead` | `1` | Predict only layers far enough ahead that the upload lands in time on their link; a slow link needs more lead | `pred-lead=0` | see above; the dynamic-lead version is still being tested |
+| `pred-slow` | `1` | Also stream onto layers served by a slower link | `pred-slow=0` | see above |
+| `pred-tune` | `1` | The tuner tries one streaming knob at a time on real token times and keeps the faster setting | `pred-tune=0` | It turns the predictor off where it does not pay (PC1 GLM) |
+| `pred-auto` | `1` | `1`: adjust lead and `pred-n` per link from the measured late share and precision; `2`: uploads per target layer = time until that layer / measured upload time per expert; `0` off | `pred-auto=2` | `pred-auto=1` +22% on W10, -3% on PC1 (before the AVX kernels) |
 
 **Sizing**
 
 | knob | default | what it does | example | evidence |
 |---|---|---|---|---|
-| `MARGIN_MB` | `0` (= 384, or from the batch size by autotune) | VRAM in MiB kept free per GPU after the cache takes its slots, so a longer context or batch does not run out of memory (not the same as `MARGIN`) | `margin_mb=1024` | Safety limit: measured post-load growth was 54-170 MiB per GPU |
+| `vram-reserve-mb` | `0` (= 384, or from the batch size by autotune) | VRAM in MiB kept free per GPU after the cache takes its slots, so a longer context or batch does not run out of memory (not the same as `swap-lead`) | `vram-reserve-mb=1024` | Safety limit: measured post-load growth was 54-170 MiB per GPU |
 
 **Experimental knobs** (off by default; **unproven, on the way out**: none beat the default in our A/B tests, kept only for  
 experiments and probably removed in a later release; do not rely on them):
 
 | knob | default | what it does | example | evidence |
 |---|---|---|---|---|
-| `BIG` | `0` | An expert may only evict one with at most its own lifetime use count | `big=1` | Never won; off and not tuned |
-| `HOT_FRAC` | `0` | Pin the always-hot set of a layer on slower links | `hot_frac=0.5` | Never won in A/B |
-| `SLOW_STAY` | `0` | Minimum stay in steps of an expert in a slow-link layer's tier | `slow_stay=64` | Never won in A/B |
-| `STICKY` | `0` | Bonus for staying in the cache | `sticky=1` | +1.6% on one GLM chat run, within noise |
-| `SLOTKEEP` | `0` | A prediction may only replace a stream slot holding a lower-scored expert of this step | `slotkeep=1` | No data |
-| `TBP`, `TBP_LAYERS` | `0`, `6` | After a token ends, stream up to `TBP` of its misses into the first `TBP_LAYERS` layers while the output head and sampling keep RAM idle | `tbp=2,tbp_layers=6` | No data |
-| `L3PF`, `AUTO_L3` | `0`, `0` | Prefetch `L3PF` experts per layer into the CPU's L3 cache (needs `GGML_MOE_CCX_SPLIT` and pinned threads); `AUTO_L3=1` tests it live | `l3pf=2,auto_l3=1` | The static per-L3 row split it needs alone lost 19% on GLM (Ryzen 3700X); pinning itself was neutral (21.73 vs 21.53) |
-| `TRACE`, `TRACE_AFTER` | `0`, `0` | Debug: record routing for this many steps, starting after this many | `trace=2000,trace_after=500` | Debug only |
+| `ev-cld` | `0` | An expert may only evict one with at most its own lifetime use count | `ev-cld=1` | Never won; off and not tuned |
+| `pin-hot` | `0` | Pin the always-hot set of a layer on slower links | `pin-hot=0.5` | Never won in A/B |
+| `slow-min-stay` | `0` | Minimum stay in steps of an expert in a slow-link layer's tier | `slow-min-stay=64` | Never won in A/B |
+| `stay-bonus` | `0` | Bonus for staying in the cache | `stay-bonus=1` | +1.6% on one GLM chat run, within noise |
+| `pred-keep` | `0` | A prediction may only replace a stream slot holding a lower-scored expert of this step | `pred-keep=1` | No data |
+| `idle-up`, `idle-up-n` | `0`, `6` | After a token ends, stream up to `idle-up` of its misses into the first `idle-up-n` layers while the output head and sampling keep RAM idle | `idle-up=2,idle-up-n=6` | No data |
+| `l3-pf`, `l3-auto` | `0`, `0` | Prefetch `l3-pf` experts per layer into the CPU's L3 cache (needs `GGML_MOE_CCX_SPLIT` and pinned threads); `l3-auto=1` tests it live | `l3-pf=2,l3-auto=1` | The static per-L3 row split it needs alone lost 19% on GLM (Ryzen 3700X); pinning itself was neutral (21.73 vs 21.53) |
+| `trace-n`, `trace-skip` | `0`, `0` | Debug: record routing for this many steps, starting after this many | `trace-n=2000,trace-skip=500` | Debug only |
 
 ## Environment variables
 
-Every knob above can also be given as `LLAMA_MOE_CACHE_<NAME>=value` (for example `LLAMA_MOE_CACHE_MARGIN=0`); the `--moe` form wins.  
+Every knob above can also be given as `LLAMA_MOE_CACHE_<NAME>=value` (for example `LLAMA_MOE_CACHE_SWAP_LEAD=0`); the `--moe` form wins.  
 These are the other fork switches. Most exist for experiments; the default is what we ship.
 
 | variable | default | what it does |
@@ -166,7 +188,7 @@ These are the other fork switches. Most exist for experiments; the default is wh
 | `LLAMA_MOE_CACHE_HALVE_EVERY` | `64` | counts halve every N steps, so recent use dominates old use |
 | `LLAMA_MOE_CACHE_ADOPT` | `1` | share of each layer's cache slots that may keep experts the prompt pass already put on the GPU (`1` all, `0.0625` a sixteenth; measured on GLM 12k prompt: 1/16 +0.3 hit points, 1/4 +3.8, all +11.4) |
 | `LLAMA_MOE_CACHE_PROBE` | on | `0` skips the start-up probe that measures CPU read rate and each upload link |
-| `LLAMA_MOE_CACHE_CPU_GBS`, `..._DDR_GBS` | probe | override the probed RAM rates in GB/s (same as the knobs) |
+| `LLAMA_MOE_CACHE_CPU_RAM_GBS`, `..._RAM_CEILING_GBS` | probe | override the probed RAM rates in GB/s (same as the knobs) |
 | `LLAMA_MOE_CACHE_DETERMINISTIC` | `0` | `1` fixes every knob and disables tuning, for repeatable measurements |
 | `LLAMA_MOE_CACHE_TUNED` | state file | start from this tuner result instead of the saved one |
 | `LLAMA_MOE_CACHE_MAX_BATCH` | `31` | largest batch that still uses the cache path; bigger batches take the prompt path |
@@ -190,7 +212,7 @@ These are the other fork switches. Most exist for experiments; the default is wh
 
 ### Predictor variables
 
-With `--moe predict=M` (or `train=N`) a small predictor guesses which experts the next layers will need.
+With `--moe pred-top=M` (or `train-every=N`) a small predictor guesses which experts the next layers will need.
 
 | variable | default | what it does |
 |---|---|---|

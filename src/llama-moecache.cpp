@@ -145,7 +145,7 @@ struct layer_state {
     std::vector<uint64_t> glob_count;     // expert id -> lifetime uses
     uint64_t              glob_max = 1;
     std::vector<bool>     sticky;         // expert id -> never evicted (most-used by lifetime count)
-    std::vector<bool>     hot;            // expert id -> always hot: the fewest experts covering LLAMA_MOE_CACHE_HOT_FRAC of the layer's picks
+    std::vector<bool>     hot;            // expert id -> always hot: the fewest experts covering LLAMA_MOE_CACHE_PIN_HOT of the layer's picks
     bool                  slow = false;   // this layer's cache sits on a GPU with a slower upload link than the fastest one
     int                   link = 0;       // upload link (GPU) of this layer's cache: 0 = the offload / fastest GPU, 1.. the others
     int32_t               n_cache = 0;    // cache slots (the rest stream predicted experts)
@@ -309,7 +309,7 @@ struct moe_cache {
     // hot-set profile: per-expert lifetime uses saved at shutdown, preloaded at the next start
     std::string profile;
 
-    // router prediction (LLAMA_MOE_CACHE_PREDICT=M): at layer L's CPU expert op a helper thread applies
+    // router prediction (LLAMA_MOE_CACHE_PRED=M): at layer L's CPU expert op a helper thread applies
     // layer L+1's router to layer L's input (top-8 overlap 0.61 on GLM-5.3-Flash) and uploads up to
     // LLAMA_MOE_CACHE_PREDICT_MAX of its top-M experts that aren't cached. They are published before
     // layer L+1's GPU split if the upload finished by then, else at the next step
@@ -460,16 +460,23 @@ struct knobs_t {
                             // the chain's stream, so the GPU computes them this token while the CPU computes the rest
 };
 
-bool knob_set(knobs_t & k, const std::string & name, double v) {
+// a knob name as typed: case and '-' / '_' do not matter (swap-lead = SWAP_LEAD)
+std::string knob_canon(std::string name) {
+    for (char & c : name) { c = c == '-' ? '_' : (char) toupper((unsigned char) c); }
+    return name;
+}
+
+bool knob_set(knobs_t & k, const std::string & name_in, double v) {
+    const std::string name = knob_canon(name_in);
     static const std::pair<const char *, double knobs_t::*> fields[] = {
-        { "SWAP_FRAC", &knobs_t::swap_frac }, { "HOT_FRAC", &knobs_t::hot_frac }, { "STICKY", &knobs_t::sticky }, { "SLOW_STAY", &knobs_t::slow_stay },
-        { "MARGIN", &knobs_t::margin }, { "BUDGET", &knobs_t::budget }, { "CPU_GBS", &knobs_t::cpu_gbs }, { "LINK", &knobs_t::link },
-        { "GATE", &knobs_t::gate }, { "GATE_MAX_US", &knobs_t::gate_max_us }, { "DDR_GBS", &knobs_t::ddr_gbs },
-        { "MARGIN_MB", &knobs_t::margin_mb }, { "WAIT", &knobs_t::wait }, { "AUTO", &knobs_t::auto_tune },
-        { "BIG", &knobs_t::big }, { "L3PF", &knobs_t::l3pf }, { "AUTO_L3", &knobs_t::auto_l3 }, { "TBP", &knobs_t::tbp }, { "TBP_LAYERS", &knobs_t::tbp_layers }, { "CHUNK_KB", &knobs_t::chunk_kb },
-        { "STREAM", &knobs_t::stream }, { "STREAM_M", &knobs_t::stream_m }, { "SLOTKEEP", &knobs_t::slotkeep }, { "SELF_TUNE", &knobs_t::self_tune }, { "PREDICT", &knobs_t::predict },
-        { "OFFSET", &knobs_t::offset }, { "STREAM_SLOW", &knobs_t::stream_slow },
-        { "TRACE", &knobs_t::trace }, { "TRACE_AFTER", &knobs_t::trace_after }, { "JIT", &knobs_t::jit },
+        { "UPLOAD_SHARE", &knobs_t::swap_frac }, { "PIN_HOT", &knobs_t::hot_frac }, { "STAY_BONUS", &knobs_t::sticky }, { "SLOW_MIN_STAY", &knobs_t::slow_stay },
+        { "SWAP_LEAD", &knobs_t::margin }, { "SWAPS_PER_STEP", &knobs_t::budget }, { "CPU_RAM_GBS", &knobs_t::cpu_gbs }, { "SWAP_LEAD_PER_LINK", &knobs_t::link },
+        { "UPLOAD_WAIT", &knobs_t::gate }, { "UPLOAD_WAIT_MAX_US", &knobs_t::gate_max_us }, { "RAM_CEILING_GBS", &knobs_t::ddr_gbs },
+        { "VRAM_RESERVE_MB", &knobs_t::margin_mb }, { "WAIT_SWAPS", &knobs_t::wait }, { "PRED_AUTO", &knobs_t::auto_tune },
+        { "EV_CLD", &knobs_t::big }, { "L3_PF", &knobs_t::l3pf }, { "L3_AUTO", &knobs_t::auto_l3 }, { "IDLE_UP", &knobs_t::tbp }, { "IDLE_UP_N", &knobs_t::tbp_layers }, { "UPLOAD_CHUNK_KB", &knobs_t::chunk_kb },
+        { "PRED_ISO", &knobs_t::stream }, { "PRED_N", &knobs_t::stream_m }, { "PRED_KEEP", &knobs_t::slotkeep }, { "PRED_TUNE", &knobs_t::self_tune }, { "PRED", &knobs_t::predict },
+        { "PRED_LEAD", &knobs_t::offset }, { "PRED_SLOW", &knobs_t::stream_slow },
+        { "TRACE_N", &knobs_t::trace }, { "TRACE_SKIP", &knobs_t::trace_after }, { "UPLOAD_NOW", &knobs_t::jit },
     };
     for (const auto & f : fields) {
         if (name == f.first) {
@@ -491,7 +498,7 @@ std::set<std::string> & user_knobs() {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "MARGIN_MB", "SWAP_FRAC", "HOT_FRAC", "STICKY", "SLOW_STAY", "MARGIN", "BUDGET", "CPU_GBS", "LINK", "GATE", "GATE_MAX_US", "STREAM", "STREAM_M", "TRACE", "TRACE_AFTER", "OFFSET", "STREAM_SLOW", "DDR_GBS", "WAIT", "CHUNK_KB", "AUTO", "TBP", "TBP_LAYERS", "BIG", "L3PF", "AUTO_L3", "SLOTKEEP", "SELF_TUNE", "PREDICT", "JIT" }) {
+        for (const char * n : { "VRAM_RESERVE_MB", "UPLOAD_SHARE", "PIN_HOT", "STAY_BONUS", "SLOW_MIN_STAY", "SWAP_LEAD", "SWAPS_PER_STEP", "CPU_RAM_GBS", "SWAP_LEAD_PER_LINK", "UPLOAD_WAIT", "UPLOAD_WAIT_MAX_US", "PRED_ISO", "PRED_N", "TRACE_N", "TRACE_SKIP", "PRED_LEAD", "PRED_SLOW", "RAM_CEILING_GBS", "WAIT_SWAPS", "UPLOAD_CHUNK_KB", "PRED_AUTO", "IDLE_UP", "IDLE_UP_N", "EV_CLD", "L3_PF", "L3_AUTO", "PRED_KEEP", "PRED_TUNE", "PRED", "UPLOAD_NOW" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
                 user_knobs().insert(n);
@@ -591,15 +598,15 @@ void profile_save(const moe_cache * mc) {
     moe_state_set(mc->profile, kv);
 }
 
-// not evictable: sticky, or cached on a slow-link layer for less than LLAMA_MOE_CACHE_SLOW_STAY steps (default 1024):
+// not evictable: sticky, or cached on a slow-link layer for less than LLAMA_MOE_CACHE_SLOW_MIN_STAY steps (default 1024):
 // on a slow link a swap costs more, so an expert must stay long enough to pay for its upload
 bool pinned(const moe_cache * mc, const layer_state & ls, int32_t e);
 
 // seed usage from the profile and queue the most-used experts of each layer for upload;
 // the first step() waits for them and publishes them. Returns the number queued.
 // Always-hot experts (formatting, common tokens) stay in VRAM: the most-used experts by lifetime
-// count, up to LLAMA_MOE_CACHE_STICKY (default 0, e.g. 0.3) of each layer's slots, are never evicted.
-// the always-hot set: the fewest experts (by lifetime count) covering LLAMA_MOE_CACHE_HOT_FRAC (default 0.75) of the picks
+// count, up to LLAMA_MOE_CACHE_STAY_BONUS (default 0, e.g. 0.3) of each layer's slots, are never evicted.
+// the always-hot set: the fewest experts (by lifetime count) covering LLAMA_MOE_CACHE_PIN_HOT (default 0.75) of the picks
 void refresh_hot(layer_state & ls) {
     const double hot_frac = knobs().hot_frac;
     ls.hot.assign(ls.glob_count.size(), false);
@@ -1305,10 +1312,10 @@ void resource_probe(moe_cache * mc) {
         if (ramp[i] >= 0.95 * cpu_alone) { n_sat = i + 1; break; }
     }
     mc->cpu_sat_threads = n_sat;
-    if (!getenv("LLAMA_MOE_CACHE_CPU_GBS")) { knobs().cpu_gbs = cpu_alone; }
-    if (!getenv("LLAMA_MOE_CACHE_DDR_GBS")) { knobs().ddr_gbs = std::max(cpu_alone, total); }
+    if (!getenv("LLAMA_MOE_CACHE_CPU_RAM_GBS")) { knobs().cpu_gbs = cpu_alone; }
+    if (!getenv("LLAMA_MOE_CACHE_RAM_CEILING_GBS")) { knobs().ddr_gbs = std::max(cpu_alone, total); }
     // the DDR budget gate (GATE=3) needs the budget just measured: on by default then (GLM short chat +6%, MiMo +16% in a pair); the tuner can turn it off
-    if (!user_knobs().count("GATE")) { knobs().gate = 3; }
+    if (!user_knobs().count("UPLOAD_WAIT")) { knobs().gate = 3; }
     std::string links, rs;
     for (int k = 0; k < mc->n_links; ++k) {
         mc->gbs_link[k] = link_alone[k];
@@ -2030,7 +2037,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             size_t free = 0, total = 0;
             ggml_backend_dev_memory(dev, &free, &total);
             // default 384 MiB (measured peak growth after load: 54 to 170 MiB per GPU); the engine measures the growth of this model
-            // per batch token once and sets margin_mb (LLAMA_MOE_CACHE_MARGIN_MB / --moe margin_mb=N override)
+            // per batch token once and sets margin_mb (LLAMA_MOE_CACHE_VRAM_RESERVE_MB / --moe vram-reserve-mb=N override)
             size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 384) * 1024 * 1024;
             // --prefetch-experts-slots: the scheduler lazily allocates N full expert
             // tensors on the device big batches are offloaded to
@@ -2248,11 +2255,11 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
         }
         // init LRU state + tables (everything uncached -> dummy slot n_slots)
-        // with router prediction on, the top LLAMA_MOE_CACHE_STREAM_SLOTS (default 4) slots of each layer take the
+        // with router prediction on, the top LLAMA_MOE_CACHE_PRED_SLOTS (default 4) slots of each layer take the
         // predicted uploads, so a wrong guess never evicts a cached expert
         int32_t n_stream = 0;
         {
-            const char * ss = getenv("LLAMA_MOE_CACHE_STREAM_SLOTS");
+            const char * ss = getenv("LLAMA_MOE_CACHE_PRED_SLOTS");
             n_stream = predict > 0 ? std::max(0, ss ? atoi(ss) : 4) : 0;
         }
         size_t vram = 0;
@@ -2923,7 +2930,7 @@ const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps
 // decode tokens, each slice's mean token time is one sample; a knob is decided when the fastest candidate beats every
 // other by two standard errors (or after MAX_S slices each), then the next knob; the whole cycle repeats after REST
 // tokens so a changed workload is followed (4096, doubling up to 65536 while cycles confirm themselves). SLICE, MAX_S and
-// 2 SE are the test's parameters, not tuning thresholds. On by default; LLAMA_MOE_CACHE_SELF_TUNE=0 / ctl SELF_TUNE=0: off.
+// 2 SE are the test's parameters, not tuning thresholds. On by default; LLAMA_MOE_CACHE_PRED_TUNE=0 / ctl SELF_TUNE=0: off.
 // multi-GPU prefill, measured (LLAMA_PREFILL_SPLIT unset): alpha 1 = experts over all GPUs by link bandwidth, 0 = the
 // fastest GPU only. Full prompt batches alternate between two alphas, each batch's tokens/s is one sample; a pair is
 // decided when the faster mean beats the other by 2 SE (or after MAX_S batches each). Search: 1 vs 0; if all GPUs lose,
@@ -3091,15 +3098,15 @@ static void self_tune(moe_cache * mc) {
     struct tunable { const char * name; double knobs_t::* f; std::vector<double> vals; bool slow = false; };
     // the streaming knobs only matter with the predictor; the swap path's are always live
     static const std::vector<tunable> T_stream = {
-        { "STREAM_M", &knobs_t::stream_m,  { 4, 6, 8, 12 } },
-        { "AUTO",     &knobs_t::auto_tune, { 0, 1 } },
-        { "TBP",      &knobs_t::tbp,       { 0, 2 } },
+        { "PRED_N", &knobs_t::stream_m,  { 4, 6, 8, 12 } },
+        { "PRED_AUTO",     &knobs_t::auto_tune, { 0, 1 } },
+        { "IDLE_UP",      &knobs_t::tbp,       { 0, 2 } },
     };
     static const std::vector<tunable> T_swap = {
-        { "GATE",     &knobs_t::gate,      { 0, 3 } },
-        { "SWAP_FRAC", &knobs_t::swap_frac, { 0.25, 0.5 }, true }, // the upload budget: more uploads need DDR headroom, which differs per machine
-        { "WAIT",     &knobs_t::wait,      { 0, 1 } },
-        { "BIG",      &knobs_t::big,       { 0, 1 } },
+        { "UPLOAD_WAIT",     &knobs_t::gate,      { 0, 3 } },
+        { "UPLOAD_SHARE", &knobs_t::swap_frac, { 0.25, 0.5 }, true }, // the upload budget: more uploads need DDR headroom, which differs per machine
+        { "WAIT_SWAPS",     &knobs_t::wait,      { 0, 1 } },
+        { "EV_CLD",      &knobs_t::big,       { 0, 1 } },
     };
     static const std::vector<tunable> T = [&] {
         std::vector<tunable> t;
@@ -3110,12 +3117,12 @@ static void self_tune(moe_cache * mc) {
             if (!det_mode && !g_autotune_off && !user_knobs().count(x.name)) { t.push_back(x); }
         };
         if (mc->pred_m > 0) {
-            add({ "PREDICT", &knobs_t::predict, { 0, 1 } }); // first: the streaming knobs are tuned with it on
+            add({ "PRED", &knobs_t::predict, { 0, 1 } }); // first: the streaming knobs are tuned with it on
         }
         if (mc->pred_m > 0 && knobs().stream > 0) { for (const auto & x : T_stream) { add(x); } }
         // the swap margin: 0 = any hotter expert may enter, -2 = pay-back margin from measured upload / CPU time. Which one wins depends
         // on the machine (slow link, RAM headroom), so it is tuned live; a state-carrying knob, hence the long slices
-        add({ "MARGIN", &knobs_t::margin, { 0, -2 }, true });
+        add({ "SWAP_LEAD", &knobs_t::margin, { 0, -2 }, true });
         for (const auto & x : T_swap) { add(x); }
         return t;
     }();
@@ -3216,10 +3223,10 @@ void llama_moe_cache_step() {
         const char * e = getenv("LLAMA_MOE_CACHE_DETERMINISTIC");
         return e && atoi(e) != 0;
     }();
-    // wait for and publish the previous step's uploads (default; LLAMA_MOE_CACHE_WAIT=0
+    // wait for and publish the previous step's uploads (default; LLAMA_MOE_CACHE_WAIT_SWAPS=0
     // disables): a cache that is current every step beats the time the wait costs,
     // fixed-text decode +16%, hit rate 66% -> 77%
-    const bool wait_publish = det || knobs().wait != 0; // LLAMA_MOE_CACHE_WAIT / ctl WAIT
+    const bool wait_publish = det || knobs().wait != 0; // LLAMA_MOE_CACHE_WAIT_SWAPS / ctl WAIT
 
     // 1) publish completed uploads (sync point: no graph is executing)
     {
@@ -3284,7 +3291,7 @@ void llama_moe_cache_step() {
     }
 
     // swap budget for this step, from measured costs: keep upload time within
-    // LLAMA_MOE_CACHE_SWAP_FRAC of the token time, minus what is still queued
+    // LLAMA_MOE_CACHE_UPLOAD_SHARE of the token time, minus what is still queued
     const double frac = knobs().swap_frac;
     int budget_total;
     {
@@ -3340,7 +3347,7 @@ void llama_moe_cache_step() {
         } else {
             budget_total = (int) (frac*step_us*mc->workers.size()/mc->upload_us) - (int) mc->todo.size();
         }
-        // static budget: LLAMA_MOE_CACHE_BUDGET swaps per step (deterministic mode: default 8)
+        // static budget: LLAMA_MOE_CACHE_SWAPS_PER_STEP swaps per step (deterministic mode: default 8)
         const int fixed_budget = (int) knobs().budget;
         if (fixed_budget >= 0 || det) {
             budget_total = fixed_budget >= 0 ? fixed_budget : 8;
@@ -3362,7 +3369,7 @@ void llama_moe_cache_step() {
             link_margin[k] = mc->gbs_link[k] > 0 && knobs().link != 0 ? (int) std::max(1.0, std::ceil(cpu_gbs / mc->gbs_link[k])) : (int) margin;
         }
     }
-    // static pay-back margin: LLAMA_MOE_CACHE_MARGIN, default 0 (deterministic mode: 4). The timing margin above (-2)
+    // static pay-back margin: LLAMA_MOE_CACHE_SWAP_LEAD, default 0 (deterministic mode: 4). The timing margin above (-2)
     // charges an upload as CPU time, but the DMA runs beside the CPU and only costs DDR contention: on GLM topic-switching
     // chats (PC1, x4 link margin 9-11) it held the cache at 64.7% hit / 19.93 t/s vs 71.2% / 21.26 t/s with 0
     const int fixed_margin = knobs().margin == -1 ? (det ? 4 : 0) : (int) knobs().margin;
@@ -3778,7 +3785,7 @@ void llama_moe_set_options(const char * opts) {
         const size_t eq = kv.find('=');
         if (eq == std::string::npos) { continue; }
         std::string name = kv.substr(0, eq);
-        for (char & c : name) { c = (char) toupper((unsigned char) c); }
+        name = knob_canon(name);
         if (name == "AUTOTUNE") {
             g_autotune_off = atof(kv.c_str() + eq + 1) == 0;
         } else if (knob_set(knobs(), name, atof(kv.c_str() + eq + 1))) {
