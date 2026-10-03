@@ -339,11 +339,6 @@ def run_exp(spec_path, rs, dry=False, only=None, rounds=None):
                         warm_done.add(arm["name"])
                         if not dry:
                             store_row(rs, spec, name, spec_sha, arm, mname, mpath, rnd, row, hw, setup, guard_lim)
-                            if arm.get("state") and os.path.exists(arm["state"]):   # the tuner state after every run, so a run that deletes or rewrites it shows
-                                sd = os.path.join(rs.DATA, "logs", name); os.makedirs(sd, exist_ok=True)
-                                shutil.copy(arm["state"], os.path.join(sd, f"state-{arm['name']}-{mname}-r{rnd + 1}.ini"))
-                            elif arm.get("state"):
-                                print(f"  WARNING: state file of {arm['name']} is gone after the run ({arm['state']})", flush=True)
     finally:
         if holder:
             try:
