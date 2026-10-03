@@ -1444,12 +1444,7 @@ static double moe_auto_noise(const moe_auto_rec & r) {
 
 // relative gap between the placements' request costs (positive: the cache is faster) and the noise bar it has to beat
 static double moe_auto_gap(const moe_auto_rec & st, const moe_auto_rec & ca, double np, double ng, double & bar) {
-    bool pk = moe_auto_p_known(st, ca);
-    // generation-heavy request (generation takes over 10% longer than the prompt, at stock's rates): the better generation wins, the
-    // prompt term drops out; otherwise the whole request time decides (the better prefill, stock usually, wins)
-    if (pk && ng * st.g_ms > 1.1 * np * st.p_ms) {
-        pk = false;
-    }
+    const bool pk = moe_auto_p_known(st, ca);
     const double c = moe_auto_cost(ca, np, ng, pk), s = moe_auto_cost(st, np, ng, pk);
     bar = std::max(0.05, std::max(moe_auto_noise(st), moe_auto_noise(ca)));
     return (s - c) / std::max(1e-9, std::min(c, s));
