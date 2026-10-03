@@ -1620,33 +1620,6 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                 }
             }
 
-            // GGML_SCHED_NO_MIDSPLIT=1: skip the rule below (experiment: it adds a split, and a sync per token, on a plain two-GPU layer split)
-            static const bool no_midsplit = getenv("GGML_SCHED_NO_MIDSPLIT") && atoi(getenv("GGML_SCHED_NO_MIDSPLIT")) != 0;
-            if (node_backend_id == cur_backend_id && !need_new_split && !no_midsplit) {
-                for (int j = 0; j < GGML_MAX_SRC; j++) {
-                    struct ggml_tensor * src = node->src[j];
-                    if (src == NULL) {
-                        continue;
-                    }
-                    // an activation from another GPU needed mid-split: start a new split
-                    // here, otherwise its copy (and the wait on that GPU) is done at split
-                    // start and the independent nodes before this one can't overlap it
-                    if (i > split->i_start && (src->buffer == NULL || src->buffer->usage != GGML_BACKEND_BUFFER_USAGE_WEIGHTS)) {
-                        const int src_backend_id = tensor_backend_id(src);
-                        if (src_backend_id >= 0 && src_backend_id != cur_backend_id &&
-                                tensor_id_copy(hash_id(src), cur_backend_id, 0) == NULL) {
-                            ggml_backend_dev_t sd = ggml_backend_get_device(sched->backends[src_backend_id]);
-                            ggml_backend_dev_t cd = ggml_backend_get_device(sched->backends[cur_backend_id]);
-                            if (sd && cd && ggml_backend_dev_type(sd) == GGML_BACKEND_DEVICE_TYPE_GPU &&
-                                    ggml_backend_dev_type(cd) == GGML_BACKEND_DEVICE_TYPE_GPU) {
-                                need_new_split = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
             if (node_backend_id != cur_backend_id || need_new_split) {
                 split->i_end = i;
                 i_split++;
