@@ -700,12 +700,12 @@ void stock_obs_cb(const char * name, const struct ggml_tensor * ids, const struc
 
 void llama_moe_observe_start(const llama_model & model) {
     const char * off = getenv("LLAMA_MOE_OBSERVE");
-    if ((off && off[0] == '0') || model.hparams.n_expert == 0 || !moe_state_enabled() || g_cache) {
+    if ((off && off[0] == '0') || model.hparams.n_expert == 0 || !moe_state_enabled() || llama_moe_cache_active()) {
         return;
     }
     std::lock_guard<std::mutex> lk(g_heat.mtx);
     g_heat.section = moe_state_section(model);
-    g_heat.counts.assign(model.hparams.n_layer, std::vector<uint64_t>(model.hparams.n_expert, 0));
+    g_heat.counts.assign(model.hparams.n_layer(), std::vector<uint64_t>(model.hparams.n_expert, 0));
     g_heat.tokens = 0;
     g_heat.on = true;
     ggml_set_moe_obs_callback(stock_obs_cb, nullptr);
