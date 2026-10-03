@@ -195,7 +195,7 @@ sudo ./pool.sh unmount                    # give the memory back
 - `mount` alone reserves what the machine can spare (RAM minus a margin of the larger of 24 GiB and 20%); `mount model.gguf` reserves what that model needs.  
 - The first load of a model fills a cache file in the pool; later loads map it. Several models share the pool, the least recently used one goes when it is full.  
 - Without `GGML_CUDA_HUGEFS`, or without a pool, nothing changes.  
-- **Needs Linux 4.11 or newer, built with `CONFIG_CONTIG_ALLOC`, on a CPU with 1 GiB pages (`pdpe1gb`)**: reserving 1 GiB pages at run time needs both. Check with `ls /sys/kernel/mm/hugepages/hugepages-1048576kB` (it must exist). Tested on Linux 7.1. Do not boot with `hugetlb_cma=`: pages inside a CMA area cannot be pinned for the GPU. Linux only.  
+- **Needs Linux 4.11 or newer, built with `CONFIG_CONTIG_ALLOC`, on a CPU with 1 GiB pages (`pdpe1gb`)**: reserving 1 GiB pages at run time needs both. Check with `grep CONFIG_CONTIG_ALLOC /boot/config-$(uname -r)` (it must say `=y`) and `ls /sys/kernel/mm/hugepages/hugepages-1048576kB` (it must exist). Tested on Linux 7.1. Do not boot with `hugetlb_cma=`: pages inside a CMA area cannot be pinned for the GPU. Linux only.  
 
 The disadvantages:  
 - **The first start is slow.** The first load of a model reads it from disk, pins it and fills the pool's cache file; only the later loads are fast.  
