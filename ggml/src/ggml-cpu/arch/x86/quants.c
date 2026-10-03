@@ -766,17 +766,22 @@ void ggml_vec_dot_q2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
     const __m256i m3     = _mm256_set1_epi8(3);
     const __m256i one    = _mm256_set1_epi8(1);
 
+    // the two Q8_0 halves are written out (no k loop with a run-time index choice): clang kept the loop rolled and was 25% slower than gcc, which unrolls it;
+    // the order of the operations is unchanged, so the result is bit for bit the same
     __m256 acc = _mm256_setzero_ps();
     for (int i = 0; i < nb; ++i) {
         const __m256i qq = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *) x[i].qs));
         const float   d0 = GGML_CPU_FP16_TO_FP32(x[i].d);
-        for (int k = 0; k < 2; ++k) {
-            const __m256i xb = _mm256_shuffle_epi8(qq, k ? xidx1 : xidx0);
-            const __m256i xv = _mm256_sub_epi8(_mm256_and_si256(_mm256_srlv_epi32(xb, shifts), m3), one); // {0..3} -> {-1..2}
-            const __m256i yv = _mm256_shuffle_epi8(_mm256_loadu_si256((const __m256i *) y[2*i + k].qs), yidx);
-            const __m256  d  = _mm256_set1_ps(d0 * GGML_CPU_FP16_TO_FP32(y[2*i + k].d));
-            acc = _mm256_fmadd_ps(d, mul_sum_i8_pairs_float(xv, yv), acc);
-        }
+
+        const __m256i xv0 = _mm256_sub_epi8(_mm256_and_si256(_mm256_srlv_epi32(_mm256_shuffle_epi8(qq, xidx0), shifts), m3), one); // {0..3} -> {-1..2}
+        const __m256i xv1 = _mm256_sub_epi8(_mm256_and_si256(_mm256_srlv_epi32(_mm256_shuffle_epi8(qq, xidx1), shifts), m3), one);
+        const __m256i yv0 = _mm256_shuffle_epi8(_mm256_loadu_si256((const __m256i *) y[2*i + 0].qs), yidx);
+        const __m256i yv1 = _mm256_shuffle_epi8(_mm256_loadu_si256((const __m256i *) y[2*i + 1].qs), yidx);
+        const __m256  d_0 = _mm256_set1_ps(d0 * GGML_CPU_FP16_TO_FP32(y[2*i + 0].d));
+        const __m256  d_1 = _mm256_set1_ps(d0 * GGML_CPU_FP16_TO_FP32(y[2*i + 1].d));
+
+        acc = _mm256_fmadd_ps(d_0, mul_sum_i8_pairs_float(xv0, yv0), acc);
+        acc = _mm256_fmadd_ps(d_1, mul_sum_i8_pairs_float(xv1, yv1), acc);
     }
     *s = hsum_float_8(acc);
 #else
