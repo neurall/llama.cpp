@@ -97,6 +97,8 @@
 #include <vector>
 #include <thread>
 #if defined(__linux__)
+#include <sched.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/file.h>
@@ -1351,11 +1353,41 @@ static size_t ggml_cuda_free_reserved_huge_bytes(size_t page) {
     return (size_t) n * page;
 }
 
+#if defined(__linux__)
+// LLAMA_HELPER_CPUS (a cpu list "0-7,16-23", set by common from a user CPU mask -C): helper threads (loader, populate, probe, uploads) stay on those
+// cores and their SMT siblings, so a user's single-die / physical-core placement is not widened to the whole machine
+static const cpu_set_t * helper_cpu_set() {
+    static const cpu_set_t cs = [] {
+        cpu_set_t c;
+        CPU_ZERO(&c);
+        if (const char * e = getenv("LLAMA_HELPER_CPUS")) {
+            for (const char * p = e; *p; ) {
+                char * end = nullptr;
+                const long a = strtol(p, &end, 10);
+                if (end == p) { break; }
+                long b = a;
+                if (*end == '-') { p = end + 1; b = strtol(p, &end, 10); }
+                for (long i = a; i <= b && i < CPU_SETSIZE; ++i) { CPU_SET((int) i, &c); }
+                p = *end == ',' ? end + 1 : end;
+                if (end == p && *end != ',') { break; }
+            }
+        }
+        return c;
+    }();
+    return CPU_COUNT(&cs) > 0 ? &cs : nullptr;
+}
+static void apply_helper_cpus() {
+    if (const cpu_set_t * cs = helper_cpu_set()) { pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), cs); }
+}
+#else
+static void apply_helper_cpus() {}
+#endif
+
 static void ggml_cuda_populate(char * p, size_t n) {
     const size_t nt = 16, ch = ((n / nt) + 4095) & ~(size_t) 4095;
     std::vector<std::thread> th;
     for (size_t i = 0; i < nt && i * ch < n; i++) {
-        th.emplace_back([=] { madvise(p + i * ch, std::min(ch, n - i * ch), 23 /* MADV_POPULATE_WRITE */); });
+        th.emplace_back([=] { apply_helper_cpus(); madvise(p + i * ch, std::min(ch, n - i * ch), 23 /* MADV_POPULATE_WRITE */); });
     }
     for (auto & t : th) { t.join(); }
 }

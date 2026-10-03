@@ -19,12 +19,12 @@ state file. Everything below is for overriding that, and a setting you give is n
 
 | I want | type |
 |---|---|
-| exactly upstream behaviour, nothing of the fork | `--moe slots=0` |
+| exactly upstream behaviour, nothing of the fork | `--fork off` |
 | the cache, but fixed settings and no self-tuning | `-at off` (and `--moe slots=N` for a fixed slot count) |
 | a reproducible benchmark | `LLAMA_MOE_STATE=0` so nothing learned earlier is used, plus `-at off` or explicit `--moe` settings; change one thing per run |
 | the cache even where the fork would choose stock (or the other way) | `LLAMA_MOE_AUTO_MODE=cache` (or `stock`) |
 | the fork to forget what it learned | delete `~/.cache/llama.cpp/moe-state.ini`, or run once with `LLAMA_MOE_AUTO_MODE=retest` |
-| to check whether the cache is what slows my machine down | run the same command with `--moe slots=0` and compare |
+| to check whether the cache is what slows my machine down | run the same command with `--fork off` and compare |
 | big pinned models to start faster | the section on loading pinned weights, below |
 
 ## Command-line flags
@@ -32,7 +32,7 @@ state file. Everything below is for overriding that, and a setting you give is n
 | flag | environment form | what it does |
 |---|---|---|
 | `--moe KEY=VAL,...` | `LLAMA_ARG_MOE` | the expert cache settings and knobs, below |
-| `--moe-expert-cache N` | `LLAMA_ARG_MOE_EXPERT_CACHE` | expert slots per layer in VRAM; `-1` sizes them from free VRAM, `0` turns the whole fork off (same as `--moe slots=0`) |
+| `--moe-expert-cache N` | `LLAMA_ARG_MOE_EXPERT_CACHE` | expert slots per layer in VRAM; `-1` sizes them from free VRAM, `0` = no cache (the rest of the fork stays on; use `--fork off` for stock behaviour) |
 | `--prefetch-experts-slots N` | | staging slots for host-to-GPU prefetch of big batches (same as `--moe pf-slots=N`) |
 | `-at on\|off`, `--autotune` | `LLAMA_ARG_AUTOTUNE`, `LLAMA_AUTOTUNE=0` | self-tuning of cache knobs, thread counts and the cache-or-stock placement; `off` = fixed defaults, nothing measured or saved (same as `--moe autotune=0`) |
 | `-lm pin\|mmap\|dio`, `--load-mode` | `LLAMA_ARG_LOAD_MODE` | `pin`: weights in pinned RAM (the default of every tool when part of the model stays in host RAM and the model fits in the RAM available now; faster prompts and uploads, the load takes longer; `-lm mmap` opts out); `mmap`: memory-mapped, for models bigger than RAM; `dio`: direct IO |
@@ -43,14 +43,14 @@ state file. Everything below is for overriding that, and a setting you give is n
 
 | you want | pass | effect |
 |---|---|---|
-| plain stock behaviour | `--moe slots=0` (or `--moe-expert-cache 0`, `LLAMA_ARG_MOE=slots=0`) | no expert cache, nothing tuned, measured or saved; the same placement and kernels as upstream llama.cpp |
+| plain stock behaviour | `--fork off` (or `LLAMA_ARG_FORK=off`) | no expert cache, nothing tuned, measured or saved; the same placement and kernels as upstream llama.cpp |
 | the cache, but no self-tuning | `-at off` (or `--moe autotune=0`, `LLAMA_AUTOTUNE=0`) | the cache works with fixed defaults, placement uses a static rule, nothing is measured or saved |
 | stock placement chosen by the fork | `LLAMA_MOE_AUTO_MODE=stock` | skips the cache-or-stock measurement and uses stock |
 | the cache forced on | `LLAMA_MOE_AUTO_MODE=cache` | skips the measurement and uses the cache |
 | a fresh start | `LLAMA_MOE_STATE=0`, or delete `~/.cache/llama.cpp/moe-state.ini` | ignore the learned state, write nothing |
-| the hand-tuned stock baseline | `--moe slots=0 --n-cpu-moe N` (or `-ot`) | keep the first layers' experts in VRAM, the rest on the CPU, as in upstream; the fair comparison for the cache |
+| the hand-tuned stock baseline | `--fork off --n-cpu-moe N` (or `-ot`) | keep the first layers' experts in VRAM, the rest on the CPU, as in upstream; the fair comparison for the cache |
 
-With `--moe slots=0` the fork behaves as upstream apart from unrelated changes (the loader, MTP, merged upstream commits).
+With `--fork off` the fork behaves as upstream apart from unrelated changes (the loader, MTP, merged upstream commits).
 
 ## `--moe` settings (command line)
 
@@ -59,7 +59,7 @@ With `--moe slots=0` the fork behaves as upstream apart from unrelated changes (
 
 | key | default | meaning |
 |---|---|---|
-| `slots=N` | automatic: on when a MoE model does not fit in VRAM | expert slots per layer in VRAM; `-1` sizes them from the free VRAM, a number fixes them, `0` turns the whole fork off (stock behaviour) |
+| `slots=N` | automatic: on when a MoE model does not fit in VRAM | expert slots per layer in VRAM; `-1` sizes them from the free VRAM, a number fixes them, `0` = no cache (the rest of the fork stays on; `--fork off` is stock behaviour) |
 | `pf-slots=N` | `0` (off) | staging slots for host-to-GPU prefetch of whole expert tensors for big batches (3 is recommended when used, at most 4) |
 | `up-max=N` | `2` | most expert uploads per layer and decode step; fewer means less PCIe and RAM traffic and a slower-changing cache |
 | `recent=N` | `64` | how many recent tokens the cache looks at when it decides which experts to keep |

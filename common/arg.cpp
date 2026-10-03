@@ -2558,13 +2558,12 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_env("LLAMA_ARG_MOE_EXPERT_CACHE"));
     add_opt(common_arg(
         {"--moe"}, "KEY=VAL,...",
-        "MoE expert cache options, comma separated. slots=N (slots per expert layer, same as --moe-expert-cache: 0 = off, -1 = size from free VRAM, unset = automatic), pf-slots=N (H2D prefetch staging slots, same as --prefetch-experts-slots), up-max=N (max expert uploads per layer and decode step), recent=N (tokens of recent usage "
+        "MoE expert cache options, comma separated. slots=N (slots per expert layer, same as --moe-expert-cache: 0 = no cache, -1 = size from free VRAM, unset = automatic), pf-slots=N (H2D prefetch staging slots, same as --prefetch-experts-slots), up-max=N (max expert uploads per layer and decode step), recent=N (tokens of recent usage "
         "the cache scores by, default 64), pred-top=M (prefetch confident experts among the top M predicted for the next layers, 0 = off), "
         "train-every=N (train the learned predictor every N decoded tokens; implies pred-top=8), state=PATH|0 (the tuner state file), or any tuner knob: swap-lead, upload-wait, wait-swaps, ev-cld, "
-        "upload-share, ... (and any other LLAMA_MOE_CACHE_<NAME> setting: POLICY, PREDICT_AHEAD, ...: --moe policy=lru). A knob given here is never self-tuned. autotune=0: no self-tuning (same as -at off). slots=0 (also --moe-expert-cache 0): expert cache off and nothing tuned, stock behaviour",
+        "upload-share, ... (and any other LLAMA_MOE_CACHE_<NAME> setting: POLICY, PREDICT_AHEAD, ...: --moe policy=lru). A knob given here is never self-tuned. autotune=0: no self-tuning (same as -at off).",
         [](common_params & params, const std::string & value) {
-            bool fork_off = false; // cache=0: wins over every other key, whatever the order
-            for (size_t pos = 0; pos < value.size();) {
+                        for (size_t pos = 0; pos < value.size();) {
                 const size_t comma = value.find(',', pos);
                 const std::string kv = value.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
                 pos = comma == std::string::npos ? value.size() : comma + 1;
@@ -2575,7 +2574,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 std::string key = kv.substr(0, eq);
                 for (char & c : key) { c = c == '_' ? '-' : (char) tolower((unsigned char) c); }
                 const int v = atoi(kv.c_str() + eq + 1);
-                if      (key == "slots")   { params.n_moe_cache_slots       = v; fork_off = fork_off || v == 0; } // = --moe-expert-cache
+                if      (key == "slots")   { params.n_moe_cache_slots       = v; } // = --moe-expert-cache
                 else if (key == "pf-slots") { params.prefetch_experts_slots  = v; } // = --prefetch-experts-slots
                 else if (key == "up-max") { params.n_moe_cache_inserts = v; }
                 else if (key == "recent")  { params.n_moe_cache_window  = v; }
@@ -2591,12 +2590,28 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 else if (key == "train-every")   { params.n_moe_predict_train = v; if (params.n_moe_predict <= 0) { params.n_moe_predict = 8; } }
                 else { params.moe_opts += (params.moe_opts.empty() ? "" : ",") + kv; } // a tuner knob: the engine checks the name
             }
-            if (fork_off) { // cache=0: expert cache off and nothing tuned or measured, i.e. stock behaviour
-                params.n_moe_cache_slots = 0;
-                params.autotune          = false;
-            }
         }
     ).set_env("LLAMA_ARG_MOE"));
+    add_opt(common_arg(
+        {"--fork"}, "on|off",
+        "off = plain upstream behaviour: no expert cache, no self-tuning or measuring, no auto-pinned weights, no thread tuner, whatever other fork options say; "
+        "on (default) = the fork's features (the expert cache where it measures faster, tuning, pinned weights)",
+        [](common_params & params, const std::string & value) {
+            if      (value == "on"  || value == "1" || value == "true")  { params.fork_off = false; }
+            else if (value == "off" || value == "0" || value == "false") {
+                params.fork_off = true;
+                // the engine reads these before common_init_from_params runs
+#ifdef _WIN32
+                _putenv_s("LLAMA_THREAD_AUTOTUNE", "0");
+                _putenv_s("GGML_CUDA_NO_REGISTERED", "1");
+#else
+                setenv("LLAMA_THREAD_AUTOTUNE", "0", 1);
+                setenv("GGML_CUDA_NO_REGISTERED", "1", 1);
+#endif
+            }
+            else { throw std::invalid_argument("--fork: expected on or off, got '" + value + "'"); }
+        }
+    ).set_env("LLAMA_ARG_FORK"));
     add_opt(common_arg(
         {"-at", "--autotune"}, "on|off",
         "self-tuning on measured token times (expert cache knobs, decode and prompt thread counts, cache-or-stock placement measuring), default on; "

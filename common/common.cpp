@@ -2008,6 +2008,38 @@ std::vector<llama_adapter_lora_ptr> & common_init_result::lora() {
 }
 
 common_init_result_ptr common_init_from_params(common_params & params, bool model_only) {
+#if defined(__linux__)
+    // a user CPU mask (-C / -Cb): helper threads (loader, populate, probe, uploads) stay on those cores and their SMT siblings instead of the whole machine
+    if (!params.fork_off && (params.cpuparams.mask_valid || params.cpuparams_batch.mask_valid) && !getenv("LLAMA_HELPER_CPUS")) {
+        std::set<int> cpus;
+        for (const auto * cp : { &params.cpuparams, &params.cpuparams_batch }) {
+            if (!cp->mask_valid) { continue; }
+            for (int c = 0; c < GGML_MAX_N_THREADS; ++c) {
+                if (!cp->cpumask[c]) { continue; }
+                cpus.insert(c);
+                std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(c) + "/topology/thread_siblings_list");
+                std::string l; std::getline(f, l);
+                for (size_t pos = 0; pos < l.size(); ) {
+                    const int a = atoi(l.c_str() + pos); int b = a;
+                    const size_t d = l.find_first_of(",-", pos);
+                    if (d != std::string::npos && l[d] == '-') { b = atoi(l.c_str() + d + 1); }
+                    for (int i = a; i <= b; ++i) { cpus.insert(i); }
+                    const size_t nx = l.find(',', pos);
+                    if (nx == std::string::npos) { break; }
+                    pos = nx + 1;
+                }
+            }
+        }
+        std::string list;
+        for (int c : cpus) { list += (list.empty() ? "" : ",") + std::to_string(c); }
+        if (!list.empty()) { setenv("LLAMA_HELPER_CPUS", list.c_str(), 1); LOG_INF("%s: helper threads stay on the user CPU mask and its SMT siblings: %s\n", __func__, list.c_str()); }
+    }
+#endif
+    if (params.fork_off) { // --fork off wins over every other fork setting, whatever the order of the options
+        params.n_moe_cache_slots = 0;
+        params.autotune          = false;
+        params.auto_pin          = false;
+    }
     const common_params orig = params; // before the placement and tuning below change it
     common_init_result_ptr res(new common_init_result(params, model_only));
 
