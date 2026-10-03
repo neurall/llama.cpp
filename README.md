@@ -184,7 +184,7 @@ decodes at 12 to 15 tokens/s pinned and at 2 to 2.5 tokens/s when the load falls
 That is why auto-pin is the default, and it needs nothing from you. **Add `-lm mmap` to any command to fall back to mmap should you prefer to trade start speed for performance.**  
 
 The optional part is a pool of 1 GiB huge pages that keeps the pinned models resident in RAM between runs: the first load fills a cache file in the pool,  
-every later load maps that file instead of reading the model again, which roughly halves the load time (often about 100 s down to about 40 s for a 100 GB model).  
+every later load maps that file instead of reading the model again, which more than halves the load time (measured on GLM-5.3-Flash 3.0-bit, 109 GiB: 43 s instead of 88 to 95 s).  
 It is worth the hassle below only if you reload models of 100 GB and up often, which is mostly the command line (every `llama-cli` run is a new process that loads the model again);  
 a server loads once and keeps running, and on a smaller model waiting 10 s instead of 5 s does not matter, so neither needs the pool.  
 
