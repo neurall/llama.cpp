@@ -96,14 +96,18 @@ Four points from one session with different output texts: a good explanation, no
 Running a model bigger than your VRAM well means choosing placement, cache size, upload schedule, batch size, thread counts, the VRAM margin. Instead of a page of flags, the
 fork measures your machine and tunes most of those while you use it. The defaults are chosen on your machine, not hard-coded:
 
-- **Cache or stock.** If the model fits in VRAM it is placed exactly like stock llama.cpp. A model that does not fit takes
-  the cache right away. When what you run is mostly long prompts (processing them would cost more than the faster generation
-  gains), the first two runs compare both and keep the faster one.  
+- **Cache or stock.** If the model fits in VRAM it is placed exactly like stock llama.cpp. A model that does not fit is measured: the first start
+  runs stock placement, the next one tries the cache, and from then on the faster of the two is used. Which one wins depends on your machine and your requests,
+  nothing is decided from the model size. Every few starts the stock placement is measured again.  
 - **Self-tuning on real token times.** The cache policy and the upload schedule are adjusted while you use it. The decode and prompt thread counts start from
   a formula (cores minus one per GPU) and the tuner moves them a few threads at a time; on a many-core host `-t 16` can be a better start (on a 64-core machine the
   difference was under 2%). A setting that does not help is dropped, a setting you fix yourself is never touched.  
 - **It remembers.** What it learned per model (hot experts, tuned settings, cache-or-stock) is kept in one file,
   `~/.cache/llama.cpp/moe-state.ini`, so the next start, even a one-shot short prompt, begins from it. Delete the file to start over.  
+- **The first runs of a model are for learning.** The first start of a model (and, for a model that does not fit in VRAM, the second one) is slower than
+  the later ones: the fork is measuring stock against the cache and capturing which experts are hot into the state file. Do the first runs with something short and
+  simple, a short prompt and `-n 100` at most, so they are quick. From the third start on it runs at its settled speed (Qwen3.8-Flash-Next IQ1_M on 2 x RTX 3090: first
+  start 66 t/s, the cache trial 54 t/s, then 66 t/s again with stock placement; where the cache wins it keeps the cache). Benchmark only after those runs.  
 - **It tells you what it does.** `llama-server` logs, and `llama-cli -lv 3` prints after each reply, whether the cache is on,
   the hit rate, the tuned settings, threads and batch sizes.  
 
