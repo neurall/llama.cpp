@@ -2207,6 +2207,7 @@ common_init_result::~common_init_result() {
                 __func__, g_ms, r.g_ms);
             llama_state_erase(sec.c_str(), "");
             moe_auto_write(g_moe_auto_file, st, moe_auto_rec(), "");
+            llama_state_suppress_writes(true);   // marked for deletion: the engine's save when the context is freed (hot experts, tuner values, threads) writes nothing
             return;
         }
         llama_state_set(sec.c_str(), (pre + ".strikes").c_str(), std::to_string(strikes).c_str());
