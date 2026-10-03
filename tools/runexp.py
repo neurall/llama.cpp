@@ -49,7 +49,7 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
 import glob, shutil, hashlib, json, os, re, shlex, signal, statistics, subprocess, sys, threading, time
 
 EXP_COLS = ["exp", "arm", "ready_s", "wall_s", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs", "ddr_util", "pcie_util",
-            "cpu_util", "gpu_util", "placement", "decisions", "rungs", "held_gib", "mem_limit", "cache_state", "state", "sys"]
+            "cpu_util", "gpu_util", "placement", "decisions", "rungs", "held_gib", "mem_limit", "cache_state", "temp", "state", "sys"]
 TOOLS = {"cli": "llama-cli", "perplexity": "llama-perplexity", "completion": "llama-completion"}
 HOLD = os.path.join(os.path.dirname(os.path.realpath(__file__)), "experiments", "vram-sim", "vramhold.py")
 
@@ -330,8 +330,11 @@ def run_exp(spec_path, rs, dry=False, only=None, rounds=None):
                     for attempt in range(1 + warm_n):
                         n_run += 1
                         row = one_run(spec, wl, setup, arm, mname, mpath, rnd, base_env, guard_lim, dry, state_file)
-                        if attempt < warm_n:
-                            print(f"  (cold hot-up run of {arm['name']} discarded, not recorded)", flush=True)
+                        if attempt < warm_n:   # the cold run is stored too, marked temp=cold; reports leave temp=cold rows out
+                            row["temp"] = "cold"
+                            print(f"  ({arm['name']}: cold first run recorded as temp=cold)", flush=True)
+                            if not dry:
+                                store_row(rs, spec, name, spec_sha, arm, mname, mpath, rnd, row, hw, setup, guard_lim)
                             continue
                         warm_done.add(arm["name"])
                         if not dry:
@@ -396,6 +399,7 @@ def one_run(spec, wl, setup, arm, mname, mpath, rnd, base_env, lim, dry, state_f
         print(f"{label}: SKIPPED (available {ms['mem_avail_gb']} GiB, swap {ms['swap_mb']} MiB)", flush=True)
         return {"skipped": 1, "sys": ms}
     cache_state = "cold" if setup.get("drop_cache") else "as-is"
+    temp = "cold" if setup.get("drop_cache") else "hot"
     if setup.get("drop_cache"):
         drop_cache(mpath)
     env = dict(base_env)
@@ -420,7 +424,7 @@ def one_run(spec, wl, setup, arm, mname, mpath, rnd, base_env, lim, dry, state_f
         os.makedirs(ld, exist_ok=True)
         with open(os.path.join(ld, f"{mname}-r{rnd + 1}-{arm['name']}.log"), "w") as lf:
             lf.write(out + "\n=== stderr ===\n" + err)
-    r.update(wall_s=round(wall, 1), cache_state=cache_state, sys={**ms, **(sampler.summary() if sampler else {})})
+    r.update(wall_s=round(wall, 1), cache_state=cache_state, temp=temp, sys={**ms, **(sampler.summary() if sampler else {})})
     if guard.reason:
         r["note"] = guard.reason
     if p.returncode not in (0, None) and not r.get("tps") and not r.get("ppl"):
@@ -449,7 +453,7 @@ def store_row(rs, spec, name, spec_sha, arm, mname, mpath, rnd, r, hw, setup, li
                exp=f"{name}@{spec_sha}", arm=arm["name"], ready_s=r.get("ready_s"), wall_s=r.get("wall_s"), rss_kb=r.get("rss_kb"), major_faults=r.get("major_faults"),
                uploads=r.get("uploads"), evictions=r.get("evictions"), up_mib=r.get("up_mib"), ddr_gbs=r.get("ddr_gbs"), pcie_gbs=r.get("pcie_gbs"),
                ddr_util=r.get("ddr_util"), pcie_util=r.get("pcie_util"), cpu_util=sysd.get("cpu_util"), gpu_util=sysd.get("gpu_util"), placement=r.get("placement"), decisions=r.get("decisions"),
-               rungs=r.get("rungs"), held_gib=held, mem_limit=setup.get("mem_limit"), cache_state=r.get("cache_state"),
+               rungs=r.get("rungs"), held_gib=held, mem_limit=setup.get("mem_limit"), cache_state=r.get("cache_state"), temp=r.get("temp"),
                state=json.dumps(setup.get("state")) if setup.get("state") not in (None, "keep") else "", sys=json.dumps(sysd, sort_keys=True, separators=(",", ":")))
     rs.csv_append("run-history.csv", rs.RUN_COLS, row)
     # the spec is kept next to the data, once
