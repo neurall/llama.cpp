@@ -4151,7 +4151,9 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         }
     }
 
-    if (node->op == GGML_OP_MUL) {
+    // GGML_CUDA_NO_GATE_FUSE=1: the fork's own gate fusion (mul, add, sigmoid, scale of the shared expert gate) is skipped (experiment switch)
+    static const bool no_gate_fuse = getenv("GGML_CUDA_NO_GATE_FUSE") != nullptr && std::atoi(getenv("GGML_CUDA_NO_GATE_FUSE"));
+    if (node->op == GGML_OP_MUL && !no_gate_fuse) {
         if (const int n = ggml_cuda_try_fuse_mul_add_sigmoid_scale(*cuda_ctx, cgraph, i)) {
             return n;
         }
