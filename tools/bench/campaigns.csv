@@ -44,3 +44,7 @@ regress-quick-start2,2026-10-03 09:36:39,start 2 (same default state file): the 
 regress-quick-start2,2026-10-03 09:37:18,start 2 (same default state file): the cache trial,,
 regress-quick-start3,2026-10-03 09:40:10,"IQ4_XS start 3, same default state file",,
 regress-quick-start4,2026-10-03 09:40:45,"IQ4_XS start 4, same default state file",,
+mimo-hostbuild,2026-10-03 09:44:58,MiMo: stock native build against stock built with our docker recipe,,
+mimo-hostbuild,2026-10-03 09:45:45,"MiMo: rc-final, 3 starts of one default state (the third is settled)",,
+mimo-ub,2026-10-03 10:03:44,MiMo rc-final with -ub 512 forced (same state file as the 2048 starts),,
+mimo-chat,2026-10-03 10:34:19,"MiMo rc-final, the README test: chat completion, 1500 tokens",,
