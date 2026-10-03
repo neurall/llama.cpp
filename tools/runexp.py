@@ -303,6 +303,9 @@ def run_exp(spec_path, rs, dry=False, only=None, rounds=None):
         base_env["LLAMA_MOE_STATE"] = state_file
         if st.get("reset", "start") == "start" and os.path.exists(state_file) and not dry:
             os.remove(state_file)
+    for a in arms:
+        if a.get("state") and os.path.exists(a["state"]) and not dry:
+            os.remove(a["state"])
     holder = None
     if setup.get("hold_vram") and not dry:
         holder = subprocess.Popen([sys.executable, HOLD] + [f"{g}:{gib}" for g, gib in setup["hold_vram"].items()], env=base_env,
@@ -360,6 +363,8 @@ def command_for(wl, setup, arm, mpath):
         cmd = ["/usr/bin/time", "-v"] + cmd
     cmd = ["timeout", str(wl.get("timeout", 1500))] + cmd
     env = {k: str(v) for k, v in arm.get("env", {}).items()}
+    if arm.get("state"):   # a state file of its own: arms must not learn from each other's runs
+        env["LLAMA_MOE_STATE"] = arm["state"]
     if env:
         cmd = ["env"] + [f"{k}={v}" for k, v in env.items()] + cmd
     if setup.get("mem_limit"):
