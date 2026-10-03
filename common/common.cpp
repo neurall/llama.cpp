@@ -1241,12 +1241,14 @@ static size_t common_model_expert_bytes(const std::string & path_model) {
 }
 
 // free memory summed over GPUs, of the largest GPU, and the GPU count
-static size_t g_gpu_total_max = 0; // largest total VRAM of any GPU: identifies the hardware in the placement record (free VRAM moves with every browser tab)
+static std::string g_gpu_id;       // the GPUs' names and PCI bus ids, hashed: identifies the hardware (and the slot, so the link) in the placement record
+static size_t g_gpu_total_max = 0; // fallback identity when the backend has no PCI id; free VRAM is not used: it moves with every browser tab
 
 static void common_gpu_free(size_t & total, size_t & max, int & n) {
     total = max = 0;
     n = 0;
     g_gpu_total_max = 0;
+    std::vector<std::string> ids;
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
@@ -1257,8 +1259,15 @@ static void common_gpu_free(size_t & total, size_t & max, int & n) {
         total += free;
         max    = std::max(max, free);
         g_gpu_total_max = std::max(g_gpu_total_max, tot);
+        ggml_backend_dev_props props;
+        ggml_backend_dev_get_props(dev, &props);
+        ids.push_back(std::string(ggml_backend_dev_name(dev)) + "|" + (props.device_id ? props.device_id : "") + "|" + std::to_string(tot >> 30));
         n++;
     }
+    std::sort(ids.begin(), ids.end());   // the order the backend lists them in does not matter
+    uint32_t h = 2166136261u;            // FNV-1a: the same on every platform, so a state file can move with its machine
+    for (const auto & id : ids) { for (char c : id) { h = (h ^ (uint8_t) c) * 16777619u; } h *= 16777619u; }
+    g_gpu_id = string_format("%08x", h);
 }
 
 // RAM that can be used without swapping: Linux MemAvailable (free + reclaimable page cache), 0 if unknown
@@ -1370,7 +1379,7 @@ static std::string moe_auto_path(const common_params & params, size_t model_size
     for (auto & c : name) { if (c == '[' || c == ']' || c == '\n' || c == '\r') { c = '_'; } }
     const std::string section = name + " " + std::to_string(model_size);
     llama_state_set_model(section.c_str());
-    return section + "\x1f" + "place.g" + std::to_string(n_gpu) + "x" + std::to_string(((g_gpu_total_max ? g_gpu_total_max : vram_max) + ((size_t) 1 << 29)) >> 30) + "g.v2"; // v1: the placement rule's epoch, not the build, so a new release does not re-measure (LLAMA_MOE_AUTO_MODE=retest forgets)
+    return section + "\x1f" + "place.g" + std::to_string(n_gpu) + "." + (g_gpu_id.empty() ? std::to_string(((g_gpu_total_max ? g_gpu_total_max : vram_max) + ((size_t) 1 << 29)) >> 30) + "g" : g_gpu_id) + ".v3"; // v1: the placement rule's epoch, not the build, so a new release does not re-measure (LLAMA_MOE_AUTO_MODE=retest forgets)
 }
 
 static void moe_auto_split(const std::string & path, std::string & section, std::string & prefix) {
