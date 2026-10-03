@@ -52,10 +52,6 @@ std::string trim(const std::string & s) {
     return s.substr(a, b - a);
 }
 
-// The file format and meaning of the entries (placement records, tuner knob names) change between releases: a file without this
-// stamp, or with another one, was written by a different build and is ignored (and replaced at the next write), never half-read.
-const char * STATE_FORMAT = "2";
-
 file_t load(const std::string & path) {
     file_t f;
     std::ifstream in(path);
@@ -75,11 +71,6 @@ file_t load(const std::string & path) {
             f[cur][trim(line.substr(0, eq))] = trim(line.substr(eq + 1));
         }
     }
-    auto it = f.find("format");
-    if (it == f.end() || it->second["version"] != STATE_FORMAT) {
-        return file_t();
-    }
-    f.erase(it);
     return f;
 }
 
@@ -91,7 +82,6 @@ bool save(const std::string & path, const file_t & f) {
             return false;
         }
         out << "# llama.cpp MoE state: what the engine learned per model (hot experts, tuner decisions, placement). Safe to delete.\n";
-        out << "\n[format]\nversion = " << STATE_FORMAT << "\n";
         for (const auto & s : f) {
             if (s.second.empty()) {
                 continue;
