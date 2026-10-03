@@ -376,6 +376,7 @@ struct moe_cache {
     // learned predictors (in-graph NLMS, see llama_moe_cache_layer::pred_m): trained every pred_train
     // tokens (--lrn-prd N, 0 = frozen) with step size pred_mu; weights persist in pred_file
     int32_t  pred_ahead = 0;
+    int32_t  pred_from  = 1; // first lookahead whose predictions are uploaded (LLAMA_MOE_CACHE_PREDICT_FROM; 2: skip the next layer, use L+2 ...)
     int32_t  pred_train = 0;
     float    pred_mu    = 0.5f;
     float    cur_mu     = 0.0f;
@@ -459,6 +460,10 @@ struct knobs_t {
     double admit       = 2; // ADMIT=N: a missed expert may take a slot only after N uses in the last 64 tokens (0: any miss). 2 beat 0 by 16% decode on GLM-5.3-Flash
                             // 3.0-bit (ppl comparator, 3 runs, ranges apart): a single recent use of a historically popular expert no longer evicts one that is hot now
     double admit_slow  = 0; // ADMIT_SLOW=N: the admission rule of layers on the slower link (their uploads cost 4-7x more; 0: same as ADMIT)
+    double lead        = 1; // LEAD=1: the predicted layers per link are the nearest ones whose upload still lands in time: the lookahead window starts at
+                            // ceil(measured upload time per expert on that link / measured layer time) and is LEAD_SPAN + 1 layers wide; the predictor's lookahead
+                            // count is derived from the probed link speeds (PREDICT_AHEAD overrides). 0: every lookahead up to PREDICT_AHEAD (the old behaviour)
+    double lead_span   = 1; // LEAD_SPAN: layers beyond the nearest feasible one that are also used
     double admit_jit   = 0; // ADMIT_JIT=N: the same admission rule for just-in-time uploads (a miss of this token goes to the GPU only after N uses in the last 64 tokens); 0: any
     double jit         = 1; // JIT miss offload (JIT=0 off): once a layer's router ids reach the host, upload the k misses (k from the
                             // measured link / CPU / combined RAM rates) that make CPU + link finish soonest into cache slots on
@@ -482,7 +487,7 @@ bool knob_set(knobs_t & k, const std::string & name_in, double v) {
         { "PRED_ISO", &knobs_t::stream }, { "PRED_N", &knobs_t::stream_m }, { "PRED_KEEP", &knobs_t::slotkeep }, { "PRED_TUNE", &knobs_t::self_tune }, { "PRED", &knobs_t::predict },
         { "PRED_LEAD", &knobs_t::offset }, { "PRED_SLOW", &knobs_t::stream_slow },
         { "TRACE_N", &knobs_t::trace }, { "TRACE_SKIP", &knobs_t::trace_after }, { "UPLOAD_NOW", &knobs_t::jit },
-        { "ADMIT", &knobs_t::admit }, { "ADMIT_SLOW", &knobs_t::admit_slow }, { "ADMIT_JIT", &knobs_t::admit_jit },
+        { "LEAD", &knobs_t::lead }, { "LEAD_SPAN", &knobs_t::lead_span }, { "ADMIT", &knobs_t::admit }, { "ADMIT_SLOW", &knobs_t::admit_slow }, { "ADMIT_JIT", &knobs_t::admit_jit },
     };
     for (const auto & f : fields) {
         if (name == f.first) {
@@ -504,7 +509,7 @@ std::set<std::string> & user_knobs() {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "VRAM_RESERVE_MB", "UPLOAD_SHARE", "PIN_HOT", "STAY_BONUS", "SLOW_MIN_STAY", "SWAP_LEAD", "SWAPS_PER_STEP", "CPU_RAM_GBS", "SWAP_LEAD_PER_LINK", "UPLOAD_WAIT", "UPLOAD_WAIT_MAX_US", "PRED_ISO", "PRED_N", "TRACE_N", "TRACE_SKIP", "ADMIT", "ADMIT_SLOW", "ADMIT_JIT", "PRED_LEAD", "PRED_SLOW", "RAM_CEILING_GBS", "WAIT_SWAPS", "UPLOAD_CHUNK_KB", "PRED_AUTO", "IDLE_UP", "IDLE_UP_N", "EV_CLD", "L3_PF", "L3_AUTO", "PRED_KEEP", "PRED_TUNE", "PRED", "UPLOAD_NOW" }) {
+        for (const char * n : { "VRAM_RESERVE_MB", "UPLOAD_SHARE", "PIN_HOT", "STAY_BONUS", "SLOW_MIN_STAY", "SWAP_LEAD", "SWAPS_PER_STEP", "CPU_RAM_GBS", "SWAP_LEAD_PER_LINK", "UPLOAD_WAIT", "UPLOAD_WAIT_MAX_US", "PRED_ISO", "PRED_N", "TRACE_N", "TRACE_SKIP", "LEAD", "LEAD_SPAN", "ADMIT", "ADMIT_SLOW", "ADMIT_JIT", "PRED_LEAD", "PRED_SLOW", "RAM_CEILING_GBS", "WAIT_SWAPS", "UPLOAD_CHUNK_KB", "PRED_AUTO", "IDLE_UP", "IDLE_UP_N", "EV_CLD", "L3_PF", "L3_AUTO", "PRED_KEEP", "PRED_TUNE", "PRED", "UPLOAD_NOW" }) {
             if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
                 knob_set(r, n, atof(e));
                 user_knobs().insert(n);
@@ -1680,8 +1685,19 @@ void pred_loop(moe_cache * mc) {
         std::vector<std::vector<int32_t>> cands(r.n_blk);
         std::vector<std::vector<float>>   cscore(r.n_blk); // the candidates' predictor scores
         for (int64_t k = 0; k < r.n_blk && r.li + 1 + k < mc->layers.size(); ++k) {
+            if (k + 1 < mc->pred_from) {
+                continue;  // the nearer layers are not predicted (PREDICT_FROM)
+            }
             const size_t tl = r.li + 1 + k;
             auto & ls = mc->layers[tl];
+            if (knobs().lead != 0) {
+                // the nearest layers whose upload still lands: lead = upload time per expert on this layer's link / layer time
+                const double ul = mc->link_us[ls.link] * (1 + (knobs().auto_tune == 1 ? mc->lead_extra[ls.link] : 0));
+                const int lead = ul > 0 ? std::max(1, (int) std::ceil(ul / std::max(1.0, mean_layer_us(mc)))) : 1;
+                if (k + 1 < lead || k + 1 > lead + (int) knobs().lead_span) {
+                    continue;
+                }
+            }
             const auto & b = mc->pred_b[tl];
             auto & cand = cands[k];
             lg.resize(ne);
@@ -2777,7 +2793,19 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             {
                 const char * a  = getenv("LLAMA_MOE_CACHE_PREDICT_AHEAD");
                 const char * mu = getenv("LLAMA_MOE_CACHE_PREDICT_MU");
-                mc->pred_ahead = std::max(0, std::min(8, a ? atoi(a) : 2));
+                int ahead = 2;
+                if (!a && knobs().lead != 0 && !mc->layers.empty() && mc->layers[0].pub.up_src && mc->layers[0].pub.gate_src && mc->layers[0].pub.down_src) {
+                    // lookahead long enough for the slowest link: its upload time (probed alone speed, x2 for the contention seen under load) over a 1 ms layer
+                    const auto & p0 = mc->layers[0].pub;
+                    const double eb = (double) (p0.up_src->nb[2] + p0.gate_src->nb[2] + p0.down_src->nb[2]);
+                    int lead_max = 1;
+                    for (int k = 0; k < mc->n_links; ++k) {
+                        if (mc->gbs_link[k] > 0) { lead_max = std::max(lead_max, (int) std::ceil(2.0 * eb / (mc->gbs_link[k] * 1e9) * 1e3)); }
+                    }
+                    ahead = std::max(2, std::min(8, lead_max + (int) knobs().lead_span));
+                }
+                mc->pred_ahead = std::max(0, std::min(8, a ? atoi(a) : ahead));
+                if (const char * fr = getenv("LLAMA_MOE_CACHE_PREDICT_FROM")) { mc->pred_from = std::max(1, std::min(8, atoi(fr))); }
                 mc->pred_train = predict_train;
                 if (mu) { mc->pred_mu = (float) atof(mu); }
                 const char * pf = getenv("LLAMA_MOE_CACHE_PREDICT_FILE");
