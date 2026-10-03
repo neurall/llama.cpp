@@ -87,6 +87,8 @@ RUN_COLS = ["ts", "commit", "bno", "tps", "pp", "hit", "model", "args", "test", 
             "pl", "proto", "rep", "seed", "branch", "patch"]  # pl: GPU power limits in W; proto: v2 = fixed workload (tests fix, fix12k), v1 = earlier; rep: repetition in a bench;
                                           # seed: sampling seed of a v2 run; branch, patch: source branch of the build and the hash of its uncommitted diff (bin/BUILD_INFO,
                                           # written by the build script; "commit" then is that commit, +patch when dirty). A run's statslog: section of stats.ini, row of stats.csv (ts + build)
+import runexp
+RUN_COLS += runexp.EXP_COLS  # columns of `run.py exp` rows, empty for the other runs
 CAMP_COLS = ["name", "start", "note", "conclusion", "why"]
 MACH_COLS = ["id", "ssh", "root", "kind", "cpu", "ram_gb", "ram_type", "gpus", "links", "os", "hostname", "board", "storage",
              "mem_detail", "gpu_detail", "sw", "note"]
@@ -106,6 +108,12 @@ def csv_append(name, cols, d):
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         w.writerow(cols)
     w.writerow([_fmt(d.get(k)) for k in cols])
+    if os.path.exists(path) and os.path.getsize(path):
+        with open(path) as f:
+            head = f.readline().rstrip("\n").split(",")
+        if head != cols and cols[:len(head)] == head:  # new columns go at the end: only the header line is rewritten, old rows stay as they are
+            lines = open(path).read().split("\n", 1)
+            open(path, "w").write(",".join(cols) + "\n" + (lines[1] if len(lines) > 1 else ""))
     with open(path, "a") as f:
         f.write(buf.getvalue())  # one write per line: concurrent benches (several machines, one host) do not interleave
 
@@ -848,10 +856,16 @@ if __name__ == "__main__":
     cl.add_argument("--note")
     cl.add_argument("--prompt")
     cl.add_argument("--ctx", type=int)
+    ex = sp.add_parser("exp", help="experiment from an INI spec (arms, env, held VRAM, memory limit, guard, sampler), every run stored; see runexp.py")
+    ex.add_argument("spec")
+    ex.add_argument("--dry", action="store_true")
+    ex.add_argument("--only")
+    ex.add_argument("--rounds", type=int)
     s_ = sp.add_parser("show")
     s_.add_argument("-t", "--test")
     s_.add_argument("-b", "--build")
     s_.add_argument("--runs", action="store_true")
     a = ap.parse_args()
     {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show}[a.cmd](a)
+     "show": cmd_show,
+     "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
