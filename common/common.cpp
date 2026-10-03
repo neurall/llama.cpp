@@ -2055,6 +2055,13 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
         if (!list.empty()) { setenv("LLAMA_HELPER_CPUS", list.c_str(), 1); LOG_INF("%s: helper threads stay on the user CPU mask and its SMT siblings: %s\n", __func__, list.c_str()); }
     }
 #endif
+    if (params.fork_off || !params.autotune) { // nothing is counted or saved
+#ifdef _WIN32
+        _putenv_s("LLAMA_MOE_OBSERVE", "0");
+#else
+        setenv("LLAMA_MOE_OBSERVE", "0", 1);
+#endif
+    }
     if (params.fork_off) { // --fork off wins over every other fork setting, whatever the order of the options
         params.n_moe_cache_slots = 0;
         params.autotune          = false;

@@ -80,6 +80,12 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                           int32_t predict = 0, int32_t predict_train = 0);
 void llama_moe_cache_free();
 
+// Heat of a start that runs the stock placement (no cache): the CPU-side expert matmuls already see their routed ids in host memory, so counting them costs a few integer
+// increments per layer and token (no GPU read-back, no sync). The counts are saved at exit in the same state lines the cache reads (hot.<layer>), so the first start that
+// runs the cache begins with a preheated set. Off with LLAMA_MOE_OBSERVE=0, without a state file, and for models without experts.
+void llama_moe_observe_start(const llama_model & model);
+void llama_moe_observe_save();
+
 // largest batch (tokens) that uses the cache; bigger ones take the stock path
 // (LLAMA_MOE_CACHE_MAX_BATCH, default 31: below the CUDA op-offload threshold)
 int64_t llama_moe_cache_max_batch();
