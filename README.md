@@ -177,8 +177,11 @@ they are listed in the document, not here.
 
 ## Resident pinned models (Optional)
 
-Nothing needs this. Without it the fork pins the weights at every start, exactly as described above.  
-With it, a big model that is pinned once stays resident in RAM between runs, so a restart skips the disk read and the pinning:  
+Everything that stays in host RAM is pinned now, because pinned weights are far faster than mmap: GLM-5.3-Flash 3.0-bit (109 GiB) on machine A  
+decodes at 12 to 15 tokens/s pinned and at 2 to 2.5 tokens/s when the load falls back to mmap, and a 12k-token prompt goes from 127 to 285 tokens/s once the state is learned.  
+That is why auto-pin is the default (`-lm mmap` opts out), and it needs nothing from you.  
+
+The optional part is a pool of 1 GiB huge pages that keeps the pinned models resident in RAM between runs: a restart skips the disk read and the pinning,  
 typically about 40 s instead of about 100 s for a 100 GB model. It helps the command line most (every `llama-cli` run is a new process that loads the model again);  
 a server loads once and keeps running, so it does not need the pool.  
 
@@ -190,8 +193,12 @@ sudo ./pool.sh unmount                    # give the memory back
 
 - `mount` alone reserves what the machine can spare (RAM minus a margin of the larger of 24 GiB and 20%); `mount model.gguf` reserves what that model needs.  
 - The first load of a model fills a cache file in the pool; later loads map it. Several models share the pool, the least recently used one goes when it is full.  
-- The pool is RAM nobody else can use while it is mounted. Reserve it right after boot: 1 GiB pages are hard to get once memory is fragmented.  
 - Without `GGML_CUDA_HUGEFS`, or without a pool, nothing changes.  
+
+The disadvantages:  
+- **The first start is slow.** Pinning 100 GB takes a while, and the first load of a model also fills the pool's cache file.  
+- **It needs sudo and a reboot.** 1 GiB pages can only be reserved from memory that is not fragmented yet. Reboot, then run `sudo ./pool.sh mount` before anything else uses RAM, to get the biggest pool; after days of uptime it is no longer possible to reserve a big one.  
+- **The pool is RAM nobody else can use** while it is mounted (a 100 GiB pool leaves about 25 GiB for everything else).  
 
 ## Good to know
 
