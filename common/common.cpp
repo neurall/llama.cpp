@@ -1421,7 +1421,9 @@ static std::string moe_auto_path(const common_params & params, size_t model_size
     for (auto & c : name) { if (c == '[' || c == ']' || c == '\n' || c == '\r') { c = '_'; } }
     const std::string section = name + " " + std::to_string(model_size);
     llama_state_set_model(section.c_str());
-    return section + "\x1f" + "place.g" + std::to_string(n_gpu) + "." + (g_gpu_id.empty() ? std::to_string(((g_gpu_total_max ? g_gpu_total_max : vram_max) + ((size_t) 1 << 29)) >> 30) + "g" : g_gpu_id) + ".v3"; // v1: the placement rule's epoch, not the build, so a new release does not re-measure (LLAMA_MOE_AUTO_MODE=retest forgets)
+    const std::string place = "place.g" + std::to_string(n_gpu) + "." + (g_gpu_id.empty() ? std::to_string(((g_gpu_total_max ? g_gpu_total_max : vram_max) + ((size_t) 1 << 29)) >> 30) + "g" : g_gpu_id) + ".v3";
+    llama_state_set_place(place.c_str());   // the engine keeps the seen link bandwidth under it
+    return section + "\x1f" + place; // v1: the placement rule's epoch, not the build, so a new release does not re-measure (LLAMA_MOE_AUTO_MODE=retest forgets)
 }
 
 static void moe_auto_split(const std::string & path, std::string & section, std::string & prefix) {

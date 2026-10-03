@@ -104,6 +104,17 @@ bool save(const std::string & path, const file_t & f) {
 
 } // namespace
 
+static std::string g_place_prefix;
+
+void moe_state_set_place(const std::string & prefix) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    g_place_prefix = prefix;
+}
+
+const std::string & moe_state_place() {
+    return g_place_prefix;
+}
+
 void moe_state_set_model(const std::string & section) {
     std::lock_guard<std::mutex> lk(g_mtx);
     g_model_section = section;
@@ -204,6 +215,10 @@ bool llama_state_get(const char * section, const char * key, char * value, size_
 bool llama_state_set(const char * section, const char * key, const char * value) {
     return moe_state_set(section, { { key, value } });
 }
+void llama_state_set_place(const char * prefix) {
+    moe_state_set_place(prefix ? prefix : "");
+}
+
 bool llama_state_erase(const char * section, const char * key_prefix) {
     return moe_state_erase(section, key_prefix);
 }
