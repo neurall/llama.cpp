@@ -1555,13 +1555,14 @@ static void common_moe_cache_auto_impl(common_params & params) {
             // both placements measured on at least two runs (the first of each may be cold), or once each when one of them wins this
             // request by more than 10%: decide for this request
             mode = moe_auto_decide_for(st, ca, params, decided);
-            // the loser never gets a new measurement: every 8th start runs it again, so a changed machine or a lucky first run is found out
+            // while the cache wins, every 8th start measures stock again, so a changed machine or a lucky first run is found out
             {
                 std::string sec, pre; moe_auto_split(path, sec, pre);
                 char b[32] = {0};
                 int since = llama_state_get(sec.c_str(), (pre + ".since").c_str(), b, sizeof b) ? atoi(b) : 0;
-                if (since >= 7) { mode = mode == "cache" ? "stock" : "cache"; since = 0; LOG_INF("%s: MoE placement: re-measuring %s this run (every 8th start)\n", __func__, mode.c_str()); }
-                else { since++; }
+                // only stock is re-measured: it cannot be slower than stock, while another try of a losing cache could
+                if (mode == "cache" && since >= 7) { mode = "stock"; since = 0; LOG_INF("%s: MoE placement: re-measuring stock this run (every 8th start)\n", __func__); }
+                else { since = mode == "cache" ? since + 1 : 0; }
                 llama_state_set(sec.c_str(), (pre + ".since").c_str(), std::to_string(since).c_str());
             }
             g_moe_auto_np = moe_auto_p_known(st, ca) ? moe_auto_est_prompt(params) : 0.0;
@@ -1577,7 +1578,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
             const size_t est_prompt = (size_t) moe_auto_est_prompt(params);
             const size_t est_gen = (size_t) moe_auto_est_gen(params);
             const bool prefill_heavy = est_prompt >= 3000 || est_prompt > 8 * est_gen;
-            const std::string first = model_size * 10 > vram_free * 13 && !prefill_heavy ? "cache" : "stock";
+            const std::string first = "stock"; // the fork is never slower than stock: the first start is stock, the cache is tried once and kept only when measured faster
             // nothing is assumed from the model's size: both placements are measured on real requests (the cache first when the model is
             // clearly bigger than the free VRAM, it wins there on every measured model; stock first otherwise), one run each when the gap is clear
             // measuring: the placement with fewer recorded runs (ties: the first), so each gets two runs before it decides
