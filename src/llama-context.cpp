@@ -1316,6 +1316,16 @@ static int threads_saved(const llama_model & model, const char * key, int dflt) 
     return moe_state_get(moe_state_section(model), key, v) && sscanf(v.c_str(), "%d %d", &d, &t) == 2 && d == dflt && t >= 2 ? t : 0;
 }
 
+// how many sessions used this saved value: it is explored again every 8th session, the others start from it and measure nothing
+static int threads_runs_bump(const llama_model & model, const char * key) {
+    std::string v;
+    int n = 0;
+    if (moe_state_get(moe_state_section(model), key, v)) { n = atoi(v.c_str()); }
+    n++;
+    moe_state_set(moe_state_section(model), { { key, std::to_string(n) } });
+    return n;
+}
+
 static void threads_save(const llama_model & model, const char * key, int dflt, int tuned) {
     moe_state_set(moe_state_section(model), { { key, std::to_string(dflt) + " " + std::to_string(tuned) } });
 }
@@ -1362,6 +1372,13 @@ void llama_context::set_batch_thread_autotune(bool on, int32_t n_max) {
         if (const int s = threads_saved(model, "threads_batch", thrb.base0)) {
             thrb.base = std::min(s, std::max(n_max, thrb.base0));
             cparams.n_threads_batch = (uint32_t) thrb.base;
+            // a count measured by an earlier session (adopted, or the default confirmed best) stands: exploring five thread counts costs a
+            // few percent of every short prompt, so it is only repeated every 8th session
+            if (threads_runs_bump(model, "threads_batch_runs") % 8 != 0) {
+                thrb.hold_len = 1 << 30;
+                thrb.hold = thrb.hold_len;
+                return;
+            }
         }
     }
     thrb.hold = 2;  // the first full batches run on the default
@@ -1427,7 +1444,11 @@ void llama_context::thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens) {
             noisy ? " (noisy, void)" : "", adopt ? cand_best : thrb.cand[0], (cand_best >= 0 && !adopt) ? " (leads, confirming)" : "");
     if (adopt) { thrb.base = cand_best; thrb.pending = -1; thrb.hold_len = 8; thrb.hold = thrb.hold_len; threads_save(model, "threads_batch", thrb.base0, cand_best); }
     else if (cand_best >= 0) { thrb.pending = cand_best; thrb.hold = 1; }   // confirm at the next full batch
-    else { thrb.pending = -1; thrb.hold_len = std::min(thrb.hold_len*2, 64); thrb.hold = thrb.hold_len; }
+    else {
+        thrb.pending = -1; thrb.hold_len = std::min(thrb.hold_len*2, 64); thrb.hold = thrb.hold_len;
+        // a clean cycle in which nothing beat the base: remember the base, the next sessions do not repeat the measurement
+        if (!noisy) { threads_save(model, "threads_batch", thrb.base0, thrb.base); }
+    }
     set(thrb.base);
     thrb.cand.clear();
 }
