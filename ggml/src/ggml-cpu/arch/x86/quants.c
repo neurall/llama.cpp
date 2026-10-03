@@ -763,7 +763,9 @@ void ggml_vec_dot_q2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
     __m256i xidx1  = _mm256_add_epi8(xidx0, _mm256_set1_epi8(8));
     // the index vectors are opaque to the optimizer: with the constants visible clang turns these byte shuffles into vpshufd + vpermq (cross-lane, slow on Zen 2:
     // the Q2_0 dot ran 25% below gcc's, which keeps vpshufb)
+#if defined(__GNUC__)   // GCC and clang (MSVC has no GNU inline assembly; it keeps its own instruction selection)
     __asm__("" : "+x"(xidx0), "+x"(xidx1));
+#endif
     const __m256i shifts = _mm256_setr_epi32(0, 2, 4, 6, 0, 2, 4, 6);
     const __m256i yidx   = _mm256_setr_epi8(0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15, 0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15);
     const __m256i m3     = _mm256_set1_epi8(3);
