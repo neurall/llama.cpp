@@ -598,6 +598,38 @@ void profile_save(const moe_cache * mc) {
         for (char & c : v) { if (c == '\n') { c = ' '; } }
         kv.emplace_back("tuned.l" + std::to_string(mc->n_links), v);
     }
+    // what this run did, per name the last 9 runs: run.<name> = <median> <last> | <oldest> ... <newest> (hit rate of the cache, evictions, uploads and
+    // uploaded MiB per step, share of the prefill's experts found in the cache)
+    {
+        uint64_t h = 0, m = 0;
+        for (const auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
+        const double steps = (double) mc->n_steps;
+        const std::pair<const char *, double> run[] = {
+            { "hit_pct",       h + m ? 100.0*h/(h + m) : 0.0 },
+            { "evict_step",    mc->n_evictions/steps },
+            { "upload_step",   mc->n_uploads/steps },
+            { "up_mib_step",   std::max<int64_t>(0, mc->up_bytes.load())/1048576.0/steps },
+            { "prefill_hit_pct", mc->n_src_query ? 100.0*mc->n_src_hit/mc->n_src_query : 0.0 },
+        };
+        for (const auto & r : run) {
+            std::vector<double> v;
+            std::string old;
+            if (moe_state_get(mc->profile, std::string("run.") + r.first, old)) {
+                const size_t bar = old.find('|');
+                std::istringstream is(bar == std::string::npos ? "" : old.substr(bar + 1));
+                for (double x; is >> x; ) { v.push_back(x); }
+            }
+            v.push_back(r.second);
+            if (v.size() > 9) { v.erase(v.begin(), v.end() - 9); }
+            std::vector<double> t = v;
+            std::sort(t.begin(), t.end());
+            char nb[48];
+            snprintf(nb, sizeof nb, "%.3f %.3f |", t[t.size()/2], v.back());
+            std::string out = nb;
+            for (double x : v) { snprintf(nb, sizeof nb, " %.3f", x); out += nb; }
+            kv.emplace_back(std::string("run.") + r.first, out);
+        }
+    }
     moe_state_set(mc->profile, kv);
 }
 
