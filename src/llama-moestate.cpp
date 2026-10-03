@@ -19,6 +19,7 @@ using section_t = std::map<std::string, std::string>;
 using file_t    = std::map<std::string, section_t>;
 
 std::mutex g_mtx;
+bool g_suppress = false; // the state of this run is marked for deletion: no writes until the process ends
 std::string g_model_section;
 
 std::string state_path() {
@@ -163,7 +164,7 @@ bool moe_state_section_kv(const std::string & section, std::vector<std::pair<std
 bool moe_state_set(const std::string & section, const std::vector<std::pair<std::string, std::string>> & kv) {
     std::lock_guard<std::mutex> lk(g_mtx);
     const std::string path = state_path();
-    if (path.empty() || section.empty()) {
+    if (path.empty() || section.empty() || g_suppress) {
         return false;
     }
     file_t f = load(path);
@@ -205,6 +206,10 @@ bool llama_state_set(const char * section, const char * key, const char * value)
 }
 bool llama_state_erase(const char * section, const char * key_prefix) {
     return moe_state_erase(section, key_prefix);
+}
+void llama_state_suppress_writes(bool suppress) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    g_suppress = suppress;
 }
 void llama_state_set_model(const char * section) {
     moe_state_set_model(section ? section : "");
