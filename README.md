@@ -59,10 +59,7 @@ The rows behind the table, with the machine letters A to D, as measured earlier 
 
 Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock llama.cpp.  
 
-Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.  
-Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.  
-Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.  
-Machine D, rented: 4x RTX 3090 (PCIe 4.0 x16 each), EPYC 7B12 (64 cores), 256 GB DDR4 on 4 of 8 memory channels (74 GB/s read measured).  
+Machines in the rows below (hardware in the table above): A = the 2x3090 box, B = the laptop, C = the CPU-only box, D = the rented 4x3090 box.  
 
 GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a 
 (no discarded run before it); the other rows are hot runs of earlier builds.  
