@@ -22,21 +22,21 @@ Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = p
 
 | model | hardware | in VRAM | gain<br>t/s, pp | short gain<br>t/s, pp | long gain<br>t/s, pp | stock<br>t/s, pp | ours<br>t/s, pp | build |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| MiMo IQ3_XXS | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 36% | **2.4x**<br>0.7x slower | -<br>- | -<br>- | 4.6<br>156 | **10.9**<br>112 | earlier |
-| GLM 3.5-bit | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 35% | **2.2x**<br>- | -<br>- | -<br>- | 6.9<br>- | **15.1**<br>- | b11707 |
-| Qwen3.6-35B Q2_0<br>slow CPU side | 4060 8G 4x8<br>8945HS 32G 48G/s | about 73% | **1.9x**<br>**2.4x** | -<br>- | -<br>- | 31.6<br>41.2 | **60.0**<br>100.9 | b12030 |
-| GLM 3.0-bit | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | about 45% | **1.9x**<br>- | -<br>- | -<br>- | 11.9<br>- | **22.4**<br>- | earlier |
-| Qwen3.6-35B Q2_0<br>CPU only | no GPU<br>3600 A520 64G | 0% | 1.8x<br>**3.4x** | -<br>- | -<br>- | 6.3<br>10.1 | 11.1<br>34.1 | b12040 |
-| Qwen Next IQ4_XS | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 55% | 1.7x<br>1.1x | -<br>- | -<br>- | 27.7<br>500 | 46.5<br>538 | earlier |
-| 27B Q5_K_M MTP<br>2.2k prompt | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits | 1.6x<br>1.3x | -<br>- | -<br>- | 31.3<br>599 | 51.1<br>792 | earlier |
-| GLM 3.0-bit<br>3 of 4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 74G/s | 66% | 1.6x<br>- | -<br>- | -<br>- | 20.1<br>- | 32.6<br>- | b11707+ |
-| Qwen Next IQ3_S | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 58% | 1.3x<br>- | 1.3x<br>1.1x | -<br>- | 43.9<br>- | 57.1<br>- | b11707 |
-| Qwen Next IQ1_M | 4060 8G 4x8<br>8945HS 32G 48G/s | about 13% | 1.3x<br>1.2x | -<br>- | -<br>- | 13.5<br>18.3 | 17.3<br>21.6 | b12030 |
-| GLM 3.0-bit<br>4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 74G/s | 88% | 1.3x<br>- | -<br>- | -<br>- | 24.7<br>- | 31.5<br>- | b11707+ |
-| 27B IQ4_NL<br>dense | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits | 1.0x<br>- | 1.0x<br>1.1x | -<br>- | 45.1<br>- | 45.0<br>- | earlier |
-| 27B Q5_K_M MTP<br>short prompt | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits | 1.0x<br>- | -<br>- | -<br>- | 78.3<br>- | 77.0<br>- | earlier |
-| Qwen Next IQ1_M | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 87% | 1.0x (picks stock)<br>- | 1.0x<br>1.0x | -<br>- | 69.1<br>- | 68.3<br>40 | b12040 |
-| 27B IQ3_S<br>CPU only | no GPU<br>3600 A520 64G | 0% | 0.9x slower<br>1.0x | -<br>- | -<br>- | 1.7<br>5.6 | 1.6<br>5.8 | b12030 |
+| MiMo-V2.6-Flash-RL-IQ3_XXS-00001-of-00008 | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 36% | **2.4x**<br>0.7x slower | -<br>- | -<br>- | 4.6<br>156 | **10.9**<br>112 | earlier |
+| GLM-5.3-Flash-GSQ-RCO-3.5bit | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 35% | **2.2x**<br>- | -<br>- | -<br>- | 6.9<br>- | **15.1**<br>- | b11707 |
+| qwen36<br>Q2_0, slow CPU side | 4060 8G 4x8<br>8945HS 32G 48G/s | about 73% | **1.9x**<br>**2.4x** | -<br>- | -<br>- | 31.6<br>41.2 | **60.0**<br>100.9 | b12030 |
+| GLM-5.3-Flash-GSQ-RCO-3.0bit | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | about 45% | **1.9x**<br>- | -<br>- | -<br>- | 11.9<br>- | **22.4**<br>- | earlier |
+| qwen36<br>Q2_0, CPU only | no GPU<br>3600 A520 64G | 0% | 1.8x<br>**3.4x** | -<br>- | -<br>- | 6.3<br>10.1 | 11.1<br>34.1 | b12040 |
+| Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003 | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 55% | 1.7x<br>1.1x | -<br>- | -<br>- | 27.7<br>500 | 46.5<br>538 | earlier |
+| Qwen3.8-27B-MTP-Q5_K_M<br>2.2k prompt | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits | 1.6x<br>1.3x | -<br>- | -<br>- | 31.3<br>599 | 51.1<br>792 | earlier |
+| GLM-5.3-Flash-GSQ-RCO-3.0bit<br>3 of 4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 74G/s | 66% | 1.6x<br>- | -<br>- | -<br>- | 20.1<br>- | 32.6<br>- | b11707+ |
+| Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002 | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 58% | 1.3x<br>- | 1.3x<br>1.1x | -<br>- | 43.9<br>- | 57.1<br>- | b11707 |
+| Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002 | 4060 8G 4x8<br>8945HS 32G 48G/s | about 13% | 1.3x<br>1.2x | -<br>- | -<br>- | 13.5<br>18.3 | 17.3<br>21.6 | b12030 |
+| GLM-5.3-Flash-GSQ-RCO-3.0bit<br>4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 74G/s | 88% | 1.3x<br>- | -<br>- | -<br>- | 24.7<br>- | 31.5<br>- | b11707+ |
+| Qwen3.8-27B-IQ4_NL<br>dense | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits | 1.0x<br>- | 1.0x<br>1.1x | -<br>- | 45.1<br>- | 45.0<br>- | earlier |
+| Qwen3.8-27B-MTP-Q5_K_M<br>short prompt | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits | 1.0x<br>- | -<br>- | -<br>- | 78.3<br>- | 77.0<br>- | earlier |
+| Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002 | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 87% | 1.0x (picks stock)<br>- | 1.0x<br>1.0x | -<br>- | 69.1<br>- | 68.3<br>40 | b12040 |
+| Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp<br>CPU only | no GPU<br>3600 A520 64G | 0% | 0.9x slower<br>1.0x | -<br>- | -<br>- | 1.7<br>5.6 | 1.6<br>5.8 | b12030 |
 | any model that fits | any | 100% | 1.0x (cache off)<br>1.0x | -<br>- | -<br>- | same<br>same | same<br>same | any |
 
 Two cells are slower than stock and say so: prompt processing of MiMo on long prompts (0.7x) and generation of the CPU-only 27B IQ3_S (0.9x, 1.6 against 1.7 tokens/s).  
