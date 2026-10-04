@@ -517,7 +517,7 @@ llama_context::llama_context(
 
 
 // research (--moe log=l, log=l64): every generated token (l) or every 64th (l64), per layer the layer's output embedding (1 byte per float, hex) and the expert ids its router selected,
-// appended to layertrace.csv (LLAMA_MOE_LAYERTRACE=FILE moves it): model,pos,layer,embhex,ids. Unsampled tokens answer "do not observe", so the graph runs as without it
+// appended to layertrace.csv in the log directory: model,pos,layer,embhex,xhex,ids. Unsampled tokens answer "do not observe", so the graph runs as without it
 namespace {
 struct layer_trace_state {
     llama_context * ctx = nullptr;
@@ -525,14 +525,15 @@ struct layer_trace_state {
     void * user_data = nullptr;
     int every = 0;
     std::string model;
-    std::map<int, std::string> hex, ids;
+    std::map<int, std::string> hex, xhex, ids;   // per layer: output embedding, router input, selected experts
 };
 layer_trace_state g_lt;
 
 bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
     const bool is_out  = strncmp(t->name, "l_out-", 6) == 0;
     const bool is_topk = strncmp(t->name, "ffn_moe_topk-", 13) == 0;
-    bool mine = (is_out || is_topk) && t->ne[1] == 1 && g_lt.ctx->trace_n_eval() > 0 && g_lt.ctx->trace_n_eval() % g_lt.every == 0;
+    const bool is_x    = strncmp(t->name, "ffn_norm-", 9) == 0;   // the router's (and the experts') input: the normalised residual
+    bool mine = (is_out || is_topk || is_x) && t->ne[1] == 1 && g_lt.ctx->trace_n_eval() > 0 && g_lt.ctx->trace_n_eval() % g_lt.every == 0;
     if (ask) {
         const bool theirs = g_lt.user_cb ? g_lt.user_cb(t, true, g_lt.user_data) : false;
         return mine || theirs;
@@ -545,6 +546,15 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
             std::string o;
             for (size_t i = 0; i < v.size(); ++i) { o += (i ? " " : "") + std::to_string(v[i]); }
             g_lt.ids[il] = o;
+        } else if (is_x && t->type == GGML_TYPE_F32) {
+            // fixed scale, clipped at +-16 (int8, 2 hex characters per dim): unlike the per-token absmax scale of the output embedding, the outlier dims do not hide the rest
+            std::vector<float> v(t->ne[0]);
+            ggml_backend_tensor_get(t, v.data(), 0, v.size()*sizeof(float));
+            std::string h;
+            h.reserve(v.size()*2);
+            char b[4];
+            for (float x : v) { snprintf(b, sizeof b, "%02x", (unsigned) (uint8_t) (int8_t) std::lround(std::max(-16.0f, std::min(16.0f, x))*(127.0f/16.0f))); h += b; }
+            g_lt.xhex[il] = h;
         } else if (is_out && t->type == GGML_TYPE_F32) {
             std::vector<float> v(t->ne[0]);
             ggml_backend_tensor_get(t, v.data(), 0, v.size()*sizeof(float));
@@ -559,12 +569,12 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
                 const std::filesystem::path path = moe_log_file("layertrace.csv");
                 std::error_code ec;
                 const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
-                std::string out = fresh ? "model,pos,layer,embhex,ids\n" : "";
+                std::string out = fresh ? "model,pos,layer,embhex,xhex,ids\n" : "";
                 const int pos = g_lt.ctx->trace_n_p_eval() + g_lt.ctx->trace_n_eval();
-                for (const auto & e : g_lt.hex) { out += g_lt.model + "," + std::to_string(pos) + "," + std::to_string(e.first) + "," + e.second + "," + (g_lt.ids.count(e.first) ? g_lt.ids[e.first] : "") + "\n"; }
+                for (const auto & e : g_lt.hex) { out += g_lt.model + "," + std::to_string(pos) + "," + std::to_string(e.first) + "," + e.second + "," + (g_lt.xhex.count(e.first) ? g_lt.xhex[e.first] : "") + "," + (g_lt.ids.count(e.first) ? g_lt.ids[e.first] : "") + "\n"; }
                 std::ofstream o(path, std::ios::app | std::ios::binary);
                 o.write(out.data(), (std::streamsize) out.size());
-                g_lt.hex.clear(); g_lt.ids.clear();
+                g_lt.hex.clear(); g_lt.xhex.clear(); g_lt.ids.clear();
             }
         }
     }
