@@ -286,14 +286,14 @@ void moe_embsnap_set(const float * emb, int n) {
 }
 
 void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & hot) {
-    std::string hex, path;
+    std::string hex;
     {
         std::lock_guard<std::mutex> lk(g_mtx);
         hex = g_embsnap_hex;
-        path = state_path();
     }
-    if (hex.empty() || path.empty() || hot.empty()) { return; }
-    const std::filesystem::path dir = std::filesystem::path(path).parent_path() / "embhot";
+    if (hex.empty() || hot.empty()) { return; }
+    const char * ed = getenv("LLAMA_MOE_EMBHOT");   // a local subdirectory of the working directory (embhot), or this path
+    const std::filesystem::path dir = ed && ed[0] ? ed : "embhot";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     std::ofstream f(dir / hex, std::ios::app);   // collected over time: every run appends a block, nothing is overwritten

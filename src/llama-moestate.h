@@ -34,7 +34,7 @@ bool moe_state_set(const std::string & section, const std::vector<std::pair<std:
 bool moe_state_erase(const std::string & section, const std::string & prefix);
 
 // research (--moe embsnap=1): the last layer embedding of the last token (n floats), pooled to 64 buckets, one signed byte each = 128 hex characters; the hot experts of the run
-// are written to <state dir>/embhot/<hex> at exit (the last token of the last graph, nothing is read while running)
+// are written to ./embhot/<hex> (the local subdirectory embhot of the working directory, or LLAMA_MOE_EMBHOT) at exit (the last token of the last graph, nothing is read while running)
 bool moe_embsnap_enabled();
 void moe_embsnap_set(const float * emb, int n);
 void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & hot);
