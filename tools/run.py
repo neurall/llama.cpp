@@ -115,7 +115,7 @@ def _fmt(v):
 
 
 def csv_append(name, cols, d):
-    if name == "run-history.csv" and "r" not in os.environ.get("PERF_LOG", "esrp"):
+    if name == "run-history.csv" and "r" not in os.environ.get("PERF_LOG", "esrgp"):
         return   # PERF_LOG without r: the run is shown but not recorded
     path = os.path.join(DATA, name)
     buf = io.StringIO()
@@ -231,7 +231,7 @@ def cache_stats(log):
 SNAP_DIR = os.path.join(DATA, "state-snapshots")   # --moe snap=1 of the builds that have it: the model's state section after every run, tracked in git
 _EMB_OFF = os.path.getsize(os.path.join(DATA, "embhot.csv")) if os.path.exists(os.path.join(DATA, "embhot.csv")) else 0
 EMB_FILE = os.path.join(DATA, "embhot.csv")        # --moe emb=1: one line per run (model, last embedding, hot experts), tracked in git
-RESEARCH_ENV = {"LLAMA_MOE_LOG": os.environ.get("PERF_LOG", "esrp"), "LLAMA_MOE_SNAP_DIR": SNAP_DIR, "LLAMA_MOE_EMBHOT": EMB_FILE}   # --moe log=esr for every harness run (builds without it ignore it): e embedding line, s state snapshot, r run history to csv and sqlite (this file); PERF_LOG=e etc. narrows it
+RESEARCH_ENV = {"LLAMA_MOE_LOG": os.environ.get("PERF_LOG", "esrgp"), "LLAMA_MOE_SNAP_DIR": SNAP_DIR, "LLAMA_MOE_EMBHOT": EMB_FILE}   # --moe log=esr for every harness run (builds without it ignore it): e embedding line, s state snapshot, r run history to csv and sqlite (this file); PERF_LOG=e etc. narrows it
 
 
 def server_start(build, env, args):
