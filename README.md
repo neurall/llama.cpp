@@ -36,14 +36,14 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 | **GLM-5.3-Flash** 3.0-bit (106 GB) | A | short chat, decode | 11.9 | **22.4** | **1.9x** |
 | **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) * | A | short chat, decode | 27.7 | **46.5** | **1.7x** |
 | | | 12k-token prompt, decode / processing | 25.3 / 500 | **42.3 / 538** | 1.7x / 1.1x |
-| Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`), fits VRAM | A | same | 78.3 | 77.0 | 1.0x (38.6 without MTP) |
+| Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`), fits VRAM | A | short tetris prompt, 100 tokens, decode | 78.3 | 77.0 | 1.0x (38.6 without MTP) |
 | | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x |
 | **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short tetris prompt, 100 tokens, decode | 43.9 | **57.1** | **1.3x** |
-| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | same | 69.1 | 67.5 (picks stock) | 1.0x |
+| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | short tetris prompt, 100 tokens, decode | 69.1 | 67.5 (picks stock) | 1.0x |
 | | B | same | 11.4 | **13.5** | **1.2x** |
 | | B | same, prompt processing | 15.5 | 5.9 | 0.4x |
-| Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | same | 45.1 | 45.0 | 1.0x |
-| Qwen3.8-27B IQ3_S, dense, CPU only | C | same | 1.7 | 1.6 | 1.0x |
+| Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | short tetris prompt, 100 tokens, decode | 45.1 | 45.0 | 1.0x |
+| Qwen3.8-27B IQ3_S, dense, CPU only | C | short tetris prompt, 100 tokens, decode | 1.7 | 1.6 | 1.0x |
 | Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) |
 
 \* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
