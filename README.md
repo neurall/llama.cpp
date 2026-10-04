@@ -29,10 +29,10 @@ Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = p
 | Qwen3.6-35B Q2_0, CPU only | no GPU<br>Ryzen 5 3600 (A520)<br>64 GB 2ch DDR4-3200 | 0% | 1.8x | 6.3 | 11.1 | 10.1 | 34.1 | b12040 |
 | Qwen Next UD-IQ4_XS 88 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 55% | 1.7x | 27.7 | 46.5 | 500 | 538 | earlier |
 | Qwen3.8-27B Q5_K_M with MTP (2.2k-token prompt) | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | fits | 1.6x | 31.3 | 51.1 | 599 | 792 | earlier |
-| GLM 3.0-bit, 3 of 4 GPUs | 3090 4x16 (4 cards)<br>EPYC 7B12 64c<br>256 GB 4ch DDR4<br>74 GB/s | 66% | 1.6x | 20.1 | 32.6 | - | - | b11707+ |
+| GLM 3.0-bit, 3 of 4 GPUs | 4x 3090, each 4x16<br>EPYC 7B12 64c<br>256 GB 4ch DDR4<br>74 GB/s | 66% | 1.6x | 20.1 | 32.6 | - | - | b11707+ |
 | Qwen Next IQ3_S 83 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 58% | 1.3x | 43.9 | 57.1 | - | - | b11707 |
 | Qwen Next IQ1_M 55 GB | 4060 8 GB 4x8 (laptop)<br>Ryzen 9 8945HS<br>32 GB 4ch LPDDR5-6400<br>48 GB/s | about 13% | 1.3x | 13.5 | 17.3 | 18.3 | 21.6 | b12030 |
-| GLM 3.0-bit, 4 GPUs | 3090 4x16 (4 cards)<br>EPYC 7B12 64c<br>256 GB 4ch DDR4<br>74 GB/s | 88% | 1.3x | 24.7 | 31.5 | - | - | b11707+ |
+| GLM 3.0-bit, 4 GPUs | 4x 3090, each 4x16<br>EPYC 7B12 64c<br>256 GB 4ch DDR4<br>74 GB/s | 88% | 1.3x | 24.7 | 31.5 | - | - | b11707+ |
 | Qwen3.8-27B IQ4_NL, dense | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | fits | 1.0x | 45.1 | 45.0 | - | - | earlier |
 | Qwen3.8-27B Q5_K_M with MTP (short prompt) | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | fits | 1.0x | 78.3 | 77.0 | - | - | earlier |
 | Qwen Next IQ1_M 55 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 87% | 1.0x (picks stock) | 69.1 | 68.3 | - | 40 | b12040 |
