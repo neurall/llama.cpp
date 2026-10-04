@@ -20,24 +20,24 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 
 Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = prompt processing tokens per second, the second number in each cell; `gain` is from the earlier same-prompt test, `short gain` and `long gain` are the new tests, stock's best of 4 runs against ours best of 4 with no warm-up (short: four different 'smallest html game' prompts; long: four different edit instructions over one long source file); stock and ours are the numbers of the earlier test; `-` = not measured yet; the build column is the build the number was taken on):
 
-| model | hardware | in VRAM | gain<br>t/s, pp | short gain<br>t/s, pp | long gain<br>t/s, pp | stock<br>t/s, pp | ours<br>t/s, pp | build |
+| model | hardware | in VRAM | gain<br>t/s pp | short gain<br>t/s pp | long gain<br>t/s pp | stock<br>t/s pp | ours<br>t/s pp | build |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| MiMo-V2.6-Flash-RL-IQ3_XXS | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 36% | **2.4x**<br>0.7x slower | -<br>- | -<br>- | 4.6<br>156 | **10.9**<br>112 | earlier |
-| GLM-5.3-Flash-GSQ-RCO-3.5bit | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 35% | **2.2x**<br>- | -<br>- | -<br>- | 6.9<br>- | **15.1**<br>- | b11707 |
-| qwen36<br>Q2_0, slow CPU side | 4060 8G 4x8<br>8945HS 32G 48G/s | about 73% | **1.9x**<br>**2.4x** | -<br>- | -<br>- | 31.6<br>41.2 | **60.0**<br>100.9 | b12030 |
-| GLM-5.3-Flash-GSQ-RCO-3.0bit | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | about 45% | **1.9x**<br>- | -<br>- | -<br>- | 11.9<br>- | **22.4**<br>- | earlier |
-| qwen36<br>Q2_0, CPU only | no GPU<br>3600 A520 64G | 0% | 1.8x<br>**3.4x** | -<br>- | -<br>- | 6.3<br>10.1 | 11.1<br>34.1 | b12040 |
-| Qwen3.8-Flash-Next-UD-IQ4_XS | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 55% | 1.7x<br>1.1x | -<br>- | -<br>- | 27.7<br>500 | 46.5<br>538 | earlier |
-| Qwen3.8-27B-MTP-Q5_K_M<br>2.2k prompt | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits | 1.6x<br>1.3x | -<br>- | -<br>- | 31.3<br>599 | 51.1<br>792 | earlier |
-| GLM-5.3-Flash-GSQ-RCO-3.0bit<br>3 of 4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 74G/s | 66% | 1.6x<br>- | -<br>- | -<br>- | 20.1<br>- | 32.6<br>- | b11707+ |
-| Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 58% | 1.3x<br>- | 1.3x<br>1.1x | -<br>- | 43.9<br>- | 57.1<br>- | b11707 |
-| Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M | 4060 8G 4x8<br>8945HS 32G 48G/s | about 13% | 1.3x<br>1.2x | -<br>- | -<br>- | 13.5<br>18.3 | 17.3<br>21.6 | b12030 |
-| GLM-5.3-Flash-GSQ-RCO-3.0bit<br>4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 74G/s | 88% | 1.3x<br>- | -<br>- | -<br>- | 24.7<br>- | 31.5<br>- | b11707+ |
-| Qwen3.8-27B-IQ4_NL<br>dense | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits | 1.0x<br>- | 1.0x<br>1.1x | -<br>- | 45.1<br>- | 45.0<br>- | earlier |
-| Qwen3.8-27B-MTP-Q5_K_M<br>short prompt | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits | 1.0x<br>- | -<br>- | -<br>- | 78.3<br>- | 77.0<br>- | earlier |
-| Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 87% | 1.0x (picks stock)<br>- | 1.0x<br>1.0x | -<br>- | 69.1<br>- | 68.3<br>40 | b12040 |
-| Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp<br>CPU only | no GPU<br>3600 A520 64G | 0% | 0.9x slower<br>1.0x | -<br>- | -<br>- | 1.7<br>5.6 | 1.6<br>5.8 | b12030 |
-| any model that fits | any | 100% | 1.0x (cache off)<br>1.0x | -<br>- | -<br>- | same<br>same | same<br>same | any |
+| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 36% | **2.4x**<br>0.7x↓ | -<br>- | -<br>- | 4.6<br>156 | **10.9**<br>112 | earlier |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.5bit | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 35% | **2.2x**<br>- | -<br>- | -<br>- | 6.9<br>- | **15.1**<br>- | b11707 |
+| qwen36 | 4060 8G 4x8<br>8945HS 32G 48G/s | 73%<br>slow CPU | **1.9x**<br>**2.4x** | -<br>- | -<br>- | 31.6<br>41.2 | **60.0**<br>100.9 | b12030 |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 45% | **1.9x**<br>- | -<br>- | -<br>- | 11.9<br>- | **22.4**<br>- | earlier |
+| qwen36 | no GPU<br>3600 A520 64G | 0%<br>CPU only | 1.8x<br>**3.4x** | -<br>- | -<br>- | 6.3<br>10.1 | 11.1<br>34.1 | b12040 |
+| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 55% | 1.7x<br>1.1x | -<br>- | -<br>- | 27.7<br>500 | 46.5<br>538 | earlier |
+| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits<br>2.2k | 1.6x<br>1.3x | -<br>- | -<br>- | 31.3<br>599 | 51.1<br>792 | earlier |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4x16<br>EPYC 7B12 256G 74G/s | 66%<br>3 of 4 | 1.6x<br>- | -<br>- | -<br>- | 20.1<br>- | 32.6<br>- | b11707+ |
+| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ3_S | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 58% | 1.3x<br>- | 1.3x<br>1.1x | -<br>- | 43.9<br>- | 57.1<br>- | b11707 |
+| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 4060 8G 4x8<br>8945HS 32G 48G/s | 13% | 1.3x<br>1.2x | -<br>- | -<br>- | 13.5<br>18.3 | 17.3<br>21.6 | b12030 |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4x16<br>EPYC 7B12 256G 74G/s | 88%<br>4 GPUs | 1.3x<br>- | -<br>- | -<br>- | 24.7<br>- | 31.5<br>- | b11707+ |
+| Qwen3.8-27B-IQ4_NL | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits<br>dense | 1.0x<br>- | 1.0x<br>1.1x | -<br>- | 45.1<br>- | 45.0<br>- | earlier |
+| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits<br>short | 1.0x<br>- | -<br>- | -<br>- | 78.3<br>- | 77.0<br>- | earlier |
+| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 87% | 1.0x<br>- | 1.0x<br>1.0x | -<br>- | 69.1<br>- | 68.3<br>40 | b12040 |
+| Qwen3.8-27B-GSQ-<br>RCO-IQ3_S-mtp | no GPU<br>3600 A520 64G | 0%<br>CPU only | 0.9x↓<br>1.0x | -<br>- | -<br>- | 1.7<br>5.6 | 1.6<br>5.8 | b12030 |
+| any model that fits | any | 100% | 1.0x<br>1.0x | -<br>- | -<br>- | same<br>same | same<br>same | any |
 
 Two cells are slower than stock and say so: prompt processing of MiMo on long prompts (0.7x) and generation of the CPU-only 27B IQ3_S (0.9x, 1.6 against 1.7 tokens/s).  
 Hardware, in this order: GPUs with PCIe generation x lanes (4x16 = PCIe 4.0 x16), CPU, RAM (G = GB, channels, type and speed), measured RAM bandwidth.  
@@ -99,7 +99,7 @@ fork measures your machine and tunes most of those while you use it. The default
   a formula (cores minus one per GPU) and the tuner moves them a few threads at a time; on a many-core host `-t 16` can be a better start (on a 64-core machine the
   difference was under 2%). A setting that does not help is dropped, a setting you fix yourself is never touched.  
 - **It remembers.** What it learned per model (hot experts, tuned settings, cache-or-stock) is kept in one file,
-  `~/.cache/llama.cpp/moe-state.ini`, so the next start, even a one-shot short prompt, begins from it. Delete the file to start over.  
+  `~/.cache/llama.cpp/moe-state.ini`, so the next start, even a one-shot short, begins from it. Delete the file to start over.  
 - **Research: hot experts by topic (`--moe emb=1`).** At exit one line is appended to `embhot.csv` in the working directory: `model,embhex,hots`, the last layer embedding of the last token (1 byte per float as hex) and the hot experts of the run (counts per layer). Nothing is read or written while running, so there is no speed cost, and the file only ever grows by appending. Collect it over time and compare how the hot experts diverge between topics; share it if you do. This is the groundwork for topic-specific hot caches: a start could preload the hot experts of the closest earlier topic instead of one average map (not done yet; whether this embedding is a good topic key is still to be measured).  
 - **Hot start from ours.** [`moe-state.ini`](moe-state.ini) in the root of this repo is our learned state (hot experts of GLM 3.0/3.5-bit, MiMo, Qwen3.8 IQ1_M/IQ3_S/IQ4_XS, Qwen3.6, OLMoE). If you run one of these models and have no state file yet, copy it to `~/.cache/llama.cpp/moe-state.ini` for a fast hot start from the first run. Do not overwrite your own file: yours holds what your hardware learned.It holds only the hardware-independent hot experts (tagged with arch and expert shape); stock-or-cache placement and tuning are measured on your machine. A model file with no record of its own is seeded from a same-name or same-family record.  
 - **The first run of a model is slower, but just once.** The first start of a model runs like stock while the fork captures which experts are hot into the state file
