@@ -377,7 +377,6 @@ struct moe_cache {
     // learned predictors (in-graph NLMS, see llama_moe_cache_layer::pred_m): trained every pred_train
     // tokens (--lrn-prd N, 0 = frozen) with step size pred_mu; weights persist in pred_file
     int32_t  pred_ahead = 0;
-    int32_t  pred_from  = 1; // first lookahead whose predictions are uploaded (LLAMA_MOE_CACHE_PREDICT_FROM; 2: skip the next layer, use L+2 ...)
     int32_t  pred_train = 0;
     float    pred_mu    = 0.5f;
     float    cur_mu     = 0.0f;
@@ -1757,9 +1756,6 @@ void pred_loop(moe_cache * mc) {
         std::vector<std::vector<int32_t>> cands(r.n_blk);
         std::vector<std::vector<float>>   cscore(r.n_blk); // the candidates' predictor scores
         for (int64_t k = 0; k < r.n_blk && r.li + 1 + k < mc->layers.size(); ++k) {
-            if (k + 1 < mc->pred_from) {
-                continue;  // the nearer layers are not predicted (PREDICT_FROM)
-            }
             const size_t tl = r.li + 1 + k;
             auto & ls = mc->layers[tl];
             if (knobs().lead != 0) {
@@ -2525,13 +2521,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
         }
         // init LRU state + tables (everything uncached -> dummy slot n_slots)
-        // with router prediction on, the top LLAMA_MOE_CACHE_PRED_SLOTS (default 4) slots of each layer take the
+        // with router prediction on, the top 4 slots of each layer take the
         // predicted uploads, so a wrong guess never evicts a cached expert
-        int32_t n_stream = 0;
-        {
-            const char * ss = getenv("LLAMA_MOE_CACHE_PRED_SLOTS");
-            n_stream = predict > 0 ? std::max(0, ss ? atoi(ss) : 4) : 0;
-        }
+        const int32_t n_stream = predict > 0 ? 4 : 0;
         size_t vram = 0;
         for (auto & ls : mc->layers) {
             const int64_t n_expert = ls.pub.up_src->ne[2];
@@ -2609,8 +2601,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             ggml_backend_buffer_type_t hbuft = (use_pread && any_file && gpu) ? ggml_backend_dev_host_buffer_type(gpu) : nullptr;
             const char * nt = getenv("LLAMA_MOE_CACHE_UPLOAD_THREADS");
             // one set of workers per upload link when layers sit behind both: a slow (x4) copy doesn't hold up the fast link's queue
-            const char * lw = getenv("LLAMA_MOE_CACHE_LINK_WORKERS");
-            const int n_links   = mc->n_links > 1 && !(lw && lw[0] == '0') ? mc->n_links : 1;
+            const int n_links   = mc->n_links > 1 ? mc->n_links : 1;
             const int n_workers = std::max(1, nt ? atoi(nt) : 1) * n_links;
             for (int w = 0; w < n_workers; ++w) {
                 mc->worker_link.push_back(n_links > 1 ? w % n_links : -1);
@@ -2878,7 +2869,6 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     ahead = std::max(2, std::min(8, lead_max + (int) knobs().lead_span));
                 }
                 mc->pred_ahead = std::max(0, std::min(8, a ? atoi(a) : ahead));
-                if (const char * fr = getenv("LLAMA_MOE_CACHE_PREDICT_FROM")) { mc->pred_from = std::max(1, std::min(8, atoi(fr))); }
                 mc->pred_train = predict_train;
                 if (mu) { mc->pred_mu = (float) atof(mu); }
                 const char * pf = getenv("LLAMA_MOE_CACHE_PREDICT_FILE");

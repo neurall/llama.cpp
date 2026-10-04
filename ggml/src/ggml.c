@@ -399,19 +399,14 @@ void * ggml_aligned_malloc(size_t size) {
   #if defined(__linux__)
     // big buffers (model weights loaded without mmap, KV cache) 2 MB aligned and marked for transparent huge pages
     // (THP mode "madvise"): streaming GBs per token through 4 KB pages costs TLB misses. Measured on a CPU-only Qwen3.6-35B
-    // decode (Ryzen 3600): 9.50 -> 9.73 t/s. GGML_HUGEPAGES=0 turns it off.
-    static int hugepages = -1;
-    if (hugepages < 0) {
-        const char * e = getenv("GGML_HUGEPAGES");
-        hugepages = !(e && atoi(e) == 0);
-    }
-    const size_t align_hp = hugepages && size >= (2u << 20) && alignment < (2u << 20) ? (2u << 20) : alignment;
+    // decode (Ryzen 3600): 9.50 -> 9.73 t/s.
+    const size_t align_hp = size >= (2u << 20) && alignment < (2u << 20) ? (2u << 20) : alignment;
   #else
     const size_t align_hp = alignment;
   #endif
     int result = posix_memalign(&aligned_memory, align_hp, size);
   #if defined(__linux__)
-    if (result == 0 && hugepages && size >= (2u << 20)) {
+    if (result == 0 && size >= (2u << 20)) {
         madvise(aligned_memory, size, MADV_HUGEPAGE);
     }
   #endif
