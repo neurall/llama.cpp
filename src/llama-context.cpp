@@ -526,6 +526,7 @@ struct layer_trace_state {
     int every = 0;
     bool ids_only = false;   // log=x: the selected expert ids only, no embeddings
     std::string model;
+    std::string file;   // the model file name without .gguf and split suffix, for routing_<file>.csv
     std::map<int, std::string> hex, xhex, ids;   // per layer: output embedding, router input, selected experts
 };
 layer_trace_state g_lt;
@@ -548,12 +549,12 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
             for (size_t i = 0; i < v.size(); ++i) { o += (i ? " " : "") + std::to_string(v[i]); }
             g_lt.ids[il] = o;
             if (g_lt.ids_only && il == (int) g_lt.ctx->get_model().hparams.n_layer() - 1) {   // the last layer closes the sample
-                const std::filesystem::path path = moe_log_file("routing.csv");
+                const std::filesystem::path path = moe_log_file(("routing_" + g_lt.file + ".csv").c_str());   // one file per model
                 std::error_code ec;
                 const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
-                std::string out = fresh ? "model,pos,layer,ids\n" : "";
+                std::string out = fresh ? "pos,layer,ids\n" : "";
                 const int pos = g_lt.ctx->trace_n_p_eval() + g_lt.ctx->trace_n_eval();
-                for (const auto & e : g_lt.ids) { out += g_lt.model + "," + std::to_string(pos) + "," + std::to_string(e.first) + "," + e.second + "\n"; }
+                for (const auto & e : g_lt.ids) { out += std::to_string(pos) + "," + std::to_string(e.first) + "," + e.second + "\n"; }
                 std::ofstream f(path, std::ios::app | std::ios::binary);
                 f.write(out.data(), (std::streamsize) out.size());
                 g_lt.ids.clear();
@@ -601,6 +602,10 @@ void llama_context::set_eval_cb() {
         g_lt.every = std::max(1, moe_log_num(g_lt.ids_only ? 'x' : 'l', 1));   // log=l: every token, log=l64: every 64th; log=x: ids only, same sampling
         g_lt.model = moe_state_section(model);
         for (char & c : g_lt.model) { if (c == ',' || c == '\n') { c = '_'; } }
+        g_lt.file = g_lt.model.substr(0, g_lt.model.find(' '));   // the section is "<file name> <size>"
+        if (g_lt.file.size() > 5 && g_lt.file.compare(g_lt.file.size() - 5, 5, ".gguf") == 0) { g_lt.file.resize(g_lt.file.size() - 5); }
+        if (const size_t sp = g_lt.file.find("-0000"); sp != std::string::npos && g_lt.file.find("-of-", sp) != std::string::npos) { g_lt.file.resize(sp); }   // -00001-of-00008
+        for (char & c : g_lt.file) { if (!isalnum((unsigned char) c) && c != '.' && c != '-' && c != '_') { c = '_'; } }
         ggml_backend_sched_set_eval_callback(sched.get(), layer_trace_cb, nullptr);
     } else {
         ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);

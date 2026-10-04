@@ -9,7 +9,7 @@ the letters, with the other fork options, are listed in [fork-knobs.md](../../..
 | `e` | `embhot.csv` | run | `model,embhex,hots`: the last layer embedding of the last token of the last graph (1 byte per float as hex, scaled by the largest value) and this run's hot experts per layer (`layer:count count ...;layer:...`) |
 | `s` (or `i`) | `state-snapshots/<date>_<time>-<model>.ini` | run (one file) | the model's own section of the learned state: lifetime hot-expert counts, tuner and placement records |
 | `l` | `layertrace.csv` | layer of every Nth generated token (`l`: every token, `l64`: every 64th) | `model,pos,layer,embhex,xhex,ids`: the layer's output embedding (scaled by its largest value), the router input (the normalised residual the experts see; fixed scale, clipped at ±16, 1 byte per dim) and the expert ids its router selected for that token |
-| `x` | `routing.csv` | like `l`, ids only | `model,pos,layer,ids`: the experts the router chose at every layer of every sampled token, the real routing flow to replay eviction policies on (`tools/sim/route_evict.py`) |
+| `x` | `routing_<model>.csv` | like `l`, ids only | `pos,layer,ids` (one file per model): the experts the router chose at every layer of every sampled token, the real routing flow to replay eviction policies on (`tools/sim/route_evict.py`) |
 | `g`, `p`, `c` | log, log, `moe-trace*` | | GPU identity of the placement record, cache stats every 64 steps, decode-step trace (`c` slows the decode path; use it for diagnosis only). The routed expert ids of every MoE layer are a backend diagnostic: `GGML_MOE_LOG=FILE` (big) |
 | `r` | `tools/bench/run-history.csv`, `tools/runs.db` | run | read by `tools/run.py` (the benchmark harness), not by the engine |
 
