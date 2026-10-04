@@ -31,7 +31,6 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 
 | model | machine | in VRAM | test | stock t/s | ours t/s | stock pp | ours pp | gain t/s | gain pp | build |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **GLM** 3.5-bit 137G | 2x3090 128G | 35% | short4 | 8.1 | **12.2** | 5.0 | ? 4.7 | **1.5x** | ? 0.9x | b12209 |
 | **MiMo** IQ3_XXS 132G | 2x3090 128G | 36% | chat | 4.8 | **12.7** | - | - | **2.6x** | - | rcn2 d43c101 |
 |  |  | 36% | 12k prompt | 4.2 | **9.7** | 179 | 139 | **2.3x** | 0.8x | b11285 |
 |  | 2x3090 128G | 36% | short4 | 2.6 | **6.5** | 1 | ? 3 | **2.5x** | ? 2.3x | b12209 |
@@ -40,6 +39,7 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 |  | CPU 64G | 0% | tetris, CPU only | 6.2 | **11.2** | 10 | ? 37 | **1.8x** | ? 3.6x | b12209 |
 | **Qwen Next** IQ4_XS 88G | 2x3090 128G | 55% | short4 | 31.2 | **48.9** | 18 | ? 23 | **1.6x** | ? 1.3x | b12209 |
 |  |  | 55% | long4 | 30.9 | **48.9** | 220 | **585** | **1.6x** | 2.7x | b12209 |
+| **GLM** 3.5-bit 137G | 2x3090 128G | 35% | short4 | 8.1 | **12.2** | 5.0 | ? 4.7 | **1.5x** | ? 0.9x | b12209 |
 | **Qwen Next** IQ3_S 83G | 2x3090 128G | 58% | short4 | 44.1 | **54.2** | 29 | ? 32 | **1.2x** | ? 1.1x | b12209 |
 |  |  | 58% | long4 | 43.1 | **52.9** | 380 | **663** | **1.2x** | 1.7x | b12209 |
 | 27B Q5_K_M + MTP | 2x3090 128G | 100% | tetris (38.6 without MTP) | 78.3 | 77.0 | - | - | 1.0x | - | b11653 |
