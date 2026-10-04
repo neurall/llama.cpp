@@ -60,6 +60,24 @@ def insert(d, cols):
         con.commit(); con.close()
     except Exception as e:
         print("runs.db:", e, file=sys.stderr)
+EMB = os.path.join(HERE, "bench", "embhot.csv")
+def ensure_emb(con):
+    con.execute("CREATE TABLE IF NOT EXISTS embhot (ts TEXT, hw TEXT, build TEXT, test TEXT, model TEXT, embhex TEXT, hots TEXT)")
+def insert_emb(since, ts, hw, build, test):
+    """called by run.py after every run: the embhot.csv lines the run appended (from byte offset since) go into the table embhot; returns the new offset"""
+    try:
+        size = os.path.getsize(EMB) if os.path.exists(EMB) else 0
+        if size <= since: return size
+        with open(EMB, newline="") as f:
+            f.seek(since); rows = [l for l in f.read().split("\n") if l and not l.startswith("model,")]
+        con = connect(); ensure_emb(con)
+        for l in rows:
+            m = l.split(",", 2)
+            if len(m) == 3: con.execute("INSERT INTO embhot VALUES (?,?,?,?,?,?,?)", (ts, hw, build, test, m[0], m[1], m[2]))
+        con.commit(); con.close()
+        return size
+    except Exception as e:
+        print("embhot:", e, file=sys.stderr); return since
 def load():
     if os.path.exists(DB): os.remove(DB)
     con = connect()
@@ -69,6 +87,12 @@ def load():
         ensure(con, cols)
         for r in rd:
             con.execute("INSERT INTO runs VALUES (" + ",".join("?" * (len(cols) + 2)) + ")", row_values(r, cols)); n += 1
+    ensure_emb(con)
+    if os.path.exists(EMB):
+        with open(EMB, newline="") as f:
+            for l in f.read().split("\n"):
+                m = l.split(",", 2)
+                if len(m) == 3 and m[0] != "model": con.execute("INSERT INTO embhot (model, embhex, hots) VALUES (?,?,?)", tuple(m))
     archive = os.path.join(HERE, "bench", "archive", "perf-2026-09-30.db")
     if os.path.exists(archive): attach_old(con, archive)
     con.commit(); print(f"{n} runs loaded into {DB}")

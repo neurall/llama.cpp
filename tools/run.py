@@ -227,10 +227,13 @@ def cache_stats(log):
 
 
 SNAP_DIR = os.path.join(DATA, "state-snapshots")   # --moe snap=1 of the builds that have it: the model's state section after every run, tracked in git
+_EMB_OFF = os.path.getsize(os.path.join(DATA, "embhot.csv")) if os.path.exists(os.path.join(DATA, "embhot.csv")) else 0
+EMB_FILE = os.path.join(DATA, "embhot.csv")        # --moe emb=1: one line per run (model, last embedding, hot experts), tracked in git
+RESEARCH_ENV = {"LLAMA_MOE_SNAP": "1", "LLAMA_MOE_SNAP_DIR": SNAP_DIR, "LLAMA_MOE_EMBSNAP": "1", "LLAMA_MOE_EMBHOT": EMB_FILE}   # on for every harness run (builds without them ignore these)
 
 
 def server_start(build, env, args):
-    env = {**env, "LLAMA_MOE_SNAP": "1", "LLAMA_MOE_SNAP_DIR": SNAP_DIR}
+    env = {**env, **RESEARCH_ENV}
     logf = f"/tmp/perf-{build}.log"
     with open(logf, "w") as lf:
         p = subprocess.Popen([os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
@@ -283,7 +286,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
            "LLAMA_MOE_CACHE_STATSLOG": "32", "LLAMA_MOE_STATSLOG": f"/tmp/perf-{build}-stats.txt",  # builds with statslog write a text line per 32 steps (moe-stats.csv)
            "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
     row = {}
-    env = {**env, "LLAMA_MOE_SNAP": "1", "LLAMA_MOE_SNAP_DIR": SNAP_DIR}
+    env = {**env, **RESEARCH_ENV}
     if test in ("ppl", "ppl3"):
         nb = "1" if test == "ppl" else "3"
         args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", "2", "-b", nb, "-ub", nb]
@@ -477,6 +480,12 @@ def store(row, build, test, rec, note, hw, vstr):
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=power_limits(hw), proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
         branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in ("pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
+    global _EMB_OFF
+    try:
+        import runlog
+        _EMB_OFF = runlog.insert_emb(_EMB_OFF, row["ts"], hw, build, test)   # the embhot.csv lines of this run into runs.db
+    except Exception as ex:
+        print("embhot:", ex, file=sys.stderr)
 
 
 def show_row(row, build, test):
