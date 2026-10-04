@@ -58,6 +58,10 @@ for l in open(readme).read().split("\n"):
                 old = num(c[col].strip().replace(NB, "").split("<br>")[0])
                 if old is not None and num(new[0]) is not None and num(new[0]) < old:
                     continue   # not better: the existing value stays
+                if test == "game4":   # an older build's row that reached a higher speed stays (also when the gain ratio is a hair higher)
+                    m = re.search(r"([\d.]+)", c[5].replace("*", "").replace(NB, "").split("<br>")[0])
+                    if m and o[0] < float(m.group(1)):
+                        continue
                 c[col] = two(*new); changed += 1
                 if test == "game4":
                     c[4] = two(f"{s[0]:.1f}", f"{s[1]:.0f}")
