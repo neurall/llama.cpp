@@ -37,7 +37,7 @@ Tests:
 Compare decode t/s only between runs with the same output md5 (tetris/chat): the text
 decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat itself.
 """
-import argparse, csv, hashlib, io, json, os, re, statistics, subprocess, sys, time, urllib.request
+import argparse, csv, glob, hashlib, io, json, os, re, statistics, subprocess, sys, time, urllib.request
 
 PROMPTS = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bench")   # frozen prompts (src_12k.cpp, src_128k.cpp, longsrc.cpp) live in tools/bench/
 HERE = os.path.abspath(os.environ.get("PERF_BUILDS", os.getcwd()))  # one subdirectory per build (its bin/ contents)
@@ -570,6 +570,18 @@ def save_tune_log(row):
         csv_append("tune.csv", TUNE_COLS, dict(ts=row["ts"], commit=row["commit_sha"], line=l))
 
 
+def save_routing_output(row, build):
+    """the generated text next to the routing trace of the same run: routing/<model>.<test-prompt>.<time>.output.txt (the newest .routing of this model and
+    test-prompt tag written in the last 10 minutes; fork builds only, with --moe log=x)"""
+    text, tag = row.get("output"), TAGBOX["v"]
+    if not text or build.startswith("stock") or "x" not in LOG_LETTERS or not MODEL:
+        return
+    stem = re.sub(r"-0000\d-of-0000\d", "", os.path.basename(MODEL)).removesuffix(".gguf")
+    fs = sorted(glob.glob(os.path.join(DATA, "routing", f"{stem}.{re.sub('[^A-Za-z0-9_-]', '_', tag)}.*.routing")), key=os.path.getmtime)
+    if fs and time.time() - os.path.getmtime(fs[-1]) < 600:
+        open(fs[-1][:-len(".routing")] + ".output.txt", "w").write(text)
+
+
 def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
     """One measured run, preceded by a discarded run with the same build and settings: model switches, a previous pinned load
     (drops the page cache) and cache/tuner warm-up all showed 5-12% swings on the first run."""
@@ -593,6 +605,7 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
            **{k: str(v) for k, v in OVR.items() if k != "prompt"}}
     hw = hw or os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
     store(row, build, test, rec, note, hw, version(build))
+    save_routing_output(row, build)
     row["build"] = build
     save_tune_log(row)
     show_row(row, build, test)
