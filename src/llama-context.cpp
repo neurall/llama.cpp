@@ -524,6 +524,7 @@ struct layer_trace_state {
     ggml_backend_sched_eval_callback user_cb = nullptr;
     void * user_data = nullptr;
     int every = 0;
+    bool ids_only = false;   // log=x: the selected expert ids only, no embeddings
     std::string model;
     std::map<int, std::string> hex, xhex, ids;   // per layer: output embedding, router input, selected experts
 };
@@ -533,7 +534,7 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
     const bool is_out  = strncmp(t->name, "l_out-", 6) == 0;
     const bool is_topk = strncmp(t->name, "ffn_moe_topk-", 13) == 0;
     const bool is_x    = strncmp(t->name, "ffn_norm-", 9) == 0;   // the router's (and the experts') input: the normalised residual
-    bool mine = (is_out || is_topk || is_x) && t->ne[1] == 1 && g_lt.ctx->trace_n_eval() > 0 && g_lt.ctx->trace_n_eval() % g_lt.every == 0;
+    bool mine = (g_lt.ids_only ? is_topk : (is_out || is_topk || is_x)) && t->ne[1] == 1 && g_lt.ctx->trace_n_eval() > 0 && g_lt.ctx->trace_n_eval() % g_lt.every == 0;
     if (ask) {
         const bool theirs = g_lt.user_cb ? g_lt.user_cb(t, true, g_lt.user_data) : false;
         return mine || theirs;
@@ -546,6 +547,17 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
             std::string o;
             for (size_t i = 0; i < v.size(); ++i) { o += (i ? " " : "") + std::to_string(v[i]); }
             g_lt.ids[il] = o;
+            if (g_lt.ids_only && il == (int) g_lt.ctx->get_model().hparams.n_layer() - 1) {   // the last layer closes the sample
+                const std::filesystem::path path = moe_log_file("routing.csv");
+                std::error_code ec;
+                const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
+                std::string out = fresh ? "model,pos,layer,ids\n" : "";
+                const int pos = g_lt.ctx->trace_n_p_eval() + g_lt.ctx->trace_n_eval();
+                for (const auto & e : g_lt.ids) { out += g_lt.model + "," + std::to_string(pos) + "," + std::to_string(e.first) + "," + e.second + "\n"; }
+                std::ofstream f(path, std::ios::app | std::ios::binary);
+                f.write(out.data(), (std::streamsize) out.size());
+                g_lt.ids.clear();
+            }
         } else if (is_x && t->type == GGML_TYPE_F32) {
             // fixed scale, clipped at +-16 (int8, 2 hex characters per dim): unlike the per-token absmax scale of the output embedding, the outlier dims do not hide the rest
             std::vector<float> v(t->ne[0]);
@@ -583,9 +595,10 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
 }  // namespace
 
 void llama_context::set_eval_cb() {
-    if (moe_log_has("l") && moe_state_enabled()) {
+    if ((moe_log_has("l") || moe_log_has("x")) && moe_state_enabled()) {
+        g_lt.ids_only = !moe_log_has("l");
         g_lt.ctx = this; g_lt.user_cb = cparams.cb_eval; g_lt.user_data = cparams.cb_eval_user_data;
-        g_lt.every = std::max(1, moe_log_num('l', 1));   // log=l: every token, log=l64: every 64th
+        g_lt.every = std::max(1, moe_log_num(g_lt.ids_only ? 'x' : 'l', 1));   // log=l: every token, log=l64: every 64th; log=x: ids only, same sampling
         g_lt.model = moe_state_section(model);
         for (char & c : g_lt.model) { if (c == ',' || c == '\n') { c = '_'; } }
         ggml_backend_sched_set_eval_callback(sched.get(), layer_trace_cb, nullptr);
