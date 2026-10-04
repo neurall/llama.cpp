@@ -72,8 +72,10 @@ def row(model, mach, test, s, o, vram="-"):
     dn_t, dn_p = round(o[0] / s[0], 1) <= 0.8, round(o[1] / s[1], 1) <= 0.8 if s[1] else False   # red only when 20% or more below stock (gain shown as 0.8x or less)
     g = lambda up, t, dn=False: f"🟢 {t}" if up else f"🔴 {t}" if dn else t   # green above stock, red below
     gt, gp = gain(o[0], s[0]), gain(o[1], s[1])
-    return (f"| {model} | {FULL.get(mach, mach)} | {vram} | {test} | {s[0]:.1f} | {g(up_t, f'{o[0]:.1f}', dn_t)} | {s[1]:.0f} | {g(up_p, f'{o[1]:.0f}', dn_p)} | "
-            f"{g(up_t, gt, dn_t)} | {g(up_p, gp, dn_p)} | {SHORT} |")
+    if test == "short4":   # a prompt of a few tokens: pp is measured but not comparable, marked ? instead of green or red
+        up_p = dn_p = False
+    return (f"| {model} | {FULL.get(mach, mach)} | {vram} | {test} | {s[0]:.1f} | {g(up_t, f'{o[0]:.1f}', dn_t)} | {s[1]:.0f} | {"? " if test == "short4" else ""}{g(up_p, f'{o[1]:.0f}', dn_p)} | "
+            f"{g(up_t, gt, dn_t)} | {"? " if test == "short4" else ""}{g(up_p, gp, dn_p)} | {SHORT} |")
 
 lines = open(readme).read().split("\n")
 hi = next(i for i, l in enumerate(lines) if l.startswith("| model | machine | in VRAM | test |"))
