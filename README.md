@@ -38,8 +38,6 @@ Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation sp
 | Qwen3.8-27B-GSQ-<br>RCO-IQ3_S-mtp | 3600 A520 64G | 0%<br>CPU only | 1.7<br>5.6 | 1.6<br>5.8 | *0.9x↓*<br>*1.0x* | -<br>- | b12030 |
 | any model that fits | any | 100% | same<br>same | same<br>same | 1.0x<br>1.0x | -<br>- | any |
 
-Two cells are slower than stock and say so: prompt processing of MiMo on long prompts (0.7x) and generation of the CPU-only 27B IQ3_S (0.9x, 1.6 against 1.7 tokens/s).  
-Hardware, in this order: GPUs with PCIe generation x lanes (4/16 = PCIe 4.0 x16, 4/16+4 = a second card on x4, same generation), CPU, RAM (G = GB, channels, type and speed), measured RAM bandwidth.  
 
 ## What you get
 
