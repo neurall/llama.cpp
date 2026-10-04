@@ -10,14 +10,12 @@ llama-cli    -m model.gguf -p "hello"
 ```
 
 The decode speedup is largest when a third to a half of a MoE model fits in VRAM (1.9x to 2.4x), fades above about 55% and is 1.0x once it fits; dense models gain nothing.  
-**Highlights (all measured, all in the table below):**
 
-- **Up to 2.4x faster generation** on models bigger than your VRAM: MiMo-V2.6-Flash 132 GB on two 24 GB cards, 4.6 to 10.9 tokens/s.  
-- **1.9x generation and 2.4x prompt processing on a laptop**: Qwen3.6-35B on an 8 GB RTX 4060, 31.6 to 60.0 and 41.2 to 100.9 tokens/s.  
-- **3.4x faster prompt processing with no GPU at all**: Qwen3.6-35B on a Ryzen 5 3600, 10.1 to 34.1 tokens/s (1.8x generation, 6.3 to 11.1).  
-- **Q2 models get a speed bump on AVX2 CPUs**: upstream has no AVX2 kernels for the Q2_0 type (it falls back to the generic path), this fork does. Qwen3.6-35B Q2_0 is the example, on the 8 GB laptop above and on the CPU-only Ryzen 5 3600 box.  
+**Also:**
+
+- **Q2 models get a speed bump on AVX2 CPUs**: upstream has no AVX2 kernels for the Q2_0 type, this fork does (Qwen3.6-35B Q2_0 in the table).  
 - **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
-- **When the cache cannot help, it falls back to stock speed by measurement**, so a model that fits or a machine that gains nothing runs at stock speed (1.0x rows below).  
+- **When the cache cannot help, it falls back to stock speed by measurement** (the 1.0x rows).  
 
 Gain over stock llama.cpp, best first (t/s = generated tokens per second on top, pp = prompt processing tokens per second below, in every cell with two numbers; four gains per model: short prompt t/s and pp, long prompt t/s and pp; both are stock's best of 4 runs against ours best of 4, no warm-up (short: four different 'smallest html game' prompts; long: four different edit instructions over one long source file); stock and ours are the numbers of the earlier same-prompt test until they are re-measured; *italic* gains are from the earlier tests (best run of ours against best run of stock from the run log: short = one short prompt repeated, long = the 12k-token prompt, or 2.2k for the MTP row); they are placeholders until the new tests (the plain numbers) replace them, `-` = not measured yet; the build column is the build the number was taken on):
 
