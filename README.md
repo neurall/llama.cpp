@@ -22,13 +22,13 @@ Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation sp
 | model | hardware | in VRAM | stock<br>t/s pp | ours<br>t/s pp | short gain<br>t/s pp | long gain<br>t/s pp | build |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.5bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 35% | 6.9<br>2 | **15.1**<br>4 | *2.7x*<br>*2.4x* | -<br>- | b11707 |
-| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>short prompt | 4.4<br>3 | **11.4**<br>4 | *2.6x*<br>*1.2x* | *2.1x*<br>*0.8x↓* | b11707 |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 45% | 12.5<br>16 | **27.5**<br>16 | *2.2x*<br>*1.0x* | -<br>- | b11707 |
-| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>12k prompt | 4.2<br>156 | **9.1**<br>112 | -<br>- | *2.3x*<br>*0.8x↓* | b11509 |
-| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>short prompt | 31.3<br>43 | **62.2**<br>64 | *2.0x*<br>*1.5x* | *1.5x*<br>*1.1x* | b11365 |
+| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>short prompt | 4.4<br>3 | **11.0**<br>3 | *2.5x*<br>*1.0x* | *2.1x*<br>*0.8x↓* | fd4c3d2d3 |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 45% | 12.5<br>16 | **26.0**<br>16 | *2.1x*<br>*1.0x* | -<br>- | b11707 |
+| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>12k prompt | 4.2<br>153 | **9.0**<br>118 | -<br>- | *2.1x*<br>*0.8x↓* | b11707 |
+| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>short prompt | 31.3<br>43 | **54.9**<br>61 | *1.8x*<br>*1.4x* | *1.5x*<br>*1.1x* | b11707 |
 | Qwen3.6-35B-A3B-<br>GSQ-hybrid | 4060 8G 4/8<br>8945HS 32G 48G/s | 73%<br>slow CPU | 31.6<br>41.2 | **60.0**<br>100.9 | *1.9x*<br>*2.6x* | -<br>- | b12030 |
 | Qwen3.6-35B-A3B-<br>GSQ-hybrid | 3600 A520 64G | 0%<br>CPU only | 6.3<br>10.1 | 11.1<br>34.1 | *1.8x*<br>*3.7x* | -<br>- | b12040 |
-| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>12k prompt | 25.3<br>500 | **42.3**<br>538 | -<br>- | *1.7x*<br>*1.1x* | b11341 |
+| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>12k prompt | 30.2<br>210 | **47.9**<br>437 | -<br>- | *1.6x*<br>*2.1x* | b12030 |
 | Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>2.2k | 31.3<br>599 | 51.1<br>792 | 1.0x<br>1.0x | *1.6x*<br>*1.3x* | earlier |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 66%<br>3 of 4 | 20.1<br>- | 32.6<br>- | *1.6x*<br>- | -<br>- | b11707+ |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>second run, -t 16 | 24.7<br>- | **33.8**<br>- | *1.4x*<br>- | -<br>- | b11707+ |
@@ -36,7 +36,7 @@ Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation sp
 | Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 4060 8G 4/8<br>8945HS 32G 48G/s | 13% | 13.5<br>18.3 | 17.3<br>21.6 | *1.3x*<br>*1.2x* | -<br>- | b12030 |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>second run | 24.7<br>- | 31.5<br>- | *1.3x*<br>- | -<br>- | b11707+ |
 | Qwen3.8-27B-IQ4_NL | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>dense | 45.1<br>27 | 45.0<br>29 | 1.0x<br>1.1x | *1.0x*<br>*1.0x* | b12128 |
-| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>short | 78.3<br>41 | 77.5<br>40 | *1.0x*<br>*1.0x* | -<br>- | b11649 |
+| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>short | 78.3<br>41 | 77.2<br>30 | *1.0x*<br>*0.7x↓* | -<br>- | b11663 |
 | Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 87% | 69.1<br>38 | 68.3<br>40 | 1.0x<br>1.0x | -<br>- | b12040 |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>first run | 24.7<br>- | 25.2<br>- | 1.0x<br>- | -<br>- | b11707+ |
 | Qwen3.8-27B-GSQ-<br>RCO-IQ3_S-mtp | 3600 A520 64G | 0%<br>CPU only | 1.7<br>5.6 | 1.6<br>5.8 | *0.9x↓*<br>*1.0x* | -<br>- | b12030 |
