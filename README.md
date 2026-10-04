@@ -41,14 +41,14 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 |  |  | 55% | long4 | 30.9 | 🟢 48.9 | 220 | 🟢 585 | 🟢 1.6x | 🟢 2.7x | b12209 |
 | **Qwen Next** IQ3_S 83G | 2x3090 128G | 58% | short4 | 44.1 | 🟢 54.2 | 29 | 🟢 32 | 🟢 1.2x | 🟢 1.1x | b12209 |
 |  |  | 58% | long4 | 43.1 | 🟢 52.9 | 380 | 🟢 663 | 🟢 1.2x | 🟢 1.7x | b12209 |
-| 27B Q5_K_M + MTP | 2x3090 128G | 100% | tetris (38.6 without MTP) | 78.3 | 🔴 77.0 | - | - | 🔴 1.0x | - | b11653 |
+| 27B Q5_K_M + MTP | 2x3090 128G | 100% | tetris (38.6 without MTP) | 78.3 | 77.0 | - | - | 1.0x | - | b11653 |
 |  |  | 100% | 2.2k prompt | 31.3 | 🟢 51.1 | 599 | 🟢 792 | 🟢 1.6x | 🟢 1.3x | unlogged |
-| **Qwen Next** IQ1_M 55G | 2x3090 128G | 87% | short4, picks stock | 68.5 | 🔴 66.2 | 39 | 🔴 33 | 🔴 1.0x | 🔴 0.8x | b12209 |
-|  | 2x3090 128G | 87% | long4 | 65.4 | 🔴 65.3 | 1209 | 🟢 1289 | 🔴 1.0x | 🟢 1.1x | b12209 |
+| **Qwen Next** IQ1_M 55G | 2x3090 128G | 87% | short4, picks stock | 68.5 | 66.2 | 39 | 🔴 33 | 1.0x | 🔴 0.8x | b12209 |
+|  | 2x3090 128G | 87% | long4 | 65.4 | 65.3 | 1209 | 🟢 1289 | 1.0x | 🟢 1.1x | b12209 |
 |  | 4060 32G | 15% | tetris | 13.7 | 🟢 17.6 | 18.3 | 🟢 20.9 | 🟢 1.3x | 🟢 1.1x | b11707 |
-| 27B IQ4_NL dense | 2x3090 128G | 100% | short4 | 45.1 | 🔴 44.7 | 28 | 🔴 23 | 🔴 1.0x | 🔴 0.8x | b12209 |
-|  |  | 100% | long4 | 44.3 | 🔴 43.9 | 1756 | 🔴 1738 | 🔴 1.0x | 🔴 1.0x | b12209 |
-| 27B IQ3_S dense | CPU 64G | 0% | tetris | 1.7 | 🔴 1.6 | 6.0 | 🔴 5.8 | 🔴 1.0x | 🔴 1.0x | b11648 |
+| 27B IQ4_NL dense | 2x3090 128G | 100% | short4 | 45.1 | 44.7 | 28 | 🔴 23 | 1.0x | 🔴 0.8x | b12209 |
+|  |  | 100% | long4 | 44.3 | 43.9 | 1756 | 1738 | 1.0x | 1.0x | b12209 |
+| 27B IQ3_S dense | CPU 64G | 0% | tetris | 1.7 | 🔴 1.6 | 6.0 | 5.8 | 🔴 0.9x | 1.0x | b11648 |
 | fits VRAM | any | 100% | anything | same | same | same | same | 1.0x (cache off) | 1.0x | any |
 
 \* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
