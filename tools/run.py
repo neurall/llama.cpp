@@ -385,20 +385,28 @@ _PL = {}
 
 
 def snapshot_state(ts, build, model, hw):
-    """a plain copy of the learned state after the run: tools/bench/state-snapshots/<date time>-<build>-<model>.ini (local runs only; not in git). Never raises into a run."""
+    """the model's own section of the learned state after the run, as tools/bench/state-snapshots/<date time>-<build>-<model>.ini (local runs only, tracked in git: research data). Never raises into a run."""
     try:
         if hw != "pc1" and hw != _PL.get("local"):
             return
         src = os.environ.get("LLAMA_MOE_STATE") or os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "llama.cpp", "moe-state.ini")
         if not os.path.exists(src):
             return
-        import shutil
+        fname = os.path.basename(str(model).split(" ")[0]).lower()
+        sect, on = [], False
+        for line in open(src, errors="replace"):
+            if line.startswith("["):
+                on = line[1:].lower().startswith(fname + " ") or line[1:].lower().startswith(re.sub(r"-0000.-of-0000.", "", fname).removesuffix(".gguf") + " ")
+            if on:
+                sect.append(line)
+        if not sect:
+            return
         d = os.path.join(DATA, "state-snapshots")
         os.makedirs(d, exist_ok=True)
         tag = lambda x: re.sub(r"[^A-Za-z0-9._-]+", "_", str(x))[:40]
         stem = re.sub(r"-0000.-of-0000.|[.]gguf", "", str(model).split(" ")[0])
-        name = f"{tag(str(ts).replace(':', ''))}-{tag(build)}-{tag(stem)}.ini"
-        shutil.copyfile(src, os.path.join(d, name))
+        with open(os.path.join(d, f"{tag(str(ts).replace(':', ''))}-{tag(build)}-{tag(stem)}.ini"), "w") as f:
+            f.writelines(sect)
     except Exception as e:
         print("state snapshot:", e, file=sys.stderr)
 
