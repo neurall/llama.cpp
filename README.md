@@ -20,24 +20,24 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 
 Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = prompt processing tokens per second, each the 4th run of its test, `-` = not measured; the build column is the build the number was taken on):
 
-| model on machine | share of the model in VRAM | gain | stock t/s | ours t/s | stock pp | ours pp | build |
-|---|---|---|---|---|---|---|---|
-| MiMo IQ3_XXS 132 GB on A (2x24 GB) | 36% | **2.4x** | 4.6 | **10.9** | 156 | 112 | earlier |
-| GLM 3.5-bit 137 GB on A | 35% | **2.2x** | 6.9 | **15.1** | - | - | b11707 |
-| Qwen3.6-35B Q2_0 on B (8 GB GPU), an exception: its CPU side is slow | about 73% | **1.9x** | 31.6 | **60.0** | 41.2 | 100.9 | b12030 |
-| GLM 3.0-bit on A | about 45% | **1.9x** | 11.9 | **22.4** | - | - | earlier |
-| Qwen3.6-35B Q2_0, CPU only, on C | 0% | 1.8x | 6.3 | 11.1 | 10.1 | 34.1 | b12040 |
-| Qwen Next UD-IQ4_XS 88 GB on A | 55% | 1.7x | 27.7 | 46.5 | 500 | 538 | earlier |
-| Qwen3.8-27B Q5_K_M with MTP on A (2.2k-token prompt) | fits | 1.6x | 31.3 | 51.1 | 599 | 792 | earlier |
-| GLM 3.0-bit on D, 3 of 4 GPUs | 66% | 1.6x | 20.1 | 32.6 | - | - | b11707+ |
-| Qwen Next IQ3_S 83 GB on A | 58% | 1.3x | 43.9 | 57.1 | - | - | b11707 |
-| Qwen Next IQ1_M 55 GB on B (8 GB GPU) | about 13% | 1.3x | 13.5 | 17.3 | 18.3 | 21.6 | b12030 |
-| GLM 3.0-bit on D, 4 GPUs | 88% | 1.3x | 24.7 | 31.5 | - | - | b11707+ |
-| Qwen3.8-27B IQ4_NL, dense, on A | fits | 1.0x | 45.1 | 45.0 | - | - | earlier |
-| Qwen3.8-27B Q5_K_M with MTP on A (short prompt) | fits | 1.0x | 78.3 | 77.0 | - | - | earlier |
-| Qwen Next IQ1_M 55 GB on A | 87% | 1.0x (picks stock) | 69.1 | 68.3 | - | 40 | b12040 |
-| Qwen3.8-27B IQ3_S, dense, CPU only, on C | 0% | 0.9x | 1.7 | 1.6 | 5.6 | 5.8 | b12030 |
-| any model that fits | 100% | 1.0x (cache off) | same | same | same | same | any |
+| model | hardware | share of the model in VRAM | gain | stock t/s | ours t/s | stock pp | ours pp | build |
+|---|---|---|---|---|---|---|---|---|
+| MiMo IQ3_XXS 132 GB | 2x RTX 3090 (x16 + x4 via X570 chipset), Ryzen 7 3700X, 125 GB DDR4-3200 2ch, 44 GB/s | 36% | **2.4x** | 4.6 | **10.9** | 156 | 112 | earlier |
+| GLM 3.5-bit 137 GB | 2x RTX 3090 (x16 + x4 via X570 chipset), Ryzen 7 3700X, 125 GB DDR4-3200 2ch, 44 GB/s | 35% | **2.2x** | 6.9 | **15.1** | - | - | b11707 |
+| Qwen3.6-35B Q2_0 (8 GB GPU), an exception: its CPU side is slow | RTX 4060 8 GB laptop (x8), Ryzen 9 8945HS, 32 GB LPDDR5-6400, 48 GB/s | about 73% | **1.9x** | 31.6 | **60.0** | 41.2 | 100.9 | b12030 |
+| GLM 3.0-bit | 2x RTX 3090 (x16 + x4 via X570 chipset), Ryzen 7 3700X, 125 GB DDR4-3200 2ch, 44 GB/s | about 45% | **1.9x** | 11.9 | **22.4** | - | - | earlier |
+| Qwen3.6-35B Q2_0, CPU only | no GPU, Ryzen 5 3600, 64 GB DDR4-3200 2ch | 0% | 1.8x | 6.3 | 11.1 | 10.1 | 34.1 | b12040 |
+| Qwen Next UD-IQ4_XS 88 GB | 2x RTX 3090 (x16 + x4 via X570 chipset), Ryzen 7 3700X, 125 GB DDR4-3200 2ch, 44 GB/s | 55% | 1.7x | 27.7 | 46.5 | 500 | 538 | earlier |
+| Qwen3.8-27B Q5_K_M with MTP (2.2k-token prompt) | 2x RTX 3090 (x16 + x4 via X570 chipset), Ryzen 7 3700X, 125 GB DDR4-3200 2ch, 44 GB/s | fits | 1.6x | 31.3 | 51.1 | 599 | 792 | earlier |
+| GLM 3.0-bit, 3 of 4 GPUs | 4x RTX 3090 (x16 each), EPYC 7B12 64c, 256 GB DDR4 4ch, 74 GB/s | 66% | 1.6x | 20.1 | 32.6 | - | - | b11707+ |
+| Qwen Next IQ3_S 83 GB | 2x RTX 3090 (x16 + x4 via X570 chipset), Ryzen 7 3700X, 125 GB DDR4-3200 2ch, 44 GB/s | 58% | 1.3x | 43.9 | 57.1 | - | - | b11707 |
+| Qwen Next IQ1_M 55 GB | RTX 4060 8 GB laptop (x8), Ryzen 9 8945HS, 32 GB LPDDR5-6400, 48 GB/s | about 13% | 1.3x | 13.5 | 17.3 | 18.3 | 21.6 | b12030 |
+| GLM 3.0-bit, 4 GPUs | 4x RTX 3090 (x16 each), EPYC 7B12 64c, 256 GB DDR4 4ch, 74 GB/s | 88% | 1.3x | 24.7 | 31.5 | - | - | b11707+ |
+| Qwen3.8-27B IQ4_NL, dense | 2x RTX 3090 (x16 + x4 via X570 chipset), Ryzen 7 3700X, 125 GB DDR4-3200 2ch, 44 GB/s | fits | 1.0x | 45.1 | 45.0 | - | - | earlier |
+| Qwen3.8-27B Q5_K_M with MTP (short prompt) | 2x RTX 3090 (x16 + x4 via X570 chipset), Ryzen 7 3700X, 125 GB DDR4-3200 2ch, 44 GB/s | fits | 1.0x | 78.3 | 77.0 | - | - | earlier |
+| Qwen Next IQ1_M 55 GB | 2x RTX 3090 (x16 + x4 via X570 chipset), Ryzen 7 3700X, 125 GB DDR4-3200 2ch, 44 GB/s | 87% | 1.0x (picks stock) | 69.1 | 68.3 | - | 40 | b12040 |
+| Qwen3.8-27B IQ3_S, dense, CPU only | no GPU, Ryzen 5 3600, 64 GB DDR4-3200 2ch | 0% | 0.9x | 1.7 | 1.6 | 5.6 | 5.8 | b12030 |
+| any model that fits | any | 100% | 1.0x (cache off) | same | same | same | same | any |
 
 Prompt processing can be slower than stock on long prompts (0.7x in the MiMo row).  
 
@@ -45,17 +45,12 @@ Prompt processing can be slower than stock on long prompts (0.7x in the MiMo row
 
 Single stream, temperature 0, model in RAM. "Stock" and "upstream" mean stock llama.cpp.  
 
-Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.  
-Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.  
-Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.  
-Machine D, rented: 4x RTX 3090 (PCIe 4.0 x16 each), EPYC 7B12 (64 cores), 256 GB DDR4 on 4 of 8 memory channels (74 GB/s read measured).  
+Rows marked `earlier` or `b11707` keep their old numbers and are being re-measured on the current release; upstream stock is the release b11379 on the laptop and upstream 836d57176 built the same way as the fork on the Ryzen 5 3600.  
 
-Rows marked `earlier` or `b11707` keep their old numbers and are being re-measured on the current release; upstream stock is the release b11379 on B and upstream 836d57176 built the same way as the fork on C.  
-
-D: upstream is the downloaded release b11323 (a source build of def4d406a gave 24.8 and 20.1).  
+The 4x RTX 3090 EPYC rows: upstream is the downloaded release b11323 (a source build of def4d406a gave 24.8 and 20.1).  
 the fork is b11707 with the placement change in this branch (any model that does not fit takes the cache);  
 the model is 85% in VRAM on 4 GPUs, so the first run only matches stock placement.  
-D numbers are from one session on a claud rented 4 gpu box (raw logs not kept, not in run-history.csv).  
+Those numbers are from one session on a rented 4 gpu box (raw logs not kept, not in run-history.csv).  
 
 Older rows: GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
 [`tools/bench/run-history.csv`](tools/bench/run-history.csv).  
@@ -86,7 +81,7 @@ that does not fit in VRAM; the fork serves only its cache misses, and its hit ra
 
 - **The gain is the CPU reads the cache removes.** It is largest when stock leaves a large share of the model on a slow CPU: on machine A (2 GPUs, 44 GB/s RAM) a model 2 to 3 times the VRAM gives 1.9x to 2.4x.  
 - **More fast memory has diminishing returns.** The slow-memory cost per unit is about the same for both (44 to 46 ms), so the fork's lead is only the difference between the share stock leaves on the CPU and its own miss rate. As the VRAM share grows both approach their floors (fork about 28 ms, stock about 34 ms, ratio about 1.2x). On 4 GPUs the fork is at 94% of its floor, and the 2, 3 and 4 GPU runs differ by 7%.  
-- **A faster CPU lowers the gain,** because the slow-memory term shrinks (machine D reads 74 GB/s against 44 GB/s on machine A).  
+- **A faster CPU lowers the gain,** because the slow-memory term shrinks (the 4-GPU EPYC box reads 74 GB/s against 44 GB/s on machine A).  
 - **A model that fits in VRAM gains nothing** (the cache is off, 1.0x).  
 
 Four points from one session with different output texts: a good explanation, not a proof. The 2 and 1 GPU stock figures are model predictions, not measurements.  
