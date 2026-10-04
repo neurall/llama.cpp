@@ -1153,6 +1153,12 @@ struct common_init_result::impl {
 // expert cache setup (experts in RAM, no repack, auto-sized cache, 2048 ubatch) so a plain
 // `-m model` runs the fast path; explicit user settings are kept
 // model file size, all splits (0 if unknown)
+
+// split.count as stored in the file; a key of another type (a malformed or foreign file) counts as an unsplit file instead of aborting in gguf_get_val_u16
+static uint32_t gguf_split_count(const struct gguf_context * gguf, int64_t id) {
+    return gguf_get_kv_type(gguf, id) == GGUF_TYPE_UINT16 ? gguf_get_val_u16(gguf, id) : 1;
+}
+
 static size_t common_model_file_size(const std::string & path_model) {
     gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
     gguf_context * gguf = gguf_init_from_file(path_model.c_str(), gp);
@@ -1160,7 +1166,7 @@ static size_t common_model_file_size(const std::string & path_model) {
         return 0;
     }
     const int64_t id = gguf_find_key(gguf, "split.count");
-    const uint32_t n_split = id < 0 ? 1 : std::max<uint32_t>(1, gguf_get_val_u16(gguf, id));
+    const uint32_t n_split = id < 0 ? 1 : std::max<uint32_t>(1, gguf_split_count(gguf, id));
     gguf_free(gguf);
     size_t size = 0;
     char prefix[4096], path[4096];
@@ -1185,7 +1191,7 @@ static size_t common_model_expert_bytes(const std::string & path_model) {
         return 0;
     }
     const int64_t id = gguf_find_key(g0, "split.count");
-    const uint32_t n_split = id < 0 ? 1 : std::max<uint32_t>(1, gguf_get_val_u16(g0, id));
+    const uint32_t n_split = id < 0 ? 1 : std::max<uint32_t>(1, gguf_split_count(g0, id));
     gguf_free(g0);
     char prefix[4096], path[4096];
     const bool split = n_split > 1 && llama_split_prefix(prefix, sizeof(prefix), path_model.c_str(), 0, n_split);

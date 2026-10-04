@@ -92,6 +92,10 @@ int main(int argc, char ** argv) {
     params.cb_eval_user_data = &cb_data;
     if (const char * dump = getenv("ROUTER_DUMP")) {
         g_dump = fopen(dump, "wb");
+        if (!g_dump) {
+            LOG_ERR("%s: cannot open ROUTER_DUMP file '%s'\n", __func__, dump);
+            return 1;
+        }
         params.cb_eval = router_dump_cb;
         params.cb_eval_user_data = nullptr;
     }

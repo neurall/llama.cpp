@@ -2141,7 +2141,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             input_cpy->data   = ggml_backend_buffer_get_base(sched->prefetch_slots[slot]);
                             ggml_backend_tensor_set_async(sched->prefetch_backend, input_cpy, input->data, 0, ggml_nbytes(input));
                             ggml_backend_event_record(sched->prefetch_ready[slot], sched->prefetch_backend);
-                            // NOTE: no event_wait here — prefetch runs on separate stream and
+                            // NOTE: no event_wait here - prefetch runs on separate stream and
                             // overlaps with compute. The consumer side has its own event
                             // synchronization right before graph launch to ensure data is ready.
                             split_prefetch_slot = slot;
@@ -2350,7 +2350,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 prefetch_input_cpy->data   = prefetch_saved_data;
             }
             // fire lookahead prefetch for a future split so the H2D overlaps this split's
-            // compute (LOOKAHEAD=0: skip — prefetch fires inline per split instead)
+            // compute (LOOKAHEAD=0: skip - prefetch fires inline per split instead)
             if (LOOKAHEAD > 0) {
                 try_fire_prefetch(split_id + 1 + LOOKAHEAD);
             }

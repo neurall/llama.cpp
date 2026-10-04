@@ -1510,7 +1510,8 @@ extern "C" {
     GGML_API void ggml_mul_mat_set_hint(
             struct ggml_tensor * a,
             enum ggml_op_hint    hint);
-
+    // indirect matrix multiplication
+    // ids may hold -1 (expert not selected): backends zero those output rows first (op_params[1])
     // indirect matrix multiplication
     GGML_API struct ggml_tensor * ggml_mul_mat_id(
             struct ggml_context * ctx,
