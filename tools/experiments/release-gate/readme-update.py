@@ -71,3 +71,6 @@ for l in open(readme).read().split("\n"):
     out.append(l)
 open(readme, "w").write("\n".join(out))
 print("cells updated:", changed)
+# empty cells that remain take the numbers of b11707 from the run log (italic): that build is hard to beat so far
+import os, subprocess
+subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "readme-fill-build.py"), readme, hist, "b11707"])

@@ -17,15 +17,15 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 - **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
 - **Fallback to stock speed.** When the cache cannot help, the fork measures this and falls back to stock speed as quickly as it can (the 1.0x rows). This is work in progress, but already very usable.  
 
-Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation speed (tokens/s) above prompt-processing speed (pp). Short and long gains compare the best run of this fork with the best run of stock on short and long prompts. *Italic* values come from earlier tests and will be replaced; `-` means not yet measured.
+Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation speed (tokens/s) above prompt-processing speed (pp). Short and long gains compare the best run of this fork with the best run of stock on short and long prompts. *Italic* values come from earlier tests or builds (b11707 where nothing newer exists) and will be replaced; `-` means not yet measured.
 
 | model | hardware | in VRAM | stock<br>t/s pp | ours<br>t/s pp | short gain<br>t/s pp | long gain<br>t/s pp | build |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.5bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 35% | 6.9<br>2 | **15.1**<br>4 | *2.7x*<br>*2.4x* | -<br>- | b11707 |
-| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>short prompt | 4.6<br>4 | **10.9**<br>4 | *2.6x*<br>*1.0x* | -<br>- | earlier |
+| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>short prompt | 4.6<br>4 | **10.9**<br>4 | *2.6x*<br>*1.0x* | *2.1x*<br>*0.8x↓* | earlier |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 45% | 11.9<br>12 | **22.4**<br>16 | *2.2x*<br>*1.4x* | -<br>- | earlier |
 | MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>12k prompt | 4.2<br>156 | **9.1**<br>112 | -<br>- | *2.3x*<br>*0.8x↓* | earlier |
-| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>short prompt | 27.7<br>18 | 46.5<br>24 | *2.0x*<br>*1.5x* | -<br>- | earlier |
+| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>short prompt | 27.7<br>18 | 46.5<br>24 | *2.0x*<br>*1.5x* | *1.5x*<br>*1.1x* | earlier |
 | Qwen3.6-35B-A3B-<br>GSQ-hybrid | 4060 8G 4/8<br>8945HS 32G 48G/s | 73%<br>slow CPU | 31.6<br>41.2 | **60.0**<br>100.9 | *1.9x*<br>*2.6x* | -<br>- | b12030 |
 | Qwen3.6-35B-A3B-<br>GSQ-hybrid | 3600 A520 64G | 0%<br>CPU only | 6.3<br>10.1 | 11.1<br>34.1 | *1.8x*<br>*3.7x* | -<br>- | b12040 |
 | Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>12k prompt | 25.3<br>500 | **42.3**<br>538 | -<br>- | *1.7x*<br>*1.1x* | earlier |
