@@ -69,7 +69,7 @@ def num(x):
 
 def row(model, mach, test, s, o, vram="-"):
     up_t, up_p = round(o[0], 1) > round(s[0], 1), round(o[1]) > round(s[1])   # compared as shown: the marker never sits on two equal numbers
-    dn_t, dn_p = round(o[0], 1) < round(s[0], 1), round(o[1]) < round(s[1])
+    dn_t, dn_p = o[0] < 0.95 * s[0], o[1] < 0.95 * s[1]   # red only when clearly slower (below 0.95x)
     g = lambda up, t, dn=False: f"🟢 {t}" if up else f"🔴 {t}" if dn else t   # green above stock, red below
     gt, gp = gain(o[0], s[0]), gain(o[1], s[1])
     return (f"| {model} | {FULL.get(mach, mach)} | {vram} | {test} | {s[0]:.1f} | {g(up_t, f'{o[0]:.1f}', dn_t)} | {s[1]:.0f} | {g(up_p, f'{o[1]:.0f}', dn_p)} | "
