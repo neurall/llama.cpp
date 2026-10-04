@@ -48,7 +48,7 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 |  | 4060 32G | 15% | tetris | 13.7 | 🟢 17.6 | 18.3 | 🟢 20.9 | 🟢 1.3x | 🟢 1.1x | b11707 |
 | 27B IQ4_NL dense | 2x3090 128G | 100% | short4 | 45.1 | 44.7 | 28 | 🔴 23 | 1.0x | 🔴 0.8x | b12209 |
 |  |  | 100% | long4 | 44.3 | 43.9 | 1756 | 1738 | 1.0x | 1.0x | b12209 |
-| 27B IQ3_S dense | CPU 64G | 0% | tetris | 1.7 | 🔴 1.6 | 6.0 | 5.8 | 🔴 0.9x | 1.0x | b11648 |
+| 27B IQ3_S dense | CPU 64G | 0% | tetris | 1.7 | 1.6 | 6.0 | 5.8 | 0.9x | 1.0x | b11648 |
 | fits VRAM | any | 100% | anything | same | same | same | same | 1.0x (cache off) | 1.0x | any |
 
 \* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
