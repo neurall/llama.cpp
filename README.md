@@ -41,30 +41,12 @@ Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation sp
 
 ## What you get
 
-Single stream, temperature 0, model in RAM. "Stock" and "upstream" mean stock llama.cpp.  
+Single stream, temperature 0, model in RAM. Stock = stock llama.cpp: the release b11379 on the laptop, 836d57176 built like the fork on the Ryzen 5 3600, the downloaded release b11323 on the rented 4x3090 box (a source build of def4d406a gave 24.8 and 20.1 there).  
+Every run behind the numbers (commit, build, machine, settings) is a row in [`tools/bench/run-history.csv`](tools/bench/run-history.csv); the rented-box numbers are from one session and their raw logs were not kept.  
 
-Rows marked `earlier` or `b11707` keep their old numbers and are being re-measured on the current release; upstream stock is the release b11379 on the laptop and upstream 836d57176 built the same way as the fork on the Ryzen 5 3600.  
+### All measured rows
 
-The 4x RTX 3090 EPYC rows: upstream is the downloaded release b11323 (a source build of def4d406a gave 24.8 and 20.1).  
-the fork is b11707 with the placement change in this branch (any model that does not fit takes the cache);  
-the model is 85% in VRAM on 4 GPUs, so the first run only matches stock placement.  
-Those numbers are from one session on a rented 4 gpu box (raw logs not kept, not in run-history.csv).  
-
-Older rows: GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
-[`tools/bench/run-history.csv`](tools/bench/run-history.csv).  
-
-### All measured rows (kept)
-
-The rows behind the table, with the machine letters A to D, as measured earlier (a number is only replaced by a better measured one):  
-
-Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock llama.cpp.  
-
-Machines in the rows below (hardware in the table above): A = the 2x3090 box, B = the laptop, C = the CPU-only box, D = the rented 4x3090 box.  
-
-GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a 
-(no discarded run before it); the other rows are hot runs of earlier builds.  
-Rows marked **b11988** are re-measured on this release (commit 3db71c4ee): one discarded run, then the 4th start; upstream is the release b11379 on B and upstream 836d57176 built the same way as the fork on C;  
-the other rows keep their old numbers and are being re-measured, the build column says on which build each was taken.  
+Earlier measurements behind the table, kept until a better measured number replaces them. Machines: A = the 2x3090 box, B = the laptop, C = the CPU-only box, D = the rented 4x3090 box. Rows marked `earlier` or `b11707` are being re-measured; rows marked **b11988** were re-measured on commit 3db71c4ee (one discarded run, then the 4th start). GLM 3.5-bit, IQ3_S and IQ1_M are the first run of b11707 against fresh upstream def4d406a; GLM and MiMo ran on release-candidate builds (MiMo also on b11509) and Qwen3.6 on the release binary.  
 
 | model (size) | machine | test | upstream | this fork | | build |
 |---|---|---|---|---|---|---|
@@ -91,27 +73,22 @@ the other rows keep their old numbers and are being re-measured, the build colum
 | | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x | earlier |
 | Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) | any |
 
-D: upstream is the downloaded release b11323 (a source build of def4d406a gave 24.8 and 20.1).  
-the fork is b11707 with the placement change in this branch (any model that does not fit takes the cache);  
-the model is 85% in VRAM on 4 GPUs, so the first run only matches stock placement.  
-D numbers are from one session on a claud rented 4 gpu box (raw logs not kept, not in run-history.csv).  
+D: the fork is b11707 with the placement change in this branch (any model that does not fit takes the cache); the model is 85% in VRAM on 4 GPUs, so the first run only matches stock placement.  
 
-\* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
-[`tools/bench/run-history.csv`](tools/bench/run-history.csv).  
+### Methodology
 
-### Why the gain depends on how much of the model fits
+Repeating one prompt at temperature 0 routes to the same experts every time, which flatters any expert cache. The table therefore uses two tests that vary the task:
 
-**Methodology: a coding session, not one repeated prompt.** A model run on the same prompt over and over at temperature 0 routes to the same experts every time, which flatters any expert cache. So the stricter test (`python3 tools/run.py bench -t edit4`) feeds one long source file (about 2700 tokens, `tools/bench/src_3k.cpp`) with four different edit instructions, one per run:  
-"add a function that counts the lines", "delete the code that is never used", "add a short comment above every function", "rename the longest function and update its callers" (128 tokens generated, temperature 0).  
-The short test is the same idea at CLI size (`-t game4`): "write smallest html tetris game", then racing, shooter and snake, 100 tokens each, so the task, the language and the stack stay the same (as in a real session) and only the game changes.  
-Every build gets the same instruction at the same repetition, builds alternate in order, each build has one discarded warm-up run with its own separate instruction, and the table reports **stock's best of the four runs against ours best of the four**.  
-Introduced 2026-10-04 (commit `11d9fd2b7`; `game4` the same day). The tests are the `edit4` and `game4` branches and the `EDIT_INSTR` and `GAME_WORDS` lists in [`tools/run.py`](tools/run.py), the snippet is [`tools/bench/src_3k.cpp`](tools/bench/src_3k.cpp), every run is a row (column `test` = `edit4`) in [`tools/bench/run-history.csv`](tools/bench/run-history.csv), and the raw logs of the runs behind this release's checks (regression tests, the IQ3_S diagnosis, the model load-time test) are in [`tools/bench/logs/`](tools/bench/logs/), one folder per experiment named with its date and time.  
-**The learned state is never deleted, not between runs and not at the start** (`~/.cache/llama.cpp/moe-state.ini` and the profile files next to it): in normal use it keeps accumulating, which is where the cache is strongest, so every rerun starts from what the earlier runs learned. An old or wrong state that leaves a model stuck on low numbers is a bug in the fork, and is fixed in the code (the placement records are versioned, so records of an older release are ignored and measured again); only the regression tests give every arm a state file of its own, so that one arm cannot learn from another.  
-So the table compares each side at its best in normal use: stock's best run against ours with the state it has accumulated (the preheated cache and profiles of a model you have used a few times). A model's first starts are slower while the state learns: IQ3_S on the 3090s ran 40, 43 and 41 to 53 tokens/s on its first three starts and 53 to 57 from the fourth on, against 44 for stock ([run logs](tools/bench/logs/iq3s-diag/)).  
-The cells of the table above were taken with the simpler repeated-prompt test (the 4th run of the same prompt) and are being repeated with these two; a row says which test it used once it has been re-measured. The repeated-prompt test is still what catches a stuck placement decision fastest, so both stay.  
+- **Long** (`python3 tools/run.py bench -t edit4`): one source file of about 2700 tokens ([`src_3k.cpp`](tools/bench/src_3k.cpp)) and four different edit instructions, one per run ("add a function that counts the lines", "delete the code that is never used", "add a short comment above every function", "rename the longest function and update its callers"), 128 tokens, temperature 0.  
+- **Short** (`-t game4`): "write smallest html tetris game", then racing, shooter and snake, 100 tokens each; only the game changes.  
 
-**Reproduce and check these numbers.** Every run behind the table (date, commit, build, machine, model, command line, speed) is a row in [`tools/bench/run-history.csv`](tools/bench/run-history.csv), failed and cold runs included.  
-`tools/experiments/release-gate/readme-rerun.sh <fork build> <stock build>` repeats the cells (one discarded run, then the recorded runs, builds in alternating order), `tools/experiments/release-gate/readme-compare.py` prints them next to the numbers above, and `python3 tools/run.py bench --help` runs any single cell. The table is sorted by gain, not by how good a row looks, and the slow rows stay in.  
+Every build gets the same instruction at the same repetition and builds alternate in order. The table reports stock's best of four runs against ours best of four, without a warm-up run.  
+
+The learned state (`~/.cache/llama.cpp/moe-state.ini` and the profile files beside it) is never deleted, between runs or at the start: it accumulates as in normal use, so ours is measured with the state of a model you have used a few times. A model's first starts are slower while it learns: IQ3_S on the 3090s ran 40, 43 and 41 to 53 tokens/s on its first three starts and 53 to 57 from the fourth on, against 44 for stock ([run logs](tools/bench/logs/iq3s-diag/)). A state that leaves a model stuck on low numbers is a bug and is fixed in the code (placement records are versioned, older ones are ignored). Only the regression tests give each arm a state file of its own.  
+
+Introduced 2026-10-04 (commit `11d9fd2b7`; `game4` the same day); the instructions are `EDIT_INSTR` and `GAME_WORDS` in [`tools/run.py`](tools/run.py). Every run is a row in [`tools/bench/run-history.csv`](tools/bench/run-history.csv) (column `test` = `edit4` or `game4`), failed and cold runs included. Raw logs of this release's checks (regression tests, IQ3_S diagnosis, load-time test) are in [`tools/bench/logs/`](tools/bench/logs/), one folder per experiment named by date and time. The earlier repeated-prompt test stays because it catches a stuck placement decision fastest.  
+
+**Reproduce.** `tools/experiments/release-gate/readme-rerun.sh <fork build> <stock build>` repeats the cells, `readme-compare.py` prints them next to the numbers above, `readme-fill.py` fills the table from the run log, and `python3 tools/run.py bench --help` runs any single cell. The table is sorted by gain; slow rows stay in.  
 
 ### Why the gain depends on how much of the model fits
 
@@ -143,15 +120,11 @@ fork measures your machine and tunes most of those while you use it. The default
 - **Self-tuning on real token times.** The cache policy and the upload schedule are adjusted while you use it. The decode and prompt thread counts start from
   a formula (cores minus one per GPU) and the tuner moves them a few threads at a time; on a many-core host `-t 16` can be a better start (on a 64-core machine the
   difference was under 2%). A setting that does not help is dropped, a setting you fix yourself is never touched.  
-- **It remembers.** What it learned per model (hot experts, tuned settings, cache-or-stock) is kept in one file,
-  `~/.cache/llama.cpp/moe-state.ini`, so the next start, even a one-shot short, begins from it. Delete the file to start over.  
-- **Research: hot experts by topic (`--moe emb=1`).** At exit one line is appended to `embhot.csv` in the working directory: `model,embhex,hots`, the last layer embedding of the last token (1 byte per float as hex) and the hot experts of the run (counts per layer). Nothing is read or written while running, so there is no speed cost, and the file only ever grows by appending. Collect it over time and compare how the hot experts diverge between topics; share it if you do. This is the groundwork for topic-specific hot caches: a start could preload the hot experts of the closest earlier topic instead of one average map (not done yet; whether this embedding is a good topic key is still to be measured).  
-- **Hot start from ours.** [`moe-state.ini`](moe-state.ini) in the root of this repo is our learned state (hot experts of GLM 3.0/3.5-bit, MiMo, Qwen3.8 IQ1_M/IQ3_S/IQ4_XS, Qwen3.6, OLMoE). If you run one of these models and have no state file yet, copy it to `~/.cache/llama.cpp/moe-state.ini` for a fast hot start from the first run. Do not overwrite your own file: yours holds what your hardware learned.It holds only the hardware-independent hot experts (tagged with arch and expert shape); stock-or-cache placement and tuning are measured on your machine. A model file with no record of its own is seeded from a same-name or same-family record.  
-- **The first run of a model is slower, but just once.** The first start of a model runs like stock while the fork captures which experts are hot into the state file
-  (`moe-state.ini`). If the cache is faster than stock on your machine, you will not see the maximum gain on the first run but on all the later ones, once the file exists
-  and the fork has measured both placements. Do the first runs with a short, simple prompt and let the answer run to its natural length, then judge the speed after them.  
-- **It tells you what it does.** `llama-server` logs, and `llama-cli -lv 3` prints after each reply, whether the cache is on,
-  the hit rate, the tuned settings, threads and batch sizes.  
+- **It remembers.** What it learned per model (hot experts, tuned settings, cache-or-stock) is kept in `~/.cache/llama.cpp/moe-state.ini`, so the next start begins from it. `LLAMA_MOE_STATE=0` ignores it.  
+- **The first run of a model is slower, once.** The first start runs like stock while the fork records which experts are hot; the cache pays off from the later starts, once both placements have been measured. Do the first runs with a short, simple prompt and let the answer run to its natural length.  
+- **Hot start from ours.** [`moe-state.ini`](moe-state.ini) in the root of this repo holds the hardware-independent hot experts of the models we measured (GLM 3.0/3.5-bit, MiMo, Qwen3.8 IQ1_M/IQ3_S/IQ4_XS, Qwen3.6, OLMoE). If you run one of them and have no state file yet, copy it to `~/.cache/llama.cpp/moe-state.ini`; do not overwrite your own. A model file without a record of its own is seeded once from the record of the same file name or the same family and expert shape, then learns on its own. Placement and tuning are always measured on your machine.  
+- **Research: hot experts by topic (`--moe emb=1`).** At exit one line `model,embhex,hots` is appended to `embhot.csv` in the working directory: the last layer embedding of the last token (1 byte per float as hex) and the run's hot experts per layer. Nothing is read or written while running, so there is no speed cost. Collected over time it lets you compare how hot experts diverge between topics, the groundwork for topic-specific hot caches (not implemented yet; whether this embedding is a good topic key is still to be measured).  
+- **It reports what it does.** `llama-server` logs, and `llama-cli -lv 3` prints after each reply, whether the cache is on, the hit rate, the tuned settings, threads and batch sizes.  
 
 ## MTP speculative decoding
 
@@ -204,16 +177,12 @@ variables, the state file, multi-GPU and MTP use) are in [docs/fork-knobs.md](do
 
 | option | what it does |
 |---|---|
-| `--moe slots=N` | expert slots per layer in VRAM (`-1` from free VRAM, `0` no cache) |
 | `--moe swap-lead=N` | uses an expert needs over the one it evicts before it is swapped in; `0` swaps eagerly, higher swaps less |
 | `--moe upload-wait=3` | uploads wait while the CPU reads experts, so both do not fight for RAM bandwidth (`0` off) |
 | `--moe upload-now=0` | stop uploading this token's missed experts on the fly |
 | `--moe upload-share=F` | share of the token time uploads may take (tuned live, default 0.25) |
 | `--moe pred-top=M,train-every=N` | prefetch the experts the next layers will probably need (top M); the predictor learns every N tokens |
 | `--moe recent=N` | tokens of recent use the cache scores by (default 64) |
-| `-at off` | no self-tuning, fixed defaults |
-| `-lm pin\|mmap` | pinned or memory-mapped weights |
-| `LLAMA_MOE_STATE=0` | ignore and never write the state file |
 
 Experimental knobs (`ev-cld`, `pin-hot`, `idle-up`, `l3-pf`, ...) are off by default, never beat the default in our tests and may be removed;  
 they are listed in the document, not here.
