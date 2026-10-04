@@ -199,7 +199,7 @@ These are the other fork switches. Most exist for experiments; the default is wh
 | `LLAMA_MOE_CACHE_PREFILL_D2D` | on | `0` stops prompt processing from copying experts between GPUs |
 | `LLAMA_PREFILL_SPLIT` | tuned | how prompt batches spread experts over GPUs: `1` by link bandwidth, `0` the fastest GPU only, between = a mix; unset lets the tuner measure it |
 | `LLAMA_MOE_CACHE_SYNC` | `1` | `0` stops the cache from waiting for the GPU between graph runs (unsafe, for experiments) |
-| `LLAMA_MOE_CACHE_UPLOAD_THREADS`, `..._LINK_WORKERS` | auto, on | upload worker threads; one worker set per link so a slow x4 copy does not block the fast link (`0` = one shared set) |
+| `LLAMA_MOE_CACHE_UPLOAD_THREADS` | auto | upload worker threads; there is always one worker set per link, so a slow x4 copy does not block the fast link |
 | `LLAMA_MOE_CACHE_PREAD` | `0` | `1` uploads with `pread` through a pinned buffer instead of copying from the mapped memory (copying from the mapping measured faster, so off) |
 | `LLAMA_MOE_CACHE_DROP`, `..._DROP_STAY` | `0`, `1024` | for models bigger than RAM: drop the RAM pages of VRAM-cached experts after they stayed cached this many steps (**unproven, on the way out**: -9% on MiMo with one GPU, off) |
 | `LLAMA_MOE_CACHE_JIT_POOL`, `..._JIT_POOL_ALL` | `0`, `0` | extra slots for just-in-time uploads of slower-link layers; **unproven, on the way out**: costs 10-12% on GLM with two 3090s even when empty, off |
