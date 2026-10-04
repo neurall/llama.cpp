@@ -1,21 +1,44 @@
 #!/usr/bin/env python3
-"""Update the README table from the new tests (campaign newtests in run-history.csv): short4 = game4, long4 = edit4, PC1 rows (2x3090) only.
-usage: readme-update.py README HISTORY.csv OURS_BUILD
-Each cell shows the best run of each side over all its runs in the log (t/s and pp separately): stock, or the same build with --fork off (campaign newtests-forkoff) when stock cannot load the model, and ours (the published build).
-A cell takes the new results only when ours is at least as fast as the number already in it; otherwise it keeps its number and build (every run is in the run log).
-A row that gets results also takes the build."""
+"""Update the README speed table from the new tests (campaign newtests in run-history.csv).
+usage: readme-update.py README HISTORY.csv OURS_BUILD        e.g. readme-update.py README.md tools/bench/run-history.csv release-b12209
+
+Table (one row per test): | model | machine | test | stock t/s | ours t/s | stock pp | ours pp | gain t/s | gain pp | build |
+Rows with test short4 (game4) or long4 (edit4) are filled; machine A = pc1 (2x RTX 3090), B = pc3 (laptop), C = pc2 (CPU only).
+A row without a model name continues the model above.
+Each side's best run over all its runs in the log (t/s and pp separately); stock = the stock build, or the same build with --fork off
+(campaign newtests-forkoff) when stock cannot load the model; ours = OURS_BUILD only.
+A row is replaced unless ours is clearly slower than the number already in it (below 0.9x): slightly lower numbers of the new build are fine.
+A model with results for a test and machine it has no row for gets one, appended to its rows, when its gain is not clearly below the model's best row (0.9x).
+Groups of rows are sorted by the t/s gain of their first row, best first ("fits VRAM" last)."""
 import csv, re, sys
-NB = " "
 readme, hist, OURS = sys.argv[1], sys.argv[2], sys.argv[3]
-latest = {}
+LABELS = {   # README model label -> file name stem in the run log
+    "**MiMo** IQ3_XXS 132G": "MiMo-V2.6-Flash-RL-IQ3_XXS",
+    "**GLM** 3.5-bit 137G": "GLM-5.3-Flash-GSQ-RCO-3.5bit",
+    "**GLM** 3.0-bit 117G": "GLM-5.3-Flash-GSQ-RCO-3.0bit",
+    "**Qwen Next** IQ4_XS 88G": "Qwen3.8-Flash-Next-UD-IQ4_XS",
+    "**Qwen Next** IQ3_S 83G": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S",
+    "**Qwen Next** IQ1_M 55G": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M",
+    "**Qwen3.6** Q2_0 11G": "Qwen3.6-35B-A3B-GSQ-hybrid",
+    "27B IQ4_NL dense": "Qwen3.8-27B-IQ4_NL",
+    "27B IQ3_S dense": "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp",
+    # the 27B with MTP is left out: its stock and ours runs must both use --spec-type draft-mtp
+}
+MACHINES = {"pc1": "A", "pc3": "B", "pc2": "C"}
+TESTS = {"short4": "game4", "long4": "edit4"}
+SHORT = OURS.removeprefix("release-")
+
+best = {}
 for r in csv.DictReader(open(hist)):
     try:
         tps, pp = float(r["tps"]), float(r["pp"] or 0)
     except ValueError:
         continue
-    if not tps or r["ok"] == "0" or r["test"] not in ("game4", "edit4") or r["hw"] != "pc1":
+    mach = MACHINES.get(r["hw"])
+    if not tps or r["ok"] == "0" or not mach or r["test"] not in TESTS.values():
         continue
     stem = re.sub(r"-0000\d-of-0000\d", "", r["model"].split(" ")[0]).removesuffix(".gguf")
+    stem = "Qwen3.6-35B-A3B-GSQ-hybrid" if stem == "qwen36" else stem
     b = r["build"]
     if r["campaign"] == "newtests-forkoff" and b.startswith(OURS):
         side = "standin"
@@ -27,51 +50,73 @@ for r in csv.DictReader(open(hist)):
         side = "ours"
     else:
         continue
-    try:
-        rep = int(float(r["rep"]))
-    except ValueError:
-        continue   # no repetition number: the prompt of the run is unknown, it cannot be paired
-    latest[(stem, r["test"], side, rep)] = (r["ts"], tps, pp)   # the CSV is chronological: the newest run of this build at this prompt wins
-def result(stem, test):
-    """the best run of each side (t/s and pp separately), over every run of the cell in the log: stock (or the --fork off stand-in) and ours"""
-    def best(sides):
-        rs = [v for k, v in latest.items() if k[0] == stem and k[1] == test and k[2] in sides]
-        return [max(v[1] for v in rs), max(v[2] for v in rs), len(rs)] if rs else None
-    s, o = best(("stock",)) or best(("standin",)), best(("ours",))
-    if s and o and s[0] and o[0]:
-        return s, o
-def g(o, s):
-    return "-" if not (o and s) else f"{o/s:.1f}x" + ("↓" if o/s < 0.95 else "")
+    v = best.setdefault((stem, mach, r["test"], side), [0.0, 0.0])
+    v[0] = max(v[0], tps); v[1] = max(v[1], pp)
+
+def pair(stem, mach, test):
+    s = best.get((stem, mach, test, "stock")) or best.get((stem, mach, test, "standin"))
+    o = best.get((stem, mach, test, "ours"))
+    return (s, o) if s and o and s[0] and o[0] else None
+
+def gain(o, s):
+    return "-" if not (o and s) else f"{o/s:.1f}x"
+
 def num(x):
-    m = re.search(r"([\d.]+)x", x.replace("*", ""))
+    m = re.search(r"([\d.]+)", x.replace("*", ""))
     return float(m.group(1)) if m else None
-def two(a, b):
-    return " " + (a + "<br>" + b).replace(" ", NB) + " "
-def cells(s, o):
-    """four cells: t/s (stock over ours), pp (stock over ours), and the gain cell (t/s over pp)"""
-    ours_t = f"**{o[0]:.1f}**" if o[0] >= 1.1*s[0] else f"{o[0]:.1f}"
-    return (f" {s[0]:.1f}<br>{ours_t} ", f" {s[1]:.0f}<br>{o[1]:.0f} ", f" {g(o[0], s[0])}<br>{g(o[1], s[1])} ")
-out, changed = [], 0
-# columns: '' model hardware vram | short4 t/s, pp | long4 t/s, pp | short4 gain, long4 gain | build ''
-for l in open(readme).read().split("\n"):
-    if l.startswith("| ") and l.count("|") == 11 and not l.startswith(("| ---", "| model")):
-        c = l.split("|")
-        stem = c[1].strip().replace(NB, " ").replace("<br>", "").replace(" ", "")
-        q = c[3].strip().replace(NB, " ")
-        # the 27B MTP row waits for its own runs with --spec-type draft-mtp (the plain cells are not the MTP test)
-        if c[2].strip().startswith("2x3090") and "MTP" not in stem and not any(k in q for k in ("run", "of 4")):
-            hit = False
-            for col, gcol, test in ((4, 8, "game4"), (6, 9, "edit4")):
-                res = result(stem, test)
-                if res:
-                    m = re.findall(r"([\d.]+)", c[col].replace(NB, " ").split("<br>")[-1]) if "<br>" in c[col] else []
-                    cur_ours = float(m[0]) if m else 0.0   # ours t/s already in the cell
-                    if res[1][0] < cur_ours:
-                        continue   # not better: the cell keeps its number and build
-                    c[col], c[col + 1], c[gcol] = cells(*res); changed += 1; hit = True
-            if hit:
-                c[10] = " " + OURS.removeprefix("release-") + " "
-        l = "|".join(c)
-    out.append(l)
-open(readme, "w").write("\n".join(out))
-print("cells updated:", changed)
+
+def row(model, mach, test, s, o):
+    ours_t = f"**{o[0]:.1f}**" if o[0] >= 1.1 * s[0] else f"{o[0]:.1f}"
+    ours_p = f"**{o[1]:.0f}**" if s[1] and o[1] >= 1.1 * s[1] else f"{o[1]:.0f}"
+    gt = gain(o[0], s[0]); gt = f"**{gt}**" if o[0] >= 1.1 * s[0] else gt
+    return f"| {model} | {mach} | {test} | {s[0]:.1f} | {ours_t} | {s[1]:.0f} | {ours_p} | {gt} | {gain(o[1], s[1])} | {SHORT} |"
+
+lines = open(readme).read().split("\n")
+hi = next(i for i, l in enumerate(lines) if l.startswith("| model | machine | test |"))
+j = hi + 2
+while j < len(lines) and lines[j].startswith("|"):
+    j += 1
+groups, cur = [], None
+for l in lines[hi + 2:j]:
+    model = l.split("|")[1].strip()
+    if model or cur is None:
+        cur = [model, []]; groups.append(cur)
+    cur[1].append(l)
+
+changed = 0
+for model, rows in groups:
+    stem = LABELS.get(model)
+    if not stem:
+        continue
+    have, mach_above = {}, ""
+    for k, l in enumerate(rows):
+        c = [x.strip() for x in l.split("|")]
+        mach_above = c[2] or mach_above   # an empty machine cell continues the machine above
+        if c[3] in TESTS:
+            have[(mach_above, c[3])] = k
+    best_gain = max((num(l.split("|")[8]) or 0) for l in rows)
+    for mach in ("A", "B", "C"):
+        for test, t in TESTS.items():
+            p = pair(stem, mach, t)
+            if not p:
+                continue
+            s, o = p
+            if (mach, test) in have:
+                k = have[(mach, test)]
+                cur_ours = num(rows[k].split("|")[5]) or 0
+                if o[0] < 0.9 * cur_ours:
+                    continue   # clearly slower than the number in the row: the row stays
+                new = row(model if k == 0 else "", mach if (k == 0 or rows[k].split("|")[2].strip()) else "", test, s, o)
+                if new != rows[k]:
+                    rows[k] = new; changed += 1
+            elif o[0] / s[0] >= 0.9 * best_gain:
+                rows.append(row("", mach, test, s, o)); changed += 1
+
+def key(g):
+    if g[0].startswith("fits VRAM"):
+        return -1
+    return num(g[1][0].split("|")[8]) or 0
+groups.sort(key=key, reverse=True)
+lines[hi + 2:j] = [l for g in groups for l in g[1]]
+open(readme, "w").write("\n".join(lines))
+print("rows updated:", changed)
