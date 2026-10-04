@@ -237,7 +237,23 @@ READY_STALL = int(os.environ.get("PERF_READY_STALL", "600"))    # seconds withou
 READY_MAX = int(os.environ.get("PERF_READY_MAX", "1800"))        # seconds from start to "listening" at most
 
 
+PIN_ATTEMPTS = int(os.environ.get("PERF_PIN_ATTEMPTS", "3"))
+
+
 def server_start(build, env, args):
+    """a server that bails with exit code 75 (the engine's [PIN_STALL]: pinning the weights stalled) is started again, three attempts in all; then this run.py exits"""
+    for attempt in range(1, PIN_ATTEMPTS + 1):
+        try:
+            return _server_start_once(build, env, args)
+        except RuntimeError as e:
+            if "[PIN_STALL]" not in str(e):
+                raise
+            print(f"pin stall, attempt {attempt}/{PIN_ATTEMPTS}: {str(e)[-200:]}", flush=True)
+            time.sleep(15)   # let the kernel settle before the next try
+    sys.exit(f"pinning stalled {PIN_ATTEMPTS} times in a row (exit code 75, [PIN_STALL]): giving up, check kcompactd and /proc/pressure/memory")
+
+
+def _server_start_once(build, env, args):
     if not build.startswith("stock"):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it)
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA},tuned=0"]
     logf = f"/tmp/perf-{build}.log"
