@@ -528,7 +528,7 @@ llama_context::~llama_context() {
     } else if (moe_observe_started) {
         llama_moe_observe_save();
     }
-    moe_snap_save(moe_state_section(model));   // research (--moe snap=1): the model's state section after the run's last write
+    if (moe_decoded) { moe_snap_save(moe_state_section(model)); }   // research (--moe snap=1): the model's state section after the run's last write
     // wait for any pending asynchronous copies into the output buffers before they are freed
     synchronize();
 
@@ -2087,6 +2087,7 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
 }
 
 int llama_context::decode(const llama_batch_ext & batch_inp) {
+    moe_decoded = true;
     if (!cparams.moe_cache && !moe_observe_started && !moe_cache_defer) {
         moe_observe_started = true;
         llama_moe_observe_start(model);
