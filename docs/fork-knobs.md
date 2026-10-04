@@ -21,9 +21,9 @@ state file. Everything below is for overriding that, and a setting you give is n
 |---|---|
 | exactly upstream behaviour, nothing of the fork | `--fork off` |
 | the cache, but fixed settings and no self-tuning | `-at off` (and `--moe slots=N` for a fixed slot count) |
-| a reproducible benchmark | `LLAMA_MOE_STATE=0` so nothing learned earlier is used, plus `-at off` or explicit `--moe` settings; change one thing per run |
-| the cache even where the fork would choose stock (or the other way) | `LLAMA_MOE_AUTO_MODE=cache` (or `stock`) |
-| the fork to forget what it learned | delete `~/.cache/llama.cpp/moe-state.ini`, or run once with `LLAMA_MOE_AUTO_MODE=retest` |
+| a reproducible benchmark | `--moe state=0` so nothing learned earlier is used, plus `-at off` or explicit `--moe` settings; change one thing per run |
+| the cache even where the fork would choose stock (or the other way) | `--moe mode=cache` (or `stock`) |
+| the fork to forget what it learned | delete `~/.cache/llama.cpp/moe-state.ini`, or run once with `--moe mode=retest` |
 | to check whether the cache is what slows my machine down | run the same command with `--fork off` and compare |
 | big pinned models to start faster | the section on loading pinned weights, below |
 
@@ -45,9 +45,9 @@ state file. Everything below is for overriding that, and a setting you give is n
 |---|---|---|
 | plain stock behaviour | `--fork off` | no expert cache, nothing tuned, measured or saved; the same placement and kernels as upstream llama.cpp |
 | the cache, but no self-tuning | `-at off` (or `--moe autotune=0`) | the cache works with fixed defaults, placement uses a static rule, nothing is measured or saved |
-| stock placement chosen by the fork | `LLAMA_MOE_AUTO_MODE=stock` | skips the cache-or-stock measurement and uses stock |
-| the cache forced on | `LLAMA_MOE_AUTO_MODE=cache` | skips the measurement and uses the cache |
-| a fresh start | `LLAMA_MOE_STATE=0`, or delete `~/.cache/llama.cpp/moe-state.ini` | ignore the learned state, write nothing |
+| stock placement chosen by the fork | `--moe mode=stock` | skips the cache-or-stock measurement and uses stock |
+| the cache forced on | `--moe mode=cache` | skips the measurement and uses the cache |
+| a fresh start | `--moe state=0`, or delete `~/.cache/llama.cpp/moe-state.ini` | ignore the learned state, write nothing |
 | the hand-tuned stock baseline | `--fork off --n-cpu-moe N` (or `-ot`) | keep the first layers' experts in VRAM, the rest on the CPU, as in upstream; the fair comparison for the cache |
 
 With `--fork off` the fork behaves as upstream apart from unrelated changes (the loader, MTP, merged upstream commits).
@@ -65,7 +65,7 @@ With `--fork off` the fork behaves as upstream apart from unrelated changes (the
 | `pred-top=M` | `0` (off) | guess which experts the next layers will need and upload the likely ones early (the top M of the guessed ranking); experimental, see the evidence below |
 | `train-every=N` | `0` (the predictor is not trained while running) | train the predictor every N decoded tokens; implies `pred-top=8` if `pred-top` is not given |
 | `autotune=0` | autotune on | no self-tuning (same as `-at off`) |
-| `log=LETTERS` | off (research) | every research and diagnostic log behind one switch, nothing is written unless you ask (`--moe log=esr`): **`e`** appends one line `model,embhex,hots` per run to `embhot.csv` in the working directory (the last layer embedding of the last token, 1 byte per float as hex, and this run's hot experts per layer; `LLAMA_MOE_EMBHOT=FILE` moves it); **`s`** (or `i`) saves the model's own section of the state file at exit as `state-snapshots/<date>_<HHMMSS>-<model>.ini` (`LLAMA_MOE_SNAP_DIR=DIR` moves it); **`g`** logs the GPU identity of the placement record; **`p`** prints cache stats every 64 steps (`p500`: every 500); **`t`** appends the routed expert ids of every MoE layer to `moe-route.txt` (`GGML_MOE_LOG=FILE` moves it; big); **`c`** writes the decode-step trace as `moe-trace*` (`LLAMA_MOE_CACHE_TRACE=PREFIX` moves it); **`l`** (every generated token) or `l64` (every 64th) appends each layer's output embedding and selected expert ids to `layertrace.csv` (`LLAMA_MOE_LAYERTRACE=FILE` moves it); **`r`** is read by `tools/run.py` (run history to csv and sqlite); details in [research](../tools/bench/research/README.md). The older switches `LLAMA_MOE_LOG_GPUID`, `LLAMA_MOE_CACHE_STATS` and `GGML_MOE_LOG` no longer enable anything by themselves. Nothing is read or written while running, so it costs no speed; preloading and seeding are unchanged |
+| `log=LETTERS` | off (research) | every research and diagnostic log behind one switch, nothing is written unless you ask (`--moe log=esr`): **`e`** appends one line `model,embhex,hots` per run to `embhot.csv` in the working directory (the last layer embedding of the last token, 1 byte per float as hex, and this run's hot experts per layer; `logdir=DIR` moves it); **`s`** (or `i`) saves the model's own section of the state file at exit as `state-snapshots/<date>_<HHMMSS>-<model>.ini` (`logdir=DIR` moves it); **`g`** logs the GPU identity of the placement record; **`p`** prints cache stats every 64 steps (`p500`: every 500); **`c`** writes the decode-step trace as `moe-trace*`; **`l`** (every generated token) or `l64` (every 64th) appends each layer's output embedding and selected expert ids to `layertrace.csv` (`logdir=DIR` moves it); **`r`** is read by `tools/run.py` (run history to csv and sqlite); details in [research](../tools/bench/research/README.md). The routed expert ids of every MoE layer are a backend diagnostic, `GGML_MOE_LOG=FILE` (see below). Nothing is read or written while running, so it costs no speed; preloading and seeding are unchanged |
 
 **Names.** The settings were renamed to say what they do. The old names (`cache`, `inserts`, `window`, `prefetch-slots`, `predict`, `train`, the knobs `MARGIN`, `GATE`, `SWAP_FRAC`, `BIG`, ... and their `LLAMA_MOE_CACHE_<OLD>` variables) no longer exist: an old `--moe` name is ignored, and an old state file entry is skipped, so the tuner relearns it. Case and `-` / `_` do not matter in the new names. `--moe-expert-cache N` is unchanged and works on every build.  
 
@@ -116,7 +116,7 @@ has to make room). The three knobs answer three questions about uploads:
 - **`upload-share` (how much).** The most time uploads may take per step, as a share of the token time (0.25 is a quarter). More uploads help the hit rate but risk stalling the step.  
   Measured: no benefit as a user setting (5 against the default gave the same hit rate, 64.6% against 64.7%; 0.5 with margin 0 was slower), so it is labelled "unproven, on the way out".
 
-The tuner sets all three while it runs. If you change one, change one at a time and use `LLAMA_MOE_STATE=0`, or the learned settings will mix into the comparison.
+The tuner sets all three while it runs. If you change one, change one at a time and use `--moe state=0`, or the learned settings will mix into the comparison.
 
 **Swap decisions**
 
@@ -178,57 +178,62 @@ experiments and probably removed in a later release; do not rely on them):
 | `l3-pf`, `l3-auto` | `0`, `0` | Prefetch `l3-pf` experts per layer into the CPU's L3 cache (needs `GGML_MOE_CCX_SPLIT` and pinned threads); `l3-auto=1` tests it live | `l3-pf=2,l3-auto=1` | The static per-L3 row split it needs alone lost 19% on GLM (Ryzen 3700X); pinning itself was neutral (21.73 vs 21.53) |
 | `trace-n`, `trace-skip` | `0`, `0` | Debug: record routing for this many steps, starting after this many | `trace-n=2000,trace-skip=500` | Debug only |
 
-## Environment variables
+## More `--moe` settings
 
-These are the other fork switches. Most exist for experiments; the default is what we ship.
+Every setting below is a `--moe` key (`--moe policy=window,fixed=1`); there are no environment variables for them. Most exist for experiments; the default is what we ship.
 
-| variable | default | what it does |
+| key | default | what it does |
 |---|---|---|
-| `LLAMA_MOE_STATE` | `~/.cache/llama.cpp/moe-state.ini` | path of the state file; `0` ignores it and never writes it (`LLAMA_MOE_CACHE_PROFILE=0` is the older switch) |
-| `LLAMA_MOE_AUTO_MODE` | measured | `stock` or `cache` forces the placement; `retest` forgets the saved decision and measures again |
-| `LLAMA_MOE_AUTO_PREFILL_SLOWDOWN` | `2.0` | the placement measurement drops the cache if it makes prompt processing more than this many times slower |
-| `LLAMA_MOE_CACHE_POLICY` | `add` | eviction score: `add` (recent use plus lifetime share), `window` (recent use only), `hybrid`, `halve` |
-| `LLAMA_MOE_CACHE_GLOBAL_WEIGHT` | `16` | weight of the lifetime share in policy `add` |
-| `LLAMA_MOE_CACHE_HALVE_EVERY` | `64` | counts halve every N steps, so recent use dominates old use |
-| `LLAMA_MOE_CACHE_ADOPT` | `1` | share of each layer's cache slots that may keep experts the prompt pass already put on the GPU (`1` all, `0.0625` a sixteenth; measured on GLM 12k prompt: 1/16 +0.3 hit points, 1/4 +3.8, all +11.4) |
-| `LLAMA_MOE_CACHE_PROBE` | on | `0` skips the start-up probe that measures CPU read rate and each upload link |
-| `LLAMA_MOE_CACHE_CPU_RAM_GBS`, `..._RAM_CEILING_GBS` | probe | override the probed RAM rates in GB/s (same as the knobs) |
-| `LLAMA_MOE_CACHE_DETERMINISTIC` | `0` | `1` fixes every knob and disables tuning, for repeatable measurements |
-| `LLAMA_MOE_CACHE_TUNED` | state file | start from this tuner result instead of the saved one |
-| `LLAMA_MOE_CACHE_MAX_BATCH` | `31` | largest batch that still uses the cache path; bigger batches take the prompt path |
-| `LLAMA_MOE_CACHE_PREFILL_D2D` | on | `0` stops prompt processing from copying experts between GPUs |
-| `LLAMA_PREFILL_SPLIT` | tuned | how prompt batches spread experts over GPUs: `1` by link bandwidth, `0` the fastest GPU only, between = a mix; unset lets the tuner measure it |
-| `LLAMA_MOE_CACHE_SYNC` | `1` | `0` stops the cache from waiting for the GPU between graph runs (unsafe, for experiments) |
-| `LLAMA_MOE_CACHE_UPLOAD_THREADS` | auto | upload worker threads; there is always one worker set per link, so a slow x4 copy does not block the fast link |
-| `LLAMA_MOE_CACHE_PREAD` | `0` | `1` uploads with `pread` through a pinned buffer instead of copying from the mapped memory (copying from the mapping measured faster, so off) |
-| `LLAMA_MOE_CACHE_DROP`, `..._DROP_STAY` | `0`, `1024` | for models bigger than RAM: drop the RAM pages of VRAM-cached experts after they stayed cached this many steps (**unproven, on the way out**: -9% on MiMo with one GPU, off) |
-| `LLAMA_MOE_CACHE_JIT_POOL`, `..._JIT_POOL_ALL` | `0`, `0` | extra slots for just-in-time uploads of slower-link layers; **unproven, on the way out**: costs 10-12% on GLM with two 3090s even when empty, off |
-| `LLAMA_MOE_CACHE_STREAM_SLOTS` | `4` | stream slots per layer for predicted uploads (only with the predictor) |
-| `LLAMA_MOE_LOG` | off | the letters of `--moe log=` (`e s i g p t c`, see the `log` row above); the cache counters every 64 steps are `p` |
-| `LLAMA_MOE_CACHE_TRACE`, `..._CTL` | `moe-trace` | `LLAMA_MOE_CACHE_TRACE` is only the file prefix of the `c` trace; `..._CTL` is a control file whose settings are re-read while running |
-| `LLAMA_THREAD_AUTOTUNE` | on | `0` turns the thread-count tuner off |
-| `LLAMA_AUTO_PLACE` | `0` | `1` places threads on physical cores per L3 domain |
-| `GGML_MOE_CCX_SPLIT`, `LLAMA_MOE_L3PF_CPUS` | off | split the expert rows per L3 domain; cores for the L3 prefetch (experimental) |
-| `LLAMA_MOE_DEFER`, `..._DEFER_MASS` | `0`, `1.0` | experimental expert deferral (compute N selected experts during the next layer's attention). Faster (+8 to 12% on GLM) but changes the output (KL cost), so opt-in; **not proven acceptable, on the way out** |
-| `GGML_CUDA_NO_PINNED` | off | never pin host memory |
-| `GGML_CUDA_REGISTER_HOST` | off | register mapped host buffers with CUDA |
-| `GGML_CUDA_P2P` | off | enable GPU-to-GPU peer access |
+| `state=PATH` | `~/.cache/llama.cpp/moe-state.ini` | path of the state file; `0` ignores it and never writes it |
+| `mode=stock\|cache\|retest` | measured | `stock` or `cache` forces the placement; `retest` forgets the saved decision and measures again |
+| `fixed=1` | `0` | fixes every knob and disables tuning, for repeatable measurements |
+| `tuned=...` | state file | start from this tuner result instead of the saved one (`0`: none, every run starts cold) |
+| `ctl=FILE` | off | a control file whose settings are re-read while running |
+| `policy=add\|window\|hybrid\|halve` | `add` | eviction score: `add` (recent use plus lifetime share), `window` (recent use only) |
+| `global-weight=N` | `16` | weight of the lifetime share in policy `add` |
+| `halve-every=N` | `64` | counts halve every N steps, so recent use dominates old use |
+| `adopt=F` | `1` | share of each layer's cache slots that may keep experts the prompt pass already put on the GPU (`1` all, `0.0625` a sixteenth; measured on GLM 12k prompt: 1/16 +0.3 hit points, 1/4 +3.8, all +11.4) |
+| `probe=0` | on | skips the start-up probe that measures CPU read rate and each upload link |
+| `cpu-ram-gbs=N`, `ram-ceiling-gbs=N` | probe | override the probed RAM rates in GB/s (same as the knobs) |
+| `max-batch=N` | `31` | largest batch that still uses the cache path; bigger batches take the prompt path |
+| `prefill-d2d=0` | on | stops prompt processing from copying experts between GPUs |
+| `prefill-split=F` | tuned | how prompt batches spread experts over GPUs: `1` by link bandwidth, `0` the fastest GPU only, between = a mix; unset lets the tuner measure it |
+| `sync=0` | `1` | stops the cache from waiting for the GPU between graph runs (unsafe, for experiments) |
+| `upload-threads=N` | auto | upload worker threads; there is always one worker set per link, so a slow x4 copy does not block the fast link |
+| `pread=1` | `0` | uploads with `pread` through a pinned buffer instead of copying from the mapped memory (copying from the mapping measured faster, so off) |
+| `drop=1`, `drop-stay=N` | `0`, `1024` | for models bigger than RAM: drop the RAM pages of VRAM-cached experts after they stayed cached this many steps (**unproven, on the way out**: -9% on MiMo with one GPU, off) |
+| `jit-pool=N`, `jit-pool-all=1` | `0`, `0` | extra slots for just-in-time uploads of slower-link layers; **unproven, on the way out**: costs 10-12% on GLM with two 3090s even when empty, off |
+| `neg-ids=...` | | diagnostic for negative expert ids |
+| `thread-tune=0` | on | turns the thread-count tuner off |
+| `batch-tune=1` | off | the prompt-batch thread tuner (needs 15 full batches to decide, so it never finished on prompts under about 16k tokens) |
+| `auto-place=1` | `0` | places threads on physical cores per L3 domain |
+| `load-threads=N` | auto | threads that read the model |
+| `l3pf-cpus=LIST` | off | cores for the L3 prefetch (experimental) |
+| `defer=N`, `defer-mass=F` | `0`, `1.0` | experimental expert deferral (compute N selected experts during the next layer's attention). Faster (+8 to 12% on GLM) but changes the output (KL cost), so opt-in; **not proven acceptable, on the way out** |
+| `observe=0` | on | no hot-expert counting on stock placement starts |
+| `spec-depth=N` | | pins the speculative draft depth of the server |
+| `log=LETTERS`, `logdir=DIR` | off, `.` | the research logs and where they go, see the `log` row above |
 
-### Predictor variables
+### Predictor settings
 
 With `--moe pred-top=M` (or `train-every=N`) a small predictor guesses which experts the next layers will need.
 
-| variable | default | what it does |
+| key | default | what it does |
 |---|---|---|
-| `LLAMA_MOE_CACHE_PREDICT_AHEAD` | `2` (0..8) | how many layers ahead it predicts |
-| `LLAMA_MOE_CACHE_PREDICT_MAX` | `2` | most predicted uploads queued per layer on the non-stream path |
-| `LLAMA_MOE_CACHE_PREDICT_MARGIN` | `0.1` | a candidate is uploaded only if its score leads the M-th prediction by this much |
-| `LLAMA_MOE_CACHE_PREDICT_MU` | `0.5` | step size of the online predictor |
-| `LLAMA_MOE_CACHE_PREDICT_STRIDE` | `1` | share one predictor over this many consecutive layers |
-| `LLAMA_MOE_CACHE_PREDICT_Q8` | on | `0` keeps predictor weights in fp16 instead of 8 bit |
-| `LLAMA_MOE_CACHE_PREDICT_MISS` | `0.05` | predictors whose miss share stays above this are switched off |
-| `LLAMA_MOE_CACHE_PREDICT_FILE` | auto | where the learned predictor is saved between runs; `0` = not saved |
-| `LLAMA_MOE_CACHE_PREDICT_RA`, `..._NOHANDOFF` | | diagnostics |
+| `predict-ahead=N` | `2` (0..8) | how many layers ahead it predicts |
+| `predict-max=N` | `2` | most predicted uploads queued per layer on the non-stream path |
+| `predict-margin=F` | `0.1` | a candidate is uploaded only if its score leads the M-th prediction by this much |
+| `predict-mu=F` | `0.5` | step size of the online predictor |
+| `predict-stride=N` | `1` | share one predictor over this many consecutive layers |
+| `predict-q8=0` | on | keeps predictor weights in fp16 instead of 8 bit |
+| `predict-miss=F` | `0.05` | predictors whose miss share stays above this are switched off |
+| `predict-file=PATH` | auto | where the learned predictor is saved between runs; `0` = not saved |
+| `predict-ra=...` | | diagnostic |
+
+### Backend diagnostics (environment variables, as in upstream's backends)
+
+The GPU and CPU backends have no access to `--moe`; these stay environment variables, as `GGML_*` ones are in upstream:
+`GGML_CUDA_HUGEFS` (the pool, see below), `GGML_CUDA_THP_SHARE` and `GGML_CUDA_REG_CHUNK_MB` (pinning), `GGML_CUDA_NO_GATE_FUSE` (no fused gate kernel), `GGML_SCHED_D2H_ASYNC=0` (synchronous device-to-host copies), `GGML_SCHED_PROF` (scheduler timeline), `GGML_MOE_LOG=FILE` (routed expert ids of every MoE layer, big), `GGML_MOE_CCX_SPLIT` (expert rows per L3 domain).
 
 ## Faster loading of pinned weights: huge pages, the pool and the cache
 
@@ -248,7 +253,7 @@ to the next without an error, so nothing here is required.
 |---|---|---|
 | plain 4 KiB pinning (16 read threads) | 91.3 s median (87.8 to 92.7) | ABBA, n=4 each |
 | hybrid (level 3) | 72.8 s (69.4 to 75.9), the pin step 60.5 s down to 44.1 s | same runs |
-| warm cache file (level 1) against the pool path (level 2), one-chunk perplexity run, `LLAMA_MOE_STATE=0` | 34.5 s (34.3 to 35.7) against 56.6 s (55.6 to 60.8); the whole run 41.1 s against 62.9 s | ABBA, n=4 each |
+| warm cache file (level 1) against the pool path (level 2), one-chunk perplexity run, `--moe state=0` | 34.5 s (34.3 to 35.7) against 56.6 s (55.6 to 60.8); the whole run 41.1 s against 62.9 s | ABBA, n=4 each |
 
 The perplexity was identical in every run of the cache comparison (3.7227), and a cold fill, two warm loads and a no-cache load on a  
 longer text all gave the same value (6.6026): the cache returns the same weights. One model, one machine, one kernel and driver: how much you gain elsewhere  
@@ -308,7 +313,7 @@ line. Allocate the pool at run time, as the script does, from ordinary memory.
 
 ## The state file
 
-`~/.cache/llama.cpp/moe-state.ini` (`LLAMA_MOE_STATE=PATH` moves it, `LLAMA_MOE_STATE=0` ignores it and never writes) holds one  
+`~/.cache/llama.cpp/moe-state.ini` (`--moe state=PATH` moves it, `--moe state=0` ignores it and never writes) holds one  
 `[model name + size]` section per model:
 
 | line | content |
