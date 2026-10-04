@@ -24,6 +24,25 @@ Files are appended to and never rewritten, so a server that runs for weeks grows
 The embedding saved by `e` is the last token of the last graph, so it is the model's state after its own answer, not the prompt alone; it carries the whole context. Whether it is the best topic key is one of the things to measure.
 `python3 tools/runlog.py` (SQLite copy of the run history, table `embhot` for the `e` lines) and numpy are enough to analyse it; no vector database is needed at this scale.
 
+## Levers for repeatable experiments
+
+These do not log anything; they hold or change the engine so that runs can be compared. All are environment variables, the defaults are what ships (details and evidence in [fork-knobs.md](fork-knobs.md)).
+
+| lever | what it does for a study |
+|---|---|
+| `LLAMA_MOE_CACHE_DETERMINISTIC=1` | fixes every knob and turns tuning off, so repeated runs are the same configuration |
+| `LLAMA_MOE_AUTO_MODE=stock` or `cache` | forces the placement; `retest` forgets the saved decision and measures again |
+| `LLAMA_MOE_STATE=PATH` or `0` | uses another state file, or none: each arm of an experiment can have its own state (the regression tests do this) |
+| `LLAMA_MOE_CACHE_TUNED=...` | starts from a given tuner result instead of the saved one |
+| `LLAMA_MOE_CACHE_POLICY` | eviction score: `add`, `window`, `hybrid`, `halve`, to compare policies on the same trace |
+| `LLAMA_MOE_CACHE_CTL=FILE` | a control file whose settings are re-read while the model runs, to change a knob mid-run |
+| `--moe pred-top=M,train-every=N` and `LLAMA_MOE_CACHE_PREDICT_*` | the learned expert predictor: depth, margin, step size, where it is saved (`..._FILE`), see the predictor table in the knobs document |
+| `--fork off` | the whole fork off, plain upstream behaviour: the control arm of any comparison |
+| `GGML_SCHED_DEBUG`, `GGML_SCHED_DEBUG_REALLOC`, `LLAMA_BATCH_DEBUG`, `LLAMA_KV_CACHE_DEBUG`, `LLAMA_GRAPH_INPUT_DEBUG`, `LLAMA_GRAPH_RESULT_DEBUG` | upstream's dump switches for the graph scheduler, batches, KV cache and graph inputs and results (verbose, for diagnosis) |
+| `LLAMA_TRACE` | upstream's trace output |
+
+The experimental, unproven knobs (`ev-cld`, `pin-hot`, `idle-up`, `l3-pf`, expert deferral `LLAMA_MOE_DEFER`) are listed with their measured effect in the knobs document; none beat the default in our tests.
+
 ## Status
 
 `e`, `s`, `g`, `p`, `t`, `c` ship in the current release. `l` (layer trace) is in the source and not yet in a release build. The near-versus-far study and a topic prompt set are planned, not done.
