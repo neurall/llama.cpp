@@ -840,7 +840,12 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     const char * from = mc->profile.c_str();
     bool ok = !mc->profile.empty();
     std::vector<std::pair<std::string, std::string>> sect;
-    ok = ok && moe_state_section_kv(mc->profile, sect, true);
+    ok = ok && moe_state_section_kv(mc->profile, sect);
+    bool seeded = false;   // no record of this exact file: take the hot map of the same name or the same family and shape, and keep it as this file's own record
+    if (ok && sect.empty()) {
+        ok = moe_state_section_kv(mc->profile, sect, true);
+        seeded = ok;
+    }
     for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
         const std::string key = "hot." + std::to_string(parse_layer_from_name(mc->layers[il].pub.up_src->name));
         const auto it = std::find_if(sect.begin(), sect.end(), [&](const auto & p) { return p.first == key; });
@@ -879,7 +884,12 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     if (!ok) {
         return 0;
     }
-    LLAMA_LOG_INFO("moe-cache: usage profile from %s\n", from);
+    LLAMA_LOG_INFO("moe-cache: usage profile from %s%s\n", from, seeded ? " (seed from a same-name or same-family record)" : "");
+    if (seeded) {
+        std::vector<std::pair<std::string, std::string>> hot;
+        for (const auto & p : sect) { if (p.first.compare(0, 4, "hot.") == 0) { hot.push_back(p); } }
+        moe_state_set(mc->profile, hot);
+    }
     size_t queued = 0;
     std::lock_guard<std::mutex> lk(mc->wmtx);
     for (size_t il = 0; il < mc->layers.size(); ++il) {

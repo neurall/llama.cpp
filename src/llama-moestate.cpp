@@ -22,6 +22,8 @@ using file_t    = std::map<std::string, section_t>;
 std::mutex g_mtx;
 bool g_suppress = false; // the state of this run is marked for deletion: no writes until the process ends
 std::string g_model_section;
+std::string g_geom;          // arch.experts.experts_used of the loaded model: what its hot map is comparable on
+std::string g_geom_section;  // the section this run writes the geom tag into
 
 std::string state_path() {
     const char * off = getenv("LLAMA_MOE_CACHE_PROFILE"); // older switch: 0 off (a path there was the old profile file, now unused)
@@ -123,14 +125,15 @@ void moe_state_set_model(const std::string & section) {
 
 std::string moe_state_section(const llama_model & model) {
     std::lock_guard<std::mutex> lk(g_mtx);
+    g_geom = std::string(llm_arch_name(model.arch)) + "." + std::to_string(model.hparams.n_expert) + "." + std::to_string(model.hparams.n_expert_used());
     if (!g_model_section.empty()) {
-        return g_model_section;
+        return g_geom_section = g_model_section;
     }
     std::string name = model.name;
     for (char & c : name) {
         if (c == '[' || c == ']' || c == '\n' || c == '\r') { c = '_'; }
     }
-    return name + " " + std::to_string(model.size());
+    return g_geom_section = name + " " + std::to_string(model.size());
 }
 
 bool moe_state_enabled() {
@@ -177,6 +180,12 @@ bool moe_state_section_kv(const std::string & section, std::vector<std::pair<std
             if (lower_name(it->first) == name && (s == f.end() || it->second.size() > s->second.size())) { s = it; }
         }
     }
+    if (s == f.end() && any_size && !g_geom.empty()) {   // same family and shape (hot maps of other quants and builds are alike): the section with the most keys
+        for (auto it = f.begin(); it != f.end(); ++it) {
+            const auto g = it->second.find("geom");
+            if (g != it->second.end() && g->second == g_geom && (s == f.end() || it->second.size() > s->second.size())) { s = it; }
+        }
+    }
     if (s == f.end()) {
         return false;
     }
@@ -194,6 +203,7 @@ bool moe_state_set(const std::string & section, const std::vector<std::pair<std:
     for (const auto & p : kv) {
         f[section][p.first] = p.second;
     }
+    if (section == g_geom_section && !g_geom.empty()) { f[section]["geom"] = g_geom; }
     return save(path, f);
 }
 
