@@ -261,9 +261,13 @@ void llama_state_set_model(const char * section) {
 // research: embedding-keyed hot expert snapshots (see llama-moestate.h)
 static std::string g_embsnap_hex;
 
+static bool log_has(const char * letters) {   // --moe log=LETTERS (LLAMA_MOE_LOG)
+    const char * e = getenv("LLAMA_MOE_LOG");
+    return e && strpbrk(e, letters) && moe_state_enabled();
+}
+
 bool moe_embsnap_enabled() {
-    const char * e = getenv("LLAMA_MOE_EMBSNAP");
-    return e && e[0] == '1' && moe_state_enabled();
+    return log_has("e");
 }
 
 void moe_embsnap_set(const float * emb, int n) {
@@ -308,8 +312,7 @@ void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & 
 
 // research: state snapshot of one model (see llama-moestate.h)
 bool moe_snap_enabled() {
-    const char * e = getenv("LLAMA_MOE_SNAP");
-    return e && e[0] == '1' && moe_state_enabled();
+    return log_has("si");
 }
 
 void moe_snap_save(const std::string & section) {

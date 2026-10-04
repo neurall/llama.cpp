@@ -513,7 +513,7 @@ llama_context::llama_context(
 }
 
 llama_context::~llama_context() {
-    if (moe_embsnap_enabled()) {   // research (--moe emb=1): at exit only, the last layer embedding of the last token of the last graph; nothing is read while running
+    if (moe_embsnap_enabled()) {   // research (--moe log=e): at exit only, the last layer embedding of the last token of the last graph; nothing is read while running
         synchronize();
         llm_graph_result * r = gf_res_prev_active ? gf_res_prev_active : gf_res_prev[0].get();
         ggml_tensor * te = r ? r->get_embd() : nullptr;
@@ -528,7 +528,7 @@ llama_context::~llama_context() {
     } else if (moe_observe_started) {
         llama_moe_observe_save();
     }
-    if (moe_decoded) { moe_snap_save(moe_state_section(model)); }   // research (--moe snap=1): the model's state section after the run's last write
+    if (moe_decoded) { moe_snap_save(moe_state_section(model)); }   // research (--moe log=s): the model's state section after the run's last write
     // wait for any pending asynchronous copies into the output buffers before they are freed
     synchronize();
 

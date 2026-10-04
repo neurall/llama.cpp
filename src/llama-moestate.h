@@ -33,13 +33,13 @@ bool moe_state_set(const std::string & section, const std::vector<std::pair<std:
 // drop every key of the section that starts with prefix
 bool moe_state_erase(const std::string & section, const std::string & prefix);
 
-// research (--moe emb=1): at exit one line is appended to ./embhot.csv (LLAMA_MOE_EMBHOT=FILE moves it): model,embhex,hots. embhex = the last layer embedding of the last
+// research (--moe log=e): at exit one line is appended to ./embhot.csv (LLAMA_MOE_EMBHOT=FILE moves it): model,embhex,hots. embhex = the last layer embedding of the last
 // token of the last graph, 1 byte per float (2 hex characters, absmax scaled); hots = this run's expert counts, layer:count count ...;layer:... Nothing is read or written while running
 bool moe_embsnap_enabled();
 void moe_embsnap_set(const float * emb, int n);
 void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & hot);
 
-// research (--moe snap=1): after the run's last state write, the model's section of the state file is saved as ./state-snapshots/<date time>-<model>.ini (LLAMA_MOE_SNAP_DIR moves the directory);
+// research (--moe log=s or log=i): after the run's last state write, the model's section of the state file is saved as ./state-snapshots/<date time>-<model>.ini (LLAMA_MOE_SNAP_DIR moves the directory);
 // the date and time in the name keep the files unique. Nothing is read or written while running
 bool moe_snap_enabled();
 void moe_snap_save(const std::string & section);
