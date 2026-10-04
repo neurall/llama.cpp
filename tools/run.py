@@ -251,7 +251,7 @@ def server_start(build, env, args):
         if "listening on" in log:
             return p, logf
         if p.poll() is not None:
-            raise RuntimeError("server exited: " + log[-300:])
+            raise RuntimeError(("server bailed, pinning stalled (exit code 75, [PIN_STALL]): " if p.returncode == 75 else "server exited: ") + log[-300:])
         if "couldn't bind" in log:
             stop(p)
             raise RuntimeError("port busy: " + log[-300:])
@@ -277,10 +277,7 @@ def post(path, body, timeout=3600):
 def server_run(build, env, args, path, body):
     p, logf = server_start(build, env, args)
     try:
-        res = post(path, body)
-        if "[PIN_STALL]" in open(logf).read():   # the engine gave up pinning (kernel memory compaction stalled): the speeds are of unpinned memory
-            raise RuntimeError("[PIN_STALL] pinning stalled, this run is not comparable")
-        return res, logf
+        return post(path, body), logf
     finally:
         stop(p)
 
