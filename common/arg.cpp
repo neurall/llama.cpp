@@ -2594,6 +2594,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                     setenv("LLAMA_MOE_EMBSNAP", v ? "1" : "0", 1);
 #endif
                 }
+                else if (key == "snap") {   // research: at exit the model's own section of the state file is saved as state-snapshots/<date time>-<model>.ini
+#ifdef _WIN32
+                    _putenv_s("LLAMA_MOE_SNAP", v ? "1" : "0");
+#else
+                    setenv("LLAMA_MOE_SNAP", v ? "1" : "0", 1);
+#endif
+                }
                 else if (key == "train-every")   { params.n_moe_predict_train = v; if (params.n_moe_predict <= 0) { params.n_moe_predict = 8; } }
                 else { params.moe_opts += (params.moe_opts.empty() ? "" : ",") + kv; } // a tuner knob: the engine checks the name
             }

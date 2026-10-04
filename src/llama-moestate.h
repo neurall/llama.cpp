@@ -38,3 +38,8 @@ bool moe_state_erase(const std::string & section, const std::string & prefix);
 bool moe_embsnap_enabled();
 void moe_embsnap_set(const float * emb, int n);
 void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & hot);
+
+// research (--moe snap=1): after the run's last state write, the model's section of the state file is saved as ./state-snapshots/<date time>-<model>.ini (LLAMA_MOE_SNAP_DIR moves the directory);
+// the date and time in the name keep the files unique. Nothing is read or written while running
+bool moe_snap_enabled();
+void moe_snap_save(const std::string & section);

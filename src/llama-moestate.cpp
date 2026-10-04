@@ -305,3 +305,26 @@ void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & 
     std::ofstream f(file, std::ios::app | std::ios::binary);
     f.write(line.data(), (std::streamsize) line.size());
 }
+
+// research: state snapshot of one model (see llama-moestate.h)
+bool moe_snap_enabled() {
+    const char * e = getenv("LLAMA_MOE_SNAP");
+    return e && e[0] == '1' && moe_state_enabled();
+}
+
+void moe_snap_save(const std::string & section) {
+    std::vector<std::pair<std::string, std::string>> kv;
+    if (!moe_snap_enabled() || !moe_state_section_kv(section, kv) || kv.empty()) { return; }
+    const char * ed = getenv("LLAMA_MOE_SNAP_DIR");
+    const std::filesystem::path dir = ed && ed[0] ? ed : "state-snapshots";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    char ts[32];
+    const time_t now = time(nullptr);
+    strftime(ts, sizeof ts, "%Y-%m-%d_%H%M%S", localtime(&now));
+    std::string name = section.substr(0, section.find_last_of(' '));
+    for (char & c : name) { if (!isalnum((unsigned char) c) && c != '.' && c != '-' && c != '_') { c = '_'; } }
+    std::ofstream f(dir / (std::string(ts) + "-" + name + ".ini"));
+    f << "[" << section << "]\n";
+    for (const auto & p : kv) { f << p.first << " = " << p.second << "\n"; }
+}

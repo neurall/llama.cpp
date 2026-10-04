@@ -528,6 +528,7 @@ llama_context::~llama_context() {
     } else if (moe_observe_started) {
         llama_moe_observe_save();
     }
+    moe_snap_save(moe_state_section(model));   // research (--moe snap=1): the model's state section after the run's last write
     // wait for any pending asynchronous copies into the output buffers before they are freed
     synchronize();
 
