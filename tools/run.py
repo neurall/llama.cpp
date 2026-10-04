@@ -63,7 +63,8 @@ LONG2K_INSTR = "There is a bug in the source code above. Find it, explain what g
 EDIT_INSTR = ["Add a function that counts the lines of this file and prints the count.",
               "Delete the code in this file that is never used.",
               "Add a short comment above every function in this file.",
-              "Rename the longest function in this file to a clearer name and update its callers."]
+              "Rename the longest function in this file to a clearer name and update its callers.",
+              "Fix the bugs in this code."]   # the fifth is run only with --rep-from 4 (README runs pick one of the first four at random: repetition 0 to 3)
 EDIT_WARM = "Explain in two sentences what this file does."
 # test game4: the short CLI test with four subjects, "write smallest html <game> game": same task, same language and stack, only the game changes (a coder stays
 # on one goal and one stack, so the experts stay relevant, but no two runs are the same prompt); same game at the same repetition for every build, own warm-up game
