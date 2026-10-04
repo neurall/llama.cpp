@@ -25,6 +25,7 @@
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
+#include <ctime>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -526,7 +527,8 @@ struct layer_trace_state {
     int every = 0;
     bool ids_only = false;   // log=x: the selected expert ids only, no embeddings
     std::string model;
-    std::string file;   // the model file name without .gguf and split suffix, for <file>.routing
+    std::string file;   // the model file name without .gguf and split suffix plus the start time, for <file>.<time>.routing
+    int last_pos = -1, seq = 0;   // log=x: a position that goes down is a new prompt: its own file (<file>-<seq>.routing)
     std::map<int, std::string> hex, xhex, ids;
     std::map<int, std::vector<int32_t>> idv;   // log=x: per layer the selected experts of the sampled token   // per layer: output embedding, router input, selected experts
 };
@@ -549,10 +551,12 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
             if (g_lt.ids_only) {
                 g_lt.idv[il] = v;
                 if (il == (int) g_lt.ctx->get_model().hparams.n_layer() - 1) {   // the last layer closes the sample
-                    // <model file>.routing, little endian: once "MOER", u16 version 1, u16 layers, u16 k, u16 layer numbers;
+                    // <model file>[.<tag>].<YYYYmmdd-HHMMSS>.routing (tag = --moe tag=NAME, run.py sets test-prompt; one file per prompt: a position that goes down starts <file>-<n>.routing), little endian: once "MOER", u16 version 1, u16 layers, u16 k, u16 layer numbers;
                     // then per sampled token i32 pos and layers x k u16 expert ids (layer order as in the header). A run starts where pos goes down.
-                    const std::filesystem::path path = moe_log_file((g_lt.file + ".routing").c_str());
+                    { const int cur = g_lt.ctx->trace_n_p_eval() + g_lt.ctx->trace_n_eval(); if (cur < g_lt.last_pos) { g_lt.seq++; } g_lt.last_pos = cur; }
+                    const std::filesystem::path path = moe_log_file(("routing/" + g_lt.file + (g_lt.seq ? "-" + std::to_string(g_lt.seq) : std::string()) + ".routing").c_str());
                     std::error_code ec;
+                    std::filesystem::create_directories(path.parent_path(), ec);   // <logdir>/routing/
                     const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
                     const uint16_t k = (uint16_t) v.size();
                     std::string out;
@@ -623,6 +627,20 @@ void llama_context::set_eval_cb() {
         if (g_lt.file.size() > 5 && g_lt.file.compare(g_lt.file.size() - 5, 5, ".gguf") == 0) { g_lt.file.resize(g_lt.file.size() - 5); }
         if (const size_t sp = g_lt.file.find("-0000"); sp != std::string::npos && g_lt.file.find("-of-", sp) != std::string::npos) { g_lt.file.resize(sp); }   // -00001-of-00008
         for (char & c : g_lt.file) { if (!isalnum((unsigned char) c) && c != '.' && c != '-' && c != '_') { c = '_'; } }
+        {   // one file per run: <model file>.<YYYYmmdd-HHMMSS>.routing
+            char ts[32];
+            const time_t now = time(nullptr);
+            struct tm tmv;
+#ifdef _WIN32
+            localtime_s(&tmv, &now);
+#else
+            localtime_r(&now, &tmv);
+#endif
+            strftime(ts, sizeof ts, "%Y%m%d-%H%M%S", &tmv);
+            std::string tag = moe_opt("tag") ? moe_opt("tag") : "";   // --moe tag=NAME: the prompt or test, in the file name
+            for (char & c : tag) { if (!isalnum((unsigned char) c) && c != '-' && c != '_') { c = '_'; } }
+            g_lt.file += (tag.empty() ? std::string() : "." + tag) + "." + ts;
+        }
         ggml_backend_sched_set_eval_callback(sched.get(), layer_trace_cb, nullptr);
     } else {
         ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
