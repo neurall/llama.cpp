@@ -20,33 +20,34 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 Rows with `game4` / `edit4` tests are build b12209 (best run of each side, the learned state kept between runs as in normal use); the others are from the last release (b11707) until they are re-measured.  
 
 Tokens/s, single stream, temperature 0, model in RAM: t/s = generation (decode), pp = prompt processing (prefill). "Stock" is stock llama.cpp.  
+Models: Qwen Next = Qwen3.8-Flash-Next, 27B = Qwen3.8-27B (dense), MTP = `--spec-type draft-mtp`; sizes in GB.  
 Tests: short4 = four short game prompts (`game4`), long4 = four edits on a 2.7k-token source file (`edit4`), tetris = one short tetris prompt, 100 tokens, chat = a short chat, 12k / 2.2k = a prompt of that many tokens.
 Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.
 Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.
 Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.
 GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a (no discarded run before it); the other rows are hot runs of earlier builds.
 
-| model (size) | machine | test | stock t/s | ours t/s | stock pp | ours pp | gain t/s | gain pp | build |
+| model | machine | test | stock t/s | ours t/s | stock pp | ours pp | gain t/s | gain pp | build |
 |---|---|---|---|---|---|---|---|---|---|
-| **MiMo-V2.6-Flash** IQ3_XXS (132 GB, bigger than RAM) | A | chat | 4.6 | **10.9** | - | - | **2.4x** | - | rc fd4c3d2d3 |
+| **MiMo** IQ3_XXS 132G | A | chat | 4.6 | **10.9** | - | - | **2.4x** | - | rc fd4c3d2d3 |
 |  |  | 12k prompt | 4.2 | **9.1** | 156 | 112 | **2.2x** | 0.7x | b11509 |
-| **GLM-5.3-Flash** 3.5-bit (137 GB, bigger than RAM) | A | tetris | 6.9 | **15.1** | - | - | **2.2x** | - | b11707 |
-| **GLM-5.3-Flash** 3.0-bit (117 GB) | A | short4 | 12.6 | **27.0** | 11 | 11 | **2.1x** | 1.0x | b12209 |
-| **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) | B | tetris | 29.2 | **59.3** | - | - | **2.0x** | - | earlier |
+| **GLM** 3.5-bit 137G | A | tetris | 6.9 | **15.1** | - | - | **2.2x** | - | b11707 |
+| **GLM** 3.0-bit 117G | A | short4 | 12.6 | **27.0** | 11 | 11 | **2.1x** | 1.0x | b12209 |
+| **Qwen3.6** Q2_0 11G | B | tetris | 29.2 | **59.3** | - | - | **2.0x** | - | earlier |
 |  | C | tetris, CPU only | 6.3 | **11.3** | - | - | **1.8x** | - | earlier |
-| **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) | A | short4 | 31.2 | **48.9** | 18 | **23** | **1.6x** | 1.3x | b12209 |
+| **Qwen Next** IQ4_XS 88G | A | short4 | 31.2 | **48.9** | 18 | **23** | **1.6x** | 1.3x | b12209 |
 |  |  | long4 | 30.9 | **48.9** | 220 | **585** | **1.6x** | 2.7x | b12209 |
-| **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short4 | 44.1 | **54.2** | 29 | **32** | **1.2x** | 1.1x | b12209 |
+| **Qwen Next** IQ3_S 83G | A | short4 | 44.1 | **54.2** | 29 | **32** | **1.2x** | 1.1x | b12209 |
 |  |  | long4 | 43.1 | **52.9** | 380 | **663** | **1.2x** | 1.7x | b12209 |
-| Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`), fits VRAM | A | tetris (38.6 without MTP) | 78.3 | 77.0 | - | - | 1.0x | - | b11653 |
+| 27B Q5_K_M + MTP | A | tetris (38.6 without MTP) | 78.3 | 77.0 | - | - | 1.0x | - | b11653 |
 |  |  | 2.2k prompt | 31.3 | **51.1** | 599 | **792** | 1.6x | 1.3x | unlogged |
-| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | short4, picks stock | 68.5 | 66.2 | 39 | 33 | 1.0x | 0.8x | b12209 |
+| **Qwen Next** IQ1_M 55G | A | short4, picks stock | 68.5 | 66.2 | 39 | 33 | 1.0x | 0.8x | b12209 |
 |  | A | long4 | 65.4 | 65.3 | 1209 | 1289 | 1.0x | 1.1x | b12209 |
 |  | B | tetris | 11.4 | **13.5** | 15.5 | 5.9 | **1.2x** | 0.4x | b11707 |
-| Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | short4 | 45.1 | 44.7 | 28 | 23 | 1.0x | 0.8x | b12209 |
+| 27B IQ4_NL dense | A | short4 | 45.1 | 44.7 | 28 | 23 | 1.0x | 0.8x | b12209 |
 |  |  | long4 | 44.3 | 43.9 | 1756 | 1738 | 1.0x | 1.0x | b12209 |
-| Qwen3.8-27B IQ3_S, dense, CPU only | C | tetris | 1.7 | 1.6 | - | - | 1.0x | - | earlier |
-| Models that fit in VRAM | any | anything | same | same | same | same | 1.0x (cache off) | 1.0x | any |
+| 27B IQ3_S dense | C | tetris | 1.7 | 1.6 | - | - | 1.0x | - | earlier |
+| fits VRAM | any | anything | same | same | same | same | 1.0x (cache off) | 1.0x | any |
 
 \* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
 [`tools/bench/run-history.csv`](tools/bench/run-history.csv).
