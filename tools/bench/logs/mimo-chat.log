@@ -1,0 +1,172 @@
+0.00.001.230 I srv  llama_server: initializing ...
+0.00.534.126 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.534.857 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.536.774 I srv    load_model: loading model '/m/m/3/MiMo-V2.6-Flash-RL-IQ3_XXS-00001-of-00008.gguf'
+0.00.926.027 I common_moe_cache_auto_impl: MoE placement: cache (the other placement could not start with this much free VRAM before; MiMo-V2.6-Flash-RL-IQ3_XXS-00001-of-00008.gguf 141408349312place.g2x23859.v1)
+0.02.005.009 I common_auto_ubatch: ubatch 2048 (request ~2000 prompt + 600 generated tokens, compute buffer 2.26 -> 2.68 GiB at 512 -> 2048, 26.4 GiB left for the cache)
+0.02.005.017 I common_moe_cache_auto_impl: MoE model (131.7 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 4096, ubatch 2048, threads 6, weights mmap (settings you pass win)
+0.02.737.051 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.02.805.543 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.02.809.486 W model has unused tensor blk.48.attn_qkv.weight (size = 243269632 bytes) -- ignoring
+0.02.809.512 W model has unused tensor blk.48.attn_output.weight (size = 67108864 bytes) -- ignoring
+0.02.809.517 W model has unused tensor blk.48.attn_norm.weight (size = 16384 bytes) -- ignoring
+0.02.809.520 W model has unused tensor blk.48.attn_sinks.weight (size = 256 bytes) -- ignoring
+0.02.809.524 W model has unused tensor blk.48.ffn_norm.weight (size = 16384 bytes) -- ignoring
+0.02.809.527 W model has unused tensor blk.48.ffn_gate.weight (size = 268435456 bytes) -- ignoring
+0.02.809.531 W model has unused tensor blk.48.ffn_down.weight (size = 268435456 bytes) -- ignoring
+0.02.809.536 W model has unused tensor blk.48.ffn_up.weight (size = 268435456 bytes) -- ignoring
+0.02.809.555 W model has unused tensor blk.48.nextn.eh_proj.weight (size = 67108864 bytes) -- ignoring
+0.02.809.559 W model has unused tensor blk.48.nextn.enorm.weight (size = 16384 bytes) -- ignoring
+0.02.809.563 W model has unused tensor blk.48.nextn.hnorm.weight (size = 16384 bytes) -- ignoring
+0.02.809.576 W model has unused tensor blk.48.layer_output_norm.weight (size = 16384 bytes) -- ignoring
+0.02.809.581 W model has unused tensor blk.49.attn_qkv.weight (size = 243269632 bytes) -- ignoring
+0.02.809.604 W model has unused tensor blk.49.attn_output.weight (size = 67108864 bytes) -- ignoring
+0.02.809.609 W model has unused tensor blk.49.attn_norm.weight (size = 16384 bytes) -- ignoring
+0.02.809.612 W model has unused tensor blk.49.attn_sinks.weight (size = 256 bytes) -- ignoring
+0.02.809.616 W model has unused tensor blk.49.ffn_norm.weight (size = 16384 bytes) -- ignoring
+0.02.809.620 W model has unused tensor blk.49.ffn_gate.weight (size = 268435456 bytes) -- ignoring
+0.02.809.623 W model has unused tensor blk.49.ffn_down.weight (size = 268435456 bytes) -- ignoring
+0.02.809.627 W model has unused tensor blk.49.ffn_up.weight (size = 268435456 bytes) -- ignoring
+0.02.809.646 W model has unused tensor blk.49.nextn.eh_proj.weight (size = 67108864 bytes) -- ignoring
+0.02.809.651 W model has unused tensor blk.49.nextn.enorm.weight (size = 16384 bytes) -- ignoring
+0.02.809.655 W model has unused tensor blk.49.nextn.hnorm.weight (size = 16384 bytes) -- ignoring
+0.02.809.668 W model has unused tensor blk.49.layer_output_norm.weight (size = 16384 bytes) -- ignoring
+0.02.809.673 W model has unused tensor blk.50.attn_qkv.weight (size = 243269632 bytes) -- ignoring
+0.02.809.697 W model has unused tensor blk.50.attn_output.weight (size = 67108864 bytes) -- ignoring
+0.02.809.702 W model has unused tensor blk.50.attn_norm.weight (size = 16384 bytes) -- ignoring
+0.02.809.711 W model has unused tensor blk.50.attn_sinks.weight (size = 256 bytes) -- ignoring
+0.02.809.715 W model has unused tensor blk.50.ffn_norm.weight (size = 16384 bytes) -- ignoring
+0.02.809.719 W model has unused tensor blk.50.ffn_gate.weight (size = 268435456 bytes) -- ignoring
+0.02.809.722 W model has unused tensor blk.50.ffn_down.weight (size = 268435456 bytes) -- ignoring
+0.02.809.726 W model has unused tensor blk.50.ffn_up.weight (size = 268435456 bytes) -- ignoring
+0.02.809.746 W model has unused tensor blk.50.nextn.eh_proj.weight (size = 67108864 bytes) -- ignoring
+0.02.809.750 W model has unused tensor blk.50.nextn.enorm.weight (size = 16384 bytes) -- ignoring
+0.02.809.754 W model has unused tensor blk.50.nextn.hnorm.weight (size = 16384 bytes) -- ignoring
+0.02.809.767 W model has unused tensor blk.50.layer_output_norm.weight (size = 16384 bytes) -- ignoring
+0.28.400.198 W moe-cache: prefill links (GB/s): CUDA1 24.9 CUDA0 6.2 -> split's transfer speedup 1.25x: one GPU (the split's compute buffers would cost more cache)
+0.28.498.561 I cmn          init: llama threadpool init, n_threads = 6
+0.30.581.834 W moe-cache: 25 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.30.581.838 W moe-cache: 22 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.30.619.963 W moe-cache: 2 upload workers (per link), from pageable host memory (mmap; --load-mode pin: faster uploads)
+0.31.915.480 W moe-cache: probe: links alone link 0 3.4 link 1 4.9 GB/s; CPU threads:GB/s alone/with links 1:15.4/20.4 2:28.2/22.3 3:31.6/27.9 4:35.2/29.7 5:36.3/28.1 6:34.5/29.7 7:35.1/30.4 -> CPU 36.3 GB/s (saturated by 4 threads), RAM budget 36.3 GB/s
+0.31.917.075 W moe-cache: 25 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.31.917.126 W operator(): MoE expert cache enabled: 47 layers, slots/layer 57..64, 2 inserts/step, 27286.5 MiB device memory
+0.37.721.983 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 4096, kv_unified = 'true'
+0.37.736.905 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.37.737.124 I srv  llama_server: model loaded
+0.37.737.154 I srv  llama_server: listening on http://127.0.0.1:8099
+0.38.034.031 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.38.034.168 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.41.478.937 I slot print_timing: id  3 | task 0 | prompt processing, n_tokens =      9, progress = 0.69, t =   3.44 s / 2.61 tokens per second
+0.52.461.370 W moe-cache: step 64 filled 2803/2833 inflight 30 queued 28 window-hit 59.7% | upload 2.24 ms/expert, token 137.2 ms idle / 0.0 ms busy, swap budget 30, min count gain 0 (fast link 1.31 ms -> 0, slow link 2.64 ms -> 0)
+0.52.461.377 W moe-cache: JIT: 1.11 experts/token uploaded for immediate use in 0.81 layers/token, of 122.19 misses/token; pool 0.00 uploads, 0.00 hits/token
+0.52.461.382 W moe-cache: GPU link 0 link: upload 1.31 ms = read 0.00 + copy 1.31, 7.4 GB/s (CPU 36 GB/s) | evicted 1418: 0.2 hits each, paid back 0%, cost 2.23 ms, lived 6.5 s
+0.52.461.386 W moe-cache: GPU link 1 link: upload 2.64 ms = read 0.00 + copy 2.64, 4.0 GB/s (CPU 36 GB/s) | evicted 1711: 0.2 hits each, paid back 0%, cost 3.22 ms, lived 5.8 s
+0.52.461.389 W moe-cache: phases: token 0.0 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+0.57.191.098 I slot print_timing: id  3 | task 0 | n_gen =    100, tg =   6.76 t/s, tg_3s =   6.82 t/s
+0.59.853.120 W moe-cache: step 128 filled 2812/2833 inflight 21 queued 20 window-hit 81.8% | upload 2.41 ms/expert, token 106.0 ms idle / 0.0 ms busy, swap budget 21, min count gain 0 (fast link 1.22 ms -> 0, slow link 2.53 ms -> 0)
+0.59.853.127 W moe-cache: JIT: 3.80 experts/token uploaded for immediate use in 3.75 layers/token, of 69.77 misses/token; pool 0.00 uploads, 0.00 hits/token
+0.59.853.131 W moe-cache: GPU link 0 link: upload 1.22 ms = read 0.00 + copy 1.22, 8.0 GB/s (CPU 36 GB/s) | evicted 2074: 1.3 hits each, paid back 7%, cost 2.02 ms, lived 7.6 s
+0.59.853.135 W moe-cache: GPU link 1 link: upload 2.53 ms = read 0.00 + copy 2.53, 4.0 GB/s (CPU 36 GB/s) | evicted 2771: 1.2 hits each, paid back 3%, cost 3.03 ms, lived 6.5 s
+0.59.853.137 W moe-cache: DDR: CPU experts 685 MB/token at 11.9 GB/s in their phases, uploads 269 MB/token | avg 8.3 GB/s
+0.59.853.140 W moe-cache: phases: token 115.5 ms wall, CPU expert matmuls 81.8 ms in 141.1 phases (71%) | 23.2 uploads/token, 82% overlapping CPU phases, gate waits 0.01 ms/token
+0.59.853.143 W moe-cache: phases: token 0.0 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+1.00.259.633 I slot print_timing: id  3 | task 0 | n_gen =    130, tg =   7.28 t/s, tg_3s =   9.78 t/s
+1.03.309.606 I slot print_timing: id  3 | task 0 | n_gen =    171, tg =   8.18 t/s, tg_3s =  13.44 t/s
+1.04.368.686 W moe-cache: step 192 filled 2824/2833 inflight 9 queued 7 window-hit 90.1% | upload 2.23 ms/expert, token 56.2 ms idle / 0.0 ms busy, swap budget 12, min count gain 0 (fast link 1.22 ms -> 0, slow link 2.58 ms -> 0)
+1.04.368.694 W moe-cache: JIT: 1.31 experts/token uploaded for immediate use in 1.31 layers/token, of 37.61 misses/token; pool 0.00 uploads, 0.00 hits/token
+1.04.368.697 W moe-cache: GPU link 0 link: upload 1.22 ms = read 0.00 + copy 1.22, 8.0 GB/s (CPU 36 GB/s) | evicted 2528: 1.6 hits each, paid back 9%, cost 1.92 ms, lived 7.6 s
+1.04.368.700 W moe-cache: GPU link 1 link: upload 2.58 ms = read 0.00 + copy 2.58, 3.8 GB/s (CPU 36 GB/s) | evicted 3382: 1.7 hits each, paid back 5%, cost 2.98 ms, lived 6.7 s
+1.04.368.701 W moe-cache: DDR: CPU experts 366 MB/token at 14.2 GB/s in their phases, uploads 166 MB/token | avg 7.5 GB/s
+1.04.368.712 W moe-cache: phases: token 70.6 ms wall, CPU expert matmuls 39.6 ms in 141.0 phases (56%) | 15.5 uploads/token, 56% overlapping CPU phases, gate waits 0.01 ms/token
+1.04.368.715 W moe-cache: phases: token 0.0 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+1.06.333.872 I slot print_timing: id  3 | task 0 | n_gen =    217, tg =   9.08 t/s, tg_3s =  15.21 t/s
+1.09.424.653 I slot print_timing: id  3 | task 0 | n_gen =    251, tg =   9.30 t/s, tg_3s =  11.00 t/s
+1.09.674.588 W moe-cache: step 256 filled 2815/2833 inflight 18 queued 17 window-hit 82.5% | upload 2.60 ms/expert, token 95.4 ms idle / 0.0 ms busy, swap budget 18, min count gain 0 (fast link 1.53 ms -> 0, slow link 3.07 ms -> 0)
+1.09.674.592 W moe-cache: JIT: 1.48 experts/token uploaded for immediate use in 1.48 layers/token, of 65.44 misses/token; pool 0.00 uploads, 0.00 hits/token
+1.09.674.596 W moe-cache: GPU link 0 link: upload 1.53 ms = read 0.00 + copy 1.53, 6.5 GB/s (CPU 36 GB/s) | evicted 3002: 1.9 hits each, paid back 11%, cost 1.83 ms, lived 7.5 s
+1.09.674.599 W moe-cache: GPU link 1 link: upload 3.07 ms = read 0.00 + copy 3.07, 3.5 GB/s (CPU 36 GB/s) | evicted 3989: 2.0 hits each, paid back 5%, cost 2.97 ms, lived 6.7 s
+1.09.674.600 W moe-cache: DDR: CPU experts 658 MB/token at 12.4 GB/s in their phases, uploads 166 MB/token | avg 9.9 GB/s
+1.09.674.604 W moe-cache: phases: token 82.9 ms wall, CPU expert matmuls 52.5 ms in 141.0 phases (63%) | 15.3 uploads/token, 69% overlapping CPU phases, gate waits 0.01 ms/token
+1.09.674.606 W moe-cache: phases: token 0.0 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+1.12.465.105 I slot print_timing: id  3 | task 0 | n_gen =    288, tg =   9.59 t/s, tg_3s =  12.17 t/s
+1.14.738.697 W moe-cache: step 320 filled 2820/2833 inflight 13 queued 11 window-hit 82.9% | upload 2.55 ms/expert, token 71.7 ms idle / 0.0 ms busy, swap budget 14, min count gain 0 (fast link 1.42 ms -> 0, slow link 2.56 ms -> 0)
+1.14.738.710 W moe-cache: JIT: 1.38 experts/token uploaded for immediate use in 1.38 layers/token, of 64.30 misses/token; pool 0.00 uploads, 0.00 hits/token
+1.14.738.714 W moe-cache: GPU link 0 link: upload 1.42 ms = read 0.00 + copy 1.42, 6.9 GB/s (CPU 36 GB/s) | evicted 3405: 2.4 hits each, paid back 14%, cost 1.77 ms, lived 7.6 s
+1.14.738.717 W moe-cache: GPU link 1 link: upload 2.56 ms = read 0.00 + copy 2.56, 3.9 GB/s (CPU 36 GB/s) | evicted 4678: 2.8 hits each, paid back 9%, cost 2.97 ms, lived 6.7 s
+1.14.738.718 W moe-cache: DDR: CPU experts 647 MB/token at 17.6 GB/s in their phases, uploads 171 MB/token | avg 10.3 GB/s
+1.14.738.785 W moe-cache: phases: token 79.1 ms wall, CPU expert matmuls 49.0 ms in 141.0 phases (62%) | 15.8 uploads/token, 78% overlapping CPU phases, gate waits 0.02 ms/token
+1.14.738.787 W moe-cache: phases: token 0.1 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+1.15.553.194 I slot print_timing: id  3 | task 0 | n_gen =    329, tg =   9.93 t/s, tg_3s =  13.28 t/s
+1.18.608.873 I slot print_timing: id  3 | task 0 | n_gen =    375, tg =  10.37 t/s, tg_3s =  15.05 t/s
+1.19.068.850 W moe-cache: step 384 filled 2830/2833 inflight 3 queued 3 window-hit 83.8% | upload 1.37 ms/expert, token 67.6 ms idle / 0.0 ms busy, swap budget 24, min count gain 5 (fast link 1.14 ms -> 5, slow link 2.82 ms -> 10)
+1.19.068.855 W moe-cache: JIT: 0.05 experts/token uploaded for immediate use in 0.05 layers/token, of 60.81 misses/token; pool 0.00 uploads, 0.00 hits/token
+1.19.068.859 W moe-cache: GPU link 0 link: upload 1.14 ms = read 0.00 + copy 1.14, 8.6 GB/s (CPU 36 GB/s) | evicted 3445: 2.4 hits each, paid back 14%, cost 1.77 ms, lived 7.6 s
+1.19.068.863 W moe-cache: GPU link 1 link: upload 2.82 ms = read 0.00 + copy 2.82, 3.7 GB/s (CPU 36 GB/s) | evicted 4684: 2.8 hits each, paid back 9%, cost 2.97 ms, lived 6.7 s
+1.19.068.865 W moe-cache: DDR: CPU experts 614 MB/token at 16.6 GB/s in their phases, uploads 9 MB/token | avg 9.2 GB/s
+1.19.068.868 W moe-cache: phases: token 67.7 ms wall, CPU expert matmuls 40.1 ms in 141.0 phases (59%) | 0.8 uploads/token, 30% overlapping CPU phases, gate waits 0.00 ms/token
+1.19.068.871 W moe-cache: phases: token 0.0 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+1.21.630.688 I slot print_timing: id  3 | task 0 | n_gen =    422, tg =  10.77 t/s, tg_3s =  15.55 t/s
+1.23.260.820 W moe-cache: step 448 filled 2833/2833 inflight 0 queued 0 window-hit 83.6% | upload 1.43 ms/expert, token 66.0 ms idle / 0.0 ms busy, swap budget 23, min count gain 5 (fast link 1.13 ms -> 5, slow link 2.75 ms -> 11)
+1.23.260.824 W moe-cache: JIT: 0.00 experts/token uploaded for immediate use in 0.00 layers/token, of 61.53 misses/token; pool 0.00 uploads, 0.00 hits/token
+1.23.260.828 W moe-cache: GPU link 0 link: upload 1.13 ms = read 0.00 + copy 1.13, 8.6 GB/s (CPU 36 GB/s) | evicted 3478: 2.4 hits each, paid back 14%, cost 1.77 ms, lived 7.6 s
+1.23.260.871 W moe-cache: GPU link 1 link: upload 2.75 ms = read 0.00 + copy 2.75, 3.6 GB/s (CPU 36 GB/s) | evicted 4697: 2.8 hits each, paid back 9%, cost 2.97 ms, lived 6.7 s
+1.23.260.872 W moe-cache: DDR: CPU experts 621 MB/token at 17.9 GB/s in their phases, uploads 7 MB/token | avg 9.6 GB/s
+1.23.260.876 W moe-cache: phases: token 65.5 ms wall, CPU expert matmuls 38.0 ms in 141.0 phases (58%) | 0.8 uploads/token, 22% overlapping CPU phases, gate waits 0.00 ms/token
+1.23.260.878 W moe-cache: phases: token 0.0 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+1.24.641.332 I slot print_timing: id  3 | task 0 | n_gen =    467, tg =  11.07 t/s, tg_3s =  14.95 t/s
+1.27.667.633 I slot print_timing: id  3 | task 0 | n_gen =    508, tg =  11.23 t/s, tg_3s =  13.55 t/s
+1.27.804.064 W moe-cache: step 512 filled 2832/2833 inflight 1 queued 1 window-hit 80.1% | upload 1.54 ms/expert, token 74.2 ms idle / 0.0 ms busy, swap budget 24, min count gain 6 (fast link 1.23 ms -> 5, slow link 2.86 ms -> 11)
+1.27.804.070 W moe-cache: JIT: 0.00 experts/token uploaded for immediate use in 0.00 layers/token, of 74.52 misses/token; pool 0.00 uploads, 0.00 hits/token
+1.27.804.073 W moe-cache: GPU link 0 link: upload 1.23 ms = read 0.00 + copy 1.23, 8.0 GB/s (CPU 36 GB/s) | evicted 3539: 2.5 hits each, paid back 14%, cost 1.76 ms, lived 7.7 s
+1.27.804.076 W moe-cache: GPU link 1 link: upload 2.86 ms = read 0.00 + copy 2.86, 3.6 GB/s (CPU 36 GB/s) | evicted 4706: 2.8 hits each, paid back 9%, cost 2.97 ms, lived 6.8 s
+1.27.804.077 W moe-cache: DDR: CPU experts 753 MB/token at 16.3 GB/s in their phases, uploads 10 MB/token | avg 10.8 GB/s
+1.27.804.081 W moe-cache: phases: token 71.0 ms wall, CPU expert matmuls 43.6 ms in 141.0 phases (61%) | 1.1 uploads/token, 22% overlapping CPU phases, gate waits 0.00 ms/token
+1.27.804.083 W moe-cache: phases: token 0.0 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+1.30.698.130 I slot print_timing: id  3 | task 0 | n_gen =    554, tg =  11.48 t/s, tg_3s =  15.18 t/s
+1.31.973.855 W moe-cache: step 576 filled 2832/2833 inflight 1 queued 1 window-hit 81.9% | upload 1.38 ms/expert, token 66.2 ms idle / 0.0 ms busy, swap budget 23, min count gain 5 (fast link 1.14 ms -> 5, slow link 2.87 ms -> 11)
+1.31.973.868 W moe-cache: JIT: 0.00 experts/token uploaded for immediate use in 0.00 layers/token, of 67.84 misses/token; pool 0.00 uploads, 0.00 hits/token
+1.31.973.872 W moe-cache: GPU link 0 link: upload 1.14 ms = read 0.00 + copy 1.14, 8.5 GB/s (CPU 36 GB/s) | evicted 3581: 2.5 hits each, paid back 15%, cost 1.75 ms, lived 7.8 s
+1.31.973.875 W moe-cache: GPU link 1 link: upload 2.87 ms = read 0.00 + copy 2.87, 3.5 GB/s (CPU 36 GB/s) | evicted 4713: 2.8 hits each, paid back 9%, cost 2.97 ms, lived 6.8 s
+1.31.973.876 W moe-cache: DDR: CPU experts 687 MB/token at 18.9 GB/s in their phases, uploads 7 MB/token | avg 10.7 GB/s
+1.31.973.879 W moe-cache: phases: token 65.2 ms wall, CPU expert matmuls 37.6 ms in 141.0 phases (58%) | 0.8 uploads/token, 16% overlapping CPU phases, gate waits 0.00 ms/token
+1.31.973.881 W moe-cache: phases: token 0.0 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+1.33.752.346 I slot print_timing: id  3 | task 0 | n_gen =    600, tg =  11.70 t/s, tg_3s =  15.06 t/s
+1.36.795.052 I slot print_timing: id  3 | task 0 | n_gen =    633, tg =  11.65 t/s, tg_3s =  10.85 t/s
+1.37.145.450 W moe-cache: step 640 filled 2832/2833 inflight 1 queued 1 window-hit 75.8% | upload 1.73 ms/expert, token 81.1 ms idle / 0.0 ms busy, swap budget 23, min count gain 6 (fast link 1.33 ms -> 5, slow link 2.87 ms -> 11)
+1.37.145.454 W moe-cache: JIT: 0.00 experts/token uploaded for immediate use in 0.00 layers/token, of 90.83 misses/token; pool 0.00 uploads, 0.00 hits/token
+1.37.145.458 W moe-cache: GPU link 0 link: upload 1.33 ms = read 0.00 + copy 1.33, 7.5 GB/s (CPU 36 GB/s) | evicted 3636: 2.6 hits each, paid back 16%, cost 1.75 ms, lived 8.0 s
+1.37.145.461 W moe-cache: GPU link 1 link: upload 2.87 ms = read 0.00 + copy 2.87, 3.5 GB/s (CPU 36 GB/s) | evicted 4728: 2.8 hits each, paid back 9%, cost 2.97 ms, lived 6.8 s
+1.37.145.463 W moe-cache: DDR: CPU experts 913 MB/token at 15.9 GB/s in their phases, uploads 11 MB/token | avg 11.4 GB/s
+1.37.145.466 W moe-cache: phases: token 80.8 ms wall, CPU expert matmuls 53.7 ms in 141.0 phases (66%) | 1.1 uploads/token, 24% overlapping CPU phases, gate waits 0.00 ms/token
+1.37.145.468 W moe-cache: phases: token 0.0 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+1.39.802.317 I slot print_timing: id  3 | task 0 | n_gen =    668, tg =  11.65 t/s, tg_3s =  11.64 t/s
+1.42.449.008 W moe-cache: step 704 filled 2821/2833 inflight 12 queued 12 window-hit 78.2% | upload 2.94 ms/expert, token 72.8 ms idle / 0.0 ms busy, swap budget 12, min count gain 0 (fast link 1.44 ms -> 0, slow link 3.06 ms -> 0)
+1.42.449.013 W moe-cache: JIT: 2.31 experts/token uploaded for immediate use in 2.30 layers/token, of 82.48 misses/token; pool 0.00 uploads, 0.00 hits/token
+1.42.449.017 W moe-cache: GPU link 0 link: upload 1.44 ms = read 0.00 + copy 1.44, 6.8 GB/s (CPU 36 GB/s) | evicted 4021: 3.6 hits each, paid back 20%, cost 1.71 ms, lived 9.4 s
+1.42.449.021 W moe-cache: GPU link 1 link: upload 3.06 ms = read 0.00 + copy 3.06, 3.6 GB/s (CPU 36 GB/s) | evicted 5457: 4.2 hits each, paid back 13%, cost 2.99 ms, lived 8.6 s
+1.42.449.023 W moe-cache: DDR: CPU experts 823 MB/token at 16.3 GB/s in their phases, uploads 175 MB/token | avg 12.0 GB/s
+1.42.449.027 W moe-cache: phases: token 82.9 ms wall, CPU expert matmuls 51.9 ms in 141.0 phases (63%) | 14.9 uploads/token, 82% overlapping CPU phases, gate waits 0.02 ms/token
+1.42.449.029 W moe-cache: phases: token 0.0 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+1.42.879.759 I slot print_timing: id  3 | task 0 | n_gen =    708, tg =  11.72 t/s, tg_3s =  13.00 t/s
+1.45.882.383 I slot print_timing: id  3 | task 0 | n_gen =    728, tg =  11.48 t/s, tg_3s =   6.66 t/s
+1.48.905.888 I slot print_timing: id  3 | task 0 | n_gen =    754, tg =  11.35 t/s, tg_3s =   8.60 t/s
+1.50.199.685 W moe-cache: step 768 filled 2815/2833 inflight 18 queued 17 window-hit 64.8% | upload 2.84 ms/expert, token 105.2 ms idle / 0.0 ms busy, swap budget 18, min count gain 0 (fast link 1.56 ms -> 0, slow link 3.94 ms -> 0)
+1.50.199.781 W moe-cache: JIT: 5.53 experts/token uploaded for immediate use in 5.39 layers/token, of 133.50 misses/token; pool 0.00 uploads, 0.00 hits/token
+1.50.199.789 W moe-cache: GPU link 0 link: upload 1.56 ms = read 0.00 + copy 1.56, 6.3 GB/s (CPU 36 GB/s) | evicted 4778: 6.0 hits each, paid back 24%, cost 1.68 ms, lived 11.5 s
+1.50.199.792 W moe-cache: GPU link 1 link: upload 3.94 ms = read 0.00 + copy 3.94, 2.8 GB/s (CPU 36 GB/s) | evicted 6418: 5.6 hits each, paid back 16%, cost 3.00 ms, lived 9.8 s
+1.50.199.813 W moe-cache: DDR: CPU experts 1318 MB/token at 16.8 GB/s in their phases, uploads 265 MB/token | avg 13.1 GB/s
+1.50.199.819 W moe-cache: phases: token 121.1 ms wall, CPU expert matmuls 86.9 ms in 141.0 phases (72%) | 21.2 uploads/token, 84% overlapping CPU phases, gate waits 0.03 ms/token
+1.50.199.822 W moe-cache: phases: token 0.0 ms wall, CPU expert matmuls 0.0 ms in 0.0 phases (0%) | 0.0 uploads/token, 0% overlapping CPU phases
+1.51.930.192 I slot print_timing: id  3 | task 0 | n_gen =    781, tg =  11.24 t/s, tg_3s =   8.93 t/s
+1.55.078.809 I slot print_timing: id  3 | task 0 | n_gen =    810, tg =  11.15 t/s, tg_3s =   9.21 t/s
+1.58.119.717 I slot print_timing: id  3 | task 0 | prompt eval time =    4502.45 ms /    13 tokens (  346.34 ms per token,     2.89 tokens per second)
+1.58.119.723 I slot print_timing: id  3 | task 0 |        eval time =   75582.76 ms /   829 tokens (   91.28 ms per token,    10.95 tokens per second)
+1.58.119.724 I slot print_timing: id  3 | task 0 |       total time =   80085.20 ms /   842 tokens
+1.58.119.760 I slot print_timing: id  3 | task 0 |    graphs reused =        820
+1.58.119.906 I slot print_timing: id  3 | task 0 |        moe cache = on, hit 77.8% this request / 77.6% overall, 57..64 slots/layer, margin 0 gate 3 wait 1 big 0 predict 1
+1.58.119.913 I slot print_timing: id  3 | task 0 |        moe churn = 11404 uploads, 12806 evictions, 121317.3 MiB uploaded (this request)
+1.58.119.914 I slot print_timing: id  3 | task 0 |          threads = 6 decode / 6 batch, batch 2048, ubatch 2048
+1.58.120.669 I slot      release: id  3 | task 0 | stop processing: n_tokens = 841, truncated = 0
+1.58.129.749 I srv    operator(): operator(): cleaning up before exit...
+1.58.139.063 W moe-cache: steps=831 hits=245806 misses=71058 hit-rate=77.6%, prefill experts from cache 0/0, kept from prefill 0
