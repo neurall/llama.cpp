@@ -8,6 +8,17 @@ NB = " "
 readme, hist, BP = sys.argv[1], sys.argv[2], sys.argv[3]
 SRC = {"short": ("game4", "t100", "chat"), "long": ("edit4", "pf12k")}
 best = {}
+vals = {}
+import statistics
+def consistent(xs):
+    """the best value that at least two runs agree on (within 5%); a lone outlier does not count, without agreement the median"""
+    xs = sorted(xs, reverse=True)
+    if len(xs) < 2:
+        return xs[0] if xs else 0.0
+    for x in xs:
+        if sum(1 for y in xs if y >= 0.95 * x) >= 2:
+            return x
+    return statistics.median(xs)
 for r in csv.DictReader(open(hist)):
     try:
         tps, pp = float(r["tps"]), float(r["pp"] or 0)
@@ -22,8 +33,9 @@ for r in csv.DictReader(open(hist)):
     b = r["build"]
     side = "stock" if b.startswith("stock") else "ours" if b.startswith(BP) else None
     if side:
-        v = best.setdefault((stem, r["test"], side), [0.0, 0.0, 0])
-        v[0] = max(v[0], tps); v[1] = max(v[1], pp); v[2] += 1
+        vals.setdefault((stem, r["test"], side), []).append((tps, pp))
+for k, xs in vals.items():
+    best[k] = [consistent([x[0] for x in xs]), consistent([x[1] for x in xs]), len(xs)]
 def pick(stem, kind):
     cand = []
     for t in SRC[kind]:

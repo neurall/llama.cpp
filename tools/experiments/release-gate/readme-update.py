@@ -8,6 +8,17 @@ import csv, re, sys
 NB = " "
 readme, hist, OURS = sys.argv[1], sys.argv[2], sys.argv[3]
 bestv = {}
+vals = {}
+import statistics
+def consistent(xs):
+    """the best value that at least two runs agree on (within 5%); a lone outlier does not count, without agreement the median"""
+    xs = sorted(xs, reverse=True)
+    if len(xs) < 2:
+        return xs[0] if xs else 0.0
+    for x in xs:
+        if sum(1 for y in xs if y >= 0.95 * x) >= 2:
+            return x
+    return statistics.median(xs)
 for r in csv.DictReader(open(hist)):
     try:
         tps, pp = float(r["tps"]), float(r["pp"] or 0)
@@ -27,8 +38,9 @@ for r in csv.DictReader(open(hist)):
         side = "ours"
     else:
         continue
-    v = bestv.setdefault((stem, r["test"], side), [0.0, 0.0, 0])
-    v[0] = max(v[0], tps); v[1] = max(v[1], pp); v[2] += 1
+    vals.setdefault((stem, r["test"], side), []).append((tps, pp))
+for k, xs in vals.items():
+    bestv[k] = [consistent([x[0] for x in xs]), consistent([x[1] for x in xs]), len(xs)]
 def result(stem, test):
     o = bestv.get((stem, test, "ours"))
     s = bestv.get((stem, test, "stock")) or bestv.get((stem, test, "standin"))
@@ -55,9 +67,9 @@ for l in open(readme).read().split("\n"):
                     continue
                 s, o = res
                 new = [g(o[0], s[0]), g(o[1], s[1])]
-                old = num(c[col].strip().replace(NB, "").split("<br>")[0])
-                if old is not None and num(new[0]) is not None and num(new[0]) < old:
-                    continue   # not better: the existing value stays
+                cur = c[col].strip().replace(NB, "").split("<br>")
+                if any(num(cur[i]) is not None and num(new[i]) is not None and num(new[i]) < num(cur[i]) for i in (0, 1)):
+                    continue   # t/s or pp lower than what the cell has: not better, the existing value stays
                 if test == "game4":   # an older build's row that reached a higher speed stays (also when the gain ratio is a hair higher)
                     m = re.search(r"([\d.]+)", c[5].replace("*", "").replace(NB, "").split("<br>")[0])
                     if m and o[0] < float(m.group(1)):
