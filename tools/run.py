@@ -78,6 +78,7 @@ CHAT_LONG = ("write smallest html tetris game. Requirements: a single self-conta
              "resumes the game, and pressing R restarts it. When a new piece cannot spawn, show a game over overlay with the final score and a hint to press R. Keep the code "
              "readable: one function for collision tests, one for locking a piece, one for clearing lines, one for drawing, and a requestAnimationFrame loop with a fixed time "
              "step. Do not use any frameworks. Answer with the complete html file only, in a single code block, without any explanation before or after it.")
+TAGBOX = {"v": ""}   # the running test and prompt (game4-racing, edit4-2, long1k, ...): --moe tag= puts it into the routing file name
 IDX = 0    # run counter: test chatv answers prompt IDX mod len(CHAT_PROMPTS) (a repeated temp-0 answer would reuse exactly the cached experts)
 CHAT_PROMPTS = [
     "Write a Python function that parses a CSV file and returns the average of each column.",
@@ -273,7 +274,7 @@ def server_start(build, env, args):
 
 def _server_start_once(build, env, args):
     if not build.startswith("stock"):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it)
-        args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA},tuned=0"]
+        args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA},tuned=0" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "")]
     logf = f"/tmp/perf-{build}.log"
     with open(logf, "w") as lf:
         p = subprocess.Popen([os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
@@ -338,6 +339,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
            "LLAMA_MOE_CACHE_STATSLOG": "32", "LLAMA_MOE_STATSLOG": f"/tmp/perf-{build}-stats.txt",  # builds with statslog write a text line per 32 steps (moe-stats.csv)
            "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
     row = {}
+    TAGBOX["v"] = test   # game4 and edit4 add their prompt below
     if test in ("ppl", "ppl3"):
         nb = "1" if test == "ppl" else "3"
         args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", "2", "-b", nb, "-ub", nb]
@@ -389,6 +391,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             text = res["content"]
         elif test == "game4":
             word = GAME_WARM if WARMING else GAME_WORDS[(REP or 0) % len(GAME_WORDS)]
+            TAGBOX["v"] = "game4-" + word.replace(" ", "_")
             args = COMMON + ["-c", str(OVR.get("ctx") or 1024)]
             res, logf = server_run(build, env, args, "/completion",
                                    {"prompt": ovr_prompt(f"write smallest html {word} game"), "n_predict": int(OVR.get("tokens") or 100), "cache_prompt": False, **GREEDY})
@@ -402,6 +405,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         elif test == "edit4":
             snippet = open(os.path.join(PROMPTS, "src_3k.cpp")).read()
             ins = EDIT_WARM if WARMING else EDIT_INSTR[(REP or 0) % len(EDIT_INSTR)]
+            TAGBOX["v"] = "edit4-%d" % ((REP or 0) % len(EDIT_INSTR))
             args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
             res, logf = server_run(build, env, args, "/completion",
                                    {"prompt": snippet + "\n\n" + ins, "n_predict": int(OVR.get("tokens") or 128), "cache_prompt": False, **GREEDY})
