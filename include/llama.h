@@ -1145,6 +1145,10 @@ extern "C" {
     // Expert cache tuning knobs as "NAME=value,NAME=value" (MARGIN, GATE, WAIT, BIG, ...; see --moe). A knob named here is never self-tuned.
     LLAMA_API void llama_moe_set_options(const char * opts);
 
+    // The --moe KEY=VALUE settings (keys lowercase with '-': state, mode, log, logdir, policy, ...): set while the command line is parsed, NULL from get when the key was not given
+    LLAMA_API void         llama_moe_set_opt(const char * key, const char * value);
+    LLAMA_API const char * llama_moe_get_opt(const char * key);
+
     // One flat INI file for what the engine learns per model (hot experts, tuner decisions, MoE placement): [section] key = value.
     // LLAMA_MOE_STATE=<file> moves it, =0 turns it off. The section of the running model is set once with llama_state_set_model().
     LLAMA_API bool llama_state_get(const char * section, const char * key, char * value, size_t n); // false: missing / off / too small

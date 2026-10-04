@@ -295,7 +295,7 @@ struct spec_depth_tuner {
     }
 
     int get(int n_gen, int d_max) {
-        static const int pinned = getenv("LLAMA_SPEC_DEPTH") ? atoi(getenv("LLAMA_SPEC_DEPTH")) : -1;
+        static const int pinned = llama_moe_get_opt("spec-depth") ? atoi(llama_moe_get_opt("spec-depth")) : -1;
         if (pinned >= 0 || d_max <= 0) {
             return std::max(0, std::min(pinned, d_max));
         }

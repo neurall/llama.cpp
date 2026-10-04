@@ -48,3 +48,7 @@ void moe_snap_save(const std::string & section);
 bool moe_log_has(const char * letters);
 // the number written right after a letter in --moe log=LETTERS (log=l64: 64), dflt when there is none; the handler of the letter uses it as its argument (l: sample every Nth token, default 1; p: stats every N steps, default 64)
 int  moe_log_num(char letter, int dflt);
+
+// the --moe KEY=VALUE settings (see llama_moe_set_opt in llama.h): NULL when the key was not given
+const char * moe_opt(const char * key);
+std::string moe_log_file(const char * name);   // the --moe logdir=DIR directory (default: the working directory) + name

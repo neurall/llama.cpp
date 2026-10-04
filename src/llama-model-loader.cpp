@@ -1,4 +1,5 @@
 #include "llama-model-loader.h"
+#include "llama-moestate.h"
 
 #if defined(__linux__)
 #include <fcntl.h>
@@ -1663,7 +1664,7 @@ bool llama_model_loader::load_all_data(
     std::atomic<bool>       pr_fail{false};
     std::vector<std::thread> pr_threads;
     size_t n_load_threads = std::max<size_t>(1, std::min<size_t>(16, std::thread::hardware_concurrency() / 2));
-    if (const char * e = getenv("LLAMA_LOAD_THREADS")) { n_load_threads = std::max(1, atoi(e)); }
+    if (const char * e = moe_opt("load-threads")) { n_load_threads = std::max(1, atoi(e)); }
     const bool par_load = !use_mmap && !use_direct_io && !check_tensors && n_load_threads > 1;
     auto pr_worker = [&]() {
 #if defined(__linux__)

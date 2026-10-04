@@ -2580,22 +2580,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 else if (key == "recent")  { params.n_moe_cache_window  = v; }
                 else if (key == "pred-top") { params.n_moe_predict       = v; }
                 else if (key == "autotune") { params.autotune = v != 0; }
-                else if (key == "state")    { // the state file (a path, or 0 for none): read while the placement is decided, before the engine reads its options
-#ifdef _WIN32
-                    _putenv_s("LLAMA_MOE_STATE", kv.substr(eq + 1).c_str());
-#else
-                    setenv("LLAMA_MOE_STATE", kv.substr(eq + 1).c_str(), 1);
-#endif
-                }
-                else if (key == "log") {   // research logs, off by default: e = embedding + hot experts line (embhot.csv), s or i = state snapshot of the model (state-snapshots/); r is for tools/run.py (run history)
-#ifdef _WIN32
-                    _putenv_s("LLAMA_MOE_LOG", kv.substr(eq + 1).c_str());
-#else
-                    setenv("LLAMA_MOE_LOG", kv.substr(eq + 1).c_str(), 1);
-#endif
-                }
                 else if (key == "train-every")   { params.n_moe_predict_train = v; if (params.n_moe_predict <= 0) { params.n_moe_predict = 8; } }
                 else { params.moe_opts += (params.moe_opts.empty() ? "" : ",") + kv; } // a tuner knob: the engine checks the name
+                llama_moe_set_opt(key.c_str(), kv.c_str() + eq + 1);   // every key is also an engine setting: state, mode, log, logdir, policy, ... (docs/fork-knobs.md)
             }
         }
     ).set_env("LLAMA_ARG_MOE"));
@@ -2607,12 +2594,11 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             if      (value == "on"  || value == "1" || value == "true")  { params.fork_off = false; }
             else if (value == "off" || value == "0" || value == "false") {
                 params.fork_off = true;
-                // the engine reads these before common_init_from_params runs
+                // read before common_init_from_params runs: the thread tuner (an engine setting), and the CUDA backend's plain host buffers (a backend variable)
+                llama_moe_set_opt("thread-tune", "0");
 #ifdef _WIN32
-                _putenv_s("LLAMA_THREAD_AUTOTUNE", "0");
                 _putenv_s("GGML_CUDA_NO_REGISTERED", "1");
 #else
-                setenv("LLAMA_THREAD_AUTOTUNE", "0", 1);
                 setenv("GGML_CUDA_NO_REGISTERED", "1", 1);
 #endif
             }

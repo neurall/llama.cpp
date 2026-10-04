@@ -5,6 +5,7 @@
 #include "llama-moecache.h"
 
 #include "llama-impl.h"
+#include "llama-moestate.h"
 #include "llama-model.h"
 #include "llama-batch.h"
 #include "llama-cparams.h"
@@ -2335,7 +2336,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             // LLAMA_MOE_DEFER=n (decode, not the last layer): the host misses among the n lowest-scored of the
             // n_expert_used selected experts (argsort order: best first) are computed while the next layer's attention
             // runs, and their output joins the next MoE layer's output (ktransformers' expert deferral)
-            static const int defer_n = [] { const char * e = getenv("LLAMA_MOE_DEFER"); return e ? atoi(e) : 0; }();
+            static const int defer_n = [] { const char * e = moe_opt("defer"); return e ? atoi(e) : 0; }();
             if (defer_n > 0 && defer_n < n_expert_used && n_tokens == 1 && il < (int) n_layer - 1 && !selected_experts_in &&
                     !up_exps_b && !gate_exps_b && !down_exps_b && !gate_up_exps && !weight_before_ffn) {
                 mc_ids_all = selected_experts;
@@ -2353,8 +2354,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                         [](ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor * w, int ith, int, void * ud) {
                             if (ith != 0) { return; }
                             const llama_moe_cache_layer * mc = (const llama_moe_cache_layer *) ud;
-                            static const int   dn   = [] { const char * e = getenv("LLAMA_MOE_DEFER"); return e ? atoi(e) : 0; }();
-                            static const float mass = [] { const char * e = getenv("LLAMA_MOE_DEFER_MASS"); return e ? (float) atof(e) : 1.0f; }();
+                            static const int   dn   = [] { const char * e = moe_opt("defer"); return e ? atoi(e) : 0; }();
+                            static const float mass = [] { const char * e = moe_opt("defer-mass"); return e ? (float) atof(e) : 1.0f; }();
                             const int32_t * tbl = (const int32_t *) mc->host_table->data;
                             for (int64_t t = 0; t < a->ne[1]; ++t) {
                                 std::vector<std::pair<float, int64_t>> miss; // (weight, slot i)

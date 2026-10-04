@@ -556,8 +556,7 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
             for (float x : v) { snprintf(b, sizeof b, "%02x", (unsigned) (uint8_t) (int8_t) std::lround(x/mx*127.0f)); h += b; }
             g_lt.hex[il] = h;
             if (il == (int) g_lt.ctx->get_model().hparams.n_layer() - 1) {   // the last layer closes the sample
-                const char * f = getenv("LLAMA_MOE_LAYERTRACE");
-                const std::filesystem::path path = f && f[0] ? f : "layertrace.csv";
+                const std::filesystem::path path = moe_log_file("layertrace.csv");
                 std::error_code ec;
                 const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
                 std::string out = fresh ? "model,pos,layer,embhex,ids\n" : "";
@@ -1415,7 +1414,7 @@ static void threads_save(const llama_model & model, const char * key, int dflt, 
 }
 
 void llama_context::set_thread_autotune(bool on) {
-    const char * e = getenv("LLAMA_THREAD_AUTOTUNE");
+    const char * e = moe_opt("thread-tune");
     if (e && atoi(e) == 0) { on = false; }
     thr.on    = on;
     thr.base0 = (int) cparams.n_threads;
@@ -1446,11 +1445,11 @@ void llama_context::thread_cap_from_probe(int32_t n_sat) {
 }
 
 void llama_context::set_batch_thread_autotune(bool on, int32_t n_max) {
-    const char * e = getenv("LLAMA_THREAD_AUTOTUNE");
+    const char * e = moe_opt("thread-tune");
     if (e && atoi(e) == 0) { on = false; }
     // off unless asked for (LLAMA_BATCH_THREAD_AUTOTUNE=1): a cycle needs 15 full batches after a two-batch hold, a prompt of up to ~16k tokens ends before it can decide
     // (and so before anything is saved), so every start explored five thread counts, SMT siblings included, and paid ~5% of the prompt (CPU only, OLMoE, 4k tokens)
-    const char * b = getenv("LLAMA_BATCH_THREAD_AUTOTUNE");
+    const char * b = moe_opt("batch-tune");
     if (!(b && atoi(b) != 0)) { on = false; }
     thrb.on    = on;
     thrb.n_max = n_max;
@@ -2620,7 +2619,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 
     // apply throttled MoE expert-cache updates between graph executions; wait for
     // the GPU first so no queued read of a slot races the worker refilling it
-    static const bool mc_sync = !getenv("LLAMA_MOE_CACHE_SYNC") || atoi(getenv("LLAMA_MOE_CACHE_SYNC")) != 0;
+    static const bool mc_sync = !moe_opt("sync") || atoi(moe_opt("sync")) != 0;
     // only the context that owns the cache steps it (not e.g. an MTP draft context)
     if (cparams.moe_cache) {
         if (mc_sync && llama_moe_cache_active()) {

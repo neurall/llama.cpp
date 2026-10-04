@@ -471,6 +471,12 @@ struct knobs_t {
 };
 
 // a knob name as typed: case and '-' / '_' do not matter (swap-lead = SWAP_LEAD)
+// the --moe key of a knob: lowercase with '-' (SWAP_LEAD = swap-lead)
+std::string knob_key(std::string name) {
+    for (char & c : name) { c = c == '_' ? '-' : (char) tolower((unsigned char) c); }
+    return name;
+}
+
 std::string knob_canon(std::string name) {
     for (char & c : name) { c = c == '-' ? '_' : (char) toupper((unsigned char) c); }
     return name;
@@ -510,7 +516,7 @@ knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
         for (const char * n : { "VRAM_RESERVE_MB", "UPLOAD_SHARE", "PIN_HOT", "STAY_BONUS", "SLOW_MIN_STAY", "SWAP_LEAD", "SWAPS_PER_STEP", "CPU_RAM_GBS", "SWAP_LEAD_PER_LINK", "UPLOAD_WAIT", "UPLOAD_WAIT_MAX_US", "PRED_ISO", "PRED_N", "TRACE_N", "TRACE_SKIP", "LEAD", "LEAD_SPAN", "ADMIT", "ADMIT_SLOW", "ADMIT_JIT", "PRED_LEAD", "PRED_SLOW", "RAM_CEILING_GBS", "WAIT_SWAPS", "UPLOAD_CHUNK_KB", "PRED_AUTO", "IDLE_UP", "IDLE_UP_N", "EV_CLD", "L3_PF", "L3_AUTO", "PRED_KEEP", "PRED_TUNE", "PRED", "UPLOAD_NOW" }) {
-            if (const char * e = getenv((std::string("LLAMA_MOE_CACHE_") + n).c_str())) {
+            if (const char * e = moe_opt(knob_key(n).c_str())) {
                 knob_set(r, n, atof(e));
                 user_knobs().insert(n);
             }
@@ -524,7 +530,7 @@ enum class policy { halve, window, hybrid, add };
 
 policy get_policy() {
     static const policy p = [] {
-        const char * e = getenv("LLAMA_MOE_CACHE_POLICY");
+        const char * e = moe_opt("policy");
         if (e && strcmp(e, "window") == 0) return policy::window;
         if (e && strcmp(e, "hybrid") == 0) return policy::hybrid;
         if (e && strcmp(e, "halve")  == 0) return policy::halve;
@@ -540,7 +546,7 @@ double score(const layer_state & ls, int32_t id) {
         case policy::hybrid: return ls.win_count[id] * ((double) ls.glob_count[id] / (double) ls.glob_max);
         case policy::add: {
             static const double k = [] {
-                const char * w = getenv("LLAMA_MOE_CACHE_GLOBAL_WEIGHT");
+                const char * w = moe_opt("global-weight");
                 return w ? atof(w) : 16.0;
             }();
             return ls.win_count[id] + k * ((double) ls.glob_count[id] / (double) ls.glob_max);
@@ -788,7 +794,7 @@ void moe_seed_hot(const std::string & section, size_t n_expert) {
 }  // namespace
 
 void llama_moe_observe_start(const llama_model & model) {
-    const char * off = getenv("LLAMA_MOE_OBSERVE");
+    const char * off = moe_opt("observe");
     if ((off && off[0] == '0') || model.hparams.n_expert == 0 || !moe_state_enabled() || llama_moe_cache_active()) {
         return;
     }
@@ -1452,7 +1458,7 @@ void unpin_helper() {
 std::vector<std::vector<int>> l3_domain_cores();
 
 void resource_probe(moe_cache * mc) {
-    const char * pe = getenv("LLAMA_MOE_CACHE_PROBE");
+    const char * pe = moe_opt("probe");
     if ((pe && pe[0] == '0') || mc->layers.empty()) {
         return;
     }
@@ -1549,8 +1555,8 @@ void resource_probe(moe_cache * mc) {
         if (ramp[i] >= 0.95 * cpu_alone) { n_sat = i + 1; break; }
     }
     mc->cpu_sat_threads = n_sat;
-    if (!getenv("LLAMA_MOE_CACHE_CPU_RAM_GBS")) { knobs().cpu_gbs = cpu_alone; }
-    if (!getenv("LLAMA_MOE_CACHE_RAM_CEILING_GBS")) { knobs().ddr_gbs = std::max(cpu_alone, total); }
+    if (!moe_opt("cpu-ram-gbs")) { knobs().cpu_gbs = cpu_alone; }
+    if (!moe_opt("ram-ceiling-gbs")) { knobs().ddr_gbs = std::max(cpu_alone, total); }
     // the DDR budget gate (GATE=3) needs the budget just measured: on by default then (GLM short chat +6%, MiMo +16% in a pair); the tuner can turn it off
     if (!user_knobs().count("UPLOAD_WAIT")) { knobs().gate = 3; }
     std::string links, rs;
@@ -1999,7 +2005,7 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
         return false;
     }
     static const double frac = [] {
-        const char * e = getenv("LLAMA_MOE_CACHE_ADOPT");
+        const char * e = moe_opt("adopt");
         return e ? atof(e) : 1.0; // measured: 1/16 +0.3 hit pts, 1/4 +3.8, 1 +11.4 (GLM 12k, 1 GPU)
     }();
     std::lock_guard<std::mutex> lock(mc->mtx);
@@ -2286,9 +2292,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
 
         // LLAMA_MOE_CACHE_JIT_POOL=n: JIT pool slots per slower-link layer on the fastest-link GPU. Default 0: the pool
         // chain's cross-GPU input/output copies cost ~10% on GLM (2x3090, 20 x4 layers) even with nothing in the pool
-        const int32_t jit_pool = [] { const char * e = getenv("LLAMA_MOE_CACHE_JIT_POOL"); return e ? std::max(0, atoi(e)) : 0; }();
+        const int32_t jit_pool = [] { const char * e = moe_opt("jit-pool"); return e ? std::max(0, atoi(e)) : 0; }();
         // LLAMA_MOE_CACHE_JIT_POOL_ALL=1: every layer gets a pool (JIT never evicts the main cache)
-        const bool jit_pool_all = [] { const char * e = getenv("LLAMA_MOE_CACHE_JIT_POOL_ALL"); return e && atoi(e) != 0; }();
+        const bool jit_pool_all = [] { const char * e = moe_opt("jit-pool-all"); return e && atoi(e) != 0; }();
         // n_slots < 0: fill each device's free VRAM (called after KV/compute buffers
         // exist), leaving a margin for the compute graph growing by the cache chain.
         // ponytail: one slot count per device, uniform over that device's layers.
@@ -2335,11 +2341,11 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
             // the learned predictors (fp16 [n_embd, n_expert * ahead] per layer, allocated after the cache) need room too
             {
-                const char * a = getenv("LLAMA_MOE_CACHE_PREDICT_AHEAD");
+                const char * a = moe_opt("predict-ahead");
                 const int64_t ahead = std::max(0, std::min(8, a ? atoi(a) : 2));
                 if (predict > 0 && ahead > 0 && !cands.empty()) {
                     const int64_t n_embd = cands[0].l->ffn_up_exps->ne[0];
-                    const char * st = getenv("LLAMA_MOE_CACHE_PREDICT_STRIDE");
+                    const char * st = moe_opt("predict-stride");
                     const size_t n_src = (cands.size() + std::max(1, st ? atoi(st) : 1) - 1) / std::max(1, st ? atoi(st) : 1);
                     // fp16 master + Q8_0 prediction copy (34 bytes per 32 values)
                     margin += (size_t) (n_src * n_embd * n_expert * ahead * (sizeof(ggml_fp16_t) + 34.0/32)) + 64u * 1024 * 1024;
@@ -2512,7 +2518,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         }
 
         {
-            const char * ng = getenv("LLAMA_MOE_CACHE_NEG_IDS");
+            const char * ng = moe_opt("neg-ids");
             g_neg_ids = !(ng && ng[0] == '0');
             for (auto & ls : mc->layers) {
                 for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) {
@@ -2596,10 +2602,10 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
             ggml_backend_dev_t gpu = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mc->bufs.back()));
             // default: copy from the mmap'd host memory (measured faster); pread path is opt-in
-            const char * pr = getenv("LLAMA_MOE_CACHE_PREAD");
+            const char * pr = moe_opt("pread");
             const bool use_pread = (pr && pr[0] == '1') || any_repack;
             ggml_backend_buffer_type_t hbuft = (use_pread && any_file && gpu) ? ggml_backend_dev_host_buffer_type(gpu) : nullptr;
-            const char * nt = getenv("LLAMA_MOE_CACHE_UPLOAD_THREADS");
+            const char * nt = moe_opt("upload-threads");
             // one set of workers per upload link when layers sit behind both: a slow (x4) copy doesn't hold up the fast link's queue
             const int n_links   = mc->n_links > 1 ? mc->n_links : 1;
             const int n_workers = std::max(1, nt ? atoi(nt) : 1) * n_links;
@@ -2767,7 +2773,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         {
             // decisions of the last self-tune on this machine for this model (the profile file's footer): start from them (an explicit
             // LLAMA_MOE_CACHE_<NAME> wins) and check again after a while instead of exploring right away
-            const char * te = getenv("LLAMA_MOE_CACHE_TUNED");
+            const char * te = moe_opt("tuned");
             std::string txt;
             if ((!te || atoi(te) != 0) && !mc->profile.empty()) { moe_state_get(mc->profile, "tuned.l" + std::to_string(mc->n_links), txt); }
             for (char & c : txt) { if (c == ' ') { c = '\n'; } }
@@ -2788,12 +2794,12 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 LLAMA_LOG_WARN("moe-cache: self-tune: %d saved settings loaded from the state file, next check after 16384 tokens\n", n);
             }
         }
-        if (const char * c = getenv("LLAMA_MOE_CACHE_CTL")) {
+        if (const char * c = moe_opt("ctl")) {
             mc->ctl = c;
         }
-        if (moe_log_has("c")) {   // --moe log=c: decode-step trace; LLAMA_MOE_CACHE_TRACE=<prefix> only moves it
-            const char * t = getenv("LLAMA_MOE_CACHE_TRACE");
-            g_tr.prefix = t && t[0] ? t : "moe-trace";
+        if (moe_log_has("c")) {   // --moe log=c: decode-step trace, files moe-trace* in the log directory
+            static const std::string trace_prefix = moe_log_file("moe-trace");
+            g_tr.prefix = trace_prefix.c_str();
             g_tr.names[TR_SCHED] = "sched: tokens, GPU splits, publishes";
             g_tr.names[TR_CPU]   = "CPU experts + router";
             g_tr.names[TR_PRED]  = "predictor";
@@ -2807,7 +2813,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         }
 #ifndef _WIN32
         {
-            const char * e = getenv("LLAMA_MOE_CACHE_DROP");
+            const char * e = moe_opt("drop");
             const double ram = (double) sysconf(_SC_PHYS_PAGES) * (double) sysconf(_SC_PAGESIZE);
             ggml_backend_dev_t gpu = mc->bufs.empty() ? nullptr : ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mc->bufs.back()));
             const bool mmapd = !mc->layers.empty() && ggml_backend_buffer_is_host(mc->layers[0].pub.up_src->buffer) &&
@@ -2841,22 +2847,22 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         }
 
         {
-            const char * x = getenv("LLAMA_MOE_CACHE_PREDICT_MAX");
+            const char * x = moe_opt("predict-max");
             mc->pred_m   = predict;
             mc->pred_max = x ? atoi(x) : 2;
             {
-                const char * ra = getenv("LLAMA_MOE_CACHE_PREDICT_RA");
+                const char * ra = moe_opt("predict-ra");
                 ggml_backend_dev_t gpu = mc->bufs.empty() ? nullptr : ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mc->bufs.back()));
                 const auto * src = mc->layers.empty() ? nullptr : mc->layers[0].pub.up_src;
                 mc->pred_ra = ra && atoi(ra) != 0 && src && ggml_backend_buffer_is_host(src->buffer) &&
                     !(gpu && ggml_backend_buffer_get_type(src->buffer) == ggml_backend_dev_host_buffer_type(gpu));
             }
-            if (const char * g = getenv("LLAMA_MOE_CACHE_PREDICT_MARGIN")) {
+            if (const char * g = moe_opt("predict-margin")) {
                 mc->pred_margin = (float) atof(g);
             }
             {
-                const char * a  = getenv("LLAMA_MOE_CACHE_PREDICT_AHEAD");
-                const char * mu = getenv("LLAMA_MOE_CACHE_PREDICT_MU");
+                const char * a  = moe_opt("predict-ahead");
+                const char * mu = moe_opt("predict-mu");
                 int ahead = 2;
                 if (!a && knobs().lead != 0 && !mc->layers.empty() && mc->layers[0].pub.up_src && mc->layers[0].pub.gate_src && mc->layers[0].pub.down_src) {
                     // lookahead long enough for the slowest link: its upload time (probed alone speed, x2 for the contention seen under load) over a 1 ms layer
@@ -2871,7 +2877,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 mc->pred_ahead = std::max(0, std::min(8, a ? atoi(a) : ahead));
                 mc->pred_train = predict_train;
                 if (mu) { mc->pred_mu = (float) atof(mu); }
-                const char * pf = getenv("LLAMA_MOE_CACHE_PREDICT_FILE");
+                const char * pf = moe_opt("predict-file");
                 mc->pred_file = pf ? (strcmp(pf, "0") == 0 ? "" : pf) : cache_file(model, "moe-pred-", "-a" + std::to_string(mc->pred_ahead));
             }
             const size_t nl = mc->layers.size();
@@ -2890,9 +2896,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             size_t n_pred = 0, n_learn = 0;
             // LLAMA_MOE_CACHE_PREDICT_STRIDE=N: predict only from every Nth layer (each covers its next `ahead`
             // layers, so ahead >= N keeps every layer predicted): N times fewer predictor matmuls and weights
-            const char * pst = getenv("LLAMA_MOE_CACHE_PREDICT_STRIDE");
+            const char * pst = moe_opt("predict-stride");
             const size_t stride = (size_t) std::max(1, pst ? atoi(pst) : 1);
-            const char * pq8 = getenv("LLAMA_MOE_CACHE_PREDICT_Q8");
+            const char * pq8 = moe_opt("predict-q8");
             const bool use_q8 = !(pq8 && pq8[0] == '0');
             for (size_t li = 0; mc->pred_m > 0 && li + 1 < nl; ++li) {
                 if (li % stride != 0) {
@@ -2983,7 +2989,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     // L3 prefetch threads, idle until L3PF > 0: one per L3 domain, pinned to that domain's highest
                     // physical core (LLAMA_MOE_L3PF_CPUS=a,b,.. overrides); rows split like GGML_MOE_CCX_SPLIT=<domains>
                     std::vector<int> cpus = l3_prefetch_cpus();
-                    if (const char * c = getenv("LLAMA_MOE_L3PF_CPUS")) {
+                    if (const char * c = moe_opt("l3pf-cpus")) {
                         cpus.clear();
                         for (const char * q = c; *q; ) {
                             cpus.push_back(atoi(q));
@@ -3008,7 +3014,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         ggml_set_moe_obs_callback(moe_obs_cb, mc);
         ggml_set_moe_phase_callback(moe_phase_cb, mc);
         {
-            const char * e = getenv("LLAMA_MOE_CACHE_PREFILL_D2D");
+            const char * e = moe_opt("prefill-d2d");
             if (!e || e[0] != '0') {
                 ggml_backend_set_moe_src_callback(moe_src_cb, mc);
                 ggml_backend_set_moe_fill_callback(moe_fill_cb, mc);
@@ -3213,7 +3219,7 @@ const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps
 // step down: 0.5 vs 0, then 0.75 vs 0.5 or 0.25 vs 0. The result is held for a rest period (doubling while re-checks
 // confirm it). Works for any GPU count and link widths; a box where splitting doesn't pay ends at 0.
 static void prefill_split_tune(moe_cache * mc, double batch_us) {
-    static const char * env = getenv("LLAMA_PREFILL_SPLIT");
+    static const char * env = moe_opt("prefill-split");
     if (env || !g_split_enabled) {
         return; // fixed by LLAMA_PREFILL_SPLIT, or the buffers weren't reserved for a split
     }
@@ -3315,7 +3321,7 @@ double llama_moe_cache_link_gbs(ggml_backend_dev_t dev) {
 // Reserved at >= 1.25x (2 x16: 2x; x16 + x4: 1.22x, where the split measured slower); alpha then starts at 1 and the
 // tuner measures. LLAMA_PREFILL_SPLIT=<alpha> overrides (0: never).
 void llama_moe_cache_prefill_decide(const std::vector<ggml_backend_dev_t> & gpus) {
-    if (const char * e = getenv("LLAMA_PREFILL_SPLIT")) {
+    if (const char * e = moe_opt("prefill-split")) {
         g_split_share   = (float) atof(e);
         g_split_enabled = g_split_share > 0;
     }
@@ -3346,7 +3352,7 @@ void llama_moe_cache_prefill_decide(const std::vector<ggml_backend_dev_t> & gpus
         sum += gbs; best = std::max(best, gbs); worst = std::min(worst, gbs);
         log += tr_fmt(" %s %.1f", ggml_backend_dev_name(d), gbs);
     }
-    if (getenv("LLAMA_PREFILL_SPLIT")) {
+    if (moe_opt("prefill-split")) {
         return;
     }
     const double speedup = best > 0 ? sum / best : 1.0;
@@ -3387,7 +3393,7 @@ static void self_tune(moe_cache * mc) {
     static const std::vector<tunable> T = [&] {
         std::vector<tunable> t;
         // whatever the user set (LLAMA_MOE_CACHE_<NAME> in the environment) is theirs: never tuned. Deterministic mode fixes them all.
-        const char * dm = getenv("LLAMA_MOE_CACHE_DETERMINISTIC");
+        const char * dm = moe_opt("fixed");
         const bool det_mode = dm && atoi(dm) != 0;
         auto add = [&](const tunable & x) {
             if (!det_mode && !g_autotune_off && !user_knobs().count(x.name)) { t.push_back(x); }
@@ -3496,7 +3502,7 @@ void llama_moe_cache_step() {
     // output. Uploads still overlap the token's compute; the wait is only for
     // the ones not finished by then.
     static const bool det = [] {
-        const char * e = getenv("LLAMA_MOE_CACHE_DETERMINISTIC");
+        const char * e = moe_opt("fixed");
         return e && atoi(e) != 0;
     }();
     // wait for and publish the previous step's uploads (default; LLAMA_MOE_CACHE_WAIT_SWAPS=0
@@ -3704,7 +3710,7 @@ void llama_moe_cache_step() {
     // lose their RAM pages; churning ones never do (dropping and re-reading them cost more than it saved)
     if (mc->drop_cached && mc->n_steps % 256 == 0) {
         static const uint64_t stay = [] {
-            const char * e = getenv("LLAMA_MOE_CACHE_DROP_STAY");
+            const char * e = moe_opt("drop-stay");
             return (uint64_t) (e ? atoll(e) : 1024);
         }();
         for (auto & ls : mc->layers) {
@@ -3721,7 +3727,7 @@ void llama_moe_cache_step() {
     // more than LLAMA_MOE_CACHE_PREDICT_MISS (default 0.05) of its expert uses (windows of 256 steps)
     if (mc->pred_ahead > 0 && mc->n_steps % 256 == 0) {
         static const double thr = [] {
-            const char * e = getenv("LLAMA_MOE_CACHE_PREDICT_MISS");
+            const char * e = moe_opt("predict-miss");
             return e ? atof(e) : 0.05;
         }();
         const size_t nl = mc->layers.size();
@@ -3962,7 +3968,7 @@ void llama_moe_cache_step() {
 
     // decay: counts halve every N steps, so recent use dominates old use
     static const uint64_t halve_every = [] {
-        const char * h = getenv("LLAMA_MOE_CACHE_HALVE_EVERY");
+        const char * h = moe_opt("halve-every");
         return (uint64_t) std::max(1, h ? atoi(h) : 64);
     }();
     if (mc->n_steps % halve_every == 0) {
@@ -4069,15 +4075,8 @@ void llama_moe_set_options(const char * opts) {
         } else if (knob_set(knobs(), name, atof(kv.c_str() + eq + 1))) {
             user_knobs().insert(name);
         } else {
-            // every other setting is an environment variable of the engine (POLICY, PREDICT_AHEAD, ...): --moe name=value sets LLAMA_MOE_CACHE_NAME, and wins over the environment
-            for (char & c : name) { if (c == '-') { c = '_'; } }
-            const std::string var = "LLAMA_MOE_CACHE_" + name, val = kv.substr(eq + 1);
-#ifdef _WIN32
-            _putenv_s(var.c_str(), val.c_str());
-#else
-            setenv(var.c_str(), val.c_str(), 1);
-#endif
-            LLAMA_LOG_INFO("moe-cache: --moe %s=%s sets %s\n", kv.substr(0, eq).c_str(), val.c_str(), var.c_str());
+            // every other setting is read by the engine by its --moe key (policy, predict-ahead, ...)
+            llama_moe_set_opt(knob_key(name).c_str(), kv.substr(eq + 1).c_str());
         }
     }
 }
@@ -4109,7 +4108,7 @@ bool llama_moe_cache_get_info(struct llama_tuning_info * info) {
 
 int64_t llama_moe_cache_max_batch() {
     static const int64_t v = [] {
-        const char * e = getenv("LLAMA_MOE_CACHE_MAX_BATCH");
+        const char * e = moe_opt("max-batch");
         return (int64_t) (e ? atoi(e) : 31);
     }();
     return v;

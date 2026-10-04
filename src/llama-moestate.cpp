@@ -31,11 +31,7 @@ std::string g_geom;          // arch.experts.experts_used of the loaded model: w
 std::string g_geom_section;  // the section this run writes the geom tag into
 
 std::string state_path() {
-    const char * off = getenv("LLAMA_MOE_CACHE_PROFILE"); // older switch: 0 off (a path there was the old profile file, now unused)
-    if (off && strcmp(off, "0") == 0) {
-        return "";
-    }
-    if (const char * e = getenv("LLAMA_MOE_STATE")) {
+    if (const char * e = moe_opt("state")) {
         return strcmp(e, "0") == 0 ? "" : e;
     }
 #ifdef _WIN32
@@ -262,7 +258,7 @@ void llama_state_set_model(const char * section) {
 static std::string g_embsnap_hex;
 
 bool moe_log_has(const char * letters) {   // --moe log=LETTERS (LLAMA_MOE_LOG)
-    const char * e = getenv("LLAMA_MOE_LOG");
+    const char * e = moe_opt("log");
     return e && strpbrk(e, letters);
 }
 
@@ -296,8 +292,7 @@ void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & 
         model = g_geom_section;
     }
     if (hex.empty() || hot.empty()) { return; }
-    const char * ef = getenv("LLAMA_MOE_EMBHOT");   // embhot.csv in the working directory, or this file
-    const std::filesystem::path file = ef && ef[0] ? ef : "embhot.csv";
+    const std::filesystem::path file = moe_log_file("embhot.csv");
     std::error_code ec;
     const bool fresh = !std::filesystem::exists(file, ec) || std::filesystem::file_size(file, ec) == 0;
     // one line per run, built whole and appended with one write: model,embhex,hots. hots = layer:count count ...;layer:... (no commas in any field)
@@ -320,8 +315,7 @@ bool moe_snap_enabled() {
 void moe_snap_save(const std::string & section) {
     std::vector<std::pair<std::string, std::string>> kv;
     if (!moe_snap_enabled() || !moe_state_section_kv(section, kv) || kv.empty()) { return; }
-    const char * ed = getenv("LLAMA_MOE_SNAP_DIR");
-    const std::filesystem::path dir = ed && ed[0] ? ed : "state-snapshots";
+    const std::filesystem::path dir = moe_log_file("state-snapshots");
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     char ts[32];
@@ -335,7 +329,32 @@ void moe_snap_save(const std::string & section) {
 }
 
 int moe_log_num(char letter, int dflt) {
-    const char * e = getenv("LLAMA_MOE_LOG");
+    const char * e = moe_opt("log");
     const char * p = e ? strchr(e, letter) : nullptr;
     return p && isdigit((unsigned char) p[1]) ? atoi(p + 1) : dflt;
+}
+
+// --moe settings
+static std::map<std::string, std::string> g_moe_opts;   // node based: the returned pointers stay valid
+static std::mutex g_opt_mtx;                             // its own lock: the state file code reads options while it holds g_mtx
+
+void llama_moe_set_opt(const char * key, const char * value) {
+    std::lock_guard<std::mutex> lk(g_opt_mtx);
+    g_moe_opts[key] = value ? value : "";
+}
+
+const char * llama_moe_get_opt(const char * key) {
+    std::lock_guard<std::mutex> lk(g_opt_mtx);
+    const auto it = g_moe_opts.find(key);
+    return it == g_moe_opts.end() ? nullptr : it->second.c_str();
+}
+
+const char * moe_opt(const char * key) {
+    return llama_moe_get_opt(key);
+}
+
+// where a research log goes: the --moe logdir=DIR directory, else the working directory
+std::string moe_log_file(const char * name) {
+    const char * d = moe_opt("logdir");
+    return d && d[0] ? std::string(d) + "/" + name : std::string(name);
 }

@@ -1277,7 +1277,7 @@ static void common_gpu_free(size_t & total, size_t & max, int & n) {
     uint32_t h = 2166136261u;            // FNV-1a: the same on every platform, so a state file can move with its machine
     for (const auto & id : ids) { for (char c : id) { h = (h ^ (uint8_t) c) * 16777619u; } h *= 16777619u; }
     g_gpu_id = string_format("%08x", h);
-    if (const char * lg = getenv("LLAMA_MOE_LOG"); lg && strchr(lg, 'g')) {   // --moe log=g
+    if (const char * lg = llama_moe_get_opt("log"); lg && strchr(lg, 'g')) {   // --moe log=g
          for (const auto & id : ids) { LOG_INF("%s: GPU identity of the placement record: %s -> %s\n", __func__, id.c_str(), g_gpu_id.c_str()); } }
 }
 
@@ -1580,10 +1580,9 @@ static bool moe_auto_clear_gap(const moe_auto_rec & st, const moe_auto_rec & ca,
     return moe_auto_gap(st, ca, np, moe_auto_est_gen(params), bar) > bar;
 }
 
-// --moe autotune=0 or LLAMA_AUTOTUNE=0: the kill switch for everything the engine tunes or measures by itself
+// -at off or --moe autotune=0: the kill switch for everything the engine tunes or measures by itself
 bool common_autotune_on(const common_params & params) {
-    const char * e = getenv("LLAMA_AUTOTUNE");
-    return params.autotune && !(e && atoi(e) == 0);
+    return params.autotune;
 }
 
 // -ub from the request and the card, no VRAM tiers: the compute buffer of a ubatch is probed (no_alloc, per candidate) and what it
@@ -1645,7 +1644,7 @@ static void common_moe_cache_auto(common_params & params) {
     // sized with a margin, 12k prompt, other margins aborting with CUDA out of memory): 54 MiB OLMoE, 74 IQ3_S, 170 GLM; ~15 at 512.
     // 0.1 MiB per ubatch token is 1.2x the worst of them, floor 200: GLM aborted with out of memory at ub 512 with 51 (-at off keeps the 384 MiB default; --moe margin_mb=N overrides)
     if (params.n_moe_cache_slots != 0 && common_autotune_on(params) && params.moe_opts.find("margin_mb") == std::string::npos &&
-        !getenv("LLAMA_MOE_CACHE_VRAM_RESERVE_MB")) {
+        !llama_moe_get_opt("vram-reserve-mb")) {
         params.moe_opts += (params.moe_opts.empty() ? "" : ",") + std::string("margin_mb=") + std::to_string(std::max(200, (int) std::ceil(0.1 * params.n_ubatch)));
     }
     COM_DBG("moe_cache_slots=%d ctx=%d batch=%d ubatch=%d threads=%d threads_batch=%d repack=%s ngl=%d tensor_overrides=%zu fit=%s\n",
@@ -1709,7 +1708,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     bool use_cache = true;
     {
         const std::string path = moe_auto_path(params, model_size, n_gpu, vram_max);
-        const char * force = getenv("LLAMA_MOE_AUTO_MODE");
+        const char * force = llama_moe_get_opt("mode");
         const std::string f = force ? force : "";
         if (f == "retest") { std::string sec, pre; moe_auto_split(path, sec, pre); llama_state_erase(sec.c_str(), pre.c_str()); }
         moe_auto_rec st, ca;
@@ -1816,7 +1815,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     // by domain so each domain's threads compute its rows (GGML_MOE_CCX_SPLIT), leaving each domain's highest core to its
     // L3 prefetch thread. Linux sysfs / Windows GetLogicalProcessorInformationEx; only without a user CPU mask (LLAMA_AUTO_PLACE=1).
     // ponytail: no NUMA-node awareness yet, Windows processor group 0 only
-    if (!params.cpuparams.mask_valid && params.cpuparams.auto_threads && getenv("LLAMA_AUTO_PLACE") && atoi(getenv("LLAMA_AUTO_PLACE")) != 0) {
+    if (!params.cpuparams.mask_valid && params.cpuparams.auto_threads && llama_moe_get_opt("auto-place") && atoi(llama_moe_get_opt("auto-place")) != 0) {
         std::vector<std::vector<int>> dom; // physical cores (first SMT thread) per L3 domain
 #if defined(_WIN32)
         DWORD len = 0;
@@ -1886,7 +1885,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 }
                 // the static per-L3 row split only serves the L3 prefetch: alone it lost 19% on GLM (3700X, fixed rows
                 // per thread lose the dynamic chunking's load balance), while pinning itself was neutral (21.73 vs 21.53)
-                const char * l3pf = getenv("LLAMA_MOE_CACHE_L3_PF");
+                const char * l3pf = llama_moe_get_opt("l3-pf");
                 if (!getenv("GGML_MOE_CCX_SPLIT") && l3pf && atof(l3pf) > 0) {
 #if defined(_WIN32)
                     _putenv_s("GGML_MOE_CCX_SPLIT", std::to_string(n_dom).c_str());
@@ -2178,11 +2177,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
     }
 #endif
     if (params.fork_off || !params.autotune) { // nothing is counted or saved
-#ifdef _WIN32
-        _putenv_s("LLAMA_MOE_OBSERVE", "0");
-#else
-        setenv("LLAMA_MOE_OBSERVE", "0", 1);
-#endif
+        llama_moe_set_opt("observe", "0");
     }
     if (params.fork_off) { // --fork off wins over every other fork setting, whatever the order of the options
         params.n_moe_cache_slots = 0;
@@ -2194,7 +2189,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
 
     // last resort: the fork could not even load or create a context (out of memory) where upstream stock would run. Free everything and start over
     // with the fork off exactly as --moe cache=0 does (cache off, autotune off, the placement of upstream); not when the user forced a placement
-    if ((res->model() == NULL || (!model_only && res->context() == NULL)) && !getenv("LLAMA_MOE_AUTO_MODE") &&
+    if ((res->model() == NULL || (!model_only && res->context() == NULL)) && !llama_moe_get_opt("mode") &&
         orig.n_moe_cache_slots != 0 && (orig.n_moe_cache_slots != -2 || common_autotune_on(orig))) {
         moe_auto_mark_failed();
         LOG_WRN("%s: initialisation failed, starting over with the fork off (as --moe cache=0)\n", __func__);
