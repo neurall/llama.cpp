@@ -136,10 +136,8 @@ Anything you pass is used as given and is never auto-tuned:
 
 | you pass | effect |
 |---|---|
-| `--fork off` | the whole fork off: no expert cache, nothing tuned or measured, no auto-pinned weights, no thread tuner: plain stock behaviour (`LLAMA_ARG_FORK=off`) |
+| `--fork off` | the whole fork off: no expert cache, nothing tuned or measured, no auto-pinned weights, no thread tuner: plain stock behaviour |
 | `-at off` | only the self-tuning off (`--autotune off`, same as `--moe autotune=0`): the cache keeps working with fixed defaults, placement uses a static rule, nothing is measured or saved |
-
-Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_FORK=off`.  
 
 ## Options
 

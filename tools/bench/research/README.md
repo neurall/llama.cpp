@@ -1,7 +1,7 @@
 # Research logs: how the hot experts of a MoE model behave
 
 This fork can record what a MoE model does while you use it, to study which experts stay hot, how that depends on the topic, and how well a router's choice can be predicted.
-Everything here is **off by default**, writes only when you ask, and costs no speed while the model runs. One switch controls it, `--moe log=LETTERS` (or `LLAMA_MOE_LOG=LETTERS`);
+Everything here is **off by default**, writes only when you ask, and costs no speed while the model runs. One switch controls it, `--moe log=LETTERS`;
 the letters, with the other fork options, are listed in [fork-knobs.md](../../../docs/fork-knobs.md). Please share what you collect.
 
 | letter | file | one line per | what it holds |

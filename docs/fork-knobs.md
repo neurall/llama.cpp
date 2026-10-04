@@ -29,22 +29,22 @@ state file. Everything below is for overriding that, and a setting you give is n
 
 ## Command-line flags
 
-| flag | environment form | what it does |
-|---|---|---|
-| `--moe KEY=VAL,...` | `LLAMA_ARG_MOE` | the expert cache settings and knobs, below |
-| `--moe-expert-cache N` | `LLAMA_ARG_MOE_EXPERT_CACHE` | expert slots per layer in VRAM; `-1` sizes them from free VRAM, `0` = no cache (the rest of the fork stays on; use `--fork off` for stock behaviour) |
-| `--prefetch-experts-slots N` | | staging slots for host-to-GPU prefetch of big batches (same as `--moe pf-slots=N`) |
-| `-at on\|off`, `--autotune` | `LLAMA_ARG_AUTOTUNE`, `LLAMA_AUTOTUNE=0` | self-tuning of cache knobs, thread counts and the cache-or-stock placement; `off` = fixed defaults, nothing measured or saved (same as `--moe autotune=0`) |
-| `-lm pin\|mmap\|dio`, `--load-mode` | `LLAMA_ARG_LOAD_MODE` | `pin`: weights in pinned RAM (the default of every tool when part of the model stays in host RAM and the model fits in the RAM available now; faster prompts and uploads, the load takes longer; `-lm mmap` opts out); `mmap`: memory-mapped, for models bigger than RAM; `dio`: direct IO |
-| `-md FILE --spec-type draft-mtp` | | MTP draft head (Qwen3.8-Flash-Next, GLM-5.3-Flash), see the README |
-| `-t N`, `-tb N` | | fixed decode / prompt thread counts (otherwise tuned) |
+| flag | what it does |
+|---|---|
+| `--moe KEY=VAL,...` | the expert cache settings and knobs, below |
+| `--moe-expert-cache N` | expert slots per layer in VRAM; `-1` sizes them from free VRAM, `0` = no cache (the rest of the fork stays on; use `--fork off` for stock behaviour) |
+| `--prefetch-experts-slots N` | staging slots for host-to-GPU prefetch of big batches (same as `--moe pf-slots=N`) |
+| `-at on\|off`, `--autotune` | self-tuning of cache knobs, thread counts and the cache-or-stock placement; `off` = fixed defaults, nothing measured or saved (same as `--moe autotune=0`) |
+| `-lm pin\|mmap\|dio`, `--load-mode` | `pin`: weights in pinned RAM (the default of every tool when part of the model stays in host RAM and the model fits in the RAM available now; faster prompts and uploads, the load takes longer; `-lm mmap` opts out); `mmap`: memory-mapped, for models bigger than RAM; `dio`: direct IO |
+| `-md FILE --spec-type draft-mtp` | MTP draft head (Qwen3.8-Flash-Next, GLM-5.3-Flash), see the README |
+| `-t N`, `-tb N` | fixed decode / prompt thread counts (otherwise tuned) |
 
 ## Turn the fork off and run stock
 
 | you want | pass | effect |
 |---|---|---|
-| plain stock behaviour | `--fork off` (or `LLAMA_ARG_FORK=off`) | no expert cache, nothing tuned, measured or saved; the same placement and kernels as upstream llama.cpp |
-| the cache, but no self-tuning | `-at off` (or `--moe autotune=0`, `LLAMA_AUTOTUNE=0`) | the cache works with fixed defaults, placement uses a static rule, nothing is measured or saved |
+| plain stock behaviour | `--fork off` | no expert cache, nothing tuned, measured or saved; the same placement and kernels as upstream llama.cpp |
+| the cache, but no self-tuning | `-at off` (or `--moe autotune=0`) | the cache works with fixed defaults, placement uses a static rule, nothing is measured or saved |
 | stock placement chosen by the fork | `LLAMA_MOE_AUTO_MODE=stock` | skips the cache-or-stock measurement and uses stock |
 | the cache forced on | `LLAMA_MOE_AUTO_MODE=cache` | skips the measurement and uses the cache |
 | a fresh start | `LLAMA_MOE_STATE=0`, or delete `~/.cache/llama.cpp/moe-state.ini` | ignore the learned state, write nothing |
@@ -54,8 +54,7 @@ With `--fork off` the fork behaves as upstream apart from unrelated changes (the
 
 ## `--moe` settings (command line)
 
-`--moe` takes comma separated `name=value` pairs, names are case-insensitive and `_` equals `-`; the same string works as  
-`LLAMA_ARG_MOE=...`. A setting you give is used as given and never self-tuned.
+`--moe` takes comma separated `name=value` pairs, names are case-insensitive and `_` equals `-`; A setting you give is used as given and never self-tuned.
 
 | key | default | meaning |
 |---|---|---|
@@ -66,9 +65,9 @@ With `--fork off` the fork behaves as upstream apart from unrelated changes (the
 | `pred-top=M` | `0` (off) | guess which experts the next layers will need and upload the likely ones early (the top M of the guessed ranking); experimental, see the evidence below |
 | `train-every=N` | `0` (the predictor is not trained while running) | train the predictor every N decoded tokens; implies `pred-top=8` if `pred-top` is not given |
 | `autotune=0` | autotune on | no self-tuning (same as `-at off`) |
-| `log=LETTERS` | off (research) | every research and diagnostic log behind one switch, nothing is written unless you ask (`--moe log=esr`, or `LLAMA_MOE_LOG=esr`): **`e`** appends one line `model,embhex,hots` per run to `embhot.csv` in the working directory (the last layer embedding of the last token, 1 byte per float as hex, and this run's hot experts per layer; `LLAMA_MOE_EMBHOT=FILE` moves it); **`s`** (or `i`) saves the model's own section of the state file at exit as `state-snapshots/<date>_<HHMMSS>-<model>.ini` (`LLAMA_MOE_SNAP_DIR=DIR` moves it); **`g`** logs the GPU identity of the placement record; **`p`** prints cache stats every 64 steps (`p500`: every 500); **`t`** appends the routed expert ids of every MoE layer to `moe-route.txt` (`GGML_MOE_LOG=FILE` moves it; big); **`c`** writes the decode-step trace as `moe-trace*` (`LLAMA_MOE_CACHE_TRACE=PREFIX` moves it); **`l`** (every generated token) or `l64` (every 64th) appends each layer's output embedding and selected expert ids to `layertrace.csv` (`LLAMA_MOE_LAYERTRACE=FILE` moves it); **`r`** is read by `tools/run.py` (run history to csv and sqlite); details in [research](../tools/bench/research/README.md). The older switches `LLAMA_MOE_LOG_GPUID`, `LLAMA_MOE_CACHE_STATS` and `GGML_MOE_LOG` no longer enable anything by themselves. Nothing is read or written while running, so it costs no speed; preloading and seeding are unchanged |
+| `log=LETTERS` | off (research) | every research and diagnostic log behind one switch, nothing is written unless you ask (`--moe log=esr`): **`e`** appends one line `model,embhex,hots` per run to `embhot.csv` in the working directory (the last layer embedding of the last token, 1 byte per float as hex, and this run's hot experts per layer; `LLAMA_MOE_EMBHOT=FILE` moves it); **`s`** (or `i`) saves the model's own section of the state file at exit as `state-snapshots/<date>_<HHMMSS>-<model>.ini` (`LLAMA_MOE_SNAP_DIR=DIR` moves it); **`g`** logs the GPU identity of the placement record; **`p`** prints cache stats every 64 steps (`p500`: every 500); **`t`** appends the routed expert ids of every MoE layer to `moe-route.txt` (`GGML_MOE_LOG=FILE` moves it; big); **`c`** writes the decode-step trace as `moe-trace*` (`LLAMA_MOE_CACHE_TRACE=PREFIX` moves it); **`l`** (every generated token) or `l64` (every 64th) appends each layer's output embedding and selected expert ids to `layertrace.csv` (`LLAMA_MOE_LAYERTRACE=FILE` moves it); **`r`** is read by `tools/run.py` (run history to csv and sqlite); details in [research](../tools/bench/research/README.md). The older switches `LLAMA_MOE_LOG_GPUID`, `LLAMA_MOE_CACHE_STATS` and `GGML_MOE_LOG` no longer enable anything by themselves. Nothing is read or written while running, so it costs no speed; preloading and seeding are unchanged |
 
-**Names.** The settings were renamed to say what they do. The old names (`cache`, `inserts`, `window`, `prefetch-slots`, `predict`, `train`, the knobs `MARGIN`, `GATE`, `SWAP_FRAC`, `BIG`, ... and their `LLAMA_MOE_CACHE_<OLD>` variables) no longer exist: an old `--moe` name is ignored, and an old state file entry is skipped, so the tuner relearns it. Case and `-` / `_` do not matter in the new names. `--moe-expert-cache N` (`LLAMA_ARG_MOE_EXPERT_CACHE`) is unchanged and works on every build.  
+**Names.** The settings were renamed to say what they do. The old names (`cache`, `inserts`, `window`, `prefetch-slots`, `predict`, `train`, the knobs `MARGIN`, `GATE`, `SWAP_FRAC`, `BIG`, ... and their `LLAMA_MOE_CACHE_<OLD>` variables) no longer exist: an old `--moe` name is ignored, and an old state file entry is skipped, so the tuner relearns it. Case and `-` / `_` do not matter in the new names. `--moe-expert-cache N` is unchanged and works on every build.  
 
 | new name | old name | | new name | old name |
 |---|---|---|---|---|
@@ -181,7 +180,6 @@ experiments and probably removed in a later release; do not rely on them):
 
 ## Environment variables
 
-Every knob above can also be given as `LLAMA_MOE_CACHE_<NAME>=value` (for example `LLAMA_MOE_CACHE_SWAP_LEAD=0`); the `--moe` form wins.  
 These are the other fork switches. Most exist for experiments; the default is what we ship.
 
 | variable | default | what it does |
