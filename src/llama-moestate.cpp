@@ -264,22 +264,21 @@ bool moe_embsnap_enabled() {
 }
 
 void moe_embsnap_set(const float * emb, int n) {
-    const int B = 64;
-    if (n < B) { return; }
-    std::vector<float> b(B, 0.0f);
+    // the whole embedding, 4 bits per float (absmax scaled, 1 hex character each); above 3800 floats neighbours are averaged so the path stays under PATH_MAX
+    if (n <= 0) { return; }
+    const int k = (n + 3799)/3800, m = (n + k - 1)/k;
+    std::vector<float> b(m, 0.0f);
     float mx = 1e-20f;
-    for (int i = 0; i < B; ++i) {
-        const int lo = (int) ((int64_t) n*i/B), hi = (int) ((int64_t) n*(i + 1)/B);
+    for (int i = 0; i < m; ++i) {
         double a = 0;
-        for (int j = lo; j < hi; ++j) { a += emb[j]; }
-        b[i] = (float) (a/(hi - lo));
+        int c = 0;
+        for (int j = i*k; j < std::min(n, (i + 1)*k); ++j, ++c) { a += emb[j]; }
+        b[i] = (float) (a/c);
         mx = std::max(mx, std::fabs(b[i]));
     }
     std::string hex;
-    char t[4];
-    for (int i = 0; i < B; ++i) {
-        snprintf(t, sizeof t, "%02x", (unsigned) (uint8_t) (int8_t) std::lround(b[i]/mx*127.0f));
-        hex += t;
+    for (int i = 0; i < m; ++i) {
+        hex += "0123456789abcdef"[std::lround(b[i]/mx*7.0f) + 8];   // 1..15
     }
     std::lock_guard<std::mutex> lk(g_mtx);
     g_embsnap_hex = hex;
@@ -294,11 +293,13 @@ void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & 
     if (hex.empty() || hot.empty()) { return; }
     const char * ed = getenv("LLAMA_MOE_EMBHOT");   // a local subdirectory of the working directory (embhot), or this path
     const std::filesystem::path dir = ed && ed[0] ? ed : "embhot";
+    std::filesystem::path leaf = dir;   // a path of 200-character directories (file names are limited to 255), the last piece is the file
+    for (size_t o = 0; o < hex.size(); o += 200) { leaf /= hex.substr(o, 200); }
     std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    std::ofstream f(dir / hex, std::ios::app);   // collected over time: every run appends a block, nothing is overwritten
+    std::filesystem::create_directories(leaf.parent_path(), ec);
+    std::ofstream f(leaf, std::ios::app);   // collected over time: every run appends a block, nothing is overwritten
     std::string model;
     { std::lock_guard<std::mutex> lk(g_mtx); model = g_geom_section; }
-    f << "# model [" << model << "] time " << (long long) time(nullptr) << ": hot experts (this run's counts) of a prompt whose last layer embedding is this file name (64 buckets, one signed byte each, scaled by the largest)\n";
+    f << "# model [" << model << "] time " << (long long) time(nullptr) << ": hot experts (this run's counts) of a prompt whose last layer embedding is this file name (4 bits per float, 1 hex character each, scaled by the largest)\n";
     for (const auto & p : hot) { f << p.first << " = " << p.second << "\n"; }
 }
