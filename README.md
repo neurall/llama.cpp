@@ -14,7 +14,8 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 
 - **Up to 2.4x faster generation** on models bigger than your VRAM: MiMo-V2.6-Flash 132 GB on two 24 GB cards, 4.6 to 10.9 tokens/s.  
 - **1.9x generation and 2.4x prompt processing on a laptop**: Qwen3.6-35B on an 8 GB RTX 4060, 31.6 to 60.0 and 41.2 to 100.9 tokens/s.  
-- **3x faster prompt processing with no GPU at all**: Qwen3.6-35B on a Ryzen 5 3600, 10.1 to 31.5 tokens/s (1.8x generation).  
+- **3.4x faster prompt processing with no GPU at all**: Qwen3.6-35B on a Ryzen 5 3600, 10.1 to 34.1 tokens/s (1.8x generation, 6.3 to 11.1).  
+- **Q2 models get a speed bump on AVX2 CPUs**: upstream has no AVX2 kernels for the Q2_0 type (it falls back to the generic path), this fork does. Qwen3.6-35B Q2_0 is the example, on the 8 GB laptop above and on the CPU-only Ryzen 5 3600 box.  
 - **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
 - **When the cache cannot help, it falls back to stock speed by measurement**, so a model that fits or a machine that gains nothing runs at stock speed (1.0x rows below).  
 
