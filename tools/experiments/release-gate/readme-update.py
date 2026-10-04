@@ -47,26 +47,26 @@ def num(x):
     return float(m.group(1)) if m else None
 def two(a, b):
     return " " + (a + "<br>" + b).replace(" ", NB) + " "
-def cells2(s, o):
-    """one cell, three lines: stock t/s / pp, ours t/s / pp, the gain (t/s / pp)"""
+def cells(s, o):
+    """four cells: t/s (stock over ours), pp (stock over ours), and the gain cell (t/s over pp)"""
     ours_t = f"**{o[0]:.1f}**" if o[0] >= 1.1*s[0] else f"{o[0]:.1f}"
-    return " " + "<br>".join(x.replace(" ", NB) for x in (f"{s[0]:.1f} / {s[1]:.0f}", f"{ours_t} / {o[1]:.0f}", f"{g(o[0], s[0])} / {g(o[1], s[1])}")) + " "
+    return (f" {s[0]:.1f}<br>{ours_t} ", f" {s[1]:.0f}<br>{o[1]:.0f} ", f" {g(o[0], s[0])}<br>{g(o[1], s[1])} ")
 out, changed = [], 0
-# columns of a row: '' model hardware vram short4 long4 build ''
+# columns: '' model hardware vram | short4 t/s, pp | long4 t/s, pp | short4 gain, long4 gain | build ''
 for l in open(readme).read().split("\n"):
-    if l.startswith("| ") and l.count("|") == 7 and not l.startswith(("| ---", "| model")):
+    if l.startswith("| ") and l.count("|") == 11 and not l.startswith(("| ---", "| model")):
         c = l.split("|")
         stem = c[1].strip().replace(NB, " ").replace("<br>", "").replace(" ", "")
         q = c[3].strip().replace(NB, " ")
         # the 27B MTP row waits for its own runs with --spec-type draft-mtp (the plain cells are not the MTP test)
         if c[2].strip().startswith("2x3090") and "MTP" not in stem and not any(k in q for k in ("run", "of 4")):
             hit = False
-            for col, test in ((4, "game4"), (5, "edit4")):
+            for col, gcol, test in ((4, 8, "game4"), (6, 9, "edit4")):
                 res = result(stem, test)
                 if res:
-                    c[col] = cells2(*res); changed += 1; hit = True
+                    c[col], c[col + 1], c[gcol] = cells(*res); changed += 1; hit = True
             if hit:
-                c[6] = " " + OURS.removeprefix("release-") + " "
+                c[10] = " " + OURS.removeprefix("release-") + " "
         l = "|".join(c)
     out.append(l)
 open(readme, "w").write("\n".join(out))
