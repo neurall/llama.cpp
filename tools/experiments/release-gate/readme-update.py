@@ -69,10 +69,11 @@ def num(x):
 
 def row(model, mach, test, s, o, vram="-"):
     up_t, up_p = round(o[0], 1) > round(s[0], 1), round(o[1]) > round(s[1])   # compared as shown: the marker never sits on two equal numbers
-    g = lambda up, t: f"🟢 {t}" if up else t   # a green marker on every number above stock
+    dn_t, dn_p = round(o[0], 1) < round(s[0], 1), round(o[1]) < round(s[1])
+    g = lambda up, t, dn=False: f"🟢 {t}" if up else f"🔴 {t}" if dn else t   # green above stock, red below
     gt, gp = gain(o[0], s[0]), gain(o[1], s[1])
-    return (f"| {model} | {FULL.get(mach, mach)} | {vram} | {test} | {s[0]:.1f} | {g(up_t, f'{o[0]:.1f}')} | {s[1]:.0f} | {g(up_p, f'{o[1]:.0f}')} | "
-            f"{g(up_t, gt)} | {g(up_p, gp)} | {SHORT} |")
+    return (f"| {model} | {FULL.get(mach, mach)} | {vram} | {test} | {s[0]:.1f} | {g(up_t, f'{o[0]:.1f}', dn_t)} | {s[1]:.0f} | {g(up_p, f'{o[1]:.0f}', dn_p)} | "
+            f"{g(up_t, gt, dn_t)} | {g(up_p, gp, dn_p)} | {SHORT} |")
 
 lines = open(readme).read().split("\n")
 hi = next(i for i, l in enumerate(lines) if l.startswith("| model | machine | in VRAM | test |"))
