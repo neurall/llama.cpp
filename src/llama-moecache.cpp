@@ -2232,6 +2232,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                           int32_t predict, int32_t predict_train) {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
     if (g_init_done) {
+        LLAMA_LOG_WARN("moe-cache: another context already has the expert cache (it is one per process): this context runs without it\n");
         return;
     }
     [&]() {

@@ -1984,6 +1984,12 @@ ggml_tensor * llm_graph_context::build_ffn(
     return cur;
 }
 
+// the architectures whose routed experts use the clamped swiglu (the stock path, the expert cache and its JIT pool must agree)
+static bool moe_uses_swiglu_clamp(llm_arch arch, const llama_hparams & hparams) {
+    return arch == LLM_ARCH_MAPLE || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_GLM5_NEXT ||
+           (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0) || arch == LLM_ARCH_HY_V4;
+}
+
 ggml_tensor * llm_graph_context::build_moe_ffn(
          ggml_tensor * cur,
          ggml_tensor * gate_inp,
@@ -2454,7 +2460,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
                 constexpr float eps = 1e-6f;
                 if (limit > eps) {
-                    if (arch == LLM_ARCH_MAPLE || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_GLM5_NEXT || (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0) || arch == LLM_ARCH_HY_V4) {
+                    if (moe_uses_swiglu_clamp(arch, hparams)) {
                         // exactly the op the CPU chain uses for these archs
                         act_g = ggml_swiglu_clamp(ctx0, gate_g, up_g, limit);
                     } else {
@@ -2478,7 +2484,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
                 ggml_tensor * act_p = nullptr;
                 if (limit > 1e-6f) {
-                    if (arch == LLM_ARCH_MAPLE || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_GLM5_NEXT || (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0) || arch == LLM_ARCH_HY_V4) {
+                    if (moe_uses_swiglu_clamp(arch, hparams)) {
                         act_p = ggml_swiglu_clamp(ctx0, gate_p, up_p, limit);
                     } else {
                         up_p = ggml_clamp(ctx0, up_p, -limit, limit);
@@ -2590,7 +2596,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                         const float limit = hparams.swiglu_clamp_exp[il];
                         constexpr float eps = 1e-6f;
                         if (limit > eps) {
-                            if (arch == LLM_ARCH_MAPLE || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_GLM5_NEXT || (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0) || arch == LLM_ARCH_HY_V4) {
+                            if (moe_uses_swiglu_clamp(arch, hparams)) {
                                 cur = ggml_swiglu_clamp(ctx0, cur, up, limit);
                             } else {
                                 up = ggml_clamp(ctx0, up, -limit, limit);

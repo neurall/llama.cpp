@@ -424,7 +424,7 @@ extern "C" {
         // 0 = off (no memory overhead); >=2 enables full-tensor lookahead prefetch of
         // host-resident (ncmoe) expert weights during prefill (GPU staging cost = slots
         // * max expert tensor). Decode is unaffected.
-        int prefetch_experts_slots;  // set via llama_context_default_params() / llama_context_from_params
+        int32_t prefetch_experts_slots;  // set via llama_context_default_params() / llama_context_from_params
 
         // [EXPERIMENTAL]
         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)
