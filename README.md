@@ -22,7 +22,7 @@ Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = p
 
 | model | hardware | share of the model in VRAM | gain t/s | stock t/s | ours t/s | stock pp | ours pp | gain pp | build |
 |---|---|---|---|---|---|---|---|---|---|
-| MiMo IQ3_XXS 132 GB | 2x3090 4x16+4x4 X570 3700X 125G 2ch DDR4-3200 44G/s | 36% | **2.4x** | 4.6 | **10.9** | 156 | 112 | 0.7x | earlier |
+| MiMo IQ3_XXS 132 GB | 2x3090 4x16+4x4 X570 3700X 125G 2ch DDR4-3200 44G/s | 36% | **2.4x** | 4.6 | **10.9** | 156 | 112 | 0.7x slower | earlier |
 | GLM 3.5-bit 137 GB | 2x3090 4x16+4x4 X570 3700X 125G 2ch DDR4-3200 44G/s | 35% | **2.2x** | 6.9 | **15.1** | - | - | - | b11707 |
 | Qwen3.6-35B Q2_0 (8 GB GPU), an exception: its CPU side is slow | 4060 8G 4x8 8945HS 32G 4ch LPDDR5-6400 48G/s | about 73% | **1.9x** | 31.6 | **60.0** | 41.2 | 100.9 | **2.4x** | b12030 |
 | GLM 3.0-bit | 2x3090 4x16+4x4 X570 3700X 125G 2ch DDR4-3200 44G/s | about 45% | **1.9x** | 11.9 | **22.4** | - | - | - | earlier |
@@ -36,10 +36,10 @@ Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = p
 | Qwen3.8-27B IQ4_NL, dense | 2x3090 4x16+4x4 X570 3700X 125G 2ch DDR4-3200 44G/s | fits | 1.0x | 45.1 | 45.0 | - | - | - | earlier |
 | Qwen3.8-27B Q5_K_M with MTP (short prompt) | 2x3090 4x16+4x4 X570 3700X 125G 2ch DDR4-3200 44G/s | fits | 1.0x | 78.3 | 77.0 | - | - | - | earlier |
 | Qwen Next IQ1_M 55 GB | 2x3090 4x16+4x4 X570 3700X 125G 2ch DDR4-3200 44G/s | 87% | 1.0x (picks stock) | 69.1 | 68.3 | - | 40 | - | b12040 |
-| Qwen3.8-27B IQ3_S, dense, CPU only | no GPU 3600 A520 64G 2ch DDR4-3200 | 0% | 0.9x | 1.7 | 1.6 | 5.6 | 5.8 | 1.0x | b12030 |
+| Qwen3.8-27B IQ3_S, dense, CPU only | no GPU 3600 A520 64G 2ch DDR4-3200 | 0% | 0.9x slower | 1.7 | 1.6 | 5.6 | 5.8 | 1.0x | b12030 |
 | any model that fits | any | 100% | 1.0x (cache off) | same | same | same | same | 1.0x | any |
 
-Prompt processing can be slower than stock on long prompts (0.7x in the MiMo row).  
+Two cells are slower than stock and say so: prompt processing of MiMo on long prompts (0.7x) and generation of the CPU-only 27B IQ3_S (0.9x, 1.6 against 1.7 tokens/s).  
 Hardware, in this order: GPUs with PCIe generation x lanes (4x16 = PCIe 4.0 x16), CPU, RAM (G = GB, channels, type and speed), measured RAM bandwidth.  
 
 ## What you get
