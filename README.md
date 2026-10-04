@@ -31,7 +31,7 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 
 | model | machine | in VRAM | test | stock t/s | ours t/s | stock pp | ours pp | gain t/s | gain pp | build |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **GLM** 3.5-bit 137G | 2x3090 128G | 35% | tetris | 8.6 | 🟢 23.0 | 3 | ? 11 | 🟢 2.7x | ? 3.7x | b11648 |
+| **GLM** 3.5-bit 137G | 2x3090 128G | 35% | short4 | 8.1 | 🟢 12.2 | 5.0 | ? 4.7 | 🟢 1.5x | ? 0.9x | b12209 |
 | **MiMo** IQ3_XXS 132G | 2x3090 128G | 36% | chat | 4.8 | 🟢 12.7 | - | - | 🟢 2.6x | - | rcn2 d43c101 |
 |  |  | 36% | 12k prompt | 4.2 | 🟢 9.7 | 179 | 🔴 139 | 🟢 2.3x | 🔴 0.8x | b11285 |
 |  | 2x3090 128G | 36% | short4 | 2.6 | 🟢 6.5 | 1 | ? 3 | 🟢 2.5x | ? 2.3x | b12209 |
