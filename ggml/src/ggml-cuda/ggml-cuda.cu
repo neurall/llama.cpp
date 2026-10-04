@@ -1400,7 +1400,6 @@ struct ggml_cuda_reg_state {
     size_t              size  = 0;
     size_t              chunk = 0;
     std::atomic<size_t> done{0};  // bytes registered, in whole chunks from the start
-    bool                stalled = false; // the first registration stalled and was given up on (its thread still holds the range: never unmap it)
     std::thread         th;
     // weights cache in a hugetlbfs file (GGML_CUDA_HUGEFS): the pages outlive the process, a later load maps the file and skips the read
     int                 fd        = -1;
@@ -1441,7 +1440,6 @@ static void ggml_backend_cuda_host_buffer_free_registered(ggml_backend_buffer_t 
 // GGML_CUDA_REG_CHUNK_MB the first chunk here and the rest on a thread while the loader reads (do not use: see below). Keeps the state for the free
 // function and the cache hooks.
 #define GGML_CUDA_PIN_STALL_S 180
-static std::atomic<bool> g_cuda_pin_stalled{false};   // a pinning call stalled: no more pinning in this process
 
 static bool ggml_cuda_register_chunked(char * ptr, size_t size, std::unique_ptr<ggml_cuda_reg_state> & st, int64_t t_pop) {
     const unsigned reg_flags = cudaHostRegisterPortable | cudaHostRegisterMapped;
@@ -1451,20 +1449,19 @@ static bool ggml_cuda_register_chunked(char * ptr, size_t size, std::unique_ptr<
     // "invalid argument" at the first prompt batch (measured: 4 GiB chunks crash GLM 3.0 perplexity, one registration gives PPL 6.6026).
     st->chunk = std::max<size_t>(2u << 20, getenv("GGML_CUDA_REG_CHUNK_MB") ? (size_t) atoll(getenv("GGML_CUDA_REG_CHUNK_MB")) << 20 : size);
     const size_t first = std::min(st->chunk, size);
-    // The registration pins every page and can stall for good when the kernel's memory compaction fights over them (kcompactd at 100%, pages stuck
-    // "isolated"; seen once on a 47 GiB pin after many big models went through the page cache). It runs on its own thread so a stall can be given up on:
-    // the buffer then falls back to ordinary memory (slower decode, but the model loads), and later buffers skip pinning.
+    // The registration pins every page and can stall for good when the kernel's memory compaction fights over them (kcompactd at 100%, pages stuck "isolated";
+    // seen once on a 47 GiB pin). A stalled pin is an error, not something to run on: after GGML_CUDA_PIN_STALL_S the process bails with a fixed message and exit
+    // code 75 (EX_TEMPFAIL), so a caller can tell it from a crash and start again.
     struct reg_call { std::atomic<int> state{0}; cudaError_t err = cudaSuccess; };
     auto rc = std::make_shared<reg_call>();
     std::thread([rc, ptr, first, reg_flags] { rc->err = cudaHostRegister(ptr, first, reg_flags); rc->state = 1; }).detach();
     const int64_t t_reg = ggml_time_us();
     while (rc->state == 0) {
         if (ggml_time_us() - t_reg > GGML_CUDA_PIN_STALL_S*1000000LL) {
-            g_cuda_pin_stalled = true;
-            fprintf(stderr, "ggml_cuda_host_malloc_registered: [PIN_STALL] cudaHostRegister of %.1f GiB made no progress in %d s (kernel memory compaction or reclaim stalled?); "
-                            "continuing with unpinned memory, speeds of this run are not comparable\n", first / 1073741824.0, GGML_CUDA_PIN_STALL_S);
-            st->stalled = true;
-            return false;
+            fprintf(stderr, "ggml_cuda_host_malloc_registered: [PIN_STALL] cudaHostRegister of %.1f GiB made no progress in %d s (kernel memory compaction or reclaim stalled?), "
+                            "bailing with exit code 75. Check kcompactd and /proc/pressure/memory; vm.compaction_proactiveness=0 helps.\n", first / 1073741824.0, GGML_CUDA_PIN_STALL_S);
+            fflush(stderr);
+            _exit(75);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -1642,9 +1639,7 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
         (t_pop - t_start) / 1e6, reserved / 1073741824.0, rpage >> 20, huge / 1073741824.0, (rest_n - huge) / 1073741824.0);
     auto st = std::make_unique<ggml_cuda_reg_state>();
     if (!ggml_cuda_register_chunked(ptr, size, st, t_pop)) {
-        if (!g_cuda_pin_stalled) {   // after a stall the abandoned registration still uses the range: it is leaked on purpose
-            munmap(ptr, size);
-        }
+        munmap(ptr, size);
         return nullptr;
     }
     return ptr;
@@ -1681,9 +1676,6 @@ static int ggml_backend_cuda_host_cache(int op, void * arg) {
 
 static ggml_backend_buffer_t ggml_backend_cuda_host_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
 #if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
-    if (g_cuda_pin_stalled) {   // pinning stalled earlier in this process: ordinary memory, no further attempts
-        return ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), size);
-    }
     if (void * reg = ggml_cuda_host_malloc_registered(size)) {
         ggml_backend_buffer_t buffer = ggml_backend_cpu_buffer_from_ptr(reg, size);
         buffer->buft = buft;
@@ -1691,9 +1683,6 @@ static ggml_backend_buffer_t ggml_backend_cuda_host_buffer_type_alloc_buffer(ggm
         return buffer;
     }
 #endif
-    if (g_cuda_pin_stalled) {   // the registration just stalled: cudaMallocHost would pin the same way
-        return ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), size);
-    }
     void * ptr = ggml_cuda_host_malloc(size);
 
     if (ptr == nullptr) {
