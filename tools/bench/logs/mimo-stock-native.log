@@ -1,0 +1,50 @@
+0.00.003.317 I srv  llama_server: initializing ...
+0.00.301.247 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.302.749 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.305.407 I srv    load_model: loading model '/m/m/3/MiMo-V2.6-Flash-RL-IQ3_XXS-00001-of-00008.gguf'
+0.05.027.822 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.05.110.518 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.05.141.421 W model has unused tensor blk.48.attn_qkv.weight (size = 243269632 bytes) -- ignoring
+0.05.141.446 W model has unused tensor blk.48.attn_output.weight (size = 67108864 bytes) -- ignoring
+0.05.141.450 W model has unused tensor blk.48.attn_norm.weight (size = 16384 bytes) -- ignoring
+0.05.141.454 W model has unused tensor blk.48.attn_sinks.weight (size = 256 bytes) -- ignoring
+0.05.141.457 W model has unused tensor blk.48.ffn_norm.weight (size = 16384 bytes) -- ignoring
+0.05.141.461 W model has unused tensor blk.48.ffn_gate.weight (size = 268435456 bytes) -- ignoring
+0.05.141.465 W model has unused tensor blk.48.ffn_down.weight (size = 268435456 bytes) -- ignoring
+0.05.141.468 W model has unused tensor blk.48.ffn_up.weight (size = 268435456 bytes) -- ignoring
+0.05.141.487 W model has unused tensor blk.48.nextn.eh_proj.weight (size = 67108864 bytes) -- ignoring
+0.05.141.492 W model has unused tensor blk.48.nextn.enorm.weight (size = 16384 bytes) -- ignoring
+0.05.141.495 W model has unused tensor blk.48.nextn.hnorm.weight (size = 16384 bytes) -- ignoring
+0.05.141.507 W model has unused tensor blk.48.layer_output_norm.weight (size = 16384 bytes) -- ignoring
+0.05.141.512 W model has unused tensor blk.49.attn_qkv.weight (size = 243269632 bytes) -- ignoring
+0.05.141.535 W model has unused tensor blk.49.attn_output.weight (size = 67108864 bytes) -- ignoring
+0.05.141.539 W model has unused tensor blk.49.attn_norm.weight (size = 16384 bytes) -- ignoring
+0.05.141.543 W model has unused tensor blk.49.attn_sinks.weight (size = 256 bytes) -- ignoring
+0.05.141.547 W model has unused tensor blk.49.ffn_norm.weight (size = 16384 bytes) -- ignoring
+0.05.141.550 W model has unused tensor blk.49.ffn_gate.weight (size = 268435456 bytes) -- ignoring
+0.05.141.554 W model has unused tensor blk.49.ffn_down.weight (size = 268435456 bytes) -- ignoring
+0.05.141.558 W model has unused tensor blk.49.ffn_up.weight (size = 268435456 bytes) -- ignoring
+0.05.141.576 W model has unused tensor blk.49.nextn.eh_proj.weight (size = 67108864 bytes) -- ignoring
+0.05.141.581 W model has unused tensor blk.49.nextn.enorm.weight (size = 16384 bytes) -- ignoring
+0.05.141.585 W model has unused tensor blk.49.nextn.hnorm.weight (size = 16384 bytes) -- ignoring
+0.05.141.597 W model has unused tensor blk.49.layer_output_norm.weight (size = 16384 bytes) -- ignoring
+0.05.141.602 W model has unused tensor blk.50.attn_qkv.weight (size = 243269632 bytes) -- ignoring
+0.05.141.626 W model has unused tensor blk.50.attn_output.weight (size = 67108864 bytes) -- ignoring
+0.05.141.630 W model has unused tensor blk.50.attn_norm.weight (size = 16384 bytes) -- ignoring
+0.05.141.634 W model has unused tensor blk.50.attn_sinks.weight (size = 256 bytes) -- ignoring
+0.05.141.638 W model has unused tensor blk.50.ffn_norm.weight (size = 16384 bytes) -- ignoring
+0.05.141.641 W model has unused tensor blk.50.ffn_gate.weight (size = 268435456 bytes) -- ignoring
+0.05.141.645 W model has unused tensor blk.50.ffn_down.weight (size = 268435456 bytes) -- ignoring
+0.05.141.649 W model has unused tensor blk.50.ffn_up.weight (size = 268435456 bytes) -- ignoring
+0.05.141.668 W model has unused tensor blk.50.nextn.eh_proj.weight (size = 67108864 bytes) -- ignoring
+0.05.141.673 W model has unused tensor blk.50.nextn.enorm.weight (size = 16384 bytes) -- ignoring
+0.05.141.677 W model has unused tensor blk.50.nextn.hnorm.weight (size = 16384 bytes) -- ignoring
+0.05.141.690 W model has unused tensor blk.50.layer_output_norm.weight (size = 16384 bytes) -- ignoring
+0.44.363.539 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 25930.32 MiB on device 0: cudaMalloc failed: out of memory
+0.44.363.803 E alloc_tensor_range: failed to allocate CUDA0 buffer of size 27189915648
+0.44.851.748 E llama_model_load: error loading model: unable to allocate CUDA0 buffer
+0.44.851.763 E llama_model_load_from_file_impl: failed to load model
+0.44.852.077 E cmn  common_init_: failed to load model '/m/m/3/MiMo-V2.6-Flash-RL-IQ3_XXS-00001-of-00008.gguf'
+0.44.852.168 E srv    load_model: failed to load model, '/m/m/3/MiMo-V2.6-Flash-RL-IQ3_XXS-00001-of-00008.gguf'
+0.44.852.655 I srv    operator(): operator(): cleaning up before exit...
+0.44.855.316 E srv  llama_server: exiting due to model loading error

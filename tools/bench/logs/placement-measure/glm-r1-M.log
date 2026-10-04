@@ -1,0 +1,315 @@
+
+
+Loading model... |-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\|/-\
+=== stderr ===
+0.00.188.319 I ggml_cuda_init: found 2 CUDA devices (Total VRAM: 48248 MiB):
+0.00.188.324 I   Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24124 MiB
+0.00.188.327 I   Device 1: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24124 MiB
+0.00.188.344 I load_backend: loaded CUDA backend from /p/bw/wt-release-next/build-dev/bin/libggml-cuda.so
+0.00.194.942 I load_backend: loaded CPU backend from /p/bw/wt-release-next/build-dev/bin/libggml-cpu-haswell.so
+0.00.195.477 I cmn  common_param: common_params_print_info: build 0 (unknown) with GNU 13.3.1 for Linux x86_64
+0.00.195.479 I cmn  common_param: common_params_print_info: verbosity = 4 (adjust with the `-lv N` CLI arg)
+0.00.195.480 I cmn  common_param: device_info:
+0.00.319.347 I cmn  common_param:   - CUDA0   : NVIDIA GeForce RTX 3090 (24124 MiB, 23859 MiB free)
+0.00.440.478 I cmn  common_param:   - CUDA1   : NVIDIA GeForce RTX 3090 (24124 MiB, 23859 MiB free)
+0.00.440.488 I cmn  common_param:   - CPU     : AMD Ryzen 7 3700X 8-Core Processor (128715 MiB, 128715 MiB free)
+0.00.440.569 I cmn  common_param: system_info: n_threads = 8 (n_threads_batch = 8) / 16 | CUDA : ARCHS = 750,800,860,890,900,1200,1210 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.440.631 I srv  init_listene: running without SSL
+0.00.441.040 I srv          init: using 15 threads for HTTP server
+0.00.441.093 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.443.091 I srv    load_model: loading model '/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf'
+0.00.443.093 I srv    load_model: local path '/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf'
+0.00.562.671 I common_moe_cache_auto_impl: MoE placement: measuring stock this run (stock 0 runs, cache 0 runs recorded; both need 2 before the faster one is kept; GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf 117481680096place.g2x23859.v1)
+0.01.115.866 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+0.01.115.870 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23781 + (89831 = 56849 +    9037 +   23945) +      -89488 |
+0.01.115.870 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23789 + (93658 = 54538 +   10820 +   28300) +      -93323 |
+0.01.115.870 I common_memory_breakdown_print: |   - Host               |                   5863 =   642 +       0 +    5220                |
+0.01.762.583 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free      self   model   context   compute    unaccounted |
+0.01.762.587 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23781 + (161315 = 56849 +    9037 +   95428) +     -160971 |
+0.01.762.588 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23789 + (178102 = 54538 +   10820 +  112743) +     -177767 |
+0.01.762.588 I common_memory_breakdown_print: |   - Host               |                   21392 =   642 +       0 +   20749                |
+0.01.834.425 I common_moe_cache_auto_impl: MoE model (109.4 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 32768, ubatch 512, threads 6, weights pinned (settings you pass win)
+0.01.834.436 I cmn  common_init_: fitting params to device memory ...
+0.01.834.436 I cmn  common_init_: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+0.01.834.474 I common_params_fit_impl: getting device memory data for initial parameters:
+0.02.325.245 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+0.02.325.248 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23781 + (58241 = 56849 +     357 +    1035) +      -57898 |
+0.02.325.249 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23789 + (56346 = 54538 +     404 +    1403) +      -56011 |
+0.02.325.249 I common_memory_breakdown_print: |   - Host               |                    860 =   642 +       0 +     217                |
+0.02.381.174 I common_params_fit_impl: projected memory use with initial parameters [MiB]:
+0.02.381.180 I common_params_fit_impl:   - CUDA0 (NVIDIA GeForce RTX 3090):  24124 total,  58241 used, -34460 free vs. target of   1024
+0.02.381.181 I common_params_fit_impl:   - CUDA1 (NVIDIA GeForce RTX 3090):  24124 total,  56346 used, -32557 free vs. target of   1024
+0.02.381.181 I common_params_fit_impl: projected to use 114588 MiB of device memory vs. 47570 MiB of free device memory
+0.02.381.181 I common_params_fit_impl: cannot meet free memory targets on all devices, need to use 69065 MiB less in total
+0.02.381.182 I common_params_fit_impl: context size set by user to 32768 -> no change
+0.02.381.187 I common_params_fit_impl: getting device memory data with all MoE tensors moved to system memory:
+0.02.889.773 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free      self    model   context   compute    unaccounted |
+0.02.889.777 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23781 + (  5166 =   4523 +     357 +     286) +       -4822 |
+0.02.889.777 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23789 + (  7649 =   4642 +     404 +    2602) +       -7314 |
+0.02.889.777 I common_memory_breakdown_print: |   - Host               |                  102925 = 102864 +       0 +      60                |
+0.02.944.407 I common_params_fit_impl: with only dense weights in device memory there is a total surplus of 32706 MiB
+0.02.944.413 I common_params_fit_impl: id=0, target=22757 MiB
+0.02.944.414 I common_params_fit_impl: id=1, target=22765 MiB
+0.03.415.191 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free      self    model   context   compute    unaccounted |
+0.03.415.195 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23859 + (     0 =      0 +       0 +       0) +         265 |
+0.03.415.196 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23859 + (  1486 =      0 +       0 +    1486) +       -1221 |
+0.03.415.196 I common_memory_breakdown_print: |   - Host               |                  112860 = 112030 +     761 +      68                |
+0.03.467.536 I common_params_fit_impl: memory for test allocation by device:
+0.03.467.543 I common_params_fit_impl: id=0, n_layer= 0, n_part= 0, overflow_type=4, mem=     0 MiB
+0.03.467.543 I common_params_fit_impl: id=1, n_layer= 0, n_part= 0, overflow_type=4, mem=  1486 MiB
+0.03.467.545 I common_params_fit_impl: filling dense-only layers back-to-front:
+0.04.132.347 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free      self    model   context   compute    unaccounted |
+0.04.132.350 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23859 + (     0 =      0 +       0 +       0) +         265 |
+0.04.132.351 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23713 + ( 11373 =   9165 +     761 +    1446) +      -10962 |
+0.04.132.351 I common_memory_breakdown_print: |   - Host               |                  102925 = 102864 +       0 +      60                |
+0.04.188.241 I common_params_fit_impl: memory for test allocation by device:
+0.04.188.247 I common_params_fit_impl: id=0, n_layer= 0, n_part= 0, overflow_type=4, mem=     0 MiB
+0.04.188.248 I common_params_fit_impl: id=1, n_layer=46, n_part=45, overflow_type=4, mem= 11373 MiB
+0.04.188.250 I common_params_fit_impl: set ngl_per_device[1].n_layer=46
+0.04.188.251 I common_params_fit_impl:   - CUDA1 (NVIDIA GeForce RTX 3090): 46 layers,  11373 MiB used,  12415 MiB free
+0.04.188.252 I common_params_fit_impl:   - CUDA0 (NVIDIA GeForce RTX 3090):  0 layers,      0 MiB used,  23781 MiB free
+0.04.188.252 I common_params_fit_impl: converting dense-only layers to full layers and filling them front-to-back with overflow to next device/system memory:
+0.04.667.445 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free      self    model   context   compute    unaccounted |
+0.04.667.449 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23713 + (113410 = 110744 +     761 +    1904) +     -112999 |
+0.04.667.450 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23859 + (   643 =    642 +       0 +       0) +        -378 |
+0.04.667.450 I common_memory_breakdown_print: |   - Host               |                     860 =    642 +       0 +     217                |
+0.04.737.191 I common_params_fit_impl: memory for test allocation by device:
+0.04.737.196 I common_params_fit_impl: id=0, n_layer=45, n_part= 0, overflow_type=4, mem=113410 MiB
+0.04.737.197 I common_params_fit_impl: id=1, n_layer= 1, n_part= 0, overflow_type=4, mem=   643 MiB
+0.05.376.592 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+0.05.376.597 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23829 + (23000 = 22569 +     141 +     289) +      -22705 |
+0.05.376.598 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23743 + (11026 =  9437 +     619 +     969) +      -10645 |
+0.05.376.598 I common_memory_breakdown_print: |   - Host               |                  80083 = 80022 +       0 +      60                |
+0.05.431.243 I common_params_fit_impl: memory for test allocation by device:
+0.05.431.249 I common_params_fit_impl: id=0, n_layer= 9, n_part= 0, overflow_type=4, mem= 23000 MiB
+0.05.431.250 I common_params_fit_impl: id=1, n_layer=37, n_part=36, overflow_type=4, mem= 11026 MiB
+0.05.431.252 I common_params_fit_impl: set ngl_per_device_high[0].(n_layer, n_part)=(9, 0), id_dense_start_high=1
+0.06.064.621 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+0.06.064.625 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23833 + (19850 = 19423 +     137 +     289) +      -19559 |
+0.06.064.626 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23739 + (11909 = 10315 +     623 +     969) +      -11523 |
+0.06.064.626 I common_memory_breakdown_print: |   - Host               |                  82351 = 82290 +       0 +      60                |
+0.06.118.334 I common_params_fit_impl: memory for test allocation by device:
+0.06.118.341 I common_params_fit_impl: id=0, n_layer= 8, n_part= 0, overflow_type=4, mem= 19850 MiB
+0.06.118.341 I common_params_fit_impl: id=1, n_layer=38, n_part=37, overflow_type=4, mem= 11909 MiB
+0.06.118.343 I common_params_fit_impl: set ngl_per_device[0].(n_layer, n_part)=(8, 0), id_dense_start=1
+0.06.118.352 I common_params_fit_impl: trying to fit one extra layer with overflow_type=LAYER_FRACTION_UP
+0.06.750.364 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+0.06.750.367 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23829 + (20999 = 20567 +     141 +     289) +      -20703 |
+0.06.750.367 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23743 + (13028 = 11439 +     619 +     969) +      -12647 |
+0.06.750.368 I common_memory_breakdown_print: |   - Host               |                  80083 = 80022 +       0 +      60                |
+0.06.805.662 I common_params_fit_impl: memory for test allocation by device:
+0.06.805.667 I common_params_fit_impl: id=0, n_layer= 9, n_part= 1, overflow_type=2, mem= 20999 MiB
+0.06.805.668 I common_params_fit_impl: id=1, n_layer=37, n_part=36, overflow_type=4, mem= 13028 MiB
+0.06.805.671 I common_params_fit_impl: set ngl_per_device[0].(n_layer, n_part, overflow_type)=(9, 1, UP), id_dense_start=1
+0.06.805.671 I common_params_fit_impl: trying to fit one extra layer with overflow_type=LAYER_FRACTION_GATE
+0.07.437.401 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+0.07.437.404 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23829 + (22002 = 21570 +     141 +     289) +      -21706 |
+0.07.437.405 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23743 + (12025 = 10436 +     619 +     969) +      -11644 |
+0.07.437.405 I common_memory_breakdown_print: |   - Host               |                  80083 = 80022 +       0 +      60                |
+0.07.489.991 I common_params_fit_impl: memory for test allocation by device:
+0.07.489.998 I common_params_fit_impl: id=0, n_layer= 9, n_part= 1, overflow_type=3, mem= 22002 MiB
+0.07.489.998 I common_params_fit_impl: id=1, n_layer=37, n_part=36, overflow_type=4, mem= 12025 MiB
+0.07.490.000 I common_params_fit_impl: set ngl_per_device[0].(n_layer, n_part, overflow_type)=(9, 1, GATE), id_dense_start=1
+0.07.490.001 I common_params_fit_impl:   - CUDA0 (NVIDIA GeForce RTX 3090):  9 layers ( 1 overflowing),  22002 MiB used,   1778 MiB free
+0.07.952.653 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+0.07.952.656 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23829 + (22002 = 21570 +     141 +     289) +      -21706 |
+0.07.952.657 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23743 + (90991 = 89816 +     619 +     554) +      -90609 |
+0.07.952.657 I common_memory_breakdown_print: |   - Host               |                    703 =   642 +       0 +      60                |
+0.08.008.405 I common_params_fit_impl: memory for test allocation by device:
+0.08.008.410 I common_params_fit_impl: id=0, n_layer= 9, n_part= 1, overflow_type=3, mem= 22002 MiB
+0.08.008.411 I common_params_fit_impl: id=1, n_layer=37, n_part= 0, overflow_type=4, mem= 90991 MiB
+0.08.622.209 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+0.08.622.213 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23829 + (22002 = 21570 +     141 +     289) +      -21706 |
+0.08.622.214 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23743 + (21087 = 19508 +     619 +     959) +      -20706 |
+0.08.622.214 I common_memory_breakdown_print: |   - Host               |                  71011 = 70950 +       0 +      60                |
+0.08.675.606 I common_params_fit_impl: memory for test allocation by device:
+0.08.675.613 I common_params_fit_impl: id=0, n_layer= 9, n_part= 1, overflow_type=3, mem= 22002 MiB
+0.08.675.613 I common_params_fit_impl: id=1, n_layer=37, n_part=32, overflow_type=4, mem= 21087 MiB
+0.08.675.616 I common_params_fit_impl: set ngl_per_device[1].(n_layer, n_part)=(37, 32), id_dense_start=1
+0.09.278.329 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+0.09.278.333 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23829 + (22002 = 21570 +     141 +     289) +      -21706 |
+0.09.278.333 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23743 + (23355 = 21776 +     619 +     959) +      -22974 |
+0.09.278.334 I common_memory_breakdown_print: |   - Host               |                  68743 = 68682 +       0 +      60                |
+0.09.329.692 I common_params_fit_impl: memory for test allocation by device:
+0.09.329.700 I common_params_fit_impl: id=0, n_layer= 9, n_part= 1, overflow_type=3, mem= 22002 MiB
+0.09.329.700 I common_params_fit_impl: id=1, n_layer=37, n_part=31, overflow_type=4, mem= 23355 MiB
+0.09.329.703 I common_params_fit_impl: set ngl_per_device_high[1].(n_layer, n_part)=(37, 31), id_dense_start_high=1
+0.09.329.703 I common_params_fit_impl: trying to fit one extra layer with overflow_type=LAYER_FRACTION_UP
+0.09.936.515 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+0.09.936.519 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23829 + (22002 = 21570 +     141 +     289) +      -21706 |
+0.09.936.520 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23743 + (21837 = 20242 +     619 +     975) +      -21456 |
+0.09.936.520 I common_memory_breakdown_print: |   - Host               |                  70276 = 70216 +       0 +      60                |
+0.09.988.935 I common_params_fit_impl: memory for test allocation by device:
+0.09.988.940 I common_params_fit_impl: id=0, n_layer= 9, n_part= 1, overflow_type=3, mem= 22002 MiB
+0.09.988.941 I common_params_fit_impl: id=1, n_layer=37, n_part=32, overflow_type=2, mem= 21837 MiB
+0.09.988.944 I common_params_fit_impl: set ngl_per_device[1].(n_layer, n_part, overflow_type)=(37, 32, UP), id_dense_start=1
+0.09.988.947 I common_params_fit_impl: trying to fit one extra layer with overflow_type=LAYER_FRACTION_GATE
+0.10.597.079 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+0.10.597.084 I common_memory_breakdown_print: |   - CUDA0 (RTX 3090)   | 24124 = 23829 + (22002 = 21570 +     141 +     289) +      -21706 |
+0.10.597.084 I common_memory_breakdown_print: |   - CUDA1 (RTX 3090)   | 24124 = 23743 + (22606 = 21011 +     619 +     975) +      -22225 |
+0.10.597.085 I common_memory_breakdown_print: |   - Host               |                  69507 = 69447 +       0 +      60                |
+0.10.652.318 I common_params_fit_impl: memory for test allocation by device:
+0.10.652.324 I common_params_fit_impl: id=0, n_layer= 9, n_part= 1, overflow_type=3, mem= 22002 MiB
+0.10.652.325 I common_params_fit_impl: id=1, n_layer=37, n_part=32, overflow_type=3, mem= 22606 MiB
+0.10.652.327 I common_params_fit_impl: set ngl_per_device[1].(n_layer, n_part, overflow_type)=(37, 32, GATE), id_dense_start=1
+0.10.652.328 I common_params_fit_impl:   - CUDA1 (NVIDIA GeForce RTX 3090): 37 layers (32 overflowing),  22606 MiB used,   1182 MiB free
+0.10.652.331 I common_fit_params: successfully fit params to free device memory
+0.10.652.334 I common_fit_params: fitting params to free memory took 8.82 seconds
+0.10.702.282 I llama_model_loader: loaded meta data with 64 key-value pairs and 1383 tensors from /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf (version GGUF V3 (latest))
+0.10.702.313 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+0.10.702.318 I llama_model_loader: - kv   0:                       general.architecture str              = glm5-next
+0.10.702.318 I llama_model_loader: - kv   1:                               general.type str              = model
+0.10.702.324 I llama_model_loader: - kv   2:                     general.sampling.top_p f32              = 0.950000
+0.10.702.325 I llama_model_loader: - kv   3:                      general.sampling.temp f32              = 1.000000
+0.10.702.326 I llama_model_loader: - kv   4:                               general.name str              = GLM-5.3-Flash
+0.10.702.326 I llama_model_loader: - kv   5:                         general.size_label str              = 288x10B
+0.10.702.327 I llama_model_loader: - kv   6:                            general.license str              = mit
+0.10.702.335 I llama_model_loader: - kv   7:                               general.tags arr[str,1]       = ["image-text-to-text"]
+0.10.702.336 I llama_model_loader: - kv   8:                          general.languages arr[str,2]       = ["en", "zh"]
+0.10.702.337 I llama_model_loader: - kv   9:                      glm5-next.block_count u32              = 45
+0.10.702.338 I llama_model_loader: - kv  10:                   glm5-next.context_length u32              = 1048576
+0.10.702.339 I llama_model_loader: - kv  11:                 glm5-next.embedding_length u32              = 4096
+0.10.702.339 I llama_model_loader: - kv  12:              glm5-next.feed_forward_length u32              = 12288
+0.10.702.341 I llama_model_loader: - kv  13:             glm5-next.attention.head_count u32              = 64
+0.10.702.344 I llama_model_loader: - kv  14:          glm5-next.attention.head_count_kv arr[i32,45]      = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, ...
+0.10.702.346 I llama_model_loader: - kv  15: glm5-next.attention.layer_norm_rms_epsilon f32              = 0.000010
+0.10.702.347 I llama_model_loader: - kv  16:                     glm5-next.expert_count u32              = 288
+0.10.702.347 I llama_model_loader: - kv  17:                glm5-next.expert_used_count u32              = 8
+0.10.702.348 I llama_model_loader: - kv  18:               glm5-next.expert_group_count u32              = 1
+0.10.702.348 I llama_model_loader: - kv  19:          glm5-next.expert_group_used_count u32              = 1
+0.10.702.349 I llama_model_loader: - kv  20:               glm5-next.expert_gating_func u32              = 2
+0.10.702.349 I llama_model_loader: - kv  21:                          general.file_type u32              = 11
+0.10.702.350 I llama_model_loader: - kv  22:                       glm5-next.vocab_size u32              = 154880
+0.10.702.350 I llama_model_loader: - kv  23:     glm5-next.attention.layer_norm_epsilon f32              = 0.000001
+0.10.702.351 I llama_model_loader: - kv  24:                  glm5-next.ssm.conv_kernel u32              = 4
+0.10.702.352 I llama_model_loader: - kv  25:                     glm5-next.kda.head_dim u32              = 128
+0.10.702.352 I llama_model_loader: - kv  26:             glm5-next.kda.gate_lower_bound f32              = -5.000000
+0.10.702.353 I llama_model_loader: - kv  27:            glm5-next.attention.q_lora_rank u32              = 1536
+0.10.702.353 I llama_model_loader: - kv  28:           glm5-next.attention.kv_lora_rank u32              = 512
+0.10.702.354 I llama_model_loader: - kv  29:             glm5-next.rope.dimension_count u32              = 0
+0.10.702.354 I llama_model_loader: - kv  30:             glm5-next.attention.key_length u32              = 512
+0.10.702.355 I llama_model_loader: - kv  31:           glm5-next.attention.value_length u32              = 512
+0.10.702.355 I llama_model_loader: - kv  32:         glm5-next.attention.key_length_mla u32              = 256
+0.10.702.355 I llama_model_loader: - kv  33:       glm5-next.attention.value_length_mla u32              = 256
+0.10.702.356 I llama_model_loader: - kv  34:     glm5-next.attention.indexer.head_count u32              = 32
+0.10.702.356 I llama_model_loader: - kv  35:     glm5-next.attention.indexer.key_length u32              = 128
+0.10.702.357 I llama_model_loader: - kv  36:          glm5-next.attention.indexer.top_k u32              = 2048
+0.10.702.357 I llama_model_loader: - kv  37:          glm5-next.attention.indexer.kpool u32              = 4
+0.10.702.358 I llama_model_loader: - kv  38: glm5-next.attention.indexer.kpool_select_tail bool             = true
+0.10.702.358 I llama_model_loader: - kv  39: glm5-next.attention.indexer.index_share_mtp bool             = true
+0.10.702.361 I llama_model_loader: - kv  40:          glm5-next.attention.indexer.types arr[bool,45]     = [true, true, true, true, true, true, ...
+0.10.702.362 I llama_model_loader: - kv  41:           glm5-next.hyper_connection.count u32              = 4
+0.10.702.362 I llama_model_loader: - kv  42: glm5-next.hyper_connection.sinkhorn_iterations u32              = 20
+0.10.702.363 I llama_model_loader: - kv  43:         glm5-next.hyper_connection.epsilon f32              = 0.000001
+0.10.702.364 I llama_model_loader: - kv  44:        glm5-next.leading_dense_block_count u32              = 3
+0.10.702.364 I llama_model_loader: - kv  45:       glm5-next.expert_feed_forward_length u32              = 2048
+0.10.702.365 I llama_model_loader: - kv  46:              glm5-next.expert_shared_count u32              = 1
+0.10.702.365 I llama_model_loader: - kv  47:             glm5-next.expert_weights_scale f32              = 2.500000
+0.10.702.366 I llama_model_loader: - kv  48:              glm5-next.expert_weights_norm bool             = true
+0.10.702.379 I llama_model_loader: - kv  49:                 glm5-next.swiglu_clamp_exp arr[f32,45]      = [10.000000, 10.000000, 10.000000, 10....
+0.10.702.391 I llama_model_loader: - kv  50:               glm5-next.swiglu_clamp_shexp arr[f32,45]      = [10.000000, 10.000000, 10.000000, 10....
+0.10.702.392 I llama_model_loader: - kv  51:               general.quantization_version u32              = 2
+0.10.702.392 I llama_model_loader: - kv  52:                       tokenizer.ggml.model str              = gpt2
+0.10.702.393 I llama_model_loader: - kv  53:                         tokenizer.ggml.pre str              = glm4
+0.10.721.558 I llama_model_loader: - kv  54:                      tokenizer.ggml.tokens arr[str,154880]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+0.10.726.386 I llama_model_loader: - kv  55:                  tokenizer.ggml.token_type arr[i32,154880]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+0.10.765.477 I llama_model_loader: - kv  56:                      tokenizer.ggml.merges arr[str,321649]  = ["Ġ Ġ", "Ġ ĠĠĠ", "ĠĠ ĠĠ", "...
+0.10.765.483 I llama_model_loader: - kv  57:                tokenizer.ggml.eos_token_id u32              = 154820
+0.10.765.483 I llama_model_loader: - kv  58:            tokenizer.ggml.padding_token_id u32              = 154820
+0.10.765.484 I llama_model_loader: - kv  59:                tokenizer.ggml.bos_token_id u32              = 154822
+0.10.765.485 I llama_model_loader: - kv  60:                tokenizer.ggml.eot_token_id u32              = 154827
+0.10.765.485 I llama_model_loader: - kv  61:            tokenizer.ggml.unknown_token_id u32              = 154820
+0.10.765.486 I llama_model_loader: - kv  62:                tokenizer.ggml.eom_token_id u32              = 154829
+0.10.765.489 I llama_model_loader: - kv  63:                    tokenizer.chat_template str              = [gMASK]<sop>\n{%- set effective_reason...
+0.10.765.492 I llama_model_loader: - type  f32:  748 tensors
+0.10.765.494 I llama_model_loader: - type q8_0:  306 tensors
+0.10.765.494 I llama_model_loader: - type q2_K:  108 tensors
+0.10.765.494 I llama_model_loader: - type q3_K:    9 tensors
+0.10.765.494 I llama_model_loader: - type q4_K:    9 tensors
+0.10.765.495 I llama_model_loader: - type bf16:  203 tensors
+0.10.765.496 I print_info: file format = GGUF V3 (latest)
+0.10.765.496 I print_info: file type   = Q3_K - Small
+0.10.765.500 I print_info: file size   = 109.40 GiB (3.00 BPW) 
+0.10.828.883 I llama_prepare_model_devices: CUDA0 host->device upload 6.2 GB/s
+0.10.846.303 I llama_prepare_model_devices: CUDA1 host->device upload 12.0 GB/s
+0.10.852.330 I llama_prepare_model_devices: using device CUDA0 (NVIDIA GeForce RTX 3090) (0000:04:00.0) - 23859 MiB free
+0.10.852.373 I llama_prepare_model_devices: using device CUDA1 (NVIDIA GeForce RTX 3090) (0000:07:00.0) - 23859 MiB free
+0.10.977.767 I load: 0 unused tokens
+0.10.996.395 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.10.996.397 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.10.996.397 I load: printing all EOG tokens:
+0.10.996.398 I load:   - 154820 ('<|endoftext|>')
+0.10.996.398 I load:   - 154827 ('<|user|>')
+0.10.996.399 I load:   - 154829 ('<|observation|>')
+0.10.996.702 I load: special tokens cache size = 36
+0.11.048.689 I load: token to piece cache size = 0.9811 MB
+0.11.048.702 I print_info: arch                  = glm5-next
+0.11.048.703 I print_info: vocab_only            = 0
+0.11.048.703 I print_info: no_alloc              = 0
+0.11.048.703 I print_info: n_ctx_train           = 1048576
+0.11.048.704 I print_info: n_embd_inp            = 4096
+0.11.048.704 I print_info: n_embd                = 4096
+0.11.048.704 I print_info: n_embd_out            = 4096
+0.11.048.705 I print_info: n_layer               = 45
+0.11.048.706 I print_info: n_layer_all           = 45
+0.11.048.714 I print_info: n_head                = 64
+0.11.048.720 I print_info: n_head_kv             = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0]
+0.11.048.720 I print_info: n_rot                 = 0
+0.11.048.720 I print_info: n_swa                 = 0
+0.11.048.721 I print_info: is_swa_any            = 0
+0.11.048.721 I print_info: non_causal_type       = 0
+0.11.048.721 I print_info: n_embd_head_k         = 512
+0.11.048.722 I print_info: n_embd_head_v         = 512
+0.11.048.725 I print_info: n_gqa                 = [0, 0, 0, 64, 0, 0, 0, 64, 0, 0, 0, 64, 0, 0, 0, 64, 0, 0, 0, 64, 0, 0, 0, 64, 0, 0, 0, 64, 0, 0, 0, 64, 0, 0, 0, 64, 0, 0, 0, 64, 0, 0, 0, 64, 0]
+0.11.048.729 I print_info: n_embd_k_gqa          = [0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0]
+0.11.048.733 I print_info: n_embd_v_gqa          = [0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0, 0, 0, 512, 0]
+0.11.048.733 I print_info: f_norm_eps            = 1.0e-06
+0.11.048.734 I print_info: f_norm_rms_eps        = 1.0e-05
+0.11.048.734 I print_info: f_clamp_kqv           = 0.0e+00
+0.11.048.735 I print_info: f_max_alibi_bias      = 0.0e+00
+0.11.048.735 I print_info: f_logit_scale         = 0.0e+00
+0.11.048.735 I print_info: f_attn_scale          = 0.0e+00
+0.11.048.736 I print_info: f_attn_value_scale    = 0.0000
+0.11.048.737 I print_info: n_ff                  = 12288
+0.11.048.738 I print_info: n_expert              = 288
+0.11.048.738 I print_info: n_expert_used         = 8
+0.11.048.738 I print_info: n_expert_groups       = 1
+0.11.048.738 I print_info: n_group_used          = 1
+0.11.048.739 I print_info: causal attn           = 1
+0.11.048.739 I print_info: pooling type          = -1
+0.11.048.739 I print_info: rope type             = -1
+0.11.048.740 I print_info: rope scaling          = linear
+0.11.048.741 I print_info: freq_base_train       = 10000.0
+0.11.048.741 I print_info: freq_scale_train      = 1
+0.11.048.742 I print_info: n_ctx_orig_yarn       = 1048576
+0.11.048.742 I print_info: rope_yarn_log_mul     = 0.0000
+0.11.048.742 I print_info: rope_finetuned        = unknown
+0.11.048.743 I print_info: model type            = 320B.A18B
+0.11.048.744 I print_info: model params          = 313.33 B
+0.11.048.744 I print_info: general.name          = GLM-5.3-Flash
+0.11.048.745 I print_info: vocab type            = BPE
+0.11.048.745 I print_info: n_vocab               = 154880
+0.11.048.746 I print_info: n_merges              = 321649
+0.11.048.746 I print_info: BOS token             = 154822 '[gMASK]'
+0.11.048.746 I print_info: EOS token             = 154820 '<|endoftext|>'
+0.11.048.746 I print_info: EOT token             = 154827 '<|user|>'
+0.11.048.747 I print_info: EOM token             = 154829 '<|observation|>'
+0.11.048.747 I print_info: UNK token             = 154820 '<|endoftext|>'
+0.11.048.747 I print_info: PAD token             = 154820 '<|endoftext|>'
+0.11.048.747 I print_info: LF token              = 198 'Ċ'
+0.11.048.748 I print_info: FIM PRE token         = 154838 '<|code_prefix|>'
+0.11.048.748 I print_info: FIM SUF token         = 154840 '<|code_suffix|>'
+0.11.048.748 I print_info: FIM MID token         = 154839 '<|code_middle|>'
+0.11.048.749 I print_info: EOG token             = 154820 '<|endoftext|>'
+0.11.048.749 I print_info: EOG token             = 154827 '<|user|>'
+0.11.048.749 I print_info: EOG token             = 154829 '<|observation|>'
+0.11.048.749 I print_info: max token length      = 1024
+0.11.048.883 I load_tensors: loading model tensors, this can take a while... (load_mode = none)
+ggml_cuda_host_malloc_registered: 67.8 GiB populated in 17.3 s (0.0 reserved 0 MiB pages, 8.1 THP, 59.7 small)
+ggml_cuda_host_malloc_registered: registered in 23.0 s
+0.51.517.363 I load_tensors: offloading output layer to GPU
+0.51.517.366 I load_tensors: offloading 44 repeating layers to GPU
+0.51.517.367 I load_tensors: offloaded 46/46 layers to GPU
+0.51.517.368 I load_tensors:        CUDA0 model buffer size = 21570.91 MiB
+0.51.517.369 I load_tensors:        CUDA1 model buffer size = 21011.97 MiB
+0.51.517.370 I load_tensors:    CUDA_Host model buffer size = 69447.31 MiB
