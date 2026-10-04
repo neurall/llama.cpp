@@ -21,20 +21,24 @@ Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation sp
 
 | model | hardware | in VRAM | stock<br>t/s pp | ours<br>t/s pp | short gain<br>t/s pp | long gain<br>t/s pp | build |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36% | 4.6<br>156 | **10.9**<br>112 | *2.6x*<br>*1.0x* | *2.3x*<br>*0.8x↓* | earlier |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.5bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 35% | 6.9<br>- | **15.1**<br>- | *2.7x*<br>*2.4x* | -<br>- | b11707 |
-| Qwen3.6-35B-A3B-<br>GSQ-hybrid | 4060 8G 4/8<br>8945HS 32G 48G/s | 73%<br>slow CPU | 31.6<br>41.2 | **60.0**<br>100.9 | *1.9x*<br>*2.6x* | -<br>- | b12030 |
+| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>short prompt | 4.6<br>- | **10.9**<br>- | *2.6x*<br>- | -<br>- | earlier |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 45% | 11.9<br>- | **22.4**<br>- | *2.2x*<br>*1.4x* | -<br>- | earlier |
+| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>12k prompt | 4.2<br>156 | **9.1**<br>112 | -<br>- | *2.2x*<br>*0.7x↓* | earlier |
+| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>short prompt | 27.7<br>- | 46.5<br>- | *2.0x*<br>*1.5x* | -<br>- | earlier |
+| Qwen3.6-35B-A3B-<br>GSQ-hybrid | 4060 8G 4/8<br>8945HS 32G 48G/s | 73%<br>slow CPU | 31.6<br>41.2 | **60.0**<br>100.9 | *1.9x*<br>*2.6x* | -<br>- | b12030 |
 | Qwen3.6-35B-A3B-<br>GSQ-hybrid | 3600 A520 64G | 0%<br>CPU only | 6.3<br>10.1 | 11.1<br>34.1 | *1.8x*<br>*3.7x* | -<br>- | b12040 |
-| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55% | 27.7<br>500 | 46.5<br>538 | *2.0x*<br>*1.5x* | *1.6x*<br>*1.1x* | earlier |
+| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>12k prompt | 25.3<br>500 | **42.3**<br>538 | -<br>- | *1.7x*<br>*1.1x* | earlier |
 | Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>2.2k | 31.3<br>599 | 51.1<br>792 | 1.0x<br>1.0x | *1.6x*<br>*1.3x* | earlier |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 66%<br>3 of 4 | 20.1<br>- | 32.6<br>- | *1.6x*<br>- | -<br>- | b11707+ |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>second run, -t 16 | 24.7<br>- | **33.8**<br>- | *1.4x*<br>- | -<br>- | b11707+ |
 | Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ3_S | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 58% | 43.9<br>- | 57.1<br>- | 1.3x<br>1.1x | -<br>- | b11707 |
 | Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 4060 8G 4/8<br>8945HS 32G 48G/s | 13% | 13.5<br>18.3 | 17.3<br>21.6 | *1.3x*<br>*1.2x* | -<br>- | b12030 |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>4 GPUs | 24.7<br>- | 31.5<br>- | *1.3x*<br>- | -<br>- | b11707+ |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>second run | 24.7<br>- | 31.5<br>- | *1.3x*<br>- | -<br>- | b11707+ |
 | Qwen3.8-27B-IQ4_NL | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>dense | 45.1<br>- | 45.0<br>- | 1.0x<br>1.1x | *1.0x*<br>*1.0x* | earlier |
 | Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>short | 78.3<br>- | 77.0<br>- | 1.0x<br>1.0x | -<br>- | earlier |
 | Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 87% | 69.1<br>- | 68.3<br>40 | 1.0x<br>1.0x | -<br>- | b12040 |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>first run | 24.7<br>- | 25.2<br>- | 1.0x<br>- | -<br>- | b11707+ |
 | Qwen3.8-27B-GSQ-<br>RCO-IQ3_S-mtp | 3600 A520 64G | 0%<br>CPU only | 1.7<br>5.6 | 1.6<br>5.8 | *0.9x↓*<br>*1.0x* | -<br>- | b12030 |
 | any model that fits | any | 100% | same<br>same | same<br>same | 1.0x<br>1.0x | -<br>- | any |
 
@@ -44,36 +48,9 @@ Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation sp
 Single stream, temperature 0, model in RAM. Stock = stock llama.cpp: the release b11379 on the laptop, 836d57176 built like the fork on the Ryzen 5 3600, the downloaded release b11323 on the rented 4x3090 box (a source build of def4d406a gave 24.8 and 20.1 there).  
 Every run behind the numbers (commit, build, machine, settings) is a row in [`tools/bench/run-history.csv`](tools/bench/run-history.csv); the rented-box numbers are from one session and their raw logs were not kept.  
 
-### All measured rows
-
-Earlier measurements behind the table, kept until a better measured number replaces them. Machines: A = the 2x3090 box, B = the laptop, C = the CPU-only box, D = the rented 4x3090 box. Rows marked `earlier` or `b11707` are being re-measured; rows marked **b11988** were re-measured on commit 3db71c4ee (one discarded run, then the 4th start). GLM 3.5-bit, IQ3_S and IQ1_M are the first run of b11707 against fresh upstream def4d406a; GLM and MiMo ran on release-candidate builds (MiMo also on b11509) and Qwen3.6 on the release binary.  
-
-| model (size) | machine | test | upstream | this fork | | build |
-|---|---|---|---|---|---|---|
-| **GLM-5.3-Flash** 3.0-bit (106 GB) | A | short chat, decode | 11.9 | **22.4** | **1.9x** | earlier |
-| **GLM-5.3-Flash** 3.0-bit (117.5 GB file) | D | short chat, decode, first run | 24.7 | 25.2 | 1.0x | b11707+ |
-| | | same, second run (saved state) | 24.7 | **31.5** | **1.3x** | b11707+ |
-| | | same, second run, `-t 16` | 24.7 | **33.8** | **1.4x** | b11707+ |
-| | | same, 3 of the 4 GPUs, second run (best ratio) | 20.1 | **32.6** | **1.6x** | b11707+ |
-| **MiMo-V2.6-Flash** IQ3_XXS (132 GB, bigger than RAM) | A | short chat, decode | 4.6 | **10.9** | **2.4x** | earlier |
-| | | 12k-token prompt, decode | 4.2 | **9.1** | **2.2x** | earlier |
-| | | 12k-token prompt, processing | 156 | 112 | 0.7x | earlier |
-| **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) * | A | short chat, decode | 27.7 | **46.5** | **1.7x** | earlier |
-| | | 12k-token prompt, decode / processing | 25.3 / 500 | **42.3 / 538** | 1.7x / 1.1x | earlier |
-| **GLM-5.3-Flash** 3.5-bit (137 GB, bigger than RAM) | A | short tetris prompt, 100 tokens, decode (text-dependent) | 6.9 | **15.1** | **2.2x** | b11707 |
-| **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short tetris prompt, 100 tokens, decode | 43.9 | **57.1** | **1.3x** | b11707 |
-| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | same | 69.1 | 67.5 (picks stock) | 1.0x | b11707 |
-| | B | same | 12.0 | **16.0** | **1.3x** | **b11988** |
-| | B | same, prompt processing | 18.1 | 19.6 | 1.1x | **b11988** |
-| **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) | B | short tetris prompt, 100 tokens, decode | 29.2 | **59.3** | **2.0x** | earlier |
-| | C | same, CPU only (AVX Q2_0 kernels) | 6.3 | **11.3** | **1.8x** | earlier |
-| Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | same | 45.1 | 45.0 | 1.0x | earlier |
-| Qwen3.8-27B IQ3_S, dense, CPU only | C | same | 1.7 | 1.6 | 1.0x | earlier |
-| Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`), fits VRAM | A | same | 78.3 | 77.0 | 1.0x (38.6 without MTP) | earlier |
-| | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x | earlier |
-| Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) | any |
-
-D: the fork is b11707 with the placement change in this branch (any model that does not fit takes the cache); the model is 85% in VRAM on 4 GPUs, so the first run only matches stock placement.  
+Rows marked `earlier` or `b11707` keep their old numbers until re-measured. GLM 3.5-bit, IQ3_S and IQ1_M are the first run of b11707 against fresh upstream def4d406a; GLM and MiMo ran on release-candidate builds (MiMo also on b11509) and Qwen3.6 on the release binary.  
+4x3090 rows: the fork is b11707 with the placement change in this branch (any model that does not fit takes the cache); the model is 85% in VRAM on 4 GPUs, so the first run only matches stock placement.  
+Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`): 38.6 tokens/s without MTP, 77.0 with it.  
 
 ### Methodology
 
