@@ -296,14 +296,14 @@ void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & 
     std::filesystem::create_directories(dir, ec);
     const std::filesystem::path file = dir / "embhot.csv";
     const bool fresh = !std::filesystem::exists(file, ec) || std::filesystem::file_size(file, ec) == 0;
-    // one line per run, built whole and appended with one write: embhex,hots,model. hots = layer:count count ...;layer:... (no commas in any field)
-    std::string line = fresh ? "embhex,hots,model\n" : "";
+    // one line per run, built whole and appended with one write: model,embhex,hots. hots = layer:count count ...;layer:... (no commas in any field)
+    std::string line = fresh ? "model,embhex,hots\n" : "";
     std::string hots;
     for (const auto & p : hot) {
         hots += (hots.empty() ? "" : ";") + p.first.substr(p.first.find('.') + 1) + ":" + p.second;
     }
     for (char & c : model) { if (c == ',' || c == '\n') { c = '_'; } }
-    line += hex + "," + hots + "," + model + "\n";
+    line += model + "," + hex + "," + hots + "\n";
     std::ofstream f(file, std::ios::app | std::ios::binary);
     f.write(line.data(), (std::streamsize) line.size());
 }
