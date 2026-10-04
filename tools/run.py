@@ -384,6 +384,25 @@ def prep_model():
 _PL = {}
 
 
+def snapshot_state(ts, build, model, hw):
+    """a plain copy of the learned state after the run: tools/bench/state-snapshots/<date time>-<build>-<model>.ini (local runs only; not in git). Never raises into a run."""
+    try:
+        if hw != "pc1" and hw != _PL.get("local"):
+            return
+        src = os.environ.get("LLAMA_MOE_STATE") or os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "llama.cpp", "moe-state.ini")
+        if not os.path.exists(src):
+            return
+        import shutil
+        d = os.path.join(DATA, "state-snapshots")
+        os.makedirs(d, exist_ok=True)
+        tag = lambda x: re.sub(r"[^A-Za-z0-9._-]+", "_", str(x))[:40]
+        stem = re.sub(r"-0000.-of-0000.|[.]gguf", "", str(model).split(" ")[0])
+        name = f"{tag(str(ts).replace(':', ''))}-{tag(build)}-{tag(stem)}.ini"
+        shutil.copyfile(src, os.path.join(d, name))
+    except Exception as e:
+        print("state snapshot:", e, file=sys.stderr)
+
+
 def power_limits(hw):
     """GPU power limits in W of this host, like 350+370 (PERF_PL overrides); only for rows of the local machine, remote ones stay empty."""
     if "pl" not in _PL:
@@ -472,6 +491,7 @@ def store(row, build, test, rec, note, hw, vstr):
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=power_limits(hw), proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
         branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in ("pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
+    snapshot_state(row["ts"], build, row["model"], hw)
 
 
 def show_row(row, build, test):
