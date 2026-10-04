@@ -40,6 +40,8 @@ Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation sp
 | Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 87% | 69.1<br>38 | 68.3<br>40 | 1.0x<br>1.0x | -<br>- | b12040 |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>first run | 24.7<br>- | 25.2<br>- | 1.0x<br>- | -<br>- | b11707+ |
 | Qwen3.8-27B-GSQ-<br>RCO-IQ3_S-mtp | 3600 A520 64G | 0%<br>CPU only | 1.7<br>5.6 | 1.6<br>5.8 | *0.9x↓*<br>*1.0x* | -<br>- | b12030 |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 44%<br>2 of 4 | ~17<br>- | 30.4<br>- | ~1.7x<br>- | -<br>- | b11707+ |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 22%<br>1 of 4 | ~15<br>- | 22.9<br>- | ~1.6x<br>- | -<br>- | b11707+ |
 | any model that fits | any | 100% | same<br>same | same<br>same | 1.0x<br>1.0x | -<br>- | any |
 
 
@@ -69,15 +71,7 @@ Introduced 2026-10-04 (commit `11d9fd2b7`; `game4` the same day); the instructio
 
 ### Why the gain depends on how much of the model fits
 
-Time per token is a fixed floor plus the cost of what is served from slow memory: `T = T0 + m x (fraction served from the CPU)`. Stock serves from the CPU every weight
-that does not fit in VRAM; the fork serves only its cache misses, and its hit rate is far above the cached fraction. Fitted on machine D, GLM 3.0-bit (ms per token):
-
-| GPUs (VRAM / model) | weights off VRAM | stock | fork: hit, model `28.3 + 46 x miss` | fork over stock |
-|---|---|---|---|---|
-| 4 (88%) | 15% | 40.5 ms (24.7 t/s) | 93.8%: 31.7 ms measured (31.5 t/s), 31.1 modelled | 1.3x |
-| 3 (66%) | 36% | 49.8 ms (20.1 t/s) | 94.9%: 30.6 ms measured (32.6 t/s) | 1.6x |
-| 2 (44%) | 57% | about 59 ms (about 17 t/s), modelled `34.0 + 44 x fraction`, not run | 87.9%: 32.9 ms measured (30.4 t/s), 33.9 modelled | about 1.7x |
-| 1 (22%) | 79% | about 68 ms (about 15 t/s), modelled, not run | 66.9%: 43.7 ms measured (22.9 t/s) | about 1.6x |
+Time per token is a fixed floor plus the cost of what is served from slow memory: `T = T0 + m x (fraction served from the CPU)`. Stock serves from the CPU every weight that does not fit in VRAM; the fork serves only its cache misses, and its hit rate is far above the cached fraction. Fitted on the rented 4x3090 box, GLM 3.0-bit: stock `34.0 + 44 x fraction` ms per token, fork `28.3 + 46 x miss` ms. Cache hit rates of the fork with 4, 3, 2 and 1 GPUs (88%, 66%, 44%, 22% of the model in VRAM): 93.8%, 94.9%, 87.9%, 66.9%. Values marked `~` in the table are model predictions, not measurements (stock with 2 and 1 GPUs was not run).  
 
 - **The gain is the CPU reads the cache removes.** It is largest when stock leaves a large share of the model on a slow CPU: on machine A (2 GPUs, 44 GB/s RAM) a model 2 to 3 times the VRAM gives 1.9x to 2.4x.  
 - **More fast memory has diminishing returns.** The slow-memory cost per unit is about the same for both (44 to 46 ms), so the fork's lead is only the difference between the share stock leaves on the CPU and its own miss rate. As the VRAM share grows both approach their floors (fork about 28 ms, stock about 34 ms, ratio about 1.2x). On 4 GPUs the fork is at 94% of its floor, and the 2, 3 and 4 GPU runs differ by 7%.  
