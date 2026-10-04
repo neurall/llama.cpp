@@ -144,6 +144,7 @@ struct layer_state {
     size_t src_offs[3] = { 0, 0, 0 };
 
     std::vector<uint64_t> glob_count;     // expert id -> lifetime uses
+    std::vector<uint64_t> glob_base;      // the counts a profile preloaded at start (research emb=1 records this run's counts: glob_count - glob_base)
     uint64_t              glob_max = 1;
     std::vector<bool>     sticky;         // expert id -> never evicted (most-used by lifetime count)
     std::vector<bool>     hot;            // expert id -> always hot: the fewest experts covering LLAMA_MOE_CACHE_PIN_HOT of the layer's picks
@@ -650,9 +651,16 @@ void profile_save(const moe_cache * mc) {
         }
     }
     moe_state_set(mc->profile, kv);
-    if (moe_embsnap_enabled()) {   // research: the run's hot counts (no preload ran, see profile_preload)
+    if (moe_embsnap_enabled()) {   // research: this run's counts alone (lifetime counts minus what the preloaded profile brought in)
         std::vector<std::pair<std::string, std::string>> hot;
-        for (const auto & p : kv) { if (p.first.compare(0, 4, "hot.") == 0) { hot.push_back(p); } }
+        for (const auto & ls : mc->layers) {
+            std::string v;
+            for (size_t e = 0; e < ls.glob_count.size(); ++e) {
+                const uint64_t b = e < ls.glob_base.size() ? ls.glob_base[e] : 0;
+                v += (e ? " " : "") + std::to_string(ls.glob_count[e] > b ? ls.glob_count[e] - b : 0);
+            }
+            hot.emplace_back("hot." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), v);
+        }
         moe_embsnap_write(hot);
     }
 }
@@ -787,7 +795,7 @@ void llama_moe_observe_start(const llama_model & model) {
     }
     std::lock_guard<std::mutex> lk(g_heat.mtx);
     g_heat.section = moe_state_section(model);
-    if (!moe_embsnap_enabled()) { moe_seed_hot(g_heat.section, model.hparams.n_expert); }
+    moe_seed_hot(g_heat.section, model.hparams.n_expert);
     g_heat.counts.assign(model.hparams.n_layer(), std::vector<uint64_t>(model.hparams.n_expert, 0));
     g_heat.tokens = 0;
     g_heat.on = true;
@@ -868,9 +876,6 @@ void set_table_entry(llama_moe_cache_layer & pub, int32_t expert, int32_t slot_o
 void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop);
 
 size_t profile_preload(moe_cache * mc, const llama_model & model) {
-    if (moe_embsnap_enabled()) {
-        return 0;   // research: embsnap records what a prompt makes hot, not what an earlier profile preloaded
-    }
     std::vector<std::vector<uint64_t>> counts;
     const char * from = mc->profile.c_str();
     bool ok = !mc->profile.empty();
@@ -921,6 +926,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     for (size_t il = 0; il < mc->layers.size(); ++il) {
         auto & ls = mc->layers[il];
         ls.glob_count = counts[il];
+        ls.glob_base  = counts[il];
         ls.glob_max   = std::max<uint64_t>(1, *std::max_element(ls.glob_count.begin(), ls.glob_count.end()));
         refresh_sticky(ls);
         std::vector<int32_t> ids;
