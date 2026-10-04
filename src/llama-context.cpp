@@ -526,8 +526,9 @@ struct layer_trace_state {
     int every = 0;
     bool ids_only = false;   // log=x: the selected expert ids only, no embeddings
     std::string model;
-    std::string file;   // the model file name without .gguf and split suffix, for routing_<file>.csv
-    std::map<int, std::string> hex, xhex, ids;   // per layer: output embedding, router input, selected experts
+    std::string file;   // the model file name without .gguf and split suffix, for <file>.routing
+    std::map<int, std::string> hex, xhex, ids;
+    std::map<int, std::vector<int32_t>> idv;   // log=x: per layer the selected experts of the sampled token   // per layer: output embedding, router input, selected experts
 };
 layer_trace_state g_lt;
 
@@ -542,22 +543,38 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
     }
     if (mine) {
         const int il = atoi(strchr(t->name, '-') + 1);
-        if (is_topk && t->type == GGML_TYPE_I32) {
+        if (is_topk && t->type == GGML_TYPE_I32 && t->ne[0] == (int64_t) g_lt.ctx->get_model().hparams.n_expert_used(il)) {   // one token's experts (a warm-up graph can pass n_tokens x k as one row)
             std::vector<int32_t> v(t->ne[0]);
             ggml_backend_tensor_get(t, v.data(), 0, v.size()*sizeof(int32_t));
-            std::string o;
-            for (size_t i = 0; i < v.size(); ++i) { o += (i ? " " : "") + std::to_string(v[i]); }
-            g_lt.ids[il] = o;
-            if (g_lt.ids_only && il == (int) g_lt.ctx->get_model().hparams.n_layer() - 1) {   // the last layer closes the sample
-                const std::filesystem::path path = moe_log_file(("routing_" + g_lt.file + ".csv").c_str());   // one file per model
-                std::error_code ec;
-                const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
-                std::string out = fresh ? "pos,layer,ids\n" : "";
-                const int pos = g_lt.ctx->trace_n_p_eval() + g_lt.ctx->trace_n_eval();
-                for (const auto & e : g_lt.ids) { out += std::to_string(pos) + "," + std::to_string(e.first) + "," + e.second + "\n"; }
-                std::ofstream f(path, std::ios::app | std::ios::binary);
-                f.write(out.data(), (std::streamsize) out.size());
-                g_lt.ids.clear();
+            if (g_lt.ids_only) {
+                g_lt.idv[il] = v;
+                if (il == (int) g_lt.ctx->get_model().hparams.n_layer() - 1) {   // the last layer closes the sample
+                    // <model file>.routing, little endian: once "MOER", u16 version 1, u16 layers, u16 k, u16 layer numbers;
+                    // then per sampled token i32 pos and layers x k u16 expert ids (layer order as in the header). A run starts where pos goes down.
+                    const std::filesystem::path path = moe_log_file((g_lt.file + ".routing").c_str());
+                    std::error_code ec;
+                    const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
+                    const uint16_t k = (uint16_t) v.size();
+                    std::string out;
+                    auto put = [&](const void * p, size_t n) { out.append((const char *) p, n); };
+                    if (fresh) {
+                        const uint16_t ver = 1, nl = (uint16_t) g_lt.idv.size();
+                        put("MOER", 4); put(&ver, 2); put(&nl, 2); put(&k, 2);
+                        for (const auto & e : g_lt.idv) { const uint16_t l = (uint16_t) e.first; put(&l, 2); }
+                    }
+                    const int32_t pos = g_lt.ctx->trace_n_p_eval() + g_lt.ctx->trace_n_eval();
+                    put(&pos, 4);
+                    for (const auto & e : g_lt.idv) {
+                        for (uint16_t i = 0; i < k; ++i) { const uint16_t id = i < e.second.size() ? (uint16_t) e.second[i] : 0xffff; put(&id, 2); }
+                    }
+                    std::ofstream f(path, std::ios::app | std::ios::binary);
+                    f.write(out.data(), (std::streamsize) out.size());
+                    g_lt.idv.clear();
+                }
+            } else {
+                std::string o;
+                for (size_t i = 0; i < v.size(); ++i) { o += (i ? " " : "") + std::to_string(v[i]); }
+                g_lt.ids[il] = o;
             }
         } else if (is_x && t->type == GGML_TYPE_F32) {
             // fixed scale, clipped at +-16 (int8, 2 hex characters per dim): unlike the per-token absmax scale of the output embedding, the outlier dims do not hide the rest
