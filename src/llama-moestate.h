@@ -33,7 +33,7 @@ bool moe_state_set(const std::string & section, const std::vector<std::pair<std:
 // drop every key of the section that starts with prefix
 bool moe_state_erase(const std::string & section, const std::string & prefix);
 
-// research (--moe embsnap=1): the last layer embedding of the last token (n floats), 4 bits per float = 1 hex character each, split into 200-character directories; the hot experts of the run
+// research (--moe embsnap=1): the last layer embedding of the last token (n floats), 4 bits per float = 1 hex character each, split into directories of the file system's maximum name length; the hot experts of the run
 // are written to ./embhot/<hex> (the local subdirectory embhot of the working directory, or LLAMA_MOE_EMBHOT) at exit (the last token of the last graph, nothing is read while running)
 bool moe_embsnap_enabled();
 void moe_embsnap_set(const float * emb, int n);

@@ -6,6 +6,9 @@
 
 #include <algorithm>
 #include <cctype>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include <cmath>
 #include <ctime>
 #include <cstdio>
@@ -293,9 +296,15 @@ void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & 
     if (hex.empty() || hot.empty()) { return; }
     const char * ed = getenv("LLAMA_MOE_EMBHOT");   // a local subdirectory of the working directory (embhot), or this path
     const std::filesystem::path dir = ed && ed[0] ? ed : "embhot";
-    std::filesystem::path leaf = dir;   // a path of 200-character directories (file names are limited to 255), the last piece is the file
-    for (size_t o = 0; o < hex.size(); o += 200) { leaf /= hex.substr(o, 200); }
     std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    size_t nm = 255;   // the longest file or directory name this file system takes (ecryptfs: 143), the last piece of the path is the file
+#ifndef _WIN32
+    const long pc = pathconf(dir.c_str(), _PC_NAME_MAX);
+    if (pc > 16) { nm = std::min<size_t>(255, (size_t) pc); }
+#endif
+    std::filesystem::path leaf = dir;
+    for (size_t o = 0; o < hex.size(); o += nm) { leaf /= hex.substr(o, nm); }
     std::filesystem::create_directories(leaf.parent_path(), ec);
     std::ofstream f(leaf, std::ios::app);   // collected over time: every run appends a block, nothing is overwritten
     std::string model;
