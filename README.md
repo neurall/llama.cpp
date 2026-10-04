@@ -17,7 +17,7 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 - **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
 - **Fallback to stock speed.** When the cache cannot help, the fork measures this and falls back to stock speed as quickly as it can (the 1.0x rows). This is work in progress, but already very usable.  
 
-This is the table of the last release (b11707); it is replaced when the new tests (four short and four long prompts per model) are complete.  
+Rows with `game4` / `edit4` tests are build b12209 (best run of each side, the learned state kept between runs as in normal use); the others are from the last release (b11707) until they are re-measured.  
 
 Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock llama.cpp.
 Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.
@@ -31,18 +31,21 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 | | | 12k-token prompt, decode | 4.2 | **9.1** | **2.2x** |
 | | | 12k-token prompt, processing | 156 | 112 | 0.7x |
 | **GLM-5.3-Flash** 3.5-bit (137 GB, bigger than RAM) | A | short tetris prompt, 100 tokens, decode (text-dependent) | 6.9 | **15.1** | **2.2x** |
+| **GLM-5.3-Flash** 3.0-bit (117 GB) | A | four short prompts (`game4`), decode / prefill | 12.6 / 11 | **27.0 / 11** | **2.1x** / 1.0x |
 | **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) | B | short tetris prompt, 100 tokens, decode | 29.2 | **59.3** | **2.0x** |
 | | C | same, CPU only (AVX Q2_0 kernels) | 6.3 | **11.3** | **1.8x** |
-| **GLM-5.3-Flash** 3.0-bit (106 GB) | A | short chat, decode | 11.9 | **22.4** | **1.9x** |
-| **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) * | A | short chat, decode | 27.7 | **46.5** | **1.7x** |
-| | | 12k-token prompt, decode / processing | 25.3 / 500 | **42.3 / 538** | 1.7x / 1.1x |
+| **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) | A | four short prompts (`game4`), decode / prefill | 31.2 / 18 | **48.9 / 23** | **1.6x / 1.3x** |
+| | | four edits on a 2.7k-token file (`edit4`), decode / prefill | 30.9 / 220 | **48.9 / 585** | **1.6x / 2.7x** |
+| **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | four short prompts (`game4`), decode / prefill | 44.1 / 29 | **54.2 / 32** | **1.2x** / 1.1x |
+| | | four edits on a 2.7k-token file (`edit4`), decode / prefill | 43.1 / 380 | **52.9 / 663** | **1.2x / 1.7x** |
 | Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`), fits VRAM | A | short tetris prompt, 100 tokens, decode | 78.3 | 77.0 | 1.0x (38.6 without MTP) |
 | | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x |
-| **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short tetris prompt, 100 tokens, decode | 43.9 | **57.1** | **1.3x** |
-| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | short tetris prompt, 100 tokens, decode | 69.1 | 67.5 (picks stock) | 1.0x |
-| | B | same | 11.4 | **13.5** | **1.2x** |
-| | B | same, prompt processing | 15.5 | 5.9 | 0.4x |
-| Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | short tetris prompt, 100 tokens, decode | 45.1 | 45.0 | 1.0x |
+| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | four short prompts (`game4`), decode / prefill | 68.5 / 39 | 66.2 / 33 (picks stock) | 1.0x / 0.8x |
+| | A | four edits on a 2.7k-token file (`edit4`), decode / prefill | 65.4 / 1209 | 65.3 / 1289 | 1.0x / 1.1x |
+| | B | short tetris prompt, 100 tokens, decode | 11.4 | **13.5** | **1.2x** |
+| | B | short tetris prompt, prompt processing | 15.5 | 5.9 | 0.4x |
+| Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | four short prompts (`game4`), decode / prefill | 45.1 / 28 | 44.7 / 23 | 1.0x / 0.8x |
+| | | four edits on a 2.7k-token file (`edit4`), decode / prefill | 44.3 / 1756 | 43.9 / 1738 | 1.0x / 1.0x |
 | Qwen3.8-27B IQ3_S, dense, CPU only | C | short tetris prompt, 100 tokens, decode | 1.7 | 1.6 | 1.0x |
 | Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) |
 

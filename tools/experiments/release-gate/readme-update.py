@@ -2,7 +2,7 @@
 """Update the README table from the new tests (campaign newtests in run-history.csv): short4 = game4, long4 = edit4, PC1 rows (2x3090) only.
 usage: readme-update.py README HISTORY.csv OURS_BUILD
 Each cell shows the best run of each side over all its runs in the log (t/s and pp separately): stock, or the same build with --fork off (campaign newtests-forkoff) when stock cannot load the model, and ours (the published build).
-A cell with results is replaced by them outright; cells without keep what they have (old values stay in git history and in the run log).
+A cell takes the new results only when ours is at least as fast as the number already in it; otherwise it keeps its number and build (every run is in the run log).
 A row that gets results also takes the build."""
 import csv, re, sys
 NB = " "
@@ -64,6 +64,10 @@ for l in open(readme).read().split("\n"):
             for col, gcol, test in ((4, 8, "game4"), (6, 9, "edit4")):
                 res = result(stem, test)
                 if res:
+                    m = re.findall(r"([\d.]+)", c[col].replace(NB, " ").split("<br>")[-1]) if "<br>" in c[col] else []
+                    cur_ours = float(m[0]) if m else 0.0   # ours t/s already in the cell
+                    if res[1][0] < cur_ours:
+                        continue   # not better: the cell keeps its number and build
                     c[col], c[col + 1], c[gcol] = cells(*res); changed += 1; hit = True
             if hit:
                 c[10] = " " + OURS.removeprefix("release-") + " "
