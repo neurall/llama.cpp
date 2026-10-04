@@ -138,6 +138,12 @@ def csv_append(name, cols, d):
             open(path, "w").write(ob.getvalue())
     with open(path, "a") as f:
         f.write(buf.getvalue())  # one write per line: concurrent benches (several machines, one host) do not interleave
+    if name == "run-history.csv":   # the same run into tools/runs.db (queryable copy; the CSV stays the source of truth)
+        try:
+            import runlog
+            runlog.insert(d, cols)
+        except Exception as e:
+            print("runs.db:", e, file=sys.stderr)
 
 
 def csv_load(name):
