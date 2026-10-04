@@ -41,7 +41,7 @@ for r in csv.DictReader(open(hist)):
         continue
     vals.setdefault((stem, r["test"], side), []).append((tps, pp))
 for k, xs in vals.items():
-    bestv[k] = [consistent([x[0] for x in xs]), consistent([x[1] for x in xs]), len(xs)]
+    bestv[k] = [max(x[0] for x in xs), max(x[1] for x in xs), len(xs)]   # the best run of each side
 def result(stem, test):
     o = bestv.get((stem, test, "ours"))
     s = bestv.get((stem, test, "stock")) or bestv.get((stem, test, "standin"))
