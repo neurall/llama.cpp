@@ -25,7 +25,7 @@ Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation sp
 | MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>short prompt | 4.4<br>3 | **11.4**<br>4 | *2.6x*<br>*1.2x* | *2.1x*<br>*0.8x↓* | b11707 |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 45% | 12.5<br>16 | **27.5**<br>16 | *2.2x*<br>*1.0x* | -<br>- | b11707 |
 | MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>12k prompt | 4.2<br>156 | **9.1**<br>112 | -<br>- | *2.3x*<br>*0.8x↓* | b11509 |
-| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>short prompt | 31.3<br>43 | **62.2**<br>64 | *2.0x*<br>*1.5x* | *1.5x*<br>*1.1x* | b11365 |
+| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>short prompt | 31.3<br>43 | **62.2**<br>64 | *2.0x*<br>*1.5x* | 1.6x<br>2.7x | b11365 |
 | Qwen3.6-35B-A3B-<br>GSQ-hybrid | 4060 8G 4/8<br>8945HS 32G 48G/s | 73%<br>slow CPU | 31.6<br>41.2 | **60.0**<br>100.9 | *1.9x*<br>*2.6x* | -<br>- | b12030 |
 | Qwen3.6-35B-A3B-<br>GSQ-hybrid | 3600 A520 64G | 0%<br>CPU only | 6.3<br>10.1 | 11.1<br>34.1 | *1.8x*<br>*3.7x* | -<br>- | b12040 |
 | Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>12k prompt | 25.3<br>500 | **42.3**<br>538 | -<br>- | *1.7x*<br>*1.1x* | b11341 |
