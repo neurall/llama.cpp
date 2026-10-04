@@ -46,7 +46,7 @@ for l in open(readme).read().split("\n"):
         stem = c[1].strip().replace(NB, " ").replace("<br>", "").replace(" ", "")
         hw = HW.get(c[2].strip().replace(NB, " ").split(" ")[0])
         if stem and hw:
-            for col, kind in ((4, "short"), (5, "long")):
+            for col, kind in ((6, "short"), (7, "long")):  # columns: model, hardware, in VRAM, stock, ours, short gain, long gain, build
                 p = pick(stem, hw, kind)
                 if not p:
                     continue
