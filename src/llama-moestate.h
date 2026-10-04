@@ -32,3 +32,10 @@ bool moe_state_section_kv(const std::string & section, std::vector<std::pair<std
 bool moe_state_set(const std::string & section, const std::vector<std::pair<std::string, std::string>> & kv);
 // drop every key of the section that starts with prefix
 bool moe_state_erase(const std::string & section, const std::string & prefix);
+
+// research (--moe embsnap=1): the last layer embedding of the prompt's last token (n floats), pooled to 64 buckets, one signed byte each = 128 hex characters; the hot experts of the run
+// are written to <state dir>/embhot/<hex>. Only the first prompt of a process is captured
+bool moe_embsnap_enabled();
+bool moe_embsnap_pending();                                   // enabled and no embedding captured yet
+void moe_embsnap_set(const float * emb, int n);
+void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & hot);

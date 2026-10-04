@@ -650,6 +650,11 @@ void profile_save(const moe_cache * mc) {
         }
     }
     moe_state_set(mc->profile, kv);
+    if (moe_embsnap_enabled()) {   // research: the run's hot counts (no preload ran, see profile_preload)
+        std::vector<std::pair<std::string, std::string>> hot;
+        for (const auto & p : kv) { if (p.first.compare(0, 4, "hot.") == 0) { hot.push_back(p); } }
+        moe_embsnap_write(hot);
+    }
 }
 
 // not evictable: sticky, or cached on a slow-link layer for less than LLAMA_MOE_CACHE_SLOW_MIN_STAY steps (default 1024):
@@ -782,7 +787,7 @@ void llama_moe_observe_start(const llama_model & model) {
     }
     std::lock_guard<std::mutex> lk(g_heat.mtx);
     g_heat.section = moe_state_section(model);
-    moe_seed_hot(g_heat.section, model.hparams.n_expert);
+    if (!moe_embsnap_enabled()) { moe_seed_hot(g_heat.section, model.hparams.n_expert); }
     g_heat.counts.assign(model.hparams.n_layer(), std::vector<uint64_t>(model.hparams.n_expert, 0));
     g_heat.tokens = 0;
     g_heat.on = true;
@@ -794,6 +799,7 @@ void llama_moe_observe_start(const llama_model & model) {
 
 void llama_moe_observe_save() {
     std::vector<std::pair<std::string, std::string>> kv;
+    std::vector<std::pair<std::string, std::string>> embhot;   // research: embsnap
     {
         std::lock_guard<std::mutex> lk(g_heat.mtx);
         if (!g_heat.on) {
@@ -826,6 +832,11 @@ void llama_moe_observe_save() {
             if (sum == 0) {
                 continue;   // a layer whose experts run on the GPU: nothing was seen
             }
+            if (moe_embsnap_enabled()) {   // research: this run's counts alone
+                std::string r;
+                for (size_t e = 0; e < c.size(); ++e) { r += (e ? " " : "") + std::to_string(c[e]); }
+                embhot.emplace_back("hot." + std::to_string(il), r);
+            }
             std::string old;   // earlier runs' counts of this layer are added
             if (moe_state_get(g_heat.section, "hot." + std::to_string(il), old)) {
                 std::istringstream is(old);
@@ -848,6 +859,7 @@ void llama_moe_observe_save() {
     }
     if (!kv.empty()) {
         moe_state_set(g_heat.section, kv);
+        moe_embsnap_write(embhot);
     }
 }
 
@@ -856,6 +868,9 @@ void set_table_entry(llama_moe_cache_layer & pub, int32_t expert, int32_t slot_o
 void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop);
 
 size_t profile_preload(moe_cache * mc, const llama_model & model) {
+    if (moe_embsnap_enabled()) {
+        return 0;   // research: embsnap records what a prompt makes hot, not what an earlier profile preloaded
+    }
     std::vector<std::vector<uint64_t>> counts;
     const char * from = mc->profile.c_str();
     bool ok = !mc->profile.empty();

@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <ctime>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -251,4 +253,57 @@ void llama_state_suppress_writes(bool suppress) {
 void llama_state_set_model(const char * section) {
     moe_state_set_model(section ? section : "");
 }
+}
+
+// research: embedding-keyed hot expert snapshots (see llama-moestate.h)
+static std::string g_embsnap_hex;
+
+bool moe_embsnap_enabled() {
+    const char * e = getenv("LLAMA_MOE_EMBSNAP");
+    return e && e[0] == '1' && moe_state_enabled();
+}
+
+bool moe_embsnap_pending() {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return g_embsnap_hex.empty() && getenv("LLAMA_MOE_EMBSNAP") && getenv("LLAMA_MOE_EMBSNAP")[0] == '1';
+}
+
+void moe_embsnap_set(const float * emb, int n) {
+    const int B = 64;
+    if (n < B) { return; }
+    std::vector<float> b(B, 0.0f);
+    float mx = 1e-20f;
+    for (int i = 0; i < B; ++i) {
+        const int lo = (int) ((int64_t) n*i/B), hi = (int) ((int64_t) n*(i + 1)/B);
+        double a = 0;
+        for (int j = lo; j < hi; ++j) { a += emb[j]; }
+        b[i] = (float) (a/(hi - lo));
+        mx = std::max(mx, std::fabs(b[i]));
+    }
+    std::string hex;
+    char t[4];
+    for (int i = 0; i < B; ++i) {
+        snprintf(t, sizeof t, "%02x", (unsigned) (uint8_t) (int8_t) std::lround(b[i]/mx*127.0f));
+        hex += t;
+    }
+    std::lock_guard<std::mutex> lk(g_mtx);
+    g_embsnap_hex = hex;
+}
+
+void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & hot) {
+    std::string hex, path;
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        hex = g_embsnap_hex;
+        path = state_path();
+    }
+    if (hex.empty() || path.empty() || hot.empty()) { return; }
+    const std::filesystem::path dir = std::filesystem::path(path).parent_path() / "embhot";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    std::ofstream f(dir / hex, std::ios::app);   // collected over time: every run appends a block, nothing is overwritten
+    std::string model;
+    { std::lock_guard<std::mutex> lk(g_mtx); model = g_geom_section; }
+    f << "# model [" << model << "] time " << (long long) time(nullptr) << ": hot experts (this run's counts) of a prompt whose last layer embedding is this file name (64 buckets, one signed byte each, scaled by the largest)\n";
+    for (const auto & p : hot) { f << p.first << " = " << p.second << "\n"; }
 }

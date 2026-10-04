@@ -2346,6 +2346,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             }
         }
 
+        if (n_outputs > 0 && !cparams.embeddings && moe_embsnap_pending() && res->get_embd()) {   // research: embsnap, the last layer embedding of the prompt's last token
+            ggml_tensor * te = res->get_embd();
+            std::vector<float> row(te->ne[0]);
+            ggml_backend_tensor_get(te, row.data(), (size_t) (n_outputs - 1)*te->nb[1], row.size()*sizeof(float));
+            moe_embsnap_set(row.data(), (int) row.size());
+        }
+
         // extract embeddings
         if (embd.data && t_embd && n_outputs > 0) {
             ggml_backend_t backend_embd = ggml_backend_sched_get_tensor_backend(sched.get(), t_embd);
