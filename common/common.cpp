@@ -2331,7 +2331,9 @@ common_init_result::~common_init_result() {
         return;
     }
     const llama_perf_context_data pd = llama_perf_context(pimpl->context.get());
-    if (pd.n_p_eval < 8 || pd.n_eval < 32) {
+    // the generation time decides what is recorded; the prompt time is only taken from real prompts (128+ tokens, below), so a short chat prompt
+    // (GLM 3.5-bit short game prompt: 6 prompt tokens) still records its run: before, every stock start of such a request was thrown away and measured again
+    if (pd.n_eval < 32) {
         LOG_INF("%s: MoE placement: too few tokens this run to record %s (%d prompt, %d generated)\n", __func__,
             g_moe_auto_mode.c_str(), pd.n_p_eval, pd.n_eval);
         return;
