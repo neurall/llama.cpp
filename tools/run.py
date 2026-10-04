@@ -62,6 +62,10 @@ EDIT_INSTR = ["Add a function that counts the lines of this file and prints the 
               "Add a short comment above every function in this file.",
               "Rename the longest function in this file to a clearer name and update its callers."]
 EDIT_WARM = "Explain in two sentences what this file does."
+# test game4: the short CLI test with four subjects, "write smallest html <game> game": same task, same language and stack, only the game changes (a coder stays
+# on one goal and one stack, so the experts stay relevant, but no two runs are the same prompt); same game at the same repetition for every build, own warm-up game
+GAME_WORDS = ["tetris", "racing", "shooter", "snake"]
+GAME_WARM = "pong"
 IDX = 0    # run counter: test chatv answers prompt IDX mod len(CHAT_PROMPTS) (a repeated temp-0 answer would reuse exactly the cached experts)
 CHAT_PROMPTS = [
     "Write a Python function that parses a CSV file and returns the average of each column.",
@@ -303,6 +307,12 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             res, logf = server_run(build, env, args, "/completion",
                                    {"prompt": ovr_prompt("generate smallest html tetris game." if test == "tetris" else "write smallest html tetris game"),
                                     "n_predict": int(OVR.get("tokens") or (-1 if test == "tetris" else 1024 if test == "fix" else 100)), **GREEDY, **(FIXED if test == "fix" else {})})
+            text = res["content"]
+        elif test == "game4":
+            word = GAME_WARM if WARMING else GAME_WORDS[(REP or 0) % len(GAME_WORDS)]
+            args = COMMON + ["-c", str(OVR.get("ctx") or 1024)]
+            res, logf = server_run(build, env, args, "/completion",
+                                   {"prompt": ovr_prompt(f"write smallest html {word} game"), "n_predict": int(OVR.get("tokens") or 100), "cache_prompt": False, **GREEDY})
             text = res["content"]
         elif test == "edit4":
             snippet = open(os.path.join(PROMPTS, "src_3k.cpp")).read()
@@ -817,7 +827,7 @@ if __name__ == "__main__":
         sys.argv.insert(1, "prompt")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "tetris", "t100", "chat", "chatv", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4"]
+    TESTS = ["ppl", "ppl3", "tetris", "t100", "chat", "chatv", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4"]
     r = sp.add_parser("run", help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", choices=TESTS)
