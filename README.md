@@ -10,68 +10,46 @@ llama-cli    -m model.gguf -p "hello"
 ```
 
 The decode speedup is largest when a third to a half of a MoE model fits in VRAM (1.9x to 2.4x), fades above about 55% and is 1.0x once it fits; dense models gain nothing.  
-Gain over stock llama.cpp by the share of the model that fits in VRAM (decode; the tables below have the machines and tests):
+Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = prompt processing tokens per second, each the 4th run of its test, `-` = not measured; the build column is the build the number was taken on):
 
-| model on machine | share of the model in VRAM | gain |
-|---|---|---|
-| MiMo IQ3_XXS 132 GB on A (2x24 GB) | 36% | **2.4x** |
-| GLM 3.5-bit 137 GB on A | 35% | **2.2x** |
-| GLM 3.0-bit on A | about 45% | 1.9x |
-| Qwen Next UD-IQ4_XS 88 GB on A | 55% | 1.7x |
-| GLM 3.0-bit on D, 3 of 4 GPUs | 66% | 1.6x |
-| Qwen Next IQ3_S 83 GB on A | 58% | 1.3x |
-| GLM 3.0-bit on D, 4 GPUs | 88% | 1.3x |
-| Qwen Next IQ1_M 55 GB on A | 87% | 1.0x (picks stock) |
-| Qwen3.6-35B Q2_0 on B (8 GB GPU), an exception: its CPU side is slow | about 73% | 2.0x |
-| any model that fits | 100% | 1.0x (cache off) |
+| model on machine | share of the model in VRAM | gain | stock t/s | ours t/s | stock pp | ours pp | build |
+|---|---|---|---|---|---|---|---|
+| MiMo IQ3_XXS 132 GB on A (2x24 GB) | 36% | **2.4x** | 4.6 | **10.9** | 156 | 112 | earlier |
+| GLM 3.5-bit 137 GB on A | 35% | **2.2x** | 6.9 | **15.1** | - | - | b11707 |
+| Qwen3.6-35B Q2_0 on B (8 GB GPU), an exception: its CPU side is slow | about 73% | **1.9x** | 31.6 | **60.0** | 41.2 | 100.9 | b12030 |
+| GLM 3.0-bit on A | about 45% | **1.9x** | 11.9 | **22.4** | - | - | earlier |
+| Qwen3.6-35B Q2_0, CPU only, on C | 0% | 1.8x | 6.3 | 11.2 | 10.1 | 31.5 | b12030 |
+| Qwen Next UD-IQ4_XS 88 GB on A | 55% | 1.7x | 27.7 | 46.5 | 500 | 538 | earlier |
+| Qwen3.8-27B Q5_K_M with MTP on A (2.2k-token prompt) | fits | 1.6x | 31.3 | 51.1 | 599 | 792 | earlier |
+| GLM 3.0-bit on D, 3 of 4 GPUs | 66% | 1.6x | 20.1 | 32.6 | - | - | b11707+ |
+| Qwen Next IQ3_S 83 GB on A | 58% | 1.3x | 43.9 | 57.1 | - | - | b11707 |
+| Qwen Next IQ1_M 55 GB on B (8 GB GPU) | about 13% | 1.3x | 13.5 | 17.3 | 18.3 | 21.6 | b12030 |
+| GLM 3.0-bit on D, 4 GPUs | 88% | 1.3x | 24.7 | 31.5 | - | - | b11707+ |
+| Qwen3.8-27B IQ4_NL, dense, on A | fits | 1.0x | 45.1 | 45.0 | - | - | earlier |
+| Qwen3.8-27B Q5_K_M with MTP on A (short prompt) | fits | 1.0x | 78.3 | 77.0 | - | - | earlier |
+| Qwen Next IQ1_M 55 GB on A | 87% | 1.0x (picks stock) | 69.1 | 67.5 | - | - | b11707 |
+| Qwen3.8-27B IQ3_S, dense, CPU only, on C | 0% | 0.9x | 1.7 | 1.6 | 5.6 | 5.8 | b12030 |
+| any model that fits | 100% | 1.0x (cache off) | same | same | same | same | any |
 
-Prompt processing can be slower than stock on long prompts (0.7x in one row below).  
+Prompt processing can be slower than stock on long prompts (0.7x in the MiMo row).  
 
 ## What you get
 
-Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock llama.cpp.  
+Single stream, temperature 0, model in RAM. "Stock" and "upstream" mean stock llama.cpp.  
 
 Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.  
 Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.  
 Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.  
 Machine D, rented: 4x RTX 3090 (PCIe 4.0 x16 each), EPYC 7B12 (64 cores), 256 GB DDR4 on 4 of 8 memory channels (74 GB/s read measured).  
 
-GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a 
-(no discarded run before it); the other rows are hot runs of earlier builds.  
-Rows marked **b11988** are re-measured on this release (commit 3db71c4ee): one discarded run, then the 4th start; upstream is the release b11379 on B and upstream 836d57176 built the same way as the fork on C;  
-the other rows keep their old numbers and are being re-measured, the build column says on which build each was taken.  
-
-| model (size) | machine | test | upstream | this fork | | build |
-|---|---|---|---|---|---|---|
-| **GLM-5.3-Flash** 3.0-bit (106 GB) | A | short chat, decode | 11.9 | **22.4** | **1.9x** | earlier |
-| **GLM-5.3-Flash** 3.0-bit (117.5 GB file) | D | short chat, decode, first run | 24.7 | 25.2 | 1.0x | b11707+ |
-| | | same, second run (saved state) | 24.7 | **31.5** | **1.3x** | b11707+ |
-| | | same, second run, `-t 16` | 24.7 | **33.8** | **1.4x** | b11707+ |
-| | | same, 3 of the 4 GPUs, second run (best ratio) | 20.1 | **32.6** | **1.6x** | b11707+ |
-| **MiMo-V2.6-Flash** IQ3_XXS (132 GB, bigger than RAM) | A | short chat, decode | 4.6 | **10.9** | **2.4x** | earlier |
-| | | 12k-token prompt, decode | 4.2 | **9.1** | **2.2x** | earlier |
-| | | 12k-token prompt, processing | 156 | 112 | 0.7x | earlier |
-| **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) * | A | short chat, decode | 27.7 | **46.5** | **1.7x** | earlier |
-| | | 12k-token prompt, decode / processing | 25.3 / 500 | **42.3 / 538** | 1.7x / 1.1x | earlier |
-| **GLM-5.3-Flash** 3.5-bit (137 GB, bigger than RAM) | A | short tetris prompt, 100 tokens, decode (text-dependent) | 6.9 | **15.1** | **2.2x** | b11707 |
-| **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short tetris prompt, 100 tokens, decode | 43.9 | **57.1** | **1.3x** | b11707 |
-| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | same | 69.1 | 67.5 (picks stock) | 1.0x | b11707 |
-| | B | same | 12.0 | **16.0** | **1.3x** | **b11988** |
-| | B | same, prompt processing | 18.1 | 19.6 | 1.1x | **b11988** |
-| **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) | B | short tetris prompt, 100 tokens, decode | 29.2 | **59.3** | **2.0x** | earlier |
-| | C | same, CPU only (AVX Q2_0 kernels) | 6.3 | **11.3** | **1.8x** | earlier |
-| Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | same | 45.1 | 45.0 | 1.0x | earlier |
-| Qwen3.8-27B IQ3_S, dense, CPU only | C | same | 1.7 | 1.6 | 1.0x | earlier |
-| Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`), fits VRAM | A | same | 78.3 | 77.0 | 1.0x (38.6 without MTP) | earlier |
-| | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x | earlier |
-| Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) | any |
+Rows marked `earlier` or `b11707` keep their old numbers and are being re-measured on the current release; upstream stock is the release b11379 on B and upstream 836d57176 built the same way as the fork on C.  
 
 D: upstream is the downloaded release b11323 (a source build of def4d406a gave 24.8 and 20.1).  
 the fork is b11707 with the placement change in this branch (any model that does not fit takes the cache);  
 the model is 85% in VRAM on 4 GPUs, so the first run only matches stock placement.  
 D numbers are from one session on a claud rented 4 gpu box (raw logs not kept, not in run-history.csv).  
 
-\* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
+Older rows: GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
 [`tools/bench/run-history.csv`](tools/bench/run-history.csv).  
 
 ### Why the gain depends on how much of the model fits
