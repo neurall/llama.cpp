@@ -2,9 +2,10 @@
 """Update the README table from the new tests (campaign newtests in run-history.csv): short = game4, long = edit4, PC1 rows (2x3090) only.
 usage: readme-update.py README HISTORY.csv OURS_BUILD
 Best run of ours (the published build) and of stock, 4 runs each; stock = the stock build, or the same build with --fork off (campaign newtests-forkoff) when stock cannot load the model.
-An empty cell takes whatever was measured; a filled cell is replaced only by a better gain (a lower one never replaces it, the run log has every run).
+A cell with a result of the new tests (best of 4 runs, same prompts for every build) is replaced by it outright, whatever it replaces: the new methodology is the better one. Old values stay in git history and in the run log. Cells without new results keep what they have.
 A short row that adopts a game4 result also takes its stock and ours numbers and the build."""
 import csv, re, sys
+MIN_RUNS = 3   # valid runs per side: a repetition whose instruction makes a model answer empty (IQ1_M, long test, 2nd instruction) fails on every build, so 3 is all there is
 NB = " "
 readme, hist, OURS = sys.argv[1], sys.argv[2], sys.argv[3]
 bestv = {}
@@ -44,7 +45,7 @@ for k, xs in vals.items():
 def result(stem, test):
     o = bestv.get((stem, test, "ours"))
     s = bestv.get((stem, test, "stock")) or bestv.get((stem, test, "standin"))
-    if o and s and o[2] >= 4 and s[2] >= 4 and o[0] and s[0]:
+    if o and s and o[2] >= MIN_RUNS and s[2] >= MIN_RUNS and o[0] and s[0]:
         return s, o
 def g(o, s):
     return "-" if not (o and s) else f"{o/s:.1f}x" + ("↓" if o/s < 0.95 else "")
@@ -67,13 +68,6 @@ for l in open(readme).read().split("\n"):
                     continue
                 s, o = res
                 new = [g(o[0], s[0]), g(o[1], s[1])]
-                cur = c[col].strip().replace(NB, "").split("<br>")
-                if any(num(cur[i]) is not None and num(new[i]) is not None and num(new[i]) < num(cur[i]) for i in (0, 1)):
-                    continue   # t/s or pp lower than what the cell has: not better, the existing value stays
-                if test == "game4":   # an older build's row that reached a higher speed stays (also when the gain ratio is a hair higher)
-                    m = re.search(r"([\d.]+)", c[5].replace("*", "").replace(NB, "").split("<br>")[0])
-                    if m and o[0] < float(m.group(1)):
-                        continue
                 c[col] = two(*new); changed += 1
                 if test == "game4":
                     c[4] = two(f"{s[0]:.1f}", f"{s[1]:.0f}")
