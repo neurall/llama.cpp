@@ -17,7 +17,7 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 - **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
 - **When the cache cannot help, it falls back to stock speed by measurement** (the 1.0x rows).  
 
-Gain over stock llama.cpp, best first (t/s = generated tokens per second on top, pp = prompt processing tokens per second below, in every cell with two numbers; four gains per model: short prompt t/s and pp, long prompt t/s and pp; both are stock's best of 4 runs against ours best of 4, no warm-up (short: four different 'smallest html game' prompts; long: four different edit instructions over one long source file); stock and ours are the numbers of the earlier same-prompt test until they are re-measured; *italic* gains are from the earlier tests (best run of ours against best run of stock from the run log: short = one short prompt repeated, long = the 12k-token prompt, or 2.2k for the MTP row); they are placeholders until the new tests (the plain numbers) replace them, `-` = not measured yet; the build column is the build the number was taken on):
+Gain over stock llama.cpp, best first. Two numbers in a cell: generation tokens/s on top, prompt processing (pp) below. Gains are stock's best run against ours best: short = four different short prompts, long = four edit instructions over one long source file. *Italic* = earlier tests, kept until the new ones replace them; `-` = not measured yet.
 
 | model | hardware | in VRAM | stock<br>t/s pp | ours<br>t/s pp | short gain<br>t/s pp | long gain<br>t/s pp | build |
 | --- | --- | --- | --- | --- | --- | --- | --- |
