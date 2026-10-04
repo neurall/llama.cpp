@@ -4,6 +4,7 @@
 #include "llama-model.h"
 #include "../include/llama.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -156,7 +157,7 @@ bool moe_state_get(const std::string & section, const std::string & key, std::st
     return true;
 }
 
-bool moe_state_section_kv(const std::string & section, std::vector<std::pair<std::string, std::string>> & kv) {
+bool moe_state_section_kv(const std::string & section, std::vector<std::pair<std::string, std::string>> & kv, bool any_size) {
     std::lock_guard<std::mutex> lk(g_mtx);
     const std::string path = state_path();
     kv.clear();
@@ -164,7 +165,18 @@ bool moe_state_section_kv(const std::string & section, std::vector<std::pair<std
         return false;
     }
     const file_t f = load(path);
-    const auto s = f.find(section);
+    auto s = f.find(section);
+    if (s == f.end() && any_size) {   // same file name (any case), other byte size (re-upload, other build of the file): the section with the most keys
+        auto lower_name = [](std::string n) {
+            n.resize(std::min(n.size(), n.find_last_of(' ')));
+            for (char & c : n) { c = (char) tolower((unsigned char) c); }
+            return n;
+        };
+        const std::string name = lower_name(section);
+        for (auto it = f.begin(); it != f.end(); ++it) {
+            if (lower_name(it->first) == name && (s == f.end() || it->second.size() > s->second.size())) { s = it; }
+        }
+    }
     if (s == f.end()) {
         return false;
     }

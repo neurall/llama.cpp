@@ -26,7 +26,8 @@ bool moe_state_enabled();
 // false: no such key or the state is off
 bool moe_state_get(const std::string & section, const std::string & key, std::string & value);
 // every key of a section (one file read)
-bool moe_state_section_kv(const std::string & section, std::vector<std::pair<std::string, std::string>> & kv);
+// any_size: no section of this exact name and size, take the one with the same file name (any case, any size) that has the most keys
+bool moe_state_section_kv(const std::string & section, std::vector<std::pair<std::string, std::string>> & kv, bool any_size = false);
 // read-modify-write of the whole file through a temporary file and rename; several keys in one write
 bool moe_state_set(const std::string & section, const std::vector<std::pair<std::string, std::string>> & kv);
 // drop every key of the section that starts with prefix

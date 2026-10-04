@@ -840,7 +840,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     const char * from = mc->profile.c_str();
     bool ok = !mc->profile.empty();
     std::vector<std::pair<std::string, std::string>> sect;
-    ok = ok && moe_state_section_kv(mc->profile, sect);
+    ok = ok && moe_state_section_kv(mc->profile, sect, true);
     for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
         const std::string key = "hot." + std::to_string(parse_layer_from_name(mc->layers[il].pub.up_src->name));
         const auto it = std::find_if(sect.begin(), sect.end(), [&](const auto & p) { return p.first == key; });
