@@ -7,7 +7,7 @@ harness, experiment records) and 2 behind the remote.
 
 | order of value | feature | evidence | branch |
 |---|---|---|---|
-| 1 | faster loading of pinned weights: hybrid huge pages (no setup), the 1 GiB pool and a cache file that outlives the process (`pool.sh`, `GGML_CUDA_HUGEFS`) | GLM 109 GB: 91 s to 73 s to ready with the hybrid alone (ABBA n=4); warm cache 34.5 s against 56.6 s for the pool path, same perplexity (ABBA n=4, state off) | `load-pinned-multithread` |
+| 1 | faster loading of pinned weights: hybrid huge pages (no setup), the 1 GiB pool and a cache file that outlives the process (`resident_pin.sh`, `GGML_CUDA_HUGEFS`) | GLM 109 GB: 91 s to 73 s to ready with the hybrid alone (ABBA n=4); warm cache 34.5 s against 56.6 s for the pool path, same perplexity (ABBA n=4, state off) | `load-pinned-multithread` |
 | 2 | every flag, `--moe` setting, knob and variable documented with an evidence label; `--moe name=value` for any setting; how to run stock | written; the `--moe` generalisation compiles (pc2) but has no GPU run | `docs-moe-switches`, `moe-switch-any-setting` |
 | 3 | the cache is not tried when it cannot fit, a placement that could not start is remembered | compiles (pc2); GPU runs of the auto placement at 10% and 20% share are in `tools/bench` when finished | `placement-low-share-guard` |
 | 4 | upstream sync (41 commits) | compiles on pc2 only; no CUDA build, no speed claim | `merge-upstream-2026-10-02` |
@@ -23,8 +23,8 @@ The first four branches touch disjoint files, so they merge without conflicts am
 
 0. **Sync.** Fetch the remote; merge it into local `release` (the README edit); push the 3 local commits (a decision for the owner, nothing is pushed by the plan).
 1. `moe-switch-any-setting` (`common/arg.cpp`, `src/llama-moecache.cpp`). Gate: dev build on PC1; `--moe policy=lru` logs the policy; default run unchanged (same perplexity).
-2. `load-pinned-multithread` (`ggml-cuda.cu`, `llama-model-loader.cpp`, `llama-model.cpp`, `pool.sh`). Gates: **a Windows build on W10** (the POSIX includes are guarded for Linux  
-   only; unverified until it builds), perplexity equal with and without the cache (done on PC1: 6.6026 and 3.7227), a run without any pool or mount (the hybrid fallback), `pool.sh mount` then `unmount` leaves no reserved pages.
+2. `load-pinned-multithread` (`ggml-cuda.cu`, `llama-model-loader.cpp`, `llama-model.cpp`, `resident_pin.sh`). Gates: **a Windows build on W10** (the POSIX includes are guarded for Linux  
+   only; unverified until it builds), perplexity equal with and without the cache (done on PC1: 6.6026 and 3.7227), a run without any pool or mount (the hybrid fallback), `resident_pin.sh mount` then `unmount` leaves no reserved pages.
 3. `docs-moe-switches`. Rebase it on the remote README first (both edit `README.md`); the pool section describes step 2, so it goes after it.
 4. `placement-low-share-guard`. Gates: GPU runs of the auto placement at about 10% share (expected: stock chosen without a trial, no out-of-memory) and at about 20% (cache), and the laptop.
 5. `merge-upstream-2026-10-02`, redone on the result. Gates: CUDA build on PC1 and W10, perplexity equal to the previous release on GLM and Qwen, decode against the previous release and stock (protocol v2, the stock baseline also with `--no-op-offload`, see below).

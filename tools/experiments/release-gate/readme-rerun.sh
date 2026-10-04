@@ -1,5 +1,5 @@
 #!/bin/bash
-# README table rerun on machine A (PC1), README protocol (run.py bench: t100 / chat / pf12k, n=3 ABBA, one discarded warm-up per cell), after the reboot and `sudo pool.sh mount 100G`.
+# README table rerun on machine A (PC1), README protocol (run.py bench: t100 / chat / pf12k, n=3 ABBA, one discarded warm-up per cell), after the reboot and `sudo resident_pin.sh mount 100G`.
 # usage: readme-rerun.sh FINAL_BUILD_DIRNAME STOCK_BUILD_DIRNAME     (both subdirectories of /p/bw/rels)
 #   FINAL = the release-recipe build of the final tree (clang), STOCK = upstream built the same way (release recipe, same upstream commit), b11707-49fe4b756 = the previous release
 set -u

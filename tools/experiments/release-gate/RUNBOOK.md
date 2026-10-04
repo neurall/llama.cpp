@@ -13,7 +13,7 @@ Rule set (memory): never slower than stock, not consistently slower than the pre
 6. pc2: CPU-only rows (Qwen3.6 CPU, OLMoE) with the final clang CPU build.
 
 ## After the reboot (PC1)
-1. `sudo /p/bw/wt-release-next/pool.sh 100g` FIRST, before any CUDA load; verify `HugePages_Free` ~100.
+1. `sudo /p/bw/wt-release-next/resident_pin.sh 100g` FIRST, before any CUDA load; verify `HugePages_Free` ~100.
 2. `python3 tools/reg_tests.py all /p/bw/rels/final-$FINAL` (regressions 1-4; 3 and 4 need the pool).
 3. `tools/experiments/release-gate/readme-rerun.sh final-$FINAL stock-docker-836d57176` (README protocol, n=3 ABBA, ~2-3 h): the table lands in `readme-rerun-table.md`.
 4. Gate: fork >= 0.98 x b11707 and >= stock on every cell, md5-equal text for cache cells (`LLAMA_MOE_CACHE_DETERMINISTIC=1`) when comparing against b11707.

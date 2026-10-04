@@ -260,14 +260,14 @@ longer text all gave the same value (6.6026): the cache returns the same weights
 depends on how fragmented your free memory is and how fast your RAM is. The first load of a model still reads the disk (about 47 s here); only  
 later starts are fast. Loading the pinned weights also holds that much RAM for as long as the process runs.
 
-### One-time setup: `pool.sh`
+### One-time setup: `resident_pin.sh`
 
 Linux only (Windows uses the old path). The kernel needs 1 GiB huge pages (`CONFIG_CONTIG_ALLOC`, the CPU flag `pdpe1gb`); tested on kernel 7.1.5 only.
 
 ```sh
-sudo ./pool.sh mount              # the most the machine can spare: total RAM minus a margin (default max(24 GiB, 20% of RAM), HUGEFS_MARGIN_GIB=N to change)
-sudo ./pool.sh 100g               # exactly that many GiB (a number with G), or --pages N, or the path of a model file to size it for that model
-sudo ./pool.sh unmount            # delete the cached models, unmount, give the pages back
+sudo ./resident_pin.sh mount              # the most the machine can spare: total RAM minus a margin (default max(24 GiB, 20% of RAM), HUGEFS_MARGIN_GIB=N to change)
+sudo ./resident_pin.sh 100g               # exactly that many GiB (a number with G), or --pages N, or the path of a model file to size it for that model
+sudo ./resident_pin.sh unmount            # delete the cached models, unmount, give the pages back
 ```
 
 It reserves the 1 GiB pages (it drops the page cache and compacts memory first so nothing has to be migrated), and mounts a hugetlbfs at  
@@ -292,7 +292,7 @@ silently uses level 2 or 3.
 
 Huge pages taken from a CMA area cannot be pinned for the GPU: the NVIDIA driver pins with `pin_user_pages(FOLL_LONGTERM)`, the kernel refuses  
 that for CMA pages unless it can migrate them, and a 1 GiB page inside the area has nowhere to go. `cudaHostRegister` then fails with  
-`invalid argument` (we measured this for every flag and chunk size). `pool.sh mount` refuses to run if that option is on the kernel command  
+`invalid argument` (we measured this for every flag and chunk size). `resident_pin.sh mount` refuses to run if that option is on the kernel command  
 line. Allocate the pool at run time, as the script does, from ordinary memory.
 
 ### Environment variables for loading
@@ -307,7 +307,7 @@ line. Allocate the pool at run time, as the script does, from ordinary memory.
 
 ### If something goes wrong
 
-- `only N of M pages could be allocated`: memory is too fragmented or too full; stop other programs, run `pool.sh unmount`, mount again with a smaller size, or reboot.
+- `only N of M pages could be allocated`: memory is too fragmented or too full; stop other programs, run `resident_pin.sh unmount`, mount again with a smaller size, or reboot.
 - No `hugetlbfs cache` line in the log: the mount is missing, the pool is too small for the file, or another process is filling the same model; the load used level 2 or 3.
 - A load that stalls for minutes while the machine is swapping: lower `GGML_CUDA_THP_SHARE` (or set it to `0`), and do not load a second large model while a cache file holds most of the RAM.
 

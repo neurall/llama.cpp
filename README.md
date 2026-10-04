@@ -172,19 +172,19 @@ It is worth the hassle below only if you reload models of 100 GB and up often, w
 a server loads once and keeps running, and on a smaller model waiting 10 s instead of 5 s does not matter, so neither needs the pool.  
 
 ```
-sudo ./pool.sh 100g                       # reserve a 100 GiB pool (any model under 100 GB) and mount the weights cache at /mnt/huge1g
+sudo ./resident_pin.sh 100g                       # reserve a 100 GiB pool (any model under 100 GB) and mount the weights cache at /mnt/huge1g
 GGML_CUDA_HUGEFS=/mnt/huge1g llama-cli -m model.gguf ...
-sudo ./pool.sh unmount                    # give the memory back
+sudo ./resident_pin.sh unmount                    # give the memory back
 ```
 
-- `sudo ./pool.sh model.gguf` reserves what that model needs; `sudo ./pool.sh mount` reserves what the machine can spare (RAM minus a margin of the larger of 24 GiB and 20%).  
+- `sudo ./resident_pin.sh model.gguf` reserves what that model needs; `sudo ./resident_pin.sh mount` reserves what the machine can spare (RAM minus a margin of the larger of 24 GiB and 20%).  
 - The first load of a model fills a cache file in the pool; later loads map it. Several models share the pool, the least recently used one goes when it is full.  
 - Without `GGML_CUDA_HUGEFS`, or without a pool, nothing changes.  
 - **Needs Linux 4.11 or newer, built with `CONFIG_CONTIG_ALLOC`, on a CPU with 1 GiB pages (`pdpe1gb`)**: reserving 1 GiB pages at run time needs both. That is what makes the pool optional and cheap: the RAM is reserved only while you want it (`mount`), and `unmount` gives it back, whereas a boot-time reservation (`hugepages=N` on the kernel command line) holds it for good and starves every other program. Check with `grep CONFIG_CONTIG_ALLOC /boot/config-$(uname -r)` (it must say `=y`) and `ls /sys/kernel/mm/hugepages/hugepages-1048576kB` (it must exist). Tested on Linux 7.1. Do not boot with `hugetlb_cma=`: pages inside a CMA area cannot be pinned for the GPU. Linux only.  
 
 The disadvantages:  
 - **The first start is slow.** The first load of a model reads it from disk, pins it and fills the pool's cache file; only the later loads are fast.  
-- **It needs sudo and a reboot.** 1 GiB pages can only be reserved from memory that is not fragmented yet. Reboot, then run `sudo ./pool.sh 100g` before anything else uses RAM, to get the biggest pool; after days of uptime it is no longer possible to reserve a big one.  
+- **It needs sudo and a reboot.** 1 GiB pages can only be reserved from memory that is not fragmented yet. Reboot, then run `sudo ./resident_pin.sh 100g` before anything else uses RAM, to get the biggest pool; after days of uptime it is no longer possible to reserve a big one.  
 - **The pool is RAM nobody else can use** while it is mounted (a 100 GiB pool leaves about 25 GiB for everything else).  
 
 ## Good to know

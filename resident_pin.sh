@@ -2,10 +2,10 @@
 # The 1 GiB huge-page pool behind the pinned-weights cache. Allocate it once; the loader does the rest (it fills a cache file on the first load of
 # a model, maps it afterwards, and evicts the least recently used model that nobody has mapped when the pool is full).
 #
-#   sudo ./pool.sh 100g               reserve a 100 GiB pool, enough for any model under 100 GB, and mount the cache at /mnt/huge1g
-#   sudo ./pool.sh model.gguf         reserve what that model needs (split models: pass the first part)
-#   sudo ./pool.sh mount              reserve the most the machine can spare (total RAM minus a margin: max(24 GiB, 20% of RAM), HUGEFS_MARGIN_GIB=N)
-#   sudo ./pool.sh unmount            delete the cached models, unmount, give the pages back
+#   sudo ./resident_pin.sh 100g               reserve a 100 GiB pool, enough for any model under 100 GB, and mount the cache at /mnt/huge1g
+#   sudo ./resident_pin.sh model.gguf         reserve what that model needs (split models: pass the first part)
+#   sudo ./resident_pin.sh mount              reserve the most the machine can spare (total RAM minus a margin: max(24 GiB, 20% of RAM), HUGEFS_MARGIN_GIB=N)
+#   sudo ./resident_pin.sh unmount            delete the cached models, unmount, give the pages back
 #
 # Root (sudo) is only needed to change the pool or the mount. Afterwards start the fork with   GGML_CUDA_HUGEFS=/mnt/huge1g   (the first load of a
 # model fills the cache, later loads map it and skip the disk read). Without the variable, or without a pool, the loader works as before.
@@ -22,7 +22,7 @@ ARGS="$*"
 cmd=${1:-}
 case "$cmd" in
   mount|unmount) shift;;
-  [0-9]*[Gg]|*.gguf|--pages) cmd=mount;;      # `./pool.sh 100g` or `./pool.sh model.gguf`: mount is implied
+  [0-9]*[Gg]|*.gguf|--pages) cmd=mount;;      # `./resident_pin.sh 100g` or `./resident_pin.sh model.gguf`: mount is implied
   *) sed -n '2,13p' "$0"; exit 1;;
 esac
 if [ "$cmd" = unmount ]; then

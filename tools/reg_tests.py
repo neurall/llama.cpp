@@ -189,7 +189,7 @@ def check(n, cur, good=None, dry=False):
     reg = REGS[n]
     good = good or reg["good_build"]
     if reg.get("needs") == "pool" and pool_free_gib() < 100:
-        return "SKIP", "needs a free 1 GiB hugepage pool of 100 pages (sudo pool.sh 100g right after boot)"
+        return "SKIP", "needs a free 1 GiB hugepage pool of 100 pages (sudo resident_pin.sh 100g right after boot)"
     if not os.path.exists(os.path.join(cur, "llama-cli")):
         return "ERROR", f"no llama-cli in {cur}"
     err = ensure_build(good, dry)   # the stored last-good build, rebuilt from its commit when missing
