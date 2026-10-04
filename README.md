@@ -15,7 +15,7 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 
 - **Q2 models get a speed bump on AVX2 CPUs**: upstream has no AVX2 kernels for the Q2_0 type, this fork does (Qwen3.6-35B Q2_0 in the table).  
 - **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
-- **When the cache cannot help, it falls back to stock speed by measurement** (the 1.0x rows).  
+- **Fallback to stock speed.** When the cache cannot help, the fork measures this and falls back to stock speed as quickly as it can (the 1.0x rows). This is work in progress, but already very usable.  
 
 Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation speed (tokens/s) above prompt-processing speed (pp). Short and long gains compare the best run of this fork with the best run of stock on short and long prompts. *Italic* values come from earlier tests and will be replaced; `-` means not yet measured.
 
