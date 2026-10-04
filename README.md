@@ -18,26 +18,26 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 - **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
 - **When the cache cannot help, it falls back to stock speed by measurement**, so a model that fits or a machine that gains nothing runs at stock speed (1.0x rows below).  
 
-Gain over stock llama.cpp, best first (t/s = generated tokens per second on top, pp = prompt processing tokens per second below, in every cell with two numbers; four gains per model: short prompt t/s and pp, long prompt t/s and pp; both are stock's best of 4 runs against ours best of 4, no warm-up (short: four different 'smallest html game' prompts; long: four different edit instructions over one long source file); stock and ours are the numbers of the earlier same-prompt test until they are re-measured; *italic* gains are from the earlier same-prompt test and stay until the new test is in (the same number in short and long), `-` = not measured yet; the build column is the build the number was taken on):
+Gain over stock llama.cpp, best first (t/s = generated tokens per second on top, pp = prompt processing tokens per second below, in every cell with two numbers; four gains per model: short prompt t/s and pp, long prompt t/s and pp; both are stock's best of 4 runs against ours best of 4, no warm-up (short: four different 'smallest html game' prompts; long: four different edit instructions over one long source file); stock and ours are the numbers of the earlier same-prompt test until they are re-measured; *italic* gains are from the earlier tests (short: one short prompt repeated; long: the 12k-token prompt, or 2.2k for the MTP row) and stay until the new tests replace them with better measured numbers, `-` = not measured yet; the build column is the build the number was taken on):
 
 | model | hardware | in VRAM | short gain<br>t/s pp | long gain<br>t/s pp | stock<br>t/s pp | ours<br>t/s pp | build |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 36% | *2.4x*<br>*0.7x↓* | *2.4x*<br>*0.7x↓* | 4.6<br>156 | **10.9**<br>112 | earlier |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.5bit | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 35% | *2.2x*<br>- | *2.2x*<br>- | 6.9<br>- | **15.1**<br>- | b11707 |
-| qwen36 | 4060 8G 4x8<br>8945HS 32G 48G/s | 73%<br>slow CPU | *1.9x*<br>*2.4x* | *1.9x*<br>*2.4x* | 31.6<br>41.2 | **60.0**<br>100.9 | b12030 |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 45% | *1.9x*<br>- | *1.9x*<br>- | 11.9<br>- | **22.4**<br>- | earlier |
-| qwen36 | no GPU<br>3600 A520 64G | 0%<br>CPU only | *1.8x*<br>*3.4x* | *1.8x*<br>*3.4x* | 6.3<br>10.1 | 11.1<br>34.1 | b12040 |
-| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 55% | *1.7x*<br>*1.1x* | *1.7x*<br>*1.1x* | 27.7<br>500 | 46.5<br>538 | earlier |
-| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits<br>2.2k | *1.6x*<br>*1.3x* | *1.6x*<br>*1.3x* | 31.3<br>599 | 51.1<br>792 | earlier |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4x16<br>EPYC 7B12 256G 74G/s | 66%<br>3 of 4 | *1.6x*<br>- | *1.6x*<br>- | 20.1<br>- | 32.6<br>- | b11707+ |
-| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ3_S | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 58% | 1.3x<br>1.1x | *1.3x*<br>- | 43.9<br>- | 57.1<br>- | b11707 |
-| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 4060 8G 4x8<br>8945HS 32G 48G/s | 13% | *1.3x*<br>*1.2x* | *1.3x*<br>*1.2x* | 13.5<br>18.3 | 17.3<br>21.6 | b12030 |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4x16<br>EPYC 7B12 256G 74G/s | 88%<br>4 GPUs | *1.3x*<br>- | *1.3x*<br>- | 24.7<br>- | 31.5<br>- | b11707+ |
-| Qwen3.8-27B-IQ4_NL | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits<br>dense | 1.0x<br>1.1x | *1.0x*<br>- | 45.1<br>- | 45.0<br>- | earlier |
-| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits<br>short | *1.0x*<br>- | *1.0x*<br>- | 78.3<br>- | 77.0<br>- | earlier |
-| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 87% | 1.0x<br>1.0x | *1.0x*<br>- | 69.1<br>- | 68.3<br>40 | b12040 |
-| Qwen3.8-27B-GSQ-<br>RCO-IQ3_S-mtp | no GPU<br>3600 A520 64G | 0%<br>CPU only | *0.9x↓*<br>*1.0x* | *0.9x↓*<br>*1.0x* | 1.7<br>5.6 | 1.6<br>5.8 | b12030 |
-| any model that fits | any | 100% | *1.0x*<br>*1.0x* | *1.0x*<br>*1.0x* | same<br>same | same<br>same | any |
+| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 36% | *2.4x*<br>- | *2.2x*<br>*0.7x↓* | 4.6<br>156 | **10.9**<br>112 | earlier |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.5bit | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 35% | *2.2x*<br>- | -<br>- | 6.9<br>- | **15.1**<br>- | b11707 |
+| qwen36 | 4060 8G 4x8<br>8945HS 32G 48G/s | 73%<br>slow CPU | *1.9x*<br>*2.4x* | -<br>- | 31.6<br>41.2 | **60.0**<br>100.9 | b12030 |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 45% | *1.9x*<br>- | -<br>- | 11.9<br>- | **22.4**<br>- | earlier |
+| qwen36 | no GPU<br>3600 A520 64G | 0%<br>CPU only | *1.8x*<br>*3.4x* | -<br>- | 6.3<br>10.1 | 11.1<br>34.1 | b12040 |
+| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 55% | *1.7x*<br>- | *1.7x*<br>*1.1x* | 27.7<br>500 | 46.5<br>538 | earlier |
+| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits<br>2.2k | -<br>- | *1.6x*<br>*1.3x* | 31.3<br>599 | 51.1<br>792 | earlier |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4x16<br>EPYC 7B12 256G 74G/s | 66%<br>3 of 4 | *1.6x*<br>- | -<br>- | 20.1<br>- | 32.6<br>- | b11707+ |
+| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ3_S | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 58% | 1.3x<br>1.1x | -<br>- | 43.9<br>- | 57.1<br>- | b11707 |
+| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 4060 8G 4x8<br>8945HS 32G 48G/s | 13% | *1.3x*<br>*1.2x* | -<br>- | 13.5<br>18.3 | 17.3<br>21.6 | b12030 |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4x16<br>EPYC 7B12 256G 74G/s | 88%<br>4 GPUs | *1.3x*<br>- | -<br>- | 24.7<br>- | 31.5<br>- | b11707+ |
+| Qwen3.8-27B-IQ4_NL | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits<br>dense | 1.0x<br>1.1x | -<br>- | 45.1<br>- | 45.0<br>- | earlier |
+| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | fits<br>short | *1.0x*<br>- | -<br>- | 78.3<br>- | 77.0<br>- | earlier |
+| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 2x3090 4x16+4x4 X570<br>3700X 125G 44G/s | 87% | 1.0x<br>1.0x | -<br>- | 69.1<br>- | 68.3<br>40 | b12040 |
+| Qwen3.8-27B-GSQ-<br>RCO-IQ3_S-mtp | no GPU<br>3600 A520 64G | 0%<br>CPU only | *0.9x↓*<br>*1.0x* | -<br>- | 1.7<br>5.6 | 1.6<br>5.8 | b12030 |
+| any model that fits | any | 100% | 1.0x<br>1.0x | -<br>- | same<br>same | same<br>same | any |
 
 Two cells are slower than stock and say so: prompt processing of MiMo on long prompts (0.7x) and generation of the CPU-only 27B IQ3_S (0.9x, 1.6 against 1.7 tokens/s).  
 Hardware, in this order: GPUs with PCIe generation x lanes (4x16 = PCIe 4.0 x16), CPU, RAM (G = GB, channels, type and speed), measured RAM bandwidth.  
@@ -55,6 +55,57 @@ Those numbers are from one session on a rented 4 gpu box (raw logs not kept, not
 
 Older rows: GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
 [`tools/bench/run-history.csv`](tools/bench/run-history.csv).  
+
+### All measured rows (kept)
+
+The rows behind the table, with the machine letters A to D, as measured earlier (a number is only replaced by a better measured one):  
+
+Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock llama.cpp.  
+
+Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.  
+Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.  
+Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.  
+Machine D, rented: 4x RTX 3090 (PCIe 4.0 x16 each), EPYC 7B12 (64 cores), 256 GB DDR4 on 4 of 8 memory channels (74 GB/s read measured).  
+
+GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a 
+(no discarded run before it); the other rows are hot runs of earlier builds.  
+Rows marked **b11988** are re-measured on this release (commit 3db71c4ee): one discarded run, then the 4th start; upstream is the release b11379 on B and upstream 836d57176 built the same way as the fork on C;  
+the other rows keep their old numbers and are being re-measured, the build column says on which build each was taken.  
+
+| model (size) | machine | test | upstream | this fork | | build |
+|---|---|---|---|---|---|---|
+| **GLM-5.3-Flash** 3.0-bit (106 GB) | A | short chat, decode | 11.9 | **22.4** | **1.9x** | earlier |
+| **GLM-5.3-Flash** 3.0-bit (117.5 GB file) | D | short chat, decode, first run | 24.7 | 25.2 | 1.0x | b11707+ |
+| | | same, second run (saved state) | 24.7 | **31.5** | **1.3x** | b11707+ |
+| | | same, second run, `-t 16` | 24.7 | **33.8** | **1.4x** | b11707+ |
+| | | same, 3 of the 4 GPUs, second run (best ratio) | 20.1 | **32.6** | **1.6x** | b11707+ |
+| **MiMo-V2.6-Flash** IQ3_XXS (132 GB, bigger than RAM) | A | short chat, decode | 4.6 | **10.9** | **2.4x** | earlier |
+| | | 12k-token prompt, decode | 4.2 | **9.1** | **2.2x** | earlier |
+| | | 12k-token prompt, processing | 156 | 112 | 0.7x | earlier |
+| **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) * | A | short chat, decode | 27.7 | **46.5** | **1.7x** | earlier |
+| | | 12k-token prompt, decode / processing | 25.3 / 500 | **42.3 / 538** | 1.7x / 1.1x | earlier |
+| **GLM-5.3-Flash** 3.5-bit (137 GB, bigger than RAM) | A | short tetris prompt, 100 tokens, decode (text-dependent) | 6.9 | **15.1** | **2.2x** | b11707 |
+| **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short tetris prompt, 100 tokens, decode | 43.9 | **57.1** | **1.3x** | b11707 |
+| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | same | 69.1 | 67.5 (picks stock) | 1.0x | b11707 |
+| | B | same | 12.0 | **16.0** | **1.3x** | **b11988** |
+| | B | same, prompt processing | 18.1 | 19.6 | 1.1x | **b11988** |
+| **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) | B | short tetris prompt, 100 tokens, decode | 29.2 | **59.3** | **2.0x** | earlier |
+| | C | same, CPU only (AVX Q2_0 kernels) | 6.3 | **11.3** | **1.8x** | earlier |
+| Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | same | 45.1 | 45.0 | 1.0x | earlier |
+| Qwen3.8-27B IQ3_S, dense, CPU only | C | same | 1.7 | 1.6 | 1.0x | earlier |
+| Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`), fits VRAM | A | same | 78.3 | 77.0 | 1.0x (38.6 without MTP) | earlier |
+| | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x | earlier |
+| Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) | any |
+
+D: upstream is the downloaded release b11323 (a source build of def4d406a gave 24.8 and 20.1).  
+the fork is b11707 with the placement change in this branch (any model that does not fit takes the cache);  
+the model is 85% in VRAM on 4 GPUs, so the first run only matches stock placement.  
+D numbers are from one session on a claud rented 4 gpu box (raw logs not kept, not in run-history.csv).  
+
+\* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
+[`tools/bench/run-history.csv`](tools/bench/run-history.csv).  
+
+### Why the gain depends on how much of the model fits
 
 **Methodology: a coding session, not one repeated prompt.** A model run on the same prompt over and over at temperature 0 routes to the same experts every time, which flatters any expert cache. So the stricter test (`python3 tools/run.py bench -t edit4`) feeds one long source file (about 2700 tokens, `tools/bench/src_3k.cpp`) with four different edit instructions, one per run:  
 "add a function that counts the lines", "delete the code that is never used", "add a short comment above every function", "rename the longest function and update its callers" (128 tokens generated, temperature 0).  
