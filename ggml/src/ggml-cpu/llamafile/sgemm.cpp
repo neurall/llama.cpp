@@ -1547,6 +1547,11 @@ class tinyBLAS_Q0_AVX {
                         // Computation of product of delta values for four blocks and replicate it across 256 bit lane
                         __m256 dvec =  _mm256_castps128_ps256(_mm_mul_ps(da, db));
                         dvec = _mm256_permute2f128_ps(dvec ,dvec, 0);
+#if defined(__GNUC__)   // GCC and clang (MSVC has no GNU inline assembly)
+                        // clang folds permute2f128 + shuffle_ps into eight vbroadcastss ymm, xmm per iteration (cross-lane, slow on Zen 2: this loop ran 19% below gcc's, which keeps
+                        // one vperm2f128 and in-lane vshufps); the empty asm keeps the permuted vector opaque
+                        __asm__("" : "+x"(dvec));
+#endif
                         // Computation of dot product and multiplication with appropriate delta value products
                         Cv[j][0] = madd(_mm256_shuffle_ps(dvec, dvec, 0),
                                     updot(_mm256_sign_epi8(avec0, avec0),
