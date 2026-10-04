@@ -754,6 +754,25 @@ void stock_obs_cb(const char * name, const struct ggml_tensor * ids, const struc
     }
     g_heat.tokens += ids->ne[1];
 }
+// a file with no hot map of its own yet starts from the one of the same file name or the same family and shape (other quant, other build of the file): it is copied
+// once into this file's own section, which then learns on its own; only layers with the model's expert count are taken
+void moe_seed_hot(const std::string & section, size_t n_expert) {
+    std::vector<std::pair<std::string, std::string>> own, donor, hot;
+    if (section.empty() || n_expert == 0 || !moe_state_enabled()) {
+        return;
+    }
+    moe_state_section_kv(section, own);
+    if (std::any_of(own.begin(), own.end(), [](const auto & p) { return p.first.compare(0, 4, "hot.") == 0; }) || !moe_state_section_kv(section, donor, true)) {
+        return;
+    }
+    for (const auto & p : donor) {
+        if (p.first.compare(0, 4, "hot.") == 0 && (size_t) std::count(p.second.begin(), p.second.end(), ' ') + 1 == n_expert) { hot.push_back(p); }
+    }
+    if (!hot.empty() && moe_state_set(section, hot)) {
+        LLAMA_LOG_INFO("moe-cache: no hot map for [%s]: seeded %zu layers from a same-name or same-family record\n", section.c_str(), hot.size());
+    }
+}
+
 }  // namespace
 
 void llama_moe_observe_start(const llama_model & model) {
@@ -763,6 +782,7 @@ void llama_moe_observe_start(const llama_model & model) {
     }
     std::lock_guard<std::mutex> lk(g_heat.mtx);
     g_heat.section = moe_state_section(model);
+    moe_seed_hot(g_heat.section, model.hparams.n_expert);
     g_heat.counts.assign(model.hparams.n_layer(), std::vector<uint64_t>(model.hparams.n_expert, 0));
     g_heat.tokens = 0;
     g_heat.on = true;
@@ -840,12 +860,8 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     const char * from = mc->profile.c_str();
     bool ok = !mc->profile.empty();
     std::vector<std::pair<std::string, std::string>> sect;
+    moe_seed_hot(mc->profile, mc->layers.empty() ? 0 : mc->layers[0].glob_count.size());
     ok = ok && moe_state_section_kv(mc->profile, sect);
-    bool seeded = false;   // no record of this exact file: take the hot map of the same name or the same family and shape, and keep it as this file's own record
-    if (ok && std::none_of(sect.begin(), sect.end(), [](const auto & p) { return p.first.compare(0, 4, "hot.") == 0; })) {   // a section that holds no hot map yet counts as missing
-        ok = moe_state_section_kv(mc->profile, sect, true);
-        seeded = ok;
-    }
     for (size_t il = 0; ok && il < mc->layers.size(); ++il) {
         const std::string key = "hot." + std::to_string(parse_layer_from_name(mc->layers[il].pub.up_src->name));
         const auto it = std::find_if(sect.begin(), sect.end(), [&](const auto & p) { return p.first == key; });
@@ -884,12 +900,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     if (!ok) {
         return 0;
     }
-    LLAMA_LOG_INFO("moe-cache: usage profile from %s%s\n", from, seeded ? " (seed from a same-name or same-family record)" : "");
-    if (seeded) {
-        std::vector<std::pair<std::string, std::string>> hot;
-        for (const auto & p : sect) { if (p.first.compare(0, 4, "hot.") == 0) { hot.push_back(p); } }
-        moe_state_set(mc->profile, hot);
-    }
+    LLAMA_LOG_INFO("moe-cache: usage profile from %s\n", from);
     size_t queued = 0;
     std::lock_guard<std::mutex> lk(mc->wmtx);
     for (size_t il = 0; il < mc->layers.size(); ++il) {
