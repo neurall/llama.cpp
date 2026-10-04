@@ -25,6 +25,7 @@ Tests:
   tetris  raw completion "generate smallest html tetris game.", -c 1024, until full
   t100    raw completion "write smallest html tetris game", -c 1024, 100 tokens, temperature 0: the short one-shot run most people benchmark
   chat    /v1/chat/completions "write smallest html tetris game", 1500 tokens
+  chat2   chat like chat with a ~350-token prompt (the same game with a requirements list), 1500 tokens: a real prompt, so pp counts
   chatv   chat with varied prompts (run counter picks the prompt, thinking off), 300 tokens: topic switches the cache has to follow
   pf128k  128k-token prefill: src_128k.cpp, 64 tokens generated, -c 131072 (like pf12k otherwise)
   pf12k   12k-token prefill: src_12k.cpp as a raw completion prompt, 32 tokens generated,
@@ -66,6 +67,15 @@ EDIT_WARM = "Explain in two sentences what this file does."
 # on one goal and one stack, so the experts stay relevant, but no two runs are the same prompt); same game at the same repetition for every build, own warm-up game
 GAME_WORDS = ["tetris", "racing", "shooter", "snake"]
 GAME_WARM = "pong"
+CHAT_LONG = ("write smallest html tetris game. Requirements: a single self-contained html file with inline css and javascript, no external libraries or assets. "
+             "The board is 10 columns by 20 rows drawn on a canvas, with a one-cell border, and every cell is 24 pixels square. All seven tetrominoes (I, O, T, S, Z, J, L) "
+             "have distinct colors and spawn from a shuffled bag so every piece appears once before any repeats. The arrow keys move the active piece left and right and "
+             "soft-drop it, the up arrow rotates it clockwise with simple wall kicks, and the space bar hard-drops it. Gravity speeds up every ten cleared lines. Show a ghost "
+             "piece where the active piece would land, a preview of the next piece, the score, the level and the number of cleared lines. Scoring is 100, 300, 500 and 800 points "
+             "for one, two, three and four lines at once, multiplied by the level, plus one point per soft-dropped cell and two per hard-dropped cell. Pressing P pauses and "
+             "resumes the game, and pressing R restarts it. When a new piece cannot spawn, show a game over overlay with the final score and a hint to press R. Keep the code "
+             "readable: one function for collision tests, one for locking a piece, one for clearing lines, one for drawing, and a requestAnimationFrame loop with a fixed time "
+             "step. Do not use any frameworks. Answer with the complete html file only, in a single code block, without any explanation before or after it.")
 IDX = 0    # run counter: test chatv answers prompt IDX mod len(CHAT_PROMPTS) (a repeated temp-0 answer would reuse exactly the cached experts)
 CHAT_PROMPTS = [
     "Write a Python function that parses a CSV file and returns the average of each column.",
@@ -392,7 +402,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
             chatv = test == "chatv"  # varied prompts (index = run counter), thinking off: the topic switches the cache has to follow
             res, logf = server_run(build, env, args, "/v1/chat/completions",
-                                   {"messages": [{"role": "user", "content": ovr_prompt(CHAT_PROMPTS[IDX % len(CHAT_PROMPTS)] if chatv else "write smallest html tetris game")}],
+                                   {"messages": [{"role": "user", "content": ovr_prompt(CHAT_PROMPTS[IDX % len(CHAT_PROMPTS)] if chatv else CHAT_LONG if test == "chat2" else "write smallest html tetris game")}],
                                     "max_tokens": int(OVR.get("tokens") or (300 if chatv else 1500)), **GREEDY,
                                     **({"chat_template_kwargs": {"enable_thinking": False}} if chatv else {})})
             m = res["choices"][0]["message"]
@@ -905,7 +915,7 @@ if __name__ == "__main__":
         sys.argv.insert(1, "prompt")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "tetris", "t100", "chat", "chatv", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4"]
+    TESTS = ["ppl", "ppl3", "tetris", "t100", "chat", "chat2", "chatv", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4"]
     r = sp.add_parser("run", help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", choices=TESTS)
