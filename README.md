@@ -10,6 +10,14 @@ llama-cli    -m model.gguf -p "hello"
 ```
 
 The decode speedup is largest when a third to a half of a MoE model fits in VRAM (1.9x to 2.4x), fades above about 55% and is 1.0x once it fits; dense models gain nothing.  
+**Highlights (all measured, all in the table below):**
+
+- **Up to 2.4x faster generation** on models bigger than your VRAM: MiMo-V2.6-Flash 132 GB on two 24 GB cards, 4.6 to 10.9 tokens/s.  
+- **1.9x generation and 2.4x prompt processing on a laptop**: Qwen3.6-35B on an 8 GB RTX 4060, 31.6 to 60.0 and 41.2 to 100.9 tokens/s.  
+- **3x faster prompt processing with no GPU at all**: Qwen3.6-35B on a Ryzen 5 3600, 10.1 to 31.5 tokens/s (1.8x generation).  
+- **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
+- **When the cache cannot help, it falls back to stock speed by measurement**, so a model that fits or a machine that gains nothing runs at stock speed (1.0x rows below).  
+
 Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = prompt processing tokens per second, each the 4th run of its test, `-` = not measured; the build column is the build the number was taken on):
 
 | model on machine | share of the model in VRAM | gain | stock t/s | ours t/s | stock pp | ours pp | build |
