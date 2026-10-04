@@ -1603,11 +1603,13 @@ static std::string moe_auto_decide_for(const moe_auto_rec & st, const moe_auto_r
     return mode;
 }
 
-// one run of each placement decides when the gap beats the noise; otherwise a second run of each is taken
+// one run of each placement decides when the CACHE wins by more than the noise; otherwise a second run of each is taken. The cache is never rejected on one run:
+// its first run starts with no learned hot experts (IQ3_S on 2x RTX 3090: 33-40 t/s cold, 53 t/s warm) and a decision "stock" is never revisited, so a cold first
+// trial would lock the model to stock speed for good
 static bool moe_auto_clear_gap(const moe_auto_rec & st, const moe_auto_rec & ca, const common_params & params) {
     double bar = 0;
     const double np = moe_auto_p_known(st, ca) ? moe_auto_est_prompt(params) : 0.0;
-    return std::fabs(moe_auto_gap(st, ca, np, moe_auto_est_gen(params), bar)) > bar;
+    return moe_auto_gap(st, ca, np, moe_auto_est_gen(params), bar) > bar;
 }
 
 // --moe autotune=0 or LLAMA_AUTOTUNE=0: the kill switch for everything the engine tunes or measures by itself

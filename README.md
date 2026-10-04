@@ -26,7 +26,7 @@ Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = p
 | GLM 3.5-bit 137 GB on A | 35% | **2.2x** | 6.9 | **15.1** | - | - | b11707 |
 | Qwen3.6-35B Q2_0 on B (8 GB GPU), an exception: its CPU side is slow | about 73% | **1.9x** | 31.6 | **60.0** | 41.2 | 100.9 | b12030 |
 | GLM 3.0-bit on A | about 45% | **1.9x** | 11.9 | **22.4** | - | - | earlier |
-| Qwen3.6-35B Q2_0, CPU only, on C | 0% | 1.8x | 6.3 | 11.2 | 10.1 | 31.5 | b12030 |
+| Qwen3.6-35B Q2_0, CPU only, on C | 0% | 1.8x | 6.3 | 11.1 | 10.1 | 34.1 | b12040 |
 | Qwen Next UD-IQ4_XS 88 GB on A | 55% | 1.7x | 27.7 | 46.5 | 500 | 538 | earlier |
 | Qwen3.8-27B Q5_K_M with MTP on A (2.2k-token prompt) | fits | 1.6x | 31.3 | 51.1 | 599 | 792 | earlier |
 | GLM 3.0-bit on D, 3 of 4 GPUs | 66% | 1.6x | 20.1 | 32.6 | - | - | b11707+ |
@@ -35,7 +35,7 @@ Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = p
 | GLM 3.0-bit on D, 4 GPUs | 88% | 1.3x | 24.7 | 31.5 | - | - | b11707+ |
 | Qwen3.8-27B IQ4_NL, dense, on A | fits | 1.0x | 45.1 | 45.0 | - | - | earlier |
 | Qwen3.8-27B Q5_K_M with MTP on A (short prompt) | fits | 1.0x | 78.3 | 77.0 | - | - | earlier |
-| Qwen Next IQ1_M 55 GB on A | 87% | 1.0x (picks stock) | 69.1 | 67.5 | - | - | b11707 |
+| Qwen Next IQ1_M 55 GB on A | 87% | 1.0x (picks stock) | 69.1 | 68.3 | - | 40 | b12040 |
 | Qwen3.8-27B IQ3_S, dense, CPU only, on C | 0% | 0.9x | 1.7 | 1.6 | 5.6 | 5.8 | b12030 |
 | any model that fits | 100% | 1.0x (cache off) | same | same | same | same | any |
 
