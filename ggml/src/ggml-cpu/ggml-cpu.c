@@ -1774,16 +1774,17 @@ static void ggml_compute_forward_mul_mat_id_impl(
             }
         }
 
-        // GGML_MOE_LOG: append the routed expert ids of every ffn_gate_exps
-        // mul_mat_id to the file named by the env var. Diagnostic only; the
-        // whole block is inert unless GGML_MOE_LOG is set at first use.
+        // --moe log=t (LLAMA_MOE_LOG): append the routed expert ids of every ffn_gate_exps
+        // mul_mat_id to moe-route.txt (GGML_MOE_LOG=<file> moves it). Diagnostic only; the
+        // whole block is inert unless the letter is set at first use.
         {
             static FILE * moe_log_file  = NULL;
             static int    moe_log_state = -1;
             if (moe_log_state == -1) {
-                const char * moe_log_path = getenv("GGML_MOE_LOG");
-                if (moe_log_path && moe_log_path[0]) {
-                    moe_log_file = fopen(moe_log_path, "a");
+                const char * moe_log_letters = getenv("LLAMA_MOE_LOG");   // --moe log=t; GGML_MOE_LOG=<file> only moves the file
+                if (moe_log_letters && strchr(moe_log_letters, 't')) {
+                    const char * moe_log_path = getenv("GGML_MOE_LOG");
+                    moe_log_file = fopen(moe_log_path && moe_log_path[0] ? moe_log_path : "moe-route.txt", "a");
                 }
                 moe_log_state = moe_log_file ? 1 : 0;
             }

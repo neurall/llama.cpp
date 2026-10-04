@@ -261,10 +261,12 @@ void llama_state_set_model(const char * section) {
 // research: embedding-keyed hot expert snapshots (see llama-moestate.h)
 static std::string g_embsnap_hex;
 
-static bool log_has(const char * letters) {   // --moe log=LETTERS (LLAMA_MOE_LOG)
+bool moe_log_has(const char * letters) {   // --moe log=LETTERS (LLAMA_MOE_LOG)
     const char * e = getenv("LLAMA_MOE_LOG");
-    return e && strpbrk(e, letters) && moe_state_enabled();
+    return e && strpbrk(e, letters);
 }
+
+static bool log_has(const char * letters) { return moe_log_has(letters) && moe_state_enabled(); }
 
 bool moe_embsnap_enabled() {
     return log_has("e");

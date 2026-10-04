@@ -43,3 +43,6 @@ void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & 
 // the date and time in the name keep the files unique. Nothing is read or written while running
 bool moe_snap_enabled();
 void moe_snap_save(const std::string & section);
+
+// --moe log=LETTERS (LLAMA_MOE_LOG): true when one of the letters is set. e embedding line (embhot.csv), s or i state snapshot, g GPU identity line, p periodic cache stats, t routing trace, c decode-step trace; r is read by tools/run.py
+bool moe_log_has(const char * letters);

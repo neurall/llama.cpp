@@ -1277,7 +1277,8 @@ static void common_gpu_free(size_t & total, size_t & max, int & n) {
     uint32_t h = 2166136261u;            // FNV-1a: the same on every platform, so a state file can move with its machine
     for (const auto & id : ids) { for (char c : id) { h = (h ^ (uint8_t) c) * 16777619u; } h *= 16777619u; }
     g_gpu_id = string_format("%08x", h);
-    if (getenv("LLAMA_MOE_LOG_GPUID")) { for (const auto & id : ids) { LOG_INF("%s: GPU identity of the placement record: %s -> %s\n", __func__, id.c_str(), g_gpu_id.c_str()); } }
+    if (const char * lg = getenv("LLAMA_MOE_LOG"); lg && strchr(lg, 'g')) {   // --moe log=g
+         for (const auto & id : ids) { LOG_INF("%s: GPU identity of the placement record: %s -> %s\n", __func__, id.c_str(), g_gpu_id.c_str()); } }
 }
 
 // RAM that can be used without swapping: Linux MemAvailable (free + reclaimable page cache), 0 if unknown

@@ -55,7 +55,7 @@ static std::vector<std::pair<ggml_backend_dev_t, double>> g_early_gbs; // early 
 
 namespace {
 
-// LLAMA_MOE_CACHE_TRACE=<prefix>: TRACE=<steps> (ctl file or env) records that many decode steps, after
+// --moe log=c (LLAMA_MOE_CACHE_TRACE=<prefix> moves the files): TRACE=<steps> (ctl file or env) records that many decode steps, after
 // TRACE_AFTER steps, as a Chrome/Perfetto trace <prefix>.<n>.json (ui.perfetto.dev): the token steps, GPU split
 // starts, CPU expert phases, predictions, every upload per worker, publishes (and how late) -- gaps show up there
 struct trace_ev { int64_t ts, dur; int tid; std::string name, args; };
@@ -2800,8 +2800,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
         if (const char * c = getenv("LLAMA_MOE_CACHE_CTL")) {
             mc->ctl = c;
         }
-        if (const char * t = getenv("LLAMA_MOE_CACHE_TRACE")) {
-            g_tr.prefix = t;
+        if (moe_log_has("c")) {   // --moe log=c: decode-step trace; LLAMA_MOE_CACHE_TRACE=<prefix> only moves it
+            const char * t = getenv("LLAMA_MOE_CACHE_TRACE");
+            g_tr.prefix = t && t[0] ? t : "moe-trace";
             g_tr.names[TR_SCHED] = "sched: tokens, GPU splits, publishes";
             g_tr.names[TR_CPU]   = "CPU experts + router";
             g_tr.names[TR_PRED]  = "predictor";
@@ -3980,7 +3981,7 @@ void llama_moe_cache_step() {
         }
     }
 
-    static const bool stats = getenv("LLAMA_MOE_CACHE_STATS") != nullptr;
+    static const bool stats = moe_log_has("p");   // --moe log=p: periodic cache stats on the log
     if (stats && mc->n_steps % 64 == 0) {
         static uint64_t ph = 0, pm = 0;
         uint64_t h = 0, m = 0, filled = 0, inflight = 0, total = 0;
