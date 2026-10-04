@@ -18,26 +18,26 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 - **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
 - **When the cache cannot help, it falls back to stock speed by measurement**, so a model that fits or a machine that gains nothing runs at stock speed (1.0x rows below).  
 
-Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = prompt processing tokens per second, stock on the first line and ours on the second, each the 4th run of its test, `-` = not measured; the build column is the build the number was taken on):
+Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = prompt processing tokens per second, each the 4th run of its test, `-` = not measured; the build column is the build the number was taken on):
 
-| model | hardware | share of the model in VRAM | gain | t/s<br>stock<br>ours | pp<br>stock<br>ours | build |
-|---|---|---|---|---|---|---|
-| MiMo IQ3_XXS 132 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 36% | **2.4x** | 4.6<br>**10.9** | 156<br>112 | earlier |
-| GLM 3.5-bit 137 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 35% | **2.2x** | 6.9<br>**15.1** | - | b11707 |
-| Qwen3.6-35B Q2_0 (8 GB GPU), an exception: its CPU side is slow | 4060 8 GB 4x8 (laptop)<br>Ryzen 9 8945HS<br>32 GB 4ch LPDDR5-6400<br>48 GB/s | about 73% | **1.9x** | 31.6<br>**60.0** | 41.2<br>100.9 | b12030 |
-| GLM 3.0-bit | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | about 45% | **1.9x** | 11.9<br>**22.4** | - | earlier |
-| Qwen3.6-35B Q2_0, CPU only | no GPU<br>Ryzen 5 3600 (A520)<br>64 GB 2ch DDR4-3200 | 0% | 1.8x | 6.3<br>11.1 | 10.1<br>34.1 | b12040 |
-| Qwen Next UD-IQ4_XS 88 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 55% | 1.7x | 27.7<br>46.5 | 500<br>538 | earlier |
-| Qwen3.8-27B Q5_K_M with MTP (2.2k-token prompt) | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | fits | 1.6x | 31.3<br>51.1 | 599<br>792 | earlier |
-| GLM 3.0-bit, 3 of 4 GPUs | 4x 3090, each 4x16<br>EPYC 7B12 64c<br>256 GB 4ch DDR4<br>74 GB/s | 66% | 1.6x | 20.1<br>32.6 | - | b11707+ |
-| Qwen Next IQ3_S 83 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 58% | 1.3x | 43.9<br>57.1 | - | b11707 |
-| Qwen Next IQ1_M 55 GB | 4060 8 GB 4x8 (laptop)<br>Ryzen 9 8945HS<br>32 GB 4ch LPDDR5-6400<br>48 GB/s | about 13% | 1.3x | 13.5<br>17.3 | 18.3<br>21.6 | b12030 |
-| GLM 3.0-bit, 4 GPUs | 4x 3090, each 4x16<br>EPYC 7B12 64c<br>256 GB 4ch DDR4<br>74 GB/s | 88% | 1.3x | 24.7<br>31.5 | - | b11707+ |
-| Qwen3.8-27B IQ4_NL, dense | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | fits | 1.0x | 45.1<br>45.0 | - | earlier |
-| Qwen3.8-27B Q5_K_M with MTP (short prompt) | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | fits | 1.0x | 78.3<br>77.0 | - | earlier |
-| Qwen Next IQ1_M 55 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 87% | 1.0x (picks stock) | 69.1<br>68.3 | -<br>40 | b12040 |
-| Qwen3.8-27B IQ3_S, dense, CPU only | no GPU<br>Ryzen 5 3600 (A520)<br>64 GB 2ch DDR4-3200 | 0% | 0.9x | 1.7<br>1.6 | 5.6<br>5.8 | b12030 |
-| any model that fits | any | 100% | 1.0x (cache off) | same | same | any |
+| model | hardware | share of the model in VRAM | gain | stock t/s | ours t/s | stock pp | ours pp | build |
+|---|---|---|---|---|---|---|---|---|
+| MiMo IQ3_XXS 132 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 36% | **2.4x** | 4.6 | **10.9** | 156 | 112 | earlier |
+| GLM 3.5-bit 137 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 35% | **2.2x** | 6.9 | **15.1** | - | - | b11707 |
+| Qwen3.6-35B Q2_0 (8 GB GPU), an exception: its CPU side is slow | 4060 8 GB 4x8 (laptop)<br>Ryzen 9 8945HS<br>32 GB 4ch LPDDR5-6400<br>48 GB/s | about 73% | **1.9x** | 31.6 | **60.0** | 41.2 | 100.9 | b12030 |
+| GLM 3.0-bit | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | about 45% | **1.9x** | 11.9 | **22.4** | - | - | earlier |
+| Qwen3.6-35B Q2_0, CPU only | no GPU<br>Ryzen 5 3600 (A520)<br>64 GB 2ch DDR4-3200 | 0% | 1.8x | 6.3 | 11.1 | 10.1 | 34.1 | b12040 |
+| Qwen Next UD-IQ4_XS 88 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 55% | 1.7x | 27.7 | 46.5 | 500 | 538 | earlier |
+| Qwen3.8-27B Q5_K_M with MTP (2.2k-token prompt) | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | fits | 1.6x | 31.3 | 51.1 | 599 | 792 | earlier |
+| GLM 3.0-bit, 3 of 4 GPUs | 4x 3090, each 4x16<br>EPYC 7B12 64c<br>256 GB 4ch DDR4<br>74 GB/s | 66% | 1.6x | 20.1 | 32.6 | - | - | b11707+ |
+| Qwen Next IQ3_S 83 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 58% | 1.3x | 43.9 | 57.1 | - | - | b11707 |
+| Qwen Next IQ1_M 55 GB | 4060 8 GB 4x8 (laptop)<br>Ryzen 9 8945HS<br>32 GB 4ch LPDDR5-6400<br>48 GB/s | about 13% | 1.3x | 13.5 | 17.3 | 18.3 | 21.6 | b12030 |
+| GLM 3.0-bit, 4 GPUs | 4x 3090, each 4x16<br>EPYC 7B12 64c<br>256 GB 4ch DDR4<br>74 GB/s | 88% | 1.3x | 24.7 | 31.5 | - | - | b11707+ |
+| Qwen3.8-27B IQ4_NL, dense | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | fits | 1.0x | 45.1 | 45.0 | - | - | earlier |
+| Qwen3.8-27B Q5_K_M with MTP (short prompt) | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | fits | 1.0x | 78.3 | 77.0 | - | - | earlier |
+| Qwen Next IQ1_M 55 GB | 3090 4x16<br>3090 4x4 (X570)<br>Ryzen 7 3700X<br>125 GB 2ch DDR4-3200<br>44 GB/s | 87% | 1.0x (picks stock) | 69.1 | 68.3 | - | 40 | b12040 |
+| Qwen3.8-27B IQ3_S, dense, CPU only | no GPU<br>Ryzen 5 3600 (A520)<br>64 GB 2ch DDR4-3200 | 0% | 0.9x | 1.7 | 1.6 | 5.6 | 5.8 | b12030 |
+| any model that fits | any | 100% | 1.0x (cache off) | same | same | same | same | any |
 
 Prompt processing can be slower than stock on long prompts (0.7x in the MiMo row).  
 GPU links read as PCIe generation x lanes (4x16 = PCIe 4.0 x16); the rest of the hardware cell is CPU, RAM (size, channels, type and speed) and the measured RAM bandwidth.  
