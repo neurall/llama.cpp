@@ -42,7 +42,7 @@ def cmp(x, y):
             sum(len(hot(x[l]) - hot(y[l])) / max(1, len(hot(x[l]))) for l in ls) / len(ls))
 
 
-print(f"{'arm':8} {'pair':26} {'hot Jaccard':>11} {'top16 shared':>12} {'hot share':>9} {'stale':>6} {'stale':>6}")
+print(f"{'arm':8} {'pair':26} {'hot Jaccard':>11} {'top16 shared':>12} {'hot share':>9} {'stale':>6}")
 for arm in ("GW16", "GW4", "GW0", "FRESH16"):
     S = {k: load(f) for k in "ABC" if os.path.exists(f := os.path.join(D, f"olmoe-{arm}-end{k}.ini"))}
     if "A" not in S:
