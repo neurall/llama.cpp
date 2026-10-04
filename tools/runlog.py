@@ -6,7 +6,8 @@ Every run is stored twice: as a row of tools/bench/run-history.csv (append-only,
   python3 tools/runlog.py load                     rebuild the database from the CSV
   python3 tools/runlog.py best MODEL [TEST]        per build: runs, consistent best t/s and pp, first and last date (MODEL is a substring of the file name)
   python3 tools/runlog.py runs MODEL [TEST] [BUILD] every run, newest first
-  python3 tools/runlog.py q "SELECT ..."           any SQL; tables: runs, view cells
+  python3 tools/runlog.py import-old [apply]       runs of the old perf.db (archive) that the CSV lacks, appended to the CSV
+  python3 tools/runlog.py q "SELECT ..."           any SQL; tables: runs, tune_log, campaign_notes, view cells
 
 consistent best = the highest value that at least two runs agree on within 5% (a lone outlier does not count), else the median."""
 import csv, os, re, sqlite3, statistics, sys
@@ -68,6 +69,8 @@ def load():
         ensure(con, cols)
         for r in rd:
             con.execute("INSERT INTO runs VALUES (" + ",".join("?" * (len(cols) + 2)) + ")", row_values(r, cols)); n += 1
+    archive = os.path.join(HERE, "bench", "archive", "perf-2026-09-30.db")
+    if os.path.exists(archive): attach_old(con, archive)
     con.commit(); print(f"{n} runs loaded into {DB}")
 def show(cur):
     rows = cur.fetchall()
@@ -76,6 +79,39 @@ def show(cur):
     print("  ".join(str(c).ljust(w[i]) for i, c in enumerate(cols)))
     for r in rows:
         print("  ".join(str("" if v is None else v).ljust(w[i]) for i, v in enumerate(r)))
+def import_old(path, apply=False):
+    """one-shot: runs of the old perf.db (tools/bench/archive/perf-2026-09-30.db, the database before the CSV) that the CSV does not have yet are appended to the CSV (campaign 'perf-db'); the old tune_log lines and campaign notes go into tables of runs.db"""
+    old = sqlite3.connect(path); old.row_factory = sqlite3.Row
+    with open(CSV, newline="") as f:
+        rd = csv.DictReader(f); cols = rd.fieldnames; have = list(rd)
+    def key(ts, b, t, tps):
+        try: return ((ts or "")[:16], str(b)[:12], t, round(float(tps), 2))
+        except (TypeError, ValueError): return ((ts or "")[:16], str(b)[:12], t, None)
+    inc = {key(r["ts"], r["build"], r["test"], r["tps"]) for r in have}
+    out = []
+    for r in old.execute("SELECT * FROM runs ORDER BY ts"):
+        if key(r["ts"], r["build"], r["test"], r["tps"]) in inc: continue
+        d = {c: "" for c in cols}
+        d.update(ts=r["ts"], commit=r["commit_sha"], bno=r["build_no"], tps=r["tps"], pp=r["pp_tps"], hit=r["hit_rate"], model=r["model"], args=r["args"], test=r["test"], hw=r["hw"],
+                 ok=r["ok"], build=r["build"], md5=r["md5"], campaign="perf-db", note=r["note"], ppl=r["ppl"], spp=r["s_per_pass"], n_gen=r["n_gen"], origin=r["origin"], env=r["env"], cmd=r["args"], proto="v1")
+        out.append({k: ("" if v in (None, "None") else v) for k, v in d.items()})
+    print(len(out), "runs of the old perf.db are not in the CSV yet")
+    if apply and out:
+        with open(CSV, "a", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=cols, lineterminator="\n"); w.writerows(out)
+    return out
+
+def attach_old(con, path):
+    old = sqlite3.connect(path)
+    con.execute("DROP TABLE IF EXISTS tune_log"); con.execute("CREATE TABLE tune_log (run_ts TEXT, run_build TEXT, tag TEXT, line TEXT)")
+    for run_id, tag, line in old.execute("SELECT run_id, tag, line FROM tune_log"):
+        r = old.execute("SELECT ts, build FROM runs WHERE id = ?", (run_id,)).fetchone() or (None, None)
+        con.execute("INSERT INTO tune_log VALUES (?,?,?,?)", (r[0], r[1], tag, line))
+    con.execute("DROP TABLE IF EXISTS campaign_notes"); con.execute("CREATE TABLE campaign_notes (name TEXT, start_ts TEXT, note TEXT, conclusion TEXT, why TEXT)")
+    for row in old.execute("SELECT name, start_ts, note, conclusion, why FROM campaigns"):
+        con.execute("INSERT INTO campaign_notes VALUES (?,?,?,?,?)", row)
+
+
 if __name__ == "__main__":
     a = sys.argv[1:]
     if not a or a[0] == "load":
@@ -89,6 +125,8 @@ if __name__ == "__main__":
         elif a[0] == "runs":
             q = "SELECT substr(ts,1,16) AS ts, hw, test, build, rep, tps, pp, hit, campaign FROM runs WHERE stem LIKE ? AND okf = 1" + (" AND test = ?" if len(a) > 2 else "") + (" AND build LIKE ?" if len(a) > 3 else "") + " ORDER BY ts DESC"
             show(con.execute(q, ("%" + a[1] + "%",) + tuple(("%" + x + "%" if i == 1 else x) for i, x in enumerate(a[2:]))))
+        elif a[0] == "import-old":
+            import_old(os.path.join(HERE, "bench", "archive", "perf-2026-09-30.db"), apply=len(a) > 1 and a[1] == "apply")
         elif a[0] == "q":
             show(con.execute(a[1]))
         else:
