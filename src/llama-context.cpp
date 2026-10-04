@@ -516,7 +516,7 @@ llama_context::llama_context(
 }
 
 
-// research (--moe log=l64): every 64th generated token, per layer the layer's output embedding (1 byte per float, hex) and the expert ids its router selected,
+// research (--moe log=l, log=l64): every generated token (l) or every 64th (l64), per layer the layer's output embedding (1 byte per float, hex) and the expert ids its router selected,
 // appended to layertrace.csv (LLAMA_MOE_LAYERTRACE=FILE moves it): model,pos,layer,embhex,ids. Unsampled tokens answer "do not observe", so the graph runs as without it
 namespace {
 struct layer_trace_state {
@@ -576,7 +576,7 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
 void llama_context::set_eval_cb() {
     if (moe_log_has("l") && moe_state_enabled()) {
         g_lt.ctx = this; g_lt.user_cb = cparams.cb_eval; g_lt.user_data = cparams.cb_eval_user_data;
-        g_lt.every = std::max(1, moe_log_num('l', 64));
+        g_lt.every = std::max(1, moe_log_num('l', 1));   // log=l: every token, log=l64: every 64th
         g_lt.model = moe_state_section(model);
         for (char & c : g_lt.model) { if (c == ',' || c == '\n') { c = '_'; } }
         ggml_backend_sched_set_eval_callback(sched.get(), layer_trace_cb, nullptr);

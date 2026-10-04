@@ -8,11 +8,11 @@ the letters, with the other fork options, are listed in [fork-knobs.md](fork-kno
 |---|---|---|---|
 | `e` | `embhot.csv` | run | `model,embhex,hots`: the last layer embedding of the last token of the last graph (1 byte per float as hex, scaled by the largest value) and this run's hot experts per layer (`layer:count count ...;layer:...`) |
 | `s` (or `i`) | `state-snapshots/<date>_<time>-<model>.ini` | run (one file) | the model's own section of the learned state: lifetime hot-expert counts, tuner and placement records |
-| `l64` | `layertrace.csv` | layer of every 64th generated token | `model,pos,layer,embhex,ids`: the layer's output embedding and the expert ids its router selected for that token |
+| `l` | `layertrace.csv` | layer of every Nth generated token (`l`: every token, `l64`: every 64th) | `model,pos,layer,embhex,ids`: the layer's output embedding and the expert ids its router selected for that token |
 | `g`, `p`, `t`, `c` | log, `moe-route.txt`, `moe-trace*` | | GPU identity of the placement record, cache stats every 64 steps, routed expert ids of every MoE layer, decode-step trace (`t` and `c` slow the decode path; use them for diagnosis only) |
 | `r` | `tools/bench/run-history.csv`, `tools/runs.db` | run | read by `tools/run.py` (the benchmark harness), not by the engine |
 
-`log=esl32` combines letters; a number right after a letter is its argument (`l32`: every 32nd token). File locations can be moved with `LLAMA_MOE_EMBHOT=FILE`, `LLAMA_MOE_SNAP_DIR=DIR`, `LLAMA_MOE_LAYERTRACE=FILE`, `GGML_MOE_LOG=FILE`.
+`log=esl32` combines letters; a number right after a letter is passed to that letter's handler as its argument (`l32`: every 32nd token, plain `l`: every token; `p500`: cache stats every 500 steps, plain `p`: every 64). File locations can be moved with `LLAMA_MOE_EMBHOT=FILE`, `LLAMA_MOE_SNAP_DIR=DIR`, `LLAMA_MOE_LAYERTRACE=FILE`, `GGML_MOE_LOG=FILE`.
 Files are appended to and never rewritten, so a server that runs for weeks grows them: leave the switch off unless you are collecting data.
 
 ## Questions the logs can answer

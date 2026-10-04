@@ -46,5 +46,5 @@ void moe_snap_save(const std::string & section);
 
 // --moe log=LETTERS (LLAMA_MOE_LOG): true when one of the letters is set. e embedding line (embhot.csv), s or i state snapshot, g GPU identity line, p periodic cache stats, t routing trace, c decode-step trace; r is read by tools/run.py
 bool moe_log_has(const char * letters);
-// the number written right after a letter in --moe log=LETTERS (log=l64: 64), dflt when there is none
+// the number written right after a letter in --moe log=LETTERS (log=l64: 64), dflt when there is none; the handler of the letter uses it as its argument (l: sample every Nth token, default 1; p: stats every N steps, default 64)
 int  moe_log_num(char letter, int dflt);

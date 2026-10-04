@@ -3981,8 +3981,9 @@ void llama_moe_cache_step() {
         }
     }
 
-    static const bool stats = moe_log_has("p");   // --moe log=p: periodic cache stats on the log
-    if (stats && mc->n_steps % 64 == 0) {
+    static const bool stats = moe_log_has("p");   // --moe log=p: periodic cache stats on the log, every 64 steps or every N with log=pN
+    static const int stats_every = std::max(1, moe_log_num('p', 64));
+    if (stats && mc->n_steps % stats_every == 0) {
         static uint64_t ph = 0, pm = 0;
         uint64_t h = 0, m = 0, filled = 0, inflight = 0, total = 0;
         for (auto & ls : mc->layers) {
