@@ -33,12 +33,17 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 | **MiMo** IQ3_XXS 132G | A 2x3090 128G | chat | 4.6 | **10.9** | - | - | **2.4x** | - | rc fd4c3d2d3 |
 |  |  | 12k prompt | 4.2 | **9.1** | 156 | 112 | **2.2x** | 0.7x | b11509 |
 | **GLM** 3.0-bit 117G | A 2x3090 128G | short4 | 12.6 | **27.0** | 11 | 11 | **2.2x** | 1.0x | b12209 |
+|  | A | short4 | 12.6 | **27.0** | 11 | 11 | **2.2x** | 1.0x | b12209 |
 | **Qwen3.6** Q2_0 11G | B 4060 32G | tetris | 29.2 | **59.3** | - | - | **2.0x** | - | earlier |
 |  | C CPU 64G | tetris, CPU only | 6.3 | **11.3** | - | - | **1.8x** | - | earlier |
 | **Qwen Next** IQ4_XS 88G | A 2x3090 128G | short4 | 31.2 | **48.9** | 18 | **23** | **1.6x** | 1.3x | b12209 |
 |  |  | long4 | 30.9 | **48.9** | 220 | **585** | **1.6x** | 2.7x | b12209 |
+|  | A | short4 | 31.2 | **48.9** | 18 | **23** | **1.6x** | 1.3x | b12209 |
+|  | A | long4 | 30.9 | **48.9** | 220 | **585** | **1.6x** | 2.7x | b12209 |
 | **Qwen Next** IQ3_S 83G | A 2x3090 128G | short4 | 44.1 | **54.2** | 29 | **32** | **1.2x** | 1.1x | b12209 |
 |  |  | long4 | 43.1 | **52.9** | 380 | **663** | **1.2x** | 1.7x | b12209 |
+|  | A | short4 | 44.1 | **54.2** | 29 | **32** | **1.2x** | 1.1x | b12209 |
+|  | A | long4 | 43.1 | **52.9** | 380 | **663** | **1.2x** | 1.7x | b12209 |
 | 27B Q5_K_M + MTP | A 2x3090 128G | tetris (38.6 without MTP) | 78.3 | 77.0 | - | - | 1.0x | - | b11653 |
 |  |  | 2.2k prompt | 31.3 | **51.1** | 599 | **792** | 1.6x | 1.3x | unlogged |
 | **Qwen Next** IQ1_M 55G | A 2x3090 128G | short4, picks stock | 68.5 | 66.2 | 39 | 33 | 1.0x | 0.8x | b12209 |
@@ -46,6 +51,8 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 |  | B 4060 32G | tetris | 11.4 | **13.5** | 15.5 | 5.9 | **1.2x** | 0.4x | b11707 |
 | 27B IQ4_NL dense | A 2x3090 128G | short4 | 45.1 | 44.7 | 28 | 23 | 1.0x | 0.8x | b12209 |
 |  |  | long4 | 44.3 | 43.9 | 1756 | 1738 | 1.0x | 1.0x | b12209 |
+|  | A | short4 | 45.1 | 44.7 | 28 | 23 | 1.0x | 0.8x | b12209 |
+|  | A | long4 | 44.3 | 43.9 | 1756 | 1738 | 1.0x | 1.0x | b12209 |
 | 27B IQ3_S dense | C CPU 64G | tetris | 1.7 | 1.6 | - | - | 1.0x | - | earlier |
 | fits VRAM | any | anything | same | same | same | same | 1.0x (cache off) | 1.0x | any |
 
