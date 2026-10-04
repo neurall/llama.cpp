@@ -405,11 +405,7 @@ def snapshot_state(ts, build, model, hw):
         os.makedirs(d, exist_ok=True)
         tag = lambda x: re.sub(r"[^A-Za-z0-9._-]+", "_", str(x))[:40]
         stem = re.sub(r"-0000.-of-0000.|[.]gguf", "", str(model).split(" ")[0])
-        suffix = f"-{tag(stem)}.ini"
-        prev = sorted(x for x in os.listdir(d) if x.endswith(suffix))
-        if prev and open(os.path.join(d, prev[-1]), errors="replace").readlines() == sect:
-            return   # same content as the newest snapshot of this model: not stored twice
-        with open(os.path.join(d, f"{tag(str(ts).replace(':', ''))}-{tag(build)}{suffix}"), "w") as f:
+        with open(os.path.join(d, f"{tag(str(ts).replace(':', ''))}-{tag(build)}-{tag(stem)}.ini"), "w") as f:   # always saved; the run's date and time keep the names unique
             f.writelines(sect)
     except Exception as e:
         print("state snapshot:", e, file=sys.stderr)

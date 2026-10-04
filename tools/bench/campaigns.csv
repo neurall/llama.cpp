@@ -106,3 +106,4 @@ newtests,2026-10-04 13:34:19,"bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-0000
 newtests,2026-10-04 13:37:06,"bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12128 variants default test edit4 n=4",,
 newtests,2026-10-04 13:47:24,"bench /m/q/4/Qwen3.8-27B-IQ4_NL.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12128 variants default test edit4 n=4",,
 newtests,2026-10-04 13:49:37,"bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12128 variants default test edit4 n=4",,
+newtests,2026-10-04 14:00:56,"bench /m/q/5/Qwen3.8-27B-MTP-Q5_K_M.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12128 variants default test edit4 n=4",,
