@@ -33,7 +33,7 @@ bool moe_state_set(const std::string & section, const std::vector<std::pair<std:
 // drop every key of the section that starts with prefix
 bool moe_state_erase(const std::string & section, const std::string & prefix);
 
-// research (--moe emb=1): at exit one line is appended to ./embhot/embhot.csv (LLAMA_MOE_EMBHOT moves the directory): model,embhex,hots. embhex = the last layer embedding of the last
+// research (--moe emb=1): at exit one line is appended to ./embhot.csv (LLAMA_MOE_EMBHOT=FILE moves it): model,embhex,hots. embhex = the last layer embedding of the last
 // token of the last graph, 1 byte per float (2 hex characters, absmax scaled); hots = this run's expert counts, layer:count count ...;layer:... Nothing is read or written while running
 bool moe_embsnap_enabled();
 void moe_embsnap_set(const float * emb, int n);

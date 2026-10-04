@@ -290,11 +290,9 @@ void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & 
         model = g_geom_section;
     }
     if (hex.empty() || hot.empty()) { return; }
-    const char * ed = getenv("LLAMA_MOE_EMBHOT");   // the local subdirectory embhot of the working directory, or this directory
-    const std::filesystem::path dir = ed && ed[0] ? ed : "embhot";
+    const char * ef = getenv("LLAMA_MOE_EMBHOT");   // embhot.csv in the working directory, or this file
+    const std::filesystem::path file = ef && ef[0] ? ef : "embhot.csv";
     std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    const std::filesystem::path file = dir / "embhot.csv";
     const bool fresh = !std::filesystem::exists(file, ec) || std::filesystem::file_size(file, ec) == 0;
     // one line per run, built whole and appended with one write: model,embhex,hots. hots = layer:count count ...;layer:... (no commas in any field)
     std::string line = fresh ? "model,embhex,hots\n" : "";
