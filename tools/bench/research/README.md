@@ -2,7 +2,7 @@
 
 This fork can record what a MoE model does while you use it, to study which experts stay hot, how that depends on the topic, and how well a router's choice can be predicted.
 Everything here is **off by default**, writes only when you ask, and costs no speed while the model runs. One switch controls it, `--moe log=LETTERS` (or `LLAMA_MOE_LOG=LETTERS`);
-the letters, with the other fork options, are listed in [fork-knobs.md](fork-knobs.md). Please share what you collect.
+the letters, with the other fork options, are listed in [fork-knobs.md](../../../docs/fork-knobs.md). Please share what you collect.
 
 | letter | file | one line per | what it holds |
 |---|---|---|---|
@@ -26,7 +26,7 @@ The embedding saved by `e` is the last token of the last graph, so it is the mod
 
 ## Levers for repeatable experiments
 
-These do not log anything; they hold or change the engine so that runs can be compared. All are environment variables, the defaults are what ships (details and evidence in [fork-knobs.md](fork-knobs.md)).
+These do not log anything; they hold or change the engine so that runs can be compared. All are environment variables, the defaults are what ships (details and evidence in [fork-knobs.md](../../../docs/fork-knobs.md)).
 
 | lever | what it does for a study |
 |---|---|
