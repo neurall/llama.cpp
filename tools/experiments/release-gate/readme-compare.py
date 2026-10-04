@@ -27,6 +27,7 @@ CELLS = [
     (IQ1, "t100, decode", "t100", "tps", 69.1, 67.5),
 ]
 rows = [r for r in csv.DictReader(open(HIST)) if r.get("campaign") == "readme-rerun"]
+BEST = os.environ.get("BEST") == "1"
 SETTLED = int(os.environ.get("SETTLED", "1"))   # the last N runs of a cell (default 1: the 4th start = the last of n=3 after the discarded warm-up, where the state is settled); SETTLED=0: all runs
 def med(model, test, build, metric):
     v = []
@@ -34,6 +35,8 @@ def med(model, test, build, metric):
         if model.split(".gguf")[0] in (r.get("model") or "") and r.get("test") == test and (r.get("build") or "") == build and r.get(metric):
             try: v.append(float(r[metric]))
             except ValueError: pass
+    if BEST and v:
+        return (max(v), len(v))   # BEST=1: the best of the recorded runs (stock's best against ours, edit4 protocol)
     if SETTLED and len(v) > SETTLED:
         v = v[-SETTLED:]
     return (st.median(v), len(v)) if v else (None, 0)

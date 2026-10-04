@@ -54,6 +54,14 @@ PORT = 8099
 OVR = {}   # --prompt TEXT|@file, --tokens N, --ctx N override the test's own prompt, generated tokens and context
 CAMPAIGN = ""  # --campaign NAME: column campaign of every row of this invocation
 REP = None  # bench repetition (0-based) of the run being stored; None outside bench
+WARMING = False  # the discarded warm-up run is on
+# test edit4: one long source snippet, a different edit instruction per repetition (what a coding session looks like: a repeated identical temp-0 prompt reuses exactly
+# the cached experts and flatters the cache); every build gets the same instruction at the same repetition, the warm-up its own
+EDIT_INSTR = ["Add a function that counts the lines of this file and prints the count.",
+              "Delete the code in this file that is never used.",
+              "Add a short comment above every function in this file.",
+              "Rename the longest function in this file to a clearer name and update its callers."]
+EDIT_WARM = "Explain in two sentences what this file does."
 IDX = 0    # run counter: test chatv answers prompt IDX mod len(CHAT_PROMPTS) (a repeated temp-0 answer would reuse exactly the cached experts)
 CHAT_PROMPTS = [
     "Write a Python function that parses a CSV file and returns the average of each column.",
@@ -296,6 +304,13 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                                    {"prompt": ovr_prompt("generate smallest html tetris game." if test == "tetris" else "write smallest html tetris game"),
                                     "n_predict": int(OVR.get("tokens") or (-1 if test == "tetris" else 1024 if test == "fix" else 100)), **GREEDY, **(FIXED if test == "fix" else {})})
             text = res["content"]
+        elif test == "edit4":
+            snippet = open(os.path.join(PROMPTS, "src_3k.cpp")).read()
+            ins = EDIT_WARM if WARMING else EDIT_INSTR[(REP or 0) % len(EDIT_INSTR)]
+            args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
+            res, logf = server_run(build, env, args, "/completion",
+                                   {"prompt": snippet + "\n\n" + ins, "n_predict": int(OVR.get("tokens") or 128), "cache_prompt": False, **GREEDY})
+            text = res["content"]
         else:
             args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
             chatv = test == "chatv"  # varied prompts (index = run counter), thinking off: the topic switches the cache has to follow
@@ -457,10 +472,14 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
     BARE = bare
     xargs = args.split() if args else ()
     if warm:  # --no-warm: the first run as a user sees it
+        global WARMING
+        WARMING = True
         try:
             run_one(build, test, extra, plain, xargs)
         except Exception as e:
             print(f"throwaway run failed: {e}", flush=True)
+        finally:
+            WARMING = False
     try:
         row = run_one(build, test, extra, plain, xargs)
     except Exception as e:
@@ -798,7 +817,7 @@ if __name__ == "__main__":
         sys.argv.insert(1, "prompt")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "tetris", "t100", "chat", "chatv", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k"]
+    TESTS = ["ppl", "ppl3", "tetris", "t100", "chat", "chatv", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4"]
     r = sp.add_parser("run", help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", choices=TESTS)
