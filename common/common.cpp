@@ -1780,14 +1780,23 @@ static void common_moe_cache_auto_impl(common_params & params) {
             // both placements measured on at least two runs (the first of each may be cold), or once each when one of them wins this
             // request by more than 10%: decide for this request
             mode = moe_auto_decide_for(st, ca, params, path, decided);
-            // while the cache wins, every 8th start measures stock again, so a changed machine or a lucky first run is found out
+            // while the cache wins, stock is measured again when the cache lost its edge: the last cache run was slower than the cache's own median by more than
+            // the noise bar (a changed machine, a lucky first run, a browser eating VRAM bandwidth). Decided at every start, a trial at most once in three starts.
             {
                 std::string sec, pre; moe_auto_split(path, sec, pre);
                 char b[32] = {0};
                 int since = llama_state_get(sec.c_str(), (pre + ".since").c_str(), b, sizeof b) ? atoi(b) : 0;
+                const double bar = std::max(0.05, std::max(moe_auto_noise(st), moe_auto_noise(ca)));
+                const double off_g = (ca.last_g > 0 && ca.g_ms > 0) ? ca.last_g / ca.g_ms - 1.0 : 0.0;
+                const double off_p = (ca.last_p > 0 && ca.p_ms > 0) ? ca.last_p / ca.p_ms - 1.0 : 0.0;
                 // only stock is re-measured: it cannot be slower than stock, while another try of a losing cache could
-                if (mode == "cache" && since >= 7) { mode = "stock"; since = 0; LOG_INF("%s: MoE placement: re-measuring stock this run (every 8th start)\n", __func__); }
-                else { since = mode == "cache" ? since + 1 : 0; }
+                if (mode == "cache" && since >= 2 && (off_g > bar || off_p > bar)) {
+                    mode = "stock"; since = 0;
+                    LOG_INF("%s: MoE placement: re-measuring stock this run (the last cache run was %.0f%% slower per %s token than its median, noise bar %.0f%%)\n", __func__,
+                        100.0 * std::max(off_g, off_p), off_g >= off_p ? "generated" : "prompt", 100.0 * bar);
+                } else {
+                    since = mode == "cache" ? since + 1 : 0;
+                }
                 llama_state_set(sec.c_str(), (pre + ".since").c_str(), std::to_string(since).c_str());
             }
             g_moe_auto_np = moe_auto_p_known(st, ca) ? moe_auto_est_prompt(params) : 0.0;

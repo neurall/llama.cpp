@@ -63,3 +63,8 @@ readme-rerun,2026-10-04 01:04:59,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.ggu
 final-w10c,2026-10-04 01:12:48,"bench N:\m\Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf builds stock-b11379,b11707-49fe4b756,final-win variants default test t100 n=3",,
 readme-rerun,2026-10-04 01:30:58,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-3db71c4ee variants default test chat n=3",,
 readme-rerun,2026-10-04 01:37:31,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds release-3db71c4ee variants default test chat n=3,,
+readme-rerun,2026-10-04 01:58:39,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds release-ac2e8344b variants default test chat n=3,,
+readme-rerun,2026-10-04 02:04:24,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf builds release-ac2e8344b variants default test t100 n=3,,
+pub-w10,2026-10-04 02:04:55,"bench N:\m\qwen36.gguf builds stock-b11379,b11707-49fe4b756,pub-b12030 variants default test t100 n=3",,
+readme-rerun,2026-10-04 02:05:24,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds release-ac2e8344b variants default test t100 n=3,,
+readme-rerun,2026-10-04 02:07:40,"bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-ac2e8344b variants default test chat n=3",,
