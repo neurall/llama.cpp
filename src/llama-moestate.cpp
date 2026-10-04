@@ -263,11 +263,6 @@ bool moe_embsnap_enabled() {
     return e && e[0] == '1' && moe_state_enabled();
 }
 
-bool moe_embsnap_pending() {
-    std::lock_guard<std::mutex> lk(g_mtx);
-    return g_embsnap_hex.empty() && getenv("LLAMA_MOE_EMBSNAP") && getenv("LLAMA_MOE_EMBSNAP")[0] == '1';
-}
-
 void moe_embsnap_set(const float * emb, int n) {
     const int B = 64;
     if (n < B) { return; }

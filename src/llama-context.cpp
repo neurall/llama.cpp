@@ -513,6 +513,16 @@ llama_context::llama_context(
 }
 
 llama_context::~llama_context() {
+    if (moe_embsnap_enabled()) {   // research (--moe emb=1): at exit only, the last layer embedding of the last token of the last graph; nothing is read while running
+        synchronize();
+        llm_graph_result * r = gf_res_prev_active ? gf_res_prev_active : gf_res_prev[0].get();
+        ggml_tensor * te = r ? r->get_embd() : nullptr;
+        if (te && te->buffer && te->ne[1] > 0) {
+            std::vector<float> row(te->ne[0]);
+            ggml_backend_tensor_get(te, row.data(), (size_t) (te->ne[1] - 1)*te->nb[1], row.size()*sizeof(float));
+            moe_embsnap_set(row.data(), (int) row.size());
+        }
+    }
     if (cparams.moe_cache) {
         llama_moe_cache_free();
     } else if (moe_observe_started) {
@@ -2344,13 +2354,6 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 GGML_ASSERT((n_outputs_prev + n_outputs)*n_vocab <= (int64_t) logits.size);
                 ggml_backend_tensor_get_async(backend_res, t_logits, logits_out, 0, n_outputs*n_vocab*sizeof(float));
             }
-        }
-
-        if (n_outputs > 0 && !cparams.embeddings && moe_embsnap_pending() && res->get_embd()) {   // research: embsnap, the last layer embedding of the prompt's last token
-            ggml_tensor * te = res->get_embd();
-            std::vector<float> row(te->ne[0]);
-            ggml_backend_tensor_get(te, row.data(), (size_t) (n_outputs - 1)*te->nb[1], row.size()*sizeof(float));
-            moe_embsnap_set(row.data(), (int) row.size());
         }
 
         // extract embeddings
