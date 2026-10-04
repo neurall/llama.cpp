@@ -15,14 +15,14 @@ MIMO=/m/m/3/MiMo-V2.6-Flash-RL-IQ3_XXS-00001-of-00008.gguf
 IQ4=/m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf
 IQ3=/m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
 IQ1=/m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf
-run $GLM3 chat $R   # GLM 3.0-bit short chat decode
-run $GLM3 t100 $R
+# done: run $IQ1 t100 $R      # picks stock: must equal stock
+# done: run $IQ3 t100 $R
+# done: run $IQ4 chat         # Qwen IQ4_XS short chat decode
+run $IQ4 pf12k        # 12k prompt: processing and decode
 run $MIMO chat        # MiMo short chat decode
-run $MIMO pf12k       # 12k prompt: processing and decode
-run $IQ4 chat         # Qwen IQ4_XS short chat decode
-run $IQ4 pf12k
-run $GLM35 t100 $R   # GLM 3.5-bit tetris t100
-run $IQ3 t100 $R
-run $IQ1 t100 $R   # picks stock: must equal stock
+run $MIMO pf12k
+run $GLM35 t100 $R    # the slowest cells last: 109 and 137 GB loads
+run $GLM3 chat $R
+run $GLM3 t100 $R
 python3 tools/run.py report --campaign $C --md > tools/experiments/release-gate/readme-rerun-table.md
 echo README_RERUN_DONE
