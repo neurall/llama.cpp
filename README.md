@@ -17,32 +17,29 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 - **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
 - **Fallback to stock speed.** When the cache cannot help, the fork measures this and falls back to stock speed as quickly as it can (the 1.0x rows). This is work in progress, but already very usable.  
 
-Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation speed (tokens/s) above prompt-processing speed (pp). Short and long gains compare the best run of this fork with the best run of stock on short and long prompts. *Italic* values come from earlier tests or builds (b11707 where nothing newer exists) and will be replaced; `-` means not yet measured.
+Speed relative to stock llama.cpp, sorted by gain. Each short4 and long4 cell has three lines: generation speed (tokens/s) and prompt-processing speed (pp), both stock → ours, then the gain of ours over stock (t/s / pp). short4 = four short game prompts (`game4`), long4 = four edit instructions over one long source file (`edit4`); each cell shows the best run of stock and the best run of ours, with the learned state kept between runs as in normal use. *Italic* values come from earlier tests or builds (b11707 where nothing newer exists) and will be replaced; `-` means not yet measured.
 
-| model | hardware | in VRAM | stock<br>t/s pp | ours<br>t/s pp | short gain<br>t/s pp | long gain<br>t/s pp | build |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.5bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 35% | 6.9<br>2 | **15.1**<br>4 | *2.7x*<br>*2.4x* | -<br>- | b11707 |
-| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>short prompt | 4.4<br>3 | **11.4**<br>4 | *2.6x*<br>*1.2x* | *2.1x*<br>*0.8x↓* | b11707 |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 45% | 12.5<br>16 | **27.5**<br>16 | *2.2x*<br>*1.0x* | -<br>- | b11707 |
-| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>12k prompt | 4.2<br>156 | **9.1**<br>112 | -<br>- | *2.3x*<br>*0.8x↓* | b11509 |
-| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>short prompt | 31.3<br>43 | **62.2**<br>64 | *2.0x*<br>*1.5x* | *1.5x*<br>*1.1x* | b11365 |
-| Qwen3.6-35B-A3B-<br>GSQ-hybrid | 4060 8G 4/8<br>8945HS 32G 48G/s | 73%<br>slow CPU | 31.6<br>41.2 | **60.0**<br>100.9 | *1.9x*<br>*2.6x* | -<br>- | b12030 |
-| Qwen3.6-35B-A3B-<br>GSQ-hybrid | 3600 A520 64G | 0%<br>CPU only | 6.3<br>10.1 | 11.1<br>34.1 | *1.8x*<br>*3.7x* | -<br>- | b12040 |
-| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>12k prompt | 25.3<br>500 | **42.3**<br>538 | -<br>- | *1.7x*<br>*1.1x* | b11341 |
-| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>2.2k | 31.3<br>599 | 51.1<br>792 | 1.0x<br>1.0x | *1.6x*<br>*1.3x* | unlogged |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 66%<br>3 of 4 | 20.1<br>- | 32.6<br>- | *1.6x*<br>- | -<br>- | b11707+ |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>second run, -t 16 | 24.7<br>- | **33.8**<br>- | *1.4x*<br>- | -<br>- | b11707+ |
-| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ3_S | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 58% | 43.9<br>29 | 57.1<br>31 | 1.3x<br>1.1x | 1.3x<br>1.8x | b11707 |
-| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 4060 8G 4/8<br>8945HS 32G 48G/s | 13% | 13.5<br>18.3 | 17.3<br>21.6 | *1.3x*<br>*1.2x* | -<br>- | b12030 |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>second run | 24.7<br>- | 31.5<br>- | *1.3x*<br>- | -<br>- | b11707+ |
-| Qwen3.8-27B-IQ4_NL | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>dense | 45.1<br>27 | 45.0<br>29 | 1.0x<br>1.1x | 1.0x<br>1.0x | b12128 |
-| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>short | 78.3<br>41 | 77.5<br>40 | *1.0x*<br>*1.0x* | *1.0x*<br>*1.0x* | b11649 |
-| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 87% | 69.1<br>38 | 68.3<br>40 | 1.0x<br>1.0x | *1.0x*<br>*1.0x* | b12040 |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>first run | 24.7<br>- | 25.2<br>- | 1.0x<br>- | -<br>- | b11707+ |
-| Qwen3.8-27B-GSQ-<br>RCO-IQ3_S-mtp | 3600 A520 64G | 0%<br>CPU only | 1.7<br>5.6 | 1.6<br>5.8 | *0.9x↓*<br>*1.0x* | -<br>- | b12030 |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 44%<br>2 of 4 | ~17<br>- | 30.4<br>- | ~1.7x<br>- | -<br>- | b11707+ |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 22%<br>1 of 4 | ~15<br>- | 22.9<br>- | ~1.6x<br>- | -<br>- | b11707+ |
-| any model that fits | any | 100% | same<br>same | same<br>same | 1.0x<br>1.0x | -<br>- | any |
+| model | hardware | in VRAM | short4<br>stock → ours | long4<br>stock → ours | build |
+| --- | --- | --- | --- | --- | --- |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.5bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 35% | 8.1 → 6.9 t/s<br>5 → 4 pp<br>0.9x↓ / 0.8x↓ gain | -| b12193 |
+| MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>short prompt | 4.4 → **11.4** t/s<br>3 → 4 pp<br>*2.6x* / *1.2x* gain | *4.2* → *9.1* t/s<br>*156* → *112* pp<br>*2.3x* / *0.8x↓* gain | b11707 |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 45% | 12.5 → **27.5** t/s<br>16 → 16 pp<br>*2.2x* / *1.0x* gain | -| b11707 |
+| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>short prompt | 31.1 → **51.6** t/s<br>17 → 23 pp<br>1.7x / 1.3x gain | 30.9 → **49.1** t/s<br>220 → 605 pp<br>1.6x / 2.7x gain | b12193 |
+| Qwen3.6-35B-A3B-<br>GSQ-hybrid | 4060 8G 4/8<br>8945HS 32G 48G/s | 73%<br>slow CPU | 31.6 → **60.0** t/s<br>41.2 → 100.9 pp<br>*1.9x* / *2.6x* gain | -| b12030 |
+| Qwen3.6-35B-A3B-<br>GSQ-hybrid | 3600 A520 64G | 0%<br>CPU only | 6.3 → 11.1 t/s<br>10.1 → 34.1 pp<br>*1.8x* / *3.7x* gain | -| b12040 |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 66%<br>3 of 4 | 20.1 → 32.6 t/s<br>- → - pp<br>*1.6x* / - gain | -| b11707+ |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>second run, -t 16 | 24.7 → **33.8** t/s<br>- → - pp<br>*1.4x* / - gain | -| b11707+ |
+| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ3_S | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 58% | 43.4 → **55.2** t/s<br>29 → 32 pp<br>1.3x / 1.1x gain | 43.1 → **53.2** t/s<br>380 → 687 pp<br>1.2x / 1.8x gain | b12193 |
+| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 4060 8G 4/8<br>8945HS 32G 48G/s | 13% | 13.5 → 17.3 t/s<br>18.3 → 21.6 pp<br>*1.3x* / *1.2x* gain | -| b12030 |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>second run | 24.7 → 31.5 t/s<br>- → - pp<br>*1.3x* / - gain | -| b11707+ |
+| Qwen3.8-27B-IQ4_NL | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>dense | 45.1 → 45.0 t/s<br>28 → 28 pp<br>1.0x / 1.0x gain | 44.3 → 44.2 t/s<br>1756 → 1749 pp<br>1.0x / 1.0x gain | b12193 |
+| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>short | 78.3 → 77.5 t/s<br>41 → 40 pp<br>*1.0x* / *1.0x* gain | *31.3* → *51.1* t/s<br>*599* → *792* pp<br>*1.6x* / *1.3x* gain | b11649 |
+| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 87% | 68.4 → 67.2 t/s<br>39 → 39 pp<br>1.0x / 1.0x gain | 65.4 → 65.4 t/s<br>1209 → 1329 pp<br>1.0x / 1.1x gain | b12193 |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>first run | 24.7 → 25.2 t/s<br>- → - pp<br>1.0x / - gain | -| b11707+ |
+| Qwen3.8-27B-GSQ-<br>RCO-IQ3_S-mtp | 3600 A520 64G | 0%<br>CPU only | 1.7 → 1.6 t/s<br>5.6 → 5.8 pp<br>*0.9x↓* / *1.0x* gain | -| b12030 |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 44%<br>2 of 4 | ~17 → 30.4 t/s<br>- → - pp<br>~1.7x / - gain | -| b11707+ |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 22%<br>1 of 4 | ~15 → 22.9 t/s<br>- → - pp<br>~1.6x / - gain | -| b11707+ |
+| any model that fits | any | 100% | same → same t/s<br>same → same pp<br>1.0x / 1.0x gain | -| any |
 
 
 ## What you get
@@ -61,7 +58,7 @@ Repeating one prompt at temperature 0 routes to the same experts every time, whi
 - **Long** (`python3 tools/run.py bench -t edit4`): one source file of about 2700 tokens ([`src_3k.cpp`](tools/bench/src_3k.cpp)) and four different edit instructions, one per run ("add a function that counts the lines", "delete the code that is never used", "add a short comment above every function", "rename the longest function and update its callers"), 128 tokens, temperature 0.  
 - **Short** (`-t game4`): "write smallest html tetris game", then racing, shooter and snake, 100 tokens each; only the game changes.  
 
-Every build gets the same instruction at the same repetition and builds alternate in order. The table reports stock's best of four runs against ours best of four, without a warm-up run.  
+Every build gets the same instruction at the same repetition and builds alternate in order. Each cell shows the best run of each side, without a warm-up run; new runs pick one of the four prompts at random.    
 
 The learned state (`~/.cache/llama.cpp/moe-state.ini` and the profile files beside it) is never deleted, between runs or at the start: it accumulates as in normal use, so ours is measured with the state of a model you have used a few times. A model's first starts are slower while it learns: IQ3_S on the 3090s ran 40, 43 and 41 to 53 tokens/s on its first three starts and 53 to 57 from the fourth on, against 44 for stock ([run logs](tools/bench/logs/iq3s-diag/)). A state that leaves a model stuck on low numbers is a bug and is fixed in the code (placement records are versioned, older ones are ignored). Only the regression tests give each arm a state file of its own.  
 

@@ -1,24 +1,13 @@
 #!/usr/bin/env python3
-"""Update the README table from the new tests (campaign newtests in run-history.csv): short = game4, long = edit4, PC1 rows (2x3090) only.
+"""Update the README table from the new tests (campaign newtests in run-history.csv): short4 = game4, long4 = edit4, PC1 rows (2x3090) only.
 usage: readme-update.py README HISTORY.csv OURS_BUILD
-Best run of ours (the published build) and of stock, 4 runs each; stock = the stock build, or the same build with --fork off (campaign newtests-forkoff) when stock cannot load the model.
-An empty cell takes whatever was measured; a filled cell is replaced only by a better gain (a lower one never replaces it, the run log has every run).
-A short row that adopts a game4 result also takes its stock and ours numbers and the build."""
+Each cell shows the best run of each side over all its runs in the log (t/s and pp separately): stock, or the same build with --fork off (campaign newtests-forkoff) when stock cannot load the model, and ours (the published build).
+A cell with results is replaced by them outright; cells without keep what they have (old values stay in git history and in the run log).
+A row that gets results also takes the build."""
 import csv, re, sys
 NB = " "
 readme, hist, OURS = sys.argv[1], sys.argv[2], sys.argv[3]
-bestv = {}
-vals = {}
-import statistics
-def consistent(xs):
-    """the best value that at least two runs agree on (within 5%); a lone outlier does not count, without agreement the median"""
-    xs = sorted(xs, reverse=True)
-    if len(xs) < 2:
-        return xs[0] if xs else 0.0
-    for x in xs:
-        if sum(1 for y in xs if y >= 0.95 * x) >= 2:
-            return x
-    return statistics.median(xs)
+latest = {}
 for r in csv.DictReader(open(hist)):
     try:
         tps, pp = float(r["tps"]), float(r["pp"] or 0)
@@ -38,13 +27,18 @@ for r in csv.DictReader(open(hist)):
         side = "ours"
     else:
         continue
-    vals.setdefault((stem, r["test"], side), []).append((tps, pp))
-for k, xs in vals.items():
-    bestv[k] = [consistent([x[0] for x in xs]), consistent([x[1] for x in xs]), len(xs)]
+    try:
+        rep = int(float(r["rep"]))
+    except ValueError:
+        continue   # no repetition number: the prompt of the run is unknown, it cannot be paired
+    latest[(stem, r["test"], side, rep)] = (r["ts"], tps, pp)   # the CSV is chronological: the newest run of this build at this prompt wins
 def result(stem, test):
-    o = bestv.get((stem, test, "ours"))
-    s = bestv.get((stem, test, "stock")) or bestv.get((stem, test, "standin"))
-    if o and s and o[2] >= 4 and s[2] >= 4 and o[0] and s[0]:
+    """the best run of each side (t/s and pp separately), over every run of the cell in the log: stock (or the --fork off stand-in) and ours"""
+    def best(sides):
+        rs = [v for k, v in latest.items() if k[0] == stem and k[1] == test and k[2] in sides]
+        return [max(v[1] for v in rs), max(v[2] for v in rs), len(rs)] if rs else None
+    s, o = best(("stock",)) or best(("standin",)), best(("ours",))
+    if s and o and s[0] and o[0]:
         return s, o
 def g(o, s):
     return "-" if not (o and s) else f"{o/s:.1f}x" + ("↓" if o/s < 0.95 else "")
@@ -53,36 +47,27 @@ def num(x):
     return float(m.group(1)) if m else None
 def two(a, b):
     return " " + (a + "<br>" + b).replace(" ", NB) + " "
+def cell3(s, o):
+    """three lines: t/s stock -> ours, pp stock -> ours, the two gains"""
+    ours_t = f"**{o[0]:.1f}**" if o[0] >= 1.1*s[0] else f"{o[0]:.1f}"
+    return " " + "<br>".join(x.replace(" ", NB) for x in (f"{s[0]:.1f} \u2192 {ours_t} t/s", f"{s[1]:.0f} \u2192 {o[1]:.0f} pp", f"{g(o[0], s[0])} / {g(o[1], s[1])} gain")) + " "
 out, changed = [], 0
+# columns of a row: '' model hardware vram short4 long4 build ''
 for l in open(readme).read().split("\n"):
-    if l.startswith("| ") and l.count("|") == 9 and not l.startswith(("| ---", "| model")):
-        c = l.split("|")   # '' model hardware vram stock ours short long build ''
+    if l.startswith("| ") and l.count("|") == 7 and not l.startswith(("| ---", "| model")):
+        c = l.split("|")
         stem = c[1].strip().replace(NB, " ").replace("<br>", "").replace(" ", "")
         q = c[3].strip().replace(NB, " ")
-        # the 27B MTP row waits for its own run with --spec-type draft-mtp (the plain cells are not the MTP test)
-        if c[2].strip().startswith("2x3090") and "MTP" not in stem and not any(k in q for k in ("12k", "2.2k", "run")):
-            for col, test in ((6, "game4"), (7, "edit4")):
+        # the 27B MTP row waits for its own runs with --spec-type draft-mtp (the plain cells are not the MTP test)
+        if c[2].strip().startswith("2x3090") and "MTP" not in stem and not any(k in q for k in ("run", "of 4")):
+            hit = False
+            for col, test in ((4, "game4"), (5, "edit4")):
                 res = result(stem, test)
-                if not res:
-                    continue
-                s, o = res
-                new = [g(o[0], s[0]), g(o[1], s[1])]
-                cur = c[col].strip().replace(NB, "").split("<br>")
-                if any(num(cur[i]) is not None and num(new[i]) is not None and num(new[i]) < num(cur[i]) for i in (0, 1)):
-                    continue   # t/s or pp lower than what the cell has: not better, the existing value stays
-                if test == "game4":   # an older build's row that reached a higher speed stays (also when the gain ratio is a hair higher)
-                    m = re.search(r"([\d.]+)", c[5].replace("*", "").replace(NB, "").split("<br>")[0])
-                    if m and o[0] < float(m.group(1)):
-                        continue
-                c[col] = two(*new); changed += 1
-                if test == "game4":
-                    c[4] = two(f"{s[0]:.1f}", f"{s[1]:.0f}")
-                    c[5] = two((f"**{o[0]:.1f}**" if o[0] >= 1.1*s[0] else f"{o[0]:.1f}"), f"{o[1]:.0f}")
-                    c[8] = " " + OURS.removeprefix("release-") + " "
+                if res:
+                    c[col] = cell3(*res); changed += 1; hit = True
+            if hit:
+                c[6] = " " + OURS.removeprefix("release-") + " "
         l = "|".join(c)
     out.append(l)
 open(readme, "w").write("\n".join(out))
 print("cells updated:", changed)
-# empty cells that remain take the numbers of b11707 from the run log (italic): that build is hard to beat so far
-import os, subprocess
-subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "readme-fill-build.py"), readme, hist, "b11707"])
