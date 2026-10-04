@@ -26,7 +26,7 @@ Tests:
   t100    raw completion "write smallest html tetris game", -c 1024, 100 tokens, temperature 0: the short one-shot run most people benchmark
   chat    /v1/chat/completions "write smallest html tetris game", 1500 tokens
   chat2   chat like chat with a ~350-token prompt (the same game with a requirements list), 1500 tokens: a real prompt, so pp counts
-  long2k  ~2048-token prompt (src_2k.cpp + an edit instruction), 1024 tokens out, -c 4096
+  long2k  ~2048-token prompt (src_2k.cpp + a bug-fix request), 2048 tokens out, -c 5120
   chatv   chat with varied prompts (run counter picks the prompt, thinking off), 300 tokens: topic switches the cache has to follow
   pf128k  128k-token prefill: src_128k.cpp, 64 tokens generated, -c 131072 (like pf12k otherwise)
   pf12k   12k-token prefill: src_12k.cpp as a raw completion prompt, 32 tokens generated,
@@ -59,6 +59,7 @@ REP = None  # bench repetition (0-based) of the run being stored; None outside b
 WARMING = False  # the discarded warm-up run is on
 # test edit4: one long source snippet, a different edit instruction per repetition (what a coding session looks like: a repeated identical temp-0 prompt reuses exactly
 # the cached experts and flatters the cache); every build gets the same instruction at the same repetition, the warm-up its own
+LONG2K_INSTR = "There is a bug in the source code above. Find it, explain what goes wrong, and give the corrected code for the affected functions with a short test that would have caught it."
 EDIT_INSTR = ["Add a function that counts the lines of this file and prints the count.",
               "Delete the code in this file that is never used.",
               "Add a short comment above every function in this file.",
@@ -392,11 +393,11 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             res, logf = server_run(build, env, args, "/completion",
                                    {"prompt": ovr_prompt(f"write smallest html {word} game"), "n_predict": int(OVR.get("tokens") or 100), "cache_prompt": False, **GREEDY})
             text = res["content"]
-        elif test == "long2k":   # a prompt of about 2048 tokens (src_2k.cpp = the first 8.9k characters of src_3k.cpp, one edit instruction), 1024 tokens out, -c 4096: a long prefill and a long decode in one run
+        elif test == "long2k":   # a prompt of about 2048 tokens (src_2k.cpp = the first 8.9k characters of src_3k.cpp) asking for a bug fix, 2048 tokens out, -c 5120: a long prefill and a long decode in one run
             snippet = open(os.path.join(PROMPTS, "src_2k.cpp")).read()
-            args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
+            args = COMMON + ["-c", str(OVR.get("ctx") or 5120)]
             res, logf = server_run(build, env, args, "/completion",
-                                   {"prompt": snippet + "\n\n" + EDIT_INSTR[0], "n_predict": int(OVR.get("tokens") or 1024), "cache_prompt": False, **GREEDY})
+                                   {"prompt": snippet + "\n\n" + LONG2K_INSTR, "n_predict": int(OVR.get("tokens") or 2048), "cache_prompt": False, **GREEDY})
             text = res["content"]
         elif test == "edit4":
             snippet = open(os.path.join(PROMPTS, "src_3k.cpp")).read()
