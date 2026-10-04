@@ -18,26 +18,26 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 - **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
 - **When the cache cannot help, it falls back to stock speed by measurement**, so a model that fits or a machine that gains nothing runs at stock speed (1.0x rows below).  
 
-Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = prompt processing tokens per second, the first two gain columns are from the earlier same-prompt test; short and long gain are the new tests, stock's best of 4 runs against ours best of 4, no warm-up (short: four different 'smallest html game' prompts; long: four different edit instructions over one long source file); `-` = not measured yet; the build column is the build the number was taken on):
+Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = prompt processing tokens per second, the second number in each cell; `gain` is from the earlier same-prompt test, `short gain` and `long gain` are the new tests, stock's best of 4 runs against ours best of 4 with no warm-up (short: four different 'smallest html game' prompts; long: four different edit instructions over one long source file); stock and ours are the numbers of the earlier test; `-` = not measured yet; the build column is the build the number was taken on):
 
-| model | hardware | share of the model in VRAM | gain t/s | gain pp | short gain t/s | short gain pp | long gain t/s | long gain pp | stock t/s | ours t/s | stock pp | ours pp | build |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| MiMo IQ3_XXS 132 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 36% | **2.4x** | 0.7x slower | - | - | - | - | 4.6 | **10.9** | 156 | 112 | earlier |
-| GLM 3.5-bit 137 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 35% | **2.2x** | - | - | - | - | - | 6.9 | **15.1** | - | - | b11707 |
-| Qwen3.6-35B Q2_0<br>(8 GB GPU, slow CPU side) | 4060 8G 4x8<br>8945HS 32G 4ch LPDDR5-6400 48G/s | about 73% | **1.9x** | **2.4x** | - | - | - | - | 31.6 | **60.0** | 41.2 | 100.9 | b12030 |
-| GLM 3.0-bit | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | about 45% | **1.9x** | - | - | - | - | - | 11.9 | **22.4** | - | - | earlier |
-| Qwen3.6-35B Q2_0<br>CPU only | no GPU<br>3600 A520 64G 2ch DDR4-3200 | 0% | 1.8x | **3.4x** | - | - | - | - | 6.3 | 11.1 | 10.1 | 34.1 | b12040 |
-| Qwen Next UD-IQ4_XS<br>88 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 55% | 1.7x | 1.1x | - | - | - | - | 27.7 | 46.5 | 500 | 538 | earlier |
-| Qwen3.8-27B Q5_K_M with MTP<br>(2.2k-token prompt) | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | fits | 1.6x | 1.3x | - | - | - | - | 31.3 | 51.1 | 599 | 792 | earlier |
-| GLM 3.0-bit<br>3 of 4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 4ch DDR4 74G/s | 66% | 1.6x | - | - | - | - | - | 20.1 | 32.6 | - | - | b11707+ |
-| Qwen Next IQ3_S 83 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 58% | 1.3x | - | 1.3x | 1.1x | - | - | 43.9 | 57.1 | - | - | b11707 |
-| Qwen Next IQ1_M 55 GB | 4060 8G 4x8<br>8945HS 32G 4ch LPDDR5-6400 48G/s | about 13% | 1.3x | 1.2x | - | - | - | - | 13.5 | 17.3 | 18.3 | 21.6 | b12030 |
-| GLM 3.0-bit, 4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 4ch DDR4 74G/s | 88% | 1.3x | - | - | - | - | - | 24.7 | 31.5 | - | - | b11707+ |
-| Qwen3.8-27B IQ4_NL<br>dense | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | fits | 1.0x | - | 1.0x | 1.1x | - | - | 45.1 | 45.0 | - | - | earlier |
-| Qwen3.8-27B Q5_K_M with MTP<br>(short prompt) | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | fits | 1.0x | - | - | - | - | - | 78.3 | 77.0 | - | - | earlier |
-| Qwen Next IQ1_M 55 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 87% | 1.0x (picks stock) | - | 1.0x | 1.0x | - | - | 69.1 | 68.3 | - | 40 | b12040 |
-| Qwen3.8-27B IQ3_S<br>dense, CPU only | no GPU<br>3600 A520 64G 2ch DDR4-3200 | 0% | 0.9x slower | 1.0x | - | - | - | - | 1.7 | 1.6 | 5.6 | 5.8 | b12030 |
-| any model that fits | any | 100% | 1.0x (cache off) | 1.0x | - | - | - | - | same | same | same | same | any |
+| model | hardware | in VRAM | gain<br>t/s, pp | short gain<br>t/s, pp | long gain<br>t/s, pp | stock<br>t/s, pp | ours<br>t/s, pp | build |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| MiMo IQ3_XXS 132 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 36% | **2.4x**<br>0.7x slower | -<br>- | -<br>- | 4.6<br>156 | **10.9**<br>112 | earlier |
+| GLM 3.5-bit 137 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 35% | **2.2x**<br>- | -<br>- | -<br>- | 6.9<br>- | **15.1**<br>- | b11707 |
+| Qwen3.6-35B Q2_0<br>(8 GB GPU, slow CPU side) | 4060 8G 4x8<br>8945HS 32G 4ch LPDDR5-6400 48G/s | about 73% | **1.9x**<br>**2.4x** | -<br>- | -<br>- | 31.6<br>41.2 | **60.0**<br>100.9 | b12030 |
+| GLM 3.0-bit | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | about 45% | **1.9x**<br>- | -<br>- | -<br>- | 11.9<br>- | **22.4**<br>- | earlier |
+| Qwen3.6-35B Q2_0<br>CPU only | no GPU<br>3600 A520 64G 2ch DDR4-3200 | 0% | 1.8x<br>**3.4x** | -<br>- | -<br>- | 6.3<br>10.1 | 11.1<br>34.1 | b12040 |
+| Qwen Next UD-IQ4_XS<br>88 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 55% | 1.7x<br>1.1x | -<br>- | -<br>- | 27.7<br>500 | 46.5<br>538 | earlier |
+| Qwen3.8-27B Q5_K_M with MTP<br>(2.2k-token prompt) | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | fits | 1.6x<br>1.3x | -<br>- | -<br>- | 31.3<br>599 | 51.1<br>792 | earlier |
+| GLM 3.0-bit<br>3 of 4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 4ch DDR4 74G/s | 66% | 1.6x<br>- | -<br>- | -<br>- | 20.1<br>- | 32.6<br>- | b11707+ |
+| Qwen Next IQ3_S 83 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 58% | 1.3x<br>- | 1.3x<br>1.1x | -<br>- | 43.9<br>- | 57.1<br>- | b11707 |
+| Qwen Next IQ1_M 55 GB | 4060 8G 4x8<br>8945HS 32G 4ch LPDDR5-6400 48G/s | about 13% | 1.3x<br>1.2x | -<br>- | -<br>- | 13.5<br>18.3 | 17.3<br>21.6 | b12030 |
+| GLM 3.0-bit, 4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 4ch DDR4 74G/s | 88% | 1.3x<br>- | -<br>- | -<br>- | 24.7<br>- | 31.5<br>- | b11707+ |
+| Qwen3.8-27B IQ4_NL<br>dense | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | fits | 1.0x<br>- | 1.0x<br>1.1x | -<br>- | 45.1<br>- | 45.0<br>- | earlier |
+| Qwen3.8-27B Q5_K_M with MTP<br>(short prompt) | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | fits | 1.0x<br>- | -<br>- | -<br>- | 78.3<br>- | 77.0<br>- | earlier |
+| Qwen Next IQ1_M 55 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 87% | 1.0x (picks stock)<br>- | 1.0x<br>1.0x | -<br>- | 69.1<br>- | 68.3<br>40 | b12040 |
+| Qwen3.8-27B IQ3_S<br>dense, CPU only | no GPU<br>3600 A520 64G 2ch DDR4-3200 | 0% | 0.9x slower<br>1.0x | -<br>- | -<br>- | 1.7<br>5.6 | 1.6<br>5.8 | b12030 |
+| any model that fits | any | 100% | 1.0x (cache off)<br>1.0x | -<br>- | -<br>- | same<br>same | same<br>same | any |
 
 Two cells are slower than stock and say so: prompt processing of MiMo on long prompts (0.7x) and generation of the CPU-only 27B IQ3_S (0.9x, 1.6 against 1.7 tokens/s).  
 Hardware, in this order: GPUs with PCIe generation x lanes (4x16 = PCIe 4.0 x16), CPU, RAM (G = GB, channels, type and speed), measured RAM bandwidth.  
