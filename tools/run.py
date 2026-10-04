@@ -690,7 +690,7 @@ def cmd_bench(a):
         if not m:
             prep_model()
         cells = [(build, name, (stock_variants.get(name, "") if build.startswith("stock") else variants[name]))
-                 for build in a.builds.split(",") for name in (["default"] + list(stock_variants) if build.startswith("stock") else names)]
+                 for build in a.builds.split(",") for name in (list(dict.fromkeys(["default"] + list(stock_variants))) if build.startswith("stock") else names)]
         # a variant may set environment variables: "env:KEY=VALUE" words (e.g. lru='env:LLAMA_MOE_CACHE_POLICY=lru'), the rest are server args
         for i in range(n):  # ABBA: odd repetitions run the cells backwards, so a drift (thermal, page cache) does not favour one cell
             REP = i
