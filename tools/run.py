@@ -745,7 +745,7 @@ def cmd_bench(a):
         cells = [(build, name, (stock_variants.get(name, "") if build.startswith("stock") else variants[name]))
                  for build in a.builds.split(",") for name in (list(dict.fromkeys(["default"] + list(stock_variants))) if build.startswith("stock") else names)]
         # a variant may set environment variables: "env:KEY=VALUE" words (e.g. lru='env:LLAMA_MOE_CACHE_POLICY=lru'), the rest are server args
-        for i in range(n):  # ABBA: odd repetitions run the cells backwards, so a drift (thermal, page cache) does not favour one cell
+        for i in range(a.rep_from, n):  # ABBA: odd repetitions run the cells backwards, so a drift (thermal, page cache) does not favour one cell
             REP = i
             for build, name, vargs in (cells if i % 2 == 0 else cells[::-1]):
                 words = vargs.split()
@@ -919,6 +919,7 @@ if __name__ == "__main__":
     b.add_argument("--variant", action="append", default=[], help="NAME=ARGS: add or override a variant, e.g. gate3='--moe upload-wait=3'")
     b.add_argument("-t", "--test", default="t100", choices=["ppl", "ppl3", "t100", "tetris"] + TESTS[4:])
     b.add_argument("--stock-variant", action="append", default=[], help="NAME=ARGS: stock builds also run this placement (e.g. tuned='--n-cpu-moe 30'): the hand-tuned baseline")
+    b.add_argument("--rep-from", type=int, default=0, help="first repetition to run (0-based): -n 2 --rep-from 1 repeats only the second repetition, e.g. one that failed")
     b.add_argument("-n", type=int, help="measured runs per cell, interleaved ABBA (default 3 for fix/fix12k, else 2); the first run of a cell is preceded by a discarded one")
     b.add_argument("--machine", default="pc1", help="pc1 = this host (server tests); other ids from 'run.py machine' run llama-cli over ssh")
     b.add_argument("--campaign", help="name in table campaigns (default bench-<date>)")
