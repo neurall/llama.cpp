@@ -50,7 +50,7 @@ Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation sp
 Single stream, temperature 0, model in RAM. Stock = stock llama.cpp: the release b11379 on the laptop, 836d57176 built like the fork on the Ryzen 5 3600, the downloaded release b11323 on the rented 4x3090 box (a source build of def4d406a gave 24.8 and 20.1 there).  
 Every run behind the numbers (commit, build, machine, settings) is a row in [`tools/bench/run-history.csv`](tools/bench/run-history.csv); the rented-box numbers are from one session and their raw logs were not kept.  
 
-Rows marked `earlier` or `b11707` keep their old numbers until re-measured. GLM 3.5-bit, IQ3_S and IQ1_M are the first run of b11707 against fresh upstream def4d406a; GLM and MiMo ran on release-candidate builds (MiMo also on b11509) and Qwen3.6 on the release binary.  
+Each row's build column names the build its numbers were measured on; older rows keep their numbers until a newer build beats them (the one marked `unlogged` has no run in the log). GLM 3.5-bit, IQ3_S and IQ1_M are the first run of b11707 against fresh upstream def4d406a; GLM and MiMo ran on release-candidate builds (MiMo also on b11509) and Qwen3.6 on the release binary.  
 4x3090 rows: the fork is b11707 with the placement change in this branch (any model that does not fit takes the cache); the model is 85% in VRAM on 4 GPUs, so the first run only matches stock placement.  
 Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`): 38.6 tokens/s without MTP, 77.0 with it.  
 
