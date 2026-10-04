@@ -26,7 +26,7 @@ Tests:
   t100    raw completion "write smallest html tetris game", -c 1024, 100 tokens, temperature 0: the short one-shot run most people benchmark
   chat    /v1/chat/completions "write smallest html tetris game", 1500 tokens
   chat2   chat like chat with a ~350-token prompt (the same game with a requirements list), 1500 tokens: a real prompt, so pp counts
-  long2k  ~2048-token prompt (src_2k.cpp + a bug-fix request), 2048 tokens out, -c 5120
+  long1k  ~1024-token prompt (src_1k.cpp + a bug-fix request), 1024 tokens out, -c 4096
   chatv   chat with varied prompts (run counter picks the prompt, thinking off), 300 tokens: topic switches the cache has to follow
   pf128k  128k-token prefill: src_128k.cpp, 64 tokens generated, -c 131072 (like pf12k otherwise)
   pf12k   12k-token prefill: src_12k.cpp as a raw completion prompt, 32 tokens generated,
@@ -393,11 +393,11 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             res, logf = server_run(build, env, args, "/completion",
                                    {"prompt": ovr_prompt(f"write smallest html {word} game"), "n_predict": int(OVR.get("tokens") or 100), "cache_prompt": False, **GREEDY})
             text = res["content"]
-        elif test == "long2k":   # a prompt of about 2048 tokens (src_2k.cpp = the first 8.9k characters of src_3k.cpp) asking for a bug fix, 2048 tokens out, -c 5120: a long prefill and a long decode in one run
-            snippet = open(os.path.join(PROMPTS, "src_2k.cpp")).read()
-            args = COMMON + ["-c", str(OVR.get("ctx") or 5120)]
+        elif test == "long1k":   # a prompt of about 1024 tokens (src_1k.cpp = the first 4.4k characters of src_3k.cpp) asking for a bug fix, 1024 tokens out, -c 4096: a long prefill and a long decode in one run
+            snippet = open(os.path.join(PROMPTS, "src_1k.cpp")).read()
+            args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
             res, logf = server_run(build, env, args, "/completion",
-                                   {"prompt": snippet + "\n\n" + LONG2K_INSTR, "n_predict": int(OVR.get("tokens") or 2048), "cache_prompt": False, **GREEDY})
+                                   {"prompt": snippet + "\n\n" + LONG2K_INSTR, "n_predict": int(OVR.get("tokens") or 1024), "cache_prompt": False, **GREEDY})
             text = res["content"]
         elif test == "edit4":
             snippet = open(os.path.join(PROMPTS, "src_3k.cpp")).read()
@@ -923,7 +923,7 @@ if __name__ == "__main__":
         sys.argv.insert(1, "prompt")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "tetris", "t100", "chat", "chat2", "chatv", "long2k", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4"]
+    TESTS = ["ppl", "ppl3", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4"]
     r = sp.add_parser("run", help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", choices=TESTS)
