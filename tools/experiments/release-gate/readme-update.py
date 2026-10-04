@@ -25,6 +25,7 @@ LABELS = {   # README model label -> file name stem in the run log
     # the 27B with MTP is left out: its stock and ours runs must both use --spec-type draft-mtp
 }
 MACHINES = {"pc1": "A", "pc3": "B", "pc2": "C"}
+FULL = {"A": "A 2x3090 128G", "B": "B 4060 32G", "C": "C CPU 64G"}   # machine cell text; rows are matched on its first word
 TESTS = {"short4": "game4", "long4": "edit4"}
 SHORT = OURS.removeprefix("release-")
 
@@ -69,7 +70,7 @@ def row(model, mach, test, s, o):
     ours_t = f"**{o[0]:.1f}**" if o[0] >= 1.1 * s[0] else f"{o[0]:.1f}"
     ours_p = f"**{o[1]:.0f}**" if s[1] and o[1] >= 1.1 * s[1] else f"{o[1]:.0f}"
     gt = gain(o[0], s[0]); gt = f"**{gt}**" if o[0] >= 1.1 * s[0] else gt
-    return f"| {model} | {mach} | {test} | {s[0]:.1f} | {ours_t} | {s[1]:.0f} | {ours_p} | {gt} | {gain(o[1], s[1])} | {SHORT} |"
+    return f"| {model} | {FULL.get(mach, mach)} | {test} | {s[0]:.1f} | {ours_t} | {s[1]:.0f} | {ours_p} | {gt} | {gain(o[1], s[1])} | {SHORT} |"
 
 lines = open(readme).read().split("\n")
 hi = next(i for i, l in enumerate(lines) if l.startswith("| model | machine | test |"))
@@ -91,7 +92,7 @@ for model, rows in groups:
     have, mach_above = {}, ""
     for k, l in enumerate(rows):
         c = [x.strip() for x in l.split("|")]
-        mach_above = c[2] or mach_above   # an empty machine cell continues the machine above
+        mach_above = c[2].split()[0] if c[2] else mach_above   # an empty machine cell continues the machine above
         if c[3] in TESTS:
             have[(mach_above, c[3])] = k
     best_gain = max((num(l.split("|")[8]) or 0) for l in rows)
