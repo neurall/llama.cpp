@@ -234,12 +234,18 @@ EMB_FILE = os.path.join(DATA, "embhot.csv")        # --moe emb=1: one line per r
 RESEARCH_ENV = {"LLAMA_MOE_LOG": os.environ.get("PERF_LOG", "esrgp"), "LLAMA_MOE_SNAP_DIR": SNAP_DIR, "LLAMA_MOE_EMBHOT": EMB_FILE}   # --moe log=esr for every harness run (builds without it ignore it): e embedding line, s state snapshot, r run history to csv and sqlite (this file); PERF_LOG=e etc. narrows it
 
 
+READY_STALL = int(os.environ.get("PERF_READY_STALL", "600"))    # seconds without a new log line before a starting server is killed
+READY_MAX = int(os.environ.get("PERF_READY_MAX", "1800"))        # seconds from start to "listening" at most
+
+
 def server_start(build, env, args):
     env = {**env, **RESEARCH_ENV}
     logf = f"/tmp/perf-{build}.log"
     with open(logf, "w") as lf:
         p = subprocess.Popen([os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
                              + args, stdout=lf, stderr=subprocess.STDOUT, env=env, preexec_fn=_die_with_parent)
+    t0 = last = time.time()
+    size = 0
     while True:
         log = open(logf).read()
         if "listening on" in log:
@@ -249,6 +255,16 @@ def server_start(build, env, args):
         if "couldn't bind" in log:
             stop(p)
             raise RuntimeError("port busy: " + log[-300:])
+        now = time.time()
+        if len(log) != size:
+            size, last = len(log), now
+        if now - last > READY_STALL or now - t0 > READY_MAX:   # a hung start (kernel memory compaction stalled the pinning of the weights for 20 minutes once): the run fails, the next one goes on
+            p.kill()
+            try:
+                p.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                pass
+            raise RuntimeError(f"server not ready: no log output for {now - last:.0f} s, {now - t0:.0f} s since start: " + log[-300:])
         time.sleep(1)
 
 
