@@ -67,15 +67,20 @@ def num(x):
     m = re.search(r"([\d.]+)", x.replace("*", ""))
     return float(m.group(1)) if m else None
 
+def shown(x, dec):   # the number as printed: gains are computed from printed numbers so a reader dividing the table gets the same value
+    return round(x, dec)
+
 def row(model, mach, test, s, o, vram="-"):
+    pd = 1 if s[1] < 20 else 0   # one decimal for small pp
+    s = (shown(s[0], 1), shown(s[1], pd)); o = (shown(o[0], 1), shown(o[1], pd))
     short = test == "short4"   # a prompt of a few tokens: pp is measured but not comparable, marked ? instead of bold
     bt = o[0] >= 1.1 * s[0]
     bp = bool(s[1]) and o[1] >= 1.1 * s[1] and not short
     ours_t = f"**{o[0]:.1f}**" if bt else f"{o[0]:.1f}"
-    ours_p = ("? " if short else "") + (f"**{o[1]:.0f}**" if bp else f"{o[1]:.0f}")
+    ours_p = ("? " if short else "") + (f"**{o[1]:.{pd}f}**" if bp else f"{o[1]:.{pd}f}")
     gt = gain(o[0], s[0]); gt = f"**{gt}**" if bt else gt
     gp = ("? " if short else "") + gain(o[1], s[1])
-    return f"| {model} | {FULL.get(mach, mach)} | {vram} | {test} | {s[0]:.1f} | {ours_t} | {s[1]:.0f} | {ours_p} | {gt} | {gp} | {SHORT} |"
+    return f"| {model} | {FULL.get(mach, mach)} | {vram} | {test} | {s[0]:.1f} | {ours_t} | {s[1]:.{pd}f} | {ours_p} | {gt} | {gp} | {SHORT} |"
 
 lines = open(readme).read().split("\n")
 hi = next(i for i, l in enumerate(lines) if l.startswith("| model | machine | in VRAM | test |"))
