@@ -417,65 +417,6 @@ static void mul_mat_vec_f_switch_fusion(
 
 
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
-// Skinny GEMV for decode (one column, no ids, no fusion): a warp per output row, 16-byte loads of the weights and
-// float4 loads of the activations, two independent loads in flight per lane. The generic kernel above reads 4 bytes per
-// thread per step, which caps 2 MB weight matvecs (hyper-connection, ssm, router) at ~200 GB/s on a 3090 (vLLM /
-// flashinfer skinny-GEMM style).
-template <typename T>
-static __device__ __forceinline__ void mmvf_v16_unpack(const uint4 & v, float * f) {
-    if constexpr (std::is_same_v<T, float>) {
-        f[0] = __uint_as_float(v.x); f[1] = __uint_as_float(v.y); f[2] = __uint_as_float(v.z); f[3] = __uint_as_float(v.w);
-    } else if constexpr (std::is_same_v<T, half>) {
-        const half2 * h = (const half2 *) &v;
-#pragma unroll
-        for (int k = 0; k < 4; ++k) { const float2 t = __half22float2(h[k]); f[2*k] = t.x; f[2*k + 1] = t.y; }
-    } else {
-        const nv_bfloat162 * h = (const nv_bfloat162 *) &v;
-#pragma unroll
-        for (int k = 0; k < 4; ++k) { const float2 t = ggml_cuda_cast<float2>(h[k]); f[2*k] = t.x; f[2*k + 1] = t.y; }
-    }
-}
-
-template <typename T, int ROWS>
-static __global__ void mul_mat_vec_f_v16(const T * __restrict__ x, const float * __restrict__ y, float * __restrict__ dst,
-        const int64_t ncols, const int64_t nrows, const int64_t stride_row) {
-    constexpr int VEC = 16/sizeof(T);
-    const int     warp = threadIdx.x >> 5;
-    const int     lane = threadIdx.x & 31;
-    const int64_t row  = (int64_t) blockIdx.x*ROWS + warp;
-    if (row >= nrows) {
-        return;
-    }
-    const T * xr = x + row*stride_row;
-    float acc0 = 0.0f, acc1 = 0.0f;
-    for (int64_t col = (int64_t) lane*VEC; col < ncols; col += 64*VEC) {
-        const int64_t c1 = col + 32*VEC;
-        const bool    hb = c1 < ncols;
-        const uint4 a = *(const uint4 *) (xr + col);
-        uint4 b = make_uint4(0, 0, 0, 0);
-        if (hb) { b = *(const uint4 *) (xr + c1); }
-        float fa[VEC], fb[VEC];
-        mmvf_v16_unpack<T>(a, fa);
-        mmvf_v16_unpack<T>(b, fb);
-#pragma unroll
-        for (int k = 0; k < VEC; k += 4) {
-            const float4 ya = *(const float4 *) (y + col + k);
-            acc0 += fa[k]*ya.x + fa[k + 1]*ya.y + fa[k + 2]*ya.z + fa[k + 3]*ya.w;
-            if (hb) {
-                const float4 yb = *(const float4 *) (y + c1 + k);
-                acc1 += fb[k]*yb.x + fb[k + 1]*yb.y + fb[k + 2]*yb.z + fb[k + 3]*yb.w;
-            }
-        }
-    }
-    float acc = acc0 + acc1;
-#pragma unroll
-    for (int o = 16; o > 0; o >>= 1) {
-        acc += __shfl_xor_sync(0xffffffff, acc, o);
-    }
-    if (lane == 0) {
-        dst[row] = acc;
-    }
-}
 #endif // !GGML_USE_HIP && !GGML_USE_MUSA
 
 template <typename T, typename type_acc, int ncols_dst, bool is_multi_token_id = false>
@@ -496,19 +437,6 @@ void launch_mul_mat_vec_f_cuda(
     const uint3 channel_ratio_fd = ids ? make_uint3(0, 0, 0) : init_fastdiv_values(nchannels_dst / nchannels_x);
     const uint3 sample_ratio_fd  = init_fastdiv_values(nsamples_dst  / nsamples_x);
 
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
-    if constexpr (ncols_dst == 1 && !is_multi_token_id) {
-        static const bool v16 = getenv("GGML_CUDA_MMVF_V16") && atoi(getenv("GGML_CUDA_MMVF_V16")) != 0;
-        constexpr int VEC = 16/sizeof(T);
-        if (v16 && ids == nullptr && fusion.gate == nullptr && fusion.x_bias == nullptr && fusion.gate_bias == nullptr &&
-                nchannels_dst == 1 && nsamples_dst == 1 && ncols % VEC == 0 && (stride_row*(int64_t) sizeof(T)) % 16 == 0 &&
-                ((uintptr_t) x | (uintptr_t) y) % 16 == 0) {
-            constexpr int ROWS = 4;
-            mul_mat_vec_f_v16<T, ROWS><<<dim3((unsigned) ((nrows + ROWS - 1)/ROWS), 1, 1), dim3(32*ROWS, 1, 1), 0, stream>>>(x, y, dst, ncols, nrows, stride_row);
-            return;
-        }
-    }
-#endif // !GGML_USE_HIP && !GGML_USE_MUSA
 
     const int device = ggml_cuda_get_device();
     const int warp_size = ggml_cuda_info().devices[device].warp_size;

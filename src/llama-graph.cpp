@@ -363,11 +363,6 @@ bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
     res &= head == mctx->get_head();
     res &= rs_z == mctx->get_rs_z();
 
-    static const bool why = getenv("LLAMA_GRAPH_REUSE_WHY") != nullptr;
-    if (why && !res) {
-        LLAMA_LOG_WARN("%s: n_rs %lld/%u, head %d/%d, rs_z %d/%d\n", __func__, (long long) s_copy->ne[0], mctx->get_n_rs(),
-                (int) head, (int) mctx->get_head(), (int) rs_z, (int) mctx->get_rs_z());
-    }
     return res;
 }
 
@@ -1439,12 +1434,8 @@ bool llm_graph_result::can_reuse(const llm_graph_params & params) {
 
     bool res = true;
 
-    static const bool why = getenv("LLAMA_GRAPH_REUSE_WHY") != nullptr;
     for (auto & input : inputs) {
         const bool cur = input->can_reuse(params);
-        if (why && !cur) {
-            LLAMA_LOG_WARN("%s: input %s blocks graph reuse\n", __func__, typeid(*input).name());
-        }
 
         if (debug > 1) {
             LLAMA_LOG_DEBUG("%s: can_reuse = %d\n", "placeholder", cur);
@@ -2567,10 +2558,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
                 if (mcache) {
                     if (mc_pred) {
-                        static const bool no_handoff = getenv("LLAMA_MOE_CACHE_PREDICT_NOHANDOFF") != nullptr;   // diagnostic: predict, don't hand to the CPU op
-                        if (!no_handoff) {
-                            cur->src[4] = mc_pred;
-                        }
+                        cur->src[4] = mc_pred;
                     }
                     cur->src[3] = mcache->host_table;
                     cur->op_params[0] = mcache->n_slots;
