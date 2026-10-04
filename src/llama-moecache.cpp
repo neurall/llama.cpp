@@ -842,7 +842,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     std::vector<std::pair<std::string, std::string>> sect;
     ok = ok && moe_state_section_kv(mc->profile, sect);
     bool seeded = false;   // no record of this exact file: take the hot map of the same name or the same family and shape, and keep it as this file's own record
-    if (ok && sect.empty()) {
+    if (ok && std::none_of(sect.begin(), sect.end(), [](const auto & p) { return p.first.compare(0, 4, "hot.") == 0; })) {   // a section that holds no hot map yet counts as missing
         ok = moe_state_section_kv(mc->profile, sect, true);
         seeded = ok;
     }
