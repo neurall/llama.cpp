@@ -26,7 +26,6 @@ Tests:
   t100    raw completion "write smallest html tetris game", -c 1024, 100 tokens, temperature 0: the short one-shot run most people benchmark
   chat    /v1/chat/completions "write smallest html tetris game", 1500 tokens
   chat2   chat like chat with a ~350-token prompt (the same game with a requirements list), 1500 tokens: a real prompt, so pp counts
-  code6   agentic coding session: src_3k.cpp, six scripted turns that keep modifying the same function (add, compile error, test, rename, failing test, comment), 500 tokens each, chat history kept, prompt cache on
   long1k  ~1024-token prompt (src_1k.cpp + a bug-fix request), 1024 tokens out, -c 4096
   chatv   chat with varied prompts (run counter picks the prompt, thinking off), 300 tokens: topic switches the cache has to follow
   pf128k  128k-token prefill: src_128k.cpp, 64 tokens generated, -c 131072 (like pf12k otherwise)
@@ -328,40 +327,6 @@ def agent_run(build, env, args):
         stop(p)
 
 
-CODE6_TURNS = [
-    "Here is a source file. Add a function that counts the lines of the text it is given and prints the count, and call it once from the code. Show only the new or changed code.",
-    "Compiling gives: error: expected ';' before '}' token, in the function you just added. Fix it and show the corrected function.",
-    "Add a small unit test for that function and show it.",
-    "Rename the function to something more descriptive and update every use. Show the changed lines.",
-    "The test now fails: expected 120, got 119, the last line has no trailing newline. Fix the function.",
-    "Update the comment above the function to describe the edge cases (empty text, no trailing newline, only newlines) and show the final function.",
-]
-
-
-def code_session(build, env, args, tokens=500):
-    """an agentic coding session: one source file, six scripted turns that keep modifying the same function (the model's own answers stay in the history,
-    the prompt cache is on); returns per-turn timings and the totals"""
-    p, logf = server_start(build, env, args)
-    try:
-        src = open(os.path.join(PROMPTS, "src_3k.cpp")).read()
-        msgs, turns, text = [], [], ""
-        for i, t in enumerate(CODE6_TURNS):
-            msgs.append({"role": "user", "content": (src + "\n\n" if i == 0 else "") + t})
-            res = post("/v1/chat/completions", {"messages": msgs, "max_tokens": int(OVR.get("tokens") or tokens), "cache_prompt": True,
-                                                **GREEDY, "chat_template_kwargs": {"enable_thinking": False}})
-            m = res["choices"][0]["message"]
-            msgs.append({"role": "assistant", "content": m.get("content") or ""})
-            tm = res["timings"]
-            turns.append({"prompt_n": tm.get("prompt_n"), "prompt_ms": tm.get("prompt_ms"), "gen_n": tm.get("predicted_n"), "gen_ms": tm.get("predicted_ms")})
-            text += f"\n--- turn {i + 1}\n" + (m.get("content") or "")
-        pn, pms = sum(x["prompt_n"] or 0 for x in turns), sum(x["prompt_ms"] or 0 for x in turns)
-        gn, gms = sum(x["gen_n"] or 0 for x in turns), sum(x["gen_ms"] or 0 for x in turns)
-        return {"turns": turns, "text": text, "prompt_tokens": pn, "gen_tokens": gn, "tps": gn / (gms / 1e3) if gms else 0,
-                "pp_tps": pn / (pms / 1e3) if pms else 0}, logf
-    finally:
-        stop(p)
-
-
 def run_one(build, test, extra_env, plain=False, extra_args=()):
     global COMMON
     if plain and not build.startswith("stock"):
@@ -404,15 +369,6 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 row["md5"] = hashlib.md5(res["content"].encode()).hexdigest()[:8]
             row.update(cache_stats(open(logf).read()))
             row.update(ok=1 if row.get("pp_tps") else 0, args=" ".join(args))
-            return row
-        if test == "code6":
-            TAGBOX["v"] = "code6"
-            args = COMMON + ["-c", str(OVR.get("ctx") or 8192), "-ub", "1024", "-b", "2048"]
-            r, logf = code_session(build, env, args)
-            row = {"tps": r["tps"], "pp_tps": r["pp_tps"], "n_gen": r["gen_tokens"], "output": r["text"], "md5": hashlib.md5(r["text"].encode()).hexdigest()[:8],
-                   "note": f"turns={len(r['turns'])} prompt_tokens={r['prompt_tokens']}"}
-            row.update(cache_stats(open(logf).read()))
-            row.update(ok=1 if row.get("tps") else 0, args=" ".join(args))
             return row
         if test == "agent":
             args = COMMON + ["-c", "16384", "-ub", "2048", "-b", "2048"]
@@ -971,7 +927,7 @@ if __name__ == "__main__":
         sys.argv.insert(1, "prompt")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "code6", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4"]
+    TESTS = ["ppl", "ppl3", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4"]
     r = sp.add_parser("run", help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", choices=TESTS)
