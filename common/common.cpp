@@ -1770,7 +1770,11 @@ static void common_moe_cache_auto_impl(common_params & params) {
         } else {
             // first run, nothing measured yet (PC1 IQ3_S 83 GB on one 24 GB GPU: stock 23.6 vs cache 42-49 t/s): the cache when the model is clearly bigger than the free VRAM (PC1 IQ1_M 54 GB on 2 x 24 GB: stock 108.9/60.4 vs cache 80.4/54.4 prompt/gen t/s); a prompt of thousands of tokens starts with stock, where the cache's slow prompt
             // processing costs more than its faster generation gains; the measured runs then keep stock only where it is faster)
-            const std::string first = "stock"; // the fork is never slower than stock: the first start is stock, the cache is tried once and kept only when measured faster
+            // first start: the cache when the model is clearly bigger than the free VRAM (under ~80% of it fits: the cache won on every such model measured, 1.2x
+            // to 2.4x on MiMo, GLM and Qwen Next, and records that never get written leave it on the usual winner), stock near the fit line (Qwen Next IQ1_M,
+            // 87% in VRAM: a tie). The other placement is measured on the next start and kept only when it wins by more than the noise bar.
+            const bool clearly_bigger = (double) model_size > 1.25 * (double) vram_free;
+            const std::string first = clearly_bigger ? "cache" : "stock";
             // nothing is assumed from the model's size: both placements are measured on real requests (the cache first when the model is
             // clearly bigger than the free VRAM, it wins there on every measured model; stock first otherwise), one run each when the gap is clear
             // measuring: the placement with fewer recorded runs (ties: the first), so each gets two runs before it decides
