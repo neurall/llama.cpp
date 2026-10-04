@@ -155,4 +155,3 @@ a.out.*
 AGENTS.local.md
 .pi/SYSTEM.md
 tools/runs.db
-tools/bench/state-snapshots/
