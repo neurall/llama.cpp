@@ -81,7 +81,7 @@ that does not fit in VRAM; the fork serves only its cache misses, and its hit ra
 
 - **The gain is the CPU reads the cache removes.** It is largest when stock leaves a large share of the model on a slow CPU: on machine A (2 GPUs, 44 GB/s RAM) a model 2 to 3 times the VRAM gives 1.9x to 2.4x.  
 - **More fast memory has diminishing returns.** The slow-memory cost per unit is about the same for both (44 to 46 ms), so the fork's lead is only the difference between the share stock leaves on the CPU and its own miss rate. As the VRAM share grows both approach their floors (fork about 28 ms, stock about 34 ms, ratio about 1.2x). On 4 GPUs the fork is at 94% of its floor, and the 2, 3 and 4 GPU runs differ by 7%.  
-- **A faster CPU lowers the gain,** because the slow-memory term shrinks (the 4-GPU EPYC box reads 74 GB/s against 44 GB/s on machine A).  
+- **A faster CPU lowers the gain,** because the slow-memory term shrinks (the 4-GPU EPYC box reads 74 GB/s against 44 GB/s on the 3700X box).  
 - **A model that fits in VRAM gains nothing** (the cache is off, 1.0x).  
 
 Four points from one session with different output texts: a good explanation, not a proof. The 2 and 1 GPU stock figures are model predictions, not measurements.  
