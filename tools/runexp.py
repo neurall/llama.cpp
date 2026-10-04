@@ -201,7 +201,7 @@ def parse_log(text, time_txt):
     m = re.search(r"moe-pred: hit=([\d.]+) hit_without_est=([\d.]+) boost_pts=([\d.]+) up=(\d+) pub=(\d+) used=(\d+) late=(\d+) stale=(\d+) cov1=([\d.]+) cov2=([\d.]+) cov3=([\d.]+) miss_per_layer=([\d.]+)", t)
     if m:
         hw_, hwo, bp, up, pub, used, late, stale, c1, c2, c3, mpl = m.groups()
-        r.update(pred_hit_without=float(hwo), pred_boost_pts=float(bp), pred_up=int(up), pred_pub=int(pub), pred_used=int(used), pred_late=int(late), pred_stale=int(stale),
+        r.update(pred_hit=float(hw_), pred_hit_without=float(hwo), pred_boost_pts=float(bp), pred_up=int(up), pred_pub=int(pub), pred_used=int(used), pred_late=int(late), pred_stale=int(stale),
                  pred_cov1=float(c1), pred_cov2=float(c2), pred_cov3=float(c3), miss_per_layer=float(mpl))
     m = re.search(r"moe-summary: hit=([\d.]+)% uploads=(\d+) evictions=(\d+) up_mib=(\d+) ddr_gbs=([\d.]+) pcie_gbs=([\d.]+) ddr_peak=([\d.]+) pcie_peak=([\d.]+)", t)
     if m:
@@ -319,9 +319,15 @@ def run_exp(spec_path, rs, dry=False, only=None, rounds=None):
     if setup.get("hold_vram") and not dry:
         holder = subprocess.Popen([sys.executable, HOLD] + [f"{g}:{gib}" for g, gib in setup["hold_vram"].items()], env=base_env,
                                   stdout=subprocess.PIPE, text=True, start_new_session=True)
+        held_ok = False
         for _ in range(120):
             if "holding" in (holder.stdout.readline() or ""):
+                held_ok = True
                 break
+            if holder.poll() is not None:
+                break
+        if not held_ok or holder.poll() is not None:
+            sys.exit(f"hold_vram failed: {HOLD} did not start holding (missing or crashed); rows would claim a constraint that never existed")
         print(f"holding VRAM {setup['hold_vram']}", flush=True)
     n_run = 0
     try:
@@ -458,6 +464,7 @@ def store_row(rs, spec, name, spec_sha, arm, mname, mpath, rnd, r, hw, setup, li
                ddr_util=r.get("ddr_util"), pcie_util=r.get("pcie_util"), cpu_util=sysd.get("cpu_util"), gpu_util=sysd.get("gpu_util"), placement=r.get("placement"), decisions=r.get("decisions"),
                rungs=r.get("rungs"), held_gib=held, mem_limit=setup.get("mem_limit"), cache_state=r.get("cache_state"), temp=r.get("temp"),
                state=json.dumps(setup.get("state")) if setup.get("state") not in (None, "keep") else "", sys=json.dumps(sysd, sort_keys=True, separators=(",", ":")))
+    row.update({c: r.get(c) for c in ["pred_hit"] + EXP_COLS if c in r and c not in row})
     rs.csv_append("run-history.csv", rs.RUN_COLS, row)
     # the spec is kept next to the data, once
     sd = os.path.join(rs.DATA, "specs")

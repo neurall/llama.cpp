@@ -48,6 +48,9 @@ def ensure(con, cols):
     con.execute("DROP VIEW IF EXISTS cells")
     con.execute("""CREATE VIEW cells AS SELECT stem, hw, test, build, MAX(bno) AS bno, COUNT(*) AS n, ROUND(consistent(tps), 2) AS tps, ROUND(consistent(pp), 1) AS pp,
                    ROUND(MAX(tps), 2) AS tps_max, MIN(ts) AS first, MAX(ts) AS last FROM runs WHERE okf = 1 AND tps IS NOT NULL GROUP BY stem, hw, test, build""")
+def ins(cols):
+    """named-column INSERT: ALTER TABLE appends new columns after stem/okf, so position is not safe"""
+    return "INSERT INTO runs (" + ", ".join(q(c) for c in cols) + ", stem, okf) VALUES (" + ",".join("?" * (len(cols) + 2)) + ")"
 def row_values(d, cols):
     stem = re.sub(r"-0000\d-of-0000\d", "", (str(d.get("model") or "")).split(" ")[0]).removesuffix(".gguf")
     vals = [(num(d.get(c)) if c in NUMERIC else (None if d.get(c) is None else str(d.get(c)))) for c in cols]
@@ -56,7 +59,7 @@ def insert(d, cols):
     """called by run.py with every run (a dict by column name); never raises into a run"""
     try:
         con = connect(); ensure(con, cols)
-        con.execute("INSERT INTO runs VALUES (" + ",".join("?" * (len(cols) + 2)) + ")", row_values(d, cols))
+        con.execute(ins(cols), row_values(d, cols))
         con.commit(); con.close()
     except Exception as e:
         print("runs.db:", e, file=sys.stderr)
@@ -86,7 +89,7 @@ def load():
         rd = csv.DictReader(f); cols = rd.fieldnames
         ensure(con, cols)
         for r in rd:
-            con.execute("INSERT INTO runs VALUES (" + ",".join("?" * (len(cols) + 2)) + ")", row_values(r, cols)); n += 1
+            con.execute(ins(cols), row_values(r, cols)); n += 1
     ensure_emb(con)
     if os.path.exists(EMB):
         with open(EMB, newline="") as f:

@@ -1,7 +1,7 @@
 // vnni_check LIB_A LIB_B [types...]: loads two ggml CPU backend libraries (e.g. libggml-cpu-haswell and libggml-cpu-zen4) in one process, quantizes random rows and
 // runs each library's vec_dot on identical inputs: results must match bit for bit, then both are timed. Needs libggml-base next to the libraries.
-//   Linux:   g++ -O2 -std=c++17 tools/vnni_check.cpp -Iggml/include -Iggml/src -ldl -o vnni_check
-//   Windows: clang++ -O2 -std=c++17 tools/vnni_check.cpp -Iggml/include -Iggml/src -o vnni_check.exe
+//   Linux:   g++ -O2 -std=c++17 tools/vnni-check.cpp -Iggml/include -Iggml/src -ldl -o vnni_check
+//   Windows: clang++ -O2 -std=c++17 tools/vnni-check.cpp -Iggml/include -Iggml/src -o vnni_check.exe
 #include "ggml.h"
 #include "ggml-cpu.h"
 #include <cstdio>
