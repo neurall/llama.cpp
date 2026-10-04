@@ -115,7 +115,7 @@ def _fmt(v):
 
 
 def csv_append(name, cols, d):
-    if name == "run-history.csv" and "r" not in os.environ.get("PERF_LOG", "esrgp"):
+    if name == "run-history.csv" and "r" not in LOG_LETTERS:
         return   # PERF_LOG without r: the run is shown but not recorded
     path = os.path.join(DATA, name)
     buf = io.StringIO()
@@ -228,10 +228,9 @@ def cache_stats(log):
     return d
 
 
-SNAP_DIR = os.path.join(DATA, "state-snapshots")   # --moe snap=1 of the builds that have it: the model's state section after every run, tracked in git
 _EMB_OFF = os.path.getsize(os.path.join(DATA, "embhot.csv")) if os.path.exists(os.path.join(DATA, "embhot.csv")) else 0
-EMB_FILE = os.path.join(DATA, "embhot.csv")        # --moe emb=1: one line per run (model, last embedding, hot experts), tracked in git
-RESEARCH_ENV = {"LLAMA_MOE_LOG": os.environ.get("PERF_LOG", "esrgp"), "LLAMA_MOE_SNAP_DIR": SNAP_DIR, "LLAMA_MOE_EMBHOT": EMB_FILE}   # --moe log=esr for every harness run (builds without it ignore it): e embedding line, s state snapshot, r run history to csv and sqlite (this file); PERF_LOG=e etc. narrows it
+EMB_FILE = os.path.join(DATA, "embhot.csv")        # written by --moe log=e (logdir=DATA)
+LOG_LETTERS = os.environ.get("PERF_LOG", "esrgp")   # --moe log=esrgp for every run of a fork build (stock builds have no --moe): e embedding line, s state snapshot, r run history (this file), g GPU identity, p cache stats; PERF_LOG=e etc. narrows it
 
 
 READY_STALL = int(os.environ.get("PERF_READY_STALL", "600"))    # seconds without a new log line before a starting server is killed
@@ -239,7 +238,8 @@ READY_MAX = int(os.environ.get("PERF_READY_MAX", "1800"))        # seconds from 
 
 
 def server_start(build, env, args):
-    env = {**env, **RESEARCH_ENV}
+    if not build.startswith("stock"):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it)
+        args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA},tuned=0"]
     logf = f"/tmp/perf-{build}.log"
     with open(logf, "w") as lf:
         p = subprocess.Popen([os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
@@ -304,7 +304,6 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
            "LLAMA_MOE_CACHE_STATSLOG": "32", "LLAMA_MOE_STATSLOG": f"/tmp/perf-{build}-stats.txt",  # builds with statslog write a text line per 32 steps (moe-stats.csv)
            "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
     row = {}
-    env = {**env, **RESEARCH_ENV}
     if test in ("ppl", "ppl3"):
         nb = "1" if test == "ppl" else "3"
         args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", "2", "-b", nb, "-ub", nb]
