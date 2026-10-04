@@ -528,6 +528,7 @@ struct layer_trace_state {
     bool ids_only = false;   // log=x: the selected expert ids only, no embeddings
     std::string model;
     std::string file;   // the model file name without .gguf and split suffix plus the start time, for <file>.<time>.routing
+    size_t nl_first = 0, k_first = 0;   // log=x: layers and experts per layer of the first complete sample; others are skipped
     int last_pos = -1, seq = 0;   // log=x: a position that goes down is a new prompt: its own file (<file>-<seq>.routing)
     std::map<int, std::string> hex, xhex, ids;
     std::map<int, std::vector<int32_t>> idv;   // log=x: per layer the selected experts of the sampled token   // per layer: output embedding, router input, selected experts
@@ -551,6 +552,8 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
             if (g_lt.ids_only) {
                 g_lt.idv[il] = v;
                 if (il == (int) g_lt.ctx->get_model().hparams.n_layer() - 1) {   // the last layer closes the sample
+                    if (g_lt.nl_first == 0) { g_lt.nl_first = g_lt.idv.size(); g_lt.k_first = v.size(); }
+                    if (g_lt.idv.size() != g_lt.nl_first || v.size() != g_lt.k_first) { g_lt.idv.clear(); return g_lt.user_cb ? g_lt.user_cb(t, false, g_lt.user_data) : true; }   // incomplete sample
                     // <model file>[.<tag>].<YYYYmmdd-HHMMSS>.routing (tag = --moe tag=NAME, run.py sets test-prompt; one file per prompt: a position that goes down starts <file>-<n>.routing), little endian: once "MOER", u16 version 1, u16 layers, u16 k, u16 layer numbers;
                     // then per sampled token i32 pos and layers x k u16 expert ids (layer order as in the header). A run starts where pos goes down.
                     { const int cur = g_lt.ctx->trace_n_p_eval() + g_lt.ctx->trace_n_eval(); if (cur < g_lt.last_pos) { g_lt.seq++; } g_lt.last_pos = cur; }
@@ -617,29 +620,31 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
 }  // namespace
 
 void llama_context::set_eval_cb() {
-    if ((moe_log_has("l") || moe_log_has("x")) && moe_state_enabled()) {
+    if ((moe_log_has("l") || moe_log_has("x")) && moe_state_enabled() && (g_lt.ctx == nullptr || g_lt.ctx == this)) {   // the first context only: a draft context has its own layers and would interleave
         g_lt.ids_only = !moe_log_has("l");
         g_lt.ctx = this; g_lt.user_cb = cparams.cb_eval; g_lt.user_data = cparams.cb_eval_user_data;
         g_lt.every = std::max(1, moe_log_num(g_lt.ids_only ? 'x' : 'l', 1));   // log=l: every token, log=l64: every 64th; log=x: ids only, same sampling
-        g_lt.model = moe_state_section(model);
-        for (char & c : g_lt.model) { if (c == ',' || c == '\n') { c = '_'; } }
-        g_lt.file = g_lt.model.substr(0, g_lt.model.find(' '));   // the section is "<file name> <size>"
-        if (g_lt.file.size() > 5 && g_lt.file.compare(g_lt.file.size() - 5, 5, ".gguf") == 0) { g_lt.file.resize(g_lt.file.size() - 5); }
-        if (const size_t sp = g_lt.file.find("-0000"); sp != std::string::npos && g_lt.file.find("-of-", sp) != std::string::npos) { g_lt.file.resize(sp); }   // -00001-of-00008
-        for (char & c : g_lt.file) { if (!isalnum((unsigned char) c) && c != '.' && c != '-' && c != '_') { c = '_'; } }
-        {   // one file per run: <model file>.<YYYYmmdd-HHMMSS>.routing
-            char ts[32];
-            const time_t now = time(nullptr);
-            struct tm tmv;
+        if (g_lt.file.empty()) {   // once per process: the file name (model, tag, start time)
+            g_lt.model = moe_state_section(model);
+            for (char & c : g_lt.model) { if (c == ',' || c == '\n') { c = '_'; } }
+            g_lt.file = g_lt.model.substr(0, g_lt.model.find(' '));   // the section is "<file name> <size>"
+            if (g_lt.file.size() > 5 && g_lt.file.compare(g_lt.file.size() - 5, 5, ".gguf") == 0) { g_lt.file.resize(g_lt.file.size() - 5); }
+            if (const size_t sp = g_lt.file.find("-0000"); sp != std::string::npos && g_lt.file.find("-of-", sp) != std::string::npos) { g_lt.file.resize(sp); }   // -00001-of-00008
+            for (char & c : g_lt.file) { if (!isalnum((unsigned char) c) && c != '.' && c != '-' && c != '_') { c = '_'; } }
+            {   // one file per run: <model file>.<YYYYmmdd-HHMMSS>.routing
+                char ts[32];
+                const time_t now = time(nullptr);
+                struct tm tmv;
 #ifdef _WIN32
-            localtime_s(&tmv, &now);
+                localtime_s(&tmv, &now);
 #else
-            localtime_r(&now, &tmv);
+                localtime_r(&now, &tmv);
 #endif
-            strftime(ts, sizeof ts, "%Y%m%d-%H%M%S", &tmv);
-            std::string tag = moe_opt("tag") ? moe_opt("tag") : "";   // --moe tag=NAME: the prompt or test, in the file name
-            for (char & c : tag) { if (!isalnum((unsigned char) c) && c != '-' && c != '_') { c = '_'; } }
-            g_lt.file += (tag.empty() ? std::string() : "." + tag) + "." + ts;
+                strftime(ts, sizeof ts, "%Y%m%d-%H%M%S", &tmv);
+                std::string tag = moe_opt("tag") ? moe_opt("tag") : "";   // --moe tag=NAME: the prompt or test, in the file name
+                for (char & c : tag) { if (!isalnum((unsigned char) c) && c != '-' && c != '_') { c = '_'; } }
+                g_lt.file += (tag.empty() ? std::string() : "." + tag) + "." + ts;
+            }
         }
         ggml_backend_sched_set_eval_callback(sched.get(), layer_trace_cb, nullptr);
     } else {
@@ -648,6 +653,7 @@ void llama_context::set_eval_cb() {
 }
 
 llama_context::~llama_context() {
+    if (g_lt.ctx == this) { g_lt.ctx = nullptr; }   // research trace (log=l, log=x): the callback state must not point at a freed context
     if (moe_embsnap_enabled()) {   // research (--moe log=e): at exit only, the last layer embedding of the last token of the last graph; nothing is read while running
         synchronize();
         llm_graph_result * r = gf_res_prev_active ? gf_res_prev_active : gf_res_prev[0].get();
