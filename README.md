@@ -36,7 +36,7 @@ Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation sp
 | Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 4060 8G 4/8<br>8945HS 32G 48G/s | 13% | 13.5<br>18.3 | 17.3<br>21.6 | *1.3x*<br>*1.2x* | -<br>- | b12030 |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>second run | 24.7<br>- | 31.5<br>- | *1.3x*<br>- | -<br>- | b11707+ |
 | Qwen3.8-27B-IQ4_NL | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>dense | 45.1<br>27 | 45.0<br>29 | 1.0x<br>1.1x | 1.0x<br>1.0x | b12128 |
-| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>short | 78.3<br>41 | 77.5<br>40 | *1.0x*<br>*1.0x* | -<br>- | b11649 |
+| Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>short | 78.3<br>41 | 77.5<br>40 | *1.0x*<br>*1.0x* | *1.0x*<br>*1.0x* | b11649 |
 | Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 87% | 69.1<br>38 | 68.3<br>40 | 1.0x<br>1.0x | *1.0x*<br>*1.0x* | b12040 |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>first run | 24.7<br>- | 25.2<br>- | 1.0x<br>- | -<br>- | b11707+ |
 | Qwen3.8-27B-GSQ-<br>RCO-IQ3_S-mtp | 3600 A520 64G | 0%<br>CPU only | 1.7<br>5.6 | 1.6<br>5.8 | *0.9x↓*<br>*1.0x* | -<br>- | b12030 |
