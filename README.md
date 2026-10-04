@@ -60,6 +60,9 @@ D numbers are from one session on a claud rented 4 gpu box (raw logs not kept, n
 Older rows: GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
 [`tools/bench/run-history.csv`](tools/bench/run-history.csv).  
 
+**Reproduce and check these numbers.** Every run behind the table (date, commit, build, machine, model, command line, speed) is a row in [`tools/bench/run-history.csv`](tools/bench/run-history.csv), failed and cold runs included.  
+`tools/experiments/release-gate/readme-rerun.sh <fork build> <stock build>` repeats the cells (one discarded run, then the recorded runs, builds in alternating order), `tools/experiments/release-gate/readme-compare.py` prints them next to the numbers above, and `python3 tools/run.py bench --help` runs any single cell. The table is sorted by gain, not by how good a row looks, and the slow rows stay in.  
+
 ### Why the gain depends on how much of the model fits
 
 Time per token is a fixed floor plus the cost of what is served from slow memory: `T = T0 + m x (fraction served from the CPU)`. Stock serves from the CPU every weight
