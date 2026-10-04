@@ -3,7 +3,7 @@
 usage: readme-update.py README HISTORY.csv OURS_BUILD
 Each cell shows the best run of each side over all its runs in the log (t/s and pp separately): stock, or the same build with --fork off (campaign newtests-forkoff) when stock cannot load the model, and ours (the published build).
 A cell with results is replaced by them outright; cells without keep what they have (old values stay in git history and in the run log).
-A short row that adopts game4 results also takes its stock and ours numbers and the build."""
+A row that gets results also takes the build."""
 import csv, re, sys
 NB = " "
 readme, hist, OURS = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -48,28 +48,27 @@ def num(x):
 def two(a, b):
     return " " + (a + "<br>" + b).replace(" ", NB) + " "
 out, changed = [], 0
+# columns of a row: '' model hardware vram | short4 stock, ours, gain | long4 stock, ours, gain | build ''
 for l in open(readme).read().split("\n"):
-    if l.startswith("| ") and l.count("|") == 9 and not l.startswith(("| ---", "| model")):
-        c = l.split("|")   # '' model hardware vram stock ours short long build ''
+    if l.startswith("| ") and l.count("|") == 11 and not l.startswith(("| ---", "| model")):
+        c = l.split("|")
         stem = c[1].strip().replace(NB, " ").replace("<br>", "").replace(" ", "")
         q = c[3].strip().replace(NB, " ")
-        # the 27B MTP row waits for its own run with --spec-type draft-mtp (the plain cells are not the MTP test)
-        if c[2].strip().startswith("2x3090") and "MTP" not in stem and not any(k in q for k in ("12k", "2.2k", "run")):
-            for col, test in ((6, "game4"), (7, "edit4")):
+        # the 27B MTP row waits for its own runs with --spec-type draft-mtp (the plain cells are not the MTP test)
+        if c[2].strip().startswith("2x3090") and "MTP" not in stem and not any(k in q for k in ("run", "of 4")):
+            hit = False
+            for col, test in ((4, "game4"), (7, "edit4")):   # first column of the three of each test
                 res = result(stem, test)
                 if not res:
                     continue
                 s, o = res
-                new = [g(o[0], s[0]), g(o[1], s[1])]
-                c[col] = two(*new); changed += 1
-                if test == "game4":
-                    c[4] = two(f"{s[0]:.1f}", f"{s[1]:.0f}")
-                    c[5] = two((f"**{o[0]:.1f}**" if o[0] >= 1.1*s[0] else f"{o[0]:.1f}"), f"{o[1]:.0f}")
-                    c[8] = " " + OURS.removeprefix("release-") + " "
+                c[col]     = two(f"{s[0]:.1f}", f"{s[1]:.0f}")
+                c[col + 1] = two((f"**{o[0]:.1f}**" if o[0] >= 1.1*s[0] else f"{o[0]:.1f}"), f"{o[1]:.0f}")
+                c[col + 2] = two(g(o[0], s[0]), g(o[1], s[1]))
+                changed += 1; hit = True
+            if hit:
+                c[10] = " " + OURS.removeprefix("release-") + " "
         l = "|".join(c)
     out.append(l)
 open(readme, "w").write("\n".join(out))
 print("cells updated:", changed)
-# empty cells that remain take the numbers of b11707 from the run log (italic): that build is hard to beat so far
-import os, subprocess
-subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "readme-fill-build.py"), readme, hist, "b11707"])
