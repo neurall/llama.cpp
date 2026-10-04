@@ -2587,7 +2587,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                     setenv("LLAMA_MOE_STATE", kv.substr(eq + 1).c_str(), 1);
 #endif
                 }
-                else if (key == "embsnap")  { // research: hot experts of this run stored under a file name made from the last layer embedding of the prompt (embhot/ next to the state file)
+                else if (key == "emb" || key == "embsnap")  { // research: hot experts of this run stored under a file name made from the last layer embedding of the prompt (embhot/ next to the state file)
 #ifdef _WIN32
                     _putenv_s("LLAMA_MOE_EMBSNAP", v ? "1" : "0");
 #else
