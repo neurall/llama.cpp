@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """routing.csv (--moe log=x) -> npz for the replay tools (route_evict.py, cache_sim.py): the real decode routing of a run.
 
-usage: routing_csv.py routing.csv out.npz [n_expert] [model-substring]
-routing.csv: model,pos,layer,ids (one line per sampled generated token and MoE layer; prefill tokens are not logged). A run starts where
+usage: routing_csv.py routing_<model>.csv out.npz [n_expert] [model-substring]
+routing_<model>.csv: pos,layer,ids (older routing.csv: model,pos,layer,ids; model-substring picks one model) (one line per sampled generated token and MoE layer; prefill tokens are not logged). A run starts where
 pos goes down (a new process appends to the same file); each run becomes one sample. out.npz as route_trace.py writes it: ids [T, NL, K]
 int16, bounds [n_samples + 1] (token offsets of the runs), layers [NL] (model layer numbers), n_expert (given, else the largest id + 1).
 """
@@ -16,7 +16,7 @@ def main():
     only = sys.argv[4] if len(sys.argv) > 4 else ""
     runs, cur, last_pos, layers = [], {}, None, set()
     for r in csv.DictReader(open(src)):
-        if only and only not in r["model"]:
+        if only and only not in r.get("model", ""):
             continue
         pos, il = int(r["pos"]), int(r["layer"])
         if last_pos is not None and pos < last_pos and cur:   # a new run
