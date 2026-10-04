@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Update the README table from the new tests (campaign newtests in run-history.csv): short4 = game4, long4 = edit4, PC1 rows (2x3090) only.
 usage: readme-update.py README HISTORY.csv OURS_BUILD
-Each side runs ONE prompt of the four (a random one, the same for every build of a cell). The newest stock run decides the prompt; ours (the published build) is taken at the same repetition,
-so the two numbers come from the same prompt. Stock = the stock build, or the same build with --fork off (campaign newtests-forkoff) when stock cannot load the model.
-A cell with such a pair is replaced by it outright; cells without one keep what they have (old values stay in git history and in the run log).
-A short row that adopts a game4 pair also takes its stock and ours numbers and the build."""
+Each cell shows the best run of each side over all its runs in the log (t/s and pp separately): stock, or the same build with --fork off (campaign newtests-forkoff) when stock cannot load the model, and ours (the published build).
+A cell with results is replaced by them outright; cells without keep what they have (old values stay in git history and in the run log).
+A short row that adopts game4 results also takes its stock and ours numbers and the build."""
 import csv, re, sys
 NB = " "
 readme, hist, OURS = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -34,13 +33,13 @@ for r in csv.DictReader(open(hist)):
         continue   # no repetition number: the prompt of the run is unknown, it cannot be paired
     latest[(stem, r["test"], side, rep)] = (r["ts"], tps, pp)   # the CSV is chronological: the newest run of this build at this prompt wins
 def result(stem, test):
-    """one prompt: stock (or the --fork off stand-in) and ours at the same repetition, i.e. the same prompt. The newest stock run decides which prompt."""
-    cand = sorted(((v[0], k[3]) for k, v in latest.items() if k[0] == stem and k[1] == test and k[2] in ("stock", "standin")), reverse=True)
-    for _, rep in cand:
-        s = latest.get((stem, test, "stock", rep)) or latest.get((stem, test, "standin", rep))
-        o = latest.get((stem, test, "ours", rep))
-        if s and o and o[1] and s[1]:
-            return [s[1], s[2], 1], [o[1], o[2], 1]
+    """the best run of each side (t/s and pp separately), over every run of the cell in the log: stock (or the --fork off stand-in) and ours"""
+    def best(sides):
+        rs = [v for k, v in latest.items() if k[0] == stem and k[1] == test and k[2] in sides]
+        return [max(v[1] for v in rs), max(v[2] for v in rs), len(rs)] if rs else None
+    s, o = best(("stock",)) or best(("standin",)), best(("ours",))
+    if s and o and s[0] and o[0]:
+        return s, o
 def g(o, s):
     return "-" if not (o and s) else f"{o/s:.1f}x" + ("↓" if o/s < 0.95 else "")
 def num(x):
