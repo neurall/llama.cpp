@@ -17,7 +17,7 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 - **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
 - **Fallback to stock speed.** When the cache cannot help, the fork measures this and falls back to stock speed as quickly as it can (the 1.0x rows). This is work in progress, but already very usable.  
 
-Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation speed (tokens/s) above prompt-processing speed (pp). short4 = four short game prompts (`game4`), long4 = four edit instructions over one long source file (`edit4`); the prompts run one after the other and the learned state is kept between them, as in normal use. Each side's best run is compared. *Italic* values come from earlier tests or builds (b11707 where nothing newer exists) and will be replaced; `-` means not yet measured.
+Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation speed (tokens/s) above prompt-processing speed (pp). short4 = four short game prompts (`game4`), long4 = four edit instructions over one long source file (`edit4`); each cell compares stock and ours on the same prompt, one of the four picked at random, with the learned state kept between runs as in normal use. *Italic* values come from earlier tests or builds (b11707 where nothing newer exists) and will be replaced; `-` means not yet measured.
 
 | model | hardware | in VRAM | stock<br>t/s pp | ours<br>t/s pp | short4 gain<br>t/s pp | long4 gain<br>t/s pp | build |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -25,19 +25,19 @@ Speed relative to stock llama.cpp, sorted by gain. Each cell shows generation sp
 | MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>short prompt | 4.4<br>3 | **11.4**<br>4 | *2.6x*<br>*1.2x* | *2.1x*<br>*0.8x↓* | b11707 |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 45% | 12.5<br>16 | **27.5**<br>16 | *2.2x*<br>*1.0x* | -<br>- | b11707 |
 | MiMo-V2.6-Flash-<br>RL-IQ3_XXS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 36%<br>12k prompt | 4.2<br>156 | **9.1**<br>112 | -<br>- | *2.3x*<br>*0.8x↓* | b11509 |
-| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>short prompt | 31.2<br>18 | **51.6**<br>23 | 1.7x<br>1.2x | 1.6x<br>2.7x | b12193 |
+| Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>short prompt | 31.1<br>17 | **49.2**<br>20 | 1.6x<br>1.2x | 1.6x<br>2.8x | b12193 |
 | Qwen3.6-35B-A3B-<br>GSQ-hybrid | 4060 8G 4/8<br>8945HS 32G 48G/s | 73%<br>slow CPU | 31.6<br>41.2 | **60.0**<br>100.9 | *1.9x*<br>*2.6x* | -<br>- | b12030 |
 | Qwen3.6-35B-A3B-<br>GSQ-hybrid | 3600 A520 64G | 0%<br>CPU only | 6.3<br>10.1 | 11.1<br>34.1 | *1.8x*<br>*3.7x* | -<br>- | b12040 |
 | Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55%<br>12k prompt | 25.3<br>500 | **42.3**<br>538 | -<br>- | *1.7x*<br>*1.1x* | b11341 |
 | Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>2.2k | 31.3<br>599 | 51.1<br>792 | 1.0x<br>1.0x | *1.6x*<br>*1.3x* | unlogged |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 66%<br>3 of 4 | 20.1<br>- | 32.6<br>- | *1.6x*<br>- | -<br>- | b11707+ |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>second run, -t 16 | 24.7<br>- | **33.8**<br>- | *1.4x*<br>- | -<br>- | b11707+ |
-| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ3_S | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 58% | 44.1<br>29 | **55.2**<br>32 | 1.3x<br>1.1x | 1.2x<br>1.8x | b12193 |
+| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ3_S | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 58% | 42.5<br>26 | **54.7**<br>28 | 1.3x<br>1.1x | 1.2x<br>1.8x | b12193 |
 | Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 4060 8G 4/8<br>8945HS 32G 48G/s | 13% | 13.5<br>18.3 | 17.3<br>21.6 | *1.3x*<br>*1.2x* | -<br>- | b12030 |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>second run | 24.7<br>- | 31.5<br>- | *1.3x*<br>- | -<br>- | b11707+ |
-| Qwen3.8-27B-IQ4_NL | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>dense | 45.1<br>28 | 45.0<br>28 | 1.0x<br>1.0x | 1.0x<br>1.0x | b12193 |
+| Qwen3.8-27B-IQ4_NL | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>dense | 44.9<br>28 | 44.8<br>28 | 1.0x<br>1.0x | 1.0x<br>1.1x | b12193 |
 | Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>short | 78.3<br>41 | 77.5<br>40 | *1.0x*<br>*1.0x* | *1.0x*<br>*1.0x* | b11649 |
-| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 87% | 68.5<br>39 | 67.2<br>39 | 1.0x<br>1.0x | 1.0x<br>1.1x | b12193 |
+| Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 87% | 68.2<br>34 | 66.4<br>32 | 1.0x<br>1.0x | 1.0x<br>1.1x | b12193 |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>first run | 24.7<br>- | 25.2<br>- | 1.0x<br>- | -<br>- | b11707+ |
 | Qwen3.8-27B-GSQ-<br>RCO-IQ3_S-mtp | 3600 A520 64G | 0%<br>CPU only | 1.7<br>5.6 | 1.6<br>5.8 | *0.9x↓*<br>*1.0x* | -<br>- | b12030 |
 | GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 44%<br>2 of 4 | ~17<br>- | 30.4<br>- | ~1.7x<br>- | -<br>- | b11707+ |
@@ -61,7 +61,7 @@ Repeating one prompt at temperature 0 routes to the same experts every time, whi
 - **Long** (`python3 tools/run.py bench -t edit4`): one source file of about 2700 tokens ([`src_3k.cpp`](tools/bench/src_3k.cpp)) and four different edit instructions, one per run ("add a function that counts the lines", "delete the code that is never used", "add a short comment above every function", "rename the longest function and update its callers"), 128 tokens, temperature 0.  
 - **Short** (`-t game4`): "write smallest html tetris game", then racing, shooter and snake, 100 tokens each; only the game changes.  
 
-Every build gets the same instruction at the same repetition and builds alternate in order. The table compares the best run of stock with the best run of ours, without a warm-up run.    
+Every build gets the same instruction at the same repetition and builds alternate in order. Each cell is one run per build on one of the four prompts, picked at random and the same for every build, without a warm-up run.    
 
 The learned state (`~/.cache/llama.cpp/moe-state.ini` and the profile files beside it) is never deleted, between runs or at the start: it accumulates as in normal use, so ours is measured with the state of a model you have used a few times. A model's first starts are slower while it learns: IQ3_S on the 3090s ran 40, 43 and 41 to 53 tokens/s on its first three starts and 53 to 57 from the fourth on, against 44 for stock ([run logs](tools/bench/logs/iq3s-diag/)). A state that leaves a model stuck on low numbers is a bug and is fixed in the code (placement records are versioned, older ones are ignored). Only the regression tests give each arm a state file of its own.  
 

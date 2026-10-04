@@ -1,25 +1,14 @@
 #!/usr/bin/env python3
-"""Update the README table from the new tests (campaign newtests in run-history.csv): short = game4, long = edit4, PC1 rows (2x3090) only.
+"""Update the README table from the new tests (campaign newtests in run-history.csv): short4 = game4, long4 = edit4, PC1 rows (2x3090) only.
 usage: readme-update.py README HISTORY.csv OURS_BUILD
-Best run of ours (the published build) and of stock, 4 runs each; stock = the stock build, or the same build with --fork off (campaign newtests-forkoff) when stock cannot load the model.
-A cell with a result of the new tests (best of 4 runs, same prompts for every build) is replaced by it outright, whatever it replaces: the new methodology is the better one. Old values stay in git history and in the run log. Cells without new results keep what they have.
-A short row that adopts a game4 result also takes its stock and ours numbers and the build."""
+Each side runs ONE prompt of the four (a random one, the same for every build of a cell). The newest stock run decides the prompt; ours (the published build) is taken at the same repetition,
+so the two numbers come from the same prompt. Stock = the stock build, or the same build with --fork off (campaign newtests-forkoff) when stock cannot load the model.
+A cell with such a pair is replaced by it outright; cells without one keep what they have (old values stay in git history and in the run log).
+A short row that adopts a game4 pair also takes its stock and ours numbers and the build."""
 import csv, re, sys
-MIN_RUNS = 3   # valid runs per side: a repetition whose instruction makes a model answer empty (IQ1_M, long test, 2nd instruction) fails on every build, so 3 is all there is
 NB = " "
 readme, hist, OURS = sys.argv[1], sys.argv[2], sys.argv[3]
-bestv = {}
-vals = {}
-import statistics
-def consistent(xs):
-    """the best value that at least two runs agree on (within 5%); a lone outlier does not count, without agreement the median"""
-    xs = sorted(xs, reverse=True)
-    if len(xs) < 2:
-        return xs[0] if xs else 0.0
-    for x in xs:
-        if sum(1 for y in xs if y >= 0.95 * x) >= 2:
-            return x
-    return statistics.median(xs)
+latest = {}
 for r in csv.DictReader(open(hist)):
     try:
         tps, pp = float(r["tps"]), float(r["pp"] or 0)
@@ -39,14 +28,19 @@ for r in csv.DictReader(open(hist)):
         side = "ours"
     else:
         continue
-    vals.setdefault((stem, r["test"], side), []).append((tps, pp))
-for k, xs in vals.items():
-    bestv[k] = [max(x[0] for x in xs), max(x[1] for x in xs), len(xs)]   # the best run of each side
+    try:
+        rep = int(float(r["rep"]))
+    except ValueError:
+        continue   # no repetition number: the prompt of the run is unknown, it cannot be paired
+    latest[(stem, r["test"], side, rep)] = (r["ts"], tps, pp)   # the CSV is chronological: the newest run of this build at this prompt wins
 def result(stem, test):
-    o = bestv.get((stem, test, "ours"))
-    s = bestv.get((stem, test, "stock")) or bestv.get((stem, test, "standin"))
-    if o and s and o[2] >= MIN_RUNS and s[2] >= MIN_RUNS and o[0] and s[0]:
-        return s, o
+    """one prompt: stock (or the --fork off stand-in) and ours at the same repetition, i.e. the same prompt. The newest stock run decides which prompt."""
+    cand = sorted(((v[0], k[3]) for k, v in latest.items() if k[0] == stem and k[1] == test and k[2] in ("stock", "standin")), reverse=True)
+    for _, rep in cand:
+        s = latest.get((stem, test, "stock", rep)) or latest.get((stem, test, "standin", rep))
+        o = latest.get((stem, test, "ours", rep))
+        if s and o and o[1] and s[1]:
+            return [s[1], s[2], 1], [o[1], o[2], 1]
 def g(o, s):
     return "-" if not (o and s) else f"{o/s:.1f}x" + ("↓" if o/s < 0.95 else "")
 def num(x):
