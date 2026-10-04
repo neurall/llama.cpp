@@ -1,4 +1,7 @@
 #include "llama-context.h"
+#include <fstream>
+#include <filesystem>
+#include <map>
 #include <thread>
 
 #include "llama-moecache.h"
@@ -509,6 +512,76 @@ llama_context::llama_context(
         for (int i = 0; i < n_vocab; ++i) {
             sampling.token_ids_full_vocab[i] = i;
         }
+    }
+}
+
+
+// research (--moe log=l64): every 64th generated token, per layer the layer's output embedding (1 byte per float, hex) and the expert ids its router selected,
+// appended to layertrace.csv (LLAMA_MOE_LAYERTRACE=FILE moves it): model,pos,layer,embhex,ids. Unsampled tokens answer "do not observe", so the graph runs as without it
+namespace {
+struct layer_trace_state {
+    llama_context * ctx = nullptr;
+    ggml_backend_sched_eval_callback user_cb = nullptr;
+    void * user_data = nullptr;
+    int every = 0;
+    std::string model;
+    std::map<int, std::string> hex, ids;
+};
+layer_trace_state g_lt;
+
+bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
+    const bool is_out  = strncmp(t->name, "l_out-", 6) == 0;
+    const bool is_topk = strncmp(t->name, "ffn_moe_topk-", 13) == 0;
+    bool mine = (is_out || is_topk) && t->ne[1] == 1 && g_lt.ctx->trace_n_eval() > 0 && g_lt.ctx->trace_n_eval() % g_lt.every == 0;
+    if (ask) {
+        const bool theirs = g_lt.user_cb ? g_lt.user_cb(t, true, g_lt.user_data) : false;
+        return mine || theirs;
+    }
+    if (mine) {
+        const int il = atoi(strchr(t->name, '-') + 1);
+        if (is_topk && t->type == GGML_TYPE_I32) {
+            std::vector<int32_t> v(t->ne[0]);
+            ggml_backend_tensor_get(t, v.data(), 0, v.size()*sizeof(int32_t));
+            std::string o;
+            for (size_t i = 0; i < v.size(); ++i) { o += (i ? " " : "") + std::to_string(v[i]); }
+            g_lt.ids[il] = o;
+        } else if (is_out && t->type == GGML_TYPE_F32) {
+            std::vector<float> v(t->ne[0]);
+            ggml_backend_tensor_get(t, v.data(), 0, v.size()*sizeof(float));
+            float mx = 1e-20f;
+            for (float x : v) { mx = std::max(mx, std::fabs(x)); }
+            std::string h;
+            h.reserve(v.size()*2);
+            char b[4];
+            for (float x : v) { snprintf(b, sizeof b, "%02x", (unsigned) (uint8_t) (int8_t) std::lround(x/mx*127.0f)); h += b; }
+            g_lt.hex[il] = h;
+            if (il == (int) g_lt.ctx->get_model().hparams.n_layer() - 1) {   // the last layer closes the sample
+                const char * f = getenv("LLAMA_MOE_LAYERTRACE");
+                const std::filesystem::path path = f && f[0] ? f : "layertrace.csv";
+                std::error_code ec;
+                const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
+                std::string out = fresh ? "model,pos,layer,embhex,ids\n" : "";
+                const int pos = g_lt.ctx->trace_n_p_eval() + g_lt.ctx->trace_n_eval();
+                for (const auto & e : g_lt.hex) { out += g_lt.model + "," + std::to_string(pos) + "," + std::to_string(e.first) + "," + e.second + "," + (g_lt.ids.count(e.first) ? g_lt.ids[e.first] : "") + "\n"; }
+                std::ofstream o(path, std::ios::app | std::ios::binary);
+                o.write(out.data(), (std::streamsize) out.size());
+                g_lt.hex.clear(); g_lt.ids.clear();
+            }
+        }
+    }
+    return g_lt.user_cb ? g_lt.user_cb(t, false, g_lt.user_data) : true;
+}
+}  // namespace
+
+void llama_context::set_eval_cb() {
+    if (moe_log_has("l") && moe_state_enabled()) {
+        g_lt.ctx = this; g_lt.user_cb = cparams.cb_eval; g_lt.user_data = cparams.cb_eval_user_data;
+        g_lt.every = std::max(1, moe_log_num('l', 64));
+        g_lt.model = moe_state_section(model);
+        for (char & c : g_lt.model) { if (c == ',' || c == '\n') { c = '_'; } }
+        ggml_backend_sched_set_eval_callback(sched.get(), layer_trace_cb, nullptr);
+    } else {
+        ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
     }
 }
 
@@ -1801,7 +1874,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         res->reset();
 
         ggml_backend_sched_reset(sched.get());
-        ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+        set_eval_cb();
 
         //const auto t_start_us = ggml_time_us();
 

@@ -333,3 +333,9 @@ void moe_snap_save(const std::string & section) {
     f << "[" << section << "]\n";
     for (const auto & p : kv) { f << p.first << " = " << p.second << "\n"; }
 }
+
+int moe_log_num(char letter, int dflt) {
+    const char * e = getenv("LLAMA_MOE_LOG");
+    const char * p = e ? strchr(e, letter) : nullptr;
+    return p && isdigit((unsigned char) p[1]) ? atoi(p + 1) : dflt;
+}

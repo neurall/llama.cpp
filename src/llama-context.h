@@ -42,6 +42,9 @@ using llama_memory_buffers = std::map<ggml_backend_buffer_type_t, llama_memory_b
 
 struct llama_context {
     bool moe_cache_defer = false; // see llama_moe_cache_defer()
+    int32_t trace_n_eval() const { return n_eval; }       // for the layer trace (--moe log=l64)
+    int32_t trace_n_p_eval() const { return n_p_eval; }
+    void set_eval_cb(); // the scheduler callback: the user's, or the layer trace (--moe log=l64) in front of it
     bool moe_decoded = false;         // this context decoded a batch (the startup memory probes create contexts that never do: no state snapshot for them)
     bool moe_observe_started = false; // the heat of a stock placement start is being counted (llama_moe_observe_start)
     // init scheduler and compute buffers, reserve worst-case graphs
