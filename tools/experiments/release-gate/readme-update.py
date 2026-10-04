@@ -48,27 +48,25 @@ def num(x):
 def two(a, b):
     return " " + (a + "<br>" + b).replace(" ", NB) + " "
 def cells2(s, o):
-    """the numbers cell (stock t/s / pp on the top line, ours below) and the gain cell (t/s / pp)"""
+    """one cell, three lines: stock t/s / pp, ours t/s / pp, the gain (t/s / pp)"""
     ours_t = f"**{o[0]:.1f}**" if o[0] >= 1.1*s[0] else f"{o[0]:.1f}"
-    num = " " + f"{s[0]:.1f} / {s[1]:.0f}".replace(" ", NB) + "<br>" + f"{ours_t} / {o[1]:.0f}".replace(" ", NB) + " "
-    gain = " " + f"{g(o[0], s[0])} / {g(o[1], s[1])}".replace(" ", NB) + " "
-    return num, gain
+    return " " + "<br>".join(x.replace(" ", NB) for x in (f"{s[0]:.1f} / {s[1]:.0f}", f"{ours_t} / {o[1]:.0f}", f"{g(o[0], s[0])} / {g(o[1], s[1])}")) + " "
 out, changed = [], 0
-# columns of a row: '' model hardware vram | short4 numbers, gain | long4 numbers, gain | build ''
+# columns of a row: '' model hardware vram short4 long4 build ''
 for l in open(readme).read().split("\n"):
-    if l.startswith("| ") and l.count("|") == 9 and not l.startswith(("| ---", "| model")):
+    if l.startswith("| ") and l.count("|") == 7 and not l.startswith(("| ---", "| model")):
         c = l.split("|")
         stem = c[1].strip().replace(NB, " ").replace("<br>", "").replace(" ", "")
         q = c[3].strip().replace(NB, " ")
         # the 27B MTP row waits for its own runs with --spec-type draft-mtp (the plain cells are not the MTP test)
         if c[2].strip().startswith("2x3090") and "MTP" not in stem and not any(k in q for k in ("run", "of 4")):
             hit = False
-            for col, test in ((4, "game4"), (6, "edit4")):
+            for col, test in ((4, "game4"), (5, "edit4")):
                 res = result(stem, test)
                 if res:
-                    c[col], c[col + 1] = cells2(*res); changed += 1; hit = True
+                    c[col] = cells2(*res); changed += 1; hit = True
             if hit:
-                c[8] = " " + OURS.removeprefix("release-") + " "
+                c[6] = " " + OURS.removeprefix("release-") + " "
         l = "|".join(c)
     out.append(l)
 open(readme, "w").write("\n".join(out))
