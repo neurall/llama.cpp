@@ -17,7 +17,7 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 - **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
 - **Fallback to stock speed.** When the cache cannot help, the fork measures this and falls back to stock speed as quickly as it can (the 1.0x rows). This is work in progress, but already very usable.  
 
-The table below is the one of the last release (b11707) while the new tests run; the build column of each row in the run log says where a number comes from.  
+This is the table of the last release (b11707); it is replaced when the new tests (four short and four long prompts per model) are complete.  
 
 Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock llama.cpp.
 Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.
