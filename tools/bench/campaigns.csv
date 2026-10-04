@@ -112,3 +112,5 @@ smoke-snap,2026-10-04 14:05:30,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-000
 newtests,2026-10-04 14:13:02,"bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12178 variants default test game4 n=4",,
 newtests,2026-10-04 14:15:07,"bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12178 variants default test game4 n=4",,
 newtests,2026-10-04 14:25:18,"bench /m/q/4/Qwen3.8-27B-IQ4_NL.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12178 variants default test game4 n=4",,
+newtests,2026-10-04 14:29:02,"bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12183 variants default test game4 n=4",,
+newtests,2026-10-04 14:31:05,"bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12183 variants default test game4 n=4",,

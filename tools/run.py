@@ -277,7 +277,10 @@ def post(path, body, timeout=3600):
 def server_run(build, env, args, path, body):
     p, logf = server_start(build, env, args)
     try:
-        return post(path, body), logf
+        res = post(path, body)
+        if "[PIN_STALL]" in open(logf).read():   # the engine gave up pinning (kernel memory compaction stalled): the speeds are of unpinned memory
+            raise RuntimeError("[PIN_STALL] pinning stalled, this run is not comparable")
+        return res, logf
     finally:
         stop(p)
 
