@@ -24,19 +24,19 @@ Gain over stock llama.cpp, best first (t/s = generated tokens per second, pp = p
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | MiMo IQ3_XXS 132 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 36% | **2.4x** | 0.7x slower | - | - | - | - | 4.6 | **10.9** | 156 | 112 | earlier |
 | GLM 3.5-bit 137 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 35% | **2.2x** | - | - | - | - | - | 6.9 | **15.1** | - | - | b11707 |
-| Qwen3.6-35B Q2_0 (8 GB GPU, slow CPU side) | 4060 8G 4x8<br>8945HS 32G 4ch LPDDR5-6400 48G/s | about 73% | **1.9x** | **2.4x** | - | - | - | - | 31.6 | **60.0** | 41.2 | 100.9 | b12030 |
+| Qwen3.6-35B Q2_0<br>(8 GB GPU, slow CPU side) | 4060 8G 4x8<br>8945HS 32G 4ch LPDDR5-6400 48G/s | about 73% | **1.9x** | **2.4x** | - | - | - | - | 31.6 | **60.0** | 41.2 | 100.9 | b12030 |
 | GLM 3.0-bit | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | about 45% | **1.9x** | - | - | - | - | - | 11.9 | **22.4** | - | - | earlier |
-| Qwen3.6-35B Q2_0, CPU only | no GPU<br>3600 A520 64G 2ch DDR4-3200 | 0% | 1.8x | **3.4x** | - | - | - | - | 6.3 | 11.1 | 10.1 | 34.1 | b12040 |
-| Qwen Next UD-IQ4_XS 88 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 55% | 1.7x | 1.1x | - | - | - | - | 27.7 | 46.5 | 500 | 538 | earlier |
-| Qwen3.8-27B Q5_K_M with MTP (2.2k-token prompt) | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | fits | 1.6x | 1.3x | - | - | - | - | 31.3 | 51.1 | 599 | 792 | earlier |
-| GLM 3.0-bit, 3 of 4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 4ch DDR4 74G/s | 66% | 1.6x | - | - | - | - | - | 20.1 | 32.6 | - | - | b11707+ |
+| Qwen3.6-35B Q2_0<br>CPU only | no GPU<br>3600 A520 64G 2ch DDR4-3200 | 0% | 1.8x | **3.4x** | - | - | - | - | 6.3 | 11.1 | 10.1 | 34.1 | b12040 |
+| Qwen Next UD-IQ4_XS<br>88 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 55% | 1.7x | 1.1x | - | - | - | - | 27.7 | 46.5 | 500 | 538 | earlier |
+| Qwen3.8-27B Q5_K_M with MTP<br>(2.2k-token prompt) | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | fits | 1.6x | 1.3x | - | - | - | - | 31.3 | 51.1 | 599 | 792 | earlier |
+| GLM 3.0-bit<br>3 of 4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 4ch DDR4 74G/s | 66% | 1.6x | - | - | - | - | - | 20.1 | 32.6 | - | - | b11707+ |
 | Qwen Next IQ3_S 83 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 58% | 1.3x | - | 1.3x | 1.1x | - | - | 43.9 | 57.1 | - | - | b11707 |
 | Qwen Next IQ1_M 55 GB | 4060 8G 4x8<br>8945HS 32G 4ch LPDDR5-6400 48G/s | about 13% | 1.3x | 1.2x | - | - | - | - | 13.5 | 17.3 | 18.3 | 21.6 | b12030 |
 | GLM 3.0-bit, 4 GPUs | 4x3090 4x16<br>EPYC 7B12 256G 4ch DDR4 74G/s | 88% | 1.3x | - | - | - | - | - | 24.7 | 31.5 | - | - | b11707+ |
-| Qwen3.8-27B IQ4_NL, dense | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | fits | 1.0x | - | 1.0x | 1.1x | - | - | 45.1 | 45.0 | - | - | earlier |
-| Qwen3.8-27B Q5_K_M with MTP (short prompt) | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | fits | 1.0x | - | - | - | - | - | 78.3 | 77.0 | - | - | earlier |
+| Qwen3.8-27B IQ4_NL<br>dense | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | fits | 1.0x | - | 1.0x | 1.1x | - | - | 45.1 | 45.0 | - | - | earlier |
+| Qwen3.8-27B Q5_K_M with MTP<br>(short prompt) | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | fits | 1.0x | - | - | - | - | - | 78.3 | 77.0 | - | - | earlier |
 | Qwen Next IQ1_M 55 GB | 2x3090 4x16+4x4 X570<br>3700X 125G 2ch DDR4-3200 44G/s | 87% | 1.0x (picks stock) | - | 1.0x | 1.0x | - | - | 69.1 | 68.3 | - | 40 | b12040 |
-| Qwen3.8-27B IQ3_S, dense, CPU only | no GPU<br>3600 A520 64G 2ch DDR4-3200 | 0% | 0.9x slower | 1.0x | - | - | - | - | 1.7 | 1.6 | 5.6 | 5.8 | b12030 |
+| Qwen3.8-27B IQ3_S<br>dense, CPU only | no GPU<br>3600 A520 64G 2ch DDR4-3200 | 0% | 0.9x slower | 1.0x | - | - | - | - | 1.7 | 1.6 | 5.6 | 5.8 | b12030 |
 | any model that fits | any | 100% | 1.0x (cache off) | 1.0x | - | - | - | - | same | same | same | same | any |
 
 Two cells are slower than stock and say so: prompt processing of MiMo on long prompts (0.7x) and generation of the CPU-only 27B IQ3_S (0.9x, 1.6 against 1.7 tokens/s).  
