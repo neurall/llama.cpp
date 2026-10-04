@@ -25,7 +25,8 @@ LABELS = {   # README model label -> file name stem in the run log
     # the 27B with MTP is left out: its stock and ours runs must both use --spec-type draft-mtp
 }
 MACHINES = {"pc1": "A", "pc3": "B", "pc2": "C"}
-FULL = {"A": "A 2x3090 128G", "B": "B 4060 32G", "C": "C CPU 64G"}   # machine cell text; rows are matched on its first word
+FULL = {"A": "2x3090 128G", "B": "4060 32G", "C": "CPU 64G"}   # machine cell text (no letter)
+LETTER = {v: k for k, v in FULL.items()}
 TESTS = {"short4": "game4", "long4": "edit4"}
 SHORT = OURS.removeprefix("release-")
 
@@ -92,7 +93,7 @@ for model, rows in groups:
     have, mach_above, have_m = {}, "", {}
     for k, l in enumerate(rows):
         c = [x.strip() for x in l.split("|")]
-        mach_above = c[2].split()[0] if c[2] else mach_above   # an empty machine cell continues the machine above
+        mach_above = LETTER.get(c[2], mach_above) if c[2] else mach_above   # an empty machine cell continues the machine above
         have_m[l] = mach_above
         if c[4] in TESTS:
             have[(mach_above, c[4])] = k
