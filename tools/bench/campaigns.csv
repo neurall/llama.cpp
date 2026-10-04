@@ -109,3 +109,6 @@ newtests,2026-10-04 13:49:37,"bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of
 newtests,2026-10-04 14:00:56,"bench /m/q/5/Qwen3.8-27B-MTP-Q5_K_M.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12128 variants default test edit4 n=4",,
 newtests,2026-10-04 14:03:28,"bench /m/m/3/MiMo-V2.6-Flash-RL-IQ3_XXS-00001-of-00008.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12128 variants default test edit4 n=4",,
 smoke-snap,2026-10-04 14:05:30,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds release-b12175 variants default test game4 n=1,,
+newtests,2026-10-04 14:13:02,"bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12178 variants default test game4 n=4",,
+newtests,2026-10-04 14:15:07,"bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12178 variants default test game4 n=4",,
+newtests,2026-10-04 14:25:18,"bench /m/q/4/Qwen3.8-27B-IQ4_NL.gguf builds stock-docker-836d57176,b11707-49fe4b756,release-b12178 variants default test game4 n=4",,
