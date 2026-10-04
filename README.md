@@ -29,10 +29,10 @@ Gain over stock llama.cpp, best first (t/s = generated tokens per second on top,
 | qwen36 | 3600 A520 64G | 0%<br>CPU only | 6.3<br>10.1 | 11.1<br>34.1 | *1.8x*<br>*3.7x* | -<br>- | b12040 |
 | Qwen3.8-Flash-<br>Next-UD-IQ4_XS | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 55% | 27.7<br>500 | 46.5<br>538 | *2.0x*<br>*1.5x* | *1.6x*<br>*1.1x* | earlier |
 | Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>2.2k | 31.3<br>599 | 51.1<br>792 | *1.0x*<br>*1.0x* | *1.6x*<br>*1.3x* | earlier |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>EPYC 256G 74G/s | 66%<br>3 of 4 | 20.1<br>- | 32.6<br>- | *1.6x*<br>- | -<br>- | b11707+ |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 66%<br>3 of 4 | 20.1<br>- | 32.6<br>- | *1.6x*<br>- | -<br>- | b11707+ |
 | Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ3_S | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 58% | 43.9<br>- | 57.1<br>- | 1.3x<br>1.1x | -<br>- | b11707 |
 | Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 4060 8G 4/8<br>8945HS 32G 48G/s | 13% | 13.5<br>18.3 | 17.3<br>21.6 | *1.3x*<br>*1.2x* | -<br>- | b12030 |
-| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>EPYC 256G 74G/s | 88%<br>4 GPUs | 24.7<br>- | 31.5<br>- | *1.3x*<br>- | -<br>- | b11707+ |
+| GLM-5.3-Flash-<br>GSQ-RCO-3.0bit | 4x3090 4/16<br>7B12 256G 74G/s | 88%<br>4 GPUs | 24.7<br>- | 31.5<br>- | *1.3x*<br>- | -<br>- | b11707+ |
 | Qwen3.8-27B-IQ4_NL | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>dense | 45.1<br>- | 45.0<br>- | 1.0x<br>1.1x | *1.0x*<br>*1.0x* | earlier |
 | Qwen3.8-27B-MTP-Q5_K_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | fits<br>short | 78.3<br>- | 77.0<br>- | *1.0x*<br>*1.0x* | -<br>- | earlier |
 | Qwen3.8-Flash-Next-<br>GSQ-RCO-IQ1_M | 2x3090 4/16+4 X570<br>3700X 125G 44G/s | 87% | 69.1<br>- | 68.3<br>40 | 1.0x<br>1.0x | -<br>- | b12040 |
