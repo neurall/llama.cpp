@@ -55,3 +55,28 @@ for arm in ("GW16", "GW4", "GW0", "FRESH16"):
     for name, x, y in pairs:
         j, t, h, st = cmp(x, y)
         print(f"{arm:8} {name:26} {j:11.2f} {t:12.2f} {h:9.2f} {st:6.2f}")
+
+
+# stickiness: with the engine's score (window + 16 x lifetime / max, window = the picks of the last 64 tokens, top-8 of every token) and a cache of a third of the experts,
+# which experts does a phase need that the score keeps out (ideal = the cache by the phase's own use, actual = the cache by the score with the lifetime counts of the state at the phase end)?
+# blocked = share of the ideal slots held by a different expert; stale kept = share of the actual slots held by experts the phase did not use at all.
+def sticky(use, life, slots_frac=1 / 3, window=64, top_k=8, k=16.0):
+    ls = sorted(set(use) & set(life))
+    blk = stale = 0.0
+    for l in ls:
+        n = len(use[l]); slots = max(1, round(n * slots_frac)); tu = sum(use[l]) or 1; mx = max(life[l]) or 1
+        win = [window * top_k * u / tu for u in use[l]]
+        ideal = set(sorted(range(n), key=lambda e: -win[e])[:slots])
+        actual = set(sorted(range(n), key=lambda e: -(win[e] + k * life[l][e] / mx))[:slots])
+        blk += len(ideal - actual) / slots
+        stale += sum(1 for e in actual if use[l][e] == 0) / slots
+    return blk / len(ls), stale / len(ls)
+
+
+print(f"\n{'arm':8} {'phase (state kept from before)':32} {'blocked':>8} {'stale kept':>10}")
+for arm in ("GW16", "GW4", "GW0"):
+    S = {kk: load(f) for kk in "ABC" if os.path.exists(f := os.path.join(D, f"olmoe-{arm}-end{kk}.ini"))}
+    for name, a, b in (("B poetry after A", "B", "A"), ("C python after B", "C", "B")):
+        if a in S and b in S:
+            bl, st = sticky(sub(S[a], S[b]), S[a], k={"GW16": 16.0, "GW4": 4.0, "GW0": 0.0}[arm])
+            print(f"{arm:8} {name:32} {bl:8.2f} {st:10.2f}")
