@@ -19,6 +19,7 @@ for r in csv.DictReader(open(hist)):
     if not tps or r["ok"] == "0":
         continue
     stem = re.sub(r"-0000\d-of-0000\d", "", r["model"].split(" ")[0]).removesuffix(".gguf")
+    stem = "Qwen3.6-35B-A3B-GSQ-hybrid" if stem == "qwen36" else stem   # the file was renamed to its original name
     b = r["build"]
     a = r["args"] + " " + r["env"]
     off = any(x in a for x in ("cache 0", "--fork off", "-at off", "cache0", "slots=0"))
