@@ -189,11 +189,17 @@ def kill_leftovers():
         time.sleep(1)
 
 
+STOP_WAIT = int(os.environ.get("PERF_STOP_WAIT", "300"))   # seconds a server gets to exit after SIGTERM before it is killed
+
+
 def stop(p):
+    """The engine writes what it learned (placement records, hot experts) when it exits, and tearing down 100+ GiB of pinned weights takes tens of seconds:
+    a kill after 2 s lost all of it for the big models (GLM and MiMo never recorded a placement and ran on stock placement for ever)."""
     p.terminate()
     try:
-        p.wait(timeout=2)
+        p.wait(timeout=STOP_WAIT)
     except subprocess.TimeoutExpired:
+        print(f"server did not exit within {STOP_WAIT} s after SIGTERM: killed, its state is lost", flush=True)
         p.kill()
         p.wait()
 
