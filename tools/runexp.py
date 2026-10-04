@@ -380,14 +380,14 @@ def command_for(wl, setup, arm, mpath):
     if wl.get("log_verbosity") and tool in ("cli", "completion"):   # engine decisions (ubatch, threads, placement) are info messages
         a += ["--log-verbosity", str(wl["log_verbosity"])]
     a += [str(x) for x in wl.get("extra", [])] + [str(x) for x in arm.get("args", [])]
+    if arm.get("state") and arm.get("origin", "fork") != "stock":   # the fork reads --moe state=FILE (the LLAMA_MOE_STATE variable is gone)
+        a += ["--moe", "state=" + arm["state"] + (".fresh" if arm.get("fresh_state") else "")]
     cmd = [exe] + a
     if setup.get("time", True):
         if os.path.exists("/usr/bin/time"):   # not on every box (pc2): then no rss or page-fault columns
             cmd = ["/usr/bin/time", "-v"] + cmd
     cmd = ["timeout", str(wl.get("timeout", 1500))] + cmd
     env = {k: str(v) for k, v in arm.get("env", {}).items()}
-    if arm.get("state"):   # a state file of its own: arms must not learn from each other's runs
-        env["LLAMA_MOE_STATE"] = arm["state"]
     if env:
         cmd = ["env"] + [f"{k}={v}" for k, v in env.items()] + cmd
     if setup.get("mem_limit"):
@@ -396,6 +396,8 @@ def command_for(wl, setup, arm, mpath):
 
 
 def one_run(spec, wl, setup, arm, mname, mpath, rnd, base_env, lim, dry, state_file):
+    if arm.get("fresh_state") and arm.get("state") and not dry and os.path.exists(arm["state"] + ".fresh"):
+        os.remove(arm["state"] + ".fresh")   # fresh_state: every start begins with an empty state file of the arm's own (never the user's moe-state.ini)
     cmd = command_for(wl, setup, arm, mpath)
     label = f"{spec['name']} {mname} r{rnd + 1} {arm['name']}"
     if dry:
