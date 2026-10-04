@@ -226,7 +226,11 @@ def cache_stats(log):
     return d
 
 
+SNAP_DIR = os.path.join(DATA, "state-snapshots")   # --moe snap=1 of the builds that have it: the model's state section after every run, tracked in git
+
+
 def server_start(build, env, args):
+    env = {**env, "LLAMA_MOE_SNAP": "1", "LLAMA_MOE_SNAP_DIR": SNAP_DIR}
     logf = f"/tmp/perf-{build}.log"
     with open(logf, "w") as lf:
         p = subprocess.Popen([os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
@@ -279,6 +283,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
            "LLAMA_MOE_CACHE_STATSLOG": "32", "LLAMA_MOE_STATSLOG": f"/tmp/perf-{build}-stats.txt",  # builds with statslog write a text line per 32 steps (moe-stats.csv)
            "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
     row = {}
+    env = {**env, "LLAMA_MOE_SNAP": "1", "LLAMA_MOE_SNAP_DIR": SNAP_DIR}
     if test in ("ppl", "ppl3"):
         nb = "1" if test == "ppl" else "3"
         args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", "2", "-b", nb, "-ub", nb]
@@ -384,33 +389,6 @@ def prep_model():
 _PL = {}
 
 
-def snapshot_state(ts, build, model, hw):
-    """the model's own section of the learned state after the run, as tools/bench/state-snapshots/<date time>-<build>-<model>.ini (local runs only, tracked in git: research data). Never raises into a run."""
-    try:
-        if hw != "pc1" and hw != _PL.get("local"):
-            return
-        src = os.environ.get("LLAMA_MOE_STATE") or os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "llama.cpp", "moe-state.ini")
-        if not os.path.exists(src):
-            return
-        fname = os.path.basename(str(model).split(" ")[0]).lower()
-        sect, on = [], False
-        for line in open(src, errors="replace"):
-            if line.startswith("["):
-                on = line[1:].lower().startswith(fname + " ") or line[1:].lower().startswith(re.sub(r"-0000.-of-0000.", "", fname).removesuffix(".gguf") + " ")
-            if on:
-                sect.append(line)
-        if not sect:
-            return
-        d = os.path.join(DATA, "state-snapshots")
-        os.makedirs(d, exist_ok=True)
-        tag = lambda x: re.sub(r"[^A-Za-z0-9._-]+", "_", str(x))[:40]
-        stem = re.sub(r"-0000.-of-0000.|[.]gguf", "", str(model).split(" ")[0])
-        with open(os.path.join(d, f"{tag(str(ts).replace(':', ''))}-{tag(build)}-{tag(stem)}.ini"), "w") as f:   # always saved; the run's date and time keep the names unique
-            f.writelines(sect)
-    except Exception as e:
-        print("state snapshot:", e, file=sys.stderr)
-
-
 def power_limits(hw):
     """GPU power limits in W of this host, like 350+370 (PERF_PL overrides); only for rows of the local machine, remote ones stay empty."""
     if "pl" not in _PL:
@@ -499,7 +477,6 @@ def store(row, build, test, rec, note, hw, vstr):
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=power_limits(hw), proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
         branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in ("pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
-    snapshot_state(row["ts"], build, row["model"], hw)
 
 
 def show_row(row, build, test):
