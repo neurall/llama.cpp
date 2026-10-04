@@ -101,6 +101,7 @@ RUN_COLS = ["ts", "commit", "bno", "tps", "pp", "hit", "model", "args", "test", 
                                           # written by the build script; "commit" then is that commit, +patch when dirty). A run's statslog: section of stats.ini, row of stats.csv (ts + build)
 import runexp
 RUN_COLS += runexp.EXP_COLS  # columns of `run.py exp` rows, empty for the other runs
+RUN_COLS += ["chipset", "cpu", "mem_gb", "mem", "mem_peak_gbs", "pcie", "pcie_peak_gbs"]  # platform of the machine (machines.csv: chipset, cpu_short, mem_gb, mem_short, mem_gbs, pcie_short, pcie_gbs); *_peak_gbs are measured GB/s peaks of the machine (ddr_gbs, pcie_gbs are what this run used), empty if not measured
 CAMP_COLS = ["name", "start", "note", "conclusion", "why"]
 MACH_COLS = ["id", "ssh", "root", "kind", "cpu", "ram_gb", "ram_type", "gpus", "links", "os", "hostname", "board", "storage",
              "mem_detail", "gpu_detail", "sw", "note"]
@@ -126,6 +127,15 @@ def csv_append(name, cols, d):
         if head != cols and cols[:len(head)] == head:  # new columns go at the end: only the header line is rewritten, old rows stay as they are
             lines = open(path).read().split("\n", 1)
             open(path, "w").write(",".join(cols) + "\n" + (lines[1] if len(lines) > 1 else ""))
+        elif head != cols:  # columns were inserted in the middle: old rows are remapped by name (a row as wide as cols is already in the new order)
+            with open(path, newline="") as f:
+                rows = list(csv.reader(f))[1:]
+            ob = io.StringIO()
+            ow = csv.writer(ob, lineterminator="\n")
+            ow.writerow(cols)
+            for r in rows:
+                ow.writerow(r if len(r) == len(cols) else [dict(zip(head, r)).get(k, "") for k in cols])
+            open(path, "w").write(ob.getvalue())
     with open(path, "a") as f:
         f.write(buf.getvalue())  # one write per line: concurrent benches (several machines, one host) do not interleave
 
@@ -451,7 +461,7 @@ def store(row, build, test, rec, note, hw, vstr):
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=power_limits(hw), proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
-        branch=bi.get("branch", ""), patch=bi.get("patch", "")))
+        branch=bi.get("branch", ""), patch=bi.get("patch", ""), **platform(hw)))
 
 
 def show_row(row, build, test):
@@ -550,6 +560,11 @@ def set_overrides(a):
 # ---- machines: machines.csv, one row per machine (id, ssh, root, kind). pc1 is the local host; others run llama-cli over ssh ----
 def machines():
     return {r["id"]: r for r in csv_load("machines.csv")}
+
+
+def platform(hw):
+    m = machines().get(hw) or {}
+    return {k: m.get(src, "") for k, src in (("chipset", "chipset"), ("cpu", "cpu_short"), ("mem_gb", "mem_gb"), ("mem", "mem_short"), ("mem_peak_gbs", "mem_gbs"), ("pcie", "pcie_short"), ("pcie_peak_gbs", "pcie_gbs"))}
 
 
 def machine(mid):
