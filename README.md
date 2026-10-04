@@ -60,6 +60,11 @@ D numbers are from one session on a claud rented 4 gpu box (raw logs not kept, n
 Older rows: GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
 [`tools/bench/run-history.csv`](tools/bench/run-history.csv).  
 
+**Methodology: a coding session, not one repeated prompt.** A model run on the same prompt over and over at temperature 0 routes to the same experts every time, which flatters any expert cache. So the stricter test (`python3 tools/run.py bench -t edit4`) feeds one long source file (about 2700 tokens, `tools/bench/src_3k.cpp`) with four different edit instructions, one per run:  
+"add a function that counts the lines", "delete the code that is never used", "add a short comment above every function", "rename the longest function and update its callers" (128 tokens generated, temperature 0).  
+Every build gets the same instruction at the same repetition, builds alternate in order, each build has one discarded warm-up run with its own separate instruction, and the table reports **stock's best of the four runs against ours best of the four**.  
+The cells of the table above were taken with the simpler repeated-prompt test (the 4th run of the same prompt) and are being repeated with this one; a row says which test it used once it has been re-measured. The repeated-prompt test is still what catches a stuck placement decision fastest, so both stay.  
+
 **Reproduce and check these numbers.** Every run behind the table (date, commit, build, machine, model, command line, speed) is a row in [`tools/bench/run-history.csv`](tools/bench/run-history.csv), failed and cold runs included.  
 `tools/experiments/release-gate/readme-rerun.sh <fork build> <stock build>` repeats the cells (one discarded run, then the recorded runs, builds in alternating order), `tools/experiments/release-gate/readme-compare.py` prints them next to the numbers above, and `python3 tools/run.py bench --help` runs any single cell. The table is sorted by gain, not by how good a row looks, and the slow rows stay in.  
 
