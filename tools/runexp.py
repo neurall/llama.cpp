@@ -313,7 +313,7 @@ def run_exp(spec_path, rs, dry=False, only=None, rounds=None):
         if st.get("reset", "start") == "start" and os.path.exists(state_file) and not dry:
             os.remove(state_file)
     for a in arms:
-        if a.get("state") and os.path.exists(a["state"]) and not dry:
+        if a.get("state") and os.path.exists(a["state"]) and not dry and a.get("keep_state") != "1":   # keep_state = 1: a second phase continues the arm's learned state
             os.remove(a["state"])
     holder = None
     if setup.get("hold_vram") and not dry:
