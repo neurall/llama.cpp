@@ -267,48 +267,43 @@ bool moe_embsnap_enabled() {
 }
 
 void moe_embsnap_set(const float * emb, int n) {
-    // the whole embedding, 4 bits per float (absmax scaled, 1 hex character each); above 3800 floats neighbours are averaged so the path stays under PATH_MAX
+    // the whole embedding, 1 byte per float (absmax scaled, 2 hex characters each)
     if (n <= 0) { return; }
-    const int k = (n + 3799)/3800, m = (n + k - 1)/k;
-    std::vector<float> b(m, 0.0f);
     float mx = 1e-20f;
-    for (int i = 0; i < m; ++i) {
-        double a = 0;
-        int c = 0;
-        for (int j = i*k; j < std::min(n, (i + 1)*k); ++j, ++c) { a += emb[j]; }
-        b[i] = (float) (a/c);
-        mx = std::max(mx, std::fabs(b[i]));
-    }
+    for (int i = 0; i < n; ++i) { mx = std::max(mx, std::fabs(emb[i])); }
     std::string hex;
-    for (int i = 0; i < m; ++i) {
-        hex += "0123456789abcdef"[std::lround(b[i]/mx*7.0f) + 8];   // 1..15
+    hex.reserve((size_t) n*2);
+    char t[4];
+    for (int i = 0; i < n; ++i) {
+        snprintf(t, sizeof t, "%02x", (unsigned) (uint8_t) (int8_t) std::lround(emb[i]/mx*127.0f));
+        hex += t;
     }
     std::lock_guard<std::mutex> lk(g_mtx);
     g_embsnap_hex = hex;
 }
 
 void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & hot) {
-    std::string hex;
+    std::string hex, model;
     {
         std::lock_guard<std::mutex> lk(g_mtx);
         hex = g_embsnap_hex;
+        model = g_geom_section;
     }
     if (hex.empty() || hot.empty()) { return; }
-    const char * ed = getenv("LLAMA_MOE_EMBHOT");   // a local subdirectory of the working directory (embhot), or this path
+    const char * ed = getenv("LLAMA_MOE_EMBHOT");   // the local subdirectory embhot of the working directory, or this directory
     const std::filesystem::path dir = ed && ed[0] ? ed : "embhot";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    size_t nm = 255;   // the longest file or directory name this file system takes (ecryptfs: 143), the last piece of the path is the file
-#ifndef _WIN32
-    const long pc = pathconf(dir.c_str(), _PC_NAME_MAX);
-    if (pc > 16) { nm = std::min<size_t>(255, (size_t) pc); }
-#endif
-    std::filesystem::path leaf = dir;
-    for (size_t o = 0; o < hex.size(); o += nm) { leaf /= hex.substr(o, nm); }
-    std::filesystem::create_directories(leaf.parent_path(), ec);
-    std::ofstream f(leaf, std::ios::app);   // collected over time: every run appends a block, nothing is overwritten
-    std::string model;
-    { std::lock_guard<std::mutex> lk(g_mtx); model = g_geom_section; }
-    f << "# model [" << model << "] time " << (long long) time(nullptr) << ": hot experts (this run's counts) of a prompt whose last layer embedding is this file name (4 bits per float, 1 hex character each, scaled by the largest)\n";
-    for (const auto & p : hot) { f << p.first << " = " << p.second << "\n"; }
+    const std::filesystem::path file = dir / "embhot.csv";
+    const bool fresh = !std::filesystem::exists(file, ec) || std::filesystem::file_size(file, ec) == 0;
+    // one line per run, built whole and appended with one write: embhex,hots,model. hots = layer:count count ...;layer:... (no commas in any field)
+    std::string line = fresh ? "embhex,hots,model\n" : "";
+    std::string hots;
+    for (const auto & p : hot) {
+        hots += (hots.empty() ? "" : ";") + p.first.substr(p.first.find('.') + 1) + ":" + p.second;
+    }
+    for (char & c : model) { if (c == ',' || c == '\n') { c = '_'; } }
+    line += hex + "," + hots + "," + model + "\n";
+    std::ofstream f(file, std::ios::app | std::ios::binary);
+    f.write(line.data(), (std::streamsize) line.size());
 }
