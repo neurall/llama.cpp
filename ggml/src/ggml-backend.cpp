@@ -2026,84 +2026,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
     }
 
-    // GGML_SCHED_PRELAUNCH=1 (async graph walker): the GPU split that follows a host expert-matmul split is queued
-    // before the host starts computing, behind a device-side wait on a host flag; its inputs (the host split's
-    // results, pinned memory) are copied on the GPU's stream after the wait. When the host finishes it only sets the
-    // flag: no sync, copy or launch on the critical path. Needs a backend with host flags (CUDA); others fall back.
-    typedef uint32_t * (*flags_alloc_t)(int);
-    typedef bool       (*wait_flag_t)(ggml_backend_t, const uint32_t *, uint32_t);
-    // default off: on a cold start (Windows, first request) a host split can outlast the device-side wait's safety timeout,
-    // the queued GPU split then runs on stale input and the first answer is empty; +0.6% on GLM is not worth that
-    static const bool       prelaunch_env = getenv("GGML_SCHED_PRELAUNCH") && atoi(getenv("GGML_SCHED_PRELAUNCH")) != 0;
-    static wait_flag_t      wait_flag     = nullptr;
-    static volatile uint32_t * pl_flag    = nullptr;
-    static uint32_t         pl_seq        = 0;
-    typedef bool       (*signal_flag_t)(ggml_backend_t, uint32_t *, uint32_t);
-    static signal_flag_t    signal_flag   = nullptr;
-    static uint32_t *       d2h_flags     = nullptr; // one per backend: GPU writes it after a CPU split's input fetches
-    static uint32_t         d2h_seq       = 0;
-    static bool             pl_init       = false;
-    if (prelaunch_env && !pl_init) {
-        pl_init = true;
-        // the registry of the first GPU backend (ggml-base can't call the registry lookup in ggml)
-        ggml_backend_reg_t reg = nullptr;
-        for (int b = 0; b < sched->n_backends && !reg; b++) {
-            ggml_backend_dev_t d = ggml_backend_get_device(sched->backends[b]);
-            if (d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) {
-                reg = ggml_backend_dev_backend_reg(d);
-            }
-        }
-        if (reg) {
-            auto fa = (flags_alloc_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_host_flags_alloc");
-            wait_flag = (wait_flag_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_wait_host_flag");
-            pl_flag   = fa ? fa(2) : nullptr; // [0] release counter, [1] device-side wait timeouts
-            signal_flag = (signal_flag_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_signal_host_flag");
-            d2h_flags   = fa ? fa(GGML_SCHED_MAX_BACKENDS) : nullptr;
-        }
-        if (getenv("GGML_SCHED_PRELAUNCH")) { // quiet by default (CPU-only / non-CUDA setups just don't use it)
-            GGML_LOG_WARN("%s: GGML_SCHED_PRELAUNCH %s\n", __func__, pl_flag && wait_flag ? "on" : "unavailable (no host flags), off");
-        }
-    }
-    const bool prelaunch = prelaunch_env && pl_flag && wait_flag && !sched->callback_eval;
-    int prelaunched = -1; // split already queued behind the flag
-    // GGML_SCHED_INPUT_EVENTS=1 (on with PRELAUNCH): per GPU backend, an event recorded after a split's input copies;
-    // a host split right after a GPU split that read host memory waits for the copies only, not the whole GPU split
-    static const bool inp_events_on = prelaunch_env ||
-            (getenv("GGML_SCHED_INPUT_EVENTS") && atoi(getenv("GGML_SCHED_INPUT_EVENTS")) != 0);
-    static ggml_backend_event_t inp_event[GGML_SCHED_MAX_BACKENDS] = {};
-    static bool inp_event_tried[GGML_SCHED_MAX_BACKENDS] = {};
-    auto can_prelaunch = [&](int id) {
-        if (id >= sched->n_splits || lookahead[id].slot != -1) {
-            return false;
-        }
-        const struct ggml_backend_sched_split * s = &splits[id];
-        ggml_backend_t be = sched->backends[s->backend_id];
-        if (ggml_backend_dev_type(ggml_backend_get_device(be)) != GGML_BACKEND_DEVICE_TYPE_GPU || s->graph.n_nodes == 0) {
-            return false;
-        }
-        for (int j = 0; j < s->n_inputs; j++) {
-            const ggml_tensor * in = s->inputs[j];
-            ggml_backend_buffer_t b = in->view_src ? in->view_src->buffer : in->buffer;
-            const ggml_tensor * cp = tensor_copy(s->inputs[j], s->backend_id, sched->cur_copy);
-            // only pinned host inputs (read by the GPU at copy time, after the wait) and plain device copies
-            if ((in->flags & GGML_TENSOR_FLAG_INPUT) || !b || !ggml_backend_buffer_is_host(b) ||
-                    strstr(ggml_backend_buft_name(ggml_backend_buffer_get_type(b)), "_Host") == nullptr ||
-                    ggml_backend_buffer_get_usage(b) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS ||
-                    !ggml_is_contiguous(in) || !ggml_is_contiguous(cp) || !cp->buffer) {
-                return false;
-            }
-        }
-        return true;
-    };
-
     for (int split_id = 0; split_id < sched->n_splits; split_id++) {
         struct ggml_backend_sched_split * split = &splits[split_id];
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
-        if (split_id == prelaunched) {
-            prev_backend_id = split_backend_id; // queued before the previous host split, nothing left to do
-            continue;
-        }
         const int64_t p_t0 = prof ? ggml_time_us() : 0;
         const bool    p_is_cpu = prof && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU;
         int64_t       p_t1 = 0;
@@ -2150,11 +2076,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         };
         if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id &&
                 !(is_gpu(sched->backends[prev_backend_id]) && (is_gpu(split_backend) || !prev_reads_host()))) {
-            if (inp_events_on && inp_event[prev_backend_id] && !is_gpu(split_backend)) {
-                // only the GPU split's host reads (its input copies) matter here: wait for those, not for its compute,
-                // so host work that follows (e.g. deferred experts) overlaps the GPU split
-                ggml_backend_event_synchronize(inp_event[prev_backend_id]);
-            } else if (sched->events[prev_backend_id][sched->cur_copy] != NULL) {
+            if (sched->events[prev_backend_id][sched->cur_copy] != NULL) {
                 ggml_backend_event_synchronize(sched->events[prev_backend_id][sched->cur_copy]);
             } else {
                 ggml_backend_synchronize(sched->backends[prev_backend_id]);
@@ -2182,17 +2104,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 }
                 ggml_backend_tensor_copy(input, input_cpy);
             } else {
-                // GGML_SCHED_H2D_ASYNC=1: host input -> GPU split, queued on the split's stream (see below); the stream
-                // orders the copy after the split backend's earlier use of input_cpy, so no host wait is needed
-                static const bool h2d_async = getenv("GGML_SCHED_H2D_ASYNC") && atoi(getenv("GGML_SCHED_H2D_ASYNC")) != 0;
-                const bool h2d_fast = h2d_async && input->buffer && ggml_backend_buffer_is_host(input->buffer) && input_cpy->buffer &&
-                        !ggml_backend_buffer_is_host(input_cpy->buffer) && split_backend->iface.set_tensor_async &&
-                        ggml_backend_buffer_get_usage(input->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
-                        ggml_is_contiguous(input) && ggml_is_contiguous(input_cpy);
                 // wait for the split backend to finish using the input before overwriting it
-                if (h2d_fast) {
-                    // nothing: stream-ordered
-                } else if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+                if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
                     ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
                 } else {
                     ggml_backend_synchronize(split_backend);
@@ -2392,11 +2305,6 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         if (std::find(d2h_pending.begin(), d2h_pending.end(), input_backend) == d2h_pending.end()) {
                             d2h_pending.push_back(input_backend);
                         }
-                    } else if (h2d_fast) {
-                        // GGML_SCHED_H2D_ASYNC=1: a GPU split's input from host memory (a CPU split's result) is queued on the
-                        // split backend's stream, ordered before its kernels, instead of two syncs + a blocking copy. The
-                        // host data stays valid: the next split that writes host memory syncs on this GPU first.
-                        ggml_backend_tensor_set_async(split_backend, input_cpy, input->data, 0, ggml_nbytes(input));
                     } else if (!split_backend->iface.cpy_tensor_async || !split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
                         ggml_backend_synchronize(input_backend);
                         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
@@ -2410,48 +2318,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
 
-        if (prelaunch && signal_flag && d2h_flags && !d2h_pending.empty()) {
-            // GGML_SCHED_PRELAUNCH: the GPU raises a host flag after the fetches; poll it instead of a stream sync
-            const uint32_t want = ++d2h_seq;
-            std::vector<int> spin;
-            for (size_t i = 0; i < d2h_pending.size(); i++) {
-                if (signal_flag(d2h_pending[i], &d2h_flags[i], want)) {
-                    spin.push_back((int) i);
-                } else {
-                    ggml_backend_synchronize(d2h_pending[i]);
-                }
-            }
-            for (int i : spin) {
-                const int64_t t0 = ggml_time_us();
-                while (((volatile uint32_t *) d2h_flags)[i] < want) {
-                    if (ggml_time_us() - t0 > 2000) { // long GPU phase: stop burning a core
-                        ggml_backend_synchronize(d2h_pending[i]);
-                        break;
-                    }
-                }
-                std::atomic_thread_fence(std::memory_order_acquire);
-            }
-        } else {
-            for (ggml_backend_t b : d2h_pending) {
-                ggml_backend_synchronize(b);
-            }
+        for (ggml_backend_t b : d2h_pending) {
+            ggml_backend_synchronize(b);
         }
         d2h_pending.clear();
-
-        if (inp_events_on && is_gpu(split_backend) && split_backend_id < GGML_SCHED_MAX_BACKENDS) {
-            bool host_in = false;
-            for (int j = 0; j < split->n_inputs && !host_in; j++) {
-                ggml_backend_buffer_t b = split->inputs[j]->view_src ? split->inputs[j]->view_src->buffer : split->inputs[j]->buffer;
-                host_in = !b || ggml_backend_buffer_is_host(b);
-            }
-            if (!inp_event_tried[split_backend_id]) {
-                inp_event_tried[split_backend_id] = true;
-                inp_event[split_backend_id] = ggml_backend_event_new(ggml_backend_get_device(split_backend));
-            }
-            if (host_in && inp_event[split_backend_id]) {
-                ggml_backend_event_record(inp_event[split_backend_id], split_backend);
-            }
-        }
 
         if (prof) {
             p_t1 = ggml_time_us();
@@ -2471,51 +2341,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             if (g_split_cb && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
                 g_split_cb(split_backend, g_split_ud);
             }
-            bool pl_now = false;
-            if (prelaunch && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU) {
-                bool mmid = false;
-                for (int j = 0; j < split->graph.n_nodes && !mmid; j++) {
-                    mmid = split->graph.nodes[j]->op == GGML_OP_MUL_MAT_ID;
-                }
-                // decode-size host runs only (few tokens): prompt batches can block the host inside the split
-                bool small = mmid;
-                for (int j = 0; j < split->graph.n_nodes && small; j++) {
-                    const ggml_tensor * t = split->graph.nodes[j];
-                    small = t->op != GGML_OP_MUL_MAT_ID || t->src[2]->ne[1] <= 8;
-                }
-                if (small && can_prelaunch(split_id + 1)) {
-                    struct ggml_backend_sched_split * nx = &splits[split_id + 1];
-                    ggml_backend_t nbe = sched->backends[nx->backend_id];
-                    if (wait_flag(nbe, (const uint32_t *) pl_flag, pl_seq + 1)) {
-                        for (int j = 0; j < nx->n_inputs; j++) {
-                            ggml_tensor * in = nx->inputs[j];
-                            ggml_backend_tensor_set_async(nbe, tensor_copy(in, nx->backend_id, sched->cur_copy), in->data, 0, ggml_nbytes(in));
-                        }
-                        ggml_backend_graph_compute_async(nbe, &nx->graph);
-                        if (sched->events[nx->backend_id][sched->cur_copy] != NULL) {
-                            ggml_backend_event_record(sched->events[nx->backend_id][sched->cur_copy], nbe);
-                        }
-                        prelaunched = split_id + 1;
-                        pl_now = true;
-                        static int n_logged = 0;
-                        if (n_logged < 3 && getenv("GGML_SCHED_PRELAUNCH")) {
-                            n_logged++;
-                            GGML_LOG_WARN("%s: prelaunched split %d (%s, %d nodes) behind host split %d\n", __func__, split_id + 1,
-                                    ggml_backend_name(nbe), nx->graph.n_nodes, split_id);
-                        }
-                    }
-                }
-            }
             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
-            if (pl_now) {
-                // the queued split hasn't run yet (it waits for the flag): its pre-split callback (MoE cache table
-                // publish/flush) goes here, where it would have run, then release it (set even on failure: no GPU hang)
-                if (g_split_cb) {
-                    g_split_cb(sched->backends[splits[prelaunched].backend_id], g_split_ud);
-                }
-                std::atomic_thread_fence(std::memory_order_seq_cst);
-                *pl_flag = ++pl_seq;
-            }
             if (split_prefetch_slot != -1) {
                 // the kernels have captured the slot address at launch, safe to restore
                 ggml_backend_event_record(sched->prefetch_free[split_prefetch_slot], split_backend);
@@ -2588,13 +2414,6 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         prev_backend_id = split_backend_id;
     }
 
-    if (pl_flag) {
-        static uint32_t pl_timeouts = 0;
-        if (pl_flag[1] != pl_timeouts) {
-            pl_timeouts = pl_flag[1];
-            GGML_LOG_WARN("%s: GGML_SCHED_PRELAUNCH: %u device-side waits timed out (a queued split ran before its host input)\n", __func__, pl_timeouts);
-        }
-    }
     if (tl_on && !tl.empty()) {
         const int64_t b = tl[0].t0;
         fprintf(stderr, "sched-timeline: %zu splits, graph %.2f ms (start, +barrier, +inputs, +launch/compute us; backend nodes inputs first..last)\n",
@@ -2695,11 +2514,7 @@ ggml_backend_sched_t ggml_backend_sched_new(
         sched->bufts[b] = bufts ? bufts[b] : ggml_backend_get_default_buffer_type(backends[b]);
         GGML_ASSERT(ggml_backend_supports_buft(backends[b], sched->bufts[b]));
 
-        // GGML_SCHED_EVENTS=1: events also without pipeline copies, so "wait until the split backend is done with
-        // this input" is a stream wait instead of a host synchronize; with several GPUs driven by one thread a host
-        // sync on one GPU keeps the other GPU from getting new work (2-GPU prefill: 1% overlap, 46k syncs = 121 s)
-        static const bool events_always = getenv("GGML_SCHED_EVENTS") && atoi(getenv("GGML_SCHED_EVENTS")) != 0;
-        if (sched->n_copies > 1 || events_always) {
+        if (sched->n_copies > 1) {
             for (int c = 0; c < sched->n_copies; c++) {
                 sched->events[b][c] = ggml_backend_event_new(backends[b]->device);
             }
