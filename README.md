@@ -32,7 +32,7 @@ GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh ups
 | **MiMo** IQ3_XXS 132G | A | chat | 4.6 | **10.9** | - | - | **2.4x** | - | rc fd4c3d2d3 |
 |  |  | 12k prompt | 4.2 | **9.1** | 156 | 112 | **2.2x** | 0.7x | b11509 |
 | **GLM** 3.5-bit 137G | A | tetris | 6.9 | **15.1** | - | - | **2.2x** | - | b11707 |
-| **GLM** 3.0-bit 117G | A | short4 | 12.6 | **27.0** | 11 | 11 | **2.1x** | 1.0x | b12209 |
+| **GLM** 3.0-bit 117G | A | short4 | 12.6 | **27.0** | 11 | 11 | **2.2x** | 1.0x | b12209 |
 | **Qwen3.6** Q2_0 11G | B | tetris | 29.2 | **59.3** | - | - | **2.0x** | - | earlier |
 |  | C | tetris, CPU only | 6.3 | **11.3** | - | - | **1.8x** | - | earlier |
 | **Qwen Next** IQ4_XS 88G | A | short4 | 31.2 | **48.9** | 18 | **23** | **1.6x** | 1.3x | b12209 |
