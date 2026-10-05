@@ -17,6 +17,8 @@ Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.
 Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.
 GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a (no discarded run before it); the other rows are hot runs of earlier builds.
 
+Stock side = upstream llama.cpp builds `def4d406a` (the three rows above), `05af0d2b1`, `b11041-4fea119` and `836d57176` (docker build) for the other rows, `b5cf8ce02` (Windows) on the laptop; every run is recorded with its stock build in the run log (`tools/runs.db`, branch `runs-db`). Some older stock numbers (MiMo chat, GLM 3.5-bit, IQ3_S) were measured before the run log existed and cannot be traced to a build there.
+
 | model (size) | machine | test | upstream | this fork | |
 |---|---|---|---|---|---|
 | **GLM-5.3-Flash** 3.0-bit (106 GB) | A | short chat, decode | 11.9 | **22.4** | **1.9x** |
