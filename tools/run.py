@@ -655,12 +655,41 @@ def save_routing_output(row, build):
         open(fs[-1][:-len(".routing")] + ".output.txt", "w").write(text)
 
 
+STOCK_FITT = os.path.join(PROMPTS, "stock-fitt.csv")   # model,hw,fitt_mib,ts: the smallest -fitt (fit target, MiB left free per GPU) found to start the stock build on this model and machine
+FITT_LADDER = [2048, 3072, 4608, 6144, 8192]            # tried in this order, only when upstream's default fit target cannot start the model (last resort)
+
+
+def stock_fitt_get(hw):
+    try:
+        for r in csv.DictReader(open(STOCK_FITT)):
+            if r["model"] == os.path.basename(MODEL) and r["hw"] == hw:
+                return int(r["fitt_mib"])
+    except OSError:
+        pass
+    return None
+
+
+def stock_fitt_put(hw, v):
+    new = not os.path.exists(STOCK_FITT)
+    with open(STOCK_FITT, "a") as f:
+        if new:
+            f.write("model,hw,fitt_mib,ts\n")
+        f.write(f"{os.path.basename(MODEL)},{hw},{v},{time.strftime('%F %T')}\n")
+
+
 def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
     """One measured run, preceded by a discarded run with the same build and settings: model switches, a previous pinned load
     (drops the page cache) and cache/tuner warm-up all showed 5-12% swings on the first run."""
     global BARE, IDX
     BARE = bare
     xargs = args.split() if args else ()
+    hw = hw or os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
+    fitt_user = "-fitt" in xargs or "--fit-target" in xargs
+    if build.startswith("stock") and not fitt_user:   # the tested value of this model and machine, else upstream's default
+        known = stock_fitt_get(hw)
+        if known:
+            xargs = list(xargs) + ["-fitt", str(known)]
+            args = (args + " " if args else "") + f"-fitt {known}"
     if warm:  # --no-warm: the first run as a user sees it
         global WARMING
         WARMING = True
@@ -674,6 +703,17 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
         row = run_one(build, test, extra, plain, xargs)
     except Exception as e:
         row = {"ok": 0, "note": str(e)[:300]}
+        if build.startswith("stock") and not fitt_user and "-fitt" not in xargs and ("server exited" in str(e) or "server bailed" in str(e)):
+            for v in FITT_LADDER:   # last resort: a larger fit target, upward, the first that starts is remembered for this model and machine
+                try:
+                    xs = list(xargs) + ["-fitt", str(v)]
+                    row = run_one(build, test, extra, plain, xs)
+                    args = (args + " " if args else "") + f"-fitt {v}"
+                    stock_fitt_put(hw, v)
+                    print(f"stock started with -fitt {v} (default and smaller targets failed): stored in {STOCK_FITT}", flush=True)
+                    break
+                except Exception as e2:
+                    row = {"ok": 0, "note": f"also failed with -fitt {v}: " + str(e2)[:250]}
     rec = {**extra, **({"bare": "1"} if bare else {}), **({"plain": "1"} if plain else {}), **({"args": args} if args else {}),
            **{k: str(v) for k, v in OVR.items() if k != "prompt"}}
     hw = hw or os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
