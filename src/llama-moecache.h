@@ -96,6 +96,7 @@ double llama_moe_cache_link_gbs(ggml_backend_dev_t dev);
 // before the first compute-buffer reserve: time each GPU's host link, reserve the prefill split only when it can pay
 void llama_moe_cache_prefill_decide(const std::vector<ggml_backend_dev_t> & gpus);
 bool    llama_moe_cache_active();
+bool    llama_moe_cache_wants_probs();   // --moe policy=r: the gate op of every cached layer also gets the router probabilities (src[6]) for the relevance score
 // startup probe: how many reader threads reach 95% of the CPU's RAM read rate (0: not measured)
 int32_t llama_moe_cache_cpu_sat_threads();
 // live cache state for llama_get_tuning_info(): false when the cache is off

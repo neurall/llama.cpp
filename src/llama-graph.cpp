@@ -2567,6 +2567,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     if (mc_pred) {
                         cur->src[4] = mc_pred;
                     }
+                    if (probs && llama_moe_cache_wants_probs()) {
+                        cur->src[6] = probs;   // policy r: the router's probability of every expert for these tokens, the relevance the cache scores by
+                    }
                     cur->src[3] = mcache->host_table;
                     cur->op_params[0] = mcache->n_slots;
                     if (mc_cpu_backend) {
@@ -2823,7 +2826,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         };
         // the immediate gate op observes the layer's full selection for the cache (its own ids hide the deferred ones)
         each_mmid(experts, 0, [&](ggml_tensor * t) {
-            if (t->src[2] == selected_experts && strstr(t->src[0]->name, "gate_exps")) { t->src[5] = mc_ids_all; }
+            if (t->src[2] == selected_experts && strstr(t->src[0]->name, "gate_exps")) { t->src[5] = mc_ids_all; if (probs && llama_moe_cache_wants_probs()) { t->src[6] = probs; } }
         });
         ggml_tensor * dexp = expert_chain(cur, mc_ids_def);
         each_mmid(dexp, 0, [&](ggml_tensor * t) {

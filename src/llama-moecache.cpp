@@ -139,6 +139,7 @@ struct layer_state {
     std::vector<uint32_t> expert_count;   // expert id -> uses, halved every LLAMA_MOE_CACHE_HALVE_EVERY steps
     std::vector<uint32_t> win_count;      // expert id -> uses in the last 64 tokens
     std::vector<uint64_t> expert_last;    // expert id -> clock of its last use (policy lru)
+    std::vector<float>    relevance;      // expert id -> router probability for the current token, smoothed: rel = decay * rel + p (policy r)
     std::vector<uint8_t>  ghost_flag;     // expert id -> evicted within the last n_cache evictions of this layer (regret counter)
     std::deque<int32_t>   ghost_q;
     std::deque<std::vector<int32_t>> recent; // ids of those tokens, oldest first
@@ -468,7 +469,7 @@ struct knobs_t {
     double stream_slow = 1; // stream onto slow-link (x4) layers too
     double trace       = 0; // LLAMA_MOE_CACHE_TRACE set: record this many steps (re-armed whenever a ctl file sets it)
     double trace_after = 0; // ... starting after this many steps
-    double admit       = 2; // ADMIT=N: a missed expert may take a slot only after N uses in the last 64 tokens (0: any miss). 2 beat 0 by 16% decode on GLM-5.3-Flash
+    double admit       = 0; // (was 2 from 3 Oct: a missed expert waited for 2 uses in the window; A/B on MiMo tetris 2048, cold start: 0 gave 20 t/s at 92% hits, 2 gave 10 t/s at 76%)  // ADMIT=N: a missed expert may take a slot only after N uses in the last 64 tokens (0: any miss). 2 beat 0 by 16% decode on GLM-5.3-Flash
                             // 3.0-bit (ppl comparator, 3 runs, ranges apart): a single recent use of a historically popular expert no longer evicts one that is hot now
     double admit_slow  = 0; // ADMIT_SLOW=N: the admission rule of layers on the slower link (their uploads cost 4-7x more; 0: same as ADMIT)
     double lead        = 1; // LEAD=1: the predicted layers per link are the nearest ones whose upload still lands in time: the lookahead window starts at
@@ -537,7 +538,7 @@ knobs_t & knobs() {
     return k;
 }
 
-enum class policy { halve, window, hybrid, add, lru };
+enum class policy { halve, window, hybrid, add, lru, rel };
 
 policy get_policy() {
     static const policy p = [] {
@@ -545,6 +546,7 @@ policy get_policy() {
         if (e && strcmp(e, "window") == 0) return policy::window;
         if (e && strcmp(e, "hybrid") == 0) return policy::hybrid;
         if (e && strcmp(e, "halve")  == 0) return policy::halve;
+        if (e && (strcmp(e, "r") == 0 || strcmp(e, "relevance") == 0)) return policy::rel;   // only the router's relevance of the expert to the current context: no recency, window or hit counts
         if (e && strcmp(e, "lru")    == 0) return policy::lru;   // plain least recently used: the score is the time of the last use, no lifetime counts, no pay-back margin
         return policy::add;
     }();
@@ -556,6 +558,7 @@ double score(const layer_state & ls, int32_t id) {
     switch (get_policy()) {
         case policy::window: return ls.win_count[id];
         case policy::lru:    return (double) ls.expert_last[id];
+        case policy::rel:    return (double) ls.relevance[id];
         case policy::hybrid: return ls.win_count[id] * ((double) ls.glob_count[id] / (double) ls.glob_max);
         case policy::add: {
             static const double k = [] {
@@ -571,7 +574,7 @@ double score(const layer_state & ls, int32_t id) {
 
 // the pay-back margin is in uses, which has no meaning for the time of the last use: plain LRU swaps whenever the candidate was used more recently
 double pay_back(int margin) {
-    return get_policy() == policy::lru ? 0.0 : (double) margin;
+    return get_policy() == policy::lru || get_policy() == policy::rel ? 0.0 : (double) margin;
 }
 
 // Hot-set profile: which experts this model used, so the next start preloads them into VRAM
@@ -1042,6 +1045,14 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->last_prefill = prefill;
     mc->last_tokens  = n_tokens;
+    if (get_policy() == policy::rel && op && op->src[6] && op->src[6]->type == GGML_TYPE_F32 && op->src[6]->data && op->src[6]->ne[0] == (int64_t) ls->relevance.size()) {
+        static const float d = [] { const char * v = moe_opt("rel-decay"); return v ? (float) atof(v) : 0.5f; }();   // 0.5: halve the old relevance, add the current one
+        const ggml_tensor * pr = op->src[6];
+        for (int64_t t = 0; t < std::min<int64_t>(n_tokens, pr->ne[1]); ++t) {
+            const float * p = (const float *) ((const char *) pr->data + t*pr->nb[1]);
+            for (size_t e = 0; e < ls->relevance.size(); ++e) { ls->relevance[e] = d*ls->relevance[e] + p[e]; }
+        }
+    }
     for (int64_t t = 0; t < n_tokens; ++t) {
         if ((int32_t) ls->recent.size() >= mc->window) {
             for (int32_t old : ls->recent.front()) {
@@ -2577,6 +2588,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             ls.expert_count.assign(n_expert, 0);
             ls.win_count.assign(n_expert, 0);
             ls.expert_last.assign(n_expert, 0);
+            ls.relevance.assign(n_expert, 0.0f);
             ls.ghost_flag.assign(n_expert, 0);
             const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
             for (int k = 0; k < 3; ++k) {
@@ -4150,6 +4162,10 @@ void llama_moe_set_options(const char * opts) {
 
 bool llama_moe_cache_active() {
     return g_cache != nullptr;
+}
+
+bool llama_moe_cache_wants_probs() {
+    return get_policy() == policy::rel;
 }
 
 bool llama_moe_cache_get_info(struct llama_tuning_info * info) {
