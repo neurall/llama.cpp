@@ -329,6 +329,8 @@ struct moe_cache {
 
     // pinned staging per upload worker, for file-backed uploads (pread -> pinned -> DMA)
     std::vector<ggml_backend_buffer_t> staging;
+    size_t bounce_bytes = 0;   // --moe bounce=MB: uploads from mmap'd memory are copied to the pinned staging buffer in chunks of this size first, then DMA'd from there (0: DMA straight from the mmap pages)
+    size_t staging_size = 0;
 
     // hot-set profile: per-expert lifetime uses saved at shutdown, preloaded at the next start
     std::string profile;
@@ -2723,7 +2725,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             // default: copy from the mmap'd host memory (measured faster); pread path is opt-in
             const char * pr = moe_opt("pread");
             const bool use_pread = (pr && pr[0] == '1') || any_repack;
-            ggml_backend_buffer_type_t hbuft = (use_pread && any_file && gpu) ? ggml_backend_dev_host_buffer_type(gpu) : nullptr;
+            const char * bn = moe_opt("bounce");
+            const size_t bounce_mb = bn ? (size_t) std::max(0, atoi(bn)) : 0;   // --moe bounce=MB (0 = off)
+            ggml_backend_buffer_type_t hbuft = (((use_pread && any_file) || bounce_mb > 0) && gpu) ? ggml_backend_dev_host_buffer_type(gpu) : nullptr;
             const char * nt = moe_opt("upload-threads");
             // one set of workers per upload link when layers sit behind both: a slow (x4) copy doesn't hold up the fast link's queue
             const int n_links   = mc->n_links > 1 ? mc->n_links : 1;
@@ -2732,6 +2736,10 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 mc->worker_link.push_back(n_links > 1 ? w % n_links : -1);
                 ggml_backend_buffer_t b = hbuft ? ggml_backend_buft_alloc_buffer(hbuft, max_expert) : nullptr;
                 mc->staging.push_back(b);
+            }
+            if (bounce_mb > 0 && mc->staging[0] && !use_pread) {
+                mc->staging_size  = max_expert;
+                mc->bounce_bytes  = std::min<size_t>(bounce_mb << 20, max_expert);
             }
             // weights loaded without mmap (--load-mode pin) sit in the GPU's pinned host buffer: direct DMA
             const bool src_pinned = gpu && ggml_backend_buffer_get_type(mc->layers[0].pub.up_src->buffer) == ggml_backend_dev_host_buffer_type(gpu);
@@ -2759,6 +2767,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 }
             }
             LLAMA_LOG_WARN("moe-cache: %d upload workers%s, %s\n", n_workers, n_links > 1 ? " (per link)" : "",
+                    mc->bounce_bytes ? "memcpy -> pinned staging (bounce) -> GPU" :
                     mc->staging[0] ? "pread -> pinned staging -> GPU" :
                     src_pinned     ? "from pinned host memory (direct DMA)" :
                                      "from pageable host memory (mmap; --load-mode pin: faster uploads)");
@@ -2842,10 +2851,19 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                         }
                     }
                     const int64_t tr = ggml_time_us();
-                    if (staging_ptr && ls.src_fd[k] >= 0 &&
+                    if (staging_ptr && mc->bounce_bytes == 0 && ls.src_fd[k] >= 0 &&
                             pread_full(ls.src_fd[k], staging_ptr, sz, ls.src_offs[k] + (size_t) j.expert*sz)) {
                         t_read += ggml_time_us() - tr;
                         ggml_backend_tensor_set(dsts[k], staging_ptr, (size_t) j.slot*dsts[k]->nb[2], sz);
+                    } else if (mc->bounce_bytes > 0 && staging_ptr && ggml_backend_buffer_is_host(srcs[k]->buffer)) {
+                        // BOUNCE: the mmap'd slice goes through this worker's pinned staging buffer: the DMA then runs from pinned memory
+                        const char * bsrc = (const char *) srcs[k]->data + (size_t) j.expert*sz;
+                        const size_t bdst = (size_t) j.slot*dsts[k]->nb[2];
+                        for (size_t off = 0; off < sz; off += mc->bounce_bytes) {
+                            const size_t n = std::min(mc->bounce_bytes, sz - off);
+                            memcpy(staging_ptr, bsrc + off, n);
+                            ggml_backend_tensor_set(dsts[k], staging_ptr, bdst + off, n);
+                        }
                     } else if (ggml_backend_buffer_is_host(srcs[k]->buffer)) {
                         // chunk: set, or the bytes this link moves in a quarter of the measured mean CPU phase (the budget is
                         // re-checked ~4 times per phase)
