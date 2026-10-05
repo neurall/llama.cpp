@@ -285,9 +285,14 @@ def build_has_moe_flag(build, env):
     return _MOE_FLAG[build]
 
 
+STATE_FILE = {"v": None}   # --clean-state: the learned-state file of the running cell (empty before its first repetition, kept for the next)
+
+
 def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
-        args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA},tuned=0" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "")]
+        args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA},tuned=0" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")]
+    elif not build.startswith("stock") and STATE_FILE["v"]:
+        env = {**env, "LLAMA_MOE_STATE": STATE_FILE["v"]}   # the first releases (no --moe flag) read the environment variable
     logf = f"/tmp/perf-{build}.log"
     with open(logf, "w") as lf:
         p = subprocess.Popen([os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
@@ -403,7 +408,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                                     "n_predict": int(OVR.get("tokens") or (-1 if test == "tetris" else 1024 if test == "fix" else 100)), **GREEDY, **(FIXED if test == "fix" else {})})
             text = res["content"]
         elif test == "game4":
-            word = GAME_WARM if WARMING else GAME_WORDS[(REP or 0) % len(GAME_WORDS)]
+            word = GAME_WARM if WARMING else GAME_WORDS[(OVR.get('pidx', REP or 0)) % len(GAME_WORDS)]
             TAGBOX["v"] = "game4-" + word.replace(" ", "_")
             args = COMMON + ["-c", str(OVR.get("ctx") or 1024)]
             res, logf = server_run(build, env, args, "/completion",
@@ -417,7 +422,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             text = res["content"]
         elif test == "edit4":
             snippet = open(os.path.join(PROMPTS, "src_3k.cpp")).read()
-            ins = EDIT_WARM if WARMING else EDIT_INSTR[(REP or 0) % len(EDIT_INSTR)]
+            ins = EDIT_WARM if WARMING else EDIT_INSTR[(OVR.get('pidx', REP or 0)) % len(EDIT_INSTR)]
             TAGBOX["v"] = "edit4-%d" % ((REP or 0) % len(EDIT_INSTR))
             args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
             res, logf = server_run(build, env, args, "/completion",
@@ -673,7 +678,7 @@ def model_name():
 
 def set_overrides(a):
     OVR.clear()
-    for k in ("prompt", "tokens", "ctx"):
+    for k in ("prompt", "tokens", "ctx", "pidx"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
 
@@ -818,6 +823,14 @@ def cmd_bench(a):
                 if deadline and time.time() > deadline:
                     print("deadline reached: remaining cells skipped", flush=True)
                     return cmd_report(argparse.Namespace(campaign=camp, since=None, last=None, tol=None, md=False))
+                if a.clean_state and not build.startswith("stock"):
+                    sf = "/tmp/runstate/" + re.sub("[^A-Za-z0-9._-]", "_", build) + "-" + re.sub("[^A-Za-z0-9._-]", "_", os.path.basename(model)) + ".ini"
+                    os.makedirs("/tmp/runstate", exist_ok=True)
+                    if i == a.rep_from and os.path.exists(sf):
+                        os.remove(sf)   # the run's own file, never ~/.cache/llama.cpp/moe-state.ini
+                    STATE_FILE["v"] = sf
+                else:
+                    STATE_FILE["v"] = None
                 warm = not a.no_warm and i == 0  # one discarded run per cell, before its first repetition
                 if m:
                     remote_cell(a.machine, m, build, a.test, args, a.note, warm=warm, env=env)
@@ -956,6 +969,7 @@ def add_overrides(sub):
     sub.add_argument("--prompt", help="prompt text or @file instead of the test's own")
     sub.add_argument("--tokens", type=int, help="generated tokens instead of the test's own")
     sub.add_argument("--ctx", type=int, help="context size instead of the test's own")
+    sub.add_argument("--pidx", type=int, help="game4 / edit4: use prompt N of the four for every repetition (default: repetition k uses prompt k mod 4)")
 
 
 if __name__ == "__main__":
@@ -992,6 +1006,7 @@ if __name__ == "__main__":
     b.add_argument("--tol", type=float, help="flag cells below TOL x stock as REGRESSION (e.g. 0.95)")
     b.add_argument("--note")
     b.add_argument("--no-warm", action="store_true", help="no discarded run before each measured one: the first run as a user sees it")
+    b.add_argument("--clean-state", action="store_true", help="every cell (build and model) starts from an EMPTY learned state: repetition 0 is the cold start, the next ones continue from its state (a state file of its own under /tmp/runstate, the user's moe-state.ini is never touched)")
     add_overrides(b)
     rp = sp.add_parser("report", help="variants against stock per model / test / machine")
     rp.add_argument("--campaign")
