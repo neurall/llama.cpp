@@ -2217,7 +2217,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
     }
 
     // the stock placement of the fitter does not fit either (MiMo 132 GB on 2 x 24 GB: it plans a 27 GiB buffer for a 24 GiB card with the default 1 GiB fit target; 4.5 GiB starts):
-    // once more with a larger fit target (+15% of each GPU's memory, at least 2 GiB) before giving up
+    // once more with a larger fit target (+20% of each GPU's memory, at least 3 GiB: 4.5 and 8 GiB start MiMo, 4 GiB does not) before giving up
     if ((res->model() == NULL || (!model_only && res->context() == NULL)) && params.fit_params && !llama_moe_get_opt("mode")) {
         common_params retry = params;
         size_t g = 0;
@@ -2226,7 +2226,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
             if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
             size_t mem_free = 0, mem_total = 0;
             ggml_backend_dev_memory(dev, &mem_free, &mem_total);
-            retry.fit_params_target[g++] += std::max<size_t>((size_t) 2 << 30, mem_total / 100 * 15);
+            retry.fit_params_target[g++] += std::max<size_t>((size_t) 3 << 30, mem_total / 100 * 20);
         }
         if (g > 0) {
             LOG_WRN("%s: the fitted placement does not fit, trying once more with a larger fit target (%zu MiB on the first GPU instead of %zu)\n", __func__,
