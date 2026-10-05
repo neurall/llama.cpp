@@ -273,8 +273,18 @@ def server_start(build, env, args):
     sys.exit(f"pinning stalled {PIN_ATTEMPTS} times in a row (exit code 75, [PIN_STALL]): giving up, check kcompactd and /proc/pressure/memory")
 
 
+_MOE_FLAG = {}
+
+
+def build_has_moe_flag(build, env):
+    if build not in _MOE_FLAG:
+        h = subprocess.run([os.path.join(HERE, build, "llama-server"), "--help"], capture_output=True, text=True, env={**os.environ, **env}).stdout
+        _MOE_FLAG[build] = "--moe " in h
+    return _MOE_FLAG[build]
+
+
 def _server_start_once(build, env, args):
-    if not build.startswith("stock"):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it)
+    if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA},tuned=0" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "")]
     logf = f"/tmp/perf-{build}.log"
     with open(logf, "w") as lf:
