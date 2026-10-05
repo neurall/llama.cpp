@@ -1785,10 +1785,16 @@ static void common_moe_cache_auto_impl(common_params & params) {
             // clearly bigger than the free VRAM, it wins there on every measured model; stock first otherwise), one run each when the gap is clear
             // measuring: the placement with fewer recorded runs (ties: the first), so each gets two runs before it decides
             mode = st.n == ca.n ? first : (st.n < ca.n ? "stock" : "cache");
+            if (clearly_bigger && mode == "stock") {
+                // not for a model clearly bigger than the free VRAM: the cache won 1.2x to 2.4x on every one measured, and the stock placement may not even start there
+                // (MiMo 132 GB and GLM 3.5-bit on 2 x 24 GB: cudaMalloc of a 27 GiB layer buffer fails, the second start of every new state died); the stock arm of a
+                // comparison is the stock build, or --moe mode=stock
+                mode = "cache";
+            }
             g_moe_auto_file = path;
             g_moe_auto_mode = mode;
-            LOG_INF("%s: MoE placement: measuring %s this run (stock %d runs, cache %d runs recorded; both need 2 before the faster one is kept; %s)\n", __func__,
-                mode.c_str(), st.n, ca.n, path.c_str());
+            LOG_INF("%s: MoE placement: measuring %s this run (stock %d runs, cache %d runs recorded; both need 2 before the faster one is kept%s; %s)\n", __func__,
+                mode.c_str(), st.n, ca.n, clearly_bigger ? "; stock is not tried: the model is clearly bigger than the free VRAM" : "", path.c_str());
         }
         use_cache = mode != "stock";
     }
