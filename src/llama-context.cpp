@@ -528,32 +528,44 @@ struct layer_trace_state {
     bool ids_only = false;   // log=x: the selected expert ids only, no embeddings
     std::string model;
     std::string file;   // the model file name without .gguf and split suffix plus the start time, for <file>.<time>.routing
-    size_t nl_first = 0, k_first = 0;   // log=x: layers and experts per layer of the first complete sample; others are skipped
+    size_t nl_first = 0, k_first = 0, ne_first = 0;   // log=x: layers and experts per layer of the first complete sample; others are skipped
     int last_pos = -1, seq = 0;   // log=x: a position that goes down is a new prompt: its own file (<file>-<seq>.routing)
     std::map<int, std::string> hex, xhex, ids;
-    std::map<int, std::vector<int32_t>> idv;   // log=x: per layer the selected experts of the sampled token   // per layer: output embedding, router input, selected experts
+    std::map<int, std::vector<int32_t>> idv;
+    std::map<int, std::vector<uint16_t>> prv;   // log=x: per layer the router probabilities of all experts (fp16): the relevance of every expert to this token   // log=x: per layer the selected experts of the sampled token   // per layer: output embedding, router input, selected experts
 };
 layer_trace_state g_lt;
 
 bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
     const bool is_out  = strncmp(t->name, "l_out-", 6) == 0;
     const bool is_topk = strncmp(t->name, "ffn_moe_topk-", 13) == 0;
+    const bool is_probs = g_lt.ids_only && strncmp(t->name, "ffn_moe_probs-", 14) == 0;   // after the gating function, before the selection bias
     const bool is_x    = strncmp(t->name, "ffn_norm-", 9) == 0;   // the router's (and the experts') input: the normalised residual
-    bool mine = (g_lt.ids_only ? is_topk : (is_out || is_topk || is_x)) && t->ne[1] == 1 && g_lt.ctx->trace_n_eval() > 0 && g_lt.ctx->trace_n_eval() % g_lt.every == 0;
+    bool mine = (g_lt.ids_only ? (is_topk || is_probs) : (is_out || is_topk || is_x)) && t->ne[1] == 1 && g_lt.ctx->trace_n_eval() > 0 && g_lt.ctx->trace_n_eval() % g_lt.every == 0;
     if (ask) {
         const bool theirs = g_lt.user_cb ? g_lt.user_cb(t, true, g_lt.user_data) : false;
         return mine || theirs;
     }
     if (mine) {
         const int il = atoi(strchr(t->name, '-') + 1);
-        if (is_topk && t->type == GGML_TYPE_I32 && t->ne[0] == (int64_t) g_lt.ctx->get_model().hparams.n_expert_used(il)) {   // one token's experts (a warm-up graph can pass n_tokens x k as one row)
+        if (is_probs) {
+            if (t->type == GGML_TYPE_F32) {
+                std::vector<float> f(t->ne[0]);
+                ggml_backend_tensor_get(t, f.data(), 0, f.size()*sizeof(float));
+                std::vector<uint16_t> h(f.size());
+                ggml_fp32_to_fp16_row(f.data(), (ggml_fp16_t *) h.data(), (int64_t) f.size());
+                g_lt.prv[il] = std::move(h);
+            }
+        } else if (is_topk && t->type == GGML_TYPE_I32 && t->ne[0] == (int64_t) g_lt.ctx->get_model().hparams.n_expert_used(il)) {   // one token's experts (a warm-up graph can pass n_tokens x k as one row)
             std::vector<int32_t> v(t->ne[0]);
             ggml_backend_tensor_get(t, v.data(), 0, v.size()*sizeof(int32_t));
             if (g_lt.ids_only) {
                 g_lt.idv[il] = v;
                 if (il == (int) g_lt.ctx->get_model().hparams.n_layer() - 1) {   // the last layer closes the sample
-                    if (g_lt.nl_first == 0) { g_lt.nl_first = g_lt.idv.size(); g_lt.k_first = v.size(); }
-                    if (g_lt.idv.size() != g_lt.nl_first || v.size() != g_lt.k_first) { g_lt.idv.clear(); return g_lt.user_cb ? g_lt.user_cb(t, false, g_lt.user_data) : true; }   // incomplete sample
+                    if (g_lt.nl_first == 0) { g_lt.nl_first = g_lt.idv.size(); g_lt.k_first = v.size(); g_lt.ne_first = g_lt.prv.size() == g_lt.idv.size() ? g_lt.prv.begin()->second.size() : 0; }
+                    if (g_lt.idv.size() != g_lt.nl_first || v.size() != g_lt.k_first || (g_lt.ne_first && (g_lt.prv.size() != g_lt.idv.size() || g_lt.prv.begin()->second.size() != g_lt.ne_first))) { g_lt.idv.clear(); g_lt.prv.clear(); return g_lt.user_cb ? g_lt.user_cb(t, false, g_lt.user_data) : true; }   // incomplete sample
+                    // version 2 (this): header "MOER", u16 2, u16 layers, u16 k, u16 n_expert (0: no probabilities), u16 layer numbers; per token i32 pos, layers x k u16 ids, then
+                    // layers x n_expert fp16 router probabilities (the relevance of every expert to the token, from the router the model computes anyway)
                     // <model file>[.<tag>].<YYYYmmdd-HHMMSS>.routing (tag = --moe tag=NAME, run.py sets test-prompt; one file per prompt: a position that goes down starts <file>-<n>.routing), little endian: once "MOER", u16 version 1, u16 layers, u16 k, u16 layer numbers;
                     // then per sampled token i32 pos and layers x k u16 expert ids (layer order as in the header). A run starts where pos goes down.
                     { const int cur = g_lt.ctx->trace_n_p_eval() + g_lt.ctx->trace_n_eval(); if (cur < g_lt.last_pos) { g_lt.seq++; } g_lt.last_pos = cur; }
@@ -565,8 +577,8 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
                     std::string out;
                     auto put = [&](const void * p, size_t n) { out.append((const char *) p, n); };
                     if (fresh) {
-                        const uint16_t ver = 1, nl = (uint16_t) g_lt.idv.size();
-                        put("MOER", 4); put(&ver, 2); put(&nl, 2); put(&k, 2);
+                        const uint16_t ver = 2, nl = (uint16_t) g_lt.idv.size(), ne = (uint16_t) g_lt.ne_first;
+                        put("MOER", 4); put(&ver, 2); put(&nl, 2); put(&k, 2); put(&ne, 2);
                         for (const auto & e : g_lt.idv) { const uint16_t l = (uint16_t) e.first; put(&l, 2); }
                     }
                     const int32_t pos = g_lt.ctx->trace_n_p_eval() + g_lt.ctx->trace_n_eval();
@@ -574,9 +586,12 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
                     for (const auto & e : g_lt.idv) {
                         for (uint16_t i = 0; i < k; ++i) { const uint16_t id = i < e.second.size() ? (uint16_t) e.second[i] : 0xffff; put(&id, 2); }
                     }
+                    if (g_lt.ne_first) {
+                        for (const auto & e : g_lt.prv) { put(e.second.data(), e.second.size()*2); }
+                    }
                     std::ofstream f(path, std::ios::app | std::ios::binary);
                     f.write(out.data(), (std::streamsize) out.size());
-                    g_lt.idv.clear();
+                    g_lt.idv.clear(); g_lt.prv.clear();
                 }
             } else {
                 std::string o;
