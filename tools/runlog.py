@@ -29,7 +29,7 @@ def connect():
     con = sqlite3.connect(DB)
     con.create_aggregate("consistent", 1, Consistent)
     return con
-NUMERIC = {"n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max", "tps", "pp", "hit", "ppl", "spp", "n_gen", "bno", "pl", "rep", "seed", "ready_s", "wall_s", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs",
+NUMERIC = {"p_met", "p_unmet", "p_pending", "p_admit_free", "p_admit_evict", "p_d_admit", "p_d_margin", "p_d_budget", "p_d_victim", "p_d_big", "p_d_dup", "p_regret", "p_ev_unpaid", "p_ev_zero", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max", "tps", "pp", "hit", "ppl", "spp", "n_gen", "bno", "pl", "rep", "seed", "ready_s", "wall_s", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs",
            "ddr_util", "pcie_util", "cpu_util", "gpu_util", "held_gib", "mem_limit", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late",
            "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3", "mem_gb", "mem_peak_gbs", "pcie_peak_gbs"}
 def num(x):

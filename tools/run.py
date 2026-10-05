@@ -116,8 +116,9 @@ RUN_COLS = ["ts", "commit", "bno", "tps", "pp", "hit", "model", "args", "test", 
 import runexp
 RUN_COLS += runexp.EXP_COLS  # columns of `run.py exp` rows, empty for the other runs
 RUN_COLS += ["pred_hit", "chipset", "cpu", "mem_gb", "mem", "mem_peak_gbs", "pcie", "pcie_peak_gbs"]  # platform of the machine (machines.csv: chipset, cpu_short, mem_gb, mem_short, mem_gbs, pcie_short, pcie_gbs); *_peak_gbs are measured GB/s peaks of the machine (ddr_gbs, pcie_gbs are what this run used), empty if not measured
+PRESSURE_COLS = ["p_met", "p_unmet", "p_pending", "p_admit_free", "p_admit_evict", "p_d_admit", "p_d_margin", "p_d_budget", "p_d_victim", "p_d_big", "p_d_dup", "p_regret", "p_ev_unpaid", "p_ev_zero"]   # cache pressure of the request (server moe_cache.pressure): met/unmet = selected experts in/not in VRAM; of the unmet that reached the swap decision: admitted into a free slot or by eviction, or declined (admit rule, margin, budget, no victim, lifetime regular, already queued); regret = misses of experts evicted within the last cache turnover; ev_unpaid / ev_zero = evicted uploads that never paid back / were never hit
 STAT_COLS = ["prompt", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max"]   # prompt: the test prompt of the run; the others: the runs of this cell so far (same model, test, build, settings and campaign), this run included: the last row of a cell holds its final min, median and max
-RUN_COLS += STAT_COLS
+RUN_COLS += STAT_COLS + PRESSURE_COLS
 CAMP_COLS = ["name", "start", "note", "conclusion", "why"]
 MACH_COLS = ["id", "ssh", "root", "kind", "cpu", "ram_gb", "ram_type", "gpus", "links", "os", "hostname", "board", "storage",
              "mem_detail", "gpu_detail", "sw", "note"]
@@ -444,6 +445,8 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         mc = t.get("moe_cache") or {}   # the server's per-request cache churn: swaps (uploads of experts into VRAM), evictions, MiB moved
         if mc.get("active"):
             row.update(uploads=mc.get("uploads_request"), evictions=mc.get("evictions_request"), up_mib=mc.get("upload_mib_request"))
+            for k, v in (mc.get("pressure") or {}).items():
+                row["p_" + k] = v
         if t.get("draft_n"):  # speculative decoding (MTP / draft model): accepted / drafted tokens
             row["note"] = f"draft {t.get('draft_n_accepted')}/{t['draft_n']}"
         if "from pageable host memory" in log:  # weights not pinned: uploads are slower, the run does not compare with pinned ones
@@ -571,7 +574,7 @@ def store(row, build, test, rec, note, hw, vstr):
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=power_limits(hw), proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
-        branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in ("uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
+        branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + ("uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
     global _EMB_OFF
     try:
         import runlog

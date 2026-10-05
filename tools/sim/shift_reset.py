@@ -9,6 +9,8 @@ Replays the prompts of the given per-prompt routing files one after another (a t
   fork+hard  fork, and when the activations jump: the whole cache is emptied
   fork+keep30  on a jump: all cached experts but the 30% with the highest score are evicted
   fork+decay   on a jump: lifetime counts and window x0.25 (weak experts lose their protection, the hottest still lead)
+  ema-sum      score = d*score + activation (1 if the expert was selected for the token), decay d per token (--decay, default 0.95): a slowly fading memory, always-present experts keep a high sum
+  ema-mul      score = log of a geometric mean: log m = d*log m + (1-d)*log(activation + 0.05): one absence costs a lot, only experts present in (nearly) every recent token score high
   fork+age     no jump signal: the lifetime counts halve every 256 tokens (plain aging)
   belady     offline best (ceiling)
 A jump = the overlap of the experts used in the last W tokens with the experts used in the 4W tokens before them (mean over layers) falls below thr.
@@ -25,6 +27,7 @@ ap.add_argument("--frac", type=float, default=0.35)
 ap.add_argument("--window", type=int, default=16)
 ap.add_argument("--thr", type=float, default=0.5)
 ap.add_argument("--nexp", type=int, default=0)
+ap.add_argument("--decay", type=float, default=0.95)
 a = ap.parse_args()
 
 segs = []
@@ -67,6 +70,7 @@ def run(policy):
     for l in range(NL):
         cache = {}   # expert -> last use
         glob = np.zeros(NE); win = np.zeros(NE); recent = []
+        esum = np.zeros(NE); emul = np.full(NE, np.log(0.05))
         nxt = None
         if policy == "belady":
             nxt = np.full((T + 1, NE), 10 ** 9, np.int64)
@@ -93,6 +97,10 @@ def run(policy):
                     glob *= 0.25; win *= 0.25
                 else:
                     glob[:] = 0; win[:] = 0; recent.clear()
+            if policy in ("ema-sum", "ema-mul"):
+                act = np.zeros(NE); act[used] = 1.0
+                esum = a.decay * esum + act
+                emul = a.decay * emul + (1 - a.decay) * np.log(act + 0.05)
             for e in used:
                 look[t] += 1
                 if e in cache:
@@ -106,6 +114,10 @@ def run(policy):
                     cand = [x for x in cache if x not in used]
                     if policy == "lru":
                         v = min(cand, key=lambda x: cache[x])
+                    elif policy == "ema-sum":
+                        v = min(cand, key=lambda x: esum[x])
+                    elif policy == "ema-mul":
+                        v = min(cand, key=lambda x: emul[x])
                     elif policy == "belady":
                         v = max(cand, key=lambda x: nxt[t + 1][x])
                     else:
@@ -122,7 +134,7 @@ def run(policy):
 
 print(f"{len(segs)} prompts, {T} tokens, {NL} layers, {NE} experts, {C} slots, window {W}, threshold {a.thr}; jumps fired {sum(fire)} (switches: {len(segs) - 1})")
 print(f"{'policy':10} {'hit rate':>9} {'first 100 after a switch':>25} {'resets':>7}")
-for pol in ("lru", "fork", "fork+soft", "fork+hard", "fork+keep30", "fork+decay", "fork+age", "belady"):
+for pol in ("lru", "fork", "fork+soft", "fork+hard", "fork+keep30", "fork+decay", "fork+age", "ema-sum", "ema-mul", "belady"):
     h, n, r = run(pol)
     first = np.zeros(T, bool)
     for s in starts[1:]:
