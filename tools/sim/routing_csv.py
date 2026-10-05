@@ -13,18 +13,23 @@ import csv, os, re, struct, sys
 import numpy as np
 
 
-def read_bin(path):
+def read_bin(path, probs=False):
+    """ids [T, NL, K] int16, bounds, layers; probs=True: also the router probabilities [T, NL, n_expert] float16 (version 2 files, else None)"""
     b = open(path, "rb").read()
     assert b[:4] == b"MOER", path
     ver, nl, k = struct.unpack_from("<HHH", b, 4)
-    layers = list(struct.unpack_from(f"<{nl}H", b, 10))
-    off = 10 + 2 * nl
-    rec = np.dtype([("pos", "<i4"), ("ids", "<u2", (nl, k))])
+    ne = struct.unpack_from("<H", b, 10)[0] if ver >= 2 else 0
+    off = 10 + (2 if ver >= 2 else 0)
+    layers = list(struct.unpack_from(f"<{nl}H", b, off))
+    off += 2 * nl
+    fields = [("pos", "<i4"), ("ids", "<u2", (nl, k))] + ([("pr", "<f2", (nl, ne))] if ne else [])
+    rec = np.dtype(fields)
     r = np.frombuffer(b, rec, offset=off, count=(len(b) - off) // rec.itemsize)
     ids = r["ids"].astype(np.int32)
     ids[ids == 0xffff] = -1
     bounds = [0] + [i for i in range(1, len(r)) if r["pos"][i] < r["pos"][i - 1]] + [len(r)]
-    return ids.astype(np.int16), np.array(bounds), np.array(layers)
+    out = (ids.astype(np.int16), np.array(bounds), np.array(layers))
+    return out + ((r["pr"] if ne else None,) if probs else ())
 
 
 def read_csv(path, only=""):
