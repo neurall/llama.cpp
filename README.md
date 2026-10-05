@@ -18,7 +18,7 @@ The decode speedup is largest when a third to a half of a MoE model fits in VRAM
 - **Fallback to stock speed.** When the cache cannot help, the fork measures this and falls back to stock speed as quickly as it can (the 1.0x rows). This is work in progress, but already very usable.  
 
 Rows with `game4` / `edit4` tests are build b12209 (best run of each side, the learned state kept between runs as in normal use); the others are from the last release (b11707) until they are re-measured.  
-Release the numbers belong to: the last published release is b11707; the `build` column names the fork build of every row (b11707 = that release, b12209 / b11653 / b11648 / b11285 = later or earlier builds of this fork that are not published as releases). The "stock" side is upstream `def4d406a`, the stock build of the b11707 measurements.  
+Release the numbers belong to: the last published release is b11707; the `build` column names the fork build of every row (b11707 = that release, b12209 / b11653 / b11648 / b11285 = later or earlier builds of this fork that are not published as releases). The "stock" side is upstream llama.cpp: `def4d406a` for the b11707 rows, `836d57176` (docker build) for the b12209 rows; rows of older builds used the stock build of their day (`05af0d2b1`, `b11041-4fea119`), listed per run in the run log.  
 
 Tokens/s, single stream, temperature 0, model in RAM: t/s = generation (decode), pp = prompt processing (prefill). "Stock" is stock llama.cpp.  
 Models: Qwen Next = Qwen3.8-Flash-Next, 27B = Qwen3.8-27B (dense), MTP = `--spec-type draft-mtp`; sizes in GB.  
