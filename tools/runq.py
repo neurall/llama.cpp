@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """runq.py: query every run we ever recorded (tools/runs.db table all_runs, built by tools/runlog_all.py).
 
-usage: runq.py MODEL [TEST] [BUILD ...] [--hw pc1] [--side ours|stock|both] [--regress] [--best]
+usage: runq.py MODEL [TEST] [BUILD ...] [--hw pc1] [--side ours|stock|both] [--sort oldest|newest|best] [--regress] [--best]
   MODEL   part of the family label or model name, case-insensitive: mimo, "glm 3.5", iq4, 27b, olmoe
   TEST    chat, t100, tetris, game4, edit4, pf12k ... (omitted: every test of the model)
   BUILD   build names or numbers as patterns (b11707, 12209, rc-final, release-b12): only these builds
   --regress   the builds of the fork whose best is below 0.9 of the best of all earlier builds (the regression list), for the model (and test)
   --best      the best build of each cell and the newest build's number next to it
-Default: one line per build in build order, best / mean / runs / pp / hit rate, stock lines marked."""
+Default: one line per build (--sort oldest|newest|best), best / mean / runs / pp / hit rate, stock lines marked."""
 import argparse, os, sqlite3, sys
 
 ap = argparse.ArgumentParser()
@@ -15,6 +15,7 @@ ap.add_argument("what", nargs="+")
 ap.add_argument("--db", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
 ap.add_argument("--hw", default="pc1")
 ap.add_argument("--side", default="both")
+ap.add_argument("--sort", choices=["oldest", "newest", "best"], default="oldest", help="order of the builds within each model and test: oldest first (default), newest first, or best number first")
 ap.add_argument("--regress", action="store_true")
 ap.add_argument("--best", action="store_true")
 a = ap.parse_args()
@@ -44,7 +45,9 @@ elif a.best:
         print(f"{r[0]:16} {r[1]:8} {r[2][:28]:28} {r[3]:7.1f} {r[4][:10]:10}  {r[5][:28]:28} {r[6]:7.1f}")
 else:
     q = f"SELECT fam, tgroup, side, build, MIN(ts), COUNT(*), MAX(tps), AVG(tps), MAX(pp), MAX(hit), bseq FROM all_runs WHERE ok = 1 AND {' AND '.join(w)} GROUP BY fam, tgroup, side, build ORDER BY fam, tgroup, bseq"
-    cur, last = con.execute(q, p), None
+    rows_ = con.execute(q, p).fetchall()
+    key = {"oldest": lambda r: (r[0], r[1], r[10]), "newest": lambda r: (r[0], r[1], -r[10]), "best": lambda r: (r[0], r[1], -r[6])}[a.sort]
+    cur, last = sorted(rows_, key=key), None
     print(f"{'model':16} {'test':8} {'build':30} {'date':10} {'n':>3} {'best':>7} {'mean':>7} {'pp':>7} {'hit%':>5}")
     for r in cur:
         if (r[0], r[1]) != last:
