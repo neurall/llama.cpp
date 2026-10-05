@@ -2725,9 +2725,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             // default: copy from the mmap'd host memory (measured faster); pread path is opt-in
             const char * pr = moe_opt("pread");
             const bool use_pread = (pr && pr[0] == '1') || any_repack;
-            const char * bn = moe_opt("bounce");
-            const size_t bounce_mb = bn ? (size_t) std::max(0, atoi(bn)) : 0;   // --moe bounce=MB (0 = off)
-            ggml_backend_buffer_type_t hbuft = (((use_pread && any_file) || bounce_mb > 0) && gpu) ? ggml_backend_dev_host_buffer_type(gpu) : nullptr;
+            const char * bn = moe_opt("bounce"), * bk = moe_opt("bounce-kb");
+            const size_t bounce_kb = bk ? (size_t) std::max(0, atoi(bk)) : bn ? (size_t) std::max(0, atoi(bn)) * 1024 : 0;   // --moe bounce-kb=KB or bounce=MB (0 = off)
+            ggml_backend_buffer_type_t hbuft = (((use_pread && any_file) || bounce_kb > 0) && gpu) ? ggml_backend_dev_host_buffer_type(gpu) : nullptr;
             const char * nt = moe_opt("upload-threads");
             // one set of workers per upload link when layers sit behind both: a slow (x4) copy doesn't hold up the fast link's queue
             const int n_links   = mc->n_links > 1 ? mc->n_links : 1;
@@ -2737,12 +2737,12 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                 ggml_backend_buffer_t b = hbuft ? ggml_backend_buft_alloc_buffer(hbuft, max_expert) : nullptr;
                 mc->staging.push_back(b);
             }
-            if (bounce_mb > 0 && mc->staging[0] && !use_pread) {
-                mc->staging_size  = max_expert;
-                mc->bounce_bytes  = std::min<size_t>(bounce_mb << 20, max_expert);
-            }
             // weights loaded without mmap (--load-mode pin) sit in the GPU's pinned host buffer: direct DMA
             const bool src_pinned = gpu && ggml_backend_buffer_get_type(mc->layers[0].pub.up_src->buffer) == ggml_backend_dev_host_buffer_type(gpu);
+            if (bounce_kb > 0 && mc->staging[0] && !use_pread && !src_pinned) {   // pinned weights are DMA'd directly: a bounce would only add a copy
+                mc->staging_size  = max_expert;
+                mc->bounce_bytes  = std::min<size_t>(bounce_kb << 10, max_expert);
+            }
             {   // --moe pinr=N: pinned copies of the uploaded experts' slices, N/10 of the RAM (default 0 = off, postponed); only for weights that are mmap'd
                 const char * pv = moe_opt("pinr");
                 const double pinr = pv ? atof(pv) : 0.0;
