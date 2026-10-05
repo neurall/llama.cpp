@@ -138,6 +138,7 @@ struct layer_state {
     std::vector<bool>     slot_in_flight; // slot has an upload pending
     std::vector<uint32_t> expert_count;   // expert id -> uses, halved every LLAMA_MOE_CACHE_HALVE_EVERY steps
     std::vector<uint32_t> win_count;      // expert id -> uses in the last 64 tokens
+    std::vector<uint64_t> expert_last;    // expert id -> clock of its last use (policy lru)
     std::deque<std::vector<int32_t>> recent; // ids of those tokens, oldest first
     // where up/gate/down live on disk (fd < 0: unknown, upload from host memory)
     int    src_fd[3]   = { -1, -1, -1 };
@@ -526,7 +527,7 @@ knobs_t & knobs() {
     return k;
 }
 
-enum class policy { halve, window, hybrid, add };
+enum class policy { halve, window, hybrid, add, lru };
 
 policy get_policy() {
     static const policy p = [] {
@@ -534,6 +535,7 @@ policy get_policy() {
         if (e && strcmp(e, "window") == 0) return policy::window;
         if (e && strcmp(e, "hybrid") == 0) return policy::hybrid;
         if (e && strcmp(e, "halve")  == 0) return policy::halve;
+        if (e && strcmp(e, "lru")    == 0) return policy::lru;   // plain least recently used: the score is the time of the last use, no lifetime counts, no pay-back margin
         return policy::add;
     }();
     return p;
@@ -543,6 +545,7 @@ policy get_policy() {
 double score(const layer_state & ls, int32_t id) {
     switch (get_policy()) {
         case policy::window: return ls.win_count[id];
+        case policy::lru:    return (double) ls.expert_last[id];
         case policy::hybrid: return ls.win_count[id] * ((double) ls.glob_count[id] / (double) ls.glob_max);
         case policy::add: {
             static const double k = [] {
@@ -554,6 +557,11 @@ double score(const layer_state & ls, int32_t id) {
         case policy::halve:  return ls.expert_count[id];
     }
     return 0;
+}
+
+// the pay-back margin is in uses, which has no meaning for the time of the last use: plain LRU swaps whenever the candidate was used more recently
+double pay_back(int margin) {
+    return get_policy() == policy::lru ? 0.0 : (double) margin;
 }
 
 // Hot-set profile: which experts this model used, so the next start preloads them into VRAM
@@ -1039,6 +1047,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             }
             ls->expert_count[id]++;
             ls->win_count[id]++;
+            ls->expert_last[id] = ++mc->clock;
             ls->recent.back().push_back(id);
             ls->glob_max = std::max(ls->glob_max, ++ls->glob_count[id]);
             const int32_t slot = ls->expert_slot[id];
@@ -2550,6 +2559,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             ls.slot_in_flight.assign(ns, false);
             ls.expert_count.assign(n_expert, 0);
             ls.win_count.assign(n_expert, 0);
+            ls.expert_last.assign(n_expert, 0);
             const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
             for (int k = 0; k < 3; ++k) {
                 if (!file_location(model, srcs[k], &ls.src_fd[k], &ls.src_offs[k])) {
@@ -3167,7 +3177,7 @@ void llama_moe_cache_jit(const llama_moe_cache_layer * pub, const ggml_tensor * 
             // JIT=1: admitted only as the step's swap would be (no churn): hotter than the victim by the link's pay-back
             // margin; JIT=2: any miss may evict the lowest-scored expert this token doesn't use
             if (knobs().jit < 2 && ((knobs().big != 0 && ls.glob_count[id] < ls.glob_count[victim]) ||
-                    score(ls, id) < score(ls, victim) + mc->link_margin[ls.link])) {
+                    score(ls, id) < score(ls, victim) + pay_back(mc->link_margin[ls.link]))) {
                 continue;
             }
             ls.expert_slot[victim] = -1;
@@ -3945,7 +3955,7 @@ void llama_moe_cache_step() {
                 if (knobs().big != 0 && ls.glob_count[id] < ls.glob_count[victim]) {
                     continue; // lifetime regular stays; a later candidate may still fit
                 }
-                if (score(ls, id) < score(ls, victim) + link_margin[ls.link] || budget-- <= 0) {
+                if (score(ls, id) < score(ls, victim) + pay_back(link_margin[ls.link]) || budget-- <= 0) {
                     break; // candidates are sorted: nothing hotter than what's cached
                 }
                 ls.expert_slot[victim] = -1;

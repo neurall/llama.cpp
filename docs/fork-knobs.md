@@ -190,7 +190,7 @@ Every setting below is a `--moe` key (`--moe policy=window,fixed=1`); there are 
 | `fixed=1` | `0` | fixes every knob and disables tuning, for repeatable measurements |
 | `tuned=...` | state file | start from this tuner result instead of the saved one (`0`: none, every run starts cold) |
 | `ctl=FILE` | off | a control file whose settings are re-read while running |
-| `policy=add\|window\|hybrid\|halve` | `add` | eviction score: `add` (recent use plus lifetime share), `window` (recent use only) |
+| `policy=add\|window\|hybrid\|halve\|lru` | `add` | eviction score: `add` (recent use plus lifetime share), `window` (uses in the last 64 tokens only), `lru` (plain least recently used: the score is the time of the last use, no lifetime counts, no pay-back margin). Pure LRU: `--moe policy=lru,admit=0` (`admit` is the default 2: a missed expert takes a slot only after 2 uses in the last 64 tokens) |
 | `global-weight=N` | `16` | weight of the lifetime share in policy `add` |
 | `halve-every=N` | `64` | counts halve every N steps, so recent use dominates old use |
 | `adopt=F` | `1` | share of each layer's cache slots that may keep experts the prompt pass already put on the GPU (`1` all, `0.0625` a sixteenth; measured on GLM 12k prompt: 1/16 +0.3 hit points, 1/4 +3.8, all +11.4) |
