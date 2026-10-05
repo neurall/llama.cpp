@@ -4172,11 +4172,14 @@ void llama_moe_cache_step() {
             std::error_code ec;
             std::filesystem::create_directories(path.parent_path(), ec);
             const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
-            std::string out = fresh ? "step,demand,met,unmet,load,filled,slots,uploads,evictions,pending,admit_free,admit_evict,d_admit,d_margin,d_budget,d_victim,d_big,d_dup,regret,ev_unpaid,ev_zero\n" : "";
+            std::string out = fresh ? "step,demand,met,unmet,load,filled,slots,uploads,evictions,pending,admit_free,admit_evict,d_admit,d_margin,d_budget,d_victim,d_big,d_dup,regret,ev_unpaid,ev_zero,t_ms\n" : "";
             char b[512];
             snprintf(b, sizeof b, "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%.3f,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64, mc->n_steps, dh + dm, dh, dm, load, filled, total, mc->n_uploads - pup, mc->n_evictions - pev);
             out += b;
             for (int i : {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}) { out += "," + std::to_string(mc->pr[i] - prev[i]); prev[i] = mc->pr[i]; }
+            // wall-clock time of the interval end in ms since the epoch (microsecond resolution), the same clock as the GPU sampler of tools/run.py: a change of speed lines up with power, clocks and swaps
+            snprintf(b, sizeof b, ",%.3f", std::chrono::duration<double, std::micro>(std::chrono::system_clock::now().time_since_epoch()).count() / 1e3);
+            out += b;
             out += "\n";
             pup = mc->n_uploads; pev = mc->n_evictions;
             std::ofstream cf(path, std::ios::app);
