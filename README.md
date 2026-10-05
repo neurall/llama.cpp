@@ -17,9 +17,9 @@ Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.
 Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.
 GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a (no discarded run before it); the other rows are hot runs of earlier builds.
 
-Stock side = upstream llama.cpp builds `def4d406a` (the three rows above), `05af0d2b1`, `b11041-4fea119` and `836d57176` (docker build) for the other rows, `b5cf8ce02` (Windows) on the laptop; every run is recorded with its stock build in the run log (`tools/runs.db`, branch `runs-db`). Some older stock numbers (MiMo chat, GLM 3.5-bit, IQ3_S) were measured before the run log existed and cannot be traced to a build there.
+Stock side = upstream llama.cpp builds `def4d406a` = upstream b11325, 1 Oct (the three rows above), `05af0d2b1` = b11302, 30 Sep, `4fea119` = b11041, 18 Sep, and `836d57176` = b11381, 3 Oct (docker build) for the other rows, `b5cf8ce02` = b11261, 29 Sep (Windows build) on the laptop; every run is recorded with its stock build in the run log (`tools/runs.db`, branch `runs-db`). Some older stock numbers (MiMo chat, GLM 3.5-bit, IQ3_S) were measured before the run log existed and cannot be traced to a build there.
 
-Upstream itself got faster between these builds: on Qwen3.8-Flash-Next IQ4_XS stock decode went from 27.6 t/s (`b11041-4fea119`, 26 Sep) to 31.0 t/s (`836d57176`, 4 Oct, median of 5), and from 25.0 to 29.3 t/s on the 12k-token prompt; GLM-5.3 3.0-bit went from 11.9 (`05af0d2b1`) to 12.5 t/s. Gains in this table are therefore only comparable within rows measured against the same stock build; the 12k-prompt processing speed of stock also differs a lot between those two builds (496 vs 210 t/s, not yet explained).
+Upstream itself got faster between these builds: on Qwen3.8-Flash-Next IQ4_XS stock decode went from 27.6 t/s (upstream b11041) to 31.0 t/s (upstream b11381, median of 5), and from 25.0 to 29.3 t/s on the 12k-token prompt; GLM-5.3 3.0-bit went from 11.9 (b11302) to 12.5 t/s. Gains in this table are therefore only comparable within rows measured against the same stock build; the 12k-prompt processing speed of stock also differs a lot between those two builds (496 vs 210 t/s, not yet explained).
 
 | model (size) | machine | test | upstream | this fork | |
 |---|---|---|---|---|---|
