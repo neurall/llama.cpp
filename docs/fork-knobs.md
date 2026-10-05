@@ -130,7 +130,7 @@ The tuner sets all three while it runs. If you change one, change one at a time 
 | `upload-now` | `1` | When a layer's router ids are known, upload some of the missed experts right then, so the GPU computes them this token while the CPU does the rest | `upload-now=0` turns it off | **Unproven, on the way out**: GLM 2x3090, a first +4.5% was noise on a 6-round rerun (off 21.80, on 22.03 / 22.25, sd about 1); without admission it churns a cold cache (18.99 vs 20.70). W10 Qwen3.6: no change |
 | `lead` | `1` | The predicted layers per link are the nearest ones whose upload still lands in time: the window starts at the upload time per expert on that link over the layer time. `0`: every lookahead up to the predictor's count (the old behaviour) | `lead=0` |
 | `lead-span` | `1` | Layers beyond the nearest feasible one that are also used | `lead-span=2` |
-| `admit` | `2` | A missed expert may take a cache slot only after this many uses in the last 64 tokens (0: any miss). 2 beat 0 by 16% decode on GLM 3.0-bit: one recent use of a historically popular expert no longer evicts one that is hot now | `admit=0` |
+| `admit` | `0` | A missed expert may take a cache slot only after this many uses in the last 64 tokens (0: any miss). Higher values mean fewer swaps (Qwen3.6 with a 34% cache: 0 to 3 gave about +5% decode, 4 to 10 flat). The default was 2 until 5 Oct (it made no difference on loop-free text) | `admit=3` |
 | `admit-slow` | `0` | The same rule for layers on the slower link, where an upload costs 4-7x more (0: same as `admit`) | `admit-slow=4` |
 | `admit-jit` | `0` | The same rule for `upload-now` uploads (0: any miss of this token may be uploaded) | `admit-jit=1` |
 
