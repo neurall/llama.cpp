@@ -7,8 +7,8 @@ usage: runq.py MODEL [TEST] [BUILD ...] [--hw pc1] [--side ours|stock|both] [--s
   BUILD   build names or numbers as patterns (b11707, 12209, rc-final, release-b12): only these builds
   --regress   the builds of the fork whose best is below 0.9 of the best of all earlier builds (the regression list), for the model (and test)
   --best      the best build of each cell and the newest build's number next to it
-Default: one line per build (--sort oldest|newest|best), best / mean / runs / pp / hit rate, stock lines marked."""
-import argparse, os, sqlite3, sys
+Default: one line per build (--sort oldest|newest|best), min / median / max over the runs of the build (one run: just the number), runs, pp, hit rate, stock lines marked."""
+import argparse, os, sqlite3, statistics, sys
 
 ap = argparse.ArgumentParser()
 ap.add_argument("what", nargs="+")
@@ -44,12 +44,14 @@ elif a.best:
     for r in con.execute(q, pr):
         print(f"{r[0]:16} {r[1]:8} {r[2][:28]:28} {r[3]:7.1f} {r[4][:10]:10}  {r[5][:28]:28} {r[6]:7.1f}")
 else:
-    q = f"SELECT fam, tgroup, side, build, MIN(ts), COUNT(*), MAX(tps), AVG(tps), MAX(pp), MAX(hit), bseq FROM all_runs WHERE ok = 1 AND {' AND '.join(w)} GROUP BY fam, tgroup, side, build ORDER BY fam, tgroup, bseq"
+    q = f"SELECT fam, tgroup, side, build, MIN(ts), COUNT(*), MAX(tps), AVG(tps), MAX(pp), MAX(hit), bseq, GROUP_CONCAT(tps) FROM all_runs WHERE ok = 1 AND {' AND '.join(w)} GROUP BY fam, tgroup, side, build ORDER BY fam, tgroup, bseq"
     rows_ = con.execute(q, p).fetchall()
     key = {"oldest": lambda r: (r[0], r[1], r[10]), "newest": lambda r: (r[0], r[1], -r[10]), "best": lambda r: (r[0], r[1], -r[6])}[a.sort]
     cur, last = sorted(rows_, key=key), None
-    print(f"{'model':16} {'test':8} {'build':30} {'date':10} {'n':>3} {'best':>7} {'mean':>7} {'pp':>7} {'hit%':>5}")
+    print(f"{'model':16} {'test':8} {'build':30} {'date':10} {'n':>3} {'min':>6} {'median':>6} {'max':>6} {'pp':>7} {'hit%':>5}")
     for r in cur:
         if (r[0], r[1]) != last:
             last = (r[0], r[1]); print()
-        print(f"{r[0]:16} {r[1]:8} {('[stock] ' if r[2] == 'stock' else '') + r[3][:22]:30} {r[4][:10]:10} {r[5]:3d} {r[6]:7.1f} {r[7]:7.1f} {(r[8] or 0):7.1f} {(r[9] or 0):5.1f}")
+        v = sorted(float(x) for x in r[11].split(","))
+        lo, med, hi = (f"{v[0]:6.1f}", f"{statistics.median(v):6.1f}", f"{v[-1]:6.1f}") if len(v) >= 2 else ("", f"{v[0]:6.1f}", "")   # one run: just the number
+        print(f"{r[0]:16} {r[1]:8} {('[stock] ' if r[2] == 'stock' else '') + r[3][:22]:30} {r[4][:10]:10} {r[5]:3d} {lo:>6} {med:>6} {hi:>6} {(r[8] or 0):7.1f} {(r[9] or 0):5.1f}")
