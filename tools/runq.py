@@ -9,6 +9,8 @@ usage: runq.py MODEL [TEST] [BUILD ...] [--hw pc1] [--side ours|stock|both] [--s
   --best      the best build of each cell and the newest build's number next to it
 Default: one line per build (--sort oldest|newest|best), min / median / max of t/s and of pp over the runs of the build (one run: just the number), runs, best hit rate, stock lines marked."""
 import argparse, os, sqlite3, statistics, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import runstats
 
 ap = argparse.ArgumentParser()
 ap.add_argument("what", nargs="+")
@@ -19,7 +21,12 @@ ap.add_argument("--sort", choices=["oldest", "newest", "best"], default="oldest"
 ap.add_argument("--regress", action="store_true")
 ap.add_argument("--best", action="store_true")
 a = ap.parse_args()
-con = sqlite3.connect(a.db)
+con = sqlite3.connect(a.db, timeout=60)
+new = runstats.refresh(con)   # records added since the last query: only their cells are recomputed
+if new < 0:
+    sys.exit("no statistics yet: run  python3 tools/runlog_all.py  once (a few minutes: it also reads the git history and the old db files)")
+if new:
+    print(f"(statistics refreshed for {new} new records)", file=sys.stderr)
 model, rest = a.what[0], a.what[1:]
 tests = {r[0] for r in con.execute("SELECT DISTINCT tgroup FROM all_runs")}
 test = next((x for x in rest if x in tests), None)

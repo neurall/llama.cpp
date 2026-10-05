@@ -15,38 +15,23 @@ Views:
   regress       for each build of the fork: its best against the best of ALL earlier builds of that cell (ratio), flagged when below 0.9
   best_ever     the build with the best number of each cell, and the newest build's number next to it"""
 import argparse, csv, glob, io, os, re, sqlite3, statistics, subprocess, sys, tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--db", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
 ap.add_argument("--readme-source", action="store_true")
+ap.add_argument("--fast", action="store_true", help="only the current run-history.csv files (no git history, no old db files): seconds, for the rebuild after new records")
+ap.add_argument("--write-csv", action="store_true", help="merge the rows missing from tools/bench/run-history.csv (git history, old db files, other worktrees) into it: existing rows stay byte-identical, the missing ones are appended in its columns")
 a = ap.parse_args()
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FAMS = [("GLM-5.3-Flash-GSQ-RCO-3.5bit", "GLM 3.5-bit"), ("GLM-5.3-Flash-GSQ-RCO-3.0bit", "GLM 3.0-bit"), ("MiMo", "MiMo IQ3_XXS"), ("Qwen3.8-Flash-Next-UD-IQ4_XS", "Next IQ4_XS"),
-        ("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S", "Next IQ3_S"), ("Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M", "Next IQ1_M"), ("Qwen3.6-35B-A3B-GSQ", "Qwen3.6 Q2_0"), ("qwen36", "Qwen3.6 Q2_0"),
-        ("Qwen3.8-27B-IQ4_NL", "27B IQ4_NL"), ("Qwen3.8-27B-GSQ-RCO-IQ3_S", "27B IQ3_S"), ("Qwen3.8-27B-MTP", "27B Q5_K_M MTP"), ("Qwen3.8-27B", "27B"), ("OLMoE", "OLMoE")]
-
-
-def fam(model, args=""):
-    m = (model or "").strip()
-    if not m:
-        m = (re.search(r"(?:-m|--model)\s+(\S+)", args or "") or [None, ""])[1]
-    m = os.path.basename(m.split(" ")[0])
-    for k, v in FAMS:
-        if k.lower() in m.lower():
-            return v
-    return re.sub(r"-0000\d-of-0000\d|\.gguf", "", m)[:28] or "?"
-
-
-def bno_of(build, bno=""):
-    m = re.search(r"b(\d{5})", build or "") or re.search(r"(\d{5})", str(bno or ""))
-    return int(m.group(1)) if m else None
-
-
-def tgroup(t):
-    return re.sub(r"-lv3$", "", re.sub(r"^cli-", "", t or ""))
+from runnorm import FAMS, fam, bno_of, tgroup
 
 
 rows, seen = [], set()
+raw = []   # (src, dict in run-history.csv columns) of every kept row, for --write-csv
+
+
+CUR = {}
 
 
 def add(src, ts, hw, model, args, test, build, bno, tps, pp, hit, ok, note=""):
@@ -65,11 +50,14 @@ def add(src, ts, hw, model, args, test, build, bno, tps, pp, hit, ok, note=""):
     except (TypeError, ValueError): pp = None
     try: hit = float(hit)
     except (TypeError, ValueError): hit = None
+    raw.append((src, CUR))
     rows.append((src, ts, hw or "pc1", fam(model, args), tgroup(test), test, build, bno_of(build, bno), "stock" if (build or "").startswith("stock") else "ours", tps, pp, hit, 0 if str(ok) == "0" else 1, (args or "")[:60], (note or "")[:80]))
 
 
 def read_csv_text(text, src):
+    global CUR
     for r in csv.DictReader(io.StringIO(text)):
+        CUR = dict(r)
         add(src, r.get("ts"), r.get("hw"), r.get("model"), r.get("args"), r.get("test"), r.get("build"), r.get("bno"), r.get("tps"), r.get("pp"), r.get("hit"), r.get("ok", 1), r.get("note"))
 
 
@@ -77,10 +65,11 @@ def read_csv_text(text, src):
 for f in sorted(set(glob.glob("/p/bw/*/tools/bench/run-history.csv") + glob.glob("/p/bw/llama.cpp/.claude/worktrees/*/tools/bench/run-history.csv") + [os.path.join(ROOT, "tools/bench/run-history.csv")])):
     read_csv_text(open(f, errors="replace").read(), "csv")
 n_csv = len(rows)
+n_git = n_db = 0
 
 # gitcsv: every committed version
 seen_blobs = set()
-log = subprocess.run(["git", "-C", ROOT, "log", "--all", "--format=%H", "--", "tools/bench/run-history.csv", "tools/moe-bench/perf.csv"], capture_output=True, text=True).stdout.split()
+log = [] if a.fast else subprocess.run(["git", "-C", ROOT, "log", "--all", "--format=%H", "--", "tools/bench/run-history.csv", "tools/moe-bench/perf.csv"], capture_output=True, text=True).stdout.split()
 for h in log:
     for path in ("tools/bench/run-history.csv", "tools/moe-bench/perf.csv"):
         b = subprocess.run(["git", "-C", ROOT, "rev-parse", f"{h}:{path}"], capture_output=True, text=True).stdout.strip()
@@ -98,15 +87,19 @@ def read_db(path, src):
             return
         for r in c.execute("select * from runs"):
             d = dict(zip(cols, r))
+            global CUR
+            CUR = {"ts": d.get("ts"), "commit": d.get("commit_sha"), "bno": d.get("build_no"), "tps": d.get("tps"), "pp": d.get("pp_tps"), "hit": d.get("hit_rate"), "model": d.get("model"),
+                   "args": d.get("args"), "test": d.get("test"), "hw": d.get("hw") or "pc1", "ok": d.get("ok", 1), "build": d.get("build"), "md5": d.get("md5"), "campaign": "import-old-db",
+                   "note": d.get("note"), "ppl": d.get("ppl"), "n_gen": d.get("n_gen"), "origin": d.get("origin"), "env": d.get("env")}
             add(src, d.get("ts"), d.get("hw"), d.get("model"), d.get("args"), d.get("test"), d.get("build"), d.get("build_no"), d.get("tps"), d.get("pp_tps"), d.get("hit_rate"), d.get("ok", 1), d.get("note"))
     except sqlite3.Error:
         pass
 
 
 dbs = glob.glob(os.path.join(ROOT, "tools/bench/archive/*.db")) + glob.glob("/p/bw/rels/runs.db") + glob.glob("/p/bw/data/**/perf*.db", recursive=True) + glob.glob("/p/bw/data/**/rc_perf*.db", recursive=True)
-for f in sorted(set(dbs)):
+for f in ([] if a.fast else sorted(set(dbs))):
     read_db(f, "db")
-for h in subprocess.run(["git", "-C", ROOT, "log", "--all", "--format=%H", "--", "tools/moe-bench/perf.db"], capture_output=True, text=True).stdout.split():
+for h in ([] if a.fast else subprocess.run(["git", "-C", ROOT, "log", "--all", "--format=%H", "--", "tools/moe-bench/perf.db"], capture_output=True, text=True).stdout.split()):
     blob = subprocess.run(["git", "-C", ROOT, "cat-file", "-p", f"{h}:tools/moe-bench/perf.db"], capture_output=True).stdout
     if blob:
         with tempfile.NamedTemporaryFile(suffix=".db") as t:
@@ -133,6 +126,47 @@ con.execute("""CREATE VIEW best_ever AS SELECT fam, tgroup, hw, build AS best_bu
                (SELECT build FROM cell_builds l WHERE l.fam = b.fam AND l.tgroup = b.tgroup AND l.hw = b.hw AND l.side = 'ours' ORDER BY l.bseq DESC LIMIT 1) AS newest_build,
                (SELECT best FROM cell_builds l WHERE l.fam = b.fam AND l.tgroup = b.tgroup AND l.hw = b.hw AND l.side = 'ours' ORDER BY l.bseq DESC LIMIT 1) AS newest_best
                FROM cell_builds b WHERE side = 'ours' AND best = (SELECT MAX(best) FROM cell_builds m WHERE m.fam = b.fam AND m.tgroup = b.tgroup AND m.hw = b.hw AND m.side = 'ours')""")
+con.execute("DROP TABLE IF EXISTS cell_stats")
+con.execute("""CREATE TABLE cell_stats (fam TEXT, tgroup TEXT, hw TEXT, side TEXT, build TEXT, n INTEGER, t_min REAL, t_med REAL, t_max REAL, pp_min REAL, pp_med REAL, pp_max REAL, hit REAL, first TEXT, bseq INTEGER,
+               PRIMARY KEY (fam, tgroup, hw, side, build))""")
+import runstats
+runstats.recompute(con, None)
+if con.execute("SELECT name FROM sqlite_master WHERE name = 'runs'").fetchone():
+    if "stats_ok" not in [r[1] for r in con.execute("PRAGMA table_info(runs)")]:
+        con.execute("ALTER TABLE runs ADD COLUMN stats_ok INTEGER")
+    con.execute("UPDATE runs SET stats_ok = 1")
 con.commit()
 tot = con.execute("SELECT COUNT(*), MIN(ts), MAX(ts), COUNT(DISTINCT build) FROM all_runs").fetchone()
 print(f"all_runs: {tot[0]} runs, {tot[1]} to {tot[2]}, {tot[3]} builds (csv {n_csv}, git history +{n_git}, old db +{n_db}) in {a.db}")
+
+
+if a.write_csv:
+    path = os.path.join(ROOT, "tools/bench/run-history.csv")
+    snap = open(path, "rb").read()
+    cur_rows = list(csv.DictReader(io.StringIO(snap.decode(errors="replace"))))
+    header = list(cur_rows[0].keys())
+    have = set()
+    for r in cur_rows:
+        try:
+            have.add(((r.get("ts") or "")[:19], fam(r.get("model"), r.get("args")), r.get("test"), r.get("build"), round(float(r.get("tps") or 0), 2)))
+        except ValueError:
+            pass
+    missing = []
+    for src, d in raw:
+        try:
+            key = ((d.get("ts") or "")[:19], fam(d.get("model"), d.get("args")), d.get("test"), d.get("build"), round(float(d.get("tps") or 0), 2))
+        except ValueError:
+            continue
+        if key not in have:
+            have.add(key); missing.append(d)
+    missing.sort(key=lambda d: d.get("ts") or "")
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=header, extrasaction="ignore", lineterminator="\n")
+    for d in missing:
+        w.writerow({k: ("" if d.get(k) is None else d.get(k)) for k in header})
+    now = open(path, "rb").read()   # rows a running benchmark appended meanwhile stay (they follow the snapshot)
+    assert now.startswith(snap)
+    tmp = path + ".new"
+    open(tmp, "wb").write(snap + buf.getvalue().encode() + now[len(snap):])
+    os.replace(tmp, path)
+    print(f"run-history.csv: {len(cur_rows)} rows kept byte-identical, {len(missing)} missing rows appended")

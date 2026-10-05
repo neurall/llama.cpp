@@ -29,7 +29,7 @@ def connect():
     con = sqlite3.connect(DB)
     con.create_aggregate("consistent", 1, Consistent)
     return con
-NUMERIC = {"tps", "pp", "hit", "ppl", "spp", "n_gen", "bno", "pl", "rep", "seed", "ready_s", "wall_s", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs",
+NUMERIC = {"n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max", "tps", "pp", "hit", "ppl", "spp", "n_gen", "bno", "pl", "rep", "seed", "ready_s", "wall_s", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs",
            "ddr_util", "pcie_util", "cpu_util", "gpu_util", "held_gib", "mem_limit", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late",
            "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3", "mem_gb", "mem_peak_gbs", "pcie_peak_gbs"}
 def num(x):
@@ -45,6 +45,8 @@ def ensure(con, cols):
     else:
         for c in cols:
             if c not in have: con.execute(f"ALTER TABLE runs ADD COLUMN {q(c)} {'REAL' if c in NUMERIC else 'TEXT'}")
+    if "stats_ok" not in [r[1] for r in con.execute("PRAGMA table_info(runs)")]:
+        con.execute("ALTER TABLE runs ADD COLUMN stats_ok INTEGER")   # NULL = a new record: the cell statistics (runlog_all.py) are stale and rebuilt on the next query (runq.py); the rebuild sets 1
     con.execute("DROP VIEW IF EXISTS cells")
     con.execute("""CREATE VIEW cells AS SELECT stem, hw, test, build, MAX(bno) AS bno, COUNT(*) AS n, ROUND(consistent(tps), 2) AS tps, ROUND(consistent(pp), 1) AS pp,
                    ROUND(MAX(tps), 2) AS tps_max, MIN(ts) AS first, MAX(ts) AS last FROM runs WHERE okf = 1 AND tps IS NOT NULL GROUP BY stem, hw, test, build""")

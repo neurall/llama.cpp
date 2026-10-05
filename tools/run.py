@@ -116,6 +116,8 @@ RUN_COLS = ["ts", "commit", "bno", "tps", "pp", "hit", "model", "args", "test", 
 import runexp
 RUN_COLS += runexp.EXP_COLS  # columns of `run.py exp` rows, empty for the other runs
 RUN_COLS += ["pred_hit", "chipset", "cpu", "mem_gb", "mem", "mem_peak_gbs", "pcie", "pcie_peak_gbs"]  # platform of the machine (machines.csv: chipset, cpu_short, mem_gb, mem_short, mem_gbs, pcie_short, pcie_gbs); *_peak_gbs are measured GB/s peaks of the machine (ddr_gbs, pcie_gbs are what this run used), empty if not measured
+STAT_COLS = ["n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max"]   # the runs of this cell so far (same model, test, build, settings and campaign), this run included: the last row of a cell holds its final min, median and max
+RUN_COLS += STAT_COLS
 CAMP_COLS = ["name", "start", "note", "conclusion", "why"]
 MACH_COLS = ["id", "ssh", "root", "kind", "cpu", "ram_gb", "ram_type", "gpus", "links", "os", "hostname", "board", "storage",
              "mem_detail", "gpu_detail", "sw", "note"]
@@ -529,6 +531,9 @@ def save_stats(build, ts, test, hw, model):
     return w
 
 
+CELLS = {}   # (model, test, build, args, campaign, hw) -> (t/s of its runs, pp of its runs)
+
+
 def store(row, build, test, rec, note, hw, vstr):
     """One csv row per run: date and commit first (the commit and build number come from the binary's own --version), host, model, settings."""
     mc = re.search(r"commit (\w+)", vstr or "")
@@ -545,8 +550,15 @@ def store(row, build, test, rec, note, hw, vstr):
     if w:
         csv_append("stats.csv", STATS_CSV_COLS, dict(ts=row["ts"], build=build, commit=row["commit_sha"], branch=bi.get("branch", ""), patch=bi.get("patch", ""), hw=hw, model=row["model"], test=test,
                    args=rec.get("args", ""), env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", tps=row.get("tps"), hit=row.get("hit_rate"), **stats_csv_row(w)))
+    cell = CELLS.setdefault((row["model"], test, build, rec.get("args", ""), CAMPAIGN, hw), ([], []))
+    if row.get("ok", 1) and row.get("tps"):
+        cell[0].append(float(row["tps"]))
+        if row.get("pp_tps"):
+            cell[1].append(float(row["pp_tps"]))
+    mm = lambda v: (min(v), statistics.median(v), max(v)) if v else (None, None, None)
+    st = dict(zip(STAT_COLS, (len(cell[0]),) + mm(cell[0]) + mm(cell[1])))
     csv_append("run-history.csv", RUN_COLS, dict(
-        ts=row["ts"], commit=row["commit_sha"], hw=hw, test=test, tps=row.get("tps"), pp=row.get("pp_tps"), hit=row.get("hit_rate"),
+        **st, ts=row["ts"], commit=row["commit_sha"], hw=hw, test=test, tps=row.get("tps"), pp=row.get("pp_tps"), hit=row.get("hit_rate"),
         ok=row.get("ok", 1), model=row["model"], build=build, args=rec.get("args", ""), md5=row.get("md5"), campaign=CAMPAIGN,
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
