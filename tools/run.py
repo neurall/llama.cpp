@@ -328,11 +328,49 @@ def post(path, body, timeout=3600):
     return json.load(urllib.request.urlopen(req, timeout=timeout))
 
 
+PROCSTAT = {}   # of the last server run: major page faults (reads of mmap'd pages from the disk) and the resident set at the end; page-cache residency of the model files before the start
+
+
+def model_residency():
+    """share of the model file(s) resident in the page cache, in percent (mincore through ctypes: no fincore needed); '' on any failure"""
+    try:
+        import ctypes, mmap
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p]
+        files = sorted(glob.glob(re.sub(r"-0000\d-of-(0000\d)", r"-*-of-\1", MODEL))) or [MODEL]
+        res = tot = 0
+        page = mmap.PAGESIZE
+        for f in files:
+            size = os.path.getsize(f)
+            with open(f, "rb") as fh:
+                mm = mmap.mmap(fh.fileno(), 0, flags=mmap.MAP_PRIVATE, prot=mmap.PROT_READ | mmap.PROT_WRITE)
+                addr = ctypes.addressof(ctypes.c_char.from_buffer(mm))
+                n = (size + page - 1) // page
+                vec = ctypes.create_string_buffer(n)
+                if libc.mincore(ctypes.c_void_p(addr), ctypes.c_size_t(size), vec) == 0:
+                    res += sum(1 for x in vec.raw if x & 1); tot += n
+                del vec
+                try:
+                    mm.close()
+                except BufferError:
+                    pass
+        return f"pagecache={100.0 * res / tot:.0f}%" if tot else ""
+    except Exception:
+        return ""
+
+
 def server_run(build, env, args, path, body):
+    PROCSTAT.clear()
+    PROCSTAT["cache_state"] = model_residency()
     p, logf = server_start(build, env, args)
     try:
         return post(path, body), logf
     finally:
+        try:
+            f = open(f"/proc/{p.pid}/stat").read().rsplit(")", 1)[1].split()   # fields after the command name: majflt is the 10th, rss the 22nd
+            PROCSTAT.update(major_faults=int(f[9]), rss_kb=int(f[21]) * os.sysconf("SC_PAGE_SIZE") // 1024)
+        except (OSError, IndexError, ValueError):
+            pass
         stop(p)
 
 
@@ -442,6 +480,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         log = open(logf).read()
         row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
                "output": text, "md5": hashlib.md5(text.encode()).hexdigest()[:8]}
+        row.update(PROCSTAT)
         mc = t.get("moe_cache") or {}   # the server's per-request cache churn: swaps (uploads of experts into VRAM), evictions, MiB moved
         if mc.get("active"):
             row.update(uploads=mc.get("uploads_request"), evictions=mc.get("evictions_request"), up_mib=mc.get("upload_mib_request"))
@@ -574,7 +613,7 @@ def store(row, build, test, rec, note, hw, vstr):
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=power_limits(hw), proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
-        branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + ("uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
+        branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + ("major_faults", "rss_kb", "cache_state", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
     global _EMB_OFF
     try:
         import runlog
