@@ -37,7 +37,7 @@ Tests:
 Compare decode t/s only between runs with the same output md5 (tetris/chat): the text
 decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat itself.
 """
-import argparse, csv, glob, hashlib, io, json, os, re, statistics, subprocess, sys, time, urllib.request
+import argparse, csv, glob, hashlib, io, json, os, re, shutil, statistics, subprocess, sys, time, urllib.request
 
 PROMPTS = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bench")   # frozen prompts (src_12k.cpp, src_128k.cpp, longsrc.cpp) live in tools/bench/
 HERE = os.path.abspath(os.environ.get("PERF_BUILDS", os.getcwd()))  # one subdirectory per build (its bin/ contents)
@@ -640,6 +640,13 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
     hw = hw or os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
     store(row, build, test, rec, note, hw, version(build))
     save_routing_output(row, build)
+    try:   # the server log of this run next to its row (slots, GPU split, tuned knobs, placement, threads): fast and slow runs of one build can be compared line by line
+        lf = f"/tmp/perf-{build}.log"
+        if os.path.exists(lf):
+            os.makedirs(os.path.join(DATA, "logs", "runs"), exist_ok=True)
+            shutil.copyfile(lf, os.path.join(DATA, "logs", "runs", f"{row['ts'].replace(' ', '_')}-{build}-{test}.log"))
+    except OSError:
+        pass
     row["build"] = build
     save_tune_log(row)
     show_row(row, build, test)
