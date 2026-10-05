@@ -441,6 +441,9 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         log = open(logf).read()
         row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
                "output": text, "md5": hashlib.md5(text.encode()).hexdigest()[:8]}
+        mc = t.get("moe_cache") or {}   # the server's per-request cache churn: swaps (uploads of experts into VRAM), evictions, MiB moved
+        if mc.get("active"):
+            row.update(uploads=mc.get("uploads_request"), evictions=mc.get("evictions_request"), up_mib=mc.get("upload_mib_request"))
         if t.get("draft_n"):  # speculative decoding (MTP / draft model): accepted / drafted tokens
             row["note"] = f"draft {t.get('draft_n_accepted')}/{t['draft_n']}"
         if "from pageable host memory" in log:  # weights not pinned: uploads are slower, the run does not compare with pinned ones
@@ -568,7 +571,7 @@ def store(row, build, test, rec, note, hw, vstr):
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=power_limits(hw), proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
-        branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in ("pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
+        branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in ("uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
     global _EMB_OFF
     try:
         import runlog
@@ -824,7 +827,7 @@ def cmd_bench(a):
                     print("deadline reached: remaining cells skipped", flush=True)
                     return cmd_report(argparse.Namespace(campaign=camp, since=None, last=None, tol=None, md=False))
                 if a.clean_state and not build.startswith("stock"):
-                    sf = "/tmp/runstate/" + re.sub("[^A-Za-z0-9._-]", "_", build) + "-" + re.sub("[^A-Za-z0-9._-]", "_", os.path.basename(model)) + ".ini"
+                    sf = "/tmp/runstate/" + re.sub("[^A-Za-z0-9._-]", "_", build + "-" + name + "-" + os.path.basename(model)) + ".ini"   # one file per build, variant and model
                     os.makedirs("/tmp/runstate", exist_ok=True)
                     if i == a.rep_from and os.path.exists(sf):
                         os.remove(sf)   # the run's own file, never ~/.cache/llama.cpp/moe-state.ini
