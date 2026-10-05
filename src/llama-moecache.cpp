@@ -229,7 +229,7 @@ struct moe_cache {
     uint64_t n_adopted   = 0; // prefill preheat: experts kept from prompt batches
     uint64_t n_evictions = 0; // experts evicted from the cache (all kinds)
     // cache pressure counters (per layer-step unless said otherwise), exposed as llama_tuning_info::moe_pr:
-    //  0 active_sum  experts used in the last 64 tokens of a layer (the population the cache would have to hold)   1 cap_sum  slots of that layer   2 steps  layer-steps counted
+    //  0 rel_seen    layer-steps observed with router probabilities (policy r; 0 after a few steps = they do not arrive and the default score is used)
     //  3 pending     misses that reached the swap decision          4 free    admitted into an empty slot            5 evict   admitted by evicting a victim
     //  6 d_admit     declined: fewer than ADMIT uses in the window  7 d_margin declined: not better than the victim by the pay-back margin
     //  8 d_budget    declined: swap budget of the step used up      9 d_victim declined: every slot in flight     10 d_big declined: the victim is a lifetime regular
@@ -539,6 +539,7 @@ knobs_t & knobs() {
 }
 
 enum class policy { halve, window, hybrid, add, lru, rel };
+std::atomic<bool> g_rel_dead{false};   // policy r without router probabilities: the cache would never fill (relevance 0 everywhere), so it falls back to the default score
 
 policy get_policy() {
     static const policy p = [] {
@@ -558,7 +559,9 @@ double score(const layer_state & ls, int32_t id) {
     switch (get_policy()) {
         case policy::window: return ls.win_count[id];
         case policy::lru:    return (double) ls.expert_last[id];
-        case policy::rel:    return (double) ls.relevance[id];
+        case policy::rel:
+            if (!g_rel_dead.load(std::memory_order_relaxed)) { return (double) ls.relevance[id]; }
+            return ls.win_count[id] + 16.0 * ((double) ls.glob_count[id] / (double) ls.glob_max);   // no router probabilities reached the cache: the default score
         case policy::hybrid: return ls.win_count[id] * ((double) ls.glob_count[id] / (double) ls.glob_max);
         case policy::add: {
             static const double k = [] {
@@ -1052,6 +1055,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             const float * p = (const float *) ((const char *) pr->data + t*pr->nb[1]);
             for (size_t e = 0; e < ls->relevance.size(); ++e) { ls->relevance[e] = d*ls->relevance[e] + p[e]; }
         }
+        mc->pr[0]++;   // observed layer-steps with router probabilities
     }
     for (int64_t t = 0; t < n_tokens; ++t) {
         if ((int32_t) ls->recent.size() >= mc->window) {
@@ -3953,6 +3957,10 @@ void llama_moe_cache_step() {
             return score(ls, a) > score(ls, b);
         });
         mc->pr[3] += ls.pending.size();
+        if (get_policy() == policy::rel && !g_rel_dead.load() && mc->pr[0] == 0 && mc->n_steps > 4) {
+            g_rel_dead = true;
+            LLAMA_LOG_WARN("moe-cache: policy r: no router probabilities reached the cache after %" PRIu64 " steps: using the default score instead\n", mc->n_steps);
+        }
         // swaps cost PCIe bandwidth and latency: cap evictions per layer per step,
         // and none at all while earlier uploads are still queued
         int & budget = budget_total;
