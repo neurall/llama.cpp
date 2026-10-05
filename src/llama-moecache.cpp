@@ -2735,9 +2735,9 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
             // weights loaded without mmap (--load-mode pin) sit in the GPU's pinned host buffer: direct DMA
             const bool src_pinned = gpu && ggml_backend_buffer_get_type(mc->layers[0].pub.up_src->buffer) == ggml_backend_dev_host_buffer_type(gpu);
-            {   // --moe pinr=N: pinned copies of the uploaded experts' slices, N/10 of the RAM (default 6; 0 = off); only for weights that are mmap'd
+            {   // --moe pinr=N: pinned copies of the uploaded experts' slices, N/10 of the RAM (default 0 = off, postponed); only for weights that are mmap'd
                 const char * pv = moe_opt("pinr");
-                const double pinr = pv ? atof(pv) : 6.0;
+                const double pinr = pv ? atof(pv) : 0.0;
                 size_t mem_total = 0;
                 if (FILE * mf = fopen("/proc/meminfo", "r")) {
                     char line[256]; size_t kb = 0;
