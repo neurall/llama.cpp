@@ -156,6 +156,7 @@ struct layer_state {
     int                   link = 0;       // upload link (GPU) of this layer's cache: 0 = the offload / fastest GPU, 1.. the others
     int32_t               n_cache = 0;    // cache slots (the rest stream predicted experts)
     std::vector<uint8_t>  is_stream;      // slot -> holds streamed (predicted) experts, not the cache
+    std::unique_ptr<std::atomic<const char *>[]> pin_ptr[3];   // tensor (up, gate, down) -> expert -> its pinned copy (--moe pinr), nullptr = not pinned
     std::vector<int32_t>  stream_slots;   // those slots, round robin
     std::vector<float>    stream_score;   // slot -> predictor score of the streamed expert (SLOTKEEP)
     std::vector<uint64_t> stream_step;    // slot -> step it was streamed for
@@ -236,6 +237,15 @@ struct moe_cache {
     // 11 d_dup       already cached, queued or score 0              12 regret  a miss of an expert evicted within the last cache turnover (an eviction that was wrong)
     // 13 ev_unpaid   evicted uploads that never paid back their copy cost   14 ev_zero  evicted uploads that were never hit
     uint64_t pr[16] = {};
+
+    // --moe pinr=N (default 6): a model that does not fit RAM keeps its weights mmap'd, and pinned copies of the slices of the experts that get uploaded are kept for as
+    // long as N/10 of the RAM lasts: the next upload of an expert reads its pinned copy (direct DMA, 2.2x the pageable speed on the x16 link), the cold ones stay in the page cache
+    ggml_backend_buffer_type_t pin_buft = nullptr;
+    size_t                     pin_budget = 0, pin_used = 0, pin_left = 0;
+    char *                     pin_cur = nullptr;
+    uint64_t                   pin_n = 0;
+    std::vector<ggml_backend_buffer_t> pin_chunks;
+    std::mutex                 pin_mtx;
 
     // model bigger than RAM, weights mmap'd: an expert in VRAM doesn't need its RAM copy. Its pages
     // are dropped when it is cached and read back (async readahead) when it is evicted, so RAM holds
@@ -415,6 +425,70 @@ bool file_location(const llama_model & model, const ggml_tensor * t, int * fd, s
     *fd  = it->second.fd;
     *off = it->second.offs;
     return true;
+}
+
+static size_t mem_available_bytes() {
+    FILE * f = fopen("/proc/meminfo", "r");
+    size_t kb = 0;
+    char line[256];
+    while (f && fgets(line, sizeof line, f)) {
+        if (sscanf(line, "MemAvailable: %zu kB", &kb) == 1) { break; }
+    }
+    if (f) { fclose(f); }
+    return kb * 1024;
+}
+
+// the pinned copy of expert e's slice of tensor k, or nullptr. Made on the SECOND upload of the expert (the first only marks it: an expert that is never evicted and uploaded again gains
+// nothing from a copy, and every copy duplicates the page cache) while the pinr budget lasts
+const char * pin_slice(moe_cache * mc, layer_state & ls, int k, int32_t e, size_t sz, const ggml_tensor * src) {
+    if (!mc->pin_buft || !ls.pin_ptr[k]) {
+        return nullptr;
+    }
+    const char * const seen = (const char *) 1;   // marker: uploaded once
+    const char * p0 = ls.pin_ptr[k][e].load(std::memory_order_acquire);
+    if (p0 > seen) {
+        return p0;
+    }
+    if (p0 == nullptr) {
+        ls.pin_ptr[k][e].store(seen, std::memory_order_release);
+        return nullptr;
+    }
+    char * dst = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(mc->pin_mtx);
+        if (ls.pin_ptr[k][e].load(std::memory_order_acquire) > seen) {
+            return ls.pin_ptr[k][e].load();
+        }
+        if (mc->pin_used + sz > mc->pin_budget) {
+            return nullptr;
+        }
+        if (mc->pin_left < sz) {
+            const size_t chunk = (size_t) 256 << 20;
+            if (mem_available_bytes() < chunk + ((size_t) 6 << 30)) {   // never push the system into swapping
+                LLAMA_LOG_WARN("moe-cache: pinr: stopped at %.1f GiB pinned (RAM available is low)\n", mc->pin_used / 1073741824.0);
+                mc->pin_budget = mc->pin_used;
+                return nullptr;
+            }
+            ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, chunk);
+            if (!b) {
+                mc->pin_budget = mc->pin_used;
+                return nullptr;
+            }
+            mc->pin_chunks.push_back(b);
+            mc->pin_cur  = (char *) ggml_backend_buffer_get_base(b);
+            mc->pin_left = chunk;
+        }
+        dst = mc->pin_cur;
+        mc->pin_cur  += sz;
+        mc->pin_left -= sz;
+        mc->pin_used += sz;
+        if (++mc->pin_n % 2048 == 0) {
+            LLAMA_LOG_WARN("moe-cache: pinr: %.1f of %.1f GiB pinned (%" PRIu64 " expert slices)\n", mc->pin_used / 1073741824.0, mc->pin_budget / 1073741824.0, mc->pin_n);
+        }
+    }
+    memcpy(dst, (const char *) src->data + (size_t) e*sz, sz);
+    ls.pin_ptr[k][e].store(dst, std::memory_order_release);
+    return dst;
 }
 
 bool pread_full(int fd, void * dst, size_t n, size_t off) {
@@ -2661,6 +2735,29 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             }
             // weights loaded without mmap (--load-mode pin) sit in the GPU's pinned host buffer: direct DMA
             const bool src_pinned = gpu && ggml_backend_buffer_get_type(mc->layers[0].pub.up_src->buffer) == ggml_backend_dev_host_buffer_type(gpu);
+            {   // --moe pinr=N: pinned copies of the uploaded experts' slices, N/10 of the RAM (default 6; 0 = off); only for weights that are mmap'd
+                const char * pv = moe_opt("pinr");
+                const double pinr = pv ? atof(pv) : 6.0;
+                size_t mem_total = 0;
+                if (FILE * mf = fopen("/proc/meminfo", "r")) {
+                    char line[256]; size_t kb = 0;
+                    while (fgets(line, sizeof line, mf)) { if (sscanf(line, "MemTotal: %zu kB", &kb) == 1) { mem_total = kb * 1024; break; } }
+                    fclose(mf);
+                }
+                if (gpu && !src_pinned && !mc->staging[0] && pinr > 0 && mem_total) {
+                    mc->pin_buft   = ggml_backend_dev_host_buffer_type(gpu);
+                    mc->pin_budget = (size_t) (std::min(pinr, 10.0) / 10.0 * (double) mem_total);
+                    for (auto & ls2 : mc->layers) {
+                        const ggml_tensor * ps[3] = { ls2.pub.up_src, ls2.pub.gate_src, ls2.pub.down_src };
+                        for (int k2 = 0; k2 < 3; ++k2) {
+                            const size_t ne = (size_t) ps[k2]->ne[2];
+                            ls2.pin_ptr[k2].reset(new std::atomic<const char *>[ne]);
+                            for (size_t e2 = 0; e2 < ne; ++e2) { ls2.pin_ptr[k2][e2].store(nullptr); }
+                        }
+                    }
+                    LLAMA_LOG_WARN("moe-cache: pinr=%.1f: up to %.1f GiB of expert slices pinned as they are uploaded, the rest stays mmap'd\n", pinr, mc->pin_budget / 1073741824.0);
+                }
+            }
             LLAMA_LOG_WARN("moe-cache: %d upload workers%s, %s\n", n_workers, n_links > 1 ? " (per link)" : "",
                     mc->staging[0] ? "pread -> pinned staging -> GPU" :
                     src_pinned     ? "from pinned host memory (direct DMA)" :
@@ -2755,11 +2852,13 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                         const size_t ch = knobs().gate < 3 || knobs().chunk_kb == 0 ? 0 :
                             knobs().chunk_kb > 0 ? (size_t) knobs().chunk_kb * 1024 :
                             (size_t) std::max(64.0*1024, (mc->gbs_link[ls.link] > 0 ? mc->gbs_link[ls.link] : 1.0) * 1e3 * mean_cpu_phase_us(mc) / 4);
+                        const char * pinned = pin_slice(mc, ls, k, j.expert, sz, srcs[k]);   // --moe pinr: the pinned copy of this slice, made now if the budget allows
                         if (ch == 0 || ch >= sz) {
-                            upload_slice(dsts[k], srcs[k], j.expert, j.slot);
+                            if (pinned) { ggml_backend_tensor_set(dsts[k], pinned, (size_t) j.slot*dsts[k]->nb[2], sz); }
+                            else        { upload_slice(dsts[k], srcs[k], j.expert, j.slot); }
                         } else {
                             // re-check the DDR budget per chunk: a CPU phase that started meanwhile makes the rest wait
-                            const char * src = (const char *) srcs[k]->data + (size_t) j.expert*sz;
+                            const char * src = pinned ? pinned : (const char *) srcs[k]->data + (size_t) j.expert*sz;
                             const size_t dst = (size_t) j.slot*dsts[k]->nb[2];
                             for (size_t off = 0; off < sz; off += ch) {
                                 const int64_t tw = ggml_time_us();
@@ -4283,6 +4382,7 @@ void llama_moe_cache_free() {
                 mc->n_pred_up, mc->n_pred_pub, mc->n_pred_used, mc->n_pred_late, mc->n_stream_stale, mc->n_promoted, mc->n_tbp);
     }
     for (auto * b : mc->staging) { if (b) { ggml_backend_buffer_free(b); } }
+    for (auto * b : mc->pin_chunks) { ggml_backend_buffer_free(b); }
     for (auto * b : mc->pbufs) { ggml_backend_buffer_free(b); }
     for (auto * c : mc->pctxs) { ggml_free(c); }
     for (auto * b : mc->bufs) { ggml_backend_buffer_free(b); }
