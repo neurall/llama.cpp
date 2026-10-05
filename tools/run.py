@@ -116,7 +116,7 @@ RUN_COLS = ["ts", "commit", "bno", "tps", "pp", "hit", "model", "args", "test", 
 import runexp
 RUN_COLS += runexp.EXP_COLS  # columns of `run.py exp` rows, empty for the other runs
 RUN_COLS += ["pred_hit", "chipset", "cpu", "mem_gb", "mem", "mem_peak_gbs", "pcie", "pcie_peak_gbs"]  # platform of the machine (machines.csv: chipset, cpu_short, mem_gb, mem_short, mem_gbs, pcie_short, pcie_gbs); *_peak_gbs are measured GB/s peaks of the machine (ddr_gbs, pcie_gbs are what this run used), empty if not measured
-STAT_COLS = ["n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max"]   # the runs of this cell so far (same model, test, build, settings and campaign), this run included: the last row of a cell holds its final min, median and max
+STAT_COLS = ["prompt", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max"]   # prompt: the test prompt of the run; the others: the runs of this cell so far (same model, test, build, settings and campaign), this run included: the last row of a cell holds its final min, median and max
 RUN_COLS += STAT_COLS
 CAMP_COLS = ["name", "start", "note", "conclusion", "why"]
 MACH_COLS = ["id", "ssh", "root", "kind", "cpu", "ram_gb", "ram_type", "gpus", "links", "os", "hostname", "board", "storage",
@@ -556,7 +556,7 @@ def store(row, build, test, rec, note, hw, vstr):
         if row.get("pp_tps"):
             cell[1].append(float(row["pp_tps"]))
     mm = lambda v: (min(v), statistics.median(v), max(v)) if v else (None, None, None)
-    st = dict(zip(STAT_COLS, (len(cell[0]),) + mm(cell[0]) + mm(cell[1])))
+    st = dict(zip(STAT_COLS, (TAGBOX['v'] or test, len(cell[0]),) + mm(cell[0]) + mm(cell[1])))   # prompt: the test and its prompt (game4-racing, edit4-2, tetris, chat ...)
     csv_append("run-history.csv", RUN_COLS, dict(
         **st, ts=row["ts"], commit=row["commit_sha"], hw=hw, test=test, tps=row.get("tps"), pp=row.get("pp_tps"), hit=row.get("hit_rate"),
         ok=row.get("ok", 1), model=row["model"], build=build, args=rec.get("args", ""), md5=row.get("md5"), campaign=CAMPAIGN,

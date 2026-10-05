@@ -24,3 +24,22 @@ def bno_of(build, bno=""):
 
 def tgroup(t):
     return re.sub(r"-lv3$", "", re.sub(r"^cli-", "", t or ""))
+
+
+GAME_WORDS = ["tetris", "racing", "shooter", "snake"]
+
+
+def prompt_of(test, rep="", tag=""):
+    """the prompt of a run: the logged column, else derived from the test and the repetition (game4 and edit4 rotate through four prompts by repetition)"""
+    if tag:
+        return tag
+    t = tgroup(test)
+    try:
+        r = int(float(rep))
+    except (TypeError, ValueError):
+        return t
+    if t == "game4":
+        return "game4-" + GAME_WORDS[r % 4]
+    if t == "edit4":
+        return f"edit4-{r % 4}"
+    return t

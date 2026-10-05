@@ -18,6 +18,8 @@ ap.add_argument("--db", default=os.path.join(os.path.dirname(os.path.abspath(__f
 ap.add_argument("--hw", default="pc1")
 ap.add_argument("--side", default="both")
 ap.add_argument("--sort", choices=["oldest", "newest", "best"], default="oldest", help="order of the builds within each model and test: oldest first (default), newest first, or best number first")
+ap.add_argument("--prompts", action="store_true", help="one line per prompt (game4-racing, edit4-2 ...) instead of per test: the spread of each prompt on each build")
+ap.add_argument("--gaps", action="store_true", help="runs and builds per model and prompt (ours and stock) on the machine: where data is missing")
 ap.add_argument("--regress", action="store_true")
 ap.add_argument("--best", action="store_true")
 a = ap.parse_args()
@@ -38,7 +40,11 @@ if a.side != "both":
     w.append("side = ?"); p.append(a.side)
 if builds:
     w.append("(" + " OR ".join("build LIKE ?" for _ in builds) + ")"); p += [f"%{b}%" for b in builds]
-if a.regress:
+if a.gaps:
+    print(f"{'model':16} {'prompt':18} {'side':5} {'runs':>5} {'builds':>6}")
+    for r in con.execute("SELECT fam, prompt, side, runs, builds FROM coverage WHERE hw = ? AND prompt NOT LIKE 'cli:%' AND LOWER(fam) LIKE ? ORDER BY fam, prompt, side", (a.hw, f"%{model.lower()}%")):
+        print(f"{r[0]:16} {(r[1] or '')[:18]:18} {r[2]:5} {r[3]:5d} {r[4]:6d}")
+elif a.regress:
     q = f"SELECT fam, tgroup, build, first, n, best, prior_best, ratio, prior_build FROM regress WHERE ratio < 0.9 AND LOWER(fam) LIKE ? AND hw = ?" + (" AND tgroup = ?" if test else "") + " ORDER BY fam, tgroup, first"
     pr = [f"%{model.lower()}%", a.hw] + ([test] if test else [])
     print(f"{'model':16} {'test':8} {'build':28} {'first':10} {'n':>3} {'best':>7} {'prior best':>10} {'ratio':>6}  vs build")
@@ -51,7 +57,8 @@ elif a.best:
     for r in con.execute(q, pr):
         print(f"{r[0]:16} {r[1]:8} {r[2][:28]:28} {r[3]:7.1f} {r[4][:10]:10}  {r[5][:28]:28} {r[6]:7.1f}")
 else:
-    q = f"SELECT fam, tgroup, side, build, MIN(ts), COUNT(*), MAX(tps), AVG(tps), MAX(pp), MAX(hit), bseq, GROUP_CONCAT(tps), GROUP_CONCAT(COALESCE(pp, -1)) FROM all_runs WHERE ok = 1 AND {' AND '.join(w)} GROUP BY fam, tgroup, side, build ORDER BY fam, tgroup, bseq"
+    tg = "COALESCE(prompt, tgroup)" if a.prompts else "tgroup"
+    q = f"SELECT fam, {tg}, side, build, MIN(ts), COUNT(*), MAX(tps), AVG(tps), MAX(pp), MAX(hit), bseq, GROUP_CONCAT(tps), GROUP_CONCAT(COALESCE(pp, -1)) FROM all_runs WHERE ok = 1 AND {' AND '.join(w)} GROUP BY fam, {tg}, side, build ORDER BY fam, {tg}, bseq"
     rows_ = con.execute(q, p).fetchall()
     key = {"oldest": lambda r: (r[0], r[1], r[10]), "newest": lambda r: (r[0], r[1], -r[10]), "best": lambda r: (r[0], r[1], -r[6])}[a.sort]
     cur, last = sorted(rows_, key=key), None
@@ -62,8 +69,11 @@ else:
         if len(v) == 1:
             return f"{'':>{w}} {v[0]:{w}.1f} {'':>{w}}"
         return f"{v[0]:{w}.1f} {statistics.median(v):{w}.1f} {v[-1]:{w}.1f}"
-    print(f"{'model':16} {'test':8} {'build':30} {'date':10} {'n':>3} {'t/s min':>6} {'median':>6} {'max':>6}   {'pp min':>6} {'median':>6} {'max':>6} {'hit%':>5}")
+    print(f"{'model':16} {'test/prompt':16} {'build':30} {'date':10} {'n':>3} {'t/s min':>6} {'median':>6} {'max':>6}   {'pp min':>6} {'median':>6} {'max':>6} {'hit%':>5} {'sd':>5} {'max/min':>7}")
     for r in cur:
         if (r[0], r[1]) != last:
             last = (r[0], r[1]); print()
-        print(f"{r[0]:16} {r[1]:8} {('[stock] ' if r[2] == 'stock' else '') + r[3][:22]:30} {r[4][:10]:10} {r[5]:3d} {mmm(r[11])}   {mmm(r[12])} {(r[9] or 0):5.1f}")
+        tv = [float(x) for x in r[11].split(",")]
+        sd = f"{statistics.pstdev(tv):5.1f}" if len(tv) > 1 else ""
+        sp = f"{max(tv) / min(tv):7.2f}" if len(tv) > 1 and min(tv) else ""
+        print(f"{r[0]:16} {r[1][:16]:16} {('[stock] ' if r[2] == 'stock' else '') + r[3][:22]:30} {r[4][:10]:10} {r[5]:3d} {mmm(r[11])}   {mmm(r[12])} {(r[9] or 0):5.1f} {sd:>5} {sp:>7}")
