@@ -438,18 +438,25 @@ static size_t mem_available_bytes() {
     return kb * 1024;
 }
 
-// the pinned copy of expert e's slice of tensor k (made on its first upload while the pinr budget lasts), or nullptr
+// the pinned copy of expert e's slice of tensor k, or nullptr. Made on the SECOND upload of the expert (the first only marks it: an expert that is never evicted and uploaded again gains
+// nothing from a copy, and every copy duplicates the page cache) while the pinr budget lasts
 const char * pin_slice(moe_cache * mc, layer_state & ls, int k, int32_t e, size_t sz, const ggml_tensor * src) {
     if (!mc->pin_buft || !ls.pin_ptr[k]) {
         return nullptr;
     }
-    if (const char * p = ls.pin_ptr[k][e].load(std::memory_order_acquire)) {
-        return p;
+    const char * const seen = (const char *) 1;   // marker: uploaded once
+    const char * p0 = ls.pin_ptr[k][e].load(std::memory_order_acquire);
+    if (p0 > seen) {
+        return p0;
+    }
+    if (p0 == nullptr) {
+        ls.pin_ptr[k][e].store(seen, std::memory_order_release);
+        return nullptr;
     }
     char * dst = nullptr;
     {
         std::lock_guard<std::mutex> lk(mc->pin_mtx);
-        if (ls.pin_ptr[k][e].load(std::memory_order_acquire)) {
+        if (ls.pin_ptr[k][e].load(std::memory_order_acquire) > seen) {
             return ls.pin_ptr[k][e].load();
         }
         if (mc->pin_used + sz > mc->pin_budget) {
