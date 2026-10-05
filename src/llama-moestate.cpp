@@ -353,6 +353,32 @@ const char * moe_opt(const char * key) {
     return llama_moe_get_opt(key);
 }
 
+// the stem of the research files of one run: model file name without .gguf and split suffix, --moe tag=NAME, start time; the same for every log of the process
+std::string moe_run_stem(const std::string & section) {
+    static std::string stem;
+    if (!stem.empty()) {
+        return stem;
+    }
+    std::string f = section.substr(0, section.find(' '));   // the section is "<file name> <size>"
+    for (char & c : f) { if (c == ',' || c == '\n') { c = '_'; } }
+    if (f.size() > 5 && f.compare(f.size() - 5, 5, ".gguf") == 0) { f.resize(f.size() - 5); }
+    if (const size_t sp = f.find("-0000"); sp != std::string::npos && f.find("-of-", sp) != std::string::npos) { f.resize(sp); }
+    for (char & c : f) { if (!isalnum((unsigned char) c) && c != '.' && c != '-' && c != '_') { c = '_'; } }
+    char ts[32];
+    const time_t now = time(nullptr);
+    struct tm tmv;
+#ifdef _WIN32
+    localtime_s(&tmv, &now);
+#else
+    localtime_r(&now, &tmv);
+#endif
+    strftime(ts, sizeof ts, "%Y%m%d-%H%M%S", &tmv);
+    std::string tag = moe_opt("tag") ? moe_opt("tag") : "";
+    for (char & c : tag) { if (!isalnum((unsigned char) c) && c != '-' && c != '_') { c = '_'; } }
+    stem = f + (tag.empty() ? std::string() : "." + tag) + "." + ts;
+    return stem;
+}
+
 // where a research log goes: the --moe logdir=DIR directory, else the working directory
 std::string moe_log_file(const char * name) {
     const char * d = moe_opt("logdir");

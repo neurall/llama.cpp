@@ -51,4 +51,5 @@ int  moe_log_num(char letter, int dflt);
 
 // the --moe KEY=VALUE settings (see llama_moe_set_opt in llama.h): NULL when the key was not given
 const char * moe_opt(const char * key);
+std::string moe_run_stem(const std::string & section);   // the name stem of this run's research files: <model file>[.<tag>].<YYYYmmdd-HHMMSS> (the time of the first call)
 std::string moe_log_file(const char * name);   // the --moe logdir=DIR directory (default: the working directory) + name

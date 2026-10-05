@@ -139,6 +139,8 @@ struct layer_state {
     std::vector<uint32_t> expert_count;   // expert id -> uses, halved every LLAMA_MOE_CACHE_HALVE_EVERY steps
     std::vector<uint32_t> win_count;      // expert id -> uses in the last 64 tokens
     std::vector<uint64_t> expert_last;    // expert id -> clock of its last use (policy lru)
+    std::vector<uint8_t>  ghost_flag;     // expert id -> evicted within the last n_cache evictions of this layer (regret counter)
+    std::deque<int32_t>   ghost_q;
     std::deque<std::vector<int32_t>> recent; // ids of those tokens, oldest first
     // where up/gate/down live on disk (fd < 0: unknown, upload from host memory)
     int    src_fd[3]   = { -1, -1, -1 };
@@ -225,6 +227,14 @@ struct moe_cache {
     uint64_t n_src_query = 0;
     uint64_t n_adopted   = 0; // prefill preheat: experts kept from prompt batches
     uint64_t n_evictions = 0; // experts evicted from the cache (all kinds)
+    // cache pressure counters (per layer-step unless said otherwise), exposed as llama_tuning_info::moe_pr:
+    //  0 active_sum  experts used in the last 64 tokens of a layer (the population the cache would have to hold)   1 cap_sum  slots of that layer   2 steps  layer-steps counted
+    //  3 pending     misses that reached the swap decision          4 free    admitted into an empty slot            5 evict   admitted by evicting a victim
+    //  6 d_admit     declined: fewer than ADMIT uses in the window  7 d_margin declined: not better than the victim by the pay-back margin
+    //  8 d_budget    declined: swap budget of the step used up      9 d_victim declined: every slot in flight     10 d_big declined: the victim is a lifetime regular
+    // 11 d_dup       already cached, queued or score 0              12 regret  a miss of an expert evicted within the last cache turnover (an eviction that was wrong)
+    // 13 ev_unpaid   evicted uploads that never paid back their copy cost   14 ev_zero  evicted uploads that were never hit
+    uint64_t pr[16] = {};
 
     // model bigger than RAM, weights mmap'd: an expert in VRAM doesn't need its RAM copy. Its pages
     // are dropped when it is cached and read back (async readahead) when it is evicted, so RAM holds
@@ -1068,6 +1078,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
                 }
             } else {
                 ls->n_miss += !prefill;
+                if (!prefill && ls->ghost_flag[id]) { mc->pr[12]++; ls->ghost_flag[id] = 0; }   // evicted recently and wanted again
                 bool dup = false;
                 for (int32_t p : ls->pending) {
                     if (p == id) { dup = true; break; }
@@ -1223,14 +1234,20 @@ void publish_job(moe_cache * mc, const upload_job & j) {
 // an expert leaves VRAM: did its upload pay back (decode hits x CPU eval time saved >= upload time)?
 void note_evict(moe_cache * mc, layer_state & ls, int32_t e) {
     mc->n_evictions++;
+    if (!ls.ghost_flag.empty()) {
+        ls.ghost_flag[e] = 1; ls.ghost_q.push_back(e);
+        while ((int32_t) ls.ghost_q.size() > std::max(1, ls.n_cache)) { ls.ghost_flag[ls.ghost_q.front()] = 0; ls.ghost_q.pop_front(); }
+    }
     if (ls.up_t[e] == 0) {
         return;
     }
+    mc->pr[14] += ls.up_hits[e] == 0;
     const int k = ls.link;
     mc->ev_n[k]++;
     mc->ev_hits[k]    += ls.up_hits[e];
     const double cpu_us = (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]) / (knobs().cpu_gbs * 1e3);
     mc->ev_paid[k]    += ls.up_hits[e] * cpu_us >= ls.up_cost[e];
+    mc->pr[13]        += !(ls.up_hits[e] * cpu_us >= ls.up_cost[e]);
     mc->ev_life_us[k] += (double) (ggml_time_us() - ls.up_t[e]);
     mc->ev_cost_us[k] += ls.up_cost[e];
     ls.up_t[e] = 0;
@@ -2560,6 +2577,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             ls.expert_count.assign(n_expert, 0);
             ls.win_count.assign(n_expert, 0);
             ls.expert_last.assign(n_expert, 0);
+            ls.ghost_flag.assign(n_expert, 0);
             const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
             for (int k = 0; k < 3; ++k) {
                 if (!file_location(model, srcs[k], &ls.src_fd[k], &ls.src_offs[k])) {
@@ -3922,13 +3940,18 @@ void llama_moe_cache_step() {
         std::sort(ls.pending.begin(), ls.pending.end(), [&](int32_t a, int32_t b) {
             return score(ls, a) > score(ls, b);
         });
+        mc->pr[3] += ls.pending.size();
         // swaps cost PCIe bandwidth and latency: cap evictions per layer per step,
         // and none at all while earlier uploads are still queued
         int & budget = budget_total;
         for (auto it = ls.pending.begin(); it != ls.pending.end(); ++it) {
             const int32_t id = *it;
-            if (ls.expert_slot[id] >= 0 || ls.queued[id] || score(ls, id) <= 0 ||
-                    ls.win_count[id] < (ls.slow && knobs().admit_slow > 0 ? knobs().admit_slow : knobs().admit)) {
+            if (ls.expert_slot[id] >= 0 || ls.queued[id] || score(ls, id) <= 0) {
+                mc->pr[11]++;
+                continue;
+            }
+            if (ls.win_count[id] < (ls.slow && knobs().admit_slow > 0 ? knobs().admit_slow : knobs().admit)) {
+                mc->pr[6]++;
                 continue;
             }
 
@@ -3947,17 +3970,25 @@ void llama_moe_cache_step() {
                 if (c < best) { best = c; slot = s; }
             }
             if (slot < 0) {
+                mc->pr[9] += ls.pending.end() - it;
                 break; // every slot is in flight; try again next step
             }
 
             const int32_t victim = ls.slot_expert[slot];
             if (victim >= 0) {
                 if (knobs().big != 0 && ls.glob_count[id] < ls.glob_count[victim]) {
+                    mc->pr[10]++;
                     continue; // lifetime regular stays; a later candidate may still fit
                 }
-                if (score(ls, id) < score(ls, victim) + pay_back(link_margin[ls.link]) || budget-- <= 0) {
+                if (score(ls, id) < score(ls, victim) + pay_back(link_margin[ls.link])) {
+                    mc->pr[7] += ls.pending.end() - it;   // this and every later (colder) candidate
                     break; // candidates are sorted: nothing hotter than what's cached
                 }
+                if (budget-- <= 0) {
+                    mc->pr[8] += ls.pending.end() - it;
+                    break;
+                }
+                mc->pr[5]++;
                 ls.expert_slot[victim] = -1;
                 ls.slot_expert[slot]   = -1;
                 set_table_entry(ls.pub, victim, ls.pub.n_slots);
@@ -3965,6 +3996,7 @@ void llama_moe_cache_step() {
                 ls.cached_since[victim] = 0;
                 if (ls.dropped[victim]) { page_hint(mc, ls, victim, false); ls.dropped[victim] = false; }
             }
+            mc->pr[4] += victim < 0;
             ls.slot_in_flight[slot] = true;
             ls.queued[id]           = 1;
 
@@ -4007,6 +4039,30 @@ void llama_moe_cache_step() {
         }
         const uint64_t dh = h - ph, dm = m - pm;
         ph = h; pm = m;
+        {   // the same numbers as a CSV next to the routing trace: routing/<stem>.cache.csv, one line per interval (log=p1: one per token). demand = met + unmet = the selected experts of
+            // all layers), met = already in VRAM, unmet = selected but not in VRAM (computed on the CPU, a swap candidate), load = mean over layers of (experts used in the last 64 tokens) / slots: above 1 the cache cannot hold the working set
+            static uint64_t prev[16] = {}, pup = 0, pev = 0;
+            double load = 0;
+            for (auto & ls : mc->layers) {
+                int act = 0;
+                for (uint32_t c : ls.win_count) { act += c > 0; }
+                load += ls.pub.n_slots ? (double) act / ls.pub.n_slots : 0;
+            }
+            load /= std::max<size_t>(1, mc->layers.size());
+            const std::filesystem::path path = moe_log_file(("routing/" + moe_run_stem(mc->profile) + ".cache.csv").c_str());
+            std::error_code ec;
+            std::filesystem::create_directories(path.parent_path(), ec);
+            const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
+            std::string out = fresh ? "step,demand,met,unmet,load,filled,slots,uploads,evictions,pending,admit_free,admit_evict,d_admit,d_margin,d_budget,d_victim,d_big,d_dup,regret,ev_unpaid,ev_zero\n" : "";
+            char b[512];
+            snprintf(b, sizeof b, "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%.3f,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64, mc->n_steps, dh + dm, dh, dm, load, filled, total, mc->n_uploads - pup, mc->n_evictions - pev);
+            out += b;
+            for (int i : {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}) { out += "," + std::to_string(mc->pr[i] - prev[i]); prev[i] = mc->pr[i]; }
+            out += "\n";
+            pup = mc->n_uploads; pev = mc->n_evictions;
+            std::ofstream cf(path, std::ios::app);
+            cf << out;
+        }
         LLAMA_LOG_WARN("moe-cache: step %" PRIu64 " filled %" PRIu64 "/%" PRIu64 " inflight %" PRIu64 " queued %zu window-hit %.1f%% | upload %.2f ms/expert, token %.1f ms idle / %.1f ms busy, swap budget %d, min count gain %d (fast link %.2f ms -> %d, slow link %.2f ms -> %d)\n",
                 mc->n_steps, filled, total, inflight, queued, dh + dm ? 100.0*dh/(dh + dm) : 0.0,
                 mc->upload_us/1e3, mc->step_us_idle/1e3, mc->step_us_busy/1e3, mc->last_budget, mc->last_margin,
@@ -4104,6 +4160,7 @@ bool llama_moe_cache_get_info(struct llama_tuning_info * info) {
     info->moe_hits = info->moe_misses = 0;
     for (auto & ls : mc->layers) { info->moe_hits += ls.n_hit; info->moe_misses += ls.n_miss; }
     info->moe_uploads = mc->n_uploads;
+    for (int i = 0; i < 16; ++i) { info->moe_pr[i] = mc->pr[i]; }
     info->moe_evictions = mc->n_evictions; info->moe_up_bytes = (uint64_t) std::max<int64_t>(0, (int64_t) mc->up_bytes);
     info->moe_layers  = (int32_t) mc->layers.size();
     info->moe_slots_min = INT32_MAX; info->moe_slots_max = 0;

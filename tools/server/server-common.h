@@ -389,10 +389,11 @@ struct server_slot_stats {
 
     // engine state for the report: cache hit counters at the start of this request, and the tuning/state JSON of the report
     uint64_t moe_hits0 = 0, moe_miss0 = 0, moe_up0 = 0, moe_ev0 = 0, moe_bytes0 = 0;
+    uint64_t moe_pr0[16] = {};
     json     tuning;
 
     // snapshot at request start
-    void tuning_begin(const llama_tuning_info & t) { moe_hits0 = t.moe_hits; moe_miss0 = t.moe_misses; moe_up0 = t.moe_uploads; moe_ev0 = t.moe_evictions; moe_bytes0 = t.moe_up_bytes; }
+    void tuning_begin(const llama_tuning_info & t) { for (int i = 0; i < 16; ++i) { moe_pr0[i] = t.moe_pr[i]; } moe_hits0 = t.moe_hits; moe_miss0 = t.moe_misses; moe_up0 = t.moe_uploads; moe_ev0 = t.moe_evictions; moe_bytes0 = t.moe_up_bytes; }
     // at report time: MoE cache on/off and hit rate of this request and overall, the live tuned knobs, threads and batch sizes
     void tuning_end(const llama_tuning_info & t) {
         json m = { {"active", t.moe_active} };
@@ -403,6 +404,11 @@ struct server_slot_stats {
             m["layers"] = t.moe_layers; m["slots_min"] = t.moe_slots_min; m["slots_max"] = t.moe_slots_max; m["uploads"] = t.moe_uploads;
             m["uploads_request"] = t.moe_uploads - moe_up0; m["evictions_request"] = t.moe_evictions - moe_ev0;
             m["upload_mib_request"] = (double) (t.moe_up_bytes - moe_bytes0) / 1048576.0;
+            // pressure of this request: demand = met (hits) + unmet (misses); of the misses that reached the swap decision, who was admitted and who declined
+            static const char * names[] = { "", "", "", "pending", "admit_free", "admit_evict", "d_admit", "d_margin", "d_budget", "d_victim", "d_big", "d_dup", "regret", "ev_unpaid", "ev_zero" };
+            json pr = { {"met", dh}, {"unmet", dm} };
+            for (int i = 3; i <= 14; ++i) { pr[names[i]] = t.moe_pr[i] - moe_pr0[i]; }
+            m["pressure"] = pr;
             m["tuned"] = { {"margin", t.margin}, {"gate", t.gate}, {"wait", t.wait}, {"big", t.big}, {"predict", t.predict}, {"self_tune", t.self_tune} };
         }
         tuning = { {"moe_cache", m}, {"n_threads", t.n_threads}, {"n_threads_batch", t.n_threads_batch}, {"n_batch", t.n_batch}, {"n_ubatch", t.n_ubatch} };

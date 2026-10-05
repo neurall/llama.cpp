@@ -642,24 +642,7 @@ void llama_context::set_eval_cb() {
         if (g_lt.file.empty()) {   // once per process: the file name (model, tag, start time)
             g_lt.model = moe_state_section(model);
             for (char & c : g_lt.model) { if (c == ',' || c == '\n') { c = '_'; } }
-            g_lt.file = g_lt.model.substr(0, g_lt.model.find(' '));   // the section is "<file name> <size>"
-            if (g_lt.file.size() > 5 && g_lt.file.compare(g_lt.file.size() - 5, 5, ".gguf") == 0) { g_lt.file.resize(g_lt.file.size() - 5); }
-            if (const size_t sp = g_lt.file.find("-0000"); sp != std::string::npos && g_lt.file.find("-of-", sp) != std::string::npos) { g_lt.file.resize(sp); }   // -00001-of-00008
-            for (char & c : g_lt.file) { if (!isalnum((unsigned char) c) && c != '.' && c != '-' && c != '_') { c = '_'; } }
-            {   // one file per run: <model file>.<YYYYmmdd-HHMMSS>.routing
-                char ts[32];
-                const time_t now = time(nullptr);
-                struct tm tmv;
-#ifdef _WIN32
-                localtime_s(&tmv, &now);
-#else
-                localtime_r(&now, &tmv);
-#endif
-                strftime(ts, sizeof ts, "%Y%m%d-%H%M%S", &tmv);
-                std::string tag = moe_opt("tag") ? moe_opt("tag") : "";   // --moe tag=NAME: the prompt or test, in the file name
-                for (char & c : tag) { if (!isalnum((unsigned char) c) && c != '-' && c != '_') { c = '_'; } }
-                g_lt.file += (tag.empty() ? std::string() : "." + tag) + "." + ts;
-            }
+            g_lt.file = moe_run_stem(g_lt.model);   // the same stem for every research file of the run (routing, cache pressure)
         }
         ggml_backend_sched_set_eval_callback(sched.get(), layer_trace_cb, nullptr);
     } else {
