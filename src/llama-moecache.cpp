@@ -211,7 +211,7 @@ struct upload_job {
 };
 
 struct moe_cache {
-    std::string settings;   // key settings that are no knobs and not tuned (upload path, bounce, workers, slots, policy), written to the state snapshot as run.settings
+    std::string settings;   // key settings that are no knobs and not tuned (upload path, bounce, workers, slots, policy), the first part of the run.knobs line of the state snapshot
     int32_t n_slots     = 0;
     int32_t max_inserts = 2;
     int32_t window      = 64; // recent-usage window in tokens (--moe-cache-window)
@@ -619,7 +619,7 @@ knobs_t & knobs() {
     return k;
 }
 
-// "NAME=value ..." of every knob the cache runs with at this moment (tuner decisions included); a * marks the ones the user set. Written to the state snapshot as run.knobs.
+// "NAME=value ..." of every knob the cache runs with at this moment (tuner decisions included); a * marks the ones the user set. Written to the state snapshot as run.knobs (after the key settings).
 std::string knob_dump() {
     std::string out;
     char b[64];
@@ -771,8 +771,7 @@ void profile_save(const moe_cache * mc) {
             kv.emplace_back(std::string("run.") + r.first, out);
         }
     }
-    kv.emplace_back("run.knobs", knob_dump());
-    if (!mc->settings.empty()) { kv.emplace_back("run.settings", mc->settings); }   // the knobs of this run at its end (what was selected, tuner decisions included)
+    kv.emplace_back("run.knobs", (mc->settings.empty() ? std::string() : mc->settings + " | ") + knob_dump());   // key settings, then every knob   // the knobs of this run at its end (what was selected, tuner decisions included)
     moe_state_set(mc->profile, kv);
     if (moe_embsnap_enabled()) {   // research: this run's counts alone (lifetime counts minus what the preloaded profile brought in)
         std::vector<std::pair<std::string, std::string>> hot;
