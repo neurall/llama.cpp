@@ -11,6 +11,21 @@ llama-cli    -m model.gguf -p "hello"
 
 ## What you get
 
+## Release b12353 admit-pin
+
+New defaults: a missed expert takes a cache slot only after 2 uses in 64 tokens (`admit 2`); the weights are pinned in RAM by default when the model fits (`auto-pin`), and
+a failed pin is never replaced by a silent mmap fallback (it says so, tells you a reboot defragments memory, and exits after the third failure); the upload bounce buffer is off by default
+(`bounce-kb 0`); every run writes its effective settings and load mode (pinned or mmap) to the log and to the state file (`run.knobs`).
+
+First numbers of this release, machine A (2x RTX 3090), GLM-5.3-Flash 3.0-bit, hot runs (learned state kept, no thread flags, so the thread autotune runs), n=4, median.  
+Stock = upstream `4fbc76dec` (b11452), built with upstream's own release recipe (GCC 13.3, CUDA 12.8.2). Ours = this release, commit `10d6c1e5c`.  
+Other models are being re-measured with the same protocol; their rows in the table below are from earlier builds and stay until replaced by better measured numbers.
+
+| model | machine | test | stock t/s | ours t/s | stock pp | ours pp | gain t/s | gain pp |
+|---|---|---|---|---|---|---|---|---|
+| **GLM** 3.0-bit 117G | A | out_heavy: 4 game prompts, 1024 tokens out | 12.42 | **20.24** | - | - | **1.63x** | - |
+| | | in_out_heavy: 4 edits of a 1k-token source, 1024 out | 12.38 | **17.06** | 41.5 | **153** | **1.38x** | **3.7x** |
+
 **Also:**
 
 - **Q2 models get a speed bump on AVX2 CPUs**: upstream has no AVX2 kernels for the Q2_0 type, this fork does (Qwen3.6-35B Q2_0 in the table).  

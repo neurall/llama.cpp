@@ -308,6 +308,13 @@ line. Allocate the pool at run time, as the script does, from ordinary memory.
 | `GGML_CUDA_NO_PINNED` | off | never pin the weights |
 | `LLAMA_LOAD_THREADS` | half the CPU threads, at most 16 | threads that read the model file into the buffer; `1` keeps the sequential reader |
 
+### If the pin fails: no silent mmap fallback
+
+With `--load-mode pin` (the default when the model fits in RAM) a failed `cudaHostRegister` is reported and never replaced by an mmap load, because that would only make the run slow without saying why.  
+The log says `weights NOT pinned: mmap / page cache` when the weights are mmap'd (a model that does not fit, or `--load-mode mmap`) and `pinned` otherwise.  
+If the registration stalls or fails, the message says that **a reboot defragments memory**; the process exits after the third failure (exit code 75 on a stall). `tools/run.py` retries the start three times.  
+Every run also writes its effective settings (autotune result, `admit`, load mode, every knob) as the `run.knobs` line of the state file.
+
 ### If something goes wrong
 
 - `only N of M pages could be allocated`: memory is too fragmented or too full; stop other programs, run `resident_pin.sh unmount`, mount again with a smaller size, or reboot.
