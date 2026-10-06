@@ -2,7 +2,7 @@
 // O_DIRECT random reads of aligned blocks, block size x queue depth (io_uring) or thread count (pread). Hill climb from 1 MiB / 8: move one
 // parameter one step while the gain is at least 3%; the choice is the cheapest setting (fewest bytes in flight) that reaches 95% of the best bandwidth seen.
 // --sqpoll: io_uring with a kernel submission-polling thread (cpu ms/GB then includes its spinning); --fixed: registered buffers and file.
-// --grid measures every point (to compare with fio). gcc -O2 -o iobench iobench.c -luring -lpthread
+// --all: every engine variant (uring, +sqpoll, +fixed, both, threads), one summary line each. --grid measures every point (to compare with fio). gcc -O2 -o iobench iobench.c -luring -lpthread
 #define _GNU_SOURCE
 #include <fcntl.h>
 #include <liburing.h>
@@ -83,23 +83,13 @@ static res_t measure(int bi, int qi) {
     return r;
 }
 
-int main(int argc, char ** argv) {
-    if (argc < 2) { fprintf(stderr, "usage: iobench FILE [--grid] [--sec S] [--engine uring|threads]\n"); return 1; }
-    int grid = 0;
-    for (int i = 2; i < argc; i++) {
-        if (!strcmp(argv[i], "--grid")) grid = 1;
-        else if (!strcmp(argv[i], "--sec") && i + 1 < argc) g_sec = atof(argv[++i]);
-        else if (!strcmp(argv[i], "--engine") && i + 1 < argc) g_threads = !strcmp(argv[++i], "threads");
-        else if (!strcmp(argv[i], "--sqpoll")) g_sqpoll = 1;
-        else if (!strcmp(argv[i], "--fixed")) g_fixed = 1;
-    }
-    g_fd = open(argv[1], O_RDONLY | O_DIRECT); if (g_fd < 0) { perror("open O_DIRECT"); return 1; }
-    struct stat st; fstat(g_fd, &st); g_size = st.st_size;
-    double T0 = now(); static res_t R[NBS][NQD]; static int done[NBS][NQD];
-    printf("engine %s%s%s, %.2f s per point, file %.1f GiB\n%6s %4s %7s %8s %9s\n", g_threads ? "threads(pread)" : "io_uring", g_sqpoll ? " +sqpoll" : "", g_fixed ? " +fixed buffers/file" : "", g_sec, g_size / 1073741824.0, "bs", "qd", "GB/s", "p50 us", "cpu ms/GB");
-    #define M(b, q) (done[b][q] ? R[b][q] : (done[b][q] = 1, R[b][q] = measure(b, q), printf("%5zuk %4d %7.2f %8.0f %9.1f\n", BS[b] >> 10, QD[q], R[b][q].gbs, R[b][q].p50_us, R[b][q].cpu_ms_gb), fflush(stdout), R[b][q]))
+static int g_grid, g_quiet;
+static void search(void) {
+    double T0 = now(); static res_t R[NBS][NQD]; static int done[NBS][NQD]; memset(done, 0, sizeof done);
+    if (!g_quiet) printf("engine %s%s%s, %.2f s per point, file %.1f GiB\n%6s %4s %7s %8s %9s\n", g_threads ? "threads(pread)" : "io_uring", g_sqpoll ? " +sqpoll" : "", g_fixed ? " +fixed buffers/file" : "", g_sec, g_size / 1073741824.0, "bs", "qd", "GB/s", "p50 us", "cpu ms/GB");
+    #define M(b, q) (done[b][q] ? R[b][q] : (done[b][q] = 1, R[b][q] = measure(b, q), g_quiet ? 0 : printf("%5zuk %4d %7.2f %8.0f %9.1f\n", BS[b] >> 10, QD[q], R[b][q].gbs, R[b][q].p50_us, R[b][q].cpu_ms_gb), fflush(stdout), R[b][q]))
     int b = 3, q = 3;
-    if (grid) { for (int i = 0; i < NBS; i++) for (int j = 0; j < NQD; j++) (void) M(i, j); }
+    if (g_grid) { for (int i = 0; i < NBS; i++) for (int j = 0; j < NQD; j++) (void) M(i, j); }
     else for (;;) {
         double cur = M(b, q).gbs; int nb = b, nq = q; double best = cur;
         int mv[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
@@ -113,6 +103,27 @@ int main(int argc, char ** argv) {
     double mx = 0; for (int i = 0; i < NBS; i++) for (int j = 0; j < NQD; j++) if (done[i][j] && R[i][j].gbs > mx) mx = R[i][j].gbs;
     int cb = -1, cq = -1; size_t cost = ~(size_t) 0;
     for (int i = 0; i < NBS; i++) for (int j = 0; j < NQD; j++) if (done[i][j] && R[i][j].gbs >= 0.95 * mx && BS[i] * QD[j] < cost) { cost = BS[i] * QD[j]; cb = i; cq = j; }
-    printf("best %.2f GB/s; choice: %zu KiB x depth %d = %.2f GB/s (p50 %.0f us, %.1f cpu ms/GB), %zu KiB in flight; %.1f s\n", mx, BS[cb] >> 10, QD[cq], R[cb][cq].gbs, R[cb][cq].p50_us, R[cb][cq].cpu_ms_gb, cost >> 10, now() - T0);
+    printf("%-26s best %.2f GB/s; choice: %5zu KiB x depth %2d = %.2f GB/s (p50 %6.0f us, %5.1f cpu ms/GB), %zu KiB in flight; %.1f s\n",
+        g_threads ? "threads(pread)" : g_sqpoll ? (g_fixed ? "io_uring +sqpoll +fixed" : "io_uring +sqpoll") : (g_fixed ? "io_uring +fixed" : "io_uring"),
+        mx, BS[cb] >> 10, QD[cq], R[cb][cq].gbs, R[cb][cq].p50_us, R[cb][cq].cpu_ms_gb, cost >> 10, now() - T0);
+}
+
+int main(int argc, char ** argv) {
+    if (argc < 2) { fprintf(stderr, "usage: iobench FILE [--all] [--grid] [--sec S] [--engine uring|threads] [--sqpoll] [--fixed]\n"); return 1; }
+    int all = 0;
+    for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "--grid")) g_grid = 1;
+        else if (!strcmp(argv[i], "--all")) all = 1;
+        else if (!strcmp(argv[i], "--sec") && i + 1 < argc) g_sec = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--engine") && i + 1 < argc) g_threads = !strcmp(argv[++i], "threads");
+        else if (!strcmp(argv[i], "--sqpoll")) g_sqpoll = 1;
+        else if (!strcmp(argv[i], "--fixed")) g_fixed = 1;
+    }
+    g_fd = open(argv[1], O_RDONLY | O_DIRECT); if (g_fd < 0) { perror("open O_DIRECT"); return 1; }
+    struct stat st; fstat(g_fd, &st); g_size = st.st_size;
+    if (all) {   // every engine variant, one summary line each
+        g_quiet = 1;
+        for (int c = 0; c < 5; c++) { g_threads = c == 4; g_sqpoll = c == 1 || c == 3; g_fixed = c == 2 || c == 3; search(); }
+    } else search();
     return 0;
 }
