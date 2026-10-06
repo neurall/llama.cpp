@@ -2013,14 +2013,11 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     // real memory pressure, not the kernel moving idle pages of other programs to swap (zram)
     const size_t swapped = params.load_pinned_auto ? common_swap_out_bytes() - swap0 : 0;
     const size_t avail   = params.load_pinned_auto ? common_ram_available() : 0;
-    if (params.load_pinned_auto && (model == NULL || swapped > (2ull << 30) || (avail && avail < (512ull << 20)))) {
-        LOG_WRN("%s: pinned weights %s (swapped %.1f GiB, %.1f GiB RAM left), reloading with mmap\n", __func__,
-            model ? "left too little RAM" : "failed to load", swapped / 1073741824.0, avail / 1073741824.0);
-        llama_model_free(model);
-        params.load_mode        = LLAMA_LOAD_MODE_AUTO;
-        params.load_pinned_auto = false;
-        mparams = common_model_params_to_llama(params);
-        model = llama_model_load_from_file(params.model.path.c_str(), mparams);
+    // no silent fallback to mmap: a pinned load that swapped or left little RAM is reported and the run goes on pinned (a different load mode behind the user's back
+    // gave unexplained t/s); a failed load is an error
+    if (params.load_pinned_auto && model != NULL && (swapped > (2ull << 30) || (avail && avail < (512ull << 20)))) {
+        LOG_WRN("%s: pinned weights left little RAM (swapped %.1f GiB, %.1f GiB RAM left); NOT falling back to mmap, expect swapping (use -lm mmap to choose mmap)\n", __func__,
+            swapped / 1073741824.0, avail / 1073741824.0);
     }
     if (model == NULL) {
         return;
