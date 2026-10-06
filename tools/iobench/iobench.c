@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -24,7 +25,8 @@ static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
 static uint64_t rnd(uint64_t * s) { *s ^= *s << 13; *s ^= *s >> 7; *s ^= *s << 17; return *s; }
 static int cmpd(const void * a, const void * b) { double x = *(const double *) a, y = *(const double *) b; return (x > y) - (x < y); }
 
-typedef struct { double gbs, p50_us; } res_t;
+typedef struct { double gbs, p50_us, cpu_ms_gb; } res_t;
+static double cpu_s(void) { struct rusage u; getrusage(RUSAGE_SELF, &u); return u.ru_utime.tv_sec + u.ru_utime.tv_usec * 1e-6 + u.ru_stime.tv_sec + u.ru_stime.tv_usec * 1e-6; }
 
 static res_t run_uring(size_t bs, int qd) {
     struct io_uring ring; io_uring_queue_init(qd, &ring, 0);
@@ -49,7 +51,7 @@ static res_t run_uring(size_t bs, int qd) {
     // drain
     struct io_uring_cqe * c; while (io_uring_peek_cqe(&ring, &c) == 0) io_uring_cqe_seen(&ring, c);
     io_uring_queue_exit(&ring);
-    res_t r = { bytes / el / 1e9, 0 }; if (nl) { qsort(lat, nl, sizeof(double), cmpd); r.p50_us = lat[nl / 2]; }
+    res_t r = { bytes / el / 1e9, 0, 0 }; if (nl) { qsort(lat, nl, sizeof(double), cmpd); r.p50_us = lat[nl / 2]; }
     free(buf); free(t0); free(lat); return r;
 }
 
@@ -63,9 +65,13 @@ static res_t run_threads(size_t bs, int n) {
     pthread_t t[64]; th_t a[64]; double start = now();
     for (int i = 0; i < n; i++) { a[i] = (th_t) { bs, i, start + g_sec, 0 }; pthread_create(&t[i], NULL, th_run, &a[i]); }
     size_t bytes = 0; for (int i = 0; i < n; i++) { pthread_join(t[i], NULL); bytes += a[i].bytes; }
-    res_t r = { bytes / (now() - start) / 1e9, 0 }; return r;
+    res_t r = { bytes / (now() - start) / 1e9, 0, 0 }; return r;
 }
-static res_t measure(int bi, int qi) { return g_threads ? run_threads(BS[bi], QD[qi]) : run_uring(BS[bi], QD[qi]); }
+static res_t measure(int bi, int qi) {
+    double c0 = cpu_s(); res_t r = g_threads ? run_threads(BS[bi], QD[qi]) : run_uring(BS[bi], QD[qi]);
+    r.cpu_ms_gb = r.gbs > 0 ? (cpu_s() - c0) * 1e3 / (r.gbs * g_sec) : 0;   // CPU time (user + system) per GB read
+    return r;
+}
 
 int main(int argc, char ** argv) {
     if (argc < 2) { fprintf(stderr, "usage: iobench FILE [--grid] [--sec S] [--engine uring|threads]\n"); return 1; }
@@ -78,8 +84,8 @@ int main(int argc, char ** argv) {
     g_fd = open(argv[1], O_RDONLY | O_DIRECT); if (g_fd < 0) { perror("open O_DIRECT"); return 1; }
     struct stat st; fstat(g_fd, &st); g_size = st.st_size;
     double T0 = now(); static res_t R[NBS][NQD]; static int done[NBS][NQD];
-    printf("engine %s, %.2f s per point, file %.1f GiB\n%6s %4s %7s %8s\n", g_threads ? "threads(pread)" : "io_uring", g_sec, g_size / 1073741824.0, "bs", "qd", "GB/s", "p50 us");
-    #define M(b, q) (done[b][q] ? R[b][q] : (done[b][q] = 1, R[b][q] = measure(b, q), printf("%5zuk %4d %7.2f %8.0f\n", BS[b] >> 10, QD[q], R[b][q].gbs, R[b][q].p50_us), fflush(stdout), R[b][q]))
+    printf("engine %s, %.2f s per point, file %.1f GiB\n%6s %4s %7s %8s %9s\n", g_threads ? "threads(pread)" : "io_uring", g_sec, g_size / 1073741824.0, "bs", "qd", "GB/s", "p50 us", "cpu ms/GB");
+    #define M(b, q) (done[b][q] ? R[b][q] : (done[b][q] = 1, R[b][q] = measure(b, q), printf("%5zuk %4d %7.2f %8.0f %9.1f\n", BS[b] >> 10, QD[q], R[b][q].gbs, R[b][q].p50_us, R[b][q].cpu_ms_gb), fflush(stdout), R[b][q]))
     int b = 3, q = 3;
     if (grid) { for (int i = 0; i < NBS; i++) for (int j = 0; j < NQD; j++) (void) M(i, j); }
     else for (;;) {
@@ -95,6 +101,6 @@ int main(int argc, char ** argv) {
     double mx = 0; for (int i = 0; i < NBS; i++) for (int j = 0; j < NQD; j++) if (done[i][j] && R[i][j].gbs > mx) mx = R[i][j].gbs;
     int cb = -1, cq = -1; size_t cost = ~(size_t) 0;
     for (int i = 0; i < NBS; i++) for (int j = 0; j < NQD; j++) if (done[i][j] && R[i][j].gbs >= 0.95 * mx && BS[i] * QD[j] < cost) { cost = BS[i] * QD[j]; cb = i; cq = j; }
-    printf("best %.2f GB/s; choice: %zu KiB x depth %d = %.2f GB/s (p50 %.0f us), %zu KiB in flight; %.1f s\n", mx, BS[cb] >> 10, QD[cq], R[cb][cq].gbs, R[cb][cq].p50_us, cost >> 10, now() - T0);
+    printf("best %.2f GB/s; choice: %zu KiB x depth %d = %.2f GB/s (p50 %.0f us, %.1f cpu ms/GB), %zu KiB in flight; %.1f s\n", mx, BS[cb] >> 10, QD[cq], R[cb][cq].gbs, R[cb][cq].p50_us, R[cb][cq].cpu_ms_gb, cost >> 10, now() - T0);
     return 0;
 }
