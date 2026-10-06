@@ -140,7 +140,7 @@ Anything you pass is used as given and is never auto-tuned:
 | `-t N`, `-tb N` | fixed thread counts |
 | `--moe-expert-cache N` | cache slots per layer; `0` turns the cache off, `-1` sizes it from free VRAM |
 | `--moe KEY=VAL,...` | `slots`, `pf-slots`, `up-max`, `recent`, `pred-top`, `train-every`, or any tuning knob (`swap-lead`, `upload-wait`, `wait-swaps`, `ev-cld`, `upload-share`, ...), for example `--moe upload-wait=3,swap-lead=0` |
-| `--load-mode pin\|mmap` | mmap (the default, as upstream) or pinned weights (`-lm pin`: model loaded into pinned host memory, faster prompt processing when the model fits in RAM; uploads then go by direct DMA) |
+| `--load-mode pin\|mmap` | pinned weights (the default for every tool when part of the model stays in host RAM and fits in available RAM, faster prompts; `-lm mmap` opts out) or mmap |
 | `--moe mode=stock\|cache` | force the placement; `--moe state=0` ignores and never writes the state file |
 
 ## Turn it off
@@ -169,9 +169,9 @@ they are listed in the document, not here.
 
 ## Resident pinned models (Optional)
 
-Weights load with mmap by default (as upstream). Pinned weights (`-lm pin`) are far faster than mmap when the model fits in RAM: GLM-5.3-Flash 3.0-bit (109 GiB) on machine A  
+Everything that stays in host RAM is pinned now, because pinned weights are far faster than mmap: GLM-5.3-Flash 3.0-bit (109 GiB) on machine A  
 decodes at 12 to 15 tokens/s pinned and at 2 to 2.5 tokens/s when the load falls back to mmap, and a 12k-token prompt goes from 127 to 285 tokens/s once the state is learned.  
-**Add `-lm pin` to a command to use pinned weights and trade start speed for performance** (they used to be the automatic default; the default is mmap since 6 Oct, with the upload bounce buffer that speeds up uploads from mmap'd weights).  
+That is why auto-pin is the default, and it needs nothing from you. **Add `-lm mmap` to any command to fall back to mmap should you prefer to trade start speed for performance.**  
 
 The optional part is a pool of 1 GiB huge pages that keeps the pinned models resident in RAM between runs: the first load fills a cache file in the pool,  
 every later load maps that file instead of reading the model again, which more than halves the load time (measured on GLM-5.3-Flash 3.0-bit, 109 GiB: 43 s instead of 88 to 95 s).  
