@@ -211,6 +211,7 @@ struct upload_job {
 };
 
 struct moe_cache {
+    std::string settings;   // key settings that are no knobs and not tuned (upload path, bounce, workers, slots, policy), written to the state snapshot as run.settings
     int32_t n_slots     = 0;
     int32_t max_inserts = 2;
     int32_t window      = 64; // recent-usage window in tokens (--moe-cache-window)
@@ -770,7 +771,8 @@ void profile_save(const moe_cache * mc) {
             kv.emplace_back(std::string("run.") + r.first, out);
         }
     }
-    kv.emplace_back("run.knobs", knob_dump());   // the knobs of this run at its end (what was selected, tuner decisions included)
+    kv.emplace_back("run.knobs", knob_dump());
+    if (!mc->settings.empty()) { kv.emplace_back("run.settings", mc->settings); }   // the knobs of this run at its end (what was selected, tuner decisions included)
     moe_state_set(mc->profile, kv);
     if (moe_embsnap_enabled()) {   // research: this run's counts alone (lifetime counts minus what the preloaded profile brought in)
         std::vector<std::pair<std::string, std::string>> hot;
@@ -2787,6 +2789,14 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     mc->staging[0] ? "pread -> pinned staging -> GPU" :
                     src_pinned     ? "from pinned host memory (direct DMA)" :
                                      "from pageable host memory (mmap; --load-mode pin: faster uploads)");
+            {
+                static const char * const pol[] = { "halve", "window", "hybrid", "add", "lru", "rel" };
+                char sb[320];
+                snprintf(sb, sizeof sb, "slots=%d workers=%d links=%d upload=%s bounce_kb=%zu policy=%s", (int) mc->n_slots, n_workers, n_links,
+                        mc->bounce_bytes ? "bounce" : mc->staging[0] ? "pread" : src_pinned ? "pinned-dma" : "mmap-pageable",
+                        (size_t) (mc->bounce_bytes >> 10), pol[(int) get_policy()]);
+                mc->settings = sb;
+            }
         }
 
         for (size_t w = 0; w < mc->staging.size(); ++w)
