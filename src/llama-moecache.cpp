@@ -545,7 +545,7 @@ struct knobs_t {
     double stream_slow = 1; // stream onto slow-link (x4) layers too
     double trace       = 0; // LLAMA_MOE_CACHE_TRACE set: record this many steps (re-armed whenever a ctl file sets it)
     double trace_after = 0; // ... starting after this many steps
-    double admit       = 0; // (was 2 from 3 Oct: a missed expert waited for 2 uses in the window; A/B on MiMo tetris 2048, cold start: 0 gave 20 t/s at 92% hits, 2 gave 10 t/s at 76%)  // ADMIT=N: a missed expert may take a slot only after N uses in the last 64 tokens (0: any miss). 2 beat 0 by 16% decode on GLM-5.3-Flash
+    double admit       = 2; // a missed expert needs ADMIT uses in the last 64 tokens before it may take a slot. Default 2 (of the experts used in a 64-token window 69% reach 2 uses, 52% reach 3, and the 3rd use predicts further use only 16% better; Qwen Next: 2 and 3 equal); was 0 (any miss) until 6 Oct, 2 from 3 Oct to 4 Oct
                             // 3.0-bit (ppl comparator, 3 runs, ranges apart): a single recent use of a historically popular expert no longer evicts one that is hot now
     double admit_slow  = 0; // ADMIT_SLOW=N: the admission rule of layers on the slower link (their uploads cost 4-7x more; 0: same as ADMIT)
     double lead        = 1; // LEAD=1: the predicted layers per link are the nearest ones whose upload still lands in time: the lookahead window starts at
@@ -2726,7 +2726,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             const char * pr = moe_opt("pread");
             const bool use_pread = (pr && pr[0] == '1') || any_repack;
             const char * bn = moe_opt("bounce"), * bk = moe_opt("bounce-kb");
-            const size_t bounce_kb = bk ? (size_t) std::max(0, atoi(bk)) : bn ? (size_t) std::max(0, atoi(bn)) * 1024 : 0;   // --moe bounce-kb=KB or bounce=MB (0 = off)
+            const size_t bounce_kb = bk ? (size_t) std::max(0, atoi(bk)) : bn ? (size_t) std::max(0, atoi(bn)) * 1024 : 256;   // --moe bounce-kb=KB or bounce=MB; default 256 KB (0 = off)
             ggml_backend_buffer_type_t hbuft = (((use_pread && any_file) || bounce_kb > 0) && gpu) ? ggml_backend_dev_host_buffer_type(gpu) : nullptr;
             const char * nt = moe_opt("upload-threads");
             // one set of workers per upload link when layers sit behind both: a slow (x4) copy doesn't hold up the fast link's queue
