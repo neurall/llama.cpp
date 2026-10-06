@@ -45,7 +45,7 @@ static res_t run_uring(size_t bs, int qd) {
         free(iov); fd = 0;
     }
 #define PREP(s, i, off) do { if (g_fixed) { io_uring_prep_read_fixed(s, fd, buf + (size_t) (i) * bs, bs, off, i); (s)->flags |= IOSQE_FIXED_FILE; } else io_uring_prep_read(s, fd, buf + (size_t) (i) * bs, bs, off); } while (0)
-    double * t0 = calloc(qd, sizeof(double)); uint64_t seed = 88172645463325252ull;
+    double * t0 = calloc(qd, sizeof(double)); uint64_t seed = 88172645463325252ull ^ (uint64_t) (now() * 1e9);   // a new random sequence every point: repeated blocks would be served by the drive's own cache
     size_t nblk = g_size / bs; double * lat = malloc(sizeof(double) * 1000000); size_t nl = 0, bytes = 0;
     double start = now();
     for (int i = 0; i < qd; i++) {
@@ -71,7 +71,7 @@ static res_t run_uring(size_t bs, int qd) {
 
 typedef struct { size_t bs; int id; double until; size_t bytes; } th_t;
 static void * th_run(void * p) {
-    th_t * a = p; char * buf = aligned_alloc(4096, a->bs); uint64_t seed = 88172645463325252ull + a->id * 7919; size_t nblk = g_size / a->bs;
+    th_t * a = p; char * buf = aligned_alloc(4096, a->bs); uint64_t seed = (88172645463325252ull ^ (uint64_t) (now() * 1e9)) + a->id * 7919; size_t nblk = g_size / a->bs;
     while (now() < a->until) { if (pread(g_fd, buf, a->bs, (rnd(&seed) % nblk) * a->bs) != (ssize_t) a->bs) break; a->bytes += a->bs; }
     free(buf); return NULL;
 }
