@@ -131,6 +131,9 @@ extern "C" {
     typedef bool (*ggml_backend_moe_fill_cb_t)(const struct ggml_tensor * weight, int32_t expert, ggml_backend_dev_t dev,
                                               void ** data, ggml_backend_buffer_t * buffer, void * user_data);
     GGML_API void ggml_backend_set_moe_fill_callback(ggml_backend_moe_fill_cb_t cb, void * user_data);
+    // the registered callbacks, called from the expert copy of the scheduler's user (false: none registered or not resident / not wanted)
+    GGML_API bool ggml_backend_moe_src (const struct ggml_tensor * weight, int32_t expert, ggml_backend_dev_t dev, const void ** data, ggml_backend_buffer_t * buffer);
+    GGML_API bool ggml_backend_moe_fill(const struct ggml_tensor * weight, int32_t expert, ggml_backend_dev_t dev, void ** data, ggml_backend_buffer_t * buffer);
 
     // called before each non-CPU split is launched, while no split is executing on that backend
     // (the MoE expert cache publishes prefetched experts here, between layers)
@@ -337,6 +340,15 @@ extern "C" {
     //
     typedef bool (*ggml_backend_sched_eval_callback)(struct ggml_tensor * t, bool ask, void * user_data);
 
+    // Callback while copying input weights of a split
+    // if the user returns false the scheduler simply copies the entire weight
+    // the callback is called only for input weights in host buffers
+    // the callback is called after all non-weight inputs of the split have been copied
+    // `src` is the tensor in the previous split
+    // `dst` is the copy of `src` in the split
+    // `graph` is the compute graph of the split
+    typedef bool (*ggml_backend_sched_copy_callback)(ggml_backend_t backend, const struct ggml_tensor * src, struct ggml_tensor * dst, struct ggml_cgraph * graph, void * user_data);
+
     // Initialize a backend scheduler, backends with low index are given priority over backends with high index
     GGML_API ggml_backend_sched_t ggml_backend_sched_new(ggml_backend_t * backends, ggml_backend_buffer_type_t * bufts, int n_backends, size_t graph_size, bool parallel, bool op_offload);
     GGML_API void                 ggml_backend_sched_free(ggml_backend_sched_t sched);
@@ -375,14 +387,8 @@ extern "C" {
     // Set a callback to be called for each resulting node during graph compute
     GGML_API void                 ggml_backend_sched_set_eval_callback(ggml_backend_sched_t sched, ggml_backend_sched_eval_callback callback, void * user_data);
 
-    // Configure full-tensor MoE expert prefetch on a scheduler (mindcontrol port of
-    // --prefetch-experts-slots). Only engages for splits whose MUL_MAT_ID weights are
-    // host-resident (GGML_BACKEND_BUFFER_USAGE_WEIGHTS, e.g. --n-cpu-moe) during large
-    // prefill batches; decode is unaffected (batch ids < 2*n_expert).
-    //   slots == 0  -> prefetch disabled (no memory overhead)
-    //   slots >= 2  -> prefetch enabled with 1-deep lookahead and per-split cross-stream wait;
-    //                  GPU staging cost = slots * max_expert_tensor. Capped at GGML_SCHED_MAX_PREFETCH_SLOTS.
-    GGML_API void                 ggml_backend_sched_set_prefetch_experts_slots(ggml_backend_sched_t sched, int slots);
+    // Set a callback to be called when the inputs weights of a split are being copied
+    GGML_API void                 ggml_backend_sched_set_copy_callback(ggml_backend_sched_t sched, ggml_backend_sched_copy_callback callback, void * user_data);
 
     //
     // Meta backend

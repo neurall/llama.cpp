@@ -828,7 +828,7 @@ void llama_context::sched_reserve() {
     gf_res_prev_active = nullptr;
 
     sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, cparams.pipeline_parallel, cparams.op_offload));
-    ggml_backend_sched_set_prefetch_experts_slots(sched.get(), cparams.prefetch_experts_slots);
+    ggml_backend_sched_set_copy_callback(sched.get(), sched_copy_experts, this);
 
     llama_memory_context_ptr mctx;
     if (memory) {
@@ -868,7 +868,7 @@ void llama_context::sched_reserve() {
                 LLAMA_LOG_WARN("%s: compute buffer allocation failed, retrying without pipeline parallelism\n", __func__);
                 cparams.pipeline_parallel = false;
                 sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, cparams.op_offload));
-                ggml_backend_sched_set_prefetch_experts_slots(sched.get(), cparams.prefetch_experts_slots);
+                ggml_backend_sched_set_copy_callback(sched.get(), sched_copy_experts, this);
                 gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get());
             }
             if (!gf) {
@@ -3222,6 +3222,8 @@ ggml_status llama_context::graph_compute(
         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
     }
 
+    copy_experts.reset();
+
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
@@ -3230,6 +3232,119 @@ ggml_status llama_context::graph_compute(
     // fprintf(stderr, "splits: %d\n", ggml_backend_sched_get_n_splits(sched));
 
     return status;
+}
+
+bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph, void * user_data) {
+    auto & st = static_cast<llama_context *>(user_data)->copy_experts;
+
+    // the ids must be computed before the split starts, so only the first node of the split is considered
+    if (ggml_graph_n_nodes(graph) == 0) {
+        return false;
+    }
+    const ggml_tensor * node = ggml_graph_node(graph, 0);
+    if (node->op != GGML_OP_MUL_MAT_ID || node->src[0] != dst) {
+        return false;
+    }
+
+    const ggml_tensor * ids = node->src[2];
+    if (ggml_nelements(ids) == 0) {
+        return true;
+    }
+
+    const int64_t n_expert    = src->ne[2];
+    const size_t  expert_size = src->nb[2];
+
+    if (ids != st.ids || (int64_t) st.used.size() != n_expert) {
+        st.ids_data.resize(ggml_nbytes(ids)/sizeof(int32_t));
+        ggml_backend_tensor_get_async(backend, ids, st.ids_data.data(), 0, ggml_nbytes(ids));
+        ggml_backend_synchronize(backend);
+
+        st.used.assign(n_expert, false);
+        for (int64_t i1 = 0; i1 < ids->ne[1]; i1++) {
+            for (int64_t i0 = 0; i0 < ids->ne[0]; i0++) {
+                const int32_t id = st.ids_data[i1*ids->nb[1]/sizeof(int32_t) + i0*ids->nb[0]/sizeof(int32_t)];
+                GGML_ASSERT(id < n_expert);
+                if (id >= 0) { // negative: skipped expert (2-GPU prefill, MoE cache)
+                    st.used[id] = true;
+                }
+            }
+        }
+
+        st.ids = ids;
+    }
+
+    // experts already resident on this device (the MoE expert cache) are copied device-to-device,
+    // runs of the rest go over PCIe as before
+    ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+    auto bytes_view = [](ggml_backend_buffer_t buf, void * data, size_t n) {
+        ggml_tensor t = {};
+        t.type   = GGML_TYPE_I8;
+        t.buffer = buf;
+        t.data   = data;
+        t.ne[0] = (int64_t) n; t.ne[1] = t.ne[2] = t.ne[3] = 1;
+        t.nb[0] = 1; t.nb[1] = t.nb[2] = t.nb[3] = n;
+        return t;
+    };
+
+    // group consecutive experts and copy them together
+    auto copy_run = [&](int64_t first, int64_t last) {
+        // copy a bit extra to ensure there are no NaNs in the padding of the last expert, this is necessary for MMQ in the CUDA backend
+        const size_t offset  = first*expert_size;
+        const size_t padding = last < n_expert - 1 ? std::min<size_t>(expert_size, 512) : 0;
+        ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + offset, offset, (last - first + 1)*expert_size + padding);
+    };
+
+    int64_t first = -1;
+    int64_t last  = -1;
+    for (int64_t id = 0; id < n_expert; ++id) {
+        if (!st.used[id]) {
+            continue;
+        }
+
+        const void *          dev_data = nullptr;
+        ggml_backend_buffer_t dev_buf  = nullptr;
+        if (ggml_backend_moe_src(src, (int32_t) id, dev, &dev_data, &dev_buf)) {
+            ggml_tensor s = bytes_view(dev_buf, (void *) dev_data, expert_size);
+            ggml_tensor d = bytes_view(dst->buffer, (uint8_t *) dst->data + (size_t) id*expert_size, expert_size);
+            ggml_backend_tensor_copy_async(backend, backend, &s, &d);
+            // keep the MMQ padding rule: the unused neighbour must not hold NaNs
+            if (id < n_expert - 1 && !st.used[id + 1]) {
+                const size_t off = (size_t) (id + 1)*expert_size;
+                ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + off, off, std::min<size_t>(expert_size, 512));
+            }
+            continue;
+        }
+
+        if (first >= 0 && id == last + 1) {
+            last = id;
+            continue;
+        }
+        if (first >= 0) {
+            copy_run(first, last);
+        }
+        first = id;
+        last  = id;
+    }
+    if (first >= 0) {
+        copy_run(first, last);
+    }
+
+    // the used experts are on the device now: let the expert cache keep some of them
+    // (device-to-device, queued after the copies above on the same stream)
+    for (int64_t id = 0; id < n_expert; ++id) {
+        if (!st.used[id]) {
+            continue;
+        }
+        void *                dst_data = nullptr;
+        ggml_backend_buffer_t dst_buf  = nullptr;
+        if (ggml_backend_moe_fill(src, (int32_t) id, dev, &dst_data, &dst_buf)) {
+            ggml_tensor s = bytes_view(dst->buffer, (uint8_t *) dst->data + (size_t) id*expert_size, expert_size);
+            ggml_tensor d = bytes_view(dst_buf, dst_data, expert_size);
+            ggml_backend_tensor_copy_async(backend, backend, &s, &d);
+        }
+    }
+
+    return true;
 }
 
 llm_graph_cb llama_context::graph_get_cb() const {
@@ -4288,6 +4403,7 @@ void llama_context::opt_epoch_iter(
                     ggml_backend_tensor_set(labels, &onef, (pos_ubatch*labels->ne[0] + labels_sparse[ilabel])*sizeof(float), sizeof(float));
                 }
             }
+            copy_experts.reset();
             ggml_opt_eval(opt_ctx, result);
             if (callback) {
                 callback(train, opt_ctx, dataset, result, idata_in_loop + (pos_ctx + pos_batch)/n_ubatch + 1, ndata_in_loop, t_loop_start);
