@@ -2025,6 +2025,8 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     if (params.load_pinned_auto) {
         LOG_INF("%s: weights pinned (swapped %.1f GiB while loading, %.1f GiB RAM left)\n", __func__,
             swapped / 1073741824.0, avail / 1073741824.0);
+    } else {
+        LOG_INF("%s: weights NOT pinned: mmap / page cache (load mode %s)\n", __func__, llama_load_mode_name(params.load_mode));
     }
 
     pimpl->model.reset(model);
