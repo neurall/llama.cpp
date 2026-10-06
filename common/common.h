@@ -981,6 +981,10 @@ enum common_decision_type {
 
 common_decision_type common_get_decision_type(const struct llama_model * model);
 
+// same as above, but reads a GGUF file; it does not load the model
+// returns COMMON_DECISION_TYPE_UNKNOWN if the file is missing, unreadable, or invalid
+common_decision_type common_get_decision_type(const std::string & fname);
+
 // note: defines the model, context, samplers, ets. lifetimes
 // speculative defaults from model size vs free VRAM (tuner start depth, max depth; skips drafting
 // where it would be slower); idempotent, call before deciding whether to load a draft model
