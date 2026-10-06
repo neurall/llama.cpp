@@ -211,6 +211,7 @@ struct upload_job {
 };
 
 struct moe_cache {
+    std::string settings;   // key settings that are no knobs and not tuned (upload path, bounce, workers, slots, policy), the first part of the run.knobs line of the state snapshot
     int32_t n_slots     = 0;
     int32_t max_inserts = 2;
     int32_t window      = 64; // recent-usage window in tokens (--moe-cache-window)
@@ -570,9 +571,8 @@ std::string knob_canon(std::string name) {
     return name;
 }
 
-bool knob_set(knobs_t & k, const std::string & name_in, double v) {
-    const std::string name = knob_canon(name_in);
-    static const std::pair<const char *, double knobs_t::*> fields[] = {
+static const std::vector<std::pair<const char *, double knobs_t::*>> & knob_fields() {
+    static const std::vector<std::pair<const char *, double knobs_t::*>> fields = {
         { "UPLOAD_SHARE", &knobs_t::swap_frac }, { "PIN_HOT", &knobs_t::hot_frac }, { "STAY_BONUS", &knobs_t::sticky }, { "SLOW_MIN_STAY", &knobs_t::slow_stay },
         { "SWAP_LEAD", &knobs_t::margin }, { "SWAPS_PER_STEP", &knobs_t::budget }, { "CPU_RAM_GBS", &knobs_t::cpu_gbs }, { "SWAP_LEAD_PER_LINK", &knobs_t::link },
         { "UPLOAD_WAIT", &knobs_t::gate }, { "UPLOAD_WAIT_MAX_US", &knobs_t::gate_max_us }, { "RAM_CEILING_GBS", &knobs_t::ddr_gbs },
@@ -583,7 +583,12 @@ bool knob_set(knobs_t & k, const std::string & name_in, double v) {
         { "TRACE_N", &knobs_t::trace }, { "TRACE_SKIP", &knobs_t::trace_after }, { "UPLOAD_NOW", &knobs_t::jit },
         { "LEAD", &knobs_t::lead }, { "LEAD_SPAN", &knobs_t::lead_span }, { "ADMIT", &knobs_t::admit }, { "ADMIT_SLOW", &knobs_t::admit_slow }, { "ADMIT_JIT", &knobs_t::admit_jit },
     };
-    for (const auto & f : fields) {
+    return fields;
+}
+
+bool knob_set(knobs_t & k, const std::string & name_in, double v) {
+    const std::string name = knob_canon(name_in);
+    for (const auto & f : knob_fields()) {
         if (name == f.first) {
             k.*f.second = v;
             return true;
@@ -612,6 +617,17 @@ knobs_t & knobs() {
         return r;
     }();
     return k;
+}
+
+// "NAME=value ..." of every knob the cache runs with at this moment (tuner decisions included); a * marks the ones the user set. Written to the state snapshot as run.knobs (after the key settings).
+std::string knob_dump() {
+    std::string out;
+    char b[64];
+    for (const auto & f : knob_fields()) {
+        snprintf(b, sizeof b, "%g", knobs().*f.second);
+        out += std::string(out.empty() ? "" : " ") + f.first + (user_knobs().count(f.first) ? "*=" : "=") + b;
+    }
+    return out;
 }
 
 enum class policy { halve, window, hybrid, add, lru, rel };
@@ -755,6 +771,7 @@ void profile_save(const moe_cache * mc) {
             kv.emplace_back(std::string("run.") + r.first, out);
         }
     }
+    kv.emplace_back("run.knobs", (mc->settings.empty() ? std::string() : mc->settings + " | ") + knob_dump());   // key settings, then every knob   // the knobs of this run at its end (what was selected, tuner decisions included)
     moe_state_set(mc->profile, kv);
     if (moe_embsnap_enabled()) {   // research: this run's counts alone (lifetime counts minus what the preloaded profile brought in)
         std::vector<std::pair<std::string, std::string>> hot;
@@ -2771,6 +2788,14 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
                     mc->staging[0] ? "pread -> pinned staging -> GPU" :
                     src_pinned     ? "from pinned host memory (direct DMA)" :
                                      "from pageable host memory (mmap; --load-mode pin: faster uploads)");
+            {
+                static const char * const pol[] = { "halve", "window", "hybrid", "add", "lru", "rel" };
+                char sb[320];
+                snprintf(sb, sizeof sb, "slots=%d workers=%d links=%d upload=%s bounce_kb=%zu policy=%s", (int) mc->n_slots, n_workers, n_links,
+                        mc->bounce_bytes ? "bounce" : mc->staging[0] ? "pread" : src_pinned ? "pinned-dma" : "mmap-pageable",
+                        (size_t) (mc->bounce_bytes >> 10), pol[(int) get_policy()]);
+                mc->settings = sb;
+            }
         }
 
         for (size_t w = 0; w < mc->staging.size(); ++w)
