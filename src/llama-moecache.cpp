@@ -2726,7 +2726,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
             const char * pr = moe_opt("pread");
             const bool use_pread = (pr && pr[0] == '1') || any_repack;
             const char * bn = moe_opt("bounce"), * bk = moe_opt("bounce-kb");
-            const size_t bounce_kb = bk ? (size_t) std::max(0, atoi(bk)) : bn ? (size_t) std::max(0, atoi(bn)) * 1024 : 256;   // --moe bounce-kb=KB or bounce=MB; default 256 KB (0 = off)
+            const size_t bounce_kb = bk ? (size_t) std::max(0, atoi(bk)) : bn ? (size_t) std::max(0, atoi(bn)) * 1024 : 0;   // --moe bounce-kb=KB or bounce=MB; default off (0): 256 KB halves the upload time but cost GLM 3.0 16% (memcpy competes with the CPU experts for RAM bandwidth)
             ggml_backend_buffer_type_t hbuft = (((use_pread && any_file) || bounce_kb > 0) && gpu) ? ggml_backend_dev_host_buffer_type(gpu) : nullptr;
             const char * nt = moe_opt("upload-threads");
             // one set of workers per upload link when layers sit behind both: a slow (x4) copy doesn't hold up the fast link's queue
