@@ -1459,15 +1459,18 @@ static bool ggml_cuda_register_chunked(char * ptr, size_t size, std::unique_ptr<
     while (rc->state == 0) {
         if (ggml_time_us() - t_reg > GGML_CUDA_PIN_STALL_S*1000000LL) {
             fprintf(stderr, "ggml_cuda_host_malloc_registered: [PIN_STALL] cudaHostRegister of %.1f GiB made no progress in %d s (kernel memory compaction or reclaim stalled?), "
-                            "bailing with exit code 75. Check kcompactd and /proc/pressure/memory; vm.compaction_proactiveness=0 helps.\n", first / 1073741824.0, GGML_CUDA_PIN_STALL_S);
+                            "bailing with exit code 75. Memory is too fragmented to pin: a REBOOT defragments it and clears this. Check kcompactd and /proc/pressure/memory; vm.compaction_proactiveness=0 helps.\n", first / 1073741824.0, GGML_CUDA_PIN_STALL_S);
             fflush(stderr);
             _exit(75);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     if (rc->err != cudaSuccess) {
-        (void) cudaGetLastError();
-        return false;
+        // no silent downgrade to unpinned memory: report it and bail with the same code as a stall, so the caller can start again (run.py gives up after three)
+        fprintf(stderr, "ggml_cuda_host_malloc_registered: [PIN_STALL] cudaHostRegister of %.1f GiB failed: %s. Memory is too fragmented to pin: a REBOOT defragments it and "
+                        "usually clears this. bailing with exit code 75.\n", first / 1073741824.0, cudaGetErrorString(rc->err));
+        fflush(stderr);
+        _exit(75);
     }
     st->done = first;
     ggml_cuda_reg_state * sp = st.get();
