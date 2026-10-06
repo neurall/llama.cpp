@@ -37,7 +37,11 @@ static res_t run_uring(size_t bs, int qd) {
     int fd = g_fd;
     if (g_fixed) {
         struct iovec * iov = malloc(sizeof(struct iovec) * qd); for (int i = 0; i < qd; i++) iov[i] = (struct iovec) { buf + (size_t) i * bs, bs };
-        if (io_uring_register_buffers(&ring, iov, qd) || io_uring_register_files(&ring, &g_fd, 1)) { perror("register"); exit(1); }
+        int rb = io_uring_register_buffers(&ring, iov, qd), rf = rb < 0 ? 0 : io_uring_register_files(&ring, &g_fd, 1);   // liburing returns -errno
+        if (rb < 0 || rf < 0) {   // typically RLIMIT_MEMLOCK (ulimit -l) too small for bs x qd: this point is skipped
+            static int warned; if (!warned++) fprintf(stderr, "note: fixed buffers: register %s: %s (ulimit -l %s)\n", rb < 0 ? "buffers" : "file", strerror(-(rb < 0 ? rb : rf)), "too small?");
+            io_uring_queue_exit(&ring); free(buf); free(iov); res_t z = { 0, 0, 0 }; return z;
+        }
         free(iov); fd = 0;
     }
 #define PREP(s, i, off) do { if (g_fixed) { io_uring_prep_read_fixed(s, fd, buf + (size_t) (i) * bs, bs, off, i); (s)->flags |= IOSQE_FIXED_FILE; } else io_uring_prep_read(s, fd, buf + (size_t) (i) * bs, bs, off); } while (0)
