@@ -1841,7 +1841,7 @@ static bool ggml_backend_sched_is_host_weight(const struct ggml_tensor * t) {
         ggml_backend_buffer_is_host(t->buffer);
 }
 
-static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggml_backend_sched_split * split, struct ggml_tensor * input) {
+static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggml_backend_sched_split * split, struct ggml_tensor * input, std::vector<ggml_backend_t> & d2h_pending) {
     const int split_backend_id = split->backend_id;
     ggml_backend_t split_backend = sched->backends[split_backend_id];
     ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, input);
@@ -1867,6 +1867,19 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
 
     if (sched->callback_copy != NULL && ggml_backend_sched_is_host_weight(input) &&
         sched->callback_copy(split_backend, input, input_cpy, &split->graph, sched->callback_copy_user_data)) {
+        return;
+    }
+
+    // GGML_SCHED_D2H_ASYNC=0 turns off: a CPU split's inputs from a GPU are fetched async (ordered after their producers on that
+    // GPU's stream) and each source backend is synced once after all inputs, instead of a synchronous copy + sync per input tensor
+    static const bool d2h_async = !(getenv("GGML_SCHED_D2H_ASYNC") && atoi(getenv("GGML_SCHED_D2H_ASYNC")) == 0);
+    if (d2h_async && input_cpy->buffer && ggml_backend_buffer_is_host(input_cpy->buffer) &&
+            ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU &&
+            input_backend->iface.get_tensor_async && ggml_is_contiguous(input) && ggml_is_contiguous(input_cpy)) {
+        ggml_backend_tensor_get_async(input_backend, input, input_cpy->data, 0, ggml_nbytes(input));
+        if (std::find(d2h_pending.begin(), d2h_pending.end(), input_backend) == d2h_pending.end()) {
+            d2h_pending.push_back(input_backend);
+        }
         return;
     }
 
@@ -1906,15 +1919,19 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
         // copy the input tensors to the split backend
         // the weights in host memory are copied last, so that the copy callback can read the other inputs of the split
+        std::vector<ggml_backend_t> d2h_pending;
         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
             if (!ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
-                ggml_backend_sched_copy_input(sched, split, split->inputs[input_id]);
+                ggml_backend_sched_copy_input(sched, split, split->inputs[input_id], d2h_pending);
             }
         }
         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
             if (ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
-                ggml_backend_sched_copy_input(sched, split, split->inputs[input_id]);
+                ggml_backend_sched_copy_input(sched, split, split->inputs[input_id], d2h_pending);
             }
+        }
+        for (ggml_backend_t b : d2h_pending) {
+            ggml_backend_synchronize(b);
         }
 
         if (g_split_cb && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
