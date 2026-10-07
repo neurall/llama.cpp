@@ -25,7 +25,10 @@ Other models are being re-measured with the same protocol; their rows in the tab
 |---|---|---|---|---|---|---|---|---|
 | **GLM** 3.0-bit 117G | A | out_heavy: 4 game prompts, 1024 tokens out | 12.42 | **20.24** | - | - | **1.63x** | - |
 | | | in_out_heavy: 4 edits of a 1k-token source, 1024 out | 12.38 | **17.06** | 41.5 | **153** | **1.38x** | **3.7x** |
-Sadly my 2nd gpu sits in very constrained x4 slot making it almost unisable so pp performance on 2x x16 slot machine I dont yet have will be I assume much better as pcie nabddith is what decides prefill performance. 
+
+Sadly my 2nd gpu sits in very constrained x4 slot making it almost unusable so pp performance on 2x x16 slot machine 
+I can't yet afford  will be I assume much better as pcie babdwith is what decides prefill performance. But In a sense its' blessing
+as this forces me to optimize for usual Joe mainstream hw combinations.
 
 **Also:**
 
