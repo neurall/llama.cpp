@@ -1,162 +1,302 @@
-# llama.cpp fork: 1.7x to 2.4x faster decode on MoE models bigger than your VRAM
+# llama.cpp: fork with multi gpu acceleration even for models bigger than total gpu mem
 
-The newest mixture-of-experts models (GLM-5.3-Flash, MiMo-V2.6-Flash, Qwen3.8-Flash-Next, Qwen3.6) are far bigger than a gaming GPU.
-This fork keeps their experts in RAM and turns the free VRAM into a live cache of the experts the model is using; the GPUs compute
-the cached ones and the CPU the rest, at the same time. No special switches needed.
+> **Big thanks to [@csantiago78](https://github.com/csantiago78)**: the expert cache
+> here builds on their implementation in llama.cpp PR
+> [#27861](https://github.com/ggml-org/llama.cpp/pull/27861) ("GPU-resident LRU cache
+> for host-offloaded MoE expert weights"), the first working hot-expert cache in
+> llama.cpp. This fork takes it further: filling all free VRAM, adaptive eviction,
+> CPU/GPU overlap, small-batch support and fused kernels.
+
+For MoE models larger than VRAM: every expert stays in system RAM, and all VRAM left
+after the KV cache becomes a live cache of the experts actually being used. The GPUs
+compute cached experts while the CPU computes the rest, in parallel.
+
+llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
+
+**Results, 2x RTX 3090 (one AM4 CPU PCIe 4.0 x16, one X570 chipset x4 slot) + Ryzen 7 3700X + 125 GB DDR4,
+CPU frequency governor `performance`, single stream, temp 0.** Short = 1500-token chat reply to "write smallest html tetris game". Long =
+12k-token code prompt (llama.cpp sources): prompt processing, then decode. The prompts and a script to
+reproduce these tests are in [`tools/moe-bench/`](tools/moe-bench/).
+
+**Stock llama.cpp vs this fork**, tokens/s, model already in RAM (*). "mmap": weights
+memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned RAM, what
+`llama-server` does by itself when the model fits in RAM; "+ MTP": plus the model's MTP draft head
+(`-md`, automatic draft depth). Multipliers vs stock; best number per row in bold (links to how to reproduce it).
+
+| model | test | stock (b11041) | fork, mmap (b11327-b11367) | fork, mmap + MTP (b11367) | fork, pinned (b11341) | fork, pinned + MTP (b11367) |
+|---|---|---|---|---|---|---|
+| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB; `llama-server` default: pinned | short: decode | 13.8 | 20.4 (1.48x) | 18.2 (1.32x) ‡ | [**21.1 (1.53x)**](tools/moe-bench/) | 18.2 (1.32x) ‡ |
+| | long: prompt processing † | 217 | 180 (0.83x) | | [**262 (1.21x)**](tools/moe-bench/) ||
+| | long: decode | 12.3 | 15.6 (1.27x) | | [**16.3 (1.33x)**](tools/moe-bench/) ||
+| MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB; `llama-server` default: mmap (bigger than RAM) | short: decode | 4.0 | [**10.1 (2.54x)**](tools/moe-bench/) | no gain ¶ | - (bigger than RAM) | - |
+| | long: prompt processing † | [**136**](tools/moe-bench/) | 133 (0.98x) | | - | - |
+| | long: decode | 4.2 | [**8.3 (1.98x)**](tools/moe-bench/) | | - | - |
+| Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB; `llama-server` default: pinned | short: decode | 27.7 | 47.1 (1.70x) | 58.3 (2.11x) | 46.5 (1.68x) | [**60.4 (2.18x)**](tools/moe-bench/) |
+| | long: prompt processing † | 500 | 372 (0.74x) | 353 (0.71x) | [**538 (1.08x)**](tools/moe-bench/) | 500 (1.00x) |
+| | long: decode | 25.3 | 38.4 (1.52x) | 40.1 (1.59x) § | [**42.3 (1.67x)**](tools/moe-bench/) | 28.0 (1.11x) § |
+| Qwen3.8-27B IQ4_NL (dense, fits VRAM), 16 GB | short / long prompt | 44.7 / 1726 | 44.8 / 1811 (no cache needed) | | ||
+| OLMoE-1B-7B Q4_K_M (fits VRAM), 4 GB | short: decode | 504 | 504 (no cache needed) | | ||
+
+¶ MiMo's built-in MTP (3 dense layers, no experts): the depth tuner keeps depth 0 (drafting was
+not 5% faster in its probes), so no measurable gain; MiMo's numbers vary between sessions (8.9-10.1)
+because the model is bigger than RAM.
+§ The 12k test generates only 32 tokens: too few for the MTP depth tuner to finish a comparison,
+so these decode numbers are mostly probing overhead and vary a lot (28-40 t/s); MTP pays off on
+longer replies (short-prompt row).
+\* Model already in RAM (OS page cache), as on a server after its first request. The
+first run after switching to another large model is slower, once, while the file is
+read from disk. MiMo (132 GB) can't fully stay in 125 GB RAM, so it always reads part of
+the model from disk. Multipliers are vs stock.
+† Prompt processing streams the experts over PCIe to one GPU, so the slot limits it (here a
+PCIe 4.0 x16 CPU slot; the second card sits in an X570 chipset x4 slot). A board with more
+x16 slots, or another GPU, should raise it; splitting prompt processing across both GPUs'
+links is the next milestone.
+‡ MTP on GLM-5.3-Flash is slower on this box (pinned: 18.2 vs 21.1 t/s without; mmap: 18.2 vs 20.4; tuner picks depth 1; the model is 2.3x
+the VRAM, so verifying drafts adds CPU work and the draft takes cache VRAM). The fork
+doesn't load the draft here by default. Another GPU (more VRAM) should make it pay off,
+as it does for Qwen (1.9x VRAM).
+
+stock llama.cpp -> this fork. The fork numbers match a plain `llama-server -m model` within ~4%
+(auto mode, see Run). Stock can't load GLM-5.3-Flash, so its stock column is
+this fork without the cache. Models that fit in VRAM don't use the cache and run the
+same (identical output). With the default `schedutil`/`powersave` governor, decode can
+be lower, mostly where the CPU computes missed experts. Prompt processing: stock keeps whole layers in VRAM and
+never uploads them, this fork uploads experts, so it depends on upload speed. With pinned
+weights (the server default when the model fits in RAM) GLM-5.3-Flash is 1.21x stock, Qwen
+1.08x; with mmap both are 17-26% below stock.
+Decode speed depends on how often generated tokens reuse cached experts: ~75% of
+experts are hits on GLM chat, ~95% on Qwen.
+
+Models: GLM original 3.0-bit GGUF [pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF](https://huggingface.co/pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF)
+works as-is (reference quality); the Q4_K attention variant above (same experts,
+non-expert Q8_0 weights at Q4_K, +0.95% perplexity) decodes ~10% faster.
+
+**Same VRAM, different use.** Each GLM token uses 8 of 288 experts per layer. Stock
+fills VRAM with whole layers (~14 of 42), mostly experts the current token doesn't
+touch, so the CPU does most expert work and the GPUs wait. This fork fills the same
+VRAM with the ~100 most-used experts of every layer, so most expert work runs on the
+GPUs, at the same time as the CPU handles the misses.
+
+## Run
 
 ```sh
 llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
-llama-cli    -m model.gguf -p "hello"
+llama-cli    -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf -p "hello"
 ```
 
-## What you get
+**Automatic defaults that differ from stock llama.cpp.** They apply only when a MoE
+model's weights are larger than the free VRAM of all GPUs. Other models, and every
+setting you pass yourself, behave as in stock llama.cpp. The chosen values are
+printed at startup (`-lv 5` prints all of them).
 
-## Release b12353 admit-pin
+| setting | stock default | fork default | why |
+|---|---|---|---|
+| expert placement | autofit: whole layers on GPU, rest on CPU | all experts in RAM (`--cpu-moe`) | the VRAM is used for the expert cache instead of fixed layers |
+| expert cache | off | fills each GPU's free VRAM (`--moe-expert-cache -1`) | holds the experts tokens actually use, so most expert work runs on the GPUs |
+| CPU weight repacking | on | off (`-nr`) | repacked experts can't be copied to the GPU cache |
+| `-ub` (tokens per prompt step) | 512 | 2048 if the largest GPU has 20+ GiB free, 1024 at 10+ GiB, else 512 | every expert upload serves more prompt tokens: ~2x faster long prompts; costs ~0.7 GiB cache VRAM (~1% decode) on GLM-5.3-Flash |
+| `-c` (context) | model maximum, fitted to VRAM | 32768 | a bigger KV cache would take VRAM from the expert cache; `-c 65536` if you need more |
+| `-t` (threads) | all physical cores | cores minus one per GPU (6 of 8 here) | a free core per GPU keeps kernel launches and cache uploads fast; measured faster |
 
-New defaults: a missed expert takes a cache slot only after 2 uses in 64 tokens (`admit 2`); the weights are pinned in RAM by default when the model fits (`auto-pin`), and
-a failed pin is never replaced by a silent mmap fallback (it says so, tells you a reboot defragments memory, and exits after the third failure); the upload bounce buffer is off by default
-(`bounce-kb 0`); every run writes its effective settings and load mode (pinned or mmap) to the log and to the state file (`run.knobs`).
+Settings you pass always win, e.g. `--moe-expert-cache 0` turns the cache off. With your
+own placement (`-ngl`, `-ot`, `--cpu-moe`) the cache stays off unless you also pass
+`--moe-expert-cache -1`.
+- **Prompt processing runs on one GPU, so its PCIe bandwidth sets the speed.** The
+  fork measures host->GPU upload speed per GPU at startup and sends prompt processing
+  to the fastest (here x16 13.2 GB/s vs chipset x4 6.1 GB/s); layers stay in bus order.
+- Output can differ between runs even at temperature 0: a cached expert runs on the
+  GPU, a missed one on the CPU, and they round slightly differently. For benchmarks,
+  `LLAMA_MOE_CACHE_DETERMINISTIC=1` makes a build repeat its output.
+- Optional tuning (defaults are measured best): `LLAMA_MOE_CACHE_MARGIN_MB` (VRAM left
+  free, 384), `LLAMA_MOE_CACHE_STATS=1` (hit rate), `LLAMA_MOE_CACHE_WAIT=0`,
+  `LLAMA_MOE_CACHE_BUDGET` / `_MARGIN` / `_SWAP_FRAC` / `_POLICY`.
 
-First numbers of this release, machine A (2x RTX 3090), GLM-5.3-Flash 3.0-bit, hot runs (learned state kept, no thread flags, so the thread autotune runs), n=4, median.  
-Stock = upstream `4fbc76dec` (b11452), built with upstream's own release recipe (GCC 13.3, CUDA 12.8.2). Ours = this release, commit `10d6c1e5c`.  
-Other models are being re-measured with the same protocol; their rows in the table below are from earlier builds and stay until replaced by better measured numbers.
+**More GPUs**: each GPU gets its own cache from its free VRAM, so more GPUs mean more
+cached experts, fewer CPU misses and faster decode, up to the point where every
+expert fits. Reports from 3+ GPU setups are welcome.
 
-| model | machine | test | stock t/s | ours t/s | stock pp | ours pp | gain t/s | gain pp |
-|---|---|---|---|---|---|---|---|---|
-| **GLM** 3.0-bit 117G | A | out_heavy: 4 game prompts, 1024 tokens out | 12.42 | **20.24** | - | - | **1.63x** | - |
-| | | in_out_heavy: 4 edits of a 1k-token source, 1024 out | 12.38 | **17.06** | 41.5 | **153** | **1.38x** | **3.7x** |
+### Pinned weights (automatic when the model fits in RAM)
 
-Sadly my 2nd gpu sits in very constrained x4 slot making it almost unusable so pp performance on 2x x16 slot machine 
-I can't yet afford  will be I assume much better as pcie babdwith is what decides prefill performance. But In a sense its' blessing
-as this forces me to optimize for usual Joe mainstream hw combinations.
+Added in release b11341. When `llama-server` runs a MoE model bigger than VRAM that fits in
+the RAM available at startup, the fork loads its weights into pinned (page-locked) memory instead of
+memory-mapping the file (`--load-mode pin` does it by hand, `--load-mode mmap` turns it off).
+The GPUs then read experts straight from RAM by DMA, for prompt processing and for the cache's
+uploads during decode. Only the server does this by default: it starts once and serves many
+requests, so the longer startup pays off. `llama-cli` and the other tools keep mmap (fast
+startup for one-off runs); pass `--load-mode pin` to pin there too.
 
-**Also:**
+| 2x RTX 3090, model in RAM | mmap | pinned |
+|---|---|---|
+| GLM-5.3-Flash: 12k prompt processing t/s | 180 | **262 (+45%)** |
+| GLM-5.3-Flash: 12k decode t/s | 15.6 | 16.3 (+5%) |
+| GLM-5.3-Flash: chat decode t/s | 20.4 | same (decode isn't limited by uploads) |
+| Qwen3.8-Flash-Next: 12k prompt processing t/s | 372 | **538 (+45%)** |
+| Qwen3.8-Flash-Next: 12k decode t/s | 38.4 | 42.3 (+10%) |
+| GLM-5.3-Flash: startup until the server answers (model in page cache) | 38 s | ~100 s |
 
-- **Q2 models get a speed bump on AVX2 CPUs**: upstream has no AVX2 kernels for the Q2_0 type, this fork does (Qwen3.6-35B Q2_0 in the table).  
-- **Reloads of a 100 GB model take half the time** with the optional huge-page pool: 43 s instead of 88 to 95 s.  
-- **Fallback to stock speed.** When the cache cannot help, the fork measures this and falls back to stock speed as quickly as it can (the 1.0x rows). This is work in progress, but already very usable.  
+**Why the server pins by default:** the extra startup is paid once, every request after it is
+faster. On GLM-5.3-Flash it costs ~60 s more at startup and saves ~22 s on every 12k-token
+prompt (12,302 tokens at 179 vs 261 t/s) plus a few seconds per chat reply, so it pays back
+after about 3 long prompts; a server usually runs for hours. To keep mmap on the server
+(faster startup, RAM stays free for other programs):
 
-Rows with `game4` / `edit4` tests are build b12209 (best run of each side, the learned state kept between runs as in normal use); the others are from the last release (b11707) until they are re-measured.  
-Release the numbers belong to: the last published release is b11707; the `build` column names the fork build of every row (b11707 = that release, b12209 / b11653 / b11648 / b11285 = later or earlier builds of this fork that are not published as releases). The "stock" side is upstream llama.cpp: `def4d406a` for the b11707 rows, `836d57176` (docker build) for the b12209 rows; rows of older builds used the stock build of their day (`05af0d2b1`, `b11041-4fea119`), listed per run in the run log.  
+```sh
+llama-server -m model.gguf --load-mode mmap
+```
 
-Tokens/s, single stream, temperature 0, model in RAM: t/s = generation (decode), pp = prompt processing (prefill). "Stock" is stock llama.cpp.  
-Models: Qwen Next = Qwen3.8-Flash-Next, 27B = Qwen3.8-27B (dense), MTP = `--spec-type draft-mtp`; sizes in GB.  
-In VRAM = total VRAM of the machine divided by the model file size (weights only, 100% = the whole model fits; KV cache and buffers take part of it).  
-Bold = at least 1.1x faster than stock; ? = prompt speed from a prompt of only a few tokens (tetris, short4 rows): measured, but too short to compare.  
-Tests: short4 = four short game prompts (`game4`), long4 = four edits on a 2.7k-token source file (`edit4`), tetris = one short tetris prompt, 100 tokens, chat = a short chat, 12k / 2.2k = a prompt of that many tokens.
-Decode tokens/s, single stream, temperature 0, model in RAM. "Upstream" is stock llama.cpp.
-Machine A: 2x RTX 3090 (PCIe 4.0 x16 + chipset x4), Ryzen 7 3700X, 125 GB DDR4-3200.
-Machine B, a laptop: RTX 4060 8 GB, Ryzen 9 8945HS, 32 GB LPDDR5X-6400.
-Machine C: no GPU, Ryzen 5 3600, 64 GB DDR4-3200.
-GLM 3.5-bit, IQ3_S and IQ1_M are the first run of build b11707 against fresh upstream def4d406a (no discarded run before it); the other rows are hot runs of earlier builds.
+To pin with `llama-cli` (or another tool), e.g. for a long session with big prompts:
 
-Stock side = upstream llama.cpp builds `def4d406a` = upstream b11325, 1 Oct (the three rows above), `05af0d2b1` = b11302, 30 Sep, `4fea119` = b11041, 18 Sep, and `836d57176` = b11381, 3 Oct (docker build) for the other rows, `b5cf8ce02` = b11261, 29 Sep (Windows build) on the laptop; every run is recorded with its stock build in the run log (`tools/runs.db`, branch `runs-db`). Some older stock numbers (MiMo chat, GLM 3.5-bit, IQ3_S) were measured before the run log existed and cannot be traced to a build there.
+```sh
+llama-cli -m model.gguf --load-mode pin
+```
 
-Upstream itself got faster between these builds: on Qwen3.8-Flash-Next IQ4_XS stock decode went from 27.6 t/s (upstream b11041) to 31.0 t/s (upstream b11381, median of 5), and from 25.0 to 29.3 t/s on the 12k-token prompt; GLM-5.3 3.0-bit went from 11.9 (b11302) to 12.5 t/s. Gains in this table are therefore only comparable within rows measured against the same stock build; the 12k-prompt processing speed of stock also differs a lot between those two builds (496 vs 210 t/s, not yet explained).
+(an explicit `--load-mode` is used as given: there is no automatic fallback to mmap if the
+model doesn't fit in RAM.)
 
-| model (size) | machine | test | upstream | this fork | |
-|---|---|---|---|---|---|
-| **GLM-5.3-Flash** 3.0-bit (106 GB) | A | short chat, decode | 11.9 | **22.4** | **1.9x** |
-| **MiMo-V2.6-Flash** IQ3_XXS (132 GB, bigger than RAM) | A | short chat, decode | 4.6 | **10.9** | **2.4x** |
-| | | 12k-token prompt, decode | 4.2 | **9.1** | **2.2x** |
-| | | 12k-token prompt, processing | 156 | 112 | 0.7x |
-| **Qwen3.8-Flash-Next** UD-IQ4_XS (88 GB) * | A | short chat, decode | 27.7 | **46.5** | **1.7x** |
-| | | 12k-token prompt, decode / processing | 25.3 / 500 | **42.3 / 538** | 1.7x / 1.1x |
-| **GLM-5.3-Flash** 3.5-bit (137 GB, bigger than RAM) | A | short tetris prompt, 100 tokens, decode (text-dependent) | 6.9 | **15.1** | **2.2x** |
-| **Qwen3.8-Flash-Next** GSQ IQ3_S (83 GB) | A | short tetris prompt, 100 tokens, decode | 43.9 | **57.1** | **1.3x** |
-| **Qwen3.8-Flash-Next** GSQ IQ1_M (55 GB, barely over 48 GB VRAM) | A | same | 69.1 | 67.5 (picks stock) | 1.0x |
-| | B | same | 11.4 | **13.5** | **1.2x** |
-| | B | same, prompt processing | 15.5 | 5.9 | 0.4x |
-| **Qwen3.6-35B-A3B** Q2_0 (11 GB, on an 8 GB GPU) | B | short tetris prompt, 100 tokens, decode | 29.2 | **59.3** | **2.0x** |
-| | C | same, CPU only (AVX Q2_0 kernels) | 6.3 | **11.3** | **1.8x** |
-| Qwen3.8-27B IQ4_NL, dense (fits VRAM) | A | same | 45.1 | 45.0 | 1.0x |
-| Qwen3.8-27B IQ3_S, dense, CPU only | C | same | 1.7 | 1.6 | 1.0x |
-| Qwen3.8-27B Q5_K_M with MTP (`--spec-type draft-mtp`), fits VRAM | A | same | 78.3 | 77.0 | 1.0x (38.6 without MTP) |
-| | | 2.2k-token prompt, decode / processing | 31.3 / 599 | **51.1 / 792** | 1.6x / 1.3x |
-| Models that fit in VRAM | any | anything | same | same | 1.0x (cache off) |
+Pros: much faster prompt processing, slightly faster decode, and no page-fault stalls on the
+first requests (the whole model is read once at startup).
+Cons: startup takes longer (pinning ~100 GB runs at the NVIDIA driver's speed, ~2.5 GB/s),
+the model's RAM stays locked while the server runs (other programs can't use it), and it only
+works when the model fits in RAM. Models bigger than RAM (MiMo-V2.6 here) keep mmap, which pages
+experts in from disk on demand. If pinning makes the system swap anyway, the fork reloads with
+mmap and says so.
 
-\* from the previous release. GLM and MiMo were measured on release-candidate builds (MiMo also on b11509) before the last placement and thread commits, Qwen3.6 on the release binary. Every run behind these numbers (commit, build, machine, settings) is in
-[`tools/bench/run-history.csv`](tools/bench/run-history.csv).
+### Persistent hot experts
 
-## Nothing to configure
+Added in release b11391. When the server stops, the expert cache saves how often each expert was
+used (lifetime activation counts, ~50 KB per model) to `~/.cache/llama.cpp/`; the next start
+preloads each layer's most-used experts into VRAM before the first request, instead of warming up
+over the first answers. Measured on GLM-5.3-Flash, first request after a restart: decode +4-6%
+(20.5-20.9 -> 21.8 t/s), cache hits +2-4 points, short-prompt processing ~3x (5.6 -> 17 t/s, its
+experts are already on the GPU). Steady-state speed is unchanged.
 
-The defaults are chosen on your machine, not hard-coded:
+- `LLAMA_MOE_CACHE_PROFILE=<file>` uses another profile file, `=0` turns it off.
+- A GGUF can carry the counts itself (u32 array `moe_cache.expert_usage`, n_layer x n_expert);
+  it is used when there is no local profile yet. The model file is never written to.
+- Also new: `--moe-cache-window N` (tokens of recent usage the cache scores by, default 64) and
+  `LLAMA_MOE_CACHE_STICKY=0.3` (never evict the most-used 30% of each layer's slots; off by
+  default, +1.6% measured, within noise).
+- Tried and dropped: uploading a long prompt's hot experts right after it. It raised the hit
+  rate (67% -> 72%) but the extra uploads compete with decode (32-token answers -6% to -20%);
+  the prefill preheat below does it device-to-device instead.
 
-- **Cache or stock, measured.** If the model fits in VRAM, or the cache would not pay for what you run, it is placed exactly
-  like stock llama.cpp, so speed never drops below stock. A model more than twice your free VRAM takes the cache right away;
-  in between, the first two runs compare both and keep the faster one.
-- **Self-tuning on real token times.** The cache policy, the upload schedule and the decode and prompt thread counts are
-  adjusted while you use it. A setting that does not help is dropped, a setting you fix yourself is never touched.
-- **It remembers.** What it learned per model (hot experts, tuned settings, cache-or-stock) is kept in one file,
-  `~/.cache/llama.cpp/moe-state.ini`, so the next start, even a one-shot short prompt, begins from it. Delete the file to start over.
-- **It tells you what it does.** `llama-server` logs, and `llama-cli -lv 3` prints after each reply, whether the cache is on,
-  the hit rate, the tuned settings, threads and batch sizes.
+### Prefill preheat
 
-## MTP speculative decoding
+Added in release b11397. While a long prompt is processed, the experts it uses are copied to the
+GPU anyway (for the offloaded matmuls). The expert cache now keeps the prompt's most-used ones
+from those copies, device-to-device (no extra PCIe traffic), in place of cached experts the prompt
+used less. Decode after the prompt then starts with the prompt's experts in VRAM. GLM-5.3-Flash,
+12k-token code prompt then 256 tokens, 1 GPU: decode 13.5 -> **15.3 t/s (+12.7%)**, cache hits
+43% -> 55%; prompt processing -1%; short answers and chat unchanged.
+`LLAMA_MOE_CACHE_ADOPT` = share of a layer's slots that one prompt batch may replace (default 1.0, 0 = off).
 
-Qwen3.8-Flash-Next MTP from PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243)
+### MTP (multi-token prediction)
+
+Added in release b11327: Qwen3.8-Flash-Next MTP from PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243)
 ([@danielhanchen](https://github.com/danielhanchen)), GLM-5.3-Flash MTP from PR
-[#27917](https://github.com/ggml-org/llama.cpp/pull/27917) (timkhronos), both in this build. Load a model's MTP draft head
-with `-md`:
+[#27917](https://github.com/ggml-org/llama.cpp/pull/27917) (timkhronos).
+
+Load a model's MTP draft head with `-md` and the fork picks the draft depth itself:
 
 ```sh
 llama-server -m Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf \
     -md mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf --spec-type draft-mtp
 llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
-    -md GLM-5.3-Flash-MTP-Q4_K.gguf --spec-type draft-mtp --spec-draft-n-max 3
+    -md GLM-5.3-Flash-MTP-Q4_K.gguf --spec-type draft-mtp
 ```
 
 - MTP heads: Qwen3.8-Flash-Next from [unsloth/Qwen3.8-Flash-Next-GGUF](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF)
   (`MTP/`, the `shared` files reuse the main model's embeddings); GLM-5.3-Flash from
   [neuralll/GLM-5.3-Flash-MTP-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-MTP-GGUF)
-  (4.3 GiB, works with any `glm5-next` GLM-5.3-Flash GGUF). We made it: no GLM MTP GGUF existed, so
-  `tools/bench/glm_splice_mtp.py` pulls just the MTP tensors out of unsloth's UD-Q4_K_XL GGUF with HTTP range requests
-  (~4.3 GiB instead of the whole model) and writes them as a draft file; see [`tools/bench/`](tools/bench/) to rebuild it.
-- GLM MTP: 89% of drafts accepted in our test, output identical to plain decoding. For a model far bigger than VRAM the draft
-  is not loaded unless you pass `--spec-draft-n-max`.
+  (4.3 GiB, works with any `glm5-next` GLM-5.3-Flash GGUF). We made it: no GLM MTP GGUF
+  existed, so `tools/moe-bench/glm_splice_mtp.py` pulls just the MTP tensors out of unsloth's
+  UD-Q4_K_XL GGUF with HTTP range requests (~4.3 GiB instead of the whole model) and writes
+  them as a draft file; see [`tools/moe-bench/`](tools/moe-bench/) to rebuild it.
+- **Why depth is automatic:** every drafted token has to be verified, and each token picks
+  its own experts. Experts that miss the VRAM cache run on the CPU at the same cost per
+  drafted token as per generated one, so the best depth depends on how much of the model the
+  GPUs hold, not only on how often drafts are accepted. The fork starts from a guess (model
+  size vs free VRAM: up to 1x → 3, up to 2x → 2, more → 0; a separate `-md` draft is then not
+  loaded at all, built-in MTP layers are kept and measured from depth 0), then measures real
+  generation speed and moves the depth up or down in doubles, then by 1, re-checking every
+  4096 tokens. The max depth is 2 when the model is bigger than VRAM (the rollback buffers of
+  hybrid models are sized by it and cost cache VRAM), 5 when it fits.
+- Measured here: Qwen3.8-Flash-Next (1.9x VRAM, 95% cache hits) **57.0 t/s with MTP vs 47.1 without (1.21x)**
+  at depth 2. GLM-5.3-Flash (2.3x VRAM, ~70% hits) is slower with MTP (17.6 vs 20.2 t/s), so
+  the fork doesn't load the draft there (a warning says so; `--spec-draft-n-max N` forces it).
+  More VRAM should make GLM MTP worth it: with 3x 24 GB, GLM is ~1.5x VRAM (less than
+  Qwen's 1.9x here), cache hits should reach 90%+ and verifying drafts would cost little CPU
+  work (estimate ~1.2-1.3x from MTP); with 4 cards nearly all experts fit. A third card on
+  a chipset x4 slot slows cache uploads and prompt processing, not decode.
+- Since release b11367: built-in MTP (MiMo-V2.6) is loaded on models bigger than VRAM too, and the
+  tuner decides; on MiMo here it keeps depth 0 (no measurable gain).
+- The depth tuner keeps its current depth (at first the model-size guess) unless another depth is
+  at least 5% faster: early in a reply (the model's reasoning) depths measure near-tied, and
+  without that margin noise sometimes picked depth 1 on Qwen (~51 instead of ~60 t/s).
+- `LLAMA_SPEC_DEPTH=N` pins the depth for benchmarks.
 
-## Your settings win
+## What's in it
 
-Anything you pass is used as given and is never auto-tuned:
+- The GPU expert cache from PR [#27861](https://github.com/ggml-org/llama.cpp/pull/27861)
+  (csantiago78), extended with: VRAM-filling auto-size; usage tracking with decay;
+  swaps only when the upload pays back; an adaptive swap budget from measured upload
+  and token times; the cache published every step (+16% decode on long prompts);
+  CPU/GPU overlap within a layer; small batches up to 31 tokens (short prompts,
+  speculative verify) through the cache.
+- Prefill: experts the prompt selects warm the cache before the first token
+  ([@sdroege](https://github.com/sdroege) explored the same idea in the PR thread);
+  in big prefill batches, cached experts are copied GPU-to-GPU instead of over PCIe.
+- Pinned weights in `llama-server` when the model fits in RAM: experts are uploaded by direct
+  DMA (prompt processing GLM +45%, Qwen +45%); `--load-mode pin` / `mmap` to choose.
+- Persistent hot experts: the cache's usage is saved at shutdown and preloaded at the next start.
+- Prefill preheat: a long prompt's hot experts stay in the cache (device-to-device, no extra PCIe).
+- Automatic defaults for MoE models bigger than free VRAM (see Run): experts in RAM,
+  cache, no repack, `-ub` by VRAM, 32k context, one core per GPU left free.
+- Startup upload-bandwidth probe that sends prompt processing to the fastest-link GPU.
+- Lookahead expert prefetch from PR [#28414](https://github.com/ggml-org/llama.cpp/pull/28414)
+  ([@leshchukandrej](https://github.com/leshchukandrej)), `--prefetch-experts-slots N`,
+  off by default (slower with the cache on this box; may help without it).
+- Scheduler fixes (no host barrier between GPU splits that don't read host memory,
+  splits inserted exactly where another GPU's result is needed), fused CUDA gate
+  kernels, repacked CPU experts stay cacheable, `GGML_SCHED_PROF=1` profiling.
+- MTP: Qwen3.8-Flash-Next MTP from PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243)
+  ([@danielhanchen](https://github.com/danielhanchen)); GLM-5.3-Flash MTP from PR
+  [#27917](https://github.com/ggml-org/llama.cpp/pull/27917) (timkhronos), plus loading GLM's
+  MTP head as a separate small file; the expert cache stays with the main model (the draft
+  never builds or frees it, and the cache sizes itself after the draft is loaded); automatic
+  draft depth from measured speed.
+- GLM-5.3-Flash support from PRs [#27773](https://github.com/ggml-org/llama.cpp/pull/27773)
+  and [#27917](https://github.com/ggml-org/llama.cpp/pull/27917) (timkhronos).
+- Every change is benchmarked against the previous release binary on fixed inputs
+  before it ships.
 
-| you pass | effect |
-|---|---|
-| `-t N`, `-tb N` | fixed thread counts |
-| `--moe-expert-cache N` | cache slots per layer; `0` turns the cache off, `-1` sizes it from free VRAM |
-| `--moe KEY=VAL,...` | `cache`, `prefetch-slots`, `inserts`, `window`, `predict`, `train`, or any tuning knob (`MARGIN`, `GATE`, `WAIT`, `BIG`, `SWAP_FRAC`, ...), for example `--moe gate=3,margin=0` |
-| `--load-mode pin\|mmap` | pinned weights (the server default when the model fits in RAM, faster prompts) or mmap |
-| `LLAMA_MOE_AUTO_MODE=stock\|cache` | force the placement; `LLAMA_MOE_STATE=0` ignores and never writes the state file |
+## Known limits and next steps
 
-## Turn it off
-
-| you pass | effect |
-|---|---|
-| `--moe cache=0` | the whole fork off: no expert cache, nothing tuned or measured, plain stock behaviour (same as `--moe-expert-cache 0`) |
-| `-at off` | only the self-tuning off (`--autotune off`, same as `--moe autotune=0`): the cache keeps working with fixed defaults, placement uses a static rule, nothing is measured or saved |
-
-Environment forms: `LLAMA_AUTOTUNE=0`, `LLAMA_ARG_AUTOTUNE=off`, `LLAMA_ARG_MOE=cache=0`.
-
-## Good to know
-
-- **RAM is the limit.** Decode speed is bound by how fast the CPU reads the experts that are not in VRAM. More or faster RAM,
-  more VRAM or a faster GPU link all raise it.
-- Output can differ slightly from stock at temperature 0: a cached expert runs on the GPU, a missed one on the CPU.
-- Prompt processing of models bigger than RAM (mmap) is 20-30% below stock: the experts stream over PCIe.
-- A second GPU on a slow slot helps less; prompt processing goes to the fastest link.
-
-## Credits and contact
-
-The expert cache builds on [@csantiago78](https://github.com/csantiago78)'s llama.cpp PR
-[#27861](https://github.com/ggml-org/llama.cpp/pull/27861); GLM-5.3-Flash support is upstream
-([#27773](https://github.com/ggml-org/llama.cpp/pull/27773)).
+- Prompt processing with mmap (models bigger than RAM, or `--load-mode mmap`) is ~20% below
+  stock. Next milestone: use both GPUs' PCIe links for it (split each layer's experts by
+  measured bandwidth), and pin what fits for models bigger than RAM.
+- GPU order, ongoing research. On this box decode is ~7% faster (tetris 28.6 vs
+  26.7 t/s, cache hits 90% vs 87%, same cache size) when the layers stay in bus order
+  (x4 GPU first) than when the x16 GPU takes the first layers, while prompt processing
+  wants the x16 GPU. So since this release prompt processing goes to the fastest-link
+  GPU and layers keep bus order, which gets both. Why the layer order matters is not
+  known yet: the two cards differ (x16: Gainward 3-slot 370 W with partly blocked
+  airflow, x4: Dell OEM 2-slot 350 W; a budget build, these were the cards available
+  at a good price). Thermals are ruled out: logged every 5 s through a 12-minute
+  128k-token run and the pinned tests (30+ minutes), neither GPU ever hit a thermal or
+  hardware slowdown (x16 card peaked at ~79 °C, clocks steady at 1860-1890 MHz; CPU and
+  DIMMs also stayed below throttling). So the difference comes from where the layers sit
+  relative to the links and cards, not from heat. Next: per-GPU timing of each layer's
+  split during decode, and in auto mode choose the order per request.
+- MTP on models much bigger than VRAM (GLM-5.3-Flash here) is slower: verifying drafts
+  multiplies the CPU's expert work. Next: let the draft use the expert cache, and verify
+  drafts with the experts the main token already selected where possible.
 
 **About the author of this fork**: I'm actively looking for an AI engineering/research
 role and open to relocating out of Eastern Europe. If this work is useful to you or
 your team, reach out: [linkedin.com/in/neuralll](https://www.linkedin.com/in/neuralll/)
 
 ---
-
-# llama.cpp
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
