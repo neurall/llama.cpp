@@ -379,6 +379,9 @@ struct moe_cache {
     double   lv_slice_sum = 0;
     uint64_t lv_rest_until = 3072; // the first cycle starts after this many decoded tokens: a short session runs on the static defaults
     uint64_t lv_rest = 0;          // tokens between cycles: doubles while cycles confirm their decisions
+    uint64_t hr_h = 0, hr_m = 0;   // hits and misses at the last hit-rate window boundary (regime-change trigger)
+    double   hr_ref = -1;          // the window hit rate (%) when the last cycle ended: the level its decisions were made at
+    uint64_t hr_at = 0;            // step of the last window boundary
     bool     lv_changed = false;   // a decision in this cycle differs from the previous cycle's
     std::vector<double> lv_prev;   // previous cycle's decisions per tunable
     std::vector<std::vector<double>> lv_samples;
@@ -3584,8 +3587,28 @@ static void self_tune(moe_cache * mc) {
         knobs().*T[k].f = T[k].vals[mc->lv_c];
         apply_predict(mc);
     };
+    // the window hit rate (256 steps): over the rest the workload can change (a new topic, a longer context). When it falls 5 points below the level the last cycle decided at,
+    // the decisions are stale and the cycle starts now instead of when the rest timer ends
+    auto window_hit = [&]() {
+        uint64_t h = 0, m = 0;
+        for (const auto & l : mc->layers) { h += l.n_hit; m += l.n_miss; }
+        const uint64_t dh = h - mc->hr_h, dm = m - mc->hr_m;
+        mc->hr_h = h; mc->hr_m = m; mc->hr_at = mc->n_steps;
+        return dh + dm > 0 ? 100.0*dh/(double) (dh + dm) : -1.0;
+    };
     if (mc->lv_k < 0) {
-        if (mc->n_steps >= mc->lv_rest_until) { begin(0); }
+        if (mc->n_steps >= mc->lv_rest_until) { begin(0); return; }
+        if (mc->n_steps >= mc->hr_at + 256) {
+            const double w = window_hit();
+            if (mc->hr_ref < 0) {
+                mc->hr_ref = w;
+            } else if (w >= 0 && w < mc->hr_ref - 5.0 && mc->n_steps > 512) {
+                LLAMA_LOG_WARN("moe-cache: self-tune: hit rate %.1f%% against %.1f%% at the last decision: workload changed, tuning again now\n", w, mc->hr_ref);
+                mc->hr_ref = -1;
+                mc->lv_rest_until = mc->n_steps;
+                begin(0);
+            }
+        }
         return;
     }
     if (mc->lv_slice_n < mc->lv_slice_len) {
@@ -3655,6 +3678,8 @@ static void self_tune(moe_cache * mc) {
                 mc->lv_rest = mc->lv_changed ? REST_MIN : std::min(REST_MAX, std::max(REST_MIN, 2*mc->lv_rest));
                 mc->lv_changed = false;
                 mc->lv_k = -1;
+                mc->hr_ref = -1; mc->hr_at = mc->n_steps;   // the next full window after the cycle sets the reference level
+                { uint64_t h = 0, m = 0; for (const auto & l : mc->layers) { h += l.n_hit; m += l.n_miss; } mc->hr_h = h; mc->hr_m = m; }
                 mc->lv_cycle++;
                 mc->lv_rest_until = mc->n_steps + mc->lv_rest;
                 LLAMA_LOG_WARN("moe-cache: self-tune: next check in %llu tokens\n", (unsigned long long) mc->lv_rest);
