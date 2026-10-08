@@ -371,12 +371,13 @@ struct moe_cache {
     int      cpu_sat_threads = 0; // startup probe: reader threads that reach 95% of the CPU's RAM read rate
     // SELF_TUNE=1 (self_tune): the knob under test, its candidate in use, the running slice, per-candidate slice means
     int      lv_k = -1, lv_c = 0;
+    int      lv_inc = 0;           // the incumbent candidate of the knob under test (the value in use when its slice cycle began)
     int64_t  lv_slice_len = 36, lv_warm = 4; // slice length and skipped tokens of the knob under test (state-carrying knobs need long ones)
     std::string tuned_text;        // the self-tuner's decisions (NAME=value lines), kept in the state file: the next start begins from them
     uint64_t lv_cycle = 0;         // cycles finished: the candidate order rotates so no candidate always runs first (cold cache)
     int64_t  lv_slice_n = 0;
     double   lv_slice_sum = 0;
-    uint64_t lv_rest_until = 0;
+    uint64_t lv_rest_until = 3072; // the first cycle starts after this many decoded tokens: a short session runs on the static defaults
     uint64_t lv_rest = 0;          // tokens between cycles: doubles while cycles confirm their decisions
     bool     lv_changed = false;   // a decision in this cycle differs from the previous cycle's
     std::vector<double> lv_prev;   // previous cycle's decisions per tunable
@@ -3575,7 +3576,10 @@ static void self_tune(moe_cache * mc) {
     // a cycle costs ~2k tokens per state-carrying knob (half of them on the worse candidate): rest long enough to keep that under ~10%
     const uint64_t REST_MIN = 16384, REST_MAX = 131072;
     auto begin = [&](int k) {
-        mc->lv_k = k; mc->lv_c = (int) (mc->lv_cycle % T[k].vals.size());
+        // the candidate in use runs first (the static default or the last decision, never a cold alternative); the others follow
+        mc->lv_k = k; mc->lv_c = 0;
+        for (size_t i = 0; i < T[k].vals.size(); ++i) { if (T[k].vals[i] == knobs().*T[k].f) { mc->lv_c = (int) i; } }
+        mc->lv_inc = mc->lv_c;
         mc->lv_slice_len = T[k].slow ? 320 : 36; mc->lv_warm = T[k].slow ? 96 : 4;
         mc->lv_samples.assign(T[k].vals.size(), {});
         mc->lv_slice_n = 0; mc->lv_slice_sum = 0;
@@ -3595,6 +3599,18 @@ static void self_tune(moe_cache * mc) {
     const size_t nv = t.vals.size();
     size_t n_min = SIZE_MAX;
     for (const auto & v : mc->lv_samples) { n_min = std::min(n_min, v.size()); }
+    // a clearly worse alternative (6% slower than the incumbent after one slice each) is dropped at once: exploring costs tokens on the worse setting
+    if (n_min >= 1 && n_min < MIN_S) {
+        const auto & vi = mc->lv_samples[mc->lv_inc];
+        double mi = 0; for (double x : vi) { mi += x; } mi /= vi.size();
+        bool worse = true;
+        for (size_t c = 0; c < nv; ++c) {
+            if ((int) c == mc->lv_inc) { continue; }
+            const auto & v = mc->lv_samples[c]; double m = 0; for (double x : v) { m += x; } m /= v.size();
+            if (!(m > 1.06*mi)) { worse = false; }
+        }
+        if (worse) { n_min = MAX_S; }   // falls into the decision below with the incumbent
+    }
     if (n_min >= MIN_S) {
         std::vector<double> mean(nv), se(nv);
         for (size_t c = 0; c < nv; ++c) {
@@ -3603,14 +3619,18 @@ static void self_tune(moe_cache * mc) {
             for (double x : v) { m += x; }
             m /= v.size();
             for (double x : v) { q += (x - m)*(x - m); }
-            mean[c] = m; se[c] = sqrt(q / (v.size() - 1) / v.size());
+            mean[c] = m; se[c] = v.size() > 1 ? sqrt(q / (v.size() - 1) / v.size()) : 1e300;
         }
-        size_t b = 0;
-        for (size_t c = 1; c < nv; ++c) { if (mean[c] < mean[b]) { b = c; } }
+        // mean: ms per token, lower is better. The incumbent keeps the knob unless an alternative is better by more than the noise (2 standard
+        // errors of both) AND by at least 1%: a tuner that is not sure leaves the value that was in use
+        const size_t inc = (size_t) mc->lv_inc;
+        size_t b = inc;
+        for (size_t c = 0; c < nv; ++c) { if (c != inc && mean[c] < mean[b]) { b = c; } }
         bool sure = true;
         for (size_t c = 0; c < nv; ++c) {
             if (c != b && mean[c] - 2*se[c] <= mean[b] + 2*se[b]) { sure = false; }
         }
+        if (b != inc && (!sure || mean[b] > 0.99*mean[inc])) { b = inc; }
         if (sure || n_min >= MAX_S) {
             knobs().*t.f = t.vals[b];
             apply_predict(mc);
