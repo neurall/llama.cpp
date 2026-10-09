@@ -126,6 +126,7 @@ RUN_COLS += ["up_ms_expert", "up_gbs_eff"]   # from the engine log: mean upload 
 RUN_COLS += ["pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb"]   # nvidia-smi dmon over the server run: GB host->device during the request (all GPUs; the server is already loaded), the peak of any GPU in a second, the mean of the seconds that moved data, GB device->host
 RUN_COLS += ["ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1"]   # from cache.csv (admit-pred builds): mean RAM traffic share of DDR_GBS, mean share of uploads that ran while the CPU read experts, mean slowdown of CPU expert phases with an upload in flight, the first predicted layer ahead per link at the end
 RUN_COLS += ["ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow"]   # hits an uploaded expert actually got before its eviction, per link (cache.csv histogram 0/1/2/3/4-5/6-10/11+; mean with bucket midpoints), the share with no hit and with 4 or more, and the mean steps it stayed cached
+RUN_COLS += ["pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct"]   # power of the request window, one value per GPU in index order (nvidia-smi, --gpulog): mean W, peak W (1 s average), peak W (instantaneous), energy of all GPUs in Wh, % of samples at the software power cap
 RUN_COLS += ["vram_mib"]   # GPU memory in use at the end of the run, all GPUs together (nvidia-smi memory.used)
 RUN_COLS += ["endpoint"]
 RUN_COLS += ["knobs_end"]   # what the build actually ran with, from the run.knobs line of the end-of-run state snapshot: key settings (slots, workers, upload path, bounce, policy) | every cache knob incl. tuner decisions (defaults differ between builds; * = set by the user)   # completion (raw prompt), chat (template) or cli (llama-cli)
@@ -414,7 +415,7 @@ def model_residency():
 
 PERFPROF = False   # --perf-prof: perf record (499 Hz, user space) of the server during each run -> tools/bench/perf/<time>-<build>.txt (flat top symbols per library)
 GPULOG = False   # --gpulog: 5 Hz nvidia-smi and CPU sampling during the runs (off by default; the slow mode turned out to be real code text, not a power or clock effect)
-GPU_Q = "index,power.draw,clocks.sm,clocks.mem,temperature.gpu,utilization.gpu,pcie.link.gen.current,pcie.link.width.current,clocks_throttle_reasons.active"
+GPU_Q = "index,power.draw,clocks.sm,clocks.mem,temperature.gpu,utilization.gpu,pcie.link.gen.current,pcie.link.width.current,clocks_throttle_reasons.active,power.draw.instant"
 
 
 def gpu_sampler(build, pid=None):
@@ -427,7 +428,7 @@ def gpu_sampler(build, pid=None):
     def pump():
         for line in p.stdout:
             v = [x.strip() for x in line.split(",")]
-            f.write(f"{time.time() * 1000:.1f}," + ",".join(v) + "\n"); rows.append(v)
+            now = time.time(); f.write(f"{now * 1000:.1f}," + ",".join(v) + "\n"); rows.append(v + [f"{now:.3f}"])   # the last element: the time of the sample
     th = threading.Thread(target=pump, daemon=True); th.start()
     cf = open(path[:-4] + ".cpu.csv", "w"); cf.write("t_ms,sys_busy_pct,proc_cores\n"); cpu, alive = [], [True]
     def cpu_poll():   # whole-machine CPU busy share (/proc/stat) and the server's own CPU use in cores (utime+stime), 5 Hz, same clock as the GPU samples
@@ -448,10 +449,28 @@ def gpu_sampler(build, pid=None):
             cf.write(f"{w2 * 1000:.1f},{busy:.1f},{cores:.2f}\n"); cpu.append((busy, cores))
             t_, i_, p_, w_ = t2, i2, p2, w2
     cth = threading.Thread(target=cpu_poll, daemon=True); cth.start()
-    def stop():
+    def stop(t_from=None, t_to=None):
         alive[0] = False; cth.join(3); cf.close()
         p.terminate(); th.join(5); f.close()
         out = {}
+        if t_from is not None:   # power over the request only (t_from..t_to, epoch seconds), per GPU in index order: mean, peak, instantaneous peak, energy, share of the samples at the software power cap
+            win = {}
+            for g in sorted({r[0] for r in rows}):
+                r = [x for x in rows if x[0] == g and t_from <= float(x[-1]) <= (t_to or time.time()) and x[1].replace(".", "").isdigit()]
+                if len(r) < 2:
+                    continue
+                pw = [float(x[1]) for x in r]; ts = [float(x[-1]) for x in r]
+                ins = [float(x[9]) for x in r if len(x) > 10 and x[9].replace(".", "").isdigit()]
+                j = sum(0.5 * (pw[i] + pw[i + 1]) * (ts[i + 1] - ts[i]) for i in range(len(r) - 1))
+                cap = 0
+                for x in r:
+                    try: cap += bool(int(x[8], 16) & 0x4)
+                    except ValueError: pass
+                win[g] = (j / max(1e-6, ts[-1] - ts[0]), max(pw), max(ins) if ins else 0.0, j / 3600.0, 100.0 * cap / len(r))
+            if win:
+                PROCSTAT.update(pw_avg="/".join("%.0f" % v[0] for v in win.values()), pw_max="/".join("%.0f" % v[1] for v in win.values()),
+                                pw_inst_max="/".join("%.0f" % v[2] for v in win.values()), energy_wh="%.3f" % sum(v[3] for v in win.values()),
+                                cap_pct="/".join("%.0f" % v[4] for v in win.values()))
         for g in sorted({r[0] for r in rows}):
             r = [x for x in rows if x[0] == g and x[2].replace(".", "").isdigit() and x[5].isdigit()]
             b = [x for x in r if int(x[5]) >= 20]   # busy samples: idle and ramp samples would set the minimum
@@ -500,7 +519,8 @@ def server_run(build, env, args, path, body, render=None):
     PROCSTAT["endpoint"] = "completion" if path == "/completion" else "chat"
     p, logf = server_start(build, env, args)
     PROCSTAT["load_s"] = round(time.time() - _t0, 1)   # server_start returns when the server answers
-    gstop = gpu_sampler(build, p.pid) if GPULOG else (lambda: ({}, ""))
+    gstop = gpu_sampler(build, p.pid) if GPULOG else (lambda *a: ({}, ""))
+    t_req = [None, None]   # the request window: the power columns cover it only
     perf = None
     if PERFPROF:
         pdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "perf"); os.makedirs(pdir, exist_ok=True)
@@ -510,10 +530,13 @@ def server_run(build, env, args, path, body, render=None):
     try:
         if render:   # the server renders the model's chat template into the prompt text
             body = {**body, "prompt": post("/apply-template", {"messages": render})["prompt"]}
-        return (post_loopguard(path, body) if path == "/completion" and not KEEP_LOOPS and int(body.get("n_predict", 0)) >= 800 else post(path, body)), logf
+        t_req[0] = time.time()
+        res = (post_loopguard(path, body) if path == "/completion" and not KEEP_LOOPS and int(body.get("n_predict", 0)) >= 800 else post(path, body))
+        t_req[1] = time.time()
+        return res, logf
     finally:
         try:
-            gs, gpath = gstop()
+            gs, gpath = gstop(t_req[0], t_req[1])
             if GPULOG:
                 PROCSTAT["gpu_log"] = " | ".join((f"gpu{g}: {v}" if g != "cpu" else f"cpu: {v}") for g, v in gs.items()) + " " + os.path.relpath(gpath, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         except Exception:
@@ -962,7 +985,7 @@ def store(row, build, test, rec, note, hw, vstr):
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=power_limits(hw), proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
-        branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
+        branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
     global _EMB_OFF
     try:
         import runlog
