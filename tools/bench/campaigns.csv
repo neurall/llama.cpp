@@ -687,3 +687,4 @@ gcchost-olmoe,2026-10-09 13:22:20,"bench /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K
 sim6-glm12,2026-10-09 13:25:53,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds release-b12353-10d6c1e5c variants ub1024,ub8192 test pf12k n=3",,
 sim7-glm24,2026-10-09 13:42:29,"bench /p/bw/data/q5h/glm12/GLM24-3.0bit.gguf builds release-b12353-10d6c1e5c variants ub512,ub2048,ub4096 test pf12k n=3",,
 sim9-pfslots,2026-10-09 13:58:44,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds release-b12353-10d6c1e5c variants p0u4096,p4u4096,p2u4096,p3u4096,p0u2048,p2u2048 test pf12k n=3",,
+sim10-pin,2026-10-09 14:10:03,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds release-b12353-10d6c1e5c variants pin0u4096,pin3u4096,pin4u4096,pin0u2048,pin3u2048 test pf12k n=2",,
