@@ -4,7 +4,7 @@
 //   bench=sync   sync and launch costs: stream/event sync, empty kernel round trip, cross-device event wait, queued kernels, cudaMalloc
 //   bench=up     upload sweep from file-backed pages (a fresh mmap of file=PATH per test, like the first touch of the mmap'd model): direct = T threads, each one whole-slice
 //                cudaMemcpyAsync from the mapped pages; bounce = T threads, each copies C-byte chunks into its own ring of pinned buffers and DMAs them; pinned = the source in pinned
-//                memory (upper bound). One GPU alone and all GPUs at once. keys: file=PATH region_mb=256 reps=3 threads=1,2,3,4 chunks_kb=64,256,1024,4096,16384,32768 ring=4
+//                memory (upper bound); dma = the bounce ring without the CPU copy (the DMA limit of a chunk size). One GPU alone and all GPUs at once. keys: file=PATH region_mb=256 reps=3 threads=1,2,3,4 chunks_kb=64,256,1024,4096,16384,32768 ring=4
 //   bench=pipe   the pass pipeline: groups of blocks alternate between the lanes (one GPU each); a lane = a host thread + an uploader thread; every step
 //                waits for its weights (uploaded through K slots), for the stash of the group before (pushed through pinned host memory by the other
 //                lane), computes (a kernel that spins for the measured time), and pushes its stash on. Reports the wall time and tokens/s, and the
@@ -310,7 +310,7 @@ static std::vector<size_t> list_of(const char * key, const char * def, size_t mu
 struct UpResult { double gbs = 0; double s = 0; };
 
 // one upload of `bytes` from src to the device buffer dst on device dev, with T threads; chunk == 0: each thread one cudaMemcpyAsync of its slice; else a pinned ring per thread
-static UpResult upload_run(int dev, void * dst, const char * src, size_t bytes, int T, size_t chunk, int ring) {
+static UpResult upload_run(int dev, void * dst, const char * src, size_t bytes, int T, size_t chunk, int ring, bool skip_copy = false) {
     std::vector<std::thread> th; std::atomic<int> ready{0}, go{0};
     const size_t slice = (bytes / T + 4095) & ~(size_t) 4095;
     double t_start = 0, t_end = 0;
@@ -332,7 +332,7 @@ static UpResult upload_run(int dev, void * dst, const char * src, size_t bytes, 
                 for (size_t off = lo; off < hi; off += chunk, k = (k + 1) % ring) {
                     const size_t n = std::min(chunk, hi - off);
                     CK(cudaEventSynchronize(ev[k]));               // the DMA that last used this buffer is done
-                    memcpy(pin[k], src + off, n);                   // page faults + the CPU copy
+                    if (!skip_copy) { memcpy(pin[k], src + off, n); } // page faults + the CPU copy (mode dma: skipped, the pinned buffer is DMA'd as it is: the DMA limit of this chunk size)
                     CK(cudaMemcpyAsync((char *) dst + off, pin[k], n, cudaMemcpyHostToDevice, st));
                     CK(cudaEventRecord(ev[k], st));
                 }
@@ -370,6 +370,7 @@ static void bench_up() {
     std::vector<Cfg> cfgs;
     cfgs.push_back({ "pinned", 1, 0 });
     for (size_t T : Ts) { cfgs.push_back({ "direct", (int) T, 0 }); }
+    for (size_t T : Ts) { for (size_t C : Cs) { cfgs.push_back({ "dma", (int) T, C }); } }
     for (size_t T : Ts) { for (size_t C : Cs) { cfgs.push_back({ "bounce", (int) T, C }); } }
     size_t next = 0; // the next unused 256 MiB window of the file, wrapped
     for (auto & c : cfgs) {
@@ -382,10 +383,10 @@ static void bench_up() {
                 for (int d = 0; d < nd; ++d) { offs[d] = (next % ((size_t) fsize / region - 1)) * region; ++next; }
                 for (int d = 0; d < nd; ++d) { void * m = mmap(nullptr, region, PROT_READ, MAP_PRIVATE, fd, offs[d]); if (m == MAP_FAILED) { perror("mmap"); exit(1); } maps[d] = (const char *) m; }
                 if (pass == 0) {
-                    for (int d = 0; d < nd; ++d) { UpResult u = upload_run(d, dbuf[d], c.mode == "pinned" ? pinned.p : maps[d], region, c.T, c.chunk, ring); acc[d] += u.gbs; }
+                    for (int d = 0; d < nd; ++d) { UpResult u = upload_run(d, dbuf[d], c.mode == "pinned" ? pinned.p : maps[d], region, c.T, c.chunk, ring, c.mode == "dma"); acc[d] += u.gbs; }
                 } else {
                     std::vector<std::thread> th; std::vector<UpResult> res(nd);
-                    for (int d = 0; d < nd; ++d) { th.emplace_back([&, d]() { res[d] = upload_run(d, dbuf[d], c.mode == "pinned" ? pinned.p : maps[d], region, c.T, c.chunk, ring); }); }
+                    for (int d = 0; d < nd; ++d) { th.emplace_back([&, d]() { res[d] = upload_run(d, dbuf[d], c.mode == "pinned" ? pinned.p : maps[d], region, c.T, c.chunk, ring, c.mode == "dma"); }); }
                     for (auto & t : th) { t.join(); }
                     for (int d = 0; d < nd; ++d) { acc[d] += res[d].gbs; }
                 }
