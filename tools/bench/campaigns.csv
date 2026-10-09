@@ -741,3 +741,5 @@ passes8i-diag,2026-10-09 19:18:36,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf b
 passes8i-diag,2026-10-09 19:19:26,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants x2 test pf12k n=1,,
 passes8j-equal,2026-10-09 19:23:17,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants j2p1,j2pa test pplc n=1",,
 passes8j-speed,2026-10-09 19:24:08,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants ob3,k2p1,k2pa,k2pas,pk2pa,pob4 test pf12k n=2",,
+passes8k-trace,2026-10-09 19:33:22,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants tr1 test pf12k n=1,,
+passes8k-trace,2026-10-09 19:33:56,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants tra test pf12k n=1,,
