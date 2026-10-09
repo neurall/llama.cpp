@@ -1,6 +1,7 @@
 // cudapipe.cu: the two-GPU prefill pipeline and its building blocks on dummy CUDA, with the real load sizes and timings (no model).
 //
 //   bench=bw     link bandwidth per GPU (pinned / pageable / file-backed host memory, alone and both GPUs at once, duplex), the stash crossing
+//   bench=lat    latency of a small host-to-device copy (24 KB, 4 MB, 50 MB) while a big upload runs on the same card (pageable / pinned, one copy per 1 GB block or chunked)
 //   bench=sync   sync and launch costs: stream/event sync, empty kernel round trip, cross-device event wait, queued kernels, cudaMalloc
 //   bench=up     upload sweep from file-backed pages (a fresh mmap of file=PATH per test, like the first touch of the mmap'd model): direct = T threads, each one whole-slice
 //                cudaMemcpyAsync from the mapped pages; bounce = T threads, each copies C-byte chunks into its own ring of pinned buffers and DMAs them; pinned = the source in pinned
@@ -452,12 +453,86 @@ static void bench_up() {
     }
 }
 
+// ---- bench=lat ----
+// What does a small host-to-device copy cost while big uploads are running on the same card? (the lane thread's input copies and stash pull wait behind the upload thread's weights in the pipeline)
+// A big-upload thread keeps copying `big_mb` blocks from the chosen source in the chosen way; a probe thread issues one small cudaMemcpyAsync (pinned source, own stream) every probe_ms and times it to completion.
+static double pct(std::vector<double> v, double q) { if (v.empty()) { return 0; } std::sort(v.begin(), v.end()); return v[std::min(v.size() - 1, (size_t) (q * v.size()))]; }
+
+static void lat_run(int dev, const char * label, HostMem & src, size_t big, size_t chunk, int ring, const std::vector<size_t> & probes, double probe_ms, double secs) {
+    CK(cudaSetDevice(dev));
+    void * dbig = nullptr; if (big) { CK(cudaMalloc(&dbig, big)); }
+    std::atomic<bool> stop{false};
+    // idle latency of each probe size first
+    std::vector<char *> ph(probes.size()); std::vector<void *> pd(probes.size());
+    for (size_t i = 0; i < probes.size(); ++i) { CK(cudaHostAlloc((void **) &ph[i], probes[i], cudaHostAllocPortable)); CK(cudaMalloc(&pd[i], probes[i])); memset(ph[i], 1, probes[i]); }
+    cudaStream_t sp; CK(cudaStreamCreateWithFlags(&sp, cudaStreamNonBlocking));
+    auto probe_once = [&](size_t i) { const double t0 = now_s(); CK(cudaMemcpyAsync(pd[i], ph[i], probes[i], cudaMemcpyHostToDevice, sp)); CK(cudaStreamSynchronize(sp)); return (now_s() - t0) * 1e3; };
+    std::vector<double> idle(probes.size()); for (size_t i = 0; i < probes.size(); ++i) { probe_once(i); std::vector<double> v; for (int r = 0; r < 20; ++r) { v.push_back(probe_once(i)); } idle[i] = pct(v, 0.5); }
+    std::vector<std::vector<double>> lat(probes.size());
+    std::atomic<size_t> bytes_done{0};
+    std::thread up([&]() {   // the upload thread (big == 0: none, the probe alone)
+        if (!big) { return; }
+        CK(cudaSetDevice(dev)); cudaStream_t su; CK(cudaStreamCreateWithFlags(&su, cudaStreamNonBlocking));
+        std::vector<char *> pin; std::vector<cudaEvent_t> ev;
+        if (chunk) { for (int k = 0; k < ring; ++k) { char * p; CK(cudaHostAlloc((void **) &p, chunk, cudaHostAllocPortable)); pin.push_back(p); cudaEvent_t e; CK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming)); ev.push_back(e); CK(cudaEventRecord(e, su)); } }
+        size_t off_src = 0;
+        while (!stop.load()) {
+            if (off_src + big > src.size) { off_src = 0; }
+            if (!chunk) {
+                CK(cudaMemcpyAsync(dbig, src.p + off_src, big, cudaMemcpyHostToDevice, su)); CK(cudaStreamSynchronize(su));
+            } else {
+                int k = 0;
+                for (size_t o = 0; o < big && !stop.load(); o += chunk, k = (k + 1) % ring) {
+                    const size_t n = std::min(chunk, big - o);
+                    CK(cudaEventSynchronize(ev[k]));
+                    if (src.kind != "pinned") { memcpy(pin[k], src.p + off_src + o, n); }
+                    CK(cudaMemcpyAsync((char *) dbig + o, src.kind == "pinned" ? src.p + off_src + o : pin[k], n, cudaMemcpyHostToDevice, su)); CK(cudaEventRecord(ev[k], su));
+                }
+                CK(cudaStreamSynchronize(su));
+            }
+            bytes_done += big; off_src += big;
+        }
+        CK(cudaStreamSynchronize(su));
+    });
+    const double t0 = now_s();
+    while (now_s() - t0 < secs) {
+        for (size_t i = 0; i < probes.size(); ++i) { lat[i].push_back(probe_once(i)); std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(probe_ms)); }
+    }
+    const double dt = now_s() - t0;
+    stop = true; up.join();
+    printf("%-34s upload %5.2f GB/s |", label, bytes_done.load() / (dt * 1e9));
+    for (size_t i = 0; i < probes.size(); ++i) { printf(" %zuK: idle %.2f p50 %.2f p90 %.2f max %.2f ms |", probes[i] >> 10, idle[i], pct(lat[i], 0.5), pct(lat[i], 0.9), pct(lat[i], 1.0)); }
+    printf("\n"); fflush(stdout);
+    if (dbig) { CK(cudaFree(dbig)); }
+}
+
+static void bench_lat() {
+    int nd = 0; CK(cudaGetDeviceCount(&nd));
+    const size_t big = (size_t) D("big_mb", 1024) << 20; const double probe_ms = D("probe_ms", 15), secs = D("secs", 3);
+    std::vector<size_t> probes = list_of("probes_kb", "24,4096,51200", 1024);
+    HostMem file = make_host("file", (size_t) D("host_gb", 4) << 30), pinned = make_host("pinned", (size_t) D("host_gb", 4) << 30);
+    printf("bench=lat: big upload %zu MiB blocks, probe every %.0f ms for %.0f s per case; probe sizes (KiB):", big >> 20, probe_ms, secs); for (auto p : probes) { printf(" %zu", p >> 10); } printf("\n");
+    for (int d = 0; d < nd; ++d) {
+        printf("--- dev%d\n", d);
+        lat_run(d, "no upload (probe alone)", pinned, 0, 0, 0, probes, probe_ms, 0.5);
+        lat_run(d, "pageable file, one copy per block", file, big, 0, 0, probes, probe_ms, secs);
+        lat_run(d, "pinned, one copy per block", pinned, big, 0, 0, probes, probe_ms, secs);
+        for (size_t c : { (size_t) 256 << 10, (size_t) 4 << 20, (size_t) 32 << 20 }) {
+            char l[96]; snprintf(l, sizeof l, "pageable file, bounce ring %zuK x4", c >> 10); lat_run(d, l, file, big, c, 4, probes, probe_ms, secs);
+        }
+        for (size_t c : { (size_t) 256 << 10, (size_t) 4 << 20, (size_t) 32 << 20 }) {
+            char l[96]; snprintf(l, sizeof l, "pinned, chunks %zuK", c >> 10); lat_run(d, l, pinned, big, c, 4, probes, probe_ms, secs);
+        }
+    }
+}
+
 int main(int argc, char ** argv) {
     for (int i = 1; i < argc; ++i) { const char * e = strchr(argv[i], '='); if (e) { g_kv[std::string(argv[i], e - argv[i])] = e + 1; } }
     const std::string bench = S("bench", "pipe");
     if (bench == "bw") { bench_bw(); }
     else if (bench == "sync") { bench_sync(); }
     else if (bench == "up") { bench_up(); }
+    else if (bench == "lat") { bench_lat(); }
     else {
         const int reps = (int) D("reps", 1);
         for (int r = 0; r < reps; ++r) { if (D("lanes", 2) >= 2 && D("baseline", 1) != 0) { run_pipe(1, true); } run_pipe((int) D("lanes", 2), true); }
