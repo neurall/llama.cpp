@@ -37,7 +37,7 @@ Tests:
 Compare decode t/s only between runs with the same output md5 (tetris/chat): the text
 decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat itself.
 """
-import argparse, csv, glob, hashlib, io, json, os, re, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
+import argparse, csv, glob, hashlib, io, json, os, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
 
 PROMPTS = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bench")   # frozen prompts (src_12k.cpp, src_128k.cpp, longsrc.cpp) live in tools/bench/
 HERE = os.path.abspath(os.environ.get("PERF_BUILDS", os.getcwd()))  # one subdirectory per build (its bin/ contents)
@@ -46,6 +46,7 @@ MODEL = os.environ.get("MODEL", "")
 MODELS_DIR = os.environ.get("PERF_MODELS_DIR", "")  # other models' pages are dropped from RAM before a run
 PPL_TEXT = os.path.join(PROMPTS, "longsrc.cpp")  # frozen snapshot of llama.cpp common/json-schema-to-grammar.cpp (code, like agent prompts)
 BARE = False
+WRAP = []   # --wrap "CMD ARGS": the server is started as CMD ARGS llama-server ... (a profiler, e.g. nsys profile -o FILE --force-overwrite=true)
 THREADS = os.environ.get("PERF_THREADS", "")                   # decode threads: unset = no -t, so the thread autotune (decode and batch) runs; set only to measure a fixed count (tools/cloud/pod.sh sets it for rented boxes)
 DEVS = os.environ.get("PERF_DEV", "CUDA0,CUDA1")                # -dev list (the GPU order is pinned)
 COMMON_ALL = (["-t", THREADS] if THREADS else []) + ["--cpu-moe", "-nr", "--moe-expert-cache", "-1", "-dev", DEVS]
@@ -324,7 +325,7 @@ def _server_start_once(build, env, args):
     args = merge_moe(args)
     logf = f"/tmp/perf-{build}.log"
     with open(logf, "w") as lf:
-        p = subprocess.Popen([os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
+        p = subprocess.Popen(WRAP + [os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
                              + args, stdout=lf, stderr=subprocess.STDOUT, env=env, preexec_fn=_die_with_parent)
     t0 = last = time.time()
     size = 0
@@ -1475,6 +1476,7 @@ def cmd_bench(a):
     CLI_EXE = a.cli_exe
     PERFPROF = a.perf_prof
     GPULOG = a.gpulog
+    WRAP[:] = shlex.split(a.wrap) if getattr(a, "wrap", None) else []
     KEEP_LOOPS = a.keep_loops
     set_overrides(a)
     variants = dict(VARIANTS)
@@ -1854,6 +1856,7 @@ if __name__ == "__main__":
     b.add_argument("--cli-exe", default="llama-cli", help="tool for --machine runs: llama-cli (conversation) or llama-completion (raw prompt, the same prompt as the server tests)")
     b.add_argument("--perf-prof", action="store_true", help="perf record the server during each run (499 Hz, user space) into tools/bench/perf/<time>-<build>.txt (top symbols)")
     b.add_argument("--gpulog", action="store_true", help="sample GPU power/clocks/temperature and CPU use at 5 Hz during the runs into tools/bench/gpulog/ (default: off)")
+    b.add_argument("--wrap", default=None, help="start the server under this command, e.g. 'nsys profile --trace=cuda --sample=none -o /tmp/x --force-overwrite=true' (a profiler; one cell per profile)")
     b.add_argument("--no-gpulog", action="store_true", help=argparse.SUPPRESS)
     b.add_argument("--redo-stock", action="store_true", help="run stock cells even when 4 or more valid runs of that stock build, model and chat test (game4c / edit4c) are already recorded")
     b.add_argument("--cold-hot", action="store_true", help="every prompt (4 for game4c/edit4c) runs twice per cell, cold (a new empty state file) then hot (the state the first wrote); the first prompt also a third run hot2 (the state after that) to check the state has converged; campaigns NAME-cold, NAME-hot, NAME-hot2; no warm-up")
