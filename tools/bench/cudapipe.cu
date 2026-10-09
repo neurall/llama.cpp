@@ -202,8 +202,11 @@ static double run_pipe(int n_lanes, bool verbose) {
     // groups from the last block backwards; lane by alternation or by share (smooth weighted round robin), the last group on lane 0
     std::vector<Grp> grp; double c0 = 0, c1 = 0; int turn = 0;
     for (int b1 = blocks; b1 > 0; ) {
-        int b0 = std::max(0, b1 - gsz); Grp g{}; g.b0 = b0; g.b1 = b1;
-        if (b0 < dense && b0 > 0) { b0 = dense; g.b0 = b0; } // dense lead on its own at the front
+        int b0 = std::max(0, b1 - gsz); Grp g{};
+        if (b1 <= dense) { b0 = 0; }                  // the dense lead is one group
+        else if (b0 < dense) { b0 = dense; }          // a group does not straddle the lead
+        g.b0 = b0; g.b1 = b1;
+        if (grp.size() > 4096) { fprintf(stderr, "too many groups\n"); exit(1); }
         if (n_lanes == 1) { g.lane = 0; }
         else if (split == "alt") { g.lane = turn++ % 2; }
         else { c0 += 1 - share1; c1 += share1; if (grp.empty() || c0 >= c1) { g.lane = 0; c0 -= 1; } else { g.lane = 1; c1 -= 1; } }
