@@ -210,3 +210,9 @@ ts,commit,line
 2026-10-06 08:07:53,4a842cb36,"moe-cache: self-tune: PRED ms/token 0:11.32 1:11.55 -> 0 (best mean, 8 slices each)"
 2026-10-08 18:58:54,f213e17f0,"moe-cache: self-tune: MARGIN ms/token -2:9.60 0:10.95 -> -2 (best mean, 8 slices each)"
 2026-10-08 18:58:54,f213e17f0,"moe-cache: self-tune: GATE ms/token 0:10.72 3:11.07 -> 3 (best mean, 8 slices each)"
+2026-10-09 20:53:45,049a163c2,knob given here is never self-tuned. autotune=0: no
+2026-10-09 20:53:49,049a163c2,knob given here is never self-tuned. autotune=0: no
+2026-10-09 20:55:21,049a163c2,knob given here is never self-tuned. autotune=0: no
+2026-10-09 20:55:29,049a163c2,knob given here is never self-tuned. autotune=0: no
+2026-10-09 20:55:33,049a163c2,knob given here is never self-tuned. autotune=0: no
+2026-10-09 20:55:37,049a163c2,knob given here is never self-tuned. autotune=0: no
