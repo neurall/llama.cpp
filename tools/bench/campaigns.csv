@@ -696,3 +696,4 @@ ovl1-prof,2026-10-09 14:49:03,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf build
 ovl1-prof,2026-10-09 14:49:45,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-ovl variants pa4 test pf12k n=1,,
 ovl1-ab,2026-10-09 14:50:24,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-ovl variants s0u4096,s3u4096,a3u4096,a6u4096,s3u2048,a3u2048 test pf12k n=3",,
 sim12-bigub,2026-10-09 15:00:52,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds release-b12353-10d6c1e5c variants m3u4096,m3u6208,m3u8192,m3u12416,m0u12416,p4u8192,p4u12416 test pf12k n=2",,
+ovl2-ab,2026-10-09 15:10:26,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-ovl variants s3u6208,a3u6208,a6u6208,s3u12416,a3u12416,p4u4096,pa4u4096 test pf12k n=3",,
