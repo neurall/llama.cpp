@@ -2,6 +2,9 @@
 //
 //   bench=bw     link bandwidth per GPU (pinned / pageable / file-backed host memory, alone and both GPUs at once, duplex), the stash crossing
 //   bench=sync   sync and launch costs: stream/event sync, empty kernel round trip, cross-device event wait, queued kernels, cudaMalloc
+//   bench=up     upload sweep from file-backed pages (a fresh mmap of file=PATH per test, like the first touch of the mmap'd model): direct = T threads, each one whole-slice
+//                cudaMemcpyAsync from the mapped pages; bounce = T threads, each copies C-byte chunks into its own ring of pinned buffers and DMAs them; pinned = the source in pinned
+//                memory (upper bound). One GPU alone and all GPUs at once. keys: file=PATH region_mb=256 reps=3 threads=1,2,3,4 chunks_kb=64,256,1024,4096,16384,32768 ring=4
 //   bench=pipe   the pass pipeline: groups of blocks alternate between the lanes (one GPU each); a lane = a host thread + an uploader thread; every step
 //                waits for its weights (uploaded through K slots), for the stash of the group before (pushed through pinned host memory by the other
 //                lane), computes (a kernel that spins for the measured time), and pushes its stash on. Reports the wall time and tokens/s, and the
@@ -297,11 +300,115 @@ static double run_pipe(int n_lanes, bool verbose) {
     return wall;
 }
 
+// ---- bench=up ----
+static std::vector<size_t> list_of(const char * key, const char * def, size_t mul) {
+    std::vector<size_t> v; std::string s = S(key, def); size_t i = 0;
+    while (i < s.size()) { size_t j = s.find(',', i); if (j == std::string::npos) { j = s.size(); } v.push_back((size_t) atof(s.substr(i, j - i).c_str()) * mul); i = j + 1; }
+    return v;
+}
+
+struct UpResult { double gbs = 0; double s = 0; };
+
+// one upload of `bytes` from src to the device buffer dst on device dev, with T threads; chunk == 0: each thread one cudaMemcpyAsync of its slice; else a pinned ring per thread
+static UpResult upload_run(int dev, void * dst, const char * src, size_t bytes, int T, size_t chunk, int ring) {
+    std::vector<std::thread> th; std::atomic<int> ready{0}, go{0};
+    const size_t slice = (bytes / T + 4095) & ~(size_t) 4095;
+    double t_start = 0, t_end = 0;
+    std::vector<double> t_done(T, 0);
+    for (int t = 0; t < T; ++t) {
+        th.emplace_back([&, t]() {
+            CK(cudaSetDevice(dev));
+            cudaStream_t st; CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
+            const size_t lo = std::min(bytes, (size_t) t * slice), hi = std::min(bytes, lo + slice);
+            std::vector<char *> pin; std::vector<cudaEvent_t> ev;
+            if (chunk) {
+                for (int k = 0; k < ring; ++k) { char * p; CK(cudaHostAlloc((void **) &p, chunk, cudaHostAllocPortable)); pin.push_back(p); cudaEvent_t e; CK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming)); ev.push_back(e); CK(cudaEventRecord(e, st)); }
+            }
+            ready++; while (go.load() == 0) { }
+            if (!chunk) {
+                if (hi > lo) { CK(cudaMemcpyAsync((char *) dst + lo, src + lo, hi - lo, cudaMemcpyHostToDevice, st)); }
+            } else {
+                int k = 0;
+                for (size_t off = lo; off < hi; off += chunk, k = (k + 1) % ring) {
+                    const size_t n = std::min(chunk, hi - off);
+                    CK(cudaEventSynchronize(ev[k]));               // the DMA that last used this buffer is done
+                    memcpy(pin[k], src + off, n);                   // page faults + the CPU copy
+                    CK(cudaMemcpyAsync((char *) dst + off, pin[k], n, cudaMemcpyHostToDevice, st));
+                    CK(cudaEventRecord(ev[k], st));
+                }
+            }
+            CK(cudaStreamSynchronize(st));
+            t_done[t] = now_s();
+            for (auto p : pin) { CK(cudaFreeHost(p)); }
+            for (auto e : ev) { CK(cudaEventDestroy(e)); }
+            CK(cudaStreamDestroy(st));
+        });
+    }
+    while (ready.load() < T) { }
+    t_start = now_s(); go = 1;
+    for (auto & x : th) { x.join(); }
+    t_end = *std::max_element(t_done.begin(), t_done.end());
+    UpResult r; r.s = t_end - t_start; r.gbs = bytes / (r.s * 1e9);
+    return r;
+}
+
+static void bench_up() {
+    int nd = 0; CK(cudaGetDeviceCount(&nd));
+    const size_t region = (size_t) D("region_mb", 256) << 20; const int reps = (int) D("reps", 3), ring = (int) D("ring", 4);
+    const std::string path = S("file", "/p/bw/data/q5h/glm12/GLM12-3.0bit.gguf");
+    std::vector<size_t> Ts = list_of("threads", "1,2,3,4", 1), Cs = list_of("chunks_kb", "64,256,1024,4096,16384,32768", 1024);
+    int fd = open(path.c_str(), O_RDONLY); if (fd < 0) { perror("file"); exit(1); }
+    off_t fsize = lseek(fd, 0, SEEK_END);
+    printf("bench=up: %d devices, file %s (%.1f GB), %zu MiB per upload, %d reps (each rep a fresh mapping, offsets differ), ring %d\n", nd, path.c_str(), fsize / 1e9, region >> 20, reps, ring);
+    // warm the page cache for the regions used (reads the file once, not timed)
+    { std::vector<char> tmp(1 << 20); size_t span = std::min<size_t>(fsize, region * (size_t) (reps + 1) * 8); for (size_t o = 0; o + tmp.size() <= span; o += tmp.size()) { if (pread(fd, tmp.data(), tmp.size(), o) < 0) { break; } } }
+    std::vector<void *> dbuf(nd);
+    for (int d = 0; d < nd; ++d) { CK(cudaSetDevice(d)); CK(cudaMalloc(&dbuf[d], region)); }
+    HostMem pinned = make_host("pinned", region);
+    printf("%-9s %-4s %-9s | %s\n", "mode", "thr", "chunk", "GB/s per GPU alone (mean of reps) | both GPUs at once (each)");
+    struct Cfg { std::string mode; int T; size_t chunk; };
+    std::vector<Cfg> cfgs;
+    cfgs.push_back({ "pinned", 1, 0 });
+    for (size_t T : Ts) { cfgs.push_back({ "direct", (int) T, 0 }); }
+    for (size_t T : Ts) { for (size_t C : Cs) { cfgs.push_back({ "bounce", (int) T, C }); } }
+    size_t next = 0; // the next unused 256 MiB window of the file, wrapped
+    for (auto & c : cfgs) {
+        std::vector<double> alone(nd, 0), both(nd, 0);
+        for (int pass = 0; pass < 2; ++pass) {         // pass 0: one GPU at a time; pass 1: all at once
+            std::vector<double> acc(nd, 0);
+            for (int r = 0; r < reps; ++r) {
+                // a fresh mapping: page tables empty, page cache hot: the first touch of the mmap'd model
+                std::vector<const char *> maps(nd); std::vector<size_t> offs(nd);
+                for (int d = 0; d < nd; ++d) { offs[d] = (next % ((size_t) fsize / region - 1)) * region; ++next; }
+                for (int d = 0; d < nd; ++d) { void * m = mmap(nullptr, region, PROT_READ, MAP_PRIVATE, fd, offs[d]); if (m == MAP_FAILED) { perror("mmap"); exit(1); } maps[d] = (const char *) m; }
+                if (pass == 0) {
+                    for (int d = 0; d < nd; ++d) { UpResult u = upload_run(d, dbuf[d], c.mode == "pinned" ? pinned.p : maps[d], region, c.T, c.chunk, ring); acc[d] += u.gbs; }
+                } else {
+                    std::vector<std::thread> th; std::vector<UpResult> res(nd);
+                    for (int d = 0; d < nd; ++d) { th.emplace_back([&, d]() { res[d] = upload_run(d, dbuf[d], c.mode == "pinned" ? pinned.p : maps[d], region, c.T, c.chunk, ring); }); }
+                    for (auto & t : th) { t.join(); }
+                    for (int d = 0; d < nd; ++d) { acc[d] += res[d].gbs; }
+                }
+                for (int d = 0; d < nd; ++d) { munmap((void *) maps[d], region); }
+            }
+            for (int d = 0; d < nd; ++d) { (pass == 0 ? alone : both)[d] = acc[d] / reps; }
+        }
+        char chunk[16]; if (c.chunk) { snprintf(chunk, sizeof chunk, "%zuK", c.chunk >> 10); } else { snprintf(chunk, sizeof chunk, "-"); }
+        printf("%-9s %-4d %-9s |", c.mode.c_str(), c.T, chunk);
+        for (int d = 0; d < nd; ++d) { printf(" dev%d %6.2f", d, alone[d]); }
+        printf(" |");
+        for (int d = 0; d < nd; ++d) { printf(" dev%d %6.2f", d, both[d]); }
+        printf("  (sum %.2f)\n", both[0] + (nd > 1 ? both[1] : 0));
+        fflush(stdout);
+    }
+}
+
 int main(int argc, char ** argv) {
     for (int i = 1; i < argc; ++i) { const char * e = strchr(argv[i], '='); if (e) { g_kv[std::string(argv[i], e - argv[i])] = e + 1; } }
     const std::string bench = S("bench", "pipe");
     if (bench == "bw") { bench_bw(); }
     else if (bench == "sync") { bench_sync(); }
+    else if (bench == "up") { bench_up(); }
     else {
         const int reps = (int) D("reps", 1);
         for (int r = 0; r < reps; ++r) { if (D("lanes", 2) >= 2 && D("baseline", 1) != 0) { run_pipe(1, true); } run_pipe((int) D("lanes", 2), true); }
