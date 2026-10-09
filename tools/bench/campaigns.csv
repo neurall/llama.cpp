@@ -743,3 +743,6 @@ passes8j-equal,2026-10-09 19:23:17,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf
 passes8j-speed,2026-10-09 19:24:08,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants ob3,k2p1,k2pa,k2pas,pk2pa,pob4 test pf12k n=2",,
 passes8k-trace,2026-10-09 19:33:22,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants tr1 test pf12k n=1,,
 passes8k-trace,2026-10-09 19:33:56,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants tra test pf12k n=1,,
+passes8l-equal,2026-10-09 19:36:29,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants l2s9 test pplc n=1,,
+passes8l-speed,2026-10-09 19:36:54,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants ob3,m2s6,m2s9,m2s12,pm2s9,pob4 test pf12k n=2",,
+passes8l-trace,2026-10-09 19:44:44,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants tm2s9 test pf12k n=1,,
