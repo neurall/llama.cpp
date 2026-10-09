@@ -802,3 +802,7 @@ passes33-r0,2026-10-10 00:54:56,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf bui
 passes33-e1,2026-10-10 00:55:47,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants e1 test pplc n=1,,
 passes33-e2,2026-10-10 00:56:47,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants e2 test pplc n=1,,
 passes33-e4,2026-10-10 00:57:45,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants e4 test pplc n=1,,
+passes34-eqc,2026-10-10 01:23:56,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants eqc test pplc n=1,,
+passes34-eql,2026-10-10 01:24:43,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants eql test pplc n=1,,
+passes34-eqlc,2026-10-10 01:25:38,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants eqlc test pplc n=1,,
+passes34-chunk,2026-10-10 01:26:39,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants b0,c16,c32,c64,c128,c32d4,ls0,ls32 test pf12k n=5",,
