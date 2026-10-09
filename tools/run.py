@@ -577,9 +577,9 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
            "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
     row = {}
     TAGBOX["v"] = test   # game4 and edit4 add their prompt below
-    if test in ("ppl", "ppl3", "pplb"):
-        nb = {"ppl": "1", "ppl3": "3", "pplb": "1024"}[test]   # pplb: 1024-token batches = the big-batch (prefill) path
-        args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", "2", "-b", nb, "-ub", nb]
+    if test in ("ppl", "ppl3", "pplb", "pplc"):
+        nb, nub = {"ppl": ("1", "1"), "ppl3": ("3", "3"), "pplb": ("1024", "1024"), "pplc": ("1024", "256")}[test]   # pplb: 1024-token batches = the big-batch (prefill) path; pplc: the same batch in 256-token ubatches (4 ubatches per decode call)
+        args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", "2", "-b", nb, "-ub", nub]
         if build.startswith("stock"):   # stock has no --moe-expert-cache
             i = args.index("--moe-expert-cache") if "--moe-expert-cache" in args else -1
             if i >= 0:
@@ -1309,13 +1309,13 @@ def remote_run(m, build, test, args, env=None):
     """The CLI version of a test (llama-cli, one prompt, greedy): what most people run. Returns a row like run_one."""
     exe, win = remote_exe(m, build), m["win"]
     envp = "".join((f"set {k}={v}&& " if win else f"{k}={v} ") for k, v in (env or {}).items())  # variant environment (env: words)
-    if test in ("ppl", "ppl3", "pplb"):  # the precise decode comparator on that machine: llama-perplexity, one token per call, longsrc.cpp (copy it to <root>\\<build>\\longsrc.cpp)
+    if test in ("ppl", "ppl3", "pplb", "pplc"):  # the precise decode comparator on that machine: llama-perplexity, one token per call, longsrc.cpp (copy it to <root>\\<build>\\longsrc.cpp)
         sep = "\\" if win else "/"
-        nb = {"ppl": "1", "ppl3": "3", "pplb": "1024"}[test]   # pplb: 1024-token batches = the big-batch (prefill) path
+        nb, nub = {"ppl": ("1", "1"), "ppl3": ("3", "3"), "pplb": ("1024", "1024"), "pplc": ("1024", "256")}[test]   # pplb: 1024-token batches = the big-batch (prefill) path; pplc: the same batch in 256-token ubatches (4 ubatches per decode call)
         stf = f'{m["root"]}{sep}perf-stats.txt'
         envs = (f'set LLAMA_MOE_STATE=0&& set LLAMA_MOE_CACHE_TUNED=0&& set LLAMA_MOE_CACHE_STATS=1&& set LLAMA_MOE_CACHE_STATSLOG=32&& set LLAMA_MOE_STATSLOG={stf}&& ' if win else
                 f'LLAMA_MOE_STATE=0 LLAMA_MOE_CACHE_TUNED=0 LLAMA_MOE_CACHE_STATS=1 LLAMA_MOE_CACHE_STATSLOG=32 LLAMA_MOE_STATSLOG={stf} ')
-        cmd = envp + envs + f'{exe.replace("llama-cli", "llama-perplexity")} -m {MODEL} -f {m["root"]}{sep}{build}{sep}longsrc.cpp -c 1024 --chunks 2 -b {nb} -ub {nb} {args} ' + ("< nul 2>&1" if win else "< /dev/null 2>&1")
+        cmd = envp + envs + f'{exe.replace("llama-cli", "llama-perplexity")} -m {MODEL} -f {m["root"]}{sep}{build}{sep}longsrc.cpp -c 1024 --chunks 2 -b {nb} -ub {nub} {args} ' + ("< nul 2>&1" if win else "< /dev/null 2>&1")
         out = remote_sh(m, cmd)
         sp_ = re.search(r"([\d.]+) seconds per pass", out)
         pp_ = re.findall(r"PPL = ([\d.]+)", out)
@@ -1818,7 +1818,7 @@ if __name__ == "__main__":
         sys.argv.insert(1, "prompt")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "pplb", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
+    TESTS = ["ppl", "ppl3", "pplb", "pplc", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
     r = sp.add_parser("run", help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", choices=TESTS + list(ALIASES))
@@ -1836,7 +1836,7 @@ if __name__ == "__main__":
     b.add_argument("--builds", required=True, help="comma separated build dirs; names starting with stock run the default variant only")
     b.add_argument("--variants", help="comma separated variant names (default: all of default,cache0,atoff and any --variant)")
     b.add_argument("--variant", action="append", default=[], help="NAME=ARGS: add or override a variant, e.g. gate3='--moe upload-wait=3'")
-    b.add_argument("-t", "--test", default="t100", choices=["ppl", "ppl3", "pplb", "t100", "tetris"] + TESTS[5:] + list(ALIASES))
+    b.add_argument("-t", "--test", default="t100", choices=["ppl", "ppl3", "pplb", "pplc", "t100", "tetris"] + TESTS[6:] + list(ALIASES))
     b.add_argument("--stock-variant", action="append", default=[], help="NAME=ARGS: stock builds also run this placement (e.g. tuned='--n-cpu-moe 30'): the hand-tuned baseline")
     b.add_argument("--rep-from", type=int, default=0, help="first repetition to run (0-based): -n 2 --rep-from 1 repeats only the second repetition, e.g. one that failed")
     b.add_argument("-n", type=int, help="measured runs per cell, interleaved ABBA (default 3 for fix/fix12k, else 2); the first run of a cell is preceded by a discarded one")
