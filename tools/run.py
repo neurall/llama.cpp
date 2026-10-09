@@ -531,7 +531,11 @@ def server_run(build, env, args, path, body, render=None):
         if render:   # the server renders the model's chat template into the prompt text
             body = {**body, "prompt": post("/apply-template", {"messages": render})["prompt"]}
         t_req[0] = time.time()
-        res = (post_loopguard(path, body) if path == "/completion" and not KEEP_LOOPS and int(body.get("n_predict", 0)) >= 800 else post(path, body))
+        rep = max(1, int(OVR.get("repeat") or 1))   # --repeat N: N requests to this server, the last one is the result (warm)
+        for i_rep in range(rep):
+            res = (post_loopguard(path, body) if path == "/completion" and not KEEP_LOOPS and int(body.get("n_predict", 0)) >= 800 else post(path, body))
+            if i_rep == 0 and rep > 1:
+                PROCSTAT["rep_first_pp"] = (res.get("timings") or {}).get("prompt_per_second")
         t_req[1] = time.time()
         return res, logf
     finally:
@@ -657,7 +661,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                                     "cache_prompt": False, **GREEDY, **(FIXED if test == "fix12k" else {})})
             t = res["timings"]
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
-                   "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}"}
+                   "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}" + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "")}
             if test == "fix12k":
                 row["md5"] = hashlib.md5(res["content"].encode()).hexdigest()[:8]
             row.update(PROCSTAT)   # load time, rss, GPU log and power of the request window (--gpulog)
@@ -1260,7 +1264,7 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
     if getattr(a, "test", None) in ALIAS_TOKENS and "tokens" not in OVR:
@@ -1695,6 +1699,7 @@ def add_overrides(sub):
     sub.add_argument("--prompt", help="prompt text or @file instead of the test's own")
     sub.add_argument("--tokens", type=int, help="generated tokens instead of the test's own")
     sub.add_argument("--ctx", type=int, help="context size instead of the test's own")
+    sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
     sub.add_argument("--pidx", type=int, help="game4 / edit4: use prompt N of the four for every repetition (default: repetition k uses prompt k mod 4)")
 
 
