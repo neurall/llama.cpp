@@ -763,3 +763,8 @@ passes14-glm12,2026-10-09 21:15:35,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf
 passes14-glm,2026-10-09 21:22:07,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds proto-pipe variants gw10,gw06,gw04 test pf12k n=2",,
 passes15-glm12,2026-10-09 21:36:12,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants ob3,pob4,m1,a10,a07,a05,a03,pm1 test pf12k n=3",,
 passes15-glm,2026-10-09 21:49:41,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds proto-pipe variants g1,gw10,gw06,gw04 test pf12k n=2",,
+passes16-equal,2026-10-09 22:24:25,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants r1 test pplc n=1,,
+passes16-ab,2026-10-09 22:25:12,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe-53df,proto-pipe variants m1 test pf12k n=5",,
+passes16-perf,2026-10-09 22:28:51,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants m1 test pf12k n=1,,
+passes17-equal,2026-10-09 22:29:59,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants e2 test pplc n=1,,
+passes17-glm12,2026-10-09 22:30:23,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants ob3,c1,c2,c3,pob4,pc2 test pf12k n=3",,
