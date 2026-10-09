@@ -683,3 +683,5 @@ sim5-equal,2026-10-09 12:42:32,"bench /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.
 sim5-chunk,2026-10-09 12:44:08,"bench /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf builds moe-chunk variants k0,k256,k512,k1024 test pf12k n=3",,
 sim3-glm12,2026-10-09 12:46:02,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds release-b12353-10d6c1e5c variants ub512,ub2048,ub4096 test pf12k n=3",,
 sim4-qn12,2026-10-09 12:55:36,"bench /p/bw/data/q5h/qn12/QN12-IQ3_S.gguf builds release-b12353-10d6c1e5c variants ub512,ub2048,ub4096 test pf12k n=3",,
+gcchost-olmoe,2026-10-09 13:22:20,"bench /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf builds b11509,509-gcc-host,509-clang-defaults variants hybrid test ppl n=5",,
+sim6-glm12,2026-10-09 13:25:53,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds release-b12353-10d6c1e5c variants ub1024,ub8192 test pf12k n=3",,
