@@ -716,3 +716,6 @@ passes5-pass-times,2026-10-09 16:45:44,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.g
 passes6-host-times,2026-10-09 16:48:07,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-passes variants h1u4096 test pf12k n=1,,
 passes6-host-times,2026-10-09 16:48:48,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-passes variants h0u4096 test pf12k n=1,,
 passes6-host-times,2026-10-09 16:49:28,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-passes variants h0u12416 test pf12k n=1,,
+passes7-equal,2026-10-09 17:29:35,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-passes variants q0,q6p1,q12p2,q9p3 test pplc n=1",,
+passes7-speed,2026-10-09 17:31:23,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-passes variants r12416,a1u4096,n1u4096,a2u4096,a1u2048,pr12416,pa1u4096 test pf12k n=2",,
+passes7-times,2026-10-09 17:39:34,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-passes variants t1u4096 test pf12k n=1,,
