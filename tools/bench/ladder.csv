@@ -1,0 +1,12 @@
+date,model,arm,build,commit,n,tps,ref_tps,ratio,hit,verdict,campaign
+2026-10-08 20:41,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,s00_base,latest,e0c513d18,3,147.98,149.49,0.990,77.4/77.5,ok,ladder-olmoe
+2026-10-08 20:41,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,s01_admit,latest,e0c513d18,3,147.76,149.49,0.988,77.4/77.5,ok,ladder-olmoe
+2026-10-08 20:41,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,s02_lead,latest,e0c513d18,3,147.98,149.49,0.990,77.4/77.5,ok,ladder-olmoe
+2026-10-08 20:41,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,s03_gate3,latest,e0c513d18,3,147.34,149.49,0.986,77.4,ok,ladder-olmoe
+2026-10-08 20:41,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,s04_margin0,latest,e0c513d18,3,147.98,149.49,0.990,77.4/77.5,ok,ladder-olmoe
+2026-10-08 20:41,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,s05_tune_gate,latest,e0c513d18,3,150.59,149.49,1.007,77.4/77.5,ok,ladder-olmoe
+2026-10-08 20:41,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,s06_tune_share,latest,e0c513d18,3,151.03,149.49,1.010,77.3/77.4/77.5,ok,ladder-olmoe
+2026-10-08 20:41,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,s07_tune_wait,latest,e0c513d18,3,145.04,149.49,0.970,77.4,below-0.98-overlap,ladder-olmoe
+2026-10-08 20:41,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,s08_tune_evcld,latest,e0c513d18,3,147.55,149.49,0.987,77.4/77.5,ok,ladder-olmoe
+2026-10-08 20:41,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,s09_tune_margin,latest,e0c513d18,3,147.55,149.49,0.987,77.4/77.5,ok,ladder-olmoe
+2026-10-08 20:41,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,s10_threads,latest,e0c513d18,3,149.49,149.49,1.000,75.9/77/77.3,ok,ladder-olmoe

@@ -1,0 +1,12 @@
+feature,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf
+s00_base,ok 0.990
+s01_admit,ok 0.988
+s02_lead,ok 0.990
+s03_gate3,ok 0.986
+s04_margin0,ok 0.990
+s05_tune_gate,ok 1.007
+s06_tune_share,ok 1.010
+s07_tune_wait,below-0.98-overlap 0.970
+s08_tune_evcld,ok 0.987
+s09_tune_margin,ok 0.987
+s10_threads,ok 1.000

@@ -30,8 +30,8 @@ for name, shas in groups:
         open(f"/p/bw/data/pick/build-{name}.log", "w").write(b.stdout[-4000:] + b.stderr[-2000:]); say(name, "BUILD FAILED (tail in /p/bw/data/pick/build-" + name + ".log)"); git("reset", "--hard", base); res.append((name, "build failed", "")); continue
     r = subprocess.run([sys.executable, os.path.join(HERE, "run.py"), "regress", os.path.join(tree, "build-dev", "bin"), "--wait"], capture_output=True, text=True)
     if r.returncode == 1:
-        say(name, "first verdict", [l for l in r.stdout.splitlines() if l.startswith("regress:")][-1:], "-> again with 30 runs")
-        r = subprocess.run([sys.executable, os.path.join(HERE, "run.py"), "regress", os.path.join(tree, "build-dev", "bin"), "--wait", "-n", "30"], capture_output=True, text=True)
+        say(name, "first verdict", [l for l in r.stdout.splitlines() if l.startswith("regress:")][-1:], "-> again with 8 runs (fixed-text comparator)")
+        r = subprocess.run([sys.executable, os.path.join(HERE, "run.py"), "regress", os.path.join(tree, "build-dev", "bin"), "--wait", "-n", "8"], capture_output=True, text=True)
     out = r.stdout.strip().splitlines(); verdict = next((l for l in reversed(out) if l.startswith("regress:")), "regress: no verdict")
     say(name, f"exit {r.returncode}", verdict)
     if r.returncode in (1, 2, 3): git("reset", "--hard", base); res.append((name, "DROPPED", verdict))

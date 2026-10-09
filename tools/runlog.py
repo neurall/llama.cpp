@@ -10,7 +10,7 @@ Every run is stored twice: as a row of tools/bench/run-history.csv (append-only,
   python3 tools/runlog.py q "SELECT ..."           any SQL; tables: runs, tune_log, campaign_notes, view cells
 
 consistent best = the highest value that at least two runs agree on within 5% (a lone outlier does not count), else the median."""
-import csv, os, re, sqlite3, statistics, sys
+import csv, os, re, sqlite3, statistics, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 CSV = os.path.join(HERE, "bench", "run-history.csv")
 DB = os.path.join(HERE, "runs.db")
@@ -29,7 +29,7 @@ def connect():
     con = sqlite3.connect(DB)
     con.create_aggregate("consistent", 1, Consistent)
     return con
-NUMERIC = {"p_met", "p_unmet", "p_pending", "p_admit_free", "p_admit_evict", "p_d_admit", "p_d_margin", "p_d_budget", "p_d_victim", "p_d_big", "p_d_dup", "p_regret", "p_ev_unpaid", "p_ev_zero", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max", "tps", "pp", "hit", "ppl", "spp", "n_gen", "bno", "pl", "rep", "seed", "ready_s", "wall_s", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs",
+NUMERIC = {"p_met", "p_unmet", "p_pending", "p_admit_free", "p_admit_evict", "p_d_admit", "p_d_margin", "p_d_budget", "p_d_victim", "p_d_big", "p_d_dup", "p_regret", "p_ev_unpaid", "p_ev_zero", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max", "tps", "pp", "hit", "ppl", "spp", "n_gen", "bno", "rep", "seed", "ready_s", "load_s", "wall_s", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "vram_mib", "pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs",
            "ddr_util", "pcie_util", "cpu_util", "gpu_util", "held_gib", "mem_limit", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late",
            "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3", "mem_gb", "mem_peak_gbs", "pcie_peak_gbs"}
 def num(x):
@@ -53,8 +53,16 @@ def ensure(con, cols):
 def ins(cols):
     """named-column INSERT: ALTER TABLE appends new columns after stem/okf, so position is not safe"""
     return "INSERT INTO runs (" + ", ".join(q(c) for c in cols) + ", stem, okf) VALUES (" + ",".join("?" * (len(cols) + 2)) + ")"
+def run_build_number(sha):
+    try:
+        o = subprocess.run(["git", "-C", HERE, "rev-list", "--count", sha], capture_output=True, text=True, timeout=20)
+        return int(o.stdout) if o.returncode == 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
 def row_values(d, cols):
     stem = re.sub(r"-0000\d-of-0000\d", "", (str(d.get("model") or "")).split(" ")[0]).removesuffix(".gguf")
+    if str(d.get("build") or "").startswith("stock") and not num(d.get("bno")) and (d.get("commit") or re.search(r"-([0-9a-f]{7,})$", str(d.get("build")))):   # a docker/source build of stock prints build 0: the upstream number is the commit count
+        d = dict(d, bno=run_build_number(d.get("commit") or re.search(r"-([0-9a-f]{7,})$", str(d["build"])).group(1)))
     vals = [(num(d.get(c)) if c in NUMERIC else (None if d.get(c) is None else str(d.get(c)))) for c in cols]
     return vals + [stem, 0 if str(d.get("ok")) == "0" else 1]
 def insert(d, cols):
@@ -65,6 +73,14 @@ def insert(d, cols):
         con.commit(); con.close()
     except Exception as e:
         print("runs.db:", e, file=sys.stderr)
+def insert_output(ts, hw, build, test, model, md5, text, uniq4, chars, code):
+    """the generated text of a run (zlib) into table outputs, keyed by ts + build + hw (read: zlib.decompress(text))"""
+    if not text: return
+    import zlib
+    con = connect()
+    con.execute("CREATE TABLE IF NOT EXISTS outputs (ts TEXT, hw TEXT, build TEXT, test TEXT, model TEXT, md5 TEXT, uniq4 REAL, chars INTEGER, code INTEGER, text BLOB)")
+    con.execute("INSERT INTO outputs VALUES (?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, test, model, md5, uniq4, chars, code, zlib.compress(text.encode(), 9)))
+    con.commit(); con.close()
 EMB = os.path.join(HERE, "bench", "embhot.csv")
 def ensure_emb(con):
     con.execute("CREATE TABLE IF NOT EXISTS embhot (ts TEXT, hw TEXT, build TEXT, test TEXT, model TEXT, embhex TEXT, hots TEXT)")
