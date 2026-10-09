@@ -540,7 +540,7 @@ struct knobs_t {
     double stream    = 1e9; // predicted uploads use up to this many stream slots per layer (0: evict cache slots, old path)
     double stream_m  = 12;  // candidates per target layer in stream mode (over-predict; no confidence cut)
     double slotkeep  = 0;   // a prediction may only replace a stream slot holding a lower-scored one of this step
-    double predict   = 1;   // the learned predictors (allocated with --moe-predict) run at all; SELF_TUNE decides it
+    double predict   = 0;   // the learned predictors (allocated with --moe-predict) run at all: off by default and never switched on by the tuner (user rule: predictor always off); PRED=1 / --moe pred=1 for research
     double self_tune = 1;   // self-tuner: A/B the streaming knobs one at a time on real decode token time (self_tune())
     double offset      = 1; // predicted uploads only for layers far enough ahead to land in time on their link
     double stream_slow = 1; // stream onto slow-link (x4) layers too
@@ -3561,9 +3561,7 @@ static void self_tune(moe_cache * mc) {
         auto add = [&](const tunable & x) {
             if (!det_mode && !g_autotune_off && !user_knobs().count(x.name)) { t.push_back(x); }
         };
-        if (mc->pred_m > 0) {
-            add({ "PRED", &knobs_t::predict, { 0, 1 } }); // first: the streaming knobs are tuned with it on
-        }
+        // the learned predictor is never switched on by the tuner (it costs performance): no PRED candidate
         if (mc->pred_m > 0 && knobs().stream > 0) { for (const auto & x : T_stream) { add(x); } }
         // the swap margin: 0 = any hotter expert may enter, -2 = pay-back margin from measured upload / CPU time. Which one wins depends
         // on the machine (slow link, RAM headroom), so it is tuned live; a state-carrying knob, hence the long slices
