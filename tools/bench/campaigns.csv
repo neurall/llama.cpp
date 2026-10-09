@@ -677,3 +677,5 @@ w10stock-Qwen3635BA-out1k,2026-10-09 10:26:15,"bench N:\m\Qwen3.6-35B-A3B-GSQ-hy
 sim1-olmoe,2026-10-09 11:48:37,"bench /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf builds release-b12353-10d6c1e5c variants ub512,ub2048,ub4096 test pf12k n=3",,
 sim1-olmoe,2026-10-09 11:49:16,"bench /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf builds release-b12353-10d6c1e5c variants ub512,ub2048,ub4096 test pf12k n=3",,
 sim1-olmoe,2026-10-09 11:50:34,"bench /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf builds release-b12353-10d6c1e5c variants ub512,ub2048,ub4096 test pf12k n=3",,
+compiler-olmoe,2026-10-09 12:00:55,"bench /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf builds b11509,b11509-libomp,509-clang-defaults variants hybrid,active,passive,gpu,cpu test ppl n=3",,
+sim2-glm,2026-10-09 12:10:18,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds release-b12353-10d6c1e5c variants ub512,ub2048,ub4096 test pf12k n=2",,
