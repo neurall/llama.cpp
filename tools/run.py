@@ -415,7 +415,7 @@ def model_residency():
 
 PERFPROF = False   # --perf-prof: perf record (499 Hz, user space) of the server during each run -> tools/bench/perf/<time>-<build>.txt (flat top symbols per library)
 GPULOG = False   # --gpulog: 5 Hz nvidia-smi and CPU sampling during the runs (off by default; the slow mode turned out to be real code text, not a power or clock effect)
-GPU_Q = "index,power.draw,clocks.sm,clocks.mem,temperature.gpu,utilization.gpu,pcie.link.gen.current,pcie.link.width.current,clocks_throttle_reasons.active,power.draw.instant"
+GPU_Q = "index,power.draw,clocks.sm,clocks.mem,temperature.gpu,utilization.gpu,pcie.link.gen.current,pcie.link.width.current,clocks_throttle_reasons.active,power.draw.instant,fan.speed"
 
 
 def gpu_sampler(build, pid=None):
@@ -428,7 +428,7 @@ def gpu_sampler(build, pid=None):
     def pump():
         for line in p.stdout:
             v = [x.strip() for x in line.split(",")]
-            now = time.time(); f.write(f"{now * 1000:.1f}," + ",".join(v) + "\n"); rows.append(v + [f"{now:.3f}"])   # the last element: the time of the sample
+            now = time.time(); f.write(f"{now * 1000:.1f}," + ",".join(v) + "\n"); f.flush(); rows.append(v + [f"{now:.3f}"])   # the last element: the time of the sample
     th = threading.Thread(target=pump, daemon=True); th.start()
     cf = open(path[:-4] + ".cpu.csv", "w"); cf.write("t_ms,sys_busy_pct,proc_cores\n"); cpu, alive = [], [True]
     def cpu_poll():   # whole-machine CPU busy share (/proc/stat) and the server's own CPU use in cores (utime+stime), 5 Hz, same clock as the GPU samples
@@ -446,7 +446,7 @@ def gpu_sampler(build, pid=None):
             time.sleep(0.2)
             t2, i2, p2, w2 = rd()
             busy = 100.0 * (1 - (i2 - i_) / max(1, t2 - t_)); cores = (p2 - p_) / tick / max(1e-3, w2 - w_)
-            cf.write(f"{w2 * 1000:.1f},{busy:.1f},{cores:.2f}\n"); cpu.append((busy, cores))
+            cf.write(f"{w2 * 1000:.1f},{busy:.1f},{cores:.2f}\n"); cf.flush(); cpu.append((busy, cores))
             t_, i_, p_, w_ = t2, i2, p2, w2
     cth = threading.Thread(target=cpu_poll, daemon=True); cth.start()
     def stop(t_from=None, t_to=None):
@@ -660,6 +660,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                    "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}"}
             if test == "fix12k":
                 row["md5"] = hashlib.md5(res["content"].encode()).hexdigest()[:8]
+            row.update(PROCSTAT)   # load time, rss, GPU log and power of the request window (--gpulog)
             row.update(cache_stats(open(logf).read()))
             row.update(ok=1 if row.get("pp_tps") else 0, args=" ".join(args))
             return row
