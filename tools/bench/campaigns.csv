@@ -806,3 +806,7 @@ passes34-eqc,2026-10-10 01:23:56,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf bu
 passes34-eql,2026-10-10 01:24:43,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants eql test pplc n=1,,
 passes34-eqlc,2026-10-10 01:25:38,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants eqlc test pplc n=1,,
 passes34-chunk,2026-10-10 01:26:39,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants b0,c16,c32,c64,c128,c32d4,ls0,ls32 test pf12k n=5",,
+passes34pl150-eqc,2026-10-10 01:34:50,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants eqc test pplc n=1,,
+passes34pl150-eql,2026-10-10 01:35:39,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants eql test pplc n=1,,
+passes34pl150-eqlc,2026-10-10 01:36:37,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants eqlc test pplc n=1,,
+passes34pl150-chunk,2026-10-10 01:37:40,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants b0,c16,c32,c64,c128,c32d4,ls0,ls32 test pf12k n=5",,
