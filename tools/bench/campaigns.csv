@@ -703,3 +703,6 @@ ovl2-ab,2026-10-09 15:16:19,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds
 sim8-glm12-2gpu,2026-10-09 15:28:41,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds release-b12353-10d6c1e5c variants ub2048,ub4096,ub8192 test pf12k n=3",,
 chunk3-equal,2026-10-09 15:34:29,"bench /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf builds moe-chunk-v1 variants e0,e256,e512 test pplb n=2",,
 sim13-128k,2026-10-09 15:35:03,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds release-b12353-10d6c1e5c variants m3u4096,m3u8192,m3u16384,p4u8192,p4u16384 test pf128k n=1",,
+passes1-equal,2026-10-09 16:09:06,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-passes variants q0,q6,q6p2,q3p1 test pplc n=1",,
+passes1-speed,2026-10-09 16:11:13,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-passes variants r4096,r12416,c4096,p2u4096,p2u2048,p1u4096 test pf12k n=2",,
+passes2-speed,2026-10-09 16:29:52,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-passes variants r4096,r12416,c4096,p1u4096,p2u4096,p3u4096,p1u2048,p2u2048,p3u2048 test pf12k n=2",,
