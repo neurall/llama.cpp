@@ -4,13 +4,14 @@
 //   bench=sync   sync and launch costs: stream/event sync, empty kernel round trip, cross-device event wait, queued kernels, cudaMalloc
 //   bench=up     upload sweep from file-backed pages (a fresh mmap of file=PATH per test, like the first touch of the mmap'd model): direct = T threads, each one whole-slice
 //                cudaMemcpyAsync from the mapped pages; bounce = T threads, each copies C-byte chunks into its own ring of pinned buffers and DMAs them; pinned = the source in pinned
-//                memory (upper bound); dma = the bounce ring without the CPU copy (the DMA limit of a chunk size). One GPU alone and all GPUs at once. keys: file=PATH region_mb=256 reps=3 threads=1,2,3,4 chunks_kb=64,256,1024,4096,16384,32768 ring=4
+//                memory (upper bound); dma = the bounce ring without the CPU copy (the DMA limit of a chunk size); pread / pread_d / uring / uring_d = the file read straight into the
+//                pinned ring (buffered / O_DIRECT; io_uring with registered buffers, reads and DMAs of different buffers overlap). One GPU alone and all GPUs at once. keys: file=PATH region_mb=256 reps=3 threads=1,2,3,4 chunks_kb=64,256,1024,4096,16384,32768 ring=4
 //   bench=pipe   the pass pipeline: groups of blocks alternate between the lanes (one GPU each); a lane = a host thread + an uploader thread; every step
 //                waits for its weights (uploaded through K slots), for the stash of the group before (pushed through pinned host memory by the other
 //                lane), computes (a kernel that spins for the measured time), and pushes its stash on. Reports the wall time and tokens/s, and the
 //                one-card run of the same load (lanes=1) for comparison.
 //
-// build: nvcc -O2 -std=c++17 -arch=sm_86 cudapipe.cu -o cudapipe -lpthread     run: CUDA_DEVICE_ORDER=PCI_BUS_ID ./cudapipe bench=pipe key=value ...
+// build: nvcc -O2 -std=c++17 -arch=sm_86 cudapipe.cu -o cudapipe -lpthread -luring     run: CUDA_DEVICE_ORDER=PCI_BUS_ID ./cudapipe bench=pipe key=value ...
 // pipe keys (defaults = full GLM 3.0bit, 12k prompt in 4 parts): blocks=45 dense=3 dsa_every=4 parts=4 gsz=1 w_mb=2550 pieces=3 stash_mb=198
 //   t_kda_ms=77 t_dsa_ms=154 (per part-step on lane 0) speed1=1.0 (lane 1 relative speed) dev0=1 dev1=0 (CUDA_DEVICE_ORDER=PCI_BUS_ID: 1 = the x16 card)
 //   lanes=2 split=alt|share share1=0.4 slots=9 src=pinned|pageable|file file=PATH host_gb=8 tokens=12416
@@ -18,6 +19,7 @@
 //   replan=0 (a DSA step ends with a stream sync, the allocator's re-plan) kernels=1 (kernels per step) uploader=1 (own thread per lane) reps=1
 #include <cuda_runtime.h>
 #include <fcntl.h>
+#include <liburing.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -310,7 +312,9 @@ static std::vector<size_t> list_of(const char * key, const char * def, size_t mu
 struct UpResult { double gbs = 0; double s = 0; };
 
 // one upload of `bytes` from src to the device buffer dst on device dev, with T threads; chunk == 0: each thread one cudaMemcpyAsync of its slice; else a pinned ring per thread
-static UpResult upload_run(int dev, void * dst, const char * src, size_t bytes, int T, size_t chunk, int ring, bool skip_copy = false) {
+// io: 0 memcpy from the mapped pages (src), 1 pread (buffered) into the pinned buffer, 2 pread O_DIRECT, 3 io_uring READ_FIXED buffered, 4 io_uring READ_FIXED O_DIRECT (file_off: where the region starts in the file)
+struct UpFiles { int fd = -1, fdd = -1; off_t off = 0; };
+static UpResult upload_run(int dev, void * dst, const char * src, size_t bytes, int T, size_t chunk, int ring, bool skip_copy = false, int io = 0, UpFiles ff = UpFiles()) {
     std::vector<std::thread> th; std::atomic<int> ready{0}, go{0};
     const size_t slice = (bytes / T + 4095) & ~(size_t) 4095;
     double t_start = 0, t_end = 0;
@@ -327,11 +331,48 @@ static UpResult upload_run(int dev, void * dst, const char * src, size_t bytes, 
             ready++; while (go.load() == 0) { }
             if (!chunk) {
                 if (hi > lo) { CK(cudaMemcpyAsync((char *) dst + lo, src + lo, hi - lo, cudaMemcpyHostToDevice, st)); }
+            } else if (io >= 3) {
+                // io_uring: every pinned buffer is FREE -> READING (READ_FIXED submitted) -> DMA (cudaMemcpyAsync issued, event pending) -> FREE; reads and DMAs of different buffers overlap
+                struct io_uring ur; if (io_uring_queue_init(ring, &ur, 0) != 0) { fprintf(stderr, "io_uring_queue_init failed\n"); exit(1); }
+                std::vector<iovec> iov(ring); for (int k = 0; k < ring; ++k) { iov[k].iov_base = pin[k]; iov[k].iov_len = chunk; }
+                if (io_uring_register_buffers(&ur, iov.data(), ring) != 0) { fprintf(stderr, "io_uring_register_buffers failed\n"); exit(1); }
+                std::vector<int> state(ring, 0); std::vector<size_t> boff(ring, 0), bn(ring, 0); // 0 free, 1 reading, 2 dma
+                size_t next = lo; size_t chunks_left = (hi - lo + chunk - 1) / chunk;
+                const int fdx = io == 4 ? ff.fdd : ff.fd;
+                while (chunks_left > 0) {
+                    bool progress = false;
+                    for (int k = 0; k < ring; ++k) {
+                        if (state[k] == 0 && next < hi) {
+                            const size_t n = std::min(chunk, hi - next);
+                            struct io_uring_sqe * sqe = io_uring_get_sqe(&ur);
+                            io_uring_prep_read_fixed(sqe, fdx, pin[k], (unsigned) n, ff.off + next, k); sqe->user_data = (unsigned long long) k;
+                            state[k] = 1; boff[k] = next; bn[k] = n; next += n; progress = true;
+                        }
+                    }
+                    if (progress) { io_uring_submit(&ur); }
+                    struct io_uring_cqe * cqe;
+                    while (io_uring_peek_cqe(&ur, &cqe) == 0) {
+                        const int k = (int) cqe->user_data;
+                        if (cqe->res < 0 || (size_t) cqe->res != bn[k]) { fprintf(stderr, "io_uring read: res %d for %zu bytes (%s)\n", cqe->res, bn[k], cqe->res < 0 ? strerror(-cqe->res) : "short"); exit(1); }
+                        io_uring_cqe_seen(&ur, cqe);
+                        CK(cudaMemcpyAsync((char *) dst + boff[k], pin[k], bn[k], cudaMemcpyHostToDevice, st)); CK(cudaEventRecord(ev[k], st));
+                        state[k] = 2; progress = true;
+                    }
+                    for (int k = 0; k < ring; ++k) {
+                        if (state[k] == 2 && cudaEventQuery(ev[k]) == cudaSuccess) { state[k] = 0; --chunks_left; progress = true; }
+                    }
+                    if (!progress) { sched_yield(); }
+                }
+                io_uring_queue_exit(&ur);
             } else {
                 int k = 0;
                 for (size_t off = lo; off < hi; off += chunk, k = (k + 1) % ring) {
                     const size_t n = std::min(chunk, hi - off);
                     CK(cudaEventSynchronize(ev[k]));               // the DMA that last used this buffer is done
+                    if (io == 1 || io == 2) {   // pread of the file region straight into the pinned buffer (buffered: the kernel copies from the page cache; O_DIRECT: the NVMe writes into it)
+                        size_t got = 0; const int fdx = io == 2 ? ff.fdd : ff.fd;
+                        while (got < n) { ssize_t r = pread(fdx, pin[k] + got, n - got, ff.off + off + got); if (r <= 0) { fprintf(stderr, "pread failed: %s\n", strerror(errno)); exit(1); } got += (size_t) r; }
+                    } else
                     if (!skip_copy) { memcpy(pin[k], src + off, n); } // page faults + the CPU copy (mode dma: skipped, the pinned buffer is DMA'd as it is: the DMA limit of this chunk size)
                     CK(cudaMemcpyAsync((char *) dst + off, pin[k], n, cudaMemcpyHostToDevice, st));
                     CK(cudaEventRecord(ev[k], st));
@@ -352,12 +393,15 @@ static UpResult upload_run(int dev, void * dst, const char * src, size_t bytes, 
     return r;
 }
 
+static int io_of(const std::string & m) { return m == "pread" ? 1 : m == "pread_d" ? 2 : m == "uring" ? 3 : m == "uring_d" ? 4 : 0; }
+
 static void bench_up() {
     int nd = 0; CK(cudaGetDeviceCount(&nd));
     const size_t region = (size_t) D("region_mb", 256) << 20; const int reps = (int) D("reps", 3), ring = (int) D("ring", 4);
     const std::string path = S("file", "/p/bw/data/q5h/glm12/GLM12-3.0bit.gguf");
     std::vector<size_t> Ts = list_of("threads", "1,2,3,4", 1), Cs = list_of("chunks_kb", "64,256,1024,4096,16384,32768", 1024);
     int fd = open(path.c_str(), O_RDONLY); if (fd < 0) { perror("file"); exit(1); }
+    int fdd = open(path.c_str(), O_RDONLY | O_DIRECT); if (fdd < 0) { perror("file O_DIRECT"); exit(1); }
     off_t fsize = lseek(fd, 0, SEEK_END);
     printf("bench=up: %d devices, file %s (%.1f GB), %zu MiB per upload, %d reps (each rep a fresh mapping, offsets differ), ring %d\n", nd, path.c_str(), fsize / 1e9, region >> 20, reps, ring);
     // warm the page cache for the regions used (reads the file once, not timed)
@@ -372,6 +416,10 @@ static void bench_up() {
     for (size_t T : Ts) { cfgs.push_back({ "direct", (int) T, 0 }); }
     for (size_t T : Ts) { for (size_t C : Cs) { cfgs.push_back({ "dma", (int) T, C }); } }
     for (size_t T : Ts) { for (size_t C : Cs) { cfgs.push_back({ "bounce", (int) T, C }); } }
+    if (D("io", 1) != 0) {   // reads of the file into the pinned ring (key io=0 to skip): pread buffered / O_DIRECT, io_uring buffered / O_DIRECT; keys threads_io, chunks_io_kb
+        std::vector<size_t> Ti = list_of("threads_io", "1,2,4", 1), Ci = list_of("chunks_io_kb", "256,1024,4096", 1024);
+        for (const char * m : { "pread", "pread_d", "uring", "uring_d" }) { for (size_t T : Ti) { for (size_t C : Ci) { cfgs.push_back({ m, (int) T, C }); } } }
+    }
     size_t next = 0; // the next unused 256 MiB window of the file, wrapped
     for (auto & c : cfgs) {
         std::vector<double> alone(nd, 0), both(nd, 0);
@@ -383,10 +431,10 @@ static void bench_up() {
                 for (int d = 0; d < nd; ++d) { offs[d] = (next % ((size_t) fsize / region - 1)) * region; ++next; }
                 for (int d = 0; d < nd; ++d) { void * m = mmap(nullptr, region, PROT_READ, MAP_PRIVATE, fd, offs[d]); if (m == MAP_FAILED) { perror("mmap"); exit(1); } maps[d] = (const char *) m; }
                 if (pass == 0) {
-                    for (int d = 0; d < nd; ++d) { UpResult u = upload_run(d, dbuf[d], c.mode == "pinned" ? pinned.p : maps[d], region, c.T, c.chunk, ring, c.mode == "dma"); acc[d] += u.gbs; }
+                    for (int d = 0; d < nd; ++d) { UpResult u = upload_run(d, dbuf[d], c.mode == "pinned" ? pinned.p : maps[d], region, c.T, c.chunk, ring, c.mode == "dma", io_of(c.mode), UpFiles{ fd, fdd, (off_t) offs[d] }); acc[d] += u.gbs; }
                 } else {
                     std::vector<std::thread> th; std::vector<UpResult> res(nd);
-                    for (int d = 0; d < nd; ++d) { th.emplace_back([&, d]() { res[d] = upload_run(d, dbuf[d], c.mode == "pinned" ? pinned.p : maps[d], region, c.T, c.chunk, ring, c.mode == "dma"); }); }
+                    for (int d = 0; d < nd; ++d) { th.emplace_back([&, d]() { res[d] = upload_run(d, dbuf[d], c.mode == "pinned" ? pinned.p : maps[d], region, c.T, c.chunk, ring, c.mode == "dma", io_of(c.mode), UpFiles{ fd, fdd, (off_t) offs[d] }); }); }
                     for (auto & t : th) { t.join(); }
                     for (int d = 0; d < nd; ++d) { acc[d] += res[d].gbs; }
                 }
