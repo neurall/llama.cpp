@@ -727,3 +727,8 @@ passes8b-times,2026-10-09 18:32:53,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf 
 passes8c-equal,2026-10-09 18:37:00,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants g2p1m1 test pplc n=1,,
 passes8c-speed,2026-10-09 18:37:26,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants ob3,d2p1,d2pa,d2p2,pob4,pd2p1,pd2pa test pf12k n=2",,
 passes8d-cache,2026-10-09 18:48:08,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants c31 test pf12k n=1,,
+passes8d-cache,2026-10-09 18:48:39,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants c0 test pf12k n=1,,
+passes8e-prof,2026-10-09 18:49:07,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants e2 test pf12k n=1,,
+passes8e-prof,2026-10-09 18:49:44,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants e1 test pf12k n=1,,
+passes8f-equal,2026-10-09 18:50:28,bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants h2p1m1 test pplc n=1,,
+passes8f-speed,2026-10-09 18:50:54,"bench /p/bw/data/q5h/glm12/GLM12-3.0bit.gguf builds proto-pipe variants ob3,q2p1,q2p1s,q2p2,pq2p1 test pf12k n=2",,
