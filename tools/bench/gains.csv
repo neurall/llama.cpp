@@ -88,3 +88,9 @@ chain13-13k,2026-10-10 18:21:49,GLM12-3.0bit.gguf,pf12k,300+370,"-dev CUDA1 pf-s
 chain13-14k,2026-10-10 18:21:49,GLM12-3.0bit.gguf,pf12k,300+370,"-dev CUDA1 pf-slots=4,maskt=8",3,3134.2,"-dev CUDA1 pf-slots=4,maskt=8",3,3134.2,1
 chain13-14k,2026-10-10 18:21:49,GLM12-3.0bit.gguf,pf12k,300+370,"-dev CUDA1 pf-slots=4,maskt=8",3,3044,"-dev CUDA1 pf-slots=4,maskt=8",3,3134.2,0.971
 chain13-14k,2026-10-10 18:21:49,GLM12-3.0bit.gguf,pf12k,300+370,"-dev CUDA1 pf-slots=4,maskt=8",3,2285.4,"-dev CUDA1 pf-slots=4,maskt=8",3,3134.2,0.729
+chain16-passes-ub-280+370,2026-10-10 18:56:12,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,280+370,"-dev CUDA1 pf-slots=3,maskt=8",2,658.2,"-dev CUDA1 pf-slots=3,maskt=8",2,658.2,1
+chain16-passes-ub-280+370,2026-10-10 18:56:12,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,280+370,"-dev CUDA1 maskt=8,passes=1,pipe=1,pipe-par=1,up-chunk=32,up-depth=1,pipe-class=2,pf-slots=4,pipe-slots=6",2,571.2,"-dev CUDA1 pf-slots=3,maskt=8",2,658.2,0.868
+chain16-passes-ub-280+370,2026-10-10 18:56:12,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,280+370,"-dev CUDA1 maskt=8,passes=1,pipe=1,pipe-par=1,up-chunk=32,up-depth=1,pipe-class=2,pf-slots=4,pipe-slots=6",2,604.6,"-dev CUDA1 pf-slots=3,maskt=8",2,658.2,0.919
+chain16-passes-ub-280+370,2026-10-10 18:56:13,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,280+370,"-dev CUDA1 pf-slots=3,maskt=8",2,658.2,"-dev CUDA1 pf-slots=3,maskt=8",2,658.2,1
+chain16-passes-ub-280+370,2026-10-10 18:56:13,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,280+370,"-dev CUDA1 maskt=8,passes=1,pipe=1,pipe-par=1,up-chunk=32,up-depth=1,pipe-class=2,pf-slots=4,pipe-slots=6",2,571.2,"-dev CUDA1 pf-slots=3,maskt=8",2,658.2,0.868
+chain16-passes-ub-280+370,2026-10-10 18:56:13,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,280+370,"-dev CUDA1 maskt=8,passes=1,pipe=1,pipe-par=1,up-chunk=32,up-depth=1,pipe-class=2,pf-slots=4,pipe-slots=6",2,604.6,"-dev CUDA1 pf-slots=3,maskt=8",2,658.2,0.919
