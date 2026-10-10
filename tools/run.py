@@ -54,6 +54,9 @@ if "," not in os.environ.get("CUDA_VISIBLE_DEVICES", ","):  # one visible GPU: n
     COMMON_ALL = COMMON_ALL[:-2]
 COMMON = COMMON_ALL
 PORT = int(os.environ.get("PERF_PORT", 8099))
+LOGTAG = "" if PORT == 8099 else f"-p{PORT}"   # a second run.py instance (PERF_PORT) keeps its own server logs
+SYNC = os.environ.get("PERF_SYNC", "")   # DIR:N start barrier: N instances fire their timed request together
+BAR_N = [0]
 OVR = {}   # --prompt TEXT|@file, --tokens N, --ctx N override the test's own prompt, generated tokens and context
 CAMPAIGN = ""  # --campaign NAME: column campaign of every row of this invocation
 REP = None  # bench repetition (0-based) of the run being stored; None outside bench
@@ -324,7 +327,7 @@ def _server_start_once(build, env, args):
     elif not build.startswith("stock") and STATE_FILE["v"]:
         env = {**env, "LLAMA_MOE_STATE": STATE_FILE["v"]}   # the first releases (no --moe flag) read the environment variable
     args = merge_moe(args)
-    logf = f"/tmp/perf-{build}.log"
+    logf = f"/tmp/perf-{build}{LOGTAG}.log"
     with open(logf, "w") as lf:
         p = subprocess.Popen(WRAP + [os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
                              + args, stdout=lf, stderr=subprocess.STDOUT, env=env, preexec_fn=_die_with_parent)
@@ -421,7 +424,7 @@ GPU_Q = "index,power.draw,clocks.sm,clocks.mem,temperature.gpu,utilization.gpu,p
 def gpu_sampler(build, pid=None):
     """5 Hz nvidia-smi samples of every GPU while the server runs -> tools/bench/gpulog/<time>-<build>.csv; stop() returns per-GPU summaries (min SM clock, max temperature, mean power, OR of the throttle reason bits, min PCIe width)"""
     d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "gpulog"); os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, f"{time.strftime('%Y%m%d-%H%M%S')}-{re.sub(r'[^A-Za-z0-9._-]', '_', build)}.csv")
+    path = os.path.join(d, f"{time.strftime('%Y%m%d-%H%M%S')}-{re.sub(r'[^A-Za-z0-9._-]', '_', build)}{LOGTAG}.csv")
     f = open(path, "w"); f.write("t_ms," + GPU_Q + "\n")
     p = subprocess.Popen(["nvidia-smi", "--query-gpu=" + GPU_Q, "--format=csv,noheader,nounits", "-lms", "200"], stdout=subprocess.PIPE, text=True)
     rows, t0 = [], time.time()
@@ -530,6 +533,12 @@ def server_run(build, env, args, path, body, render=None):
     try:
         if render:   # the server renders the model's chat template into the prompt text
             body = {**body, "prompt": post("/apply-template", {"messages": render})["prompt"]}
+        if SYNC and not WARMING:   # start barrier: drop a ready file, wait until N instances have one
+            d, n = SYNC.rsplit(":", 1); os.makedirs(d, exist_ok=True); BAR_N[0] += 1
+            open(os.path.join(d, f"b{BAR_N[0]}-{PORT}"), "w").close()
+            t_b = time.time()
+            while len([f for f in os.listdir(d) if f.startswith(f"b{BAR_N[0]}-")]) < int(n) and time.time() - t_b < 240:
+                time.sleep(0.05)
         t_req[0] = time.time()
         rep = max(1, int(OVR.get("repeat") or 1))   # --repeat N: N requests to this server, the last one is the result (warm)
         for i_rep in range(rep):
@@ -601,7 +610,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
          and not (x == "-1" and COMMON_ALL[i - 1] == "--moe-expert-cache")]) + list(extra_args)  # stock/plain: autofit, no cache
     wait_vram_free()
     env = {**os.environ, **extra_env, "LD_LIBRARY_PATH": os.path.join(HERE, build), "LLAMA_MOE_CACHE_STATS": "1",
-           "LLAMA_MOE_CACHE_STATSLOG": "32", "LLAMA_MOE_STATSLOG": f"/tmp/perf-{build}-stats.txt",  # builds with statslog write a text line per 32 steps (moe-stats.csv)
+           "LLAMA_MOE_CACHE_STATSLOG": "32", "LLAMA_MOE_STATSLOG": f"/tmp/perf-{build}{LOGTAG}-stats.txt",  # builds with statslog write a text line per 32 steps (moe-stats.csv)
            "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
     row = {}
     TAGBOX["v"] = test   # game4 and edit4 add their prompt below
@@ -628,7 +637,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                                capture_output=True, text=True, env=env, preexec_fn=_die_with_parent)
             log = r.stdout + r.stderr
             _wall = round(time.time() - _t0, 1); _start = time.strftime("%F %T", time.localtime(_t0))
-            open(f"/tmp/perf-{build}-ppl.log", "w").write(log)   # a failed perplexity run is diagnosable
+            open(f"/tmp/perf-{build}{LOGTAG}-ppl.log", "w").write(log)   # a failed perplexity run is diagnosable
             if re.findall(r"PPL = ([\d.]+)", log):
                 if v is not None:
                     print(f"stock perplexity ran with -fitt {v}", flush=True)
@@ -883,7 +892,7 @@ def windows_from_cache_csv(build):
 
 def save_stats(build, ts, test, hw, model):
     """The server's statslog file of the measured run (a value per 32 steps: t/s, hit, uploads, evictions, MiB uploaded, DDR and PCIe GB/s) -> a section of stats.ini."""
-    f = f"/tmp/perf-{build}-stats.txt"
+    f = f"/tmp/perf-{build}{LOGTAG}-stats.txt"
     if os.path.exists(f):
         w = [[float(x) for x in l.split()] for l in open(f) if l[:1].isdigit() and len(l.split()) in (10, 14, 18)]
         os.remove(f)  # the next run of this build must not re-save it
@@ -1044,7 +1053,7 @@ def snapshot_knobs(t0):
 def save_tune_log(row):
     """The self-tune decisions of this run's server log, keyed by the run's date and commit (tune.csv)."""
     try:
-        lines = [re.sub(r"^\S+ [A-Z] ", "", l.strip())[:300] for l in open(f"/tmp/perf-{row['build']}.log", errors="replace")
+        lines = [re.sub(r"^\S+ [A-Z] ", "", l.strip())[:300] for l in open(f"/tmp/perf-{row['build']}{LOGTAG}.log", errors="replace")
                  if "self-tune" in l or "thread autotune" in l]
     except OSError:
         return
@@ -1196,7 +1205,7 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
     save_routing_output(row, build)
     history_line(row, test, hw)
     try:   # the server log of this run next to its row (slots, GPU split, tuned knobs, placement, threads): fast and slow runs of one build can be compared line by line
-        lf = f"/tmp/perf-{build}.log"
+        lf = f"/tmp/perf-{build}{LOGTAG}.log"
         if os.path.exists(lf):
             os.makedirs(os.path.join(DATA, "logs", "runs"), exist_ok=True)
             shutil.copyfile(lf, os.path.join(DATA, "logs", "runs", f"{row['ts'].replace(' ', '_')}-{build}-{test}.log"))
@@ -1352,7 +1361,7 @@ def remote_run(m, build, test, args, env=None):
         row.update(cache_stats(out))
         st = remote_sh(m, ("type " if win else "cat ") + stf + (" 2>nul" if win else " 2>/dev/null"))
         if st.strip():  # the run's statslog goes to stats.ini like a local run's
-            open(f"/tmp/perf-{build}-stats.txt", "w").write(st)
+            open(f"/tmp/perf-{build}{LOGTAG}-stats.txt", "w").write(st)
         return row
     prompt = ovr_prompt("generate smallest html tetris game." if test == "tetris" else "write smallest html tetris game").replace('"', "'")
     n = int(OVR.get("tokens") or (-1 if test == "tetris" else 100))
