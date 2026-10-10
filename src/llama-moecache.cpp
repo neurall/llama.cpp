@@ -127,7 +127,7 @@ std::string tr_fmt(const char * fmt, ...) {
 constexpr int MAX_LINKS = 16; // GPUs with a cache (their host->GPU links are measured, never assumed)
 
 struct layer_state {
-    llama_moe_cache_layer pub;
+    llama_moe_cache_fork_layer pub;
 
     // LRU bookkeeping (host side; the tables mirror expert_slot)
     std::vector<int32_t>  slot_expert;   // slot -> expert id, -1 when empty
@@ -398,7 +398,7 @@ struct moe_cache {
     int64_t                 last_obs    = -1; // layer idx of the last CPU expert op this step (mtx)
     uint64_t n_pred_up = 0, n_pred_pub = 0, n_pred_used = 0, n_pred_late = 0, n_stream_stale = 0, n_promoted = 0, n_tbp = 0;
 
-    // learned predictors (in-graph NLMS, see llama_moe_cache_layer::pred_m): trained every pred_train
+    // learned predictors (in-graph NLMS, see llama_moe_cache_fork_layer::pred_m): trained every pred_train
     // tokens (--lrn-prd N, 0 = frozen) with step size pred_mu; weights persist in pred_file
     int32_t  pred_ahead = 0;
     int32_t  pred_train = 0;
@@ -895,7 +895,7 @@ void moe_seed_hot(const std::string & section, size_t n_expert) {
 
 void llama_moe_observe_start(const llama_model & model) {
     const char * off = moe_opt("observe");
-    if ((off && off[0] == '0') || model.hparams.n_expert == 0 || !moe_state_enabled() || llama_moe_cache_active()) {
+    if ((off && off[0] == '0') || model.hparams.n_expert == 0 || !moe_state_enabled() || llama_moe_cache_fork_active()) {
         return;
     }
     std::lock_guard<std::mutex> lk(g_heat.mtx);
@@ -977,7 +977,7 @@ void llama_moe_observe_save() {
 }
 
 namespace {
-void set_table_entry(llama_moe_cache_layer & pub, int32_t expert, int32_t slot_or_dummy);
+void set_table_entry(llama_moe_cache_fork_layer & pub, int32_t expert, int32_t slot_or_dummy);
 void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop);
 
 size_t profile_preload(moe_cache * mc, const llama_model & model) {
@@ -1106,7 +1106,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
     const int64_t n_tokens = ids->ne[1];
     // big-batch prefill ids are observed too: they warm the cache before decode
     // (hits aren't counted there, the cache graph isn't built for big batches)
-    const bool prefill = n_tokens > llama_moe_cache_max_batch();
+    const bool prefill = n_tokens > llama_moe_cache_fork_max_batch();
 
     const int il = parse_layer_from_name(name);
     if (il < 0) {
@@ -1456,7 +1456,7 @@ void pred_save(const moe_cache * mc) {
 }
 
 // Q8_0 prediction copy <- fp16 master (at start and after loading saved weights; the graph re-quantizes after updates)
-void pred_requant(llama_moe_cache_layer & pub) {
+void pred_requant(llama_moe_cache_fork_layer & pub) {
     if (!pub.pred_q || !pub.pred_all) {
         return;
     }
@@ -2207,9 +2207,9 @@ void upload_slice(ggml_tensor * dst_c, const ggml_tensor * src, int32_t expert, 
 // copy is flushed in one transfer per dirty layer at the next sync point (split callback, end of step) instead of
 // one synchronous 4-byte copy per entry
 std::mutex                                g_tbl_mtx;
-std::vector<llama_moe_cache_layer *>      g_tbl_dirty;
+std::vector<llama_moe_cache_fork_layer *>      g_tbl_dirty;
 
-void set_table_entry(llama_moe_cache_layer & pub, int32_t expert, int32_t slot_or_dummy) {
+void set_table_entry(llama_moe_cache_fork_layer & pub, int32_t expert, int32_t slot_or_dummy) {
     if (pub.jit_n > 0 && slot_or_dummy != pub.n_slots + 1 && g_cache) {
         // the main cache takes (or drops) this expert: it leaves the JIT pool, or the pool chain would add it twice
         for (auto & l : g_cache->layers) {
@@ -2236,7 +2236,7 @@ void set_table_entry(llama_moe_cache_layer & pub, int32_t expert, int32_t slot_o
 bool g_neg_ids = false;
 
 void flush_tables() {
-    std::vector<llama_moe_cache_layer *> d;
+    std::vector<llama_moe_cache_fork_layer *> d;
     {
         std::lock_guard<std::mutex> lk(g_tbl_mtx);
         d.swap(g_tbl_dirty);
@@ -2345,7 +2345,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     return true;
 }
 
-void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots, int32_t window,
+void llama_moe_cache_fork_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots, int32_t window,
                           int32_t predict, int32_t predict_train) {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
     if (g_init_done) {
@@ -3199,7 +3199,7 @@ void llama_moe_cache_init(const llama_model & model, int32_t n_slots, int32_t ma
 // once the link is done) finishes at T(k); the k with the smallest T wins, 0 when nothing beats the CPU alone. All rates
 // are measured (link and CPU phase rates live, RAM budget by the startup probe). Uploaded experts become cache entries
 // (same eviction score as the step's swaps), so the upload also serves later tokens.
-void llama_moe_cache_jit(const llama_moe_cache_layer * pub, const ggml_tensor * ids) {
+void llama_moe_cache_fork_jit(const llama_moe_cache_fork_layer * pub, const ggml_tensor * ids) {
     moe_cache * mc = g_cache;
     if (!mc || knobs().jit == 0 || ids->ne[1] > 4) {
         return;
@@ -3359,7 +3359,7 @@ void llama_moe_cache_jit(const llama_moe_cache_layer * pub, const ggml_tensor * 
     mc->n_jit_layers += n_up > 0;
 }
 
-const llama_moe_cache_layer * llama_moe_cache_lookup(const ggml_tensor * up_exps) {
+const llama_moe_cache_fork_layer * llama_moe_cache_fork_lookup(const ggml_tensor * up_exps) {
     if (!g_cache) {
         return nullptr;
     }
@@ -3456,11 +3456,11 @@ static void prefill_split_tune(moe_cache * mc, double batch_us) {
     set(mc->ps_vals[mc->ps_c]);
 }
 
-float llama_moe_cache_prefill_alpha() {
+float llama_moe_cache_fork_prefill_alpha() {
     return g_split_share;
 }
 
-double llama_moe_cache_link_gbs(ggml_backend_dev_t dev) {
+double llama_moe_cache_fork_link_gbs(ggml_backend_dev_t dev) {
     moe_cache * mc = g_cache; // set once at init
     if (mc && dev) {
         for (int k = 0; k < mc->n_links; ++k) {
@@ -3482,7 +3482,7 @@ double llama_moe_cache_link_gbs(ggml_backend_dev_t dev) {
 // 64 MB pinned-host -> device copies per GPU, and splitting's best transfer speedup is (sum of link GB/s) / (fastest).
 // Reserved at >= 1.25x (2 x16: 2x; x16 + x4: 1.22x, where the split measured slower); alpha then starts at 1 and the
 // tuner measures. LLAMA_PREFILL_SPLIT=<alpha> overrides (0: never).
-void llama_moe_cache_prefill_decide(const std::vector<ggml_backend_dev_t> & gpus) {
+void llama_moe_cache_fork_prefill_decide(const std::vector<ggml_backend_dev_t> & gpus) {
     if (const char * e = moe_opt("prefill-split")) {
         g_split_share   = (float) atof(e);
         g_split_enabled = g_split_share > 0;
@@ -3651,7 +3651,7 @@ static void self_tune(moe_cache * mc) {
     apply_predict(mc);
 }
 
-void llama_moe_cache_step() {
+void llama_moe_cache_fork_step() {
     moe_cache * mc = g_cache;
     if (!mc) {
         return;
@@ -4288,15 +4288,15 @@ void llama_moe_set_options(const char * opts) {
     }
 }
 
-bool llama_moe_cache_active() {
+bool llama_moe_cache_fork_active() {
     return g_cache != nullptr;
 }
 
-bool llama_moe_cache_wants_probs() {
+bool llama_moe_cache_fork_wants_probs() {
     return get_policy() == policy::rel;
 }
 
-bool llama_moe_cache_get_info(struct llama_tuning_info * info) {
+bool llama_moe_cache_fork_get_info(struct llama_tuning_info * info) {
     moe_cache * mc = g_cache;
     if (!mc) {
         return false;
@@ -4318,7 +4318,7 @@ bool llama_moe_cache_get_info(struct llama_tuning_info * info) {
     return true;
 }
 
-int64_t llama_moe_cache_max_batch() {
+int64_t llama_moe_cache_fork_max_batch() {
     static const int64_t v = [] {
         const char * e = moe_opt("max-batch");
         return (int64_t) (e ? atoi(e) : 31);
@@ -4326,7 +4326,7 @@ int64_t llama_moe_cache_max_batch() {
     return v;
 }
 
-void llama_moe_cache_free() {
+void llama_moe_cache_fork_free() {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
     moe_cache * mc = g_cache;
     if (!mc) {
@@ -4413,19 +4413,19 @@ void llama_moe_cache_free() {
     g_init_done = false;
 }
 
-bool llama_moe_cache_pred_train_now() {
+bool llama_moe_cache_fork_pred_train_now() {
     return g_pred_train_now;
 }
 
-bool llama_moe_cache_graph_reusable() {
+bool llama_moe_cache_fork_graph_reusable() {
     return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built && g_split_epoch == g_split_epoch_built;
 }
 
-int32_t llama_moe_cache_cpu_sat_threads() {
+int32_t llama_moe_cache_fork_cpu_sat_threads() {
     return g_cache ? g_cache->cpu_sat_threads : 0;
 }
 
-void llama_moe_cache_graph_built() {
+void llama_moe_cache_fork_graph_built() {
     g_pred_train_built = g_pred_train_now;
     g_pred_epoch_built = g_pred_epoch;
     g_split_epoch_built = g_split_epoch;

@@ -486,7 +486,7 @@ llama_context::llama_context(
                 ggml_backend_dev_t d = ggml_backend_get_device(backend.get());
                 if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpus.push_back(d); }
             }
-            llama_moe_cache_prefill_decide(gpus);
+            llama_moe_cache_fork_prefill_decide(gpus);
         }
 
         sched_reserve();
@@ -665,7 +665,7 @@ llama_context::~llama_context() {
         }
     }
     if (cparams.moe_cache) {
-        llama_moe_cache_free();
+        llama_moe_cache_fork_free();
     } else if (moe_observe_started) {
         llama_moe_observe_save();
     }
@@ -1926,7 +1926,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
     const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
-    if (!graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable()) {
+    if (!graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_fork_graph_reusable()) {
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
 
         // with pipeline parallelism, the previous graph_compute_async may still be running
@@ -1947,7 +1947,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         //const auto t_start_us = ggml_time_us();
 
         gf = model.build_graph(gparams);
-        llama_moe_cache_graph_built();
+        llama_moe_cache_fork_graph_built();
 
         //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
 
@@ -2235,9 +2235,9 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     }
     if (cparams.moe_cache && !cparams.moe_cache_started && !moe_cache_defer) {
         cparams.moe_cache_started = true;
-        llama_moe_cache_init(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots, cparams.moe_cache_window,
+        llama_moe_cache_fork_init(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots, cparams.moe_cache_window,
                 cparams.moe_predict, cparams.moe_predict_train);
-        thread_cap_from_probe(llama_moe_cache_cpu_sat_threads());
+        thread_cap_from_probe(llama_moe_cache_fork_cpu_sat_threads());
         sched_reserve(); // the compute graph now includes the cache chain
     }
     if (!memory) {
@@ -2691,10 +2691,10 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     static const bool mc_sync = !moe_opt("sync") || atoi(moe_opt("sync")) != 0;
     // only the context that owns the cache steps it (not e.g. an MTP draft context)
     if (cparams.moe_cache) {
-        if (mc_sync && llama_moe_cache_active()) {
+        if (mc_sync && llama_moe_cache_fork_active()) {
             ggml_backend_sched_synchronize(sched.get());
         }
-        llama_moe_cache_step();
+        llama_moe_cache_fork_step();
     }
 
     return 0;
@@ -3035,7 +3035,7 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
     // activation/down/concat per 4-token chunk of batches up to max_batch. The
     // scheduler is sized before the cache exists, so budget for it up front.
     if (cparams.moe_cache) {
-        const uint32_t nt = (uint32_t) std::min<int64_t>(n_tokens, llama_moe_cache_max_batch());
+        const uint32_t nt = (uint32_t) std::min<int64_t>(n_tokens, llama_moe_cache_fork_max_batch());
         res += model.hparams.n_layer() * (16u + 12u * ((nt + 3) / 4));
     }
 
@@ -4718,7 +4718,7 @@ void llama_set_warmup(llama_context * ctx, bool warmup) {
     ctx->set_warmup(warmup);
 }
 
-void llama_moe_cache_defer(llama_context * ctx, bool defer) {
+void llama_moe_cache_fork_defer(llama_context * ctx, bool defer) {
     ctx->moe_cache_defer = defer;
 }
 
@@ -5199,7 +5199,7 @@ void llama_get_tuning_info(const llama_context * ctx, llama_tuning_info * info) 
     *info = {};
     info->margin = info->gate = info->wait = info->big = info->predict = info->self_tune = -1;
     info->moe_slots_min = info->moe_slots_max = info->moe_layers = -1;
-    info->moe_active = llama_moe_cache_get_info(info);
+    info->moe_active = llama_moe_cache_fork_get_info(info);
     info->n_threads       = (int32_t) ctx->get_cparams().n_threads;
     info->n_threads_batch = (int32_t) ctx->get_cparams().n_threads_batch;
     info->n_batch         = (int32_t) ctx->n_batch();

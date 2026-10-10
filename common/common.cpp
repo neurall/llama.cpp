@@ -2390,13 +2390,13 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
             tmp.push_back(decoder_start_token_id);
         }
         if (llama_model_has_decoder(model)) {
-            llama_moe_cache_defer(lctx, true); // start the cache on the first real decode
+            llama_moe_cache_fork_defer(lctx, true); // start the cache on the first real decode
             tmp.resize(std::min(tmp.size(), (size_t) params.n_batch));
             common_batch batch = common_batch_get_one(lctx, tmp);
             llama_process(lctx, LLAMA_PROCESS_TYPE_DECODE, batch.get());
             llama_synchronize(lctx);
             llama_memory_clear(llama_get_memory(lctx), true);
-            llama_moe_cache_defer(lctx, false);
+            llama_moe_cache_fork_defer(lctx, false);
         }
         llama_memory_clear(llama_get_memory(lctx), true);
         llama_synchronize(lctx);
