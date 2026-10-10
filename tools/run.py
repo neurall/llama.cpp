@@ -54,6 +54,9 @@ if "," not in os.environ.get("CUDA_VISIBLE_DEVICES", ","):  # one visible GPU: n
     COMMON_ALL = COMMON_ALL[:-2]
 COMMON = COMMON_ALL
 PORT = int(os.environ.get("PERF_PORT", 8099))
+NVSMI = os.environ.get("NVIDIA_SMI", "nvidia-smi")   # a driver that does not match the system libraries (the P2P test module): the nvidia-smi of its own userspace
+def ldpath(build):   # the build directory first; PERF_LD_EXTRA=dir:dir appended (the userspace of a test driver whose version differs from the system libraries)
+    return os.path.join(HERE, build) + (":" + os.environ["PERF_LD_EXTRA"] if os.environ.get("PERF_LD_EXTRA") else "")
 LOGTAG = "" if PORT == 8099 else f"-p{PORT}"   # a second run.py instance (PERF_PORT) keeps its own server logs
 SYNC = os.environ.get("PERF_SYNC", "")   # DIR:N start barrier: N instances fire their timed request together
 BAR_N = [0]
@@ -246,7 +249,7 @@ def wait_vram_free():
         if time.time() - t0 > 60:  # something still holds VRAM: clean up again
             kill_leftovers()
             t0 = time.time()
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+        out = subprocess.run([NVSMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True).stdout.split()
         if out and max(int(x) for x in out) < 500 + int(os.environ.get("PERF_HOLD_MB", 0)):  # PERF_HOLD_MB: VRAM a holder process keeps on purpose (simulated smaller card)
             return
@@ -255,7 +258,7 @@ def wait_vram_free():
 
 def version(build):
     r = subprocess.run([os.path.join(HERE, build, "llama-server"), "--version"], capture_output=True, text=True,
-                       env={**os.environ, "LD_LIBRARY_PATH": os.path.join(HERE, build)})
+                       env={**os.environ, "LD_LIBRARY_PATH": ldpath(build)})
     m = re.search(r"version: (.*)", r.stdout + r.stderr)
     return m.group(1).strip() if m else "?"
 
@@ -426,7 +429,7 @@ def gpu_sampler(build, pid=None):
     d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "gpulog"); os.makedirs(d, exist_ok=True)
     path = os.path.join(d, f"{time.strftime('%Y%m%d-%H%M%S')}-{re.sub(r'[^A-Za-z0-9._-]', '_', build)}{LOGTAG}.csv")
     f = open(path, "w"); f.write("t_ms," + GPU_Q + "\n")
-    p = subprocess.Popen(["nvidia-smi", "--query-gpu=" + GPU_Q, "--format=csv,noheader,nounits", "-lms", "200"], stdout=subprocess.PIPE, text=True)
+    p = subprocess.Popen([NVSMI, "--query-gpu=" + GPU_Q, "--format=csv,noheader,nounits", "-lms", "200"], stdout=subprocess.PIPE, text=True)
     rows, t0 = [], time.time()
     def pump():
         for line in p.stdout:
@@ -494,7 +497,7 @@ def pcie_sampler():
     """host -> device and device -> host PCIe traffic of every GPU while the request runs (nvidia-smi dmon, 1 Hz, MB/s): stop() returns (total GB host->device, peak GB/s of any GPU, mean GB/s of the seconds that moved data, total GB device->host). Cheap enough to be on for every server run."""
     rows = []
     try:
-        p = subprocess.Popen(["nvidia-smi", "dmon", "-s", "t", "-d", "1"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        p = subprocess.Popen([NVSMI, "dmon", "-s", "t", "-d", "1"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     except OSError:
         return lambda: None
     def pump():
@@ -560,7 +563,7 @@ def server_run(build, env, args, path, body, render=None):
         except (OSError, IndexError, ValueError):
             pass
         try:
-            o = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
+            o = subprocess.run([NVSMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
             PROCSTAT["vram_mib"] = sum(int(x) for x in o.split())
         except Exception:
             pass
@@ -609,7 +612,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         [x for i, x in enumerate(COMMON_ALL) if x not in ("--cpu-moe", "--moe-expert-cache")
          and not (x == "-1" and COMMON_ALL[i - 1] == "--moe-expert-cache")]) + list(extra_args)  # stock/plain: autofit, no cache
     wait_vram_free()
-    env = {**os.environ, **extra_env, "LD_LIBRARY_PATH": os.path.join(HERE, build), "LLAMA_MOE_CACHE_STATS": "1",
+    env = {**os.environ, **extra_env, "LD_LIBRARY_PATH": ldpath(build), "LLAMA_MOE_CACHE_STATS": "1",
            "LLAMA_MOE_CACHE_STATSLOG": "32", "LLAMA_MOE_STATSLOG": f"/tmp/perf-{build}{LOGTAG}-stats.txt",  # builds with statslog write a text line per 32 steps (moe-stats.csv)
            "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
     row = {}
@@ -812,7 +815,7 @@ def power_limits(hw):
         out = ""
         if os.environ.get("PERF_PL") is None:
             try:
-                out = subprocess.run(["nvidia-smi", "--query-gpu=power.limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
+                out = subprocess.run([NVSMI, "--query-gpu=power.limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
             except Exception:
                 pass
         _PL["pl"] = os.environ.get("PERF_PL") or "+".join(str(round(float(x))) for x in out.split() if x.replace(".", "").isdigit())
