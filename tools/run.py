@@ -272,6 +272,22 @@ def wait_vram_free():
         time.sleep(1)
 
 
+def fail_reason(build, n=3):
+    """why a run failed: the first distinct error lines (' E ' level) of this build's server log, so the history note says 'cudaMalloc failed: out of memory'
+    and not just 'HTTP Error 500'"""
+    try:
+        seen = []
+        for l in open(f"/tmp/perf-{build}{LOGTAG}.log", errors="replace"):
+            m = re.match(r"^\S+ E (.*)", l.rstrip())
+            if m:
+                t = re.sub(r"\d+(\.\d+)? MiB|size \d+", "N", m.group(1))[:110]
+                if t not in [re.sub(r"\d+(\.\d+)? MiB|size \d+", "N", x)[:110] for x in seen]:
+                    seen.append(m.group(1)[:110])
+        return " | ".join(seen[:n])
+    except Exception:
+        return ""
+
+
 def version(build):
     r = subprocess.run([os.path.join(HERE, build, "llama-server"), "--version"], capture_output=True, text=True,
                        env={**os.environ, "LD_LIBRARY_PATH": ldpath(build)})
@@ -1188,7 +1204,7 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
     try:
         row = run_one(build, test, extra, plain, xargs)
     except Exception as e:
-        row = {"ok": 0, "note": str(e)[:300]}
+        row = {"ok": 0, "note": (str(e)[:80] + " [" + fail_reason(build) + "]" if fail_reason(build) else str(e))[:400]}
         if build.startswith("stock") and not fitt_user and "-fitt" not in xargs and ("server exited" in str(e) or "server bailed" in str(e)):
             for v in FITT_LADDER:   # last resort: a larger fit target, upward, the first that starts is remembered for this model and machine
                 try:
