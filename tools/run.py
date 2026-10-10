@@ -418,7 +418,7 @@ def model_residency():
 
 PERFPROF = False   # --perf-prof: perf record (499 Hz, user space) of the server during each run -> tools/bench/perf/<time>-<build>.txt (flat top symbols per library)
 GPULOG = False   # --gpulog: 5 Hz nvidia-smi and CPU sampling during the runs (off by default; the slow mode turned out to be real code text, not a power or clock effect)
-GPU_Q = "index,power.draw,clocks.sm,clocks.mem,temperature.gpu,utilization.gpu,pcie.link.gen.current,pcie.link.width.current,clocks_throttle_reasons.active,power.draw.instant,fan.speed"
+GPU_Q = "index,power.draw,clocks.sm,clocks.mem,temperature.gpu,utilization.gpu,pcie.link.gen.current,pcie.link.width.current,clocks_throttle_reasons.active,power.draw.instant,fan.speed,memory.used"
 
 
 def gpu_sampler(build, pid=None):
@@ -483,7 +483,7 @@ def gpu_sampler(build, pid=None):
             for x in r:
                 try: thr |= int(x[8], 16)
                 except ValueError: pass
-            out[g] = f"util_avg={sum(int(x[5]) for x in r) // len(r)}% busy={100 * len(b) // len(r)}% clk_avg={sum(clk) // len(clk)} clk_p5={clk[len(clk) // 20]} pw_avg={sum(pw) / len(pw):.0f} temp_max={max(int(x[4]) for x in r)} thr=0x{thr:x} pcie_w={min(int(x[7]) for x in r)}"
+            out[g] = f"util_avg={sum(int(x[5]) for x in r) // len(r)}% busy={100 * len(b) // len(r)}% clk_avg={sum(clk) // len(clk)} clk_p5={clk[len(clk) // 20]} pw_avg={sum(pw) / len(pw):.0f} temp_max={max(int(x[4]) for x in r)} vram_peak_mib={max([int(x[11]) for x in r if len(x) > 12 and x[11].isdigit()] or [0])} thr=0x{thr:x} pcie_w={min(int(x[7]) for x in r)}"
         if cpu:
             out["cpu"] = f"sys_avg={sum(c[0] for c in cpu) / len(cpu):.0f}% proc_cores_avg={sum(c[1] for c in cpu) / len(cpu):.1f}"
         return out, path
