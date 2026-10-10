@@ -28,3 +28,7 @@ chain3b-alone-24k,2026-10-10 14:58:10,GLM12-3.0bit.gguf,pf12k,300+300,"-dev CUDA
 chain3b-alone-24k,2026-10-10 14:58:10,GLM12-3.0bit.gguf,pf12k,300+300,"-dev CUDA0 pf-slots=6,passes=1,maskt=8,up-chunk=32,up-depth=1",2,1932,"-dev CUDA1 pf-slots=6,passes=1,maskt=8",2,2462.2,0.785
 seq6-48k-pl350,2026-10-10 15:03:55,GLM12-3.0bit.gguf,pf12k,350+370,"-dev CUDA1 pf-slots=4,maskt=8",2,2648.4,"-dev CUDA1 pf-slots=4,maskt=8",2,2648.4,1
 seq6-48k-pl350,2026-10-10 15:03:55,GLM12-3.0bit.gguf,pf12k,350+370,"-dev CUDA1,CUDA0 pf-slots=6,passes=1,pipe-slots=9,maskt=8,pipe=1,pipe-par=2,up-chunk=32,up-depth=1",2,2846.5,"-dev CUDA1 pf-slots=4,maskt=8",2,2648.4,1.075
+p2p1-24k,2026-10-10 16:20:06,GLM12-3.0bit.gguf,pf12k,330+370,"-dev CUDA1 pf-slots=4,maskt=8",4,2764.6,"-dev CUDA1 pf-slots=4,maskt=8",4,2764.6,1
+p2p1-24k,2026-10-10 16:20:06,GLM12-3.0bit.gguf,pf12k,330+370,"-dev CUDA1,CUDA0 pf-slots=6,passes=1,pipe-slots=9,maskt=8,pipe=1,pipe-par=2,up-chunk=32,up-depth=1,pipe-class=2",4,3426.3,"-dev CUDA1 pf-slots=4,maskt=8",4,2764.6,1.239
+p2p1-24k,2026-10-10 16:20:06,GLM12-3.0bit.gguf,pf12k,330+370,"-dev CUDA1,CUDA0 pf-slots=6,passes=1,pipe-slots=9,maskt=8,pipe=1,pipe-par=2,up-chunk=32,up-depth=1,pipe-class=2,p2p=1",5,2945.2,"-dev CUDA1 pf-slots=4,maskt=8",4,2764.6,1.065
+p2p1-48k,2026-10-10 16:23:12,GLM12-3.0bit.gguf,pf12k,330+370,"-dev CUDA1 pf-slots=4,maskt=8",3,2626.2,"-dev CUDA1 pf-slots=4,maskt=8",3,2626.2,1
