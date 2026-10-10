@@ -55,6 +55,22 @@ if "," not in os.environ.get("CUDA_VISIBLE_DEVICES", ","):  # one visible GPU: n
 COMMON = COMMON_ALL
 PORT = int(os.environ.get("PERF_PORT", 8099))
 NVSMI = os.environ.get("NVIDIA_SMI", "nvidia-smi")   # a driver that does not match the system libraries (the P2P test module): the nvidia-smi of its own userspace
+def local_hw():
+    return os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
+
+
+def hw_is_local_gpu_host():
+    return os.environ.get("PERF_NO_PL_RESET") is None and shutil.which(NVSMI.split()[0]) is not None
+
+
+def pl_apply(spec):
+    """Set the GPU power limits (watts per card, like 300+370; a 0 keeps that card) with sudo. A long run on the x4 card has to stay at 300 W (it fell off the bus at 350 W under long load): bench takes PERF_PL_LONG=300+370 for those runs and puts PERF_PL_SHORT (default 350+370) back at its end."""
+    for i, w in enumerate(spec.split("+")):
+        if w.strip() and float(w) > 0:
+            subprocess.run(["sudo", "-n", NVSMI, "-i", str(i), "-pl", str(int(float(w)))], capture_output=True, timeout=30)
+    _PL.clear()   # the power_limits() cache reads the new values for the rows of this run
+
+
 def ldpath(build):   # the build directory first; PERF_LD_EXTRA=dir:dir appended (the userspace of a test driver whose version differs from the system libraries)
     return os.path.join(HERE, build) + (":" + os.environ["PERF_LD_EXTRA"] if os.environ.get("PERF_LD_EXTRA") else "")
 LOGTAG = "" if PORT == 8099 else f"-p{PORT}"   # a second run.py instance (PERF_PORT) keeps its own server logs
@@ -1510,6 +1526,34 @@ def probe_cells(cells, a, model):
 VARIANTS = {"default": "", "cache0": "--moe-expert-cache 0", "atoff": "-at off"}  # --variant NAME=ARGS adds or overrides
 
 
+GAIN_COLS = ["campaign", "ts", "model", "test", "pl", "variant", "n", "pp_med", "base_variant", "base_n", "base_pp_med", "gain"]
+
+
+def gains_write(camp):
+    """Gain of every setting of a campaign as a ratio (1.22) to the baseline arm of the SAME campaign (the single-card group with the fewest cards, first run), with the GPU power limits of the rows:
+    absolute t/s move with power limit, driver and boot flags, the ratio inside one session does not. Appended to gains.csv (campaign, ts, model, test, pl, variant, n, pp_med, base_variant, base_n, base_pp_med, gain)."""
+    rows = [r for r in csv_load("run-history.csv") if r["campaign"] == camp and r["ok"] != "0" and num(r, "pp") not in (None, 0)]
+    if not rows:
+        return
+    groups = {}
+    for r in rows:
+        groups.setdefault((r["model"], r["test"], r["args"], r.get("env") or ""), []).append(r)
+    def label(k):
+        m = re.search(r"--moe (\S+)", k[2]); e = re.findall(r"(?:GGML|LLAMA)_[A-Z_]+=\w+", k[3])
+        return ("-dev " + (re.search(r"-dev (\S+)", k[2]) or [0, "?"])[1] + " " + (m.group(1) if m else "") + (" " + " ".join(e) if e else "")).strip()
+    for (model, test) in sorted({(k[0], k[1]) for k in groups}):
+        cells = {k: v for k, v in groups.items() if k[0] == model and k[1] == test}
+        single = [k for k in cells if "," not in (re.search(r"-dev (\S+)", k[2]) or [0, "x,y"])[1]]
+        if not single:
+            continue
+        bk = min(single, key=lambda k: min(r["ts"] for r in cells[k]))
+        bmed = statistics.median(num(r, "pp") for r in cells[bk])
+        for k, v in cells.items():
+            med = statistics.median(num(r, "pp") for r in v)
+            csv_append("gains.csv", GAIN_COLS, dict(campaign=camp, ts=time.strftime("%F %T"), model=os.path.basename(model or ""), test=test, pl=v[-1].get("pl", ""), variant=label(k),
+                       n=len(v), pp_med=round(med, 1), base_variant=label(bk), base_n=len(cells[bk]), base_pp_med=round(bmed, 1), gain=round(med / bmed, 3)))
+
+
 def cmd_bench(a):
     global MODEL, PERFPROF, GPULOG, KEEP_LOOPS, CLI_EXE, TEMPLATED
     TEMPLATED = a.templated
@@ -1525,6 +1569,22 @@ def cmd_bench(a):
         variants[k] = x
     names = a.variants.split(",") if a.variants else list(variants)
     global CAMPAIGN
+    if os.environ.get("PERF_PL_LONG"):
+        import atexit
+        if os.environ["PERF_PL_LONG"] == "auto":   # the long-run cap lives in one file (/p/bw/p2p/pl-long.txt, like 330+370), written after a stability run
+            try:
+                os.environ["PERF_PL_LONG"] = open("/p/bw/p2p/pl-long.txt").read().strip() or "300+370"
+            except OSError:
+                os.environ["PERF_PL_LONG"] = "300+370"
+        pl_apply(os.environ["PERF_PL_LONG"])
+        atexit.register(pl_apply, os.environ.get("PERF_PL_SHORT", "350+370"))
+    elif hw_is_local_gpu_host():
+        # a short run: if the cards are at exactly the long-run cap (a long run was killed before it restored the limits), put the short-run limits back.
+        # Any other setting (150 W for the night, 280 W for a test) is the user's and stays.
+        cur = power_limits(local_hw()); cap = "+".join(str(int(float(x))) for x in (os.environ.get("PERF_PL_LONG_CAP") or (open("/p/bw/p2p/pl-long.txt").read().strip() if os.path.exists("/p/bw/p2p/pl-long.txt") else "300+370")).split("+"))
+        if cur == cap and os.environ.get("PERF_PL_SHORT", "350+370") != cap:
+            pl_apply(os.environ.get("PERF_PL_SHORT", "350+370"))
+            print("power limits were at the long-run cap %s: put back to %s for this short run" % (cap, os.environ.get("PERF_PL_SHORT", "350+370")), flush=True)
     CAMPAIGN = camp = a.campaign or "bench-" + time.strftime("%F-%H%M")
     csv_append("campaigns.csv", CAMP_COLS, dict(name=camp, start=time.strftime("%F %T"),
                note=a.note or f"bench {a.models} builds {a.builds} variants {','.join(names)} test {a.test} n={a.n}"))
@@ -1579,6 +1639,10 @@ def cmd_bench(a):
                     run_cell(build, a.test, env, False, args, True, a.note, warm=warm)
     REP = None
     for cn in ([camp + "-cold", camp + "-hot", camp + "-hot2"] if a.cold_hot else [camp]):
+        try:
+            gains_write(cn)
+        except Exception as e:   # the gain table is a convenience: it never fails a bench call
+            print(f"gains: {e}", flush=True)
         cmd_report(argparse.Namespace(campaign=cn, since=None, last=a.last, tol=a.tol, md=False))
 
 
@@ -1909,6 +1973,8 @@ if __name__ == "__main__":
     rp.add_argument("--last", type=int)
     rp.add_argument("--tol", type=float)
     rp.add_argument("--md", action="store_true", help="also print README table rows (median, range, run ids)")
+    gp = sp.add_parser("gains", help="append the gain (ratio to the baseline arm of the same campaign) of the given campaigns to gains.csv, with the GPU power limits; bench does it for its own campaign")
+    gp.add_argument("campaigns", nargs="+")
     m = sp.add_parser("machine", help="list machines, or add one: machine add ID --ssh user@host --root DIR --os linux|windows")
     m.add_argument("action", nargs="?", default="list", choices=["list", "add"])
     m.add_argument("id", nargs="?")
@@ -1950,6 +2016,6 @@ if __name__ == "__main__":
     s_.add_argument("-b", "--build")
     s_.add_argument("--runs", action="store_true")
     a = ap.parse_args()
-    {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
+    {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
      "show": cmd_show, "regress": cmd_regress,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
