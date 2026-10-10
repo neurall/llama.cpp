@@ -111,3 +111,5 @@ chain18-qwen-48k,2026-10-10 19:15:51,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-0
 chain18-qwen-48k,2026-10-10 19:15:51,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pf12k,280+370,"-dev CUDA1 pf-slots=3,maskt=8",2,1635.8,"-dev CUDA1 pf-slots=3,maskt=8",2,1530.7,1.069
 chain19-qwen-12k-pair,2026-10-10 19:37:22,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pf12k,280+370,"-dev CUDA1 pf-slots=3,maskt=8",3,1513.3,"-dev CUDA1 pf-slots=3,maskt=8",3,1513.3,1
 chain19-qwen-48k-pair,2026-10-10 19:39:43,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pf12k,280+370,"-dev CUDA1 pf-slots=3,maskt=8",2,1618.4,"-dev CUDA1 pf-slots=3,maskt=8",2,1618.4,1
+chain20-qwen-12k-pair,2026-10-10 19:57:28,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pf12k,280+370,"-dev CUDA1 pf-slots=3,maskt=8",3,1554.2,"-dev CUDA1 pf-slots=3,maskt=8",3,1554.2,1
+chain20-qwen-48k-pair,2026-10-10 20:00:15,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pf12k,280+370,"-dev CUDA1 pf-slots=3,maskt=8",2,1603,"-dev CUDA1 pf-slots=3,maskt=8",2,1603,1
