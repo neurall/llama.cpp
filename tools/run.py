@@ -53,7 +53,7 @@ COMMON_ALL = (["-t", THREADS] if THREADS else []) + ["--cpu-moe", "-nr", "--moe-
 if "," not in os.environ.get("CUDA_VISIBLE_DEVICES", ","):  # one visible GPU: no device order to pin
     COMMON_ALL = COMMON_ALL[:-2]
 COMMON = COMMON_ALL
-PORT = 8099
+PORT = int(os.environ.get("PERF_PORT", 8099))
 OVR = {}   # --prompt TEXT|@file, --tokens N, --ctx N override the test's own prompt, generated tokens and context
 CAMPAIGN = ""  # --campaign NAME: column campaign of every row of this invocation
 REP = None  # bench repetition (0-based) of the run being stored; None outside bench
