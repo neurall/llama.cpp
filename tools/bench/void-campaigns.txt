@@ -1,0 +1,3 @@
+chain5-glm12k  mmap full GLM, not decision material (2026-10-10 user)
+chain6-glm48k  mmap full GLM, not decision material
+chain7-glm48k-contig  mmap full GLM, partial, not decision material
