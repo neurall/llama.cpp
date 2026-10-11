@@ -131,6 +131,7 @@ The tuner sets all three while it runs. If you change one, change one at a time 
 | `lead` | `1` | The predicted layers per link are the nearest ones whose upload still lands in time: the window starts at the upload time per expert on that link over the layer time. `0`: every lookahead up to the predictor's count (the old behaviour) | `lead=0` |
 | `lead-span` | `1` | Layers beyond the nearest feasible one that are also used | `lead-span=2` |
 | `admit` | `2` | A missed expert may take a cache slot only after this many uses in the last 64 tokens (0: any miss). Higher values mean fewer swaps but a slower-adapting cache: of the experts used in a 64-token window 69% reach 2 uses, 52% reach 3 and 40% reach 4, and an expert admitted on its 3rd use brings only about 16% more further hits than one admitted on its 2nd. On Qwen Next `admit` 2 and 3 measured equal; 0 to 2 gave +3.4% decode on Qwen3.6 | `admit=3` |
+| `admit-boot`, `admit-boot-steps` | `6`, `128` | While the cache is still cold (the first `admit-boot-steps` decode steps of a process that has seen no big prompt batch) a missed expert needs this many uses instead of `admit`: a strict entry saves uploads that cost more than they return. A big prompt batch fills the cache by adoption and ends this phase at once. `admit-boot=0` (or any value <= `admit`) turns it off | `admit-boot=0` | Qwen3.6 game4, 100 tokens: admit 8 at the start +5.8% over 2 with the same hit rate; gone at 1024 tokens. The first version cost GLM 12k-prompt decode 5% until the prompt batch ended the phase |
 | `admit-slow` | `0` | The same rule for layers on the slower link, where an upload costs 4-7x more (0: same as `admit`) | `admit-slow=4` |
 | `admit-jit` | `0` | The same rule for `upload-now` uploads (0: any miss of this token may be uploaded) | `admit-jit=1` |
 
@@ -151,7 +152,7 @@ lost 3-10% (hit rate +0.4-0.7 points) because uploads arrived too late and compe
 
 | knob | default | what it does | example | evidence |
 |---|---|---|---|---|
-| `pred` | `1` | The learned predictors run at all (they exist only with `--moe pred-top=M` or `train-every=N`) | `pred-top=8,train-every=64` enables them | see above |
+| `pred` | `0` | The learned predictors run at all; off by default and never switched on by the tuner (they exist only with `--moe pred-top=M` or `train-every=N`) | `pred=1,pred-top=8,train-every=64` | see above |
 | `pred-iso` | on | Predicted uploads go into separate stream slots, so a wrong guess evicts nothing useful; `0` = they evict cache slots (old path) | `pred-iso=0` | see above |
 | `pred-n` | `12` | Predicted candidates uploaded per target layer (over-guesses on purpose, no confidence cut) | `pred-n=6` | W10: 6 was best; offline about 80% of the uploads at 12 are wasted |
 | `pred-lead` | `1` | Predict only layers far enough ahead that the upload lands in time on their link; a slow link needs more lead | `pred-lead=0` | see above; the dynamic-lead version is still being tested |
@@ -187,12 +188,13 @@ Every setting below is a `--moe` key (`--moe policy=window,fixed=1`); there are 
 |---|---|---|
 | `state=PATH` | `~/.cache/llama.cpp/moe-state.ini` | path of the state file; `0` ignores it and never writes it |
 | `mode=stock\|cache\|retest` | measured | `stock` or `cache` forces the placement; `retest` forgets the saved decision and measures again |
-| `fixed=1` | `0` | fixes every knob and disables tuning, for repeatable measurements |
+| `fixed=1` | `0` | deterministic mode, for perplexity and A/B runs that must repeat: no tuning, a fixed swap budget and `swap-lead` 4, and each step publishes exactly the uploads the previous step scheduled, so the cache contents (and with them which experts the GPU or the CPU computes) no longer depend on upload timing. Add `upload-now=0`: the just-in-time uploads size themselves from live link and CPU timing |
 | `tuned=...` | state file | start from this tuner result instead of the saved one (`0`: none, every run starts cold) |
 | `ctl=FILE` | off | a control file whose settings are re-read while running |
 | `pinr=N` | `0` (off for now) | a model that does not fit the RAM keeps its weights mmap'd; pinned copies of the slices of the experts that are uploaded to the GPU a second time (evicted and wanted again) are made as long as N/10 of the RAM lasts (`pinr=3`: 30%, `pinr=0`: off). The next upload of such an expert reads the pinned copy (direct DMA, about 2.2x the speed of pageable memory on a x16 link), cold experts stay in the page cache. Stops early when less than 6 GiB of RAM is available. A model that fits the RAM is pinned whole as before (`-lm mmap` opts out) |
 | `policy=add\|window\|hybrid\|halve\|lru` | `add` | eviction score: `add` (recent use plus lifetime share), `window` (uses in the last 64 tokens only), `lru` (plain least recently used: the score is the time of the last use, no lifetime counts, no pay-back margin). Pure LRU: `--moe policy=lru,admit=0` (`admit` is the default 2: a missed expert takes a slot only after 2 uses in the last 64 tokens) |
 | `global-weight=N` | `16` | weight of the lifetime share in policy `add` |
+| `rel-decay=F` | `0.5` | research, policy `rel` only: each step the relevance score of an expert is multiplied by F before the router probability of this step is added |
 | `halve-every=N` | `64` | counts halve every N steps, so recent use dominates old use |
 | `adopt=F` | `1` | share of each layer's cache slots that may keep experts the prompt pass already put on the GPU (`1` all, `0.0625` a sixteenth; measured on GLM 12k prompt: 1/16 +0.3 hit points, 1/4 +3.8, all +11.4) |
 | `probe=0` | on | skips the start-up probe that measures CPU read rate and each upload link |
@@ -268,9 +270,9 @@ later starts are fast. Loading the pinned weights also holds that much RAM for a
 Linux only (Windows uses the old path). The kernel needs 1 GiB huge pages (`CONFIG_CONTIG_ALLOC`, the CPU flag `pdpe1gb`); tested on kernel 7.1.5 only.
 
 ```sh
-sudo ./resident_pin.sh mount              # the most the machine can spare: total RAM minus a margin (default max(24 GiB, 20% of RAM), HUGEFS_MARGIN_GIB=N to change)
-sudo ./resident_pin.sh 100g               # exactly that many GiB (a number with G), or --pages N, or the path of a model file to size it for that model
-sudo ./resident_pin.sh unmount            # delete the cached models, unmount, give the pages back
+sudo fork/resident_pin.sh mount              # the most the machine can spare: total RAM minus a margin (default max(24 GiB, 20% of RAM), HUGEFS_MARGIN_GIB=N to change)
+sudo fork/resident_pin.sh 100g               # exactly that many GiB (a number with G), or --pages N, or the path of a model file to size it for that model
+sudo fork/resident_pin.sh unmount            # delete the cached models, unmount, give the pages back
 ```
 
 It reserves the 1 GiB pages (it drops the page cache and compacts memory first so nothing has to be migrated), and mounts a hugetlbfs at  
@@ -306,6 +308,7 @@ line. Allocate the pool at run time, as the script does, from ordinary memory.
 | `GGML_CUDA_THP_SHARE` | `0.7` | share of the free 2 MiB blocks used for transparent huge pages in level 3. `0.9` was faster (70 s) in five runs but once froze a load for more than 13 minutes while memory was heavily used; `0` is plain 4 KiB pages |
 | `GGML_CUDA_REG_CHUNK_MB` | whole buffer | register the buffer in chunks of this many MiB. **Do not use:** a tensor that straddles two registrations makes `cudaMemcpyAsync` fail with `invalid argument` at the first prompt batch (measured: perplexity crashed with 4 GiB chunks, ran with one registration) |
 | `GGML_CUDA_NO_PINNED` | off | never pin the weights |
+| `GGML_CUDA_NO_REGISTERED` | off | pin big weight buffers with plain `cudaMallocHost` instead of registering the loaded pages (diagnostic) |
 | `LLAMA_LOAD_THREADS` | half the CPU threads, at most 16 | threads that read the model file into the buffer; `1` keeps the sequential reader |
 
 ### If the pin fails: no silent mmap fallback
