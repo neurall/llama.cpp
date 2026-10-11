@@ -71,7 +71,10 @@ def main():
     for it in range(1, a.max_iter + 1):
         spec = f"{lim[0]}+{lim[1]}"
         camp = f"plcal-{spec}-it{it}"
-        env = dict(os.environ, PERF_PL_LONG=spec, PERF_PL_SHORT=spec)
+        # the environment the queue daemon gives its tasks (queue/env.sh, PERF_BUILDS, PCI bus device order)
+        envout = subprocess.run(["bash", "-c", ". /p/bw/data/q5h/queue/env.sh 2>/dev/null; env -0"], capture_output=True).stdout.decode(errors="replace")
+        env = dict(kv.split("=", 1) for kv in envout.split("\0") if "=" in kv)
+        env.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", PERF_BUILDS="/p/bw/rels/devbuilds", PERF_LOG="r", PERF_PL_LONG=spec, PERF_PL_SHORT=spec)
         cmd = ["python3", os.path.join(HERE, "run.py"), "bench", "--models", a.model, "--builds", a.build, "--variants", "v",
                "--variant=v=-sm tensor -ngl 99 -b 4096 -ub 2048 -np 1", "-t", "pf128k", "--tokens", "1", "-n", "1", "--no-probe", "--campaign", camp]
         t_start = time.time()
@@ -127,6 +130,9 @@ def main():
             continue
         if proc.poll() is None:
             kill_run(proc); log(f"it {it}: limits {spec} W: timeout after {dur:.0f} s without a throttle (killed); busy samples {dict(busy)}")
+        elif proc.returncode != 0 or not sum(busy.values()):
+            log(f"it {it}: limits {spec} W: RUN FAILED after {dur:.0f} s (exit {proc.returncode}, busy samples {dict(busy)}): see /p/bw/data/q5h/plcal-it{it}.out; not a result")
+            sys.exit(3)
         else:
             log(f"it {it}: limits {spec} W: CLEAN run of {dur:.0f} s (exit {proc.returncode}), busy samples {dict(busy)}")
         log(f"RESULT: no throttling drops at {spec} W (x4 + x16)")
