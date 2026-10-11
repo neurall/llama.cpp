@@ -328,6 +328,21 @@ def build_has_moe_flag(build, env):
     return _MOE_FLAG[build]
 
 
+def drop_moe_flag(build, env, args):
+    """a build without --moe (stock, the first releases) would not start with it: drop it; autotune=0 becomes the old environment switch"""
+    if build_has_moe_flag(build, env):
+        return env, list(args)
+    out, i = [], 0
+    while i < len(args):
+        if args[i] == "--moe" and i + 1 < len(args):
+            if "autotune=0" in args[i + 1].split(","):
+                env = {**env, "LLAMA_AUTOTUNE": "0"}
+            i += 2
+        else:
+            out.append(args[i]); i += 1
+    return env, out
+
+
 STATE_FILE = {"v": None}   # --clean-state: the learned-state file of the running cell (empty before its first repetition, kept for the next)
 
 
@@ -350,16 +365,7 @@ def _server_start_once(build, env, args):
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")]
     elif not build.startswith("stock") and STATE_FILE["v"]:
         env = {**env, "LLAMA_MOE_STATE": STATE_FILE["v"]}   # the first releases (no --moe flag) read the environment variable
-    if not build_has_moe_flag(build, env):   # a build without --moe (stock, the first releases) would not start with it: drop it; autotune=0 becomes the old environment switch
-        out, i = [], 0
-        while i < len(args):
-            if args[i] == "--moe" and i + 1 < len(args):
-                if "autotune=0" in args[i + 1].split(","):
-                    env = {**env, "LLAMA_AUTOTUNE": "0"}
-                i += 2
-            else:
-                out.append(args[i]); i += 1
-        args = out
+    env, args = drop_moe_flag(build, env, args)
     args = merge_moe(args)
     logf = f"/tmp/perf-{build}{LOGTAG}.log"
     with open(logf, "w") as lf:
@@ -665,6 +671,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
     if test in ("ppl", "ppl3", "pplb", "pplc"):
         nb, nub = {"ppl": ("1", "1"), "ppl3": ("3", "3"), "pplb": ("1024", "1024"), "pplc": ("1024", "256")}[test]   # pplb: 1024-token batches = the big-batch (prefill) path; pplc: the same batch in 256-token ubatches (4 ubatches per decode call)
         args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", "2", "-b", nb, "-ub", nub]
+        env, args = drop_moe_flag(build, env, args)   # the b11509 arm of the regress cell failed on --moe autotune=0,...
         if build.startswith("stock"):   # stock has no --moe-expert-cache
             i = args.index("--moe-expert-cache") if "--moe-expert-cache" in args else -1
             if i >= 0:
