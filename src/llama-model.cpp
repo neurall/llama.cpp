@@ -11,6 +11,7 @@
 #include "llama-mmap.h"
 #include "llama-cparams.h"
 #include "llama-model-loader.h"
+#include "llama-moecache-fork.h"
 
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
@@ -1630,6 +1631,15 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     pimpl->dev_layer.resize(n_layer_all);
     for (int il = 0; il < n_layer_all; ++il) {
         pimpl->dev_layer[il] = get_layer_buft_list(il);
+    }
+    {   // fork: --moe layer-heat=1 puts the expert layers whose caches hit most on the GPU with the slower host link (same count per GPU)
+        std::vector<ggml_backend_dev_t> ld(n_layer_all);
+        for (int il = 0; il < n_layer_all; ++il) { ld[il] = pimpl->dev_layer[il].dev; }
+        if (llama_moe_layer_heat_fork(*this, ld)) {
+            for (int il = 0; il < n_layer_all; ++il) {
+                if (ld[il] != pimpl->dev_layer[il].dev) { pimpl->dev_layer[il] = { ld[il], &pimpl->gpu_buft_list.at(ld[il]) }; }
+            }
+        }
     }
 
     // assign the output layer

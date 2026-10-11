@@ -21,6 +21,7 @@
 #include <cstdarg>
 #include <map>
 #include <mutex>
+#include <numeric>
 #include <sstream>
 #include <set>
 #include <string>
@@ -3783,6 +3784,99 @@ double llama_moe_cache_link_gbs_fork(ggml_backend_dev_t dev) {
 // 64 MB pinned-host -> device copies per GPU, and splitting's best transfer speedup is (sum of link GB/s) / (fastest).
 // Reserved at >= 1.25x (2 x16: 2x; x16 + x4: 1.22x, where the split measured slower); alpha then starts at 1 and the
 // tuner measures. LLAMA_PREFILL_SPLIT=<alpha> overrides (0: never).
+// pinned host -> device GB/s of a GPU: 64 MB copies, measured once per process (the layer placement asks at load, the prefill split later)
+static double early_link_gbs(ggml_backend_dev_t d) {
+    for (const auto & e : g_early_gbs) {
+        if (e.first == d) {
+            return e.second;
+        }
+    }
+    const size_t n = 64u << 20;
+    ggml_backend_buffer_type_t hb = ggml_backend_dev_host_buffer_type(d);
+    ggml_backend_buffer_t hbuf = hb ? ggml_backend_buft_alloc_buffer(hb, n) : nullptr;
+    ggml_backend_buffer_t dbuf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(d), n);
+    double gbs = 0;
+    if (hbuf && dbuf) {
+        ggml_tensor t = {};
+        t.type = GGML_TYPE_I8; t.buffer = dbuf; t.data = ggml_backend_buffer_get_base(dbuf);
+        t.ne[0] = (int64_t) n; t.ne[1] = t.ne[2] = t.ne[3] = 1; t.nb[0] = 1; t.nb[1] = t.nb[2] = t.nb[3] = n;
+        const void * src = ggml_backend_buffer_get_base(hbuf);
+        ggml_backend_tensor_set(&t, src, 0, n); // warm-up
+        const int64_t t0 = ggml_time_us();
+        for (int r = 0; r < 4; ++r) { ggml_backend_tensor_set(&t, src, 0, n); }
+        gbs = 4.0 * n / (double) std::max<int64_t>(1, ggml_time_us() - t0) / 1e3;
+    }
+    if (hbuf) { ggml_backend_buffer_free(hbuf); }
+    if (dbuf) { ggml_backend_buffer_free(dbuf); }
+    g_early_gbs.push_back({ d, gbs });
+    return gbs;
+}
+
+// --moe layer-heat=1, two GPUs: the expert layers whose saved usage is most concentrated (the share of the layer's expert uses that its top quarter
+// of experts carries, from hot.<layer> of the state file) go to the GPU with the slower host link. Their caches hit more, so that link uploads
+// less. The number of layers per GPU stays what the split gave; only which layers changes. Without a saved profile nothing moves.
+bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backend_dev_t> & layer_dev) {
+    const char * e = moe_opt("layer-heat");
+    if (!e || atoi(e) == 0) {
+        return false;
+    }
+    std::vector<ggml_backend_dev_t> gpus;
+    for (ggml_backend_dev_t d : layer_dev) {
+        if (d && ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_CPU && std::find(gpus.begin(), gpus.end(), d) == gpus.end()) {
+            gpus.push_back(d);
+        }
+    }
+    if (gpus.size() != 2) {
+        return false;
+    }
+    std::vector<std::pair<std::string, std::string>> kv;
+    std::string name = model.name;
+    for (char & c : name) {
+        if (c == '[' || c == ']' || c == '\n' || c == '\r') { c = '_'; }
+    }
+    if (!moe_state_section_kv(name + " 0", kv, true)) {
+        LLAMA_LOG_WARN("moe-cache: layer-heat: no saved usage profile for %s, layers stay where the split put them\n", name.c_str());
+        return false;
+    }
+    const double g0 = early_link_gbs(gpus[0]), g1 = early_link_gbs(gpus[1]);
+    ggml_backend_dev_t slow = g0 <= g1 ? gpus[0] : gpus[1], fast = g0 <= g1 ? gpus[1] : gpus[0];
+    std::vector<std::pair<double, int>> heat;   // (concentration, layer) of the expert layers on either GPU
+    int n_slow = 0;
+    for (const auto & p : kv) {
+        if (p.first.compare(0, 4, "hot.") != 0) {
+            continue;
+        }
+        const int il = atoi(p.first.c_str() + 4);
+        if (il < 0 || il >= (int) layer_dev.size() || (layer_dev[il] != slow && layer_dev[il] != fast)) {
+            continue;
+        }
+        std::vector<double> c;
+        std::istringstream is(p.second);
+        for (double x; is >> x; ) { c.push_back(x); }
+        const double tot = std::accumulate(c.begin(), c.end(), 0.0);
+        if (c.empty() || tot <= 0) {
+            continue;
+        }
+        std::sort(c.rbegin(), c.rend());
+        const double top = std::accumulate(c.begin(), c.begin() + std::max<size_t>(1, c.size() / 4), 0.0);
+        heat.push_back({ top / tot, il });
+        n_slow += layer_dev[il] == slow;
+    }
+    if (heat.empty()) {
+        return false;
+    }
+    std::sort(heat.rbegin(), heat.rend());
+    std::string on_slow;
+    for (size_t i = 0; i < heat.size(); ++i) {
+        const bool to_slow = (int) i < n_slow;
+        layer_dev[heat[i].second] = to_slow ? slow : fast;
+        if (to_slow) { on_slow += tr_fmt(" %d", heat[i].second); }
+    }
+    LLAMA_LOG_WARN("moe-cache: layer-heat: %d of %zu expert layers on %s (host link %.1f GB/s, %s %.1f GB/s), the most concentrated:%s\n", n_slow, heat.size(),
+            ggml_backend_dev_name(slow), std::min(g0, g1), ggml_backend_dev_name(fast), std::max(g0, g1), on_slow.c_str());
+    return true;
+}
+
 void llama_moe_cache_prefill_decide_fork(const std::vector<ggml_backend_dev_t> & gpus) {
     if (const char * e = moe_opt("prefill-split")) {
         g_split_share   = (float) atof(e);
@@ -3791,27 +3885,10 @@ void llama_moe_cache_prefill_decide_fork(const std::vector<ggml_backend_dev_t> &
     if (gpus.size() < 2) {
         return;
     }
-    const size_t n = 64u << 20;
     double sum = 0, best = 0, worst = 1e30;
     std::string log;
     for (ggml_backend_dev_t d : gpus) {
-        ggml_backend_buffer_type_t hb = ggml_backend_dev_host_buffer_type(d);
-        ggml_backend_buffer_t hbuf = hb ? ggml_backend_buft_alloc_buffer(hb, n) : nullptr;
-        ggml_backend_buffer_t dbuf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(d), n);
-        double gbs = 0;
-        if (hbuf && dbuf) {
-            ggml_tensor t = {};
-            t.type = GGML_TYPE_I8; t.buffer = dbuf; t.data = ggml_backend_buffer_get_base(dbuf);
-            t.ne[0] = (int64_t) n; t.ne[1] = t.ne[2] = t.ne[3] = 1; t.nb[0] = 1; t.nb[1] = t.nb[2] = t.nb[3] = n;
-            const void * src = ggml_backend_buffer_get_base(hbuf);
-            ggml_backend_tensor_set(&t, src, 0, n); // warm-up
-            const int64_t t0 = ggml_time_us();
-            for (int r = 0; r < 4; ++r) { ggml_backend_tensor_set(&t, src, 0, n); }
-            gbs = 4.0 * n / (double) std::max<int64_t>(1, ggml_time_us() - t0) / 1e3;
-        }
-        if (hbuf) { ggml_backend_buffer_free(hbuf); }
-        if (dbuf) { ggml_backend_buffer_free(dbuf); }
-        g_early_gbs.push_back({ d, gbs });
+        const double gbs = early_link_gbs(d);
         sum += gbs; best = std::max(best, gbs); worst = std::min(worst, gbs);
         log += tr_fmt(" %s %.1f", ggml_backend_dev_name(d), gbs);
     }

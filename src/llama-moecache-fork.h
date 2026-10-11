@@ -100,6 +100,8 @@ float llama_moe_cache_prefill_alpha_fork();
 double llama_moe_cache_link_gbs_fork(ggml_backend_dev_t dev);
 // before the first compute-buffer reserve: time each GPU's host link, reserve the prefill split only when it can pay
 void llama_moe_cache_prefill_decide_fork(const std::vector<ggml_backend_dev_t> & gpus);
+// --moe layer-heat=1: per layer device in / out; true when a layer moved (the most concentrated expert layers to the GPU with the slower host link)
+bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backend_dev_t> & layer_dev);
 bool    llama_moe_cache_active_fork();
 bool    llama_moe_cache_wants_probs_fork();   // --moe policy=r: the gate op of every cached layer also gets the router probabilities (src[6]) for the relevance score
 // startup probe: how many reader threads reach 95% of the CPU's RAM read rate (0: not measured)
