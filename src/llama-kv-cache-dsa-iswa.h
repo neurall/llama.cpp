@@ -12,6 +12,11 @@
 
 class llama_kv_cache_dsa_iswa : public llama_memory_i {
 public:
+    // fork: every ggml tensor this memory owns (moving a layer between GPUs, see llama_swap_layers_fork); false: a part is not covered
+    bool visit_tensors_fork(const std::function<void(ggml_tensor *)> & f) const override {
+        return kv_dsa->visit_tensors_fork(f) && kv_swa->visit_tensors_fork(f);
+    }
+
     llama_kv_cache_dsa_iswa(
             const llama_model & model,
                     ggml_type   type_k,

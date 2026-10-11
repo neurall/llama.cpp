@@ -18,6 +18,11 @@
 
 class llama_memory_hybrid_iswa : public llama_memory_i {
 public:
+    // fork: every ggml tensor this memory owns (moving a layer between GPUs, see llama_swap_layers_fork); false: a part is not covered
+    bool visit_tensors_fork(const std::function<void(ggml_tensor *)> & f) const override {
+        return mem_attn->visit_tensors_fork(f) && mem_recr->visit_tensors_fork(f);
+    }
+
     llama_memory_hybrid_iswa(
         const llama_model & model,
                             /* attn */

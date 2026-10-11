@@ -45,6 +45,7 @@ struct llama_context {
     int32_t trace_n_eval() const { return n_eval; }       // for the layer trace (--moe log=l64)
     int32_t trace_n_p_eval() const { return n_p_eval; }
     void set_eval_cb(); // the scheduler callback: the user's, or the layer trace (--moe log=l64) in front of it
+    bool moe_swap_test_done = false;  // --moe swap-test=A:B ran (fork)
     bool moe_decoded = false;         // this context decoded a batch (the startup memory probes create contexts that never do: no state snapshot for them)
     bool moe_observe_started = false; // the heat of a stock placement start is being counted (llama_moe_observe_start)
     // init scheduler and compute buffers, reserve worst-case graphs
@@ -61,6 +62,8 @@ struct llama_context {
     //   - changing attention type
     //   - etc.
     void sched_reserve();
+    // fork: layers a and b trade GPUs in place (weights, memory tensors, expert caches); false: not possible, nothing changed
+    bool swap_layers_fork(int a, int b);
 
     void synchronize();
 

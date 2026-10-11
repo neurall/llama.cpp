@@ -801,6 +801,88 @@ static int llama_graph_n_input_tensors(ggml_cgraph * gf) {
     return (int) users.size();
 }
 
+// fork: layers a and b trade GPUs without allocating anything. Every pair of their tensors (weights in VRAM, memory tensors: KV, indexer caches,
+// recurrent states) must match in type and shape. Each pair is copied crosswise through host memory, then the two tensors trade storage
+// (data, buffer, extra), so layer a's tensors point at the memory on b's GPU that now holds a's data. The expert caches trade cards too
+// (llama_moe_cache_swap_layers_fork). Then the layer -> device map changes and the scheduler plans the graph again. Call between batches.
+bool llama_context::swap_layers_fork(int a, int b) {
+    if (a == b || a < 0 || b < 0 || a >= (int) model.hparams.n_layer_all || b >= (int) model.hparams.n_layer_all || model.dev_layer(a) == model.dev_layer(b)) {
+        LLAMA_LOG_WARN("%s: layers %d and %d: not two layers on different devices\n", __func__, a, b);
+        return false;
+    }
+    synchronize();
+    const int64_t t0 = ggml_time_us();
+    std::vector<std::pair<ggml_tensor *, ggml_tensor *>> pairs;
+    auto pair_up = [&](const std::map<std::string, ggml_tensor *> & by_name, const std::string & pa, const std::string & pb, bool suffix) -> bool {
+        for (const auto & [name, ta] : by_name) {
+            const bool mine = suffix ? (name.size() > pa.size() && name.compare(name.size() - pa.size(), pa.size(), pa) == 0)
+                                     : name.compare(0, pa.size(), pa) == 0;
+            if (!mine) {
+                continue;
+            }
+            const std::string nb = suffix ? name.substr(0, name.size() - pa.size()) + pb : pb + name.substr(pa.size());
+            auto it = by_name.find(nb);
+            if (it == by_name.end()) {
+                LLAMA_LOG_WARN("%s: %s has no counterpart %s\n", __func__, name.c_str(), nb.c_str());
+                return false;
+            }
+            ggml_tensor * tb = it->second;
+            if (!ta->buffer || !tb->buffer) {
+                continue;
+            }
+            const bool ha = ggml_backend_buffer_is_host(ta->buffer), hb = ggml_backend_buffer_is_host(tb->buffer);
+            if (ha && hb) {
+                continue;   // both in RAM (experts with --cpu-moe): nothing moves
+            }
+            if (ha != hb || ta->type != tb->type || !ggml_are_same_shape(ta, tb) || ggml_nbytes(ta) != ggml_nbytes(tb) || ta->view_src || tb->view_src) {
+                LLAMA_LOG_WARN("%s: %s and %s differ in type, shape or residence\n", __func__, name.c_str(), nb.c_str());
+                return false;
+            }
+            pairs.push_back({ ta, tb });
+        }
+        return true;
+    };
+    std::map<std::string, ggml_tensor *> weights;
+    for (const auto & [name, t] : model.tensors_by_name) { weights[name] = t; }
+    std::map<std::string, ggml_tensor *> mem;
+    if (memory && !memory->visit_tensors_fork([&](ggml_tensor * t) { mem[ggml_get_name(t)] = t; })) {
+        LLAMA_LOG_WARN("%s: this memory type cannot move layers yet\n", __func__);
+        return false;
+    }
+    if (!pair_up(weights, "blk." + std::to_string(a) + ".", "blk." + std::to_string(b) + ".", false) ||
+        !pair_up(mem, "_l" + std::to_string(a), "_l" + std::to_string(b), true)) {
+        return false;
+    }
+    if (!llama_moe_cache_swap_layers_fork(a, b)) {
+        return false;
+    }
+    size_t bytes = 0;
+    std::vector<uint8_t> da, db;
+    for (auto & [ta, tb] : pairs) {
+        const size_t n = ggml_nbytes(ta);
+        da.resize(n); db.resize(n);
+        ggml_backend_tensor_get(ta, da.data(), 0, n);
+        ggml_backend_tensor_get(tb, db.data(), 0, n);
+        ggml_backend_tensor_set(tb, da.data(), 0, n);
+        ggml_backend_tensor_set(ta, db.data(), 0, n);
+        std::swap(ta->data, tb->data);
+        std::swap(ta->buffer, tb->buffer);
+        std::swap(ta->extra, tb->extra);
+        bytes += 2*n;
+    }
+    const_cast<llama_model &>(model).swap_layer_dev_fork(a, b);   // the context holds the model const; the placement is the one thing a swap changes
+    for (auto & res : gf_res_prev) {
+        if (res) {
+            res->reset();
+        }
+    }
+    gf_res_prev_active = nullptr;
+    sched_need_reserve = true;
+    sched_reserve();
+    LLAMA_LOG_WARN("%s: layers %d and %d traded GPUs: %zu tensors, %.1f MiB copied, %.0f ms\n", __func__, a, b, pairs.size(), bytes / 1048576.0, (ggml_time_us() - t0) / 1000.0);
+    return true;
+}
+
 void llama_context::sched_reserve() {
     if (!sched_need_reserve) {
         return;
@@ -2242,6 +2324,15 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 cparams.moe_predict, cparams.moe_predict_train);
         thread_cap_from_probe(llama_moe_cache_cpu_sat_threads_fork());
         sched_reserve(); // the compute graph now includes the cache chain
+    }
+    if (cparams.moe_cache_started && !moe_swap_test_done) {   // --moe swap-test=A:B: swap two layers once, before the first batch (test of the swap)
+        moe_swap_test_done = true;
+        if (const char * e = llama_moe_get_opt("swap-test")) {
+            int a = -1, b = -1;
+            if (sscanf(e, "%d:%d", &a, &b) == 2) {
+                swap_layers_fork(a, b);
+            }
+        }
     }
     if (!memory) {
         LLAMA_LOG_DEBUG("%s: cannot decode batches with this context (calling encode() instead)\n", __func__);

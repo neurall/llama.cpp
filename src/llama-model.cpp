@@ -2339,6 +2339,10 @@ void llama_model::print_info() const {
     vocab.print_info();
 }
 
+void llama_model::swap_layer_dev_fork(int a, int b) {
+    std::swap(pimpl->dev_layer.at(a), pimpl->dev_layer.at(b));
+}
+
 ggml_backend_dev_t llama_model::dev_layer(int il) const {
     return pimpl->dev_layer.at(il).dev;
 }

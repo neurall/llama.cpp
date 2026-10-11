@@ -3877,6 +3877,133 @@ bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backe
     return true;
 }
 
+// Layers il_a and il_b trade GPUs (llama_context::swap_layers_fork moves their weights and memory). Their expert caches trade cards
+// too: each layer's views, device table, pool class and link become the other's. Cached experts move in one direction only: those of the
+// layer that goes to the card with the slower link (it would have to upload them over that link again), the highest-scored first, as many as
+// that card's class has free blocks for; the layer that goes to the faster link refills from RAM if it needs to. Nothing is allocated (the copy
+// goes through host memory, read before the blocks are given up).
+// Call at a sync point (no graph running); waits for in-flight uploads of the two layers.
+bool llama_moe_cache_swap_layers_fork(int il_a, int il_b) {
+    moe_cache * mc = g_cache;
+    if (!mc) {
+        return true;   // no expert cache: nothing to move
+    }
+    size_t ia = SIZE_MAX, ib = SIZE_MAX;
+    for (size_t i = 0; i < mc->layers.size(); ++i) {
+        if (mc->layers[i].pub.il == il_a) { ia = i; }
+        if (mc->layers[i].pub.il == il_b) { ib = i; }
+    }
+    if (ia == SIZE_MAX || ib == SIZE_MAX) {
+        return ia == ib;   // neither layer is cached: fine; only one: the caller checked the layouts, this cannot be swapped
+    }
+    layer_state & A = mc->layers[ia];
+    layer_state & B = mc->layers[ib];
+    for (int k = 0; k < 3; ++k) {
+        const ggml_tensor * sa = k == 0 ? A.pub.up_src : k == 1 ? A.pub.gate_src : A.pub.down_src;
+        const ggml_tensor * sb = k == 0 ? B.pub.up_src : k == 1 ? B.pub.gate_src : B.pub.down_src;
+        if (sa->type != sb->type || sa->nb[2] != sb->nb[2]) {
+            LLAMA_LOG_WARN("moe-cache: swap %d <-> %d: the experts differ in size, not swapped\n", il_a, il_b);
+            return false;
+        }
+    }
+    if ((A.pcls < 0) != (B.pcls < 0) || A.pub.jit_n > 0 || B.pub.jit_n > 0) {
+        return false;
+    }
+    // wait for the uploads still running into either layer
+    for (int spin = 0; ; ++spin) {
+        {
+            std::lock_guard<std::mutex> lk(mc->mtx);
+            bool busy = false;
+            for (const layer_state * l : { &A, &B }) {
+                for (size_t s = 0; s < l->slot_in_flight.size() && !busy; ++s) { busy = l->slot_in_flight[s]; }
+            }
+            if (!busy) { break; }
+        }
+        if (spin > 20000) { return false; }
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    std::lock_guard<std::mutex> lk(mc->mtx);
+    // the cached experts of each layer, hottest first, read to host
+    struct moved { int32_t e; std::vector<uint8_t> data[3]; };
+    auto take = [&](layer_state & L, size_t li, bool keep) {
+        std::vector<std::pair<double, int32_t>> c;
+        for (size_t s = 0; s < L.slot_expert.size(); ++s) {
+            if (L.slot_expert[s] >= 0) { c.push_back({ xscore(mc, L, L.slot_expert[s]), (int32_t) s }); }
+        }
+        std::sort(c.rbegin(), c.rend());
+        std::vector<moved> out;
+        ggml_tensor * t3[3] = { L.pub.up_c, L.pub.gate_c, L.pub.down_c };
+        for (const auto & p : c) {
+            if (!keep) {
+                break;
+            }
+            moved m;
+            m.e = L.slot_expert[p.second];
+            for (int k = 0; k < 3; ++k) {
+                const ggml_tensor * src = k == 0 ? L.pub.up_src : k == 1 ? L.pub.gate_src : L.pub.down_src;
+                m.data[k].resize(src->nb[2]);
+                ggml_backend_tensor_get(t3[k], m.data[k].data(), (size_t) p.second * t3[k]->nb[2], src->nb[2]);
+            }
+            out.push_back(std::move(m));
+        }
+        for (const auto & p : c) {   // the layer leaves this card: its experts there are gone, its blocks free
+            const int32_t e = L.slot_expert[p.second];
+            L.expert_slot[e] = -1;
+            L.slot_expert[p.second] = -1;
+            L.cached_since[e] = 0;
+            pool_release(mc, li, p.second);
+        }
+        return out;
+    };
+    // after the swap A has B's link and B has A's: the layer arriving on the slower link (link != 0) keeps its experts
+    std::vector<moved> ma = take(A, ia, B.link != 0), mb = take(B, ib, A.link != 0);
+    // the layers trade their card-bound cache state
+    std::swap(A.pub.up_c, B.pub.up_c);
+    std::swap(A.pub.gate_c, B.pub.gate_c);
+    std::swap(A.pub.down_c, B.pub.down_c);
+    std::swap(A.pub.dev_table, B.pub.dev_table);
+    std::swap(A.pub.n_slots, B.pub.n_slots);
+    std::swap(A.pcls, B.pcls);
+    std::swap(A.n_own, B.n_own);
+    std::swap(A.link, B.link);
+    std::swap(A.slow, B.slow);
+    std::swap(A.slot_expert, B.slot_expert);
+    std::swap(A.slot_last_use, B.slot_last_use);
+    std::swap(A.slot_in_flight, B.slot_in_flight);
+    std::swap(A.is_stream, B.is_stream);
+    std::swap(A.stream_score, B.stream_score);
+    std::swap(A.stream_step, B.stream_step);
+    std::swap(A.stream_slots, B.stream_slots);
+    for (layer_state * L : { &A, &B }) {   // every expert uncached on the new card first
+        for (int32_t e = 0; e < (int32_t) L->expert_slot.size(); ++e) { set_table_entry(L->pub, e, L->pub.n_slots); }
+    }
+    // the moved experts into free blocks of the new card's class
+    int n_moved = 0, n_dropped = 0;
+    auto put = [&](layer_state & L, size_t li, std::vector<moved> & ms) {
+        ggml_tensor * t3[3] = { L.pub.up_c, L.pub.gate_c, L.pub.down_c };
+        for (auto & m : ms) {
+            double best;
+            const int32_t s = pick_slot(mc, li, [](layer_state &, size_t, int32_t) { return -1.0; }, best).slot;   // free blocks only
+            if (s < 0) { n_dropped++; continue; }
+            pool_take(mc, li, s);
+            for (int k = 0; k < 3; ++k) {
+                ggml_backend_tensor_set(t3[k], m.data[k].data(), (size_t) s * t3[k]->nb[2], m.data[k].size());
+            }
+            L.slot_expert[s] = m.e;
+            L.expert_slot[m.e] = s;
+            L.slot_last_use[s] = ++mc->clock;
+            L.cached_since[m.e] = mc->n_steps + 1;
+            set_table_entry(L.pub, m.e, s);
+            n_moved++;
+        }
+    };
+    put(A, ia, ma);
+    put(B, ib, mb);
+    flush_tables();
+    LLAMA_LOG_WARN("moe-cache: swap %d <-> %d: %d cached experts moved with their layers, %d dropped (no free block on the new card)\n", il_a, il_b, n_moved, n_dropped);
+    return true;
+}
+
 void llama_moe_cache_prefill_decide_fork(const std::vector<ggml_backend_dev_t> & gpus) {
     if (const char * e = moe_opt("prefill-split")) {
         g_split_share   = (float) atof(e);

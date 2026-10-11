@@ -80,6 +80,9 @@ struct llama_memory_i {
 
     using layer_share_cb = std::function<int32_t(int32_t il)>;
 
+    // fork: visit every ggml tensor this memory owns (moving a layer between GPUs); false: this memory type is not covered
+    virtual bool visit_tensors_fork(const std::function<void(ggml_tensor *)> & f) const { GGML_UNUSED(f); return false; }
+
     virtual ~llama_memory_i() = default;
 
     // split the input batch into a set of ubatches and verify that they can fit into the cache

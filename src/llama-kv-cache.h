@@ -19,6 +19,14 @@ struct llama_context;
 
 class llama_kv_cache : public llama_memory_i {
 public:
+    // fork: every ggml tensor this memory owns (moving a layer between GPUs, see llama_swap_layers_fork); false: a part is not covered
+    bool visit_tensors_fork(const std::function<void(ggml_tensor *)> & f) const override {
+        for (const auto & cb : ctxs_bufs) {
+            for (ggml_tensor * t = ggml_get_first_tensor(cb.first.get()); t; t = ggml_get_next_tensor(cb.first.get(), t)) { f(t); }
+        }
+        return true;
+    }
+
     struct stream_copy_info {
         bool empty() const {
             assert(ssrc.size() == sdst.size());
