@@ -1,0 +1,47 @@
+From 601ddf1f2a002a6171328b8d6c167dae5472d12b Mon Sep 17 00:00:00 2001
+From: Ladislav Nevery <neuralll@gmail.com>
+Date: Sun, 11 Oct 2026 13:21:09 +0200
+Subject: [PATCH] ggml-backend: skip the split barrier when the previous split
+ read nothing this split can overwrite
+
+A split without inputs waits for the previous split's backend before it starts, because the allocator may have reused buffer regions across splits.
+The only regions a split can overwrite are those of its own backend's compute buffer. When no input of the previous split lives in a buffer of that
+type (the usual case of a GPU split followed by a CPU split on a MoE model run with --cpu-moe, or of two splits on different devices), the previous
+split's asynchronous copies cannot be reading anything this split writes, and the host no longer waits for the GPU between layers.
+---
+ ggml/src/ggml-backend.cpp | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index ff3f07998..b1e4e34d5 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -1862,8 +1862,23 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+         ggml_backend_t split_backend = sched->backends[split_backend_id];
+ 
+         // ensure the previous split's async work has completed before we start
+-        // this split, the allocator may have reused buffer regions across splits
+-        if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id) {
++        // this split, the allocator may have reused buffer regions across splits.
++        // The regions this split can overwrite are the ones of its own backend's compute buffer
++        // (sched->bufts[split_backend_id]); if no input of the previous split lives in such a
++        // buffer, its async copies cannot be reading anything this split writes: no barrier needed.
++        const auto prev_reads_buffer_of_split_backend = [&]() {
++            const struct ggml_backend_sched_split * prev = &splits[split_id - 1];
++            for (int j = 0; j < prev->n_inputs; j++) {
++                const struct ggml_tensor * in = prev->inputs[j];
++                ggml_backend_buffer_t buf = in->view_src ? in->view_src->buffer : in->buffer;
++                if (!buf || ggml_backend_buffer_get_type(buf) == sched->bufts[split_backend_id]) {
++                    return true;
++                }
++            }
++            return false;
++        };
++        if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id &&
++                (split_id == 0 || prev_reads_buffer_of_split_backend())) {
+             if (sched->events[prev_backend_id][sched->cur_copy] != NULL) {
+                 ggml_backend_event_synchronize(sched->events[prev_backend_id][sched->cur_copy]);
+             } else {
+-- 
+2.43.0
+
