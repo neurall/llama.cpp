@@ -4424,7 +4424,46 @@ def _tool_selftest():
 
 
 
+def _tool_standin():
+    """run.py standin SRC[,SRC2...] DST N: a layer-truncated copy of a GGUF (the first N blocks and the global tensors, per-layer metadata arrays cut to N).
+    Same per-layer sizes, attention mix and expert shapes as the full model, so upload and compute timings per layer are real and a test runs about
+    (blocks / N) times faster; the output is nonsense and the cache hit rate is not representative. Used to iterate on prefill and upload paths of models
+    that do not fit in VRAM (GLM-5.3-Flash 12 blocks: 32.7 GB)."""
+    import re as _re
+    ap = argparse.ArgumentParser(prog="run.py standin", description=_tool_standin.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("src", help="the .gguf (first part of a split model; several parts comma separated)")
+    ap.add_argument("dst"); ap.add_argument("n", type=int, help="blocks to keep")
+    a = ap.parse_args()
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gguf-py"))
+    from gguf import GGUFReader, GGUFWriter, GGUFValueType
+    srcs = a.src.split(",")
+    r = GGUFReader(srcs[0]); rs = [r] + [GGUFReader(p) for p in srcs[1:]]
+    arch = r.fields["general.architecture"].contents()
+    old = int(r.fields[f"{arch}.block_count"].contents())
+    w = GGUFWriter(a.dst, arch)
+    for k, f in r.fields.items():
+        if k.startswith("GGUF.") or k.startswith("split.") or k == "general.architecture":
+            continue
+        v = f.contents(); t = f.types[0]
+        if k == f"{arch}.block_count":
+            v = a.n
+        elif t == GGUFValueType.ARRAY and hasattr(v, "__len__") and len(v) == old:
+            v = list(v)[:a.n]
+        if t == GGUFValueType.ARRAY:
+            w.add_key_value(k, v, t, f.types[1])
+        else:
+            w.add_key_value(k, v, t)
+    for t in [t for rr in rs for t in rr.tensors]:
+        m = _re.match(r"blk\.(\d+)\.", t.name)
+        if m and int(m.group(1)) >= a.n:
+            continue
+        w.add_tensor(t.name, t.data, raw_shape=t.data.shape, raw_dtype=t.tensor_type)
+    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(progress=True); w.close()
+    print("standin written:", a.dst, f"({old} -> {a.n} blocks)")
+
+
 TOOLS = {
+    'standin': _tool_standin,
     'runlog-all': _tool_runlog_all,
     'runq': _tool_runq,
     'merge-runs': _tool_merge_runs,
