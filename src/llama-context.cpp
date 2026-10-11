@@ -3259,6 +3259,15 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         ggml_backend_tensor_get_async(backend, ids, st.ids_data.data(), 0, ggml_nbytes(ids));
         ggml_backend_synchronize(backend);
 
+        // let an expert cache see which experts offloaded batches use (the old sched loop did this; the move to user code dropped it)
+        void * obs_ud = nullptr;
+        ggml_moe_obs_cb_t obs_cb = ggml_get_moe_obs_callback(&obs_ud);
+        if (obs_cb && strstr(src->name, "ffn_gate_exps")) {
+            ggml_tensor ids_host = *ids;
+            ids_host.data = st.ids_data.data();
+            obs_cb(src->name, &ids_host, nullptr, obs_ud);
+        }
+
         st.used.assign(n_expert, false);
         for (int64_t i1 = 0; i1 < ids->ne[1]; i1++) {
             for (int64_t i0 = 0; i0 < ids->ne[0]; i0++) {
