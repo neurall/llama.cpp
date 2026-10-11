@@ -148,7 +148,7 @@ RUN_COLS += ["up_ms_expert", "up_gbs_eff"]   # from the engine log: mean upload 
 RUN_COLS += ["pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb"]   # nvidia-smi dmon over the server run: GB host->device during the request (all GPUs; the server is already loaded), the peak of any GPU in a second, the mean of the seconds that moved data, GB device->host
 RUN_COLS += ["ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1"]   # from cache.csv (admit-pred builds): mean RAM traffic share of DDR_GBS, mean share of uploads that ran while the CPU read experts, mean slowdown of CPU expert phases with an upload in flight, the first predicted layer ahead per link at the end
 RUN_COLS += ["ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow"]   # hits an uploaded expert actually got before its eviction, per link (cache.csv histogram 0/1/2/3/4-5/6-10/11+; mean with bucket midpoints), the share with no hit and with 4 or more, and the mean steps it stayed cached
-RUN_COLS += ["t_full_pw"]   # time to full power, FIRST server start of a bench call only: seconds from the start of the GPU log (the server start) until each GPU first draws >= 90% of its own peak (1 s average), one value per GPU in index order; the load phase is the time the cards are not at full power
+RUN_COLS += ["t_full_pw"]   # time to full power, for every server start (a bench run restarts the server): seconds from the start of the GPU log (the server start) until each GPU first draws >= 90% of its own peak (1 s average), one value per GPU in index order; the load phase is the time the cards are not at full power
 RUN_COLS += ["pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct"]   # power of the request window, one value per GPU in index order (nvidia-smi, --gpulog): mean W, peak W (1 s average), peak W (instantaneous), energy of all GPUs in Wh, % of samples at the software power cap
 RUN_COLS += ["vram_mib"]   # GPU memory in use at the end of the run, all GPUs together (nvidia-smi memory.used)
 RUN_COLS += ["endpoint"]
@@ -453,7 +453,6 @@ def model_residency():
 
 
 PERFPROF = False   # --perf-prof: perf record (499 Hz, user space) of the server during each run -> tools/bench/perf/<time>-<build>.txt (flat top symbols per library)
-_FIRST_START = {"done": False}   # t_full_pw is logged for the first server start of a bench call only
 GPULOG = False   # --gpulog: 5 Hz nvidia-smi and CPU sampling during the runs (off by default; the slow mode turned out to be real code text, not a power or clock effect)
 GPU_Q = "index,power.draw,clocks.sm,clocks.mem,temperature.gpu,utilization.gpu,pcie.link.gen.current,pcie.link.width.current,clocks_throttle_reasons.active,power.draw.instant,fan.speed,memory.used"
 
@@ -523,10 +522,8 @@ def gpu_sampler(build, pid=None):
                 if float(x[1]) >= 0.9 * peak:
                     tfp[g] = float(x[-1]) - t0
                     break
-        if tfp and not _FIRST_START["done"]:   # only the first server start of a bench call (cold start); later restarts find warm caches and stay empty
+        if tfp:   # every server start: a bench run restarts the server, each start has its own load
             PROCSTAT.update(t_full_pw="/".join("%.1f" % v for v in tfp.values()))
-        if tfp:
-            _FIRST_START["done"] = True
         for g in sorted({r[0] for r in rows}):
             r = [x for x in rows if x[0] == g and x[2].replace(".", "").isdigit() and x[5].isdigit()]
             b = [x for x in r if int(x[5]) >= 20]   # busy samples: idle and ramp samples would set the minimum
