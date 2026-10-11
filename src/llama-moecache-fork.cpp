@@ -871,7 +871,9 @@ struct stock_heat_t {
     std::string section;
     std::vector<std::vector<uint64_t>> counts;   // [layer][expert]
     uint64_t tokens = 0;                         // routed tokens seen (summed over observed layers)
+    int64_t steps = 0;                           // decode calls seen while counting
 } g_heat;
+std::atomic<bool> g_heat_live{false};            // counting right now (stops after observe-steps decode calls; the counts stay for the save): read without the lock once per decode call
 
 void * cuda_obs_proc(const char * name) {
     ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
@@ -924,15 +926,50 @@ void llama_moe_observe_start(const llama_model & model) {
     if ((off && off[0] == '0') || model.hparams.n_expert == 0 || !moe_state_enabled() || llama_moe_cache_active_fork()) {
         return;
     }
+    // a model whose experts all sit on GPUs keeps the stock placement for good: the cache never runs on it, so there is no hot map to learn
+    bool any_host_experts = false;
+    for (const auto & l : model.layers) {
+        if (!l.ffn_up_exps || !l.ffn_up_exps->buffer) {
+            continue;
+        }
+        ggml_backend_dev_t d = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(l.ffn_up_exps->buffer));
+        if (ggml_backend_buffer_is_host(l.ffn_up_exps->buffer) || (d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_CPU)) {
+            any_host_experts = true;
+            break;
+        }
+    }
+    if (!any_host_experts) {
+        return;
+    }
     std::lock_guard<std::mutex> lk(g_heat.mtx);
     g_heat.section = moe_state_section(model);
     moe_seed_hot(g_heat.section, model.hparams.n_expert);
     g_heat.counts.assign(model.hparams.n_layer(), std::vector<uint64_t>(model.hparams.n_expert, 0));
     g_heat.tokens = 0;
+    g_heat.steps = 0;
     g_heat.on = true;
+    g_heat_live = true;
     ggml_set_moe_obs_callback(stock_obs_cb, nullptr);
     if (auto fn = (void (*)(bool)) cuda_obs_proc("ggml_backend_cuda_obs_enable")) {
         fn(true);   // GPU-resident layers count on the device, read back once in llama_moe_observe_save
+    }
+}
+
+// A stable hot map needs a few hundred tokens. The counting itself costs every token (a lock and a read-back of the router ids on CPU layers, one extra
+// kernel per layer on GPU layers), so it stops after observe-steps decode calls (--moe observe-steps=N, default 512, 0: never) and the run goes on at full speed.
+void llama_moe_observe_step() {
+    if (!g_heat_live.load(std::memory_order_relaxed)) {
+        return;
+    }
+    static const int64_t cap = [] { const char * v = moe_opt("observe-steps"); return v ? (int64_t) atoll(v) : (int64_t) 512; }();
+    std::lock_guard<std::mutex> lk(g_heat.mtx);
+    if (cap <= 0 || ++g_heat.steps < cap) {
+        return;
+    }
+    g_heat_live = false;
+    ggml_set_moe_obs_callback(nullptr, nullptr);
+    if (auto en = (void (*)(bool)) cuda_obs_proc("ggml_backend_cuda_obs_enable")) {
+        en(false);   // the device counters keep what they have; llama_moe_observe_save reads them
     }
 }
 

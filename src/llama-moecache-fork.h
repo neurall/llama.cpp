@@ -84,6 +84,7 @@ void llama_moe_cache_free_fork();
 // increments per layer and token (no GPU read-back, no sync). The counts are saved at exit in the same state lines the cache reads (hot.<layer>), so the first start that
 // runs the cache begins with a preheated set. Off with LLAMA_MOE_OBSERVE=0, without a state file, and for models without experts.
 void llama_moe_observe_start(const llama_model & model);
+void llama_moe_observe_step();   // once per decode call: ends the counting after observe-steps calls
 void llama_moe_observe_save();
 
 // largest batch (tokens) that uses the cache; bigger ones take the stock path

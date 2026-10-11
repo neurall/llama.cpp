@@ -2233,6 +2233,9 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         moe_observe_started = true;
         llama_moe_observe_start(model);
     }
+    if (moe_observe_started) {
+        llama_moe_observe_step();
+    }
     if (cparams.moe_cache && !cparams.moe_cache_started && !moe_cache_defer) {
         cparams.moe_cache_started = true;
         llama_moe_cache_init_fork(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots, cparams.moe_cache_window,
