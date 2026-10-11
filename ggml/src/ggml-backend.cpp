@@ -2141,6 +2141,27 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     free(sched);
 }
 
+// fork: the compute graphs of `backend` are placed in `buffer` (from offset, at most capacity bytes) instead of a buffer the scheduler owns;
+// its own buffer is freed now. Used to put the compute buffer inside the expert-cache pool (the blocks it covers are blocked while it is in use)
+void ggml_backend_sched_set_external_buffer(ggml_backend_sched_t sched, ggml_backend_t backend, ggml_backend_buffer_t buffer, size_t offset, size_t capacity) {
+    for (int i = 0; i < sched->n_backends; i++) {
+        if (sched->backends[i] == backend) {
+            ggml_gallocr_set_external_buffer(sched->galloc, i, buffer, offset, capacity);
+            return;
+        }
+    }
+}
+
+// fork: bytes of the backend's compute buffer the current graph uses (what the graph allocator placed, from the start of the buffer)
+size_t ggml_backend_sched_graph_peak(ggml_backend_sched_t sched, ggml_backend_t backend) {
+    for (int i = 0; i < sched->n_backends; i++) {
+        if (sched->backends[i] == backend) {
+            return ggml_gallocr_get_graph_peak(sched->galloc, i);
+        }
+    }
+    return 0;
+}
+
 void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     // reset state for the next run

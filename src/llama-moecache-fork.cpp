@@ -234,7 +234,25 @@ struct moe_cache {
         std::vector<int32_t> free;    // free blocks (stack)
     };
     std::vector<pool_state> pool;
-    uint64_t gmax_all = 1;   // block pool: the lifetime count of the busiest expert of ANY layer, the common scale of scores compared across layers
+    int64_t  n_expert_used = 0;   // experts per token (the compute alias sizes the CUDA scratch from it)
+    uint64_t gmax_all = 1;
+    // compute alias (--moe alias=1): per pool buffer, the first size class can lend its first blocks to the scheduler's compute buffer.
+    // Blocks [0, blocked) of that class are compute memory now (owner -2): no expert, not free; `want` is what the last graph needed.
+    struct alias_pool {
+        ggml_backend_buffer_t buf  = nullptr;
+        ggml_backend_dev_t    dev  = nullptr;
+        int32_t               pcls = -1;
+        size_t                B    = 0;
+        int32_t               n    = 0;
+        int32_t               blocked = 0;
+        int32_t               want    = 0;
+        int                   cuda_dev = -1;    // CUDA device index (the backend's scratch region lives in the lent blocks), -1: other backend
+        size_t                tok_bytes = 0;    // CUDA scratch of the largest expert matmul per batch token (see llama_moe_cache_alias_fork)
+        size_t                hwm       = 0;    // the largest scratch a graph asked for so far (reported with log=a)
+        int32_t               last_n    = 0;    // the previous graph: its tokens and the scratch it was lent (self-check of the formula)
+        size_t                last_scr  = 0;
+    };
+    std::vector<alias_pool> alias;   // block pool: the lifetime count of the busiest expert of ANY layer, the common scale of scores compared across layers
     std::map<const ggml_tensor *, size_t> by_up_src;
     std::map<const ggml_tensor *, std::pair<size_t, int>> by_src; // host weight -> (layer, 0 up / 1 gate / 2 down)
 
@@ -1094,6 +1112,9 @@ slot_pick pick_slot(moe_cache * mc, size_t li, Rank rank, double & best) {
         }
         for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
             const int32_t o = ps.owner[b];
+            if (o == -2) {
+                continue;   // lent to the compute buffer (alias)
+            }
             if (o < 0) { p.slot = b; best = 0; return p; }
             layer_state & lo = mc->layers[o];
             if (lo.slot_in_flight[b] || lo.is_stream[b]) {
@@ -2536,6 +2557,185 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     return true;
 }
 
+// ---- compute alias ---------------------------------------------------------------------------------------------------------------------------
+// --moe alias=1: the scheduler places the compute graphs of a GPU at the start of that GPU's expert pool buffer (the first blocks of its biggest
+// size class) instead of a buffer of its own. After each graph is allocated, the blocks its tensors reach are taken from the cache (their experts
+// evicted, uploads into them awaited) and lent to it; at the next step (a sync point) the blocks above what the last graph needed come back. A
+// decode graph needs a few blocks, a big prompt batch many, only while it runs: no buffer is allocated or resized, so the prompt ubatch is
+// bounded by the pool, not by a separate compute buffer.
+static bool alias_on() {
+    static const bool on = [] { const char * e = moe_opt("alias"); return e && atoi(e) != 0; }();
+    return on;
+}
+
+std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork() {
+    std::vector<llama_moe_alias_buf_fork> out;
+    moe_cache * mc = g_cache;
+    if (!mc || !alias_on()) {
+        return out;
+    }
+    for (const auto & ap : mc->alias) {
+        out.push_back({ ap.buf, ap.dev, (size_t) ap.n * ap.B });   // never the zero block behind the class
+    }
+    return out;
+}
+
+void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
+    moe_cache * mc = g_cache;
+    if (!mc || !alias_on() || mc->alias.empty()) {
+        return;
+    }
+    bool changed = false;
+    for (auto & ap : mc->alias) {
+        size_t peak = 0;
+        for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+            ggml_backend_t be = ggml_backend_sched_get_backend(sched, i);
+            if (ggml_backend_get_device(be) == ap.dev) { peak = ggml_backend_sched_graph_peak(sched, be); }
+        }
+        // the backend's scratch goes into the lent blocks right after the graph's tensors. Its size is computed, per graph, from the kernel:
+        // the largest single op is an expert matmul (MMQ mul_mat_id, ggml-cuda/mmq.cu), which takes per batch token and used expert the
+        // activations quantized to q8_1 (K padded to 512 values, 36 bytes per 32), their scale (4 B) and two index entries (8 B), where K is
+        // the input width (n_embd for up/gate, the expert width for down); plus the expert bounds and the q8_1 tail of up to 128 rows, and
+        // the pool's 2 MiB granularity. Ops run one after another, so the need is the largest op, not the sum.
+        static size_t (*scratch_fn)(int, void *, size_t) = [] {
+            ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+            return reg ? (size_t (*)(int, void *, size_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_scratch_fork") : nullptr;
+        }();
+        if (ap.cuda_dev < 0 && scratch_fn) {
+            const char * nm = ggml_backend_dev_name(ap.dev);
+            if (nm && strncmp(nm, "CUDA", 4) == 0) { ap.cuda_dev = atoi(nm + 4); }
+        }
+        size_t scratch = 0;
+        if (ap.cuda_dev >= 0) {
+            if (ap.tok_bytes == 0) {
+                for (const auto & l : mc->layers) {
+                    const int64_t n_used = std::max<int64_t>(1, mc->n_expert_used);
+                    for (const ggml_tensor * t : { l.pub.up_src, l.pub.gate_src, l.pub.down_src }) {
+                        const size_t k_pad = (size_t) GGML_PAD(t->ne[0], 512);
+                        ap.tok_bytes = std::max(ap.tok_bytes, (size_t) n_used * (k_pad * 36 / 32 + 12));
+                    }
+                }
+            }
+            const size_t asked = scratch_fn(ap.cuda_dev, nullptr, 0);   // what the previous graph asked for, fitting or not
+            ap.hwm = std::max(ap.hwm, asked);
+            if (asked > ap.last_scr && ap.last_n > 0) {
+                // an op the formula does not know took more: it overflowed into the device pool (the VRAM margin). From now on every graph gets it
+                const size_t per_tok = (asked + ap.last_n - 1) / ap.last_n;
+                LLAMA_LOG_WARN("moe-cache: alias %s: a %d-token graph asked for %.1f MiB of scratch, %.1f MiB were lent: %zu -> %zu bytes per token from now on\n",
+                        ggml_backend_dev_name(ap.dev), ap.last_n, asked / 1048576.0, ap.last_scr / 1048576.0, ap.tok_bytes, std::max(ap.tok_bytes, per_tok));
+                ap.tok_bytes = std::max(ap.tok_bytes, per_tok);
+            }
+            const size_t n_expert = mc->layers.empty() ? 0 : (size_t) mc->layers[0].pub.up_src->ne[2];
+            scratch = GGML_PAD((size_t) n_tokens * ap.tok_bytes + 128 * 144 + (n_expert + 1) * 4, (size_t) 2 << 20);
+            ap.last_n   = n_tokens;
+            ap.last_scr = scratch;
+        }
+        const size_t peak_al = GGML_PAD(peak, 256);
+        const int32_t need_all = std::min<int32_t>(ap.n, (int32_t) ((peak_al + scratch + ap.B - 1) / ap.B));
+        ap.want = need_all;
+        if (ap.cuda_dev >= 0) {
+            const size_t cap = (size_t) need_all * ap.B > peak_al ? (size_t) need_all * ap.B - peak_al : 0;
+            scratch_fn(ap.cuda_dev, cap > 0 ? (char *) ggml_backend_buffer_get_base(ap.buf) + peak_al : nullptr, cap);
+        }
+        const int32_t need = need_all;
+        static const bool dbg = moe_log_has("a");   // --moe log=a: the compute alias per graph
+        if (dbg) {
+            LLAMA_LOG_WARN("moe-cache: alias %s: %d tokens, graph %.1f MiB + scratch %.1f MiB (largest asked so far %.1f MiB) = %d of %d blocks, %d lent\n",
+                    ggml_backend_dev_name(ap.dev), n_tokens, peak / 1048576.0, scratch / 1048576.0, ap.hwm / 1048576.0, need, ap.n, ap.blocked);
+        }
+        if (need <= ap.blocked) {
+            continue;
+        }
+        auto & ps = mc->pool[ap.pcls];
+        // uploads into these blocks: a queued one is dropped, a finished but unpublished one is discarded, a running one is awaited (one copy);
+        // an adoption is cancelled (its device copy was queued before this graph on the same stream). The step publishes uploads only later,
+        // so waiting for the publish would never end.
+        const size_t want_pcls = (size_t) ap.pcls;
+        auto in_zone = [&](const upload_job & j) {
+            return j.layer_idx < mc->layers.size() && mc->layers[j.layer_idx].pcls == (int32_t) want_pcls && j.slot >= ap.blocked && j.slot < need;
+        };
+        auto drop_job = [&](const upload_job & j) {
+            layer_state & lo = mc->layers[j.layer_idx];
+            lo.slot_in_flight[j.slot] = false;
+            if (j.expert >= 0 && j.expert < (int32_t) lo.queued.size()) { lo.queued[j.expert] = 0; }
+        };
+        for (int spin = 0; ; ++spin) {
+            bool busy = false;
+            {
+                std::lock_guard<std::mutex> wlk(mc->wmtx);
+                std::lock_guard<std::mutex> lk(mc->mtx);
+                for (auto it = mc->todo.begin(); it != mc->todo.end(); ) {
+                    if (in_zone(*it)) { drop_job(*it); it = mc->todo.erase(it); } else { ++it; }
+                }
+                for (size_t k = 0; k < mc->done.size(); ) {
+                    if (in_zone(mc->done[k])) { drop_job(mc->done[k]); mc->done[k] = mc->done.back(); mc->done.pop_back(); } else { ++k; }
+                }
+                for (int32_t b = ap.blocked; b < need && !busy; ++b) {
+                    const int32_t o = ps.owner[b];
+                    if (o < 0 || !mc->layers[o].slot_in_flight[b]) {
+                        continue;
+                    }
+                    layer_state & lo = mc->layers[o];
+                    bool adoption = false;
+                    for (size_t i = 0; i < lo.adopted.size(); ++i) {
+                        const int32_t e = lo.adopted[i];
+                        if (lo.adopt_slot[e] == b) {
+                            lo.adopt_slot[e] = -1;
+                            lo.adopt_mask[e] = 0;
+                            lo.adopted.erase(lo.adopted.begin() + (ptrdiff_t) i);
+                            lo.slot_in_flight[b] = false;
+                            adoption = true;
+                            break;
+                        }
+                    }
+                    busy = !adoption;   // a worker is copying into it right now
+                }
+            }
+            if (!busy) {
+                break;
+            }
+            GGML_ASSERT(spin < 200000 && "compute alias: an upload into the borrowed blocks never finished");
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        for (int32_t b = ap.blocked; b < need; ++b) {
+            const int32_t o = ps.owner[b];
+            if (o >= 0) {
+                layer_state & lo = mc->layers[o];
+                evict_slot(mc, lo, b);
+                lo.n_own--;
+            } else if (o == -1) {
+                auto it = std::find(ps.free.begin(), ps.free.end(), b);
+                if (it != ps.free.end()) { ps.free.erase(it); }
+            }
+            ps.owner[b] = -2;
+        }
+        ap.blocked = need;
+        changed = true;
+    }
+    if (changed) {
+        flush_tables();
+        ggml_backend_sched_synchronize(sched);   // the previous graph may still read those blocks; this graph's inputs are written next
+    }
+}
+
+// at a sync point: blocks above what the last graph needed go back to the cache
+static void alias_release(moe_cache * mc) {
+    for (auto & ap : mc->alias) {
+        if (ap.want >= ap.blocked) {
+            continue;
+        }
+        auto & ps = mc->pool[ap.pcls];
+        for (int32_t b = ap.want; b < ap.blocked; ++b) {
+            if (ps.owner[b] == -2) {
+                ps.owner[b] = -1;
+                ps.free.push_back(b);
+            }
+        }
+        ap.blocked = ap.want;
+    }
+}
+
 // ---- block pool layout -------------------------------------------------------------------------------------------------------------------------
 // The expert cache of a device group is ONE buffer of blocks. A block holds one expert: its up, gate and down slices one after the other. Layers whose
 // experts have the same types and sizes form a size class; a class is a run of equal blocks, and any block of it can hold an expert of any layer of
@@ -2601,6 +2801,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
 
         auto * mc = new moe_cache();
         mc->n_slots = n_slots;
+        mc->n_expert_used = (int64_t) model.hparams.n_expert_used();
         if (max_inserts > 0) {
             mc->max_inserts = max_inserts;
         }
@@ -2798,7 +2999,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 pool_layout_t pl = pool_layout(ll);
                 std::vector<int32_t> nblk(pl.cls.size());
                 size_t total = 0;
-                for (size_t c = 0; c < pl.cls.size(); ++c) {
+                // the class with the most layers first: its first blocks are the ones the compute buffer can borrow (alias)
+                std::vector<size_t> order(pl.cls.size());
+                for (size_t c = 0; c < order.size(); ++c) { order[c] = c; }
+                std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) { return pl.cls[x].members.size() > pl.cls[y].members.size(); });
+                for (size_t c : order) {
                     nblk[c]        = slots * (int32_t) pl.cls[c].members.size();   // the class's share of the memory, owned by no layer
                     pl.cls[c].base = total;
                     total         += (size_t) (nblk[c] + 1) * pl.cls[c].B;
@@ -2843,6 +3048,15 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
                 LLAMA_LOG_WARN("moe-cache: block pool on %s: %zu layers, %.1f MiB, size classes: %s; no blocks reserved per layer\n", ggml_backend_buft_name(buft),
                         cands.size(), total / 1048576.0, cls_txt.c_str());
+                {
+                    moe_cache::alias_pool ap;
+                    ap.buf  = pbuf;
+                    ap.dev  = ggml_backend_buft_get_device(buft);
+                    ap.pcls = (int32_t) (pool0 + order[0]);
+                    ap.B    = pl.cls[order[0]].B;
+                    ap.n    = nblk[order[0]];
+                    mc->alias.push_back(ap);
+                }
                 mc->bufs.push_back(pbuf);
             }
             ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
@@ -4602,6 +4816,7 @@ void llama_moe_cache_step_fork() {
         }
     }
 
+    alias_release(mc);
     mc->gmax_all = 1;
     for (const auto & l : mc->layers) { mc->gmax_all = std::max(mc->gmax_all, l.glob_max); }
     // 2) schedule new uploads: evict at a sync point (clear the victim's table

@@ -73,6 +73,13 @@ GGML_API bool ggml_gallocr_alloc_graph(ggml_gallocr_t galloc, struct ggml_cgraph
 
 GGML_API size_t ggml_gallocr_get_buffer_size(ggml_gallocr_t galloc, int buffer_id);
 
+// fork: place the graphs of buffer_id inside `buffer` from `offset` on, at most `capacity` bytes, instead of a buffer the allocator owns.
+// The allocator's current buffer for that id is freed now; the external one is never freed, resized or marked as compute by the allocator.
+// buffer == NULL: back to own buffers
+// fork: bytes from the buffer start to the end of the highest tensor the allocator placed for the current graph (multi-chunk: chunk-local)
+GGML_API size_t ggml_gallocr_get_graph_peak(ggml_gallocr_t galloc, int buffer_id);
+GGML_API void ggml_gallocr_set_external_buffer(ggml_gallocr_t galloc, int buffer_id, ggml_backend_buffer_t buffer, size_t offset, size_t capacity);
+
 // Utils
 // Create a buffer and allocate all the tensors in a ggml_context
 

@@ -7,6 +7,7 @@
 #include "llama-adapter.h"
 #include "llama-impl.h"
 #include "llama-memory.h"
+#include "llama-moecache-fork.h"
 
 #include "ggml-cpp.h"
 #include "ggml-opt.h"
@@ -64,6 +65,9 @@ struct llama_context {
     void sched_reserve();
     // fork: layers a and b trade GPUs in place (weights, memory tensors, expert caches); false: not possible, nothing changed
     bool swap_layers_fork(int a, int b);
+    // fork: --moe alias=1: put the GPUs' compute graphs into the expert pool buffers of moe_alias_bufs (after every scheduler creation)
+    void apply_moe_alias();
+    std::vector<llama_moe_alias_buf_fork> moe_alias_bufs;
 
     void synchronize();
 

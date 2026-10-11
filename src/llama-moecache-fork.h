@@ -104,6 +104,11 @@ void llama_moe_cache_prefill_decide_fork(const std::vector<ggml_backend_dev_t> &
 bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backend_dev_t> & layer_dev);
 // layers il_a and il_b trade GPUs: their expert caches trade cards (cached experts move along as far as free blocks allow); false: not possible
 bool llama_moe_cache_swap_layers_fork(int il_a, int il_b);
+// compute alias (--moe alias=1): the pool buffers whose first blocks the scheduler may use for its compute graphs, and the bytes it may use
+struct llama_moe_alias_buf_fork { ggml_backend_buffer_t buf; ggml_backend_dev_t dev; size_t capacity; };
+std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork();
+// after a graph is allocated, before its inputs are set: lend the blocks it reaches to it (evict their experts)
+void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens);
 bool    llama_moe_cache_active_fork();
 bool    llama_moe_cache_wants_probs_fork();   // --moe policy=r: the gate op of every cached layer also gets the router probabilities (src[6]) for the relevance score
 // startup probe: how many reader threads reach 95% of the CPU's RAM read rate (0: not measured)

@@ -383,6 +383,10 @@ extern "C" {
     // This in effect deallocates all tensors that were previously allocated and leaves them with dangling pointers.
     // The correct way to use this API is to discard the deallocated tensors and create new ones.
     GGML_API void                 ggml_backend_sched_reset(ggml_backend_sched_t sched);
+    // fork: compute graphs of `backend` go into an external buffer (the expert-cache pool); the scheduler's own buffer is freed now
+    GGML_API void   ggml_backend_sched_set_external_buffer(ggml_backend_sched_t sched, ggml_backend_t backend, ggml_backend_buffer_t buffer, size_t offset, size_t capacity);
+    // fork: bytes of the backend's compute buffer the current allocated graph uses (what the graph allocator placed there)
+    GGML_API size_t ggml_backend_sched_graph_peak(ggml_backend_sched_t sched, ggml_backend_t backend);
 
     // Set a callback to be called for each resulting node during graph compute
     GGML_API void                 ggml_backend_sched_set_eval_callback(ggml_backend_sched_t sched, ggml_backend_sched_eval_callback callback, void * user_data);

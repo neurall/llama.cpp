@@ -883,6 +883,17 @@ bool llama_context::swap_layers_fork(int a, int b) {
     return true;
 }
 
+// fork: --moe alias=1: the GPUs' compute graphs go into the expert pool buffers (llama_moe_cache_alias_fork lends the blocks they reach)
+void llama_context::apply_moe_alias() {
+    for (const auto & ab : moe_alias_bufs) {
+        for (auto & be : backends) {
+            if (ggml_backend_get_device(be.get()) == ab.dev) {
+                ggml_backend_sched_set_external_buffer(sched.get(), be.get(), ab.buf, 0, ab.capacity);
+            }
+        }
+    }
+}
+
 void llama_context::sched_reserve() {
     if (!sched_need_reserve) {
         return;
@@ -911,6 +922,7 @@ void llama_context::sched_reserve() {
 
     sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, cparams.pipeline_parallel, cparams.op_offload));
     ggml_backend_sched_set_copy_callback(sched.get(), sched_copy_experts, this);
+    apply_moe_alias();
 
     llama_memory_context_ptr mctx;
     if (memory) {
@@ -951,6 +963,7 @@ void llama_context::sched_reserve() {
                 cparams.pipeline_parallel = false;
                 sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, cparams.op_offload));
                 ggml_backend_sched_set_copy_callback(sched.get(), sched_copy_experts, this);
+                apply_moe_alias();
                 gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get());
             }
             if (!gf) {
@@ -2047,6 +2060,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         gf_res_prev_active = res;
     }
+    llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);   // fork: --moe alias=1 lends the pool blocks this graph's tensors reach to it
 
     // set the input data for the input tensors
     {
@@ -2320,8 +2334,22 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     }
     if (cparams.moe_cache && !cparams.moe_cache_started && !moe_cache_defer) {
         cparams.moe_cache_started = true;
+        const char * alias_opt = llama_moe_get_opt("alias");
+        const bool   alias     = alias_opt && atoi(alias_opt) != 0;
+        if (alias) {   // the compute buffers go back to the devices first: the pool is sized with that memory and lends it back to the graphs
+            for (auto & be : backends) {
+                if (ggml_backend_dev_type(ggml_backend_get_device(be.get())) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                    ggml_backend_sched_set_external_buffer(sched.get(), be.get(), nullptr, 0, 0);
+                }
+            }
+        }
         llama_moe_cache_init_fork(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots, cparams.moe_cache_window,
                 cparams.moe_predict, cparams.moe_predict_train);
+        if (alias) {
+            moe_alias_bufs = llama_moe_cache_alias_buffers_fork();   // applied to every scheduler created from now on (sched_reserve makes a new one)
+            apply_moe_alias();
+            sched_need_reserve = true;
+        }
         thread_cap_from_probe(llama_moe_cache_cpu_sat_threads_fork());
         sched_reserve(); // the compute graph now includes the cache chain
     }

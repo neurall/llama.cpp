@@ -691,14 +691,83 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
 };
 #endif // defined(GGML_USE_VMM)
 
+// fork: a scratch region per device inside memory the caller owns (the expert-cache pool lends it per graph, llama_moe_cache_alias_fork).
+// While it is set, the main stream's temporary buffers (quantized activations, expert-sorted copies, cuBLAS scratch) are taken from it in
+// stack order instead of the device pool, so they never stay mapped after the graph (the VMM pool keeps its peak forever). What does not fit
+// goes to the device pool as before. The high-water mark counts what was asked for, whether it fitted or not, so the caller learns the need.
+struct ggml_cuda_scratch_region {
+    char * base = nullptr;
+    size_t cap  = 0;
+    size_t top  = 0;
+    size_t hwm  = 0;
+    struct piece { size_t off, size; bool freed; };
+    std::vector<piece> live;
+};
+static ggml_cuda_scratch_region g_cuda_scratch[GGML_CUDA_MAX_DEVICES];
+
+struct ggml_cuda_pool_scratch : public ggml_cuda_pool {
+    int device;
+    std::unique_ptr<ggml_cuda_pool> inner;
+    ggml_cuda_pool_scratch(int device, std::unique_ptr<ggml_cuda_pool> inner) : device(device), inner(std::move(inner)) {}
+
+    void * alloc(size_t size, size_t * actual_size) override {
+        ggml_cuda_scratch_region & s = g_cuda_scratch[device];
+        if (s.base != nullptr && size > 0) {
+            const size_t off = GGML_PAD(s.top, 256);
+            s.hwm = std::max(s.hwm, off + size);
+            if (off + size <= s.cap) {
+                s.live.push_back({ off, size, false });
+                s.top = off + size;
+                *actual_size = size;
+                return s.base + off;
+            }
+        }
+        return inner->alloc(size, actual_size);
+    }
+
+    void free(void * ptr, size_t size) override {
+        ggml_cuda_scratch_region & s = g_cuda_scratch[device];
+        if (s.base != nullptr && (char *) ptr >= s.base && (char *) ptr < s.base + s.cap) {
+            const size_t off = (size_t) ((char *) ptr - s.base);
+            for (size_t i = s.live.size(); i-- > 0; ) {
+                if (s.live[i].off == off && !s.live[i].freed) { s.live[i].freed = true; break; }
+            }
+            while (!s.live.empty() && s.live.back().freed) { s.live.pop_back(); }
+            s.top = s.live.empty() ? 0 : s.live.back().off + s.live.back().size;
+            return;
+        }
+        inner->free(ptr, size);
+    }
+};
+
+// set (base != NULL) or clear the scratch region of a device; returns the high-water mark since the last call and resets it
+static size_t ggml_backend_cuda_scratch_fork(int device, void * base, size_t cap) {
+    ggml_cuda_scratch_region & s = g_cuda_scratch[device];
+    const size_t hwm = s.hwm;
+    if (s.live.empty()) {   // never move a region that still holds live buffers
+        s.base = (char *) base;
+        s.cap  = base ? cap : 0;
+        s.top  = 0;
+    }
+    s.hwm = 0;
+    return hwm;
+}
+
 std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(int                  device,
                                                                                [[maybe_unused]] int stream_no) {
+    std::unique_ptr<ggml_cuda_pool> p;
 #if defined(GGML_USE_VMM)
     if (ggml_cuda_info().devices[device].vmm) {
-        return std::unique_ptr<ggml_cuda_pool>(new ggml_cuda_pool_vmm(device));
+        p.reset(new ggml_cuda_pool_vmm(device));
     }
 #endif // defined(GGML_USE_VMM)
-    return std::unique_ptr<ggml_cuda_pool>(new ggml_cuda_pool_leg(device));
+    if (!p) {
+        p.reset(new ggml_cuda_pool_leg(device));
+    }
+    if (stream_no == 0) {   // fork: the main stream may take its scratch from a region the caller lends (ggml_backend_cuda_scratch_fork)
+        p.reset(new ggml_cuda_pool_scratch(device, std::move(p)));
+    }
+    return p;
 }
 
 // destroying a cuBLAS handle while a graph is being captured in a different thread can result in a CUDA error
@@ -6482,6 +6551,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_host_cache") == 0) {
         return (void *)ggml_backend_cuda_host_cache;
+    }
+    if (strcmp(name, "ggml_backend_cuda_scratch_fork") == 0) {
+        return (void *)ggml_backend_cuda_scratch_fork;
     }
     if (strcmp(name, "ggml_backend_unregister_host_buffer") == 0) {
         return (void *)ggml_backend_cuda_unregister_host_buffer;
