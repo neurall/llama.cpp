@@ -84,9 +84,10 @@ def main():
         while proc.poll() is None and time.time() - t_start < a.timeout and not bad:
             time.sleep(0.4)
             if gfile is None:
-                cand = [f for f in glob.glob(os.path.join(GPULOG, "*.csv")) if not f.endswith(".cpu.csv") and os.path.getmtime(f) >= t_start - 1 and os.path.getsize(f) > 0]
+                cand = [f for f in glob.glob(os.path.join(GPULOG, "*.csv")) if not f.endswith(".cpu.csv") and os.path.getsize(f) > 0
+                        and time.mktime(time.strptime(os.path.basename(f)[:15], "%Y%m%d-%H%M%S")) >= int(t_start)]   # the log of THIS run: its name carries the start time
                 if cand:
-                    gfile = max(cand, key=os.path.getmtime)
+                    gfile = max(cand, key=os.path.basename)
             if gfile:
                 with open(gfile) as f:
                     f.seek(pos); chunk = f.read(); pos = f.tell()
@@ -123,6 +124,7 @@ def main():
         if bad:
             kill_run(proc)
             log(f"it {it}: limits {spec} W: THROTTLE on GPU {sorted(bad)} after {dur:.0f} s ({'; '.join(f'GPU{g}: {r}' for g, r in sorted(reason.items()))}); killed")
+            time.sleep(6)
             for g in bad:
                 lim[g] -= a.step
                 if lim[g] < a.floor:
