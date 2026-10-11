@@ -1140,7 +1140,7 @@ extern "C" {
 
     // MoE expert cache: while deferred, decodes don't start the cache (warmup runs), so its
     // auto size sees the VRAM left after models loaded later (speculative draft, mmproj)
-    LLAMA_API void llama_moe_cache_fork_defer(struct llama_context * ctx, bool defer);
+    LLAMA_API void llama_moe_cache_defer_fork(struct llama_context * ctx, bool defer);
 
     // Expert cache tuning knobs as "NAME=value,NAME=value" (MARGIN, GATE, WAIT, BIG, ...; see --moe). A knob named here is never self-tuned.
     LLAMA_API void llama_moe_set_options(const char * opts);

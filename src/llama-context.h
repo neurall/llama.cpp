@@ -41,7 +41,7 @@ struct llama_memory_buffer {
 using llama_memory_buffers = std::map<ggml_backend_buffer_type_t, llama_memory_buffer>;
 
 struct llama_context {
-    bool moe_cache_defer = false; // see llama_moe_cache_fork_defer()
+    bool moe_cache_defer = false; // see llama_moe_cache_defer_fork()
     int32_t trace_n_eval() const { return n_eval; }       // for the layer trace (--moe log=l64)
     int32_t trace_n_p_eval() const { return n_p_eval; }
     void set_eval_cb(); // the scheduler callback: the user's, or the layer trace (--moe log=l64) in front of it

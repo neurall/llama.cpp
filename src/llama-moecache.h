@@ -19,7 +19,7 @@
 //  - the two down-projection outputs are summed; uncached ids contribute 0
 //    through the cache chain (zero slot) and cached ids contribute 0 through
 //    the CPU chain (skip), so the result is exact.
-//  - llama_moe_cache_fork_step(), called at the end of llama_context::decode(),
+//  - llama_moe_cache_step_fork(), called at the end of llama_context::decode(),
 //    performs throttled LRU updates: at most LLAMA_MOE_CACHE_INSERTS expert
 //    uploads per layer per step via ggml_backend_tensor_set.
 //
@@ -34,7 +34,7 @@
 struct llama_model;
 struct ggml_tensor;
 
-struct llama_moe_cache_fork_layer {
+struct llama_moe_cache_layer_fork {
     int il = -1;
 
     int32_t n_slots = 0;
@@ -76,9 +76,9 @@ struct llama_moe_cache_fork_layer {
 
 // build the cache for every host-resident expert layer of the model.
 // Safe to call more than once; only the first call does work.
-void llama_moe_cache_fork_init(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots = 0, int32_t window = 64,
+void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots = 0, int32_t window = 64,
                           int32_t predict = 0, int32_t predict_train = 0);
-void llama_moe_cache_fork_free();
+void llama_moe_cache_free_fork();
 
 // Heat of a start that runs the stock placement (no cache): the CPU-side expert matmuls already see their routed ids in host memory, so counting them costs a few integer
 // increments per layer and token (no GPU read-back, no sync). The counts are saved at exit in the same state lines the cache reads (hot.<layer>), so the first start that
@@ -88,30 +88,30 @@ void llama_moe_observe_save();
 
 // largest batch (tokens) that uses the cache; bigger ones take the stock path
 // (LLAMA_MOE_CACHE_MAX_BATCH, default 31: below the CUDA op-offload threshold)
-int64_t llama_moe_cache_fork_max_batch();
+int64_t llama_moe_cache_max_batch_fork();
 // multi-GPU prefill: alpha (1 = experts over all GPUs by link bandwidth, 0 = fastest GPU only), measured or LLAMA_PREFILL_SPLIT
-float llama_moe_cache_fork_prefill_alpha();
+float llama_moe_cache_prefill_alpha_fork();
 // a GPU's measured upload link GB/s (startup probe, refined by uploads); 0 if unknown
-double llama_moe_cache_fork_link_gbs(ggml_backend_dev_t dev);
+double llama_moe_cache_link_gbs_fork(ggml_backend_dev_t dev);
 // before the first compute-buffer reserve: time each GPU's host link, reserve the prefill split only when it can pay
-void llama_moe_cache_fork_prefill_decide(const std::vector<ggml_backend_dev_t> & gpus);
-bool    llama_moe_cache_fork_active();
-bool    llama_moe_cache_fork_wants_probs();   // --moe policy=r: the gate op of every cached layer also gets the router probabilities (src[6]) for the relevance score
+void llama_moe_cache_prefill_decide_fork(const std::vector<ggml_backend_dev_t> & gpus);
+bool    llama_moe_cache_active_fork();
+bool    llama_moe_cache_wants_probs_fork();   // --moe policy=r: the gate op of every cached layer also gets the router probabilities (src[6]) for the relevance score
 // startup probe: how many reader threads reach 95% of the CPU's RAM read rate (0: not measured)
-int32_t llama_moe_cache_fork_cpu_sat_threads();
+int32_t llama_moe_cache_cpu_sat_threads_fork();
 // live cache state for llama_get_tuning_info(): false when the cache is off
-bool    llama_moe_cache_fork_get_info(struct llama_tuning_info * info);
+bool    llama_moe_cache_get_info_fork(struct llama_tuning_info * info);
 
 // nullptr when the cache is disabled or this tensor has no cached layer
-const llama_moe_cache_fork_layer * llama_moe_cache_fork_lookup(const ggml_tensor * up_exps);
+const llama_moe_cache_layer_fork * llama_moe_cache_lookup_fork(const ggml_tensor * up_exps);
 // JIT miss offload (LLAMA_MOE_CACHE_UPLOAD_NOW): called with a layer's router ids on the host before its cache chain launches
-void llama_moe_cache_fork_jit(const llama_moe_cache_fork_layer * pub, const ggml_tensor * ids);
+void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
 
 // apply throttled LRU updates; call between graph executions only
-void llama_moe_cache_fork_step();
+void llama_moe_cache_step_fork();
 
 // learned predictors: the next decode trains them (the graph holds the update nodes only then, so a
 // non-training step costs just the prediction); graph reuse must not cross a change of this
-bool llama_moe_cache_fork_pred_train_now();
-bool llama_moe_cache_fork_graph_reusable();
-void llama_moe_cache_fork_graph_built();
+bool llama_moe_cache_pred_train_now_fork();
+bool llama_moe_cache_graph_reusable_fork();
+void llama_moe_cache_graph_built_fork();
