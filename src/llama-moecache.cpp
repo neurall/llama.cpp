@@ -217,6 +217,7 @@ struct moe_cache {
 
     uint64_t clock   = 0;
     uint64_t n_steps = 0;
+    bool     boot_done = false;    // a prompt batch was seen: the admit boot is over
     uint64_t boot_from = 0;        // the admit boot window counts from here (the start of the process: a cold cache; a prompt batch fills the cache by adoption and does not restart it, GLM pf12k decode -5%)
 
     std::mutex mtx; // guards pending lists + clock (observe runs during graph exec)
@@ -1131,6 +1132,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->last_prefill = prefill;
+    if (prefill) { mc->boot_done = true; }   // a big prompt batch fills the cache by adoption: the strict entry of the boot is for a cold cache only
     mc->last_tokens  = n_tokens;
     if (get_policy() == policy::rel && op && op->src[6] && op->src[6]->type == GGML_TYPE_F32 && op->src[6]->data && op->src[6]->ne[0] == (int64_t) ls->relevance.size()) {
         static const float d = [] { const char * v = moe_opt("rel-decay"); return v ? (float) atof(v) : 0.5f; }();   // 0.5: halve the old relevance, add the current one
@@ -4134,7 +4136,7 @@ void llama_moe_cache_step_fork() {
                 continue;
             }
             double admit_now = ls.slow && knobs().admit_slow > 0 ? knobs().admit_slow : knobs().admit;
-            if (knobs().admit_boot > admit_now && (double) (mc->n_steps - mc->boot_from) < knobs().admit_boot_steps) { admit_now = knobs().admit_boot; }
+            if (!mc->boot_done && knobs().admit_boot > admit_now && (double) (mc->n_steps - mc->boot_from) < knobs().admit_boot_steps) { admit_now = knobs().admit_boot; }
             if (ls.win_count[id] < admit_now) {
                 mc->pr[6]++;
                 continue;
