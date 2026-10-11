@@ -1612,6 +1612,13 @@ bool common_autotune_on(const common_params & params) {
 // extra = compute buffer of this ubatch minus that of 512, cache_vram = VRAM left for cache slots; the decode loss is taken as
 // the share of cache slots lost. Constants measured: prefill grows with ub^0.6 (2.3x for 4x on a 16 GB card with experts in RAM,
 // 1.8x on 2x RTX 3090 and on OLMoE) and is ~11x the decode rate; np / ng are the request profile (-p / -n, else the agentic estimate).
+// What the model below stands for (measured GLM-5.3-Flash 3.0-bit pinned, 12k prompt, 2x RTX 3090, 2026-10-11, -ub 1024/2048/4096 = 177/275/370 t/s):
+// one pass over a prompt chunk costs a fixed part a (uploading the experts the chunk uses, 4.1 s here) plus b per token (GPU compute, 1.7 ms here), so
+//   pass time = a + ub * b,   prompt speed = ub / (a + ub * b),   upper limit 1/b (about 590 t/s here), 455 t/s at ub 8192, 490 at 12288.
+// The ub^0.5-0.6 used below is that curve over 512..2048; it flattens further up. A bigger ubatch costs compute buffer VRAM, which the cache then lacks
+// (decode -3% per doubling here), so the best ubatch is the one where the saved upload time per prompt stops paying for it: it depends on the link speed
+// (a), the GPU (b) and the prompt length n: with passes = ceil(n / ub_max) equal chunks of n / passes tokens the last pass is never a nearly empty one that
+// pays a whole upload. A slow link (PCIe 3.0, x4) raises a and moves the optimum up; a fast GPU lowers b and does the same.
 static uint32_t common_auto_ubatch(common_params & params) {
     const double PP_EXP = 0.5, PP_PER_TG = 11.0;
     const uint32_t cand[] = { 512, 1024, 2048 };

@@ -4434,6 +4434,18 @@ bool llama_moe_cache_get_info_fork(struct llama_tuning_info * info) {
     return true;
 }
 
+// max-batch: the largest batch (tokens) that still goes through the cache path. Larger batches take the prompt path, which uploads the experts they use.
+//
+// Why a threshold exists and where it should sit (measured GLM-5.3-Flash 3.0-bit, 2x RTX 3090, x16 + x4, DDR4-3200 ~44 GB/s; fitted 2026-10-11):
+//   cache path   time ~ n * c      c = CPU time per token for the experts the cache misses, close to the decode step (about 40-50 ms)
+//   prompt path  time ~ a + n * b  a = upload of the used experts per pass (3.5-4 s here, saturates once most experts are used), b = GPU compute per token
+//                                  (about 1.7 ms: prefill of 1k/2k/4k-token ubatches took 5.8/7.5/11.1 s)
+//   crossover    n* = a / (c - b)  about 90 tokens on this machine; 120 tokens measured 32 t/s streaming against 25 t/s through the cache.
+// The crossover scales with the ratio of RAM bandwidth to PCIe bandwidth, because c is bound by the CPU reading the missed experts from RAM and a by the
+// link: a box with 100 GB/s RAM on PCIe 3.0 (ratio about 8) has its optimum at several hundred tokens (a fork user measured 512 best), ours (ratio 2-3.5)
+// at about 90, a laptop on a slow link and fast RAM higher still, a 4x16 GPU server with slow RAM lower. The decode batches (1 token) and the speculative
+// verify batches (a few tokens) must stay on the cache path, so never go below about 8.
+// Default 31 is conservative for this machine; deriving it from the probes (link GB/s, CPU GB/s, measured decode step and layer times) is planned.
 int64_t llama_moe_cache_max_batch_fork() {
     static const int64_t v = [] {
         const char * e = moe_opt("max-batch");
@@ -4505,7 +4517,7 @@ void llama_moe_cache_free_fork() {
     }
     pred_save(mc);
     if (mc->n_pred_up || mc->pm_miss) {
-        // one line for the harness (fork/runexp.py): the predictor's result of this run
+        // one line for the harness (fork/run.py (exp)): the predictor's result of this run
         uint64_t hh = 0, mm = 0;
         for (auto & ls : mc->layers) { hh += ls.n_hit; mm += ls.n_miss; }
         const double hr = hh + mm ? 100.0*hh/(hh + mm) : 0.0, boost = hh + mm ? 100.0*mc->n_pred_used/(hh + mm) : 0.0;
