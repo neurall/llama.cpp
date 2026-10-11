@@ -1,4 +1,4 @@
-#include "llama-moestate.h"
+#include "llama-moestate-fork.h"
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -254,7 +254,7 @@ void llama_state_set_model(const char * section) {
 }
 }
 
-// research: embedding-keyed hot expert snapshots (see llama-moestate.h)
+// research: embedding-keyed hot expert snapshots (see llama-moestate-fork.h)
 static std::string g_embsnap_hex;
 
 bool moe_log_has(const char * letters) {   // --moe log=LETTERS (LLAMA_MOE_LOG)
@@ -307,7 +307,7 @@ void moe_embsnap_write(const std::vector<std::pair<std::string, std::string>> & 
     f.write(line.data(), (std::streamsize) line.size());
 }
 
-// research: state snapshot of one model (see llama-moestate.h)
+// research: state snapshot of one model (see llama-moestate-fork.h)
 bool moe_snap_enabled() {
     return log_has("si");
 }

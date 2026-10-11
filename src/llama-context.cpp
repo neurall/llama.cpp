@@ -4,8 +4,8 @@
 #include <map>
 #include <thread>
 
-#include "llama-moecache.h"
-#include "llama-moestate.h"
+#include "llama-moecache-fork.h"
+#include "llama-moestate-fork.h"
 
 #include "ggml.h"
 #include "llama-arch.h"

@@ -2,10 +2,10 @@
 
 #include <typeinfo>
 
-#include "llama-moecache.h"
+#include "llama-moecache-fork.h"
 
 #include "llama-impl.h"
-#include "llama-moestate.h"
+#include "llama-moestate-fork.h"
 #include "llama-model.h"
 #include "llama-batch.h"
 #include "llama-cparams.h"
@@ -2289,7 +2289,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     //call early so that topk-moe can be used
     ggml_build_forward_expand(gf, weights);
 
-    // MoE expert cache (see llama-moecache.h): during decode and small batches
+    // MoE expert cache (see llama-moecache-fork.h): during decode and small batches
     // (short prefills, speculative verify) on a layer whose experts live in host
     // memory, run a parallel mul_mat_id chain over a device-resident cache of hot
     // experts. Cached ids are skipped by the CPU chain (src[3] table) and served

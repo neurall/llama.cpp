@@ -1,5 +1,5 @@
-#include "llama-moecache.h"
-#include "llama-moestate.h"
+#include "llama-moecache-fork.h"
+#include "llama-moestate-fork.h"
 
 #include "llama-impl.h"
 #include "llama-model.h"

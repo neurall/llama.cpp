@@ -1,7 +1,7 @@
 # fork/
 
 Everything of this fork that is not engine code lives here, so the engine diff against upstream stays small and a PR can be cut without it.
-Engine code stays where the build needs it: `src/llama-moecache*`, `src/llama-moestate*` and our edits to upstream files.
+Engine code stays where the build needs it: `src/llama-moecache-fork.*`, `src/llama-moestate-fork.*` and our edits to upstream files.
 
 | path | contents |
 |---|---|
