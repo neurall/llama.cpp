@@ -1841,6 +1841,203 @@ def regress_promote(name, src, med, n, camp, old, why):
         f.write(f"{time.strftime('%F %T')},{name},{med:.2f},{n},{camp},{old or ''},{why}\n")
 
 
+def queue_lock(wait=True):
+    """/tmp/queue.lock for this process, unless it runs as a queue task (the daemon holds the lock for the task then: QUEUE_HOLDS_LOCK=1).
+    Returns the open lock file (keep it referenced), None when the daemon holds it, or raises OSError when wait=False and the lock is taken."""
+    if os.environ.get("QUEUE_HOLDS_LOCK"):
+        return None
+    import fcntl
+    lk = open("/tmp/queue.lock", "a")
+    fcntl.flock(lk, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+    return lk
+
+
+DEVBUILDS = os.environ.get("PERF_DEVBUILDS", "/p/bw/rels/devbuilds")
+BUILD_REPO = os.environ.get("PERF_BUILD_REPO", "/p/bw/wt-switches")   # the repository whose objects a --commit build checks out
+
+
+def _git(repo, *args, check=True):
+    r = subprocess.run(["git", "-C", repo] + list(args), capture_output=True, text=True)
+    if check and r.returncode != 0:
+        sys.exit(f"git {' '.join(args)}: {r.stderr.strip()}")
+    return r.stdout.strip()
+
+
+def cmd_build(a):
+    r"""Dev build (the release container and flags, llama-server / llama-cli / llama-perplexity only) of a worktree as it is (--tree) or of a commit
+    (--commit: a temporary worktree, removed after the build; ccache keeps the objects). The binaries go to DEVBUILDS/NAME with BUILD_INFO
+    (commit, branch, patch). Then the regress cell (restricted OLMoE, pinned knobs, against the best binary) unless --no-regress: every build is checked.
+    --machine pc3: the same commit built on the W10 laptop (git bundle over ssh, its release-out\winbuild.bat) into N:\NAME (no regress there)."""
+    name = a.name
+    log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "logs", f"build-{name}" + ("" if a.machine == "pc1" else f"-{a.machine}") + ".log")
+    if a.machine == "pc3":
+        rev = _git(a.repo, "rev-parse", a.commit or "HEAD") if not a.tree else _git(a.tree, "rev-parse", "HEAD")
+        short = rev[:9]; ref = f"run-build-{name}"; bundle = f"/tmp/{ref}.bundle"
+        repo = a.tree or a.repo
+        _git(repo, "branch", "-f", ref, rev)
+        r = subprocess.run(["git", "-C", repo, "bundle", "create", bundle, ref, "--not", a.w10_base], capture_output=True, text=True)
+        _git(repo, "branch", "-D", ref)
+        if r.returncode != 0:
+            sys.exit(f"bundle: {r.stderr.strip()}")
+        host = "o@192.168.1.2"
+        with open(log, "w") as lf:
+            subprocess.run(["scp", "-q", bundle, f"{host}:C:/Users/o/{ref}.bundle"], stdout=lf, stderr=subprocess.STDOUT, check=True)
+            cmd = (f"cd /d N:\\llama.cpp && git fetch -q C:\\Users\\o\\{ref}.bundle {ref} && git checkout -q FETCH_HEAD && call N:\\llama.cpp\\release-out\\winbuild.bat"
+                   f" && (if not exist N:\\{name} mkdir N:\\{name}) && xcopy /q /y N:\\llama.cpp\\build-cuda-dl\\bin\\* N:\\{name}\\"
+                   f" && copy /y N:\\admit-pin-b12353-10d6c1e5c\\*140*.dll N:\\{name}\\ && echo PKG_OK {short}")
+            subprocess.run(["ssh", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=120", host, cmd], stdout=lf, stderr=subprocess.STDOUT)
+        os.remove(bundle)
+        ok = f"PKG_OK {short}" in open(log).read()
+        print(f"build {name} on pc3 ({short}): {'OK, N:\\' + name if ok else 'FAILED, see ' + log}", flush=True)
+        sys.exit(0 if ok else 1)
+    tmp = None
+    if a.commit:
+        rev = _git(a.repo, "rev-parse", a.commit)
+        tmp = f"/p/bw/build-tmp-{name}"
+        if os.path.exists(tmp):
+            _git(a.repo, "worktree", "remove", "--force", tmp, check=False)
+        _git(a.repo, "worktree", "add", "--detach", tmp, rev)
+        W = tmp
+    else:
+        W = os.path.abspath(a.tree)
+    B = os.path.join(W, "build-dev")
+    gitc = _git(W, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    os.makedirs(B, exist_ok=True); os.makedirs("/p/bw/rels/ccache", exist_ok=True)
+    gtd = "--gcc-install-dir=/opt/rh/gcc-toolset-15/root/usr/lib/gcc/x86_64-redhat-linux/15"
+    inner = ("source /opt/rh/gcc-toolset-13/enable && git config --global --add safe.directory '*' && SLD='-static-libstdc++ -static-libgcc' && "
+             f"cmake -S {W} -B {B} -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS={gtd} -DCMAKE_CXX_FLAGS={gtd} "
+             "-DCMAKE_CUDA_HOST_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/gcc -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON "
+             "-DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_CUDA=ON -DGGML_CUDA_NCCL=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=ON "
+             "-DOPENSSL_USE_STATIC_LIBS=ON -DOPENSSL_ROOT_DIR=/opt/openssl -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_UI=OFF "
+             "-DCMAKE_EXE_LINKER_FLAGS=\"$SLD\" -DCMAKE_SHARED_LINKER_FLAGS=\"$SLD\" -DCMAKE_MODULE_LINKER_FLAGS=\"$SLD\" && "
+             f"cmake --build {B} -j 8 --target llama-server llama-cli llama-perplexity")
+    docker = ["nice", "-n", "19", "docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-e", "CCACHE_DIR=/ccache",
+              "-e", "CCACHE_MAXSIZE=40G", "-e", f"CCACHE_BASEDIR={W}", "-e", "CCACHE_NOHASHDIR=1", "-v", "/p/bw/rels/ccache:/ccache", "-v", f"{W}:{W}",
+              "-v", f"{gitc}:{gitc}:ro", "llama-rel-el8", "bash", "-c", inner]
+    lk = queue_lock(wait=True)   # no build while a benchmark runs (a build takes the CPU the measurements use)
+    t0 = time.time()
+    with open(log, "w") as lf:
+        rc = subprocess.run(docker, stdout=lf, stderr=subprocess.STDOUT).returncode
+    del lk
+    binp = os.path.join(B, "bin")
+    if rc != 0 or not os.path.exists(os.path.join(binp, "llama-server")):
+        errs = [l for l in open(log, errors="replace").read().splitlines() if " error" in l or "Error " in l or "undefined" in l][:8]
+        print(f"build {name}: FAILED (exit {rc}) after {time.time() - t0:.0f} s, log {log}" + "".join("\n  " + e[:220] for e in errs), flush=True)
+        if tmp:
+            _git(a.repo, "worktree", "remove", "--force", tmp, check=False)
+        sys.exit(1)
+    if not os.path.exists(os.path.join(binp, "libomp.so")) and os.path.exists("/p/bw/wt-learn/build-dev/bin/libomp.so"):
+        shutil.copy2(os.path.realpath("/p/bw/wt-learn/build-dev/bin/libomp.so"), os.path.join(binp, "libomp.so"))   # the build links it dynamically
+    srcs = ["src", "common", "include", "ggml", "tools/server"]
+    patch = subprocess.run(["git", "-C", W, "diff", "HEAD", "--"] + srcs, capture_output=True).stdout
+    with open(os.path.join(binp, "BUILD_INFO"), "w") as f:
+        f.write(f"commit={_git(W, 'rev-parse', '--short', 'HEAD')}\nbranch={_git(W, 'rev-parse', '--abbrev-ref', 'HEAD')}\npatch={hashlib.sha1(patch).hexdigest()[:8] if patch else 0}\n")
+    dst = os.path.join(DEVBUILDS, name)
+    if os.path.islink(dst):
+        os.remove(dst)
+    elif os.path.exists(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(binp, dst, symlinks=True)
+    if tmp:
+        _git(a.repo, "worktree", "remove", "--force", tmp, check=False)
+    print(f"build {name}: OK in {time.time() - t0:.0f} s -> {dst} ({open(os.path.join(dst, 'BUILD_INFO')).read().split()[0]})", flush=True)
+    if not a.no_regress:
+        r = subprocess.run([sys.executable, os.path.abspath(__file__), "regress", dst, "--wait"])
+        sys.exit(r.returncode)
+
+
+HUGE_NR = "/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages"
+HUGE_FREE = "/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages"
+
+
+def _sudo_write(path, val):
+    r = subprocess.run(["sudo", "-n", "tee", path], input=str(val), capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"hugepool: writing {path} needs root (sudo -n): {r.stderr.strip()}")
+
+
+def cmd_hugepool(a):
+    """The 1 GiB huge-page pool behind the pinned-weights cache (was resident_pin.sh). mount [SIZE like 100g | MODEL.gguf ...]: reserve the pool
+    (drop caches, compact, retry until it stops growing) and mount hugetlbfs at /mnt/huge1g (HUGEFS_MOUNT); with no size the most the machine can
+    spare (RAM minus max(24 GiB, 20%), HUGEFS_MARGIN_GIB). unmount: delete the cached models, unmount, give the pages back. status: pool and mount.
+    Root only through sudo -n for the pool and the mount. Start the fork with GGML_CUDA_HUGEFS=/mnt/huge1g (queue/env.sh does when it is mounted)."""
+    mnt = os.environ.get("HUGEFS_MOUNT", "/mnt/huge1g")
+    if not os.path.exists(HUGE_NR):
+        sys.exit(f"this kernel has no 1 GiB huge pages ({HUGE_NR} missing)")
+    rd = lambda p: int(open(p).read().strip())
+    if a.action == "status":
+        print(f"pool {rd(HUGE_NR)} x 1 GiB, {rd(HUGE_FREE)} free; mount {mnt}: {'yes' if os.path.ismount(mnt) else 'no'}"
+              + (f", cached files: {', '.join(sorted(os.listdir(mnt)))}" if os.path.ismount(mnt) and os.listdir(mnt) else ""))
+        return
+    if a.action == "unmount":
+        if os.path.ismount(mnt):
+            for f in os.listdir(mnt):
+                try:
+                    os.remove(os.path.join(mnt, f))
+                except OSError:
+                    subprocess.run(["sudo", "-n", "rm", "-f", os.path.join(mnt, f)])
+            subprocess.run(["sudo", "-n", "umount", mnt], check=True)
+        _sudo_write(HUGE_NR, 0)
+        print(f"unmounted: cache files deleted, mount removed, pool {rd(HUGE_NR)} pages")
+        return
+    if "hugetlb_cma" in open("/proc/cmdline").read():
+        sys.exit("the kernel was booted with hugetlb_cma=: those pages cannot be pinned for the GPU, boot without it")
+    total = int([l for l in open("/proc/meminfo") if l.startswith("MemTotal")][0].split()[1]) >> 20
+    margin = int(os.environ.get("HUGEFS_MARGIN_GIB") or max(total // 5, 24))
+    most = total - margin
+    if most <= 0:
+        sys.exit(f"not enough RAM for a pool (total {total} GiB, margin {margin} GiB)")
+    targets = a.what or []
+    if len(targets) == 1 and re.fullmatch(r"\d+[Gg]", targets[0]):
+        want = int(targets[0][:-1])
+        if want > most:
+            print(f"note: {want} GiB is above the computed limit of {most} GiB (RAM {total} GiB, margin {margin} GiB), using your size")
+        most = max(most, want)
+    elif targets:
+        total_b = 0
+        for m in targets:
+            if not os.path.isfile(m):
+                sys.exit(f"no such file: {m}")
+            base = re.sub(r"-\d{5}-of-\d{5}\.gguf$", "", m)
+            parts = sorted(glob.glob(base + "-*-of-*.gguf")) if base != m else [m]
+            total_b += sum(os.path.getsize(p) for p in parts)
+        want = (total_b >> 30) + 2   # the pinned buffer holds at most the whole model, plus slack for alignment
+        if want > most:
+            print(f"the model(s) need {want} GiB but at most {most} GiB can be spared (RAM {total} GiB, margin {margin} GiB): only part of it can stay in the pool")
+            want = most
+    else:
+        want = most
+    have = rd(HUGE_NR)
+    if have < want:
+        print(f"reserving {want} 1 GiB pages (now {have}): dropping the page cache and compacting memory first", flush=True)
+        pc = "/proc/sys/vm/compaction_proactiveness"
+        old_pc = open(pc).read().strip() if os.path.exists(pc) else None
+        if old_pc is not None:
+            _sudo_write(pc, 100)
+        subprocess.run(["sync"]); _sudo_write("/proc/sys/vm/drop_caches", 3)
+        last, idle, tries = have, 0, 0
+        while rd(HUGE_NR) < want and idle < 3 and tries < 12:   # pages a try gets are kept: repeating with compaction in between gets further
+            tries += 1
+            _sudo_write("/proc/sys/vm/compact_memory", 1); _sudo_write(HUGE_NR, want)
+            now = rd(HUGE_NR)
+            print(f"  try {tries}: {now} of {want} pages", flush=True)
+            if now > last:
+                idle = 0
+            else:
+                idle += 1; time.sleep(2)
+            last = now
+        if old_pc is not None:
+            _sudo_write(pc, old_pc)
+    got = rd(HUGE_NR)
+    if got < want:
+        sys.exit(f"only {got} of {want} pages could be allocated (memory too fragmented or too small, even after repeated compaction); free memory and retry, a smaller size may work, or reboot")
+    if not os.path.ismount(mnt):
+        subprocess.run(["sudo", "-n", "mkdir", "-p", mnt], check=True)
+        subprocess.run(["sudo", "-n", "mount", "-t", "hugetlbfs", "-o", f"pagesize=1G,uid={os.getuid()},gid={os.getgid()},mode=0775", "none", mnt], check=True)
+    print(f"pool: {got} x 1 GiB ({rd(HUGE_FREE)} free of RAM {total} GiB, margin {margin} GiB), mount: {mnt}")
+    print(f"start the fork with:  GGML_CUDA_HUGEFS={mnt} llama-server -m ... -lm pin")
+
+
 def cmd_regress(a):
     """One fast cell (OLMoE with a restricted cache through the chat endpoint, 500 tokens, a few seconds per run): the build in DIR against the best build
     kept in BEST/current, alternating, every run in run-history.csv (campaign regress-<label>-<time>). REGRESSION (exit 1): the median is below --tol x
@@ -1849,9 +2046,8 @@ def cmd_regress(a):
     cand = os.path.abspath(a.dir or os.path.join(os.getcwd(), "build-dev", "bin"))
     if not os.path.exists(os.path.join(cand, "llama-server")):
         sys.exit(f"regress: no llama-server in {cand}")
-    lock = open("/tmp/queue.lock", "a")
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | (0 if a.wait else fcntl.LOCK_NB))
+        lock = queue_lock(wait=a.wait)   # none inside a queue task: the daemon holds the lock for it
     except OSError:
         print(f"regress: SKIPPED, a benchmark queue holds /tmp/queue.lock. Later: run.py regress {cand} --wait", flush=True)
         sys.exit(3)
@@ -2038,11 +2234,22 @@ if __name__ == "__main__":
     rg.add_argument("--rebase", action="store_true", help="after the run this build becomes the best whatever the numbers (the reference of a new line)")
     rg.add_argument("--wait", action="store_true", help="wait for a running benchmark queue (/tmp/queue.lock) instead of skipping")
     rg.add_argument("--verbose", action="store_true", help="show the output of the runs")
+    bd = sp.add_parser("build", help="dev build of a worktree (--tree) or a commit (--commit, temporary worktree) into DEVBUILDS/NAME, then the regress cell; --machine pc3 builds on the W10 laptop")
+    bd.add_argument("name")
+    bd.add_argument("--tree", help="worktree to build as it is (uncommitted changes included, BUILD_INFO patch= marks them)")
+    bd.add_argument("--commit", help="commit to build in a temporary worktree of --repo")
+    bd.add_argument("--repo", default=BUILD_REPO)
+    bd.add_argument("--machine", default="pc1", choices=["pc1", "pc3"])
+    bd.add_argument("--w10-base", default="6846d4803", help="a commit the W10 repository has: the bundle carries only what is newer")
+    bd.add_argument("--no-regress", action="store_true", help="skip the regress cell after the build")
+    hp = sp.add_parser("hugepool", help="the 1 GiB huge-page pool for the pinned-weights cache: mount [SIZE|MODEL...] | unmount | status (was resident_pin.sh)")
+    hp.add_argument("action", choices=["mount", "unmount", "status"])
+    hp.add_argument("what", nargs="*", help="mount: a size like 100g or model file(s); nothing = the most the machine can spare")
     s_ = sp.add_parser("show")
     s_.add_argument("-t", "--test")
     s_.add_argument("-b", "--build")
     s_.add_argument("--runs", action="store_true")
     a = ap.parse_args()
     {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "hugepool": cmd_hugepool,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
