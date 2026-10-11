@@ -190,6 +190,27 @@ used less. Decode after the prompt then starts with the prompt's experts in VRAM
 43% -> 55%; prompt processing -1%; short answers and chat unchanged.
 `LLAMA_MOE_CACHE_ADOPT` = share of a layer's slots that one prompt batch may replace (default 1.0, 0 = off).
 
+### Global expert pool
+
+The expert cache used to give every layer the same fixed number of slots. Some layers spread their traffic over many experts, others use a few very often, so part of every layer's share held cold experts while busier layers missed. Now the cache of a GPU is one pool of blocks per expert size (one block = one expert's up, gate and down weights). No block belongs to a layer: a missed expert takes a free block, or the block of the lowest-scored cached expert of any layer with the same expert size. Layers end up with as many experts as earn their place (OLMoE, 35% of the experts in VRAM: 17 to 26 per layer instead of 22 each). Scores of different layers are compared on one scale (the busiest expert of any layer); per-layer scales starved layers with a few hot experts.
+
+It helps most where VRAM is tight, which is where 8 and 16 GB cards are. Same binary, `--moe pool=0` (fixed slots per layer) vs the default pool, 400-500 generated tokens, n=3-4:
+
+| model, share of experts that fit in VRAM | t/s fixed slots | t/s pool | cache hits fixed slots | cache hits pool |
+|---|---|---|---|---|
+| Qwen3.8-Flash-Next (12-layer test copy), 20% | 132.5 | 137.3 (+3.6%) | 80.2% | 83.1% |
+| Qwen3.8-Flash-Next (12-layer test copy), 25% | 138.6 | 141.5 (+2.1%) | 83.6% | 85.5% |
+| MiMo-V2.6-Flash 3-bit (12-layer test copy), 25% | 94.9 | 97.8 (+3.1%) | 71.7% | 73.4% |
+| OLMoE-1B-7B, 35% | 177.5 | 181.7 (+2.4%) | 78.3% | 79.3% |
+| GLM-5.3-Flash 3.0-bit, all free VRAM (2x RTX 3090), n=2 | 20.31 | 20.23 (same) | 72.9% | 73.3% |
+| MiMo-V2.6-Flash 3-bit, all free VRAM (2x RTX 3090), n=2 | 32.70 | 32.44 (same) | 83.6% | 83.8% |
+
+With most of the model in VRAM there is little to gain and nothing is lost within noise. The test copies keep the first 12 layers of the real model so a run takes minutes. `--moe pool=0` turns the pool off; with the predictor on (`--moe predict=1`) the fixed slots are used.
+
+### Hot layers on the GPU with the slower link
+
+With two GPUs where one sits in a slower slot (here x4 at 6.4 GB/s next to x16 at 25.5 GB/s), every cache miss on the slow card costs four times as long to upload. `--moe layer-heat=1` puts the layers whose experts are used most unevenly (their caches hit most) on the slower card and the rest on the faster one, with the same number of layers per card. It reads the usage counts saved by earlier runs (`~/.cache/llama.cpp/moe-state.ini`), so the first run of a model is placed as before. GLM-5.3-Flash 3.0-bit, 2x RTX 3090, n=2: 20.44 -> 20.62 t/s, cache hits 74.1% -> 75.6%. Off by default until a longer test confirms it.
+
 ### MTP (multi-token prediction)
 
 Added in release b11327: Qwen3.8-Flash-Next MTP from PR [#28243](https://github.com/ggml-org/llama.cpp/pull/28243)
