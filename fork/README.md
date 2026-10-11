@@ -16,6 +16,5 @@ Engine code stays where the build needs it: `src/llama-moecache-fork.*`, `src/ll
 | `cloud/`, `iobench/`, `charts/` | rented-box helpers, disk I/O micro-benchmarks, chart scripts |
 | `docs/` | fork documentation: [`fork-knobs.md`](docs/fork-knobs.md) (every flag, `--moe` setting and environment variable), the cache refactor design spec |
 | `experiments/` | one directory per experiment: README (question, method, tables, decision), scripts, small sample data |
-| `data/` | small research outputs kept for reference (`embhot.csv`) |
 
 Run everything through `python3 fork/run.py ...` from the repository root.
