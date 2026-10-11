@@ -5148,12 +5148,12 @@ bool llama_moe_cache_get_info_fork(struct llama_tuning_info * info) {
 // at about 90, a laptop on a slow link and fast RAM higher still, a 4x16 GPU server with slow RAM lower. The decode batches (1 token) and the speculative
 // verify batches (a few tokens) must stay on the cache path, so never go below about 8.
 // Default 31 is conservative for this machine; deriving it from the probes (link GB/s, CPU GB/s, measured decode step and layer times) is planned.
-// --moe max-batch=auto: the limit is computed (see llama_moe_cache_crossover_fork); a number fixes it; unset = 31 until the computation has been
-// A/B tested as the default. The graph node budget is sized for the cap, so the computed value may move between 8 and the cap without a rebuild.
+// --moe max-batch: unset or auto = the limit is computed at the first decode (crossover below; 31 until then, and 31 if the probe fails); a number fixes it.
+// The graph node budget is sized for the cap, so the computed value may move between 8 and the cap without a rebuild.
 static std::atomic<int64_t> g_mb_auto { 31 };      // the computed limit
 static std::atomic<int64_t> g_mb_probe { -1 };     // >= 0 while the start-up probe forces the cache path for up to this many tokens
 static bool mb_is_auto() {
-    static const bool a = [] { const char * e = moe_opt("max-batch"); return e && strcmp(e, "auto") == 0; }();
+    static const bool a = [] { const char * e = moe_opt("max-batch"); return !e || strcmp(e, "auto") == 0; }();
     return a;
 }
 static int64_t mb_fixed() {
@@ -5173,7 +5173,7 @@ int64_t llama_moe_cache_max_batch_fork() {
     if (mb_fixed() >= 0) {
         return mb_fixed();
     }
-    return mb_is_auto() ? g_mb_auto.load(std::memory_order_relaxed) : 31;
+    return g_mb_auto.load(std::memory_order_relaxed);
 }
 
 // The streaming path costs a(n) + n*b: a(n) uploads every distinct expert the batch touches, over the offload GPU's link (prompt batches are
