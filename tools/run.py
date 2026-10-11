@@ -148,6 +148,7 @@ RUN_COLS += ["up_ms_expert", "up_gbs_eff"]   # from the engine log: mean upload 
 RUN_COLS += ["pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb"]   # nvidia-smi dmon over the server run: GB host->device during the request (all GPUs; the server is already loaded), the peak of any GPU in a second, the mean of the seconds that moved data, GB device->host
 RUN_COLS += ["ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1"]   # from cache.csv (admit-pred builds): mean RAM traffic share of DDR_GBS, mean share of uploads that ran while the CPU read experts, mean slowdown of CPU expert phases with an upload in flight, the first predicted layer ahead per link at the end
 RUN_COLS += ["ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow"]   # hits an uploaded expert actually got before its eviction, per link (cache.csv histogram 0/1/2/3/4-5/6-10/11+; mean with bucket midpoints), the share with no hit and with 4 or more, and the mean steps it stayed cached
+RUN_COLS += ["t_full_pw"]   # time to full power: seconds from the start of the GPU log (the server start) until each GPU first draws >= 90% of its own peak (1 s average), one value per GPU in index order; the load phase is the time the cards are not at full power
 RUN_COLS += ["pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct"]   # power of the request window, one value per GPU in index order (nvidia-smi, --gpulog): mean W, peak W (1 s average), peak W (instantaneous), energy of all GPUs in Wh, % of samples at the software power cap
 RUN_COLS += ["vram_mib"]   # GPU memory in use at the end of the run, all GPUs together (nvidia-smi memory.used)
 RUN_COLS += ["endpoint"]
@@ -509,6 +510,20 @@ def gpu_sampler(build, pid=None):
                 PROCSTAT.update(pw_avg="/".join("%.0f" % v[0] for v in win.values()), pw_max="/".join("%.0f" % v[1] for v in win.values()),
                                 pw_inst_max="/".join("%.0f" % v[2] for v in win.values()), energy_wh="%.3f" % sum(v[3] for v in win.values()),
                                 cap_pct="/".join("%.0f" % v[4] for v in win.values()))
+        tfp = {}
+        for g in sorted({r[0] for r in rows}):   # time to full power per GPU, over the whole log
+            r = [x for x in rows if x[0] == g and x[1].replace(".", "").isdigit()]
+            if len(r) < 2:
+                continue
+            peak = max(float(x[1]) for x in r)
+            if peak < 100:
+                continue
+            for x in r:
+                if float(x[1]) >= 0.9 * peak:
+                    tfp[g] = float(x[-1]) - t0
+                    break
+        if tfp:
+            PROCSTAT.update(t_full_pw="/".join("%.1f" % v for v in tfp.values()))
         for g in sorted({r[0] for r in rows}):
             r = [x for x in rows if x[0] == g and x[2].replace(".", "").isdigit() and x[5].isdigit()]
             b = [x for x in r if int(x[5]) >= 20]   # busy samples: idle and ramp samples would set the minimum
@@ -1578,7 +1593,7 @@ def cmd_bench(a):
     TEMPLATED = a.templated
     CLI_EXE = a.cli_exe
     PERFPROF = a.perf_prof
-    GPULOG = a.gpulog
+    GPULOG = a.gpulog or not getattr(a, "no_gpulog", False)   # on by default: the power numbers (pw_*, energy_wh, t_full_pw) are part of every run; --no-gpulog turns it off
     WRAP[:] = shlex.split(a.wrap) if getattr(a, "wrap", None) else []
     KEEP_LOOPS = a.keep_loops
     set_overrides(a)
@@ -1990,9 +2005,9 @@ if __name__ == "__main__":
     b.add_argument("--templated", action="store_true", help="chat tests: render the model's chat template with the server's /apply-template and send the text to /completion (the loop guard then applies)")
     b.add_argument("--cli-exe", default="llama-cli", help="tool for --machine runs: llama-cli (conversation) or llama-completion (raw prompt, the same prompt as the server tests)")
     b.add_argument("--perf-prof", action="store_true", help="perf record the server during each run (499 Hz, user space) into tools/bench/perf/<time>-<build>.txt (top symbols)")
-    b.add_argument("--gpulog", action="store_true", help="sample GPU power/clocks/temperature and CPU use at 5 Hz during the runs into tools/bench/gpulog/ (default: off)")
+    b.add_argument("--gpulog", action="store_true", help="sample GPU power/clocks/temperature and CPU use at 5 Hz during the runs into tools/bench/gpulog/ (default: ON since 2026-10-11; --no-gpulog turns it off)")
     b.add_argument("--wrap", default=None, help="start the server under this command, e.g. 'nsys profile --trace=cuda --sample=none -o /tmp/x --force-overwrite=true' (a profiler; one cell per profile)")
-    b.add_argument("--no-gpulog", action="store_true", help=argparse.SUPPRESS)
+    b.add_argument("--no-gpulog", action="store_true", help="no GPU/CPU sampling (power columns stay empty)")
     b.add_argument("--redo-stock", action="store_true", help="run stock cells even when 4 or more valid runs of that stock build, model and chat test (game4c / edit4c) are already recorded")
     b.add_argument("--cold-hot", action="store_true", help="every prompt (4 for game4c/edit4c) runs twice per cell, cold (a new empty state file) then hot (the state the first wrote); the first prompt also a third run hot2 (the state after that) to check the state has converged; campaigns NAME-cold, NAME-hot, NAME-hot2; no warm-up")
     b.add_argument("--clean-state", action="store_true", help="every cell (build and model) starts from an EMPTY learned state: repetition 0 is the cold start, the next ones continue from its state (a state file of its own under /tmp/runstate, the user's moe-state.ini is never touched)")
