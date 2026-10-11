@@ -2559,14 +2559,20 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
 }
 
 // ---- compute alias ---------------------------------------------------------------------------------------------------------------------------
-// --moe alias=1: the scheduler places the compute graphs of a GPU at the start of that GPU's expert pool buffer (the first blocks of its biggest
+// --moe alias (default 1, 0 = off): the scheduler places the compute graphs of a GPU at the start of that GPU's expert pool buffer (the first blocks of its biggest
 // size class) instead of a buffer of its own. After each graph is allocated, the blocks its tensors reach are taken from the cache (their experts
 // evicted, uploads into them awaited) and lent to it; at the next step (a sync point) the blocks above what the last graph needed come back. A
 // decode graph needs a few blocks, a big prompt batch many, only while it runs: no buffer is allocated or resized, so the prompt ubatch is
 // bounded by the pool, not by a separate compute buffer.
+// default on (with the block pool); --moe alias=0 keeps the scheduler's own compute buffers
+static std::atomic<bool> g_alias_dropped { false };   // the pool could not lend even the smallest worst-case graph: the scheduler keeps its own buffers
 static bool alias_on() {
-    static const bool on = [] { const char * e = moe_opt("alias"); return e && atoi(e) != 0; }();
-    return on;
+    static const bool on = [] { const char * e = moe_opt("alias"); return !e || atoi(e) != 0; }();
+    return on && !g_alias_dropped.load(std::memory_order_relaxed);
+}
+
+void llama_moe_cache_alias_drop_fork() {
+    g_alias_dropped = true;
 }
 
 std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork() {
@@ -2579,6 +2585,54 @@ std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork() {
         out.push_back({ ap.buf, ap.dev, (size_t) ap.n * ap.B });   // never the zero block behind the class
     }
     return out;
+}
+
+// CUDA scratch per batch token of the biggest expert matmul (see llama_moe_cache_alias_fork): experts per token x padded input width x 2 bytes
+static size_t alias_tok_bytes(moe_cache * mc, moe_cache::alias_pool & ap) {
+    if (ap.tok_bytes == 0) {
+        for (const auto & l : mc->layers) {
+            const int64_t n_used = std::max<int64_t>(1, mc->n_expert_used);
+            for (const ggml_tensor * t : { l.pub.up_src, l.pub.gate_src, l.pub.down_src }) {
+                ap.tok_bytes = std::max(ap.tok_bytes, (size_t) n_used * (size_t) GGML_PAD(t->ne[0], 512) * 2);
+            }
+        }
+    }
+    return ap.tok_bytes;
+}
+
+// After a worst-case reserve: do the graph, its scratch and the prefetch staging slots fit in what the pool lends? (graph: needed, stage: optional)
+llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
+    llama_moe_alias_fit_fork fit;
+    moe_cache * mc = g_cache;
+    if (!mc || !alias_on() || mc->alias.empty()) {
+        return fit;
+    }
+    for (auto & ap : mc->alias) {
+        size_t peak = 0;
+        for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+            ggml_backend_t be = ggml_backend_sched_get_backend(sched, i);
+            if (ggml_backend_get_device(be) == ap.dev) { peak = ggml_backend_sched_graph_peak(sched, be); }
+        }
+        const size_t cap     = (size_t) ap.n * ap.B;
+        const size_t scratch = ap.cuda_dev >= 0 || strncmp(ggml_backend_dev_name(ap.dev), "CUDA", 4) == 0
+                             ? GGML_PAD((size_t) n_tokens * alias_tok_bytes(mc, ap), (size_t) 2 << 20) : 0;
+        const size_t base    = GGML_PAD(GGML_PAD(peak, 256) + scratch, 256);
+        fit.cap  = std::min(fit.cap ? fit.cap : cap, cap);
+        fit.need = std::max(fit.need, base);
+        if (base > cap) {
+            fit.graph = false;
+        }
+        if (ap.dev == mc->link_dev[0]) {
+            const size_t stage = ggml_backend_sched_prefetch_slot_bytes(sched) * (size_t) std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
+            if (stage > 0 && base + stage > cap) {
+                fit.stage = false;
+                fit.need  = std::max(fit.need, base + stage);
+            } else {
+                fit.need  = std::max(fit.need, base + stage);
+            }
+        }
+    }
+    return fit;
 }
 
 void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
@@ -2609,15 +2663,7 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         }
         size_t scratch = 0;
         if (ap.cuda_dev >= 0) {
-            if (ap.tok_bytes == 0) {
-                for (const auto & l : mc->layers) {
-                    const int64_t n_used = std::max<int64_t>(1, mc->n_expert_used);
-                    for (const ggml_tensor * t : { l.pub.up_src, l.pub.gate_src, l.pub.down_src }) {
-                        const size_t k_pad = (size_t) GGML_PAD(t->ne[0], 512);
-                        ap.tok_bytes = std::max(ap.tok_bytes, (size_t) n_used * k_pad * 2);
-                    }
-                }
-            }
+            alias_tok_bytes(mc, ap);
             const size_t asked = scratch_fn(ap.cuda_dev, nullptr, 0);   // what the previous graph asked for, fitting or not
             ap.hwm = std::max(ap.hwm, asked);
             if (ap.last_n > 0 && ap.last_n < 64) {
@@ -2637,11 +2683,25 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             ap.last_scr = scratch;
         }
         const size_t peak_al = GGML_PAD(peak, 256);
-        const int32_t need_all = std::min<int32_t>(ap.n, (int32_t) ((peak_al + scratch + ap.B - 1) / ap.B));
+        // prefetch overlap: the staging slots of the prompt batch (full expert tensors uploaded ahead on a second stream) are lent blocks too,
+        // after the graph and its scratch; only on the GPU that prompt batches are offloaded to
+        size_t stage = 0;
+        const size_t stage_off = GGML_PAD(peak_al + scratch, 256);
+        if (ap.dev == mc->link_dev[0]) {
+            stage = ggml_backend_sched_prefetch_slot_bytes(sched) * (size_t) std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
+        }
+        const int32_t need_all = std::min<int32_t>(ap.n, (int32_t) ((stage_off + stage + ap.B - 1) / ap.B));
         ap.want = need_all;
         if (ap.cuda_dev >= 0) {
-            const size_t cap = (size_t) need_all * ap.B > peak_al ? (size_t) need_all * ap.B - peak_al : 0;
-            scratch_fn(ap.cuda_dev, cap > 0 ? (char *) ggml_backend_buffer_get_base(ap.buf) + peak_al : nullptr, cap);
+            scratch_fn(ap.cuda_dev, scratch > 0 ? (char *) ggml_backend_buffer_get_base(ap.buf) + peak_al : nullptr, scratch);
+        }
+        if (ap.dev == mc->link_dev[0]) {
+            // the staging slots come only from lent blocks: if the class cannot lend them, this graph runs without prefetch (never a new buffer)
+            if (stage > 0 && (size_t) need_all * ap.B >= stage_off + stage) {
+                ggml_backend_sched_set_prefetch_region(sched, ap.buf, stage_off, stage, true);
+            } else {
+                ggml_backend_sched_set_prefetch_region(sched, nullptr, 0, 0, true);
+            }
         }
         const int32_t need = need_all;
         static const bool dbg = moe_log_has("a");   // --moe log=a: the compute alias per graph
@@ -2881,7 +2941,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 384) * 1024 * 1024;
             // --prefetch-experts-slots: the scheduler lazily allocates N full expert
             // tensors on the device big batches are offloaded to
-            if (prefetch_slots >= 2) {
+            if (prefetch_slots >= 2 && !alias_on()) {   // with the compute alias the staging slots are lent blocks: no permanent reserve
                 if (model.dev_offload < model.devices.size() && dev == model.devices[model.dev_offload].dev) {
                     size_t max_tensor = 0;
                     for (const auto & c : all) {

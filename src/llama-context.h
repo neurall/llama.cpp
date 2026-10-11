@@ -68,6 +68,7 @@ struct llama_context {
     // fork: --moe alias=1: put the GPUs' compute graphs into the expert pool buffers of moe_alias_bufs (after every scheduler creation)
     void apply_moe_alias();
     std::vector<llama_moe_alias_buf_fork> moe_alias_bufs;
+    bool moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size_t need, size_t cap);
 
     void synchronize();
 

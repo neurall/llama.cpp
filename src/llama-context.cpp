@@ -884,6 +884,7 @@ bool llama_context::swap_layers_fork(int a, int b) {
 }
 
 // fork: --moe alias=1: the GPUs' compute graphs go into the expert pool buffers (llama_moe_cache_alias_fork lends the blocks they reach)
+bool llama_context::moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size_t need, size_t cap) {
 void llama_context::apply_moe_alias() {
     for (const auto & ab : moe_alias_bufs) {
         for (auto & be : backends) {
@@ -947,6 +948,15 @@ void llama_context::sched_reserve() {
     int n_input_tensors_pp = -1;
 
     int n_splits_tg        = -1;
+    // prefetch overlap: --prefetch-experts-slots / --moe pf-slots; unset (-1) = 3 staging slots (they are only filled when expert weights are
+    // host-resident and a prompt batch computes them on a GPU, so there is nothing to allocate otherwise); 0 = off
+    {
+        int n = cparams.prefetch_experts_slots;
+        if (n < 0) {
+            n = 3;
+        }
+        ggml_backend_sched_set_prefetch_experts_slots(sched.get(), n);
+    }
     int n_nodes_tg         = -1;
     int n_inputs_tg        = -1;
     int n_input_tensors_tg = -1;
@@ -1028,6 +1038,12 @@ void llama_context::sched_reserve() {
                     backend_buf_exp_size[i] / 1024.0 / 1024.0);
         }
     }
+            if (!gf && !moe_alias_bufs.empty()) {   // the graph does not fit in the lent blocks: smaller micro-batch, or the alias off
+                if (moe_alias_shrink_fork(false, true, 0, 0)) {
+                    sched_reserve();
+                    return;
+                }
+            }
 
     {
         const bool diff = n_nodes_pp != n_nodes_tg || n_splits_pp != n_splits_tg ||
@@ -1078,6 +1094,14 @@ void llama_context::synchronize() {
     }
 
     // get a more accurate load time, upon first eval
+    if (!moe_alias_bufs.empty() && !model.hparams.no_alloc) {
+        const llama_moe_alias_fit_fork fit = llama_moe_cache_alias_fit_fork(sched.get(), (int32_t) n_tokens);
+        if (moe_alias_shrink_fork(fit.graph, fit.stage, fit.need, fit.cap)) {
+            sched_reserve();
+            return;
+        }
+    }
+
     if (n_queued_tokens > 0 && !has_evaluated_once) {
         t_load_us = ggml_time_us() - t_start_us;
         has_evaluated_once = true;
@@ -2335,7 +2359,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     if (cparams.moe_cache && !cparams.moe_cache_started && !moe_cache_defer) {
         cparams.moe_cache_started = true;
         const char * alias_opt = llama_moe_get_opt("alias");
-        const bool   alias     = alias_opt && atoi(alias_opt) != 0;
+        const bool   alias     = !alias_opt || atoi(alias_opt) != 0;   // default on; the pool decides whether there is anything to lend
         if (alias) {   // the compute buffers go back to the devices first: the pool is sized with that memory and lends it back to the graphs
             for (auto & be : backends) {
                 if (ggml_backend_dev_type(ggml_backend_get_device(be.get())) == GGML_BACKEND_DEVICE_TYPE_GPU) {
@@ -2343,7 +2367,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 }
             }
         }
-        llama_moe_cache_init_fork(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots, cparams.moe_cache_window,
+        llama_moe_cache_init_fork(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots < 0 ? 3 : cparams.prefetch_experts_slots, cparams.moe_cache_window,
                 cparams.moe_predict, cparams.moe_predict_train);
         if (alias) {
             moe_alias_bufs = llama_moe_cache_alias_buffers_fork();   // applied to every scheduler created from now on (sched_reserve makes a new one)
@@ -4642,7 +4666,7 @@ llama_context_params llama_context_default_params() {
         /*.op_offload                  =*/ true,
         /*.swa_full                    =*/ true,
         /*.kv_unified                  =*/ false,
-        /*.prefetch_experts_slots      =*/ 0,
+        /*.prefetch_experts_slots      =*/ -1,
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
         /*.ctx_other                   =*/ nullptr,

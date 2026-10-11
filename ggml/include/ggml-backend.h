@@ -387,6 +387,13 @@ extern "C" {
     GGML_API void   ggml_backend_sched_set_external_buffer(ggml_backend_sched_t sched, ggml_backend_t backend, ggml_backend_buffer_t buffer, size_t offset, size_t capacity);
     // fork: bytes of the backend's compute buffer the current allocated graph uses (what the graph allocator placed there)
     GGML_API size_t ggml_backend_sched_graph_peak(ggml_backend_sched_t sched, ggml_backend_t backend);
+    // fork: prefetch overlap: N >= 2 staging slots for full expert tensors uploaded on a second stream while the previous split computes (0 = off)
+    GGML_API void   ggml_backend_sched_set_prefetch_experts_slots(ggml_backend_sched_t sched, int n_slots);
+    GGML_API int    ggml_backend_sched_get_prefetch_experts_slots(ggml_backend_sched_t sched);
+    // fork: bytes of one staging slot for the current graph (0: nothing is staged)
+    GGML_API size_t ggml_backend_sched_prefetch_slot_bytes(ggml_backend_sched_t sched);
+    // fork: staging slots are ranges of `buffer` the host owns (offset, capacity bytes); buffer == NULL: the scheduler allocates them
+    GGML_API void   ggml_backend_sched_set_prefetch_region(ggml_backend_sched_t sched, ggml_backend_buffer_t buffer, size_t offset, size_t capacity, bool only);
 
     // Set a callback to be called for each resulting node during graph compute
     GGML_API void                 ggml_backend_sched_set_eval_callback(ggml_backend_sched_t sched, ggml_backend_sched_eval_callback callback, void * user_data);

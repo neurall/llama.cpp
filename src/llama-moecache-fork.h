@@ -114,6 +114,11 @@ bool    llama_moe_cache_wants_probs_fork();   // --moe policy=r: the gate op of 
 // startup probe: how many reader threads reach 95% of the CPU's RAM read rate (0: not measured)
 int32_t llama_moe_cache_cpu_sat_threads_fork();
 // live cache state for llama_get_tuning_info(): false when the cache is off
+// after a worst-case reserve with the alias: does the graph (+ CUDA scratch) fit in the lent blocks, and the prefetch staging slots too? need / cap in bytes
+struct llama_moe_alias_fit_fork { bool graph = true; bool stage = true; size_t need = 0; size_t cap = 0; };
+llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sched, int32_t n_tokens);
+// the pool cannot lend the smallest worst-case graph: the alias stays off from now on
+void llama_moe_cache_alias_drop_fork();
 bool    llama_moe_cache_get_info_fork(struct llama_tuning_info * info);
 
 // nullptr when the cache is disabled or this tensor has no cached layer
