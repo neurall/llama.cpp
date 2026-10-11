@@ -2333,6 +2333,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     }
     layer_state & ls = mc->layers[it->second.first];
     std::lock_guard<std::mutex> lock(mc->mtx);
+    mc->boot_done = true;   // a GPU prompt batch (this callback only runs for those): the cache is warmed by adoption, the admit boot is over
     // GPU-offloaded prompt batches never reach the CPU observer (moe_obs_cb): count the prompt's
     // experts here (once per expert and batch, on up) for the lifetime usage and the saved profile.
     // Not queued for upload: extra uploads after a long prompt measured slower (they compete with decode)
