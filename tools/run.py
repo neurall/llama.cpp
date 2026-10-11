@@ -1936,7 +1936,18 @@ def cmd_regress(a):
     print(f"regress: PASS, {ratio:.3f} x the best ({med[label]:.2f} against {med[ref]:.2f} t/s)")
 
 
+def _sync_runs_db():
+    """whatever happened to the per-run insert (a locked database, a crash, rows merged in from another machine): at exit runs.db gets every CSV row it lacks"""
+    try:
+        import runlog
+        runlog.sync()
+    except Exception as e:
+        print("runs.db sync:", e, file=sys.stderr)
+
+
 if __name__ == "__main__":
+    import atexit
+    atexit.register(_sync_runs_db)
     if len(sys.argv) > 1 and sys.argv[1] in ("short", "12k", "128k"):  # the old run.py usage: run.py short|12k|128k [--url U]
         sys.argv.insert(1, "prompt")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

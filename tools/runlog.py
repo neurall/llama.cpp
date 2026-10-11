@@ -4,6 +4,7 @@ Every run is stored twice: as a row of tools/bench/run-history.csv (append-only,
 `load` rebuilds the database from the CSV any time.
 
   python3 tools/runlog.py load                     rebuild the database from the CSV
+  python3 tools/runlog.py sync                     add the CSV rows the database lacks (after a git merge of run-history.csv from another machine)
   python3 tools/runlog.py best MODEL [TEST]        per build: runs, consistent best t/s and pp, first and last date (MODEL is a substring of the file name)
   python3 tools/runlog.py runs MODEL [TEST] [BUILD] every run, newest first
   python3 tools/runlog.py import-old [apply]       runs of the old perf.db (archive) that the CSV lacks, appended to the CSV
@@ -99,15 +100,29 @@ def insert_emb(since, ts, hw, build, test):
         return size
     except Exception as e:
         print("embhot:", e, file=sys.stderr); return since
+def read_csv_rows():
+    """(cols, rows as dicts): a duplicate header name (ddr_util, wall_s) keeps its first column, a later non-empty value fills an empty first one; lines whose
+    first field is not a timestamp (merge-conflict markers) are skipped"""
+    with open(CSV, newline="") as f:
+        rd = csv.reader(f); head = next(rd); cols = []
+        for c in head:
+            if c not in cols: cols.append(c)
+        rows = []
+        for row in rd:
+            if not row or not row[0].startswith("20"): continue
+            d = {}
+            for c, v in zip(head, row):
+                if d.get(c) in (None, ""): d[c] = v
+            rows.append(d)
+    return cols, rows
 def load():
     if os.path.exists(DB): os.remove(DB)
     con = connect()
-    n = 0
-    with open(CSV, newline="") as f:
-        rd = csv.DictReader(f); cols = rd.fieldnames
-        ensure(con, cols)
-        for r in rd:
-            con.execute(ins(cols), row_values(r, cols)); n += 1
+    cols, rows = read_csv_rows()
+    ensure(con, cols)
+    for r in rows:
+        con.execute(ins(cols), row_values(r, cols))
+    n = len(rows)
     ensure_emb(con)
     if os.path.exists(EMB):
         with open(EMB, newline="") as f:
@@ -117,6 +132,20 @@ def load():
     archive = os.path.join(HERE, "bench", "archive", "perf-2026-09-30.db")
     if os.path.exists(archive): attach_old(con, archive)
     con.commit(); print(f"{n} runs loaded into {DB}")
+def sync():
+    """append the CSV rows the database lacks (runs that came in by a git merge from another machine); never deletes anything"""
+    con = connect()
+    cols, rows = read_csv_rows()
+    ensure(con, cols)
+    def key(ts, build, test, tps):
+        t = num(tps)
+        return (str(ts), str(build or ""), str(test or ""), None if t is None else round(t, 3))
+    have = {key(*r) for r in con.execute("SELECT ts, build, test, tps FROM runs")}
+    n = 0
+    for r in rows:
+        if key(r.get("ts"), r.get("build"), r.get("test"), r.get("tps")) in have: continue
+        con.execute(ins(cols), row_values(r, cols)); n += 1
+    con.commit(); print(f"{n} CSV rows added to {DB} ({len(rows)} in the CSV)")
 def show(cur):
     rows = cur.fetchall()
     cols = [d[0] for d in cur.description]
@@ -161,6 +190,8 @@ if __name__ == "__main__":
     a = sys.argv[1:]
     if not a or a[0] == "load":
         load()
+    elif a[0] == "sync":
+        sync()
     else:
         if not os.path.exists(DB): load()
         con = connect()
