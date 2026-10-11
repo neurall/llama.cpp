@@ -377,7 +377,7 @@ struct moe_cache {
     uint64_t lv_cycle = 0;         // cycles finished: the candidate order rotates so no candidate always runs first (cold cache)
     int64_t  lv_slice_n = 0;
     double   lv_slice_sum = 0;
-    uint64_t lv_rest_until = 3072; // the first cycle starts after this many decoded tokens: a short session runs on the static defaults
+    uint64_t lv_rest_until = 0;    // the first cycle starts at once (a saved tuner state sets a rest instead); the incumbent runs first, so exploring costs little
     uint64_t lv_rest = 0;          // tokens between cycles: doubles while cycles confirm their decisions
     uint64_t hr_h = 0, hr_m = 0;   // hits and misses at the last hit-rate window boundary (regime-change trigger)
     double   hr_ref = -1;          // the window hit rate (%) when the last cycle ended: the level its decisions were made at
