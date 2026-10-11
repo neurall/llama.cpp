@@ -1912,7 +1912,10 @@ def history_line(row, test, hw):
     """one line after a run: t/s, tokens and characters of this run against the earlier good runs (ok=1, no loop) of the same model, test and prompt on this machine, all builds: min / mean / max, and HIGH / LOW outside the range"""
     try:
         import sqlite3
-        con = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"), timeout=10)
+        db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")
+        if os.environ.get("FORK_NO_RUNS_DB") or not os.path.exists(db):
+            return   # no run log on this machine (or run.py quick): no comparison line, and no empty database file created by a read
+        con = sqlite3.connect(db, timeout=10)
         stem = re.sub(r"-0000\d-of-0000\d", "", model_name().split(" ")[0]).removesuffix(".gguf")
         q = "SELECT tps, n_gen, out_chars FROM runs WHERE stem = ? AND test = ? AND hw = ? AND ok = 1 AND COALESCE(loop, 0) = 0 AND tps > 0 AND ts < ?"
         rows = con.execute(q, (stem, test, hw, row["ts"])).fetchall()
