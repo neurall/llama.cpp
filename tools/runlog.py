@@ -5,6 +5,7 @@ Every run is stored twice: as a row of tools/bench/run-history.csv (append-only,
 
   python3 tools/runlog.py load                     rebuild the database from the CSV
   python3 tools/runlog.py sync                     add the CSV rows the database lacks (after a git merge of run-history.csv from another machine)
+  python3 tools/runlog.py bestpl MODEL TEST PL     like best, only the rows measured at one power limit, e.g. 280+280
   python3 tools/runlog.py best MODEL [TEST]        per build: runs, consistent best t/s and pp, first and last date (MODEL is a substring of the file name)
   python3 tools/runlog.py runs MODEL [TEST] [BUILD] every run, newest first
   python3 tools/runlog.py import-old [apply]       runs of the old perf.db (archive) that the CSV lacks, appended to the CSV
@@ -198,6 +199,10 @@ if __name__ == "__main__":
         if a[0] == "best":
             q = "SELECT test, build, bno, hw, n, tps, pp, tps_max, substr(first,1,10) AS first, substr(last,1,10) AS last FROM cells WHERE stem LIKE ?" + (" AND test = ?" if len(a) > 2 else "") + " ORDER BY test, last DESC"
             show(con.execute(q, ("%" + a[1] + "%",) + ((a[2],) if len(a) > 2 else ())))
+        elif a[0] == "bestpl":   # bestpl MODEL TEST PL: like best, but only the rows measured at one power limit (like 280+280); the limit is the live reading at the time of the row
+            q = ("SELECT test, build, bno, hw, COUNT(*) AS n, ROUND(consistent(tps), 2) AS tps, ROUND(consistent(pp), 1) AS pp, ROUND(MAX(tps), 2) AS tps_max, substr(MIN(ts),1,10) AS first, substr(MAX(ts),1,10) AS last "
+                 "FROM runs WHERE stem LIKE ? AND test = ? AND pl = ? AND okf = 1 AND tps IS NOT NULL GROUP BY test, build, hw ORDER BY last DESC")
+            show(con.execute(q, ("%" + a[1] + "%", a[2], a[3])))
         elif a[0] == "runs":
             q = "SELECT substr(ts,1,16) AS ts, hw, test, build, rep, tps, pp, hit, campaign FROM runs WHERE stem LIKE ? AND okf = 1" + (" AND test = ?" if len(a) > 2 else "") + (" AND build LIKE ?" if len(a) > 3 else "") + " ORDER BY ts DESC"
             show(con.execute(q, ("%" + a[1] + "%",) + tuple(("%" + x + "%" if i == 1 else x) for i, x in enumerate(a[2:]))))
