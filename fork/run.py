@@ -1870,11 +1870,128 @@ def _git(repo, *args, check=True):
     return r.stdout.strip()
 
 
+REL_OUT = os.environ.get("PERF_RELEASE_OUT", "/p/bw/rels/release-out")   # release archives (Linux tar.gz, Windows zip copies); the KEEP_BUILDS newest build numbers stay
+SMOKE_IMAGES = ["rockylinux:8", "ubuntu:20.04", "ubuntu:22.04", "debian:12", "ubuntu:24.04"]   # the Linux archive must start on all of them (glibc 2.28 floor)
+
+
+IMAGES = os.environ.get("PERF_IMAGES", "/p/bw/rels/images")   # docker save of every image a release was built with: an old build can be redone with the same compiler
+
+
+def _image(name, keep=False):
+    """the id of a build image, built from fork/docker/Dockerfile when it is missing; keep: saved once per id to IMAGES (zstd, restore with
+    `zstd -dc FILE | docker load`). The ccache is shared and content-addressed (CCACHE_MAXSIZE 100G), so an old commit rebuilt in the same image is fast."""
+    insp = lambda: subprocess.run(["docker", "image", "inspect", "-f", "{{.Id}}", name], capture_output=True, text=True)
+    r = insp()
+    if r.returncode != 0:
+        subprocess.run(["docker", "build", "-t", name, os.path.join(os.path.dirname(os.path.abspath(__file__)), "docker")], check=True)
+        r = insp()
+    iid = r.stdout.strip().split(":")[-1][:12]
+    f = os.path.join(IMAGES, f"{name}-{iid}.tar.zst")
+    if keep and not os.path.exists(f):
+        os.makedirs(IMAGES, exist_ok=True)
+        print(f"saving build image {name}@{iid} to {f} (once per image)", flush=True)
+        subprocess.run(f"docker save {name} | zstd -q -T0 -3 -o {f}.part && mv {f}.part {f}", shell=True, check=True)
+    return iid
+
+
+def _rel_prune(keep=int(os.environ.get("KEEP_BUILDS", "2"))):
+    """release-out keeps the archives of the `keep` newest build numbers (published releases live on GitHub); the shared cudart-llama-bin-win zip stays"""
+    vers = sorted({int(m.group(1)) for f in os.listdir(REL_OUT) for m in [re.search(r"-b(\d{5})-", f)] if m}, reverse=True)
+    for v in vers[keep:]:
+        for f in glob.glob(os.path.join(REL_OUT, f"*-b{v}-*")):
+            print(f"prune {os.path.basename(f)}", flush=True)
+            shutil.rmtree(f) if os.path.isdir(f) else os.remove(f)
+
+
+def _build_stock(a):
+    """upstream llama.cpp built exactly like upstream's release workflow (job ubuntu-cuda, x64, CUDA 12.8: nvidia/cuda:12.8.2-devel-ubuntu24.04, GCC 13,
+    the workflow's cmake flags): stock numbers must be what upstream's binaries do, never the fork's recipe. Result: /p/bw/gh-rel/stock-b<build>-<hash9>
+    (write-protected, with the CUDA 12.8 runtime libs) and a link to it in DEVBUILDS."""
+    src = os.path.expanduser(a.src); img = "nvidia/cuda:12.8.2-devel-ubuntu24.04"
+    _git(src, "fetch", "-q", "origin"); _git(src, "checkout", "-q", a.ref)
+    h = _git(src, "rev-parse", "--short=9", "HEAD"); B = os.path.join(src, "build-stock-ubuntu")
+    os.makedirs(B, exist_ok=True); os.makedirs("/p/bw/rels/ccache-stock", exist_ok=True)
+    inner = ("set -e; apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential cmake ninja-build libssl-dev git ccache >/dev/null; "
+             "git config --global --add safe.directory /src; "
+             "cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache "
+             "-DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_CUDA=ON -DGGML_CUDA_NCCL=OFF "
+             "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON -DGGML_CUDA_CCCL_VERSION=v3.4.3 -DLLAMA_BUILD_UI=OFF; "
+             "cmake --build build --config Release -j $(nproc); "
+             "cp -L /usr/local/cuda/lib64/libcudart.so.12 /usr/local/cuda/lib64/libcublas.so.12 /usr/local/cuda/lib64/libcublasLt.so.12 build/bin/; "
+             f"chown -R {os.getuid()}:{os.getgid()} build")
+    log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "logs", f"build-stock-{h}.log")
+    print(f"stock build of {h} ({_git(src, 'log', '-1', '--format=%s')[:70]}) in {img}, log {log}", flush=True)
+    lk = queue_lock(wait=True)   # no build while a benchmark runs
+    with open(log, "w") as lf:
+        rc = subprocess.run(["docker", "run", "--rm", "-v", f"{src}:/src", "-v", f"{B}:/src/build", "-v", "/p/bw/rels/ccache-stock:/ccache", "-e", "CCACHE_DIR=/ccache",
+                             "-w", "/src", img, "bash", "-c", inner], stdout=lf, stderr=subprocess.STDOUT).returncode
+    del lk
+    vout = subprocess.run([os.path.join(B, "bin", "llama-server"), "--version"], capture_output=True, text=True, env=dict(os.environ, LD_LIBRARY_PATH=os.path.join(B, "bin")))
+    m = re.search(r"build (\d+)", vout.stdout + vout.stderr)
+    if rc != 0 or not m:
+        sys.exit(f"stock build: FAILED (exit {rc}), log {log}")
+    D = f"/p/bw/gh-rel/stock-b{m.group(1)}-{h}"
+    if os.path.exists(D):
+        subprocess.run(["chmod", "-R", "u+w", D]); shutil.rmtree(D)
+    shutil.copytree(os.path.join(B, "bin"), D, symlinks=True); shutil.copy2(os.path.join(src, "LICENSE"), D)
+    with open(os.path.join(D, "BUILD_INFO"), "w") as f:
+        f.write(f"commit={h}\nbranch=upstream-stock (upstream release recipe: ubuntu 24.04, CUDA 12.8.2, GCC)\n")
+    subprocess.run(["chmod", "-R", "a-w", D])
+    lnk = os.path.join(DEVBUILDS, os.path.basename(D))
+    if not os.path.lexists(lnk):
+        os.symlink(D, lnk)
+    print(f"stock build: OK -> {D} (also {lnk})", flush=True)
+
+
+def _package_linux(a, W, binp, log):
+    """the release archives of a release build: llama-release-b<build>-<commit>-bin-ubuntu-cuda-13.2-x64.tar.gz (binaries, LICENSE, the libomp.so the clang
+    build links dynamically) and the matching cudart archive, smoke-started in SMOKE_IMAGES; DEVBUILDS/NAME = both archives unpacked (what users get)"""
+    uid = f"{os.getuid()}:{os.getgid()}"
+    dk = lambda *args: subprocess.run(["docker", "run", "--rm", "--user", uid] + list(args), capture_output=True, text=True)
+    vout = dk("-e", "LD_LIBRARY_PATH=/b", "-v", f"{binp}:/b:ro", "llama-rel-el8", "/b/llama-server", "--version")   # the host has neither libomp nor the CUDA 13 runtime
+    v = re.search(r"build (\d+)", vout.stdout + vout.stderr); c = re.search(r"commit ([0-9a-f]+)", vout.stdout + vout.stderr)
+    if not v or not c:
+        sys.exit(f"release: no version from llama-server --version: {(vout.stdout + vout.stderr)[-300:]}")
+    N = f"llama-release-b{v.group(1)}-{c.group(1)}-bin-ubuntu-cuda-13.2-x64"; C = "cudart-" + N
+    os.makedirs(REL_OUT, exist_ok=True)
+    for d in (N, C):
+        shutil.rmtree(os.path.join(REL_OUT, d), ignore_errors=True); os.makedirs(os.path.join(REL_OUT, d))
+    shutil.copytree(binp, os.path.join(REL_OUT, N), symlinks=True, dirs_exist_ok=True); shutil.copy2(os.path.join(W, "LICENSE"), os.path.join(REL_OUT, N))
+    dk("-v", f"{REL_OUT}/{N}:/o", "llama-rel-el8", "bash", "-c", "cp -L /usr/lib64/libomp.so /o/libomp.so")
+    dk("-v", f"{REL_OUT}/{C}:/o", "llama-rel-el8", "bash", "-c", "for l in cudart cublas cublasLt; do cp -L /usr/local/cuda/lib64/lib$l.so.13 /o/; done")
+    for d in (N, C):
+        subprocess.run(["tar", "czf", f"{d}.tar.gz", d], cwd=REL_OUT, check=True)
+    with open(log, "a") as lf:
+        for img in SMOKE_IMAGES:
+            r = subprocess.run(["docker", "run", "--rm", "-e", "LD_LIBRARY_PATH=/c", "-v", f"{REL_OUT}/{N}:/r:ro", "-v", f"{REL_OUT}/{C}:/c:ro", img, "/r/llama-server", "--version"],
+                               capture_output=True, text=True)
+            line = next((l for l in (r.stdout + r.stderr).splitlines() if "version" in l or "error" in l), "no output")
+            lf.write(f"smoke {img}: {line}\n"); print(f"smoke {img}: {line}", flush=True)
+    dst = os.path.join(DEVBUILDS, a.name)
+    if os.path.islink(dst):
+        os.remove(dst)
+    shutil.rmtree(dst, ignore_errors=True); os.makedirs(dst)
+    for d in (N, C):   # the archives, not the build tree: the numbers are the published artifact's
+        subprocess.run(["tar", "xzf", os.path.join(REL_OUT, f"{d}.tar.gz"), "-C", dst, "--strip-components=1"], check=True)
+        shutil.rmtree(os.path.join(REL_OUT, d), ignore_errors=True)
+    _rel_prune()
+    return N, dst
+
+
 def cmd_build(a):
-    r"""Dev build (the release container and flags, llama-server / llama-cli / llama-perplexity only) of a worktree as it is (--tree) or of a commit
-    (--commit: a temporary worktree, removed after the build; ccache keeps the objects). The binaries go to DEVBUILDS/NAME with BUILD_INFO
-    (commit, branch, patch). Then the regress cell (restricted OLMoE, pinned knobs, against the best binary) unless --no-regress: every build is checked.
-    --machine pc3: the same commit built on the W10 laptop (git bundle over ssh, its release-out\winbuild.bat) into N:\NAME (no regress there)."""
+    r"""Builds, in containers (pc1) or on the W10 laptop (pc3), with ccache.
+    default: dev build (the release container and flags, llama-server / llama-cli / llama-perplexity only) of a worktree as it is (--tree) or of a commit
+      (--commit: a temporary worktree, removed after the build) into DEVBUILDS/NAME with BUILD_INFO (commit, branch, patch).
+    --release: the release recipe (was hcf/lrel/build.sh): every target incl. tests, the archives in REL_OUT (Linux tar.gz + cudart), smoke starts in
+      SMOKE_IMAGES, DEVBUILDS/NAME = the archives unpacked. Image llama-rel-el8 from fork/docker/Dockerfile.
+    --stock: upstream at --ref from --src with upstream's release recipe (was hcf/lrel/stock-build.sh) into /p/bw/gh-rel/stock-b<build>-<hash> (no NAME).
+    After a pc1 build the regress cell runs (restricted OLMoE, pinned knobs, against the best binary) unless --no-regress.
+    --machine pc3: the same commit built on the W10 laptop (git bundle over ssh, its release-out\winbuild.bat) into N:\NAME (no regress there);
+      with --release also the zip (binaries, VC runtime DLLs, LICENSE) in N:\llama.cpp\release-out and a copy in REL_OUT."""
+    if a.stock:
+        return _build_stock(a)
+    if not a.name:
+        sys.exit("build: NAME is needed (the directory under DEVBUILDS)")
     name = a.name
     log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "logs", f"build-{name}" + ("" if a.machine == "pc1" else f"-{a.machine}") + ".log")
     if a.machine == "pc3":
@@ -1887,14 +2004,29 @@ def cmd_build(a):
         if r.returncode != 0:
             sys.exit(f"bundle: {r.stderr.strip()}")
         host = "o@192.168.1.2"
+        ssh = ["ssh", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=120", host]
         with open(log, "w") as lf:
             subprocess.run(["scp", "-q", bundle, f"{host}:C:/Users/o/{ref}.bundle"], stdout=lf, stderr=subprocess.STDOUT, check=True)
             cmd = (f"cd /d N:\\llama.cpp && git fetch -q C:\\Users\\o\\{ref}.bundle {ref} && git checkout -q FETCH_HEAD && call N:\\llama.cpp\\release-out\\winbuild.bat"
                    f" && (if not exist N:\\{name} mkdir N:\\{name}) && xcopy /q /y N:\\llama.cpp\\build-cuda-dl\\bin\\* N:\\{name}\\"
                    f" && copy /y N:\\admit-pin-b12353-10d6c1e5c\\*140*.dll N:\\{name}\\ && echo PKG_OK {short}")
-            subprocess.run(["ssh", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=120", host, cmd], stdout=lf, stderr=subprocess.STDOUT)
+            subprocess.run(ssh + [cmd], stdout=lf, stderr=subprocess.STDOUT)
         os.remove(bundle)
         ok = f"PKG_OK {short}" in open(log).read()
+        if ok and a.release:   # the zip the way every published Windows release was made (build-cuda-dl\bin + the VC runtime DLLs + LICENSE)
+            vout = subprocess.run(ssh + [f"N:\\{name}\\llama-server.exe --version"], capture_output=True, text=True)
+            v = re.search(r"build (\d+)", vout.stdout + vout.stderr); c = re.search(r"commit ([0-9a-f]+)", vout.stdout + vout.stderr)
+            if not v or not c:
+                sys.exit(f"release zip: no version from llama-server.exe: {(vout.stdout + vout.stderr)[-300:]}")
+            z = f"llama-release-b{v.group(1)}-{c.group(1)}-bin-win-cuda-13.4-x64.zip"
+            pkg = (f"set P=N:\\tmp\\pkg& (if exist N:\\tmp\\pkg rmdir /s /q N:\\tmp\\pkg) & mkdir N:\\tmp\\pkg && xcopy /q N:\\llama.cpp\\build-cuda-dl\\bin\\* N:\\tmp\\pkg\\ >nul"
+                   f" && cd /d N:\\tmp\\pkg && tar -xf N:\\llama.cpp\\release-out\\llama-release-b11214-a3768a8-bin-win-cuda-13.4-x64.zip msvcp140.dll vcruntime140.dll vcruntime140_1.dll"
+                   f" && copy /y N:\\llama.cpp\\LICENSE N:\\tmp\\pkg\\ >nul && (if exist N:\\llama.cpp\\release-out\\{z} del N:\\llama.cpp\\release-out\\{z})"
+                   f" && tar -a -cf N:\\llama.cpp\\release-out\\{z} * && echo ZIP_OK")
+            with open(log, "a") as lf:
+                r = subprocess.run(ssh + [pkg], stdout=lf, stderr=subprocess.STDOUT)
+                ok = "ZIP_OK" in open(log).read() and subprocess.run(["scp", "-q", f"{host}:N:/llama.cpp/release-out/{z}", os.path.join(REL_OUT, z)], stdout=lf, stderr=subprocess.STDOUT).returncode == 0
+            print(f"release zip {z}: " + (f"OK, N:\\llama.cpp\\release-out and {REL_OUT}" if ok else f"FAILED, see {log}"), flush=True)
         print(f"build {name} on pc3 ({short}): {'OK, N:\\' + name if ok else 'FAILED, see ' + log}", flush=True)
         sys.exit(0 if ok else 1)
     tmp = None
@@ -1907,21 +2039,22 @@ def cmd_build(a):
         W = tmp
     else:
         W = os.path.abspath(a.tree)
-    B = os.path.join(W, "build-dev")
+    B = os.path.join(W, "build-linux" if a.release else "build-dev")
     gitc = _git(W, "rev-parse", "--path-format=absolute", "--git-common-dir")
     os.makedirs(B, exist_ok=True); os.makedirs("/p/bw/rels/ccache", exist_ok=True)
     gtd = "--gcc-install-dir=/opt/rh/gcc-toolset-15/root/usr/lib/gcc/x86_64-redhat-linux/15"
     inner = ("source /opt/rh/gcc-toolset-13/enable && git config --global --add safe.directory '*' && SLD='-static-libstdc++ -static-libgcc' && "
              f"cmake -S {W} -B {B} -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS={gtd} -DCMAKE_CXX_FLAGS={gtd} "
-             "-DCMAKE_CUDA_HOST_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/gcc -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON "
+             "-DCMAKE_CUDA_HOST_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/gcc -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DBUILD_SHARED_LIBS=ON "
              "-DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_CUDA=ON -DGGML_CUDA_NCCL=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=ON "
-             "-DOPENSSL_USE_STATIC_LIBS=ON -DOPENSSL_ROOT_DIR=/opt/openssl -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_UI=OFF "
+             f"-DOPENSSL_USE_STATIC_LIBS=ON -DOPENSSL_ROOT_DIR=/opt/openssl -DLLAMA_BUILD_TESTS={'ON' if a.release else 'OFF'} -DLLAMA_BUILD_UI=OFF "
              "-DCMAKE_EXE_LINKER_FLAGS=\"$SLD\" -DCMAKE_SHARED_LINKER_FLAGS=\"$SLD\" -DCMAKE_MODULE_LINKER_FLAGS=\"$SLD\" && "
-             f"cmake --build {B} -j 8 --target llama-server llama-cli llama-perplexity")
-    docker = ["nice", "-n", "19", "docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-e", "CCACHE_DIR=/ccache",
-              "-e", "CCACHE_MAXSIZE=40G", "-e", f"CCACHE_BASEDIR={W}", "-e", "CCACHE_NOHASHDIR=1", "-v", "/p/bw/rels/ccache:/ccache", "-v", f"{W}:{W}",
-              "-v", f"{gitc}:{gitc}:ro", "llama-rel-el8", "bash", "-c", inner]
+             + (f"cmake --build {B} -j $(nproc)" if a.release else f"cmake --build {B} -j 8 --target llama-server llama-cli llama-perplexity"))
     lk = queue_lock(wait=True)   # no build while a benchmark runs (a build takes the CPU the measurements use)
+    iid = _image("llama-rel-el8", keep=a.release)
+    docker = ([] if a.release else ["nice", "-n", "19"]) + ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-e", "CCACHE_DIR=/ccache",
+              "-e", "CCACHE_MAXSIZE=100G", "-e", f"CCACHE_BASEDIR={W}", "-e", "CCACHE_NOHASHDIR=1", "-v", "/p/bw/rels/ccache:/ccache", "-v", f"{W}:{W}",
+              "-v", f"{gitc}:{gitc}:ro", "llama-rel-el8", "bash", "-c", inner]
     t0 = time.time()
     with open(log, "w") as lf:
         rc = subprocess.run(docker, stdout=lf, stderr=subprocess.STDOUT).returncode
@@ -1933,18 +2066,27 @@ def cmd_build(a):
         if tmp:
             _git(a.repo, "worktree", "remove", "--force", tmp, check=False)
         sys.exit(1)
-    if not os.path.exists(os.path.join(binp, "libomp.so")) and os.path.exists("/p/bw/wt-learn/build-dev/bin/libomp.so"):
-        shutil.copy2(os.path.realpath("/p/bw/wt-learn/build-dev/bin/libomp.so"), os.path.join(binp, "libomp.so"))   # the build links it dynamically
+    if not os.path.exists(os.path.join(binp, "libomp.so")):   # the clang build links the LLVM OpenMP runtime dynamically; the image has it
+        subprocess.run(["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "-v", f"{binp}:/o", "llama-rel-el8", "bash", "-c", "cp -L /usr/lib64/libomp.so /o/libomp.so"],
+                       capture_output=True)
     srcs = ["src", "common", "include", "ggml", "tools/server"]
     patch = subprocess.run(["git", "-C", W, "diff", "HEAD", "--"] + srcs, capture_output=True).stdout
-    with open(os.path.join(binp, "BUILD_INFO"), "w") as f:
-        f.write(f"commit={_git(W, 'rev-parse', '--short', 'HEAD')}\nbranch={_git(W, 'rev-parse', '--abbrev-ref', 'HEAD')}\npatch={hashlib.sha1(patch).hexdigest()[:8] if patch else 0}\n")
-    dst = os.path.join(DEVBUILDS, name)
-    if os.path.islink(dst):
-        os.remove(dst)
-    elif os.path.exists(dst):
-        shutil.rmtree(dst)
-    shutil.copytree(binp, dst, symlinks=True)
+    info = (f"commit={_git(W, 'rev-parse', '--short', 'HEAD')}\nbranch={_git(W, 'rev-parse', '--abbrev-ref', 'HEAD')}\npatch={hashlib.sha1(patch).hexdigest()[:8] if patch else 0}\n"
+            f"image=llama-rel-el8@{iid}\n")
+    if a.release:
+        arch, dst = _package_linux(a, W, binp, log)
+        info += f"release={arch}\n"
+    else:
+        with open(os.path.join(binp, "BUILD_INFO"), "w") as f:
+            f.write(info)
+        dst = os.path.join(DEVBUILDS, name)
+        if os.path.islink(dst):
+            os.remove(dst)
+        elif os.path.exists(dst):
+            shutil.rmtree(dst)
+        shutil.copytree(binp, dst, symlinks=True)
+    with open(os.path.join(dst, "BUILD_INFO"), "w") as f:
+        f.write(info)
     if tmp:
         _git(a.repo, "worktree", "remove", "--force", tmp, check=False)
     print(f"build {name}: OK in {time.time() - t0:.0f} s -> {dst} ({open(os.path.join(dst, 'BUILD_INFO')).read().split()[0]})", flush=True)
@@ -2241,8 +2383,12 @@ if __name__ == "__main__":
     rg.add_argument("--rebase", action="store_true", help="after the run this build becomes the best whatever the numbers (the reference of a new line)")
     rg.add_argument("--wait", action="store_true", help="wait for a running benchmark queue (/tmp/queue.lock) instead of skipping")
     rg.add_argument("--verbose", action="store_true", help="show the output of the runs")
-    bd = sp.add_parser("build", help="dev build of a worktree (--tree) or a commit (--commit, temporary worktree) into DEVBUILDS/NAME, then the regress cell; --machine pc3 builds on the W10 laptop")
-    bd.add_argument("name")
+    bd = sp.add_parser("build", help="dev build (default), --release (archives in REL_OUT, DEVBUILDS/NAME = the archives unpacked) or --stock (upstream recipe) of a worktree (--tree) or a commit (--commit), then the regress cell; --machine pc3 builds on the W10 laptop")
+    bd.add_argument("name", nargs="?", help="directory under DEVBUILDS (not for --stock)")
+    bd.add_argument("--release", action="store_true", help="the release recipe and packaging (was hcf/lrel/build.sh RELEASE=1); with --machine pc3 the Windows zip")
+    bd.add_argument("--stock", action="store_true", help="upstream llama.cpp with upstream's release recipe (was hcf/lrel/stock-build.sh) into /p/bw/gh-rel/stock-b<build>-<hash>")
+    bd.add_argument("--src", default="~/lc", help="--stock: the upstream clone")
+    bd.add_argument("--ref", default="origin/master", help="--stock: the upstream commit to build")
     bd.add_argument("--tree", help="worktree to build as it is (uncommitted changes included, BUILD_INFO patch= marks them)")
     bd.add_argument("--commit", help="commit to build in a temporary worktree of --repo")
     bd.add_argument("--repo", default=BUILD_REPO)
