@@ -269,6 +269,11 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   and [#27917](https://github.com/ggml-org/llama.cpp/pull/27917) (timkhronos).
 - Every change is benchmarked against the previous release binary on fixed inputs
   before it ships.
+- Regressions and missing optimisations found in upstream along the way, and how they were
+  solved (the host barrier of #29943 that cost GLM 9.5% decode, the shared-expert fusion of
+  #29184 that slows the fused MMVQ kernel for models without a shared expert, an AVX2/AVX-512
+  Q2_0 kernel, a GLM-5 graph that was rebuilt every token): the table in
+  [`fork/PATCHES.md`](fork/PATCHES.md#upstream-regressions-and-bugs-found-and-how-they-were-fixed).
 
 ## Known limits and next steps
 
