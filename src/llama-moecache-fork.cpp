@@ -4619,6 +4619,15 @@ void llama_moe_cache_free_fork() {
     for (auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
     LLAMA_LOG_WARN("moe-cache: steps=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " hit-rate=%.1f%%, prefill experts from cache %" PRIu64 "/%" PRIu64 ", kept from prefill %" PRIu64 "\n",
             mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0, mc->n_src_hit, mc->n_src_query, mc->n_adopted);
+    // --moe layer-stats=1: how many cache slots each layer holds filled at the end of the run, and its hit rate (does a fixed per-layer share fill up evenly?)
+    if (const char * e = moe_opt("layer-stats"); e && atoi(e) != 0) {
+        for (const auto & ls : mc->layers) {
+            int filled = 0;
+            for (int32_t x : ls.slot_expert) { filled += x >= 0; }
+            LLAMA_LOG_WARN("moe-cache: layer %d: %d of %d slots filled, hits %" PRIu64 " misses %" PRIu64 " (%.1f%%)\n", ls.pub.il, filled, ls.pub.n_slots,
+                    (uint64_t) ls.n_hit, (uint64_t) ls.n_miss, ls.n_hit + ls.n_miss ? 100.0*ls.n_hit/(ls.n_hit + ls.n_miss) : 0.0);
+        }
+    }
     if (mc->pm_pick[0]) {
         LLAMA_LOG_WARN("moe-cache: prefetch candidates L+1 (top-M predicted uncached): M=1 %.0f%% used, M=2 %.0f%%, M=3 %.0f%%; "
                 "they cover %.0f%% / %.0f%% / %.0f%% of the real misses (%.2f misses per layer)\n",
