@@ -39,6 +39,9 @@ decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat
 """
 import argparse, csv, glob, hashlib, io, json, os, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import config as fcfg   # machine-specific paths and model files: fork/config.py (defaults, ~/.config/llama-fork/config.toml, FORK_* variables)
+
 PROMPTS = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bench")   # frozen prompts (src_12k.cpp, src_128k.cpp, longsrc.cpp) live in fork/bench/
 HERE = os.path.abspath(os.environ.get("PERF_BUILDS", os.getcwd()))  # one subdirectory per build (its bin/ contents)
 DATA = os.environ.get("RUN_DATA") or PROMPTS   # directory of run-history.csv, campaigns.csv, machines.csv, tune.csv (default: fork/bench, committed)
@@ -646,7 +649,7 @@ def server_run(build, env, args, path, body, render=None):
 
 
 def agent_run(build, env, args):
-    sys.path.insert(0, os.environ.get("PERF_AGENT_DIR", "/p/bw/miniagentic"))
+    sys.path.insert(0, os.environ.get("PERF_AGENT_DIR") or fcfg.path("agent"))
     import miniagentic
     p, logf = server_start(build, env, args)
     try:
@@ -1803,18 +1806,18 @@ def add_overrides(sub):
 
 
 # ---- regress: the quick check after every commit: this build against the best binary kept so far ----
-BEST = os.environ.get("PERF_BEST", "/p/bw/rels/best")   # BEST/current -> the frozen copy of the fastest build so far; BEST/history.csv: every change of it
-REGRESS_MODEL = os.environ.get("REGRESS_MODEL", "/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf")
+BEST = os.environ.get("PERF_BEST") or fcfg.path("best")   # BEST/current -> the frozen copy of the fastest build so far; BEST/history.csv: every change of it
+REGRESS_MODEL = os.environ.get("REGRESS_MODEL") or fcfg.model("olmoe")
 # 19 of 64 experts per layer (30%) in VRAM: the cache has to work for its speed; no learned state: every run of every build starts the same
 REGRESS_ARGS = os.environ.get("REGRESS_ARGS", "--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0")   # knobs pinned: a default change must not mask or fake a speed change; this cell amplifies scheduler regressions (the #29943 merge cost it 15-17%, GLM 9.5%)   # learned state: --clean-state below (a fresh state file per build; builds of every age take it)
 # cells of the check: (model, args, visible GPUs or None for both, runs or None for -n, big). Every MoE model we publish numbers for; restricted caches
 # (30-35% of the experts) on the two small ones so the cache path is what is timed. The verdict is the worst cell. REGRESS_FAST=1: only the small cells.
 _T = " -t 6 -tb 8"
 REGRESS_CELLS = [(REGRESS_MODEL, REGRESS_ARGS, "1", None, False),
-                 ("/m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf", "--cpu-moe --moe-expert-cache 90" + _T, "1", None, False),
-                 ("/m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf", "--cpu-moe" + _T, None, 2, True),
-                 ("/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf", "--cpu-moe" + _T, None, 2, True),
-                 ("/m/m/4/MiMo-V2.6-Flash-MOPD-MXFP4.gguf", "--cpu-moe" + _T, None, 2, True)]
+                 (fcfg.model("qwen36"), "--cpu-moe --moe-expert-cache 90" + _T, "1", None, False),
+                 (fcfg.model("qwen38"), "--cpu-moe" + _T, None, 2, True),
+                 (fcfg.model("glm"), "--cpu-moe" + _T, None, 2, True),
+                 (fcfg.model("mimo"), "--cpu-moe" + _T, None, 2, True)]
 if os.environ.get("REGRESS_FAST") == "1":
     REGRESS_CELLS = [c for c in REGRESS_CELLS if not c[4]]
 
@@ -1859,8 +1862,8 @@ def queue_lock(wait=True):
     return lk
 
 
-DEVBUILDS = os.environ.get("PERF_DEVBUILDS", "/p/bw/rels/devbuilds")
-BUILD_REPO = os.environ.get("PERF_BUILD_REPO", "/p/bw/wt-switches")   # the repository whose objects a --commit build checks out
+DEVBUILDS = os.environ.get("PERF_DEVBUILDS") or fcfg.path("devbuilds")
+BUILD_REPO = os.environ.get("PERF_BUILD_REPO") or fcfg.path("build_repo")   # the repository whose objects a --commit build checks out
 
 
 def _git(repo, *args, check=True):
@@ -1870,11 +1873,11 @@ def _git(repo, *args, check=True):
     return r.stdout.strip()
 
 
-REL_OUT = os.environ.get("PERF_RELEASE_OUT", "/p/bw/rels/release-out")   # release archives (Linux tar.gz, Windows zip copies); the KEEP_BUILDS newest build numbers stay
+REL_OUT = os.environ.get("PERF_RELEASE_OUT") or fcfg.path("release_out")   # release archives (Linux tar.gz, Windows zip copies); the KEEP_BUILDS newest build numbers stay
 SMOKE_IMAGES = ["rockylinux:8", "ubuntu:20.04", "ubuntu:22.04", "debian:12", "ubuntu:24.04"]   # the Linux archive must start on all of them (glibc 2.28 floor)
 
 
-IMAGES = os.environ.get("PERF_IMAGES", "/p/bw/rels/images")   # docker save of every image a release was built with: an old build can be redone with the same compiler
+IMAGES = os.environ.get("PERF_IMAGES") or fcfg.path("images")   # docker save of every image a release was built with: an old build can be redone with the same compiler
 
 
 def _image(name, keep=False):
@@ -1910,7 +1913,7 @@ def _build_stock(a):
     src = os.path.expanduser(a.src); img = "nvidia/cuda:12.8.2-devel-ubuntu24.04"
     _git(src, "fetch", "-q", "origin"); _git(src, "checkout", "-q", a.ref)
     h = _git(src, "rev-parse", "--short=9", "HEAD"); B = os.path.join(src, "build-stock-ubuntu")
-    os.makedirs(B, exist_ok=True); os.makedirs("/p/bw/rels/ccache-stock", exist_ok=True)
+    os.makedirs(B, exist_ok=True); os.makedirs(fcfg.path("ccache_stock"), exist_ok=True)
     inner = ("set -e; apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential cmake ninja-build libssl-dev git ccache >/dev/null; "
              "git config --global --add safe.directory /src; "
              "cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache "
@@ -1923,14 +1926,14 @@ def _build_stock(a):
     print(f"stock build of {h} ({_git(src, 'log', '-1', '--format=%s')[:70]}) in {img}, log {log}", flush=True)
     lk = queue_lock(wait=True)   # no build while a benchmark runs
     with open(log, "w") as lf:
-        rc = subprocess.run(["docker", "run", "--rm", "-v", f"{src}:/src", "-v", f"{B}:/src/build", "-v", "/p/bw/rels/ccache-stock:/ccache", "-e", "CCACHE_DIR=/ccache",
+        rc = subprocess.run(["docker", "run", "--rm", "-v", f"{src}:/src", "-v", f"{B}:/src/build", "-v", fcfg.path("ccache_stock") + ":/ccache", "-e", "CCACHE_DIR=/ccache",
                              "-w", "/src", img, "bash", "-c", inner], stdout=lf, stderr=subprocess.STDOUT).returncode
     del lk
     vout = subprocess.run([os.path.join(B, "bin", "llama-server"), "--version"], capture_output=True, text=True, env=dict(os.environ, LD_LIBRARY_PATH=os.path.join(B, "bin")))
     m = re.search(r"build (\d+)", vout.stdout + vout.stderr)
     if rc != 0 or not m:
         sys.exit(f"stock build: FAILED (exit {rc}), log {log}")
-    D = f"/p/bw/gh-rel/stock-b{m.group(1)}-{h}"
+    D = os.path.join(fcfg.path("gh_rel"), f"stock-b{m.group(1)}-{h}")
     if os.path.exists(D):
         subprocess.run(["chmod", "-R", "u+w", D]); shutil.rmtree(D)
     shutil.copytree(os.path.join(B, "bin"), D, symlinks=True); shutil.copy2(os.path.join(src, "LICENSE"), D)
@@ -2003,7 +2006,8 @@ def cmd_build(a):
         _git(repo, "branch", "-D", ref)
         if r.returncode != 0:
             sys.exit(f"bundle: {r.stderr.strip()}")
-        host = "o@192.168.1.2"
+        host = fcfg.get("hosts", "w10_ssh") or sys.exit("build --machine pc3: set [hosts] w10_ssh in the fork config (ssh target of the Windows build host)")
+        w10 = fcfg.get("hosts", "w10_root")   # drive/root of the build host, e.g. N:
         ssh = ["ssh", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=120", host]
         with open(log, "w") as lf:
             subprocess.run(["scp", "-q", bundle, f"{host}:C:/Users/o/{ref}.bundle"], stdout=lf, stderr=subprocess.STDOUT, check=True)
@@ -2032,7 +2036,7 @@ def cmd_build(a):
     tmp = None
     if a.commit:
         rev = _git(a.repo, "rev-parse", a.commit)
-        tmp = f"/p/bw/build-tmp-{name}"
+        tmp = os.path.join(fcfg.path("build_tmp"), name)
         if os.path.exists(tmp):
             _git(a.repo, "worktree", "remove", "--force", tmp, check=False)
         _git(a.repo, "worktree", "add", "--detach", tmp, rev)
@@ -2041,7 +2045,7 @@ def cmd_build(a):
         W = os.path.abspath(a.tree)
     B = os.path.join(W, "build-linux" if a.release else "build-dev")
     gitc = _git(W, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    os.makedirs(B, exist_ok=True); os.makedirs("/p/bw/rels/ccache", exist_ok=True)
+    os.makedirs(B, exist_ok=True); os.makedirs(fcfg.path("ccache"), exist_ok=True)
     gtd = "--gcc-install-dir=/opt/rh/gcc-toolset-15/root/usr/lib/gcc/x86_64-redhat-linux/15"
     inner = ("source /opt/rh/gcc-toolset-13/enable && git config --global --add safe.directory '*' && SLD='-static-libstdc++ -static-libgcc' && "
              f"cmake -S {W} -B {B} -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS={gtd} -DCMAKE_CXX_FLAGS={gtd} "
@@ -2053,7 +2057,7 @@ def cmd_build(a):
     lk = queue_lock(wait=True)   # no build while a benchmark runs (a build takes the CPU the measurements use)
     iid = _image("llama-rel-el8", keep=a.release)
     docker = ([] if a.release else ["nice", "-n", "19"]) + ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-e", "CCACHE_DIR=/ccache",
-              "-e", "CCACHE_MAXSIZE=100G", "-e", f"CCACHE_BASEDIR={W}", "-e", "CCACHE_NOHASHDIR=1", "-v", "/p/bw/rels/ccache:/ccache", "-v", f"{W}:{W}",
+              "-e", "CCACHE_MAXSIZE=100G", "-e", f"CCACHE_BASEDIR={W}", "-e", "CCACHE_NOHASHDIR=1", "-v", fcfg.path("ccache") + ":/ccache", "-v", f"{W}:{W}",
               "-v", f"{gitc}:{gitc}:ro", "llama-rel-el8", "bash", "-c", inner]
     t0 = time.time()
     with open(log, "w") as lf:
