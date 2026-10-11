@@ -90,6 +90,11 @@ void llama_moe_observe_save();
 // largest batch (tokens) that uses the cache; bigger ones take the stock path
 // (LLAMA_MOE_CACHE_MAX_BATCH, default 31: below the CUDA op-offload threshold)
 int64_t llama_moe_cache_max_batch_fork();
+// --moe max-batch=auto: node budget cap, start-up probe of the cache path (timed 16- and 64-token batches), result -> the computed limit
+int64_t llama_moe_cache_max_batch_cap_fork();
+bool    llama_moe_cache_probe_wanted_fork();
+void    llama_moe_cache_probe_begin_fork();
+void    llama_moe_cache_probe_end_fork(double t16_us, double t64_us);
 
 // ubatch for one decode call of n_tokens new tokens, at most ub_max (the compute buffer is sized for it): equal passes, and a tail that fits the
 // cache path (<= max-batch) is left to it instead of a nearly empty streaming pass that pays a whole expert upload. `--moe prefill-equal=0` = ub_max.
@@ -109,16 +114,16 @@ struct llama_moe_alias_buf_fork { ggml_backend_buffer_t buf; ggml_backend_dev_t 
 std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork();
 // after a graph is allocated, before its inputs are set: lend the blocks it reaches to it (evict their experts)
 void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens);
-bool    llama_moe_cache_active_fork();
-bool    llama_moe_cache_wants_probs_fork();   // --moe policy=r: the gate op of every cached layer also gets the router probabilities (src[6]) for the relevance score
-// startup probe: how many reader threads reach 95% of the CPU's RAM read rate (0: not measured)
-int32_t llama_moe_cache_cpu_sat_threads_fork();
-// live cache state for llama_get_tuning_info(): false when the cache is off
 // after a worst-case reserve with the alias: does the graph (+ CUDA scratch) fit in the lent blocks, and the prefetch staging slots too? need / cap in bytes
 struct llama_moe_alias_fit_fork { bool graph = true; bool stage = true; size_t need = 0; size_t cap = 0; };
 llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sched, int32_t n_tokens);
 // the pool cannot lend the smallest worst-case graph: the alias stays off from now on
 void llama_moe_cache_alias_drop_fork();
+bool    llama_moe_cache_active_fork();
+bool    llama_moe_cache_wants_probs_fork();   // --moe policy=r: the gate op of every cached layer also gets the router probabilities (src[6]) for the relevance score
+// startup probe: how many reader threads reach 95% of the CPU's RAM read rate (0: not measured)
+int32_t llama_moe_cache_cpu_sat_threads_fork();
+// live cache state for llama_get_tuning_info(): false when the cache is off
 bool    llama_moe_cache_get_info_fork(struct llama_tuning_info * info);
 
 // nullptr when the cache is disabled or this tensor has no cached layer

@@ -884,9 +884,79 @@ bool llama_context::swap_layers_fork(int a, int b) {
     return true;
 }
 
-// fork: --moe alias=1: the GPUs' compute graphs go into the expert pool buffers (llama_moe_cache_alias_fork lends the blocks they reach)
+// fork: --moe max-batch=auto: how long a 16- and a 64-token batch take on the cache path (second run of each: graphs built, uploads settled),
+// on varied tokens so the routing is not one fixed expert set. The context is cleared after each run.
+void llama_context::moe_probe_costs_fork() {
+    const int64_t t_start = ggml_time_us();
+    const llama_token n_vocab = (llama_token) model.vocab.n_tokens();
+    llama_moe_cache_probe_begin_fork();
+    auto run = [&](int n) -> double {
+        llama_batch_ext batch(this);
+        for (int i = 0; i < n; ++i) {
+            const int32_t idx = batch.add_token(0);
+            llama_pos pos[GGML_MROPE_SECTIONS] = { i, i, i, 0 };
+            if (idx < 0 || !batch.set_token_id(idx, (llama_token) ((1000 + (int64_t) i * 7919) % std::max<llama_token>(n_vocab, 2))) ||
+                !batch.set_token_pos(idx, pos) || !batch.set_output(idx, i == n - 1)) {
+                return -1.0;
+            }
+        }
+        synchronize();
+        const int64_t t0 = ggml_time_us();
+        const int ret = decode(batch);
+        synchronize();
+        const double dt = (double) (ggml_time_us() - t0);
+        memory->clear(true);
+        return ret == 0 ? dt : -1.0;
+    };
+    double t16 = -1, t64 = -1;
+    if (run(4) > 0) {
+        run(16);
+        t16 = run(16);
+        run(64);
+        t64 = run(64);
+    }
+    llama_moe_cache_probe_end_fork(t16, t64);
+    LLAMA_LOG_WARN("%s: cache-path probe took %.1f s\n", __func__, (ggml_time_us() - t_start) / 1e6);
+}
+
+// fork: the compute alias lends the pool's first blocks to the worst-case graph, its CUDA scratch and the prefetch staging slots. When they do not fit
+// the micro-batch gets smaller (half, down to 512) and the scheduler is reserved again; at 512 the staging slots are skipped for graphs that cannot
+// lend them (prefetch off, no allocation), and if even the graph does not fit the alias is dropped and the scheduler keeps its own buffers.
+// Returns true when sched_reserve() must run again.
 bool llama_context::moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size_t need, size_t cap) {
+    if (graph_fits && stage_fits) {
+        return false;
+    }
+    if (cparams.n_ubatch > 512) {
+        const uint32_t nu = std::max<uint32_t>(512, (cparams.n_ubatch / 2) / 32 * 32);
+        LLAMA_LOG_WARN("%s: the pool lends %.0f MiB, graph + scratch%s need %.0f MiB at micro-batch %u: micro-batch %u\n", __func__, cap / 1048576.0,
+                graph_fits ? " + prefetch staging" : "", need / 1048576.0, cparams.n_ubatch, nu);
+        cparams.n_ubatch = nu;
+        sched_need_reserve = true;
+        return true;
+    }
+    if (!graph_fits) {
+        LLAMA_LOG_WARN("%s: the pool cannot lend the graph even at micro-batch 512: compute buffers stay separate (--moe alias=0)\n", __func__);
+        llama_moe_cache_alias_drop_fork();
+        moe_alias_bufs.clear();
+        sched_need_reserve = true;
+        return true;
+    }
+    LLAMA_LOG_WARN("%s: no room for the prefetch staging slots at micro-batch 512: prefetch is skipped for graphs that cannot lend them\n", __func__);
+    return false;
+}
+
+// fork: --moe alias=1: the GPUs' compute graphs go into the expert pool buffers (llama_moe_cache_alias_fork lends the blocks they reach)
 void llama_context::apply_moe_alias() {
+    // prefetch overlap: --prefetch-experts-slots / --moe pf-slots; unset (-1) = 3 staging slots (they are only filled when expert weights are
+    // host-resident and a prompt batch computes them on a GPU, so there is nothing to allocate otherwise); 0 = off
+    {
+        int n = cparams.prefetch_experts_slots;
+        if (n < 0) {
+            n = 3;
+        }
+        ggml_backend_sched_set_prefetch_experts_slots(sched.get(), n);
+    }
     for (const auto & ab : moe_alias_bufs) {
         for (auto & be : backends) {
             if (ggml_backend_get_device(be.get()) == ab.dev) {
@@ -949,15 +1019,6 @@ void llama_context::sched_reserve() {
     int n_input_tensors_pp = -1;
 
     int n_splits_tg        = -1;
-    // prefetch overlap: --prefetch-experts-slots / --moe pf-slots; unset (-1) = 3 staging slots (they are only filled when expert weights are
-    // host-resident and a prompt batch computes them on a GPU, so there is nothing to allocate otherwise); 0 = off
-    {
-        int n = cparams.prefetch_experts_slots;
-        if (n < 0) {
-            n = 3;
-        }
-        ggml_backend_sched_set_prefetch_experts_slots(sched.get(), n);
-    }
     int n_nodes_tg         = -1;
     int n_inputs_tg        = -1;
     int n_input_tensors_tg = -1;
@@ -976,6 +1037,12 @@ void llama_context::sched_reserve() {
                 ggml_backend_sched_set_copy_callback(sched.get(), sched_copy_experts, this);
                 apply_moe_alias();
                 gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get());
+            }
+            if (!gf && !moe_alias_bufs.empty()) {   // the graph does not fit in the lent blocks: smaller micro-batch, or the alias off
+                if (moe_alias_shrink_fork(false, true, 0, 0)) {
+                    sched_reserve();
+                    return;
+                }
             }
             if (!gf) {
                 throw std::runtime_error("failed to allocate compute pp buffers");
@@ -1027,6 +1094,14 @@ void llama_context::sched_reserve() {
         }
     }
 
+    if (!moe_alias_bufs.empty() && !model.hparams.no_alloc) {
+        const llama_moe_alias_fit_fork fit = llama_moe_cache_alias_fit_fork(sched.get(), (int32_t) n_tokens);
+        if (moe_alias_shrink_fork(fit.graph, fit.stage, fit.need, fit.cap)) {
+            sched_reserve();
+            return;
+        }
+    }
+
     for (size_t i = 0; i < backend_ptrs.size(); ++i) {
         ggml_backend_t             backend = backend_ptrs[i];
         ggml_backend_buffer_type_t buft    = backend_buft[i];
@@ -1039,12 +1114,6 @@ void llama_context::sched_reserve() {
                     backend_buf_exp_size[i] / 1024.0 / 1024.0);
         }
     }
-            if (!gf && !moe_alias_bufs.empty()) {   // the graph does not fit in the lent blocks: smaller micro-batch, or the alias off
-                if (moe_alias_shrink_fork(false, true, 0, 0)) {
-                    sched_reserve();
-                    return;
-                }
-            }
 
     {
         const bool diff = n_nodes_pp != n_nodes_tg || n_splits_pp != n_splits_tg ||
@@ -1095,14 +1164,6 @@ void llama_context::synchronize() {
     }
 
     // get a more accurate load time, upon first eval
-    if (!moe_alias_bufs.empty() && !model.hparams.no_alloc) {
-        const llama_moe_alias_fit_fork fit = llama_moe_cache_alias_fit_fork(sched.get(), (int32_t) n_tokens);
-        if (moe_alias_shrink_fork(fit.graph, fit.stage, fit.need, fit.cap)) {
-            sched_reserve();
-            return;
-        }
-    }
-
     if (n_queued_tokens > 0 && !has_evaluated_once) {
         t_load_us = ggml_time_us() - t_start_us;
         has_evaluated_once = true;
@@ -2033,6 +2094,7 @@ bool llama_context::set_adapter_cvec(
 }
 
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
+    llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
     if (mctx && !mctx->apply()) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
@@ -2094,7 +2156,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
         res->set_inputs(&ubatch);
 
-    llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
     }
 
@@ -2378,6 +2439,12 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         }
         thread_cap_from_probe(llama_moe_cache_cpu_sat_threads_fork());
         sched_reserve(); // the compute graph now includes the cache chain
+    }
+    if (cparams.moe_cache_started && !moe_probe_done) {   // --moe max-batch=auto: time the cache path once, before the first real batch
+        moe_probe_done = true;
+        if (llama_moe_cache_probe_wanted_fork() && memory && memory->seq_pos_max(0) < 0) {
+            moe_probe_costs_fork();
+        }
     }
     if (cparams.moe_cache_started && !moe_swap_test_done) {   // --moe swap-test=A:B: swap two layers once, before the first batch (test of the swap)
         moe_swap_test_done = true;
@@ -3186,7 +3253,7 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
     // activation/down/concat per 4-token chunk of batches up to max_batch. The
     // scheduler is sized before the cache exists, so budget for it up front.
     if (cparams.moe_cache) {
-        const uint32_t nt = (uint32_t) std::min<int64_t>(n_tokens, llama_moe_cache_max_batch_fork());
+        const uint32_t nt = (uint32_t) std::min<int64_t>(n_tokens, llama_moe_cache_max_batch_cap_fork());
         res += model.hparams.n_layer() * (16u + 12u * ((nt + 3) / 4));
     }
 

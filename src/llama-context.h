@@ -46,6 +46,7 @@ struct llama_context {
     int32_t trace_n_eval() const { return n_eval; }       // for the layer trace (--moe log=l64)
     int32_t trace_n_p_eval() const { return n_p_eval; }
     void set_eval_cb(); // the scheduler callback: the user's, or the layer trace (--moe log=l64) in front of it
+    bool moe_probe_done = false;      // --moe max-batch=auto: the cache-path probe ran (or was not needed)
     bool moe_swap_test_done = false;  // --moe swap-test=A:B ran (fork)
     bool moe_decoded = false;         // this context decoded a batch (the startup memory probes create contexts that never do: no state snapshot for them)
     bool moe_observe_started = false; // the heat of a stock placement start is being counted (llama_moe_observe_start)
@@ -67,8 +68,9 @@ struct llama_context {
     bool swap_layers_fork(int a, int b);
     // fork: --moe alias=1: put the GPUs' compute graphs into the expert pool buffers of moe_alias_bufs (after every scheduler creation)
     void apply_moe_alias();
-    std::vector<llama_moe_alias_buf_fork> moe_alias_bufs;
     bool moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size_t need, size_t cap);
+    void moe_probe_costs_fork();   // --moe max-batch=auto: timed cache-path batches at the first decode
+    std::vector<llama_moe_alias_buf_fork> moe_alias_bufs;
 
     void synchronize();
 
