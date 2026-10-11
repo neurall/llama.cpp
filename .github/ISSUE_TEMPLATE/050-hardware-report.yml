@@ -1,0 +1,59 @@
+name: Hardware report (fork results)
+description: Share what this fork does on your machine, good or bad. Results from any hardware are very welcome.
+title: "Hardware report: "
+labels: ["hardware-report"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Thank you for measuring. Results on hardware other than the author's (2x RTX 3090 on a Ryzen 7 3700X) are the most useful
+        thing you can send. Run `python3 fork/run.py quick --help` for the short benchmark, or paste your own numbers with the build and settings.
+        A slower result than stock is as welcome as a faster one.
+  - type: textarea
+    id: version
+    attributes:
+      label: Build
+      description: Output of `llama-server --version`, and whether you used a release archive or built it yourself.
+      placeholder: |
+        version: 0.5.0-dev (build 12400, commit abc123456)
+        built with clang 21 for Linux x86_64 (release archive)
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware
+      description: GPU model(s) and how each is connected (PCIe generation and width, chipset or CPU slot), power limit if you changed it, CPU, RAM size and type, storage.
+      placeholder: |
+        GPUs: RTX 4090 (PCIe 4.0 x16, CPU slot), power limit default
+        CPU: Ryzen 9 7950X, 64 GB DDR5-6000
+        Storage: NVMe, model on the same drive
+    validations:
+      required: true
+  - type: textarea
+    id: model
+    attributes:
+      label: Model
+      description: Model file name, quantisation and size, and whether it fits in VRAM or in RAM.
+      placeholder: "GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf, 106 GB, does not fit VRAM, fits RAM"
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      description: The table printed by `python3 fork/run.py quick` (stock against the fork), or your own numbers (decode t/s and prompt processing t/s, with the prompt length).
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: flags
+    attributes:
+      label: Flags and settings
+      description: The command line, including any `--moe` settings. Say whether you used the defaults.
+      render: shell
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Throttling, crashes, startup time, anything surprising. The `[moe-cache]` lines of the server log are useful.
