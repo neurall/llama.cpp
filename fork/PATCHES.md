@@ -48,6 +48,18 @@ MTP draft head for GLM-5.3-Flash and Qwen3.8-Flash-Next (`-md FILE --spec-type d
 
 `run.py` (benchmarks, builds, regression check), the run log (`run-history.csv`, `runlog.py`), simulators, experiment records. See `fork/README.md`.
 
+## Upstream regressions and bugs found, and how they were fixed
+
+Every change of this fork is measured against the build before it, and so is every upstream merge. These came out of that, in the order they were found. Numbers are decode tokens/s on the RTX 3090 machine unless stated.
+
+| # | upstream change | what it broke | how it was found | fix in this fork | status |
+|---|---|---|---|---|---|
+| 1 | #29943 (selective expert copy moved into a user callback), on top of the #26040 host barrier | every CPU split after a GPU split waited for the GPU: +6.6 ms per GLM decode graph (-9.5% decode), -15 to -17% on a restricted-cache OLMoE cell on both test machines (PC1 124.3 -> 145.9 t/s once fixed, W10 laptop 105 -> 123) | A/B of the pre-merge and post-merge builds on the small OLMoE cell, then `GGML_SCHED_PROF=1` (barrier 0.01 ms against 6.66 ms per graph) | the barrier is skipped when the previous split ran on a GPU and either side is a GPU or the previous split read no host memory (`is_gpu`, `prev_reads_host` in `ggml_backend_sched_compute_splits`) | fixed, verified; **upstream candidate** |
+| 2 | #29184 (shared experts fused into MMVQ) | the fused `mul_mat_vec_q` kernels carry a runtime shared-expert branch and reassignable pointers that every launch pays, also for models without a shared expert: Q4_K kernel +7%, Q6_K +5%, whole decode -2.2% on OLMoE (nsys: same 163,456 launches, GPU busy 759.5 -> 778.9 ms; stock b11552 has it too) | decode of a VRAM-resident OLMoE slower than the b11509 release in the same session; a compiler test (b11509 source with today's recipe = b11509 speed) ruled out the toolchain; nsys kernel table pointed at the kernel | `has_shared` template parameter: only launches with `fusion.shared_up` use the instantiation with the branch | fix committed (`20c5d02b1`), measurement across models pending; **upstream candidate** |
+| 3 | MMQ ids path (`ggml-cuda/mmq.cu`) | the padding of the tail was sized from `ne12` and not from the flattened row count (`ne12*n_expert_used`) | wrong results on a batch tail with a MoE model | padding from the flattened row count | fixed; **upstream candidate** |
+
+Two of the "regressions" turned out not to be one, and are listed so the numbers are not misread: an observer that counts expert use on stock placement costs nothing measurable (`observe=0` gives +0.3%), and the clang build recipe is as fast as the gcc one on the same source.
+
 ## Upstream plan
 
 1. Scheduler host-barrier refinement, with the restricted-OLMoE repro (smallest, clearest win).
