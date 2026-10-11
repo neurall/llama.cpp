@@ -542,7 +542,7 @@ struct knobs_t {
     double wait        = 1;    // the step waits for queued cache swaps (0: never; finished uploads are published at splits)
     double chunk_kb    = -1;    // GATE=3: copy in chunks of this size, re-checking the DDR budget before each (0: whole tensor)
     double margin_mb   = 0;     // VRAM kept free per GPU after the cache is sized; 0: 384 (the engine sets it from the measured run-time growth)
-    double ddr_gbs     = 44;   // tools/bench/ddrbw: CPU + both DMAs together peak at 44-45 GB/s (DDR4-3200 ECC, 2 ch); GATE=3: an upload starts only while DDR demand + its link rate stays under this
+    double ddr_gbs     = 44;   // fork/bench/ddrbw: CPU + both DMAs together peak at 44-45 GB/s (DDR4-3200 ECC, 2 ch); GATE=3: an upload starts only while DDR demand + its link rate stays under this
     double stream    = 1e9; // predicted uploads use up to this many stream slots per layer (0: evict cache slots, old path)
     double stream_m  = 12;  // candidates per target layer in stream mode (over-predict; no confidence cut)
     double slotkeep  = 0;   // a prediction may only replace a stream slot holding a lower-scored one of this step
@@ -4271,7 +4271,7 @@ void llama_moe_cache_step_fork() {
             snprintf(b, sizeof b, "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%.3f,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64, mc->n_steps, dh + dm, dh, dm, load, filled, total, mc->n_uploads - pup, mc->n_evictions - pev);
             out += b;
             for (int i : {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}) { out += "," + std::to_string(mc->pr[i] - prev[i]); prev[i] = mc->pr[i]; }
-            // wall-clock time of the interval end in ms since the epoch (microsecond resolution), the same clock as the GPU sampler of tools/run.py: a change of speed lines up with power, clocks and swaps
+            // wall-clock time of the interval end in ms since the epoch (microsecond resolution), the same clock as the GPU sampler of fork/run.py: a change of speed lines up with power, clocks and swaps
             snprintf(b, sizeof b, ",%.3f", std::chrono::duration<double, std::micro>(std::chrono::system_clock::now().time_since_epoch()).count() / 1e3);
             out += b;
             out += "\n";
@@ -4465,7 +4465,7 @@ void llama_moe_cache_free_fork() {
     }
     pred_save(mc);
     if (mc->n_pred_up || mc->pm_miss) {
-        // one line for the harness (tools/runexp.py): the predictor's result of this run
+        // one line for the harness (fork/runexp.py): the predictor's result of this run
         uint64_t hh = 0, mm = 0;
         for (auto & ls : mc->layers) { hh += ls.n_hit; mm += ls.n_miss; }
         const double hr = hh + mm ? 100.0*hh/(hh + mm) : 0.0, boost = hh + mm ? 100.0*mc->n_pred_used/(hh + mm) : 0.0;

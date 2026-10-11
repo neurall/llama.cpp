@@ -2585,7 +2585,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 else if (key == "autotune") { params.autotune = v != 0; }
                 else if (key == "train-every")   { params.n_moe_predict_train = v; if (params.n_moe_predict <= 0) { params.n_moe_predict = 8; } }
                 else { params.moe_opts += (params.moe_opts.empty() ? "" : ",") + kv; } // a tuner knob: the engine checks the name
-                llama_moe_set_opt(key.c_str(), kv.c_str() + eq + 1);   // every key is also an engine setting: state, mode, log, logdir, policy, ... (docs/fork-knobs.md)
+                llama_moe_set_opt(key.c_str(), kv.c_str() + eq + 1);   // every key is also an engine setting: state, mode, log, logdir, policy, ... (fork/docs/fork-knobs.md)
             }
         }
     ).set_env("LLAMA_ARG_MOE"));

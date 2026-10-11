@@ -15,7 +15,7 @@
 *.gguf.json
 *.lastModified
 *.log
-!tools/bench/logs/**/*.log
+!fork/bench/logs/**/*.log
 *.metallib
 *.o
 *.so
@@ -154,4 +154,4 @@ a.out.*
 
 AGENTS.local.md
 .pi/SYSTEM.md
-tools/runs.db
+fork/runs.db

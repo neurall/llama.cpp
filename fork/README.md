@@ -1,0 +1,21 @@
+# fork/
+
+Everything of this fork that is not engine code lives here, so the engine diff against upstream stays small and a PR can be cut without it.
+Engine code stays where the build needs it: `src/llama-moecache*`, `src/llama-moestate*` and our edits to upstream files.
+
+| path | contents |
+|---|---|
+| `run.py` | the single entry point for every benchmark run, build, regression check and the huge-page pool (`run.py bench`, `build`, `regress`, `hugepool`; see its header) |
+| `runlog.py`, `runq.py`, `runlog_all.py`, `runstats.py`, `runnorm.py`, `merge_runs.py` | the run log: `runs.db` next to these files (not in git), queries over every run ever recorded |
+| `runexp.py`, `reg_tests.py`, `plcal.py`, `baseline.py`, `pick_features.py`, `bisect_perf.py`, `bisect_glm.sh`, `dbcommit.sh` | experiment runner, numbered regression tests, power-limit search, README cells on one build, bisect helpers, runs-db publishing |
+| `resident_pin.sh` | one-time setup of the 1 GiB huge-page pool for fast pinned loads (users); `run.py hugepool` does the same for our runs |
+| `moe-state.ini` | seed state file (hot experts per model): copy to `~/.cache/llama.cpp/moe-state.ini` if you have none |
+| `vnni-check.cpp` | CPU feature check |
+| `bench/` | frozen prompts, run history (`run-history.csv`), stats, campaigns, GPU logs |
+| `sim/` | offline cache simulators and trace tools |
+| `cloud/`, `iobench/`, `charts/` | rented-box helpers, disk I/O micro-benchmarks, chart scripts |
+| `docs/` | fork documentation: [`fork-knobs.md`](docs/fork-knobs.md) (every flag, `--moe` setting and environment variable), the cache refactor design spec |
+| `experiments/` | one directory per experiment: README (question, method, tables, decision), scripts, small sample data |
+| `data/` | small research outputs kept for reference (`embhot.csv`) |
+
+Run everything through `python3 fork/run.py ...` from the repository root.
