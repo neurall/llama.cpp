@@ -154,7 +154,9 @@ struct layer_state {
     std::vector<bool>     hot;            // expert id -> always hot: the fewest experts covering LLAMA_MOE_CACHE_PIN_HOT of the layer's picks
     bool                  slow = false;   // this layer's cache sits on a GPU with a slower upload link than the fastest one
     int                   link = 0;       // upload link (GPU) of this layer's cache: 0 = the offload / fastest GPU, 1.. the others
-    int32_t               n_cache = 0;    // cache slots (the rest stream predicted experts)
+    int32_t               n_cache = 0;    // cache slots (the rest stream predicted experts); block pool: this layer's nominal share, used only by heuristics (hot set, adopt limit)
+    int32_t               pcls    = -1;   // block pool: the size class this layer's experts are cached in (index into moe_cache::pool), -1 = own tensors (--moe pool=0)
+    int32_t               n_own   = 0;    // block pool: blocks of the class this layer owns now
     std::vector<uint8_t>  is_stream;      // slot -> holds streamed (predicted) experts, not the cache
     std::unique_ptr<std::atomic<const char *>[]> pin_ptr[3];   // tensor (up, gate, down) -> expert -> its pinned copy (--moe pinr), nullptr = not pinned
     std::vector<int32_t>  stream_slots;   // those slots, round robin
@@ -224,6 +226,13 @@ struct moe_cache {
     std::mutex mtx; // guards pending lists + clock (observe runs during graph exec)
 
     std::vector<layer_state> layers;
+    // block pool: per size class, which layer owns each block (-1 free) and the free blocks. No block is reserved for a layer: a layer takes a
+    // free block, or the block of the lowest-ranked cached expert of ANY layer of the class (see pick_slot)
+    struct pool_state {
+        std::vector<int32_t> owner;   // block -> index into layers, -1 free
+        std::vector<int32_t> free;    // free blocks (stack)
+    };
+    std::vector<pool_state> pool;
     std::map<const ggml_tensor *, size_t> by_up_src;
     std::map<const ggml_tensor *, std::pair<size_t, int>> by_src; // host weight -> (layer, 0 up / 1 gate / 2 down)
 
@@ -1042,6 +1051,105 @@ void llama_moe_observe_save() {
 namespace {
 void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t slot_or_dummy);
 void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop);
+void note_evict(moe_cache * mc, layer_state & ls, int32_t e);
+
+// ---- block pool runtime ----------------------------------------------------------------------------------------------------------------------------
+// With the block pool the slot index used everywhere (tables, upload offsets, the slot arrays of a layer) is a block of the layer's size class.
+// Invariant: ls.slot_expert[s] >= 0 or ls.slot_in_flight[s] only in the layer that owns block s. Without the pool (--moe pool=0) a slot is one of
+// the layer's own tensor slots and these helpers keep the old per-layer behaviour.
+struct slot_pick {
+    int32_t slot  = -1;
+    int32_t owner = -1;   // layer whose cached expert sits in the block; -1: the block is free or empty
+};
+
+// the block an expert of layer li may take: a free (or owned but empty) block if there is one, else the block whose cached expert has the lowest
+// rank(owner layer, owner index, expert) >= 0 (< 0: may not be evicted). Pool: every block of li's class, whichever layer owns it: no layer has a
+// quota. best: the rank of the returned victim, 0 for a free block
+template <class Rank>
+slot_pick pick_slot(moe_cache * mc, size_t li, Rank rank, double & best) {
+    layer_state & ls = mc->layers[li];
+    best = 1e300;
+    slot_pick p;
+    if (ls.pcls >= 0) {
+        auto & ps = mc->pool[ls.pcls];
+        if (!ps.free.empty()) {
+            p.slot = ps.free.back();
+            best = 0;
+            return p;
+        }
+        for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
+            const int32_t o = ps.owner[b];
+            if (o < 0) { p.slot = b; best = 0; return p; }
+            layer_state & lo = mc->layers[o];
+            if (lo.slot_in_flight[b] || lo.is_stream[b]) {
+                continue;
+            }
+            const int32_t e = lo.slot_expert[b];
+            if (e < 0) { p.slot = b; best = 0; return p; }   // owned and empty (an adoption that did not complete)
+            const double r = rank(lo, (size_t) o, e);
+            if (r >= 0 && r < best) { best = r; p.slot = b; p.owner = o; }
+        }
+        return p;
+    }
+    for (int32_t b = 0; b < ls.pub.n_slots; ++b) {
+        if (ls.slot_in_flight[b] || ls.is_stream[b]) {
+            continue;
+        }
+        const int32_t e = ls.slot_expert[b];
+        if (e < 0) { p.slot = b; best = 0; return p; }
+        const double r = rank(ls, li, e);
+        if (r >= 0 && r < best) { best = r; p.slot = b; p.owner = (int32_t) li; }
+    }
+    return p;
+}
+
+// block b now belongs to layer li (the expert its previous owner cached there must be evicted first)
+void pool_take(moe_cache * mc, size_t li, int32_t b) {
+    layer_state & ls = mc->layers[li];
+    if (ls.pcls < 0) {
+        return;
+    }
+    auto & ps = mc->pool[ls.pcls];
+    const int32_t o = ps.owner[b];
+    if (o == (int32_t) li) {
+        return;
+    }
+    if (o < 0) {
+        auto it = std::find(ps.free.rbegin(), ps.free.rend(), b);
+        if (it != ps.free.rend()) {
+            ps.free.erase(std::next(it).base());
+        }
+    } else {
+        mc->layers[o].n_own--;
+    }
+    ps.owner[b] = (int32_t) li;
+    ls.n_own++;
+}
+
+// layer li gives the empty block b back: any layer of the class may take it
+void pool_release(moe_cache * mc, size_t li, int32_t b) {
+    layer_state & ls = mc->layers[li];
+    if (ls.pcls < 0 || mc->pool[ls.pcls].owner[b] != (int32_t) li) {
+        return;
+    }
+    mc->pool[ls.pcls].owner[b] = -1;
+    mc->pool[ls.pcls].free.push_back(b);
+    ls.n_own--;
+}
+
+// evict the expert layer lo caches in block b; its table entry goes back to uncached now (call at a sync point)
+void evict_slot(moe_cache * mc, layer_state & lo, int32_t b) {
+    const int32_t v = lo.slot_expert[b];
+    if (v < 0) {
+        return;
+    }
+    lo.expert_slot[v] = -1;
+    lo.slot_expert[b] = -1;
+    set_table_entry(lo.pub, v, lo.pub.n_slots);
+    note_evict(mc, lo, v);
+    lo.cached_since[v] = 0;
+    if (lo.dropped[v]) { page_hint(mc, lo, v, false); lo.dropped[v] = false; }
+}
 
 size_t profile_preload(moe_cache * mc, const llama_model & model) {
     std::vector<std::vector<uint64_t>> counts;
@@ -1104,10 +1212,16 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             }
         }
         std::sort(ids.begin(), ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
-        for (int32_t s = 0; s < std::min<int32_t>(ls.n_cache, (int32_t) ids.size()); ++s) {
+        for (int32_t i = 0; i < std::min<int32_t>(ls.n_cache, (int32_t) ids.size()); ++i) {
+            double best;
+            const int32_t s = pick_slot(mc, il, [](layer_state &, size_t, int32_t) { return -1.0; }, best).slot;   // free blocks only
+            if (s < 0) {
+                break;
+            }
+            pool_take(mc, il, s);
             ls.slot_in_flight[s] = true;
-            ls.queued[ids[s]]    = 1;
-            upload_job pj { il, ids[s], s };
+            ls.queued[ids[i]]    = 1;
+            upload_job pj { il, ids[i], s };
             pj.t_queued = ggml_time_us();
             mc->todo.push_back(pj);
             queued++;
@@ -2201,29 +2315,23 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
         if (ls.expert_slot[expert] >= 0 || (int32_t) ls.adopted.size() >= (int32_t) (frac * ls.n_cache)) {
             return false;
         }
-        // victim: empty slot, else the non-sticky cached expert with the least lifetime use,
+        // victim: a free block, else the non-sticky cached expert with the least lifetime use (block pool: of any layer of the class),
         // and only if this expert (whose use this prompt just counted) was used more
-        uint64_t least = UINT64_MAX;
-        for (int32_t sl = 0; sl < ls.pub.n_slots; ++sl) {
-            if (ls.slot_in_flight[sl] || ls.is_stream[sl]) {
-                continue;
-            }
-            const int32_t v = ls.slot_expert[sl];
-            if (v < 0) { slot = sl; least = 0; break; }
-            if (pinned(mc, ls, v)) {
-                continue;
-            }
-            if (ls.glob_count[v] < least) { least = ls.glob_count[v]; slot = sl; }
-        }
-        if (slot < 0 || least >= ls.glob_count[expert]) {
+        double least;
+        const size_t ali = it->second.first;
+        const slot_pick pk = pick_slot(mc, ali, [&](layer_state & lo, size_t, int32_t v) { return pinned(mc, lo, v) ? -1.0 : (double) lo.glob_count[v]; }, least);
+        slot = pk.slot;
+        if (slot < 0 || least >= (double) ls.glob_count[expert]) {
             return false;
         }
-        const int32_t victim = ls.slot_expert[slot];
-        if (victim >= 0) {
-            ls.expert_slot[victim] = -1; // no later batch reads the slot as the victim
-            ls.slot_expert[slot]   = -1;
-            ls.adopt_victims.push_back(victim);
+        if (pk.owner >= 0) {
+            layer_state & lo = mc->layers[pk.owner];
+            const int32_t victim = lo.slot_expert[slot];
+            lo.expert_slot[victim] = -1; // no later batch reads the slot as the victim
+            lo.slot_expert[slot]   = -1;
+            lo.adopt_victims.push_back(victim);   // its table entry is reset at the next step
         }
+        pool_take(mc, ali, slot);
         ls.slot_in_flight[slot] = true;
         ls.adopt_slot[expert]   = slot;
         ls.adopted.push_back(expert);
@@ -2414,32 +2522,30 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
 }
 
 // ---- block pool layout -------------------------------------------------------------------------------------------------------------------------
-// The cache tensors of the layers of one device group share ONE buffer. Layers whose experts have the same (type, bytes) for up / gate / down form a class.
-// A class occupies a stretch of the buffer made of rounds: round r holds slot r of every layer of the class, one block (up, gate, down, each aligned)
-// after the other. The cache tensor of a layer is a strided view of that stretch: data = stretch + offset of the layer's block, nb[2] = round bytes.
-// Why: (1) no per-tensor padding or allocation, the buffer is allocated once; (2) the first n rounds of the first class are one contiguous byte range
-// that a compute buffer can take over (slot r < n blocked) without any allocation or free; (3) the MMVQ / MMQ kernels take the expert stride from nb[2]
-// as nb[2] / type size, so a round is padded to a multiple of the least common multiple of the quant block sizes of its class (tests: MUL_MAT_ID strided).
+// The expert cache of a device group is ONE buffer of blocks. A block holds one expert: its up, gate and down slices one after the other. Layers whose
+// experts have the same types and sizes form a size class; a class is a run of equal blocks, and any block of it can hold an expert of any layer of
+// the class (the owner table, moe_cache::pool, says which). Nothing is reserved per layer: the class gets (layers x the slot count) blocks and the
+// layers take them as their experts earn them. The cache tensors of a layer are strided views of its class: data = class start + the slice's offset
+// in a block, nb[2] = block bytes, ne[2] = blocks of the class + 1 (the last block stays zero: the "uncached" target of the tables).
+// The MMVQ / MMQ kernels take the expert stride from nb[2] as nb[2] / type size, so a block is padded to a multiple of the quant block sizes of its
+// class (test-backend-ops: MUL_MAT_ID with strided experts). The first blocks of the buffer are one contiguous byte range a compute buffer can take.
 struct pool_class {
-    size_t R    = 0;                 // bytes of one round
-    size_t base = 0;                 // byte offset of the class stretch in the buffer
+    size_t B      = 0;               // bytes of one block
+    size_t off[3] = { 0, 0, 0 };     // up / gate / down: byte offset inside a block
+    size_t base   = 0;               // byte offset of the class in the buffer
     std::vector<size_t> members;     // indices into the group's layer list
-};
-struct pool_layer {
-    size_t cls    = 0;
-    size_t off[3] = { 0, 0, 0 };     // up / gate / down: byte offset inside a round
 };
 struct pool_layout_t {
     std::vector<pool_class> cls;
-    std::vector<pool_layer> lay;
-    size_t round_bytes = 0;          // all classes: bytes of one slot of every layer
+    std::vector<size_t>     lay_cls;      // layer -> class
+    size_t round_bytes = 0;               // the bytes of one block per layer (what one more slot per layer costs)
 };
 
 static size_t pool_up(size_t x, size_t a) { return (x + a - 1) / a * a; }
 
 static pool_layout_t pool_layout(const std::vector<const llama_layer *> & ls) {
     pool_layout_t out;
-    out.lay.resize(ls.size());
+    out.lay_cls.resize(ls.size());
     std::map<std::vector<size_t>, size_t> key2cls;
     for (size_t i = 0; i < ls.size(); ++i) {
         const ggml_tensor * t[3] = { ls[i]->ffn_up_exps, ls[i]->ffn_gate_exps, ls[i]->ffn_down_exps };
@@ -2447,28 +2553,20 @@ static pool_layout_t pool_layout(const std::vector<const llama_layer *> & ls) {
         auto it = key2cls.find(key);
         if (it == key2cls.end()) {
             it = key2cls.emplace(key, out.cls.size()).first;
-            out.cls.emplace_back();
+            pool_class c;
+            size_t off = 0, q = 128;   // 128: the CUDA buffer alignment
+            for (int k = 0; k < 3; ++k) {
+                c.off[k] = off;
+                off += pool_up(t[k]->nb[2], 128);
+                const size_t ts = ggml_type_size(t[k]->type);
+                q = q / std::__gcd(q, ts) * ts;
+            }
+            c.B = pool_up(off, q);
+            out.cls.push_back(c);
         }
-        pool_class & c = out.cls[it->second];
-        pool_layer & l = out.lay[i];
-        l.cls = it->second;
-        size_t off = c.R;
-        for (int k = 0; k < 3; ++k) {
-            l.off[k] = off;
-            off += pool_up(t[k]->nb[2], 256);
-        }
-        c.R = off;
-        c.members.push_back(i);
-    }
-    for (auto & c : out.cls) {
-        const ggml_tensor * t0 = ls[c.members[0]]->ffn_up_exps, * t1 = ls[c.members[0]]->ffn_gate_exps, * t2 = ls[c.members[0]]->ffn_down_exps;
-        size_t q = 256;
-        for (const ggml_tensor * t : { t0, t1, t2 }) {
-            const size_t ts = ggml_type_size(t->type);
-            q = q / std::__gcd(q, ts) * ts;
-        }
-        c.R = pool_up(c.R, q);
-        out.round_bytes += c.R;
+        out.lay_cls[i] = it->second;
+        out.cls[it->second].members.push_back(i);
+        out.round_bytes += out.cls[it->second].B;
     }
     return out;
 }
@@ -2538,8 +2636,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
 
         // LLAMA_MOE_CACHE_JIT_POOL=n: JIT pool slots per slower-link layer on the fastest-link GPU. Default 0: the pool
         // chain's cross-GPU input/output copies cost ~10% on GLM (2x3090, 20 x4 layers) even with nothing in the pool
-        // --moe pool=0: one buffer per layer tensor, as before the block pool (reference for A/B)
-        const bool pool_on = [] { const char * e = moe_opt("pool"); return !e || atoi(e) != 0; }();
+        // --moe pool=0: own cache tensors per layer with a fixed slot count each, as before the block pool (reference for A/B)
+        const bool pool_on = [] { const char * e = moe_opt("pool"); return !e || atoi(e) != 0; }() && predict <= 0;   // the predictor's stream slots are per layer
         const int32_t jit_pool = [] { const char * e = moe_opt("jit-pool"); return e ? std::max(0, atoi(e)) : 0; }();
         // LLAMA_MOE_CACHE_JIT_POOL_ALL=1: every layer gets a pool (JIT never evicts the main cache)
         const bool jit_pool_all = [] { const char * e = moe_opt("jit-pool-all"); return e && atoi(e) != 0; }();
@@ -2683,8 +2781,13 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 std::vector<const llama_layer *> ll;
                 for (const auto & c : cands) { ll.push_back(c.l); }
                 pool_layout_t pl = pool_layout(ll);
+                std::vector<int32_t> nblk(pl.cls.size());
                 size_t total = 0;
-                for (auto & c : pl.cls) { c.base = total; total += (size_t) (slots + 1) * c.R; }
+                for (size_t c = 0; c < pl.cls.size(); ++c) {
+                    nblk[c]        = slots * (int32_t) pl.cls[c].members.size();   // the class's share of the memory, owned by no layer
+                    pl.cls[c].base = total;
+                    total         += (size_t) (nblk[c] + 1) * pl.cls[c].B;
+                }
                 total += 4096;   // MMQ reads whole 512-wide tiles: the end of the last tensor may be read past
                 ggml_backend_buffer_t pbuf = ggml_backend_buft_alloc_buffer(buft, total);
                 if (!pbuf) {
@@ -2694,23 +2797,37 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 ggml_backend_buffer_clear(pbuf, 0);
                 ggml_backend_buffer_set_usage(pbuf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
                 uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(pbuf);
+                const size_t pool0 = mc->pool.size();
+                std::string cls_txt;
+                for (size_t c = 0; c < pl.cls.size(); ++c) {
+                    moe_cache::pool_state ps;
+                    ps.owner.assign(nblk[c], -1);
+                    for (int32_t b = nblk[c] - 1; b >= 0; --b) { ps.free.push_back(b); }
+                    mc->pool.push_back(std::move(ps));
+                    cls_txt += tr_fmt("%s%d x %.2f MiB (%zu layers)", c ? ", " : "", nblk[c], pl.cls[c].B / 1048576.0, pl.cls[c].members.size());
+                }
                 for (size_t i = 0; i < cands.size(); ++i) {
                     layer_state * ls = nullptr;
                     for (auto & l : mc->layers) {
                         if (l.pub.il == cands[i].il) { ls = &l; break; }
                     }
-                    const pool_layer & pli = pl.lay[i];
-                    const pool_class & cl  = pl.cls[pli.cls];
+                    const size_t       ci = pl.lay_cls[i];
+                    const pool_class & cl = pl.cls[ci];
+                    const int32_t      n  = nblk[ci];
                     ggml_tensor * t3[3] = { ls->pub.up_c, ls->pub.gate_c, ls->pub.down_c };
                     for (int k = 0; k < 3; ++k) {
-                        t3[k]->nb[2]  = cl.R;
-                        t3[k]->nb[3]  = cl.R * (size_t) (slots + 1);
+                        t3[k]->ne[2]  = n + 1;
+                        t3[k]->nb[2]  = cl.B;
+                        t3[k]->nb[3]  = cl.B * (size_t) (n + 1);
                         t3[k]->buffer = pbuf;
-                        t3[k]->data   = base + cl.base + pli.off[k];
+                        t3[k]->data   = base + cl.base + cl.off[k];
                     }
+                    ls->pub.n_slots = n;                      // the class's blocks; n is the zero block ("uncached")
+                    ls->pcls        = (int32_t) (pool0 + ci);
+                    ls->n_cache     = slots;                  // nominal share, for the heuristics only
                 }
-                LLAMA_LOG_WARN("moe-cache: block pool on %s: %zu layers in %zu classes, %d slots + 1 per layer, %.1f MiB (rounds of %.1f MiB)\n", ggml_backend_buft_name(buft),
-                        cands.size(), pl.cls.size(), slots, total / 1048576.0, pl.round_bytes / 1048576.0);
+                LLAMA_LOG_WARN("moe-cache: block pool on %s: %zu layers, %.1f MiB, size classes: %s; no blocks reserved per layer\n", ggml_backend_buft_name(buft),
+                        cands.size(), total / 1048576.0, cls_txt.c_str());
                 mc->bufs.push_back(pbuf);
             }
             ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
@@ -2824,12 +2941,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         for (auto & ls : mc->layers) {
             const int64_t n_expert = ls.pub.up_src->ne[2];
             const int32_t ns = ls.pub.n_slots;
-            ls.n_cache = ns > 2*n_stream ? ns - n_stream : ns;
+            ls.n_cache = ls.pcls >= 0 ? ls.n_cache : ns > 2*n_stream ? ns - n_stream : ns;   // pool: the share set at allocation (heuristics only)
             ls.is_stream.assign(ns, 0);
             ls.stream_score.assign(ns, 0.0f);
             ls.stream_step.assign(ns, 0);
             ls.stream_slots.clear();
-            for (int32_t sl = ls.n_cache; sl < ns; ++sl) {
+            for (int32_t sl = ls.n_cache; ls.pcls < 0 && sl < ns; ++sl) {
                 ls.is_stream[sl] = 1;
                 ls.stream_slots.push_back(sl);
             }
@@ -3485,25 +3602,18 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         if (knobs().admit_jit > 0 && ls.win_count[id] < knobs().admit_jit) {
             continue;  // not seen often enough in the last 64 tokens: the CPU computes it, it takes no slot
         }
-        // slot: an empty one, else the lowest-scored cached expert this token doesn't use
-        int32_t slot = -1;
-        double best = 1e300;
-        for (int32_t s = 0; s < ls.pub.n_slots; ++s) {
-            if (ls.slot_in_flight[s] || ls.is_stream[s]) {
-                continue;
-            }
-            const int32_t x = ls.slot_expert[s];
-            if (x < 0) { slot = s; break; }
-            if (pinned(mc, ls, x) || std::find(cur.begin(), cur.end(), x) != cur.end()) {
-                continue;
-            }
-            const double c = score(ls, x);
-            if (c < best) { best = c; slot = s; }
-        }
+        // slot: a free block, else the lowest-scored cached expert of THIS layer this token doesn't use (mid-graph: another layer's
+        // table may already be on the GPU, so its blocks are not taken here; the step at the token boundary moves blocks between layers)
+        double best;
+        const size_t jli = (size_t) (&ls - mc->layers.data());
+        const slot_pick pk = pick_slot(mc, jli, [&](layer_state & lo, size_t o, int32_t x) {
+            return o != jli || pinned(mc, lo, x) || std::find(cur.begin(), cur.end(), x) != cur.end() ? -1.0 : score(lo, x);
+        }, best);
+        const int32_t slot = pk.slot;
         if (slot < 0) {
             break;
         }
-        const int32_t victim = ls.slot_expert[slot];
+        const int32_t victim = pk.owner >= 0 ? ls.slot_expert[slot] : -1;
         if (victim >= 0) {
             // JIT=1: admitted only as the step's swap would be (no churn): hotter than the victim by the link's pay-back
             // margin; JIT=2: any miss may evict the lowest-scored expert this token doesn't use
@@ -3511,12 +3621,9 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
                     score(ls, id) < score(ls, victim) + pay_back(mc->link_margin[ls.link]))) {
                 continue;
             }
-            ls.expert_slot[victim] = -1;
-            set_table_entry(ls.pub, victim, ls.pub.n_slots);
-            note_evict(mc, ls, victim);
-            ls.cached_since[victim] = 0;
-            if (ls.dropped[victim]) { page_hint(mc, ls, victim, false); ls.dropped[victim] = false; }
+            evict_slot(mc, ls, slot);
         }
+        pool_take(mc, jli, slot);
         // async on the chain's stream: the chain (launched next) runs after the copies
         const ggml_tensor * srcs[3] = { pub->up_src, pub->gate_src, pub->down_src };
         ggml_tensor *       dsts[3] = { pub->up_c,   pub->gate_c,   pub->down_c   };
@@ -3942,6 +4049,8 @@ void llama_moe_cache_step_fork() {
                     set_table_entry(ls.pub, e, slot);
                     ls.cached_since[e] = mc->n_steps + 1;
                     n_adopt++;
+                } else {
+                    pool_release(mc, (size_t) (&ls - mc->layers.data()), slot);
                 }
                 ls.slot_in_flight[slot] = false;
                 ls.adopt_slot[e] = -1;
@@ -4312,32 +4421,24 @@ void llama_moe_cache_step_fork() {
                 continue;
             }
 
-            // victim: an empty non-in-flight slot if any, else the least-called cached expert
-            int32_t slot = -1;
-            double best = 1e300;
-            for (int32_t s = 0; s < ls.pub.n_slots; ++s) {
-                if (ls.slot_in_flight[s] || ls.is_stream[s]) {
-                    continue;
-                }
-                if (ls.slot_expert[s] < 0) { slot = s; break; }
-                if (pinned(mc, ls, ls.slot_expert[s])) {
-                    continue;
-                }
-                const double c = score(ls, ls.slot_expert[s]);
-                if (c < best) { best = c; slot = s; }
-            }
+            // victim: a free block if any, else the lowest-scored cached expert (block pool: of ANY layer of the class, so the blocks go to the
+            // layers whose experts score highest; without the pool: of this layer)
+            double best;
+            const slot_pick pk = pick_slot(mc, li, [&](layer_state & lo, size_t, int32_t e) { return pinned(mc, lo, e) ? -1.0 : score(lo, e); }, best);
+            const int32_t slot = pk.slot;
             if (slot < 0) {
                 mc->pr[9] += ls.pending.end() - it;
                 break; // every slot is in flight; try again next step
             }
 
-            const int32_t victim = ls.slot_expert[slot];
+            layer_state & lo = pk.owner >= 0 ? mc->layers[pk.owner] : ls;
+            const int32_t victim = pk.owner >= 0 ? lo.slot_expert[slot] : -1;
             if (victim >= 0) {
-                if (knobs().big != 0 && ls.glob_count[id] < ls.glob_count[victim]) {
+                if (knobs().big != 0 && ls.glob_count[id] < lo.glob_count[victim]) {
                     mc->pr[10]++;
                     continue; // lifetime regular stays; a later candidate may still fit
                 }
-                if (score(ls, id) < score(ls, victim) + pay_back(link_margin[ls.link])) {
+                if (score(ls, id) < score(lo, victim) + pay_back(link_margin[ls.link])) {
                     mc->pr[7] += ls.pending.end() - it;   // this and every later (colder) candidate
                     break; // candidates are sorted: nothing hotter than what's cached
                 }
@@ -4346,13 +4447,9 @@ void llama_moe_cache_step_fork() {
                     break;
                 }
                 mc->pr[5]++;
-                ls.expert_slot[victim] = -1;
-                ls.slot_expert[slot]   = -1;
-                set_table_entry(ls.pub, victim, ls.pub.n_slots);
-                note_evict(mc, ls, victim);
-                ls.cached_since[victim] = 0;
-                if (ls.dropped[victim]) { page_hint(mc, ls, victim, false); ls.dropped[victim] = false; }
+                evict_slot(mc, lo, slot);
             }
+            pool_take(mc, li, slot);
             mc->pr[4] += victim < 0;
             ls.slot_in_flight[slot] = true;
             ls.queued[id]           = 1;
@@ -4383,7 +4480,7 @@ void llama_moe_cache_step_fork() {
         static uint64_t ph = 0, pm = 0;
         uint64_t h = 0, m = 0, filled = 0, inflight = 0, total = 0;
         for (auto & ls : mc->layers) {
-            h += ls.n_hit; m += ls.n_miss; total += ls.pub.n_slots;
+            h += ls.n_hit; m += ls.n_miss; total += ls.pcls >= 0 ? ls.n_own : ls.pub.n_slots;
             for (int32_t s = 0; s < ls.pub.n_slots; ++s) {
                 filled   += ls.slot_expert[s] >= 0;
                 inflight += ls.slot_in_flight[s];
@@ -4403,7 +4500,7 @@ void llama_moe_cache_step_fork() {
             for (auto & ls : mc->layers) {
                 int act = 0;
                 for (uint32_t c : ls.win_count) { act += c > 0; }
-                load += ls.pub.n_slots ? (double) act / ls.pub.n_slots : 0;
+                load += (ls.pcls >= 0 ? ls.n_own : ls.pub.n_slots) > 0 ? (double) act / (ls.pcls >= 0 ? ls.n_own : ls.pub.n_slots) : 0;
             }
             load /= std::max<size_t>(1, mc->layers.size());
             const std::filesystem::path path = moe_log_file(("routing/" + moe_run_stem(mc->profile) + ".cache.csv").c_str());
@@ -4529,8 +4626,8 @@ bool llama_moe_cache_get_info_fork(struct llama_tuning_info * info) {
     info->moe_layers  = (int32_t) mc->layers.size();
     info->moe_slots_min = INT32_MAX; info->moe_slots_max = 0;
     for (auto & ls : mc->layers) {
-        info->moe_slots_min = std::min(info->moe_slots_min, ls.pub.n_slots);
-        info->moe_slots_max = std::max(info->moe_slots_max, ls.pub.n_slots);
+        info->moe_slots_min = std::min(info->moe_slots_min, ls.pcls >= 0 ? ls.n_own : ls.pub.n_slots);
+        info->moe_slots_max = std::max(info->moe_slots_max, ls.pcls >= 0 ? ls.n_own : ls.pub.n_slots);
     }
     info->margin = mc->last_margin; // the value in use (the tuner's pick, a fixed MARGIN, or the timing rule's)
     info->gate = (int32_t) knobs().gate; info->wait = (int32_t) knobs().wait; info->big = (int32_t) knobs().big;
@@ -4624,7 +4721,8 @@ void llama_moe_cache_free_fork() {
         for (const auto & ls : mc->layers) {
             int filled = 0;
             for (int32_t x : ls.slot_expert) { filled += x >= 0; }
-            LLAMA_LOG_WARN("moe-cache: layer %d: %d of %d slots filled, hits %" PRIu64 " misses %" PRIu64 " (%.1f%%)\n", ls.pub.il, filled, ls.pub.n_slots,
+            LLAMA_LOG_WARN("moe-cache: layer %d: %d experts cached (%s %d), hits %" PRIu64 " misses %" PRIu64 " (%.1f%%)\n", ls.pub.il, filled,
+                    ls.pcls >= 0 ? "pool class" : "slots", ls.pcls >= 0 ? ls.pcls : ls.pub.n_slots,
                     (uint64_t) ls.n_hit, (uint64_t) ls.n_miss, ls.n_hit + ls.n_miss ? 100.0*ls.n_hit/(ls.n_hit + ls.n_miss) : 0.0);
         }
     }
