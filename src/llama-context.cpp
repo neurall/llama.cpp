@@ -5,6 +5,7 @@
 #include <thread>
 
 #include "llama-moecache-fork.h"
+#include "llama-kv-cache.h"
 #include "llama-moestate-fork.h"
 
 #include "ggml.h"
@@ -2093,6 +2094,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
         res->set_inputs(&ubatch);
 
+    llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
     }
 

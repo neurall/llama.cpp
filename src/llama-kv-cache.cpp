@@ -12,6 +12,11 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
 
 static bool ggml_is_power_of_2(int n) {
@@ -1566,6 +1571,88 @@ struct args_set_input_kq_mask {
     int64_t n_tps;
 };
 
+// fork: persistent workers that fill the rows of a big ubatch's attention mask in parallel (--moe maskt=N). The caller takes chunks too; the workers
+// sleep between batches, so a mask fill pays no thread spawn (about 20 to 50 us per thread per batch with std::thread, more than a small fill is worth).
+struct kq_mask_pool {
+    std::mutex              m;
+    std::condition_variable cv_work, cv_done;
+    std::vector<std::thread> th;
+    const std::function<void(int)> * fn = nullptr;
+    int      next = 0, n_chunks = 0, pending = 0;
+    uint64_t gen = 0;
+    bool     stop = false;
+
+    explicit kq_mask_pool(int n_workers) {
+        for (int i = 0; i < n_workers; ++i) {
+            th.emplace_back([this] { loop(); });
+        }
+    }
+    ~kq_mask_pool() {
+        {
+            std::lock_guard<std::mutex> lk(m);
+            stop = true;
+        }
+        cv_work.notify_all();
+        for (auto & t : th) {
+            t.join();
+        }
+    }
+    // take chunks of the current job until none is left; called with the lock held, returns with it held
+    void work(std::unique_lock<std::mutex> & lk) {
+        while (next < n_chunks) {
+            const int c = next++;
+            const auto * f = fn;
+            lk.unlock();
+            (*f)(c);
+            lk.lock();
+            if (--pending == 0) {
+                cv_done.notify_one();
+            }
+        }
+    }
+    void loop() {
+        uint64_t seen = 0;
+        std::unique_lock<std::mutex> lk(m);
+        for (;;) {
+            cv_work.wait(lk, [&] { return stop || gen != seen; });
+            if (stop) {
+                return;
+            }
+            seen = gen;
+            work(lk);
+        }
+    }
+    // fn(0 .. n-1) on the workers and the caller; returns when all are done
+    void run(int n, const std::function<void(int)> & f) {
+        std::unique_lock<std::mutex> lk(m);
+        fn = &f; next = 0; n_chunks = n; pending = n; gen++;
+        lk.unlock();
+        cv_work.notify_all();
+        lk.lock();
+        work(lk);
+        cv_done.wait(lk, [&] { return pending == 0; });
+    }
+};
+
+// threads that fill a mask (the caller plus workers): the same count the batch compute uses (the context sets it before each ubatch, so the
+// tuner's choice of batch threads is followed); --moe maskt=N fixes it, 1 = off
+static std::atomic<int> g_kq_mask_threads { 1 };
+
+void llama_kv_cache_set_mask_threads_fork(int n) {
+    g_kq_mask_threads.store(std::max(1, n), std::memory_order_relaxed);
+}
+
+static int kq_mask_threads() {
+    static const int fixed = [] { const char * e = llama_moe_get_opt("maskt"); return e ? std::max(1, atoi(e)) : 0; }();
+    return fixed > 0 ? fixed : g_kq_mask_threads.load(std::memory_order_relaxed);
+}
+
+// one pool for every template instance of the fill: a worker per physical core, a job uses as many chunks as threads are wanted
+static kq_mask_pool & kq_mask_workers() {
+    static kq_mask_pool pool(std::max(0, (int) std::thread::hardware_concurrency() / 2 - 1));
+    return pool;
+}
+
 template<typename T, bool causal, bool swa, bool is_2d, bool alibi>
 static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data) {
   //const auto & hparams = args.hparams;
@@ -1594,12 +1681,13 @@ static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data
         seq_pos_min[seq_id] = std::min(seq_pos_min[seq_id], ubatch->pos[i]);
     }
 
-    for (uint32_t s = 0; s < n_stream; ++s) {
+    // rows [ii0, ii1) of stream s
+    const auto fill_rows = [&](uint32_t s, uint32_t ii0, uint32_t ii1) {
         // bookkeeping of the KQ mask cells that could change for other tokens of the same sequence
         std::unordered_map<llama_seq_id, uint32_t>              seq_srct;
         std::unordered_map<llama_seq_id, std::vector<uint32_t>> seq_idxs;
 
-        for (uint32_t ii = 0; ii < n_tps; ++ii) {
+        for (uint32_t ii = ii0; ii < ii1; ++ii) {
             const uint32_t i = s*n_tps + ii;
 
             const llama_seq_id seq_id = ubatch->seq_id[i][0];
@@ -1714,6 +1802,25 @@ skip:
                 data[idst + j] = mask_drop;
             }
         }
+    };
+
+    // --moe maskt=N: the rows of a big ubatch in up to N chunks, filled in parallel by a persistent worker pool (N-1 workers plus the caller).
+    // A chunk starts its sequences over (their first row in it is filled cell by cell, the next ones copy it and update the cells near the batch
+    // positions), so the mask is the same as with one thread. Default: the batch thread count of the compute (measured on 8 cores: 4 threads
+    // +6.7%, 8 +7.3%, 16 +7.4%); maskt=1 turns it off. Only when the fill is worth it: tokens x cached positions >= 1M entries and >= 256 rows per chunk
+    // (GLM12, 12k prompt: 38-46 ms per 4096-token ubatch and 337 ms for one 12412-token ubatch on one thread; 8 threads: +6.5% prompt speed).
+    const int n_thr = kq_mask_threads();
+    kq_mask_pool & pool = kq_mask_workers();
+    const int n_chunks = (n_thr > 1 && (int64_t) n_tps * n_kv >= (1 << 20)) ? std::min<int>(n_thr, (int) (n_tps / 256)) : 1;
+    for (uint32_t s = 0; s < n_stream; ++s) {
+        if (n_chunks <= 1) {
+            fill_rows(s, 0, (uint32_t) n_tps);
+            continue;
+        }
+        const std::function<void(int)> job = [&](int c) {
+            fill_rows(s, (uint32_t) (n_tps*c/n_chunks), (uint32_t) (n_tps*(c + 1)/n_chunks));
+        };
+        pool.run(n_chunks, job);
     }
 }
 

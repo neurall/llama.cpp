@@ -482,3 +482,6 @@ private:
     // as the cache gets filled, the benefit from this heuristic disappears
     int32_t n_kv;
 };
+
+// fork: threads the attention-mask fill of the next ubatch may use (the batch compute thread count)
+void llama_kv_cache_set_mask_threads_fork(int n);
