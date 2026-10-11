@@ -1,0 +1,30 @@
+name: Fork tooling
+
+# The fork's own Python tooling and docs: no GPU and no model needed. The engine itself is built and tested by the upstream workflows in this directory.
+on:
+  push:
+    paths:
+      - 'fork/**'
+      - 'README.md'
+      - '.github/workflows/fork-ci.yml'
+  pull_request:
+    paths:
+      - 'fork/**'
+      - 'README.md'
+      - '.github/workflows/fork-ci.yml'
+
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Tool checks (compile, simulator invariants, config)
+        run: python3 fork/ci/test_tools.py
+
+      - name: Relative links in README and fork docs
+        run: python3 fork/ci/check_links.py
