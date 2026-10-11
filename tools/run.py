@@ -59,18 +59,6 @@ def local_hw():
     return os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
 
 
-def hw_is_local_gpu_host():
-    return os.environ.get("PERF_NO_PL_RESET") is None and shutil.which(NVSMI.split()[0]) is not None
-
-
-def pl_apply(spec):
-    """Set the GPU power limits (watts per card, like 300+370; a 0 keeps that card) with sudo. A long run on the x4 card has to stay at 300 W (it fell off the bus at 350 W under long load): bench takes PERF_PL_LONG=300+370 for those runs and puts PERF_PL_SHORT (default 350+370) back at its end."""
-    for i, w in enumerate(spec.split("+")):
-        if w.strip() and float(w) > 0:
-            subprocess.run(["sudo", "-n", NVSMI, "-i", str(i), "-pl", str(int(float(w)))], capture_output=True, timeout=30)
-    _PL.clear()   # the power_limits() cache reads the new values for the rows of this run
-
-
 def ldpath(build):   # the build directory first; PERF_LD_EXTRA=dir:dir appended (the userspace of a test driver whose version differs from the system libraries)
     return os.path.join(HERE, build) + (":" + os.environ["PERF_LD_EXTRA"] if os.environ.get("PERF_LD_EXTRA") else "")
 LOGTAG = "" if PORT == 8099 else f"-p{PORT}"   # a second run.py instance (PERF_PORT) keeps its own server logs
@@ -1603,22 +1591,6 @@ def cmd_bench(a):
         variants[k] = x
     names = a.variants.split(",") if a.variants else list(variants)
     global CAMPAIGN
-    if os.environ.get("PERF_PL_LONG"):
-        import atexit
-        if os.environ["PERF_PL_LONG"] == "auto":   # the long-run cap lives in one file (/p/bw/p2p/pl-long.txt, like 330+370), written after a stability run
-            try:
-                os.environ["PERF_PL_LONG"] = open("/p/bw/p2p/pl-long.txt").read().strip() or "300+370"
-            except OSError:
-                os.environ["PERF_PL_LONG"] = "300+370"
-        pl_apply(os.environ["PERF_PL_LONG"])
-        atexit.register(pl_apply, os.environ.get("PERF_PL_SHORT", "350+370"))
-    elif hw_is_local_gpu_host():
-        # a short run: if the cards are at exactly the long-run cap (a long run was killed before it restored the limits), put the short-run limits back.
-        # Any other setting (150 W for the night, 280 W for a test) is the user's and stays.
-        cur = power_limits(local_hw()); cap = "+".join(str(int(float(x))) for x in (os.environ.get("PERF_PL_LONG_CAP") or (open("/p/bw/p2p/pl-long.txt").read().strip() if os.path.exists("/p/bw/p2p/pl-long.txt") else "300+370")).split("+"))
-        if cur == cap and os.environ.get("PERF_PL_SHORT", "350+370") != cap:
-            pl_apply(os.environ.get("PERF_PL_SHORT", "350+370"))
-            print("power limits were at the long-run cap %s: put back to %s for this short run" % (cap, os.environ.get("PERF_PL_SHORT", "350+370")), flush=True)
     CAMPAIGN = camp = a.campaign or "bench-" + time.strftime("%F-%H%M")
     csv_append("campaigns.csv", CAMP_COLS, dict(name=camp, start=time.strftime("%F %T"),
                note=a.note or f"bench {a.models} builds {a.builds} variants {','.join(names)} test {a.test} n={a.n}"))

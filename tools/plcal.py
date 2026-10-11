@@ -74,7 +74,10 @@ def main():
         # the environment the queue daemon gives its tasks (queue/env.sh, PERF_BUILDS, PCI bus device order)
         envout = subprocess.run(["bash", "-c", ". /p/bw/data/q5h/queue/env.sh 2>/dev/null; env -0"], capture_output=True).stdout.decode(errors="replace")
         env = dict(kv.split("=", 1) for kv in envout.split("\0") if "=" in kv)
-        env.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", PERF_BUILDS="/p/bw/rels/devbuilds", PERF_LOG="r", PERF_PL_LONG=spec, PERF_PL_SHORT=spec)
+        env.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", PERF_BUILDS="/p/bw/rels/devbuilds", PERF_LOG="r")
+        nvsmi = env.get("NVIDIA_SMI", "nvidia-smi")
+        for gi, w in enumerate(lim):   # this tool is the only place that changes the limits (the boot defaults are fixed): set them before the run
+            subprocess.run(["sudo", "-n", nvsmi, "-i", str(gi), "-pl", str(w)], capture_output=True, timeout=30)
         cmd = ["python3", os.path.join(HERE, "run.py"), "bench", "--models", a.model, "--builds", a.build, "--variants", "v",
                "--variant=v=-sm tensor -ngl 99 -b 4096 -ub 2048 -np 1", "-t", "pf128k", "--prompt", "@" + a.prompt, "--ctx", str(a.ctx), "--tokens", "1", "-n", "1", "--no-probe", "--campaign", camp]
         t_start = time.time()
