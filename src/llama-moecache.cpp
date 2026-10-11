@@ -217,7 +217,7 @@ struct moe_cache {
 
     uint64_t clock   = 0;
     uint64_t n_steps = 0;
-    uint64_t boot_from = 0;        // decode step count at the last prompt batch: the admit boot window counts from here
+    uint64_t boot_from = 0;        // the admit boot window counts from here (the start of the process: a cold cache; a prompt batch fills the cache by adoption and does not restart it, GLM pf12k decode -5%)
 
     std::mutex mtx; // guards pending lists + clock (observe runs during graph exec)
 
@@ -552,7 +552,7 @@ struct knobs_t {
     double trace_after = 0; // ... starting after this many steps
     double admit       = 2; // a missed expert needs ADMIT uses in the last 64 tokens before it may take a slot. Default 2 (of the experts used in a 64-token window 69% reach 2 uses, 52% reach 3, and the 3rd use predicts further use only 16% better; Qwen Next: 2 and 3 equal); was 0 (any miss) until 6 Oct, 2 from 3 Oct to 4 Oct
                             // 3.0-bit (ppl comparator, 3 runs, ranges apart): a single recent use of a historically popular expert no longer evicts one that is hot now
-    double admit_boot  = 6; // ADMIT_BOOT=N: the admit used for the first ADMIT_BOOT_STEPS decode steps after a prompt batch, while the cache is still being filled: strict entry saves
+    double admit_boot  = 6; // ADMIT_BOOT=N: the admit used for the first ADMIT_BOOT_STEPS decode steps at the start of the process, while the cache is still being filled: strict entry saves
                             // uploads that cost more than they return (Qwen3.6 game4, 100 tokens: admit 8 is +5.8% over 2, hit rate flat; at 1024 tokens the gain is gone); 0 or <= ADMIT: off
     double admit_boot_steps = 128;
     double admit_slow  = 0; // ADMIT_SLOW=N: the admission rule of layers on the slower link (their uploads cost 4-7x more; 0: same as ADMIT)
@@ -1131,7 +1131,6 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->last_prefill = prefill;
-    if (prefill) { mc->boot_from = mc->n_steps; }
     mc->last_tokens  = n_tokens;
     if (get_policy() == policy::rel && op && op->src[6] && op->src[6]->type == GGML_TYPE_F32 && op->src[6]->data && op->src[6]->ne[0] == (int64_t) ls->relevance.size()) {
         static const float d = [] { const char * v = moe_opt("rel-decay"); return v ? (float) atof(v) : 0.5f; }();   // 0.5: halve the old relevance, add the current one
