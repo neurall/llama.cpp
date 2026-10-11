@@ -249,7 +249,8 @@ struct moe_cache {
         int                   cuda_dev = -1;    // CUDA device index (the backend's scratch region lives in the lent blocks), -1: other backend
         size_t                tok_bytes = 0;    // CUDA scratch of the largest expert matmul per batch token (see llama_moe_cache_alias_fork)
         size_t                hwm       = 0;    // the largest scratch a graph asked for so far (reported with log=a)
-        int32_t               last_n    = 0;    // the previous graph: its tokens and the scratch it was lent (self-check of the formula)
+        size_t                small     = 0;    // the most scratch a small graph (< 64 tokens) asked for
+        int32_t               last_n    = 0;    // the previous graph: its tokens and the scratch it was lent (the rate is corrected from it)
         size_t                last_scr  = 0;
     };
     std::vector<alias_pool> alias;   // block pool: the lifetime count of the busiest expert of ANY layer, the common scale of scores compared across layers
@@ -2592,11 +2593,12 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             ggml_backend_t be = ggml_backend_sched_get_backend(sched, i);
             if (ggml_backend_get_device(be) == ap.dev) { peak = ggml_backend_sched_graph_peak(sched, be); }
         }
-        // the backend's scratch goes into the lent blocks right after the graph's tensors. Its size is computed, per graph, from the kernel:
-        // the largest single op is an expert matmul (MMQ mul_mat_id, ggml-cuda/mmq.cu), which takes per batch token and used expert the
-        // activations quantized to q8_1 (K padded to 512 values, 36 bytes per 32), their scale (4 B) and two index entries (8 B), where K is
-        // the input width (n_embd for up/gate, the expert width for down); plus the expert bounds and the q8_1 tail of up to 128 rows, and
-        // the pool's 2 MiB granularity. Ops run one after another, so the need is the largest op, not the sum.
+        // the backend's scratch goes into the lent blocks right after the graph's tensors. Its size per batch token is measured: every graph
+        // reports what it asked for (fitting or not), and big graphs (>= 64 tokens) raise the rate when they asked for more than they were lent.
+        // The start value is what the expert matmuls of a prompt batch ask for: experts per token x input width x 2 bytes (the activations as
+        // f16, one row per token and used expert; GLM-5.3-Flash: 8 x 4096 x 2 = 65536 B per token, measured 256 MiB at 4096 tokens, 768 MiB at
+        // 12284). It is not a pure function of the batch: one 4092-token graph deep in the context asked for 75 KB per token. A graph that
+        // asks for more than it was lent takes the rest from the device pool (the VRAM margin), once; small graphs get the most a small one asked.
         static size_t (*scratch_fn)(int, void *, size_t) = [] {
             ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
             return reg ? (size_t (*)(int, void *, size_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_scratch_fork") : nullptr;
@@ -2612,21 +2614,25 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                     const int64_t n_used = std::max<int64_t>(1, mc->n_expert_used);
                     for (const ggml_tensor * t : { l.pub.up_src, l.pub.gate_src, l.pub.down_src }) {
                         const size_t k_pad = (size_t) GGML_PAD(t->ne[0], 512);
-                        ap.tok_bytes = std::max(ap.tok_bytes, (size_t) n_used * (k_pad * 36 / 32 + 12));
+                        ap.tok_bytes = std::max(ap.tok_bytes, (size_t) n_used * k_pad * 2);
                     }
                 }
             }
             const size_t asked = scratch_fn(ap.cuda_dev, nullptr, 0);   // what the previous graph asked for, fitting or not
             ap.hwm = std::max(ap.hwm, asked);
-            if (asked > ap.last_scr && ap.last_n > 0) {
-                // an op the formula does not know took more: it overflowed into the device pool (the VRAM margin). From now on every graph gets it
+            if (ap.last_n > 0 && ap.last_n < 64) {
+                ap.small = std::max(ap.small, asked);
+            }
+            if (asked > ap.last_scr && ap.last_n >= 64) {
+                // a big graph took more than it was lent: the rest came from the device pool (the VRAM margin). From now on every graph gets it
                 const size_t per_tok = (asked + ap.last_n - 1) / ap.last_n;
                 LLAMA_LOG_WARN("moe-cache: alias %s: a %d-token graph asked for %.1f MiB of scratch, %.1f MiB were lent: %zu -> %zu bytes per token from now on\n",
                         ggml_backend_dev_name(ap.dev), ap.last_n, asked / 1048576.0, ap.last_scr / 1048576.0, ap.tok_bytes, std::max(ap.tok_bytes, per_tok));
                 ap.tok_bytes = std::max(ap.tok_bytes, per_tok);
             }
             const size_t n_expert = mc->layers.empty() ? 0 : (size_t) mc->layers[0].pub.up_src->ne[2];
-            scratch = GGML_PAD((size_t) n_tokens * ap.tok_bytes + 128 * 144 + (n_expert + 1) * 4, (size_t) 2 << 20);
+            scratch = n_tokens >= 64 ? GGML_PAD((size_t) n_tokens * ap.tok_bytes + (n_expert + 1) * 4, (size_t) 2 << 20)
+                                     : GGML_PAD(ap.small + (1u << 20), (size_t) 2 << 20);
             ap.last_n   = n_tokens;
             ap.last_scr = scratch;
         }
