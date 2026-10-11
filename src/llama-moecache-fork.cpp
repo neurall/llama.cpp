@@ -1197,6 +1197,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
         }
         mc->pr[0]++;   // observed layer-steps with router probabilities
     }
+    static const bool count_prompt = [] { const char * v = moe_opt("count-prompt"); return !v || atoi(v) != 0; }();   // --moe count-prompt=0: prompt batches warm the window but not the lifetime counts
     for (int64_t t = 0; t < n_tokens; ++t) {
         if ((int32_t) ls->recent.size() >= mc->window) {
             for (int32_t old : ls->recent.front()) {
@@ -1214,7 +1215,9 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             ls->win_count[id]++;
             ls->expert_last[id] = ++mc->clock;
             ls->recent.back().push_back(id);
-            ls->glob_max = std::max(ls->glob_max, ++ls->glob_count[id]);
+            if (!prefill || count_prompt) {   // the lifetime counts (eviction score, saved hot map): the answer's experts, not the question's, with count-prompt=0
+                ls->glob_max = std::max(ls->glob_max, ++ls->glob_count[id]);
+            }
             const int32_t slot = ls->expert_slot[id];
             if (slot >= 0) {
                 if (!prefill && ls->is_stream[slot] &&

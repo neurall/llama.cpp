@@ -216,6 +216,7 @@ Every setting below is a `--moe` key (`--moe policy=window,fixed=1`); there are 
 | `l3pf-cpus=LIST` | off | cores for the L3 prefetch (experimental) |
 | `defer=N`, `defer-mass=F` | `0`, `1.0` | experimental expert deferral (compute N selected experts during the next layer's attention). Faster (+8 to 12% on GLM) but changes the output (KL cost), so opt-in; **not proven acceptable, on the way out** |
 | `observe=0` | on | no hot-expert counting on stock placement starts. The counting learns which experts the *answer* uses (decode batches of at most 8 tokens; a prompt batch routes differently and is not counted), so a later cache run starts from a warm map. It is skipped when every expert already sits on a GPU (the cache never runs there) |
+| `count-prompt=0` | `1` | cache mode: prompt batches are counted in the recent-use window (they warm the cache before decode) but not in the lifetime counts that score eviction and become the saved hot map; the question's experts are not the answer's. Experiment: default stays `1` until an A/B on 12k-prompt decode shows a gain |
 | `observe-steps=N` | `512` | the counting stops after N decode calls and the run goes on at full speed (`0`: never stop) |
 | `spec-depth=N` | | pins the speculative draft depth of the server |
 | `log=LETTERS`, `logdir=DIR` | off, `.` | the research logs and where they go, see the `log` row above |
