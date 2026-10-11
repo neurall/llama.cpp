@@ -233,6 +233,7 @@ struct moe_cache {
         std::vector<int32_t> free;    // free blocks (stack)
     };
     std::vector<pool_state> pool;
+    uint64_t gmax_all = 1;   // block pool: the lifetime count of the busiest expert of ANY layer, the common scale of scores compared across layers
     std::map<const ggml_tensor *, size_t> by_up_src;
     std::map<const ggml_tensor *, std::pair<size_t, int>> by_src; // host weight -> (layer, 0 up / 1 gate / 2 down)
 
@@ -665,24 +666,31 @@ policy get_policy() {
 }
 
 // eviction score, in "uses" units so the pay-back margin applies to all policies
-double score(const layer_state & ls, int32_t id) {
+// gmax: the scale of the lifetime-count term. Within a layer its own busiest expert (ls.glob_max); when experts of different layers compete
+// for a block (block pool) one common scale, else a layer that spreads its traffic over many experts gets all of them scored near the top and
+// a layer with a few very hot experts loses its second tier (measured MiMo stand-in, 25% cache: layer 4 fell from 64 to 13 experts, hit 68 -> 43%)
+double score(const layer_state & ls, int32_t id, uint64_t gmax) {
     switch (get_policy()) {
         case policy::window: return ls.win_count[id];
         case policy::lru:    return (double) ls.expert_last[id];
         case policy::rel:
             if (!g_rel_dead.load(std::memory_order_relaxed)) { return (double) ls.relevance[id]; }
-            return ls.win_count[id] + 16.0 * ((double) ls.glob_count[id] / (double) ls.glob_max);   // no router probabilities reached the cache: the default score
-        case policy::hybrid: return ls.win_count[id] * ((double) ls.glob_count[id] / (double) ls.glob_max);
+            return ls.win_count[id] + 16.0 * ((double) ls.glob_count[id] / (double) gmax);   // no router probabilities reached the cache: the default score
+        case policy::hybrid: return ls.win_count[id] * ((double) ls.glob_count[id] / (double) gmax);
         case policy::add: {
             static const double k = [] {
                 const char * w = moe_opt("global-weight");
                 return w ? atof(w) : 16.0;
             }();
-            return ls.win_count[id] + k * ((double) ls.glob_count[id] / (double) ls.glob_max);
+            return ls.win_count[id] + k * ((double) ls.glob_count[id] / (double) gmax);
         }
         case policy::halve:  return ls.expert_count[id];
     }
     return 0;
+}
+
+double score(const layer_state & ls, int32_t id) {
+    return score(ls, id, ls.glob_max);
 }
 
 // the pay-back margin is in uses, which has no meaning for the time of the last use: plain LRU swaps whenever the candidate was used more recently
@@ -1052,6 +1060,12 @@ namespace {
 void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t slot_or_dummy);
 void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop);
 void note_evict(moe_cache * mc, layer_state & ls, int32_t e);
+double score(const layer_state & ls, int32_t id, uint64_t gmax);
+double score(const layer_state & ls, int32_t id);
+// score of an expert competing with experts of other layers for a block: one common scale (moe_cache::gmax_all) in the pool
+inline double xscore(const moe_cache * mc, const layer_state & ls, int32_t id) {
+    return ls.pcls >= 0 ? score(ls, id, std::max<uint64_t>(1, mc->gmax_all)) : score(ls, id);
+}
 
 // ---- block pool runtime ----------------------------------------------------------------------------------------------------------------------------
 // With the block pool the slot index used everywhere (tables, upload offsets, the slot arrays of a layer) is a block of the layer's size class.
@@ -4384,6 +4398,8 @@ void llama_moe_cache_step_fork() {
         }
     }
 
+    mc->gmax_all = 1;
+    for (const auto & l : mc->layers) { mc->gmax_all = std::max(mc->gmax_all, l.glob_max); }
     // 2) schedule new uploads: evict at a sync point (clear the victim's table
     //    entry now), then hand the slice copies to the worker
     const size_t n_layers = mc->layers.size();
@@ -4424,7 +4440,7 @@ void llama_moe_cache_step_fork() {
             // victim: a free block if any, else the lowest-scored cached expert (block pool: of ANY layer of the class, so the blocks go to the
             // layers whose experts score highest; without the pool: of this layer)
             double best;
-            const slot_pick pk = pick_slot(mc, li, [&](layer_state & lo, size_t, int32_t e) { return pinned(mc, lo, e) ? -1.0 : score(lo, e); }, best);
+            const slot_pick pk = pick_slot(mc, li, [&](layer_state & lo, size_t, int32_t e) { return pinned(mc, lo, e) ? -1.0 : xscore(mc, lo, e); }, best);
             const int32_t slot = pk.slot;
             if (slot < 0) {
                 mc->pr[9] += ls.pending.end() - it;
@@ -4438,7 +4454,7 @@ void llama_moe_cache_step_fork() {
                     mc->pr[10]++;
                     continue; // lifetime regular stays; a later candidate may still fit
                 }
-                if (score(ls, id) < score(lo, victim) + pay_back(link_margin[ls.link])) {
+                if (xscore(mc, ls, id) < xscore(mc, lo, victim) + pay_back(link_margin[ls.link])) {
                     mc->pr[7] += ls.pending.end() - it;   // this and every later (colder) candidate
                     break; // candidates are sorted: nothing hotter than what's cached
                 }
