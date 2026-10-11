@@ -2184,7 +2184,7 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
     layer_state & ls = mc->layers[it->second.first];
     const int kind = it->second.second;
     ggml_tensor * c = kind == 0 ? ls.pub.up_c : kind == 1 ? ls.pub.gate_c : ls.pub.down_c;
-    if (!c || !c->buffer || c->nb[2] != weight->nb[2] ||
+    if (!c || !c->buffer || c->nb[2] < weight->nb[2] || c->nb[1] != weight->nb[1] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
         return false;
     }
@@ -2399,7 +2399,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
         ls.glob_max = std::max(ls.glob_max, ++ls.glob_count[expert]);
     }
     ggml_tensor * c = it->second.second == 0 ? ls.pub.up_c : it->second.second == 1 ? ls.pub.gate_c : ls.pub.down_c;
-    if (!c || !c->buffer || c->nb[2] != weight->nb[2] ||
+    if (!c || !c->buffer || c->nb[2] < weight->nb[2] || c->nb[1] != weight->nb[1] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
         return false;
     }
@@ -2411,6 +2411,66 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     *data   = (const uint8_t *) c->data + (size_t) ls.expert_slot[expert]*c->nb[2];
     *buffer = c->buffer;
     return true;
+}
+
+// ---- block pool layout -------------------------------------------------------------------------------------------------------------------------
+// The cache tensors of the layers of one device group share ONE buffer. Layers whose experts have the same (type, bytes) for up / gate / down form a class.
+// A class occupies a stretch of the buffer made of rounds: round r holds slot r of every layer of the class, one block (up, gate, down, each aligned)
+// after the other. The cache tensor of a layer is a strided view of that stretch: data = stretch + offset of the layer's block, nb[2] = round bytes.
+// Why: (1) no per-tensor padding or allocation, the buffer is allocated once; (2) the first n rounds of the first class are one contiguous byte range
+// that a compute buffer can take over (slot r < n blocked) without any allocation or free; (3) the MMVQ / MMQ kernels take the expert stride from nb[2]
+// as nb[2] / type size, so a round is padded to a multiple of the least common multiple of the quant block sizes of its class (tests: MUL_MAT_ID strided).
+struct pool_class {
+    size_t R    = 0;                 // bytes of one round
+    size_t base = 0;                 // byte offset of the class stretch in the buffer
+    std::vector<size_t> members;     // indices into the group's layer list
+};
+struct pool_layer {
+    size_t cls    = 0;
+    size_t off[3] = { 0, 0, 0 };     // up / gate / down: byte offset inside a round
+};
+struct pool_layout_t {
+    std::vector<pool_class> cls;
+    std::vector<pool_layer> lay;
+    size_t round_bytes = 0;          // all classes: bytes of one slot of every layer
+};
+
+static size_t pool_up(size_t x, size_t a) { return (x + a - 1) / a * a; }
+
+static pool_layout_t pool_layout(const std::vector<const llama_layer *> & ls) {
+    pool_layout_t out;
+    out.lay.resize(ls.size());
+    std::map<std::vector<size_t>, size_t> key2cls;
+    for (size_t i = 0; i < ls.size(); ++i) {
+        const ggml_tensor * t[3] = { ls[i]->ffn_up_exps, ls[i]->ffn_gate_exps, ls[i]->ffn_down_exps };
+        const std::vector<size_t> key = { (size_t) t[0]->type, (size_t) t[1]->type, (size_t) t[2]->type, t[0]->nb[2], t[1]->nb[2], t[2]->nb[2] };
+        auto it = key2cls.find(key);
+        if (it == key2cls.end()) {
+            it = key2cls.emplace(key, out.cls.size()).first;
+            out.cls.emplace_back();
+        }
+        pool_class & c = out.cls[it->second];
+        pool_layer & l = out.lay[i];
+        l.cls = it->second;
+        size_t off = c.R;
+        for (int k = 0; k < 3; ++k) {
+            l.off[k] = off;
+            off += pool_up(t[k]->nb[2], 256);
+        }
+        c.R = off;
+        c.members.push_back(i);
+    }
+    for (auto & c : out.cls) {
+        const ggml_tensor * t0 = ls[c.members[0]]->ffn_up_exps, * t1 = ls[c.members[0]]->ffn_gate_exps, * t2 = ls[c.members[0]]->ffn_down_exps;
+        size_t q = 256;
+        for (const ggml_tensor * t : { t0, t1, t2 }) {
+            const size_t ts = ggml_type_size(t->type);
+            q = q / std::__gcd(q, ts) * ts;
+        }
+        c.R = pool_up(c.R, q);
+        out.round_bytes += c.R;
+    }
+    return out;
 }
 
 void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots, int32_t window,
@@ -2478,6 +2538,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
 
         // LLAMA_MOE_CACHE_JIT_POOL=n: JIT pool slots per slower-link layer on the fastest-link GPU. Default 0: the pool
         // chain's cross-GPU input/output copies cost ~10% on GLM (2x3090, 20 x4 layers) even with nothing in the pool
+        // --moe pool=0: one buffer per layer tensor, as before the block pool (reference for A/B)
+        const bool pool_on = [] { const char * e = moe_opt("pool"); return !e || atoi(e) != 0; }();
         const int32_t jit_pool = [] { const char * e = moe_opt("jit-pool"); return e ? std::max(0, atoi(e)) : 0; }();
         // LLAMA_MOE_CACHE_JIT_POOL_ALL=1: every layer gets a pool (JIT never evicts the main cache)
         const bool jit_pool_all = [] { const char * e = moe_opt("jit-pool-all"); return e && atoi(e) != 0; }();
@@ -2524,6 +2586,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             for (const auto & c : cands) {
                 per_slot += c.l->ffn_up_exps->nb[2] + c.l->ffn_gate_exps->nb[2] + c.l->ffn_down_exps->nb[2];
                 n_expert = c.l->ffn_up_exps->ne[2];
+            }
+            if (pool_on) {   // the rounds are padded (alignment, quant block sizes): count what the buffer really takes
+                std::vector<const llama_layer *> ll;
+                for (const auto & c : cands) { ll.push_back(c.l); }
+                per_slot = pool_layout(ll).round_bytes;
             }
             // the learned predictors (fp16 [n_embd, n_expert * ahead] per layer, allocated after the cache) need room too
             {
@@ -2609,6 +2676,43 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
             }
 
+            // block pool: the up / gate / down cache tensors of all layers are strided views of one buffer (see pool_layout); the remaining
+            // tensors of the context (device tables) are allocated below as before. The tensor fields are set by hand: init_tensor would clear
+            // the quantization padding behind a tensor, which here is the next layer's data.
+            if (pool_on && !tables_only) {
+                std::vector<const llama_layer *> ll;
+                for (const auto & c : cands) { ll.push_back(c.l); }
+                pool_layout_t pl = pool_layout(ll);
+                size_t total = 0;
+                for (auto & c : pl.cls) { c.base = total; total += (size_t) (slots + 1) * c.R; }
+                total += 4096;   // MMQ reads whole 512-wide tiles: the end of the last tensor may be read past
+                ggml_backend_buffer_t pbuf = ggml_backend_buft_alloc_buffer(buft, total);
+                if (!pbuf) {
+                    LLAMA_LOG_WARN("%s: failed to allocate the MoE cache pool (%.1f MiB) on %s - cache disabled\n", __func__, total / 1048576.0, ggml_backend_buft_name(buft));
+                    return false;
+                }
+                ggml_backend_buffer_clear(pbuf, 0);
+                ggml_backend_buffer_set_usage(pbuf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+                uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(pbuf);
+                for (size_t i = 0; i < cands.size(); ++i) {
+                    layer_state * ls = nullptr;
+                    for (auto & l : mc->layers) {
+                        if (l.pub.il == cands[i].il) { ls = &l; break; }
+                    }
+                    const pool_layer & pli = pl.lay[i];
+                    const pool_class & cl  = pl.cls[pli.cls];
+                    ggml_tensor * t3[3] = { ls->pub.up_c, ls->pub.gate_c, ls->pub.down_c };
+                    for (int k = 0; k < 3; ++k) {
+                        t3[k]->nb[2]  = cl.R;
+                        t3[k]->nb[3]  = cl.R * (size_t) (slots + 1);
+                        t3[k]->buffer = pbuf;
+                        t3[k]->data   = base + cl.base + pli.off[k];
+                    }
+                }
+                LLAMA_LOG_WARN("moe-cache: block pool on %s: %zu layers in %zu classes, %d slots + 1 per layer, %.1f MiB (rounds of %.1f MiB)\n", ggml_backend_buft_name(buft),
+                        cands.size(), pl.cls.size(), slots, total / 1048576.0, pl.round_bytes / 1048576.0);
+                mc->bufs.push_back(pbuf);
+            }
             ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
             if (!buf) {
                 LLAMA_LOG_WARN("%s: failed to allocate MoE cache buffer on %s - cache disabled\n",
@@ -4452,6 +4556,21 @@ int64_t llama_moe_cache_max_batch_fork() {
         return (int64_t) (e ? atoi(e) : 31);
     }();
     return v;
+}
+
+uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
+    static const bool on = [] { const char * e = moe_opt("prefill-equal"); return !e || atoi(e) != 0; }();
+    const uint32_t mb = (uint32_t) std::max<int64_t>(1, llama_moe_cache_max_batch_fork());
+    if (!on || n <= ub_max || ub_max <= mb) {
+        return ub_max;
+    }
+    // full passes of ub_max leave a tail; if the cache path takes it (<= max-batch), stream the full passes and let the tail through the cache
+    if (n % ub_max <= mb) {
+        return ub_max;
+    }
+    // otherwise equal passes: no nearly empty last pass
+    const uint32_t passes = (n + ub_max - 1) / ub_max;
+    return (n + passes - 1) / passes;
 }
 
 void llama_moe_cache_free_fork() {

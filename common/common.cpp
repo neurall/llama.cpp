@@ -1620,15 +1620,28 @@ bool common_autotune_on(const common_params & params) {
 // (a), the GPU (b) and the prompt length n: with passes = ceil(n / ub_max) equal chunks of n / passes tokens the last pass is never a nearly empty one that
 // pays a whole upload. A slow link (PCIe 3.0, x4) raises a and moves the optimum up; a fast GPU lowers b and does the same.
 static uint32_t common_auto_ubatch(common_params & params) {
-    const double PP_EXP = 0.5, PP_PER_TG = 11.0;
-    const uint32_t cand[] = { 512, 1024, 2048 };
-    std::vector<size_t> compute(3, 0);
+    // pass time a + ub*b gives prompt speed ~ ub / (A + ub) with A = a / b (about 2400 tokens on GLM-5.3-Flash / 2x RTX 3090: 177/275/370 t/s at 1k/2k/4k)
+    const double PP_A = 2400.0, PP_PER_TG = 11.0;
+    // a candidate whose extra compute buffer would take more than this share of the VRAM the cache has is never offered: it ends in CUDA out of memory
+    // (full GLM at -ub 8192 and 12288 on the 24 GB x4 card) or in a cache too small to decode from
+    const double MAX_CACHE_SHARE = 0.75;
+    // candidates are computed, not a fixed ladder: from the largest batch the cache path takes (max-batch: below it a batch never streams) doubling up to 12288
+    const char * mbo = llama_moe_get_opt("max-batch");
+    const uint32_t mb = std::max<uint32_t>(8, mbo ? (uint32_t) atoi(mbo) : 31);
+    std::vector<uint32_t> cand;
+    for (uint32_t ub = mb + 1; ub < 12288; ub *= 2) { cand.push_back(ub); }
+    cand.push_back(12288);
+    const uint32_t LO = cand[0], MID = 2048;   // probe the smallest candidate and 2048, extrapolate the rest (the buffer is ~linear in ub)
+    const uint32_t SAFE = 512;                 // what a failed probe keeps
+    const int NC = (int) cand.size();
+    std::vector<size_t> compute(2, 0);
     int64_t cache_vram = 0;
-    for (int i : { 0, 2 }) {  // the buffer is ~linear in ub: probe both ends, interpolate the middle
+    for (int i : { 0, 1 }) {
         auto mp = common_model_params_to_llama(params);
         auto cp = common_context_params_to_llama(params);
-        cp.n_ubatch = cand[i];
-        cp.n_batch  = std::max(cp.n_batch, cand[i]);
+        const uint32_t pu = i == 0 ? LO : MID;
+        cp.n_ubatch = pu;
+        cp.n_batch  = std::max(cp.n_batch, pu);
         std::vector<ggml_backend_dev_t> devs;
         uint32_t ngl = 0, nctx = 0, nexp = 0;
         size_t sum = 0;
@@ -1642,25 +1655,30 @@ static uint32_t common_auto_ubatch(common_params & params) {
                 }
             }
         } catch (const std::exception & e) {
-            COM_DBG("ubatch probe failed (%s), keeping %u\n", e.what(), cand[0]);
-            return cand[0];
+            COM_DBG("ubatch probe failed (%s), keeping %u\n", e.what(), SAFE);
+            return SAFE;
         }
         compute[i] = sum;
     }
-    if (cache_vram <= 0 || compute[2] <= compute[0]) {
-        return cand[0];
+    if (cache_vram <= 0 || compute[1] <= compute[0]) {
+        return SAFE;
     }
     const double np = moe_auto_est_prompt(params), ng = moe_auto_est_gen(params);
-    uint32_t best = cand[0];
+    uint32_t best = SAFE;
     double t_best = 1e300;
-    for (uint32_t ub : cand) {
-        const double extra = (double) (compute[2] - compute[0]) * (ub - 512) / 1536.0;
-        const double t = np / (PP_PER_TG * std::pow(ub / 512.0, PP_EXP)) + ng * (1.0 + extra / (double) cache_vram);
+    for (int ci = 0; ci < NC; ++ci) {
+        const uint32_t ub = cand[ci];
+        const double extra = (double) (compute[1] - compute[0]) * (ub - LO) / (double) (MID - LO);
+        if (extra > MAX_CACHE_SHARE * (double) cache_vram) {
+            COM_DBG("ubatch %u: extra buffer %.2f GiB exceeds %.0f%% of the %.1f GiB cache VRAM, not offered\n", ub, extra / 1073741824.0, 100 * MAX_CACHE_SHARE, cache_vram / 1073741824.0);
+            continue;
+        }
+        const double t = np / (PP_PER_TG * (ub / (PP_A + ub)) / (LO / (PP_A + LO))) + ng * (1.0 + extra / (double) cache_vram);
         COM_DBG("ubatch %u: extra buffer %.2f GiB of %.1f GiB cache VRAM, est. %.0f decode-token units\n", ub, extra / 1073741824.0, cache_vram / 1073741824.0, t);
         if (t < t_best) { t_best = t; best = ub; }
     }
-    LOG_INF("%s: ubatch %u (request ~%.0f prompt + %.0f generated tokens, compute buffer %.2f -> %.2f GiB at 512 -> 2048, %.1f GiB left for the cache)\n", __func__,
-        best, np, ng, compute[0] / 1073741824.0, compute[2] / 1073741824.0, cache_vram / 1073741824.0);
+    LOG_INF("%s: ubatch %u (request ~%.0f prompt + %.0f generated tokens, compute buffer %.2f -> %.2f GiB at %u -> %u probed, rest extrapolated, %.1f GiB left for the cache)\n", __func__,
+        best, np, ng, compute[0] / 1073741824.0, compute[1] / 1073741824.0, LO, MID, cache_vram / 1073741824.0);
     return best;
 }
 
@@ -1841,7 +1859,9 @@ static void common_moe_cache_auto_impl(common_params & params) {
         }
     }
     if (!params.ubatch_user && common_autotune_on(params)) {
-        params.n_ubatch = std::min<uint32_t>(params.n_batch, common_auto_ubatch(params));
+        const uint32_t ub = common_auto_ubatch(params);
+        params.n_batch  = std::max<uint32_t>(params.n_batch, 4 * ub);   // a decode call carries several passes: equal passes are computed from the call's token count
+        params.n_ubatch = ub;
     }
     // leave one core per GPU to drive it (measured on 2 GPUs: 6 of 8 cores beats 8)
     for (auto * cp : { &params.cpuparams, &params.cpuparams_batch }) {

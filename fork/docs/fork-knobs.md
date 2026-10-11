@@ -88,7 +88,7 @@ With `--fork off` the fork behaves as upstream apart from unrelated changes (the
 | `upload-share` | `SWAP_FRAC` | | `stay-bonus` | `STICKY` |
 | `upload-now` | `JIT` | | `l3-pf`, `l3-auto` | `L3PF`, `AUTO_L3` |
 | `cpu-ram-gbs`, `ram-ceiling-gbs` | `CPU_GBS`, `DDR_GBS` | | `trace-n`, `trace-skip` | `TRACE`, `TRACE_AFTER` |
-| `wait-swaps` | `WAIT` | | | |
+| `wait-swaps` | `WAIT` | | `pool` | (new) |
 
 Any other name is a tuning knob of the cache engine (`--moe upload-wait=3,swap-lead=0`). A knob you set is never self-tuned; a name the  
 engine does not know is logged as `unknown key` and ignored. Values are numbers; `0`/`1` are off/on.

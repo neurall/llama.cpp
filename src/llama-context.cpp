@@ -2352,8 +2352,11 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 
     llama_memory_context_ptr mctx;
 
+    // prompt batches: equal passes sized from the number of new tokens, a tail the cache path can take is left to it (n_ubatch is the maximum)
+    const uint32_t n_ubatch_call = cparams.moe_cache ? llama_moe_cache_prefill_ubatch_fork(n_tokens_all, cparams.n_ubatch) : cparams.n_ubatch;
+
     while (true) {
-        mctx = memory->init_batch(*balloc, cparams.n_ubatch, output_all);
+        mctx = memory->init_batch(*balloc, n_ubatch_call, output_all);
         if (!mctx) {
             return -2;
         }
