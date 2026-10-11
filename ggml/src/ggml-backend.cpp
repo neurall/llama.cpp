@@ -1916,29 +1916,23 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         const bool    p_is_cpu = prof && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU;
 
         // ensure the previous split's async work has completed before we start
-        // this split, the allocator may have reused buffer regions across splits
-        // GPU->GPU needs no host barrier: a GPU only reads another GPU's memory
-        // through input copies, which are ordered on the source GPU's stream
-        const auto is_gpu = [](ggml_backend_t b) {
-            ggml_backend_dev_t d = ggml_backend_get_device(b);
-            return d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU;
-        };
-        // a GPU split that read no host memory only touched device memory, so
-        // nothing this split writes can still be in use by it: no barrier either
-        // (the fork had this refinement before the #29943 merge; the merge took the unconditional barrier, which made every
-        //  CPU split after a GPU split wait for the GPU: +6.6 ms per GLM decode graph, OLMoE -16% on the RTX 4060 laptop)
-        const auto prev_reads_host = [&]() {
+        // this split, the allocator may have reused buffer regions across splits.
+        // The regions this split can overwrite are those of its own backend's compute buffer (sched->bufts[split_backend_id]), where the
+        // allocator may have reused memory the previous split's asynchronous copies are still reading. If no input of the previous split lives in
+        // a buffer of that type, nothing it reads can be overwritten here: no barrier. (The #29943 merge took the unconditional barrier, which made
+        // every CPU split after a GPU split wait for the GPU: +6.6 ms per GLM decode graph, OLMoE -16% on the RTX 4060 laptop.)
+        const auto prev_reads_buffer_of_split_backend = [&]() {
             const struct ggml_backend_sched_split * prev = &splits[split_id - 1];
             for (int j = 0; j < prev->n_inputs; j++) {
-                ggml_backend_buffer_t b = prev->inputs[j]->view_src ? prev->inputs[j]->view_src->buffer : prev->inputs[j]->buffer;
-                if (!b || ggml_backend_buffer_is_host(b)) {
+                const struct ggml_tensor * in = prev->inputs[j];
+                ggml_backend_buffer_t buf = in->view_src ? in->view_src->buffer : in->buffer;
+                if (!buf || ggml_backend_buffer_get_type(buf) == sched->bufts[split_backend_id]) {
                     return true;
                 }
             }
             return false;
         };
-        if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id &&
-                !(is_gpu(sched->backends[prev_backend_id]) && (is_gpu(split_backend) || !prev_reads_host()))) {
+        if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id && prev_reads_buffer_of_split_backend()) {
             if (sched->events[prev_backend_id][sched->cur_copy] != NULL) {
                 ggml_backend_event_synchronize(sched->events[prev_backend_id][sched->cur_copy]);
             } else {
