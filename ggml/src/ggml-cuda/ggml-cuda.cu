@@ -2378,7 +2378,7 @@ static __global__ void k_obs_count(const char * ids, int64_t ne0, int64_t nb0, i
 
 static void ggml_cuda_obs_count(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * ids) {
     const char * nm = src0->name;
-    if (strncmp(nm, "blk.", 4) != 0 || !strstr(nm, "ffn_gate_exps") || ids->type != GGML_TYPE_I32) {
+    if (strncmp(nm, "blk.", 4) != 0 || !strstr(nm, "ffn_gate_exps") || ids->type != GGML_TYPE_I32 || ids->ne[1] > 8) {   // > 8 tokens: a prompt batch, not the answer
         return;
     }
     const int il = atoi(nm + 4);

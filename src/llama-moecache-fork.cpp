@@ -882,7 +882,7 @@ void * cuda_obs_proc(const char * name) {
 
 void stock_obs_cb(const char * name, const struct ggml_tensor * ids, const struct ggml_tensor *, void *) {
     const int il = parse_layer_from_name(name);
-    if (il < 0 || ids->type != GGML_TYPE_I32) {
+    if (il < 0 || ids->type != GGML_TYPE_I32 || ids->ne[1] > 8) {   // > 8 tokens is a prompt batch: the experts a question uses are not the ones the answer uses
         return;
     }
     std::lock_guard<std::mutex> lk(g_heat.mtx);
@@ -955,7 +955,7 @@ void llama_moe_observe_start(const llama_model & model) {
     }
 }
 
-// A stable hot map needs a few hundred tokens. The counting itself costs every token (a lock and a read-back of the router ids on CPU layers, one extra
+// The hot map is that of the answer (decode batches of at most 8 tokens: a prompt batch routes differently and is not counted). It is stable after a few hundred tokens. The counting itself costs every token (a lock and a read-back of the router ids on CPU layers, one extra
 // kernel per layer on GPU layers), so it stops after observe-steps decode calls (--moe observe-steps=N, default 512, 0: never) and the run goes on at full speed.
 void llama_moe_observe_step() {
     if (!g_heat_live.load(std::memory_order_relaxed)) {

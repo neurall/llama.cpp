@@ -2233,7 +2233,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         moe_observe_started = true;
         llama_moe_observe_start(model);
     }
-    if (moe_observe_started) {
+    if (moe_observe_started && batch_inp.tokens.size() <= 8) {   // the answer, not the question: prompt batches are not counted (and do not use up the step budget)
         llama_moe_observe_step();
     }
     if (cparams.moe_cache && !cparams.moe_cache_started && !moe_cache_defer) {
