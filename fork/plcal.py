@@ -9,13 +9,26 @@ On the first throttle the run is killed, the throttling GPU's limit goes down by
 ends the search: those limits are the answer. Xid 79 in the kernel log ends everything at once.
 
 usage: plcal.py [--start 280+280] [--step 10] [--floor 150] [--max-iter 12] [--build stock-b11552-23b0202a1] [--model PATH]
-Run with the queue stopped; it takes /tmp/queue.lock for the whole search. Result lines go to /p/bw/data/q5h/plcal.log."""
+Run with the queue stopped; it takes /tmp/queue.lock for the whole search. Result lines go to <work>/plcal.log."""
 import argparse, collections, csv, glob, os, signal, statistics, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import config as fcfg
 GPULOG = os.path.join(HERE, "bench", "gpulog")
-LOG = "/p/bw/data/q5h/plcal.log"
+WORK = fcfg.path("work"); os.makedirs(WORK, exist_ok=True)
+LOG = os.path.join(WORK, "plcal.log")
 THERMAL = 0x8 | 0x20 | 0x40
+
+
+def queue_env():
+    """the environment the queue daemon gives its tasks: ours plus the exports of the optional [gpu] env_sh file"""
+    sh = fcfg.get("gpu", "env_sh")
+    if sh and os.path.isfile(sh):
+        out = subprocess.run(["bash", "-c", f". {sh} 2>/dev/null; env -0"], capture_output=True).stdout.decode(errors="replace")
+        return dict(kv.split("=", 1) for kv in out.split("\0") if "=" in kv)
+    return dict(os.environ)
+
 
 
 def log(msg):
@@ -58,9 +71,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default="280+280"); ap.add_argument("--step", type=int, default=10); ap.add_argument("--floor", type=int, default=150)
     ap.add_argument("--max-iter", type=int, default=12); ap.add_argument("--ctx", type=int, default=131072)
-    ap.add_argument("--prompt", default="/p/bw/data/q5h/p100k.txt")
+    ap.add_argument("--prompt", default=os.path.join(WORK, "p100k.txt"))
     ap.add_argument("--build", default="stock-b11552-23b0202a1")
-    ap.add_argument("--model", default="/m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf")
+    ap.add_argument("--model", default=fcfg.model("qwen36"))
     ap.add_argument("--timeout", type=int, default=240)
     a = ap.parse_args()
     lim = [int(x) for x in a.start.split("+")]
@@ -72,16 +85,15 @@ def main():
         spec = f"{lim[0]}+{lim[1]}"
         camp = f"plcal-{spec}-it{it}"
         # the environment the queue daemon gives its tasks (queue/env.sh, PERF_BUILDS, PCI bus device order)
-        envout = subprocess.run(["bash", "-c", ". /p/bw/data/q5h/queue/env.sh 2>/dev/null; env -0"], capture_output=True).stdout.decode(errors="replace")
-        env = dict(kv.split("=", 1) for kv in envout.split("\0") if "=" in kv)
-        env.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", PERF_BUILDS="/p/bw/rels/devbuilds", PERF_LOG="r")
-        nvsmi = env.get("NVIDIA_SMI", "nvidia-smi")
+        env = queue_env()
+        env.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", PERF_BUILDS=fcfg.path("devbuilds"), PERF_LOG="r")
+        nvsmi = fcfg.get("gpu", "nvidia_smi")
         for gi, w in enumerate(lim):   # this tool is the only place that changes the limits (the boot defaults are fixed): set them before the run
             subprocess.run(["sudo", "-n", nvsmi, "-i", str(gi), "-pl", str(w)], capture_output=True, timeout=30)
         cmd = ["python3", os.path.join(HERE, "run.py"), "bench", "--models", a.model, "--builds", a.build, "--variants", "v",
                "--variant=v=-sm tensor -ngl 99 -b 4096 -ub 2048 -np 1", "-t", "pf128k", "--prompt", "@" + a.prompt, "--ctx", str(a.ctx), "--tokens", "1", "-n", "1", "--no-probe", "--campaign", camp]
         t_start = time.time()
-        proc = subprocess.Popen(cmd, env=env, cwd=os.path.dirname(HERE), stdout=open(f"/p/bw/data/q5h/plcal-it{it}.out", "w"), stderr=subprocess.STDOUT, start_new_session=True)
+        proc = subprocess.Popen(cmd, env=env, cwd=os.path.dirname(HERE), stdout=open(os.path.join(WORK, f"plcal-it{it}.out"), "w"), stderr=subprocess.STDOUT, start_new_session=True)
         gfile, pos, hist, bad, thr_clk, thr_th, busy = None, 0, collections.defaultdict(lambda: collections.deque(maxlen=50)), set(), collections.Counter(), collections.Counter(), collections.Counter()
         reason = {}
         while proc.poll() is None and time.time() - t_start < a.timeout and not bad:
@@ -136,7 +148,7 @@ def main():
         if proc.poll() is None:
             kill_run(proc); log(f"it {it}: limits {spec} W: timeout after {dur:.0f} s without a throttle (killed); busy samples {dict(busy)}")
         elif proc.returncode != 0 or not sum(busy.values()):
-            log(f"it {it}: limits {spec} W: RUN FAILED after {dur:.0f} s (exit {proc.returncode}, busy samples {dict(busy)}): see /p/bw/data/q5h/plcal-it{it}.out; not a result")
+            log(f"it {it}: limits {spec} W: RUN FAILED after {dur:.0f} s (exit {proc.returncode}, busy samples {dict(busy)}): see {WORK}/plcal-it{it}.out; not a result")
             sys.exit(3)
         else:
             log(f"it {it}: limits {spec} W: CLEAN run of {dur:.0f} s (exit {proc.returncode}), busy samples {dict(busy)}")

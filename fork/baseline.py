@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
 """baseline.py: run our README cells (game4c, edit4c, pf12k) for every model on one build (default: the latest stock) through fork/run.py bench, read the
 5 Hz GPU log of every run, and when the x4 card throttles (thermal / HW slowdown flag in >= 2 busy samples in a row, or a clock drop below 85% of its
-median of the last 10 s in >= 3 busy samples in a row) lower the x4 power limit by STEP watts EVERYWHERE (live, /etc/systemd/system/gpu-powerlimit.service,
-/p/bw/p2p/limits.env) and run that cell again. Every run is logged by run.py as always; the verdict per cell goes to /p/bw/data/q5h/baseline.log.
+median of the last 10 s in >= 3 busy samples in a row) lower the x4 power limit by STEP watts EVERYWHERE (live, and in the boot files named by [gpu] limits_service / limits_env
+of the fork config) and run that cell again. Every run is logged by run.py as always; the verdict per cell goes to <work>/baseline.log.
 usage: baseline.py [--build stock-b11552-23b0202a1] [--models glm,qn38,q36,olmoe] [--step 10] [--floor 150] [--tag base1]
 Takes /tmp/queue.lock for the whole run: stop the queue daemon first."""
 import argparse, collections, fcntl, glob, os, statistics, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import config as fcfg
 GPULOG = os.path.join(HERE, "bench", "gpulog")
-LOG = "/p/bw/data/q5h/baseline.log"
+WORK = fcfg.path("work"); os.makedirs(WORK, exist_ok=True)
+LOG = os.path.join(WORK, "baseline.log")
 THERMAL = 0x8 | 0x20 | 0x40
-NVSMI = "/p/bw/p2p/bin595/nvidia-smi"
-MODELS = {"glm": "/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf",
-          "qn38": "/m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
-          "q36": "/m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf",
-          "olmoe": "/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf"}
+NVSMI = fcfg.get("gpu", "nvidia_smi")
+MODELS = {"glm": fcfg.model("glm"), "qn38": fcfg.model("qwen38"), "q36": fcfg.model("qwen36"), "olmoe": fcfg.model("olmoe")}
 CELLS = {"glm": [("out_heavy", "game4c", [], 3), ("in_out_heavy", "edit4c", ["--tokens", "1024"], 3), ("in_heavy", "pf12k", [], 3)],
          "qn38": [("out_heavy", "game4c", [], 3), ("in_out_heavy", "edit4c", ["--tokens", "1024"], 3), ("in_heavy", "pf12k", [], 3)],
          "q36": [("out_heavy", "game4c", [], 3), ("in_out_heavy", "edit4c", ["--tokens", "1024"], 3), ("in_heavy", "pf12k", [], 3)],
          "olmoe": [("out_heavy", "tetrisc", [], 5)]}
+
+
+def queue_env():
+    """the environment the queue daemon gives its tasks: ours plus the exports of the optional [gpu] env_sh file"""
+    sh = fcfg.get("gpu", "env_sh")
+    if sh and os.path.isfile(sh):
+        out = subprocess.run(["bash", "-c", f". {sh} 2>/dev/null; env -0"], capture_output=True).stdout.decode(errors="replace")
+        return dict(kv.split("=", 1) for kv in out.split("\0") if "=" in kv)
+    return dict(os.environ)
+
 
 
 def log(msg):
@@ -39,11 +49,15 @@ def live_limits():
 
 def set_x4(w):
     """x4 card (GPU 0) to w watts: live, boot service, boot defaults"""
+    svc, lenv = fcfg.get("gpu", "limits_service"), fcfg.get("gpu", "limits_env")
     sh("sudo", "-n", NVSMI, "-i", "0", "-pl", str(w))
-    sh("sudo", "-n", "sed", "-i", f"s/-i 0 -pl [0-9]*/-i 0 -pl {w}/", "/etc/systemd/system/gpu-powerlimit.service")
-    sh("sudo", "-n", "systemctl", "daemon-reload")
-    lines = open("/p/bw/p2p/limits.env").read().splitlines()
-    open("/p/bw/p2p/limits.env", "w").write("\n".join((f"LIMIT0={w}   # GPU0 = x4 card, lowered by baseline.py after a throttle ({time.strftime('%F %T')})" if l.startswith("LIMIT0=") else l) for l in lines) + "\n")
+    if svc:
+        sh("sudo", "-n", "sed", "-i", f"s/-i 0 -pl [0-9]*/-i 0 -pl {w}/", svc)
+        sh("sudo", "-n", "systemctl", "daemon-reload")
+    if not lenv:
+        return
+    lines = open(lenv).read().splitlines()
+    open(lenv, "w").write("\n".join((f"LIMIT0={w}   # GPU0 = x4 card, lowered by baseline.py after a throttle ({time.strftime('%F %T')})" if l.startswith("LIMIT0=") else l) for l in lines) + "\n")
 
 
 def throttled(files, t_start):
@@ -84,9 +98,8 @@ def main():
     ap.add_argument("--retries", type=int, default=4)
     a = ap.parse_args()
     lock = open("/tmp/queue.lock", "a"); fcntl.flock(lock, fcntl.LOCK_EX)
-    envout = subprocess.run(["bash", "-c", ". /p/bw/data/q5h/queue/env.sh 2>/dev/null; env -0"], capture_output=True).stdout.decode(errors="replace")
-    env = dict(kv.split("=", 1) for kv in envout.split("\0") if "=" in kv)
-    env.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", PERF_BUILDS="/p/bw/rels/devbuilds", PERF_LOG="r")
+    env = queue_env()
+    env.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", PERF_BUILDS=fcfg.path("devbuilds"), PERF_LOG="r")
     log(f"baseline start: build {a.build}, models {a.models}, limits {live_limits()} W (x4 + x16), tag {a.tag}")
     for key in a.models.split(","):
         for tname, test, extra, n in CELLS[key]:
@@ -95,14 +108,14 @@ def main():
                 t0 = time.time(); lim = live_limits()
                 cmd = ["python3", os.path.join(HERE, "run.py"), "bench", "--models", MODELS[key], "--builds", a.build, "--variants", "v", "--variant=v=-np 1",
                        "-t", test, "-n", str(n), "--no-probe", "--campaign", camp] + extra
-                r = subprocess.run(cmd, env=env, cwd=os.path.dirname(HERE), stdout=open(f"/p/bw/data/q5h/baseline-{camp}.out", "w"), stderr=subprocess.STDOUT)
+                r = subprocess.run(cmd, env=env, cwd=os.path.dirname(HERE), stdout=open(os.path.join(WORK, f"baseline-{camp}.out"), "w"), stderr=subprocess.STDOUT)
                 files = [f for f in glob.glob(os.path.join(GPULOG, "*.csv")) if not f.endswith(".cpu.csv")
                          and time.mktime(time.strptime(os.path.basename(f)[:15], "%Y%m%d-%H%M%S")) >= int(t0)]
                 thr = throttled(files, t0)
                 lt = {g: v for g, v in thr.items()}
                 log(f"{camp}: limits {lim[0]}+{lim[1]} W, exit {r.returncode}, {len(files)} server starts, {time.time() - t0:.0f} s, throttle: " + ("; ".join(f"GPU{g}: {v}" for g, v in sorted(lt.items())) if lt else "none"))
                 if r.returncode != 0:
-                    log(f"{camp}: run.py failed, see /p/bw/data/q5h/baseline-{camp}.out; continuing with the next cell")
+                    log(f"{camp}: run.py failed, see {WORK}/baseline-{camp}.out; continuing with the next cell")
                     break
                 if 1 in lt:
                     log(f"note: x16 card throttled in {camp} (limit {lim[1]} W): logged only")

@@ -4,9 +4,11 @@ Defaults suit a plain Linux box (everything under ~/llama-fork, models under ~/m
   $FORK_CONFIG, ./fork/local.toml (ignored by git), ~/.config/llama-fork/config.toml
 and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case), e.g. FORK_PATHS_RELS=/data/rels.
 
-  [paths]   rels  gh_rel  devbuilds  release_out  images  best  ccache  ccache_stock  build_repo  build_tmp  agent
+  [paths]   rels  gh_rel  devbuilds  release_out  images  best  ccache  ccache_stock  build_repo  build_tmp  work  agent
   [models]  olmoe  qwen36  qwen38  glm  mimo        (the regress cells and baseline.py skip a model whose file is missing)
   [hosts]   w10_ssh  w10_root                         (the Windows laptop used by `run.py build --machine pc3`; the ssh target may be an alias from ~/.ssh/config)
+  [gpu]     nvidia_smi  limits_env  limits_service  env_sh   (power-limit tools plcal.py / baseline.py: nvidia-smi to call through sudo, the files that keep the limits at boot, an
+                                                              optional shell file whose exports every queue task gets; empty = not used)
 """
 import os
 
@@ -16,7 +18,7 @@ DEFAULTS = {
     "paths": {
         "rels": _BASE + "/rels", "gh_rel": _BASE + "/stock", "devbuilds": _BASE + "/rels/devbuilds", "release_out": _BASE + "/rels/release-out",
         "images": _BASE + "/rels/images", "best": _BASE + "/rels/best", "ccache": _BASE + "/ccache", "ccache_stock": _BASE + "/ccache-stock",
-        "build_repo": os.getcwd(), "build_tmp": _BASE + "/build-tmp", "agent": "",
+        "build_repo": os.getcwd(), "build_tmp": _BASE + "/build-tmp", "work": _BASE + "/work", "agent": "",
     },
     "models": {
         "olmoe": HOME + "/models/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf",
@@ -26,6 +28,7 @@ DEFAULTS = {
         "mimo": HOME + "/models/MiMo-V2.6-Flash-MOPD-MXFP4.gguf",
     },
     "hosts": {"w10_ssh": "", "w10_root": "N:"},
+    "gpu": {"nvidia_smi": "nvidia-smi", "limits_env": "", "limits_service": "", "env_sh": ""},
 }
 
 
