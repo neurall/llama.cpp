@@ -841,18 +841,21 @@ _PL = {}
 
 
 def power_limits(hw):
-    """GPU power limits in W of this host, like 350+370 (PERF_PL overrides); only for rows of the local machine, remote ones stay empty."""
-    if "pl" not in _PL:
-        local = os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
-        out = ""
-        if os.environ.get("PERF_PL") is None:
-            try:
-                out = subprocess.run([NVSMI, "--query-gpu=power.limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
-            except Exception:
-                pass
-        _PL["pl"] = os.environ.get("PERF_PL") or "+".join(str(round(float(x))) for x in out.split() if x.replace(".", "").isdigit())
-        _PL["local"] = local
-    return _PL["pl"] if hw == _PL["local"] else ""
+    """GPU power limits in W of this host, like 350+370 (PERF_PL overrides); only for rows of the local machine, remote ones stay empty.
+    Read from the cards for every row (the limits change at the start and the end of a bench call and by hand): a cached first value
+    recorded 350+370 for a run that crashed the x4 card at 330 W. A card that does not answer leaves its place out (a fault shows as a shorter value)."""
+    if "local" not in _PL:
+        _PL["local"] = os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
+    if hw != _PL["local"]:
+        return ""
+    if os.environ.get("PERF_PL") is not None:
+        return os.environ["PERF_PL"]
+    out = ""
+    try:
+        out = subprocess.run([NVSMI, "--query-gpu=power.limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        pass
+    return "+".join(str(round(float(x))) for x in out.split() if x.replace(".", "").isdigit())
 
 
 def build_info(build):
