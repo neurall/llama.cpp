@@ -259,7 +259,8 @@ def wait_vram_free():
             t0 = time.time()
         out = subprocess.run([NVSMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True).stdout.split()
-        if out and max(int(x) for x in out) < 500 + int(os.environ.get("PERF_HOLD_MB", 0)):  # PERF_HOLD_MB: VRAM a holder process keeps on purpose (simulated smaller card)
+        out = [x for x in out if x.isdigit()]   # no GPU, or an nvidia-smi that fails: nothing to wait for
+        if not out or max(int(x) for x in out) < 500 + int(os.environ.get("PERF_HOLD_MB", 0)):  # PERF_HOLD_MB: VRAM a holder process keeps on purpose (simulated smaller card)
             return
         time.sleep(1)
 
@@ -618,7 +619,7 @@ def server_run(build, env, args, path, body, render=None):
             pass
         try:
             o = subprocess.run([NVSMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
-            PROCSTAT["vram_mib"] = sum(int(x) for x in o.split())
+            PROCSTAT["vram_mib"] = sum(int(x) for x in o.split() if x.isdigit())
         except Exception:
             pass
         try:
@@ -1413,7 +1414,7 @@ def remote_run(m, build, test, args, env=None):
         nb, nub = {"ppl": ("1", "1"), "ppl3": ("3", "3"), "pplb": ("1024", "1024"), "pplc": ("1024", "256")}[test]   # pplb: 1024-token batches = the big-batch (prefill) path; pplc: the same batch in 256-token ubatches (4 ubatches per decode call)
         stf = f'{m["root"]}{sep}perf-stats.txt'
         envs = (f'set LLAMA_MOE_STATE=0&& set LLAMA_MOE_CACHE_TUNED=0&& set LLAMA_MOE_CACHE_STATS=1&& set LLAMA_MOE_CACHE_STATSLOG=32&& set LLAMA_MOE_STATSLOG={stf}&& ' if win else
-                f'LLAMA_MOE_STATE=0 LLAMA_MOE_CACHE_TUNED=0 LLAMA_MOE_CACHE_STATS=1 LLAMA_MOE_CACHE_STATSLOG=32 LLAMA_MOE_STATSLOG={stf} ')
+                f'LD_LIBRARY_PATH={os.path.dirname(exe)} LLAMA_MOE_STATE=0 LLAMA_MOE_CACHE_TUNED=0 LLAMA_MOE_CACHE_STATS=1 LLAMA_MOE_CACHE_STATSLOG=32 LLAMA_MOE_STATSLOG={stf} ')   # native Linux builds bake their build dir into RUNPATH
         cmd = envp + envs + f'{exe.replace("llama-cli", "llama-perplexity")} -m {MODEL} -f {m["root"]}{sep}{build}{sep}longsrc.cpp -c 1024 --chunks 2 -b {nb} -ub {nub} {args} ' + ("< nul 2>&1" if win else "< /dev/null 2>&1")
         out = remote_sh(m, cmd)
         sp_ = re.search(r"([\d.]+) seconds per pass", out)
@@ -2099,6 +2100,76 @@ def cmd_build(a):
         sys.exit(r.returncode)
 
 
+def cmd_quick(a):
+    """The short benchmark for anyone with a machine and a model: the fork build against a stock build, interleaved, on short chat answers (decode) and a
+    12k-token prompt (prompt processing). Nothing is written to the run history unless --record. Prints one markdown table to paste into a hardware report."""
+    import tempfile
+    if not a.record:
+        os.environ["FORK_NO_RUNS_DB"] = "1"
+    fork = os.path.abspath(os.path.expanduser(a.fork))
+    for d, what in ((fork, "--fork"), (os.path.abspath(os.path.expanduser(a.stock)) if a.stock else None, "--stock")):
+        if d and not os.path.exists(os.path.join(d, "llama-server")):
+            sys.exit(f"quick: no llama-server in {what} {d}")
+    model = os.path.abspath(os.path.expanduser(a.model))
+    if not os.path.exists(model):
+        sys.exit(f"quick: model file not found: {model}")
+    stage = tempfile.mkdtemp(prefix="quick-builds-")
+    data = os.environ.get("RUN_DATA") if a.record else tempfile.mkdtemp(prefix="quick-data-")
+    os.symlink(fork, os.path.join(stage, "fork"))
+    builds = ["fork"]
+    if a.stock:
+        os.symlink(os.path.abspath(os.path.expanduser(a.stock)), os.path.join(stage, "stock-ref"))
+        builds = ["stock-ref", "fork"]
+    env = dict(os.environ, PERF_BUILDS=stage, PERF_LOG="r", **({"RUN_DATA": data} if data else {}), **({} if a.record else {"FORK_NO_RUNS_DB": "1"}))
+    tests = [t for t in (("short chat answers (decode)", "game4c", ["--tokens", str(a.tokens)]), ("12k-token prompt (processing)", "pf12k", []))
+             if a.tests in ("both", "decode" if t[1] == "game4c" else "prefill")]
+    camp = "quick-" + time.strftime("%F-%H%M")
+    for label, test, extra in tests:
+        print(f"quick: {label}, {len(builds)} build(s), n={a.n} ...", flush=True)
+        subprocess.run([sys.executable, os.path.realpath(__file__), "bench", "--models", model, "--builds", ",".join(builds), "--variants", "default",
+                        "-t", test, "-n", str(a.n), "--no-probe", "--campaign", f"{camp}-{test}"] + extra + (["--variant", "default=" + a.args] if a.args else []),
+                       env=env, stdout=subprocess.DEVNULL if not a.verbose else None, stderr=subprocess.STDOUT if a.verbose else subprocess.DEVNULL)
+    rows = []
+    path = os.path.join(data or DATA, "run-history.csv")
+    if os.path.exists(path):
+        with open(path, newline="") as f:
+            rows = [r for r in csv.DictReader(f) if r.get("campaign", "").startswith(camp) and r.get("ok") != "0"]
+    def med(build, test, col):
+        v = [float(r[col]) for r in rows if r["build"] == build and r["test"] == test and r.get(col)]
+        return statistics.median(v) if v else None
+    def cell(x):
+        return "-" if x is None else f"{x:.1f}"
+    def gain(f, st):
+        return "-" if f is None or not st else f"{f / st:.2f}x"
+    def sh(*cmd):
+        try:
+            r = subprocess.run(list(cmd), capture_output=True, text=True, timeout=20, env=dict(os.environ, LD_LIBRARY_PATH=fork))
+            return (r.stdout + (r.stderr if "--version" in cmd else "")).strip() if r.returncode == 0 else ""
+        except Exception:
+            return ""
+    gpus = sh("nvidia-smi", "--query-gpu=name,memory.total,power.limit,pcie.link.gen.current,pcie.link.width.current", "--format=csv,noheader").replace("\n", "; ")
+    cpu = next((l.split(":", 1)[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name")), "") if os.path.exists("/proc/cpuinfo") else ""
+    mem = next((int(l.split()[1]) // (1 << 20) for l in open("/proc/meminfo") if l.startswith("MemTotal")), 0) if os.path.exists("/proc/meminfo") else 0
+    ver = sh(os.path.join(fork, "llama-server"), "--version")
+    print()
+    print(f"Model: {os.path.basename(model)}")
+    print(f"Fork build: {next((l for l in ver.splitlines() if 'version' in l), '?')}")
+    print(f"GPUs: {gpus or 'none found'}")
+    print(f"CPU: {cpu}, RAM: {mem} GiB")
+    print()
+    print("| test | stock t/s | fork t/s | gain | stock pp t/s | fork pp t/s | pp gain |")
+    print("|---|---|---|---|---|---|---|")
+    for label, test, _ in tests:
+        st_t, fk_t = med("stock-ref", test, "tps"), med("fork", test, "tps")
+        st_p, fk_p = (med("stock-ref", test, "pp"), med("fork", test, "pp")) if test == "pf12k" else (None, None)
+        print(f"| {label} | {cell(st_t)} | {cell(fk_t)} | {gain(fk_t, st_t)} | {cell(st_p)} | {cell(fk_p)} | {gain(fk_p, st_p)} |")
+    if not rows:
+        print("\nquick: no valid run (start the server by hand to see why: llama-server -m MODEL).")
+    shutil.rmtree(stage, ignore_errors=True)
+    if not a.record and data:
+        shutil.rmtree(data, ignore_errors=True)
+
+
 HUGE_NR = "/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages"
 HUGE_FREE = "/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages"
 
@@ -2287,6 +2358,8 @@ def cmd_regress(a):
 
 def _sync_runs_db():
     """whatever happened to the per-run insert (a locked database, a crash, rows merged in from another machine): at exit runs.db gets every CSV row it lacks"""
+    if os.environ.get("FORK_NO_RUNS_DB"):
+        return   # run.py quick without --record: nothing of the run goes into the run log
     try:
         import runlog
         runlog.sync()
@@ -2399,6 +2472,16 @@ if __name__ == "__main__":
     bd.add_argument("--machine", default="pc1", choices=["pc1", "pc3"])
     bd.add_argument("--w10-base", default="6846d4803", help="a commit the W10 repository has: the bundle carries only what is newer")
     bd.add_argument("--no-regress", action="store_true", help="skip the regress cell after the build")
+    qk = sp.add_parser("quick", help="the short benchmark for any machine: --fork build against --stock, short chat answers and a 12k-token prompt, one markdown table (nothing is recorded unless --record)")
+    qk.add_argument("--model", required=True, help="the .gguf file (the first part of a split model)")
+    qk.add_argument("--fork", required=True, help="directory with the fork's llama-server")
+    qk.add_argument("--stock", help="directory with an upstream llama-server, to compare against")
+    qk.add_argument("-n", type=int, default=2, help="measured runs per test and build (default 2)")
+    qk.add_argument("--tokens", type=int, default=256, help="tokens per chat answer (default 256)")
+    qk.add_argument("--tests", choices=["both", "decode", "prefill"], default="both", help="which tests to run (a slow machine may want only one)")
+    qk.add_argument("--args", default="", help="extra server arguments for both builds, e.g. '-c 16384'")
+    qk.add_argument("--record", action="store_true", help="also add the runs to fork/bench/run-history.csv")
+    qk.add_argument("--verbose", action="store_true", help="show the output of the benchmark runs")
     hp = sp.add_parser("hugepool", help="the 1 GiB huge-page pool for the pinned-weights cache: mount [SIZE|MODEL...] | unmount | status (was resident_pin.sh)")
     hp.add_argument("action", choices=["mount", "unmount", "status"])
     hp.add_argument("what", nargs="*", help="mount: a size like 100g or model file(s); nothing = the most the machine can spare")
@@ -2408,5 +2491,5 @@ if __name__ == "__main__":
     s_.add_argument("--runs", action="store_true")
     a = ap.parse_args()
     {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "hugepool": cmd_hugepool,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)

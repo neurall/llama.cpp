@@ -28,7 +28,7 @@ class Consistent:
             if sum(1 for y in xs if y >= 0.95 * x) >= 2: return x
         return statistics.median(xs)
 def connect():
-    con = sqlite3.connect(DB)
+    con = sqlite3.connect(":memory:" if os.environ.get("FORK_NO_RUNS_DB") else DB)   # run.py quick without --record: nothing of the run reaches the database file
     con.create_aggregate("consistent", 1, Consistent)
     return con
 NUMERIC = {"p_met", "p_unmet", "p_pending", "p_admit_free", "p_admit_evict", "p_d_admit", "p_d_margin", "p_d_budget", "p_d_victim", "p_d_big", "p_d_dup", "p_regret", "p_ev_unpaid", "p_ev_zero", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max", "tps", "pp", "hit", "ppl", "spp", "n_gen", "bno", "rep", "seed", "ready_s", "load_s", "wall_s", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "vram_mib", "pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs",
@@ -40,6 +40,7 @@ def num(x):
 def q(c): return '"' + c + '"'
 def ensure(con, cols):
     """the runs table has every CSV column (numeric ones REAL), plus stem (file name without split suffix and .gguf) and okf (1 unless the run failed); new columns are added as they appear"""
+    cols = list(dict.fromkeys(cols))   # a CSV header may repeat a name (wall_s, ddr_util): one column each
     have = [r[1] for r in con.execute("PRAGMA table_info(runs)")]
     if not have:
         con.execute("CREATE TABLE runs (" + ", ".join(f"{q(c)} {'REAL' if c in NUMERIC else 'TEXT'}" for c in cols) + ", stem TEXT, okf INTEGER)")
