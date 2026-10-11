@@ -23,8 +23,5 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Tool checks (compile, simulator invariants, config)
-        run: python3 fork/ci/test_tools.py
-
-      - name: Relative links in README and fork docs
-        run: python3 fork/ci/check_links.py
+      - name: Fork tooling self-test (compile, tool help, simulator invariants, config, markdown links)
+        run: python3 fork/run.py selftest

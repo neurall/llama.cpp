@@ -1,6 +1,6 @@
 # What this fork changes, area by area
 
-The fork is upstream llama.cpp plus the patches below. Each area is one commit of the branch `series` (`python3 fork/series.py` rebuilds it from the tip), so every change can be read, reviewed or sent upstream on its own. The areas share a few files, so only the last commit of the series is guaranteed to build.
+The fork is upstream llama.cpp plus the patches below. Each area is one commit of the branch `series` (`python3 fork/run.py series` rebuilds it from the tip), so every change can be read, reviewed or sent upstream on its own. The areas share a few files, so only the last commit of the series is guaranteed to build.
 
 Status words: **candidate** = general enough for an upstream pull request, **local** = specific to this fork's design or to Linux/NVIDIA hardware, **overlaps** = upstream has its own implementation.
 
@@ -46,7 +46,7 @@ MTP draft head for GLM-5.3-Flash and Qwen3.8-Flash-Next (`-md FILE --spec-type d
 
 ## 7. Tooling (`fork/`)
 
-`run.py` (benchmarks, builds, regression check), the run log (`run-history.csv`, `runlog.py`), simulators, experiment records. See `fork/README.md`.
+`run.py` (benchmarks, builds, regression check), the run log (`run-history.csv`, `run.py runlog`), simulators, experiment records. See `fork/README.md`.
 
 ## Upstream regressions and bugs found, and how they were fixed
 

@@ -39,8 +39,924 @@ decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat
 """
 import argparse, csv, glob, hashlib, io, json, os, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
 
+import types
+
+
+def _register(name, ns):
+    """the namespace returned by a merged library section as module `name`: every `import name` in this file and in the sections keeps working"""
+    m = types.ModuleType(name, ns.get('__doc__'))
+    m.__dict__.update(ns)
+    sys.modules[name] = m
+    return m
+
+
+# ======================================================================================================================
+# Libraries of the fork tooling, merged from their former files (config, runnorm, runstats, runexp, runlog).
+# ======================================================================================================================
+
+def _lib_config():
+    # ---- config.py (merged into run.py; the code of the file, unchanged)
+    __doc__ = """Machine-specific settings of the fork tools (paths, model files, W10 build host), kept out of the code.
+
+Defaults suit a plain Linux box (everything under ~/llama-fork, models under ~/models). Override in a TOML file, first found wins:
+  $FORK_CONFIG, ./fork/local.toml (ignored by git), ~/.config/llama-fork/config.toml
+and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case), e.g. FORK_PATHS_RELS=/data/rels.
+
+  [paths]   rels  gh_rel  devbuilds  release_out  images  best  ccache  ccache_stock  build_repo  build_tmp  work  agent
+  [models]  olmoe  qwen36  qwen38  glm  mimo        (the regress cells and run.py baseline skip a model whose file is missing)
+  [hosts]   w10_ssh  w10_root                         (the Windows laptop used by `run.py build --machine pc3`; the ssh target may be an alias from ~/.ssh/config)
+  [gpu]     nvidia_smi  limits_env  limits_service  env_sh   (power-limit tools run.py plcal / run.py baseline: nvidia-smi to call through sudo, the files that keep the limits at boot, an
+                                                              optional shell file whose exports every queue task gets; empty = not used)
+"""
+    import os
+
+    HOME = os.path.expanduser("~")
+    _BASE = os.path.join(HOME, "llama-fork")
+    DEFAULTS = {
+        "paths": {
+            "rels": _BASE + "/rels", "gh_rel": _BASE + "/stock", "devbuilds": _BASE + "/rels/devbuilds", "release_out": _BASE + "/rels/release-out",
+            "images": _BASE + "/rels/images", "best": _BASE + "/rels/best", "ccache": _BASE + "/ccache", "ccache_stock": _BASE + "/ccache-stock",
+            "build_repo": os.getcwd(), "build_tmp": _BASE + "/build-tmp", "work": _BASE + "/work", "agent": "",
+        },
+        "models": {
+            "olmoe": HOME + "/models/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf",
+            "qwen36": HOME + "/models/Qwen3.6-35B-A3B-GSQ-hybrid.gguf",
+            "qwen38": HOME + "/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+            "glm": HOME + "/models/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf",
+            "mimo": HOME + "/models/MiMo-V2.6-Flash-MOPD-MXFP4.gguf",
+        },
+        "hosts": {"w10_ssh": "", "w10_root": "N:"},
+        "gpu": {"nvidia_smi": "nvidia-smi", "limits_env": "", "limits_service": "", "env_sh": ""},
+    }
+
+
+    def _load():
+        import tomllib
+        here = os.path.dirname(os.path.abspath(__file__))
+        for p in (os.environ.get("FORK_CONFIG"), os.path.join(here, "local.toml"), os.path.join(HOME, ".config", "llama-fork", "config.toml")):
+            if p and os.path.isfile(p):
+                with open(p, "rb") as f:
+                    return tomllib.load(f), p
+        return {}, None
+
+
+    _FILE, SOURCE = _load()
+
+
+    def get(section, key):
+        """environment FORK_<SECTION>_<KEY>, then the TOML file, then the default"""
+        env = os.environ.get(f"FORK_{section}_{key}".upper())
+        if env is not None:
+            return env
+        if key in _FILE.get(section, {}):
+            return _FILE[section][key]
+        return DEFAULTS[section][key]
+
+
+    def path(key):
+        return os.path.expanduser(get("paths", key))
+
+
+    def model(key):
+        return os.path.expanduser(get("models", key))
+
+    return {k: v for k, v in dict(locals()).items() if not (k.startswith('__') and k != '__doc__')}
+
+config = _register('config', _lib_config())
+
+
+def _lib_runnorm():
+    # ---- the normalisation section of run.py (merged into run.py; the code of the file, unchanged)
+    __doc__ = """the normalisation section of run.py: the normalisation shared by run.py runlog-all (full rebuild of all_runs) and the statistics section of run.py (incremental refresh): model family, build number, test group."""
+    import os, re
+
+    FAMS = [("GLM-5.3-Flash-GSQ-RCO-3.5bit", "GLM 3.5-bit"), ("GLM-5.3-Flash-GSQ-RCO-3.0bit", "GLM 3.0-bit"), ("MiMo", "MiMo IQ3_XXS"), ("Qwen3.8-Flash-Next-UD-IQ4_XS", "Next IQ4_XS"),
+            ("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S", "Next IQ3_S"), ("Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M", "Next IQ1_M"), ("Qwen3.6-35B-A3B-GSQ", "Qwen3.6 Q2_0"), ("qwen36", "Qwen3.6 Q2_0"),
+            ("Qwen3.8-27B-IQ4_NL", "27B IQ4_NL"), ("Qwen3.8-27B-GSQ-RCO-IQ3_S", "27B IQ3_S"), ("Qwen3.8-27B-MTP", "27B Q5_K_M MTP"), ("Qwen3.8-27B", "27B"), ("OLMoE", "OLMoE")]
+
+
+    def fam(model, args=""):
+        m = (model or "").strip()
+        if not m:
+            m = (re.search(r"(?:-m|--model)\s+(\S+)", args or "") or [None, ""])[1]
+        m = os.path.basename(m.split(" ")[0])
+        for k, v in FAMS:
+            if k.lower() in m.lower():
+                return v
+        return re.sub(r"-0000\d-of-0000\d|\.gguf", "", m)[:28] or "?"
+
+
+    def bno_of(build, bno=""):
+        m = re.search(r"b(\d{5})", build or "") or re.search(r"(\d{5})", str(bno or ""))
+        return int(m.group(1)) if m else None
+
+
+    def tgroup(t):
+        return re.sub(r"-lv3$", "", re.sub(r"^cli-", "", t or ""))
+
+
+    GAME_WORDS = ["tetris", "racing", "shooter", "snake"]
+
+
+    def prompt_of(test, rep="", tag=""):
+        """the prompt of a run: the logged column, else derived from the test and the repetition (game4 and edit4 rotate through four prompts by repetition)"""
+        if tag:
+            return tag
+        t = tgroup(test)
+        try:
+            r = int(float(rep))
+        except (TypeError, ValueError):
+            return t
+        if t == "game4":
+            return "game4-" + GAME_WORDS[r % 4]
+        if t == "edit4":
+            return f"edit4-{r % 4}"
+        return t
+
+    return {k: v for k, v in dict(locals()).items() if not (k.startswith('__') and k != '__doc__')}
+
+runnorm = _register('runnorm', _lib_runnorm())
+
+
+def _lib_runstats():
+    # ---- the statistics section of run.py (merged into run.py; the code of the file, unchanged)
+    __doc__ = """the statistics section of run.py: cell statistics (min, median and max of t/s and pp per model, test, machine, side and build) kept in runs.db table cell_stats.
+
+Records added since the last refresh are marked (runs.stats_ok IS NULL, set by runlog.insert); refresh(con) takes ONLY those: they go into all_runs
+(if not there yet), only the cells they belong to are recomputed, then the records are marked done. Called at the start of every run.py runq query."""
+    import os, statistics, sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from runnorm import fam, bno_of, tgroup, prompt_of
+
+
+    def recompute(con, cells):
+        """cells: list of (fam, tgroup, prompt, hw, side, build) to recompute, None = all"""
+        where, args = "", []
+        if cells is not None:
+            where = " AND (fam, tgroup, prompt, hw, side, build) IN (" + ",".join("(?,?,?,?,?,?)" for _ in cells) + ")"
+            args = [x for c in cells for x in c]
+        groups = {}
+        for r in con.execute(f"SELECT fam, tgroup, COALESCE(prompt, tgroup), hw, side, build, tps, pp, hit, ts FROM all_runs WHERE ok = 1{where}", args):
+            g = groups.setdefault(r[:6], ([], [], [], []))
+            g[0].append(r[6])
+            if r[7]:
+                g[1].append(r[7])
+            if r[8] is not None:
+                g[2].append(r[8])
+            g[3].append(r[9])
+        mm = lambda v: (min(v), statistics.median(v), max(v)) if v else (None, None, None)
+        for k, (t, pp, hit, ts) in groups.items():
+            sd = statistics.pstdev(t) if len(t) > 1 else None   # observed spread of this model, prompt and build: standard deviation and max/min
+            con.execute("INSERT OR REPLACE INTO cell_stats (fam, tgroup, prompt, hw, side, build, n, t_min, t_med, t_max, t_sd, spread, pp_min, pp_med, pp_max, hit, first) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        k + (len(t),) + mm(t) + (sd, max(t) / min(t) if len(t) > 1 and min(t) else None) + mm(pp) + (max(hit) if hit else None, min(ts)))
+        # build order: by the time of the first run of the build, over all sides
+        firsts = sorted(con.execute("SELECT build, MIN(ts) FROM all_runs GROUP BY build ORDER BY MIN(ts)"))
+        for i, (b, _) in enumerate(firsts):
+            con.execute("UPDATE cell_stats SET bseq = ? WHERE build = ?", (i, b))
+            con.execute("UPDATE all_runs SET bseq = ? WHERE build = ?", (i, b))
+
+
+    def refresh(con):
+        """returns the number of new records taken in (0: statistics were current)"""
+        have = {r[0] for r in con.execute("SELECT name FROM sqlite_master")}
+        if "all_runs" not in have or "cell_stats" not in have or "runs" not in have:
+            return -1   # no full build yet: python3 fork/run.py runlog-all
+        if "stats_ok" not in [r[1] for r in con.execute("PRAGMA table_info(runs)")]:
+            con.execute("ALTER TABLE runs ADD COLUMN stats_ok INTEGER")   # every record counts as new: the dedupe in all_runs keeps the rows already there
+        for col in ("prompt", "rep"):   # a db made before these columns existed
+            if col not in [r[1] for r in con.execute("PRAGMA table_info(runs)")]:
+                con.execute(f"ALTER TABLE runs ADD COLUMN {col} TEXT")
+        new = con.execute("SELECT ts, hw, model, args, test, build, bno, tps, pp, hit, ok, note, rep, prompt FROM runs WHERE stats_ok IS NULL").fetchall()
+        if not new:
+            return 0
+        cells = set()
+        for ts, hw, model, args, test, build, bno, tps, pp, hit, ok, note, rep, prompt in new:
+            if not tps:
+                continue
+            f, tg, pr = fam(model, args), tgroup(test), prompt_of(test, rep, prompt)
+            side = "stock" if (build or "").startswith("stock") else "ours"
+            if not con.execute("SELECT 1 FROM all_runs WHERE ts = ? AND fam = ? AND test = ? AND build = ? AND ROUND(tps, 2) = ROUND(?, 2)", ((ts or "")[:19], f, test, build, tps)).fetchone():
+                con.execute("INSERT INTO all_runs (src, ts, hw, fam, tgroup, test, build, bno, side, tps, pp, hit, ok, args, note, prompt) VALUES ('csv',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            ((ts or "")[:19], hw or "pc1", f, tg, test, build, bno_of(build, bno), side, tps, pp, hit, 0 if str(ok) == "0" else 1, (args or "")[:60], (note or "")[:80], pr))
+            cells.add((f, tg, pr, hw or "pc1", side, build))
+        recompute(con, sorted(cells))
+        con.execute("UPDATE runs SET stats_ok = 1 WHERE stats_ok IS NULL")
+        con.commit()
+        return len(new)
+
+    return {k: v for k, v in dict(locals()).items() if not (k.startswith('__') and k != '__doc__')}
+
+runstats = _register('runstats', _lib_runstats())
+
+
+def _lib_runexp():
+    # ---- runexp.py (merged into run.py; the code of the file, unchanged)
+    __doc__ = """run.py exp SPEC.ini [--dry] [--only ARM,ARM] [--rounds N]: an experiment described in a file, every run stored like any other run.
+
+Everything an experiment needs is a field of the spec, so no side script is ever needed (and nothing is lost when a temp folder goes away).
+Every run is one row of run-history.csv (same columns as run.py bench, plus the ones below) and the spec itself is kept next to the data.
+
+[exp]
+name = pinned-load-abba          ; campaign name of every row
+note = what this tests
+rounds = 3
+order = rotate                   ; rotate | abba | fixed
+warm = 0                         ; discarded runs of each arm before its first measured one
+
+[models]                         ; name = path
+glm = /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf
+
+[workload]
+tool = cli                       ; cli | perplexity | completion
+prompt_file = fork/bench/prompt650.txt    ; or prompt = text
+n = 100
+ctx = 2048
+chunks = 2                       ; perplexity: chunks, text_file
+extra = -lm pin                  ; args of every arm
+timeout = 1500
+
+[setup]
+cuda_visible_devices = 1
+hold_vram = 0:12.4               ; GPU:GiB, space separated; held for the whole experiment
+mem_limit = 30G                  ; systemd-run scope per run, swap off
+drop_cache = 1                   ; model leaves the page cache before every run
+state = off                      ; off | keep | FILE (learned MoE state, reset at start)
+env = K=V K2=V2
+guard = min_avail_gb=40 max_swap_mb=1500 swapout_pages_s=25000 psi=30
+sample = 1                       ; CPU/GPU/memory once a second, summarised in the row
+
+[arm N]                          ; one section per arm
+bin = /p/bw/wt-release-next/build-dev/bin
+args = --moe-expert-cache 0
+env = K=V
+origin = fork                    ; fork | stock
+tool = completion                ; optional, overrides workload tool
+
+Command line: run.py exp SPEC.ini [--dry] [--only N,P] [--rounds N]
+Columns added to run-history.csv by this (empty for rows of the older runs): exp (spec name), arm, ready_s (model ready: the perplexity start), wall_s, rss_kb,
+major_faults, uploads, evictions, up_mib (churn), ddr_gbs, pcie_gbs, ddr_util, pcie_util (% of the probed peaks), cpu_util, gpu_util (per GPU, %), placement, rungs
+(retries that rescued a start), held_gib, mem_limit, cache_state, state, sys (json: clocks, power, temperature, free memory, swap, kernel, driver, huge pages).
+The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fills the churn and bandwidth columns.
+"""
+    import glob, shutil, hashlib, json, os, re, shlex, signal, statistics, subprocess, sys, threading, time
+
+    EXP_COLS = ["exp", "arm", "ready_s", "wall_s", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3", "miss_per_layer", "ddr_gbs", "pcie_gbs", "ddr_util", "pcie_util",
+                "cpu_util", "gpu_util", "placement", "decisions", "rungs", "held_gib", "mem_limit", "cache_state", "temp", "state", "sys"]
+    TOOLS = {"cli": "llama-cli", "perplexity": "llama-perplexity", "completion": "llama-completion"}
+    HOLD = os.path.join(os.path.dirname(os.path.realpath(__file__)), "experiments", "vram-sim", "vramhold.py")
+
+
+    def _read(path, default=""):
+        try:
+            return open(path).read()
+        except OSError:
+            return default
+
+
+    def meminfo():
+        m = {k: int(v) for k, v in re.findall(r"^(\w+):\s+(\d+)", _read("/proc/meminfo"), re.M)}
+        return m
+
+
+    def machine_state():
+        m = meminfo()
+        st = {"mem_avail_gb": round(m.get("MemAvailable", 0) / 1048576, 1), "swap_mb": round((m.get("SwapTotal", 0) - m.get("SwapFree", 0)) / 1024),
+              "kernel": os.uname().release, "huge_1g_free": _read("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages").strip(),
+              "huge_1g_total": _read("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages").strip()}
+        try:
+            st["driver"] = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], capture_output=True, text=True, timeout=10).stdout.split()[0]
+        except Exception:
+            pass
+        return st
+
+
+    def cpu_times():
+        f = _read("/proc/stat").split("\n")[0].split()[1:]
+        v = [int(x) for x in f[:8]]
+        return sum(v) - v[3] - v[4], sum(v)   # busy (not idle, not iowait), total
+
+
+    class Sampler(threading.Thread):
+        """CPU, GPU and memory once a second; summary() gives the means and extremes"""
+        def __init__(self):
+            super().__init__(daemon=True)
+            self.stop_ev = threading.Event()
+            self.cpu, self.gpu, self.clk, self.pw, self.tmp, self.avail, self.swap, self.thr = [], {}, {}, {}, {}, [], [], set()
+
+        def run(self):
+            b0, t0 = cpu_times()
+            while not self.stop_ev.wait(1.0):
+                b1, t1 = cpu_times()
+                if t1 > t0:
+                    self.cpu.append(100.0 * (b1 - b0) / (t1 - t0))
+                b0, t0 = b1, t1
+                m = meminfo()
+                self.avail.append(m.get("MemAvailable", 0) / 1048576)
+                self.swap.append((m.get("SwapTotal", 0) - m.get("SwapFree", 0)) / 1024)
+                try:
+                    out = subprocess.run(["nvidia-smi", "--query-gpu=index,utilization.gpu,clocks.sm,power.draw,temperature.gpu,clocks_throttle_reasons.active",
+                                          "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout
+                    for line in out.strip().split("\n"):
+                        i, u, c, p, t, r = [x.strip() for x in line.split(",")]
+                        self.gpu.setdefault(i, []).append(float(u)); self.clk.setdefault(i, []).append(float(c))
+                        self.pw.setdefault(i, []).append(float(p)); self.tmp.setdefault(i, []).append(float(t))
+                        if r not in ("0x0000000000000000", "0x0000000000000001"):
+                            self.thr.add(r)
+                except Exception:
+                    pass
+
+        def summary(self):
+            mean = lambda v: round(statistics.mean(v), 1) if v else None
+            return {"cpu_util": mean(self.cpu), "cpu_max": round(max(self.cpu), 1) if self.cpu else None,
+                    "gpu_util": "/".join(str(mean(v)) for _, v in sorted(self.gpu.items())) or None,
+                    "gpu_clk_mhz": "/".join(str(round(statistics.mean(v))) for _, v in sorted(self.clk.items())) or None,
+                    "gpu_power_w": "/".join(str(mean(v)) for _, v in sorted(self.pw.items())) or None,
+                    "gpu_temp_max": "/".join(str(round(max(v))) for _, v in sorted(self.tmp.items())) or None,
+                    "gpu_throttle": sorted(self.thr) or None,
+                    "mem_avail_min_gb": round(min(self.avail), 1) if self.avail else None, "swap_max_mb": round(max(self.swap)) if self.swap else None}
+
+
+    class Guard(threading.Thread):
+        """kills the run's process group on a swap storm or memory pressure"""
+        def __init__(self, proc, limits):
+            super().__init__(daemon=True)
+            self.proc, self.lim, self.stop_ev, self.reason = proc, limits, threading.Event(), ""
+
+        @staticmethod
+        def pswpout():
+            m = re.search(r"^pswpout (\d+)", _read("/proc/vmstat"), re.M)
+            return int(m.group(1)) if m else 0
+
+        def run(self):
+            prev = self.pswpout()
+            while not self.stop_ev.wait(1.0):
+                cur = self.pswpout()
+                psi = re.search(r"some avg10=([\d.]+)", _read("/proc/pressure/memory"))
+                if cur - prev > self.lim.get("swapout_pages_s", 25000) or (psi and float(psi.group(1)) > self.lim.get("psi", 30)):
+                    self.reason = f"guard: swap-out +{cur - prev} pages/s, memory pressure {psi.group(1) if psi else '?'}"
+                    try:
+                        os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                    except Exception:
+                        pass
+                    return
+                prev = cur
+
+
+    def model_files(path):
+        m = re.match(r"(.*)-0*1-of-(\d+)\.gguf$", path)
+        return sorted(glob.glob(m.group(1) + "-*-of-" + m.group(2) + ".gguf")) if m else [path]
+
+
+    def drop_cache(path):
+        for f in model_files(path):
+            try:
+                fd = os.open(f, os.O_RDONLY)
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+                os.close(fd)
+            except OSError:
+                pass
+        time.sleep(2)
+
+
+    def parse_log(text, time_txt):
+        """everything a run's output says: speeds, perplexity, ready time, placement, rescues, out of memory, the engine's summary line"""
+        t = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text).replace("\r", "\n")
+        r = {}
+        m = re.search(r"\[ Prompt: ([0-9.]+) t/s \| Generation: ([0-9.]+) t/s \]", t)
+        if m:
+            r["pp"], r["tps"] = float(m.group(1)), float(m.group(2))
+        else:   # llama-completion / perf lines
+            mp = re.search(r"prompt eval time =\s*[\d.]+ ms /\s*(\d+) tokens.*?([\d.]+) tokens per second", t)
+            mg = re.search(r"(?<!prompt )eval time =\s*[\d.]+ ms /\s*(\d+) runs.*?([\d.]+) tokens per second", t)
+            if mp:
+                r["pp"] = float(mp.group(2))
+            if mg:
+                r["tps"], r["n_gen"] = float(mg.group(2)), int(mg.group(1))
+        m = re.search(r"Final estimate: PPL = ([0-9.]+)", t)
+        if m:
+            r["ppl"] = float(m.group(1))
+        m = re.search(r"^(\d+)\.(\d\d)\.(\d{3})\.\d{3} I perplexity: tokenizing the input", t, re.M)
+        if m:
+            r["ready_s"] = int(m.group(1)) * 60 + int(m.group(2)) + int(m.group(3)) / 1000
+        m = re.search(r"MoE placement: ([^\n]{0,140})", t)
+        if m:
+            r["placement"] = m.group(1).strip()
+        dec = [re.sub(r"^\S+ [IWE] ", "", l).strip()[:200] for l in t.split("\n") if re.search(
+            r"ubatch \d+ \(|compute threads|decode threads|prompt threads|tuned|autotune|MoE placement|retrying|context creation failed|n_ubatch|threads:", l)]
+        if dec:
+            r["decisions"] = " || ".join(dict.fromkeys(dec))[:1500]
+        rungs = sorted(set(re.findall(r"retrying with ubatch \d+|retrying without op offload|starting over with the fork off", t)))
+        if rungs:
+            r["rungs"] = ";".join(rungs)
+        if "out of memory" in t:
+            r["oom"] = 1
+        m = re.search(r"moe-pred: hit=([\d.]+) hit_without_est=([\d.]+) boost_pts=([\d.]+) up=(\d+) pub=(\d+) used=(\d+) late=(\d+) stale=(\d+) cov1=([\d.]+) cov2=([\d.]+) cov3=([\d.]+) miss_per_layer=([\d.]+)", t)
+        if m:
+            hw_, hwo, bp, up, pub, used, late, stale, c1, c2, c3, mpl = m.groups()
+            r.update(pred_hit=float(hw_), pred_hit_without=float(hwo), pred_boost_pts=float(bp), pred_up=int(up), pred_pub=int(pub), pred_used=int(used), pred_late=int(late), pred_stale=int(stale),
+                     pred_cov1=float(c1), pred_cov2=float(c2), pred_cov3=float(c3), miss_per_layer=float(mpl))
+        m = re.search(r"moe-summary: hit=([\d.]+)% uploads=(\d+) evictions=(\d+) up_mib=(\d+) ddr_gbs=([\d.]+) pcie_gbs=([\d.]+) ddr_peak=([\d.]+) pcie_peak=([\d.]+)", t)
+        if m:
+            h, up, ev, mib, dd, pc, dpk, ppk = [float(x) for x in m.groups()]
+            r.update(hit=h, uploads=int(up), evictions=int(ev), up_mib=int(mib), ddr_gbs=dd, pcie_gbs=pc,
+                     ddr_util=round(100 * dd / dpk, 1) if dpk else None, pcie_util=round(100 * pc / ppk, 1) if ppk else None)
+        if time_txt:
+            m = re.search(r"Maximum resident set size \(kbytes\): (\d+)", time_txt)
+            if m:
+                r["rss_kb"] = int(m.group(1))
+            m = re.search(r"Major \(requiring I/O\) page faults: (\d+)", time_txt)
+            if m:
+                r["major_faults"] = int(m.group(1))
+        return r
+
+
+    def order_arms(arms, rnd, how):
+        if how == "abba":
+            return arms if rnd % 2 == 0 else arms[::-1]
+        if how == "rotate":
+            k = rnd % len(arms)
+            return arms[k:] + arms[:k]
+        return arms
+
+
+    def version_of(bindir):
+        for tool in ("llama-cli", "llama-completion", "llama-perplexity"):
+            exe = os.path.join(bindir, tool)
+            if os.path.exists(exe):
+                try:
+                    out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=60, env={**os.environ, "CUDA_VISIBLE_DEVICES": ""}).stderr
+                    mc, mb = re.search(r"commit (\w+)", out), re.search(r"build (\d+)", out)
+                    return (mc.group(1) if mc else None), (int(mb.group(1)) if mb else None)
+                except Exception:
+                    return None, None
+        return None, None
+
+
+    def build_meta(bindir):
+        """commit, branch, patch of a build: bin/BUILD_INFO (or its parent), else the binary's --version"""
+        for d in (bindir, os.path.dirname(bindir.rstrip("/"))):
+            try:
+                bi = dict(l.strip().split("=", 1) for l in open(os.path.join(d, "BUILD_INFO")) if "=" in l)
+                return bi.get("commit"), bi.get("branch", ""), bi.get("patch", ""), None
+            except OSError:
+                pass
+        c, b = version_of(bindir)
+        return c, "", "", b
+
+
+    def _kv(v):
+        return dict(x.split("=", 1) for x in shlex.split(v) if "=" in x)
+
+
+    def load_spec(path):
+        """INI spec (see the top of this file) -> the dict the runner uses"""
+        import configparser
+        c = configparser.ConfigParser(inline_comment_prefixes=(";",), interpolation=None)
+        c.optionxform = str
+        c.read(path)
+        e, w, s = dict(c["exp"]), dict(c["workload"]) if "workload" in c else {}, dict(c["setup"]) if "setup" in c else {}
+        num = lambda v: float(v) if "." in v else int(v)
+        for k in ("n", "ctx", "chunks", "timeout", "log_verbosity"):
+            if k in w:
+                w[k] = int(w[k])
+        w["extra"] = shlex.split(w.get("extra", ""))
+        st = s.get("state", "keep")
+        setup = {"state": st if st in ("off", "keep") else {"file": st, "reset": "start"}, "env": _kv(s.get("env", "")),
+                 "guard": {k: num(v) for k, v in _kv(s.get("guard", "")).items()}, "drop_cache": s.get("drop_cache", "0") == "1", "save_logs": s.get("save_logs", "1") == "1",
+                 "sample": s.get("sample", "1") == "1"}
+        if s.get("cuda_visible_devices"):
+            setup["cuda_visible_devices"] = s["cuda_visible_devices"]
+        if s.get("mem_limit"):
+            setup["mem_limit"] = s["mem_limit"]
+        if s.get("hold_vram"):
+            setup["hold_vram"] = dict(x.split(":") for x in s["hold_vram"].split())
+        arms = []
+        for sec in c.sections():
+            if sec.startswith("arm "):
+                a = dict(c[sec])
+                arms.append({**a, "name": sec[4:].strip(), "args": shlex.split(a.get("args", "")), "env": _kv(a.get("env", ""))})
+        return {"_path": path, "name": e["name"], "note": e.get("note", ""), "rounds": int(e.get("rounds", 1)), "order": e.get("order", "fixed"), "warm": int(e.get("warm", 0)),
+                "models": dict(c["models"]), "workload": w, "setup": setup, "arms": arms}
+
+
+    def run_exp(spec_path, rs, dry=False, only=None, rounds=None):
+        """rs: the run.py module (csv_append, RUN_COLS, power_limits, DATA, hw name)"""
+        spec = load_spec(spec_path)
+        name = spec["name"]
+        wl, setup = spec.get("workload", {}), spec.get("setup", {})
+        arms = [a for a in spec["arms"] if not only or a["name"] in only]
+        models = spec["models"]
+        models = models if isinstance(models, dict) else {os.path.basename(p): p for p in models}
+        rounds = rounds or spec.get("rounds", 1)
+        guard_lim = setup.get("guard", {})
+        hw = os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
+        spec_sha = hashlib.sha1(open(spec_path, "rb").read()).hexdigest()[:8]
+        base_env = dict(os.environ)
+        if setup.get("cuda_visible_devices") is not None:
+            base_env["CUDA_VISIBLE_DEVICES"] = str(setup["cuda_visible_devices"])
+        base_env.update({k: str(v) for k, v in setup.get("env", {}).items()})
+        st = setup.get("state", "keep")
+        state_file = None
+        if st == "off":
+            base_env["LLAMA_MOE_STATE"] = "0"
+        elif isinstance(st, dict):
+            state_file = st["file"]
+            base_env["LLAMA_MOE_STATE"] = state_file
+            if st.get("reset", "start") == "start" and os.path.exists(state_file) and not dry:
+                os.remove(state_file)
+        for a in arms:
+            if a.get("state") and os.path.exists(a["state"]) and not dry and a.get("keep_state") != "1":   # keep_state = 1: a second phase continues the arm's learned state
+                os.remove(a["state"])
+        holder = None
+        if setup.get("hold_vram") and not dry:
+            holder = subprocess.Popen([sys.executable, HOLD] + [f"{g}:{gib}" for g, gib in setup["hold_vram"].items()], env=base_env,
+                                      stdout=subprocess.PIPE, text=True, start_new_session=True)
+            held_ok = False
+            for _ in range(120):
+                if "holding" in (holder.stdout.readline() or ""):
+                    held_ok = True
+                    break
+                if holder.poll() is not None:
+                    break
+            if not held_ok or holder.poll() is not None:
+                sys.exit(f"hold_vram failed: {HOLD} did not start holding (missing or crashed); rows would claim a constraint that never existed")
+            print(f"holding VRAM {setup['hold_vram']}", flush=True)
+        n_run = 0
+        try:
+            for mname, mpath in models.items():
+                warm_done = set()
+                for rnd in range(rounds):
+                    for arm in order_arms(arms, rnd, spec.get("order", "fixed")):
+                        # a discarded hot-up run (cold file read, never stored) only for arms that read the weights lazily (mmap, stock, fork off):
+                        # warm = N on the arm, else on [exp]; a pinned arm reads the whole file while loading and needs none
+                        warm_n = int(arm.get("warm", spec.get("warm", 0))) if arm["name"] not in warm_done else 0
+                        for attempt in range(1 + warm_n):
+                            n_run += 1
+                            row = one_run(spec, wl, setup, arm, mname, mpath, rnd, base_env, guard_lim, dry, state_file)
+                            if attempt < warm_n:   # the cold run is stored too, marked temp=cold; reports leave temp=cold rows out
+                                row["temp"] = "cold"
+                                print(f"  ({arm['name']}: cold first run recorded as temp=cold)", flush=True)
+                                if not dry:
+                                    store_row(rs, spec, name, spec_sha, arm, mname, mpath, rnd, row, hw, setup, guard_lim)
+                                continue
+                            warm_done.add(arm["name"])
+                            if not dry:
+                                store_row(rs, spec, name, spec_sha, arm, mname, mpath, rnd, row, hw, setup, guard_lim)
+        finally:
+            if holder:
+                try:
+                    os.killpg(os.getpgid(holder.pid), signal.SIGKILL)
+                except Exception:
+                    pass
+        print(f"{name}: {n_run} runs", flush=True)
+
+
+    def command_for(wl, setup, arm, mpath):
+        tool = arm.get("tool", wl.get("tool", "cli"))
+        exe = os.path.join(arm["bin"], TOOLS[tool])
+        a = ["-m", mpath]
+        here = os.path.dirname(os.path.realpath(__file__))
+        resolve = lambda p: p if os.path.isabs(p) else os.path.join(os.path.dirname(here), p)
+        if tool == "perplexity":
+            a += ["-f", resolve(wl.get("text_file", "fork/bench/longsrc.cpp")), "-c", str(wl.get("ctx", 512)), "--chunks", str(wl.get("chunks", 2))]
+        else:
+            if wl.get("prompt_file"):
+                a += ["-f", resolve(wl["prompt_file"])]
+            elif wl.get("prompt"):
+                a += ["-p", wl["prompt"]]
+            a += ["-n", str(wl.get("n", 100)), "--temp", "0"]
+            if tool == "cli":
+                a += ["-st"]
+            if wl.get("ctx"):
+                a += ["-c", str(wl["ctx"])]
+        if wl.get("log_verbosity") and tool in ("cli", "completion"):   # engine decisions (ubatch, threads, placement) are info messages
+            a += ["--log-verbosity", str(wl["log_verbosity"])]
+        a += [str(x) for x in wl.get("extra", [])] + [str(x) for x in arm.get("args", [])]
+        if arm.get("state") and arm.get("origin", "fork") != "stock":   # the fork reads --moe state=FILE (the LLAMA_MOE_STATE variable is gone)
+            a += ["--moe", "state=" + arm["state"] + (".fresh" if arm.get("fresh_state") else "")]
+        cmd = [exe] + a
+        if setup.get("time", True):
+            if os.path.exists("/usr/bin/time"):   # not on every box (pc2): then no rss or page-fault columns
+                cmd = ["/usr/bin/time", "-v"] + cmd
+        cmd = ["timeout", str(wl.get("timeout", 1500))] + cmd
+        env = {k: str(v) for k, v in arm.get("env", {}).items()}
+        if env:
+            cmd = ["env"] + [f"{k}={v}" for k, v in env.items()] + cmd
+        if setup.get("mem_limit"):
+            cmd = ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={setup['mem_limit']}", "-p", "MemorySwapMax=0"] + cmd
+        return cmd
+
+
+    def one_run(spec, wl, setup, arm, mname, mpath, rnd, base_env, lim, dry, state_file):
+        if arm.get("fresh_state") and arm.get("state") and not dry and os.path.exists(arm["state"] + ".fresh"):
+            os.remove(arm["state"] + ".fresh")   # fresh_state: every start begins with an empty state file of the arm's own (never the user's moe-state.ini)
+        cmd = command_for(wl, setup, arm, mpath)
+        label = f"{spec['name']} {mname} r{rnd + 1} {arm['name']}"
+        if dry:
+            print(f"[dry] {label}: {shlex.join(cmd)}", flush=True)
+            return {}
+        ms = machine_state()
+        if ms["mem_avail_gb"] < lim.get("min_avail_gb", 0) or ms["swap_mb"] > lim.get("max_swap_mb", 10 ** 9):
+            print(f"{label}: SKIPPED (available {ms['mem_avail_gb']} GiB, swap {ms['swap_mb']} MiB)", flush=True)
+            return {"skipped": 1, "sys": ms}
+        cache_state = "cold" if setup.get("drop_cache") else "as-is"
+        temp = "cold" if setup.get("drop_cache") else "hot"
+        if setup.get("drop_cache"):
+            drop_cache(mpath)
+        elif str(arm.get("free_cache", "0")) == "1":   # pinned arms: the file's page cache is released first (RAM for the pinned copy), the run is not marked cold
+            drop_cache(mpath)
+        env = dict(base_env)
+        t0 = time.time()
+        sampler = Sampler() if setup.get("sample", True) else None
+        p = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace", start_new_session=True)
+        guard = Guard(p, lim)
+        if sampler:
+            sampler.start()
+        guard.start()
+        out, err = p.communicate()
+        wall = time.time() - t0
+        guard.stop_ev.set()
+        if sampler:
+            sampler.stop_ev.set()
+        # /usr/bin/time -v writes to stderr after the program's own output
+        tm = re.search(r"Command being timed:.*", err)
+        time_txt = err[tm.start():] if tm else ""
+        r = parse_log(out + "\n" + err, time_txt)
+        if setup.get("save_logs", True):   # the whole output of every run, next to the data (a row is a summary, the log is the evidence)
+            ld = os.path.join(os.environ.get("RUN_DATA") or os.path.join(os.path.dirname(os.path.realpath(__file__)), "bench"), "logs", spec["name"])
+            os.makedirs(ld, exist_ok=True)
+            with open(os.path.join(ld, f"{mname}-r{rnd + 1}-{arm['name']}.log"), "w") as lf:
+                lf.write(out + "\n=== stderr ===\n" + err)
+        r.update(wall_s=round(wall, 1), cache_state=cache_state, temp=temp, sys={**ms, **(sampler.summary() if sampler else {})})
+        if guard.reason:
+            r["note"] = guard.reason
+        if p.returncode not in (0, None) and not r.get("tps") and not r.get("ppl"):
+            r.setdefault("note", f"exit {p.returncode}" + (", out of memory" if r.get("oom") else ""))
+        print(f"{label}: " + (f"{r['tps']:.2f} t/s" if r.get("tps") else "no t/s") + (f", pp {r['pp']:.1f}" if r.get("pp") else "") + (f", PPL {r['ppl']}" if r.get("ppl") else "")
+              + (f", ready {r['ready_s']:.1f}s" if r.get("ready_s") else "") + f", wall {wall:.0f}s" + (f" [{r['note']}]" if r.get("note") else "")
+              + (f" [{r['rungs']}]" if r.get("rungs") else ""), flush=True)
+        return r
+
+
+    def store_row(rs, spec, name, spec_sha, arm, mname, mpath, rnd, r, hw, setup, lim):
+        if r.get("skipped"):
+            return
+        commit, branch, patch, bno = build_meta(arm["bin"])
+        env = {**{k: str(v) for k, v in setup.get("env", {}).items()}, **{k: str(v) for k, v in arm.get("env", {}).items()}}
+        if setup.get("state") == "off":
+            env["LLAMA_MOE_STATE"] = "0"
+        held = "+".join(f"{g}:{v}" for g, v in setup.get("hold_vram", {}).items())
+        sysd = r.get("sys") or {}
+        row = dict(ts=time.strftime("%F %T"), commit=(commit or "") + ("+" + patch if patch and patch != "0" else ""), bno=bno, tps=r.get("tps"), pp=r.get("pp"), hit=r.get("hit"),
+                   model=os.path.basename(mpath), args=" ".join(map(str, arm.get("args", []))), test=spec.get("workload", {}).get("tool", "cli") + ":" + name, hw=hw,
+                   ok=1 if (r.get("tps") or r.get("ppl")) else 0, build=arm.get("build") or arm["name"], campaign=name, note=" | ".join(x for x in (spec.get("note", ""), r.get("note", "")) if x),
+                   ppl=r.get("ppl"), n_gen=r.get("n_gen") or spec.get("workload", {}).get("n"), origin=arm.get("origin", "fork"),
+                   env=json.dumps(env, sort_keys=True, separators=(",", ":")) if env else "", cmd=shlex.join(command_for(spec.get("workload", {}), setup, arm, mpath)),
+                   pl=rs.power_limits(hw), proto="v2" if spec.get("rounds", 1) >= 3 else "v1", rep=rnd, branch=branch, patch=patch,
+                   exp=f"{name}@{spec_sha}", arm=arm["name"], ready_s=r.get("ready_s"), wall_s=r.get("wall_s"), rss_kb=r.get("rss_kb"), major_faults=r.get("major_faults"),
+                   uploads=r.get("uploads"), evictions=r.get("evictions"), up_mib=r.get("up_mib"), ddr_gbs=r.get("ddr_gbs"), pcie_gbs=r.get("pcie_gbs"),
+                   ddr_util=r.get("ddr_util"), pcie_util=r.get("pcie_util"), cpu_util=sysd.get("cpu_util"), gpu_util=sysd.get("gpu_util"), placement=r.get("placement"), decisions=r.get("decisions"),
+                   rungs=r.get("rungs"), held_gib=held, mem_limit=setup.get("mem_limit"), cache_state=r.get("cache_state"), temp=r.get("temp"),
+                   state=json.dumps(setup.get("state")) if setup.get("state") not in (None, "keep") else "", sys=json.dumps(sysd, sort_keys=True, separators=(",", ":")))
+        row.update({c: r.get(c) for c in ["pred_hit"] + EXP_COLS if c in r and c not in row})
+        rs.csv_append("run-history.csv", rs.RUN_COLS, row)
+        # the spec is kept next to the data, once
+        sd = os.path.join(rs.DATA, "specs")
+        os.makedirs(sd, exist_ok=True)
+        dst = os.path.join(sd, f"{name}@{spec_sha}.ini")
+        if not os.path.exists(dst):
+            shutil.copy(spec["_path"], dst)
+
+    return {k: v for k, v in dict(locals()).items() if not (k.startswith('__') and k != '__doc__')}
+
+runexp = _register('runexp', _lib_runexp())
+
+
+def _lib_runlog():
+    # ---- run.py runlog (merged into run.py; the code of the file, unchanged)
+    __doc__ = """SQLite view of the run log: what model, prompt test and build gave what speed, and when.
+Every run is stored twice: as a row of fork/bench/run-history.csv (append-only, the source of truth, in git) and, written by run.py at the same moment, in fork/runs.db (this database, queryable, not in git).
+`load` rebuilds the database from the CSV any time.
+
+  python3 fork/run.py runlog load                     rebuild the database from the CSV
+  python3 fork/run.py runlog sync                     add the CSV rows the database lacks (after a git merge of run-history.csv from another machine)
+  python3 fork/run.py runlog bestpl MODEL TEST PL     like best, only the rows measured at one power limit, e.g. 280+280
+  python3 fork/run.py runlog best MODEL [TEST]        per build: runs, consistent best t/s and pp, first and last date (MODEL is a substring of the file name)
+  python3 fork/run.py runlog runs MODEL [TEST] [BUILD] every run, newest first
+  python3 fork/run.py runlog import-old [apply]       runs of the old perf.db (archive) that the CSV lacks, appended to the CSV
+  python3 fork/run.py runlog q "SELECT ..."           any SQL; tables: runs, tune_log, campaign_notes, view cells
+
+consistent best = the highest value that at least two runs agree on within 5% (a lone outlier does not count), else the median."""
+    import csv, os, re, sqlite3, statistics, subprocess, sys
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    CSV = os.path.join(HERE, "bench", "run-history.csv")
+    DB = os.path.join(HERE, "runs.db")
+    class Consistent:
+        def __init__(self): self.v = []
+        def step(self, x):
+            if x is not None: self.v.append(x)
+        def finalize(self):
+            xs = sorted(self.v, reverse=True)
+            if not xs: return None
+            if len(xs) < 2: return xs[0]
+            for x in xs:
+                if sum(1 for y in xs if y >= 0.95 * x) >= 2: return x
+            return statistics.median(xs)
+    def connect():
+        con = sqlite3.connect(":memory:" if os.environ.get("FORK_NO_RUNS_DB") else DB)   # run.py quick without --record: nothing of the run reaches the database file
+        con.create_aggregate("consistent", 1, Consistent)
+        return con
+    NUMERIC = {"p_met", "p_unmet", "p_pending", "p_admit_free", "p_admit_evict", "p_d_admit", "p_d_margin", "p_d_budget", "p_d_victim", "p_d_big", "p_d_dup", "p_regret", "p_ev_unpaid", "p_ev_zero", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max", "tps", "pp", "hit", "ppl", "spp", "n_gen", "bno", "rep", "seed", "ready_s", "load_s", "wall_s", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "vram_mib", "pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs",
+               "ddr_util", "pcie_util", "cpu_util", "gpu_util", "held_gib", "mem_limit", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late",
+               "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3", "mem_gb", "mem_peak_gbs", "pcie_peak_gbs"}
+    def num(x):
+        try: return float(x)
+        except (TypeError, ValueError): return None
+    def q(c): return '"' + c + '"'
+    def ensure(con, cols):
+        """the runs table has every CSV column (numeric ones REAL), plus stem (file name without split suffix and .gguf) and okf (1 unless the run failed); new columns are added as they appear"""
+        cols = list(dict.fromkeys(cols))   # a CSV header may repeat a name (wall_s, ddr_util): one column each
+        have = [r[1] for r in con.execute("PRAGMA table_info(runs)")]
+        if not have:
+            con.execute("CREATE TABLE runs (" + ", ".join(f"{q(c)} {'REAL' if c in NUMERIC else 'TEXT'}" for c in cols) + ", stem TEXT, okf INTEGER)")
+            con.execute("CREATE INDEX IF NOT EXISTS i_runs ON runs (stem, test, build)")
+        else:
+            for c in cols:
+                if c not in have: con.execute(f"ALTER TABLE runs ADD COLUMN {q(c)} {'REAL' if c in NUMERIC else 'TEXT'}")
+        if "stats_ok" not in [r[1] for r in con.execute("PRAGMA table_info(runs)")]:
+            con.execute("ALTER TABLE runs ADD COLUMN stats_ok INTEGER")   # NULL = a new record: the cell statistics (run.py runlog-all) are stale and rebuilt on the next query (run.py runq); the rebuild sets 1
+        con.execute("DROP VIEW IF EXISTS cells")
+        con.execute("""CREATE VIEW cells AS SELECT stem, hw, test, build, MAX(bno) AS bno, COUNT(*) AS n, ROUND(consistent(tps), 2) AS tps, ROUND(consistent(pp), 1) AS pp,
+                   ROUND(MAX(tps), 2) AS tps_max, MIN(ts) AS first, MAX(ts) AS last FROM runs WHERE okf = 1 AND tps IS NOT NULL GROUP BY stem, hw, test, build""")
+    def ins(cols):
+        """named-column INSERT: ALTER TABLE appends new columns after stem/okf, so position is not safe"""
+        return "INSERT INTO runs (" + ", ".join(q(c) for c in cols) + ", stem, okf) VALUES (" + ",".join("?" * (len(cols) + 2)) + ")"
+    def run_build_number(sha):
+        try:
+            o = subprocess.run(["git", "-C", HERE, "rev-list", "--count", sha], capture_output=True, text=True, timeout=20)
+            return int(o.stdout) if o.returncode == 0 else None
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return None
+    def row_values(d, cols):
+        stem = re.sub(r"-0000\d-of-0000\d", "", (str(d.get("model") or "")).split(" ")[0]).removesuffix(".gguf")
+        if str(d.get("build") or "").startswith("stock") and not num(d.get("bno")) and (d.get("commit") or re.search(r"-([0-9a-f]{7,})$", str(d.get("build")))):   # a docker/source build of stock prints build 0: the upstream number is the commit count
+            d = dict(d, bno=run_build_number(d.get("commit") or re.search(r"-([0-9a-f]{7,})$", str(d["build"])).group(1)))
+        vals = [(num(d.get(c)) if c in NUMERIC else (None if d.get(c) is None else str(d.get(c)))) for c in cols]
+        return vals + [stem, 0 if str(d.get("ok")) == "0" else 1]
+    def insert(d, cols):
+        """called by run.py with every run (a dict by column name); never raises into a run"""
+        try:
+            con = connect(); ensure(con, cols)
+            con.execute(ins(cols), row_values(d, cols))
+            con.commit(); con.close()
+        except Exception as e:
+            print("runs.db:", e, file=sys.stderr)
+    def insert_output(ts, hw, build, test, model, md5, text, uniq4, chars, code):
+        """the generated text of a run (zlib) into table outputs, keyed by ts + build + hw (read: zlib.decompress(text))"""
+        if not text: return
+        import zlib
+        con = connect()
+        con.execute("CREATE TABLE IF NOT EXISTS outputs (ts TEXT, hw TEXT, build TEXT, test TEXT, model TEXT, md5 TEXT, uniq4 REAL, chars INTEGER, code INTEGER, text BLOB)")
+        con.execute("INSERT INTO outputs VALUES (?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, test, model, md5, uniq4, chars, code, zlib.compress(text.encode(), 9)))
+        con.commit(); con.close()
+    EMB = os.path.join(HERE, "bench", "embhot.csv")
+    def ensure_emb(con):
+        con.execute("CREATE TABLE IF NOT EXISTS embhot (ts TEXT, hw TEXT, build TEXT, test TEXT, model TEXT, embhex TEXT, hots TEXT)")
+    def insert_emb(since, ts, hw, build, test):
+        """called by run.py after every run: the embhot.csv lines the run appended (from byte offset since) go into the table embhot; returns the new offset"""
+        try:
+            size = os.path.getsize(EMB) if os.path.exists(EMB) else 0
+            if size <= since: return size
+            with open(EMB, newline="") as f:
+                f.seek(since); rows = [l for l in f.read().split("\n") if l and not l.startswith("model,")]
+            con = connect(); ensure_emb(con)
+            for l in rows:
+                m = l.split(",", 2)
+                if len(m) == 3: con.execute("INSERT INTO embhot VALUES (?,?,?,?,?,?,?)", (ts, hw, build, test, m[0], m[1], m[2]))
+            con.commit(); con.close()
+            return size
+        except Exception as e:
+            print("embhot:", e, file=sys.stderr); return since
+    def read_csv_rows():
+        """(cols, rows as dicts): a duplicate header name (ddr_util, wall_s) keeps its first column, a later non-empty value fills an empty first one; lines whose
+    first field is not a timestamp (merge-conflict markers) are skipped"""
+        with open(CSV, newline="") as f:
+            rd = csv.reader(f); head = next(rd); cols = []
+            for c in head:
+                if c not in cols: cols.append(c)
+            rows = []
+            for row in rd:
+                if not row or not row[0].startswith("20"): continue
+                d = {}
+                for c, v in zip(head, row):
+                    if d.get(c) in (None, ""): d[c] = v
+                rows.append(d)
+        return cols, rows
+    def load():
+        if os.path.exists(DB): os.remove(DB)
+        con = connect()
+        cols, rows = read_csv_rows()
+        ensure(con, cols)
+        for r in rows:
+            con.execute(ins(cols), row_values(r, cols))
+        n = len(rows)
+        ensure_emb(con)
+        if os.path.exists(EMB):
+            with open(EMB, newline="") as f:
+                for l in f.read().split("\n"):
+                    m = l.split(",", 2)
+                    if len(m) == 3 and m[0] != "model": con.execute("INSERT INTO embhot (model, embhex, hots) VALUES (?,?,?)", tuple(m))
+        archive = os.path.join(HERE, "bench", "archive", "perf-2026-09-30.db")
+        if os.path.exists(archive): attach_old(con, archive)
+        con.commit(); print(f"{n} runs loaded into {DB}")
+    def sync():
+        """append the CSV rows the database lacks (runs that came in by a git merge from another machine); never deletes anything"""
+        con = connect()
+        cols, rows = read_csv_rows()
+        ensure(con, cols)
+        def key(ts, build, test, tps):
+            t = num(tps)
+            return (str(ts), str(build or ""), str(test or ""), None if t is None else round(t, 3))
+        have = {key(*r) for r in con.execute("SELECT ts, build, test, tps FROM runs")}
+        n = 0
+        for r in rows:
+            if key(r.get("ts"), r.get("build"), r.get("test"), r.get("tps")) in have: continue
+            con.execute(ins(cols), row_values(r, cols)); n += 1
+        con.commit(); print(f"{n} CSV rows added to {DB} ({len(rows)} in the CSV)")
+    def show(cur):
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description]
+        w = [max(len(str(c)), *(len(str(r[i])) for r in rows)) if rows else len(c) for i, c in enumerate(cols)]
+        print("  ".join(str(c).ljust(w[i]) for i, c in enumerate(cols)))
+        for r in rows:
+            print("  ".join(str("" if v is None else v).ljust(w[i]) for i, v in enumerate(r)))
+    def import_old(path, apply=False):
+        """one-shot: runs of the old perf.db (fork/bench/archive/perf-2026-09-30.db, the database before the CSV) that the CSV does not have yet are appended to the CSV (campaign 'perf-db'); the old tune_log lines and campaign notes go into tables of runs.db"""
+        old = sqlite3.connect(path); old.row_factory = sqlite3.Row
+        with open(CSV, newline="") as f:
+            rd = csv.DictReader(f); cols = rd.fieldnames; have = list(rd)
+        def key(ts, b, t, tps):
+            try: return ((ts or "")[:16], str(b)[:12], t, round(float(tps), 2))
+            except (TypeError, ValueError): return ((ts or "")[:16], str(b)[:12], t, None)
+        inc = {key(r["ts"], r["build"], r["test"], r["tps"]) for r in have}
+        out = []
+        for r in old.execute("SELECT * FROM runs ORDER BY ts"):
+            if key(r["ts"], r["build"], r["test"], r["tps"]) in inc: continue
+            d = {c: "" for c in cols}
+            d.update(ts=r["ts"], commit=r["commit_sha"], bno=r["build_no"], tps=r["tps"], pp=r["pp_tps"], hit=r["hit_rate"], model=r["model"], args=r["args"], test=r["test"], hw=r["hw"],
+                     ok=r["ok"], build=r["build"], md5=r["md5"], campaign="perf-db", note=r["note"], ppl=r["ppl"], spp=r["s_per_pass"], n_gen=r["n_gen"], origin=r["origin"], env=r["env"], cmd=r["args"], proto="v1")
+            out.append({k: ("" if v in (None, "None") else v) for k, v in d.items()})
+        print(len(out), "runs of the old perf.db are not in the CSV yet")
+        if apply and out:
+            with open(CSV, "a", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=cols, lineterminator="\n"); w.writerows(out)
+        return out
+
+    def attach_old(con, path):
+        old = sqlite3.connect(path)
+        con.execute("DROP TABLE IF EXISTS tune_log"); con.execute("CREATE TABLE tune_log (run_ts TEXT, run_build TEXT, tag TEXT, line TEXT)")
+        for run_id, tag, line in old.execute("SELECT run_id, tag, line FROM tune_log"):
+            r = old.execute("SELECT ts, build FROM runs WHERE id = ?", (run_id,)).fetchone() or (None, None)
+            con.execute("INSERT INTO tune_log VALUES (?,?,?,?)", (r[0], r[1], tag, line))
+        con.execute("DROP TABLE IF EXISTS campaign_notes"); con.execute("CREATE TABLE campaign_notes (name TEXT, start_ts TEXT, note TEXT, conclusion TEXT, why TEXT)")
+        for row in old.execute("SELECT name, start_ts, note, conclusion, why FROM campaigns"):
+            con.execute("INSERT INTO campaign_notes VALUES (?,?,?,?,?)", row)
+
+
+    def _cli():
+        a = sys.argv[1:]
+        if not a or a[0] == "load":
+            load()
+        elif a[0] == "sync":
+            sync()
+        else:
+            if not os.path.exists(DB): load()
+            con = connect()
+            if a[0] == "best":
+                q = "SELECT test, build, bno, hw, n, tps, pp, tps_max, substr(first,1,10) AS first, substr(last,1,10) AS last FROM cells WHERE stem LIKE ?" + (" AND test = ?" if len(a) > 2 else "") + " ORDER BY test, last DESC"
+                show(con.execute(q, ("%" + a[1] + "%",) + ((a[2],) if len(a) > 2 else ())))
+            elif a[0] == "bestpl":   # bestpl MODEL TEST PL: like best, but only the rows measured at one power limit (like 280+280); the limit is the live reading at the time of the row
+                q = ("SELECT test, build, bno, hw, COUNT(*) AS n, ROUND(consistent(tps), 2) AS tps, ROUND(consistent(pp), 1) AS pp, ROUND(MAX(tps), 2) AS tps_max, substr(MIN(ts),1,10) AS first, substr(MAX(ts),1,10) AS last "
+                 "FROM runs WHERE stem LIKE ? AND test = ? AND pl = ? AND okf = 1 AND tps IS NOT NULL GROUP BY test, build, hw ORDER BY last DESC")
+                show(con.execute(q, ("%" + a[1] + "%", a[2], a[3])))
+            elif a[0] == "runs":
+                q = "SELECT substr(ts,1,16) AS ts, hw, test, build, rep, tps, pp, hit, campaign FROM runs WHERE stem LIKE ? AND okf = 1" + (" AND test = ?" if len(a) > 2 else "") + (" AND build LIKE ?" if len(a) > 3 else "") + " ORDER BY ts DESC"
+                show(con.execute(q, ("%" + a[1] + "%",) + tuple(("%" + x + "%" if i == 1 else x) for i, x in enumerate(a[2:]))))
+            elif a[0] == "import-old":
+                import_old(os.path.join(HERE, "bench", "archive", "perf-2026-09-30.db"), apply=len(a) > 1 and a[1] == "apply")
+            elif a[0] == "q":
+                show(con.execute(a[1]))
+            else:
+                print(__doc__)
+
+    return {k: v for k, v in dict(locals()).items() if not (k.startswith('__') and k != '__doc__')}
+
+runlog = _register('runlog', _lib_runlog())
+
+
+
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-import config as fcfg   # machine-specific paths and model files: fork/config.py (defaults, ~/.config/llama-fork/config.toml, FORK_* variables)
+import config as fcfg   # machine-specific paths and model files: the config section of run.py (defaults, ~/.config/llama-fork/config.toml, FORK_* variables)
 
 PROMPTS = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bench")   # frozen prompts (src_12k.cpp, src_128k.cpp, longsrc.cpp) live in fork/bench/
 HERE = os.path.abspath(os.environ.get("PERF_BUILDS", os.getcwd()))  # one subdirectory per build (its bin/ contents)
@@ -2367,12 +3283,1171 @@ def _sync_runs_db():
         print("runs.db sync:", e, file=sys.stderr)
 
 
+
+
+# ======================================================================================================================
+# Tools, merged from their former files; `python3 fork/run.py <tool> ARGS` runs one with its own argument parser.
+# ======================================================================================================================
+
+def _tool_runlog_all():
+    # ---- run.py runlog-all (merged into run.py; the code of the file, unchanged)
+    __doc__ = """run.py runlog-all: every run we ever recorded in one table of tools/runs.db (all_runs), plus views that make a regression visible.
+
+usage: run.py runlog-all [--db tools/runs.db] [--readme-source]   (rebuilds all_runs and its views, leaves the other tables alone)
+
+Sources, de-duplicated on (ts to the second, model, test, build, tps):
+  csv     fork/bench/run-history.csv of this tree and of every worktree next to it (the same file at other branches)
+  gitcsv  every committed version of fork/bench/run-history.csv (tools/bench/ before 2026-10-11) in git history (all branches), rows later dropped from the file included
+  db      the old SQLite files (tools/moe-bench/perf.db from git history, fork/bench/archive/perf-*.db, /p/bw/rels/runs.db, /p/bw/data/**/perf*.db, rc_perf*.db)
+  readme  --readme-source: the speed tables of old README versions in git (numbers from before the run log, only where no logged run of that model and test exists)
+Normalised columns: fam (model family label), tgroup (test without the cli- prefix and -lv3 suffix), bno (build number from the build name or bno column),
+bseq (rank of the build by the time of its first run: orders dev and release-candidate builds that have no number), side (stock / ours), tps, pp, hit, ok.
+Views:
+  cell_builds   per family, test, machine, side and build: best, median and number of runs, in build order
+  regress       for each build of the fork: its best against the best of ALL earlier builds of that cell (ratio), flagged when below 0.9
+  best_ever     the build with the best number of each cell, and the newest build's number next to it"""
+    import argparse, csv, glob, io, os, re, sqlite3, statistics, subprocess, sys, tempfile
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--db", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+    ap.add_argument("--readme-source", action="store_true")
+    ap.add_argument("--extra", nargs="*", default=[], help="more run-history.csv and old perf db files, e.g. copies of the logs of pc2 and the laptop")
+    ap.add_argument("--fast", action="store_true", help="only the current run-history.csv files (no git history, no old db files): seconds, for the rebuild after new records")
+    ap.add_argument("--write-csv", action="store_true", help="merge the rows missing from fork/bench/run-history.csv (git history, old db files, other worktrees) into it: existing rows stay byte-identical, the missing ones are appended in its columns")
+    a = ap.parse_args()
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    from runnorm import FAMS, fam, bno_of, tgroup, prompt_of
+
+
+    rows, seen = [], set()
+    raw = []   # (src, dict in run-history.csv columns) of every kept row, for --write-csv
+
+
+    CUR = {}
+
+
+    def add(src, ts, hw, model, args, test, build, bno, tps, pp, hit, ok, note="", rep="", tag=""):
+        try:
+            tps = float(tps)
+        except (TypeError, ValueError):
+            return
+        if not tps:
+            return
+        ts = (ts or "")[:19]
+        key = (ts, fam(model, args), test, build, round(tps, 2))
+        if key in seen:
+            return
+        seen.add(key)
+        try: pp = float(pp)
+        except (TypeError, ValueError): pp = None
+        try: hit = float(hit)
+        except (TypeError, ValueError): hit = None
+        raw.append((src, CUR))
+        rows.append((src, ts, hw or "pc1", fam(model, args), tgroup(test), test, build, bno_of(build, bno), "stock" if (build or "").startswith("stock") else "ours", tps, pp, hit, 0 if str(ok) == "0" else 1, (args or "")[:60], (note or "")[:80], prompt_of(test, rep, tag)))
+
+
+    def read_csv_text(text, src):
+        nonlocal CUR
+        for r in csv.DictReader(io.StringIO(text)):
+            CUR = dict(r)
+            add(src, r.get("ts"), r.get("hw"), r.get("model"), r.get("args"), r.get("test"), r.get("build"), r.get("bno"), r.get("tps"), r.get("pp"), r.get("hit"), r.get("ok", 1), r.get("note"), r.get("rep"), r.get("prompt"))
+
+
+    # csv: every worktree
+    for f in sorted(set(glob.glob("/p/bw/*/tools/bench/run-history.csv") + glob.glob("/p/bw/*/fork/bench/run-history.csv") + glob.glob("/p/bw/llama.cpp/.claude/worktrees/*/tools/bench/run-history.csv") + [os.path.join(ROOT, "fork/bench/run-history.csv")])):
+        read_csv_text(open(f, errors="replace").read(), "csv")
+    for f in a.extra:
+        if f.endswith(".csv"):
+            read_csv_text(open(f, errors="replace").read(), "extra")
+    n_csv = len(rows)
+    n_git = n_db = 0
+
+    # gitcsv: every committed version
+    seen_blobs = set()
+    log = [] if a.fast else subprocess.run(["git", "-C", ROOT, "log", "--all", "--format=%H", "--", "fork/bench/run-history.csv", "tools/bench/run-history.csv", "tools/moe-bench/perf.csv"], capture_output=True, text=True).stdout.split()
+    for h in log:
+        for path in ("fork/bench/run-history.csv", "tools/bench/run-history.csv", "tools/moe-bench/perf.csv"):   # fork/ since 2026-10-11, tools/ before
+            b = subprocess.run(["git", "-C", ROOT, "rev-parse", f"{h}:{path}"], capture_output=True, text=True).stdout.strip()
+            if b and b not in seen_blobs:
+                seen_blobs.add(b)
+                read_csv_text(subprocess.run(["git", "-C", ROOT, "cat-file", "-p", b], capture_output=True).stdout.decode(errors="replace"), "gitcsv")
+    n_git = len(rows) - n_csv
+
+
+    def read_db(path, src):
+        try:
+            c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            cols = [x[1] for x in c.execute("pragma table_info(runs)")]
+            if not cols:
+                return
+            for r in c.execute("select * from runs"):
+                d = dict(zip(cols, r))
+                nonlocal CUR
+                CUR = {"ts": d.get("ts"), "commit": d.get("commit_sha"), "bno": d.get("build_no"), "tps": d.get("tps"), "pp": d.get("pp_tps"), "hit": d.get("hit_rate"), "model": d.get("model"),
+                       "args": d.get("args"), "test": d.get("test"), "hw": d.get("hw") or "pc1", "ok": d.get("ok", 1), "build": d.get("build"), "md5": d.get("md5"), "campaign": "import-old-db",
+                       "note": d.get("note"), "ppl": d.get("ppl"), "n_gen": d.get("n_gen"), "origin": d.get("origin"), "env": d.get("env")}
+                add(src, d.get("ts"), d.get("hw"), d.get("model"), d.get("args"), d.get("test"), d.get("build"), d.get("build_no"), d.get("tps"), d.get("pp_tps"), d.get("hit_rate"), d.get("ok", 1), d.get("note"))
+        except sqlite3.Error:
+            pass
+
+
+    dbs = glob.glob(os.path.join(ROOT, "fork/bench/archive/*.db")) + glob.glob("/p/bw/rels/runs.db") + glob.glob("/p/bw/data/**/perf*.db", recursive=True) + glob.glob("/p/bw/data/**/rc_perf*.db", recursive=True)
+    for f in ([] if a.fast else sorted(set(dbs))):
+        read_db(f, "db")
+    for f in a.extra:
+        if f.endswith(".db"):
+            read_db(f, "db")
+    for h in ([] if a.fast else subprocess.run(["git", "-C", ROOT, "log", "--all", "--format=%H", "--", "tools/moe-bench/perf.db"], capture_output=True, text=True).stdout.split()):
+        blob = subprocess.run(["git", "-C", ROOT, "cat-file", "-p", f"{h}:tools/moe-bench/perf.db"], capture_output=True).stdout
+        if blob:
+            with tempfile.NamedTemporaryFile(suffix=".db") as t:
+                t.write(blob); t.flush(); read_db(t.name, "db")
+    n_db = len(rows) - n_csv - n_git
+
+    con = sqlite3.connect(a.db)
+    con.execute("DROP TABLE IF EXISTS all_runs")
+    con.execute("""CREATE TABLE all_runs (src TEXT, ts TEXT, hw TEXT, fam TEXT, tgroup TEXT, test TEXT, build TEXT, bno INTEGER, side TEXT, tps REAL, pp REAL, hit REAL, ok INTEGER, args TEXT, note TEXT, prompt TEXT, bseq INTEGER)""")
+    con.executemany("INSERT INTO all_runs (src,ts,hw,fam,tgroup,test,build,bno,side,tps,pp,hit,ok,args,note,prompt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    # bseq: rank of the build by the time of its first run
+    con.execute("""UPDATE all_runs SET bseq = (SELECT COUNT(*) FROM (SELECT build b, MIN(ts) t FROM all_runs GROUP BY build) x WHERE x.t < (SELECT MIN(ts) FROM all_runs y WHERE y.build = all_runs.build))""")
+    con.execute("CREATE INDEX IF NOT EXISTS i_all ON all_runs (fam, tgroup, hw, side, build)")
+    for v in ("cell_builds", "regress", "best_ever", "coverage"):
+        con.execute(f"DROP VIEW IF EXISTS {v}")
+    con.execute("""CREATE VIEW cell_builds AS SELECT fam, tgroup, hw, side, build, bseq, MIN(ts) AS first, COUNT(*) AS n, ROUND(MAX(tps), 2) AS best, ROUND(AVG(tps), 2) AS mean,
+               ROUND(MAX(pp), 1) AS best_pp, ROUND(MAX(hit), 1) AS best_hit FROM all_runs WHERE ok = 1 GROUP BY fam, tgroup, hw, side, build""")
+    con.execute("""CREATE VIEW regress AS SELECT fam, tgroup, hw, build, first, n, best,
+               ROUND((SELECT MAX(p.best) FROM cell_builds p WHERE p.fam = c.fam AND p.tgroup = c.tgroup AND p.hw = c.hw AND p.side = 'ours' AND p.bseq < c.bseq), 2) AS prior_best,
+               ROUND(best / (SELECT MAX(p.best) FROM cell_builds p WHERE p.fam = c.fam AND p.tgroup = c.tgroup AND p.hw = c.hw AND p.side = 'ours' AND p.bseq < c.bseq), 2) AS ratio,
+               (SELECT p.build FROM cell_builds p WHERE p.fam = c.fam AND p.tgroup = c.tgroup AND p.hw = c.hw AND p.side = 'ours' AND p.bseq < c.bseq ORDER BY p.best DESC LIMIT 1) AS prior_build
+               FROM cell_builds c WHERE side = 'ours' AND n >= 2""")
+    con.execute("""CREATE VIEW best_ever AS SELECT fam, tgroup, hw, build AS best_build, best, first AS best_first,
+               (SELECT build FROM cell_builds l WHERE l.fam = b.fam AND l.tgroup = b.tgroup AND l.hw = b.hw AND l.side = 'ours' ORDER BY l.bseq DESC LIMIT 1) AS newest_build,
+               (SELECT best FROM cell_builds l WHERE l.fam = b.fam AND l.tgroup = b.tgroup AND l.hw = b.hw AND l.side = 'ours' ORDER BY l.bseq DESC LIMIT 1) AS newest_best
+               FROM cell_builds b WHERE side = 'ours' AND best = (SELECT MAX(best) FROM cell_builds m WHERE m.fam = b.fam AND m.tgroup = b.tgroup AND m.hw = b.hw AND m.side = 'ours')""")
+    con.execute("DROP TABLE IF EXISTS cell_stats")
+    con.execute("""CREATE TABLE cell_stats (fam TEXT, tgroup TEXT, prompt TEXT, hw TEXT, side TEXT, build TEXT, n INTEGER, t_min REAL, t_med REAL, t_max REAL, t_sd REAL, spread REAL, pp_min REAL, pp_med REAL, pp_max REAL, hit REAL, first TEXT, bseq INTEGER,
+               PRIMARY KEY (fam, tgroup, prompt, hw, side, build))""")
+    import runstats
+    runstats.recompute(con, None)
+    if con.execute("SELECT name FROM sqlite_master WHERE name = 'runs'").fetchone():
+        if "stats_ok" not in [r[1] for r in con.execute("PRAGMA table_info(runs)")]:
+            con.execute("ALTER TABLE runs ADD COLUMN stats_ok INTEGER")
+        con.execute("UPDATE runs SET stats_ok = 1")
+    con.execute("""CREATE VIEW coverage AS SELECT fam, prompt, hw, side, SUM(n) AS runs, COUNT(*) AS builds, MAX(build) AS newest FROM cell_stats GROUP BY fam, prompt, hw, side""")   # runs and builds per model and prompt: the gaps
+    con.commit()
+    tot = con.execute("SELECT COUNT(*), MIN(ts), MAX(ts), COUNT(DISTINCT build) FROM all_runs").fetchone()
+    print(f"all_runs: {tot[0]} runs, {tot[1]} to {tot[2]}, {tot[3]} builds (csv {n_csv}, git history +{n_git}, old db +{n_db}) in {a.db}")
+
+
+    if a.write_csv:
+        path = os.path.join(ROOT, "fork/bench/run-history.csv")
+        snap = open(path, "rb").read()
+        cur_rows = list(csv.DictReader(io.StringIO(snap.decode(errors="replace"))))
+        header = list(cur_rows[0].keys())
+        have = set()
+        for r in cur_rows:
+            try:
+                have.add(((r.get("ts") or "")[:19], fam(r.get("model"), r.get("args")), r.get("test"), r.get("build"), round(float(r.get("tps") or 0), 2)))
+            except ValueError:
+                pass
+        missing = []
+        for src, d in raw:
+            try:
+                key = ((d.get("ts") or "")[:19], fam(d.get("model"), d.get("args")), d.get("test"), d.get("build"), round(float(d.get("tps") or 0), 2))
+            except ValueError:
+                continue
+            if key not in have:
+                have.add(key); missing.append(d)
+        missing.sort(key=lambda d: d.get("ts") or "")
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=header, extrasaction="ignore", lineterminator="\n")
+        for d in missing:
+            w.writerow({k: ("" if d.get(k) is None else d.get(k)) for k in header})
+        now = open(path, "rb").read()   # rows a running benchmark appended meanwhile stay (they follow the snapshot)
+        assert now.startswith(snap)
+        tmp = path + ".new"
+        open(tmp, "wb").write(snap + buf.getvalue().encode() + now[len(snap):])
+        os.replace(tmp, path)
+        print(f"run-history.csv: {len(cur_rows)} rows kept byte-identical, {len(missing)} missing rows appended")
+
+
+
+def _tool_runq():
+    # ---- run.py runq (merged into run.py; the code of the file, unchanged)
+    __doc__ = """run.py runq: query every run we ever recorded (fork/runs.db table all_runs, built by run.py runlog-all).
+
+usage: run.py runq MODEL [TEST] [BUILD ...] [--hw pc1] [--side ours|stock|both] [--sort oldest|newest|best] [--regress] [--best]
+  MODEL   part of the family label or model name, case-insensitive: mimo, "glm 3.5", iq4, 27b, olmoe
+  TEST    chat, t100, tetris, game4, edit4, pf12k ... (omitted: every test of the model)
+  BUILD   build names or numbers as patterns (b11707, 12209, rc-final, release-b12): only these builds
+  --regress   the builds of the fork whose best is below 0.9 of the best of all earlier builds (the regression list), for the model (and test)
+  --best      the best build of each cell and the newest build's number next to it
+Default: one line per build (--sort oldest|newest|best), min / median / max of t/s and of pp over the runs of the build (one run: just the number), runs, best hit rate, stock lines marked."""
+    import argparse, os, sqlite3, statistics, sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import runstats
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("what", nargs="+")
+    ap.add_argument("--db", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+    ap.add_argument("--hw", default="pc1")
+    ap.add_argument("--side", default="both")
+    ap.add_argument("--sort", choices=["oldest", "newest", "best"], default="oldest", help="order of the builds within each model and test: oldest first (default), newest first, or best number first")
+    ap.add_argument("--prompts", action="store_true", help="one line per prompt (game4-racing, edit4-2 ...) instead of per test: the spread of each prompt on each build")
+    ap.add_argument("--gaps", action="store_true", help="runs and builds per model and prompt (ours and stock) on the machine: where data is missing")
+    ap.add_argument("--regress", action="store_true")
+    ap.add_argument("--best", action="store_true")
+    a = ap.parse_args()
+    con = sqlite3.connect(a.db, timeout=60)
+    new = runstats.refresh(con)   # records added since the last query: only their cells are recomputed
+    if new < 0:
+        sys.exit("no statistics yet: run  python3 fork/run.py runlog-all  once (a few minutes: it also reads the git history and the old db files)")
+    if new:
+        print(f"(statistics refreshed for {new} new records)", file=sys.stderr)
+    model, rest = a.what[0], a.what[1:]
+    tests = {r[0] for r in con.execute("SELECT DISTINCT tgroup FROM all_runs")}
+    test = next((x for x in rest if x in tests), None)
+    builds = [x for x in rest if x != test]
+    w, p = ["LOWER(fam) LIKE ?", "hw = ?"], [f"%{model.lower()}%", a.hw]
+    if test:
+        w.append("tgroup = ?"); p.append(test)
+    if a.side != "both":
+        w.append("side = ?"); p.append(a.side)
+    if builds:
+        w.append("(" + " OR ".join("build LIKE ?" for _ in builds) + ")"); p += [f"%{b}%" for b in builds]
+    if a.gaps:
+        print(f"{'model':16} {'prompt':18} {'side':5} {'runs':>5} {'builds':>6}")
+        for r in con.execute("SELECT fam, prompt, side, runs, builds FROM coverage WHERE hw = ? AND prompt NOT LIKE 'cli:%' AND LOWER(fam) LIKE ? ORDER BY fam, prompt, side", (a.hw, f"%{model.lower()}%")):
+            print(f"{r[0]:16} {(r[1] or '')[:18]:18} {r[2]:5} {r[3]:5d} {r[4]:6d}")
+    elif a.regress:
+        q = f"SELECT fam, tgroup, build, first, n, best, prior_best, ratio, prior_build FROM regress WHERE ratio < 0.9 AND LOWER(fam) LIKE ? AND hw = ?" + (" AND tgroup = ?" if test else "") + " ORDER BY fam, tgroup, first"
+        pr = [f"%{model.lower()}%", a.hw] + ([test] if test else [])
+        print(f"{'model':16} {'test':8} {'build':28} {'first':10} {'n':>3} {'best':>7} {'prior best':>10} {'ratio':>6}  vs build")
+        for r in con.execute(q, pr):
+            print(f"{r[0]:16} {r[1]:8} {r[2][:28]:28} {r[3][:10]:10} {r[4]:3d} {r[5]:7.1f} {r[6]:10.1f} {r[7]:6.2f}  {r[8][:28]}")
+    elif a.best:
+        q = "SELECT fam, tgroup, best_build, best, best_first, newest_build, newest_best FROM best_ever WHERE LOWER(fam) LIKE ? AND hw = ?" + (" AND tgroup = ?" if test else "") + " ORDER BY fam, tgroup"
+        pr = [f"%{model.lower()}%", a.hw] + ([test] if test else [])
+        print(f"{'model':16} {'test':8} {'best build':28} {'best':>7} {'date':10}  {'newest build':28} {'newest':>7}")
+        for r in con.execute(q, pr):
+            print(f"{r[0]:16} {r[1]:8} {r[2][:28]:28} {r[3]:7.1f} {r[4][:10]:10}  {r[5][:28]:28} {r[6]:7.1f}")
+    else:
+        tg = "COALESCE(prompt, tgroup)" if a.prompts else "tgroup"
+        q = f"SELECT fam, {tg}, side, build, MIN(ts), COUNT(*), MAX(tps), AVG(tps), MAX(pp), MAX(hit), bseq, GROUP_CONCAT(tps), GROUP_CONCAT(COALESCE(pp, -1)) FROM all_runs WHERE ok = 1 AND {' AND '.join(w)} GROUP BY fam, {tg}, side, build ORDER BY fam, {tg}, bseq"
+        rows_ = con.execute(q, p).fetchall()
+        key = {"oldest": lambda r: (r[0], r[1], r[10]), "newest": lambda r: (r[0], r[1], -r[10]), "best": lambda r: (r[0], r[1], -r[6])}[a.sort]
+        cur, last = sorted(rows_, key=key), None
+        def mmm(txt, w=6):   # min / median / max of a comma separated list (-1 = no value); one run: just the number
+            v = sorted(float(x) for x in txt.split(",") if float(x) >= 0)
+            if not v:
+                return f"{'':>{w}} {'':>{w}} {'':>{w}}"
+            if len(v) == 1:
+                return f"{'':>{w}} {v[0]:{w}.1f} {'':>{w}}"
+            return f"{v[0]:{w}.1f} {statistics.median(v):{w}.1f} {v[-1]:{w}.1f}"
+        print(f"{'model':16} {'test/prompt':16} {'build':30} {'date':10} {'n':>3} {'t/s min':>6} {'median':>6} {'max':>6}   {'pp min':>6} {'median':>6} {'max':>6} {'hit%':>5} {'sd':>5} {'max/min':>7}")
+        for r in cur:
+            if (r[0], r[1]) != last:
+                last = (r[0], r[1]); print()
+            tv = [float(x) for x in r[11].split(",")]
+            sd = f"{statistics.pstdev(tv):5.1f}" if len(tv) > 1 else ""
+            sp = f"{max(tv) / min(tv):7.2f}" if len(tv) > 1 and min(tv) else ""
+            print(f"{r[0]:16} {r[1][:16]:16} {('[stock] ' if r[2] == 'stock' else '') + r[3][:22]:30} {r[4][:10]:10} {r[5]:3d} {mmm(r[11])}   {mmm(r[12])} {(r[9] or 0):5.1f} {sd:>5} {sp:>7}")
+
+
+
+def _tool_merge_runs():
+    # ---- run.py merge-runs (merged into run.py; the code of the file, unchanged)
+    __doc__ = """run.py merge-runs [--apply]: run-history.csv rows of the other machines (ssh) that this machine's fork/bench/run-history.csv lacks are appended to it
+(append-only; a row is the same run when ts, hw, build, test and model agree), and inserted into runs.db (never rebuilt: load would drop the outputs table).
+Without --apply only counts. Rows keep their own columns (missing ones stay empty); a copy of each fetched file is kept in /tmp/merge-runs/."""
+    import csv, io, os, subprocess, sys
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    CSV = os.path.join(HERE, "bench", "run-history.csv")
+    SRC = [("o@192.168.1.12", "/home/o/w/tools/bench/run-history.csv"), ("o@192.168.1.12", "/home/o/wt-merge/tools/bench/run-history.csv"),
+           ("o@192.168.1.12", "/home/o/wt-pin/tools/bench/run-history.csv"), ("o@192.168.1.2", "N:/llama.cpp/tools/bench/run-history.csv"),
+           ("o@192.168.1.2", "N:/llama-pred/tools/bench/run-history.csv"), ("o@192.168.1.2", "N:/wt-next/tools/bench/run-history.csv")]
+    key = lambda r: (r.get("ts"), r.get("hw"), r.get("build"), r.get("test"), r.get("model"))
+    with open(CSV, newline="") as f:
+        rd = csv.DictReader(f); cols = rd.fieldnames; have = {key(r) for r in rd}
+    new = []
+    os.makedirs("/tmp/merge-runs", exist_ok=True)
+    for host, path in SRC:
+        p = subprocess.run(["ssh", "-o", "ConnectTimeout=6", "-o", "BatchMode=yes", host, ("type " + path.replace("/", "\\")) if host.endswith(".2") else "cat " + path], capture_output=True, text=True)
+        if p.returncode or "ts" not in p.stdout[:400]:
+            print(f"{host}:{path}: not readable"); continue
+        open(f"/tmp/merge-runs/{host.split('@')[1]}-{path.replace('/', '_').replace(':', '')}", "w").write(p.stdout)
+        rows = [r for r in csv.DictReader(io.StringIO(p.stdout)) if r.get("ts")]
+        add = [r for r in rows if key(r) not in have]
+        for r in add: have.add(key(r))
+        new += add
+        print(f"{host}:{path}: {len(rows)} rows, {len(add)} new")
+    print(f"{len(new)} new rows in total")
+    if new and "--apply" in sys.argv:
+        with open(CSV, "a", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore", restval=""); [w.writerow(r) for r in new]
+        sys.path.insert(0, HERE); import runlog   # rows are inserted into runs.db one by one: "run.py runlog load" would delete the database and with it the outputs table (texts exist only there)
+        for r in new: runlog.insert(r, cols)
+        print("inserted into", runlog.DB)
+
+
+
+def _tool_pick_features():
+    # ---- run.py pick-features (merged into run.py; the code of the file, unchanged)
+    __doc__ = """run.py pick-features GROUPS.txt [--tree /p/bw/wt-base509]: put fork features on the fast base one group at a time, each group tested before the next.
+GROUPS.txt: lines 'name: sha sha sha ...' (commits in order). Per group: git cherry-pick them in the tree (a conflict: the group is skipped, tree reset), dev build,
+`run.py regress` (restricted OLMoE, 19 slots, 500 tokens, against the best binary kept in /p/bw/rels/best): REGRESSION (below 0.98 x best) drops the group (tree reset to the
+last good state), PASS or NEW BEST keeps it. Result per group in /p/bw/data/pick/<tree name>.log and a line in the final table."""
+    import os, re, subprocess, sys, time
+    HERE = os.path.dirname(os.path.realpath(__file__)); tree = "/p/bw/wt-base509"; args = sys.argv[1:]
+    if "--tree" in args: i = args.index("--tree"); tree = args[i + 1]; del args[i:i + 2]
+    groups = [(l.split(":", 1)[0].strip(), l.split(":", 1)[1].split()) for l in open(args[0]) if ":" in l and not l.startswith("#")]
+    os.makedirs("/p/bw/data/pick", exist_ok=True); LOG = f"/p/bw/data/pick/{os.path.basename(tree)}.log"
+    def say(*x):
+        s = time.strftime("%F %T ") + " ".join(map(str, x)); print(s, flush=True); open(LOG, "a").write(s + "\n")
+    def git(*c): return subprocess.run(["git", *c], cwd=tree, capture_output=True, text=True)
+    res = []
+    for name, shas in groups:
+        base = git("rev-parse", "HEAD").stdout.strip(); ok = True
+        for s in shas:
+            r = git("cherry-pick", s)
+            if r.returncode:
+                if "empty" in (r.stdout + r.stderr) or "previous cherry-pick is now empty" in (r.stdout + r.stderr): git("cherry-pick", "--skip"); continue
+                say(name, "CONFLICT at", s[:9], (r.stderr or r.stdout).strip().splitlines()[-1][:100]); git("cherry-pick", "--abort"); ok = False; break
+        if not ok: git("reset", "--hard", base); res.append((name, "conflict", "")); continue
+        import fcntl
+        lk = open("/tmp/queue.lock", "a"); fcntl.flock(lk, fcntl.LOCK_EX)   # a build never overlaps a benchmark
+        try:
+            b = subprocess.run(["bash", "/p/bw/data/hcf/lrel/dev-build.sh"], env={**os.environ, "W": tree, "REGRESS": "0"}, capture_output=True, text=True)
+        finally:
+            fcntl.flock(lk, fcntl.LOCK_UN); lk.close()
+        if "DEVBUILD_EXIT 0" not in b.stdout:
+            open(f"/p/bw/data/pick/build-{name}.log", "w").write(b.stdout[-4000:] + b.stderr[-2000:]); say(name, "BUILD FAILED (tail in /p/bw/data/pick/build-" + name + ".log)"); git("reset", "--hard", base); res.append((name, "build failed", "")); continue
+        r = subprocess.run([sys.executable, os.path.join(HERE, "run.py"), "regress", os.path.join(tree, "build-dev", "bin"), "--wait"], capture_output=True, text=True)
+        if r.returncode == 1:
+            say(name, "first verdict", [l for l in r.stdout.splitlines() if l.startswith("regress:")][-1:], "-> again with 8 runs (fixed-text comparator)")
+            r = subprocess.run([sys.executable, os.path.join(HERE, "run.py"), "regress", os.path.join(tree, "build-dev", "bin"), "--wait", "-n", "8"], capture_output=True, text=True)
+        out = r.stdout.strip().splitlines(); verdict = next((l for l in reversed(out) if l.startswith("regress:")), "regress: no verdict")
+        say(name, f"exit {r.returncode}", verdict)
+        if r.returncode in (1, 2, 3): git("reset", "--hard", base); res.append((name, "DROPPED", verdict))
+        else:
+            m = re.search(r"([0-9.]+) x the (?:best|previous best)", verdict)
+            gain = f"{(float(m.group(1)) - 1) * 100:+.1f}% against the best so far" if m else "gain: this build is the new reference" if "BEST is now" in verdict or "this build is the best" in verdict else "no ratio"
+            if "tf32" in name:   # the line now measures with the TF32 switch: this build is the reference from here on
+                subprocess.run([sys.executable, os.path.join(HERE, "run.py"), "regress", os.path.join(tree, "build-dev", "bin"), "--wait", "--rebase"], capture_output=True, text=True)
+            say(f"FEATURE ADDED: {name} ({len(shas)} commits), {gain}")
+            res.append((name, "kept", gain))
+    say("SUMMARY"); [say(f"  {n:24s} {s:12s} {v}") for n, s, v in res]
+
+
+
+def _tool_bisect_perf():
+    # ---- run.py bisect (merged into run.py; the code of the file, unchanged)
+    __doc__ = """run.py bisect --good REF --bad REF --metric off|c19 [--n 4]: which commit made the build slower? Binary search over `git rev-list --reverse good..bad` (every commit, topological
+order), one persistent worktree (incremental dev builds, ccache), one measurement per step with run.py (chat endpoint, OLMoE, 500 tokens, GPU1, learned state off):
+  off  the whole model on the GPU, no cache (--moe-expert-cache 0): the shared path (kernels, graph, loader)
+  c19  19 of 64 experts per layer in VRAM (--cpu-moe --moe-expert-cache 19): the cache path
+good/bad speed = a measurement of each end first; a commit is 'fast' when its median is above the middle. A commit that does not build or run is skipped (its neighbour is tried).
+Each step holds /tmp/queue.lock around build AND run (a build never overlaps a benchmark). Log: <build_tmp>/bisect-logs/<name>.log, every run in run-history.csv (campaign bisect-<name>)."""
+    import argparse, csv, fcntl, os, shutil, statistics, subprocess, sys, time
+    HERE = os.path.dirname(os.path.realpath(__file__)); REPO = os.path.dirname(HERE)
+    sys.path.insert(0, HERE)
+    import config as fcfg
+    devbuilds = fcfg.path("devbuilds")
+    ap = argparse.ArgumentParser(); ap.add_argument("--good", required=True); ap.add_argument("--bad", required=True); ap.add_argument("--metric", default="off", choices=["off", "c19"])
+    ap.add_argument("--n", type=int, default=4); ap.add_argument("--name"); ap.add_argument("--tree", default=os.path.join(fcfg.path("build_tmp"), "bisect")); a = ap.parse_args()
+    name = a.name or f"{a.metric}-{a.good[:7]}-{a.bad[:7]}"; LOGDIR = os.path.join(fcfg.path("build_tmp"), "bisect-logs"); os.makedirs(LOGDIR, exist_ok=True); LOG = os.path.join(LOGDIR, f"{name}.log")
+    def say(*x):
+        s = time.strftime("%F %T ") + " ".join(map(str, x)); print(s, flush=True); open(LOG, "a").write(s + "\n")
+    def git(*c, cwd=None): return subprocess.run(["git", *c], cwd=cwd or REPO, capture_output=True, text=True).stdout.strip()
+    commits = git("rev-list", "--reverse", "--topo-order", f"{a.good}..{a.bad}").split()
+    say(f"{len(commits)} commits between {a.good[:9]} and {a.bad[:9]}, metric {a.metric}")
+    if not os.path.exists(a.tree):
+        os.makedirs(os.path.dirname(a.tree), exist_ok=True); subprocess.run(["git", "worktree", "add", "--detach", "-f", a.tree, a.bad], cwd=REPO, check=True)
+    ARGS = {"off": "-ngl 99 --n-cpu-moe 0 --moe-expert-cache 0", "c19": "--cpu-moe --moe-expert-cache 19"}[a.metric]
+    def measure(ref, tag):
+        """build `ref` in the persistent worktree (run.py build, the queue lock is held here), measure it, remove the build"""
+        lock = open("/tmp/queue.lock", "a"); fcntl.flock(lock, fcntl.LOCK_EX)
+        label = f"bis-{ref[:9]}"; dst = os.path.join(devbuilds, label)
+        try:
+            subprocess.run(["git", "checkout", "-q", "-f", ref], cwd=a.tree, check=True)
+            r = subprocess.run([sys.executable, os.path.join(HERE, "run.py"), "build", label, "--tree", a.tree, "--no-regress"],
+                               env={**os.environ, "QUEUE_HOLDS_LOCK": "1"}, capture_output=True, text=True)
+            if r.returncode != 0 or not os.path.exists(os.path.join(dst, "llama-server")):
+                say(ref[:9], "BUILD FAILED", (r.stdout + r.stderr)[-300:].replace("\n", " | ")); return None
+            camp = f"bisect-{name}-{tag}-{ref[:9]}"
+            env = dict(os.environ, PERF_BUILDS=devbuilds, PERF_LOG="r", CUDA_VISIBLE_DEVICES="1", PERF_DEV="CUDA0", CUDA_DEVICE_ORDER="PCI_BUS_ID", PERF_THREADS="6")
+            subprocess.run([sys.executable, os.path.join(HERE, "run.py"), "bench", "--models", fcfg.model("olmoe"), "--builds", label, "--variants", "v", "--variant", "v=" + ARGS,
+                            "-t", "tetrisc", "--tokens", "500", "--ctx", "2048", "-n", str(a.n), "--clean-state", "--campaign", camp], env=env, capture_output=True, text=True)
+            v = [float(x["tps"]) for x in csv.DictReader(open(os.path.join(HERE, "bench", "run-history.csv"))) if x["campaign"] == camp and x["ok"] != "0" and x["tps"]]
+            return statistics.median(v) if v else None
+        finally:
+            shutil.rmtree(dst, ignore_errors=True)   # a bisect would otherwise leave a CUDA build per step
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    g = measure(commits[0] if False else a.good, "good"); b = measure(a.bad, "bad"); say("good end", g, "bad end", b)
+    if not g or not b or g <= b * 1.005: sys.exit(say("no usable difference between the ends: nothing to bisect") or 1)
+    mid = (g + b) / 2; lo, hi = -1, len(commits) - 1   # commits[lo] is fast (the good end counts as -1), commits[hi] is slow
+    while hi - lo > 1:
+        i = (lo + hi) // 2; v = None; j = i
+        for j in [i] + [i + d for k in range(1, 6) for d in (k, -k) if lo < i + d < hi]:
+            v = measure(commits[j], f"s{j}")
+            if v is not None: break
+        if v is None: say("six commits in a row do not build: stop"); break
+        say(f"[{lo}..{hi}] step {j} {commits[j][:9]} {v:.2f} t/s ({'fast' if v > mid else 'slow'}; middle {mid:.2f})  {git('log', '-1', '--format=%s', commits[j])[:90]}")
+        if v > mid: lo = j
+        else: hi = j
+    c = commits[hi]; say("FIRST SLOW COMMIT:", c[:9], git("log", "-1", "--format=%cs %an %s", c)[:150]); say(git("show", "--stat", "--format=", c)[:1500])
+
+
+
+def _tool_plcal():
+    # ---- run.py plcal (merged into run.py; the code of the file, unchanged)
+    __doc__ = """run.py plcal: find the highest power limit per GPU without throttling drops.
+
+Each iteration runs one short, GPU-heavy request through fork/run.py bench (logged like every run, GPU log on): the pf128k test with a cut of its prompt file (about 100k tokens)
+prefilled by a model that loads in seconds, both GPUs busy (split mode tensor). While it runs the 5 Hz GPU log is read live. A GPU is throttling when
+  - a thermal / hardware slowdown reason (0x8 HW slowdown, 0x20 SW thermal, 0x40 HW thermal slowdown) is active in >= 2 busy samples in a row, or
+  - its SM clock falls below 85% of its own median of the last 10 s in >= 3 busy samples in a row (a transient drop; a steady lower clock from a cap is not a drop).
+On the first throttle the run is killed, the throttling GPU's limit goes down by STEP watts, and the next iteration starts. A run that ends without a throttle
+ends the search: those limits are the answer. Xid 79 in the kernel log ends everything at once.
+
+usage: run.py plcal [--start 280+280] [--step 10] [--floor 150] [--max-iter 12] [--build stock-b11552-23b0202a1] [--model PATH]
+Run with the queue stopped; it takes /tmp/queue.lock for the whole search. Result lines go to <work>/plcal.log."""
+    import argparse, collections, csv, glob, os, signal, statistics, subprocess, sys, time
+
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, HERE)
+    import config as fcfg
+    GPULOG = os.path.join(HERE, "bench", "gpulog")
+    WORK = fcfg.path("work"); os.makedirs(WORK, exist_ok=True)
+    LOG = os.path.join(WORK, "plcal.log")
+    THERMAL = 0x8 | 0x20 | 0x40
+
+
+    def queue_env():
+        """the environment the queue daemon gives its tasks: ours plus the exports of the optional [gpu] env_sh file"""
+        sh = fcfg.get("gpu", "env_sh")
+        if sh and os.path.isfile(sh):
+            out = subprocess.run(["bash", "-c", f". {sh} 2>/dev/null; env -0"], capture_output=True).stdout.decode(errors="replace")
+            return dict(kv.split("=", 1) for kv in out.split("\0") if "=" in kv)
+        return dict(os.environ)
+
+
+
+    def log(msg):
+        line = time.strftime("%F %T ") + msg
+        print(line, flush=True)
+        with open(LOG, "a") as f:
+            f.write(line + "\n")
+
+
+    def kernel_xid79():
+        out = subprocess.run(["journalctl", "-k", "--since", "-3min", "-q"], capture_output=True, text=True).stdout
+        return "Xid" in out and "79" in out and "fallen off the bus" in out
+
+
+    def kill_run(proc):
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        for _ in range(50):
+            if proc.poll() is not None:
+                break
+            time.sleep(0.1)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        # a server left behind by the killed bench: exact path match only
+        out = subprocess.run(["ps", "-eo", "pid,args"], capture_output=True, text=True).stdout
+        for l in out.splitlines():
+            p = l.split(None, 1)
+            if len(p) == 2 and "/rels/devbuilds/" in p[1] and p[1].split()[0].endswith("llama-server"):
+                try:
+                    os.kill(int(p[0]), signal.SIGTERM)
+                except (ProcessLookupError, ValueError):
+                    pass
+
+
+    def main():
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--start", default="280+280"); ap.add_argument("--step", type=int, default=10); ap.add_argument("--floor", type=int, default=150)
+        ap.add_argument("--max-iter", type=int, default=12); ap.add_argument("--ctx", type=int, default=131072)
+        ap.add_argument("--prompt", default=os.path.join(WORK, "p100k.txt"))
+        ap.add_argument("--build", default="stock-b11552-23b0202a1")
+        ap.add_argument("--model", default=fcfg.model("qwen36"))
+        ap.add_argument("--timeout", type=int, default=240)
+        a = ap.parse_args()
+        lim = [int(x) for x in a.start.split("+")]
+        lock = open("/tmp/queue.lock", "a")
+        import fcntl
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        log(f"plcal start: limits {lim[0]}+{lim[1]} W, step {a.step}, model {os.path.basename(a.model)}, build {a.build}, prompt {a.prompt}")
+        for it in range(1, a.max_iter + 1):
+            spec = f"{lim[0]}+{lim[1]}"
+            camp = f"plcal-{spec}-it{it}"
+            # the environment the queue daemon gives its tasks (queue/env.sh, PERF_BUILDS, PCI bus device order)
+            env = queue_env()
+            env.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", PERF_BUILDS=fcfg.path("devbuilds"), PERF_LOG="r")
+            nvsmi = fcfg.get("gpu", "nvidia_smi")
+            for gi, w in enumerate(lim):   # this tool is the only place that changes the limits (the boot defaults are fixed): set them before the run
+                subprocess.run(["sudo", "-n", nvsmi, "-i", str(gi), "-pl", str(w)], capture_output=True, timeout=30)
+            cmd = ["python3", os.path.join(HERE, "run.py"), "bench", "--models", a.model, "--builds", a.build, "--variants", "v",
+                   "--variant=v=-sm tensor -ngl 99 -b 4096 -ub 2048 -np 1", "-t", "pf128k", "--prompt", "@" + a.prompt, "--ctx", str(a.ctx), "--tokens", "1", "-n", "1", "--no-probe", "--campaign", camp]
+            t_start = time.time()
+            proc = subprocess.Popen(cmd, env=env, cwd=os.path.dirname(HERE), stdout=open(os.path.join(WORK, f"plcal-it{it}.out"), "w"), stderr=subprocess.STDOUT, start_new_session=True)
+            gfile, pos, hist, bad, thr_clk, thr_th, busy = None, 0, collections.defaultdict(lambda: collections.deque(maxlen=50)), set(), collections.Counter(), collections.Counter(), collections.Counter()
+            reason = {}
+            while proc.poll() is None and time.time() - t_start < a.timeout and not bad:
+                time.sleep(0.4)
+                if gfile is None:
+                    cand = [f for f in glob.glob(os.path.join(GPULOG, "*.csv")) if not f.endswith(".cpu.csv") and os.path.getsize(f) > 0
+                            and time.mktime(time.strptime(os.path.basename(f)[:15], "%Y%m%d-%H%M%S")) >= int(t_start)]   # the log of THIS run: its name carries the start time
+                    if cand:
+                        gfile = max(cand, key=os.path.basename)
+                if gfile:
+                    with open(gfile) as f:
+                        f.seek(pos); chunk = f.read(); pos = f.tell()
+                    for line in chunk.splitlines():
+                        p = line.split(",")
+                        if len(p) < 10 or not p[1].isdigit() or p[0] == "t_ms":
+                            continue
+                        g = int(p[1])
+                        try:
+                            clk = int(p[3]); util = int(p[6]); thr = int(p[9], 16)
+                        except ValueError:
+                            continue
+                        if util < 80:
+                            thr_clk[g] = thr_th[g] = 0
+                            continue
+                        busy[g] += 1
+                        h = hist[g]
+                        if thr & THERMAL:
+                            thr_th[g] += 1
+                            if thr_th[g] >= 2:
+                                bad.add(g); reason[g] = f"thermal/HW slowdown flag 0x{thr:x} at {clk} MHz"
+                        else:
+                            thr_th[g] = 0
+                        if len(h) >= 25 and clk < 0.85 * statistics.median(h):
+                            thr_clk[g] += 1
+                            if thr_clk[g] >= 3:
+                                bad.add(g); reason[g] = f"clock drop to {clk} MHz (median of the last 10 s {statistics.median(h):.0f})"
+                        else:
+                            thr_clk[g] = 0
+                            h.append(clk)
+                if kernel_xid79():
+                    log("XID 79 in the kernel log: stopping everything"); kill_run(proc); sys.exit(2)
+            dur = time.time() - t_start
+            if bad:
+                kill_run(proc)
+                log(f"it {it}: limits {spec} W: THROTTLE on GPU {sorted(bad)} after {dur:.0f} s ({'; '.join(f'GPU{g}: {r}' for g, r in sorted(reason.items()))}); killed")
+                time.sleep(6)
+                for g in bad:
+                    lim[g] -= a.step
+                    if lim[g] < a.floor:
+                        log(f"GPU {g} reached the floor {a.floor} W: stopping"); sys.exit(1)
+                continue
+            if proc.poll() is None:
+                kill_run(proc); log(f"it {it}: limits {spec} W: timeout after {dur:.0f} s without a throttle (killed); busy samples {dict(busy)}")
+            elif proc.returncode != 0 or not sum(busy.values()):
+                log(f"it {it}: limits {spec} W: RUN FAILED after {dur:.0f} s (exit {proc.returncode}, busy samples {dict(busy)}): see {WORK}/plcal-it{it}.out; not a result")
+                sys.exit(3)
+            else:
+                log(f"it {it}: limits {spec} W: CLEAN run of {dur:.0f} s (exit {proc.returncode}), busy samples {dict(busy)}")
+            log(f"RESULT: no throttling drops at {spec} W (x4 + x16)")
+            return
+        log(f"max iterations reached, last limits {lim[0]}+{lim[1]}")
+
+
+    if __name__ == "__main__":
+        main()
+
+
+
+def _tool_baseline():
+    # ---- run.py baseline (merged into run.py; the code of the file, unchanged)
+    __doc__ = """run.py baseline: run our README cells (game4c, edit4c, pf12k) for every model on one build (default: the latest stock) through fork/run.py bench, read the
+5 Hz GPU log of every run, and when the x4 card throttles (thermal / HW slowdown flag in >= 2 busy samples in a row, or a clock drop below 85% of its
+median of the last 10 s in >= 3 busy samples in a row) lower the x4 power limit by STEP watts EVERYWHERE (live, and in the boot files named by [gpu] limits_service / limits_env
+of the fork config) and run that cell again. Every run is logged by run.py as always; the verdict per cell goes to <work>/baseline.log.
+usage: run.py baseline [--build stock-b11552-23b0202a1] [--models glm,qn38,q36,olmoe] [--step 10] [--floor 150] [--tag base1]
+Takes /tmp/queue.lock for the whole run: stop the queue daemon first."""
+    import argparse, collections, fcntl, glob, os, statistics, subprocess, sys, time
+
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, HERE)
+    import config as fcfg
+    GPULOG = os.path.join(HERE, "bench", "gpulog")
+    WORK = fcfg.path("work"); os.makedirs(WORK, exist_ok=True)
+    LOG = os.path.join(WORK, "baseline.log")
+    THERMAL = 0x8 | 0x20 | 0x40
+    NVSMI = fcfg.get("gpu", "nvidia_smi")
+    MODELS = {"glm": fcfg.model("glm"), "qn38": fcfg.model("qwen38"), "q36": fcfg.model("qwen36"), "olmoe": fcfg.model("olmoe")}
+    CELLS = {"glm": [("out_heavy", "game4c", [], 3), ("in_out_heavy", "edit4c", ["--tokens", "1024"], 3), ("in_heavy", "pf12k", [], 3)],
+             "qn38": [("out_heavy", "game4c", [], 3), ("in_out_heavy", "edit4c", ["--tokens", "1024"], 3), ("in_heavy", "pf12k", [], 3)],
+             "q36": [("out_heavy", "game4c", [], 3), ("in_out_heavy", "edit4c", ["--tokens", "1024"], 3), ("in_heavy", "pf12k", [], 3)],
+             "olmoe": [("out_heavy", "tetrisc", [], 5)]}
+
+
+    def queue_env():
+        """the environment the queue daemon gives its tasks: ours plus the exports of the optional [gpu] env_sh file"""
+        sh = fcfg.get("gpu", "env_sh")
+        if sh and os.path.isfile(sh):
+            out = subprocess.run(["bash", "-c", f". {sh} 2>/dev/null; env -0"], capture_output=True).stdout.decode(errors="replace")
+            return dict(kv.split("=", 1) for kv in out.split("\0") if "=" in kv)
+        return dict(os.environ)
+
+
+
+    def log(msg):
+        line = time.strftime("%F %T ") + msg
+        print(line, flush=True)
+        open(LOG, "a").write(line + "\n")
+
+
+    def sh(*cmd):
+        return subprocess.run(list(cmd), capture_output=True, text=True, timeout=60)
+
+
+    def live_limits():
+        out = sh(NVSMI, "--query-gpu=power.limit", "--format=csv,noheader,nounits").stdout
+        return [int(float(x)) for x in out.split() if x.replace(".", "").isdigit()]
+
+
+    def set_x4(w):
+        """x4 card (GPU 0) to w watts: live, boot service, boot defaults"""
+        svc, lenv = fcfg.get("gpu", "limits_service"), fcfg.get("gpu", "limits_env")
+        sh("sudo", "-n", NVSMI, "-i", "0", "-pl", str(w))
+        if svc:
+            sh("sudo", "-n", "sed", "-i", f"s/-i 0 -pl [0-9]*/-i 0 -pl {w}/", svc)
+            sh("sudo", "-n", "systemctl", "daemon-reload")
+        if not lenv:
+            return
+        lines = open(lenv).read().splitlines()
+        open(lenv, "w").write("\n".join((f"LIMIT0={w}   # GPU0 = x4 card, lowered by run.py baseline after a throttle ({time.strftime('%F %T')})" if l.startswith("LIMIT0=") else l) for l in lines) + "\n")
+
+
+    def throttled(files, t_start):
+        """per GPU index: reason of the first throttle seen in the GPU logs of this cell, else {}"""
+        found = {}
+        for f in sorted(files):
+            hist = collections.defaultdict(lambda: collections.deque(maxlen=50)); c_clk = collections.Counter(); c_th = collections.Counter()
+            for line in open(f).read().splitlines()[1:]:
+                p = line.split(",")
+                try:
+                    g = int(p[1]); clk = int(p[3]); util = int(p[6]); thr = int(p[9], 16)
+                except (ValueError, IndexError):
+                    continue
+                if util < 80:
+                    c_clk[g] = c_th[g] = 0
+                    continue
+                if thr & THERMAL:
+                    c_th[g] += 1
+                    if c_th[g] >= 2 and g not in found:
+                        found[g] = f"flag 0x{thr:x} at {clk} MHz"
+                else:
+                    c_th[g] = 0
+                h = hist[g]
+                if len(h) >= 25 and clk < 0.85 * statistics.median(h):
+                    c_clk[g] += 1
+                    if c_clk[g] >= 3 and g not in found:
+                        found[g] = f"clock drop to {clk} MHz (median of the last 10 s {statistics.median(h):.0f})"
+                else:
+                    c_clk[g] = 0
+                    h.append(clk)
+        return found
+
+
+    def main():
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--build", default="stock-b11552-23b0202a1"); ap.add_argument("--models", default="glm,qn38,q36,olmoe")
+        ap.add_argument("--step", type=int, default=10); ap.add_argument("--floor", type=int, default=150); ap.add_argument("--tag", default="base1")
+        ap.add_argument("--retries", type=int, default=4)
+        a = ap.parse_args()
+        lock = open("/tmp/queue.lock", "a"); fcntl.flock(lock, fcntl.LOCK_EX)
+        env = queue_env()
+        env.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", PERF_BUILDS=fcfg.path("devbuilds"), PERF_LOG="r")
+        log(f"baseline start: build {a.build}, models {a.models}, limits {live_limits()} W (x4 + x16), tag {a.tag}")
+        for key in a.models.split(","):
+            for tname, test, extra, n in CELLS[key]:
+                for attempt in range(1, a.retries + 1):
+                    camp = f"{a.tag}-{key}-{tname}" + ("" if attempt == 1 else f"-try{attempt}")
+                    t0 = time.time(); lim = live_limits()
+                    cmd = ["python3", os.path.join(HERE, "run.py"), "bench", "--models", MODELS[key], "--builds", a.build, "--variants", "v", "--variant=v=-np 1",
+                           "-t", test, "-n", str(n), "--no-probe", "--campaign", camp] + extra
+                    r = subprocess.run(cmd, env=env, cwd=os.path.dirname(HERE), stdout=open(os.path.join(WORK, f"baseline-{camp}.out"), "w"), stderr=subprocess.STDOUT)
+                    files = [f for f in glob.glob(os.path.join(GPULOG, "*.csv")) if not f.endswith(".cpu.csv")
+                             and time.mktime(time.strptime(os.path.basename(f)[:15], "%Y%m%d-%H%M%S")) >= int(t0)]
+                    thr = throttled(files, t0)
+                    lt = {g: v for g, v in thr.items()}
+                    log(f"{camp}: limits {lim[0]}+{lim[1]} W, exit {r.returncode}, {len(files)} server starts, {time.time() - t0:.0f} s, throttle: " + ("; ".join(f"GPU{g}: {v}" for g, v in sorted(lt.items())) if lt else "none"))
+                    if r.returncode != 0:
+                        log(f"{camp}: run.py failed, see {WORK}/baseline-{camp}.out; continuing with the next cell")
+                        break
+                    if 1 in lt:
+                        log(f"note: x16 card throttled in {camp} (limit {lim[1]} W): logged only")
+                    if 0 not in lt:
+                        break
+                    new = lim[0] - a.step
+                    if new < a.floor:
+                        log(f"x4 floor {a.floor} W reached: stopping"); return
+                    set_x4(new)
+                    log(f"x4 throttled at {lim[0]} W: lowered to {new} W everywhere (live, gpu-powerlimit.service, limits.env); running {camp.split('-try')[0]} again")
+                    time.sleep(20)
+        log(f"baseline done, final limits {live_limits()} W")
+
+
+    if __name__ == "__main__":
+        main()
+
+
+
+def _tool_reg_tests():
+    # ---- run.py reg-tests (merged into run.py; the code of the file, unchanged)
+    __doc__ = """Regression checks, one per regression that was ever spotted, numbered. Is regression N back in a build?
+
+  run.py reg-tests list                      the regressions: number, title, what it was, the stored last-good build
+  run.py reg-tests N CURRENT [GOOD]          run check N on build CURRENT (a bin directory) and on the stored last-good build (or GOOD),
+                                         through fork/run.py exp (every run lands in run-history.csv), print PASS or REGRESSION
+  run.py reg-tests N CURRENT --dry           only print the experiment that would run
+  run.py reg-tests all CURRENT               every default check that can run on this machine now (a check that needs a pool says SKIP without one; opt-in checks, reg 2, run by number)
+
+CURRENT is a directory with llama-cli (and libs), e.g. /p/bw/wt-release-next/build-dev/bin. The last-good builds are stored under /p/bw/rels.
+A check compares CURRENT with the last-good build on the same machine, same tool (llama-cli on both: llama-cli and llama-completion print different
+rates for the same engine), own state file per arm (an arm must never learn from another arm's runs).
+"""
+    import csv, glob, os, re, shlex, statistics, subprocess, sys, time
+
+    HERE = os.path.dirname(os.path.realpath(__file__))
+    REPO = os.path.dirname(HERE)
+    RUN = os.path.join(HERE, "run.py")
+    HIST = os.path.join(HERE, "bench", "run-history.csv")
+    LOGS = os.path.join(HERE, "bench", "logs")
+    PROMPT = os.path.join(HERE, "bench", "src_12k.cpp")   # the README pf12k prompt (12k tokens, 100 generated, -c 16384 -ub 2048 -b 2048): prompt processing and decode in one run, the same prompt as the README table
+    RELS = "/p/bw/rels"
+    GOOD = RELS + "/rc-final-fd4c3d2d3"                      # rc-merge fd4c3d2d3: placement measured, pin decision with pool, no mid-split rule
+
+    # the stored builds: directory name under RELS -> the commit it is built from. A build that is missing is rebuilt from its commit in a separate temporary worktree
+    # (the docker dev build, nothing touches the current tree), the binaries are stored under RELS with a BUILD_INFO, the temporary tree is removed.
+    BUILDS = {
+        "rc-final-fd4c3d2d3":  {"ref": "fd4c3d2d3", "note": "rc-merge: placement measured, pin decision with pool, mid-split rule removed"},
+        "b11707-49fe4b756":    {"ref": "49fe4b756", "note": "release b11707 (the README numbers)"},
+        "stock-bed0a8566":     {"ref": "bed0a8566", "note": "upstream master, the stock floor"},
+        "stock-def4d406a":     {"ref": "def4d406a", "note": "upstream master, the older stock"},
+    }
+    BUILD_SCRIPT = "/p/bw/data/hcf/lrel/dev-build.sh"
+    BUILD_TMP = "/p/bw/build-tmp"
+
+
+    def ensure_build(path, dry=False):
+        """path: a build directory. Missing: build it from BUILDS[basename] in a temporary worktree and store it. Returns None or an error text."""
+        if os.path.exists(os.path.join(path, "llama-cli")):
+            return None
+        name = os.path.basename(path.rstrip("/"))
+        spec = BUILDS.get(name)
+        if not spec:
+            return f"no llama-cli in {path} and no recipe for '{name}' in BUILDS (add one: the commit it is built from)"
+        if dry:
+            print(f"[dry] would build {name} from {spec['ref']} in {BUILD_TMP}/{name} and store it in {path}")
+            return None
+        tmp = os.path.join(BUILD_TMP, name)
+        os.makedirs(BUILD_TMP, exist_ok=True)
+        print(f"building {name} from {spec['ref']} in {tmp} (docker dev build, several minutes)", flush=True)
+        for cmd in (["git", "-C", REPO, "worktree", "add", "--detach", "-f", tmp, spec["ref"]],):
+            r = run(cmd)
+            if r.returncode:
+                return f"git worktree failed: {r.stderr.strip()[:200]}"
+        try:
+            r = subprocess.run(["bash", BUILD_SCRIPT], env={**os.environ, "W": tmp}, text=True)
+            binp = os.path.join(tmp, "build-dev", "bin")
+            if not os.path.exists(os.path.join(binp, "llama-cli")):
+                return f"build of {name} failed (no llama-cli in {binp}, exit {r.returncode})"
+            os.makedirs(path, exist_ok=True)
+            subprocess.run(["cp", "-a", binp + "/.", path], check=True)
+            with open(os.path.join(path, "BUILD_INFO"), "w") as f:
+                f.write(f"commit={spec['ref']}\nbranch=reg_tests\npatch=0\nnote={spec.get('note', '')}\n")
+            print(f"stored {path}", flush=True)
+            return None
+        finally:
+            run(["git", "-C", REPO, "worktree", "remove", "--force", tmp])
+            subprocess.run(["rm", "-rf", tmp])
+
+
+    M = {
+        "qn_iq1m": "/m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+        "glm30":   "/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf",
+    }
+
+    # each regression: what it was, how it shows, the model, the arms' extra args/env, the metric and the tolerance (CURRENT must reach tol x the good build)
+    REGS = {
+        1: dict(title="near-fit model forced onto the expert cache (first start and every start)",
+                was="Qwen3.8-Flash-Next IQ1_M (55 GB, 48 GB VRAM): commit aab03fbe8 took the cache without measuring: 54.7 t/s generation and 469 t/s prompt against 66 and 920 with stock placement",
+                model="qn_iq1m", rounds=4, args="", env={}, state=True, judge="settled", tol=0.93,
+                extra_arms=[("STOCK", RELS + "/stock-docker-836d57176", True), ("B11707", RELS + "/b11707-49fe4b756", False)],
+                good_build=GOOD, how="the last two starts (settled) of a fresh state file: generation and prompt t/s"),
+        2: dict(title="extra graph split on a plain two-GPU layer split (mid-split rule)",
+                was="the scheduler started a new split when an activation from another GPU was needed: 4 splits where stock has 3, 1.1% generation on Qwen Next (65.9 against 66.6 without it)",
+                model="qn_iq1m", rounds=1, opt_in=True, args="--fork off", env={}, state=False, judge="splits", tol=0.99,
+                good_build=GOOD, how="'splits =' of the graph in the log must not exceed the good build's, generation >= 0.99 x good"),
+        3: dict(title="pin decision ignores a reserved huge page pool",
+                was="with a 100 GiB pool reserved only ~21 GiB 'RAM available': a 109 GiB model fell back to mmap and ran at 2.5 t/s (GLM 3.0-bit)",
+                model="glm30", rounds=2, args="", env={}, state=True, judge="pinned", tol=0.85, needs="pool",
+                good_build=GOOD, how="log says 'weights pinned' and generation >= 0.85 x good (first start, stock placement)"),
+        4: dict(title="pin decision ignores a warm hugetlbfs weights cache",
+                was="with GGML_CUDA_HUGEFS holding the weights (68 GiB of the pool) the decision saw too little RAM: mmap fallback, 2.0 t/s on GLM 3.0-bit",
+                model="glm30", rounds=2, args="", env={"GGML_CUDA_HUGEFS": "/mnt/huge1g"}, state=True, judge="pinned", tol=0.85, needs="pool",
+                good_build=GOOD, how="the second start (cache file warm) says 'weights pinned' and generation >= 0.85 x good"),
+    }
+
+
+    def run(cmd, **kw):
+        return subprocess.run(cmd, text=True, capture_output=True, **kw)
+
+
+    def pool_free_gib():
+        try:
+            return int(open("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages").read())
+        except OSError:
+            return 0
+
+
+    def spec_text(n, reg, name, cur, good):
+        arms = []
+        for arm, b in (("GOOD", good), ("CUR", cur)):
+            a = f"[arm {arm}]\nbin = {b}\n"
+            if reg["args"]:
+                a += f"args = {reg['args']}\n"
+            env = " ".join(f"{k}={v}" for k, v in reg["env"].items())
+            if env:
+                a += f"env = {env}\n"
+            if reg["state"]:
+                a += f"state = /tmp/reg{n}-state-{arm}.ini\n"
+            arms.append(a)
+        for arm, b, stock in reg.get("extra_arms", ()):   # README-grade rows: upstream stock (release recipe) and the previous release next to the good/current builds
+            a = f"[arm {arm}]\nbin = {b}\n"
+            if reg["args"]:
+                a += f"args = {reg['args']}\n"
+            if stock:
+                a += "origin = stock\n"
+            elif reg["state"]:
+                a += f"state = /tmp/reg{n}-state-{arm}.ini\n"
+            arms.append(a)
+        return f"""[exp]
+name = {name}
+note = regression {n}: {reg['title']}
+rounds = {reg['rounds']}
+order = fixed
+
+[models]
+m = {M[reg['model']]}
+
+[workload]
+tool = cli
+prompt_file = {PROMPT}
+n = 100
+args = -c 16384 -ub 2048 -b 2048
+log_verbosity = 4
+timeout = 2400
+
+[setup]
+guard = min_avail_gb=10 max_swap_mb=8000 swapout_pages_s=400000 psi=60
+
+""" + "\n".join(arms)
+
+
+    def rows(name):
+        return [r for r in csv.DictReader(open(HIST)) if r.get("campaign") == name and r.get("tps") and r.get("temp", "") != "cold"]
+
+
+    def log_of(name, arm, rnd):
+        f = os.path.join(LOGS, name, f"m-r{rnd}-{arm}.log")
+        return open(f, errors="replace").read() if os.path.exists(f) else ""
+
+
+    def judge(n, reg, name):
+        r = {a: sorted([x for x in rows(name) if x["arm"] == a], key=lambda x: int(x["rep"])) for a in ("GOOD", "CUR")}
+        if not r["GOOD"] or not r["CUR"]:
+            return "ERROR", "no rows for one of the arms (the runs failed: see the log)"
+        g = lambda a, k, last=None: statistics.median(float(x[k]) for x in (r[a][-last:] if last else r[a]) if x.get(k))
+        j, tol = reg["judge"], reg["tol"]
+        if j == "settled":   # the last two starts of a fresh state
+            gt, ct, gp, cp = g("GOOD", "tps", 2), g("CUR", "tps", 2), g("GOOD", "pp", 2), g("CUR", "pp", 2)
+            ok = ct >= tol * gt and cp >= tol * gp
+            return ("PASS" if ok else "REGRESSION"), f"settled starts: generation {ct:.1f} against good {gt:.1f} ({100*ct/gt:.0f}%), prompt {cp:.0f} against {gp:.0f} ({100*cp/gp:.0f}%), needs {100*tol:.0f}%"
+        if j == "splits":
+            sp = lambda a: [int(m.group(1)) for m in (re.search(r"graph: nodes = \d+, splits = (\d+)", log_of(name, a, int(x["rep"]) + 1)) for x in r[a]) if m]
+            gs, cs = sp("GOOD"), sp("CUR")
+            gt, ct = g("GOOD", "tps"), g("CUR", "tps")
+            ok = bool(gs) and bool(cs) and max(cs) <= max(gs) and ct >= tol * gt
+            return ("PASS" if ok else "REGRESSION"), f"splits {max(cs) if cs else '?'} against good {max(gs) if gs else '?'}, generation {ct:.1f} against {gt:.1f} ({100*ct/gt:.1f}%), needs {100*tol:.1f}%"
+        if j == "pinned":
+            idx = len(r["CUR"]) - 1 if n == 4 else 0
+            lg = log_of(name, "CUR", int(r["CUR"][idx]["rep"]) + 1)
+            pinned = "weights pinned" in lg
+            gt, ct = float(r["GOOD"][idx]["tps"]), float(r["CUR"][idx]["tps"])
+            ok = pinned and ct >= tol * gt
+            return ("PASS" if ok else "REGRESSION"), f"{'pinned' if pinned else 'NOT pinned (mmap fallback)'}, generation {ct:.1f} against good {gt:.1f} ({100*ct/gt:.0f}%), needs {100*tol:.0f}%"
+        return "ERROR", f"unknown judge {j}"
+
+
+    def check(n, cur, good=None, dry=False):
+        reg = REGS[n]
+        good = good or reg["good_build"]
+        if reg.get("needs") == "pool" and pool_free_gib() < 100:
+            return "SKIP", "needs a free 1 GiB hugepage pool of 100 pages (sudo resident_pin.sh 100g right after boot)"
+        if not os.path.exists(os.path.join(cur, "llama-cli")):
+            return "ERROR", f"no llama-cli in {cur}"
+        err = ensure_build(good, dry)   # the stored last-good build, rebuilt from its commit when missing
+        if err:
+            return "ERROR", err
+        name = f"reg{n}-{time.strftime('%m%d-%H%M')}"
+        spec = f"/tmp/{name}.ini"
+        open(spec, "w").write(spec_text(n, reg, name, cur, good))
+        for arm in ("GOOD", "CUR", "B11707"):
+            if reg["state"] and os.path.exists(f"/tmp/reg{n}-state-{arm}.ini"):
+                os.remove(f"/tmp/reg{n}-state-{arm}.ini")
+        if dry:
+            print(open(spec).read())
+            return "DRY", spec
+        p = subprocess.run([sys.executable, RUN, "exp", spec])
+        if p.returncode != 0:
+            return "ERROR", f"run.py exp exited {p.returncode}"
+        return judge(n, reg, name)
+
+
+    def main():
+        a = sys.argv[1:]
+        if not a or a[0] in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        if a[0] == "list":
+            for n, r in REGS.items():
+                print(f"reg {n}: {r['title']}\n   was:  {r['was']}\n   test: {r['how']}\n   last good: {r['good_build']}  model: {M[r['model']]}")
+            return 0
+        if len(a) < 2:
+            print("usage: run.py reg-tests N CURRENT_BIN_DIR [GOOD_BIN_DIR] [--dry]   |   run.py reg-tests all CURRENT_BIN_DIR   |   run.py reg-tests list")
+            return 2
+        dry = "--dry" in a
+        a = [x for x in a if x != "--dry"]
+        # reg 2 (--fork off against the good build) is opt-in: --fork off has equalled stock within ~1.5% in every comparison, `all` skips it, `run.py reg-tests 2 CURRENT` runs it
+        ns = [n for n, r in REGS.items() if not r.get("opt_in")] if a[0] == "all" else [int(a[0])]
+        bad = 0
+        for n in ns:
+            status, msg = check(n, os.path.abspath(a[1]), a[2] if len(a) > 2 else None, dry)
+            print(f"reg {n} [{REGS[n]['title']}]: {status}: {msg}")
+            bad += status in ("REGRESSION", "ERROR")
+        return 1 if bad else 0
+
+
+    if __name__ == "__main__":
+        sys.exit(main())
+
+
+
+def _tool_series():
+    # ---- run.py series (merged into run.py; the code of the file, unchanged)
+    __doc__ = """run.py series [--base 6753a033f] [--tip main] [--branch series] [--tree /p/bw/wt-series]
+
+Builds the branch `series` from the fork's tip: starting at the upstream commit the fork is based on, ONE COMMIT PER AREA (see fork/PATCHES.md) carrying the
+diff of the paths of that area. A path that belongs to no area goes into the last commit, so `git diff series main` is empty. The commits are a reading aid
+(what does the fork change, area by area) and the base of upstream pull requests: only the last commit is guaranteed to build, because areas share files.
+The temporary worktree is removed afterwards; nothing is pushed."""
+    import argparse, os, subprocess, sys
+
+    # area name, commit title, path prefixes (first match wins; later areas take what is left)
+    AREAS = [
+        ("cuda-loader", "CUDA: pinned weight loading (huge page pool, THP hybrid, registered pages), multi-threaded loader, load-mode",
+         ["ggml/src/ggml-cuda/ggml-cuda.cu", "src/llama-model-loader.cpp"]),
+        ("scheduler", "scheduler: host-barrier refinement, selective expert copy hook, split timer (GGML_SCHED_PROF), device-to-host async",
+         ["ggml/src/ggml-backend.cpp", "ggml/include/ggml-backend.h", "ggml/include/ggml.h", "ggml/src/ggml.c"]),
+        ("cpu-kernels", "CPU/CUDA kernels: Q2_0 AVX2 dot, repack and matmul fixes",
+         ["ggml/src/ggml-cpu/", "ggml/src/ggml-cuda/"]),
+        ("expert-cache", "MoE expert cache and self-tuner (llama-moecache-fork, llama-moestate-fork) with their graph and context hooks",
+         ["src/llama-moecache-fork.", "src/llama-moestate-fork.", "src/llama-graph.", "src/llama-context.", "src/llama-cparams.h", "src/llama-ext.h", "src/llama.cpp",
+          "include/llama.h", "src/CMakeLists.txt", "examples/eval-callback/"]),
+        ("placement-and-flags", "automatic placement, thread tuner, --moe / --fork / --load-mode flags, server and CLI hooks",
+         ["common/", "tools/cli/", "tools/server/"]),
+        ("mtp-and-models", "GLM MTP draft head, hybrid-idx memory, conversion fixes",
+         ["src/models/", "src/llama-model.", "src/llama-arch.", "src/llama-hparams.h", "src/llama-kv-cache.", "src/llama-memory-", "conversion/", "convert_hf_to_gguf.py"]),
+        ("fork-tooling", "fork/: benchmark harness, run log, docs, experiments, build recipe; README and ignore rules",
+         ["fork/", "README.md", ".gitignore"]),
+    ]
+
+
+    def git(*a, cwd=None, check=True):
+        r = subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True)
+        if check and r.returncode != 0:
+            sys.exit(f"git {' '.join(a)}: {r.stderr.strip()}")
+        return r.stdout
+
+
+    def main():
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--base", default="6753a033f"); ap.add_argument("--tip", default="main"); ap.add_argument("--branch", default="series")
+        ap.add_argument("--tree", default="/p/bw/wt-series")
+        a = ap.parse_args()
+        repo = os.getcwd()
+        changes = {}
+        for line in git("diff", "--name-status", "--no-renames", a.base, a.tip).splitlines():
+            st, path = line.split("\t", 1)
+            changes[path] = st
+        left = dict(changes)
+        git("worktree", "add", "--detach", "-f", a.tree, a.base)
+        try:
+            git("checkout", "-q", "-B", a.branch, a.base, cwd=a.tree)
+            for i, (name, title, prefixes) in enumerate(AREAS):
+                last = i == len(AREAS) - 1
+                mine = [p for p in left if any(p.startswith(x) for x in prefixes)] if not last else list(left)
+                if last:   # fork-tooling takes what no earlier area claimed; engine files among them are listed so an area can be added
+                    mine = list(left)
+                    stray = [p for p in mine if not any(p.startswith(x) for x in prefixes)]
+                    if stray:
+                        print("not in any area (put into the last commit):", *stray[:20], sep="\n  ")
+                for p in mine:
+                    if left[p] == "D":
+                        git("rm", "-q", "--ignore-unmatch", p, cwd=a.tree)
+                    else:
+                        git("checkout", a.tip, "--", p, cwd=a.tree)
+                    del left[p]
+                if git("status", "--short", cwd=a.tree).strip():
+                    git("commit", "-q", "-m", title, cwd=a.tree)
+                    print(f"{name}: {len(mine)} files", flush=True)
+            left_diff = git("diff", "--stat", a.branch, a.tip, cwd=repo).strip()
+            print("git diff series main:", left_diff or "empty")
+        finally:
+            git("worktree", "remove", "--force", a.tree, check=False)
+
+
+    if __name__ == "__main__":
+        main()
+
+
+
+def _tool_selftest():
+    # ---- selftest.py (merged into run.py; the code of the file, unchanged)
+    __doc__ = """run.py selftest: the checks of the fork tooling that need no GPU and no model (the CI workflow fork-ci.yml runs it).
+
+1. run.py compiles and every tool answers --help
+2. the cache simulator on a seeded synthetic routing trace keeps its invariants: the offline optimum (belady) is never beaten, a counting policy beats
+   plain LRU on a skewed trace, and two runs print the same numbers
+3. the config module: defaults, a TOML file, and the FORK_* variables in that order
+4. every relative markdown link of README.md, fork/README.md, fork/PATCHES.md and fork/docs/*.md resolves"""
+    import glob, os, py_compile, random, re, runpy, subprocess, sys, tempfile
+
+    os.environ["FORK_NO_RUNS_DB"] = "1"
+    FORK = os.path.dirname(os.path.abspath(__file__))
+    ROOT = os.path.dirname(FORK)
+    RUN = os.path.join(FORK, "run.py")
+    PY = sys.executable
+    failed = []
+
+
+    def check(cond, msg):
+        print(("ok: " if cond else "FAIL: ") + msg)
+        if not cond:
+            failed.append(msg)
+
+
+    # 1. compile, help
+    py_compile.compile(RUN, doraise=True)
+    check(True, "run.py compiles")
+    r = subprocess.run([PY, RUN, "--help"], capture_output=True, text=True, timeout=120)
+    check(r.returncode == 0 and "quick" in r.stdout, "run.py --help lists the subcommands")
+    for tool in ("quick", "plcal", "baseline", "series", "bisect", "runlog-all", "runq"):
+        r = subprocess.run([PY, RUN, tool, "--help"], capture_output=True, text=True, timeout=120)
+        check(r.returncode == 0 and "usage" in (r.stdout + r.stderr).lower(), f"run.py {tool} --help")
+
+
+    # 2. cache simulator
+    def synthetic_trace(path, n_exp=64, n_layer=4, n_tok=600, k=6, seed=7):
+        rnd = random.Random(seed)
+        w = [1.0 / (i + 1) for i in range(n_exp)]   # skewed: a few experts do most of the work, like real routers
+        with open(path, "w") as f:
+            for _ in range(n_tok):
+                for il in range(n_layer):
+                    ids = set()
+                    while len(ids) < k:
+                        ids.add(rnd.choices(range(n_exp), weights=w)[0])
+                    f.write("blk.%d.ffn_gate_exps %s\n" % (il, " ".join(map(str, sorted(ids)))))
+
+
+    def sim(trace):
+        r = subprocess.run([PY, os.path.join(FORK, "sim", "cache_sim.py"), trace, "--frac", "0.25"], capture_output=True, text=True, timeout=300)
+        line = next(l for l in r.stdout.splitlines() if l.startswith("cache"))
+        return {m.group(1): float(m.group(2)) for m in re.finditer(r"(\w+)\s+([\d.]+)%", line.split("|")[0])}
+
+
+    with tempfile.TemporaryDirectory() as d:
+        t = os.path.join(d, "trace.txt")
+        synthetic_trace(t)
+        a, b = sim(t), sim(t)
+    check(a == b, "the simulator is deterministic")
+    check(a["belady"] >= max(v for k, v in a.items() if k != "belady"), f"belady is the upper bound ({a['belady']}%)")
+    check(a["lfu"] > a["lru"], f"on a skewed trace LFU beats LRU ({a['lfu']}% vs {a['lru']}%)")
+
+    # 3. config precedence (run.py loaded as a module: nothing is dispatched)
+    for k in [k for k in os.environ if k.startswith("FORK_") and k != "FORK_NO_RUNS_DB"]:
+        del os.environ[k]
+    with tempfile.TemporaryDirectory() as d:
+        toml = os.path.join(d, "c.toml")
+        open(toml, "w").write('[paths]\nrels = "/from/file"\n')
+        os.environ["FORK_CONFIG"] = toml
+        c = runpy.run_path(RUN, run_name="forkselftest")["config"]
+        check(c.path("rels") == "/from/file", "a TOML setting overrides the default")
+        check(c.path("best").endswith("/rels/best"), "an unset key keeps its default")
+        os.environ["FORK_PATHS_RELS"] = "/from/env"
+        check(c.path("rels") == "/from/env", "the FORK_* variable wins over the file")
+        del os.environ["FORK_PATHS_RELS"], os.environ["FORK_CONFIG"]
+
+    # 4. markdown links
+    bad = []
+    files = [os.path.join(ROOT, f) for f in ("README.md", "fork/README.md", "fork/PATCHES.md")] + sorted(glob.glob(os.path.join(ROOT, "fork/docs/*.md")))
+    for f in files:
+        if not os.path.exists(f):
+            continue
+        text = re.sub(r"```.*?```", "", open(f, encoding="utf-8").read(), flags=re.S)   # links inside code blocks are examples
+        for m in re.finditer(r"\]\(([^)\s]+)\)", text):
+            target = m.group(1).split("#")[0]
+            if not target or re.match(r"[a-z]+:", target):
+                continue
+            if not os.path.exists(os.path.normpath(os.path.join(os.path.dirname(f), target))):
+                bad.append(f"{os.path.relpath(f, ROOT)}: {m.group(1)}")
+    check(not bad, "every relative markdown link resolves" + ("" if not bad else ": " + "; ".join(bad[:5])))
+
+    if failed:
+        sys.exit(f"selftest: {len(failed)} check(s) failed")
+    print("selftest: all checks passed")
+
+
+
+TOOLS = {
+    'runlog-all': _tool_runlog_all,
+    'runq': _tool_runq,
+    'merge-runs': _tool_merge_runs,
+    'pick-features': _tool_pick_features,
+    'bisect': _tool_bisect_perf,
+    'plcal': _tool_plcal,
+    'baseline': _tool_baseline,
+    'reg-tests': _tool_reg_tests,
+    'series': _tool_series,
+    'selftest': _tool_selftest,
+    'runlog': lambda: sys.modules['runlog']._cli(),
+}
+
+
 if __name__ == "__main__":
     import atexit
     atexit.register(_sync_runs_db)
+    if len(sys.argv) > 1 and sys.argv[1] in TOOLS:   # a merged tool: it keeps its own argument parser
+        _tool = sys.argv[1]
+        sys.argv = [f"run.py {_tool}"] + sys.argv[2:]
+        TOOLS[_tool]()
+        sys.exit(0)
     if len(sys.argv) > 1 and sys.argv[1] in ("short", "12k", "128k"):  # the old run.py usage: run.py short|12k|128k [--url U]
         sys.argv.insert(1, "prompt")
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 epilog="tools (each has its own --help): " + ", ".join(sorted(TOOLS)))
     sp = ap.add_subparsers(dest="cmd", required=True)
     TESTS = ["ppl", "ppl3", "pplb", "pplc", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
     r = sp.add_parser("run", help="measured runs of one test for BUILD...")

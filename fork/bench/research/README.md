@@ -23,7 +23,7 @@ Files are appended to and never rewritten, so a server that runs for weeks grows
 3. **Can the router be predicted?** `layertrace.csv` pairs a layer's input state with the experts chosen at that layer and the next ones: data to train an expert predictor outside the engine.
 
 The embedding saved by `e` is the last token of the last graph, so it is the model's state after its own answer, not the prompt alone; it carries the whole context. Whether it is the best topic key is one of the things to measure.
-`python3 fork/runlog.py` (SQLite copy of the run history, table `embhot` for the `e` lines) and numpy are enough to analyse it; no vector database is needed at this scale.
+`python3 fork/run.py runlog` (SQLite copy of the run history, table `embhot` for the `e` lines) and numpy are enough to analyse it; no vector database is needed at this scale.
 
 ## Levers for repeatable experiments
 

@@ -16,7 +16,7 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 **Results, 2x RTX 3090 (one AM4 CPU PCIe 4.0 x16, one X570 chipset x4 slot) + Ryzen 7 3700X + 125 GB DDR4,
 CPU frequency governor `performance`, single stream, temp 0.** Short = 1500-token chat reply to "write smallest html tetris game". Long =
 12k-token code prompt (llama.cpp sources): prompt processing, then decode. The prompts and a script to
-reproduce these tests are in [`tools/moe-bench/`](tools/moe-bench/).
+reproduce these tests are in [`fork/bench/`](fork/bench/).
 
 **Stock llama.cpp vs this fork**, tokens/s, model already in RAM (*). "mmap": weights
 memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned RAM, what
@@ -25,15 +25,15 @@ memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned
 
 | model | test | stock (b11041) | fork, mmap (b11327-b11367) | fork, mmap + MTP (b11367) | fork, pinned (b11341) | fork, pinned + MTP (b11367) |
 |---|---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB; `llama-server` default: pinned | short: decode | 13.8 | 20.4 (1.48x) | 18.2 (1.32x) ‡ | [**21.1 (1.53x)**](tools/moe-bench/) | 18.2 (1.32x) ‡ |
-| | long: prompt processing † | 217 | 180 (0.83x) | | [**262 (1.21x)**](tools/moe-bench/) ||
-| | long: decode | 12.3 | 15.6 (1.27x) | | [**16.3 (1.33x)**](tools/moe-bench/) ||
-| MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB; `llama-server` default: mmap (bigger than RAM) | short: decode | 4.0 | [**10.1 (2.54x)**](tools/moe-bench/) | no gain ¶ | - (bigger than RAM) | - |
-| | long: prompt processing † | [**136**](tools/moe-bench/) | 133 (0.98x) | | - | - |
-| | long: decode | 4.2 | [**8.3 (1.98x)**](tools/moe-bench/) | | - | - |
-| Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB; `llama-server` default: pinned | short: decode | 27.7 | 47.1 (1.70x) | 58.3 (2.11x) | 46.5 (1.68x) | [**60.4 (2.18x)**](tools/moe-bench/) |
-| | long: prompt processing † | 500 | 372 (0.74x) | 353 (0.71x) | [**538 (1.08x)**](tools/moe-bench/) | 500 (1.00x) |
-| | long: decode | 25.3 | 38.4 (1.52x) | 40.1 (1.59x) § | [**42.3 (1.67x)**](tools/moe-bench/) | 28.0 (1.11x) § |
+| GLM-5.3-Flash 3.0-bit [Q4_K attn](https://huggingface.co/neuralll/GLM-5.3-Flash-GSQ-RCO-3.0bit-Q4Kattn-GGUF), 106 GB; `llama-server` default: pinned | short: decode | 13.8 | 20.4 (1.48x) | 18.2 (1.32x) ‡ | [**21.1 (1.53x)**](fork/bench/) | 18.2 (1.32x) ‡ |
+| | long: prompt processing † | 217 | 180 (0.83x) | | [**262 (1.21x)**](fork/bench/) ||
+| | long: decode | 12.3 | 15.6 (1.27x) | | [**16.3 (1.33x)**](fork/bench/) ||
+| MiMo-V2.6-Flash-RL IQ3_XXS, 132 GB; `llama-server` default: mmap (bigger than RAM) | short: decode | 4.0 | [**10.1 (2.54x)**](fork/bench/) | no gain ¶ | - (bigger than RAM) | - |
+| | long: prompt processing † | [**136**](fork/bench/) | 133 (0.98x) | | - | - |
+| | long: decode | 4.2 | [**8.3 (1.98x)**](fork/bench/) | | - | - |
+| Qwen3.8-Flash-Next UD-IQ4_XS, 88 GB; `llama-server` default: pinned | short: decode | 27.7 | 47.1 (1.70x) | 58.3 (2.11x) | 46.5 (1.68x) | [**60.4 (2.18x)**](fork/bench/) |
+| | long: prompt processing † | 500 | 372 (0.74x) | 353 (0.71x) | [**538 (1.08x)**](fork/bench/) | 500 (1.00x) |
+| | long: decode | 25.3 | 38.4 (1.52x) | 40.1 (1.59x) § | [**42.3 (1.67x)**](fork/bench/) | 28.0 (1.11x) § |
 | Qwen3.8-27B IQ4_NL (dense, fits VRAM), 16 GB | short / long prompt | 44.7 / 1726 | 44.8 / 1811 (no cache needed) | | ||
 | OLMoE-1B-7B Q4_K_M (fits VRAM), 4 GB | short: decode | 504 | 504 (no cache needed) | | ||
 
@@ -209,9 +209,9 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf \
   (`MTP/`, the `shared` files reuse the main model's embeddings); GLM-5.3-Flash from
   [neuralll/GLM-5.3-Flash-MTP-GGUF](https://huggingface.co/neuralll/GLM-5.3-Flash-MTP-GGUF)
   (4.3 GiB, works with any `glm5-next` GLM-5.3-Flash GGUF). We made it: no GLM MTP GGUF
-  existed, so `tools/moe-bench/glm_splice_mtp.py` pulls just the MTP tensors out of unsloth's
+  existed, so `fork/bench/glm_splice_mtp.py` pulls just the MTP tensors out of unsloth's
   UD-Q4_K_XL GGUF with HTTP range requests (~4.3 GiB instead of the whole model) and writes
-  them as a draft file; see [`tools/moe-bench/`](tools/moe-bench/) to rebuild it.
+  them as a draft file; see [`fork/bench/`](fork/bench/) to rebuild it.
 - **Why depth is automatic:** every drafted token has to be verified, and each token picks
   its own experts. Experts that miss the VRAM cache run on the CPU at the same cost per
   drafted token as per generated one, so the best depth depends on how much of the model the

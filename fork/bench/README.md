@@ -84,13 +84,13 @@ so it is not a guide for tuning without async upload timing and stream slots. Th
 
 ## runs.db: the run log as a database
 
-Every run is written twice: as a row of `run-history.csv` (append-only, the source of truth, in git) and, by `fork/run.py` at the same moment, into `fork/runs.db` (SQLite, not in git, `python3 fork/runlog.py load` rebuilds it from the CSV).
+Every run is written twice: as a row of `run-history.csv` (append-only, the source of truth, in git) and, by `fork/run.py` at the same moment, into `fork/runs.db` (SQLite, not in git, `python3 fork/run.py runlog load` rebuilds it from the CSV).
 It answers "what did this model, test and build give, and when" in one line:
 
 ```
-python3 fork/runlog.py best IQ4_XS game4        # per build: runs, consistent best t/s and pp, first and last date
-python3 fork/runlog.py runs GLM-5.3 chat b11707 # every run, newest first
-python3 fork/runlog.py q "SELECT build, tps FROM cells WHERE stem LIKE '%MiMo%' AND test = 'game4'"
+python3 fork/run.py runlog best IQ4_XS game4        # per build: runs, consistent best t/s and pp, first and last date
+python3 fork/run.py runlog runs GLM-5.3 chat b11707 # every run, newest first
+python3 fork/run.py runlog q "SELECT build, tps FROM cells WHERE stem LIKE '%MiMo%' AND test = 'game4'"
 ```
 
 The `cells` view groups by model, machine, test and build; "consistent best" is the highest value that two runs agree on within 5%, so a lone outlier does not count.

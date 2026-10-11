@@ -1,7 +1,7 @@
 #!/bin/bash
 # publish fork/runs.db as the ONLY commit of the branch runs-db: every call replaces that commit (no parent), so the history of the binary never accumulates.
 # usage: fork/dbcommit.sh [--push]     --push: force-with-lease to the fork (neurall, branch runs-db only, never anything else)
-# get it: git fetch neurall runs-db && git show FETCH_HEAD:runs.db > fork/runs.db      (or rebuild: python3 fork/runlog.py load; python3 tools/runlog_all.py --fast)
+# get it: git fetch neurall runs-db && git show FETCH_HEAD:runs.db > fork/runs.db      (or rebuild: python3 fork/run.py runlog load; python3 fork/run.py runlog-all --fast)
 set -e
 R=$(git rev-parse --show-toplevel); DB=$R/fork/runs.db; T=$(mktemp -d)
 python3 - "$DB" "$T/runs.db" <<'PY'

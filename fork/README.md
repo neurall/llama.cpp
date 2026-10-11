@@ -5,9 +5,8 @@ Engine code stays where the build needs it: `src/llama-moecache-fork.*`, `src/ll
 
 | path | contents |
 |---|---|
-| `run.py` | the single entry point for every benchmark run, build, regression check and the huge-page pool (`run.py bench`, `build`, `regress`, `hugepool`; see its header) |
-| `runlog.py`, `runq.py`, `runlog_all.py`, `runstats.py`, `runnorm.py`, `merge_runs.py` | the run log: `runs.db` next to these files (not in git), queries over every run ever recorded |
-| `runexp.py`, `reg_tests.py`, `plcal.py`, `baseline.py`, `pick_features.py`, `bisect_perf.py`, `bisect_glm.sh`, `dbcommit.sh` | experiment runner, numbered regression tests, power-limit search, README cells on one build, bisect helpers, runs-db publishing |
+| `run.py` | the single Python file of the fork: every benchmark run, build, regression check and the huge-page pool (`run.py bench`, `build`, `quick`, `regress`, `hugepool`, `exp`), the run log (`runlog`, `runq`, `runlog-all`, `merge-runs`), power-limit and regression tools (`plcal`, `baseline`, `reg-tests`, `bisect`, `pick-features`), `series` and `selftest`; `run.py --help` lists them, each has its own `--help`. Machine paths come from its config section (`~/.config/llama-fork/config.toml`) |
+| `bisect_glm.sh`, `dbcommit.sh` | `git bisect run` helper for a GLM regression, publishing of the run database |
 | `resident_pin.sh` | one-time setup of the 1 GiB huge-page pool for fast pinned loads (users); `run.py hugepool` does the same for our runs |
 | `moe-state.ini` | seed state file (hot experts per model): copy to `~/.cache/llama.cpp/moe-state.ini` if you have none |
 | `vnni-check.cpp` | CPU feature check |
