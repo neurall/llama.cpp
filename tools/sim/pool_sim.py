@@ -20,7 +20,7 @@ streams = [load(t) for t in topics]; L = streams[0].shape[1]
 def run(spec):
     name, _, kv = spec.partition(":"); P = dict(x.split("=") for x in kv.split(",") if x); P = {k: float(v) for k, v in P.items()}
     wg, ww, n = P.get("wg", .3), P.get("ww", .7), int(P.get("n", 64)); cs, gx, wc = P.get("cs", 0), P.get("gx", 1), P.get("wc", 0)
-    pooled = name != "perlayer"; T = a.slots * L
+    pooled = name not in ("perlayer", "perwin"); T = a.slots * L
     cached = np.zeros((L, E), bool); glob = np.zeros((L, E)); win = np.zeros((L, E)); churn = np.zeros((L, E)); stay = np.zeros((L, E))
     M = np.zeros((L, E, E), np.float32) if wc else None
     # hmm: K latent states with per-(layer, expert) usage C[s]; a sticky transition; belief b filtered online from each token's active experts
@@ -99,7 +99,11 @@ def run(spec):
                     free = (T - cached.sum()) > 0 if pooled else occ[l] < a.slots
                     if not free:
                         if budget <= 0: break
-                        cv = np.where(cached & (stay <= step), val, np.inf) if pooled else np.where(cached[l] & (stay[l] <= step), val[l], np.inf)
+                        if pooled and P.get("ld", 0):   # victim by next use: layer l' runs again after (l' - l) mod L layer steps (L for the same layer): far = good victim, discounted by ld x nt / L window hits
+                            nt = (np.arange(L) - l) % L; nt[nt == 0] = L; vv = val - P["ld"] * (nt / L)[:, None] / n   # additive: ld hits of the window per full lap, so cold (zero) experts are told apart by next use
+                            cv = np.where(cached & (stay <= step), vv, np.inf)
+                        else:
+                            cv = np.where(cached & (stay <= step), val, np.inf) if pooled else np.where(cached[l] & (stay[l] <= step), val[l], np.inf)
                         k = int(np.argmin(cv)); vl, ve = divmod(k, E) if pooled else (l, k)
                         if cv.flat[k] == np.inf or val[l, e] <= cv.flat[k]: continue
                         cached[vl, ve] = False; occ[vl] -= 1; budget -= 1; ev += 1

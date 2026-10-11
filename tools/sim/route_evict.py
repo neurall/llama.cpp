@@ -127,8 +127,6 @@ def simulate(policy, C):
                     if need > 0:
                         if policy == 'lru':
                             sc = st.last[j].astype(np.float64)
-                        elif policy == 'lfua':
-                            sc = st.lfu[j] if hasattr(st, 'lfu') else st.total[j]
                         elif policy == 'ours':
                             sc = st.win[j] + 16.0 * st.glob[j] / max(st.glob[j].max(), 1.0)
                         elif policy == 'belady':

@@ -1,0 +1,59 @@
+
+
+<think>
+The user wants the smallest possible HTML Tetris game. I need to create a complete, playable Tetris game in a single HTML file with minimal code. Let me think about the essential elements:
+
+1. A canvas or grid to display the board
+2. Tetromino pieces (I, O, T, L, J, S, Z)
+3. Game logic: piece movement, rotation, collision detection, line clearing
+4. Controls: keyboard input
+5. Score tracking
+
+I'll use a canvas-based approach for compactness. Let me write the most compact version possible while still being functional.
+
+Key optimizations:
+- Use a single array for the board
+- Encode pieces as compact arrays
+- Use minimal variable names
+- Combine logic where possible
+
+Let me write this out:
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id=c width=200 height=400></canvas>
+<script>
+const C=document.getElementById('c'),X=C.getContext('2d'),W=10,H=20;
+const P=[[[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]],[[1,1],[1,1]],[[0,1,0],[1,1,1],[0,0,0]],[[1,0,0],[1,1,1],[0,0,0]],[[0,0,1],[1,1,1],[0,0,0]],[[0,1,1],[1,1,0],[0,0,0]],[[1,1,0],[0,1,1],[0,0,0]]];
+const K=[0,1,2,3,4,5,6];
+let b=[],s=0,t=0;
+function R(){for(let r=0;r<H;r++){let f=0;for(let c=0;c<W;c++)f+=b[r][c];if(f==W)s++;}}
+function D(){R();for(let r=H-1;r>0;r--)if(b[r-1].some(x=>x==0)){b[r-1]=[...b[r]];b[r]=[0,...Array(W-1)]}else b[r]=[0,...Array(W)];if(s>0){for(let r=0;r<H;r++)b[r]=[0,...Array(W)];s=0}}
+function N(){let p=P[K[Math.floor(Math.random()*7)]],x=4,y=0;while(y<H&&p.every((r,i)=>r.every((c,j)=>!c||!b[y+i][x+j]))){if(y+1==H||p.some((r,i)=>r.some((c,j)=>c&&b[y+i+1][x+j])))break;y++}b=p.map((r,i)=>r.map((c,j)=>c?b[y+i][x+j]=1:0));t=0}
+function M(){let p=P[K[Math.floor(Math.random()*7)]],x=4,y=0;while(y<H&&p.every((r,i)=>r.every((c,j)=>!c||!b[y+i][x+j]))){if(y+1==H||p.some((r,i)=>r.some((c,j)=>c&&b[y+i+1][x+j])))break;y++}b=p.map((r,i)=>r.map((c,j)=>c?b[y+i][x+j]=1:0));t=0}
+// This is getting messy. Let me redo this more carefully.
+</script>
+</body>
+</html>
+```
+
+Let me think more carefully and write a clean, compact version.
+
+I'll structure it as:
+- Board: 10x20 array
+- Pieces: 7 tetrominoes
+- Current piece with position and rotation
+- Game loop with keyboard controls
+
+Let me write it properly:
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id=c width=200 height=400></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20;
+const P=[[[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]],[[1,1],[1,1]],[[0,1,0],[1,1,1],[0,0,0]],[[1,0,0],[1,1,1],[0,0,0]],[[0,0,1],[1,1,1],[0,0,0]],[[0,1,1],[1,1,0],[0,0

@@ -10,10 +10,13 @@ for r in rows:
         continue
     n = int("".join(c for c in r["hw"].replace("pod-", "").split("gpu")[0] if c.isdigit()) or 0)
     tag = (r.get("note") or "").split(" | ")[0] or ("stock" if r["origin"] == "stock" else "fork")
-    cell[(r["model"], r["test"])][(n, tag)] = r
+    base, _, suf = tag.partition("-")   # pod.sh tags fork cells cold${TAGSUF}: cold-mmap -> base cold, suffix mmap
+    cell[(r["model"], r["test"], "" if base == "stock" else suf)][(n, base)] = r
 f = lambda r, k, fmt="%.1f": (fmt % float(r[k])) if r and r.get(k) not in (None, "") else "-"
-for (model, test), c in sorted(cell.items()):
-    print(f"\n{model}   test {test}   (decode t/s | prompt t/s | hit %)")
+for (model, test, suf), c in sorted(cell.items()):
+    if suf:   # the stock cells carry no suffix: show them next to every suffixed block
+        c = {**{k: v for k, v in cell.get((model, test, ""), {}).items() if k[1] == "stock"}, **c}
+    print(f"\n{model}   test {test}{'   [' + suf + ']' if suf else ''}   (decode t/s | prompt t/s | hit %)")
     print(f"{'GPUs':>4}  {'fork cold':>24} {'fork prewarm':>24} {'fork hot':>24} {'stock':>24}  {'hot/stock':>9}  md5")
     for n in sorted({k[0] for k in c}):
         cs = [c.get((n, t)) for t in ("cold", "prewarm", "hot", "stock")]

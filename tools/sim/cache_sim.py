@@ -230,7 +230,7 @@ def sim_global(B, D, pol, margin, keep_victim, C, window=64, k=16.0):
             for e in ids:
                 if t >= a.warm:
                     tot += 1
-                    if e in L['cache'] and (keep_victim or True): hit += 1
+                    if e in L['cache']: hit += 1
             if len(L['recent']) >= window:
                 for e in L['recent'].popleft(): L['win'][e] -= 1
             L['recent'].append(ids)
