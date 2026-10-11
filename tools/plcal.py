@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """plcal.py: find the highest power limit per GPU without throttling drops.
 
-Each iteration runs one short, GPU-heavy request through tools/run.py bench (logged like every run, GPU log on): the pf128k test (a 128k-token prompt)
+Each iteration runs one short, GPU-heavy request through tools/run.py bench (logged like every run, GPU log on): the pf128k test with a cut of its prompt file (about 100k tokens)
 prefilled by a model that loads in seconds, both GPUs busy (split mode tensor). While it runs the 5 Hz GPU log is read live. A GPU is throttling when
   - a thermal / hardware slowdown reason (0x8 HW slowdown, 0x20 SW thermal, 0x40 HW thermal slowdown) is active in >= 2 busy samples in a row, or
   - its SM clock falls below 85% of its own median of the last 10 s in >= 3 busy samples in a row (a transient drop; a steady lower clock from a cap is not a drop).
@@ -57,7 +57,7 @@ def kill_run(proc):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default="280+280"); ap.add_argument("--step", type=int, default=10); ap.add_argument("--floor", type=int, default=150)
-    ap.add_argument("--max-iter", type=int, default=12); ap.add_argument("--ctx", type=int, default=110000)
+    ap.add_argument("--max-iter", type=int, default=12); ap.add_argument("--ctx", type=int, default=131072)
     ap.add_argument("--prompt", default="/p/bw/data/q5h/p100k.txt")
     ap.add_argument("--build", default="stock-b11552-23b0202a1")
     ap.add_argument("--model", default="/m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf")
@@ -76,7 +76,7 @@ def main():
         env = dict(kv.split("=", 1) for kv in envout.split("\0") if "=" in kv)
         env.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", PERF_BUILDS="/p/bw/rels/devbuilds", PERF_LOG="r", PERF_PL_LONG=spec, PERF_PL_SHORT=spec)
         cmd = ["python3", os.path.join(HERE, "run.py"), "bench", "--models", a.model, "--builds", a.build, "--variants", "v",
-               "--variant=v=-sm tensor -ngl 99 -b 4096 -ub 2048 -np 1", "-t", "pf128k", "--tokens", "1", "-n", "1", "--no-probe", "--campaign", camp]
+               "--variant=v=-sm tensor -ngl 99 -b 4096 -ub 2048 -np 1", "-t", "pf128k", "--prompt", "@" + a.prompt, "--ctx", str(a.ctx), "--tokens", "1", "-n", "1", "--no-probe", "--campaign", camp]
         t_start = time.time()
         proc = subprocess.Popen(cmd, env=env, cwd=os.path.dirname(HERE), stdout=open(f"/p/bw/data/q5h/plcal-it{it}.out", "w"), stderr=subprocess.STDOUT, start_new_session=True)
         gfile, pos, hist, bad, thr_clk, thr_th, busy = None, 0, collections.defaultdict(lambda: collections.deque(maxlen=50)), set(), collections.Counter(), collections.Counter(), collections.Counter()
