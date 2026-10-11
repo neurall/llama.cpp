@@ -18,3 +18,13 @@ Engine code stays where the build needs it: `src/llama-moecache-fork.*`, `src/ll
 | `experiments/` | one directory per experiment: README (question, method, tables, decision), scripts, small sample data |
 
 Run everything through `python3 fork/run.py ...` from the repository root.
+
+## Branches
+
+| branch | role |
+|---|---|
+| `master` | exact mirror of upstream `ggml-org/llama.cpp` master, fast-forward only |
+| `main` | upstream plus the fork's patches: the product; releases are tags `release-b<build>-<hash>` on it |
+| `data` | run history (`run-history.csv`, append only) behind the numbers in the README; no code |
+
+Older experiment branches are kept as `archive/<name>` tags only.
