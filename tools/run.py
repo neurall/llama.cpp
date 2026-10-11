@@ -350,6 +350,16 @@ def _server_start_once(build, env, args):
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")]
     elif not build.startswith("stock") and STATE_FILE["v"]:
         env = {**env, "LLAMA_MOE_STATE": STATE_FILE["v"]}   # the first releases (no --moe flag) read the environment variable
+    if not build_has_moe_flag(build, env):   # a build without --moe (stock, the first releases) would not start with it: drop it; autotune=0 becomes the old environment switch
+        out, i = [], 0
+        while i < len(args):
+            if args[i] == "--moe" and i + 1 < len(args):
+                if "autotune=0" in args[i + 1].split(","):
+                    env = {**env, "LLAMA_AUTOTUNE": "0"}
+                i += 2
+            else:
+                out.append(args[i]); i += 1
+        args = out
     args = merge_moe(args)
     logf = f"/tmp/perf-{build}{LOGTAG}.log"
     with open(logf, "w") as lf:
@@ -1789,7 +1799,7 @@ def add_overrides(sub):
 BEST = os.environ.get("PERF_BEST", "/p/bw/rels/best")   # BEST/current -> the frozen copy of the fastest build so far; BEST/history.csv: every change of it
 REGRESS_MODEL = os.environ.get("REGRESS_MODEL", "/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf")
 # 19 of 64 experts per layer (30%) in VRAM: the cache has to work for its speed; no learned state: every run of every build starts the same
-REGRESS_ARGS = os.environ.get("REGRESS_ARGS", "--cpu-moe --moe-expert-cache 19 -t 6 -tb 8")   # learned state: --clean-state below (a fresh state file per build; builds of every age take it)
+REGRESS_ARGS = os.environ.get("REGRESS_ARGS", "--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0")   # knobs pinned: a default change must not mask or fake a speed change; this cell amplifies scheduler regressions (the #29943 merge cost it 15-17%, GLM 9.5%)   # learned state: --clean-state below (a fresh state file per build; builds of every age take it)
 # cells of the check: (model, args, visible GPUs or None for both, runs or None for -n, big). Every MoE model we publish numbers for; restricted caches
 # (30-35% of the experts) on the two small ones so the cache path is what is timed. The verdict is the worst cell. REGRESS_FAST=1: only the small cells.
 _T = " -t 6 -tb 8"
