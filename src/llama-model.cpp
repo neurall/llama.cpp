@@ -1616,7 +1616,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // is bound by the transfer of the experts, compute is faster than the transfer, and a layer owned by a card on a slow link makes the offload card wait for it.
     const char * o_split = llama_moe_get_opt("split");
     bool apply_plan = false;   // use `prefill_plan` as the layer shares
-    if (all_zero && o_split && strcmp(o_split, "bw") == 0 && prefill_plan.empty()) {
+    if (all_zero && o_split && strcmp(o_split, "bw") == 0) {   // overrides the plan above: split=bw is the explicit request (the plan is computed and logged either way)
         bool ok = n_devices() > 1;
         std::vector<float> bw(n_devices(), 0.0f);
         for (size_t i = 0; i < n_devices() && ok; ++i) {
