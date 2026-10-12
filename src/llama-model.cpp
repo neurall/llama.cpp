@@ -1612,9 +1612,27 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         for (const auto & l : plan_log) { LLAMA_LOG_INFO("%s: %s\n", __func__, l.c_str()); }
         for (size_t i = 0; i < prefill_plan.size(); ++i) { LLAMA_LOG_INFO("%s: prefill plan: %s gets %.0f%% of the layers\n", __func__, ggml_backend_dev_name(devices[i].dev), 100.0 * prefill_plan[i]); }
     }
+    // --moe split=bw: the layers follow the upload bandwidth of the cards (pinned host-to-device rate from the per-GPU probe), not their free memory. A prompt pass
+    // is bound by the transfer of the experts, compute is faster than the transfer, and a layer owned by a card on a slow link makes the offload card wait for it.
+    const char * o_split = llama_moe_get_opt("split");
+    bool apply_plan = false;   // use `prefill_plan` as the layer shares
+    if (all_zero && o_split && strcmp(o_split, "bw") == 0 && prefill_plan.empty()) {
+        bool ok = n_devices() > 1;
+        std::vector<float> bw(n_devices(), 0.0f);
+        for (size_t i = 0; i < n_devices() && ok; ++i) {
+            const auto * r = llama_gpu_probe_find_fork(devices[i].dev);
+            ok = r && r->h2d_gbs > 0;
+            if (ok) { bw[i] = (float) r->h2d_gbs; }
+        }
+        if (ok) {
+            for (size_t i = 0; i < n_devices(); ++i) { LLAMA_LOG_INFO("%s: split=bw: %s upload %.1f GB/s\n", __func__, ggml_backend_dev_name(devices[i].dev), bw[i]); }
+            prefill_plan = bw;
+            apply_plan = true;
+        }
+    }
     const char * o_plan = llama_moe_get_opt("prefill-plan");
-    if (all_zero && prefill_plan.size() == n_devices() && o_plan && strcmp(o_plan, "apply") == 0) {
-        LLAMA_LOG_INFO("%s: prefill-plan=apply: layer split from the plan\n", __func__);
+    if (all_zero && prefill_plan.size() == n_devices() && (apply_plan || (o_plan && strcmp(o_plan, "apply") == 0))) {
+        LLAMA_LOG_INFO("%s: layer split from %s\n", __func__, apply_plan ? "the upload bandwidth (split=bw)" : "the prefill plan (prefill-plan=apply)");
         std::vector<float> sp(prefill_plan);
         std::copy(sp.begin(), sp.end(), splits.begin());
     } else if (all_zero) {
