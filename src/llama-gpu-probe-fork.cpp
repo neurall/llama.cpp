@@ -13,8 +13,9 @@
 //   lat_us        median of 64 small (4 KB) synchronous uploads: the fixed cost of one hand-off between two layers on different cards.
 //   layer_us      the compute part, measured by a MINI GRAPH (llama_gpu_probe_layer_fork): the matmuls of one layer of this very model with fake weights of
 //                 the real tensor types and widths (cut to a few hundred rows, no big upload; the routed experts through mul_mat_id with the model's
-//                 number of experts per token) and n fake tokens, looped for 60 ms and the loops counted, so the model's real quantisation kernels measure how
-//                 long a layer takes on each card at sustained clocks, power capping included, and the result is scaled up to the full layer by weight bytes.
+//                 number of experts per token) and n fake tokens, timed as the fastest of three short batches, so the model's real quantisation kernels measure how
+//                 long a layer takes on each card, and the result is scaled up to the full layer by weight bytes. A power cap does not show in a probe this
+//                 short; the measured prefill speed at run time covers it.
 //                 It covers the weight-bound ops; attention over a long context, norms and the scans of hybrid layers are not in it (a small share, and
 //                 the speed of a card relative to the others is what the plan uses).
 //
@@ -125,12 +126,10 @@ double latency_us(ggml_tensor * t, const void * src) {
 
 // Microseconds one layer of the given tensors takes for n_tokens fake tokens on one card.
 // Not the full layer: the weights are the real types and widths but cut to a few hundred rows (a few MB per tensor, no big upload, nothing to fill), the graph
-// is run in a loop until WINDOW_US have passed and the loops are counted, so the time is a sustained one (the clocks settle; the small weights draw less power than a big-weight burst, so a power cap shows less than in the real pass) and
-// the result is microseconds per loop. A compute-bound kernel costs in proportion to the weight bytes it reads per token, so the time of the full layer is
+// is run a few times and the fastest batch is taken (back-calculated per run), so the probe costs milliseconds; it is not a sustained load, so a power cap
+// shows only in the measured prefill speed at run time (measured: x4 card at 220 W reads 6% slower here, 20% slower in a long burst). A compute-bound kernel costs in proportion to the weight bytes it reads per token, so the time of the full layer is
 // the time of a loop times (weight bytes a token touches in the real layer) / (the same in the reduced graph). Experts: only a few are allocated, the cost per
 // token does not depend on the size of the table; mul_mat_id with n_used experts per token as the model does.
-constexpr int64_t WINDOW_US = 60000;
-
 double layer_time_us(ggml_backend_dev_t dev, const std::vector<llama_layer_spec_fork> & specs, int n_used, int n_tokens) {
     ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
     if (!be) { return 0.0; }
@@ -182,15 +181,16 @@ double layer_time_us(ggml_backend_dev_t dev, const std::vector<llama_layer_spec_
             ggml_backend_tensor_set(ids, id.data(), 0, id.size() * sizeof(int32_t));
             for (int i = 0; i < 3; ++i) { ggml_backend_graph_compute(be, gf); }   // kernels, caches and graph set-up: not counted
             ggml_backend_synchronize(be);
-            int64_t loops = 0;
-            const int64_t t0 = ggml_time_us();
-            int64_t t1 = t0;
-            while (t1 - t0 < WINDOW_US) {
-                for (int i = 0; i < 8; ++i) { ggml_backend_graph_compute(be, gf); ++loops; }
+            // the fastest of three short batches: one run of the graph is a fraction of a millisecond, a batch of 4 amortises the synchronisation, and the
+            // fastest batch is the one least disturbed (no window to reach throttled clocks: a power cap is left to the measured prefill speed at run time)
+            double best_us = 1e300;
+            for (int rep = 0; rep < 3; ++rep) {
+                const int64_t t0 = ggml_time_us();
+                for (int i = 0; i < 4; ++i) { ggml_backend_graph_compute(be, gf); }
                 ggml_backend_synchronize(be);
-                t1 = ggml_time_us();
+                best_us = std::min(best_us, (double) (ggml_time_us() - t0) / 4.0);
             }
-            result = (double) (t1 - t0) / (double) loops * (full_bytes / red_bytes);
+            result = best_us * (full_bytes / red_bytes);
         }
     }
     ggml_backend_free(be);
