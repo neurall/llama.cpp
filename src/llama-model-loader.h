@@ -79,6 +79,8 @@ struct llama_model_loader {
     size_t   n_bytes    = 0;
 
     bool use_mmap = false;
+    size_t pin_budget = 0;   // fork: with mmap on, the bytes of tensors that keep the pinned host buffer (--moe pin-budget, set by common when the model does not fit pinned RAM); the rest is mapped
+    size_t pin_used   = 0;
     bool use_direct_io = false;
     bool check_tensors;
     bool no_alloc;

@@ -570,6 +570,7 @@ llama_model_loader::llama_model_loader(
     }
 
     tensor_buft_overrides = param_tensor_buft_overrides_p;
+    if (const char * pb = llama_moe_get_opt("pin-budget")) { pin_budget = (size_t) strtoull(pb, nullptr, 10); }   // fork: bytes that may stay pinned although mmap is on
 
     this->use_mmap      = load_mode == LLAMA_LOAD_MODE_MMAP || load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK || load_mode == LLAMA_LOAD_MODE_AUTO;
     this->use_direct_io = load_mode == LLAMA_LOAD_MODE_DIRECT_IO;
@@ -1281,14 +1282,19 @@ struct ggml_tensor * llama_model_loader::create_tensor(
             }
         }
 
-        // avoid using a host buffer when using mmap
+        // avoid using a host buffer when using mmap, except for as much as the pin budget allows (fork): a model that does not fit pinned RAM is pinned as far as
+        // the RAM and the huge-page pool reach, in tensor order, and the rest is mapped (--moe pin-budget=BYTES, set by common_init_from_params)
         auto * buft_dev = ggml_backend_buft_get_device(buft);
         if (use_mmap && buft_dev && buft == ggml_backend_dev_host_buffer_type(buft_dev)) {
-            auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-            if (!cpu_dev) {
-                throw std::runtime_error("no CPU backend found");
+            if (pin_used + ggml_nbytes(t_meta) <= pin_budget) {
+                pin_used += ggml_nbytes(t_meta);   // this tensor is read into pinned memory
+            } else {
+                auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+                if (!cpu_dev) {
+                    throw std::runtime_error("no CPU backend found");
+                }
+                buft = ggml_backend_dev_buffer_type(cpu_dev);
             }
-            buft = ggml_backend_dev_buffer_type(cpu_dev);
         }
 
         if (buft != buft_list->front().second) {

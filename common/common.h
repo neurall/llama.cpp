@@ -502,6 +502,7 @@ struct common_params {
     bool fork_off         = false; // --fork off: stock behaviour in every respect (no cache, tuning, measuring, auto-pin, thread tuner)
     bool auto_pin         = true;  // auto mode may pin the weights when part of the model stays in host RAM and it fits RAM now (every tool; -lm mmap opts out)
     bool load_pinned_auto = false; // auto mode chose pinned weights (load mode none); falls back to mmap if loading swaps
+    size_t load_pin_budget = 0;    // auto mode, model does not fit pinned RAM: pin this many bytes (in tensor order), the rest is mapped (--moe pin-budget, read by the loader)
 
     enum llama_lazy_mode lazy_mode = LLAMA_LAZY_MODE_AUTO; // on-demand reading of tensors marked by the arch
 

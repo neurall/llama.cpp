@@ -1954,7 +1954,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 // weights cache (GGML_CUDA_HUGEFS): a pinned host buffer is keyed by the model files' identity and the tensor layout inside it
                 int (*host_cache)(int, void *) = nullptr;
                 std::string cache_key;
-                if (getenv("GGML_CUDA_HUGEFS") && !ml.use_mmap && strstr(ggml_backend_buft_name(buft), "Host") != nullptr) {
+                if (getenv("GGML_CUDA_HUGEFS") && (!ml.use_mmap || ml.pin_budget > 0) && strstr(ggml_backend_buft_name(buft), "Host") != nullptr) {   // (mmap with a pin budget: the pinned part of the hybrid)
                     if (auto * reg = ggml_backend_reg_by_name("CUDA")) {
                         host_cache = (int (*)(int, void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_cache");
                     }

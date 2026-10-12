@@ -1856,6 +1856,14 @@ static void common_moe_cache_auto_impl(common_params & params) {
         if (avail && model_size <= avail) {
             params.load_mode        = LLAMA_LOAD_MODE_NONE;
             params.load_pinned_auto = true;
+        } else if (avail) {
+            // the model does not fit pinned RAM: pin as much as the machine can spare, in tensor order, and map the rest. Never the whole model through mmap behind the
+            // user's back. The budget is the reserved huge-page pool (memory nothing else can use) plus the available RAM minus a safety margin for the system.
+            const size_t pool   = avail - common_ram_available(false);
+            const size_t mem    = avail - pool;
+            const size_t margin = (size_t) 4 << 30;
+            params.load_pin_budget = pool + (mem > margin ? mem - margin : 0);
+            llama_moe_set_opt("pin-budget", std::to_string(params.load_pin_budget).c_str());
         }
     }
     if (!params.ubatch_user && common_autotune_on(params)) {
@@ -2097,7 +2105,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     const size_t swapped = params.load_pinned_auto ? common_swap_out_bytes() - swap0 : 0;
     const size_t avail   = params.load_pinned_auto ? common_ram_available() : 0;
     // no silent fallback to mmap: a pinned load that swapped or left little RAM is reported and the run goes on pinned (a different load mode behind the user's back
-    // gave unexplained t/s); a failed load is an error
+    // gave unexplained t/s); a failed load is an error. A model that does not fit is pinned as far as it reaches and the rest is mapped, and the log says how much of each.
     if (params.load_pinned_auto && model != NULL && (swapped > (2ull << 30) || (avail && avail < (512ull << 20)))) {
         LOG_WRN("%s: pinned weights left little RAM (swapped %.1f GiB, %.1f GiB RAM left); NOT falling back to mmap, expect swapping (use -lm mmap to choose mmap)\n", __func__,
             swapped / 1073741824.0, avail / 1073741824.0);
@@ -2108,6 +2116,9 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     if (params.load_pinned_auto) {
         LOG_INF("%s: weights pinned (swapped %.1f GiB while loading, %.1f GiB RAM left)\n", __func__,
             swapped / 1073741824.0, avail / 1073741824.0);
+    } else if (params.load_pin_budget > 0) {
+        LOG_INF("%s: weights pinned as far as they reach: the model does not fit pinned RAM, up to %.1f GiB pinned (in tensor order), the rest mapped (mmap / page cache)\n", __func__,
+            params.load_pin_budget / 1073741824.0);
     } else {
         LOG_INF("%s: weights NOT pinned: mmap / page cache (load mode %s)\n", __func__, llama_load_mode_name(params.load_mode));
     }
