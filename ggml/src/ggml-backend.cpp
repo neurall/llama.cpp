@@ -2066,6 +2066,30 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     static int64_t pb_cpu = 0, pb_gpu = 0, pc_tiny = 0, n_tiny = 0;
     const int64_t p_graph_t0 = prof ? ggml_time_us() : 0;
 
+    // GGML_SCHED_TRACE=<file>: one CSV row per split of every prompt-sized graph (GGML_SCHED_TRACE_ALL=1: every graph), research. Where a pass spends its time,
+    // split by split, in four parts that are separated by synchronising the card after each of them (so the numbers add up, at the price of serialising the
+    // overlap of uploads and compute): gap_us = host time since the previous split ended (launch and scheduling overhead), barrier_us = waiting for the previous
+    // card before the inputs may be touched, copy_us = send and receive: the input copies to this card (activations from the previous card, K/V, weights that
+    // live in host memory, uploads), compute_us = this card's kernels. Columns: graph,split,backend,tokens,nodes,first,last,inputs,in_bytes,host_w_bytes,gap_us,
+    // barrier_us,copy_us,compute_us (first/last = names of the first and last node of the split, which says which layer it is).
+    static FILE * tr_file = [] () -> FILE * {
+        const char * f = getenv("GGML_SCHED_TRACE");
+        if (!f || !*f) { return NULL; }
+        FILE * fp = fopen(f, "a");
+        if (fp && ftell(fp) == 0) { fprintf(fp, "graph,split,backend,tokens,nodes,first,last,inputs,in_bytes,host_w_bytes,gap_us,barrier_us,copy_us,compute_us\n"); }
+        return fp;
+    }();
+    static const bool tr_all = getenv("GGML_SCHED_TRACE_ALL") != NULL;
+    static long tr_graph = 0;
+    int64_t tr_tokens = 0;
+    if (tr_file && sched->n_splits > 0) {
+        const struct ggml_cgraph & lg = splits[sched->n_splits - 1].graph;
+        tr_tokens = lg.n_nodes > 0 ? lg.nodes[lg.n_nodes - 1]->ne[1] : 0;
+    }
+    const bool tracing = tr_file && (tr_all || tr_tokens > 1);
+    int64_t tr_prev_end = 0;
+    if (tracing) { tr_graph++; }
+
     // prefetch overlap: a staged expert tensor of a future split (see ggml_backend_sched_prefetch_target). LOOKAHEAD splits ahead of the one
     // computing, so by the time the consumer starts the upload is done and its wait is a no-op; the slot count must exceed the lookahead.
     static const int LOOKAHEAD = 1;
@@ -2126,6 +2150,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
         const int64_t p_t0 = prof ? ggml_time_us() : 0;
+        const int64_t tr_t0 = tracing ? ggml_time_us() : 0;
         const prefetch_pending * pf = (pf_on && lookahead[split_id].slot != -1) ? &lookahead[split_id] : NULL;
         const bool    p_is_cpu = prof && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU;
 
@@ -2155,6 +2180,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
 
         const int64_t p_tb = prof ? ggml_time_us() : 0;
+        const int64_t tr_tb = tracing ? ggml_time_us() : 0;
         if (prof) {
             (p_is_cpu ? pb_cpu : pb_gpu) += p_tb - p_t0;
         }
@@ -2181,7 +2207,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         for (ggml_backend_t b : d2h_pending) {
             ggml_backend_synchronize(b);
         }
+        if (tracing) { ggml_backend_synchronize(split_backend); }   // the copies have arrived
         const int64_t p_t1 = prof ? ggml_time_us() : 0;
+        const int64_t tr_tc = tracing ? ggml_time_us() : 0;
 
         if (g_split_cb && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
             g_split_cb(split_backend, g_split_ud);
@@ -2254,6 +2282,21 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
                 j0 = j1;
             }
+        }
+
+        if (tracing) {
+            ggml_backend_synchronize(split_backend);   // the kernels are done
+            const int64_t tr_td = ggml_time_us();
+            size_t in_bytes = 0, hw_bytes = 0;
+            for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+                (ggml_backend_sched_is_host_weight(split->inputs[input_id]) ? hw_bytes : in_bytes) += ggml_nbytes(split->inputs[input_id]);
+            }
+            const struct ggml_cgraph & g = split->graph;
+            fprintf(tr_file, "%ld,%d,%s,%lld,%d,%s,%s,%d,%zu,%zu,%lld,%lld,%lld,%lld\n", tr_graph, split_id, ggml_backend_name(split_backend), (long long) tr_tokens, g.n_nodes,
+                    g.n_nodes > 0 ? g.nodes[0]->name : "", g.n_nodes > 0 ? g.nodes[g.n_nodes - 1]->name : "", split->n_inputs, in_bytes, hw_bytes,
+                    (long long) (tr_prev_end ? tr_t0 - tr_prev_end : 0), (long long) (tr_tb - tr_t0), (long long) (tr_tc - tr_tb), (long long) (tr_td - tr_tc));
+            fflush(tr_file);
+            tr_prev_end = tr_td;
         }
 
         // record the event of this split
