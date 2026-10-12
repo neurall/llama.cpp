@@ -452,7 +452,9 @@ llama_context::llama_context(
             model.n_gpu_layers() > model.hparams.n_layer_all &&
             model.split_mode() == LLAMA_SPLIT_MODE_LAYER &&
             cparams.offload_kqv &&
-            !model.has_tensor_overrides();
+            // --moe pipe-stock=1 (research): the stock micro-batch pipeline across the cards although the experts are host-resident (tensor overrides). A prompt of several
+            // micro-batches (-b > -ub) then has card 1 work on micro-batch k+1 while card 2 works on k: the overlap the single-pass traces lack.
+            (!model.has_tensor_overrides() || [] { const char * e = llama_moe_get_opt("pipe-stock"); return e && atoi(e) != 0; }());
 
         // pipeline parallelism requires support for async compute and events in all devices
         if (pipeline_parallel) {
