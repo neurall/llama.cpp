@@ -1637,6 +1637,14 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
         if (ok) {
             for (size_t i = 0; i < n_devices(); ++i) { LLAMA_LOG_INFO("%s: split=bw: %s upload %.1f GB/s\n", __func__, ggml_backend_dev_name(devices[i].dev), bw[i]); }
+            // A card on a slower link also pays for the hand-offs of its layers (activations across, a stream sync that waits for the upload in flight), so its
+            // share of the layers is its share of the bandwidth times `split-slow-scale`. MEASURED CALIBRATION, not a derived constant: x16 (25.8 GB/s) + x4 (6.5 GB/s)
+            // gives a bandwidth share of 20% for the x4; the best prompt speed on GLM (15%: 765.6 prompt t/s vs 740.5 at 20% and 670.8 with the free-memory split)
+            // and on MiMo (15%: 711 vs 579 at 20% and 640 with the free-memory split) is at 15%, i.e. a scale of 0.75. To be replaced by a measured hand-off cost.
+            const char * o_scale = llama_moe_get_opt("split-slow-scale");
+            const float  scale   = o_scale ? (float) atof(o_scale) : 0.75f;
+            const float  bw_max  = *std::max_element(bw.begin(), bw.end());
+            for (size_t i = 0; i < n_devices(); ++i) { if (bw[i] < bw_max) { bw[i] *= scale; } }
             prefill_plan = bw;
             apply_plan = true;
         }
