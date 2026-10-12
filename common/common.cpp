@@ -1861,7 +1861,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     if (!params.ubatch_user && common_autotune_on(params)) {
         uint32_t ub;
         // Experts in RAM: every prompt pass uploads all of them (4.1 s on full GLM 3.0-bit, about 2400 tokens' worth of compute), so a bigger pass amortizes the
-        // upload until the per-token compute starts to rise (full GLM, 12k prompt: 4096 -> 368.9 prompt tokens/s, 8192 -> 458.7, 12288 -> 440.9; compute-only
+        // upload until the per-token compute starts to rise (full models, 12k prompt: GLM 4096 -> 476 prompt tokens/s, 8192 -> 572, 12416 -> 573; MiMo 469 -> 599; compute-only
         // models peak at 2048-4096). The compute alias lends the pool's blocks to the graph, so the big maximum costs no cache while decoding; the per-prompt
         // rule (llama_moe_cache_prefill_ubatch_fork) then splits the prompt into equal passes up to this maximum, and the shrink-to-fit in the context lowers it
         // when the pool cannot lend the graph. Without the alias (--moe alias=0, pool=0, router prediction on) the old chooser below weighs the compute buffer against the cache.
@@ -1869,11 +1869,11 @@ static void common_moe_cache_auto_impl(common_params & params) {
         const char * o_pool  = llama_moe_get_opt("pool");
         const bool   alias_ok = use_cache && params.n_moe_predict <= 0 && (!o_alias || atoi(o_alias) != 0) && (!o_pool || atoi(o_pool) != 0);
         if (alias_ok) {
-            ub = 8192;
-            if (params.n_ctx > 0) {
-                ub = std::max<uint32_t>(512, std::min<uint32_t>(ub, params.n_ctx));
-            }
-            LOG_INF("%s: ubatch %u: experts stream from RAM, the compute alias lends the graph (prompt passes are sized per request, equal passes up to this)\n", __func__, ub);
+            // no fixed size: the best pass differs per model (12.4k prompt, full models: GLM flat from 8192 to 12416, MiMo 12416 +28% over 8192, Qwen3.8 8192).
+            // The maximum is the context; the context's shrink-to-fit halves it until the pool can lend the graph, and the per-prompt rule picks equal passes under it.
+            ub = params.n_ctx > 0 ? params.n_ctx : params.n_batch;
+            ub = std::max<uint32_t>(512, ub);
+            LOG_INF("%s: ubatch %u: experts stream from RAM, the compute alias lends the graph (maximum = context, lowered to what the pool can lend; prompt passes are sized per request)\n", __func__, ub);
         } else {
             ub = common_auto_ubatch(params);
         }
