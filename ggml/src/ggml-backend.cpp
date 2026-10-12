@@ -2118,6 +2118,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             return;
         }
         ggml_backend_t s_backend = sched->backends[s->backend_id];
+        // The lent staging blocks live on one card (the one the expert cache serves). A split of another card (its layers' expert matmuls pinned to it,
+        // --moe expert-owner=1) must not stage through them: its stream would copy into the other card's memory (assert in set_tensor_async), and the
+        // staging stream would have been created for whichever card's split came first. That card's experts take the plain input-copy path.
+        if (sched->prefetch_region_buf != NULL && ggml_backend_buffer_get_type(sched->prefetch_region_buf) != ggml_backend_get_default_buffer_type(s_backend)) {
+            return;
+        }
         if (sched->prefetch_backend != NULL && sched->prefetch_backend->device != s_backend->device) {
             return;   // the staging stream belongs to one device (the one prompt batches are offloaded to)
         }
