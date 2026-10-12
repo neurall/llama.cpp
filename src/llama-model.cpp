@@ -1598,10 +1598,17 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         pm.n_expert = (double) hparams.n_expert;
         pm.n_used   = (double) hparams.n_expert_used_max();
         pm.n_embd   = (double) hparams.n_embd;
+        pm.kv_bytes_token_layer = 2.0 * (double) (hparams.n_embd_k_gqa(0) + hparams.n_embd_v_gqa(0));   // F16 K and V of one token in one layer
         const char * o_tok = llama_moe_get_opt("prefill-plan-tokens");
-        pm.n_tokens = o_tok ? atof(o_tok) : 4096.0;   // the pass size the plan is made for: an input of the model, not a threshold
+        pm.n_tokens = o_tok ? atof(o_tok) : 12288.0;   // the prompt the plan is made for: a reference workload (a long prompt), an input of the model, not a threshold
+        const char * o_pass = llama_moe_get_opt("prefill-plan-pass");
+        pm.pass_tokens = o_pass ? atof(o_pass) : 4096.0;   // tokens per pass (micro-batch) of that reference workload
+        const char * o_tps = llama_moe_get_opt("prefill-plan-tps");
+        pm.fastest_prefill_tps = o_tps ? atof(o_tps) : 0.0;
         std::vector<std::string> plan_log;
-        prefill_plan = llama_prefill_plan_fork(cards, pm, &plan_log);
+        bool same_order = true;   // the subset table is indexed by the probe order: it has to be the device order of the model
+        for (size_t i = 0; i < cards.size(); ++i) { same_order = same_order && cards[i] && cards[i]->index == i; }
+        if (same_order) { prefill_plan = llama_prefill_plan_fork(cards, llama_gpu_probe_conc_fork(), pm, &plan_log); }
         for (const auto & l : plan_log) { LLAMA_LOG_INFO("%s: %s\n", __func__, l.c_str()); }
         for (size_t i = 0; i < prefill_plan.size(); ++i) { LLAMA_LOG_INFO("%s: prefill plan: %s gets %.0f%% of the layers\n", __func__, ggml_backend_dev_name(devices[i].dev), 100.0 * prefill_plan[i]); }
     }

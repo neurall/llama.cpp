@@ -51,6 +51,7 @@ constexpr size_t LAT_BYTES    = 4096;
 
 std::mutex                                                  g_mu;
 std::map<ggml_backend_dev_t, llama_gpu_probe_fork_result>   g_results;
+std::vector<std::vector<double>>                            g_conc;
 
 // pinned host memory when the backend offers it (what the real streamed prefill uploads from), plain memory otherwise
 struct host_buf {
@@ -151,11 +152,12 @@ double compute_wtps(ggml_backend_dev_t dev, const void * host_ptr) {
 
 }  // namespace
 
-std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<ggml_backend_dev_t> & gpus) {
+std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<ggml_backend_dev_t> & gpus, std::vector<std::vector<double>> * conc) {
     std::vector<llama_gpu_probe_fork_result> out(gpus.size());
     // per card, alone: upload, latency, compute
     for (size_t i = 0; i < gpus.size(); ++i) {
         out[i].dev  = gpus[i];
+        out[i].index = i;
         out[i].name = ggml_backend_dev_name(gpus[i]);
         host_buf h(gpus[i], PROBE_BYTES);
         dev_ctx c(0);
@@ -167,11 +169,16 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
         }
         out[i].wtps = compute_wtps(gpus[i], h.ptr);
     }
-    // all cards at once: every thread uploads in a loop after a common start, bandwidth = its bytes over its own time
-    if (gpus.size() > 1) {
+    // every subset of cards uploading at once (and the singles alone): each member's rate = its bytes over its own time after a common start. Cards behind one
+    // root complex or the chipset uplink slow each other down; the subset table is what the plan reads to see what a card steals from the others.
+    const size_t n = gpus.size();
+    if (conc) { conc->assign((size_t) 1 << n, std::vector<double>(n, 0.0)); }
+    for (unsigned mask = 1; mask < ((unsigned) 1 << n); ++mask) {
+        std::vector<double> rate(n, 0.0);
         std::atomic<bool> go{false};
         std::vector<std::thread> th;
-        for (size_t i = 0; i < gpus.size(); ++i) {
+        for (size_t i = 0; i < n; ++i) {
+            if (!(mask >> i & 1)) { continue; }
             th.emplace_back([&, i] {
                 host_buf h(gpus[i], PROBE_BYTES);
                 dev_ctx c(0);
@@ -182,18 +189,24 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
                 const int reps = 6;
                 const int64_t t0 = ggml_time_us();
                 for (int r = 0; r < reps; ++r) { ggml_backend_tensor_set(big, h.ptr, 0, PROBE_BYTES); }
-                out[i].h2d_conc_gbs = (double) PROBE_BYTES * reps / 1e3 / (double) std::max<int64_t>(1, ggml_time_us() - t0);
+                rate[i] = (double) PROBE_BYTES * reps / 1e3 / (double) std::max<int64_t>(1, ggml_time_us() - t0);
             });
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));   // let every thread reach the barrier
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));   // let every thread reach the barrier
         go.store(true);
         for (auto & t : th) { t.join(); }
-    } else if (!out.empty()) {
-        out[0].h2d_conc_gbs = out[0].h2d_gbs;
+        if (conc) { (*conc)[mask] = rate; }
+        if (mask == ((unsigned) 1 << n) - 1) { for (size_t i = 0; i < n; ++i) { out[i].h2d_conc_gbs = rate[i]; } }
     }
+    if (n == 1) { out[0].h2d_conc_gbs = out[0].h2d_gbs; }
     std::lock_guard<std::mutex> lk(g_mu);
     for (const auto & r : out) { g_results[r.dev] = r; }
+    if (conc) { g_conc = *conc; }
     return out;
+}
+
+const std::vector<std::vector<double>> & llama_gpu_probe_conc_fork() {
+    return g_conc;
 }
 
 const llama_gpu_probe_fork_result * llama_gpu_probe_find_fork(ggml_backend_dev_t dev) {
@@ -202,83 +215,155 @@ const llama_gpu_probe_fork_result * llama_gpu_probe_find_fork(ggml_backend_dev_t
     return it == g_results.end() ? nullptr : &it->second;
 }
 
-std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_probe_fork_result *> & cards, const llama_prefill_model_fork & m, std::vector<std::string> * log) {
+std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_probe_fork_result *> & cards, const std::vector<std::vector<double>> & conc,
+                                           const llama_prefill_model_fork & m, std::vector<std::string> * log) {
     const size_t n = cards.size();
     if (n < 2 || n > 8 || m.n_layer <= 0 || m.n_tokens <= 0) { return {}; }
     for (const auto * c : cards) {
         if (!c || c->h2d_gbs <= 0 || c->wtps <= 0) { return {}; }
     }
-    const double L   = m.n_layer;
-    const double N   = std::max(1.0, m.n_expert);
-    const double k   = std::min(N, std::max(0.0, m.n_used));
-    // bytes a pass uploads per layer: the experts that at least one of its tokens touches (a dense model has none)
-    const double up_b  = m.expert_bytes_layer * (1.0 - std::pow(1.0 - k / N, m.n_tokens));
-    // weight bytes a token reads per layer: the dense part and the experts it uses
-    const double act_b = m.dense_bytes_layer + m.expert_bytes_layer * k / N;
+    const double L = m.n_layer;
+    const double N = std::max(1.0, m.n_expert);
+    double fastest_wtps = 0.0;
+    for (const auto * c : cards) { fastest_wtps = std::max(fastest_wtps, c->wtps); }
+    const double k = std::min(N, std::max(0.0, m.n_used));
     auto say = [&](const std::string & s) { if (log) { log->push_back(s); } };
-    char buf[320];
+    char buf[400];
+    auto has = [](unsigned mask, size_t i) { return (mask >> i & 1u) != 0; };
+    auto members = [&](unsigned mask) { std::vector<size_t> v; for (size_t i = 0; i < n; ++i) { if (has(mask, i)) { v.push_back(i); } } return v; };
+    // upload rate of card i while exactly the cards of `mask` upload: measured (subset table) when present, else the all-cards rate
+    auto rate = [&](unsigned mask, size_t i) {
+        if (mask < conc.size() && i < conc[mask].size() && conc[mask][i] > 0) { return conc[mask][i]; }
+        return members(mask).size() > 1 && cards[i]->h2d_conc_gbs > 0 ? cards[i]->h2d_conc_gbs : cards[i]->h2d_gbs;
+    };
+    // the layers each card owns in the decode layout: the layers of a card that is left out of the prefill have to be computed by the others
+    std::vector<double> own(n, 1.0 / (double) n);
+    if (m.owner_share.size() == n) { own = m.owner_share; }
 
+    // Modelled time in microseconds of a prompt of n_tok tokens on the cards of `mask`. The prompt runs in p = ceil(n_tok / pass) passes and consecutive
+    // passes are pipelined over the cards (ggml_backend_sched pipeline parallelism). A card's stage time for one pass is its share of the layers times
+    // the larger of its compute and its upload time per layer (uploads run ahead of the compute, so they overlap). With p passes
+    //     T = sum of the stage times (the first pass walks through every card)  +  (p - 1) x the slowest stage  +  hand-offs
+    // so one pass is sequential and extra cards cannot help beyond their link, while many passes make the slowest stage the limit and the best shares
+    // equalise the stage times. On top comes what leaving the other cards out costs: their dense weights have to be on the cards that compute their layers
+    // (one copy from host per prompt) and the K/V their layers produce has to reach the owning card afterwards. Shares go to `share` (size n, 0 for non-members).
+    auto solve = [&](unsigned mask, double n_tok, std::vector<double> * share) -> double {
+        const auto idx = members(mask);
+        const double pass_tok = m.pass_tokens > 0 ? std::min(n_tok, m.pass_tokens) : n_tok;
+        const double p        = std::ceil(n_tok / pass_tok);
+        const double up_b  = m.expert_bytes_layer * (1.0 - std::pow(1.0 - k / N, pass_tok));   // experts a pass touches per layer (a dense model has none)
+        const double act_b = m.dense_bytes_layer + m.expert_bytes_layer * k / N;               // weight bytes one token reads per layer
+        std::vector<double> a(idx.size());                                                      // microseconds per layer of one pass: max(compute, upload)
+        double best_bw = 0.0;
+        for (size_t j = 0; j < idx.size(); ++j) {
+            const double bw = rate(mask, idx[j]);
+            best_bw = std::max(best_bw, bw);
+            const double u = up_b / (bw * 1e3);
+            // Compute per layer of one pass. Only the SPEED OF A CARD RELATIVE TO THE FASTEST is taken from the probe (the same kernel runs on every card, so the
+            // ratio is robust); the absolute scale is the fastest card's real prefill speed on this model when it is known, because a synthetic kernel
+            // does not reflect the real prefill kernels well enough to say whether a pass is compute-bound or link-bound
+            const double rel = cards[idx[j]]->wtps / fastest_wtps;
+            const double c = (m.fastest_prefill_tps > 0 ? pass_tok / (m.fastest_prefill_tps * rel * L) : act_b * pass_tok / cards[idx[j]]->wtps) * 1e6;
+            a[j] = L * std::max(u, c);
+        }
+        double hand = 0.0;   // one hand-off per boundary and pass: the fixed latency plus the pass's activations crossing the slower link
+        for (size_t j = 0; j + 1 < idx.size(); ++j) {
+            const auto * x = cards[idx[j]]; const auto * y = cards[idx[j + 1]];
+            const double bw = std::max(1e-3, std::min(x->h2d_gbs, y->h2d_gbs));
+            hand += p * (std::max(x->lat_us, y->lat_us) + pass_tok * m.n_embd * 4.0 / (bw * 1e3));
+        }
+        // for a bound M on the slowest stage a card takes at most M / a_j of the layers; the sum of the stage times is smallest when the cheapest card
+        // is filled first (fractional knapsack; cards with equal cost share the layers in proportion to their cap); T(M) = chain(M) + (p - 1) M is
+        // convex in M, so a ternary search finds the best M
+        auto eval = [&](double M, std::vector<double> * sh) -> double {
+            std::vector<double> cap(idx.size());
+            double cap_sum = 0.0;
+            for (size_t j = 0; j < idx.size(); ++j) { cap[j] = std::min(1.0, M / a[j]); cap_sum += cap[j]; }
+            if (cap_sum < 1.0 - 1e-12) { return 1e300; }
+            std::vector<size_t> ord(idx.size());
+            for (size_t j = 0; j < ord.size(); ++j) { ord[j] = j; }
+            std::sort(ord.begin(), ord.end(), [&](size_t x, size_t y) { return a[x] < a[y]; });
+            if (sh) { sh->assign(idx.size(), 0.0); }
+            double rest = 1.0, chain = 0.0;
+            for (size_t g = 0; g < ord.size() && rest > 1e-15; ) {
+                size_t e = g;
+                double gcap = 0.0;
+                while (e < ord.size() && a[ord[e]] <= a[ord[g]] * (1.0 + 1e-9)) { gcap += cap[ord[e]]; ++e; }
+                const double take = std::min(gcap, rest);
+                for (size_t q = g; q < e; ++q) {
+                    const double part = gcap > 0 ? take * cap[ord[q]] / gcap : 0.0;
+                    chain += part * a[ord[q]];
+                    if (sh) { (*sh)[ord[q]] = part; }
+                }
+                rest -= take;
+                g = e;
+            }
+            return chain + (p - 1.0) * M;
+        };
+        double inv = 0.0, amin = 1e300;
+        for (double x : a) { inv += 1.0 / x; amin = std::min(amin, x); }
+        double lo = 1.0 / inv, hi = amin;
+        for (int it = 0; it < 100; ++it) {
+            const double m1 = lo + (hi - lo) / 3.0, m2 = hi - (hi - lo) / 3.0;
+            if (eval(m1, nullptr) <= eval(m2, nullptr)) { hi = m2; } else { lo = m1; }
+        }
+        std::vector<double> sh;
+        const double t_pass = eval(0.5 * (lo + hi), &sh) + hand;
+        double setup = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            if (has(mask, i)) { continue; }
+            setup += own[i] * L * m.dense_bytes_layer / (best_bw * 1e3);                                                              // dense weights to the cards in `mask`
+            setup += own[i] * L * m.kv_bytes_token_layer * n_tok / (std::max(1e-3, std::min(cards[i]->h2d_gbs, best_bw)) * 1e3);   // K/V back to the owner
+        }
+        if (share) { share->assign(n, 0.0); for (size_t j = 0; j < idx.size(); ++j) { (*share)[idx[j]] = sh[j]; } }
+        return t_pass + setup;
+    };
+
+    // the best subset for the pass size of the plan; fewer cards first, so a tie keeps the smaller set
     double best_t = 1e300;
     unsigned best_mask = 0;
     std::vector<double> best_share;
-    for (size_t size = 1; size <= n; ++size) {              // fewer cards first: a tie keeps the smaller set
+    for (size_t size = 1; size <= n; ++size) {
         for (unsigned mask = 1; mask < (1u << n); ++mask) {
-            size_t bits = 0;
-            for (size_t i = 0; i < n; ++i) { bits += mask >> i & 1; }   // (no __builtin_popcount: the MSVC build)
-            if (bits != size) { continue; }
-            std::vector<size_t> idx;
-            for (size_t i = 0; i < n; ++i) { if (mask >> i & 1) { idx.push_back(i); } }
-            const bool conc = idx.size() > 1;
-            std::vector<double> u(idx.size()), c(idx.size());   // microseconds per layer: upload, compute
-            double hand = 0.0;
-            for (size_t j = 0; j < idx.size(); ++j) {
-                const auto * r = cards[idx[j]];
-                const double bw = conc && r->h2d_conc_gbs > 0 ? r->h2d_conc_gbs : r->h2d_gbs;
-                u[j] = up_b / (bw * 1e3);
-                c[j] = act_b * m.n_tokens / r->wtps * 1e6;
-            }
-            // one hand-off per boundary: the fixed latency plus the activations of the whole pass crossing the slower link
-            for (size_t j = 0; j + 1 < idx.size(); ++j) {
-                const auto * a = cards[idx[j]]; const auto * b = cards[idx[j + 1]];
-                const double bw = std::max(1e-3, std::min(a->h2d_gbs, b->h2d_gbs));
-                hand += std::max(a->lat_us, b->lat_us) + m.n_tokens * m.n_embd * 4.0 / (bw * 1e3);
-            }
-            // smallest T for which shares exist: every card takes at most T / (layers x its upload time) of the layers (its link finishes in T),
-            // the shares add up to 1, and the sequential compute plus hand-offs fits in T; the compute chain is minimised by filling the cheapest
-            // card first (fractional knapsack)
-            std::vector<size_t> by_c(idx.size());
-            for (size_t j = 0; j < by_c.size(); ++j) { by_c[j] = j; }
-            std::sort(by_c.begin(), by_c.end(), [&](size_t x, size_t y) { return c[x] < c[y]; });
-            auto fill = [&](double T, std::vector<double> * share) -> bool {
-                double cap_sum = 0.0, rest = 1.0, chain = hand;
-                std::vector<double> cap(idx.size());
-                for (size_t j = 0; j < idx.size(); ++j) { cap[j] = u[j] > 0 ? std::min(1.0, T / (L * u[j])) : 1.0; cap_sum += cap[j]; }
-                if (cap_sum < 1.0) { return false; }
-                if (share) { share->assign(idx.size(), 0.0); }
-                for (size_t j : by_c) {
-                    const double take = std::min(cap[j], rest);
-                    chain += take * L * c[j];
-                    rest -= take;
-                    if (share) { (*share)[j] = take; }
-                }
-                return chain <= T;
-            };
-            double lo = 0.0, hi = 1e15;
-            for (int it = 0; it < 90; ++it) {
-                const double mid = 0.5 * (lo + hi);
-                if (fill(mid, nullptr)) { hi = mid; } else { lo = mid; }
-            }
-            std::vector<double> share;
-            fill(hi, &share);
-            snprintf(buf, sizeof buf, "prefill plan: cards %u -> modelled pass %.0f ms", mask, hi / 1e3);
+            if (members(mask).size() != size) { continue; }
+            std::vector<double> sh;
+            const double t = solve(mask, m.n_tokens, &sh);
+            snprintf(buf, sizeof buf, "prefill plan: cards %u -> modelled pass %.0f ms", mask, t / 1e3);
             say(buf);
-            if (hi < best_t) {
-                best_t = hi; best_mask = mask;
-                best_share.assign(n, 0.0);
-                for (size_t j = 0; j < idx.size(); ++j) { best_share[idx[j]] = share[j]; }
-            }
+            if (t < best_t) { best_t = t; best_mask = mask; best_share = sh; }
         }
     }
+
+    // The accounting per card, at the prompt size of the plan. For a card in the chosen set: the upload bandwidth it brings and the bandwidth it takes away from
+    // the others (measured with the subset table), what it saves per prompt token, and the prompt sizes (powers of two, tokens) for which the set with the card
+    // is faster than the set without it. For a card left out: the prompt sizes for which including it would be faster. The range has two ends because a card
+    // pays back only when the prompt is long enough for its fixed costs and short enough for the pipeline not to be compute-bound.
+    auto helps_range = [&](unsigned with, unsigned without) -> std::string {
+        double first = -1, last = -1;
+        for (double t = 1.0; t <= 16777216.0; t *= 2.0) {
+            if (solve(with, t, nullptr) < solve(without, t, nullptr)) { if (first < 0) { first = t; } last = t; }
+        }
+        if (first < 0) { return "never"; }
+        char b2[64];
+        snprintf(b2, sizeof b2, "%.0f to %.0f tokens", first, last);
+        return b2;
+    };
+    for (size_t i = 0; i < n; ++i) {
+        if (has(best_mask, i)) {
+            if (members(best_mask).size() < 2) { continue; }
+            const unsigned rest = best_mask & ~(1u << i);
+            double stolen = 0.0;
+            for (size_t j : members(rest)) { stolen += rate(rest, j) - rate(best_mask, j); }
+            const double gain = (solve(rest, m.n_tokens, nullptr) - solve(best_mask, m.n_tokens, nullptr)) / m.n_tokens;
+            snprintf(buf, sizeof buf, "prefill plan: %s brings %.1f GB/s, takes %.1f GB/s from the other cards, saves %.1f us per token, helps for prompts of %s",
+                     cards[i]->name.c_str(), rate(best_mask, i), stolen, gain, helps_range(best_mask, rest).c_str());
+        } else {
+            snprintf(buf, sizeof buf, "prefill plan: %s is left out; including it would help for prompts of %s",
+                     cards[i]->name.c_str(), helps_range(best_mask | (1u << i), best_mask).c_str());
+        }
+        say(buf);
+    }
+    say(m.fastest_prefill_tps > 0 ? "prefill plan: compute scale from the measured prefill speed of the fastest card" : "prefill plan: compute scale estimated from the synthetic probe (set --moe prefill-plan-tps=N, the fastest card's prefill tokens/s, to calibrate)");
     std::vector<float> out(n);
     for (size_t i = 0; i < n; ++i) { out[i] = (float) best_share[i]; }
     snprintf(buf, sizeof buf, "prefill plan: chosen cards %u, modelled pass %.0f ms for %.0f tokens", best_mask, best_t / 1e3, m.n_tokens);
