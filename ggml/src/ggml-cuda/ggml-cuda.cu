@@ -3087,6 +3087,10 @@ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tens
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
 
+    if (buf->buft != ggml_backend_cuda_buffer_type(cuda_ctx->device)) {
+        // says which tensor went to which card (a prompt batch with the expert matmuls pinned to the layers' owners broke here)
+        GGML_LOG_ERROR("%s: tensor '%s' is in buffer type %s, the stream belongs to %s\n", __func__, tensor->name, ggml_backend_buft_name(buf->buft), cuda_ctx->name.c_str());
+    }
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
     ggml_cuda_h2d_pace(cuda_ctx->device, size);
