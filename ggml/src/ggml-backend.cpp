@@ -2220,6 +2220,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
     }
 
+    // GGML_SCHED_COPY_AHEAD=0 turns off. Inputs (not weights) of split i+1 that come from other cards are copied BEFORE split i is launched, when split i+1 is on
+    // another GPU and does not consume anything split i computes. A cross-card copy waits for an event recorded on the SOURCE card at the moment of the copy, i.e.
+    // behind everything queued there by then: the two expert chains of the multi-GPU prompt split (both fed by the same hidden state and id masks from the
+    // attention part) were serialised by it, whichever went first (nsys, GLM 8k: the second chain started when the first ended, plus the hop). Copied before the
+    // first chain is launched, the event sits right after the attention part and both chains start together.
+    static const bool copy_ahead = !(getenv("GGML_SCHED_COPY_AHEAD") && atoi(getenv("GGML_SCHED_COPY_AHEAD")) == 0);
+    std::vector<char> ahead_done(sched->n_splits, 0);
     for (int split_id = 0; split_id < sched->n_splits; split_id++) {
         struct ggml_backend_sched_split * split = &splits[split_id];
         int split_backend_id = split->backend_id;
@@ -2263,7 +2270,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         // copy the input tensors to the split backend
         // the weights in host memory are copied last, so that the copy callback can read the other inputs of the split
         std::vector<ggml_backend_t> d2h_pending;
-        for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+        for (int input_id = 0; input_id < split->n_inputs && !ahead_done[split_id]; input_id++) {
             if (pf && split->inputs[input_id] == pf->input) {
                 continue;   // staged by the prefetch
             }
@@ -2281,6 +2288,29 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
         for (ggml_backend_t b : d2h_pending) {
             ggml_backend_synchronize(b);
+        }
+        if (copy_ahead && !sched->callback_eval && split_id + 1 < sched->n_splits && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+            struct ggml_backend_sched_split * nx = &splits[split_id + 1];
+            ggml_backend_t nx_backend = sched->backends[nx->backend_id];
+            if (nx->backend_id != split_backend_id && !ahead_done[split_id + 1] &&
+                    ggml_backend_dev_type(ggml_backend_get_device(nx_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+                bool dep = false;   // does the next split read something this split computes?
+                for (int i = 0; i < nx->n_inputs && !dep; i++) {
+                    for (int j = 0; j < split->graph.n_nodes; j++) {
+                        if (split->graph.nodes[j] == nx->inputs[i]) { dep = true; break; }
+                    }
+                }
+                if (!dep) {
+                    std::vector<ggml_backend_t> nx_d2h;
+                    for (int i = 0; i < nx->n_inputs; i++) {
+                        if (!ggml_backend_sched_is_host_weight(nx->inputs[i])) {
+                            ggml_backend_sched_copy_input(sched, nx, nx->inputs[i], nx_d2h);
+                        }
+                    }
+                    for (ggml_backend_t b2 : nx_d2h) { ggml_backend_synchronize(b2); }
+                    ahead_done[split_id + 1] = 1;
+                }
+            }
         }
         if (tracing) { ggml_backend_synchronize(split_backend); }   // the copies have arrived
         const int64_t p_t1 = prof ? ggml_time_us() : 0;
