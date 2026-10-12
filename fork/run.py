@@ -1178,8 +1178,48 @@ def wait_vram_free():
                              capture_output=True, text=True).stdout.split()
         out = [x for x in out if x.isdigit()]   # no GPU, or an nvidia-smi that fails: nothing to wait for
         if not out or max(int(x) for x in out) < 500 + int(os.environ.get("PERF_HOLD_MB", 0)):  # PERF_HOLD_MB: VRAM a holder process keeps on purpose (simulated smaller card)
+            wait_host_free()
             return
         time.sleep(1)
+
+
+def wait_host_free(limit_s=900):
+    """the host side of 'the machine is free': a 100 GB model process needs a while to unmap its memory after it was told to stop, and the next load must not start into
+    that (swap, a stalled cudaHostRegister: PIN_STALL, ssh crawling). Waits until no llama process is left (they are not killed here: wait_vram_free already did that
+    for the stale ones), no process holds more than PERF_BIG_RSS_GB (default 8) of resident memory, and MemAvailable is at least PERF_MIN_AVAIL_GB (default 8).
+    The hugepage pool is reserved separately and persists on purpose, it is not counted. Gives up (with a message, the run goes on) after limit_s."""
+    big, need = int(os.environ.get("PERF_BIG_RSS_GB", 8)), int(os.environ.get("PERF_MIN_AVAIL_GB", 8))
+    t0, why = time.time(), ""
+    while time.time() - t0 < limit_s:
+        why = ""
+        me = os.getpid()
+        for d in os.listdir("/proc"):
+            if not d.isdigit() or int(d) == me:
+                continue
+            try:
+                st = open(f"/proc/{d}/stat").read()
+                comm = st[st.index("(") + 1:st.rindex(")")]
+                state = st[st.rindex(")") + 2:].split()[0]
+                if state == "Z":
+                    continue
+                if comm.startswith("llama-"):
+                    why = f"{comm} (pid {d}) is still alive"
+                    break
+                rss_gb = int(st[st.rindex(")") + 2:].split()[21]) * os.sysconf("SC_PAGE_SIZE") / 2**30
+                if rss_gb > big:
+                    why = f"{comm} (pid {d}) holds {rss_gb:.0f} GiB"
+                    break
+            except Exception:
+                continue
+        if not why:
+            avail = int(re.search(r"MemAvailable:\s+(\d+)", open("/proc/meminfo").read()).group(1)) // 1048576
+            if avail < need:
+                why = f"only {avail} GiB of RAM available"
+        if not why:
+            time.sleep(5)   # freed memory comes back to the system a moment after the process is gone
+            return
+        time.sleep(2)
+    print(f"wait_host_free: not free after {limit_s} s ({why}); going on", flush=True)
 
 
 def fail_reason(build, n=3):
