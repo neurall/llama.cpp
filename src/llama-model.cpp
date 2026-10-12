@@ -1616,7 +1616,18 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // is bound by the transfer of the experts, compute is faster than the transfer, and a layer owned by a card on a slow link makes the offload card wait for it.
     const char * o_split = llama_moe_get_opt("split");
     bool apply_plan = false;   // use `prefill_plan` as the layer shares
-    if (all_zero && o_split && strcmp(o_split, "bw") == 0) {   // overrides the plan above: split=bw is the explicit request (the plan is computed and logged either way)
+    // default ON: measured on GLM (x16 + x4 card), the layers split by upload rate (x4 holds ~20%) beat the free-memory split (x4 holds ~48%) at 1.6k tokens
+    // (4819 vs 5138 ms) and at 12k (748 vs 679 prompt t/s) with decode not slower; --moe split=mem keeps the free-memory split
+    // The default needs the model to stream: when the whole model fits in the cards' free memory the experts live in VRAM and the memory split is the right one
+    // (a card on a slow link holds its share of the weights anyway, nothing is uploaded per pass). Dense (non-MoE) models never stream, so they keep it too.
+    bool bw_default = false;
+    if (!o_split && all_zero && n_devices() > 1 && hparams.n_expert > 1) {
+        double model_b = 0.0, free_b = 0.0;
+        for (const auto & kv : ml.weights_map) { if (kv.second.tensor) { model_b += (double) ggml_nbytes(kv.second.tensor); } }
+        for (size_t i = 0; i < n_devices(); ++i) { size_t f, t; ggml_backend_dev_memory(devices[i].dev, &f, &t); free_b += (double) f; }
+        bw_default = model_b > 0.9 * free_b;
+    }
+    if (all_zero && ((!o_split && bw_default) || (o_split && strcmp(o_split, "bw") == 0))) {   // overrides the plan above: split=bw is the explicit request (the plan is computed and logged either way)
         bool ok = n_devices() > 1;
         std::vector<float> bw(n_devices(), 0.0f);
         for (size_t i = 0; i < n_devices() && ok; ++i) {
