@@ -2131,7 +2131,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             pfs_why[why]++;
             static const bool pf_dump = getenv("GGML_PF_STATS") && atoi(getenv("GGML_PF_STATS")) >= 2;
             static int dumped = 0;
-            if (pf_dump && (why == 2 || why == 3) && s->graph.n_nodes > 2 && dumped < 12) {
+            if (pf_dump && (why == 2 || why == 3) && s->graph.n_nodes > 2 && dumped < 14 && sched->n_splits > 100 && sched->n_splits < 160) {
                 dumped++;
                 GGML_LOG_WARN("pf-dump: split %d on %s, why %d, %d nodes, %d inputs; nodes:", target_id, ggml_backend_name(sched->backends[s->backend_id]), why, s->graph.n_nodes, s->n_inputs);
                 for (int i = 0; i < s->graph.n_nodes && i < 6; i++) {
@@ -2379,10 +2379,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
     }
 
-    if (pf_stats && pfs_fired + pfs_why[1] + pfs_why[2] + pfs_why[3] + pfs_why[4] + pfs_why[5] + pfs_card + pfs_dev + pfs_prep > 20) {
-        GGML_LOG_WARN("pf-stats: %d splits, prefetch fired for %d; not staged: no inputs %d, first node not MUL_MAT_ID %d, weight not an input %d, weight not host-resident %d, few ids %d, "
-                "region on another card %d, staging stream on another card %d, no slots %d%s\n", sched->n_splits, pfs_fired, pfs_why[1], pfs_why[2], pfs_why[3], pfs_why[4], pfs_why[5],
-                pfs_card, pfs_dev, pfs_prep, pfs_off ? "  [prefetch is OFF for this graph]" : "");
+    if (pf_stats && sched->n_splits >= 30) {
+        const struct ggml_cgraph & lg = splits[sched->n_splits - 1].graph;
+        const long long n_tok = lg.n_nodes > 0 ? (long long) lg.nodes[lg.n_nodes - 1]->ne[1] : 0;
+        GGML_LOG_WARN("pf-stats (%lld tokens, %d slots, prefetch %s): %d splits, prefetch fired for %d; not staged: no inputs %d, first node not MUL_MAT_ID %d, weight not an input %d, "
+                "weight not host-resident %d, few ids %d, region on another card %d, staging stream on another card %d, no slots %d\n",
+                n_tok, sched->prefetch_n_slots, pf_on ? "on" : "OFF", sched->n_splits, pfs_fired, pfs_why[1], pfs_why[2], pfs_why[3], pfs_why[4], pfs_why[5],
+                pfs_card, pfs_dev, pfs_prep);
     }
 
     return GGML_STATUS_SUCCESS;
