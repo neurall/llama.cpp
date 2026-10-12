@@ -2635,13 +2635,13 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
         if (base > cap) {
             fit.graph = false;
         }
-        if (ap.dev == mc->link_dev[0]) {
+        {
             // A staging slot holds one whole expert tensor. The scheduler only knows its slot size once a prompt batch has been computed, so at reserve time it
             // says 0 and the slots looked free: the micro-batch was never shrunk for them, and the real prompt graph then found no room, ran WITHOUT prefetch and
             // paid its whole upload on top of the compute (GLM 12k, one x16: 649 prompt t/s at the auto micro-batch, 769 at 8192 where the slots fit; nsys: 0% of the copy
             // time hidden behind kernels). Until the scheduler knows, the largest expert tensor of the model is the slot size.
-            size_t slot_b = ggml_backend_sched_prefetch_slot_bytes(sched);
-            if (slot_b == 0) {
+            size_t slot_b = ggml_backend_sched_prefetch_slot_bytes_dev(sched, ap.dev);   // 0 for a card that runs no staged expert matmul in this graph
+            if (slot_b == 0 && ap.dev == mc->link_dev[0]) {
                 for (const auto & l : mc->layers) {
                     for (const ggml_tensor * t : { l.pub.up_src, l.pub.gate_src, l.pub.down_src }) {
                         if (t) { slot_b = std::max(slot_b, GGML_PAD(ggml_nbytes(t), 256)); }
@@ -2712,20 +2712,19 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         // after the graph and its scratch; only on the GPU that prompt batches are offloaded to
         size_t stage = 0;
         const size_t stage_off = GGML_PAD(peak_al + scratch, 256);
-        if (ap.dev == mc->link_dev[0]) {
-            stage = ggml_backend_sched_prefetch_slot_bytes(sched) * (size_t) std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
-        }
+        // every card that runs staged expert matmuls in this graph gets its slots from its own pool (the multi-GPU prompt split runs half of the experts on each card)
+        stage = ggml_backend_sched_prefetch_slot_bytes_dev(sched, ap.dev) * (size_t) std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
         const int32_t need_all = std::min<int32_t>(ap.n, (int32_t) ((stage_off + stage + ap.B - 1) / ap.B));
         ap.want = need_all;
         if (ap.cuda_dev >= 0) {
             scratch_fn(ap.cuda_dev, scratch > 0 ? (char *) ggml_backend_buffer_get_base(ap.buf) + peak_al : nullptr, scratch);
         }
-        if (ap.dev == mc->link_dev[0]) {
-            // the staging slots come only from lent blocks: if the class cannot lend them, this graph runs without prefetch (never a new buffer)
+        {
+            // the staging slots come only from lent blocks: if the class cannot lend them, this card's splits of this graph run without prefetch (never a new buffer)
             if (stage > 0 && (size_t) need_all * ap.B >= stage_off + stage) {
-                ggml_backend_sched_set_prefetch_region(sched, ap.buf, stage_off, stage, true);
+                ggml_backend_sched_set_prefetch_region_dev(sched, ap.dev, ap.buf, stage_off, stage, true);
             } else {
-                ggml_backend_sched_set_prefetch_region(sched, nullptr, 0, 0, true);
+                ggml_backend_sched_set_prefetch_region_dev(sched, ap.dev, nullptr, 0, 0, true);
             }
         }
         const int32_t need = need_all;

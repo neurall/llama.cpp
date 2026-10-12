@@ -392,6 +392,10 @@ extern "C" {
     GGML_API int    ggml_backend_sched_get_prefetch_experts_slots(ggml_backend_sched_t sched);
     // fork: bytes of one staging slot for the current graph (0: nothing is staged)
     GGML_API size_t ggml_backend_sched_prefetch_slot_bytes(ggml_backend_sched_t sched);
+    // fork: the same for the splits of one card (0 when the card runs no staged expert matmul in the current graph)
+    GGML_API size_t ggml_backend_sched_prefetch_slot_bytes_dev(ggml_backend_sched_t sched, ggml_backend_dev_t dev);
+    // fork: lend staging slots of card `dev`: ranges of `buffer` from offset, capacity bytes (NULL = allocate); one call per card
+    GGML_API void   ggml_backend_sched_set_prefetch_region_dev(ggml_backend_sched_t sched, ggml_backend_dev_t dev, ggml_backend_buffer_t buffer, size_t offset, size_t capacity, bool only);
     // fork: staging slots are ranges of `buffer` the host owns (offset, capacity bytes); buffer == NULL: the scheduler allocates them
     GGML_API void   ggml_backend_sched_set_prefetch_region(ggml_backend_sched_t sched, ggml_backend_buffer_t buffer, size_t offset, size_t capacity, bool only);
 
