@@ -1,0 +1,20 @@
+0.00.000.212 I srv  llama_server: initializing ...
+0.00.037.794 E ggml_cuda_init: failed to initialize CUDA: system has unsupported display driver / cuda driver combination
+0.00.043.752 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.044.916 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.046.647 I srv    load_model: loading model '/m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf'
+0.00.924.001 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.05.562.147 I cmn          init: llama threadpool init, n_threads = 6
+0.08.284.114 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, kv_unified = 'true'
+0.08.293.328 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.08.293.583 I srv  llama_server: model loaded
+0.08.293.588 I srv  llama_server: listening on http://127.0.0.1:8099
+0.09.094.355 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.09.094.682 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.28.082.418 I slot print_timing: id  3 | task 0 | n_gen =    100, tg =   6.28 t/s, tg_3s =   6.35 t/s
+0.29.925.045 I slot print_timing: id  3 | task 0 | prompt eval time =    3232.92 ms /    17 tokens (  190.17 ms per token,     5.26 tokens per second)
+0.29.925.047 I slot print_timing: id  3 | task 0 |        eval time =   17597.17 ms /   120 tokens (  147.88 ms per token,     6.76 tokens per second)
+0.29.925.048 I slot print_timing: id  3 | task 0 |       total time =   20830.09 ms /   137 tokens
+0.29.925.364 I slot print_timing: id  3 | task 0 |    graphs reused =        119
+0.29.926.557 I slot      release: id  3 | task 0 | stop processing: n_tokens = 136, truncated = 0
+0.31.232.345 I srv    operator(): operator(): cleaning up before exit...

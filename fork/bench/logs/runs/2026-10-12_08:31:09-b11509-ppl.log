@@ -1,0 +1,18 @@
+0.00.000.210 I srv  llama_server: initializing ...
+0.00.038.878 E ggml_cuda_init: failed to initialize CUDA: system has unsupported display driver / cuda driver combination
+0.00.044.820 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.045.993 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.047.766 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+0.00.198.442 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.02.222.963 I cmn          init: llama threadpool init, n_threads = 6
+0.02.330.361 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, kv_unified = 'true'
+0.02.335.077 I srv  llama_server: model loaded
+0.02.335.081 I srv  llama_server: listening on http://127.0.0.1:8099
+0.03.001.110 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.03.001.196 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.05.863.753 I slot print_timing: id  3 | task 0 | prompt eval time =     124.82 ms /    20 tokens (    6.24 ms per token,   160.24 tokens per second)
+0.05.863.758 I slot print_timing: id  3 | task 0 |        eval time =    2737.70 ms /   120 tokens (   23.01 ms per token,    43.47 tokens per second)
+0.05.863.759 I slot print_timing: id  3 | task 0 |       total time =    2862.52 ms /   140 tokens
+0.05.863.765 I slot print_timing: id  3 | task 0 |    graphs reused =        119
+0.05.863.805 I slot      release: id  3 | task 0 | stop processing: n_tokens = 139, truncated = 0
+0.07.071.153 I srv    operator(): operator(): cleaning up before exit...
