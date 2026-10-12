@@ -1,0 +1,21 @@
+0.00.000.731 I srv  llama_server: initializing ...
+0.00.048.588 E ggml_cuda_init: failed to initialize CUDA: system has unsupported display driver / cuda driver combination
+0.00.055.049 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.055.370 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.056.996 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+0.00.178.261 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.01.745.617 I common_init_result: weights NOT pinned: mmap / page cache (load mode auto)
+0.01.769.991 I cmn          init: llama threadpool init, n_threads = 6
+0.01.892.248 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, kv_unified = 'true'
+0.01.894.628 I srv  llama_server: model loaded
+0.01.894.634 I srv  llama_server: listening on http://127.0.0.1:8099
+0.02.026.566 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.02.026.635 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.04.660.430 I slot print_timing: id  3 | task 0 | prompt eval time =     122.38 ms /    20 tokens (    6.12 ms per token,   163.43 tokens per second)
+0.04.660.436 I slot print_timing: id  3 | task 0 |        eval time =    2511.38 ms /   120 tokens (   21.10 ms per token,    47.38 tokens per second)
+0.04.660.437 I slot print_timing: id  3 | task 0 |       total time =    2633.76 ms /   140 tokens
+0.04.660.440 I slot print_timing: id  3 | task 0 |    graphs reused =        118
+0.04.660.456 I slot print_timing: id  3 | task 0 |        moe cache = off
+0.04.660.457 I slot print_timing: id  3 | task 0 |          threads = 6 decode / 8 batch, batch 2048, ubatch 512
+0.04.660.490 I slot      release: id  3 | task 0 | stop processing: n_tokens = 139, truncated = 0
+0.05.068.911 I srv    operator(): operator(): cleaning up before exit...

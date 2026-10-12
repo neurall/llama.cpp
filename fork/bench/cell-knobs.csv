@@ -338,3 +338,7 @@ ts,campaign,model,build,variant,requested,used,mismatch
 2026-10-12 07:15:18,regress-HEAD-617c2955e-1012-0714-OLMoE-,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,b11509,c,"{} | --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",,
 2026-10-12 07:23:18,regress-HEAD-617c2955e-1012-0714-Qwen3.,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,HEAD-617c2955e,c,{} | --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,,
 2026-10-12 07:23:45,regress-HEAD-617c2955e-1012-0714-Qwen3.,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,b11509,c,{} | --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,,
+2026-10-12 21:04:26,regress-prefill-select-4d438464a-1012-2104-OLMoE-,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,prefill-select-4d438464a,c,"{} | --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",,
+2026-10-12 21:04:37,regress-prefill-select-4d438464a-1012-2104-OLMoE-,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,b11509,c,"{} | --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",,
+2026-10-12 21:12:27,regress-prefill-select-4d438464a-1012-2104-Qwen3.,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,prefill-select-4d438464a,c,{} | --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,,
+2026-10-12 21:12:46,regress-prefill-select-4d438464a-1012-2104-Qwen3.,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,b11509,c,{} | --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,,

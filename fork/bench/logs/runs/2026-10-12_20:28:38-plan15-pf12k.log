@@ -1,0 +1,44 @@
+0.00.000.894 I srv  llama_server: initializing ...
+0.00.190.619 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.191.012 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.192.673 I srv    load_model: loading model '/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf'
+0.00.572.917 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 14 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf 117481680096place.g2.6b6844dc.v3)
+0.00.573.047 I common_moe_cache_auto_impl: ubatch 16384: experts stream from RAM, the compute alias lends the graph (maximum = context, lowered to what the pool can lend; prompt passes are sized per request)
+0.00.573.052 I common_moe_cache_auto_impl: MoE model (109.4 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 16384, ubatch 16384, threads 6, weights pinned (settings you pass win)
+0.02.107.782 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.02.107.786 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+ggml_cuda_host_malloc_registered: 100.5 GiB hugetlbfs cache (warm) mapped in 0.0 s
+ggml_cuda_host_malloc_registered: registered in 2.6 s
+0.05.973.725 I common_init_result: weights pinned (swapped 0.0 GiB while loading, 11.7 GiB RAM left)
+0.05.976.614 W moe-cache: prefill links (GB/s): CUDA1 26.0 CUDA0 6.4 -> split's transfer speedup 1.25x: one GPU (the split's compute buffers would cost more cache)
+ggml_cuda_host_malloc_registered: 1.8 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 1.8 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.3 s
+0.06.679.242 I cmn          init: llama threadpool init, n_threads = 6
+0.07.141.800 W moe-cache: 7 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.07.141.806 W moe-cache: 35 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.07.351.654 W moe-cache: block pool on CUDA0: 7 layers, 20890.9 MiB, size classes: 789 x 13.50 MiB (3 layers), 789 x 10.31 MiB (3 layers), 263 x 7.88 MiB (1 layers); no blocks reserved per layer
+0.07.372.640 W moe-cache: block pool on CUDA1: 35 layers, 15442.9 MiB, size classes: 1960 x 7.88 MiB (35 layers); no blocks reserved per layer
+0.07.373.770 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+0.08.171.405 W moe-cache: probe: links alone link 0 24.9 link 1 5.8 GB/s; CPU threads:GB/s alone/with links 1:26.1/44.1 2:42.0/45.6 3:41.9/45.3 4:39.9/45.2 -> CPU 42.0 GB/s (saturated by 2 threads), RAM budget 45.6 GB/s
+0.08.174.304 W moe-cache: 7 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.08.174.323 W operator(): MoE expert cache enabled: 42 layers, slots/layer 263..1960, 2 inserts/step, 1796335.9 MiB device memory
+ggml_cuda_host_malloc_registered: 1.8 GiB populated in 0.2 s (0.0 reserved 0 MiB pages, 1.8 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.3 s
+0.09.108.045 W moe-cache: max-batch auto = 128 (stored probe)
+0.12.092.221 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+0.12.111.516 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.12.111.545 I srv  llama_server: model loaded
+0.12.111.550 I srv  llama_server: listening on http://127.0.0.1:8099
+0.13.009.452 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.13.009.497 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.29.480.585 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  12412, progress = 1.00, t =  16.47 s / 753.84 tokens per second
+0.33.867.531 I slot print_timing: id  0 | task 0 | prompt eval time =   17066.47 ms / 12416 tokens (    1.37 ms per token,   727.51 tokens per second)
+0.33.867.535 I slot print_timing: id  0 | task 0 |        eval time =    3791.53 ms /    64 tokens (   60.18 ms per token,    16.62 tokens per second)
+0.33.867.535 I slot print_timing: id  0 | task 0 |       total time =   20858.00 ms / 12480 tokens
+0.33.867.539 I slot print_timing: id  0 | task 0 |    graphs reused =         62
+0.33.868.019 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 69.4% this request / 67.4% overall, 41..272 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.33.868.023 I slot print_timing: id  0 | task 0 |        moe churn = 1566 uploads, 3951 evictions, 26291.6 MiB uploaded (this request)
+0.33.868.024 I slot print_timing: id  0 | task 0 |          threads = 4 decode / 6 batch, batch 16384, ubatch 16384
+0.33.908.819 I slot      release: id  0 | task 0 | stop processing: n_tokens = 12479, truncated = 0
+0.35.172.362 I srv    operator(): operator(): cleaning up before exit...
+0.35.198.411 W moe-cache: steps=66 hits=15627 misses=7557 hit-rate=67.4%, prefill experts from cache 141/30240, kept from prefill 528

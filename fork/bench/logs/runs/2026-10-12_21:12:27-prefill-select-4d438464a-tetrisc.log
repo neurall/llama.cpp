@@ -1,0 +1,23 @@
+0.00.000.770 I srv  llama_server: initializing ...
+0.00.044.495 E ggml_cuda_init: failed to initialize CUDA: system has unsupported display driver / cuda driver combination
+0.00.049.572 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.049.904 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.051.563 I srv    load_model: loading model '/m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf'
+0.00.932.135 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.04.508.843 I common_init_result: weights NOT pinned: mmap / page cache (load mode auto)
+0.04.546.427 I cmn          init: llama threadpool init, n_threads = 6
+0.04.875.063 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, kv_unified = 'true'
+0.04.880.426 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.04.880.461 I srv  llama_server: model loaded
+0.04.880.465 I srv  llama_server: listening on http://127.0.0.1:8099
+0.05.138.084 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.05.138.363 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.13.998.847 I slot print_timing: id  3 | task 0 | n_gen =    100, tg =  11.71 t/s, tg_3s =  11.82 t/s
+0.15.731.221 I slot print_timing: id  3 | task 0 | prompt eval time =     402.35 ms /    17 tokens (   23.67 ms per token,    42.25 tokens per second)
+0.15.731.225 I slot print_timing: id  3 | task 0 |        eval time =   10190.47 ms /   120 tokens (   85.63 ms per token,    11.68 tokens per second)
+0.15.731.225 I slot print_timing: id  3 | task 0 |       total time =   10592.82 ms /   137 tokens
+0.15.731.228 I slot print_timing: id  3 | task 0 |    graphs reused =        118
+0.15.731.250 I slot print_timing: id  3 | task 0 |        moe cache = off
+0.15.731.252 I slot print_timing: id  3 | task 0 |          threads = 6 decode / 8 batch, batch 2048, ubatch 512
+0.15.732.091 I slot      release: id  3 | task 0 | stop processing: n_tokens = 136, truncated = 0
+0.16.175.660 I srv    operator(): operator(): cleaning up before exit...
