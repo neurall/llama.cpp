@@ -2174,11 +2174,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         p.saved_data   = input_cpy->data;
         input_cpy->buffer = pf_slot_buf[slot];
         input_cpy->data   = pf_slot_data[slot];
-        // Only the experts this MUL_MAT_ID owns (--moe prefill-split gives each card an id range, op_params 2 and 3): one copy of that contiguous range,
+        // Only the experts this MUL_MAT_ID owns (--moe prefill-split gives each card an id range, op_params 8 and 9; 0 is the precision, 1 the skip flag, 3 the src1 precision): one copy of that contiguous range,
         // not the whole tensor. The padding after the range is the MMQ rule of sched_copy_experts: the next expert's first bytes must not hold NaNs.
         const ggml_tensor * mm_node = s->graph.nodes[0];
         p.lo = 0; p.hi = input->ne[2];
-        if (mm_node->op_params[3] > mm_node->op_params[2]) { p.lo = mm_node->op_params[2]; p.hi = std::min<int64_t>(mm_node->op_params[3], input->ne[2]); }
+        if (mm_node->op_params[9] > mm_node->op_params[8]) { p.lo = mm_node->op_params[8]; p.hi = std::min<int64_t>(mm_node->op_params[9], input->ne[2]); }
         {
             const size_t esz = input->nb[2];
             const size_t off = (size_t) p.lo*esz;
