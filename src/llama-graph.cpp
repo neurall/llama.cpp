@@ -2800,20 +2800,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         cb(moe_out, "ffn_moe_out", il);
         return moe_out;
     } else {
-        // --moe expert-owner=1 (research, prompt batches only): the experts of a layer are uploaded to and computed on the card that owns the layer, over that card's own
-        // link, instead of all of them on the offload card (the scheduler sends any expert weight in host memory to the first backend that offloads). With the layers
-        // shared out by upload bandwidth (--moe split=bw) every link then works on its own layers at the same time, and activations cross cards only where a card's block
-        // of layers begins and ends, not twice per layer of the slow card.
-        static const bool owner_on = [] { const char * e = llama_moe_get_opt("expert-owner"); return e && atoi(e) != 0; }();
-        if (owner_on && !mcache && sched && n_tokens >= 32 && il >= 0) {
-            ggml_backend_dev_t d = model.dev_layer(il);
-            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
-                ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
-                if (ggml_backend_get_device(b) == d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) { mm_id_backend = b; break; }
-            }
-        }
         experts = expert_chain(cur, selected_experts);
-        mm_id_backend = nullptr;
     }
 
     if (mcache) {
