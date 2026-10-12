@@ -1063,6 +1063,7 @@ RUN_COLS += ["knobs_end"]   # what the build actually ran with, from the run.kno
 RUN_COLS += ["load_mode"]   # how the weights were loaded, from the server log: pinned (+ upload path), mmap, mmap after a failed pin ("reloading with mmap"); load time (load_s) tells too: pinned GLM 3.0 about 85-120 s, mmap about 25 s
 RUN_COLS += ["start_ts", "end_ts", "load_s", "wall_s"]   # start_ts / end_ts: when the process started and ended (local time); load_s: seconds until the model was loaded and ready (server: ready to answer; llama-cli / perplexity: the "load time" it prints); wall_s: seconds the whole run took, start to end
 RUN_COLS += ["uniq4", "out_chars", "code", "loop"]   # text class of the generated output: share of unique word 4-grams (a repetition loop is ~0.1, real text ~0.9+), characters, 1 if it contains code; the text itself is in runs.db table outputs
+RUN_COLS += ["gpu_pp", "gpu_tg"]   # the same GPU samples split at the end of the prompt (server timings prompt_ms): prefill phase and generation phase separately, per GPU "util / clock / power / share of samples at the software power cap"; the whole-run gpu_log below blends both and hides that a prefill is compute bound while the decode idles
 RUN_COLS += ["gpu_log"]   # per-GPU summary of the 5 Hz nvidia-smi samples of the run (share of busy samples, mean and 5th percentile SM clock and mean power over the busy samples (GPU utilization >= 20%), max temp, throttle reason bits, min PCIe width) and the sample file
 CAMP_COLS = ["name", "start", "note", "conclusion", "why"]
 MACH_COLS = ["id", "ssh", "root", "kind", "cpu", "ram_gb", "ram_type", "gpus", "links", "os", "hostname", "board", "storage",
@@ -1412,7 +1413,7 @@ def gpu_sampler(build, pid=None):
             cf.write(f"{w2 * 1000:.1f},{busy:.1f},{cores:.2f}\n"); cf.flush(); cpu.append((busy, cores))
             t_, i_, p_, w_ = t2, i2, p2, w2
     cth = threading.Thread(target=cpu_poll, daemon=True); cth.start()
-    def stop(t_from=None, t_to=None):
+    def stop(t_from=None, t_to=None, t_split=None):
         alive[0] = False; cth.join(3); cf.close()
         p.terminate(); th.join(5); f.close()
         out = {}
@@ -1458,6 +1459,17 @@ def gpu_sampler(build, pid=None):
                 try: thr |= int(x[8], 16)
                 except ValueError: pass
             out[g] = f"util_avg={sum(int(x[5]) for x in r) // len(r)}% busy={100 * len(b) // len(r)}% clk_avg={sum(clk) // len(clk)} clk_p5={clk[len(clk) // 20]} pw_avg={sum(pw) / len(pw):.0f} temp_max={max(int(x[4]) for x in r)} vram_peak_mib={max([int(x[11]) for x in r if len(x) > 12 and x[11].isdigit()] or [0])} thr=0x{thr:x} pcie_w={min(int(x[7]) for x in r)}"
+        # prefill and generation separately: t_split = end of the prompt (request start + the server's prompt_ms); stop.phases = {"pp": {gpu: text}, "tg": {gpu: text}}
+        stop.phases = {"pp": {}, "tg": {}}
+        if t_from is not None and t_split is not None:
+            for g in sorted({r[0] for r in rows}):
+                for ph, (a, b) in (("pp", (t_from, t_split)), ("tg", (t_split, t_to or time.time()))):
+                    r = [x for x in rows if x[0] == g and a <= float(x[-1]) <= b and x[1].replace(".", "").isdigit() and x[2].replace(".", "").isdigit() and x[5].isdigit()]
+                    if len(r) < 2:
+                        continue
+                    cap = sum(1 for x in r if x[8].startswith("0x") and int(x[8], 16) & 0x4)
+                    stop.phases[ph][g] = (f"util={sum(int(x[5]) for x in r) // len(r)}% clk={sum(int(x[2]) for x in r) // len(r)} pw={sum(float(x[1]) for x in r) / len(r):.0f}"
+                                          f" cap={100 * cap // len(r)}%")
         if cpu:
             out["cpu"] = f"sys_avg={sum(c[0] for c in cpu) / len(cpu):.0f}% proc_cores_avg={sum(c[1] for c in cpu) / len(cpu):.1f}"
         return out, path
@@ -1523,7 +1535,15 @@ def server_run(build, env, args, path, body, render=None):
         return res, logf
     finally:
         try:
-            gs, gpath = gstop(t_req[0], t_req[1])
+            t_split = None
+            try:   # end of the prompt phase: request start + prompt_ms of the server's timings
+                t_split = t_req[0] + float((res.get("timings") or {}).get("prompt_ms")) / 1000.0
+            except (NameError, TypeError, ValueError, AttributeError):
+                pass
+            gs, gpath = gstop(t_req[0], t_req[1], t_split)
+            for ph, col in (("pp", "gpu_pp"), ("tg", "gpu_tg")):
+                if getattr(gstop, "phases", None) and gstop.phases[ph]:
+                    PROCSTAT[col] = " | ".join(f"gpu{g}: {v}" for g, v in gstop.phases[ph].items())
             if GPULOG:
                 PROCSTAT["gpu_log"] = " | ".join((f"gpu{g}: {v}" if g != "cpu" else f"cpu: {v}") for g, v in gs.items()) + " " + os.path.relpath(gpath, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         except Exception:
