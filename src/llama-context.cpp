@@ -637,7 +637,7 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
 }
 }  // namespace
 
-// research (--moe log=t): per-layer timing of every prompt batch (more than one token). The scheduler is asked for the input embedding and the output of each layer;
+// research (--moe log=t): per-layer timing of every prompt batch (more than one token). The scheduler is asked for the output of each layer;
 // it computes up to such a node, synchronises the card that ran it and calls back, so the time between two callbacks is that layer on that card including the upload
 // waits and the hand-off copy from the previous card. Appended to prefill-timing.csv in the log directory: file,pass,n_tokens,layer,backend,dt_us,cum_us. The
 // synchronisation at every layer breaks the overlap of uploads across layers a little, so the totals are somewhat above an undisturbed pass; the point is the
@@ -647,42 +647,42 @@ struct prefill_trace_state {
     llama_context * ctx = nullptr;
     ggml_backend_sched_eval_callback user_cb = nullptr;
     void * user_data = nullptr;
-    int64_t t0 = 0, t_prev = 0;   // start of the pass (the input embedding) and the previous callback
-    int pass = 0;
+    int64_t t0 = 0, t_prev = 0;   // start of the pass (its first layer's output) and the previous callback
+    int pass = 0, last_il = -1;
     std::string file;
     std::string rows;
 };
 prefill_trace_state g_pt;
 
 bool prefill_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
-    const bool is_in  = strcmp(t->name, "inp_embd") == 0;
-    const bool is_out = strncmp(t->name, "l_out-", 6) == 0;
-    const bool mine   = (is_in || is_out) && t->ne[1] > 1;
+    const bool mine = strncmp(t->name, "l_out-", 6) == 0 && t->ne[1] > 1;   // (inp_embd is an input leaf, the scheduler never calls back for it)
     if (ask) {
         const bool theirs = g_pt.user_cb ? g_pt.user_cb(t, true, g_pt.user_data) : false;
         return mine || theirs;
     }
     if (mine) {
         const int64_t now = ggml_time_us();
-        if (is_in) {
+        const int il = atoi(strchr(t->name, '-') + 1);
+        if (g_pt.t0 == 0 || il <= g_pt.last_il) {   // the layer number went down (or this is the first callback): a new pass starts, its first layer has no start time and gets dt 0
             g_pt.t0 = g_pt.t_prev = now;
             g_pt.pass++;
             g_pt.rows.clear();
-        } else if (g_pt.t0 > 0) {
-            const int il = atoi(strchr(t->name, '-') + 1);
-            g_pt.rows += g_pt.file + "," + std::to_string(g_pt.pass) + "," + std::to_string(t->ne[1]) + "," + std::to_string(il) + "," + g_pt.ctx->trace_backend_name(t) + "," +
-                         std::to_string(now - g_pt.t_prev) + "," + std::to_string(now - g_pt.t0) + "\n";
-            g_pt.t_prev = now;
-            if (il == (int) g_pt.ctx->get_model().hparams.n_layer() - 1) {   // the last layer closes the pass
-                const std::filesystem::path path = moe_log_file("prefill-timing.csv");
-                std::error_code ec;
-                const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
-                std::ofstream o(path, std::ios::app | std::ios::binary);
-                if (fresh) { o << "file,pass,n_tokens,layer,backend,dt_us,cum_us\n"; }
-                o.write(g_pt.rows.data(), (std::streamsize) g_pt.rows.size());
-                g_pt.rows.clear();
-                g_pt.t0 = 0;
-            }
+        }
+        g_pt.last_il = il;
+        g_pt.rows += g_pt.file + "," + std::to_string(g_pt.pass) + "," + std::to_string(t->ne[1]) + "," + std::to_string(il) + "," + g_pt.ctx->trace_backend_name(t) + "," +
+                     std::to_string(now - g_pt.t_prev) + "," + std::to_string(now - g_pt.t0) + "\n";
+        g_pt.t_prev = now;
+        if (il == (int) g_pt.ctx->get_model().hparams.n_layer() - 1) {   // the last layer closes the pass
+            const std::filesystem::path path = moe_log_file("prefill-timing.csv");
+            std::error_code ec;
+            std::filesystem::create_directories(path.parent_path(), ec);
+            const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
+            std::ofstream o(path, std::ios::app | std::ios::binary);
+            if (fresh) { o << "file,pass,n_tokens,layer,backend,dt_us,cum_us\n"; }
+            o.write(g_pt.rows.data(), (std::streamsize) g_pt.rows.size());
+            g_pt.rows.clear();
+            g_pt.t0 = 0;
+            g_pt.last_il = -1;
         }
     }
     return g_pt.user_cb ? g_pt.user_cb(t, false, g_pt.user_data) : true;
