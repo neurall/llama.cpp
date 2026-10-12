@@ -1559,6 +1559,15 @@ def server_run(build, env, args, path, body, render=None):
     try:
         if render:   # the server renders the model's chat template into the prompt text
             body = {**body, "prompt": post("/apply-template", {"messages": render})["prompt"]}
+        if OVR.get("clamp") and isinstance(body.get("prompt"), str):   # --clamp N: the prompt is cut to N tokens (the server counts them, so it is right for every tokenizer)
+            txt, n_cl = body["prompt"], int(OVR["clamp"])
+            for _ in range(4):
+                n_tok = len(post("/tokenize", {"content": txt})["tokens"])
+                if n_tok <= n_cl:
+                    break
+                txt = txt[:int(len(txt) * n_cl / n_tok * 0.995)]
+            body = {**body, "prompt": txt}
+            print(f"clamp: prompt cut to {n_tok} tokens (limit {n_cl})", flush=True)
         if SYNC and not WARMING:   # start barrier: drop a ready file, wait until N instances have one
             d, n = SYNC.rsplit(":", 1); os.makedirs(d, exist_ok=True); BAR_N[0] += 1
             open(os.path.join(d, f"b{BAR_N[0]}-{PORT}"), "w").close()
@@ -2318,7 +2327,7 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
     if getattr(a, "test", None) in ALIAS_TOKENS and "tokens" not in OVR:
@@ -2785,6 +2794,8 @@ def add_overrides(sub):
     sub.add_argument("--prompt", help="prompt text or @file instead of the test's own")
     sub.add_argument("--tokens", type=int, help="generated tokens instead of the test's own")
     sub.add_argument("--ctx", type=int, help="context size instead of the test's own")
+    sub.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), metavar="N[k]",
+                     help="cut the prompt of the test to N tokens (8k = 8000, so it fits one -ub 8192 pass), measured with the server's own /tokenize, for any model; raw-prompt tests only")
     sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
     sub.add_argument("--pidx", type=int, help="game4 / edit4: use prompt N of the four for every repetition (default: repetition k uses prompt k mod 4)")
 
