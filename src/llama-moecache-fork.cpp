@@ -2840,7 +2840,7 @@ static pool_layout_t pool_layout(const std::vector<const llama_layer *> & ls) {
                 c.off[k] = off;
                 off += pool_up(t[k]->nb[2], 128);
                 const size_t ts = ggml_type_size(t[k]->type);
-                q = q / std::__gcd(q, ts) * ts;
+                q = q / std::gcd(q, ts) * ts;
             }
             c.B = pool_up(off, q);
             out.cls.push_back(c);
