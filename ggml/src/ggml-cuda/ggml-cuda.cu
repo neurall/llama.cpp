@@ -860,10 +860,49 @@ static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer,
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
+// Diagnostic, for testing only: GGML_CUDA_H2D_CAP=<device>:<GB/s>[,<device>:<GB/s>...] caps the host->device copy rate of a GPU, e.g. GGML_CUDA_H2D_CAP=0:1.5
+// makes device 0 behave like a card on a narrow link. Why it exists: users will have cards on x4 slots, PCIe 2/3 links or x1 risers, and the prefill GPU selection
+// (which cards take part in a prompt pass) must be tested on such links without owning the hardware. The value is the allowed upload bandwidth, not a slot type.
+// How: a token bucket per device. Each copy of `size` bytes may start no earlier than the end of the previous one at the capped rate, so the CPU thread issuing
+// the copy sleeps until then; the copy itself then runs at full speed. The average rate over many copies (the expert uploads of a prefill pass are thousands of
+// copies of a few MB) is the cap; a single large copy still finishes at wire speed, so the cap is not exact for one-off transfers. The startup upload probe in
+// llama.cpp goes through the same path (ggml_backend_tensor_set), so the automatic selection sees the capped bandwidth like a real narrow link.
+static void ggml_cuda_h2d_pace(int device, size_t size) {
+    static const std::vector<double> caps = [] {
+        std::vector<double> c(GGML_CUDA_MAX_DEVICES, 0.0);
+        if (const char * e = getenv("GGML_CUDA_H2D_CAP")) {
+            for (const char * p = e; p && *p; ) {
+                int d = -1; double g = 0; int n = 0;
+                if (sscanf(p, "%d:%lf%n", &d, &g, &n) >= 2 && d >= 0 && d < GGML_CUDA_MAX_DEVICES && g > 0) { c[d] = g; }
+                p = strchr(p + (n > 0 ? n : 1), ',');
+                if (p) { ++p; }
+            }
+        }
+        return c;
+    }();
+    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES || caps[device] <= 0.0) {
+        return;
+    }
+    static std::mutex mu;
+    static int64_t next_us[GGML_CUDA_MAX_DEVICES] = {};
+    int64_t wait_us;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        const int64_t now = ggml_time_us();
+        const int64_t start = std::max(now, next_us[device]);
+        next_us[device] = start + (int64_t) ((double) size / (caps[device] * 1e3));
+        wait_us = start - now;
+    }
+    if (wait_us > 0) {
+        std::this_thread::sleep_for(std::chrono::microseconds(wait_us));
+    }
+}
+
 static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
+    ggml_cuda_h2d_pace(ctx->device, size);
     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
@@ -3050,6 +3089,7 @@ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tens
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
+    ggml_cuda_h2d_pace(cuda_ctx->device, size);
     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
 }
 
