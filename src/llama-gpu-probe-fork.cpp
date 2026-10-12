@@ -43,6 +43,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -262,7 +263,7 @@ std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_pro
     // so one pass is sequential and extra cards cannot help beyond their link, while many passes make the slowest stage the limit and the best shares
     // equalise the stage times. On top comes what leaving the other cards out costs: their dense weights have to be on the cards that compute their layers
     // (one copy from host per prompt) and the K/V their layers produce has to reach the owning card afterwards. Shares go to `share` (size n, 0 for non-members).
-    auto solve = [&](unsigned mask, double n_tok, std::vector<double> * share) -> double {
+    std::function<double(unsigned, double, std::vector<double> *)> solve = [&](unsigned mask, double n_tok, std::vector<double> * share) -> double {
         const auto idx = members(mask);
         const double pass_tok = m.pass_tokens > 0 ? std::min(n_tok, m.pass_tokens) : n_tok;
         const double p        = std::ceil(n_tok / pass_tok);
@@ -324,6 +325,10 @@ std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_pro
         }
         std::vector<double> sh;
         const double t_pass = eval(0.5 * (lo + hi), &sh) + hand;
+        // a member that ends up with no layers is not taking part: the set without it is the same prefill, and it pays the cost of sitting out (below)
+        if (idx.size() > 1) {
+            for (size_t j = 0; j < idx.size(); ++j) { if (sh[j] < 1e-9) { return solve(mask & ~(1u << idx[j]), n_tok, share); } }
+        }
         double setup = 0.0;
         for (size_t i = 0; i < n; ++i) {
             if (has(mask, i)) { continue; }
