@@ -435,8 +435,19 @@ static std::vector<float> prefill_plan_impl(const std::vector<const llama_gpu_pr
         say(buf);
     }
     say(m.fastest_prefill_tps > 0 ? "prefill plan: compute scale calibrated to the measured prefill speed of the fastest card" : "prefill plan: UNCALIBRATED, the fastest card's compute assumed equal to its upload per layer; relative speeds from the probe (--moe prefill-plan-tps=N, its prefill tokens/s, calibrates)");
-    std::vector<float> out(n);
-    for (size_t i = 0; i < n; ++i) { out[i] = (float) best_share[i]; }
+    // The SET of cards comes from the search above (it matched the measurements: the x16 alone at 1.6k tokens, both cards from a few passes up). The SHARES it found
+    // do not: the stage balance of a pipelined pass gave the x4 card 76-86% of the layers for a 12k-token GLM prompt, and the measured prompt speed is best at 15%
+    // (GLM 765.6 prompt t/s vs 740.5 at 20%; MiMo 711 vs 579 at 20%; 86% was slower than not using the card). So the shares are the upload-rate shares of the chosen
+    // cards, damped by `slow_scale` for every card that is not on the fastest link (it also pays for the hand-offs of its layers).
+    std::vector<float> out(n, 0.0f);
+    if (members(best_mask).size() > 1) {
+        double top = 0.0, sum = 0.0;
+        for (size_t i : members(best_mask)) { top = std::max(top, rate(best_mask, i)); }
+        for (size_t i : members(best_mask)) { sum += rate(best_mask, i) * (rate(best_mask, i) < top ? m.slow_scale : 1.0); }
+        for (size_t i : members(best_mask)) { out[i] = (float) (rate(best_mask, i) * (rate(best_mask, i) < top ? m.slow_scale : 1.0) / sum); }
+    } else {
+        for (size_t i = 0; i < n; ++i) { out[i] = (float) best_share[i]; }
+    }
     snprintf(buf, sizeof buf, "prefill plan: chosen cards %u, modelled pass %.0f ms for %.0f tokens", best_mask, best_t / 1e3, m.n_tokens);
     say(buf);
     return out;

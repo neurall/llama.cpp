@@ -1588,6 +1588,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         for (size_t i = 0; i < n_devices(); ++i) { cards.push_back(llama_gpu_probe_find_fork(devices[i].dev)); }
         llama_prefill_model_fork pm;
         pm.n_layer = (int) hparams.n_layer();
+        { const char * o_sc = llama_moe_get_opt("split-slow-scale"); if (o_sc) { pm.slow_scale = atof(o_sc); } }
         double exp_b = 0, den_b = 0;
         for (const auto & kv : ml.weights_map) {
             if (kv.first.compare(0, 4, "blk.") != 0 || !kv.second.tensor) { continue; }

@@ -43,6 +43,7 @@ struct llama_prefill_model_fork {
     bool   pipelined           = false; // consecutive passes overlap on different cards (a pass on one card while the next pass runs on another). The engine does not do
                                         // this today (nsys, GLM and MiMo: no overlap between passes), so by default the passes are summed: T = passes x one pass. Without this
                                         // the plan cannot "balance stages" by handing a slow-link card most of the layers, which was the 86% x4 share of the first model.
+    double slow_scale          = 0.75;  // factor on the upload-rate share of every member that is not on the fastest link (see llama_prefill_plan_fork); measured calibration, --moe split-slow-scale
     double fastest_prefill_tps = 0.0;   // measured prefill tokens per second of the fastest card alone on this model (0 = unknown: estimated from the synthetic probe)
     std::vector<double> owner_share;    // share of the layers each card owns in the decode layout (the default split); empty = equal
 };
