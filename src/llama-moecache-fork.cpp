@@ -5180,7 +5180,7 @@ int64_t llama_moe_cache_max_batch_fork() {
 // offloaded to the fastest card): layers x distinct experts u(n) x expert bytes / link speed, with u(n) = N (1 - (1 - k/N)^n) for N experts per
 // layer and k used per token; b is the small GPU compute per token. The cache path costs c per token (measured). Crossover n*: n c = a(n) + n b.
 // Check, GLM-5.3-Flash 3.0-bit on 2x RTX 3090 (link 25.5 GB/s): a(120) = 3.8 s formula vs 3.7 s measured; qwen3.8 cut-down 0.43 vs 0.47 s.
-static int64_t crossover(const moe_cache * mc, double c_us) {
+static int64_t crossover(const moe_cache * mc, double c_us, double b_us, double s_n, double s_us) {
     const int64_t cap = llama_moe_cache_max_batch_cap_fork();
     if (mc->layers.empty() || c_us <= 0) {
         return 31;
@@ -5191,8 +5191,11 @@ static int64_t crossover(const moe_cache * mc, double c_us) {
     }
     const double N = (double) mc->layers[0].pub.up_src->ne[2];
     const double k = std::max<double>(1.0, (double) mc->n_expert_used);
-    const double link = mc->gbs_link[0] > 0 ? mc->gbs_link[0] : (mc->gbs_all > 0 ? mc->gbs_all : 10.0);   // GB/s
-    const double b_us = 0.06 * c_us;
+    // b_us (compute per streamed token) and the effective link speed come from timed streaming passes (probe), no constants: the upload part of a pass
+    // of s_n tokens is its time minus s_n * b, and u(s_n) experts per layer went over the link in that time.
+    const double u_s  = N * (1.0 - std::pow(1.0 - k / N, s_n));
+    const double up_us = std::max(1.0, s_us - s_n * b_us);
+    const double link = u_s * bytes_sum / (up_us * 1e3);   // GB/s, effective
     for (int64_t n = 8; n <= cap; ++n) {
         const double u    = N * (1.0 - std::pow(1.0 - k / N, (double) n));
         const double a_us = u * bytes_sum / (link * 1e3);
@@ -5211,9 +5214,10 @@ bool llama_moe_cache_probe_wanted_fork() {
     std::string v;
     if (!mc->profile.empty() && moe_state_get(mc->profile, "batch.cost", v)) {   // stored by an earlier start: no probe, just compute
         double slots = 0, t16 = 0, t64 = 0;
-        if (sscanf(v.c_str(), "%lf %lf %lf", &slots, &t16, &t64) == 3 && (int32_t) slots == mc->n_slots && t64 > t16 && t16 > 0) {
+        double sn1 = 0, ts1 = 0, sn2 = 0, ts2 = 0;
+        if (sscanf(v.c_str(), "%lf %lf %lf %lf %lf %lf %lf", &slots, &t16, &t64, &sn1, &ts1, &sn2, &ts2) == 7 && (int32_t) slots == mc->n_slots && t64 > t16 && t16 > 0 && ts2 > ts1 && sn2 > sn1) {
             const double c = (t64 - t16) / 48.0;
-            g_mb_auto = crossover(mc, c);
+            g_mb_auto = crossover(mc, c, (ts2 - ts1) / (sn2 - sn1), sn2, ts2);
             LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (cache path %.2f ms per token, stored)\n", (long long) g_mb_auto.load(), c / 1e3);
             return false;
         }
@@ -5225,22 +5229,27 @@ void llama_moe_cache_probe_begin_fork() {
     g_mb_probe = llama_moe_cache_max_batch_cap_fork();
 }
 
-void llama_moe_cache_probe_end_fork(double t16_us, double t64_us) {
+void llama_moe_cache_probe_stream_fork(bool on) {
+    g_mb_probe = on ? 0 : llama_moe_cache_max_batch_cap_fork();
+}
+
+void llama_moe_cache_probe_end_fork(double t16_us, double t64_us, double sn1, double ts1_us, double sn2, double ts2_us) {
     g_mb_probe = -1;
     moe_cache * mc = g_cache;
-    if (!mc || t16_us <= 0 || t64_us <= 0) {
-        return;
+    if (!mc || t16_us <= 0 || t64_us <= 0 || ts1_us <= 0 || ts2_us <= ts1_us || sn2 <= sn1) {
+        return;   // probe failed: the limit stays at 31
     }
     double c = (t64_us - t16_us) / 48.0;
     if (c <= 0) {
         c = t64_us / 64.0;   // noise: the whole batch time per token (an upper bound)
     }
-    g_mb_auto = crossover(mc, c);
-    LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (cache path: 16 tokens %.0f ms, 64 tokens %.0f ms = %.2f ms per token; streaming from %.1f GB/s)\n",
-            (long long) g_mb_auto.load(), t16_us / 1e3, t64_us / 1e3, c / 1e3, mc->gbs_link[0] > 0 ? mc->gbs_link[0] : mc->gbs_all);
+    const double b = (ts2_us - ts1_us) / (sn2 - sn1);
+    g_mb_auto = crossover(mc, c, b, sn2, ts2_us);
+    LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (cache path %.2f ms per token; streaming passes %.0f tokens %.0f ms, %.0f tokens %.0f ms = %.2f ms per token)\n",
+            (long long) g_mb_auto.load(), c / 1e3, sn1, ts1_us / 1e3, sn2, ts2_us / 1e3, b / 1e3);
     if (!mc->profile.empty()) {
-        char buf[96];
-        snprintf(buf, sizeof buf, "%d %.0f %.0f", (int) mc->n_slots, t16_us, t64_us);
+        char buf[160];
+        snprintf(buf, sizeof buf, "%d %.0f %.0f %.0f %.0f %.0f %.0f", (int) mc->n_slots, t16_us, t64_us, sn1, ts1_us, sn2, ts2_us);
         moe_state_set(mc->profile, { { "batch.cost", buf } });
     }
 }

@@ -884,7 +884,7 @@ bool llama_context::swap_layers_fork(int a, int b) {
     return true;
 }
 
-// fork: --moe max-batch=auto: how long a 16- and a 64-token batch take on the cache path (second run of each: graphs built, uploads settled),
+// fork: --moe max-batch=auto: how long a 16- and a 64-token batch take on the cache path, and a streamed pass of two larger sizes (second run of each: graphs built, uploads settled),
 // on varied tokens so the routing is not one fixed expert set. The context is cleared after each run.
 void llama_context::moe_probe_costs_fork() {
     const int64_t t_start = ggml_time_us();
@@ -915,7 +915,19 @@ void llama_context::moe_probe_costs_fork() {
         run(64);
         t64 = run(64);
     }
-    llama_moe_cache_probe_end_fork(t16, t64);
+    // streaming passes above the cap, two sizes: slope = compute per token, the rest of the pass = the expert upload
+    double ts1 = -1, ts2 = -1;
+    const int sn2 = (int) std::min<int64_t>(4 * llama_moe_cache_max_batch_cap_fork(), cparams.n_ubatch);
+    const int sn1 = sn2 / 2;
+    if (t64 > 0 && sn1 > llama_moe_cache_max_batch_cap_fork()) {
+        llama_moe_cache_probe_stream_fork(true);
+        run(sn1);
+        ts1 = run(sn1);
+        run(sn2);
+        ts2 = run(sn2);
+        llama_moe_cache_probe_stream_fork(false);
+    }
+    llama_moe_cache_probe_end_fork(t16, t64, sn1, ts1, sn2, ts2);
     LLAMA_LOG_WARN("%s: cache-path probe took %.1f s\n", __func__, (ggml_time_us() - t_start) / 1e6);
 }
 
