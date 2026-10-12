@@ -75,3 +75,7 @@ struct llama_prefill_mem_choice {
     const char * reason  = "";
 };
 llama_prefill_mem_choice llama_prefill_mem_plan_fork(const llama_prefill_mem_fork & m);
+
+// Modelled time (microseconds) of the whole prompt for a given split of the layers over the cards (one share per card, summing to 1), without any search; -1 on bad input.
+double llama_prefill_plan_eval_fork(const std::vector<const llama_gpu_probe_fork_result *> & cards, const std::vector<std::vector<double>> & conc,
+                                    const llama_prefill_model_fork & m, const std::vector<double> & split);

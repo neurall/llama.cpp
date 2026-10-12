@@ -230,8 +230,8 @@ const llama_gpu_probe_fork_result * llama_gpu_probe_find_fork(ggml_backend_dev_t
     return it == g_results.end() ? nullptr : &it->second;
 }
 
-std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_probe_fork_result *> & cards, const std::vector<std::vector<double>> & conc,
-                                           const llama_prefill_model_fork & m, std::vector<std::string> * log) {
+static std::vector<float> prefill_plan_impl(const std::vector<const llama_gpu_probe_fork_result *> & cards, const std::vector<std::vector<double>> & conc,
+                                            const llama_prefill_model_fork & m, std::vector<std::string> * log, const std::vector<double> * eval_split, double * eval_us) {
     const size_t n = cards.size();
     if (n < 2 || n > 8 || m.n_layer <= 0 || m.n_tokens <= 0) { return {}; }
     for (const auto * c : cards) {
@@ -263,44 +263,62 @@ std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_pro
     // so one pass is sequential and extra cards cannot help beyond their link, while many passes make the slowest stage the limit and the best shares
     // equalise the stage times. On top comes what leaving the other cards out costs: their dense weights have to be on the cards that compute their layers
     // (one copy from host per prompt) and the K/V their layers produce has to reach the owning card afterwards. Shares go to `share` (size n, 0 for non-members).
+    const std::vector<double> * fixed_split = nullptr;   // llama_prefill_plan_eval_fork: evaluate this split instead of searching one
     std::function<double(unsigned, double, std::vector<double> *)> solve = [&](unsigned mask, double n_tok, std::vector<double> * share) -> double {
         const auto idx = members(mask);
         const double pass_tok = m.pass_tokens > 0 ? std::min(n_tok, m.pass_tokens) : n_tok;
         const double p        = std::ceil(n_tok / pass_tok);
         const double up_b  = m.expert_bytes_layer * (1.0 - std::pow(1.0 - k / N, pass_tok));   // experts a pass touches per layer (a dense model has none)
         const double act_b = m.dense_bytes_layer + m.expert_bytes_layer * k / N;               // weight bytes one token reads per layer
-        std::vector<double> a(idx.size());                                                      // microseconds per layer of one pass: max(compute, upload)
+        // How this engine runs a prompt pass (measured, nsys + scheduler trace): the experts of EVERY layer are uploaded to and computed on one card, the offload card E
+        // (the member with the fastest link), whoever owns the layer. A layer owned by another card j runs its dense part (attention, norms, router, shared expert) on j
+        // and costs two hops of the whole batch's activations per pass (E -> j for the attention, j -> E for the experts), each tokens x n_embd x 4 bytes over the
+        // slower of the two links plus a stream synchronisation. So per layer:
+        //   expert part  x_E = max(upload on E, expert compute on E), always on E (the upload of the next layer hides under the compute of this one)
+        //   dense part   d_j = dense compute on the owner;  hops h_j = 2 x (latency + activations / link) for an owner other than E
+        // The compute of a layer on a card is the card's relative speed applied to the calibrated time per layer, split into the expert and the dense part by the
+        // weight bytes a token reads in each.
+        size_t e_j = 0;                                   // index (in idx) of the offload card
+        for (size_t j = 1; j < idx.size(); ++j) { if (cards[idx[j]]->h2d_gbs > cards[idx[e_j]]->h2d_gbs) { e_j = j; } }
+        const double act_exp = m.expert_bytes_layer * k / N, act_den = m.dense_bytes_layer;
+        const double phi = act_exp + act_den > 0 ? act_exp / (act_exp + act_den) : 0.5;   // share of a layer's compute that is experts
+        double x_E = 0.0;
+        std::vector<double> a(idx.size());                // per unit share of the layers: the dense compute of the layers the card owns, plus the hops when it is not E
         double best_bw = 0.0;
         for (size_t j = 0; j < idx.size(); ++j) {
             const double bw = rate(mask, idx[j]);
             best_bw = std::max(best_bw, bw);
-            const double u = up_b / (bw * 1e3);
-            // Compute per layer of one pass. The probe gives the speed of a card relative to the fastest; the scale is the fastest card's measured prefill
-            // speed on this model when it is known, otherwise the fastest card's own upload time per layer at this pass size (compute and upload assumed equal there)
             const double rel = cards[idx[j]]->compute / fastest_compute;
             const double c_ref = m.fastest_prefill_tps > 0 ? pass_tok / (m.fastest_prefill_tps * L) * 1e6 : up_b / (cards[ref]->h2d_gbs * 1e3);
-            const double c = c_ref / rel;
-            a[j] = L * std::max(u, c);
+            const double c_layer = c_ref / rel;           // compute of a whole layer on this card
+            if (j == e_j) {
+                x_E = std::max(up_b / (bw * 1e3), c_layer * phi);
+                a[j] = L * c_layer * (1.0 - phi);
+            } else {
+                const double link = std::max(1e-3, std::min(cards[idx[j]]->h2d_gbs, cards[idx[e_j]]->h2d_gbs));
+                const double hop  = 2.0 * (std::max(cards[idx[j]]->lat_us, cards[idx[e_j]]->lat_us) + pass_tok * m.n_embd * 4.0 / (link * 1e3));
+                a[j] = L * (c_layer * (1.0 - phi) + hop);
+            }
         }
-        double hand = 0.0;   // one hand-off per boundary and pass: the fixed latency plus the pass's activations crossing the slower link
-        for (size_t j = 0; j + 1 < idx.size(); ++j) {
-            const auto * x = cards[idx[j]]; const auto * y = cards[idx[j + 1]];
-            const double bw = std::max(1e-3, std::min(x->h2d_gbs, y->h2d_gbs));
-            hand += p * (std::max(x->lat_us, y->lat_us) + pass_tok * m.n_embd * 4.0 / (bw * 1e3));
-        }
+        const double hand = 0.0;   // the hops are in a[j] now
         // for a bound M on the slowest stage a card takes at most M / a_j of the layers; the sum of the stage times is smallest when the cheapest card
         // is filled first (fractional knapsack; cards with equal cost share the layers in proportion to their cap); T(M) = chain(M) + (p - 1) M is
         // convex in M, so a ternary search finds the best M
         auto eval = [&](double M, std::vector<double> * sh) -> double {
+            if (M < L * x_E) { return 1e300; }              // E's stage holds the experts of every layer
             std::vector<double> cap(idx.size());
             double cap_sum = 0.0;
-            for (size_t j = 0; j < idx.size(); ++j) { cap[j] = std::min(1.0, M / a[j]); cap_sum += cap[j]; }
+            for (size_t j = 0; j < idx.size(); ++j) {
+                const double room = j == e_j ? M - L * x_E : M;
+                cap[j] = a[j] > 0 ? std::min(1.0, room / a[j]) : 1.0;
+                cap_sum += cap[j];
+            }
             if (cap_sum < 1.0 - 1e-12) { return 1e300; }
             std::vector<size_t> ord(idx.size());
             for (size_t j = 0; j < ord.size(); ++j) { ord[j] = j; }
             std::sort(ord.begin(), ord.end(), [&](size_t x, size_t y) { return a[x] < a[y]; });
             if (sh) { sh->assign(idx.size(), 0.0); }
-            double rest = 1.0, chain = 0.0;
+            double rest = 1.0, chain = L * x_E;
             for (size_t g = 0; g < ord.size() && rest > 1e-15; ) {
                 size_t e = g;
                 double gcap = 0.0;
@@ -316,15 +334,39 @@ std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_pro
             }
             return chain + (p - 1.0) * M;
         };
-        double inv = 0.0, amin = 1e300;
-        for (double x : a) { inv += 1.0 / x; amin = std::min(amin, x); }
-        double lo = 1.0 / inv, hi = amin;
+        if (fixed_split) {   // the modelled time of a given split: sum of the stage times + (passes - 1) x the slowest stage
+            double sum = L * x_E, mx = L * x_E;
+            for (size_t j = 0; j < idx.size(); ++j) {
+                const double f = (*fixed_split)[idx[j]];
+                const double st = f * a[j] + (j == e_j ? L * x_E : 0.0);
+                sum += f * a[j]; mx = std::max(mx, st);
+            }
+            if (share) { share->assign(n, 0.0); for (size_t j = 0; j < idx.size(); ++j) { (*share)[idx[j]] = (*fixed_split)[idx[j]]; } }
+            return sum + (p - 1.0) * mx;
+        }
+        // search M between the smallest feasible stage and one card doing everything. Feasible = the caps of the cards add up to the whole model; that is monotone in M,
+        // so the smallest feasible M is found by bisection first and the (convex) cost is then searched on the feasible side only
+        double hi = L * x_E;
+        for (size_t j = 0; j < idx.size(); ++j) { hi = std::max(hi, j == e_j ? L * x_E + a[j] : a[j]); }
+        auto feasible = [&](double M) {
+            if (M < L * x_E) { return false; }
+            double cs = 0.0;
+            for (size_t j = 0; j < idx.size(); ++j) { cs += a[j] > 0 ? std::min(1.0, (j == e_j ? M - L * x_E : M) / a[j]) : 1.0; }
+            return cs >= 1.0 - 1e-12;
+        };
+        double lo = L * x_E;
+        if (!feasible(lo)) {
+            double l2 = lo, h2 = hi;
+            for (int it = 0; it < 100; ++it) { const double mid = 0.5 * (l2 + h2); if (feasible(mid)) { h2 = mid; } else { l2 = mid; } }
+            lo = h2;
+        }
         for (int it = 0; it < 100; ++it) {
             const double m1 = lo + (hi - lo) / 3.0, m2 = hi - (hi - lo) / 3.0;
             if (eval(m1, nullptr) <= eval(m2, nullptr)) { hi = m2; } else { lo = m1; }
         }
         std::vector<double> sh;
         const double t_pass = eval(0.5 * (lo + hi), &sh) + hand;
+        if (sh.size() != idx.size()) { sh.assign(idx.size(), 0.0); sh[e_j] = 1.0; }   // (cannot happen: the search stays on the feasible side)
         // a member that ends up with no layers is not taking part: the set without it is the same prefill, and it pays the cost of sitting out (below)
         if (idx.size() > 1) {
             for (size_t j = 0; j < idx.size(); ++j) { if (sh[j] < 1e-9) { return solve(mask & ~(1u << idx[j]), n_tok, share); } }
@@ -339,6 +381,11 @@ std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_pro
         return t_pass + setup;
     };
 
+    if (eval_split) {   // only evaluate: the modelled time of this split over all the cards, no search
+        fixed_split = eval_split;
+        if (eval_us) { *eval_us = solve((1u << n) - 1, m.n_tokens, nullptr); }
+        return {};
+    }
     // the best subset for the pass size of the plan; fewer cards first, so a tie keeps the smaller set
     double best_t = 1e300;
     unsigned best_mask = 0;
@@ -423,4 +470,17 @@ llama_prefill_mem_choice llama_prefill_mem_plan_fork(const llama_prefill_mem_for
         c.stream_dense = false; c.ub = ub_res; c.passes = p_res; c.extra_us = t_res; c.reason = ub_res >= m.n_tokens ? "one pass fits with the dense weights resident" : "the extra dense traffic costs more than fewer passes save";
     }
     return c;
+}
+
+std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_probe_fork_result *> & cards, const std::vector<std::vector<double>> & conc,
+                                           const llama_prefill_model_fork & m, std::vector<std::string> * log) {
+    return prefill_plan_impl(cards, conc, m, log, nullptr, nullptr);
+}
+
+// Modelled time in microseconds of the whole prompt for a given split of the layers (one share per card, sum 1), no search: to compare the model with measured runs.
+double llama_prefill_plan_eval_fork(const std::vector<const llama_gpu_probe_fork_result *> & cards, const std::vector<std::vector<double>> & conc,
+                                    const llama_prefill_model_fork & m, const std::vector<double> & split) {
+    double us = -1.0;
+    if (split.size() == cards.size()) { prefill_plan_impl(cards, conc, m, nullptr, &split, &us); }
+    return us;
 }
