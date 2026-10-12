@@ -2636,7 +2636,19 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
             fit.graph = false;
         }
         if (ap.dev == mc->link_dev[0]) {
-            const size_t stage = ggml_backend_sched_prefetch_slot_bytes(sched) * (size_t) std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
+            // A staging slot holds one whole expert tensor. The scheduler only knows its slot size once a prompt batch has been computed, so at reserve time it
+            // says 0 and the slots looked free: the micro-batch was never shrunk for them, and the real prompt graph then found no room, ran WITHOUT prefetch and
+            // paid its whole upload on top of the compute (GLM 12k, one x16: 649 prompt t/s at the auto micro-batch, 769 at 8192 where the slots fit; nsys: 0% of the copy
+            // time hidden behind kernels). Until the scheduler knows, the largest expert tensor of the model is the slot size.
+            size_t slot_b = ggml_backend_sched_prefetch_slot_bytes(sched);
+            if (slot_b == 0) {
+                for (const auto & l : mc->layers) {
+                    for (const ggml_tensor * t : { l.pub.up_src, l.pub.gate_src, l.pub.down_src }) {
+                        if (t) { slot_b = std::max(slot_b, GGML_PAD(ggml_nbytes(t), 256)); }
+                    }
+                }
+            }
+            const size_t stage = slot_b * (size_t) std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
             if (stage > 0 && base + stage > cap) {
                 fit.stage = false;
                 fit.need  = std::max(fit.need, base + stage);
