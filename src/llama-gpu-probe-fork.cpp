@@ -11,8 +11,11 @@
 //   h2d_conc_gbs  the same while every card uploads at once. Cards behind one root complex or the chipset uplink share bandwidth; only this number
 //                 shows it, and it is what a real prefill sees because every card streams its own layers' experts at the same time.
 //   lat_us        median of 64 small (4 KB) synchronous uploads: the fixed cost of one hand-off between two layers on different cards.
-//   wtps          a mul_mat over 64 MB of uploaded quantised weights (Q4_K, the MMQ path the real model uses) with a 512-token batch, in weight bytes x
-//                 tokens per second. The dense part of a prefill pass is bound by this (clocks and power capping are included, the kernel runs for ms).
+//   layer_us      the compute part, measured by a MINI GRAPH (llama_gpu_probe_layer_fork): the matmuls of one layer of this very model with fake weights of
+//                 the real tensor types and shapes (the routed experts through mul_mat_id with the model's number of experts per token) and n fake
+//                 tokens, so the model's real quantisation kernels measure how long a token of a layer takes on each card, clocks and power capping included.
+//                 It covers the weight-bound ops; attention over a long context, norms and the scans of hybrid layers are not in it (a small share, and
+//                 the speed of a card relative to the others is what the plan uses).
 //
 // The plan. A prefill pass walks the layers one after the other, each on the card that holds it. The experts of a layer are uploaded by the card that
 // computes it, and the upload of later layers runs ahead of the compute (prefetch overlap), so:
@@ -45,7 +48,6 @@
 namespace {
 
 constexpr size_t PROBE_BYTES = 64u << 20;   // size of the bulk upload and of the quantised weights of the compute probe
-constexpr int    PROBE_TOKENS = 512;        // tokens of the compute probe (a small prefill batch)
 constexpr int    LAT_SAMPLES  = 64;
 constexpr size_t LAT_BYTES    = 4096;
 
@@ -117,37 +119,62 @@ double latency_us(ggml_tensor * t, const void * src) {
     return median(v);
 }
 
-// a mul_mat of 64 MB of Q4_K weights with PROBE_TOKENS tokens, in weight bytes x tokens per second
-double compute_wtps(ggml_backend_dev_t dev, const void * host_ptr) {
+// microseconds for one layer of the given tensors with n_tokens fake tokens on one card
+double layer_time_us(ggml_backend_dev_t dev, const std::vector<llama_layer_spec_fork> & specs, int n_used, int n_tokens) {
     ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
     if (!be) { return 0.0; }
-    const int64_t K = 4096;
-    const int64_t rows = (int64_t) (PROBE_BYTES / ((size_t) K / 256 * 144)) / 32 * 32;   // Q4_K: 144 bytes per 256 weights
-    double wtps = 0.0;
+    double result = 0.0;
     {
-        dev_ctx c(0);
-        ggml_tensor * w = ggml_new_tensor_2d(c.ctx, GGML_TYPE_Q4_K, K, rows);
-        ggml_tensor * x = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32,  K, PROBE_TOKENS);
-        ggml_tensor * y = ggml_mul_mat(c.ctx, w, x);
+        dev_ctx c(ggml_tensor_overhead() * (specs.size() * 4 + 16));
+        std::map<int64_t, ggml_tensor *> xs;   // one activation per input width
+        std::vector<std::pair<ggml_tensor *, bool>> to_fill;   // tensors to fill with bytes (weights) ...
+        auto x_of = [&](int64_t ne0) {
+            auto it = xs.find(ne0);
+            if (it == xs.end()) { it = xs.emplace(ne0, ggml_new_tensor_3d(c.ctx, GGML_TYPE_F32, ne0, 1, n_tokens)).first; }
+            return it->second;
+        };
+        ggml_tensor * ids = ggml_new_tensor_2d(c.ctx, GGML_TYPE_I32, std::max(1, n_used), n_tokens);
         ggml_cgraph * gf = ggml_new_graph(c.ctx);
-        ggml_build_forward_expand(gf, y);
-        if (c.alloc(dev) && ggml_nbytes(w) <= PROBE_BYTES) {
-            ggml_backend_tensor_set(w, host_ptr, 0, ggml_nbytes(w));
-            ggml_backend_tensor_set(x, host_ptr, 0, ggml_nbytes(x));
+        for (const auto & sp : specs) {
+            if (sp.ne0 <= 0 || sp.ne1 <= 0) { continue; }
+            if (sp.ne2 > 1) {   // routed experts: only a few of them are allocated, the cost per token does not depend on the size of the table
+                const int64_t pe = std::min<int64_t>(sp.ne2, std::max<int64_t>(2 * n_used, 16));
+                ggml_tensor * w = ggml_new_tensor_3d(c.ctx, sp.type, sp.ne0, sp.ne1, pe);
+                to_fill.push_back({ w, false });
+                ggml_build_forward_expand(gf, ggml_mul_mat_id(c.ctx, w, x_of(sp.ne0), ids));
+            } else {
+                ggml_tensor * w = ggml_new_tensor_2d(c.ctx, sp.type, sp.ne0, sp.ne1);
+                to_fill.push_back({ w, false });
+                ggml_build_forward_expand(gf, ggml_mul_mat(c.ctx, w, ggml_reshape_2d(c.ctx, x_of(sp.ne0), sp.ne0, n_tokens)));
+            }
+        }
+        if (ggml_graph_n_nodes(gf) > 0 && c.alloc(dev)) {
+            // weights: bytes of a pattern (any bytes are valid quantised blocks; the time does not depend on the values), activations: 1.0f
+            const size_t chunk = 16u << 20;
+            std::vector<uint8_t> bytes(chunk, 1);
+            for (auto & pr : to_fill) {
+                for (size_t off = 0; off < ggml_nbytes(pr.first); off += chunk) { ggml_backend_tensor_set(pr.first, bytes.data(), off, std::min(chunk, ggml_nbytes(pr.first) - off)); }
+            }
+            for (auto & kv : xs) {
+                std::vector<float> ones((size_t) kv.first * n_tokens, 1.0f);
+                ggml_backend_tensor_set(kv.second, ones.data(), 0, ones.size() * sizeof(float));
+            }
+            std::vector<int32_t> id((size_t) std::max(1, n_used) * n_tokens);
+            for (size_t i = 0; i < id.size(); ++i) { id[i] = (int32_t) ((i * 2654435761u) % 16u) % std::max<int32_t>(1, (int32_t) std::min<int64_t>(16, 2 * n_used)); }   // spread over the allocated experts
+            ggml_backend_tensor_set(ids, id.data(), 0, id.size() * sizeof(int32_t));
             std::vector<double> t_us;
-            for (int i = 0; i < 6; ++i) {   // the first run builds kernels and caches: not counted
+            for (int i = 0; i < 5; ++i) {   // the first run builds kernels and caches: not counted
                 ggml_backend_synchronize(be);
                 const int64_t t0 = ggml_time_us();
                 ggml_backend_graph_compute(be, gf);
                 ggml_backend_synchronize(be);
                 if (i > 0) { t_us.push_back((double) (ggml_time_us() - t0)); }
             }
-            const double t = median(t_us);
-            if (t > 0) { wtps = (double) ggml_nbytes(w) * PROBE_TOKENS / (t / 1e6); }
+            result = median(t_us);
         }
     }
     ggml_backend_free(be);
-    return wtps;
+    return result;
 }
 
 }  // namespace
@@ -167,7 +194,6 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
             out[i].h2d_gbs = bulk_gbs(big, h.ptr, 3);
             out[i].lat_us  = latency_us(small, h.ptr);
         }
-        out[i].wtps = compute_wtps(gpus[i], h.ptr);
     }
     // every subset of cards uploading at once (and the singles alone): each member's rate = its bytes over its own time after a common start. Cards behind one
     // root complex or the chipset uplink slow each other down; the subset table is what the plan reads to see what a card steals from the others.
@@ -209,6 +235,15 @@ const std::vector<std::vector<double>> & llama_gpu_probe_conc_fork() {
     return g_conc;
 }
 
+void llama_gpu_probe_layer_fork(const std::vector<ggml_backend_dev_t> & gpus, const std::vector<llama_layer_spec_fork> & specs, int n_used, int n_tokens) {
+    for (ggml_backend_dev_t d : gpus) {
+        const double us = layer_time_us(d, specs, n_used, n_tokens);
+        std::lock_guard<std::mutex> lk(g_mu);
+        auto it = g_results.find(d);
+        if (it != g_results.end()) { it->second.layer_us = us; it->second.layer_tokens = n_tokens; }
+    }
+}
+
 const llama_gpu_probe_fork_result * llama_gpu_probe_find_fork(ggml_backend_dev_t dev) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_results.find(dev);
@@ -220,12 +255,14 @@ std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_pro
     const size_t n = cards.size();
     if (n < 2 || n > 8 || m.n_layer <= 0 || m.n_tokens <= 0) { return {}; }
     for (const auto * c : cards) {
-        if (!c || c->h2d_gbs <= 0 || c->wtps <= 0) { return {}; }
+        if (!c || c->h2d_gbs <= 0 || c->layer_us <= 0 || c->layer_tokens <= 0) { return {}; }
     }
     const double L = m.n_layer;
     const double N = std::max(1.0, m.n_expert);
-    double fastest_wtps = 0.0;
-    for (const auto * c : cards) { fastest_wtps = std::max(fastest_wtps, c->wtps); }
+    double fastest_tok_us = 1e300;   // microseconds one token of one layer takes on the fastest card
+    for (const auto * c : cards) { fastest_tok_us = std::min(fastest_tok_us, c->layer_us / c->layer_tokens); }
+    // optional calibration: the fastest card's measured prefill speed on the whole model fixes the scale of every card's time per token
+    const double scale = m.fastest_prefill_tps > 0 ? (1e6 / (m.fastest_prefill_tps * L)) / fastest_tok_us : 1.0;
     const double k = std::min(N, std::max(0.0, m.n_used));
     auto say = [&](const std::string & s) { if (log) { log->push_back(s); } };
     char buf[400];
@@ -259,11 +296,8 @@ std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_pro
             const double bw = rate(mask, idx[j]);
             best_bw = std::max(best_bw, bw);
             const double u = up_b / (bw * 1e3);
-            // Compute per layer of one pass. Only the SPEED OF A CARD RELATIVE TO THE FASTEST is taken from the probe (the same kernel runs on every card, so the
-            // ratio is robust); the absolute scale is the fastest card's real prefill speed on this model when it is known, because a synthetic kernel
-            // does not reflect the real prefill kernels well enough to say whether a pass is compute-bound or link-bound
-            const double rel = cards[idx[j]]->wtps / fastest_wtps;
-            const double c = (m.fastest_prefill_tps > 0 ? pass_tok / (m.fastest_prefill_tps * rel * L) : act_b * pass_tok / cards[idx[j]]->wtps) * 1e6;
+            // compute per layer of one pass: the time one token of one layer takes on this card (mini graph) times the tokens of the pass
+            const double c = cards[idx[j]]->layer_us / cards[idx[j]]->layer_tokens * pass_tok * scale;
             a[j] = L * std::max(u, c);
         }
         double hand = 0.0;   // one hand-off per boundary and pass: the fixed latency plus the pass's activations crossing the slower link
@@ -363,7 +397,7 @@ std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_pro
         }
         say(buf);
     }
-    say(m.fastest_prefill_tps > 0 ? "prefill plan: compute scale from the measured prefill speed of the fastest card" : "prefill plan: compute scale estimated from the synthetic probe (set --moe prefill-plan-tps=N, the fastest card's prefill tokens/s, to calibrate)");
+    say(m.fastest_prefill_tps > 0 ? "prefill plan: compute scale calibrated to the measured prefill speed of the fastest card" : "prefill plan: compute times from the mini graph as measured (--moe prefill-plan-tps=N, the fastest card's prefill tokens/s, calibrates them)");
     std::vector<float> out(n);
     for (size_t i = 0; i < n; ++i) { out[i] = (float) best_share[i]; }
     snprintf(buf, sizeof buf, "prefill plan: chosen cards %u, modelled pass %.0f ms for %.0f tokens", best_mask, best_t / 1e3, m.n_tokens);

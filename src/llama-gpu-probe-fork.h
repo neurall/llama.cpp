@@ -14,7 +14,8 @@ struct llama_gpu_probe_fork_result {
     double h2d_gbs      = 0.0;   // bulk host->device upload (64 MB, pinned source) with this card alone
     double h2d_conc_gbs = 0.0;   // the same upload while every probed card uploads at once: shared root complex, chipset uplink and RAM contention
     double lat_us       = 0.0;   // median time of one small (4 KB) synchronous upload: the fixed cost of a hand-off between layers
-    double wtps         = 0.0;   // compute speed in "weight bytes x tokens per second": a quantised mul_mat over 64 MB of uploaded weights and 512 tokens
+    double layer_us     = 0.0;   // microseconds this card takes for ONE layer of the model (mini graph with the layer's real tensor types and shapes) ...
+    double layer_tokens = 0.0;   // ... for this many fake tokens; so one token of one layer takes layer_us / layer_tokens on this card
 };
 
 // Runs the probe on every GPU (about 1 s per card) and remembers the results for llama_gpu_probe_find_fork().
@@ -25,6 +26,18 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
 
 // The subset table of the last llama_gpu_probe_fork() call (see its `conc` argument).
 const std::vector<std::vector<double>> & llama_gpu_probe_conc_fork();
+
+// One weight tensor of a layer as the GGUF describes it: enough to build a fake tensor of the same type and shape on a card.
+struct llama_layer_spec_fork {
+    ggml_type type = GGML_TYPE_F32;
+    int64_t   ne0 = 0, ne1 = 0, ne2 = 1;   // ne2 > 1: a routed-expert tensor (ne2 experts), run with mul_mat_id
+};
+
+// The compute part of the probe: a mini graph with one layer's matmuls (fake weights of the real types and shapes, `n_tokens` fake tokens, n_used
+// experts per token through mul_mat_id) is timed on every card, so the real prefill kernels (MMQ of the model's quantisations) measure how long a token
+// takes on each card. Needs only the tensor descriptions, so it runs before any model buffer or graph is allocated. Fills layer_us / layer_tokens of the
+// results kept by llama_gpu_probe_fork().
+void llama_gpu_probe_layer_fork(const std::vector<ggml_backend_dev_t> & gpus, const std::vector<llama_layer_spec_fork> & specs, int n_used, int n_tokens);
 
 // Results of an earlier llama_gpu_probe_fork() for this device, or nullptr.
 const llama_gpu_probe_fork_result * llama_gpu_probe_find_fork(ggml_backend_dev_t dev);
