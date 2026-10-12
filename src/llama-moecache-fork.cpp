@@ -5184,10 +5184,26 @@ int64_t llama_moe_cache_max_batch_fork() {
 // a formula over all touched experts says). Each path is a piecewise-linear curve through its points, extended past the last point with the last slope;
 // the switch is the smallest n where streaming is not slower than the cache path (cap when it never is within the cap).
 struct mb_pts { std::vector<double> n, us; };
-static double mb_eval(const mb_pts & p, double n) {
+// batch time cannot fall as the batch grows: pool adjacent violators (average neighbours that break the order) smooths timing noise
+static void mb_monotone(mb_pts & p) {
+    std::vector<double> v, w;
+    for (double u : p.us) {
+        v.push_back(u); w.push_back(1);
+        while (v.size() > 1 && v[v.size() - 2] > v.back()) {
+            const double t = w[w.size() - 2] + w.back();
+            v[v.size() - 2] = (v[v.size() - 2] * w[w.size() - 2] + v.back() * w.back()) / t;
+            w[w.size() - 2] = t;
+            v.pop_back(); w.pop_back();
+        }
+    }
+    size_t k = 0;
+    for (size_t i = 0; i < v.size(); ++i) { for (int j = 0; j < (int) w[i]; ++j) { p.us[k++] = v[i]; } }
+}
+// below the first point the cache path scales with the tokens (through the origin), a streamed pass stays at its first point (the upload does not shrink)
+static double mb_eval(const mb_pts & p, double n, bool flat_below) {
     const size_t m = p.n.size();
-    if (m == 1) {
-        return p.us[0] * n / p.n[0];
+    if (n <= p.n[0]) {
+        return flat_below ? p.us[0] : p.us[0] * n / p.n[0];
     }
     size_t i = 1;
     while (i + 1 < m && n > p.n[i]) {
@@ -5202,7 +5218,7 @@ static int64_t crossover(const mb_pts & cache, const mb_pts & stream) {
         return 31;
     }
     for (int64_t n = 8; n <= cap; ++n) {
-        if (mb_eval(stream, (double) n) <= mb_eval(cache, (double) n)) {
+        if (mb_eval(stream, (double) n, true) <= mb_eval(cache, (double) n, false)) {
             return n;
         }
     }
@@ -5245,6 +5261,7 @@ bool llama_moe_cache_probe_wanted_fork() {
     std::string v;
     mb_pts c, st;
     if (!mc->profile.empty() && moe_state_get(mc->profile, "batch.cost2", v) && mb_decode(v, mc->n_slots, c, st)) {   // stored by an earlier start: no probe, just compute
+        mb_monotone(c); mb_monotone(st);
         g_mb_auto = crossover(c, st);
         LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (stored probe)\n", (long long) g_mb_auto.load());
         return false;
@@ -5269,6 +5286,7 @@ void llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int n
     if (!mc || c.n.size() < 2 || st.n.size() < 2) {
         return;   // probe failed: the limit stays at 31
     }
+    mb_monotone(c); mb_monotone(st);
     g_mb_auto = crossover(c, st);
     std::string msg;
     for (size_t i = 0; i < c.n.size(); ++i) { msg += " c" + std::to_string((int) c.n[i]) + "=" + std::to_string((int) (c.us[i] / 1e3)) + "ms"; }
