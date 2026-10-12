@@ -1616,7 +1616,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             const char * o_pt = llama_moe_get_opt("prefill-plan-probe-tokens");
             std::vector<ggml_backend_dev_t> pdevs;
             for (size_t i = 0; i < n_devices(); ++i) { pdevs.push_back(devices[i].dev); }
-            if (!specs.empty()) { llama_gpu_probe_layer_fork(pdevs, specs, (int) hparams.n_expert_used_max(), o_pt ? atoi(o_pt) : 1024); }
+            if (!specs.empty()) { llama_gpu_probe_layer_fork(pdevs, specs, (int) hparams.n_expert_used_max(), o_pt ? atoi(o_pt) : 2048); }
             for (size_t i = 0; i < n_devices(); ++i) {
                 if (const auto * r = llama_gpu_probe_find_fork(devices[i].dev)) {
                     LLAMA_LOG_INFO("%s: probe %s: one layer of this model takes %.2f ms for %.0f tokens (%.1f us per token)\n", __func__, r->name.c_str(), r->layer_us / 1e3, r->layer_tokens, r->layer_tokens > 0 ? r->layer_us / r->layer_tokens : 0.0);

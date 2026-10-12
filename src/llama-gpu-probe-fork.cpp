@@ -202,15 +202,20 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
     for (unsigned mask = 1; mask < ((unsigned) 1 << n); ++mask) {
         std::vector<double> rate(n, 0.0);
         std::atomic<bool> go{false};
+        std::atomic<int>  ready{0};   // threads that finished their set-up and warm-up: the start is a real barrier, not a sleep
+        int               want = 0;
         std::vector<std::thread> th;
         for (size_t i = 0; i < n; ++i) {
             if (!(mask >> i & 1)) { continue; }
+            ++want;
             th.emplace_back([&, i] {
                 host_buf h(gpus[i], PROBE_BYTES);
                 dev_ctx c(0);
                 ggml_tensor * big = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I8, (int64_t) PROBE_BYTES);
-                if (!c.alloc(gpus[i])) { return; }
-                ggml_backend_tensor_set(big, h.ptr, 0, PROBE_BYTES);   // warm-up
+                const bool ok = c.alloc(gpus[i]);
+                if (ok) { ggml_backend_tensor_set(big, h.ptr, 0, PROBE_BYTES); }   // warm-up
+                ready.fetch_add(1);   // (also when the allocation failed, so the barrier cannot hang)
+                if (!ok) { return; }
                 while (!go.load()) { std::this_thread::yield(); }
                 const int reps = 6;
                 const int64_t t0 = ggml_time_us();
@@ -218,7 +223,7 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
                 rate[i] = (double) PROBE_BYTES * reps / 1e3 / (double) std::max<int64_t>(1, ggml_time_us() - t0);
             });
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));   // let every thread reach the barrier
+        while (ready.load() < want) { std::this_thread::yield(); }
         go.store(true);
         for (auto & t : th) { t.join(); }
         if (conc) { (*conc)[mask] = rate; }
