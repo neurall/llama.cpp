@@ -1613,10 +1613,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 if (t->ne[2] > 1 && !exps) { continue; }                            // other 3D tensors (MLA, conv): not covered by the mini graph
                 specs.push_back({ t->type, t->ne[0], t->ne[1], t->ne[2] });
             }
+            // 512 fake tokens: past the knee where a matmul stops being bound by reading the weights (per-token time flat from about 512), 0.12 s for two cards.
+            // Known blind spot: a short burst does not reach the power-capped clocks of a card (measured: x4 card at 220 W reads 9% faster than the x16 card at
+            // 512 tokens and 20% slower at 2048); that is left to the measured prefill speed at run time, --moe prefill-plan-probe-tokens=2048 shows it at the probe.
             const char * o_pt = llama_moe_get_opt("prefill-plan-probe-tokens");
             std::vector<ggml_backend_dev_t> pdevs;
             for (size_t i = 0; i < n_devices(); ++i) { pdevs.push_back(devices[i].dev); }
-            if (!specs.empty()) { llama_gpu_probe_layer_fork(pdevs, specs, (int) hparams.n_expert_used_max(), o_pt ? atoi(o_pt) : 2048); }
+            if (!specs.empty()) { llama_gpu_probe_layer_fork(pdevs, specs, (int) hparams.n_expert_used_max(), o_pt ? atoi(o_pt) : 512); }
             for (size_t i = 0; i < n_devices(); ++i) {
                 if (const auto * r = llama_gpu_probe_find_fork(devices[i].dev)) {
                     LLAMA_LOG_INFO("%s: probe %s: one layer of this model takes %.2f ms for %.0f tokens (%.1f us per token)\n", __func__, r->name.c_str(), r->layer_us / 1e3, r->layer_tokens, r->layer_tokens > 0 ? r->layer_us / r->layer_tokens : 0.0);
