@@ -3120,7 +3120,7 @@ def _sudo_write(path, val):
 
 
 def cmd_stop(a):
-    """Stops a running measurement chain for real: the harness (bench, regress, exp, run, quick, ctl, prompt with their flock wrappers), every descendant of it (the
+    """Stops a running measurement chain for real: the harness (bench, regress, exp, run, quick, ctl, prompt with their flock wrappers), the servers and tools of our builds and an nsys around them, every descendant of it (the
     servers and tools it started: a killed script does not take its children with it, and a lone kill of the harness lets the parent script start the next cell),
     and the .sh scripts that started it. Never the shell that runs this command or its ancestors (a plain `bash -c` is left alone, only real script files count).
     SIGTERM first, SIGKILL for what is still there after --grace seconds, then it waits until the GPUs have (almost) no memory in use, and puts the power limits
@@ -3156,7 +3156,10 @@ def cmd_stop(a):
     def is_harness(argv):
         py = os.path.basename(argv[0]).startswith("python")
         return py and any(x.endswith("run.py") for x in argv[1:4]) and any(x in ("bench", "regress", "exp", "run", "quick", "ctl", "prompt", "baseline") for x in argv[1:6])
-    roots = {p for p, (argv, _) in procs.items() if p not in protected and (is_harness(argv) or (os.path.basename(argv[0]) == "flock" and any(x.endswith("run.py") for x in argv)))}
+    def is_tool(argv):   # a server or tool of one of our builds, or an nsys wrapped around one
+        exe = argv[0]
+        return os.path.basename(exe) == "nsys" or any(exe.startswith(d) for d in (DEVBUILDS + "/", "/p/bw/rels/", "/p/bw/gh-rel/") if d)
+    roots = {p for p, (argv, _) in procs.items() if p not in protected and (is_harness(argv) or is_tool(argv) or (os.path.basename(argv[0]) == "flock" and any(x.endswith("run.py") for x in argv)))}
     scripts = set()
     for r in roots:   # the scripts above the harness: they would start the next cell
         pid = procs[r][1]
