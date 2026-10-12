@@ -11,14 +11,13 @@
 //   h2d_conc_gbs  the same while every card uploads at once. Cards behind one root complex or the chipset uplink share bandwidth; only this number
 //                 shows it, and it is what a real prefill sees because every card streams its own layers' experts at the same time.
 //   lat_us        median of 64 small (4 KB) synchronous uploads: the fixed cost of one hand-off between two layers on different cards.
-//   compute       the compute part. The backend's own probe when every card has one (CUDA and HIP: a kernel of chains of int8 dot products, the instruction the
-//                 quantised matmul kernels are built on, loops until 2 ms of the card's own timer have passed and counts the loops; also reports the SM clock it
-//                 reached; no data, no graph, no allocation of any size). Backends without it are measured with a portable ggml graph: a small Q4_K mul_mat
-//                 through the backend's own kernels, the fastest of three batches. Only the RATIO between cards probed by the same method is used: the same loop
-//                 on every card gives the relative speed. The absolute scale comes from one real measurement (the fastest card's prefill tokens per second on
-//                 this model, --moe prefill-plan-tps or the stored value of an earlier run); without it the plan assumes that the fastest card's compute and
-//                 upload take equally long per layer at the pass size and says so in its log.
-//                 A 2 ms window does not reach the power-capped clocks of a sustained pass; that is left to the measured prefill speed at run time.
+//   compute       the compute part, portable on purpose: one small ggml graph (a mul_mat of Q4_K weights, 4096 wide, against 512 fake tokens) run through the
+//                 backend's own matmul kernels on every card, the fastest of three short batches, in weight bytes x tokens per second. It needs no model, no big
+//                 allocation and no per-backend code, so it works on CUDA, HIP, Vulkan, Metal, SYCL alike. Only the RATIO between cards is used. The absolute scale
+//                 comes from one real measurement (the fastest card's prefill tokens per second on this model, --moe prefill-plan-tps or the stored value of an
+//                 earlier run); without it the plan assumes that the fastest card's compute and upload take equally long per layer at the pass size and says so
+//                 in its log. A probe this short does not reach the power-capped clocks of a sustained pass (measured: a x4 card limited to 220 W reads 6% slower
+//                 here, 20% slower in a long burst); that is left to the measured prefill speed at run time.
 //
 // The plan. A prefill pass walks the layers one after the other, each on the card that holds it. The experts of a layer are uploaded by the card that
 // computes it, and the upload of later layers runs ahead of the compute (prefetch overlap), so:
@@ -37,7 +36,6 @@
 
 #include "ggml.h"
 #include "ggml-alloc.h"
-#include "llama.h"   // llama_moe_get_opt
 
 #include <algorithm>
 #include <atomic>
@@ -160,8 +158,6 @@ double graph_compute(ggml_backend_dev_t dev) {
     return result;
 }
 
-typedef bool (*probe_loops_fn)(ggml_backend_dev_t, long long, double *, double *);
-
 }  // namespace
 
 std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<ggml_backend_dev_t> & gpus, std::vector<std::vector<double>> * conc) {
@@ -180,28 +176,8 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
             out[i].lat_us  = latency_us(small, h.ptr);
         }
     }
-    // compute: the backend's own loop probe when EVERY card has one (a fixed window of the card's own timer, loops counted), else the portable graph for all
-    // cards, so the numbers of different cards are always in the same unit
-    {
-        std::vector<probe_loops_fn> fns;
-        for (size_t i = 0; i < gpus.size(); ++i) {
-            ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(gpus[i]);
-            fns.push_back(reg ? (probe_loops_fn) ggml_backend_reg_get_proc_address(reg, "ggml_backend_probe_loops") : nullptr);
-        }
-        // --moe prefill-plan-compute=graph forces the portable graph (to compare the two methods on one binary), =kernel the loop probe only
-        const char * force = llama_moe_get_opt("prefill-plan-compute");
-        bool all = !fns.empty() && !(force && strcmp(force, "graph") == 0);
-        for (auto f : fns) { all = all && f != nullptr; }
-        for (size_t i = 0; i < gpus.size() && all; ++i) {
-            double ops = 0.0, mhz = 0.0;
-            fns[i](gpus[i], 2000, &ops, &mhz);   // a first launch loads the kernel: not counted
-            if (!fns[i](gpus[i], 2000, &ops, &mhz) || ops <= 0.0) { all = false; break; }
-            out[i].compute = ops; out[i].clock_mhz = mhz; out[i].compute_method = "ggml_backend_probe_loops";
-        }
-        if (!all) {
-            for (size_t i = 0; i < gpus.size(); ++i) { out[i].compute = graph_compute(gpus[i]); out[i].clock_mhz = 0.0; out[i].compute_method = "ggml graph"; }
-        }
-    }
+    // compute: the portable graph on every card, through the backend's own matmul kernels (see graph_compute); same unit for all cards
+    for (size_t i = 0; i < gpus.size(); ++i) { out[i].compute = graph_compute(gpus[i]); }
     // every subset of cards uploading at once (and the singles alone): each member's rate = its bytes over its own time after a common start. Cards behind one
     // root complex or the chipset uplink slow each other down; the subset table is what the plan reads to see what a card steals from the others.
     const size_t n = gpus.size();

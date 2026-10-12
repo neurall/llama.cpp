@@ -14,9 +14,7 @@ struct llama_gpu_probe_fork_result {
     double h2d_gbs      = 0.0;   // bulk host->device upload (32 MB, pinned source) with this card alone
     double h2d_conc_gbs = 0.0;   // the same upload while every probed card uploads at once: shared root complex, chipset uplink and RAM contention
     double lat_us       = 0.0;   // median time of one small (4 KB) synchronous upload: the fixed cost of a hand-off between layers
-    double compute      = 0.0;   // sustained compute throughput in the unit of `compute_method`; only the ratio between cards probed by the same method means anything
-    double clock_mhz    = 0.0;   // SM clock reached during the compute probe (0 when the method cannot tell)
-    std::string compute_method;  // "ggml_backend_probe_loops" (a backend's own loop kernel counted for a fixed time) or "ggml graph" (the portable fallback)
+    double compute      = 0.0;   // compute throughput of a small quantised matmul through the backend's own kernels (weight bytes x tokens per second); only the ratio between cards means anything
 };
 
 // Runs the probe on every GPU (about 1 s per card) and remembers the results for llama_gpu_probe_find_fork().

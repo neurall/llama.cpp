@@ -6569,83 +6569,8 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
     GGML_UNUSED(reg);
 }
 
-// Fork: throughput probe for the prefill GPU selection (see src/llama-gpu-probe-fork.cpp). No data, no allocation of any size, no graph: every thread runs
-// chains of int8 dot products (dp4a, the instruction the quantised matmul kernels are built on) in a loop until the window of the GPU's own timer has passed,
-// and counts the loops. The count is proportional to the throughput the card sustains in that time, so the ratio of two cards' counts is their relative speed;
-// cycles over elapsed time gives the SM clock actually reached under that load. Four independent chains per thread hide the instruction latency.
-// The timer: NVIDIA globaltimer (nanoseconds, PTX), AMD wall_clock64() (a fixed rate that the host queries); MUSA is not covered (the portable graph probe runs).
-#if !defined(GGML_USE_MUSA)
-static __device__ __forceinline__ unsigned long long ggml_cuda_probe_ticks() {
-#if defined(GGML_USE_HIP)
-    return (unsigned long long) wall_clock64();
-#else
-    unsigned long long t;
-    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
-    return t;
-#endif
-}
-
-static __global__ void ggml_cuda_probe_loop_kernel(unsigned long long window_ticks, unsigned long long * out) {
-    const unsigned long long t0 = ggml_cuda_probe_ticks();
-    const long long c0 = clock64();
-    int a = threadIdx.x, b = a + 1, c = a + 2, d = a + 3;
-    unsigned long long loops = 0, t = t0;
-    while (t - t0 < window_ticks) {
-#pragma unroll
-        for (int i = 0; i < 16; ++i) {
-            a = ggml_cuda_dp4a(a, 0x01020304 + i, a);
-            b = ggml_cuda_dp4a(b, 0x02030405 + i, b);
-            c = ggml_cuda_dp4a(c, 0x03040506 + i, c);
-            d = ggml_cuda_dp4a(d, 0x04050607 + i, d);
-        }
-        ++loops;
-        t = ggml_cuda_probe_ticks();
-    }
-    unsigned long long w = loops * 16 * 4;   // dp4a per thread; summed over the warp, one atomic per warp
-    for (int o = warpSize / 2; o > 0; o >>= 1) { w += __shfl_down_sync(0xffffffffffffffffull, w, o); }
-    if ((threadIdx.x % warpSize) == 0) { atomicAdd(&out[0], w); }
-    if (blockIdx.x == 0 && threadIdx.x == 0) { out[1] = (unsigned long long) (clock64() - c0); out[2] = t - t0; }
-    if (a + b + c + d == 0x13572468 && loops == 0) { out[3] = 1; }   // keeps the chains alive
-}
-#endif
-
-// Runs the probe kernel on one device for window_us microseconds. This is the CUDA/HIP implementation of the optional backend probe "ggml_backend_probe_loops"
-// (bool fn(ggml_backend_dev_t, long long window_us, double * ops_per_s, double * clock_mhz), looked up through the backend registry): another backend can offer the
-// same function, backends without it are probed with a portable ggml graph instead. Returns the dp4a operations per second the whole GPU sustained and the SM clock.
-static bool ggml_backend_cuda_probe_loops(ggml_backend_dev_t dev, long long window_us, double * ops_per_s, double * clock_mhz) {   // registered as "ggml_backend_probe_loops"
-#if defined(GGML_USE_MUSA)
-    GGML_UNUSED(dev); GGML_UNUSED(window_us); GGML_UNUSED(ops_per_s); GGML_UNUSED(clock_mhz);
-    return false;
-#else
-    const auto * ctx = (const ggml_backend_cuda_device_context *) dev->context;
-    ggml_cuda_set_device(ctx->device);
-    double ticks_per_s = 1e9;   // globaltimer counts nanoseconds
-#if defined(GGML_USE_HIP)
-    int khz = 0;
-    if (hipDeviceGetAttribute(&khz, hipDeviceAttributeWallClockRate, ctx->device) != hipSuccess || khz <= 0) { return false; }
-    ticks_per_s = (double) khz * 1e3;
-#endif
-    unsigned long long * d_out = nullptr;
-    if (cudaMalloc(&d_out, 4 * sizeof(unsigned long long)) != cudaSuccess) { return false; }   // 32 bytes, at load time
-    cudaMemset(d_out, 0, 4 * sizeof(unsigned long long));
-    const int blocks = 4 * ggml_cuda_info().devices[ctx->device].nsm;
-    ggml_cuda_probe_loop_kernel<<<blocks, 256>>>((unsigned long long) ((double) window_us * 1e-6 * ticks_per_s), d_out);
-    unsigned long long h[4] = {};
-    const bool ok = cudaDeviceSynchronize() == cudaSuccess && cudaMemcpy(h, d_out, sizeof h, cudaMemcpyDeviceToHost) == cudaSuccess;
-    cudaFree(d_out);
-    if (!ok || h[2] == 0) { return false; }
-    const double seconds = (double) h[2] / ticks_per_s;
-    *ops_per_s = (double) h[0] / seconds;
-    *clock_mhz = (double) h[1] / seconds / 1e6;
-    return true;
-#endif
-}
-
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
-    if (strcmp(name, "ggml_backend_probe_loops") == 0) {   // generic name: any backend can offer the same probe
-        return (void *)ggml_backend_cuda_probe_loops;
-    }
     if (strcmp(name, "ggml_backend_cuda_obs_enable") == 0) {
         return (void *)ggml_backend_cuda_obs_enable;
     }
