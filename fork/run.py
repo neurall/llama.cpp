@@ -3119,6 +3119,102 @@ def _sudo_write(path, val):
         sys.exit(f"hugepool: writing {path} needs root (sudo -n): {r.stderr.strip()}")
 
 
+def cmd_stop(a):
+    """Stops a running measurement chain for real: the harness (bench, regress, exp, run, quick, ctl, prompt with their flock wrappers), every descendant of it (the
+    servers and tools it started: a killed script does not take its children with it, and a lone kill of the harness lets the parent script start the next cell),
+    and the .sh scripts that started it. Never the shell that runs this command or its ancestors (a plain `bash -c` is left alone, only real script files count).
+    SIGTERM first, SIGKILL for what is still there after --grace seconds, then it waits until the GPUs have (almost) no memory in use, and puts the power limits
+    back to the values of the [gpu] limits_env file (LIMIT0=, LIMIT1=) unless --no-power. --dry lists what it would stop and changes nothing.
+    A build (docker) is not a measurement and is not touched; stop it with docker."""
+    import signal
+    me = os.getpid()
+    def read_proc(pid):
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                argv = [x.decode(errors="replace") for x in f.read().split(b"\0") if x]
+            with open(f"/proc/{pid}/stat") as f:
+                ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+            return argv, ppid
+        except (OSError, ValueError, IndexError):
+            return None, None
+    procs = {}
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            argv, ppid = read_proc(int(d))
+            if argv:
+                procs[int(d)] = (argv, ppid)
+    children = {}
+    for pid, (argv, ppid) in procs.items():
+        children.setdefault(ppid, []).append(pid)
+    protected = set()   # this process and its ancestors
+    pid = me
+    while pid in procs and pid > 1:
+        protected.add(pid)
+        pid = procs[pid][1]
+    def is_script(argv):   # `bash ./something.sh ...`, not `bash -c ...`
+        return len(argv) >= 2 and os.path.basename(argv[0]) in ("bash", "sh") and argv[1].endswith(".sh")
+    def is_harness(argv):
+        py = os.path.basename(argv[0]).startswith("python")
+        return py and any(x.endswith("run.py") for x in argv[1:4]) and any(x in ("bench", "regress", "exp", "run", "quick", "ctl", "prompt", "baseline") for x in argv[1:6])
+    roots = {p for p, (argv, _) in procs.items() if p not in protected and (is_harness(argv) or (os.path.basename(argv[0]) == "flock" and any(x.endswith("run.py") for x in argv)))}
+    scripts = set()
+    for r in roots:   # the scripts above the harness: they would start the next cell
+        pid = procs[r][1]
+        while pid in procs and pid > 1 and pid not in protected and is_script(procs[pid][0]):
+            scripts.add(pid)
+            pid = procs[pid][1]
+    targets, stack = set(), list(roots | scripts)
+    while stack:
+        p = stack.pop()
+        if p in targets or p in protected:
+            continue
+        targets.add(p)
+        stack.extend(children.get(p, []))
+    if not targets:
+        print("stop: nothing of the measurement harness is running")
+    for p in sorted(targets):
+        kind = "script" if p in scripts else "harness" if p in roots else "child"
+        print(f"  {kind:8} {p:>8}  {' '.join(procs[p][0])[:110]}")
+    if a.dry:
+        return
+    def alive(p):
+        argv, _ = read_proc(p)
+        return argv is not None
+    for p in sorted(scripts):   # parents first: nothing may start the next cell while the rest goes down
+        try: os.kill(p, signal.SIGTERM)
+        except OSError: pass
+    for p in sorted(targets - scripts):
+        try: os.kill(p, signal.SIGTERM)
+        except OSError: pass
+    t_end = time.time() + a.grace
+    while time.time() < t_end and any(alive(p) for p in targets):
+        time.sleep(0.5)
+    left = [p for p in targets if alive(p)]
+    for p in left:
+        try: os.kill(p, signal.SIGKILL)
+        except OSError: pass
+    if left:
+        print(f"stop: SIGKILL for {len(left)} that ignored SIGTERM for {a.grace} s")
+        time.sleep(1.0)
+    # the GPUs: wait until (almost) nothing is in use
+    t_end = time.time() + a.wait_gpu
+    used = None
+    while time.time() < t_end:
+        out = subprocess.run([NVSMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout.split()
+        used = max([int(float(x)) for x in out if x.replace(".", "").isdigit()] or [0])
+        if used < 800:
+            break
+        time.sleep(2)
+    print(f"stop: {len(targets)} processes ended; GPU memory in use {used} MiB" + ("" if used is None or used < 800 else "  <-- NOT free"))
+    lenv = fcfg.get("gpu", "limits_env")
+    if not a.no_power and lenv and os.path.isfile(lenv):
+        for line in open(lenv).read().splitlines():
+            m = re.match(r"LIMIT(\d+)=(\d+)", line.strip())
+            if m:
+                r = subprocess.run(["sudo", "-n", NVSMI, "-i", m.group(1), "-pl", m.group(2)], capture_output=True, text=True)
+                print(f"stop: GPU {m.group(1)} power limit {m.group(2)} W" + ("" if r.returncode == 0 else f"  (failed: {r.stderr.strip()[:80]})"))
+
+
 def cmd_hugepool(a):
     """The 1 GiB huge-page pool behind the pinned-weights cache (was resident_pin.sh). mount [SIZE like 100g | MODEL.gguf ...]: reserve the pool
     (drop caches, compact, retry until it stops growing) and mount hugetlbfs at /mnt/huge1g (HUGEFS_MOUNT); with no size the most the machine can
@@ -4622,11 +4718,16 @@ if __name__ == "__main__":
     hp = sp.add_parser("hugepool", help="the 1 GiB huge-page pool for the pinned-weights cache: mount [SIZE|MODEL...] | unmount | status (was resident_pin.sh)")
     hp.add_argument("action", choices=["mount", "unmount", "status"])
     hp.add_argument("what", nargs="*", help="mount: a size like 100g or model file(s); nothing = the most the machine can spare")
+    st = sp.add_parser("stop", help="stop the running measurement chain properly: parent scripts, harness, all children; then wait for free GPU memory and restore the power limits")
+    st.add_argument("--dry", action="store_true", help="list what would be stopped, change nothing")
+    st.add_argument("--grace", type=float, default=10.0, help="seconds between SIGTERM and SIGKILL")
+    st.add_argument("--wait-gpu", type=float, default=60.0, help="seconds to wait until the GPUs have no memory in use")
+    st.add_argument("--no-power", action="store_true", help="leave the power limits alone")
     s_ = sp.add_parser("show")
     s_.add_argument("-t", "--test")
     s_.add_argument("-b", "--build")
     s_.add_argument("--runs", action="store_true")
     a = ap.parse_args()
     {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
