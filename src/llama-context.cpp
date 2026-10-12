@@ -637,6 +637,63 @@ bool layer_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
 }
 }  // namespace
 
+// research (--moe log=t): per-layer timing of every prompt batch (more than one token). The scheduler is asked for the input embedding and the output of each layer;
+// it computes up to such a node, synchronises the card that ran it and calls back, so the time between two callbacks is that layer on that card including the upload
+// waits and the hand-off copy from the previous card. Appended to prefill-timing.csv in the log directory: file,pass,n_tokens,layer,backend,dt_us,cum_us. The
+// synchronisation at every layer breaks the overlap of uploads across layers a little, so the totals are somewhat above an undisturbed pass; the point is the
+// shares: how long a layer takes on each card, and what a card boundary costs.
+namespace {
+struct prefill_trace_state {
+    llama_context * ctx = nullptr;
+    ggml_backend_sched_eval_callback user_cb = nullptr;
+    void * user_data = nullptr;
+    int64_t t0 = 0, t_prev = 0;   // start of the pass (the input embedding) and the previous callback
+    int pass = 0;
+    std::string file;
+    std::string rows;
+};
+prefill_trace_state g_pt;
+
+bool prefill_trace_cb(struct ggml_tensor * t, bool ask, void * ud) {
+    const bool is_in  = strcmp(t->name, "inp_embd") == 0;
+    const bool is_out = strncmp(t->name, "l_out-", 6) == 0;
+    const bool mine   = (is_in || is_out) && t->ne[1] > 1;
+    if (ask) {
+        const bool theirs = g_pt.user_cb ? g_pt.user_cb(t, true, g_pt.user_data) : false;
+        return mine || theirs;
+    }
+    if (mine) {
+        const int64_t now = ggml_time_us();
+        if (is_in) {
+            g_pt.t0 = g_pt.t_prev = now;
+            g_pt.pass++;
+            g_pt.rows.clear();
+        } else if (g_pt.t0 > 0) {
+            const int il = atoi(strchr(t->name, '-') + 1);
+            g_pt.rows += g_pt.file + "," + std::to_string(g_pt.pass) + "," + std::to_string(t->ne[1]) + "," + std::to_string(il) + "," + g_pt.ctx->trace_backend_name(t) + "," +
+                         std::to_string(now - g_pt.t_prev) + "," + std::to_string(now - g_pt.t0) + "\n";
+            g_pt.t_prev = now;
+            if (il == (int) g_pt.ctx->get_model().hparams.n_layer() - 1) {   // the last layer closes the pass
+                const std::filesystem::path path = moe_log_file("prefill-timing.csv");
+                std::error_code ec;
+                const bool fresh = !std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) == 0;
+                std::ofstream o(path, std::ios::app | std::ios::binary);
+                if (fresh) { o << "file,pass,n_tokens,layer,backend,dt_us,cum_us\n"; }
+                o.write(g_pt.rows.data(), (std::streamsize) g_pt.rows.size());
+                g_pt.rows.clear();
+                g_pt.t0 = 0;
+            }
+        }
+    }
+    return g_pt.user_cb ? g_pt.user_cb(t, false, g_pt.user_data) : true;
+}
+}  // namespace
+
+const char * llama_context::trace_backend_name(const ggml_tensor * t) const {
+    ggml_backend_t b = sched ? ggml_backend_sched_get_tensor_backend(sched.get(), const_cast<ggml_tensor *>(t)) : nullptr;
+    return b ? ggml_backend_name(b) : "?";
+}
+
 void llama_context::set_eval_cb() {
     if ((moe_log_has("l") || moe_log_has("x")) && moe_state_enabled() && (g_lt.ctx == nullptr || g_lt.ctx == this)) {   // the first context only: a draft context has its own layers and would interleave
         g_lt.ids_only = !moe_log_has("l");
@@ -648,6 +705,14 @@ void llama_context::set_eval_cb() {
             g_lt.file = moe_run_stem(g_lt.model);   // the same stem for every research file of the run (routing, cache pressure)
         }
         ggml_backend_sched_set_eval_callback(sched.get(), layer_trace_cb, nullptr);
+    } else if (moe_log_has("t") && (g_pt.ctx == nullptr || g_pt.ctx == this)) {   // the first context only
+        g_pt.ctx = this; g_pt.user_cb = cparams.cb_eval; g_pt.user_data = cparams.cb_eval_user_data;
+        if (g_pt.file.empty()) {
+            g_pt.file = moe_state_section(model);
+            for (char & c : g_pt.file) { if (c == ',' || c == '\n') { c = '_'; } }
+            g_pt.file = moe_run_stem(g_pt.file);
+        }
+        ggml_backend_sched_set_eval_callback(sched.get(), prefill_trace_cb, nullptr);
     } else {
         ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
     }

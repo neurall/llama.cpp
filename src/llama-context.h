@@ -44,6 +44,7 @@ using llama_memory_buffers = std::map<ggml_backend_buffer_type_t, llama_memory_b
 struct llama_context {
     bool moe_cache_defer = false; // see llama_moe_cache_defer_fork()
     int32_t trace_n_eval() const { return n_eval; }       // for the layer trace (--moe log=l64)
+    const char * trace_backend_name(const struct ggml_tensor * t) const;   // research (--moe log=t): the backend (card) that computed a node
     int32_t trace_n_p_eval() const { return n_p_eval; }
     void set_eval_cb(); // the scheduler callback: the user's, or the layer trace (--moe log=l64) in front of it
     bool moe_probe_done = false;      // --moe max-batch=auto: the cache-path probe ran (or was not needed)
