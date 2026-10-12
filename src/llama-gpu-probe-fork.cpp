@@ -267,7 +267,7 @@ static std::vector<float> prefill_plan_impl(const std::vector<const llama_gpu_pr
     std::function<double(unsigned, double, std::vector<double> *)> solve = [&](unsigned mask, double n_tok, std::vector<double> * share) -> double {
         const auto idx = members(mask);
         const double pass_tok = m.pass_tokens > 0 ? std::min(n_tok, m.pass_tokens) : n_tok;
-        const double p        = std::ceil(n_tok / pass_tok);
+        const double p        = std::ceil(n_tok / pass_tok);   // number of passes; pipelining between them only counts when m.pipelined (see the header)
         const double up_b  = m.expert_bytes_layer * (1.0 - std::pow(1.0 - k / N, pass_tok));   // experts a pass touches per layer (a dense model has none)
         const double act_b = m.dense_bytes_layer + m.expert_bytes_layer * k / N;               // weight bytes one token reads per layer
         // How this engine runs a prompt pass (measured, nsys + scheduler trace): the experts of EVERY layer are uploaded to and computed on one card, the offload card E

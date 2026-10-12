@@ -6573,8 +6573,30 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
     GGML_UNUSED(reg);
 }
 
+// Fork: host->device copy of one slice WITHOUT the synchronisation that ggml_backend_tensor_set ends with. The expert-cache workers upload one expert at a time
+// (3 tensors of about 1-2 MB); with the sync after every copy a GLM prompt of 1641 tokens made 34k cudaStreamSynchronize calls (9.7 s of API time over the
+// worker threads, nsys) and kept every worker waiting for its own copy before it could queue the next. The caller keeps the source bytes unchanged until it calls
+// ggml_backend_cuda_thread_sync_fork() (pinned slice memory or the model's own mapping: both stable), and calls that once per job, before it reports the job done.
+// The copy runs on the calling thread's own stream (cudaStreamPerThread), like ggml_backend_cuda_buffer_set_tensor.
+static void ggml_backend_cuda_set_tensor_nosync_fork(ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+    ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buf->context;
+    ggml_cuda_set_device(ctx->device);
+    ggml_cuda_h2d_pace(ctx->device, size);
+    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+}
+static void ggml_backend_cuda_thread_sync_fork() {
+    CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
+    if (strcmp(name, "ggml_backend_cuda_set_tensor_nosync_fork") == 0) {
+        return (void *)ggml_backend_cuda_set_tensor_nosync_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_thread_sync_fork") == 0) {
+        return (void *)ggml_backend_cuda_thread_sync_fork;
+    }
     if (strcmp(name, "ggml_backend_cuda_obs_enable") == 0) {
         return (void *)ggml_backend_cuda_obs_enable;
     }

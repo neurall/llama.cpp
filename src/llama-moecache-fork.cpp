@@ -2415,6 +2415,19 @@ void upload_slice(ggml_tensor * dst_c, const ggml_tensor * src, int32_t expert, 
     ggml_backend_tensor_set(dst_c, (const char *) src->data + (size_t) expert*sz, (size_t) slot*dst_c->nb[2], sz);
 }
 
+// The CUDA backend's copy without the stream synchronisation (see ggml_backend_cuda_set_tensor_nosync_fork in ggml-cuda.cu for why: one sync per expert slice
+// was 34k syncs in a 1641-token GLM prompt). nullptr when there is no CUDA backend; the caller then uses the synchronous ggml_backend_tensor_set.
+// A worker that used it calls cuda_thread_sync() once before it reports the job done.
+typedef void (*cuda_set_nosync_t)(ggml_tensor *, const void *, size_t, size_t);
+cuda_set_nosync_t cuda_set_nosync() {
+    static const cuda_set_nosync_t f = (cuda_set_nosync_t) cuda_obs_proc("ggml_backend_cuda_set_tensor_nosync_fork");
+    return f;
+}
+void cuda_thread_sync() {
+    static void (* const f)() = (void (*)()) cuda_obs_proc("ggml_backend_cuda_thread_sync_fork");
+    if (f) { f(); }
+}
+
 // table writes go to the host table (host memory, read by the CPU expert op) and mark the layer; the device
 // copy is flushed in one transfer per dirty layer at the next sync point (split callback, end of step) instead of
 // one synchronous 4-byte copy per entry
@@ -3413,6 +3426,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 ggml_tensor *       dsts[3] = { ls.pub.up_c,   ls.pub.gate_c,   ls.pub.down_c   };
                 const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
                 int64_t t_read = 0;
+                bool nosync_used = false;   // some tensor of this job was queued without a sync: wait for all of them once, after the loop
                 for (int k = 0; k < 3; ++k) {
                     const size_t sz = srcs[k]->nb[2];
                     const int64_t link_mbs = (int64_t) ((mc->gbs_link[ls.link] > 0 ? mc->gbs_link[ls.link] : 10.0) * 1e3);
@@ -3464,7 +3478,15 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             (size_t) std::max(64.0*1024, (mc->gbs_link[ls.link] > 0 ? mc->gbs_link[ls.link] : 1.0) * 1e3 * mean_cpu_phase_us(mc) / 4);
                         const char * pinned = pin_slice(mc, ls, k, j.expert, sz, srcs[k]);   // --moe pinr: the pinned copy of this slice, made now if the budget allows
                         if (ch == 0 || ch >= sz) {
-                            if (pinned) { ggml_backend_tensor_set(dsts[k], pinned, (size_t) j.slot*dsts[k]->nb[2], sz); }
+                            // the source (pinned slice copy or the model's own mapping) stays put, so the copy can be queued without waiting for it: the
+                            // job syncs once after its three tensors (nosync_used) instead of after each of them
+                            const cuda_set_nosync_t ns = ggml_backend_buffer_is_host(dsts[k]->buffer) ? nullptr : cuda_set_nosync();
+                            if (ns) {
+                                const size_t doff = (size_t) j.slot*dsts[k]->nb[2];
+                                ns(dsts[k], pinned ? pinned : (const char *) srcs[k]->data + (size_t) j.expert*sz, doff, sz);
+                                nosync_used = true;
+                            }
+                            else if (pinned) { ggml_backend_tensor_set(dsts[k], pinned, (size_t) j.slot*dsts[k]->nb[2], sz); }
                             else        { upload_slice(dsts[k], srcs[k], j.expert, j.slot); }
                         } else {
                             // re-check the DDR budget per chunk: a CPU phase that started meanwhile makes the rest wait
@@ -3483,6 +3505,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         LLAMA_LOG_ERROR("moe-cache: can't upload repacked '%s' without its file location\n", srcs[k]->name);
                     }
                 }
+                if (nosync_used) { cuda_thread_sync(); }
                 j.t_done  = ggml_time_us();
                 if (j.stream) {
                     mc->st_up[ls.link]++;

@@ -40,6 +40,9 @@ struct llama_prefill_model_fork {
     double kv_bytes_token_layer = 0.0;  // K and V bytes one token adds to one layer: they move from a card left out of the prefill to the layer's owner afterwards
     double n_tokens            = 0.0;   // tokens of the prompt the plan is made for
     double pass_tokens         = 0.0;   // tokens of one prefill pass (micro-batch); the prompt runs in ceil(n_tokens / pass_tokens) passes; 0 = one pass
+    bool   pipelined           = false; // consecutive passes overlap on different cards (a pass on one card while the next pass runs on another). The engine does not do
+                                        // this today (nsys, GLM and MiMo: no overlap between passes), so by default the passes are summed: T = passes x one pass. Without this
+                                        // the plan cannot "balance stages" by handing a slow-link card most of the layers, which was the 86% x4 share of the first model.
     double fastest_prefill_tps = 0.0;   // measured prefill tokens per second of the fastest card alone on this model (0 = unknown: estimated from the synthetic probe)
     std::vector<double> owner_share;    // share of the layers each card owns in the decode layout (the default split); empty = equal
 };
