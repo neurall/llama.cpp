@@ -2129,6 +2129,20 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         int why = 0;
         if (!ggml_backend_sched_prefetch_target(sched, s, &input, &input_cpy, &why)) {
             pfs_why[why]++;
+            static const bool pf_dump = getenv("GGML_PF_STATS") && atoi(getenv("GGML_PF_STATS")) >= 2;
+            static int dumped = 0;
+            if (pf_dump && (why == 2 || why == 3) && s->graph.n_nodes > 2 && dumped < 12) {
+                dumped++;
+                GGML_LOG_WARN("pf-dump: split %d on %s, why %d, %d nodes, %d inputs; nodes:", target_id, ggml_backend_name(sched->backends[s->backend_id]), why, s->graph.n_nodes, s->n_inputs);
+                for (int i = 0; i < s->graph.n_nodes && i < 6; i++) {
+                    GGML_LOG_WARN(" [%s %s]", ggml_op_name(s->graph.nodes[i]->op), s->graph.nodes[i]->name);
+                }
+                GGML_LOG_WARN(" inputs:");
+                for (int i = 0; i < s->n_inputs && i < 6; i++) {
+                    GGML_LOG_WARN(" [%s]", s->inputs[i]->name);
+                }
+                GGML_LOG_WARN("\n");
+            }
             return;
         }
         ggml_backend_t s_backend = sched->backends[s->backend_id];
