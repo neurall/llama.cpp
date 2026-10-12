@@ -56,6 +56,12 @@ struct llama_prefill_model_fork {
 std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_probe_fork_result *> & cards, const std::vector<std::vector<double>> & conc,
                                            const llama_prefill_model_fork & m, std::vector<std::string> * log);
 
+// Verdict of the last llama_prefill_plan_fork() for the expert-parallel prompt split (--moe prefill-split): 1 = some card pays, 0 = none does, -1 = not decided.
+// A card joins the split only if the compute it takes over per layer is worth more than the activations it costs: the hidden state goes to the card and the
+// partial result comes back, 2 x tokens x n_embd x 4 bytes over the card's own link (measured by the probe), plus its latency. Both sides grow with the number of
+// tokens, so the verdict does not depend on the prompt length, only on the link, the card's compute and the model. Replaces a fixed "speedup >= 1.25 and links within 0.7".
+int llama_prefill_split_verdict_fork();
+
 // Memory side of the prefill on one card (a P-card, a card that computes the prompt): keep its dense weights resident, or stream them through a window of two
 // layers like the experts? Streaming frees VRAM for a longer micro-batch and for the K/V of a long prompt, and costs dense_bytes / upload rate of extra traffic per pass.
 struct llama_prefill_mem_fork {

@@ -1,4 +1,5 @@
 #include "llama-moecache-fork.h"
+#include "llama-gpu-probe-fork.h"
 #include "llama-moestate-fork.h"
 
 #include "llama-impl.h"
@@ -4341,8 +4342,10 @@ void llama_moe_cache_prefill_decide_fork(const std::vector<ggml_backend_dev_t> &
         return;
     }
     const double speedup = best > 0 ? sum / best : 1.0;
-    // only GPUs on equally fast links (x16 with x16): a x4 or chipset-shared link (PC1 IQ3_S: 6.2 vs 25.5 GB/s, speedup 1.24x) never splits
-    g_split_enabled = speedup >= 1.25 && worst >= 0.7 * best;
+    // The planner decides (llama_prefill_split_verdict_fork: the compute a card takes over per layer against the activation hop over its link, both from the probe).
+    // Only when the planner did not run is the old rule used: links within 0.7 of each other and a transfer speedup of 1.25.
+    const int verdict = llama_prefill_split_verdict_fork();
+    g_split_enabled = verdict >= 0 ? verdict == 1 : (speedup >= 1.25 && worst >= 0.7 * best);
     g_split_share   = g_split_enabled ? 1.0f : 0.0f;
     LLAMA_LOG_WARN("moe-cache: prefill links (GB/s):%s -> split's transfer speedup %.2fx: %s\n", log.c_str(), speedup,
         g_split_enabled ? "reserved, alpha measured on prompt batches" : "one GPU (the split's compute buffers would cost more cache)");

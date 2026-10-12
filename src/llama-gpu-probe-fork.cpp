@@ -230,6 +230,9 @@ const llama_gpu_probe_fork_result * llama_gpu_probe_find_fork(ggml_backend_dev_t
     return it == g_results.end() ? nullptr : &it->second;
 }
 
+static int g_split_verdict = -1;
+int llama_prefill_split_verdict_fork() { return g_split_verdict; }
+
 static std::vector<float> prefill_plan_impl(const std::vector<const llama_gpu_probe_fork_result *> & cards, const std::vector<std::vector<double>> & conc,
                                             const llama_prefill_model_fork & m, std::vector<std::string> * log, const std::vector<double> * eval_split, double * eval_us) {
     const size_t n = cards.size();
@@ -435,6 +438,37 @@ static std::vector<float> prefill_plan_impl(const std::vector<const llama_gpu_pr
         say(buf);
     }
     say(m.fastest_prefill_tps > 0 ? "prefill plan: compute scale calibrated to the measured prefill speed of the fastest card" : "prefill plan: UNCALIBRATED, the fastest card's compute assumed equal to its upload per layer; relative speeds from the probe (--moe prefill-plan-tps=N, its prefill tokens/s, calibrates)");
+    // Expert-parallel split verdict per card other than the offload card E (see llama_prefill_split_verdict_fork). The card takes the share f of every layer's
+    // experts where both finish together: each card's throughput is the smaller of (its link / the layer's expert bytes) and (its compute / the layer's expert work),
+    // f = thr_j / (thr_E + thr_j). That saves f x (E's expert compute) per layer; the split costs the hop. Evaluated at the plan's token count.
+    if (!eval_split) {
+        size_t e_idx = 0;
+        for (size_t i = 1; i < n; ++i) { if (cards[i]->h2d_gbs > cards[e_idx]->h2d_gbs) { e_idx = i; } }
+        const double pass_tok = m.pass_tokens > 0 ? std::min(m.n_tokens, m.pass_tokens) : m.n_tokens;
+        const double up_b   = m.expert_bytes_layer * (1.0 - std::pow(1.0 - k / N, pass_tok));
+        const double c_ref  = m.fastest_prefill_tps > 0 ? pass_tok / (m.fastest_prefill_tps * L) * 1e6 : up_b / (cards[ref]->h2d_gbs * 1e3);
+        const double act_e  = m.expert_bytes_layer * k / N, act_d = m.dense_bytes_layer;
+        const double phi_e  = act_e + act_d > 0 ? act_e / (act_e + act_d) : 0.5;
+        const double c_exp_E = c_ref * phi_e / (cards[e_idx]->compute / fastest_compute);   // E's expert compute per layer at pass_tok tokens, us
+        const double thr_E  = 1.0 / std::max(up_b / (cards[e_idx]->h2d_gbs * 1e3), c_exp_E);
+        int any = 0;
+        for (size_t j = 0; j < n; ++j) {
+            if (j == e_idx) { continue; }
+            const double c_exp_j = c_ref * phi_e / (cards[j]->compute / fastest_compute);
+            const double thr_j = 1.0 / std::max(up_b / (cards[j]->h2d_gbs * 1e3), c_exp_j);
+            const double f     = thr_j / (thr_E + thr_j);
+            const double saved = f * c_exp_E;
+            const double link  = std::max(1e-3, std::min(cards[j]->h2d_gbs, cards[e_idx]->h2d_gbs));
+            const double hop   = 2.0 * (std::max(cards[j]->lat_us, cards[e_idx]->lat_us) + pass_tok * m.n_embd * 4.0 / (link * 1e3));
+            const bool pays = saved > hop;
+            any += pays;
+            snprintf(buf, sizeof buf, "prefill plan: expert split with %s: takes %.0f%% of the experts, saves %.0f us of expert compute per layer, costs %.0f us of hop (%.0f tokens, %.1f GB/s): %s",
+                     cards[j]->name.c_str(), 100.0 * f, saved, hop, pass_tok, link, pays ? "pays" : "does not pay");
+            say(buf);
+        }
+        g_split_verdict = any ? 1 : 0;
+    }
+
     // The SET of cards comes from the search above (it matched the measurements: the x16 alone at 1.6k tokens, both cards from a few passes up). The SHARES it found
     // do not: the stage balance of a pipelined pass gave the x4 card 76-86% of the layers for a 12k-token GLM prompt, and the measured prompt speed is best at 15%
     // (GLM 765.6 prompt t/s vs 740.5 at 20%; MiMo 711 vs 579 at 20%; 86% was slower than not using the card). So the shares are the upload-rate shares of the chosen
