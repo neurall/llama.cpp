@@ -12,8 +12,9 @@
 //                 shows it, and it is what a real prefill sees because every card streams its own layers' experts at the same time.
 //   lat_us        median of 64 small (4 KB) synchronous uploads: the fixed cost of one hand-off between two layers on different cards.
 //   layer_us      the compute part, measured by a MINI GRAPH (llama_gpu_probe_layer_fork): the matmuls of one layer of this very model with fake weights of
-//                 the real tensor types and shapes (the routed experts through mul_mat_id with the model's number of experts per token) and n fake
-//                 tokens, so the model's real quantisation kernels measure how long a token of a layer takes on each card, clocks and power capping included.
+//                 the real tensor types and widths (cut to a few hundred rows, no big upload; the routed experts through mul_mat_id with the model's
+//                 number of experts per token) and n fake tokens, looped for 60 ms and the loops counted, so the model's real quantisation kernels measure how
+//                 long a layer takes on each card at sustained clocks, power capping included, and the result is scaled up to the full layer by weight bytes.
 //                 It covers the weight-bound ops; attention over a long context, norms and the scans of hybrid layers are not in it (a small share, and
 //                 the speed of a card relative to the others is what the plan uses).
 //
@@ -122,7 +123,14 @@ double latency_us(ggml_tensor * t, const void * src) {
     return median(v);
 }
 
-// microseconds for one layer of the given tensors with n_tokens fake tokens on one card
+// Microseconds one layer of the given tensors takes for n_tokens fake tokens on one card.
+// Not the full layer: the weights are the real types and widths but cut to a few hundred rows (a few MB per tensor, no big upload, nothing to fill), the graph
+// is run in a loop until WINDOW_US have passed and the loops are counted, so the time is a sustained one (the clocks settle; the small weights draw less power than a big-weight burst, so a power cap shows less than in the real pass) and
+// the result is microseconds per loop. A compute-bound kernel costs in proportion to the weight bytes it reads per token, so the time of the full layer is
+// the time of a loop times (weight bytes a token touches in the real layer) / (the same in the reduced graph). Experts: only a few are allocated, the cost per
+// token does not depend on the size of the table; mul_mat_id with n_used experts per token as the model does.
+constexpr int64_t WINDOW_US = 60000;
+
 double layer_time_us(ggml_backend_dev_t dev, const std::vector<llama_layer_spec_fork> & specs, int n_used, int n_tokens) {
     ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
     if (!be) { return 0.0; }
@@ -130,7 +138,8 @@ double layer_time_us(ggml_backend_dev_t dev, const std::vector<llama_layer_spec_
     {
         dev_ctx c(ggml_tensor_overhead() * (specs.size() * 4 + 16));
         std::map<int64_t, ggml_tensor *> xs;   // one activation per input width
-        std::vector<std::pair<ggml_tensor *, bool>> to_fill;   // tensors to fill with bytes (weights) ...
+        std::vector<ggml_tensor *> weights;
+        double full_bytes = 0.0, red_bytes = 0.0;   // weight bytes one token touches: the real layer, the reduced graph
         auto x_of = [&](int64_t ne0) {
             auto it = xs.find(ne0);
             if (it == xs.end()) { it = xs.emplace(ne0, ggml_new_tensor_3d(c.ctx, GGML_TYPE_F32, ne0, 1, n_tokens)).first; }
@@ -140,40 +149,48 @@ double layer_time_us(ggml_backend_dev_t dev, const std::vector<llama_layer_spec_
         ggml_cgraph * gf = ggml_new_graph(c.ctx);
         for (const auto & sp : specs) {
             if (sp.ne0 <= 0 || sp.ne1 <= 0) { continue; }
-            if (sp.ne2 > 1) {   // routed experts: only a few of them are allocated, the cost per token does not depend on the size of the table
+            const bool exps = sp.ne2 > 1;
+            const int64_t rows = std::min<int64_t>(sp.ne1, exps ? 256 : 512);
+            const double used = exps ? std::max(1, n_used) : 1.0;
+            full_bytes += (double) ggml_row_size(sp.type, sp.ne0) * (double) sp.ne1 * used;
+            red_bytes  += (double) ggml_row_size(sp.type, sp.ne0) * (double) rows * used;
+            if (exps) {
                 const int64_t pe = std::min<int64_t>(sp.ne2, std::max<int64_t>(2 * n_used, 16));
-                ggml_tensor * w = ggml_new_tensor_3d(c.ctx, sp.type, sp.ne0, sp.ne1, pe);
-                to_fill.push_back({ w, false });
+                ggml_tensor * w = ggml_new_tensor_3d(c.ctx, sp.type, sp.ne0, rows, pe);
+                weights.push_back(w);
                 ggml_build_forward_expand(gf, ggml_mul_mat_id(c.ctx, w, x_of(sp.ne0), ids));
             } else {
-                ggml_tensor * w = ggml_new_tensor_2d(c.ctx, sp.type, sp.ne0, sp.ne1);
-                to_fill.push_back({ w, false });
+                ggml_tensor * w = ggml_new_tensor_2d(c.ctx, sp.type, sp.ne0, rows);
+                weights.push_back(w);
                 ggml_build_forward_expand(gf, ggml_mul_mat(c.ctx, w, ggml_reshape_2d(c.ctx, x_of(sp.ne0), sp.ne0, n_tokens)));
             }
         }
-        if (ggml_graph_n_nodes(gf) > 0 && c.alloc(dev)) {
+        if (ggml_graph_n_nodes(gf) > 0 && red_bytes > 0 && c.alloc(dev)) {
             // weights: bytes of a pattern (any bytes are valid quantised blocks; the time does not depend on the values), activations: 1.0f
-            const size_t chunk = 16u << 20;
+            const size_t chunk = 4u << 20;
             std::vector<uint8_t> bytes(chunk, 1);
-            for (auto & pr : to_fill) {
-                for (size_t off = 0; off < ggml_nbytes(pr.first); off += chunk) { ggml_backend_tensor_set(pr.first, bytes.data(), off, std::min(chunk, ggml_nbytes(pr.first) - off)); }
+            for (ggml_tensor * w : weights) {
+                for (size_t off = 0; off < ggml_nbytes(w); off += chunk) { ggml_backend_tensor_set(w, bytes.data(), off, std::min(chunk, ggml_nbytes(w) - off)); }
             }
             for (auto & kv : xs) {
                 std::vector<float> ones((size_t) kv.first * n_tokens, 1.0f);
                 ggml_backend_tensor_set(kv.second, ones.data(), 0, ones.size() * sizeof(float));
             }
             std::vector<int32_t> id((size_t) std::max(1, n_used) * n_tokens);
-            for (size_t i = 0; i < id.size(); ++i) { id[i] = (int32_t) ((i * 2654435761u) % 16u) % std::max<int32_t>(1, (int32_t) std::min<int64_t>(16, 2 * n_used)); }   // spread over the allocated experts
+            const int32_t span = std::max<int32_t>(1, (int32_t) std::min<int64_t>(16, 2 * std::max(1, n_used)));
+            for (size_t i = 0; i < id.size(); ++i) { id[i] = (int32_t) ((i * 2654435761u) % (uint32_t) span); }   // spread over the allocated experts
             ggml_backend_tensor_set(ids, id.data(), 0, id.size() * sizeof(int32_t));
-            std::vector<double> t_us;
-            for (int i = 0; i < 5; ++i) {   // the first run builds kernels and caches: not counted
+            for (int i = 0; i < 3; ++i) { ggml_backend_graph_compute(be, gf); }   // kernels, caches and graph set-up: not counted
+            ggml_backend_synchronize(be);
+            int64_t loops = 0;
+            const int64_t t0 = ggml_time_us();
+            int64_t t1 = t0;
+            while (t1 - t0 < WINDOW_US) {
+                for (int i = 0; i < 8; ++i) { ggml_backend_graph_compute(be, gf); ++loops; }
                 ggml_backend_synchronize(be);
-                const int64_t t0 = ggml_time_us();
-                ggml_backend_graph_compute(be, gf);
-                ggml_backend_synchronize(be);
-                if (i > 0) { t_us.push_back((double) (ggml_time_us() - t0)); }
+                t1 = ggml_time_us();
             }
-            result = median(t_us);
+            result = (double) (t1 - t0) / (double) loops * (full_bytes / red_bytes);
         }
     }
     ggml_backend_free(be);
