@@ -3498,7 +3498,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                                     std::this_thread::yield();
                                 }
                                 mc->gate_wait_us += ggml_time_us() - tw;
-                                ggml_backend_tensor_set(dsts[k], src + off, dst + off, std::min(ch, sz - off));
+                                // the chunk source stays put as well (pinned copy or the model's mapping): queue the chunk, the job syncs once at its end.
+                                // The budget wait above still paces the chunks, which is all the per-chunk sync was good for here.
+                                const cuda_set_nosync_t ns = ggml_backend_buffer_is_host(dsts[k]->buffer) ? nullptr : cuda_set_nosync();
+                                if (ns) { ns(dsts[k], src + off, dst + off, std::min(ch, sz - off)); nosync_used = true; }
+                                else    { ggml_backend_tensor_set(dsts[k], src + off, dst + off, std::min(ch, sz - off)); }
                             }
                         }
                     } else {
