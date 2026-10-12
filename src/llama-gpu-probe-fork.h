@@ -11,7 +11,7 @@ struct llama_gpu_probe_fork_result {
     ggml_backend_dev_t dev = nullptr;
     size_t index = 0;            // position in the vector given to llama_gpu_probe_fork() (the order of the subset table)
     std::string name;
-    double h2d_gbs      = 0.0;   // bulk host->device upload (64 MB, pinned source) with this card alone
+    double h2d_gbs      = 0.0;   // bulk host->device upload (32 MB, pinned source) with this card alone
     double h2d_conc_gbs = 0.0;   // the same upload while every probed card uploads at once: shared root complex, chipset uplink and RAM contention
     double lat_us       = 0.0;   // median time of one small (4 KB) synchronous upload: the fixed cost of a hand-off between layers
     double layer_us     = 0.0;   // microseconds this card takes for ONE layer of the model (mini graph with the layer's real tensor types and shapes) ...

@@ -7,7 +7,7 @@
 // split cost MiMo 14% of its prompt speed against the x16 card alone, because the x16 card waited 20 to 40% of the pass for the x4 card's layers.
 //
 // What the probe measures, per card, before any graph or compute buffer exists (about 1 s per card, no model needed):
-//   h2d_gbs       bulk host->device upload, 64 MB from pinned memory, this card alone. The expert upload of a streamed prefill is bound by this.
+//   h2d_gbs       bulk host->device upload, 32 MB from pinned memory, this card alone. The expert upload of a streamed prefill is bound by this.
 //   h2d_conc_gbs  the same while every card uploads at once. Cards behind one root complex or the chipset uplink share bandwidth; only this number
 //                 shows it, and it is what a real prefill sees because every card streams its own layers' experts at the same time.
 //   lat_us        median of 64 small (4 KB) synchronous uploads: the fixed cost of one hand-off between two layers on different cards.
@@ -47,7 +47,10 @@
 
 namespace {
 
-constexpr size_t PROBE_BYTES = 64u << 20;   // size of the bulk upload and of the quantised weights of the compute probe
+// Size of the bulk upload. The probe ranks cards and sizes shares, it does not need to saturate a link: measured on a x16 + x4 box, 32 MB with 2+4 repetitions
+// reads the x16 card within 0.3% of 64 MB (26.0 GB/s) in 0.20 s instead of 0.45 s; at 16 MB the fast link reads 6% low (the transfer ends before the link ramps
+// up), at 8 MB 13% low.
+constexpr size_t PROBE_BYTES = 32u << 20;
 constexpr int    LAT_SAMPLES  = 64;
 constexpr size_t LAT_BYTES    = 4096;
 
@@ -191,7 +194,7 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
         ggml_tensor * big   = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I8, (int64_t) PROBE_BYTES);
         ggml_tensor * small = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I8, (int64_t) LAT_BYTES);
         if (c.alloc(gpus[i])) {
-            out[i].h2d_gbs = bulk_gbs(big, h.ptr, 3);
+            out[i].h2d_gbs = bulk_gbs(big, h.ptr, 2);
             out[i].lat_us  = latency_us(small, h.ptr);
         }
     }
@@ -217,7 +220,7 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
                 ready.fetch_add(1);   // (also when the allocation failed, so the barrier cannot hang)
                 if (!ok) { return; }
                 while (!go.load()) { std::this_thread::yield(); }
-                const int reps = 6;
+                const int reps = 4;
                 const int64_t t0 = ggml_time_us();
                 for (int r = 0; r < reps; ++r) { ggml_backend_tensor_set(big, h.ptr, 0, PROBE_BYTES); }
                 rate[i] = (double) PROBE_BYTES * reps / 1e3 / (double) std::max<int64_t>(1, ggml_time_us() - t0);
