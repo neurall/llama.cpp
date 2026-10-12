@@ -934,7 +934,7 @@ void llama_context::moe_probe_costs_fork() {
 }
 
 // fork: the compute alias lends the pool's first blocks to the worst-case graph, its CUDA scratch and the prefetch staging slots. When they do not fit
-// the micro-batch gets smaller (half, down to 512) and the scheduler is reserved again; at 512 the staging slots are skipped for graphs that cannot
+// the micro-batch gets smaller (scaled by lent / needed bytes, down to 512) and the scheduler is reserved again; at 512 the staging slots are skipped for graphs that cannot
 // lend them (prefetch off, no allocation), and if even the graph does not fit the alias is dropped and the scheduler keeps its own buffers.
 // Returns true when sched_reserve() must run again.
 bool llama_context::moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size_t need, size_t cap) {
@@ -942,7 +942,11 @@ bool llama_context::moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size
         return false;
     }
     if (cparams.n_ubatch > 512) {
-        const uint32_t nu = std::max<uint32_t>(512, (cparams.n_ubatch / 2) / 32 * 32);
+        // need grows about linearly with the tokens: scale by what the pool lends (halving overshot: MiMo fit 12416 but landed on 8192), and step down
+        // by at least one 32-token granule so the loop ends
+        const double fit = need > 0 && cap > 0 ? (double) cap / (double) need : 0.5;
+        const uint32_t cut = (uint32_t) (cparams.n_ubatch * std::min(0.97, fit * 0.97)) / 32 * 32;
+        const uint32_t nu  = std::max<uint32_t>(512, std::min<uint32_t>(cut, cparams.n_ubatch - 32));
         LLAMA_LOG_WARN("%s: the pool lends %.0f MiB, graph + scratch%s need %.0f MiB at micro-batch %u: micro-batch %u\n", __func__, cap / 1048576.0,
                 graph_fits ? " + prefetch staging" : "", need / 1048576.0, cparams.n_ubatch, nu);
         cparams.n_ubatch = nu;
