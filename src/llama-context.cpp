@@ -909,12 +909,12 @@ void llama_context::moe_probe_costs_fork() {
         return ret == 0 ? dt : -1.0;
     };
     const int cap = (int) llama_moe_cache_max_batch_cap_fork();
-    const int cn[3] = { 16, 64, cap };
+    const double cn[3] = { 16, 64, (double) cap };
     double cus[3] = { -1, -1, -1 };
     if (run(4) > 0) {
         for (int i = 0; i < 3; ++i) {
-            run(cn[i]);
-            cus[i] = run(cn[i]);
+            run((int) cn[i]);
+            cus[i] = run((int) cn[i]);
         }
     }
     // streamed passes (above 0 tokens forced onto the streaming path), sizes up to the micro-batch
