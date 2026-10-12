@@ -2741,7 +2741,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 for (size_t i = 0; i < parts.size(); ++i) { sum += parts[i].gbs; if (parts[i].gbs > parts[fast].gbs) { fast = i; } }
                 // slowest first: their chains are issued first, so they stream while the faster GPUs work
                 const ggml_backend_t fast_b = parts[fast].b;
-                std::sort(parts.begin(), parts.end(), [](const split_part & x, const split_part & y) { return x.gbs < y.gbs; });
+                // --moe split-order=fast issues the fastest link's chain first. With the staging slots in place the slow link has nothing left to "stream while the others
+                // work", and a chain issued first holds the others back: nsys, GLM 8k, split 0.5: the x4's chain (30 ms) ran alone, then the x16's (111 ms), per layer.
+                static const bool fast_first = [] { const char * e = llama_moe_get_opt("split-order"); return e && strcmp(e, "fast") == 0; }();
+                std::sort(parts.begin(), parts.end(), [](const split_part & x, const split_part & y) { return fast_first ? x.gbs > y.gbs : x.gbs < y.gbs; });
                 int64_t lo = 0;
                 std::vector<split_part> kept;
                 for (size_t i = 0; i < parts.size(); ++i) {
