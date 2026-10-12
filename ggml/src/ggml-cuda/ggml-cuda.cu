@@ -6578,6 +6578,34 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
 // worker threads, nsys) and kept every worker waiting for its own copy before it could queue the next. The caller keeps the source bytes unchanged until it calls
 // ggml_backend_cuda_thread_sync_fork() (pinned slice memory or the model's own mapping: both stable), and calls that once per job, before it reports the job done.
 // The copy runs on the calling thread's own stream (cudaStreamPerThread), like ggml_backend_cuda_buffer_set_tensor.
+// Fork: copy n equal slices device-to-device in ONE kernel launch. The expert-copy callback keeps the experts of a streamed layer in the cache by copying every
+// wanted slice from the staged tensor into its cache block: one cudaMemcpyAsync per expert and tensor, hundreds per layer (GLM at 12k tokens: about 2000 D2D copies
+// in one prompt pass). Each copy is a driver call; all of them together are a few hundred microseconds of device time. Here the pointer lists go over once and a
+// single kernel (one block per slice, 16-byte accesses) does the lot. Returns false when the sizes or addresses are not 16-byte aligned: the caller copies one by one.
+static __global__ void k_copy_slices_fork(const char * const * srcs, char * const * dsts, size_t n16) {
+    const uint4 * s = (const uint4 *) srcs[blockIdx.x];
+    uint4       * d = (uint4 *) dsts[blockIdx.x];
+    for (size_t i = threadIdx.x; i < n16; i += blockDim.x) {
+        d[i] = s[i];
+    }
+}
+static bool ggml_backend_cuda_copy_slices_fork(ggml_backend_t backend, const void * const * srcs, void * const * dsts, size_t n, size_t bytes) {
+    if (n == 0) { return true; }
+    if (bytes % 16 != 0) { return false; }
+    for (size_t i = 0; i < n; ++i) {
+        if (((uintptr_t) srcs[i] | (uintptr_t) dsts[i]) % 16 != 0) { return false; }
+    }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(ctx->device);
+    ggml_cuda_pool_alloc<const char *> d_src(ctx->pool(), n);
+    ggml_cuda_pool_alloc<char *>       d_dst(ctx->pool(), n);
+    CUDA_CHECK(cudaMemcpyAsync(d_src.ptr, srcs, n*sizeof(void *), cudaMemcpyHostToDevice, ctx->stream()));   // pageable host arrays: staged by the driver before the call returns
+    CUDA_CHECK(cudaMemcpyAsync(d_dst.ptr, dsts, n*sizeof(void *), cudaMemcpyHostToDevice, ctx->stream()));
+    k_copy_slices_fork<<<(unsigned) n, 256, 0, ctx->stream()>>>(d_src.ptr, d_dst.ptr, bytes/16);
+    CUDA_CHECK(cudaGetLastError());
+    return true;
+}
+
 static void ggml_backend_cuda_set_tensor_nosync_fork(ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buf->context;
@@ -6591,6 +6619,9 @@ static void ggml_backend_cuda_thread_sync_fork() {
 
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
+    if (strcmp(name, "ggml_backend_cuda_copy_slices_fork") == 0) {
+        return (void *)ggml_backend_cuda_copy_slices_fork;
+    }
     if (strcmp(name, "ggml_backend_cuda_set_tensor_nosync_fork") == 0) {
         return (void *)ggml_backend_cuda_set_tensor_nosync_fork;
     }

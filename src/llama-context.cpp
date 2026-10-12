@@ -3606,6 +3606,35 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + offset, offset, (last - first + 1)*expert_size + padding);
     };
 
+    // Slice copies inside the device (cache -> staged tensor, staged tensor -> cache) are collected and issued as ONE kernel launch when the backend has one
+    // (CUDA: ggml_backend_cuda_copy_slices_fork), instead of one driver call per expert and tensor.
+    typedef bool (*copy_slices_t)(ggml_backend_t, const void * const *, void * const *, size_t, size_t);
+    static std::map<ggml_backend_dev_t, copy_slices_t> slices_fn;
+    copy_slices_t copy_slices = nullptr;
+    {
+        auto it = slices_fn.find(dev);
+        if (it == slices_fn.end()) {
+            ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+            it = slices_fn.emplace(dev, reg ? (copy_slices_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_copy_slices_fork") : nullptr).first;
+        }
+        copy_slices = it->second;
+    }
+    struct slice_pair { const void * s; void * d; ggml_backend_buffer_t sb; ggml_backend_buffer_t db; };
+    std::vector<slice_pair> pairs;
+    auto flush_slices = [&]() {
+        if (pairs.empty()) { return; }
+        std::vector<const void *> srcs; std::vector<void *> dsts;
+        for (const auto & p : pairs) { srcs.push_back(p.s); dsts.push_back(p.d); }
+        if (!(copy_slices && copy_slices(backend, srcs.data(), dsts.data(), pairs.size(), expert_size))) {
+            for (const auto & p : pairs) {
+                ggml_tensor s = bytes_view(p.sb, (void *) p.s, expert_size);
+                ggml_tensor d = bytes_view(p.db, p.d, expert_size);
+                ggml_backend_tensor_copy_async(backend, backend, &s, &d);
+            }
+        }
+        pairs.clear();
+    };
+
     int64_t first = -1;
     int64_t last  = -1;
     for (int64_t id = 0; id < n_expert; ++id) {
@@ -3616,9 +3645,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         const void *          dev_data = nullptr;
         ggml_backend_buffer_t dev_buf  = nullptr;
         if (ggml_backend_moe_src(src, (int32_t) id, dev, &dev_data, &dev_buf)) {
-            ggml_tensor s = bytes_view(dev_buf, (void *) dev_data, expert_size);
-            ggml_tensor d = bytes_view(dst->buffer, (uint8_t *) dst->data + (size_t) id*expert_size, expert_size);
-            ggml_backend_tensor_copy_async(backend, backend, &s, &d);
+            pairs.push_back({ dev_data, (uint8_t *) dst->data + (size_t) id*expert_size, dev_buf, dst->buffer });   // cache block -> slot in the staged tensor
             // keep the MMQ padding rule: the unused neighbour must not hold NaNs
             if (id < n_expert - 1 && !st.used[id + 1]) {
                 const size_t off = (size_t) (id + 1)*expert_size;
@@ -3641,8 +3668,10 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         copy_run(first, last);
     }
 
+    flush_slices();   // the resident experts, in one launch (they are read by the matmul after the uploads of the runs above, on the same stream)
+
     // the used experts are on the device now: let the expert cache keep some of them
-    // (device-to-device, queued after the copies above on the same stream)
+    // (device-to-device, queued after the copies above on the same stream, one launch for all of them)
     for (int64_t id = 0; id < n_expert; ++id) {
         if (!st.used[id]) {
             continue;
@@ -3650,11 +3679,10 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         void *                dst_data = nullptr;
         ggml_backend_buffer_t dst_buf  = nullptr;
         if (ggml_backend_moe_fill(src, (int32_t) id, dev, &dst_data, &dst_buf)) {
-            ggml_tensor s = bytes_view(dst->buffer, (uint8_t *) dst->data + (size_t) id*expert_size, expert_size);
-            ggml_tensor d = bytes_view(dst_buf, dst_data, expert_size);
-            ggml_backend_tensor_copy_async(backend, backend, &s, &d);
+            pairs.push_back({ (uint8_t *) dst->data + (size_t) id*expert_size, dst_data, dst->buffer, dst_buf });
         }
     }
+    flush_slices();
 
     return true;
 }
