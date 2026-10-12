@@ -12,6 +12,7 @@
 #include "llama-cparams.h"
 #include "llama-model-loader.h"
 #include "llama-moecache-fork.h"
+#include "llama-gpu-probe-fork.h"
 
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
@@ -1579,7 +1580,37 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // calculate the split points
     bool all_zero = tensor_split == nullptr || std::all_of(tensor_split, tensor_split + n_devices(), [](float x) { return x == 0.0f; });
     std::vector<float> splits(n_devices());
-    if (all_zero) {
+    // fork: --moe prefill-plan=apply uses the layer shares that the per-GPU probe earns (llama-gpu-probe-fork.cpp) instead of free memory; any other value
+    // (default) only logs the plan. A -ts / --tensor-split of the user always wins.
+    std::vector<float> prefill_plan;
+    if (all_zero && n_devices() > 1) {
+        std::vector<const llama_gpu_probe_fork_result *> cards;
+        for (size_t i = 0; i < n_devices(); ++i) { cards.push_back(llama_gpu_probe_find_fork(devices[i].dev)); }
+        llama_prefill_model_fork pm;
+        pm.n_layer = (int) hparams.n_layer();
+        double exp_b = 0, den_b = 0;
+        for (const auto & kv : ml.weights_map) {
+            if (kv.first.compare(0, 4, "blk.") != 0 || !kv.second.tensor) { continue; }
+            (kv.first.find("_exps") != std::string::npos ? exp_b : den_b) += (double) ggml_nbytes(kv.second.tensor);
+        }
+        pm.expert_bytes_layer = exp_b / std::max(1, pm.n_layer);
+        pm.dense_bytes_layer  = den_b / std::max(1, pm.n_layer);
+        pm.n_expert = (double) hparams.n_expert;
+        pm.n_used   = (double) hparams.n_expert_used_max();
+        pm.n_embd   = (double) hparams.n_embd;
+        const char * o_tok = llama_moe_get_opt("prefill-plan-tokens");
+        pm.n_tokens = o_tok ? atof(o_tok) : 4096.0;   // the pass size the plan is made for: an input of the model, not a threshold
+        std::vector<std::string> plan_log;
+        prefill_plan = llama_prefill_plan_fork(cards, pm, &plan_log);
+        for (const auto & l : plan_log) { LLAMA_LOG_INFO("%s: %s\n", __func__, l.c_str()); }
+        for (size_t i = 0; i < prefill_plan.size(); ++i) { LLAMA_LOG_INFO("%s: prefill plan: %s gets %.0f%% of the layers\n", __func__, ggml_backend_dev_name(devices[i].dev), 100.0 * prefill_plan[i]); }
+    }
+    const char * o_plan = llama_moe_get_opt("prefill-plan");
+    if (all_zero && prefill_plan.size() == n_devices() && o_plan && strcmp(o_plan, "apply") == 0) {
+        LLAMA_LOG_INFO("%s: prefill-plan=apply: layer split from the plan\n", __func__);
+        std::vector<float> sp(prefill_plan);
+        std::copy(sp.begin(), sp.end(), splits.begin());
+    } else if (all_zero) {
         // default split, by free memory
         for (size_t i = 0; i < n_devices(); ++i) {
             ggml_backend_dev_t dev = devices[i].dev;

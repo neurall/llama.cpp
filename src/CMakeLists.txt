@@ -37,6 +37,7 @@ set(LLAMA_CORE_SOURCES
     llama-model-saver.cpp
     llama-model.cpp
     llama-moecache-fork.cpp
+    llama-gpu-probe-fork.cpp
     llama-moestate-fork.cpp
     llama-quant.cpp
     llama-sampler.cpp

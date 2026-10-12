@@ -2,6 +2,7 @@
 
 #include "llama-impl.h"
 #include "llama-version.h"
+#include "llama-gpu-probe-fork.h"
 
 #include "llama-chat.h"
 #include "llama-context.h"
@@ -310,6 +311,17 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
                     gpu_offload = i;
                     best = gbs;
                 }
+            }
+        }
+
+        // fork: per-GPU probe (upload alone and with all cards at once, hand-off latency, compute speed); the results feed the prefill layer plan in
+        // llama_model_base::load_tensors (see llama-gpu-probe-fork.cpp for what is measured and how the plan uses it)
+        if (gpus.size() > 1) {
+            std::vector<ggml_backend_dev_t> probe_devs;
+            for (const auto & g : gpus) { probe_devs.push_back(g.dev); }
+            for (const auto & r : llama_gpu_probe_fork(probe_devs)) {
+                LLAMA_LOG_INFO("%s: probe %s: upload %.1f GB/s alone, %.1f GB/s with all cards, small copy %.0f us, compute %.1f GB*tokens/s\n", __func__,
+                        r.name.c_str(), r.h2d_gbs, r.h2d_conc_gbs, r.lat_us, r.wtps / 1e9);
             }
         }
 
