@@ -2583,6 +2583,11 @@ def cmd_bench(a):
     PERFPROF = a.perf_prof
     GPULOG = a.gpulog or not getattr(a, "no_gpulog", False)   # on by default: the power numbers (pw_*, energy_wh, t_full_pw) are part of every run; --no-gpulog turns it off
     WRAP[:] = shlex.split(a.wrap) if getattr(a, "wrap", None) else []
+    if getattr(a, "lock_clock", None):
+        r = subprocess.run(["sudo", "-n", NVSMI, "-lgc", f"{a.lock_clock},{a.lock_clock}"], capture_output=True, text=True)
+        print(f"lock-clock: all GPUs locked to {a.lock_clock} MHz" + ("" if r.returncode == 0 else f"  (FAILED: {r.stderr.strip()[:100]})"), flush=True)
+        import atexit
+        atexit.register(lambda: subprocess.run(["sudo", "-n", NVSMI, "-rgc"], capture_output=True, text=True))
     KEEP_LOOPS = a.keep_loops
     set_overrides(a)
     variants = dict(VARIANTS)
@@ -3249,6 +3254,7 @@ def cmd_stop(a):
             break
         time.sleep(2)
     print(f"stop: {len(targets)} processes ended; GPU memory in use {used} MiB" + ("" if used is None or used < 800 else "  <-- NOT free"))
+    subprocess.run(["sudo", "-n", NVSMI, "-rgc"], capture_output=True, text=True)   # a --lock-clock that was not reset (the run was killed)
     lenv = fcfg.get("gpu", "limits_env")
     if not a.no_power and lenv and os.path.isfile(lenv):
         for line in open(lenv).read().splitlines():
@@ -4686,6 +4692,8 @@ if __name__ == "__main__":
     b.add_argument("--cli-exe", default="llama-cli", help="tool for --machine runs: llama-cli (conversation) or llama-completion (raw prompt, the same prompt as the server tests)")
     b.add_argument("--perf-prof", action="store_true", help="perf record the server during each run (499 Hz, user space) into fork/bench/perf/<time>-<build>.txt (top symbols)")
     b.add_argument("--gpulog", action="store_true", help="sample GPU power/clocks/temperature and CPU use at 5 Hz during the runs into fork/bench/gpulog/ (default: ON since 2026-10-11; --no-gpulog turns it off)")
+    b.add_argument("--lock-clock", type=int, default=None, metavar="MHZ",
+                   help="lock the SM clock of every GPU to MHZ for this run (nvidia-smi -lgc, reset at the end and by 'stop'): both cards then compute at the same speed, so a two-card model needs no clock or power-limit ratio. The power limits stay as they are; pick a clock both cards hold at their limits (x4 at 220 W: about 1500)")
     b.add_argument("--wrap", default=None, help="start the server under this command, e.g. 'nsys profile --trace=cuda --sample=none -o /tmp/x --force-overwrite=true' (a profiler; one cell per profile)")
     b.add_argument("--no-gpulog", action="store_true", help="no GPU/CPU sampling (power columns stay empty)")
     b.add_argument("--redo-stock", action="store_true", help="run stock cells even when 4 or more valid runs of that stock build, model and chat test (game4c / edit4c) are already recorded")
