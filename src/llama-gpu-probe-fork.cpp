@@ -296,7 +296,11 @@ static std::vector<float> prefill_plan_impl(const std::vector<const llama_gpu_pr
                 a[j] = L * c_layer * (1.0 - phi);
             } else {
                 const double link = std::max(1e-3, std::min(cards[idx[j]]->h2d_gbs, cards[idx[e_j]]->h2d_gbs));
-                const double hop  = 2.0 * (std::max(cards[idx[j]]->lat_us, cards[idx[e_j]]->lat_us) + pass_tok * m.n_embd * 4.0 / (link * 1e3));
+                // two hops of the batch's activations over the slower link, and the stall of the stream synchronisation at the hop: the host waits until the expert tensor
+                // that is uploading on E (one lookahead, a third of a layer's experts) has arrived, and starts no further upload meanwhile (measured: 20 ms per x4 layer on MiMo,
+                // the upload of one tensor takes 29 ms there)
+                const double stall = up_b / 3.0 / (rate(mask, idx[e_j]) * 1e3);
+                const double hop  = 2.0 * (std::max(cards[idx[j]]->lat_us, cards[idx[e_j]]->lat_us) + pass_tok * m.n_embd * 4.0 / (link * 1e3)) + stall;
                 a[j] = L * (c_layer * (1.0 - phi) + hop);
             }
         }
