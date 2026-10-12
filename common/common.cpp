@@ -1859,8 +1859,28 @@ static void common_moe_cache_auto_impl(common_params & params) {
         }
     }
     if (!params.ubatch_user && common_autotune_on(params)) {
-        const uint32_t ub = common_auto_ubatch(params);
-        params.n_batch  = std::max<uint32_t>(params.n_batch, 4 * ub);   // a decode call carries several passes: equal passes are computed from the call's token count
+        uint32_t ub;
+        // Experts in RAM: every prompt pass uploads all of them (4.1 s on full GLM 3.0-bit, about 2400 tokens' worth of compute), so a bigger pass amortizes the
+        // upload until the per-token compute starts to rise (full GLM, 12k prompt: 4096 -> 368.9 prompt tokens/s, 8192 -> 458.7, 12288 -> 440.9; compute-only
+        // models peak at 2048-4096). The compute alias lends the pool's blocks to the graph, so the big maximum costs no cache while decoding; the per-prompt
+        // rule (llama_moe_cache_prefill_ubatch_fork) then splits the prompt into equal passes up to this maximum, and the shrink-to-fit in the context lowers it
+        // when the pool cannot lend the graph. Without the alias (--moe alias=0, pool=0, router prediction on) the old chooser below weighs the compute buffer against the cache.
+        const char * o_alias = llama_moe_get_opt("alias");
+        const char * o_pool  = llama_moe_get_opt("pool");
+        const bool   alias_ok = use_cache && params.n_moe_predict <= 0 && (!o_alias || atoi(o_alias) != 0) && (!o_pool || atoi(o_pool) != 0);
+        if (alias_ok) {
+            ub = 8192;
+            if (params.n_ctx > 0) {
+                ub = std::max<uint32_t>(512, std::min<uint32_t>(ub, params.n_ctx));
+            }
+            LOG_INF("%s: ubatch %u: experts stream from RAM, the compute alias lends the graph (prompt passes are sized per request, equal passes up to this)\n", __func__, ub);
+        } else {
+            ub = common_auto_ubatch(params);
+        }
+        params.n_batch  = std::max<uint32_t>(params.n_batch, 2 * ub);   // a decode call carries several passes: equal passes are computed from the call's token count
+        if (params.n_ctx > 0) {
+            params.n_batch = std::min<uint32_t>(params.n_batch, std::max<uint32_t>(params.n_ctx, ub));
+        }
         params.n_ubatch = ub;
     }
     // leave one core per GPU to drive it (measured on 2 GPUs: 6 of 8 cores beats 8)
