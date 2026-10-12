@@ -1000,6 +1000,10 @@ struct llm_graph_context {
     // 2-GPU prefill (LLAMA_PREFILL_SPLIT): while set, build_lora_mm_id pins its MUL_MAT_ID to this backend and marks it as
     // taking negative (skipped) expert ids, whose output rows are zeroed
     mutable ggml_backend_t mm_id_backend = nullptr;
+    // expert range [lo, hi) a card owns in the multi-GPU prompt split (hi <= lo: all experts); carried on the MUL_MAT_ID node (op_params 2, 3) so the scheduler
+    // stages and uploads only that range of the host weight instead of the whole tensor
+    mutable int32_t mm_id_lo = 0;
+    mutable int32_t mm_id_hi = 0;
 
     const llm_arch arch;
 

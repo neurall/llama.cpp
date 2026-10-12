@@ -2100,6 +2100,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         ggml_backend_buffer_t saved_buffer = NULL;
         void *         saved_data = NULL;
         ggml_backend_buffer_t slot_buf = NULL;
+        int64_t        lo         = 0;     // expert range staged: [lo, hi); hi = n_expert when the node owns them all
+        int64_t        hi         = 0;
     };
     std::vector<prefetch_pending> lookahead;
     ggml_backend_buffer_t pf_slot_buf[GGML_SCHED_MAX_PREFETCH_SLOTS] = {};
@@ -2142,7 +2144,17 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         p.saved_data   = input_cpy->data;
         input_cpy->buffer = pf_slot_buf[slot];
         input_cpy->data   = pf_slot_data[slot];
-        ggml_backend_tensor_set_async(sched->prefetch_backend, input_cpy, input->data, 0, ggml_nbytes(input));
+        // Only the experts this MUL_MAT_ID owns (--moe prefill-split gives each card an id range, op_params 2 and 3): one copy of that contiguous range,
+        // not the whole tensor. The padding after the range is the MMQ rule of sched_copy_experts: the next expert's first bytes must not hold NaNs.
+        const ggml_tensor * mm_node = s->graph.nodes[0];
+        p.lo = 0; p.hi = input->ne[2];
+        if (mm_node->op_params[3] > mm_node->op_params[2]) { p.lo = mm_node->op_params[2]; p.hi = std::min<int64_t>(mm_node->op_params[3], input->ne[2]); }
+        {
+            const size_t esz = input->nb[2];
+            const size_t off = (size_t) p.lo*esz;
+            const size_t pad = p.hi < input->ne[2] ? std::min<size_t>(esz, 512) : 0;
+            ggml_backend_tensor_set_async(sched->prefetch_backend, input_cpy, (const char *) input->data + off, off, (size_t) (p.hi - p.lo)*esz + pad);
+        }
         ggml_backend_event_record(sched->prefetch_ready[slot], sched->prefetch_backend);
     };
     if (pf_on) {
@@ -2226,9 +2238,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             // let the expert cache see (count) the experts of this batch and keep some of them, device to device from the staged copy
             // (queued after the wait, on the compute stream); every expert is staged, the callbacks decide which ones are worth a block
             ggml_backend_dev_t pdev = ggml_backend_get_device(split_backend);
-            const int64_t n_exp = pf->input->ne[2];
+            const int64_t n_exp = pf->hi;   // only the staged range: the rest of the slot holds nothing of this batch
             const size_t  exp_sz = pf->input->nb[2];
-            for (int64_t id = 0; id < n_exp; ++id) {
+            for (int64_t id = pf->lo; id < n_exp; ++id) {
                 const void * dd = NULL; ggml_backend_buffer_t db = NULL;
                 (void) ggml_backend_moe_src(pf->input, (int32_t) id, pdev, &dd, &db);   // counts the use; the staged copy already has the expert
                 void * dst_data = NULL; ggml_backend_buffer_t dst_buf = NULL;

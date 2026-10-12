@@ -1609,6 +1609,7 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
     ggml_tensor * res = ggml_mul_mat_id(ctx0, w, cur, ids);
     if (mm_id_backend) {
         res->op_params[1] = 1; // ids may be -1: zero the output first
+        if (mm_id_hi > mm_id_lo) { res->op_params[2] = mm_id_lo; res->op_params[3] = mm_id_hi; }
         ggml_backend_sched_set_tensor_backend(sched, res, mm_id_backend);
     }
 
@@ -2792,8 +2793,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         ggml_tensor * moe_out = nullptr;
         for (size_t i = 0; i < parts.size(); ++i) {
             mm_id_backend = parts[i].b;
+            mm_id_lo = (int32_t) parts[i].lo;
+            mm_id_hi = (int32_t) parts[i].hi;
             ggml_tensor * p = reduce(expert_chain(cur, ids[i]), parts[i].b);
             mm_id_backend = nullptr;
+            mm_id_lo = mm_id_hi = 0;
             ggml_build_forward_expand(gf, p); // in this order: slowest link's chain issued first
             moe_out = moe_out ? ggml_add(ctx0, moe_out, p) : p;
         }
