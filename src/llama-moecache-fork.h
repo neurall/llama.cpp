@@ -94,7 +94,7 @@ int64_t llama_moe_cache_max_batch_fork();
 int64_t llama_moe_cache_max_batch_cap_fork();
 bool    llama_moe_cache_probe_wanted_fork();
 void    llama_moe_cache_probe_begin_fork();
-void    llama_moe_cache_probe_end_fork(double t16_us, double t64_us, double sn1, double ts1_us, double sn2, double ts2_us);
+void    llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int nc, const double * sn, const double * sus, int ns);
 void    llama_moe_cache_probe_stream_fork(bool on);   // force passes above 0 tokens onto the streaming path (probe)
 
 // ubatch for one decode call of n_tokens new tokens, at most ub_max (the compute buffer is sized for it): equal passes, and a tail that fits the

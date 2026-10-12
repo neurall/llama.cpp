@@ -908,26 +908,28 @@ void llama_context::moe_probe_costs_fork() {
         memory->clear(true);
         return ret == 0 ? dt : -1.0;
     };
-    double t16 = -1, t64 = -1;
+    const int cap = (int) llama_moe_cache_max_batch_cap_fork();
+    const int cn[3] = { 16, 64, cap };
+    double cus[3] = { -1, -1, -1 };
     if (run(4) > 0) {
-        run(16);
-        t16 = run(16);
-        run(64);
-        t64 = run(64);
+        for (int i = 0; i < 3; ++i) {
+            run(cn[i]);
+            cus[i] = run(cn[i]);
+        }
     }
-    // streaming passes above the cap, two sizes: slope = compute per token, the rest of the pass = the expert upload
-    double ts1 = -1, ts2 = -1;
-    const int sn2 = (int) std::min<int64_t>(4 * llama_moe_cache_max_batch_cap_fork(), cparams.n_ubatch);
-    const int sn1 = sn2 / 2;
-    if (t64 > 0 && sn1 > llama_moe_cache_max_batch_cap_fork()) {
+    // streamed passes (above 0 tokens forced onto the streaming path), sizes up to the micro-batch
+    double sn[4], sus[4];
+    int ns = 0;
+    if (cus[2] > 0) {
         llama_moe_cache_probe_stream_fork(true);
-        run(sn1);
-        ts1 = run(sn1);
-        run(sn2);
-        ts2 = run(sn2);
+        for (int n : { 64, 128, 256, 512 }) {
+            if (n > (int) cparams.n_ubatch) { break; }
+            run(n);
+            sn[ns] = n; sus[ns] = run(n); ++ns;
+        }
         llama_moe_cache_probe_stream_fork(false);
     }
-    llama_moe_cache_probe_end_fork(t16, t64, sn1, ts1, sn2, ts2);
+    llama_moe_cache_probe_end_fork(cn, cus, 3, sn, sus, ns);
     LLAMA_LOG_WARN("%s: cache-path probe took %.1f s\n", __func__, (ggml_time_us() - t_start) / 1e6);
 }
 

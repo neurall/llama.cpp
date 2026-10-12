@@ -5180,30 +5180,61 @@ int64_t llama_moe_cache_max_batch_fork() {
 // offloaded to the fastest card): layers x distinct experts u(n) x expert bytes / link speed, with u(n) = N (1 - (1 - k/N)^n) for N experts per
 // layer and k used per token; b is the small GPU compute per token. The cache path costs c per token (measured). Crossover n*: n c = a(n) + n b.
 // Check, GLM-5.3-Flash 3.0-bit on 2x RTX 3090 (link 25.5 GB/s): a(120) = 3.8 s formula vs 3.7 s measured; qwen3.8 cut-down 0.43 vs 0.47 s.
-static int64_t crossover(const moe_cache * mc, double c_us, double b_us, double s_n, double s_us) {
+// Measured, not modelled: the probe times batches of several sizes on both paths (the cache keeps part of the experts, so the streamed pass uploads less than
+// a formula over all touched experts says). Each path is a piecewise-linear curve through its points, extended past the last point with the last slope;
+// the switch is the smallest n where streaming is not slower than the cache path (cap when it never is within the cap).
+struct mb_pts { std::vector<double> n, us; };
+static double mb_eval(const mb_pts & p, double n) {
+    const size_t m = p.n.size();
+    if (m == 1) {
+        return p.us[0] * n / p.n[0];
+    }
+    size_t i = 1;
+    while (i + 1 < m && n > p.n[i]) {
+        ++i;
+    }
+    const double slope = (p.us[i] - p.us[i - 1]) / (p.n[i] - p.n[i - 1]);
+    return std::max(0.0, p.us[i - 1] + slope * (n - p.n[i - 1]));
+}
+static int64_t crossover(const mb_pts & cache, const mb_pts & stream) {
     const int64_t cap = llama_moe_cache_max_batch_cap_fork();
-    if (mc->layers.empty() || c_us <= 0) {
+    if (cache.n.empty() || stream.n.empty()) {
         return 31;
     }
-    double bytes_sum = 0;
-    for (const auto & l : mc->layers) {
-        bytes_sum += (double) (l.pub.up_src->nb[2] + l.pub.gate_src->nb[2] + l.pub.down_src->nb[2]);
-    }
-    const double N = (double) mc->layers[0].pub.up_src->ne[2];
-    const double k = std::max<double>(1.0, (double) mc->n_expert_used);
-    // b_us (compute per streamed token) and the effective link speed come from timed streaming passes (probe), no constants: the upload part of a pass
-    // of s_n tokens is its time minus s_n * b, and u(s_n) experts per layer went over the link in that time.
-    const double u_s  = N * (1.0 - std::pow(1.0 - k / N, s_n));
-    const double up_us = std::max(1.0, s_us - s_n * b_us);
-    const double link = u_s * bytes_sum / (up_us * 1e3);   // GB/s, effective
     for (int64_t n = 8; n <= cap; ++n) {
-        const double u    = N * (1.0 - std::pow(1.0 - k / N, (double) n));
-        const double a_us = u * bytes_sum / (link * 1e3);
-        if ((double) n * c_us >= a_us + (double) n * b_us) {
+        if (mb_eval(stream, (double) n) <= mb_eval(cache, (double) n)) {
             return n;
         }
     }
     return cap;
+}
+static std::string mb_encode(int slots, const mb_pts & c, const mb_pts & s) {
+    std::string r = std::to_string(slots) + " " + std::to_string(c.n.size());
+    for (size_t i = 0; i < c.n.size(); ++i) { r += " " + std::to_string((long long) c.n[i]) + ":" + std::to_string((long long) c.us[i]); }
+    r += " " + std::to_string(s.n.size());
+    for (size_t i = 0; i < s.n.size(); ++i) { r += " " + std::to_string((long long) s.n[i]) + ":" + std::to_string((long long) s.us[i]); }
+    return r;
+}
+static bool mb_decode(const std::string & v, int slots, mb_pts & c, mb_pts & s) {
+    std::istringstream is(v);
+    int sl = 0;
+    size_t cnt = 0;
+    if (!(is >> sl >> cnt) || sl != slots || cnt < 2 || cnt > 16) {
+        return false;
+    }
+    auto get = [&](mb_pts & p, size_t m) {
+        for (size_t i = 0; i < m; ++i) {
+            std::string t; double n, u;
+            if (!(is >> t) || sscanf(t.c_str(), "%lf:%lf", &n, &u) != 2 || n <= 0 || u <= 0) { return false; }
+            p.n.push_back(n); p.us.push_back(u);
+        }
+        return true;
+    };
+    size_t ns = 0;
+    if (!get(c, cnt) || !(is >> ns) || ns < 2 || ns > 16 || !get(s, ns)) {
+        return false;
+    }
+    return true;
 }
 
 bool llama_moe_cache_probe_wanted_fork() {
@@ -5212,15 +5243,11 @@ bool llama_moe_cache_probe_wanted_fork() {
         return false;
     }
     std::string v;
-    if (!mc->profile.empty() && moe_state_get(mc->profile, "batch.cost", v)) {   // stored by an earlier start: no probe, just compute
-        double slots = 0, t16 = 0, t64 = 0;
-        double sn1 = 0, ts1 = 0, sn2 = 0, ts2 = 0;
-        if (sscanf(v.c_str(), "%lf %lf %lf %lf %lf %lf %lf", &slots, &t16, &t64, &sn1, &ts1, &sn2, &ts2) == 7 && (int32_t) slots == mc->n_slots && t64 > t16 && t16 > 0 && ts2 > ts1 && sn2 > sn1) {
-            const double c = (t64 - t16) / 48.0;
-            g_mb_auto = crossover(mc, c, (ts2 - ts1) / (sn2 - sn1), sn2, ts2);
-            LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (cache path %.2f ms per token, stored)\n", (long long) g_mb_auto.load(), c / 1e3);
-            return false;
-        }
+    mb_pts c, st;
+    if (!mc->profile.empty() && moe_state_get(mc->profile, "batch.cost2", v) && mb_decode(v, mc->n_slots, c, st)) {   // stored by an earlier start: no probe, just compute
+        g_mb_auto = crossover(c, st);
+        LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (stored probe)\n", (long long) g_mb_auto.load());
+        return false;
     }
     return true;
 }
@@ -5233,24 +5260,22 @@ void llama_moe_cache_probe_stream_fork(bool on) {
     g_mb_probe = on ? 0 : llama_moe_cache_max_batch_cap_fork();
 }
 
-void llama_moe_cache_probe_end_fork(double t16_us, double t64_us, double sn1, double ts1_us, double sn2, double ts2_us) {
+void llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int nc, const double * sn, const double * sus, int ns) {
     g_mb_probe = -1;
     moe_cache * mc = g_cache;
-    if (!mc || t16_us <= 0 || t64_us <= 0 || ts1_us <= 0 || ts2_us <= ts1_us || sn2 <= sn1) {
+    mb_pts c, st;
+    for (int i = 0; i < nc; ++i) { if (cus[i] > 0) { c.n.push_back(cn[i]); c.us.push_back(cus[i]); } }
+    for (int i = 0; i < ns; ++i) { if (sus[i] > 0) { st.n.push_back(sn[i]); st.us.push_back(sus[i]); } }
+    if (!mc || c.n.size() < 2 || st.n.size() < 2) {
         return;   // probe failed: the limit stays at 31
     }
-    double c = (t64_us - t16_us) / 48.0;
-    if (c <= 0) {
-        c = t64_us / 64.0;   // noise: the whole batch time per token (an upper bound)
-    }
-    const double b = (ts2_us - ts1_us) / (sn2 - sn1);
-    g_mb_auto = crossover(mc, c, b, sn2, ts2_us);
-    LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (cache path %.2f ms per token; streaming passes %.0f tokens %.0f ms, %.0f tokens %.0f ms = %.2f ms per token)\n",
-            (long long) g_mb_auto.load(), c / 1e3, sn1, ts1_us / 1e3, sn2, ts2_us / 1e3, b / 1e3);
+    g_mb_auto = crossover(c, st);
+    std::string msg;
+    for (size_t i = 0; i < c.n.size(); ++i) { msg += " c" + std::to_string((int) c.n[i]) + "=" + std::to_string((int) (c.us[i] / 1e3)) + "ms"; }
+    for (size_t i = 0; i < st.n.size(); ++i) { msg += " s" + std::to_string((int) st.n[i]) + "=" + std::to_string((int) (st.us[i] / 1e3)) + "ms"; }
+    LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (timed batches, cache path c / streamed s:%s)\n", (long long) g_mb_auto.load(), msg.c_str());
     if (!mc->profile.empty()) {
-        char buf[160];
-        snprintf(buf, sizeof buf, "%d %.0f %.0f %.0f %.0f %.0f %.0f", (int) mc->n_slots, t16_us, t64_us, sn1, ts1_us, sn2, ts2_us);
-        moe_state_set(mc->profile, { { "batch.cost", buf } });
+        moe_state_set(mc->profile, { { "batch.cost2", mb_encode((int) mc->n_slots, c, st) } });
     }
 }
 
