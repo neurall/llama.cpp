@@ -2767,10 +2767,13 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         ggml_tensor * f1 = ggml_scale_bias(ctx0, f, 1.0f, 1.0f);
         std::vector<ggml_tensor *> ids(parts.size());
         for (size_t i = 0; i < parts.size(); ++i) {
-            ggml_tensor * m = ggml_mul(ctx0,
-                ggml_clamp(ctx0, ggml_scale_bias(ctx0, f,  1.0f, (float) (1 - parts[i].lo)), 0.0f, 1.0f),
-                ggml_clamp(ctx0, ggml_scale_bias(ctx0, f, -1.0f, (float) parts[i].hi),       0.0f, 1.0f));
-            ids[i] = ggml_cast(ctx0, ggml_scale_bias(ctx0, ggml_mul(ctx0, m, f1), 1.0f, -1.0f), GGML_TYPE_I32);
+            // Every operation of a card's id mask is pinned to that card. Left free, the scheduler put them next to the first chain, so the second chain took
+            // its ids from the first chain's split and had to wait for it (nsys, GLM 8k: the x16's chain started when the x4's ended).
+            auto pin = [&](ggml_tensor * t) { ggml_backend_sched_set_tensor_backend(sched, t, parts[i].b); return t; };
+            ggml_tensor * lo_m = pin(ggml_clamp(ctx0, pin(ggml_scale_bias(ctx0, f,  1.0f, (float) (1 - parts[i].lo))), 0.0f, 1.0f));
+            ggml_tensor * hi_m = pin(ggml_clamp(ctx0, pin(ggml_scale_bias(ctx0, f, -1.0f, (float) parts[i].hi)),       0.0f, 1.0f));
+            ggml_tensor * m = pin(ggml_mul(ctx0, lo_m, hi_m));
+            ids[i] = pin(ggml_cast(ctx0, pin(ggml_scale_bias(ctx0, pin(ggml_mul(ctx0, m, f1)), 1.0f, -1.0f)), GGML_TYPE_I32));
             cb(ids[i], "ffn_moe_ids_part", il);
             // all id sets before any chain: the scheduler copies only the used experts of a host weight when the
             // MUL_MAT_ID is the first node of its split (the ids must exist before the split starts)
