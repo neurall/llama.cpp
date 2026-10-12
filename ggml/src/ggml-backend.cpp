@@ -1921,12 +1921,16 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
 // ---- prefetch overlap helpers ----------------------------------------------------------------------------------------------------------------
 // The split whose first node is a MUL_MAT_ID over a host-resident weight and a batch large enough that nearly every expert is used (ids >= 2 x
 // experts): its full expert tensor is staged on a second stream while the previous split computes.
-static bool ggml_backend_sched_prefetch_target(ggml_backend_sched_t sched, struct ggml_backend_sched_split * s, ggml_tensor ** input, ggml_tensor ** input_cpy) {
+static bool ggml_backend_sched_prefetch_target(ggml_backend_sched_t sched, struct ggml_backend_sched_split * s, ggml_tensor ** input, ggml_tensor ** input_cpy, int * why = nullptr) {
+    // why (GGML_PF_STATS): 1 split has no inputs, 2 its first node is not a MUL_MAT_ID, 3 its weight is not one of its inputs, 4 the weight is not host-resident, 5 few ids
+    int dummy; if (!why) { why = &dummy; }
     if (s->graph.n_nodes == 0 || s->n_inputs == 0) {
+        *why = 1;
         return false;
     }
     ggml_tensor * node = s->graph.nodes[0];
     if (node->op != GGML_OP_MUL_MAT_ID) {
+        *why = 2;
         return false;
     }
     for (int i = 0; i < s->n_inputs; i++) {
@@ -1939,16 +1943,19 @@ static bool ggml_backend_sched_prefetch_target(ggml_backend_sched_t sched, struc
             continue;
         }
         if (!ggml_backend_sched_is_host_weight(cand)) {
+            *why = 4;
             return false;
         }
         const ggml_tensor * ids = node->src[2];
         if (ids->ne[0]*ids->ne[1] < 2*cand->ne[2]) {
+            *why = 5;
             return false;
         }
         *input = cand;
         *input_cpy = cand_cpy;
         return true;
     }
+    *why = 3;
     return false;
 }
 
@@ -2110,13 +2117,18 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     if (pf_on) {
         lookahead.resize(sched->n_splits);
     }
+    // GGML_PF_STATS=1: one line per prompt graph on stderr, how many splits were staged by the prefetch ring and why the others were not (see prefetch_target for 1..5)
+    static const bool pf_stats = getenv("GGML_PF_STATS") != NULL;
+    int pfs_fired = 0, pfs_why[6] = {0}, pfs_card = 0, pfs_dev = 0, pfs_prep = 0, pfs_off = pf_on ? 0 : 1;
     const auto fire_prefetch = [&](int target_id) {
         if (!pf_on || target_id >= sched->n_splits || lookahead[target_id].slot != -1 || sched->prefetch_n_slots < 2) {
             return;
         }
         struct ggml_backend_sched_split * s = &splits[target_id];
         ggml_tensor * input = NULL, * input_cpy = NULL;
-        if (!ggml_backend_sched_prefetch_target(sched, s, &input, &input_cpy)) {
+        int why = 0;
+        if (!ggml_backend_sched_prefetch_target(sched, s, &input, &input_cpy, &why)) {
+            pfs_why[why]++;
             return;
         }
         ggml_backend_t s_backend = sched->backends[s->backend_id];
@@ -2124,15 +2136,19 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         // --moe expert-owner=1) must not stage through them: its stream would copy into the other card's memory (assert in set_tensor_async), and the
         // staging stream would have been created for whichever card's split came first. That card's experts take the plain input-copy path.
         if (sched->prefetch_region_buf != NULL && ggml_backend_buffer_get_type(sched->prefetch_region_buf) != ggml_backend_get_default_buffer_type(s_backend)) {
+            pfs_card++;
             return;
         }
         if (sched->prefetch_backend != NULL && sched->prefetch_backend->device != s_backend->device) {
+            pfs_dev++;
             return;   // the staging stream belongs to one device (the one prompt batches are offloaded to)
         }
         const size_t need = ggml_backend_buft_get_alloc_size(ggml_backend_get_default_buffer_type(s_backend), input);
         if (!ggml_backend_sched_prefetch_prepare(sched, s_backend, need, sched->prefetch_n_slots, pf_slot_buf, pf_slot_data)) {
+            pfs_prep++;
             return;
         }
+        pfs_fired++;
         const int slot = sched->prefetch_cur;
         sched->prefetch_cur = (sched->prefetch_cur + 1) % sched->prefetch_n_slots;
         if (sched->prefetch_used[slot]) {
@@ -2347,6 +2363,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             pw_cpu = pw_gpu = pc_cpu = pl_gpu = p_total = p_n = p_splits = 0;
             pb_cpu = pb_gpu = pc_tiny = n_tiny = 0;
         }
+    }
+
+    if (pf_stats && pfs_fired + pfs_why[1] + pfs_why[2] + pfs_why[3] + pfs_why[4] + pfs_why[5] + pfs_card + pfs_dev + pfs_prep > 20) {
+        GGML_LOG_WARN("pf-stats: %d splits, prefetch fired for %d; not staged: no inputs %d, first node not MUL_MAT_ID %d, weight not an input %d, weight not host-resident %d, few ids %d, "
+                "region on another card %d, staging stream on another card %d, no slots %d%s\n", sched->n_splits, pfs_fired, pfs_why[1], pfs_why[2], pfs_why[3], pfs_why[4], pfs_why[5],
+                pfs_card, pfs_dev, pfs_prep, pfs_off ? "  [prefetch is OFF for this graph]" : "");
     }
 
     return GGML_STATUS_SUCCESS;
