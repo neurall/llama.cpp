@@ -390,3 +390,37 @@ std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_pro
     say(buf);
     return out;
 }
+
+// Dense weights resident or streamed? The per-token compute is the same either way, so only the pass count and the dense traffic differ:
+//     resident: ub_res = (VRAM - ring - K/V(n) - all dense) / scratch per token;       cost = passes_res x a
+//     streamed: ub_str = (VRAM - ring - K/V(n) - dense of 2 layers) / scratch per token; cost = passes_str x (a + dense_total / upload rate)
+// Streamed also decides alone when the resident layout leaves no room for a micro-batch (a long prompt: its K/V is the big consumer), and neither layout
+// is feasible when even the streamed one leaves nothing: then more cards must take part. A prompt that fits one pass in the resident layout never streams.
+llama_prefill_mem_choice llama_prefill_mem_plan_fork(const llama_prefill_mem_fork & m) {
+    llama_prefill_mem_choice c;
+    if (m.scratch_bytes_per_token <= 0 || m.n_tokens <= 0) { return c; }
+    const double kv = m.kv_bytes_per_token * m.n_tokens;
+    auto ub_for = [&](double dense_resident) {
+        const double room = m.vram_bytes - m.ring_bytes - kv - dense_resident;
+        double ub = room > 0 ? std::floor(room / m.scratch_bytes_per_token) : 0.0;
+        if (m.ub_cap > 0) { ub = std::min(ub, m.ub_cap); }
+        return std::min(ub, m.n_tokens);
+    };
+    const double ub_res = ub_for(m.dense_bytes_total);
+    const double ub_str = ub_for(2.0 * m.dense_bytes_layer);
+    const double dense_us = m.upload_gbs > 0 ? m.dense_bytes_total / (m.upload_gbs * 1e3) : 0.0;
+    if (ub_res < 1.0 && ub_str < 1.0) { c.reason = "does not fit even with the dense weights streamed: more cards must take part"; return c; }
+    c.feasible = true;
+    const double p_res = ub_res >= 1.0 ? std::ceil(m.n_tokens / ub_res) : 1e30;
+    const double p_str = ub_str >= 1.0 ? std::ceil(m.n_tokens / ub_str) : 1e30;
+    const double t_res = p_res * m.pass_fixed_us;
+    const double t_str = p_str * (m.pass_fixed_us + dense_us);
+    if (ub_res < 1.0) {
+        c.stream_dense = true; c.ub = ub_str; c.passes = p_str; c.extra_us = t_str; c.reason = "dense resident leaves no room for a micro-batch";
+    } else if (t_str < t_res) {
+        c.stream_dense = true; c.ub = ub_str; c.passes = p_str; c.extra_us = t_str; c.reason = "fewer passes save more than the dense traffic costs";
+    } else {
+        c.stream_dense = false; c.ub = ub_res; c.passes = p_res; c.extra_us = t_res; c.reason = ub_res >= m.n_tokens ? "one pass fits with the dense weights resident" : "the extra dense traffic costs more than fewer passes save";
+    }
+    return c;
+}

@@ -51,3 +51,27 @@ struct llama_prefill_model_fork {
 // and after how many tokens its fixed costs are paid back.
 std::vector<float> llama_prefill_plan_fork(const std::vector<const llama_gpu_probe_fork_result *> & cards, const std::vector<std::vector<double>> & conc,
                                            const llama_prefill_model_fork & m, std::vector<std::string> * log);
+
+// Memory side of the prefill on one card (a P-card, a card that computes the prompt): keep its dense weights resident, or stream them through a window of two
+// layers like the experts? Streaming frees VRAM for a longer micro-batch and for the K/V of a long prompt, and costs dense_bytes / upload rate of extra traffic per pass.
+struct llama_prefill_mem_fork {
+    double vram_bytes             = 0.0;   // VRAM the pass may use on this card (total minus the CUDA context and what the system needs)
+    double dense_bytes_total      = 0.0;   // dense weights of every layer this card computes in the prefill
+    double dense_bytes_layer      = 0.0;   // dense weights of one layer
+    double ring_bytes             = 0.0;   // the expert staging ring (3 expert tensors)
+    double kv_bytes_per_token     = 0.0;   // K and V of one token for all layers this card computes
+    double scratch_bytes_per_token = 0.0;  // compute scratch of one token of a micro-batch (about 65 KB measured on GLM)
+    double n_tokens               = 0.0;   // prompt length
+    double ub_cap                 = 0.0;   // the largest micro-batch worth considering (the context, or the user's -ub)
+    double pass_fixed_us          = 0.0;   // `a`: cost of one pass that does not scale with the tokens and is not hidden (measured: upload exposure, launch gaps)
+    double upload_gbs             = 0.0;   // the card's upload rate
+};
+struct llama_prefill_mem_choice {
+    bool   feasible      = false;   // some micro-batch fits at all
+    bool   stream_dense  = false;
+    double ub            = 0.0;     // micro-batch the choice allows
+    double passes        = 0.0;
+    double extra_us      = 0.0;     // cost that depends on the choice: passes x (a + streamed dense traffic)
+    const char * reason  = "";
+};
+llama_prefill_mem_choice llama_prefill_mem_plan_fork(const llama_prefill_mem_fork & m);
