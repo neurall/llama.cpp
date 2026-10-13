@@ -42,8 +42,9 @@
 // the helper idles when it arrives before. No formula gets this right for every model, card and link: the balance depends on each card's compute, the bytes
 // of the layer's expert tensors (they differ between layers: mixed quantisations), the hop of the hidden state over the helper's link, the power caps.
 // So it is measured and tuned, per layer, as the user specified (2026-10-13):
-//   start   a card that is not on the fastest link holds  coef x (its upload rate / the fastest upload rate)  of the experts, whether it owns the layer or
-//           helps; the cards on the fastest link share the rest. coef 1.4 is a rough temporary seed (--moe split-start-coef), e.g. 6.5 / 26 GB/s x 1.4 = 35%.
+//   start   from the prompt length (see split_ctl_counts): a card that is not on the fastest link starts with its upload-balanced share (its upload rate
+//           over the sum of all rates: both links finish the layer's uploads together) times (0.5 + 0.14 per 1000 tokens of the pass), between 0.5 and 2
+//           times; the cards on the fastest link share the rest. Short passes are bound by the uploads, long ones by compute.
 //   tune    after every prompt pass the scheduler reports, per layer and card, when the card's expert chain started and ended and when a helper's partial
 //           sum had left it (time stamps in stream order, ggml_sched_chain_stat). delta = t_out(helper) - t_end(owner): positive, the owner waited, the
 //           helper gets fewer experts; negative, the helper waited and gets more. The step is 5% of the experts (--moe split-step) and is halved every
@@ -123,7 +124,21 @@ void split_ctl_update(int64_t n_expert, int64_t n_embd) {
         const ggml_sched_chain_stat * o = nullptr;
         int n_owner = 0;
         for (const auto * e : kv.second) { if (e->t_out == 0) { o = e; ++n_owner; } }
-        if (n_owner != 1 || o->t_start == 0 || o->t_end <= o->t_start || o->hi <= o->lo) { continue; }
+        // dense split (range mode): every card hands its partial results on (no chain without t_out); the reference is the card holding the most experts
+        // and the balance is between the chain ENDS: both cards' partial results are needed by both ranges
+        const bool range_mode = n_owner == 0;
+        if (range_mode) {
+            for (const auto * e : kv.second) { if (!o || (e->hi - e->lo) > (o->hi - o->lo)) { o = e; } }
+            n_owner = o ? 1 : 0;
+        }
+        if (n_owner != 1 || o->t_start == 0 || o->t_end <= o->t_start || o->hi <= o->lo) {
+            static int dbg = 0;
+            if (dbg++ < 8 && getenv("LLAMA_SPLIT_CTL_DEBUG")) {
+                LLAMA_LOG_WARN("prefill split: layer %d not measured: %zu chains, owners %d, t_start %lld, t_end %lld, range %d-%d\n", kv.first, kv.second.size(), n_owner,
+                        o ? (long long) o->t_start : -1LL, o ? (long long) o->t_end : -1LL, o ? o->lo : -1, o ? o->hi : -1);
+            }
+            continue;
+        }
         tokens = o->n_tokens;
         double period = 0.0;   // us
         {
@@ -138,11 +153,18 @@ void split_ctl_update(int64_t n_expert, int64_t n_embd) {
             if (h == o || h->t_start == 0 || h->t_end <= h->t_start || h->hi <= h->lo) { continue; }
             const llama_split_ctl::key_t key(split_bucket(h->n_tokens), kv.first, ggml_backend_get_device(h->backend));
             auto it = c.held.find(key);
-            if (it == c.held.end()) { continue; }
+            if (it == c.held.end()) {
+                static int dbg2 = 0;
+                if (dbg2++ < 8 && getenv("LLAMA_SPLIT_CTL_DEBUG")) {
+                    LLAMA_LOG_WARN("prefill split: layer %d helper %s has no count for bucket %d (tokens %lld)\n", kv.first, ggml_backend_name(h->backend),
+                            split_bucket(h->n_tokens), (long long) h->n_tokens);
+                }
+                continue;
+            }
             const double n_meas = (double) (h->hi - h->lo);
             const double per_h  = (double) (h->t_end - h->t_start) / n_meas;
             const double tau    = per_o + per_h;
-            const double delta  = (double) (h->t_out - o->t_end);
+            const double delta  = (double) ((range_mode ? h->t_end : h->t_out) - o->t_end);
             double move = 0.0;
             if (std::fabs(delta) >= 0.5 * tau) {
                 auto sit = c.step.find(key);
@@ -185,20 +207,26 @@ std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vecto
     std::lock_guard<std::mutex> lk(c.mu);
     if (bytes_layer > 0 && n_expert > 0) { c.bytes_expert[il] = bytes_layer / (double) n_expert; }
     split_ctl_update(n_expert, n_embd);
-    static const double coef  = split_opt("split-start-coef", 1.4);
+    // Start share from the prompt length (replaces the fixed coefficient 1.4 on the link ratio of the first version). A short pass is bound by the expert
+    // uploads, where the slow link's card should hold no more than its upload-balanced share (its rate over the sum of the rates), less what the hand-offs
+    // take from its link; a long pass is bound by compute, where it can hold more. Measured best on GLM-5.3-Flash, x16 + x4 (upload-balanced share 19.7%),
+    // x4 at 55% of the tokens: 15% at 1.8k tokens (x 0.75), 25% at 5.5k (x 1.27). Factor = 0.5 + 0.14 per 1000 tokens of the pass, between 0.5 and 2.
+    // Only the start: the bisection below moves every layer from there, per pass size.
+    const double len_f = std::max(0.5, std::min(2.0, 0.5 + 0.14 * (double) n_tokens / 1000.0));
     static const long   retry = (long) split_opt("split-retry", 32);
     const int bk = split_bucket(n_tokens);
     std::vector<double> v(cards.size(), 0.0);
-    // Start share of a card: a card that is not on the fastest link holds coef x (its upload rate / the fastest rate), whether it owns the layer or helps
-    // (GLM-5.3-Flash on x16 + x4: the x4 card owns five layers, and seeded as "the helper gets coef x its rate over the owner's" the x16 helper was cut to
-    // an equal split there, the x4 held 50% and uploaded 1.2 GB per layer over its link); the cards on the fastest link share the rest equally.
-    double u_max = 0.0, slow_sum = 0.0;
+    // Whether the card owns the layer or helps does not matter (GLM-5.3-Flash on x16 + x4: the x4 card owns five layers; seeded as "the helper gets a
+    // multiple of its rate over the owner's", the x16 helper was cut to an equal split there and the x4 uploaded 1.2 GB per layer over its link); the cards
+    // on the fastest link share the rest equally.
+    double u_max = 0.0, u_sum = 0.0, slow_sum = 0.0;
     int    n_fast = 0;
-    for (const auto & cd : cards) { u_max = std::max(u_max, cd.second); }
-    for (const auto & cd : cards) { if (cd.second < 0.999 * u_max) { slow_sum += std::min(1.0, coef * cd.second / u_max); } else { ++n_fast; } }
+    for (const auto & cd : cards) { u_max = std::max(u_max, cd.second); u_sum += cd.second; }
+    const auto slow_start = [&](size_t i) { return std::min(1.0, len_f * cards[i].second / std::max(1e-9, u_sum)); };
+    for (size_t i = 0; i < cards.size(); ++i) { if (cards[i].second < 0.999 * u_max) { slow_sum += slow_start(i); } else { ++n_fast; } }
     const double slow_scale = slow_sum > 0.9 ? 0.9 / slow_sum : 1.0;
     const auto start_share = [&](size_t i) {
-        return cards[i].second < 0.999 * u_max ? slow_scale * std::min(1.0, coef * cards[i].second / u_max) : (1.0 - slow_scale * slow_sum) / std::max(1, n_fast);
+        return cards[i].second < 0.999 * u_max ? slow_scale * slow_start(i) : (1.0 - slow_scale * slow_sum) / std::max(1, n_fast);
     };
     const auto seed = [&](size_t i) {
         double v0 = start_share(i) * (double) n_expert;
@@ -2979,8 +3007,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 // hand; otherwise from the upload rates as before.
                 static const bool ctl_on = split_opt("split-auto", 1) != 0 && split_opt("split-chunks", 1) <= 1;
                 std::vector<int64_t> n_of;
-                if (ctl_on && slow_share < 0.0 && gate_inp && gate_inp->buffer && moe_ranges.empty()) {
-                    const ggml_backend_dev_t od = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(gate_inp->buffer));
+                if (ctl_on && slow_share < 0.0 && gate_inp && gate_inp->buffer) {
+                    // range mode (dense split): every card hands its partial results on, the router runs on the last range's card: that card is the reference
+                    const ggml_backend_dev_t od = !moe_ranges.empty() ? ggml_backend_get_device(moe_ranges.back().b)
+                                                                      : ggml_backend_buft_get_device(ggml_backend_buffer_get_type(gate_inp->buffer));
                     std::vector<std::pair<ggml_backend_dev_t, double>> cards;
                     size_t owner_i = parts.size();
                     for (size_t i = 0; i < parts.size(); ++i) {
