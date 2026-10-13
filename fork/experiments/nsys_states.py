@@ -23,7 +23,7 @@ def load(path, thr):
         else: cur.append(k)
     bursts.append(cur)
     big = [x for x in bursts if len(x) >= 0.8 * max(len(y) for y in bursts)]
-    b = big[-1] if os.environ.get("NSYS_PICK", "last") == "last" else max(bursts, key=len)   # the last prompt pass (warm when the prompt is repeated)
+    b = min(big, key=lambda x: max(k[1] for k in x) - x[0][0]) if os.environ.get("NSYS_PICK", "fastest") == "fastest" else big[-1]   # the last prompt pass (warm when the prompt is repeated)
     s = b[0][0]; e = max(k[1] for k in b)
     cps = c.execute("select start,end,deviceId,copyKind,bytes from CUPTI_ACTIVITY_KIND_MEMCPY where end>=? and start<=?", (s, e)).fetchall()
     rt = c.execute("select r.start,r.end,r.globalTid,st.value from CUPTI_ACTIVITY_KIND_RUNTIME r join StringIds st on st.id=r.nameId where r.end>=? and r.start<=?", (s, e)).fetchall()

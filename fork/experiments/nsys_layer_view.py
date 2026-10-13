@@ -25,7 +25,7 @@ for k in ks[1:]:
     if k[0] - cur[-1][1] > GAP: bursts.append(cur); cur = [k]
     else: cur.append(k)
 bursts.append(cur)
-big = [x for x in bursts if len(x) >= 0.8 * max(len(y) for y in bursts)]; b = big[-1] if os.environ.get("NSYS_PICK", "last") == "last" else max(bursts, key=len)
+big = [x for x in bursts if len(x) >= 0.8 * max(len(y) for y in bursts)]; b = min(big, key=lambda x: max(k[1] for k in x) - x[0][0]) if os.environ.get("NSYS_PICK", "fastest") == "fastest" else big[-1]
 s = b[0][0]; e = max(k[1] for k in b)
 cps = c.execute("select start,end,deviceId,copyKind,bytes from CUPTI_ACTIVITY_KIND_MEMCPY where end>=? and start<=? order by start", (s - 1_000_000_000, e)).fetchall()
 mmq = [k for k in b if k[3].startswith("mul_mat_q")]
@@ -45,7 +45,7 @@ for d in (0, 1):
         if j < len(mats): up[d].append((st, en, by, layer_of(mats[j][1]))); j += 1
 a, z = ends[L - 1], ends[L]; T = (z - a) / 1e6
 mine = [x for d in (0, 1) for x in up[d] if x[3] == L]; nxt = [x for d in (0, 1) for x in up[d] if x[3] == L + 1]
-x_lo = max(a - 700e6, min([a] + [x[0] for x in mine])); x_hi = z
+x_lo = a if os.environ.get("NSYS_FROM_START", "1") == "1" else max(a - 700e6, min([a] + [x[0] for x in mine])); x_hi = z   # default: the layer only, from its start
 rel = lambda t: (t - a) / 1e6
 fig = plt.figure(figsize=(15, 16.6))
 gs = fig.add_gridspec(15, 1, height_ratios=[1, 1, 1, 1, 1, 1, 1, 1, 1.5, 1.5, 1.5, 0.8, 0.8, 1.0, 1.0], hspace=0.28)
