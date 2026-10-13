@@ -60,7 +60,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
         std::lock_guard<std::mutex> lk(g_mu);
         g_sets[&model];
     }
-    if (!dsplit_opt_on() || (model.arch != LLM_ARCH_GLM5_NEXT && model.arch != LLM_ARCH_QWEN3NEXT && model.arch != LLM_ARCH_QWEN4EXP && model.arch != LLM_ARCH_MIMO2 && model.arch != LLM_ARCH_DEEPSEEK4)) {
+    if (!dsplit_opt_on() || (model.arch != LLM_ARCH_GLM5_NEXT && model.arch != LLM_ARCH_QWEN3NEXT && model.arch != LLM_ARCH_QWEN4EXP && model.arch != LLM_ARCH_MIMO2 && model.arch != LLM_ARCH_DEEPSEEK4 && model.arch != LLM_ARCH_QWEN35MOE)) {
         return;   // a token-range graph exists for these architectures only: no copies for other models (they get the expert split alone)
     }
     std::vector<ggml_backend_dev_t> gpus;
