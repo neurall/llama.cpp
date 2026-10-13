@@ -54,13 +54,13 @@ bool dsplit_opt_auto() {
 
 }  // namespace
 
-void llama_dsplit_mirror_build_fork(const llama_model & model) {
+void llama_dsplit_mirror_build_fork(llama_model & model) {
     {
         // the per-pass choice (--moe dense-split=auto) is managed for any model on two or more GPUs, with or without copies
         std::lock_guard<std::mutex> lk(g_mu);
         g_sets[&model];
     }
-    if (!dsplit_opt_on() || (model.arch != LLM_ARCH_GLM5_NEXT && model.arch != LLM_ARCH_QWEN3NEXT)) {
+    if (!dsplit_opt_on() || (model.arch != LLM_ARCH_GLM5_NEXT && model.arch != LLM_ARCH_QWEN3NEXT && model.arch != LLM_ARCH_QWEN4EXP && model.arch != LLM_ARCH_MIMO2 && model.arch != LLM_ARCH_DEEPSEEK4)) {
         return;   // a token-range graph exists for these architectures only: no copies for other models (they get the expert split alone)
     }
     std::vector<ggml_backend_dev_t> gpus;
@@ -110,6 +110,13 @@ void llama_dsplit_mirror_build_fork(const llama_model & model) {
         for (size_t i = 0; i < src.size(); ++i) {
             ggml_backend_tensor_copy(src[i], dst[i]);
             S.mirror[D][src[i]] = dst[i];
+            // The model's per-tensor precision rules are keyed by the weight tensor (llama_prec_policy: "this weight cannot take 4-bit activations").
+            // A copy takes the rule of its original: without it the copies of such weights ran with 4-bit activations on the other card
+            // (Qwen3.8-Flash-Next, the linear-attention weights: perplexity 4360 where one card gives 1.125, with copies that were byte for byte right).
+            auto p1 = model.prec_policy.prec_src1.find(src[i]);
+            if (p1 != model.prec_policy.prec_src1.end()) { const ggml_prec v = p1->second; model.prec_policy.prec_src1[dst[i]] = v; }
+            auto pa = model.prec_policy.prec_acc.find(src[i]);
+            if (pa != model.prec_policy.prec_acc.end()) { const ggml_prec v = pa->second; model.prec_policy.prec_acc[dst[i]] = v; }
         }
         S.bufs.push_back({ ctx, buf });
         LLAMA_LOG_INFO("%s: dense split: %zu dense tensors (%.1f MiB) copied to %s in %.2f s\n", __func__, src.size(), bytes / 1048576.0,
@@ -185,9 +192,40 @@ int dsplit_bucket_of(int64_t n) {
 }
 }  // namespace
 
+// LLAMA_DS_VERIFY=1 (debug): once, before the first prompt pass, every copy is read back and compared with its original, byte for byte. A copy that differs
+// was made before its original had its final content (a weight that is filled or rewritten after the load).
+static void dsplit_verify(const dsplit_set & S) {
+    size_t n = 0, n_bad = 0;
+    std::vector<uint8_t> a, b;
+    for (const auto & dm : S.mirror) {
+        for (const auto & pr : dm.second) {
+            const ggml_tensor * src = pr.first;
+            const ggml_tensor * dst = pr.second;
+            const size_t nb = ggml_nbytes(src);
+            a.resize(nb); b.resize(nb);
+            ggml_backend_tensor_get(src, a.data(), 0, nb);
+            ggml_backend_tensor_get(dst, b.data(), 0, nb);
+            ++n;
+            if (memcmp(a.data(), b.data(), nb) != 0) {
+                size_t first = 0, cnt = 0;
+                for (size_t i = 0; i < nb; ++i) { if (a[i] != b[i]) { if (cnt++ == 0) { first = i; } } }
+                if (n_bad++ < 24) {
+                    LLAMA_LOG_WARN("dense split: copy of %s (%s, %zu bytes) on %s differs from its original: %zu bytes, the first at %zu\n", src->name,
+                            ggml_type_name(src->type), nb, ggml_backend_dev_name(dm.first), cnt, first);
+                }
+            }
+        }
+    }
+    LLAMA_LOG_WARN("dense split: %zu copies of dense weights checked against their originals, %zu differ\n", n, n_bad);
+}
+
 bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
+    {
+        static bool verified = false;
+        if (!verified && n_tokens >= 64 && it != g_sets.end() && getenv("LLAMA_DS_VERIFY")) { verified = true; dsplit_verify(it->second); }
+    }
     int choice = -1;
     const bool managed = it != g_sets.end() && dsplit_n_gpus(model) >= 2 && (dsplit_opt_auto() || !it->second.mirror.empty());
     if (managed && n_tokens >= 64) {
@@ -257,8 +295,22 @@ llama_layer llama_dsplit_layer_fork(const llama_model & model, const llama_layer
     static_assert(sizeof(llama_layer) % sizeof(ggml_tensor *) == 0, "llama_layer is expected to hold tensor pointers only");
     llama_layer m = l;
     ggml_tensor ** p = reinterpret_cast<ggml_tensor **>(&m);
+    // LLAMA_DS_ORIG=a,b (debug): weights whose name contains one of these pieces are read from the layer's own card instead of the copy
+    static const std::vector<std::string> keep = [] {
+        std::vector<std::string> v;
+        const char * e = getenv("LLAMA_DS_ORIG");
+        for (const char * q = e; q && *q; ) {
+            const char * c = strchr(q, ',');
+            v.push_back(c ? std::string(q, c - q) : std::string(q));
+            q = c ? c + 1 : nullptr;
+        }
+        return v;
+    }();
     for (size_t i = 0; i < sizeof(llama_layer) / sizeof(ggml_tensor *); ++i) {
-        if (p[i]) { p[i] = llama_dsplit_mirror_fork(model, p[i], dev); }
+        if (!p[i]) { continue; }
+        bool orig = false;
+        for (const auto & k : keep) { orig = orig || strstr(p[i]->name, k.c_str()) != nullptr; }
+        if (!orig) { p[i] = llama_dsplit_mirror_fork(model, p[i], dev); }
     }
     return m;
 }

@@ -9,7 +9,7 @@ struct llama_model;
 
 // --moe dense-split=1: copies the dense (non-expert) weights of every trunk layer once to every other GPU, at load. Nothing when the option is off or
 // fewer than two GPUs hold layers.
-void llama_dsplit_mirror_build_fork(const llama_model & model);
+void llama_dsplit_mirror_build_fork(llama_model & model);   // also gives every copy the precision rule of its original (model.prec_policy)
 void llama_dsplit_mirror_free_fork(const llama_model & model);
 
 // true when the copies exist (the graph builder may cut a prompt pass into token ranges)

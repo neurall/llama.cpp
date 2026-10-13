@@ -1021,6 +1021,18 @@ struct llm_graph_context {
     void                       ds_pin(ggml_backend_t b) const;               // tensors created since the last mark run on card b (views and memory writes excepted)
     ggml_backend_t             ds_backend(ggml_backend_dev_t dev) const;     // the scheduler's backend of a device
     std::vector<ggml_tensor *> ds_slice(ggml_tensor * x) const;              // per-range views of x along its last non-unit dim (= tokens), not pinned
+    // range r of x along its token dim. The same view for every caller in this graph: a view made anew for every layer is a new tensor each time and the
+    // scheduler copies it to the range's card every time (GLM-5.3-Flash, 3k tokens: 34 MB of attention mask per layer).
+    mutable std::map<std::pair<const ggml_tensor *, size_t>, ggml_tensor *> ds_cut;
+    ggml_tensor *              ds_rows(ggml_tensor * x, size_t r) const;
+    // the positions of every range (inp_pos holds n_pos_per_embd blocks of n_tokens: a range is one piece of each block), on its card
+    std::vector<ggml_tensor *> ds_pos(ggml_tensor * inp_pos) const;
+    // A conv history handed from range to range. xs[r] = the new columns of range r, [channels, tokens of the range, 1], on its card; rows = the stored
+    // history (state_cols x channels values, as read from the recurrent memory). Returns the conv input of every range, [state_cols + tokens, channels, 1]
+    // with the history first, on the range's card: the memory's history for the first range, the last state_cols columns of the range before for the
+    // others. The last range's last columns are written to states_all at byte dst_off (where the memory is).
+    std::vector<ggml_tensor *> ds_conv_chain(ggml_tensor * rows, ggml_tensor * states_all, size_t dst_off, const std::vector<ggml_tensor *> & xs,
+                                             int64_t state_cols, int64_t channels) const;
     ggml_tensor *              ds_join(const std::vector<ggml_tensor *> & xs, int dim, ggml_backend_t b) const;   // the ranges together again, on card b
     // KV-cache attention of every range (flash attention): each range's K/V are written to the cache with its slice of the cache indices, each range's
     // queries attend over the whole cache with its rows of the mask. q/k/v per range (computed on the range's card, after rope), sinks per range (the

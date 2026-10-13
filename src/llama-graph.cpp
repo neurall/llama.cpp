@@ -48,10 +48,26 @@
 //           per pass size, and a size never seen starts from the nearest tuned size.
 //   tune    after every prompt pass the scheduler reports, per layer and card, when the card's expert chain started and ended and when a helper's partial
 //           sum had left it (time stamps in stream order, ggml_sched_chain_stat). delta = t_out(helper) - t_end(owner): positive, the owner waited, the
-//           helper gets fewer experts; negative, the helper waited and gets more. The step is 5% of the experts (--moe split-step) and is halved every
-//           time the wait changes sides (5, 2.5, 1.25 ...: a bisection once the target is bracketed), never less than one expert, and nothing moves while
-//           delta is inside half of tau = the owner's time per expert + the helper's time per expert (what one expert changes between the two end times).
-//           The step is taken from the count the measurement was made with, so a measurement that arrives a pass late cannot add up twice.
+//           helper gets fewer experts; negative, the helper waited and gets more. One expert moved changes the gap by tau = the owner's time per expert
+//           + the helper's time per expert, so the move that closes the gap is delta / tau experts: 75% of it is taken (--moe split-gain; the times per
+//           expert include waits that do not scale with the count), at most `step` experts, never less than one. One pass's gap is good to about a
+//           millisecond, which is several experts, so what is acted on is the mean of the last three estimates of the balance point (count - delta /
+//           tau, --moe split-window), and nothing moves while that smoothed gap is inside half of tau or 1% of the layer time. `step` starts at 25% of the experts (--moe split-step) and is halved every time the wait changes sides, so a wrong
+//           estimate still closes like a bisection. The move is taken from the count the measurement was made with: a measurement that arrives a pass
+//           late cannot add up twice. (The first version moved a fixed 5% per pass whatever the gap: four passes to switch a helper off, each of them
+//           with the wrong shares.)
+//   apply   a pass asks for new counts before its graph is reused (llama_split_ctl_poll_fork, from llama_context::process_ubatch): the graph is rebuilt
+//           only when a count changed, a pass with unchanged counts reuses the graph of the pass before. (Read while a graph was being built, as before,
+//           new counts reached a pass only when something else forced a rebuild, and the same measurement was applied again on every reuse.)
+//   settle  a pass size is settled when its measured layer time stays within 1.5% (--moe split-settle) for two measurements in a row, or after 8
+//           measurements (--moe split-passes) whatever they say: the counts of the fastest measurement are taken and kept for the rest of the run (the
+//           prompt length is what it is, the answer has been found). (Judged by the counts instead, a size never settled: timing jitter of a
+//           millisecond moves a few experts in most layers on every pass, while the layer time has long stopped changing.)
+//   cost    Qwen3.8-Flash-Next, 5.5k tokens, ten passes of the same prompt, prompt tokens/s: 1219, 1264, 1257, 1264, 1300, 1303, 1300 ... with the
+//           tuning, 1222, 1260, 1264, 1284, 1280, 1279 ... with the start shares, 906 on one card. A rebuild costs 7 ms of a 4.2 s pass and no pass was
+//           slower than with the start shares: the tuning is free, so nothing is stored between runs (a stored answer would have to be keyed by the
+//           model, the cards and their slots, and would go stale with any of them). Every run measures and stops when it has settled.
+//           --moe split-auto=0: no tuning, the start shares for the whole run.
 //   skip    a helper whose count falls under one expert, or whose experts save the owner less time than the owner spends on the two copies with it, holds
 //           nothing in that layer: no chain, no hop, no upload there (the go / no-go, per layer, measured). It is tried again 32 measured passes later.
 //   length  the counts are kept per pass size (one bucket per power of two of the tokens in the pass): hops and compute grow with the tokens, the expert bytes
@@ -61,7 +77,7 @@
 //           this, not by compute: GLM-5.3-Flash at 2k tokens has a 108 ms layer and 8.3 MB per expert, a x4 link moves 23% of the experts in that time;
 //           seeded with 35% the owner waited 70 ms per layer for the helper's uploads (316 prompt tokens per second against 406 on one card).
 // Any number of cards; nothing refers to a slot width or to "two cards". Without the stamps (a backend that has no host function in stream order) the start
-// values stay. --moe split-slow-share=F fixes the shares by hand (tests); --moe split-auto=0 restores the upload-rate shares.
+// values stay. --moe split-slow-share=F fixes the shares by hand (tests).
 extern "C" {
     struct ggml_sched_chain_stat {      // must match ggml-backend.cpp
         int            layer;
@@ -85,6 +101,15 @@ struct llama_split_ctl {
     std::map<key_t, long>   off_at;   // skipped since this update
     std::map<int, double>   bytes_expert;   // per layer: bytes of one expert over the three expert tensors
     std::map<int, double>   ms_tok;         // per pass-size bucket: measured layer period per token (us), to cap a start value by the link
+    std::map<int, int>      calm;           // per pass-size bucket: measurements in a row whose layer time stayed within the tolerance
+    std::map<int, int>      n_meas;         // per pass-size bucket: measurements read
+    std::map<int, double>   period;         // per pass-size bucket: the layer time of the last measurement (us)
+    std::map<int, double>   best_period;    // per pass-size bucket: the shortest layer time measured so far
+    std::map<key_t, double> used;           // the counts the last graph was built with (what a measurement belongs to)
+    std::map<key_t, double> best;           // the counts of the measurement with the shortest layer time
+    std::map<key_t, std::vector<double>> est;   // the last few estimates of the balance point (count - gap / time per expert)
+    std::map<int, bool>     frozen;         // per pass-size bucket: settled, the counts stay for the rest of the run
+    long                    n_rebuilds = 0; // measurements that changed a count (each one rebuilds the graph of the next pass)
 };
 llama_split_ctl g_split_ctl;
 
@@ -99,18 +124,20 @@ double split_opt(const char * key, double def) {
     return e ? atof(e) : def;
 }
 
-// a finished measurement is read once and every layer's helper counts are moved
-void split_ctl_update(int64_t n_expert, int64_t n_embd) {
+// a finished measurement is read once and every layer's helper counts are moved; true when a count changed (the next graph of that size is rebuilt)
+bool split_ctl_update(int64_t n_expert, int64_t n_embd) {
     llama_split_ctl & c = g_split_ctl;
     long gen = 0;
     ggml_backend_sched_chain_stats(nullptr, 0, &gen);
-    if (gen == c.gen_seen) { return; }
+    if (gen == c.gen_seen) { return false; }
     static std::vector<ggml_sched_chain_stat> st(2048);
     const int n = ggml_backend_sched_chain_stats(st.data(), (int) st.size(), &gen);
     c.gen_seen = gen;
-    if (n <= 0) { return; }
+    if (n <= 0) { return false; }
     c.n_updates++;
-    static const double step0 = split_opt("split-step", 0.05);
+    static const double step0 = split_opt("split-step", 0.25);
+    static const double gain  = split_opt("split-gain", 0.75);
+    std::map<int, int> big_moves, seen;   // per pass-size bucket of this measurement: layers moved by more than one expert, layers measured
     std::map<int, std::vector<const ggml_sched_chain_stat *>> by_layer;
     for (int i = 0; i < n; ++i) { by_layer[st[i].layer].push_back(&st[i]); }
     double sum_wait = 0, sum_early = 0, sum_share = 0, sum_period = 0;
@@ -156,7 +183,9 @@ void split_ctl_update(int64_t n_expert, int64_t n_embd) {
         const double hop_o = gbs_o > 0 ? 2.0 * (double) o->n_tokens * (double) n_embd * 4.0 / (gbs_o * 1e3) : 0.0;   // us: the owner's halves of the two copies
         for (const auto * h : kv.second) {
             if (h == o || h->t_start == 0 || h->t_end <= h->t_start || h->hi <= h->lo) { continue; }
-            const llama_split_ctl::key_t key(split_bucket(h->n_tokens), kv.first, ggml_backend_get_device(h->backend));
+            const int bk_h = split_bucket(h->n_tokens);
+            if (c.frozen[bk_h]) { continue; }   // settled: nothing moves for this pass size
+            const llama_split_ctl::key_t key(bk_h, kv.first, ggml_backend_get_device(h->backend));
             auto it = c.held.find(key);
             if (it == c.held.end()) {
                 static int dbg2 = 0;
@@ -173,15 +202,26 @@ void split_ctl_update(int64_t n_expert, int64_t n_embd) {
             // chain takes longer (its upload or its compute) holds too many experts. (Compared by their ends, the x4 card looked early because the x16's
             // chain waited for the x4's tokens, and its share ran away to more than half.)
             const double delta  = range_mode ? (double) ((h->t_end - h->t_start) - (o->t_end - o->t_start)) : (double) (h->t_out - o->t_end);
+            // Every measurement, at whatever count it was made, says where the balance lies: count - delta / tau. The mean of the last few of these
+            // estimates (--moe split-window, 3) takes the timing jitter out before anything moves: one pass's gap is good to a millisecond or so, which
+            // is several experts.
             double move = 0.0;
-            if (std::fabs(delta) >= 0.5 * tau) {
-                auto sit = c.step.find(key);
-                if (sit == c.step.end()) { sit = c.step.emplace(key, step0 * (double) n_expert).first; }
-                const int d = delta > 0 ? 1 : -1;
-                int & last = c.dir[key];
-                if (last != 0 && last != d) { sit->second *= 0.5; }   // the wait changed sides: the target lies inside the last step
-                last = d;
-                move = d * std::max(1.0, sit->second);
+            {
+                static const size_t window = (size_t) std::max(1.0, split_opt("split-window", 3));
+                auto & est = c.est[key];
+                est.push_back(std::max(0.0, std::min((double) n_expert - 1.0, n_meas - delta / std::max(1e-9, tau))));
+                if (est.size() > window) { est.erase(est.begin()); }
+                const double target = std::accumulate(est.begin(), est.end(), 0.0) / (double) est.size();
+                const double gap    = (n_meas - target) * tau;   // the smoothed gap, us: positive, the helper holds too many
+                if (std::fabs(gap) >= std::max(0.5 * tau, 0.01 * period)) {   // period 0 (not measured): half of tau alone
+                    auto sit = c.step.find(key);
+                    if (sit == c.step.end()) { sit = c.step.emplace(key, step0 * (double) n_expert).first; }
+                    const int d = gap > 0 ? 1 : -1;
+                    int & last = c.dir[key];
+                    if (last != 0 && last != d) { sit->second *= 0.5; }   // the gap changed sides: the target lies inside the last step
+                    last = d;
+                    move = d * std::max(1.0, std::min(sit->second, gain * std::fabs(n_meas - target)));   // towards the smoothed balance, at most the step
+                }
             }
             double v = std::max(0.0, std::min((double) n_expert - 1.0, n_meas - move));
             // the link cap: what this card's link uploads in one layer period (without what the owner waited), less its two hops, 15% spare
@@ -196,6 +236,8 @@ void split_ctl_update(int64_t n_expert, int64_t n_embd) {
             }
             if (v < 1.0 || v * per_o < hop_o) { v = 0.0; c.off_at[key] = c.n_updates; ++n_off; }
             if (llround(v) != llround(n_meas)) { ++n_moved; }
+            if (std::llabs(llround(v) - llround(n_meas)) > 1) { big_moves[bk_h]++; }
+            seen[bk_h]++;
             it->second = v;
             (delta > 0 ? sum_wait : sum_early) += std::fabs(delta);
             sum_share += v / (double) n_expert;
@@ -207,6 +249,40 @@ void split_ctl_update(int64_t n_expert, int64_t n_embd) {
         LLAMA_LOG_WARN("prefill split: pass %ld of %lld tokens measured over %d layer chains: layer %.1f ms, the owner waited %.2f ms per layer, a helper %.2f ms; helper share now %.1f%% on average, %d layers moved, %d capped by the link, %d skipped\n",
                 c.n_updates, (long long) tokens, n_h, n_period ? sum_period / n_period / 1e3 : 0.0, sum_wait / n_h / 1e3, sum_early / n_h / 1e3, 100.0 * sum_share / n_h, n_moved, n_capped, n_off);
     }
+    // settle (see the top of this file): by the layer time of the pass size most layers of this measurement ran at
+    bool restored = false;
+    {
+        int bk_main = -1, n_main = 0;
+        for (const auto & sb : seen) { if (sb.second > n_main) { n_main = sb.second; bk_main = sb.first; } }
+        if (bk_main >= 0 && n_main >= 4 && n_period > 0) {
+            static const double tol   = split_opt("split-settle", 0.015);
+            static const int    limit = (int) split_opt("split-passes", 8);
+            const double p = sum_period / n_period;
+            double & last = c.period[bk_main];
+            int & calm    = c.calm[bk_main];
+            int & meas    = c.n_meas[bk_main];
+            ++meas;
+            calm = (last > 0.0 && std::fabs(p - last) <= tol * last) ? calm + 1 : 0;
+            last = p;
+            auto bp = c.best_period.find(bk_main);
+            if (bp == c.best_period.end() || p < bp->second) {
+                c.best_period[bk_main] = p;
+                for (const auto & u : c.used) { if (seen.count(std::get<0>(u.first))) { c.best[u.first] = u.second; } }   // the counts this measurement ran with
+            }
+            if (calm >= 2 || meas >= limit) {
+                for (const auto & sb : seen) { c.frozen[sb.first] = true; }
+                for (const auto & bst : c.best) {
+                    if (!seen.count(std::get<0>(bst.first))) { continue; }
+                    auto h = c.held.find(bst.first);
+                    if (h != c.held.end() && llround(h->second) != llround(bst.second)) { h->second = bst.second; restored = true; }
+                }
+                LLAMA_LOG_WARN("prefill split: passes of up to %lld tokens are settled after %d measurements (layer time %.1f ms, the best %.1f ms): the expert counts of the best one are kept for the rest of the run\n",
+                        (long long) ((int64_t) 64 << bk_main), meas, p / 1e3, c.best_period[bk_main] / 1e3);
+            }
+        }
+    }
+    if (n_moved > 0 || restored) { c.n_rebuilds++; }
+    return n_moved > 0 || restored;
 }
 
 // experts each card holds in layer il for a pass of n_tokens (cards: device and upload rate; the owner keeps what the helpers do not hold)
@@ -214,7 +290,7 @@ std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vecto
     llama_split_ctl & c = g_split_ctl;
     std::lock_guard<std::mutex> lk(c.mu);
     if (bytes_layer > 0 && n_expert > 0) { c.bytes_expert[il] = bytes_layer / (double) n_expert; }
-    split_ctl_update(n_expert, n_embd);
+
     // Start share: the upload-balanced share (replaces the fixed 1.4 x link ratio of the first version and a factor fitted to GLM-5.3-Flash: measured
     // there, the best x4 share was 15% at 1.8k tokens and 25% at 5.5k against 19.7% upload-balanced, but that curve belongs to that model and those
     // cards; the bisection tunes each layer and pass size from here).
@@ -261,7 +337,7 @@ std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vecto
         if (it == c.held.end()) {
             it = c.held.emplace(key, seed(i)).first;
             fresh = true;
-        } else if (it->second <= 0.0) {
+        } else if (it->second <= 0.0 && !c.frozen[bk]) {   // a settled size keeps its switched-off helpers
             auto ot = c.off_at.find(key);
             if (ot == c.off_at.end() || c.n_updates - ot->second >= retry) { it->second = seed(i); c.off_at.erase(key); fresh = true; }
         }
@@ -282,12 +358,22 @@ std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vecto
         if (i == owner) { continue; }
         out[i] = std::max<int64_t>(0, std::min<int64_t>(n_expert - 1 - used, llround(v[i])));
         used += out[i];
+        c.used[llama_split_ctl::key_t(bk, il, cards[i].first)] = (double) out[i];
     }
     out[owner] = n_expert - used;
     return out;
 }
 
 }  // namespace
+
+// fork: asked before a prompt pass reuses the graph of the pass before (llama_context::process_ubatch): reads a finished measurement of the expert chains and
+// moves the cards' expert counts (see "apply" at the top of this file). true: a count changed, the graph has to be rebuilt.
+bool llama_split_ctl_poll_fork(int64_t n_expert, int64_t n_embd) {
+    static const bool tune = split_opt("split-auto", 1) != 0;
+    if (!tune || n_expert <= 0) { return false; }
+    std::lock_guard<std::mutex> lk(g_split_ctl.mu);
+    return split_ctl_update(n_expert, n_embd);
+}
 
 // dedup helpers
 
@@ -3011,7 +3097,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 for (const auto & pt : parts) { if (pt.gbs < top) { slow_sum += pt.gbs; } }
                 // The counts come from the share controller (see llama_split_ctl above) when the layer has an owner among the cards and nothing fixes the shares by
                 // hand; otherwise from the upload rates as before.
-                static const bool ctl_on = split_opt("split-auto", 1) != 0 && split_opt("split-chunks", 1) <= 1;
+                static const bool ctl_on = split_opt("split-chunks", 1) <= 1;   // --moe split-auto=0 stops the tuning (llama_split_ctl_poll_fork), not the table
                 std::vector<int64_t> n_of;
                 if (ctl_on && slow_share < 0.0 && gate_inp && gate_inp->buffer) {
                     // range mode (dense split): every card hands its partial results on, the router runs on the last range's card: that card is the reference
@@ -5079,11 +5165,15 @@ int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buck
 
 bool llm_graph_context::ds_plan(int64_t min_tokens) const {
     ds_r.clear();
+    ds_cut.clear();
     ds_mark = nullptr;
     static const double  share0  = [] { const char * e = llama_moe_get_opt("dense-split-share"); return e ? atof(e) : 0.55; }();
     static const int64_t min_tok = [] { const char * e = llama_moe_get_opt("dense-split-min");   return e ? (int64_t) atoll(e) : (int64_t) 512; }();
     if (!sched || llama_dsplit_cur_fork() != 1 || ubatch.n_seqs != 1 || cparams.n_rs_seq != 0 || n_tokens < std::max(min_tok, min_tokens)) {
         return false;
+    }
+    if (!loras->empty()) {
+        return false;   // an adapter is looked up by the weight tensor: the copies on the other cards would run without it
     }
     std::vector<std::pair<double, ggml_backend_t>> gpus;   // (upload rate, backend)
     for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
@@ -5133,15 +5223,63 @@ ggml_backend_t llm_graph_context::ds_backend(ggml_backend_dev_t dev) const {
     return nullptr;
 }
 
-std::vector<ggml_tensor *> llm_graph_context::ds_slice(ggml_tensor * x) const {
+ggml_tensor * llm_graph_context::ds_rows(ggml_tensor * x, size_t r) const {
+    const auto key = std::make_pair((const ggml_tensor *) x, r);
+    auto it = ds_cut.find(key);
+    if (it != ds_cut.end()) { return it->second; }
     int d = GGML_MAX_DIMS - 1;
     while (d > 0 && x->ne[d] == 1) { --d; }   // the token dim: the last one that is not 1
+    int64_t ne[4] = { x->ne[0], x->ne[1], x->ne[2], x->ne[3] };
+    ne[d] = ds_r[r].t1 - ds_r[r].t0;
+    ggml_tensor * v = ggml_view_4d(ctx0, x, ne[0], ne[1], ne[2], ne[3], x->nb[1], x->nb[2], x->nb[3], ds_r[r].t0 * x->nb[d]);
+    ds_cut[key] = v;
+    return v;
+}
+
+std::vector<ggml_tensor *> llm_graph_context::ds_slice(ggml_tensor * x) const {
     std::vector<ggml_tensor *> out;
-    for (const auto & r : ds_r) {
-        const int64_t nr = r.t1 - r.t0;
-        int64_t ne[4] = { x->ne[0], x->ne[1], x->ne[2], x->ne[3] };
-        ne[d] = nr;
-        out.push_back(ggml_view_4d(ctx0, x, ne[0], ne[1], ne[2], ne[3], x->nb[1], x->nb[2], x->nb[3], r.t0 * x->nb[d]));
+    for (size_t r = 0; r < ds_r.size(); ++r) { out.push_back(ds_rows(x, r)); }
+    return out;
+}
+
+std::vector<ggml_tensor *> llm_graph_context::ds_pos(ggml_tensor * inp_pos) const {
+    const int64_t npe = hparams.n_pos_per_embd();
+    if (npe <= 1) { return ds_slice(inp_pos); }
+    const int64_t n_all = inp_pos->ne[0] / npe;
+    const size_t  es    = ggml_element_size(inp_pos);
+    std::vector<ggml_tensor *> out(ds_r.size());
+    for (size_t r = 0; r < ds_r.size(); ++r) {
+        const int64_t nr = ds_r[r].t1 - ds_r[r].t0;
+        ds_skip();
+        ggml_tensor * t = nullptr;
+        for (int64_t k = 0; k < npe; ++k) {
+            ggml_tensor * v = ggml_view_1d(ctx0, inp_pos, nr, (size_t) (k * n_all + ds_r[r].t0) * es);
+            t = t ? ggml_concat(ctx0, t, v, 0) : v;
+        }
+        out[r] = t;
+        ds_pin(ds_r[r].b);
+    }
+    return out;
+}
+
+std::vector<ggml_tensor *> llm_graph_context::ds_conv_chain(ggml_tensor * rows, ggml_tensor * states_all, size_t dst_off, const std::vector<ggml_tensor *> & xs,
+                                                             int64_t state_cols, int64_t channels) const {
+    std::vector<ggml_tensor *> out(ds_r.size());
+    ds_skip();
+    ggml_tensor * tail = ggml_reshape_3d(ctx0, rows, state_cols, channels, 1);   // the stored history, where the memory is
+    for (size_t r = 0; r < ds_r.size(); ++r) {
+        const int64_t nr = ds_r[r].t1 - ds_r[r].t0;
+        ds_skip();
+        ggml_tensor * in  = ggml_concat(ctx0, tail, ggml_transpose(ctx0, xs[r]), 0);
+        ggml_tensor * win = ggml_cont(ctx0, ggml_view_3d(ctx0, in, state_cols, channels, 1, in->nb[1], in->nb[2], (size_t) nr * in->nb[0]));
+        out[r] = in;
+        ds_pin(ds_r[r].b);
+        if (r + 1 == ds_r.size()) {
+            ggml_build_forward_expand(gf, ggml_cpy(ctx0, win, ggml_view_2d(ctx0, states_all, state_cols * channels, 1, states_all->nb[1], dst_off)));
+            ds_skip();   // the write runs where the memory is
+        } else {
+            tail = win;
+        }
     }
     return out;
 }
@@ -5176,8 +5314,9 @@ std::vector<ggml_tensor *> llm_graph_context::ds_attn_cache(const llama_kv_cache
     ds_skip();
     for (size_t r = 0; r < ds_r.size(); ++r) {
         const int64_t nr = ds_r[r].t1 - ds_r[r].t0;
-        ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k[r], ggml_view_1d(ctx0, k_idxs, nr, ds_r[r].t0 * ggml_element_size(k_idxs)), il));
-        ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v[r], ggml_view_1d(ctx0, v_idxs, nr, ds_r[r].t0 * ggml_element_size(v_idxs)), il));
+        (void) nr;
+        ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k[r], ds_rows(k_idxs, r), il));
+        ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v[r], ds_rows(v_idxs, r), il));
     }
     ds_skip();
     // 2. every range's queries over the whole cache, with its rows of the mask (the cache view is read after both writes: they were issued first)
@@ -5187,8 +5326,8 @@ std::vector<ggml_tensor *> llm_graph_context::ds_attn_cache(const llama_kv_cache
         ds_skip();
         ggml_tensor * kc = mctx_cur->get_k(ctx0, il);
         ggml_tensor * vc = mctx_cur->get_v(ctx0, il);
-        ggml_tensor * m  = ggml_view_4d(ctx0, kq_mask, kq_mask->ne[0], nr, kq_mask->ne[2], kq_mask->ne[3], kq_mask->nb[1], kq_mask->nb[2], kq_mask->nb[3],
-                                        ds_r[r].t0 * kq_mask->nb[1]);
+        (void) nr;
+        ggml_tensor * m  = ds_rows(kq_mask, r);   // its rows of the mask, cut once for all layers
         out[r] = build_attn_mha(q[r], kc, vc, nullptr, m, sinks.empty() ? nullptr : sinks[r], nullptr, 0, kq_scale, il);
         ds_pin(ds_r[r].b);
     }

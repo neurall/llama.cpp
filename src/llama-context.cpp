@@ -23,6 +23,8 @@
 #include "llama-sampler.h"
 #include "llama.h"
 
+bool llama_split_ctl_poll_fork(int64_t n_expert, int64_t n_embd);   // fork: llama-graph.cpp, the share controller of the expert split
+
 // fork: defined in ggml-backend.cpp, declared here (a line in a shared ggml header rebuilds every CUDA object): zeros in the row padding behind the last
 // expert of a copied expert tensor
 extern "C" {
@@ -2203,7 +2205,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
     // fork: --moe dense-split: the configuration of this pass (one card or split over the cards), chosen before the graph is built; a changed choice rebuilds
     const bool ds_changed = llama_dsplit_decide_fork(model, ubatch.n_tokens);
-    if (!graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork() && !ds_changed) {
+    // fork: the share controller of the expert split (llama-graph.cpp) moves the cards' expert counts from the measurement of an earlier pass; a changed count
+    // needs a new graph
+    const bool ctl_changed = ubatch.n_tokens >= 32 && llama_split_ctl_poll_fork((int64_t) model.hparams.n_expert, (int64_t) model.hparams.n_embd);
+    const int64_t t_graph0 = ggml_time_us();
+    bool graph_rebuilt = false;
+    if (!graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork() && !ds_changed && !ctl_changed) {
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
 
         // with pipeline parallelism, the previous graph_compute_async may still be running
@@ -2241,6 +2248,15 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         }
 
         gf_res_prev_active = res;
+        graph_rebuilt = true;
+    }
+    if (graph_rebuilt && ubatch.n_tokens >= 32) {
+        // what a rebuild costs a pass (the share controller pays it every time it moves a count): LLAMA_SPLIT_CTL_DEBUG=1 prints it
+        static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;
+        if (dbg) {
+            LLAMA_LOG_WARN("prefill split: graph of %u tokens built and placed in %.1f ms%s\n", ubatch.n_tokens, (ggml_time_us() - t_graph0) / 1e3,
+                    ctl_changed ? " (the expert counts changed)" : ds_changed ? " (one card / split choice changed)" : "");
+        }
     }
     llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);   // fork: --moe alias=1 lends the pool blocks this graph's tensors reach to it
 
