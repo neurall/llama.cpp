@@ -1,4 +1,5 @@
 #if defined(__linux__)
+#include <nvtx3/nvToolsExt.h>   // fork: NVTX ranges for diagnostics (GGML_NVTX)
 #include <sys/mman.h>
 #endif
 #include "ggml-cuda.h"
@@ -6604,7 +6605,6 @@ static __global__ void k_copy_slices_fork(const char * const * srcs, char * cons
 }
 // fork: NVTX ranges for the scheduler thread (GGML_NVTX=1 in ggml-backend.cpp): Nsight Systems draws them on the host thread next to the CUDA calls and kernels they launched,
 // on the same clock, so a long wait shows up with the name the scheduler gave it. Reached through the proc address, no shared header.
-#include <nvtx3/nvToolsExt.h>
 static void ggml_backend_cuda_nvtx_push_fork(const char * name) { nvtxRangePushA(name); }
 static void ggml_backend_cuda_nvtx_pop_fork() { nvtxRangePop(); }
 
