@@ -403,6 +403,8 @@ extern "C" {
     GGML_API void                 ggml_backend_sched_set_eval_callback(ggml_backend_sched_t sched, ggml_backend_sched_eval_callback callback, void * user_data);
 
     // Set a callback to be called when the inputs weights of a split are being copied
+    // fork: time the host thread spends in a blocking call of the split loop (site 1-8, see ggml-backend.cpp); GGML_PF_STATS=1 prints them
+    GGML_API void                 ggml_backend_sched_sync_stat_add(int site, long long us);
     GGML_API void                 ggml_backend_sched_set_copy_callback(ggml_backend_sched_t sched, ggml_backend_sched_copy_callback callback, void * user_data);
 
     //

@@ -3560,7 +3560,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
     if (ids != st.ids || (int64_t) st.used.size() != n_expert) {
         st.ids_data.resize(ggml_nbytes(ids)/sizeof(int32_t));
         ggml_backend_tensor_get_async(backend, ids, st.ids_data.data(), 0, ggml_nbytes(ids));
-        ggml_backend_synchronize(backend);
+        { const int64_t t_ids = ggml_time_us(); ggml_backend_synchronize(backend); ggml_backend_sched_sync_stat_add(3, ggml_time_us() - t_ids); }
 
         // let an expert cache see which experts offloaded batches use (the old sched loop did this; the move to user code dropped it)
         void * obs_ud = nullptr;

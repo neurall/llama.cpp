@@ -1876,6 +1876,15 @@ static bool ggml_backend_sched_is_host_weight(const struct ggml_tensor * t) {
         ggml_backend_buffer_is_host(t->buffer);
 }
 
+// Time the host thread spends in the blocking calls of the split loop, by call site (GGML_PF_STATS=1 prints them per big graph). Sites: 1 copy_input waits for the split's own
+// card, 2 copy_input synchronous cross-card fallback, 3 the expert copy callback reading the router ids (llama_context::sched_copy_experts), 4 D2H fetches before a split,
+// 5 the previous card before a split without inputs, 6 copy-ahead of the next split's inputs, 7 tracing, 8 end of an eval-callback split.
+static std::atomic<long long> g_sync_us[10], g_sync_n[10];
+void ggml_backend_sched_sync_stat_add(int site, long long us) {
+    if (site >= 0 && site < 10) { g_sync_us[site].fetch_add(us); g_sync_n[site].fetch_add(1); }
+}
+#define SYNC_TIMED(site, call) do { const int64_t _t = ggml_time_us(); call; ggml_backend_sched_sync_stat_add(site, ggml_time_us() - _t); } while (0)
+
 static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggml_backend_sched_split * split, struct ggml_tensor * input, std::vector<ggml_backend_t> & d2h_pending) {
     const int split_backend_id = split->backend_id;
     ggml_backend_t split_backend = sched->backends[split_backend_id];
@@ -1932,14 +1941,6 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
 }
 
 
-// Time the host thread spends in the blocking calls of the split loop, by call site (GGML_PF_STATS=1 prints them per big graph). Sites: 1 copy_input waits for the split's own
-// card, 2 copy_input synchronous cross-card fallback, 3 the expert copy callback reading the router ids (llama_context::sched_copy_experts), 4 D2H fetches before a split,
-// 5 the previous card before a split without inputs, 6 copy-ahead of the next split's inputs, 7 tracing, 8 end of an eval-callback split.
-static std::atomic<long long> g_sync_us[10], g_sync_n[10];
-void ggml_backend_sched_sync_stat_add(int site, long long us) {
-    if (site >= 0 && site < 10) { g_sync_us[site].fetch_add(us); g_sync_n[site].fetch_add(1); }
-}
-#define SYNC_TIMED(site, call) do { const int64_t _t = ggml_time_us(); call; ggml_backend_sched_sync_stat_add(site, ggml_time_us() - _t); } while (0)
 
 // the staging ring of card `dev`; created on first use with the configured slot count (NULL when the table of rings is full)
 static struct sched_pf_ring * ggml_backend_sched_pf_ring_for(ggml_backend_sched_t sched, ggml_backend_dev_t dev) {
