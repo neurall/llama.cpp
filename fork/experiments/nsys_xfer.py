@@ -43,6 +43,33 @@ def main():
         hist = [sum(1 for x in v if lo <= x[0] < hi) for lo, hi, _ in BINS]
         print("%-4d %-4s %8d %10.2f %9.2f %9.2f %7.0f%% %9.1f %9.1f  %s" % (d, k, n, tot / 1e9, tot / n / 1e6, busy, 100 * busy / win, tot / 1e9 / max(busy, 1e-9), tot / 1e9 / win,
               " ".join("%s:%d" % (lab, h) for (lo, hi, lab), h in zip(BINS, hist) if h)))
+    # When does each card's expert upload run? Host-to-device copies of 1 MB or more (expert tensors; the small ones are inputs and ids), per card: first start, last end,
+    # bytes, and the share of the time of the shorter of the two uploads during which BOTH cards were copying (100% = fully parallel, 0% = one after the other).
+    big = {d: sorted((st, en, by) for (by, st, en) in v if by >= 1 << 20) for (d, k), v in groups.items() if k == "H2D"}
+    print("expert uploads (H2D >= 1 MB), time from the start of the pass window:")
+    for d, v in sorted(big.items()):
+        if v:
+            print("  card %d: %5d copies, %8.2f GB, first start %6.2f s, last end %6.2f s, span %6.2f s, copying %6.2f s" %
+                  (d, len(v), sum(x[2] for x in v) / 1e9, (v[0][0] - s) / 1e9, (max(x[1] for x in v) - s) / 1e9, (max(x[1] for x in v) - v[0][0]) / 1e9,
+                   sum(z - a for a, z in merge([[x[0], x[1]] for x in v])) / 1e9))
+    if len(big) >= 2 and all(big.values()):
+        ds = sorted(big)
+        iv = {d: merge([[x[0], x[1]] for x in big[d]]) for d in ds}
+        a_, b_ = iv[ds[0]], iv[ds[1]]
+        ov = 0
+        for x0, x1 in a_:
+            for y0, y1 in b_:
+                ov += max(0, min(x1, y1) - max(x0, y0))
+        short = min(sum(z - a for a, z in a_), sum(z - a for a, z in b_))
+        print("  both cards copying at once: %.2f s = %.0f%% of the shorter card's copying time" % (ov / 1e9, 100 * ov / max(short, 1)))
+        # per second of the pass: bytes each card uploaded (a timeline of 1 s buckets)
+        nb = int(win) + 1
+        print("  GB per second of the pass:    " + " ".join("%5d" % i for i in range(nb)))
+        for d in ds:
+            bk = [0.0] * nb
+            for st, en, by in big[d]:
+                bk[min(nb - 1, int((st - s) / 1e9))] += by / 1e9
+            print("    card %d                      " % d + " ".join("%5.1f" % x for x in bk))
     print("host API calls in the window (all threads):")
     q = ("select st.value,count(*),round(sum(r.end-r.start)/1e6,1) from CUPTI_ACTIVITY_KIND_RUNTIME r join StringIds st on st.id=r.nameId "
          "where r.start>=? and r.start<=? and (st.value like 'cudaMemcpy%' or st.value like '%Synchronize%' or st.value like 'cudaMemset%' or st.value like '%StreamWaitEvent%') "
