@@ -958,7 +958,7 @@ struct ggml_backend_sched_split {
 };
 
 #ifndef GGML_SCHED_MAX_PREFETCH_SLOTS
-#define GGML_SCHED_MAX_PREFETCH_SLOTS 4
+#define GGML_SCHED_MAX_PREFETCH_SLOTS 8   // fork: two layers of three expert tensors fit (pf-slots=6); 4 silently capped pf-slots=6
 #endif
 
 #ifndef GGML_SCHED_MAX_PF_RINGS
@@ -2316,7 +2316,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     // other card's upload for the coming layer was issued only when the scheduler reached that card's split: nsys, GLM 8k, split: the x4 card's upload started 60-110 ms after
     // the x16's and its compute waited for it (copy, then compute, no overlap), the cards' kernels ran at the same time for 0.47 s of 17 s. With one card the two rules
     // are the same (k+1 was fired earlier, k+2 now). PF_WINDOW bounds the scan for splits that are no prefetch target.
-    static const int PF_PER_CARD = LOOKAHEAD + 1, PF_WINDOW = 24;
+    // In flight per card: one less than the card's staging slots (a slot is reused only when the matmul that read it has finished), at least LOOKAHEAD + 1. With 3 slots
+    // that is 2, fewer than one layer's 3 expert tensors (gate, up, down): the next layer's copies could start only when the current layer's matmuls ran, which on the slow
+    // card is at the end of the layer (nsys, OLMoE split: the x4 card prefetched nothing ahead). With 6 slots (two layers) the next layer's copies start right after the
+    // current layer's, limited by the copy engine only. PF_WINDOW: the scan reaches over a whole layer of splits in the multi-GPU split (about 10 per layer).
+    const int PF_PER_CARD = std::max(LOOKAHEAD + 1, sched->prefetch_n_slots - 1);
+    static const int PF_WINDOW = 64;
     const auto fire_ahead = [&](int k) {
         std::vector<int> pend(sched->n_backends, 0);
         for (int j = k + 1; j < sched->n_splits && j <= k + PF_WINDOW; j++) {
