@@ -45,7 +45,7 @@ for d in (0, 1):
         if j < len(mats): up[d].append((st, en, by, layer_of(mats[j][1]))); j += 1
 a, z = ends[L - 1], ends[L]; T = (z - a) / 1e6
 mine = [x for d in (0, 1) for x in up[d] if x[3] == L]; nxt = [x for d in (0, 1) for x in up[d] if x[3] == L + 1]
-x_lo = a if os.environ.get("NSYS_FROM_START", "1") == "1" else max(a - 700e6, min([a] + [x[0] for x in mine])); x_hi = z   # default: the layer only, from its start
+x_lo = a if os.environ.get("NSYS_FROM_START", "0") == "1" else max(a - 700e6, min([a] + [x[0] for x in mine])); x_hi = z   # default: from this layer's first own upload (its data), only its own activity
 rel = lambda t: (t - a) / 1e6
 fig = plt.figure(figsize=(15, 16.6))
 gs = fig.add_gridspec(15, 1, height_ratios=[1, 1, 1, 1, 1, 1, 1, 1, 1.5, 1.5, 1.5, 0.8, 0.8, 1.0, 1.0], hspace=0.28)
@@ -75,11 +75,13 @@ for i in range(8):
     axs[i].set_yticks([]); axs[i].set_ylim(-0.5, 0.5); axs[i].set_ylabel(names[i], rotation=0, ha="right", va="center", fontsize=9)
     axs[i].axvspan(rel(x_lo), 0, color="#f2f2f2", zorder=0)           # before the layer starts
 # bandwidth lanes: bytes of every host-to-device copy per 2 ms bin
+own_or_next = set((x[0], x[1]) for dd in (0, 1) for x in up[dd] if x[3] in (L, L + 1))
 binw = 2e6; edges = np.arange(x_lo, x_hi + binw, binw); nb = len(edges) - 1
 def rate(dev):
     by = np.zeros(nb)
     for st, en, d, kind, n in cps:
         if kind != 1 or (dev is not None and d != dev) or en <= x_lo or st >= x_hi or n < 65536: continue
+        if (st, en) not in own_or_next: continue   # only the copies of this layer's experts and of the next layer's (prefetch): no other layer's traffic
         dur = max(en - st, 1)
         i0 = max(0, int((st - x_lo) // binw)); i1 = min(nb - 1, int((en - x_lo) // binw))
         for i in range(i0, i1 + 1):
@@ -125,7 +127,7 @@ for ax in axs:
     ax.axvline(0, color="k", lw=2.2); ax.axvline(T, color="k", lw=2.2); ax.grid(axis="x", alpha=0.25)
 axs[0].text(0, 0.62, " LAYER %d START (0 ms)" % L, fontsize=10, weight="bold", ha="left", va="bottom", transform=axs[0].get_xaxis_transform())
 axs[0].text(T, 0.62, "LAYER %d END (%.0f ms) " % (L, T), fontsize=10, weight="bold", ha="right", va="bottom", transform=axs[0].get_xaxis_transform())
-axs[0].set_xlim(rel(x_lo) - 2, T + 3); axs[14].set_xlabel("ms from the start of layer %d  (grey area = before the layer starts: prefetch during the layer before)" % L)
+axs[0].set_xlim(rel(x_lo) - 2, T + 3); axs[14].set_xlabel("ms from the start of layer %d  (grey area = this layer's experts uploading before its compute starts; only this layer's activity is drawn)" % L)
 for ax in axs[:-1]: plt.setp(ax.get_xticklabels(), visible=False)
 for ax in axs: ax.set_xlim(rel(x_lo) - 2, T + 3)
 fig.suptitle("%s: GLM 8k prompt, one pass, layer %d (%.0f ms)" % (path.split("/")[-1].replace(".sqlite", ""), L, T), fontsize=12, y=0.92)
