@@ -1929,7 +1929,8 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
     if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
         ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
     } else {
-        ggml_backend_synchronize(split_backend);
+        // no copy events (one input copy, no pipeline parallelism): the destination card's whole stream is drained here, on the host, before every input copy
+        SYNC_TIMED_NAMED(9, ggml_backend_synchronize(split_backend), input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
     }
 
     if (sched->callback_copy != NULL && ggml_backend_sched_is_host_weight(input) &&
