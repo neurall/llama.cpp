@@ -1,0 +1,61 @@
+0.00.000.911 I srv  llama_server: initializing ...
+0.00.274.123 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.274.516 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.276.169 I srv    load_model: loading model '/m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf'
+0.00.554.273 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 85 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf 115678863104place.g2.6b6844dc.v3)
+0.00.554.290 I common_moe_cache_auto_impl: ubatch 16384: experts stream from RAM, the compute alias lends the graph (maximum = context, lowered to what the pool can lend; prompt passes are sized per request)
+0.00.554.294 I common_moe_cache_auto_impl: MoE model (107.7 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 16384, ubatch 16384, threads 6, weights mmap (settings you pass win)
+0.01.493.888 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+ggml_cuda_host_malloc_registered: 102.3 GiB populated in 6.4 s (101.0 reserved 1024 MiB pages, 1.3 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 3.0 s
+0.32.102.842 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.32.173.095 W moe-cache: prefill links (GB/s): CUDA1 26.0 CUDA0 6.4 -> split's transfer speedup 1.25x: reserved, alpha measured on prompt batches
+ggml_cuda_host_malloc_registered: 2.0 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 2.0 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.32.513.883 I cmn          init: llama threadpool init, n_threads = 6
+0.32.755.118 W moe-cache: 19 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.32.755.121 W moe-cache: 28 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.32.979.002 W moe-cache: block pool on CUDA0: 19 layers, 19485.5 MiB, size classes: 1750 x 7.88 MiB (14 layers), 125 x 8.74 MiB (1 layers), 250 x 8.74 MiB (2 layers), 125 x 8.74 MiB (1 layers), 125 x 10.31 MiB (1 layers); no blocks reserved per layer
+0.33.002.041 W moe-cache: block pool on CUDA1: 28 layers, 17384.7 MiB, size classes: 476 x 8.74 MiB (7 layers), 340 x 9.59 MiB (5 layers), 340 x 8.74 MiB (5 layers), 272 x 7.88 MiB (4 layers), 68 x 9.59 MiB (1 layers), 68 x 10.31 MiB (1 layers), 136 x 9.59 MiB (2 layers), 136 x 9.50 MiB (2 layers), 68 x 11.98 MiB (1 layers); no blocks reserved per layer
+0.33.002.919 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+0.33.799.923 W moe-cache: probe: links alone link 0 24.9 link 1 5.7 GB/s; CPU threads:GB/s alone/with links 1:26.4/44.2 2:42.1/45.5 3:42.1/45.3 4:40.0/45.3 -> CPU 42.1 GB/s (saturated by 2 threads), RAM budget 45.5 GB/s
+0.33.802.789 W moe-cache: 19 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.33.802.816 W operator(): MoE expert cache enabled: 47 layers, slots/layer 68..1750, 2 inserts/step, 831395.3 MiB device memory
+0.33.836.777 E ggml_gallocr_reserve_n_impl: graph needs 7489.3 MiB in 1 chunk(s), the external CUDA1 buffer holds 4160.9 MiB
+0.33.836.781 E graph_reserve: failed to allocate compute buffers
+0.33.836.788 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 16384: micro-batch 12384
+0.33.847.951 E ggml_gallocr_reserve_n_impl: graph needs 6376.0 MiB in 1 chunk(s), the external CUDA1 buffer holds 4160.9 MiB
+0.33.847.956 E graph_reserve: failed to allocate compute buffers
+0.33.847.962 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 12384: micro-batch 9344
+0.33.857.637 E ggml_gallocr_reserve_n_impl: graph needs 5056.7 MiB in 1 chunk(s), the external CUDA1 buffer holds 4160.9 MiB
+0.33.857.642 E graph_reserve: failed to allocate compute buffers
+0.33.857.650 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 9344: micro-batch 7040
+0.34.103.546 W moe_alias_shrink_fork: the pool lends 4161 MiB, graph + scratch need 7689 MiB at micro-batch 7040: micro-batch 3680
+0.34.311.346 W moe_alias_shrink_fork: the pool lends 4161 MiB, graph + scratch + prefetch staging need 5966 MiB at micro-batch 3680: micro-batch 2464
+0.34.448.350 W moe_alias_shrink_fork: the pool lends 4161 MiB, graph + scratch + prefetch staging need 5486 MiB at micro-batch 2464: micro-batch 1792
+0.34.543.842 W moe_alias_shrink_fork: the pool lends 4161 MiB, graph + scratch + prefetch staging need 5360 MiB at micro-batch 1792: micro-batch 1344
+0.34.623.068 W moe_alias_shrink_fork: the pool lends 4161 MiB, graph + scratch + prefetch staging need 5276 MiB at micro-batch 1344: micro-batch 1024
+0.34.683.190 W moe_alias_shrink_fork: the pool lends 4161 MiB, graph + scratch + prefetch staging need 5216 MiB at micro-batch 1024: micro-batch 768
+0.34.735.393 W moe_alias_shrink_fork: the pool lends 4161 MiB, graph + scratch + prefetch staging need 5168 MiB at micro-batch 768: micro-batch 576
+0.34.776.399 W moe_alias_shrink_fork: the pool lends 4161 MiB, graph + scratch + prefetch staging need 5132 MiB at micro-batch 576: micro-batch 512
+0.34.814.518 W moe_alias_shrink_fork: no room for the prefetch staging slots at micro-batch 512: prefetch is skipped for graphs that cannot lend them
+0.34.815.666 W moe-cache: max-batch auto = 128 (stored probe)
+0.37.300.529 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+0.37.312.107 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.37.312.138 I srv  llama_server: model loaded
+0.37.312.141 I srv  llama_server: listening on http://127.0.0.1:8099
+0.38.064.771 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.38.064.810 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+1.56.812.037 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   7372, progress = 0.93, t =  78.75 s / 93.62 tokens per second
+2.02.076.130 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   7884, progress = 1.00, t =  84.01 s / 93.84 tokens per second
+2.03.741.020 I slot print_timing: id  0 | task 0 | prompt eval time =   84198.73 ms /  7888 tokens (   10.67 ms per token,    93.68 tokens per second)
+2.03.741.023 I slot print_timing: id  0 | task 0 |        eval time =    1477.45 ms /    32 tokens (   47.66 ms per token,    20.98 tokens per second)
+2.03.741.024 I slot print_timing: id  0 | task 0 |       total time =   85676.18 ms /  7920 tokens
+2.03.741.027 I slot print_timing: id  0 | task 0 |    graphs reused =         30
+2.03.741.083 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 80.5% this request / 76.2% overall, 50..146 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+2.03.741.087 I slot print_timing: id  0 | task 0 |        moe churn = 1075 uploads, 1914 evictions, 12548.8 MiB uploaded (this request)
+2.03.741.090 I slot print_timing: id  0 | task 0 |          threads = 6 decode / 6 batch, batch 16384, ubatch 512
+2.03.741.416 I slot      release: id  0 | task 0 | stop processing: n_tokens = 7919, truncated = 0
+2.03.764.671 I srv    operator(): operator(): cleaning up before exit...
+2.03.765.351 I ~common_init_result: MoE placement: too few tokens this run to record cache (7890 prompt, 31 generated)
+2.03.765.419 W moe-cache: steps=35 hits=10570 misses=3310 hit-rate=76.2%, prefill experts from cache 62444/234018, kept from prefill 264
