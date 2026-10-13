@@ -2160,6 +2160,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     // GGML_PF_STATS=1: one line per prompt graph on stderr, how many splits were staged by the prefetch ring and why the others were not (see prefetch_target for 1..5)
     static const bool pf_stats = getenv("GGML_PF_STATS") != NULL;
     int pfs_fired = 0, pfs_why[7] = {0}, pfs_card = 0, pfs_dev = 0, pfs_prep = 0, pfs_off = pf_on ? 0 : 1;
+    // GGML_PF_TRACE=1: for graphs of 300+ splits, one line per staged copy (split, card, expert range, microseconds since the graph started, the split being launched at that moment)
+    // and one per launched split (card, first node), to read the issue order of both cards' copies against an nsys timeline.
+    static const bool pf_trace = getenv("GGML_PF_TRACE") && atoi(getenv("GGML_PF_TRACE")) == 1;
+    const int64_t pft_t0 = ggml_time_us();
+    int pft_cur = -1;
     const auto fire_prefetch = [&](int target_id) {
         if (!pf_on || target_id >= sched->n_splits || lookahead[target_id].slot != -1 || sched->prefetch_n_slots < 2) {
             return;
@@ -2199,6 +2204,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             return;
         }
         pfs_fired++;
+        if (pf_trace && sched->n_splits > 300) {
+            const ggml_tensor * mmn = s->graph.nodes[0];
+            GGML_LOG_WARN("pf-trace: staged split %d card %s experts [%d,%d) issued at %lld us while launching split %d\n", target_id, ggml_backend_name(s_backend),
+                    (int) mmn->op_params[8], (int) mmn->op_params[9], (long long) (ggml_time_us() - pft_t0), pft_cur);
+        }
         const int slot = R->cur;
         R->cur = (R->cur + 1) % R->n_slots;
         if (R->used[slot]) {
@@ -2255,6 +2265,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         struct ggml_backend_sched_split * split = &splits[split_id];
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
+        pft_cur = split_id;
+        if (pf_trace && sched->n_splits > 300 && split->graph.n_nodes > 0 && split->graph.nodes[0]->op == GGML_OP_MUL_MAT_ID) {
+            GGML_LOG_WARN("pf-trace: launch split %d card %s MUL_MAT_ID at %lld us (staged %s)\n", split_id, ggml_backend_name(split_backend), (long long) (ggml_time_us() - pft_t0),
+                    (pf_on && lookahead[split_id].slot != -1) ? "yes" : "no");
+        }
         const int64_t p_t0 = prof ? ggml_time_us() : 0;
         const int64_t tr_t0 = tracing ? ggml_time_us() : 0;
         const prefetch_pending * pf = (pf_on && lookahead[split_id].slot != -1) ? &lookahead[split_id] : NULL;
