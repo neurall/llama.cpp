@@ -45,14 +45,18 @@
 //           helps; the cards on the fastest link share the rest. coef 1.4 is a rough temporary seed (--moe split-start-coef), e.g. 6.5 / 26 GB/s x 1.4 = 35%.
 //   tune    after every prompt pass the scheduler reports, per layer and card, when the card's expert chain started and ended and when a helper's partial
 //           sum had left it (time stamps in stream order, ggml_sched_chain_stat). delta = t_out(helper) - t_end(owner): positive, the owner waited, the
-//           helper gets fewer experts; negative, the helper waited and gets more. The step is 5% of the experts the first time (--moe split-step) and half
-//           of the previous step every time after (5, 2.5, 1.25 ...: a bisection, a handful of passes), never less than one expert, and nothing moves while
+//           helper gets fewer experts; negative, the helper waited and gets more. The step is 5% of the experts (--moe split-step) and is halved every
+//           time the wait changes sides (5, 2.5, 1.25 ...: a bisection once the target is bracketed), never less than one expert, and nothing moves while
 //           delta is inside half of tau = the owner's time per expert + the helper's time per expert (what one expert changes between the two end times).
 //           The step is taken from the count the measurement was made with, so a measurement that arrives a pass late cannot add up twice.
 //   skip    a helper whose count falls under one expert, or whose experts save the owner less time than the owner spends on the two copies with it, holds
 //           nothing in that layer: no chain, no hop, no upload there (the go / no-go, per layer, measured). It is tried again 32 measured passes later.
 //   length  the counts are kept per pass size (one bucket per power of two of the tokens in the pass): hops and compute grow with the tokens, the expert bytes
 //           do not, so the balance moves with the prompt length. A size never seen starts from the nearest tuned size of the same layer and card.
+//   link    a helper cannot hold more experts than its link uploads in one layer: (layer period - its hops) x upload rate / bytes per expert, with 15%
+//           spare. The period is measured (the owner's chain start of two consecutive layers, minus what the owner waited). Short passes are bound by
+//           this, not by compute: GLM-5.3-Flash at 2k tokens has a 108 ms layer and 8.3 MB per expert, a x4 link moves 23% of the experts in that time;
+//           seeded with 35% the owner waited 70 ms per layer for the helper's uploads (316 prompt tokens per second against 406 on one card).
 // Any number of cards; nothing refers to a slot width or to "two cards". Without the stamps (a backend that has no host function in stream order) the start
 // values stay. --moe split-slow-share=F fixes the shares by hand (tests); --moe split-auto=0 restores the upload-rate shares.
 extern "C" {
@@ -74,7 +78,10 @@ struct llama_split_ctl {
     typedef std::tuple<int, int, ggml_backend_dev_t> key_t;   // pass-size bucket, layer, helper card
     std::map<key_t, double> held;     // experts the helper holds (a fraction is kept, the graph rounds)
     std::map<key_t, double> step;     // the next step of this layer and card, in experts
+    std::map<key_t, int>    dir;      // direction of the last step: the step is halved when the direction turns
     std::map<key_t, long>   off_at;   // skipped since this update
+    std::map<int, double>   bytes_expert;   // per layer: bytes of one expert over the three expert tensors
+    std::map<int, double>   ms_tok;         // per pass-size bucket: measured layer period per token (us), to cap a start value by the link
 };
 llama_split_ctl g_split_ctl;
 
@@ -103,15 +110,26 @@ void split_ctl_update(int64_t n_expert, int64_t n_embd) {
     static const double step0 = split_opt("split-step", 0.05);
     std::map<int, std::vector<const ggml_sched_chain_stat *>> by_layer;
     for (int i = 0; i < n; ++i) { by_layer[st[i].layer].push_back(&st[i]); }
-    double sum_wait = 0, sum_early = 0, sum_share = 0;
-    int n_h = 0, n_moved = 0, n_off = 0;
+    double sum_wait = 0, sum_early = 0, sum_share = 0, sum_period = 0;
+    int n_h = 0, n_moved = 0, n_off = 0, n_capped = 0, n_period = 0;
     int64_t tokens = 0;
+    // the owner's chain start per layer: two consecutive layers give the layer period
+    std::map<int, int64_t> o_start;
+    for (const auto & kv : by_layer) {
+        for (const auto * e : kv.second) { if (e->t_out == 0 && e->t_start != 0) { o_start[kv.first] = e->t_start; } }
+    }
     for (const auto & kv : by_layer) {
         const ggml_sched_chain_stat * o = nullptr;
         int n_owner = 0;
         for (const auto * e : kv.second) { if (e->t_out == 0) { o = e; ++n_owner; } }
         if (n_owner != 1 || o->t_start == 0 || o->t_end <= o->t_start || o->hi <= o->lo) { continue; }
         tokens = o->n_tokens;
+        double period = 0.0;   // us
+        {
+            auto nx = o_start.find(kv.first + 1), pv = o_start.find(kv.first - 1);
+            if (nx != o_start.end() && nx->second > o->t_start)      { period = (double) (nx->second - o->t_start); }
+            else if (pv != o_start.end() && o->t_start > pv->second) { period = (double) (o->t_start - pv->second); }
+        }
         const double per_o = (double) (o->t_end - o->t_start) / (double) (o->hi - o->lo);
         const double gbs_o = llama_moe_cache_link_gbs_fork(ggml_backend_get_device(o->backend));
         const double hop_o = gbs_o > 0 ? 2.0 * (double) o->n_tokens * (double) n_embd * 4.0 / (gbs_o * 1e3) : 0.0;   // us: the owner's halves of the two copies
@@ -128,10 +146,23 @@ void split_ctl_update(int64_t n_expert, int64_t n_embd) {
             if (std::fabs(delta) >= 0.5 * tau) {
                 auto sit = c.step.find(key);
                 if (sit == c.step.end()) { sit = c.step.emplace(key, step0 * (double) n_expert).first; }
-                move = (delta > 0 ? 1.0 : -1.0) * std::max(1.0, sit->second);
-                sit->second *= 0.5;
+                const int d = delta > 0 ? 1 : -1;
+                int & last = c.dir[key];
+                if (last != 0 && last != d) { sit->second *= 0.5; }   // the wait changed sides: the target lies inside the last step
+                last = d;
+                move = d * std::max(1.0, sit->second);
             }
             double v = std::max(0.0, std::min((double) n_expert - 1.0, n_meas - move));
+            // the link cap: what this card's link uploads in one layer period (without what the owner waited), less its two hops, 15% spare
+            const double gbs_h = llama_moe_cache_link_gbs_fork(ggml_backend_get_device(h->backend));
+            auto be = c.bytes_expert.find(kv.first);
+            if (period > 0 && gbs_h > 0 && be != c.bytes_expert.end() && be->second > 0) {
+                const double p_eff = std::max(0.0, period - std::max(0.0, delta));
+                const double hop_h = 2.0 * (double) h->n_tokens * (double) n_embd * 2.0 / (gbs_h * 1e3);   // us, f16 both ways
+                const double cap_n = 0.85 * std::max(0.0, p_eff - hop_h) * gbs_h * 1e3 / be->second;
+                if (v > cap_n) { v = cap_n; ++n_capped; }
+                sum_period += p_eff; ++n_period;
+            }
             if (v < 1.0 || v * per_o < hop_o) { v = 0.0; c.off_at[key] = c.n_updates; ++n_off; }
             if (llround(v) != llround(n_meas)) { ++n_moved; }
             it->second = v;
@@ -140,16 +171,18 @@ void split_ctl_update(int64_t n_expert, int64_t n_embd) {
             ++n_h;
         }
     }
+    if (n_period > 0 && tokens > 0) { c.ms_tok[split_bucket(tokens)] = sum_period / n_period / (double) tokens; }
     if (n_h > 0 && (c.n_updates <= 12 || c.n_updates % 16 == 0)) {
-        LLAMA_LOG_WARN("prefill split: pass %ld of %lld tokens measured over %d layer chains: the owner waited %.2f ms per layer, a helper %.2f ms; helper share now %.1f%% on average, %d layers moved, %d skipped\n",
-                c.n_updates, (long long) tokens, n_h, sum_wait / n_h / 1e3, sum_early / n_h / 1e3, 100.0 * sum_share / n_h, n_moved, n_off);
+        LLAMA_LOG_WARN("prefill split: pass %ld of %lld tokens measured over %d layer chains: layer %.1f ms, the owner waited %.2f ms per layer, a helper %.2f ms; helper share now %.1f%% on average, %d layers moved, %d capped by the link, %d skipped\n",
+                c.n_updates, (long long) tokens, n_h, n_period ? sum_period / n_period / 1e3 : 0.0, sum_wait / n_h / 1e3, sum_early / n_h / 1e3, 100.0 * sum_share / n_h, n_moved, n_capped, n_off);
     }
 }
 
 // experts each card holds in layer il for a pass of n_tokens (cards: device and upload rate; the owner keeps what the helpers do not hold)
-std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vector<std::pair<ggml_backend_dev_t, double>> & cards, size_t owner, int64_t n_expert, int64_t n_embd) {
+std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vector<std::pair<ggml_backend_dev_t, double>> & cards, size_t owner, int64_t n_expert, int64_t n_embd, double bytes_layer) {
     llama_split_ctl & c = g_split_ctl;
     std::lock_guard<std::mutex> lk(c.mu);
+    if (bytes_layer > 0 && n_expert > 0) { c.bytes_expert[il] = bytes_layer / (double) n_expert; }
     split_ctl_update(n_expert, n_embd);
     static const double coef  = split_opt("split-start-coef", 1.4);
     static const long   retry = (long) split_opt("split-retry", 32);
@@ -167,13 +200,22 @@ std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vecto
         return cards[i].second < 0.999 * u_max ? slow_scale * std::min(1.0, coef * cards[i].second / u_max) : (1.0 - slow_scale * slow_sum) / std::max(1, n_fast);
     };
     const auto seed = [&](size_t i) {
-        for (int d = 1; d <= 4; ++d) {
-            for (int sgn = -1; sgn <= 1; sgn += 2) {
-                auto jt = c.held.find(llama_split_ctl::key_t(bk + sgn * d, il, cards[i].first));
-                if (jt != c.held.end() && jt->second > 0.0) { return jt->second; }
+        double v0 = start_share(i) * (double) n_expert;
+        // The link cap for a pass size not measured yet: the layer period per token of the nearest measured size, scaled to this size (the period grows
+        // about with the tokens). No size measured at all: the start share stands, and the first measured pass corrects it.
+        if (cards[i].second < 0.999 * u_max && bytes_layer > 0) {
+            for (int d = 0; d <= 6; ++d) {
+                auto mt = c.ms_tok.find(bk - d);
+                if (mt == c.ms_tok.end()) { mt = c.ms_tok.find(bk + d); }
+                if (mt != c.ms_tok.end()) {
+                    const double period = mt->second * (double) n_tokens;                                               // us
+                    const double hop    = 2.0 * (double) n_tokens * (double) n_embd * 2.0 / (cards[i].second * 1e3);    // us
+                    v0 = std::min(v0, 0.85 * std::max(0.0, period - hop) * cards[i].second * 1e3 / (bytes_layer / (double) n_expert));
+                    break;
+                }
             }
         }
-        return start_share(i) * (double) n_expert;
+        return v0;
     };
     double sum_h = 0.0;
     bool   fresh = false;
@@ -2944,7 +2986,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                         cards.push_back({ ggml_backend_get_device(parts[i].b), parts[i].gbs });
                         if (od && cards.back().first == od) { owner_i = i; }
                     }
-                    if (owner_i < parts.size()) { n_of = split_ctl_counts(il, n_tokens, cards, owner_i, n_expert, n_embd); }
+                    const double bytes_layer = (double) ((up_exps ? ggml_nbytes(up_exps) : 0) + (gate_exps ? ggml_nbytes(gate_exps) : 0) + (down_exps ? ggml_nbytes(down_exps) : 0));
+                    if (owner_i < parts.size()) { n_of = split_ctl_counts(il, n_tokens, cards, owner_i, n_expert, n_embd, bytes_layer); }
                 }
                 int64_t lo = 0;
                 std::vector<split_part> kept;
