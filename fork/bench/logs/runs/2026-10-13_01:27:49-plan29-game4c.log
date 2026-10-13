@@ -1,0 +1,32 @@
+0.00.536.165 W DEPRECATED: argument '-c' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.536.637 I srv  llama_server: initializing ...
+0.00.536.645 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.537.145 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.539.055 I srv    load_model: loading model '/m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf'
+0.00.860.369 I common_moe_cache_auto_impl: MoE placement: stock (the other placement could not start with this much free VRAM before; MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf 115678863104place.g2.6b6844dc.v3)
+0.01.772.885 I common_auto_ubatch: ubatch 256 (request ~2000 prompt + 600 generated tokens, compute buffer 0.03 -> 0.98 GiB at 32 -> 2048 probed, rest extrapolated, 3.2 GiB left for the cache)
+0.01.772.891 I common_moe_cache_auto_impl: MoE model (107.7 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 1024, ubatch 256, threads 6, weights pinned (settings you pass win)
+0.02.215.511 W common_fit_params: failed to fit params to free device memory: model_params::tensor_split already set by user, abort
+0.02.566.455 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.02.631.026 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 90143.06 MiB on device 1: cudaMalloc failed: out of memory
+0.02.631.031 E ggml_backend_buft_alloc_buffer_n_default: failed to allocate CUDA1 buffer of size 94521849600
+0.02.658.294 E llama_model_load: error loading model: unable to allocate CUDA1 buffer
+0.02.658.300 E llama_model_load_from_file_impl: failed to load model
+0.02.658.405 W common_init_from_params: initialisation failed, starting over with the fork off (as --moe cache=0)
+0.03.235.931 W common_fit_params: failed to fit params to free device memory: model_params::tensor_split already set by user, abort
+0.03.589.150 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.51.863.929 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 90143.06 MiB on device 1: cudaMalloc failed: out of memory
+0.51.863.958 E ggml_backend_buft_alloc_buffer_n_default: failed to allocate CUDA1 buffer of size 94521849600
+0.52.375.635 E llama_model_load: error loading model: unable to allocate CUDA1 buffer
+0.52.375.640 E llama_model_load_from_file_impl: failed to load model
+0.52.377.209 W common_init_from_params: the fitted placement does not fit, trying once more with a larger fit target (5849 MiB on the first GPU instead of 1024)
+0.52.970.621 W common_fit_params: failed to fit params to free device memory: model_params::tensor_split already set by user, abort
+0.53.323.927 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+1.39.090.420 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 90143.06 MiB on device 1: cudaMalloc failed: out of memory
+1.39.090.447 E ggml_backend_buft_alloc_buffer_n_default: failed to allocate CUDA1 buffer of size 94521849600
+1.39.564.666 E llama_model_load: error loading model: unable to allocate CUDA1 buffer
+1.39.564.672 E llama_model_load_from_file_impl: failed to load model
+1.39.565.577 E cmn  common_init_: failed to load model '/m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf'
+1.39.567.470 E srv    load_model: failed to load model, '/m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf'
+1.39.567.605 I srv    operator(): operator(): cleaning up before exit...
+1.39.575.346 E srv  llama_server: exiting due to model loading error

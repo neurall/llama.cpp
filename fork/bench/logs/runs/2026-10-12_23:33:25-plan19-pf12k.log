@@ -1,0 +1,37 @@
+0.00.273.521 I srv  llama_server: initializing ...
+0.00.273.532 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.273.872 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.275.515 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+ggml_cuda_host_malloc_registered: 3.7 GiB hugetlbfs cache (warm) mapped in 0.0 s
+ggml_cuda_host_malloc_registered: registered in 0.1 s
+0.00.697.890 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.00.741.393 I cmn          init: llama threadpool init, n_threads = 6
+0.00.800.480 W moe-cache: 16 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.00.803.983 W moe-cache: block pool on CUDA1: 16 layers, 1116.5 MiB, size classes: 152 x 3.92 MiB (8 layers), 152 x 3.38 MiB (8 layers); no blocks reserved per layer
+0.00.804.927 W moe-cache: 1 upload workers, from pinned host memory (direct DMA)
+0.01.599.332 W moe-cache: probe: links alone link 0 21.5 GB/s; CPU threads:GB/s alone/with links 1:26.2/40.9 2:41.9/45.1 3:41.6/44.7 4:39.8/44.7 -> CPU 41.9 GB/s (saturated by 2 threads), RAM budget 45.1 GB/s
+0.01.601.464 W operator(): MoE expert cache enabled: 16 layers, slots/layer 152..152, 2 inserts/step, 26678.0 MiB device memory
+0.01.614.808 E ggml_gallocr_reserve_n_impl: graph needs 755.7 MiB in 1 chunk(s), the external CUDA1 buffer holds 596.2 MiB
+0.01.614.812 E graph_reserve: failed to allocate compute buffers
+0.01.614.817 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 3500: micro-batch 2624
+0.01.648.233 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch need 982 MiB at micro-batch 2624: micro-batch 1536
+0.01.677.757 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch + prefetch staging need 672 MiB at micro-batch 1536: micro-batch 1312
+0.01.700.459 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch + prefetch staging need 636 MiB at micro-batch 1312: micro-batch 1184
+0.01.721.023 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch + prefetch staging need 615 MiB at micro-batch 1184: micro-batch 1088
+0.01.740.047 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch + prefetch staging need 599 MiB at micro-batch 1088: micro-batch 1024
+0.01.759.628 W moe-cache: max-batch auto = 128 (stored probe)
+0.01.785.959 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 4096, kv_unified = 'false'
+0.01.788.334 I srv  llama_server: model loaded
+0.01.788.339 I srv  llama_server: listening on http://127.0.0.1:8099
+0.02.034.381 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.02.034.426 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.02.761.825 I slot print_timing: id  0 | task 0 | prompt eval time =     624.94 ms /  3466 tokens (    0.18 ms per token,  5546.14 tokens per second)
+0.02.761.828 I slot print_timing: id  0 | task 0 |        eval time =     102.43 ms /    16 tokens (    6.83 ms per token,   146.44 tokens per second)
+0.02.761.829 I slot print_timing: id  0 | task 0 |       total time =     727.37 ms /  3482 tokens
+0.02.761.833 I slot print_timing: id  0 | task 0 |    graphs reused =         14
+0.02.761.882 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 82.5% this request / 73.1% overall, 15..28 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.02.761.886 I slot print_timing: id  0 | task 0 |        moe churn = 95 uploads, 202 evictions, 734.2 MiB uploaded (this request)
+0.02.761.887 I slot print_timing: id  0 | task 0 |          threads = 6 decode / 8 batch, batch 3500, ubatch 1024
+0.02.762.089 I slot      release: id  0 | task 0 | stop processing: n_tokens = 3481, truncated = 0
+0.03.047.981 I srv    operator(): operator(): cleaning up before exit...
+0.03.048.555 W moe-cache: steps=17 hits=1590 misses=586 hit-rate=73.1%, prefill experts from cache 1671/11520, kept from prefill 10

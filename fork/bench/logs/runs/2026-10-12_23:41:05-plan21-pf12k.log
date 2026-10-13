@@ -1,0 +1,43 @@
+0.00.272.353 I srv  llama_server: initializing ...
+0.00.272.365 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.272.700 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.274.359 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+ggml_cuda_host_malloc_registered: 3.7 GiB hugetlbfs cache (warm) mapped in 0.0 s
+ggml_cuda_host_malloc_registered: registered in 0.1 s
+0.00.693.456 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.00.737.172 I cmn          init: llama threadpool init, n_threads = 6
+0.00.795.236 W pf-stats: 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 17, weight not an input 16, weight not host-resident 0, few ids 0, region on another card 0, staging stream on another card 0, no slots 0
+0.00.797.876 W moe-cache: 16 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.00.801.380 W moe-cache: block pool on CUDA1: 16 layers, 1116.5 MiB, size classes: 152 x 3.92 MiB (8 layers), 152 x 3.38 MiB (8 layers); no blocks reserved per layer
+0.00.802.323 W moe-cache: 1 upload workers, from pinned host memory (direct DMA)
+0.01.596.741 W moe-cache: probe: links alone link 0 21.5 GB/s; CPU threads:GB/s alone/with links 1:26.3/41.1 2:42.0/45.0 3:41.5/44.4 4:39.9/45.0 -> CPU 42.0 GB/s (saturated by 2 threads), RAM budget 45.0 GB/s
+0.01.598.935 W operator(): MoE expert cache enabled: 16 layers, slots/layer 152..152, 2 inserts/step, 26678.0 MiB device memory
+0.01.612.137 E ggml_gallocr_reserve_n_impl: graph needs 755.7 MiB in 1 chunk(s), the external CUDA1 buffer holds 596.2 MiB
+0.01.612.139 E graph_reserve: failed to allocate compute buffers
+0.01.612.145 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 3500: micro-batch 2624
+0.01.646.278 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch need 982 MiB at micro-batch 2624: micro-batch 1536
+0.01.676.955 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch + prefetch staging need 672 MiB at micro-batch 1536: micro-batch 1312
+0.01.700.691 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch + prefetch staging need 636 MiB at micro-batch 1312: micro-batch 1184
+0.01.722.098 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch + prefetch staging need 615 MiB at micro-batch 1184: micro-batch 1088
+0.01.742.171 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch + prefetch staging need 599 MiB at micro-batch 1088: micro-batch 1024
+0.01.762.269 W moe-cache: max-batch auto = 128 (stored probe)
+0.01.786.254 W pf-stats: 66 splits, prefetch fired for 0; not staged: no inputs 33, first node not MUL_MAT_ID 33, weight not an input 0, weight not host-resident 0, few ids 0, region on another card 0, staging stream on another card 0, no slots 0
+0.01.789.485 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 4096, kv_unified = 'false'
+0.01.792.258 I srv  llama_server: model loaded
+0.01.792.263 I srv  llama_server: listening on http://127.0.0.1:8099
+0.02.034.666 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.02.034.710 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.02.224.408 W pf-stats: 49 splits, prefetch fired for 45; not staged: no inputs 1, first node not MUL_MAT_ID 2, weight not an input 1, weight not host-resident 0, few ids 0, region on another card 0, staging stream on another card 0, no slots 0
+0.02.368.814 W pf-stats: 49 splits, prefetch fired for 45; not staged: no inputs 1, first node not MUL_MAT_ID 2, weight not an input 1, weight not host-resident 0, few ids 0, region on another card 0, staging stream on another card 0, no slots 0
+0.02.513.623 W pf-stats: 49 splits, prefetch fired for 45; not staged: no inputs 1, first node not MUL_MAT_ID 2, weight not an input 1, weight not host-resident 0, few ids 0, region on another card 0, staging stream on another card 0, no slots 0
+0.02.659.790 W pf-stats: 51 splits, prefetch fired for 45; not staged: no inputs 3, first node not MUL_MAT_ID 3, weight not an input 0, weight not host-resident 0, few ids 0, region on another card 0, staging stream on another card 0, no slots 0
+0.02.660.334 I slot print_timing: id  0 | task 0 | prompt eval time =     625.60 ms /  3466 tokens (    0.18 ms per token,  5540.32 tokens per second)
+0.02.660.336 I slot print_timing: id  0 | task 0 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token,     0.00 tokens per second)
+0.02.660.337 I slot print_timing: id  0 | task 0 |       total time =     625.60 ms /  3467 tokens
+0.02.660.339 I slot print_timing: id  0 | task 0 |    graphs reused =          0
+0.02.660.380 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 0.0% this request / 0.0% overall, 0..25 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.02.660.383 I slot print_timing: id  0 | task 0 |        moe churn = 1 uploads, 149 evictions, 3.9 MiB uploaded (this request)
+0.02.660.384 I slot print_timing: id  0 | task 0 |          threads = 6 decode / 8 batch, batch 3500, ubatch 1024
+0.02.660.551 I slot      release: id  0 | task 0 | stop processing: n_tokens = 3466, truncated = 0
+0.03.047.031 I srv    operator(): operator(): cleaning up before exit...
+0.03.047.576 W moe-cache: steps=2 hits=0 misses=256 hit-rate=0.0%, prefill experts from cache 1671/11520, kept from prefill 10

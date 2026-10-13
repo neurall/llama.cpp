@@ -1,0 +1,42 @@
+0.00.255.020 I srv  llama_server: initializing ...
+0.00.255.033 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.255.365 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.256.987 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+ggml_cuda_host_malloc_registered: 3.7 GiB hugetlbfs cache (warm) mapped in 0.0 s
+ggml_cuda_host_malloc_registered: registered in 0.1 s
+0.00.695.638 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.00.736.858 I cmn          init: llama threadpool init, n_threads = 6
+0.00.800.906 W moe-cache: 16 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.00.804.412 W moe-cache: block pool on CUDA1: 16 layers, 1116.5 MiB, size classes: 152 x 3.92 MiB (8 layers), 152 x 3.38 MiB (8 layers); no blocks reserved per layer
+0.00.805.372 W moe-cache: 1 upload workers, from pinned host memory (direct DMA)
+0.01.599.721 W moe-cache: probe: links alone link 0 20.3 GB/s; CPU threads:GB/s alone/with links 1:26.5/40.2 2:42.0/44.8 3:41.8/44.6 4:39.4/44.0 -> CPU 42.0 GB/s (saturated by 2 threads), RAM budget 44.8 GB/s
+0.01.601.821 W operator(): MoE expert cache enabled: 16 layers, slots/layer 152..152, 2 inserts/step, 26678.0 MiB device memory
+0.01.616.336 E ggml_gallocr_reserve_n_impl: graph needs 755.7 MiB in 1 chunk(s), the external CUDA1 buffer holds 596.2 MiB
+0.01.616.338 E graph_reserve: failed to allocate compute buffers
+0.01.616.348 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 3500: micro-batch 2624
+0.01.650.291 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch need 982 MiB at micro-batch 2624: micro-batch 1536
+0.01.678.015 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch + prefetch staging need 672 MiB at micro-batch 1536: micro-batch 1312
+0.01.701.112 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch + prefetch staging need 636 MiB at micro-batch 1312: micro-batch 1184
+0.01.720.767 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch + prefetch staging need 615 MiB at micro-batch 1184: micro-batch 1088
+0.01.740.366 W moe_alias_shrink_fork: the pool lends 596 MiB, graph + scratch + prefetch staging need 599 MiB at micro-batch 1088: micro-batch 1024
+0.01.759.186 W moe-cache: max-batch auto = 128 (stored probe)
+0.01.787.740 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 4096, kv_unified = 'false'
+0.01.790.106 I srv  llama_server: model loaded
+0.01.790.111 I srv  llama_server: listening on http://127.0.0.1:8099
+0.02.180.161 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.02.180.196 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.02.809.060 I slot print_timing: id  0 | task 0 | prompt eval time =     628.83 ms /  3466 tokens (    0.18 ms per token,  5511.81 tokens per second)
+0.02.809.064 I slot print_timing: id  0 | task 0 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token,     0.00 tokens per second)
+0.02.809.065 I slot print_timing: id  0 | task 0 |       total time =     628.83 ms /  3467 tokens
+0.02.809.067 I slot print_timing: id  0 | task 0 |    graphs reused =          0
+0.02.809.111 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 0.0% this request / 0.0% overall, 0..25 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.02.809.115 I slot print_timing: id  0 | task 0 |        moe churn = 1 uploads, 149 evictions, 3.9 MiB uploaded (this request)
+0.02.809.116 I slot print_timing: id  0 | task 0 |          threads = 6 decode / 8 batch, batch 3500, ubatch 1024
+0.02.809.323 I slot      release: id  0 | task 0 | stop processing: n_tokens = 3466, truncated = 0
+0.03.195.676 I srv    operator(): operator(): cleaning up before exit...
+0.03.196.376 W moe-cache: steps=2 hits=0 misses=256 hit-rate=0.0%, prefill experts from cache 1671/11520, kept from prefill 10
+Collecting data...
+Generating '/tmp/nsys-report-4069.qdstrm'
+[1/1] [0%                          ] olmoe2-one.nsys-rep[1/1] [0%                          ] olmoe2-one.nsys-rep[1/1] [=17%                        ] olmoe2-one.nsys-rep[1/1] [======33%                   ] olmoe2-one.nsys-rep[1/1] [==========49%               ] olmoe2-one.nsys-rep[1/1] [===========50%              ] olmoe2-one.nsys-rep[1/1] [========================100%] olmoe2-one.nsys-rep[1/1] [========================100%] olmoe2-one.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/olmoe2-one.nsys-rep

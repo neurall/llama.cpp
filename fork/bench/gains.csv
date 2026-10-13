@@ -175,3 +175,29 @@ b49-fullpl,2026-10-12 01:33:44,GLM12-3.0bit.gguf,pf12k,220+370,-dev CUDA1 maskt=
 b49-fullpl,2026-10-12 01:33:44,GLM12-3.0bit.gguf,pf12k,220+370,-dev CUDA1 maskt=6,3,3202.6,-dev CUDA1 maskt=8,9,3193.5,1.003
 b50-mirror,2026-10-12 01:38:28,GLM12-3.0bit.gguf,pf12k,220+280,-dev CUDA1 maskt=8,6,2888.3,-dev CUDA1 maskt=8,6,2888.3,1
 b50-mirror,2026-10-12 01:38:28,GLM12-3.0bit.gguf,pf12k,220+280,-dev CUDA1,6,2893.7,-dev CUDA1 maskt=8,6,2888.3,1.002
+x16-ub-sweep,2026-10-12 22:50:29,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,300+370,-dev CUDA1,2,533.9,-dev CUDA1,2,533.9,1
+x16-ub-sweep,2026-10-12 22:50:29,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,300+370,-dev CUDA1,2,769.2,-dev CUDA1,2,533.9,1.441
+x16-ub-sweep,2026-10-12 22:50:29,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,300+370,-dev CUDA1,2,649.4,-dev CUDA1,2,533.9,1.216
+x16-ub-sweep,2026-10-12 22:50:29,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,300+370,-dev CUDA1,2,647.8,-dev CUDA1,2,533.9,1.213
+x16-nsys-8192,2026-10-12 22:56:02,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,300+370,-dev CUDA1,1,763.9,-dev CUDA1,1,763.9,1
+stage-fit-glm,2026-10-12 23:00:19,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,300+370,-dev CUDA1 log=a,2,701.3,-dev CUDA1 log=a,2,701.3,1
+stage-fit-glm,2026-10-12 23:00:19,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,300+370,-dev ? log=a,2,758.9,-dev CUDA1 log=a,2,701.3,1.082
+x16-nsys-12416,2026-10-12 23:01:43,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,300+370,-dev CUDA1,1,643.5,-dev CUDA1,1,643.5,1
+x16-trace-ub8192,2026-10-12 23:03:05,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,220+280,-dev CUDA1 log=a,1,695.5,-dev CUDA1 log=a,1,695.5,1
+fixed-pl-glm,2026-10-12 23:09:31,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,220+280,-dev CUDA1,2,645.3,-dev CUDA1,2,645.3,1
+fixed-pl-glm,2026-10-12 23:09:31,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,220+280,-dev CUDA1,2,703,-dev CUDA1,2,645.3,1.089
+fixed-pl-glm,2026-10-12 23:09:31,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,220+280,-dev ?,2,665.2,-dev CUDA1,2,645.3,1.031
+onepass8k-220,2026-10-12 23:21:38,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,220+220,-dev CUDA1,3,578.3,-dev CUDA1,3,578.3,1
+onepass8k-220,2026-10-12 23:21:38,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,220+220,-dev CUDA1,3,578.3,-dev CUDA1,3,578.3,1
+onepass8k-220,2026-10-12 23:21:38,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,220+220,-dev ?,3,560.1,-dev CUDA1,3,578.3,0.969
+onepass8k-220,2026-10-12 23:21:38,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pf12k,220+220,-dev ?,3,554.7,-dev CUDA1,3,578.3,0.959
+olmoe-split,2026-10-12 23:27:02,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",5,1617.9,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",5,1617.9,1
+olmoe-split,2026-10-12 23:27:02,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev ? autotune=0,predict=0,admit-boot=0",5,1578.7,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",5,1617.9,0.976
+olmoe-split,2026-10-12 23:27:02,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev ? autotune=0,predict=0,admit-boot=0,prefill-split=1",5,1125.4,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",5,1617.9,0.696
+olmoe-split,2026-10-12 23:27:02,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev ? autotune=0,predict=0,admit-boot=0,prefill-split=0.5",5,1262.2,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",5,1617.9,0.78
+olmoe-pin-split,2026-10-12 23:35:36,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",5,5540.8,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",5,5540.8,1
+olmoe-pin-split,2026-10-12 23:35:36,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev ? autotune=0,predict=0,admit-boot=0",5,2647.9,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",5,5540.8,0.478
+olmoe-pin-split,2026-10-12 23:35:36,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev ? autotune=0,predict=0,admit-boot=0,prefill-split=1",5,1853.5,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",5,5540.8,0.335
+olmoe-pin-split,2026-10-12 23:35:36,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev ? autotune=0,predict=0,admit-boot=0,prefill-split=0.5",5,2069.9,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",5,5540.8,0.374
+olmoe-pin-trace-one,2026-10-12 23:36:04,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",1,5511.8,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",1,5511.8,1
+pfstats-one,2026-10-12 23:41:05,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",1,5540.3,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",1,5540.3,1

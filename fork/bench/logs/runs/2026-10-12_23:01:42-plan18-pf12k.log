@@ -1,0 +1,45 @@
+0.00.253.598 I srv  llama_server: initializing ...
+0.00.253.609 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.253.951 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.255.542 I srv    load_model: loading model '/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf'
+0.00.618.996 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 76 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf 117481680096place.g2.6b6844dc.v3)
+0.00.619.146 I common_moe_cache_auto_impl: MoE model (109.4 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 16384, ubatch 12416, threads 6, weights pinned (settings you pass win)
+0.01.398.320 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.01.398.324 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+ggml_cuda_host_malloc_registered: 100.5 GiB hugetlbfs cache (warm) mapped in 0.0 s
+ggml_cuda_host_malloc_registered: registered in 2.6 s
+0.05.315.582 I common_init_result: weights pinned (swapped 0.0 GiB while loading, 11.3 GiB RAM left)
+ggml_cuda_host_malloc_registered: 1.3 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 1.3 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.05.817.100 I cmn          init: llama threadpool init, n_threads = 6
+0.06.221.977 W moe-cache: 42 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.06.401.987 W moe-cache: block pool on CUDA1: 42 layers, 13164.4 MiB, size classes: 111 x 13.50 MiB (3 layers), 111 x 10.31 MiB (3 layers), 1332 x 7.88 MiB (36 layers); no blocks reserved per layer
+0.06.403.133 W moe-cache: 1 upload workers, from pinned host memory (direct DMA)
+0.07.199.215 W moe-cache: probe: links alone link 0 25.1 GB/s; CPU threads:GB/s alone/with links 1:26.1/42.2 2:41.6/45.1 3:41.4/45.1 4:39.7/44.6 -> CPU 41.6 GB/s (saturated by 2 threads), RAM budget 45.1 GB/s
+0.07.202.032 W operator(): MoE expert cache enabled: 42 layers, slots/layer 111..1332, 2 inserts/step, 1157009.6 MiB device memory
+ggml_cuda_host_malloc_registered: 1.3 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 1.3 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.07.822.100 W moe-cache: max-batch auto = 128 (stored probe)
+0.08.225.605 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+0.08.245.919 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.08.245.951 I srv  llama_server: model loaded
+0.08.245.955 I srv  llama_server: listening on http://127.0.0.1:8099
+0.09.155.235 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.09.155.287 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.28.075.987 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  12412, progress = 1.00, t =  18.92 s / 656.01 tokens per second
+0.28.450.229 I slot print_timing: id  0 | task 0 | prompt eval time =   19294.90 ms / 12416 tokens (    1.55 ms per token,   643.49 tokens per second)
+0.28.450.233 I slot print_timing: id  0 | task 0 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token,     0.00 tokens per second)
+0.28.450.234 I slot print_timing: id  0 | task 0 |       total time =   19294.90 ms / 12417 tokens
+0.28.450.237 I slot print_timing: id  0 | task 0 |    graphs reused =          0
+0.28.450.293 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 5.1% this request / 3.4% overall, 15..52 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.28.450.298 I slot print_timing: id  0 | task 0 |        moe churn = 43 uploads, 1452 evictions, 847.9 MiB uploaded (this request)
+0.28.450.299 I slot print_timing: id  0 | task 0 |          threads = 6 decode / 6 batch, batch 12416, ubatch 12416
+0.28.450.992 I slot      release: id  0 | task 0 | stop processing: n_tokens = 12416, truncated = 0
+0.29.298.921 I srv    operator(): operator(): cleaning up before exit...
+0.29.299.570 I ~common_init_result: MoE placement: too few tokens this run to record cache (12418 prompt, 1 generated)
+0.29.299.727 W moe-cache: steps=3 hits=68 misses=1948 hit-rate=3.4%, prefill experts from cache 648/36195, kept from prefill 15
+Collecting data...
+Generating '/tmp/nsys-report-35a2.qdstrm'
+[1/1] [0%                          ] x16ub12416.nsys-rep[1/1] [0%                          ] x16ub12416.nsys-rep[1/1] [11%                         ] x16ub12416.nsys-rep[1/1] [9%                          ] x16ub12416.nsys-rep[1/1] [8%                          ] x16ub12416.nsys-rep[1/1] [7%                          ] x16ub12416.nsys-rep[1/1] [6%                          ] x16ub12416.nsys-rep[1/1] [12%                         ] x16ub12416.nsys-rep[1/1] [=17%                        ] x16ub12416.nsys-rep[1/1] [===22%                      ] x16ub12416.nsys-rep[1/1] [====28%                     ] x16ub12416.nsys-rep[1/1] [======33%                   ] x16ub12416.nsys-rep[1/1] [=======39%                  ] x16ub12416.nsys-rep[1/1] [=========44%                ] x16ub12416.nsys-rep[1/1] [===========50%              ] x16ub12416.nsys-rep[1/1] [========================100%] x16ub12416.nsys-rep[1/1] [========================100%] x16ub12416.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/x16ub12416.nsys-rep

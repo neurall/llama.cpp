@@ -1,0 +1,35 @@
+0.00.271.642 I srv  llama_server: initializing ...
+0.00.271.654 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.271.972 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.273.602 I srv    load_model: loading model '/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf'
+0.00.618.099 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 97 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf 117481680096place.g2.6b6844dc.v3)
+0.00.618.241 I common_moe_cache_auto_impl: MoE model (109.4 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 16384, ubatch 8192, threads 6, weights pinned (settings you pass win)
+0.01.359.564 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.01.359.568 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+ggml_cuda_host_malloc_registered: 100.5 GiB hugetlbfs cache (warm) mapped in 0.0 s
+ggml_cuda_host_malloc_registered: registered in 2.6 s
+0.04.721.398 I common_init_result: weights pinned (swapped 0.0 GiB while loading, 11.2 GiB RAM left)
+0.05.117.561 I cmn          init: llama threadpool init, n_threads = 6
+0.05.458.880 W moe-cache: 42 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.05.592.166 W moe-cache: block pool on CUDA1: 42 layers, 13164.4 MiB, size classes: 111 x 13.50 MiB (3 layers), 111 x 10.31 MiB (3 layers), 1332 x 7.88 MiB (36 layers); no blocks reserved per layer
+0.05.593.201 W moe-cache: 1 upload workers, from pinned host memory (direct DMA)
+0.06.389.023 W moe-cache: probe: links alone link 0 25.5 GB/s; CPU threads:GB/s alone/with links 1:26.2/42.5 2:42.2/45.6 3:42.1/45.3 4:39.8/45.2 -> CPU 42.2 GB/s (saturated by 2 threads), RAM budget 45.6 GB/s
+0.06.391.931 W operator(): MoE expert cache enabled: 42 layers, slots/layer 111..1332, 2 inserts/step, 1157009.6 MiB device memory
+0.06.922.470 W moe-cache: max-batch auto = 128 (stored probe)
+0.07.366.377 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+0.07.388.783 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.07.388.819 I srv  llama_server: model loaded
+0.07.388.823 I srv  llama_server: listening on http://127.0.0.1:8099
+0.08.019.928 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.08.019.972 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.21.331.955 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   7883, progress = 1.00, t =  13.31 s / 592.18 tokens per second
+0.26.501.844 I slot print_timing: id  0 | task 0 | prompt eval time =   13653.07 ms /  7887 tokens (    1.73 ms per token,   577.67 tokens per second)
+0.26.501.847 I slot print_timing: id  0 | task 0 |        eval time =    4828.77 ms /    64 tokens (   76.65 ms per token,    13.05 tokens per second)
+0.26.501.848 I slot print_timing: id  0 | task 0 |       total time =   18481.84 ms /  7951 tokens
+0.26.501.852 I slot print_timing: id  0 | task 0 |    graphs reused =         60
+0.26.501.905 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 47.3% this request / 45.9% overall, 27..48 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.26.501.908 I slot print_timing: id  0 | task 0 |        moe churn = 2119 uploads, 4033 evictions, 33197.6 MiB uploaded (this request)
+0.26.501.909 I slot print_timing: id  0 | task 0 |          threads = 4 decode / 6 batch, batch 8192, ubatch 8192
+0.26.502.344 I slot      release: id  0 | task 0 | stop processing: n_tokens = 7950, truncated = 0
+0.27.151.597 I srv    operator(): operator(): cleaning up before exit...
+0.27.174.261 W moe-cache: steps=66 hits=10638 misses=12546 hit-rate=45.9%, prefill experts from cache 654/36288, kept from prefill 217

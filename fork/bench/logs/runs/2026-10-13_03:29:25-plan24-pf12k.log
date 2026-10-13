@@ -1,0 +1,6 @@
+0.00.002.961 I srv  llama_server: initializing ...
+0.00.289.224 E ggml_cuda_init: failed to initialize CUDA: system has unsupported display driver / cuda driver combination
+0.00.302.497 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.303.525 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.305.425 I srv    load_model: loading model '/m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf'
+0.00.686.125 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden

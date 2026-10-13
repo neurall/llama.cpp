@@ -1,0 +1,101 @@
+0.00.000.980 I srv  llama_server: initializing ...
+0.00.320.962 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.322.769 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.325.206 I srv    load_model: loading model '/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf'
+0.00.670.996 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 101 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf 117481680096place.g2.6b6844dc.v3)
+0.00.671.147 I common_moe_cache_auto_impl: ubatch 16384: experts stream from RAM, the compute alias lends the graph (maximum = context, lowered to what the pool can lend; prompt passes are sized per request)
+0.00.671.152 I common_moe_cache_auto_impl: MoE model (109.4 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 16384, ubatch 16384, threads 6, weights pinned (settings you pass win)
+0.02.219.375 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.02.219.378 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+ggml_cuda_host_malloc_registered: 100.5 GiB hugetlbfs cache (warm) mapped in 0.0 s
+ggml_cuda_host_malloc_registered: registered in 2.6 s
+0.09.370.036 I common_init_result: weights pinned (swapped 0.0 GiB while loading, 12.3 GiB RAM left)
+ggml_cuda_host_malloc_registered: 1.8 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 1.8 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.10.016.489 I cmn          init: llama threadpool init, n_threads = 6
+0.10.490.402 W pf-stats (1 tokens, 3 slots, prefetch on): 87 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 44, weight not an input 42, weight not host-resident 0, few ids 0, region on another card 0, staging stream on another card 0, no slots 0
+0.10.500.981 W moe-cache: 5 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.10.500.984 W moe-cache: 37 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.10.759.910 W moe-cache: block pool on CUDA0: 5 layers, 17566.7 MiB, size classes: 861 x 13.50 MiB (3 layers), 574 x 10.31 MiB (2 layers); no blocks reserved per layer
+0.10.780.178 W moe-cache: block pool on CUDA1: 37 layers, 15002.6 MiB, size classes: 51 x 10.31 MiB (1 layers), 1836 x 7.88 MiB (36 layers); no blocks reserved per layer
+0.10.781.288 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+0.11.579.464 W moe-cache: probe: links alone link 0 25.1 link 1 5.8 GB/s; CPU threads:GB/s alone/with links 1:26.3/44.0 2:42.0/45.2 3:41.7/44.8 4:39.9/45.0 -> CPU 42.0 GB/s (saturated by 2 threads), RAM budget 45.2 GB/s
+0.11.582.419 W moe-cache: 5 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.11.582.441 W operator(): MoE expert cache enabled: 42 layers, slots/layer 51..1836, 2 inserts/step, 1703578.5 MiB device memory
+ggml_cuda_host_malloc_registered: 1.8 GiB populated in 0.2 s (0.0 reserved 0 MiB pages, 1.8 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.12.464.052 W moe-cache: max-batch auto = 128 (stored probe)
+0.12.905.167 W pf-stats (1 tokens, 3 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 85, first node not MUL_MAT_ID 86, weight not an input 0, weight not host-resident 0, few ids 0, region on another card 0, staging stream on another card 0, no slots 0
+0.14.883.037 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+0.14.904.367 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.14.904.396 I srv  llama_server: model loaded
+0.14.904.399 I srv  llama_server: listening on http://127.0.0.1:8099
+0.15.031.438 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.15.031.550 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+/p/bw/wt-main/ggml/src/ggml-cuda/mmq.cu:127: GGML_ASSERT(prec == GGML_PREC_UNDEFINED || prec == GGML_PREC_Q8 || prec == GGML_PREC_Q4) failed
+[New LWP 557197]
+[New LWP 557138]
+[New LWP 557137]
+[New LWP 557136]
+[New LWP 557135]
+[New LWP 557134]
+[New LWP 557133]
+[New LWP 557132]
+[New LWP 557131]
+[New LWP 557130]
+[New LWP 557129]
+[New LWP 557128]
+[New LWP 557127]
+[New LWP 557126]
+[New LWP 557125]
+[New LWP 557065]
+[New LWP 557064]
+[New LWP 557063]
+[New LWP 557062]
+[New LWP 557061]
+[New LWP 557060]
+[New LWP 557059]
+[New LWP 557058]
+[New LWP 557057]
+[New LWP 557056]
+[New LWP 557055]
+[New LWP 557054]
+[New LWP 557053]
+[New LWP 557052]
+[New LWP 557051]
+[New LWP 557050]
+[New LWP 557049]
+[New LWP 557048]
+[New LWP 557047]
+[New LWP 557046]
+[New LWP 557045]
+[New LWP 557035]
+[New LWP 557034]
+[New LWP 557033]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+0x0000704b64310913 in __GI___wait4 (pid=557216, stat_loc=0x0, options=0, usage=0x0) at ../sysdeps/unix/sysv/linux/wait4.c:30
+warning: 30	../sysdeps/unix/sysv/linux/wait4.c: No such file or directory
+#0  0x0000704b64310913 in __GI___wait4 (pid=557216, stat_loc=0x0, options=0, usage=0x0) at ../sysdeps/unix/sysv/linux/wait4.c:30
+30	in ../sysdeps/unix/sysv/linux/wait4.c
+#1  0x0000704b646f00f6 in ggml_print_backtrace () from /p/bw/rels/devbuilds/plan23/libggml-base.so.0
+#2  0x0000704b646ee149 in ggml_abort () from /p/bw/rels/devbuilds/plan23/libggml-base.so.0
+#3  0x0000704b52bac221 in ggml_cuda_mul_mat_q(ggml_backend_cuda_context&, ggml_tensor const*, ggml_tensor const*, ggml_tensor const*, ggml_tensor*) () from /p/bw/rels/devbuilds/plan23/libggml-cuda.so
+#4  0x0000704b52b5f319 in ggml_backend_cuda_graph_compute(ggml_backend*, ggml_cgraph*) () from /p/bw/rels/devbuilds/plan23/libggml-cuda.so
+#5  0x0000704b647140b5 in ggml_backend_sched_graph_compute_async () from /p/bw/rels/devbuilds/plan23/libggml-base.so.0
+#6  0x0000704b64929b5c in llama_context::graph_compute(ggml_cgraph*, bool) () from /p/bw/rels/devbuilds/plan23/libllama.so.0
+#7  0x0000704b64929615 in llama_context::process_ubatch(llama_ubatch const&, llm_graph_type, llama_memory_context_i*, ggml_status&) () from /p/bw/rels/devbuilds/plan23/libllama.so.0
+#8  0x0000704b6492b43c in llama_context::decode(llama_batch_ext const&) () from /p/bw/rels/devbuilds/plan23/libllama.so.0
+#9  0x0000704b658df589 in std::_Function_handler<void (), server_context_impl::decode(int&, int)::{lambda()#1}>::_M_invoke(std::_Any_data const&) () from /p/bw/rels/devbuilds/plan23/libllama-server-impl.so
+#10 0x0000704b65876892 in server_queue::yield_to_queue(std::function<void ()>&&) () from /p/bw/rels/devbuilds/plan23/libllama-server-impl.so
+#11 0x0000704b658cf4b5 in server_context_impl::decode(int&, int) () from /p/bw/rels/devbuilds/plan23/libllama-server-impl.so
+#12 0x0000704b658ce76a in server_context_impl::update_slots() () from /p/bw/rels/devbuilds/plan23/libllama-server-impl.so
+#13 0x0000704b65876d53 in server_queue::start_loop(long) () from /p/bw/rels/devbuilds/plan23/libllama-server-impl.so
+#14 0x0000704b6581a51d in llama_server(common_params&, int, char**, server_child&) () from /p/bw/rels/devbuilds/plan23/libllama-server-impl.so
+#15 0x0000704b658113e4 in llama_server(int, char**) () from /p/bw/rels/devbuilds/plan23/libllama-server-impl.so
+#16 0x0000704b6422a1ca in __libc_start_call_main (main=main@entry=0x400400 <main>, argc=argc@entry=11, argv=argv@entry=0x7ffc6f9b54f8) at ../sysdeps/nptl/libc_start_call_main.h:58
+warning: 58	../sysdeps/nptl/libc_start_call_main.h: No such file or directory
+#17 0x0000704b6422a28b in __libc_start_main_impl (main=0x400400 <main>, argc=11, argv=0x7ffc6f9b54f8, init=<optimized out>, fini=<optimized out>, rtld_fini=<optimized out>, stack_end=0x7ffc6f9b54e8) at ../csu/libc-start.c:360
+warning: 360	../csu/libc-start.c: No such file or directory
+#18 0x000000000040033e in _start ()
+[Inferior 1 (process 557031) detached]
