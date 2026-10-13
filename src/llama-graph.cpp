@@ -2764,6 +2764,21 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     lo = hi;
                 }
                 parts = kept;
+                // --moe split-chunks=N: every card's expert range is cut into N blocks (more parts on the same card). A block is staged and uploaded on its own and its
+                // matmul starts when ITS experts have arrived, while the next block uploads: the card computes in step with its transfer inside the layer, instead of
+                // waiting for the whole range (nsys, GLM 8k: the x16 card did no compute while a layer's tensor of 1.8 GB arrived, about 70 ms per tensor). The blocks of a
+                // card keep their order after the other card's blocks of the same layer; each is one more mask, one more MUL_MAT_ID per tensor and one more sum.
+                static const int chunks = [] { const char * e = llama_moe_get_opt("split-chunks"); return e ? std::max(1, atoi(e)) : 1; }();
+                if (chunks > 1) {
+                    std::vector<split_part> cut;
+                    for (const auto & pt : parts) {
+                        for (int ci = 0; ci < chunks; ++ci) {
+                            const int64_t clo = pt.lo + (pt.hi - pt.lo) * ci / chunks, chi = pt.lo + (pt.hi - pt.lo) * (ci + 1) / chunks;
+                            if (chi > clo) { cut.push_back({ pt.b, pt.gbs, clo, chi }); }
+                        }
+                    }
+                    parts = cut;
+                }
             }
             if (parts.size() < 2) {
                 parts.clear();
