@@ -2918,10 +2918,18 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             ggml_backend_t nx_backend = sched->backends[nx->backend_id];
             if (nx->backend_id != split_backend_id && !ahead_done[split_id + 1] &&
                     ggml_backend_dev_type(ggml_backend_get_device(nx_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
-                bool dep = false;   // does the next split read something this split computes?
+                // Does the next split read something this split computes? An input can be a VIEW of such a tensor (a slice of this split's K handed to the next
+                // split's cache write, a reshaped state): the view is another tensor, and its node can lie in the next split's own range, so the tensor it
+                // looks into is checked too. Compared by the input alone, such a copy was issued before this split had run and the other card read what the
+                // memory held before: Qwen3.8-Flash-Next with the dense split, perplexity 32.9 where one card gives 1.125 (1.126 with this check, and with
+                // GGML_SCHED_COPY_AHEAD=0).
+                bool dep = false;
                 for (int i = 0; i < nx->n_inputs && !dep; i++) {
+                    const struct ggml_tensor * in  = nx->inputs[i];
+                    const struct ggml_tensor * src = in->view_src;
                     for (int j = 0; j < split->graph.n_nodes; j++) {
-                        if (split->graph.nodes[j] == nx->inputs[i]) { dep = true; break; }
+                        const struct ggml_tensor * nd = split->graph.nodes[j];
+                        if (nd == in || (src != NULL && (nd == src || nd->view_src == src))) { dep = true; break; }
                     }
                 }
                 if (!dep) {
