@@ -749,6 +749,19 @@ static size_t ggml_backend_cuda_scratch_fork(int device, void * base, size_t cap
         s.base = (char *) base;
         s.cap  = base ? cap : 0;
         s.top  = 0;
+    } else if (s.base != (char *) base) {
+        // The caller has laid out its memory for the new place (graph, scratch, staging slots, see llama_moe_cache_alias_fork): a region that stays behind
+        // overlaps whatever was put there. This must not happen between two graphs (every user frees its buffers before its operation returns); reported
+        // so that it is seen if it ever does.
+        static int warned = 0;
+        if (warned++ < 8) {
+            GGML_LOG_WARN("%s: scratch region of CUDA%d NOT moved (%zu buffers still live, %zu bytes in use): it stays at %p, the caller asked for %p\n", __func__,
+                    device, s.live.size(), s.top, (void *) s.base, base);
+        }
+    }
+    {
+        static const bool dbg = getenv("GGML_CUDA_SCRATCH_DEBUG") != nullptr;
+        if (dbg) { GGML_LOG_WARN("%s: CUDA%d scratch %p + %zu (asked %p + %zu), %zu live, high-water mark of the last graph %zu\n", __func__, device, (void *) s.base, s.cap, base, cap, s.live.size(), hwm); }
     }
     s.hwm = 0;
     return hwm;
@@ -3184,7 +3197,7 @@ static __global__ void k_xstage_read16(uint4 * __restrict__ dst, const uint4 * _
 }
 static __global__ void k_xstage_read1(uint8_t * __restrict__ dst, const uint8_t * __restrict__ src, const size_t n) {
     for (size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (size_t) gridDim.x * blockDim.x) {
-        dst[i] = *(const volatile uint8_t *) (src + i);
+        dst[i] = __ldcv(src + i);   // uncached like the 16-byte path: a volatile load does not stop the card from serving a stale line of the reused block
     }
 }
 static bool ggml_cuda_xstage_zc_on() {

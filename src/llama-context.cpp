@@ -23,6 +23,12 @@
 #include "llama-sampler.h"
 #include "llama.h"
 
+// fork: defined in ggml-backend.cpp, declared here (a line in a shared ggml header rebuilds every CUDA object): zeros in the row padding behind the last
+// expert of a copied expert tensor
+extern "C" {
+    GGML_API void ggml_backend_tensor_zero_tail_fork(ggml_backend_t backend, struct ggml_tensor * tensor);
+}
+
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
@@ -3609,6 +3615,9 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         const size_t offset  = first*expert_size;
         const size_t padding = last < n_expert - 1 ? std::min<size_t>(expert_size, 512) : 0;
         ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + offset, offset, (last - first + 1)*expert_size + padding);
+        if (last == n_expert - 1) {
+            ggml_backend_tensor_zero_tail_fork(backend, dst);   // fork: the last expert has no neighbour: zeros in the tensor's own row padding (see ggml-backend.cpp)
+        }
     };
 
     // Slice copies inside the device (cache -> staged tensor, staged tensor -> cache) are collected and issued as ONE kernel launch when the backend has one
@@ -3651,6 +3660,9 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         ggml_backend_buffer_t dev_buf  = nullptr;
         if (ggml_backend_moe_src(src, (int32_t) id, dev, &dev_data, &dev_buf)) {
             pairs.push_back({ dev_data, (uint8_t *) dst->data + (size_t) id*expert_size, dev_buf, dst->buffer });   // cache block -> slot in the staged tensor
+            if (id == n_expert - 1) {
+                ggml_backend_tensor_zero_tail_fork(backend, dst);   // the last expert, taken from the cache: the row padding behind it is the tensor's own
+            }
             // keep the MMQ padding rule: the unused neighbour must not hold NaNs
             if (id < n_expert - 1 && !st.used[id + 1]) {
                 const size_t off = (size_t) (id + 1)*expert_size;
