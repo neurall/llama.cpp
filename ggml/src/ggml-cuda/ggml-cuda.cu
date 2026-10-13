@@ -3297,6 +3297,27 @@ static bool ggml_backend_cuda_xcopy_dst_ordered(ggml_backend_t src, ggml_backend
     return ggml_cuda_get_physical_device(s->device) != ggml_cuda_get_physical_device(d->device);
 }
 
+// fork: a time stamp in stream order (see ggml_sched_chain_stat in ggml-backend.cpp): a host function queued on the card's compute stream writes the wall clock
+// when the stream gets there. It measures when a card reached a point of the graph, which the host thread cannot know (it issues work several layers ahead).
+// The callback only stores eight bytes; the stream moves on at once.
+extern "C" {
+    typedef void (*ggml_backend_stamp_fn_t)(ggml_backend_t backend, int64_t * dst);
+    GGML_API void ggml_backend_sched_set_stamp_fn(ggml_backend_stamp_fn_t fn);
+}
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+static void CUDART_CB ggml_cuda_stamp_cb(void * p) {
+    *(int64_t *) p = ggml_time_us();
+}
+static void ggml_backend_cuda_stamp(ggml_backend_t backend, int64_t * dst) {
+    if (!ggml_backend_is_cuda(backend)) {
+        return;
+    }
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+    ggml_cuda_set_device(cuda_ctx->device);
+    CUDA_CHECK(cudaLaunchHostFunc(cuda_ctx->stream(), ggml_cuda_stamp_cb, dst));
+}
+#endif
+
 static void ggml_backend_cuda_synchronize(ggml_backend_t backend) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *)backend->context;
 
@@ -6861,6 +6882,9 @@ ggml_backend_t ggml_backend_cuda_init(int device) {
         return nullptr;
     }
     ggml_backend_sched_set_xcopy_dst_ordered(ggml_backend_cuda_xcopy_dst_ordered);   // fork: see ggml_cuda_xstage_copy
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    ggml_backend_sched_set_stamp_fn(ggml_backend_cuda_stamp);                        // fork: see ggml_backend_cuda_stamp
+#endif
 
     ggml_backend_t cuda_backend = new ggml_backend {
         /* .guid    = */ ggml_backend_cuda_guid(),

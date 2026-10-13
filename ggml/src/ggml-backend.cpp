@@ -21,6 +21,7 @@
 #include <string.h>
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -676,6 +677,61 @@ void ggml_backend_sched_set_xcopy_dst_ordered(ggml_backend_xcopy_dst_ordered_t f
     g_xcopy_dst_ordered = fn;
 }
 
+// fork: device-time stamps of the expert chains of the multi-GPU prompt split, the measurement behind the share controller (llama_split_ctl in llama-graph.cpp).
+// The host thread issues work several layers ahead of the cards, so nothing the host can time says when a card reached a point. A backend that can run a host
+// function in stream order (CUDA: cudaLaunchHostFunc) registers g_stamp_fn; the function writes the wall clock into *dst when the card's stream gets there.
+// Per layer and card, three stamps:
+//     t_start  in front of the card's first expert matmul of the layer (its inputs have arrived)
+//     t_end    behind its last one
+//     t_out    behind its half of the copy that hands its partial sum to another card (0 for the card that keeps the result: the layer's owner)
+// A helper is late by t_out(helper) - t_end(owner): positive, the owner waits for it; negative, the helper finished early and could hold more experts.
+// One measurement at a time, of the last prompt graph issued; it is complete when every t_end has been written, and then becomes readable through
+// ggml_backend_sched_chain_stats. A graph issued while the previous measurement is still running on the cards is not measured (nothing here ever waits).
+struct ggml_sched_chain_stat {
+    int            layer;
+    ggml_backend_t backend;
+    int            lo, hi;       // the expert ids this card holds in this layer: [lo, hi)
+    int64_t        t_start, t_end, t_out;   // microseconds, ggml_time_us(); written from the driver's callback thread (aligned 64-bit stores)
+    int64_t        n_tokens;
+};
+typedef void (*ggml_backend_stamp_fn_t)(ggml_backend_t backend, int64_t * dst);
+static ggml_backend_stamp_fn_t g_stamp_fn = NULL;
+#define GGML_SCHED_MAX_CHAIN_STATS 2048
+static struct ggml_sched_chain_stat g_chain_buf[2][GGML_SCHED_MAX_CHAIN_STATS];
+static int        g_chain_n[2]   = { 0, 0 };
+static int        g_chain_live   = -1;   // index of the measurement still running on the cards, -1 none
+static int        g_chain_done   = -1;   // index of the last complete one
+static long       g_chain_gen    = 0;    // counts complete measurements
+static std::mutex g_chain_mu;
+extern "C" {
+    GGML_API void ggml_backend_sched_set_stamp_fn(ggml_backend_stamp_fn_t fn);
+    GGML_API int  ggml_backend_sched_chain_stats(struct ggml_sched_chain_stat * out, int cap, long * gen);
+}
+void ggml_backend_sched_set_stamp_fn(ggml_backend_stamp_fn_t fn) {
+    g_stamp_fn = fn;
+}
+// the measurement that is still running becomes the readable one once all its chains have ended
+static void ggml_backend_sched_chain_roll(void) {
+    if (g_chain_live < 0) { return; }
+    for (int i = 0; i < g_chain_n[g_chain_live]; i++) {
+        if (g_chain_buf[g_chain_live][i].t_end == 0) { return; }
+    }
+    g_chain_done = g_chain_live;
+    g_chain_live = -1;
+    g_chain_gen++;
+}
+// Copies the last complete measurement (returns the number of entries, 0 when there is none) and its generation: a caller that remembers the generation
+// sees each measurement once.
+int ggml_backend_sched_chain_stats(struct ggml_sched_chain_stat * out, int cap, long * gen) {
+    std::lock_guard<std::mutex> lk(g_chain_mu);
+    ggml_backend_sched_chain_roll();
+    if (gen) { *gen = g_chain_gen; }
+    if (g_chain_done < 0 || out == NULL) { return 0; }
+    const int n = std::min(cap, g_chain_n[g_chain_done]);
+    for (int i = 0; i < n; i++) { out[i] = g_chain_buf[g_chain_done][i]; }
+    return n;
+}
+
 void ggml_backend_set_split_callback(ggml_backend_split_cb_t cb, void * user_data) {
     g_split_cb = cb;
     g_split_ud = user_data;
@@ -1040,6 +1096,7 @@ struct ggml_backend_sched {
     ggml_backend_event_t events[GGML_SCHED_MAX_BACKENDS][GGML_SCHED_MAX_COPIES];
     ggml_backend_event_t tail_ev[GGML_SCHED_MAX_BACKENDS];   // fork: per backend, marks the tail of its stream for a device-side wait before a cross-card input copy (see ggml_backend_sched_copy_input)
     uint32_t xcopy_touched;                                  // fork: bit b = a copy between two GPUs was just queued with backend b as its source or destination (read and cleared by the split loop)
+    uint32_t xcopy_src;                                      // fork: the same, source cards only (the stamp behind a card's hand-off, see ggml_sched_chain_stat)
     struct ggml_tensor ** graph_inputs;
     int n_graph_inputs;
     int graph_inputs_capacity;
@@ -1979,6 +2036,32 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
         return;
     }
 
+    // fork: the experts of a range matmul of the multi-GPU prompt split that got no staging slot (no memory for the ring on this card). The stock path drains the
+    // card on the HOST and then lets the copy callback read the router ids, again with a host wait: the scheduler thread stands still until this card is idle and
+    // issues nothing for the other cards meanwhile (nsys, GLM 8k, x16 owner + x4 helper: the x16's own expert chain started 123 ms late in every layer). A big
+    // batch uses every expert of the range, so the whole range is queued as one upload on the card's own compute stream: stream order puts it behind everything
+    // that may still read that memory, and nothing waits on the host. The expert cache does not see these experts (as with the staging ring).
+    // GGML_SCHED_RANGE_ASYNC=0 restores the callback.
+    if (ggml_backend_sched_is_host_weight(input) && split->graph.n_nodes > 0 && split_backend->iface.set_tensor_async != NULL &&
+            sched->events[split_backend_id][sched->cur_copy] == NULL &&
+            ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+        static const bool range_async = !(getenv("GGML_SCHED_RANGE_ASYNC") && atoi(getenv("GGML_SCHED_RANGE_ASYNC")) == 0);
+        const struct ggml_tensor * n0 = split->graph.nodes[0];
+        if (range_async && n0->op == GGML_OP_MUL_MAT_ID && n0->op_params[9] > n0->op_params[8] && n0->src[0] == input_cpy && input->ne[2] > 0 &&
+                ggml_is_contiguous(input) && ggml_is_contiguous(input_cpy)) {
+            const int64_t lo = n0->op_params[8], hi = std::min<int64_t>(n0->op_params[9], input->ne[2]);
+            if (hi > lo) {
+                const size_t esz = input->nb[2];
+                const size_t off = (size_t) lo*esz;
+                const size_t pad = hi < input->ne[2] ? std::min<size_t>(esz, 512) : 0;
+                NVTX_PUSH("ASYNC expert range %s [%d,%d) -> %s", input->name, (int) lo, (int) hi, ggml_backend_name(split_backend));
+                ggml_backend_tensor_set_async(split_backend, input_cpy, (const char *) input->data + off, off, (size_t) (hi - lo)*esz + pad);
+                NVTX_POP();
+                return;
+            }
+        }
+    }
+
     // wait for the split backend to finish using the input before overwriting it
     if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
         ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
@@ -2046,6 +2129,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
             ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
         for (int b = 0; b < sched->n_backends; b++) {
             if (sched->backends[b] == input_backend || sched->backends[b] == split_backend) { sched->xcopy_touched |= 1u << b; }
+            if (sched->backends[b] == input_backend) { sched->xcopy_src |= 1u << b; }
         }
     }
     if (!split_backend->iface.cpy_tensor_async || !split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
@@ -2127,7 +2211,24 @@ static bool ggml_backend_sched_prefetch_target(ggml_backend_sched_t sched, struc
     return false;
 }
 
-// bytes of the largest staged expert tensor (as the device reads it: padded rows)
+// Bytes a staging slot needs for the expert matmul that is the first node of split `s` and reads the host tensor `in`: the whole tensor as the device reads it
+// (padded rows), or, for a matmul that owns an id range [lo, hi) (multi-GPU prompt split), only that range with the same tail padding. Sized for the whole
+// tensor, the slots of a card that holds 30% of the experts were 3.3 times too large: on GLM-5.3-Flash (789 MB per expert tensor, 6 slots) the card on the slow
+// link needed 4.7 GB of lent blocks, got none, and ran without the upload ring (nsys: its uploads inside its compute stream, the other card idle 123 ms per
+// layer). GGML_PF_COMPACT=0 restores whole-tensor slots.
+static size_t ggml_backend_sched_prefetch_bytes(ggml_backend_sched_t sched, const struct ggml_backend_sched_split * s, const struct ggml_tensor * in) {
+    static const bool compact = !(getenv("GGML_PF_COMPACT") && atoi(getenv("GGML_PF_COMPACT")) == 0);
+    const size_t full = ggml_backend_buft_get_alloc_size(ggml_backend_get_default_buffer_type(sched->backends[s->backend_id]), in);
+    const struct ggml_tensor * node = s->graph.nodes[0];
+    if (compact && node->op_params[9] > node->op_params[8] && in->ne[2] > 0) {
+        const int64_t lo = node->op_params[8], hi = std::min<int64_t>(node->op_params[9], in->ne[2]);
+        const size_t tail = full > ggml_nbytes(in) ? full - ggml_nbytes(in) : 0;
+        if (hi > lo) { return std::min(full, (size_t) (hi - lo)*in->nb[2] + tail + 512); }
+    }
+    return full;
+}
+
+// bytes of the largest staged expert tensor (as the device reads it: padded rows; a card's own id range in the multi-GPU prompt split)
 static size_t ggml_backend_sched_prefetch_scan(ggml_backend_sched_t sched, int backend_id) {
     size_t max_size = 0;
     for (int split_id = 0; split_id < sched->n_splits; split_id++) {
@@ -2137,7 +2238,7 @@ static size_t ggml_backend_sched_prefetch_scan(ggml_backend_sched_t sched, int b
         }
         ggml_tensor * in = NULL, * cpy = NULL;
         if (ggml_backend_sched_prefetch_target(sched, s, &in, &cpy)) {
-            max_size = std::max(max_size, ggml_backend_buft_get_alloc_size(ggml_backend_get_default_buffer_type(sched->backends[s->backend_id]), in));
+            max_size = std::max(max_size, ggml_backend_sched_prefetch_bytes(sched, s, in));
         }
     }
     return max_size;
@@ -2184,8 +2285,12 @@ static bool ggml_backend_sched_prefetch_prepare(ggml_backend_sched_t sched, stru
             }
         }
     }
-    size = GGML_PAD(std::max(size, ggml_backend_sched_prefetch_scan(sched, -1)), 256);
-    sched->prefetch_slot_bytes = size;
+    {
+        int bid = -1;
+        for (int b = 0; b < sched->n_backends; b++) { if (sched->backends[b] == split_backend) { bid = b; } }
+        size = GGML_PAD(std::max(size, ggml_backend_sched_prefetch_scan(sched, bid)), 256);   // this card's largest staged range
+    }
+    sched->prefetch_slot_bytes = std::max(sched->prefetch_slot_bytes, size);
 
     // slots inside a buffer the host owns (the expert cache lends the blocks): no allocation here
     if (R->region_buf != NULL && R->region_cap >= (size_t) n * size) {
@@ -2368,7 +2473,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             return;
         }
         const int ri = (int) (R - sched->prefetch_ring);
-        const size_t need = ggml_backend_buft_get_alloc_size(ggml_backend_get_default_buffer_type(s_backend), input);
+        const size_t need = ggml_backend_sched_prefetch_bytes(sched, s, input);
         if (!ggml_backend_sched_prefetch_prepare(sched, R, s_backend, need, R->n_slots, pf_slot_buf[ri], pf_slot_data[ri])) {
             pfs_prep++;
             return;
@@ -2405,6 +2510,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         const ggml_tensor * mm_node = s->graph.nodes[0];
         p.lo = 0; p.hi = input->ne[2];
         if (mm_node->op_params[9] > mm_node->op_params[8]) { p.lo = mm_node->op_params[8]; p.hi = std::min<int64_t>(mm_node->op_params[9], input->ne[2]); }
+        // A slot that holds only the range (see ggml_backend_sched_prefetch_bytes) starts with expert `lo`: the tensor's data pointer is moved back by lo experts,
+        // so expert id still sits at data + id x expert size. The matmul reads only ids in [lo, hi) (the others are -1), so it never leaves the slot.
+        if (p.lo > 0 && need < ggml_backend_buft_get_alloc_size(ggml_backend_get_default_buffer_type(s_backend), input)) {
+            input_cpy->data = pf_slot_data[ri][slot] - (size_t) p.lo*input->nb[2];
+        }
         {
             const size_t esz = input->nb[2];
             const size_t off = (size_t) p.lo*esz;
@@ -2439,6 +2549,53 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     };
     if (pf_on) {
         fire_ahead(-1);
+    }
+
+    // Stamps of the expert chains (see ggml_sched_chain_stat): the expert matmul splits of the multi-GPU prompt split are grouped by (layer, card); the layer is
+    // the number at the end of the MUL_MAT_ID's name ("ffn_moe_gate-12"). Only when the previous measurement has left the cards.
+    int ch_set = -1, ch_n = 0, ch_ended = 0;
+    std::vector<int>  ch_first(sched->n_splits, -1), ch_last(sched->n_splits, -1);
+    std::vector<int>  ch_tail(sched->n_backends, -1);   // the chain that ended last on this card, until anything else is launched on it
+    std::vector<char> ch_out;
+    sched->xcopy_src = 0;
+    if (g_stamp_fn != NULL && !sched->callback_eval && sched->n_splits > 1) {
+        std::vector<struct ggml_sched_chain_stat> found;
+        std::vector<int> found_last;
+        for (int j = 0; j < sched->n_splits; j++) {
+            const struct ggml_backend_sched_split * sj = &splits[j];
+            if (sj->graph.n_nodes == 0) { continue; }
+            const struct ggml_tensor * n0 = sj->graph.nodes[0];
+            if (n0->op != GGML_OP_MUL_MAT_ID || !(n0->op_params[9] > n0->op_params[8])) { continue; }
+            const char * dash = strrchr(n0->name, '-');
+            if (dash == NULL || dash[1] < '0' || dash[1] > '9') { continue; }
+            const int layer = atoi(dash + 1);
+            int idx = -1;
+            for (size_t i = 0; i < found.size(); i++) {
+                if (found[i].layer == layer && found[i].backend == sched->backends[sj->backend_id] && found[i].lo == n0->op_params[8]) { idx = (int) i; }
+            }
+            if (idx < 0) {
+                struct ggml_sched_chain_stat e = {};
+                e.layer = layer; e.backend = sched->backends[sj->backend_id]; e.lo = n0->op_params[8]; e.hi = n0->op_params[9];
+                e.n_tokens = n0->src[2] ? n0->src[2]->ne[1] : 0;
+                idx = (int) found.size();
+                found.push_back(e); found_last.push_back(j);
+                ch_first[j] = idx;
+            }
+            found_last[idx] = j;
+        }
+        if (!found.empty() && found.size() <= GGML_SCHED_MAX_CHAIN_STATS) {
+            std::lock_guard<std::mutex> lk(g_chain_mu);
+            ggml_backend_sched_chain_roll();
+            if (g_chain_live < 0) {
+                ch_set = g_chain_done == 0 ? 1 : 0;
+                ch_n   = (int) found.size();
+                for (int i = 0; i < ch_n; i++) { g_chain_buf[ch_set][i] = found[i]; ch_last[found_last[i]] = i; }
+                g_chain_n[ch_set] = ch_n;
+                g_chain_live = ch_set;
+                ch_out.assign(ch_n, 0);
+            }
+        }
+        if (ch_set < 0) { std::fill(ch_first.begin(), ch_first.end(), -1); }
     }
 
     // GGML_SCHED_COPY_AHEAD=0 turns off. Inputs (not weights) of split i+1 that come from other cards are copied BEFORE split i is launched, when split i+1 is on
@@ -2566,6 +2723,17 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 }
             }
         }
+        {
+            // t_out: this card's half of a copy between GPUs was just queued right behind its expert chain: its partial sum leaves for the layer's owner
+            const uint32_t xsrc = sched->xcopy_src;
+            sched->xcopy_src = 0;
+            for (int b = 0; b < sched->n_backends && ch_set >= 0; b++) {
+                if ((xsrc >> b & 1) && ch_tail[b] >= 0 && !ch_out[ch_tail[b]]) {
+                    g_stamp_fn(sched->backends[b], &g_chain_buf[ch_set][ch_tail[b]].t_out);
+                    ch_out[ch_tail[b]] = 1;
+                }
+            }
+        }
         if (pf_on && !pf_release_split) {
             pft_issued = std::max(pft_issued, split_id + ((split_id + 1 < sched->n_splits && ahead_done[split_id + 1]) ? 1 : 0));
             const uint32_t touched = sched->xcopy_touched;
@@ -2585,6 +2753,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
         if (g_split_cb && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
             g_split_cb(split_backend, g_split_ud);
+        }
+        ch_tail[split_backend_id] = -1;
+        if (ch_set >= 0 && ch_first[split_id] >= 0) {
+            g_stamp_fn(split_backend, &g_chain_buf[ch_set][ch_first[split_id]].t_start);
         }
         if (pf) {
             // the staged tensor is uploaded when the second stream's event has fired; the compute stream waits for it on the device, not the host
@@ -2613,6 +2785,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
         if (!sched->callback_eval) {
             NVTX_PUSH("LAUNCH graph_compute_async"); enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph); NVTX_POP();
+            if (ch_set >= 0 && ch_last[split_id] >= 0 && ec == GGML_STATUS_SUCCESS) {
+                g_stamp_fn(split_backend, &g_chain_buf[ch_set][ch_last[split_id]].t_end);
+                ch_tail[split_backend_id] = ch_last[split_id];
+                ch_ended++;
+            }
             if (pf) {
                 // the kernels have captured the slot address at launch: the staging copy may point back, the slot is free once this split is done
                 if (pf_release_split || xnext.empty() || xnext[split_backend_id][split_id + 1] >= sched->n_splits) {
@@ -2715,6 +2892,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     }
 
     for (int b = 0; b < sched->n_backends; b++) { release_slots(b); }   // slots still waiting for a release (the next graph waits for these events)
+    if (ch_set >= 0 && ch_ended != ch_n) {
+        std::lock_guard<std::mutex> lk(g_chain_mu);
+        if (g_chain_live == ch_set) { g_chain_live = -1; }
+    }
 
     if (pf_stats && sched->n_splits >= 30) {
         const struct ggml_cgraph & lg = splits[sched->n_splits - 1].graph;

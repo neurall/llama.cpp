@@ -36,7 +36,9 @@ for i, s in enumerate(p0):
         passes.append((s, e))
 if not passes:
     sys.exit("no prompt pass in the trace")
-pi = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] != "last" else len(passes) - 1
+spans = [c.execute("select max(end) from NVTX_EVENTS where start>=? and start<? and text like 'SPLIT %'", (a, b)).fetchone()[0] - a for a, b in passes]
+longest = max(range(len(passes)), key=lambda i: spans[i])
+pi = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] not in ("last", "auto") else (longest if spans[longest] > 3 * sorted(spans)[len(spans) // 2] else len(passes) - 1)
 S, E_ = passes[pi]
 sp = c.execute("select start,end,text from NVTX_EVENTS where start>=? and start<? and text like 'SPLIT %' order by start", (S, E_)).fetchall()
 sp_start = [x[0] for x in sp]
@@ -158,7 +160,9 @@ for d in devs:
 
 # ---- layer N ---------------------------------------------------------------------------------------------------------------------------------------------------
 own_runs = runs[owner]
-dense_start = {r[4]: r[0] for r in own_runs if r[2] == "dense" and r[4] >= 0}      # layer -> start of its dense part on the owner
+dense_start = {}                                                                    # layer -> start of its dense part on the owner (the first of its kernel runs)
+for r in own_runs:
+    if r[2] == "dense" and r[4] >= 0 and (r[4] not in dense_start or r[0] < dense_start[r[4]]): dense_start[r[4]] = r[0]
 moe_layers = sorted(set(r[4] for r in own_runs if r[2] == "moe"))
 ok = [L for L in moe_layers if L in dense_start and L + 1 in dense_start]
 if len(ok) < 2:
