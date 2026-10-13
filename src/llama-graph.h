@@ -1004,6 +1004,11 @@ struct llm_graph_context {
     // stages and uploads only that range of the host weight instead of the whole tensor
     mutable int32_t mm_id_lo = 0;
     mutable int32_t mm_id_hi = 0;
+    // fork: dense split (token ranges on several cards, see llama-dsplit-fork.cpp). Non-empty while a model builds a layer in range mode: build_moe_ffn takes
+    // the hidden state of every range from the range's card (cur), runs each card's expert chain on all tokens, and leaves each range's sum of the partial
+    // results in `out` on the range's card (the value it returns is the last range's).
+    struct moe_range_fork { ggml_backend_t b = nullptr; int64_t t0 = 0, t1 = 0; ggml_tensor * cur = nullptr; ggml_tensor * out = nullptr; };
+    mutable std::vector<moe_range_fork> moe_ranges;
 
     const llm_arch arch;
 

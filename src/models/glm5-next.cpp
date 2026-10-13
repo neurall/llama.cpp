@@ -1,5 +1,9 @@
 #include "models.h"
 #include "llama-memory-hybrid-idx.h"
+#include "../llama-dsplit-fork.h"
+#include "../llama-moecache-fork.h"
+
+#include <algorithm>
 
 // GLM5-Next (GLM-5.3-Flash): hybrid KDA (linear) + nope MLA with a k-pool DSA indexer,
 // mHC residual streams, DeepSeek-style MoE.
@@ -629,7 +633,259 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
 
     ggml_tensor * prev_sel = nullptr;
 
-    for (int il = 0; il < n_layer; ++il) {
+    // ---- fork: dense split (llama-dsplit-fork.cpp) ---------------------------------------------------------------------------------------------------------
+    // A prompt pass of one sequence is cut into token ranges, one per card: the first (the slower link) holds --moe dense-split-share of the tokens (default
+    // 0.3), the last card the rest. Every card computes the dense part of its range of every layer with its own copy of the dense weights, and its range's
+    // residual stream stays on it for the whole pass. Only what depends on other tokens crosses:
+    //   KDA layers   range after range: the conv window (the last d_conv-1 projected tokens) and the recurrent state (4.2 MB on GLM-5.3-Flash) of a range are
+    //                the start of the next range's; the last range writes both to the memory. The scan itself is therefore sequential over the ranges.
+    //   DSA layers   (sparse attention) first version: all tokens on the layer's own card, the ranges' inputs gathered there and the outputs sent back.
+    //   MoE          experts stay shared by id range; build_moe_ffn runs in range mode (moe_ranges): every card's chain reads all ranges, every range gets the
+    //                sum of all cards' partial results.
+    // Exact (the same operations on the same tokens; only the summation order of the partial results changes). Off for several sequences in one pass, for
+    // rollback snapshots (n_rs_seq > 0) and for passes shorter than --moe dense-split-min tokens (default 512).
+    struct drange { ggml_backend_t b; ggml_backend_dev_t dev; int64_t t0, t1; };
+    std::vector<drange> R;
+    {
+        static const double  share0  = [] { const char * e = llama_moe_get_opt("dense-split-share"); return e ? atof(e) : 0.3; }();
+        static const int64_t min_tok = [] { const char * e = llama_moe_get_opt("dense-split-min");   return e ? (int64_t) atoll(e) : (int64_t) 512; }();
+        if (sched && llama_dsplit_ready_fork(model) && n_seqs == 1 && cparams.n_rs_seq == 0 && n_tokens >= std::max<int64_t>(min_tok, 4 * d_conv) &&
+                !cparams.embeddings_nextn) {
+            std::vector<std::pair<double, ggml_backend_t>> gpus;   // (upload rate, backend)
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+                ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+                if (ggml_backend_dev_type(ggml_backend_get_device(b)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                    gpus.push_back({ llama_moe_cache_link_gbs_fork(ggml_backend_get_device(b)), b });
+                }
+            }
+            if (gpus.size() >= 2) {
+                std::stable_sort(gpus.begin(), gpus.end(), [](const auto & x, const auto & y) { return x.first < y.first; });   // slowest link first
+                const int64_t n0 = std::max<int64_t>(d_conv, std::min<int64_t>(n_tokens - d_conv, (int64_t) llround(share0 * (double) n_tokens)));
+                R.push_back({ gpus.front().second, ggml_backend_get_device(gpus.front().second), 0, n0 });
+                R.push_back({ gpus.back().second,  ggml_backend_get_device(gpus.back().second),  n0, n_tokens });
+            }
+        }
+    }
+    // Everything created for a range is pinned to the range's card: pin() walks the tensors of ctx0 created since the last mark. Views take the card of their
+    // source; writes into the memory (cpy into a view of a KV / recurrent-state tensor) run where the memory is.
+    ggml_tensor * pin_mark = nullptr;
+    auto skip = [&]() {
+        ggml_tensor * t = pin_mark ? pin_mark : ggml_get_first_tensor(ctx0);
+        if (t == nullptr) { return; }
+        for (ggml_tensor * n = ggml_get_next_tensor(ctx0, t); n; n = ggml_get_next_tensor(ctx0, n)) { t = n; }
+        pin_mark = t;
+    };
+    auto pin = [&](ggml_backend_t b) {
+        for (ggml_tensor * t = pin_mark ? ggml_get_next_tensor(ctx0, pin_mark) : ggml_get_first_tensor(ctx0); t; t = ggml_get_next_tensor(ctx0, t)) {
+            pin_mark = t;
+            if (b == nullptr || t->op == GGML_OP_NONE || t->buffer != nullptr) { continue; }
+            if (t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE) { continue; }
+            if (t->view_src != nullptr && t->view_src->buffer != nullptr) { continue; }
+            ggml_backend_sched_set_tensor_backend(sched, t, b);
+        }
+    };
+    auto backend_of = [&](ggml_backend_dev_t dev) -> ggml_backend_t {
+        for (int i = 0; sched && i < ggml_backend_sched_get_n_backends(sched); ++i) {
+            ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+            if (ggml_backend_get_device(b) == dev) { return b; }
+        }
+        return nullptr;
+    };
+    // the layer as seen from card dev: every dense weight replaced by its copy there (llama_layer holds tensor pointers only)
+    static_assert(sizeof(llama_layer) % sizeof(ggml_tensor *) == 0, "llama_layer is expected to hold tensor pointers only");
+    auto layer_on = [&](const llama_layer & l, ggml_backend_dev_t dev) {
+        llama_layer m = l;
+        ggml_tensor ** p = reinterpret_cast<ggml_tensor **>(&m);
+        for (size_t i = 0; i < sizeof(llama_layer) / sizeof(ggml_tensor *); ++i) {
+            if (p[i]) { p[i] = llama_dsplit_mirror_fork(model, p[i], dev); }
+        }
+        return m;
+    };
+
+    if (!R.empty()) {
+        const size_t NR = R.size();
+        std::vector<ggml_tensor *> x(NR), res(NR), post(NR), comb(NR), cr(NR);
+        skip();
+        for (size_t r = 0; r < NR; ++r) {
+            const int64_t nr = R[r].t1 - R[r].t0;
+            ggml_tensor * e = ggml_cont(ctx0, ggml_view_2d(ctx0, inp, n_embd, nr, inp->nb[1], R[r].t0 * inp->nb[1]));
+            e = ggml_reshape_3d(ctx0, e, n_embd, 1, nr);
+            x[r] = ggml_repeat_4d(ctx0, e, n_embd, hc, nr, 1);
+            pin(R[r].b);
+        }
+        for (int il = 0; il < n_layer; ++il) {
+            const auto & layer = model.layers[il];
+            std::vector<llama_layer> L;
+            for (size_t r = 0; r < NR; ++r) { L.push_back(layer_on(layer, R[r].dev)); }
+
+            for (size_t r = 0; r < NR; ++r) {
+                skip();
+                res[r] = x[r];
+                ggml_tensor * c = build_hc_pre(x[r], L[r].hc_attn_fn, L[r].hc_attn_scale, L[r].hc_attn_base, &post[r], &comb[r], il);
+                cr[r] = build_norm(c, L[r].attn_norm, nullptr, LLM_NORM_RMS, il);
+                pin(R[r].b);
+            }
+
+            if (hparams.is_recr(il)) {
+                const auto * mctx_cur = inp_rs->mctx;
+                const auto   kv_head  = mctx_cur->get_head();
+                ggml_tensor * conv_states_all = mctx_cur->get_r_l(il);
+                ggml_tensor * ssm_states_all  = mctx_cur->get_s_l(il);
+                skip();
+                ggml_tensor * conv_state_all = build_rs(inp_rs, conv_states_all, hparams.n_embd_r(), n_seqs);
+                ggml_tensor * state = build_rs(inp_rs, ssm_states_all, hparams.n_embd_s(), n_seqs);
+                state = ggml_reshape_4d(ctx0, state, head_dim, head_dim, n_head_kda, n_seqs);
+                skip();   // the memory reads run where the memory is
+                const int64_t conv_state_size = (d_conv - 1) * d_inner;
+                const int64_t n_embd_r_total  = 3 * conv_state_size;
+                const size_t  es_s = ggml_element_size(conv_state_all);
+                const size_t  es_m = ggml_element_size(conv_states_all);
+                ggml_tensor * tail[3] = { nullptr, nullptr, nullptr };
+                for (size_t r = 0; r < NR; ++r) {
+                    const int64_t nr   = R[r].t1 - R[r].t0;
+                    const bool    last = r + 1 == NR;
+                    const llama_layer & Lr = L[r];
+                    ggml_tensor * qkv[3];
+                    for (int q = 0; q < 3; ++q) {
+                        ggml_tensor * W  = q == 0 ? Lr.wq : q == 1 ? Lr.wk : Lr.wv;
+                        ggml_tensor * Cw = q == 0 ? Lr.ssm_q_conv : q == 1 ? Lr.ssm_k_conv : Lr.ssm_v_conv;
+                        ggml_tensor * prev = tail[q] ? tail[q] : ggml_view_3d(ctx0, conv_state_all, d_conv - 1, d_inner, n_seqs,
+                                (d_conv - 1) * es_s, n_embd_r_total * es_s, q * conv_state_size * es_s);
+                        ggml_tensor * xp = ggml_mul_mat(ctx0, W, cr[r]);
+                        ggml_tensor * x3 = ggml_reshape_3d(ctx0, xp, d_inner, nr, n_seqs);
+                        ggml_tensor * cx = ggml_concat(ctx0, prev, ggml_transpose(ctx0, x3), 0);
+                        // the last d_conv-1 tokens: the next range's conv window, or (last range) the conv state written to the memory
+                        ggml_tensor * win = ggml_cont(ctx0, ggml_view_3d(ctx0, cx, d_conv - 1, d_inner, n_seqs, cx->nb[1], cx->nb[2], nr * cx->nb[0]));
+                        if (last) {
+                            ggml_build_forward_expand(gf, ggml_cpy(ctx0, win, ggml_view_3d(ctx0, conv_states_all, d_conv - 1, d_inner, n_seqs,
+                                    (d_conv - 1) * es_m, n_embd_r_total * es_m, (kv_head * n_embd_r_total + q * conv_state_size) * es_m)));
+                        } else {
+                            tail[q] = win;
+                        }
+                        ggml_tensor * X = ggml_ssm_conv(ctx0, cx, ggml_reshape_2d(ctx0, Cw, d_conv, d_inner));
+                        X = ggml_silu(ctx0, ggml_reshape_2d(ctx0, X, d_inner, nr));
+                        qkv[q] = ggml_reshape_4d(ctx0, X, head_dim, n_head_kda, nr, n_seqs);
+                    }
+                    ggml_tensor * f_a = ggml_mul_mat(ctx0, Lr.ssm_f_a, cr[r]);
+                    ggml_tensor * g1  = ggml_add(ctx0, ggml_mul_mat(ctx0, Lr.ssm_f_b, f_a), Lr.ssm_dt_b);
+                    ggml_tensor * A   = ggml_reshape_3d(ctx0, Lr.ssm_a, 1, n_head_kda, 1);
+                    if (hparams.kda_gate_lower_bound > -INFINITY) {
+                        g1 = ggml_mul(ctx0, ggml_reshape_3d(ctx0, g1, head_dim, n_head_kda, nr), A);
+                        g1 = ggml_scale(ctx0, ggml_sigmoid(ctx0, ggml_scale(ctx0, g1, -1.0f)), hparams.kda_gate_lower_bound);
+                    } else {
+                        g1 = ggml_mul(ctx0, ggml_reshape_3d(ctx0, ggml_softplus(ctx0, g1), head_dim, n_head_kda, nr), A);
+                    }
+                    g1 = ggml_reshape_4d(ctx0, g1, head_dim, n_head_kda, nr, n_seqs);
+                    ggml_tensor * beta = ggml_sigmoid(ctx0, ggml_reshape_4d(ctx0, ggml_mul_mat(ctx0, Lr.ssm_beta, cr[r]), 1, n_head_kda, nr, n_seqs));
+                    ggml_tensor * Qc = build_gdn_l2_norm(ctx0, qkv[0], 1e-6f);
+                    ggml_tensor * Kc = build_gdn_l2_norm(ctx0, qkv[1], 1e-6f);
+                    auto os = build_delta_net(Qc, Kc, qkv[2], g1, beta, state, il);
+                    ggml_tensor * output    = ggml_cont(ctx0, os.first);
+                    ggml_tensor * new_state = ggml_cont(ctx0, os.second);
+                    if (last) {
+                        ggml_build_forward_expand(gf, ggml_cpy(ctx0, new_state, ggml_view_2d(ctx0, ssm_states_all, hparams.n_embd_s(), n_seqs,
+                                ssm_states_all->nb[1], kv_head * hparams.n_embd_s() * ggml_element_size(ssm_states_all))));
+                    } else {
+                        state = new_state;   // the next range continues from here
+                    }
+                    ggml_tensor * g2 = ggml_mul_mat(ctx0, Lr.ssm_g_b, ggml_mul_mat(ctx0, Lr.ssm_g_a, cr[r]));
+                    g2 = ggml_reshape_3d(ctx0, g2, head_dim, n_head_kda, nr);
+                    ggml_tensor * normed = build_norm(ggml_reshape_3d(ctx0, output, head_dim, n_head_kda, nr), Lr.ssm_o_norm, nullptr, LLM_NORM_RMS, il);
+                    ggml_tensor * gated  = ggml_cont_2d(ctx0, ggml_mul(ctx0, normed, ggml_sigmoid(ctx0, g2)), d_inner, nr);
+                    cr[r] = ggml_mul_mat(ctx0, Lr.wo, gated);
+                    pin(R[r].b);
+                }
+            } else {
+                // sparse attention, first version: all tokens on the layer's own card
+                ggml_backend_t bl = backend_of(model.dev_layer(il));
+                skip();
+                ggml_tensor * all = cr[0];
+                for (size_t r = 1; r < NR; ++r) { all = ggml_concat(ctx0, all, cr[r], 1); }
+                pin(bl);
+                ggml_tensor * out = build_dsa_layer(all, layer, mctx_hyb, inp_attn, inp_kpool, &prev_sel, il);
+                skip();
+                for (size_t r = 0; r < NR; ++r) {
+                    cr[r] = ggml_cont(ctx0, ggml_view_2d(ctx0, out, n_embd, R[r].t1 - R[r].t0, out->nb[1], R[r].t0 * out->nb[1]));
+                }
+                pin(bl);
+            }
+
+            for (size_t r = 0; r < NR; ++r) {
+                skip();
+                x[r]   = build_hc_post(cr[r], res[r], post[r], comb[r], il);
+                res[r] = x[r];
+                ggml_tensor * c = build_hc_pre(x[r], L[r].hc_ffn_fn, L[r].hc_ffn_scale, L[r].hc_ffn_base, &post[r], &comb[r], il);
+                cr[r] = build_norm(c, L[r].ffn_norm, nullptr, LLM_NORM_RMS, il);
+                pin(R[r].b);
+            }
+
+            if ((uint32_t) il < hparams.n_layer_dense_lead) {
+                for (size_t r = 0; r < NR; ++r) {
+                    skip();
+                    cr[r] = build_ffn(cr[r], L[r].ffn_up, nullptr, nullptr, L[r].ffn_gate, nullptr, nullptr, L[r].ffn_down, nullptr, nullptr,
+                            nullptr, LLM_FFN_SILU, LLM_FFN_PAR, il);
+                    pin(R[r].b);
+                }
+            } else {
+                // router logits per range on its card; the selection runs on the last range's card for all tokens (288 x tokens floats cross, not the hidden state)
+                std::vector<ggml_tensor *> lg(NR);
+                for (size_t r = 0; r < NR; ++r) {
+                    skip();
+                    lg[r] = build_lora_mm(L[r].ffn_gate_inp, cr[r]);
+                    if ((llama_expert_gating_func_type) hparams.expert_gating_func == LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS) {
+                        ggml_prec_set_acc(lg[r], GGML_PREC_F32);
+                    }
+                    pin(R[r].b);
+                }
+                skip();
+                ggml_tensor * logits = lg[0];
+                ggml_tensor * call   = cr[0];
+                for (size_t r = 1; r < NR; ++r) {
+                    logits = ggml_concat(ctx0, logits, lg[r], 1);
+                    call   = ggml_concat(ctx0, call, cr[r], 1);   // the shape of the whole pass; computed only if a path of build_moe_ffn reads it
+                }
+                pin(R.back().b);
+                moe_ranges.clear();
+                for (size_t r = 0; r < NR; ++r) { moe_ranges.push_back({ R[r].b, R[r].t0, R[r].t1, cr[r], nullptr }); }
+                build_moe_ffn(call,
+                        llama_dsplit_mirror_fork(model, layer.ffn_gate_inp, R.back().dev),
+                        layer.ffn_up_exps,
+                        layer.ffn_gate_exps,
+                        layer.ffn_down_exps,
+                        llama_dsplit_mirror_fork(model, layer.ffn_exp_probs_b, R.back().dev),
+                        n_expert, n_expert_used,
+                        LLM_FFN_SILU, hparams.expert_weights_norm,
+                        hparams.expert_weights_scale,
+                        (llama_expert_gating_func_type) hparams.expert_gating_func,
+                        il, logits);
+                std::vector<ggml_tensor *> mo(NR);
+                for (size_t r = 0; r < NR; ++r) { mo[r] = moe_ranges[r].out; }
+                moe_ranges.clear();
+                skip();   // the router's selection follows its input (the logits, on the last range's card); the expert chains are pinned inside
+                for (size_t r = 0; r < NR; ++r) {
+                    skip();
+                    ggml_tensor * sh = build_ffn(cr[r], L[r].ffn_up_shexp, nullptr, nullptr, L[r].ffn_gate_shexp, nullptr, nullptr, L[r].ffn_down_shexp, nullptr, nullptr,
+                            nullptr, LLM_FFN_SILU, LLM_FFN_PAR, il);
+                    cr[r] = ggml_add(ctx0, mo[r], sh);
+                    pin(R[r].b);
+                }
+            }
+
+            for (size_t r = 0; r < NR; ++r) {
+                skip();
+                x[r] = build_cvec(build_hc_post(cr[r], res[r], post[r], comb[r], il), il);
+                pin(R[r].b);
+                ggml_build_forward_expand(gf, x[r]);
+            }
+        }
+        // the ranges back together for the output head, on the output card
+        skip();
+        inpL = x[0];
+        for (size_t r = 1; r < NR; ++r) { inpL = ggml_concat(ctx0, inpL, x[r], 2); }
+        pin(backend_of(model.dev_output()));
+    }
+
+    for (int il = 0; il < n_layer && R.empty(); ++il) {
         const auto & layer = model.layers[il];
 
         ggml_tensor * residual = inpL;

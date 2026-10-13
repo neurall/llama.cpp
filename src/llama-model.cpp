@@ -13,6 +13,7 @@
 #include "llama-model-loader.h"
 #include "llama-moecache-fork.h"
 #include "llama-gpu-probe-fork.h"
+#include "llama-dsplit-fork.h"
 
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
@@ -1296,6 +1297,7 @@ llama_model::llama_model(const llama_model_params & params) : params(params), pi
 }
 
 llama_model::~llama_model() {
+    llama_dsplit_mirror_free_fork(*this);
 #ifndef _WIN32
     for (int fd : exps_fds) {
         close(fd);
@@ -2141,6 +2143,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             pimpl->mappings.emplace_back(std::move(mapping));
         }
     }
+
+    llama_dsplit_mirror_build_fork(*this);   // fork: --moe dense-split=1 copies the dense weights to the other GPUs once (llama-dsplit-fork.cpp)
 
     return true;
 }

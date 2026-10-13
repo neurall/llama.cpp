@@ -2978,7 +2978,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 // hand; otherwise from the upload rates as before.
                 static const bool ctl_on = split_opt("split-auto", 1) != 0 && split_opt("split-chunks", 1) <= 1;
                 std::vector<int64_t> n_of;
-                if (ctl_on && slow_share < 0.0 && gate_inp && gate_inp->buffer) {
+                if (ctl_on && slow_share < 0.0 && gate_inp && gate_inp->buffer && moe_ranges.empty()) {
                     const ggml_backend_dev_t od = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(gate_inp->buffer));
                     std::vector<std::pair<ggml_backend_dev_t, double>> cards;
                     size_t owner_i = parts.size();
@@ -3023,6 +3023,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
         }
     }
+    // fork: dense split (moe_ranges, set by the model builder): the split path is taken in any case; without an expert split, the card of the last range (the
+    // fastest link, see llama_model_glm5_next::graph) holds all experts.
+    if (!moe_ranges.empty() && parts.empty() && sched) {
+        parts.push_back({ moe_ranges.back().b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(moe_ranges.back().b)), 0, n_expert });
+    }
     ggml_tensor * experts = nullptr;
     if (!parts.empty()) {
         // The OWNER of the layer is the card that holds its dense weights (attention, norms, router): the router weight says which. Nothing below assumes two cards or
@@ -3038,6 +3043,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         if (gate_inp && gate_inp->buffer) {
             const ggml_backend_dev_t owner_dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(gate_inp->buffer));
             for (const auto & pt : parts) { if (owner_dev && ggml_backend_get_device(pt.b) == owner_dev) { owner_b = pt.b; } }
+        }
+        if (!moe_ranges.empty()) {
+            // range mode: the router runs on the card of the last range (the caller puts the logits there); that card plays the owner for the id helpers
+            owner_b = nullptr;
+            for (const auto & pt : parts) { if (pt.b == moe_ranges.back().b) { owner_b = pt.b; } }
         }
         if (owner_b) {
             std::stable_partition(parts.begin(), parts.end(), [&](const split_part & pt) { return pt.b != owner_b; });   // helpers first, the owner's chain(s) last
@@ -3059,7 +3069,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         static const bool hop_f16 = split_opt("split-f16", 1) != 0;
         ggml_tensor * cur16 = nullptr;
         std::vector<ggml_tensor *> cur_part(parts.size(), nullptr);
-        if (owner_b && hop_f16 && cur->type == GGML_TYPE_F32) {
+        if (owner_b && hop_f16 && cur->type == GGML_TYPE_F32 && moe_ranges.empty()) {
             for (const auto & pt : parts) { if (pt.b != owner_b) { cur16 = cur16 ? cur16 : ggml_cast(ctx0, cur, GGML_TYPE_F16); } }
             if (cur16) {
                 ggml_backend_sched_set_tensor_backend(sched, cur16, owner_b);
@@ -3107,12 +3117,54 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
             return sum;
         };
+        // fork: dense split. Every card's expert chain reads the hidden state of ALL tokens: the ranges on its own card as they are, the other cards' ranges
+        // copied over as f16 (cast once on the range's card, back to f32 on the reading card), concatenated in token order on the reading card.
+        std::map<ggml_backend_t, ggml_tensor *> rin_cache;
+        std::vector<ggml_tensor *> r16(moe_ranges.size(), nullptr);
+        auto range_in = [&](ggml_backend_t b) -> ggml_tensor * {
+            auto it = rin_cache.find(b);
+            if (it != rin_cache.end()) { return it->second; }
+            ggml_tensor * acc = nullptr;
+            for (size_t r = 0; r < moe_ranges.size(); ++r) {
+                ggml_tensor * x = moe_ranges[r].cur;   // [n_embd, tokens of the range] on the range's card
+                if (moe_ranges[r].b != b) {
+                    if (hop_f16 && x->type == GGML_TYPE_F32) {
+                        if (!r16[r]) {
+                            r16[r] = ggml_cast(ctx0, x, GGML_TYPE_F16);
+                            ggml_backend_sched_set_tensor_backend(sched, r16[r], moe_ranges[r].b);
+                            ggml_build_forward_expand(gf, r16[r]);
+                        }
+                        x = ggml_cast(ctx0, r16[r], GGML_TYPE_F32);
+                    } else {
+                        x = ggml_cont(ctx0, x);
+                    }
+                    ggml_backend_sched_set_tensor_backend(sched, x, b);
+                }
+                if (acc) {
+                    acc = ggml_concat(ctx0, acc, x, 1);
+                    ggml_backend_sched_set_tensor_backend(sched, acc, b);
+                } else {
+                    acc = x;
+                }
+            }
+            acc = ggml_reshape_3d(ctx0, acc, n_embd, 1, n_tokens);   // the chain's input layout (cur is [n_embd, 1, n_tokens] here)
+            rin_cache[b] = acc;
+            return acc;
+        };
+        if (!moe_ranges.empty()) {
+            // Every card's input is put in the graph BEFORE any expert chain, so the copies of the other cards' ranges are issued right behind their dense part.
+            // Built next to its chain, the copy of the x4 card's range for the x16's chain was queued on the x4's stream behind the x4's whole chain (the read
+            // half of a copy runs on the source card's stream, in order): the two chains ran one after the other (nsys, GLM-5.3-Flash 5.5k, dense split: the x16
+            // waited 36 ms, then the x4 49 ms, per layer).
+            for (size_t i = 0; i < parts.size(); ++i) { ggml_build_forward_expand(gf, range_in(parts[i].b)); }
+        }
         std::vector<ggml_tensor *> partial(parts.size());
         for (size_t i = 0; i < parts.size(); ++i) {
             mm_id_backend = parts[i].b;
             mm_id_lo = (int32_t) parts[i].lo;
             mm_id_hi = (int32_t) parts[i].hi;
-            partial[i] = reduce(expert_chain(cur_part[i] ? cur_part[i] : cur, ids[i]), parts[i].b, w_part[i]);
+            ggml_tensor * chain_in = !moe_ranges.empty() ? range_in(parts[i].b) : (cur_part[i] ? cur_part[i] : cur);
+            partial[i] = reduce(expert_chain(chain_in, ids[i]), parts[i].b, w_part[i]);
             mm_id_backend = nullptr;
             mm_id_lo = mm_id_hi = 0;
             if (cur_part[i]) {   // rule 5: the partial sum leaves the helper as f16 and becomes f32 again on the owner
@@ -3124,6 +3176,42 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 continue;
             }
             ggml_build_forward_expand(gf, partial[i]); // in this order: the helpers' chains issued first (slowest link first), the owner's last
+        }
+        if (!moe_ranges.empty()) {
+            // fork: dense split. Each range gets the sum of all cards' partial results for its tokens, on the range's card: its own card's part first, the other
+            // cards' parts of it cross as f16 (cast on the card that computed them, back to f32 on the range's card).
+            for (auto & rg : moe_ranges) {
+                const int64_t nr = rg.t1 - rg.t0;
+                ggml_tensor * acc = nullptr;
+                for (int pass = 0; pass < 2; ++pass) {
+                    for (size_t i = 0; i < parts.size(); ++i) {
+                        if ((parts[i].b == rg.b) != (pass == 0)) { continue; }
+                        ggml_tensor * v = ggml_view_2d(ctx0, partial[i], n_embd, nr, partial[i]->nb[1], rg.t0 * partial[i]->nb[1]);
+                        if (parts[i].b != rg.b) {
+                            v = hop_f16 ? ggml_cast(ctx0, v, GGML_TYPE_F16) : ggml_cont(ctx0, v);
+                            ggml_backend_sched_set_tensor_backend(sched, v, parts[i].b);
+                            ggml_build_forward_expand(gf, v);
+                            if (hop_f16) {
+                                v = ggml_cast(ctx0, v, GGML_TYPE_F32);
+                                ggml_backend_sched_set_tensor_backend(sched, v, rg.b);
+                            }
+                        }
+                        if (acc) {
+                            acc = ggml_add(ctx0, acc, v);
+                            ggml_backend_sched_set_tensor_backend(sched, acc, rg.b);
+                        } else {
+                            acc = v;
+                        }
+                    }
+                }
+                if (acc && acc->op == GGML_OP_VIEW) {   // one card holds all experts and it is this range's card: a contiguous copy of the rows
+                    acc = ggml_cont(ctx0, acc);
+                    ggml_backend_sched_set_tensor_backend(sched, acc, rg.b);
+                }
+                cb(acc, "ffn_moe_out", il);
+                rg.out = acc;
+            }
+            return moe_ranges.back().out;
         }
         // rule 3: every partial sum goes straight to the owner and is added there, the owner's own part first. (Added as the chains were built, the sum of two
         // helpers was computed on the second helper: one card's result crossed to another helper and only then to the owner.)
