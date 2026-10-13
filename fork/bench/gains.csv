@@ -201,3 +201,19 @@ olmoe-pin-split,2026-10-12 23:35:36,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,
 olmoe-pin-split,2026-10-12 23:35:36,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev ? autotune=0,predict=0,admit-boot=0,prefill-split=0.5",5,2069.9,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",5,5540.8,0.374
 olmoe-pin-trace-one,2026-10-12 23:36:04,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",1,5511.8,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",1,5511.8,1
 pfstats-one,2026-10-12 23:41:05,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf12k,220+220,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",1,5540.3,"-dev CUDA1 autotune=0,predict=0,admit-boot=0",1,5540.3,1
+bench-2026-10-13-0915,2026-10-13 09:15:50,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev CUDA1,1,8917.3,-dev CUDA1,1,8917.3,1
+bench-2026-10-13-0915,2026-10-13 09:16:20,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev CUDA1,1,8917.3,-dev CUDA1,1,8917.3,1
+bench-2026-10-13-0915,2026-10-13 09:16:20,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,"-dev ? prefill-split=1,split-slow-share=0.25",1,6011.5,-dev CUDA1,1,8917.3,0.674
+bench-2026-10-13-0917,2026-10-13 09:18:25,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev CUDA1,1,12690.7,-dev CUDA1,1,12690.7,1
+bench-2026-10-13-0940,2026-10-13 09:41:21,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev CUDA1,1,12417.5,-dev CUDA1,1,12417.5,1
+bench-2026-10-13-0941,2026-10-13 09:41:57,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev CUDA1,1,4218,-dev CUDA1,1,4218,1
+bench-2026-10-13-0942,2026-10-13 09:42:46,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev CUDA1,1,8871.8,-dev CUDA1,1,8871.8,1
+bench-2026-10-13-0942,2026-10-13 09:43:21,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev CUDA1,1,8871.8,-dev CUDA1,1,8871.8,1
+bench-2026-10-13-0942,2026-10-13 09:43:21,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev ?,1,6107.9,-dev CUDA1,1,8871.8,0.688
+bench-2026-10-13-0944,2026-10-13 09:44:44,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev CUDA1 sim-dense-repeat=3,1,8890.9,-dev CUDA1 sim-dense-repeat=3,1,8890.9,1
+bench-2026-10-13-0944,2026-10-13 09:45:20,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev CUDA1 sim-dense-repeat=3,1,8890.9,-dev CUDA1 sim-dense-repeat=3,1,8890.9,1
+bench-2026-10-13-0944,2026-10-13 09:45:20,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev ? sim-dense-repeat=3,1,6170.5,-dev CUDA1 sim-dense-repeat=3,1,8890.9,0.694
+bench-2026-10-13-0949,2026-10-13 09:50:44,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev ? sim-dense-repeat=3,1,6108.9,-dev CUDA1 sim-dense-repeat=3,1,8872,0.689
+bench-2026-10-13-0949,2026-10-13 09:50:44,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,-dev CUDA1 sim-dense-repeat=3,1,8872,-dev CUDA1 sim-dense-repeat=3,1,8872,1
+bench-2026-10-13-1012,2026-10-13 10:13:02,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,"-dev CUDA1 alias=0,sim-dense-repeat=3,prefill-split=0",1,8991.5,"-dev CUDA1 alias=0,sim-dense-repeat=3,prefill-split=0",1,8991.5,1
+bench-2026-10-13-1031,2026-10-13 10:32:42,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,pf4k,220+220,"-dev CUDA1 alias=0,sim-moe-repeat=4,sim-dense-repeat=8,prefill-split=0",1,3352.9,"-dev CUDA1 alias=0,sim-moe-repeat=4,sim-dense-repeat=8,prefill-split=0",1,3352.9,1
