@@ -1612,6 +1612,32 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         if (same_order) { prefill_plan = llama_prefill_plan_fork(cards, llama_gpu_probe_conc_fork(), pm, &plan_log); }
         for (const auto & l : plan_log) { LLAMA_LOG_INFO("%s: %s\n", __func__, l.c_str()); }
         for (size_t i = 0; i < prefill_plan.size(); ++i) { LLAMA_LOG_INFO("%s: prefill plan: %s gets %.0f%% of the layers\n", __func__, ggml_backend_dev_name(devices[i].dev), 100.0 * prefill_plan[i]); }
+        // Advisory (nothing is switched yet): for a few prompt lengths, does each card keep its dense weights resident, or does only streaming them through a window
+        // of two layers leave room for a micro-batch and the K/V of the prompt? (llama_prefill_mem_plan_fork). Shares: the plan above, else equal. The scratch per token is
+        // the GLM figure (about 65 KB, measured) and the fixed cost of a pass is left 0, so "stream" shows only where residency is impossible: the lengths that streaming
+        // UNLOCKS, not a speed estimate. Real per-card numbers come with the engine side (dense ring in the arena).
+        if (cards.size() == n_devices()) {
+            for (size_t i = 0; i < n_devices(); ++i) {
+                size_t f = 0, t = 0; ggml_backend_dev_memory(devices[i].dev, &f, &t);
+                const double share = prefill_plan.size() == n_devices() ? prefill_plan[i] : 1.0 / n_devices();
+                llama_prefill_mem_fork mf;
+                mf.vram_bytes = std::max(0.0, (double) f - 1.5 * (1ull << 30));
+                mf.dense_bytes_layer = pm.dense_bytes_layer;
+                mf.dense_bytes_total = pm.dense_bytes_layer * pm.n_layer * share;
+                mf.ring_bytes = pm.expert_bytes_layer;   // 3 staging slots of one expert tensor each = one layer's experts
+                mf.kv_bytes_per_token = pm.kv_bytes_token_layer * pm.n_layer * share;
+                mf.scratch_bytes_per_token = 65e3;
+                mf.upload_gbs = cards[i] ? cards[i]->h2d_gbs : 0.0;
+                std::string row;
+                for (double n_tok : { 8192.0, 24576.0, 49152.0, 98304.0, 196608.0 }) {
+                    mf.n_tokens = n_tok; mf.ub_cap = n_tok;
+                    const llama_prefill_mem_choice c = llama_prefill_mem_plan_fork(mf);
+                    char b2[96]; snprintf(b2, sizeof b2, " %.0fk:%s", n_tok / 1024, !c.feasible ? "no" : c.stream_dense ? "stream" : "resident");
+                    row += b2;
+                }
+                LLAMA_LOG_INFO("%s: prefill memory plan %s (%.0f%% of the layers, %.1f GiB free):%s\n", __func__, ggml_backend_dev_name(devices[i].dev), 100.0 * share, f / 1073741824.0, row.c_str());
+            }
+        }
     }
     // --moe split=bw: the layers follow the upload bandwidth of the cards (pinned host-to-device rate from the per-GPU probe), not their free memory. A prompt pass
     // is bound by the transfer of the experts, compute is faster than the transfer, and a layer owned by a card on a slow link makes the offload card wait for it.
