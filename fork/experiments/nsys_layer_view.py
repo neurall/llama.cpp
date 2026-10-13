@@ -44,12 +44,13 @@ a, z = ends[L - 1], ends[L]; T = (z - a) / 1e6
 mine = [x for d in (0, 1) for x in up[d] if x[3] == L]; nxt = [x for d in (0, 1) for x in up[d] if x[3] == L + 1]
 x_lo = max(a - 700e6, min([a] + [x[0] for x in mine])); x_hi = z
 rel = lambda t: (t - a) / 1e6
-fig = plt.figure(figsize=(15, 10.5))
-gs = fig.add_gridspec(9, 1, height_ratios=[1, 1, 1, 1, 1, 1, 1.5, 1.5, 1.5], hspace=0.28)
-axs = [fig.add_subplot(gs[i, 0]) for i in range(9)]
+fig = plt.figure(figsize=(15, 14.6))
+gs = fig.add_gridspec(13, 1, height_ratios=[1, 1, 1, 1, 1, 1, 1, 1, 1.5, 1.5, 1.5, 0.8, 0.8], hspace=0.28)
+axs = [fig.add_subplot(gs[i, 0]) for i in range(13)]
 for ax in axs[1:]: ax.sharex(axs[0])
-names = ["1  UPLOAD x16: experts used by layer %d" % L, "2  UPLOAD x4: experts used by layer %d" % L, "3  COMPUTE x16: expert matmuls of layer %d" % L, "4  COMPUTE x4: expert matmuls of layer %d" % L,
-         "5  PREFETCH x16: experts for layer %d" % (L + 1), "6  PREFETCH x4: experts for layer %d" % (L + 1), "7  host memory read", "8  x16 link", "9  x4 link"]
+names = ["1  UPLOAD x16: experts used by layer %d" % L, "2  UPLOAD x4: experts used by layer %d" % L, "3  COMPUTE x16: expert matmuls", "4  COMPUTE x16: dense + other kernels",
+         "5  COMPUTE x4: expert matmuls", "6  COMPUTE x4: dense + other kernels", "7  PREFETCH x16: experts for layer %d" % (L + 1), "8  PREFETCH x4: experts for layer %d" % (L + 1),
+         "9  host memory read", "10  x16 link", "11  x4 link"]
 cols = ["#2f5f9e", "#b03a36", "#2a6f2a", "#2a6f2a", "#8fb3dd", "#e3a09c"]
 def draw(ax, ivs, color, label_ms=False):
     for st, en in ivs:
@@ -58,11 +59,16 @@ def draw(ax, ivs, color, label_ms=False):
         if label_ms and en - st > 14e6: ax.text((rel(st) + rel(en)) / 2, 0, "%.0f ms" % ((en - st) / 1e6), ha="center", va="center", fontsize=8, color="white")
 draw(axs[0], [(x[0], x[1]) for x in up[1] if x[3] == L], cols[0], True)
 draw(axs[1], [(x[0], x[1]) for x in up[0] if x[3] == L], cols[1], True)
-draw(axs[2], [(k[0], k[1]) for k in heavy[1] if a - 1 <= k[0] and k[1] <= z + 1], cols[2])
-draw(axs[3], [(k[0], k[1]) for k in heavy[0] if a - 1 <= k[0] and k[1] <= z + 1], cols[3])
-draw(axs[4], [(x[0], x[1]) for x in up[1] if x[3] == L + 1], cols[4], False)
-draw(axs[5], [(x[0], x[1]) for x in up[0] if x[3] == L + 1], cols[5], False)
-for i in range(6):
+isexp = lambda k, dv: k in heavy_set[dv]
+heavy_set = {1: set(map(id, heavy[1])), 0: set(map(id, heavy[0]))}
+win = lambda k: a - 1 <= k[0] and k[1] <= z + 1
+draw(axs[2], [(k[0], k[1]) for k in heavy[1] if win(k)], "#2a6f2a")
+draw(axs[3], [(k[0], k[1]) for k in b if k[2] == 1 and id(k) not in heavy_set[1] and win(k)], "#7a7a7a")
+draw(axs[4], [(k[0], k[1]) for k in heavy[0] if win(k)], "#2a6f2a")
+draw(axs[5], [(k[0], k[1]) for k in b if k[2] == 0 and id(k) not in heavy_set[0] and win(k)], "#7a7a7a")
+draw(axs[6], [(x[0], x[1]) for x in up[1] if x[3] == L + 1], cols[4], False)
+draw(axs[7], [(x[0], x[1]) for x in up[0] if x[3] == L + 1], cols[5], False)
+for i in range(8):
     axs[i].set_yticks([]); axs[i].set_ylim(-0.5, 0.5); axs[i].set_ylabel(names[i], rotation=0, ha="right", va="center", fontsize=9)
     axs[i].axvspan(rel(x_lo), 0, color="#f2f2f2", zorder=0)           # before the layer starts
 # bandwidth lanes: bytes of every host-to-device copy per 2 ms bin
@@ -78,7 +84,17 @@ def rate(dev):
             if o > 0: by[i] += n * o / dur
     return by / (binw / 1e9) / 1e9                                      # GB/s per bin
 xs = (edges[:-1] - a) / 1e6
-for ax, dev, peak, lab, col in ((axs[6], None, RAM, names[6], "#555555"), (axs[7], 1, P16, names[7], "#2f5f9e"), (axs[8], 0, P4, names[8], "#b03a36")):
+import nsys_states as NS
+ns_d = NS.load(path, thr); ns_out, ns_T = NS.classify(ns_d, a, z)
+SCOL = ["#2a6f2a", "#4f81bd", "#e69f00", "#d9a0a0", "#c0504d", "#7a3f98", "#888888", "#bbbbbb", "#000000"]
+for ax, dv, lab in ((axs[11], 1, "12  STATE x16 (every ms)"), (axs[12], 0, "13  STATE x4 (every ms)")):
+    st_arr = ns_out[dv]
+    for i in range(len(st_arr)):
+        ax.barh(0, 0.25, left=i * 0.25, height=0.9, color=SCOL[st_arr[i]], linewidth=0)
+    ax.set_yticks([]); ax.set_ylim(-0.5, 0.5); ax.set_ylabel(lab, rotation=0, ha="right", va="center", fontsize=9)
+from matplotlib.patches import Patch
+axs[12].legend(handles=[Patch(color=SCOL[i], label="%s (x16 %.0f / x4 %.0f ms)" % (NS.STATES[i], (ns_out[1] == i).sum() * 0.25, (ns_out[0] == i).sum() * 0.25)) for i in range(9)], loc="upper center", bbox_to_anchor=(0.5, -0.55), ncol=3, fontsize=8, frameon=False)
+for ax, dev, peak, lab, col in ((axs[8], None, RAM, names[8], "#555555"), (axs[9], 1, P16, names[9], "#2f5f9e"), (axs[10], 0, P4, names[10], "#b03a36")):
     r = rate(dev); ax.fill_between(xs, 0, np.minimum(100 * r / peak, 160), step="post", color=col, alpha=0.85)
     ax.set_ylim(0, 105); ax.axhline(100, color="k", lw=0.6, ls=":")
     ax.set_ylabel(lab + "\n%% of %.1f GB/s" % peak, rotation=0, ha="right", va="center", fontsize=9)
@@ -87,7 +103,7 @@ for ax in axs:
     ax.axvline(0, color="k", lw=2.2); ax.axvline(T, color="k", lw=2.2); ax.grid(axis="x", alpha=0.25)
 axs[0].text(0, 0.62, " LAYER %d START (0 ms)" % L, fontsize=10, weight="bold", ha="left", va="bottom", transform=axs[0].get_xaxis_transform())
 axs[0].text(T, 0.62, "LAYER %d END (%.0f ms) " % (L, T), fontsize=10, weight="bold", ha="right", va="bottom", transform=axs[0].get_xaxis_transform())
-axs[0].set_xlim(rel(x_lo) - 2, T + 3); axs[8].set_xlabel("ms from the start of layer %d  (grey area = before the layer starts: prefetch during the layer before)" % L)
+axs[0].set_xlim(rel(x_lo) - 2, T + 3); axs[12].set_xlabel("ms from the start of layer %d  (grey area = before the layer starts: prefetch during the layer before)" % L)
 for ax in axs[:-1]: plt.setp(ax.get_xticklabels(), visible=False)
-fig.suptitle("%s: GLM 8k prompt, one pass, layer %d (%.0f ms)" % (path.split("/")[-1].replace(".sqlite", ""), L, T), fontsize=12, y=0.93)
+fig.suptitle("%s: GLM 8k prompt, one pass, layer %d (%.0f ms)" % (path.split("/")[-1].replace(".sqlite", ""), L, T), fontsize=12, y=0.92)
 plt.savefig(out, dpi=100, bbox_inches="tight"); print("wrote", out, "layer %d: %.0f ms" % (L, T))
