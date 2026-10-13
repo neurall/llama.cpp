@@ -2389,7 +2389,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             // let the expert cache see (count) the experts of this batch and keep some of them, device to device from the staged copy
             // (queued after the wait, on the compute stream); every expert is staged, the callbacks decide which ones are worth a block
             ggml_backend_dev_t pdev = ggml_backend_get_device(split_backend);
-            const int64_t n_exp = pf->hi;   // only the staged range: the rest of the slot holds nothing of this batch
+            // The expert cache's preheat from the prompt (usage counts and the adoption copies of the staged experts) is optional and costs host time per expert and tensor and a
+            // device-to-device copy of every adopted expert (GLM 8k: 24 GB of D2D copies in a pass). It is OFF here for now; GGML_PF_COUNT=1 turns it back on (measured: +11.4 decode
+            // hit points on GLM 12k with all slots adopting).
+            static const bool pf_count = getenv("GGML_PF_COUNT") && atoi(getenv("GGML_PF_COUNT")) == 1;
+            const int64_t n_exp = pf_count ? pf->hi : pf->lo;   // the staged range; nothing when the preheat is off
             const size_t  exp_sz = pf->input->nb[2];
             for (int64_t id = pf->lo; id < n_exp; ++id) {
                 const void * dd = NULL; ggml_backend_buffer_t db = NULL;
