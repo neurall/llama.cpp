@@ -1921,7 +1921,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
         } else {
             SYNC_TIMED_NAMED(1, ggml_backend_synchronize(split_backend), input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
         }
-        ggml_backend_tensor_copy(input, input_cpy);
+        NVTX_PUSH("TENSOR_COPY user input %s", input->name); ggml_backend_tensor_copy(input, input_cpy); NVTX_POP();
         return;
     }
 
@@ -1959,7 +1959,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
         } else {
             SYNC_TIMED_NAMED(2, ggml_backend_synchronize(split_backend), input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
         }
-        const int64_t _tc = ggml_time_us(); ggml_backend_tensor_copy(input, input_cpy); ggml_backend_sched_sync_stat_add(2, ggml_time_us() - _tc);
+        NVTX_PUSH("TENSOR_COPY sync-copy %s %s->%s", input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend)); const int64_t _tc = ggml_time_us(); ggml_backend_tensor_copy(input, input_cpy); NVTX_POP(); ggml_backend_sched_sync_stat_add(2, ggml_time_us() - _tc);
     }
 }
 
