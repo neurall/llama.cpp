@@ -41,8 +41,8 @@
 // the helper idles when it arrives before. No formula gets this right for every model, card and link: the balance depends on each card's compute, the bytes
 // of the layer's expert tensors (they differ between layers: mixed quantisations), the hop of the hidden state over the helper's link, the power caps.
 // So it is measured and tuned, per layer, as the user specified (2026-10-13):
-//   start   a helper holds  coef x (its upload rate / the owner's upload rate)  of the experts. coef 1.4 is a rough temporary seed (--moe split-start-coef),
-//           e.g. 6.5 / 26 GB/s x 1.4 = 35%; the helpers together start with no more than an equal split leaves the owner.
+//   start   a card that is not on the fastest link holds  coef x (its upload rate / the fastest upload rate)  of the experts, whether it owns the layer or
+//           helps; the cards on the fastest link share the rest. coef 1.4 is a rough temporary seed (--moe split-start-coef), e.g. 6.5 / 26 GB/s x 1.4 = 35%.
 //   tune    after every prompt pass the scheduler reports, per layer and card, when the card's expert chain started and ended and when a helper's partial
 //           sum had left it (time stamps in stream order, ggml_sched_chain_stat). delta = t_out(helper) - t_end(owner): positive, the owner waited, the
 //           helper gets fewer experts; negative, the helper waited and gets more. The step is 5% of the experts the first time (--moe split-step) and half
@@ -155,6 +155,17 @@ std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vecto
     static const long   retry = (long) split_opt("split-retry", 32);
     const int bk = split_bucket(n_tokens);
     std::vector<double> v(cards.size(), 0.0);
+    // Start share of a card: a card that is not on the fastest link holds coef x (its upload rate / the fastest rate), whether it owns the layer or helps
+    // (GLM-5.3-Flash on x16 + x4: the x4 card owns five layers, and seeded as "the helper gets coef x its rate over the owner's" the x16 helper was cut to
+    // an equal split there, the x4 held 50% and uploaded 1.2 GB per layer over its link); the cards on the fastest link share the rest equally.
+    double u_max = 0.0, slow_sum = 0.0;
+    int    n_fast = 0;
+    for (const auto & cd : cards) { u_max = std::max(u_max, cd.second); }
+    for (const auto & cd : cards) { if (cd.second < 0.999 * u_max) { slow_sum += std::min(1.0, coef * cd.second / u_max); } else { ++n_fast; } }
+    const double slow_scale = slow_sum > 0.9 ? 0.9 / slow_sum : 1.0;
+    const auto start_share = [&](size_t i) {
+        return cards[i].second < 0.999 * u_max ? slow_scale * std::min(1.0, coef * cards[i].second / u_max) : (1.0 - slow_scale * slow_sum) / std::max(1, n_fast);
+    };
     const auto seed = [&](size_t i) {
         for (int d = 1; d <= 4; ++d) {
             for (int sgn = -1; sgn <= 1; sgn += 2) {
@@ -162,7 +173,7 @@ std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vecto
                 if (jt != c.held.end() && jt->second > 0.0) { return jt->second; }
             }
         }
-        return coef * cards[i].second / std::max(1e-9, cards[owner].second) * (double) n_expert;
+        return start_share(i) * (double) n_expert;
     };
     double sum_h = 0.0;
     bool   fresh = false;
@@ -180,13 +191,12 @@ std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vecto
         v[i] = it->second;
         sum_h += v[i];
     }
-    // a start value never gives the helpers together more than an equal split leaves the owner; tuned values are only bound by "the owner keeps one expert"
-    const double max_h = fresh ? (double) n_expert * (double) (cards.size() - 1) / (double) cards.size() : (double) n_expert - 1.0;
+    // the owner always keeps one expert
+    (void) fresh;
+    const double max_h = (double) n_expert - 1.0;
     if (sum_h > max_h && sum_h > 0.0) {
         for (size_t i = 0; i < cards.size(); ++i) {
-            if (i == owner) { continue; }
-            v[i] *= max_h / sum_h;
-            if (fresh) { c.held[llama_split_ctl::key_t(bk, il, cards[i].first)] = v[i]; }
+            if (i != owner) { v[i] *= max_h / sum_h; }
         }
     }
     std::vector<int64_t> out(cards.size(), 0);
@@ -2998,6 +3008,21 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // mul behind the helper's `down` matmul, the 110 KB copy was issued behind that matmul and stood on the helper's link behind the helper's own expert upload
         // of the next layer (nsys, same run: 3.5 ms, which the owner then waited for the partial sum). Early, it travels with the id helpers while the link is free.
         std::vector<ggml_tensor *> w_part(parts.size(), nullptr);
+        // Rule 5: what crosses the cards crosses as f16. The hidden state goes to a helper and its partial sum comes back, both [n_embd, n_tokens] f32, over
+        // the helper's link in both directions: GLM-5.3-Flash at 8k tokens 131 MB each way, 20 ms + 21 ms of a x4 link per layer, which is what bounds the
+        // share the helper can finish in time (and 5 ms + 5 ms of the owner's stream). Half the bytes as f16: the owner casts once for all helpers, a helper
+        // casts back in its mask split (so the hidden state arrives with the id helpers, at the very start of its chain), and returns its sum as f16.
+        // The expert matmuls quantise their input to 8 bits anyway; the partial sum loses bits 12 and below. --moe split-f16=0 keeps f32.
+        static const bool hop_f16 = split_opt("split-f16", 1) != 0;
+        ggml_tensor * cur16 = nullptr;
+        std::vector<ggml_tensor *> cur_part(parts.size(), nullptr);
+        if (owner_b && hop_f16 && cur->type == GGML_TYPE_F32) {
+            for (const auto & pt : parts) { if (pt.b != owner_b) { cur16 = cur16 ? cur16 : ggml_cast(ctx0, cur, GGML_TYPE_F16); } }
+            if (cur16) {
+                ggml_backend_sched_set_tensor_backend(sched, cur16, owner_b);
+                ggml_build_forward_expand(gf, cur16);
+            }
+        }
         std::vector<size_t> mask_order;      // rule 2: the owner's masks first
         for (size_t i = 0; i < parts.size(); ++i) { if (parts[i].b == owner_b) { mask_order.push_back(i); } }
         for (size_t i = 0; i < parts.size(); ++i) { if (parts[i].b != owner_b) { mask_order.push_back(i); } }
@@ -3016,6 +3041,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             if (owner_b && parts[i].b != owner_b && !weight_before_ffn) {   // rule 4
                 w_part[i] = pin(ggml_cont(ctx0, weights));
                 ggml_build_forward_expand(gf, w_part[i]);
+            }
+            if (cur16 && parts[i].b != owner_b) {                           // rule 5
+                cur_part[i] = pin(ggml_cast(ctx0, cur16, GGML_TYPE_F32));
+                ggml_build_forward_expand(gf, cur_part[i]);
             }
         }
         // each GPU weights and sums its experts ([n_embd, n_tokens] crosses between the GPUs, not [n_embd, n_expert_used, n_tokens])
@@ -3040,9 +3069,17 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             mm_id_backend = parts[i].b;
             mm_id_lo = (int32_t) parts[i].lo;
             mm_id_hi = (int32_t) parts[i].hi;
-            partial[i] = reduce(expert_chain(cur, ids[i]), parts[i].b, w_part[i]);
+            partial[i] = reduce(expert_chain(cur_part[i] ? cur_part[i] : cur, ids[i]), parts[i].b, w_part[i]);
             mm_id_backend = nullptr;
             mm_id_lo = mm_id_hi = 0;
+            if (cur_part[i]) {   // rule 5: the partial sum leaves the helper as f16 and becomes f32 again on the owner
+                ggml_tensor * p16 = ggml_cast(ctx0, partial[i], GGML_TYPE_F16);
+                ggml_backend_sched_set_tensor_backend(sched, p16, parts[i].b);
+                ggml_build_forward_expand(gf, p16);
+                partial[i] = ggml_cast(ctx0, p16, GGML_TYPE_F32);
+                ggml_backend_sched_set_tensor_backend(sched, partial[i], owner_b);
+                continue;
+            }
             ggml_build_forward_expand(gf, partial[i]); // in this order: the helpers' chains issued first (slowest link first), the owner's last
         }
         // rule 3: every partial sum goes straight to the owner and is added there, the owner's own part first. (Added as the chains were built, the sum of two

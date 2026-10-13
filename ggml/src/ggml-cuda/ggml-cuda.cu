@@ -3155,12 +3155,13 @@ static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const 
 struct ggml_cuda_xstage_block {
     void *      host     = nullptr;
     size_t      cap      = 0;
+    bool        mapped   = false;     // anonymous memory registered with the driver (released with cudaHostUnregister + munmap), else cudaHostAlloc
     cudaEvent_t d2h_done = nullptr;   // on the source stream, after the read into the block
     cudaEvent_t h2d_done = nullptr;   // on the destination stream, after the write from the block
     bool        used     = false;
 };
 static const int    GGML_CUDA_XSTAGE_N_SMALL = 16;
-static const int    GGML_CUDA_XSTAGE_N_BIG   = 4;
+static const int    GGML_CUDA_XSTAGE_N_BIG   = 2;   // one large tensor crosses a pair of cards per layer and direction: two blocks keep the awaited write a layer old
 static const size_t GGML_CUDA_XSTAGE_SMALL   = 1u << 20;
 struct ggml_cuda_xstage_ring {
     ggml_cuda_xstage_block small[GGML_CUDA_XSTAGE_N_SMALL];
@@ -3192,13 +3193,34 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
             // the block grows (a longer batch than any before): the write still reading the old block must finish first. Rare, so a host wait is fine here.
             ggml_cuda_set_device(ctx_dst->device);
             if (e.used) { CUDA_CHECK(cudaEventSynchronize(e.h2d_done)); }
-            CUDA_CHECK(cudaFreeHost(e.host));
-            e.host = nullptr; e.cap = 0; e.used = false;
+#ifdef __linux__
+            if (e.mapped) { CUDA_CHECK(cudaHostUnregister(e.host)); munmap(e.host, e.cap); } else
+#endif
+            { CUDA_CHECK(cudaFreeHost(e.host)); }
+            e.host = nullptr; e.cap = 0; e.used = false; e.mapped = false;
         }
         const size_t cap = small ? GGML_CUDA_XSTAGE_SMALL : GGML_PAD(n, (size_t) 2 << 20);
         ggml_cuda_set_device(ctx_src->device);
+#ifdef __linux__
+        // A large block is anonymous memory on transparent huge pages, registered with the driver: cudaHostAlloc pins about 1.3 GiB/s, so the 524 MB residual
+        // stream of GLM-5.3-Flash cost 0.4 s of a 14 s prompt pass the first time it crossed the cards (nsys: one layer 430 ms longer); registered huge pages
+        // pin several times faster (see ggml_cuda_host_malloc_registered). cudaHostAlloc stays the fallback and the path for small blocks.
+        if (!small) {
+            void * p = mmap(nullptr, cap, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (p != MAP_FAILED) {
+                (void) madvise(p, cap, MADV_HUGEPAGE);
+                memset(p, 0, cap);
+                if (cudaHostRegister(p, cap, cudaHostRegisterPortable) == cudaSuccess) {
+                    e.host = p; e.mapped = true;
+                } else {
+                    (void) cudaGetLastError();
+                    munmap(p, cap);
+                }
+            }
+        }
+#endif
         // portable: pinned for every CUDA context, the two cards read and write the same block
-        if (cudaHostAlloc(&e.host, cap, cudaHostAllocPortable) != cudaSuccess) {
+        if (e.host == nullptr && cudaHostAlloc(&e.host, cap, cudaHostAllocPortable) != cudaSuccess) {
             (void) cudaGetLastError();
             e.host = nullptr;
             return false;
