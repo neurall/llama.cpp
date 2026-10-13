@@ -1039,6 +1039,7 @@ struct ggml_backend_sched {
     int next_copy;
     ggml_backend_event_t events[GGML_SCHED_MAX_BACKENDS][GGML_SCHED_MAX_COPIES];
     ggml_backend_event_t tail_ev[GGML_SCHED_MAX_BACKENDS];   // fork: per backend, marks the tail of its stream for a device-side wait before a cross-card input copy (see ggml_backend_sched_copy_input)
+    uint32_t xcopy_touched;                                  // fork: bit b = a copy between two GPUs was just queued with backend b as its source or destination (read and cleared by the split loop)
     struct ggml_tensor ** graph_inputs;
     int n_graph_inputs;
     int graph_inputs_capacity;
@@ -2040,6 +2041,13 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
 
     // try async copy, but if not possible, we can still use a sync copy without synchronizing the dst backend, since we handle the synchronization here with multiple copies and events
     // TODO: add public function to facilitate this, since applications do not have direct access to the backend interface
+    // fork: a copy between two GPUs is a hand-off on both cards' links; the split loop releases the cards' staging slots behind it (see "release of a staging slot")
+    if (input_backend != split_backend && ggml_backend_dev_type(ggml_backend_get_device(input_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU &&
+            ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+        for (int b = 0; b < sched->n_backends; b++) {
+            if (sched->backends[b] == input_backend || sched->backends[b] == split_backend) { sched->xcopy_touched |= 1u << b; }
+        }
+    }
     if (!split_backend->iface.cpy_tensor_async || !split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
         SYNC_TIMED_NAMED(2, ggml_backend_synchronize(input_backend), input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
@@ -2288,6 +2296,42 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     static const bool pf_trace = getenv("GGML_PF_TRACE") && atoi(getenv("GGML_PF_TRACE")) == 1;
     const int64_t pft_t0 = ggml_time_us();
     int pft_cur = -1;
+    // Release of a staging slot. A slot may be overwritten once the matmul that read it has finished: an event recorded on the card's compute stream behind that
+    // split, which the next upload into the slot waits for. Recorded right behind the split, the upload started the moment the matmul ended, and at the end of a
+    // card's expert chain that is exactly when the layer's hand-off needs the same link: the copies of one card run one after the other, so the helper's partial sum
+    // stood behind the owner's own upload (nsys, OLMoE 3.4k tokens, x16 owner + x4 helper: 2.0 ms per layer with no kernel on the owner, and the three uploads of a
+    // layer were three pieces spread over 20 ms). Rule, for any number of cards: if a copy between GPUs that touches this card (as source or destination) comes
+    // later in the graph, the slot is released behind THAT copy, together with the card's other slots waiting for it. The uploads of a layer's three tensors then
+    // run as one block right after the hand-off (for the owner: under its dense part; for a helper: while it has nothing to compute), and never in front of it.
+    // A card without a later hand-off (one GPU, the last layer) releases behind the split as before. GGML_PF_RELEASE=split restores that everywhere.
+    static const bool pf_release_split = getenv("GGML_PF_RELEASE") && strcmp(getenv("GGML_PF_RELEASE"), "split") == 0;
+    struct pend_free { int ring; int slot; };
+    std::vector<std::vector<pend_free>> pf_pend(sched->n_backends);
+    std::vector<std::vector<int>> xnext;   // xnext[b][j]: the first split >= j whose input copies cross between GPUs and touch backend b; n_splits when none
+    int  pft_issued  = -1;                 // the last split whose input copies have been queued
+    bool pf_deferred = false;              // set by fire_prefetch: the upload waits for a hand-off that releases its slot
+    sched->xcopy_touched = 0;
+    if (pf_on && !pf_release_split) {
+        const auto is_gpu = [&](int b) { return ggml_backend_dev_type(ggml_backend_get_device(sched->backends[b])) == GGML_BACKEND_DEVICE_TYPE_GPU; };
+        std::vector<uint32_t> xm(sched->n_splits, 0);
+        for (int j = 0; j < sched->n_splits; j++) {
+            const struct ggml_backend_sched_split * sj = &splits[j];
+            for (int i = 0; i < sj->n_inputs; i++) {
+                struct ggml_tensor * in = sj->inputs[i];
+                if ((in->flags & GGML_TENSOR_FLAG_INPUT) || ggml_backend_sched_is_host_weight(in)) { continue; }
+                const int sb = tensor_backend_id(in);
+                if (sb >= 0 && sb != sj->backend_id && is_gpu(sb) && is_gpu(sj->backend_id)) { xm[j] |= (1u << sb) | (1u << sj->backend_id); }
+            }
+        }
+        xnext.assign(sched->n_backends, std::vector<int>(sched->n_splits + 2, sched->n_splits));
+        for (int b = 0; b < sched->n_backends; b++) {
+            for (int j = sched->n_splits - 1; j >= 0; j--) { xnext[b][j] = (xm[j] >> b & 1) ? j : xnext[b][j + 1]; }
+        }
+    }
+    const auto release_slots = [&](int b) {
+        for (const pend_free & q : pf_pend[b]) { ggml_backend_event_record(sched->prefetch_ring[q.ring].free[q.slot], sched->backends[b]); }
+        pf_pend[b].clear();
+    };
     const auto fire_prefetch = [&](int target_id) {
         char nvtx_pf[120] = "";
         if (g_nvtx_on) { snprintf(nvtx_pf, sizeof nvtx_pf, "PREFETCH issue split %d %s", target_id, target_id < sched->n_splits ? ggml_backend_name(sched->backends[splits[target_id].backend_id]) : "-"); }
@@ -2328,6 +2372,16 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         if (!ggml_backend_sched_prefetch_prepare(sched, R, s_backend, need, R->n_slots, pf_slot_buf[ri], pf_slot_data[ri])) {
             pfs_prep++;
             return;
+        }
+        {
+            // the slot this upload would take is still waiting for its release behind a hand-off of this card: the upload is issued then (fire_ahead comes back
+            // after every launch). No hand-off before the target split needs the slot: released now, behind everything queued on the card so far.
+            bool waiting = false;
+            for (const pend_free & q : pf_pend[s->backend_id]) { if (q.ring == ri && q.slot == R->cur) { waiting = true; } }
+            if (waiting) {
+                if (!xnext.empty() && xnext[s->backend_id][pft_issued + 1] < target_id) { pf_deferred = true; return; }
+                release_slots(s->backend_id);
+            }
         }
         pfs_fired++;
         if (pf_trace && sched->n_splits > 300) {
@@ -2372,11 +2426,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     static const int PF_WINDOW = 64;
     const auto fire_ahead = [&](int k) {
         std::vector<int> pend(sched->n_backends, 0);
+        std::vector<char> held(sched->n_backends, 0);   // this card's next upload waits for a slot release: nothing later of the card may overtake it (the ring is first in, first out)
         for (int j = k + 1; j < sched->n_splits && j <= k + PF_WINDOW; j++) {
             const int b = splits[j].backend_id;
             if (lookahead[j].slot != -1) { pend[b]++; continue; }
-            if (pend[b] >= PF_PER_CARD) { continue; }
+            if (pend[b] >= PF_PER_CARD || held[b]) { continue; }
+            pf_deferred = false;
             fire_prefetch(j);
+            if (pf_deferred) { held[b] = 1; }
             if (lookahead[j].slot != -1) { pend[b]++; }
         }
     };
@@ -2509,6 +2566,19 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 }
             }
         }
+        if (pf_on && !pf_release_split) {
+            pft_issued = std::max(pft_issued, split_id + ((split_id + 1 < sched->n_splits && ahead_done[split_id + 1]) ? 1 : 0));
+            const uint32_t touched = sched->xcopy_touched;
+            sched->xcopy_touched = 0;
+            for (int b = 0; b < sched->n_backends; b++) {
+                // Released behind the LAST copy of a run INTO this card: the adds of several helpers' partial sums follow each other on the owner, each its own
+                // split with one incoming copy. A hand-off of the next layer is no such run (this card's dense part or idle time lies in between): the release
+                // must not wait for it, or the uploads would start with the next expert phase instead of under the dense part.
+                const int nj = pft_issued + 1;
+                const bool run_on = nj < sched->n_splits && splits[nj].backend_id == b && xnext[b][nj] == nj;
+                if ((touched >> b & 1) && !pf_pend[b].empty() && !run_on) { release_slots(b); }
+            }
+        }
         if (tracing) { SYNC_TIMED(7, ggml_backend_synchronize(split_backend)); }   // the copies have arrived
         const int64_t p_t1 = prof ? ggml_time_us() : 0;
         const int64_t tr_tc = tracing ? ggml_time_us() : 0;
@@ -2545,7 +2615,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             NVTX_PUSH("LAUNCH graph_compute_async"); enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph); NVTX_POP();
             if (pf) {
                 // the kernels have captured the slot address at launch: the staging copy may point back, the slot is free once this split is done
-                ggml_backend_event_record(sched->prefetch_ring[pf->ring].free[pf->slot], split_backend);
+                if (pf_release_split || xnext.empty() || xnext[split_backend_id][split_id + 1] >= sched->n_splits) {
+                    ggml_backend_event_record(sched->prefetch_ring[pf->ring].free[pf->slot], split_backend);
+                } else {
+                    pf_pend[split_backend_id].push_back({ pf->ring, pf->slot });   // behind this card's next hand-off, see "release of a staging slot"
+                }
                 sched->prefetch_ring[pf->ring].used[pf->slot] = true;
                 pf->input_cpy->buffer = pf->saved_buffer;
                 pf->input_cpy->data   = pf->saved_data;
@@ -2556,6 +2630,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 NVTX_POP();
             }
             if (ec != GGML_STATUS_SUCCESS) {
+                for (int b = 0; b < sched->n_backends; b++) { release_slots(b); }
                 return ec;
             }
         } else {
@@ -2638,6 +2713,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             pb_cpu = pb_gpu = pc_tiny = n_tiny = 0;
         }
     }
+
+    for (int b = 0; b < sched->n_backends; b++) { release_slots(b); }   // slots still waiting for a release (the next graph waits for these events)
 
     if (pf_stats && sched->n_splits >= 30) {
         const struct ggml_cgraph & lg = splits[sched->n_splits - 1].graph;
