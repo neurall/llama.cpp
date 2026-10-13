@@ -2214,10 +2214,24 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
         ggml_backend_event_record(R->ready[slot], R->backend);
     };
-    if (pf_on) {
-        for (int i = 0; i <= LOOKAHEAD && i < sched->n_splits; i++) {
-            fire_prefetch(i);
+    // The lookahead is counted PER CARD, not in splits: after split k is launched, every card keeps its next PF_PER_CARD staged expert splits in flight (fired, not yet
+    // launched). Counted in splits (LOOKAHEAD) it fired only split k+2, and in the multi-GPU prompt split, where the splits of a layer alternate between the cards, the
+    // other card's upload for the coming layer was issued only when the scheduler reached that card's split: nsys, GLM 8k, split: the x4 card's upload started 60-110 ms after
+    // the x16's and its compute waited for it (copy, then compute, no overlap), the cards' kernels ran at the same time for 0.47 s of 17 s. With one card the two rules
+    // are the same (k+1 was fired earlier, k+2 now). PF_WINDOW bounds the scan for splits that are no prefetch target.
+    static const int PF_PER_CARD = LOOKAHEAD + 1, PF_WINDOW = 24;
+    const auto fire_ahead = [&](int k) {
+        std::vector<int> pend(sched->n_backends, 0);
+        for (int j = k + 1; j < sched->n_splits && j <= k + PF_WINDOW; j++) {
+            const int b = splits[j].backend_id;
+            if (lookahead[j].slot != -1) { pend[b]++; continue; }
+            if (pend[b] >= PF_PER_CARD) { continue; }
+            fire_prefetch(j);
+            if (lookahead[j].slot != -1) { pend[b]++; }
         }
+    };
+    if (pf_on) {
+        fire_ahead(-1);
     }
 
     // GGML_SCHED_COPY_AHEAD=0 turns off. Inputs (not weights) of split i+1 that come from other cards are copied BEFORE split i is launched, when split i+1 is on
@@ -2350,7 +2364,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 pf->input_cpy->data   = pf->saved_data;
             }
             if (pf_on) {
-                fire_prefetch(split_id + 1 + LOOKAHEAD);
+                fire_ahead(split_id);
             }
             if (ec != GGML_STATUS_SUCCESS) {
                 return ec;
