@@ -1962,10 +1962,11 @@ static bool ggml_backend_sched_prefetch_target(ggml_backend_sched_t sched, struc
         *why = 2;
         return false;
     }
-    // The expert matmuls of the multi-GPU prompt split (each card an id range [lo, hi), op_params 8 and 9) are not staged ahead: their copies are the layer's own
-    // transfer, issued for BOTH cards together before either chain is launched (copy-ahead in ggml_backend_sched_compute_splits). Run as prefetch, the x4 card's
-    // copy was queued behind its slot's last reader and began after the x16's had ended (nsys, GLM 8k, 25% on the x4 card). GGML_PF_SPLIT=1 stages them again.
-    static const bool pf_split = getenv("GGML_PF_SPLIT") && atoi(getenv("GGML_PF_SPLIT")) == 1;
+    // The expert matmuls of the multi-GPU prompt split (each card an id range [lo, hi), op_params 8 and 9) are staged ahead like any other (per-card rings and lookahead).
+    // GGML_PF_SPLIT=0 keeps them out: their copies are then the layer's own transfer, issued for both cards together by the copy-ahead before either chain is launched.
+    // Measured (nsys, GLM 8k, 25% on the x4 card): without the staging the x16's upload of the layer (1 GB, 38 ms) ran in front of its compute, 229 gaps over 5 ms
+    // with no kernel on either card, 8.4 s in all, the pass 20.75 s against 17.4 s with it.
+    static const bool pf_split = !(getenv("GGML_PF_SPLIT") && atoi(getenv("GGML_PF_SPLIT")) == 0);
     if (!pf_split && node->op_params[9] > node->op_params[8]) {
         *why = 6;
         return false;
