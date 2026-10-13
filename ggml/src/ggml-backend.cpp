@@ -2637,10 +2637,16 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         // every CPU split after a GPU split wait for the GPU: +6.6 ms per GLM decode graph, OLMoE -16% on the RTX 4060 laptop.)
         const auto prev_reads_buffer_of_split_backend = [&]() {
             const struct ggml_backend_sched_split * prev = &splits[split_id - 1];
+            // fork: a copy between two GPUs reads its source on the SOURCE card's own stream (CUDA: the read half of the staged copy, or the peer copy, both queued
+            // on the source stream; g_xcopy_dst_ordered says so), so this split's kernels on that card are queued behind the read and cannot overwrite the tensor
+            // before it has been read: no barrier for such inputs. With the dense split (token ranges on two cards, splits alternating between them) the barrier
+            // held the scheduler thread 42.8 s over 746 calls in two GLM-5.3-Flash 8k passes (pf-stats site 5) and made the cards run one after the other.
+            const bool ordered = g_xcopy_dst_ordered != NULL && g_xcopy_dst_ordered(sched->backends[split_backend_id], sched->backends[prev->backend_id]);
             for (int j = 0; j < prev->n_inputs; j++) {
                 const struct ggml_tensor * in = prev->inputs[j];
                 ggml_backend_buffer_t buf = in->view_src ? in->view_src->buffer : in->buffer;
                 if (!buf || ggml_backend_buffer_get_type(buf) == sched->bufts[split_backend_id]) {
+                    if (buf && ordered) { continue; }
                     return true;
                 }
             }
