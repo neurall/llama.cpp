@@ -1025,6 +1025,7 @@ struct ggml_backend_sched {
     int cur_copy;
     int next_copy;
     ggml_backend_event_t events[GGML_SCHED_MAX_BACKENDS][GGML_SCHED_MAX_COPIES];
+    ggml_backend_event_t tail_ev[GGML_SCHED_MAX_BACKENDS];   // fork: per backend, marks the tail of its stream for a device-side wait before a cross-card input copy (see ggml_backend_sched_copy_input)
     struct ggml_tensor ** graph_inputs;
     int n_graph_inputs;
     int graph_inputs_capacity;
@@ -1929,8 +1930,33 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
     if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
         ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
     } else {
-        // no copy events (one input copy, no pipeline parallelism): the destination card's whole stream is drained here, on the host, before every input copy
-        SYNC_TIMED_NAMED(9, ggml_backend_synchronize(split_backend), input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
+        // No copy events (one input copy: no pipeline parallelism, e.g. experts in host memory). The copy must not overwrite input_cpy before the destination card has finished
+        // everything queued on it so far. The stock code drains the destination stream on the HOST here, which stops the scheduler thread until that card is idle: nothing else
+        // gets queued meanwhile, on either card. Measured (nsys + NVTX, OLMoE 3.4k-token prompt, expert split over two cards): 271 ms of a 415 ms pass in these drains, for the
+        // router ids, the normed hidden state, the router weights and the layer output crossing the cards.
+        // Same ordering on the GPU instead: an event at the tail of the destination stream, and the SOURCE stream (where the async peer copy runs) waits for it. Only for an
+        // input coming from another GPU backend with events; anything else (CPU inputs, backends without events) keeps the drain. GGML_SCHED_DRAIN=1 restores the drain everywhere.
+        static const bool drain = getenv("GGML_SCHED_DRAIN") && atoi(getenv("GGML_SCHED_DRAIN")) == 1;
+        bool waited = false;
+        if (!drain && input_backend != split_backend && split_backend->iface.cpy_tensor_async != NULL &&
+                ggml_backend_dev_type(ggml_backend_get_device(input_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU &&
+                ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+            if (sched->tail_ev[split_backend_id] == NULL) {
+                ggml_backend_dev_props props;
+                ggml_backend_dev_get_props(ggml_backend_get_device(split_backend), &props);
+                if (props.caps.events) { sched->tail_ev[split_backend_id] = ggml_backend_event_new(ggml_backend_get_device(split_backend)); }
+            }
+            if (sched->tail_ev[split_backend_id] != NULL) {
+                NVTX_PUSH("DEVICE-WAIT %s: %s waits for the tail of %s", input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
+                ggml_backend_event_record(sched->tail_ev[split_backend_id], split_backend);
+                ggml_backend_event_wait(input_backend, sched->tail_ev[split_backend_id]);
+                NVTX_POP();
+                waited = true;
+            }
+        }
+        if (!waited) {
+            SYNC_TIMED_NAMED(9, ggml_backend_synchronize(split_backend), input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
+        }
     }
 
     if (sched->callback_copy != NULL && ggml_backend_sched_is_host_weight(input) &&
@@ -2641,6 +2667,9 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     for (int b = 0; b < sched->n_backends; b++) {
         for (int c = 0; c < sched->n_copies; c++) {
             ggml_backend_event_free(sched->events[b][c]);
+        }
+        if (sched->tail_ev[b]) {
+            ggml_backend_event_free(sched->tail_ev[b]);
         }
     }
     for (int r = 0; r < sched->prefetch_n_rings; r++) {
