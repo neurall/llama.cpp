@@ -1,5 +1,8 @@
 #include "llama-hparams.h"
 #include "models.h"
+#include "../llama-dsplit-fork.h"
+
+#include <algorithm>
 
 #include "llama-kv-cache-dsv4.h"
 
@@ -1235,7 +1238,90 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
     inpL = ggml_repeat_4d(ctx0, inpL, n_embd, hc, n_tokens, 1);
     cb(inpL, "hc_init", -1);
 
-    for (int il = 0; il < n_layer; ++il) {
+    // ---- fork: dense split (token ranges, one per card; the shared kit in llama-graph.cpp, the reasoning in llama-dsplit-fork.cpp) ---------------------------
+    // Everything of a DeepSeek-4 layer is per token except the attention block: the compressors (CSA / HCA) keep a running state over the tokens and the
+    // indexer selects over the compressed cache, so the attention stays whole. Per layer: every card runs the hyper-connection mix, the norm and (after the
+    // attention) the hyper-connection merge, the router and the shared expert for its token range with its own copy of the dense weights; the attention input
+    // of the ranges is gathered on the layer's own card, runs there for all tokens with the one-card builder (build_attention) and is cut again. The routed
+    // experts are shared by id range (build_moe_ffn in range mode). The gain is the part outside the attention; the attention joins stay cheap because the
+    // hidden state of the attention input is one vector per token (n_embd), not the hyper-connection stack (hc * n_embd).
+    bool ds_done = false;
+    {
+        bool ds_ok = !ubatch.embd && !cparams.embeddings_nextn &&
+                     std::none_of(cparams.embeddings_layer_inp.begin(), cparams.embeddings_layer_inp.end(), [](bool b) { return b; });
+        if (ds_ok && ds_plan(64)) {
+            const size_t NR = ds_r.size();
+            std::vector<ggml_tensor *> x(NR), residual(NR), post(NR), comb(NR), cur_r(NR), ffn_in(NR), lg(NR), f(NR);
+            for (size_t r = 0; r < NR; ++r) { ds_skip(); x[r] = ggml_cont(ctx0, ds_rows(inpL, r)); ds_pin(ds_r[r].b); }
+            for (int il = 0; il < n_layer; ++il) {
+                std::vector<llama_layer> L;
+                for (size_t r = 0; r < NR; ++r) { L.push_back(llama_dsplit_layer_fork(model, model.layers[il], ds_r[r].dev)); }
+                ggml_backend_t bl = ds_backend(model.dev_layer(il));
+                for (size_t r = 0; r < NR; ++r) {
+                    ds_skip();
+                    residual[r] = x[r];
+                    cur_r[r] = build_hc_pre(x[r], L[r].hc_attn_fn, L[r].hc_attn_scale, L[r].hc_attn_base, &post[r], &comb[r], il);
+                    cur_r[r] = build_norm(cur_r[r], L[r].attn_norm, nullptr, LLM_NORM_RMS, il);
+                    ds_pin(ds_r[r].b);
+                }
+                // attention: the ranges together on the layer's card, the one-card builder, cut again
+                ds_skip();
+                ggml_tensor * all = cur_r[0];
+                for (size_t r = 1; r < NR; ++r) { all = ggml_concat(ctx0, all, cur_r[r], 1); }
+                ds_pin(bl);
+                ds_skip();
+                ggml_tensor * att = build_attention(model, inp_dsv4, all, inp_pos, il);
+                ds_pin(bl);
+                for (size_t r = 0; r < NR; ++r) {
+                    ds_skip();
+                    ggml_tensor * a = ggml_cont(ctx0, ds_rows(att, r));
+                    ggml_tensor * h = build_hc_post(a, residual[r], post[r], comb[r], il);
+                    residual[r] = h;
+                    cur_r[r] = build_hc_pre(h, L[r].hc_ffn_fn, L[r].hc_ffn_scale, L[r].hc_ffn_base, &post[r], &comb[r], il);
+                    ffn_in[r] = build_norm(cur_r[r], L[r].ffn_norm, nullptr, LLM_NORM_RMS, il);
+                    lg[r] = build_lora_mm(L[r].ffn_gate_inp, ffn_in[r]);
+                    ds_pin(ds_r[r].b);
+                }
+                const auto & layer = model.layers[il];
+                ggml_backend_dev_t dlast = ds_r.back().dev;
+                // router logits per range on its card; the selection runs on the last range's card for all tokens
+                ds_skip();
+                ggml_tensor * logits = lg[0], * call = ffn_in[0];
+                for (size_t r = 1; r < NR; ++r) { logits = ggml_concat(ctx0, logits, lg[r], 1); call = ggml_concat(ctx0, call, ffn_in[r], 1); }
+                ggml_tensor * selected_experts = nullptr;
+                ggml_tensor * exp_probs_b = llama_dsplit_mirror_fork(model, layer.ffn_exp_probs_b, dlast);
+                if ((uint32_t) il < hparams.dsv4_hash_layer_count) {
+                    selected_experts = ggml_get_rows(ctx0, llama_dsplit_mirror_fork(model, layer.ffn_gate_tid2eid, dlast), res->t_inp_tokens);
+                    exp_probs_b = nullptr;
+                }
+                ds_pin(ds_r.back().b);
+                moe_ranges.clear();
+                for (size_t r = 0; r < NR; ++r) { moe_ranges.push_back({ ds_r[r].b, ds_r[r].t0, ds_r[r].t1, ffn_in[r], nullptr }); }
+                build_moe_ffn(call, llama_dsplit_mirror_fork(model, layer.ffn_gate_inp, dlast),
+                        layer.ffn_up_exps, layer.ffn_gate_exps, layer.ffn_down_exps, exp_probs_b,
+                        n_expert, hparams.n_expert_used(), LLM_FFN_SILU, hparams.expert_weights_norm, hparams.expert_weights_scale,
+                        (llama_expert_gating_func_type) hparams.expert_gating_func, il, logits,
+                        nullptr, nullptr, nullptr, nullptr, selected_experts);
+                std::vector<ggml_tensor *> mo(NR);
+                for (size_t r = 0; r < NR; ++r) { mo[r] = moe_ranges[r].out; }
+                moe_ranges.clear();
+                ds_skip();
+                for (size_t r = 0; r < NR; ++r) {
+                    ds_skip();
+                    ggml_tensor * sh = build_ffn(ffn_in[r], L[r].ffn_up_shexp, nullptr, nullptr, L[r].ffn_gate_shexp, nullptr, nullptr,
+                            L[r].ffn_down_shexp, nullptr, nullptr, nullptr, LLM_FFN_SILU, LLM_FFN_PAR, il);
+                    x[r] = build_cvec(build_hc_post(ggml_add(ctx0, mo[r], sh), residual[r], post[r], comb[r], il), il);
+                    ds_pin(ds_r[r].b);
+                    ggml_build_forward_expand(gf, x[r]);
+                }
+            }
+            // the ranges back together (the hyper-connection stack is [n_embd, hc, tokens]) on the output card; the tail below takes the output rows
+            inpL = ds_join(x, 2, ds_backend(model.dev_output()));
+            ds_done = true;
+        }
+    }
+
+    for (int il = 0; il < n_layer && !ds_done; ++il) {
         if ((size_t) il < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il]) {
             res->t_layer_inp[il] = build_hc_mean(inpL);
             cb(res->t_layer_inp[il], "layer_inp", il);
