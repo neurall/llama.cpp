@@ -1521,3 +1521,8 @@ bench-2026-10-13-1649,2026-10-13 16:49:25,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.
 bench-2026-10-13-1651,2026-10-13 16:51:43,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan64 variants v test pf4k n=1,,
 bench-2026-10-13-1654,2026-10-13 16:54:54,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan65 variants v test pf4k n=1,,
 bench-2026-10-13-1657,2026-10-13 16:57:49,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan65 variants v test pf8k n=1,,
+bench-2026-10-13-1702,2026-10-13 17:02:10,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan66 variants v test pf4k n=1,,
+bench-2026-10-13-1705,2026-10-13 17:05:47,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan66 variants v test pf8k n=1,,
+bench-2026-10-13-1711,2026-10-13 17:11:08,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan67 variants v test pf4k n=1,,
+bench-2026-10-13-1713,2026-10-13 17:13:53,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan68 variants v test pf4k n=1,,
+bench-2026-10-13-1717,2026-10-13 17:17:00,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan68 variants v test pf8k n=1,,
