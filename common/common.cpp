@@ -1399,6 +1399,7 @@ struct moe_auto_rec { bool have = false; double p_ms = -1, g_ms = 0, g_max = 0, 
 static std::string g_moe_auto_file;  // decision file of this run (empty: auto choice not involved)
 static double g_moe_auto_np = 0, g_moe_auto_ng = 600; // the request profile of the decision, for the one made when this run is recorded
 static std::string g_moe_auto_mode;  // mode this run explores: "stock" or "cache" (empty: decided already)
+static bool g_moe_auto_user_ts = false;   // the user gave a layer split (-ts): a start failure then says nothing about the placement and is not recorded
 static size_t      g_moe_auto_vram_free = 0; // free VRAM when this run chose its placement
 
 // The placement records live in the engine's state file (llama_state_*, one INI section per model):
@@ -1493,6 +1494,13 @@ static void moe_auto_write(const std::string & path, const moe_auto_rec & st, co
 // on (until that much more VRAM is free than at the failure, e.g. another program that held it has gone)
 static void moe_auto_mark_failed() {
     if (g_moe_auto_mode.empty()) {
+        return;
+    }
+    if (g_moe_auto_user_ts) {
+        // With an explicit -ts the layer fit is skipped ("tensor_split already set by user, abort"), the experts stay on the GPUs and the start fails for lack of
+        // VRAM whichever placement was chosen. Recording that made the tuner pick the stock placement for MiMo from then on (decode 14 t/s instead of 26).
+        LOG_WRN("%s: the start failed with a layer split given by the user (-ts): not recorded as a failed placement\n", __func__);
+        g_moe_auto_mode.clear();
         return;
     }
     moe_auto_rec st, ca;
@@ -1752,6 +1760,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
     }
 
     bool use_cache = true;
+    g_moe_auto_user_ts = false;
+    for (size_t i = 0; i < llama_max_devices(); ++i) { g_moe_auto_user_ts = g_moe_auto_user_ts || params.tensor_split[i] != 0.0f; }
     {
         const std::string path = moe_auto_path(params, model_size, n_gpu, vram_max);
         const char * force = llama_moe_get_opt("mode");
