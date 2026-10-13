@@ -5070,3 +5070,127 @@ int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buck
 
     return relative_bucket;
 }
+
+// ---- fork: dense split kit ------------------------------------------------------------------------------------------------------------------------------------
+// Shared by the model builders that cut a prompt pass into token ranges, one per card (see llama-dsplit-fork.cpp for the why and the measurements). A builder
+// calls ds_plan() once; if it returns true, it builds every per-token block once per range between ds_skip() and ds_pin(card) (with the range's copy of the
+// layer, llama_dsplit_layer_fork), the KV-cache attention with ds_attn_kv(), the experts with build_moe_ffn in range mode (moe_ranges), and joins the ranges
+// for the output head with ds_join(). Recurrent blocks hand their state from range to range in the builder (the state of a range is the start of the next).
+
+bool llm_graph_context::ds_plan(int64_t min_tokens) const {
+    ds_r.clear();
+    ds_mark = nullptr;
+    static const double  share0  = [] { const char * e = llama_moe_get_opt("dense-split-share"); return e ? atof(e) : 0.55; }();
+    static const int64_t min_tok = [] { const char * e = llama_moe_get_opt("dense-split-min");   return e ? (int64_t) atoll(e) : (int64_t) 512; }();
+    if (!sched || llama_dsplit_cur_fork() != 1 || ubatch.n_seqs != 1 || cparams.n_rs_seq != 0 || n_tokens < std::max(min_tok, min_tokens)) {
+        return false;
+    }
+    std::vector<std::pair<double, ggml_backend_t>> gpus;   // (upload rate, backend)
+    for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+        ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+        if (ggml_backend_dev_type(ggml_backend_get_device(b)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+            gpus.push_back({ llama_moe_cache_link_gbs_fork(ggml_backend_get_device(b)), b });
+        }
+    }
+    if (gpus.size() < 2) {
+        return false;
+    }
+    std::stable_sort(gpus.begin(), gpus.end(), [](const auto & x, const auto & y) { return x.first < y.first; });   // slowest link first
+    // two ranges for now (the slowest and the fastest card); more cards: more ranges, same kit
+    const int64_t edge = std::max<int64_t>(min_tokens, std::min<int64_t>(n_tokens - min_tokens, (int64_t) llround(share0 * (double) n_tokens)));
+    ds_r.push_back({ gpus.front().second, ggml_backend_get_device(gpus.front().second), 0, edge });
+    ds_r.push_back({ gpus.back().second,  ggml_backend_get_device(gpus.back().second),  edge, n_tokens });
+    static int logged = 0;
+    if (logged++ < 4) {
+        LLAMA_LOG_WARN("dense split: graph of %lld tokens: %s tokens 0-%lld, %s tokens %lld-%lld\n", (long long) n_tokens, ggml_backend_name(ds_r[0].b),
+                (long long) edge, ggml_backend_name(ds_r[1].b), (long long) edge, (long long) n_tokens);
+    }
+    return true;
+}
+
+void llm_graph_context::ds_skip() const {
+    ggml_tensor * t = ds_mark ? ds_mark : ggml_get_first_tensor(ctx0);
+    if (t == nullptr) { return; }
+    for (ggml_tensor * n = ggml_get_next_tensor(ctx0, t); n; n = ggml_get_next_tensor(ctx0, n)) { t = n; }
+    ds_mark = t;
+}
+
+void llm_graph_context::ds_pin(ggml_backend_t b) const {
+    for (ggml_tensor * t = ds_mark ? ggml_get_next_tensor(ctx0, ds_mark) : ggml_get_first_tensor(ctx0); t; t = ggml_get_next_tensor(ctx0, t)) {
+        ds_mark = t;
+        if (b == nullptr || t->op == GGML_OP_NONE || t->buffer != nullptr) { continue; }
+        if (t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE) { continue; }
+        if (t->view_src != nullptr && t->view_src->buffer != nullptr) { continue; }   // writes into the memory (KV cache, recurrent state) run where it is
+        ggml_backend_sched_set_tensor_backend(sched, t, b);
+    }
+}
+
+ggml_backend_t llm_graph_context::ds_backend(ggml_backend_dev_t dev) const {
+    for (int i = 0; sched && i < ggml_backend_sched_get_n_backends(sched); ++i) {
+        ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+        if (ggml_backend_get_device(b) == dev) { return b; }
+    }
+    return nullptr;
+}
+
+std::vector<ggml_tensor *> llm_graph_context::ds_slice(ggml_tensor * x) const {
+    int d = GGML_MAX_DIMS - 1;
+    while (d > 0 && x->ne[d] == 1) { --d; }   // the token dim: the last one that is not 1
+    std::vector<ggml_tensor *> out;
+    for (const auto & r : ds_r) {
+        const int64_t nr = r.t1 - r.t0;
+        int64_t ne[4] = { x->ne[0], x->ne[1], x->ne[2], x->ne[3] };
+        ne[d] = nr;
+        out.push_back(ggml_view_4d(ctx0, x, ne[0], ne[1], ne[2], ne[3], x->nb[1], x->nb[2], x->nb[3], r.t0 * x->nb[d]));
+    }
+    return out;
+}
+
+ggml_tensor * llm_graph_context::ds_join(const std::vector<ggml_tensor *> & xs, int dim, ggml_backend_t b) const {
+    ds_skip();
+    ggml_tensor * acc = xs[0];
+    for (size_t i = 1; i < xs.size(); ++i) { acc = ggml_concat(ctx0, acc, xs[i], dim); }
+    ds_pin(b);
+    return acc;
+}
+
+std::vector<ggml_tensor *> llm_graph_context::ds_attn_kv(llm_graph_input_attn_kv * inp, const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k,
+                                                          const std::vector<ggml_tensor *> & v, const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const {
+    GGML_ASSERT(!inp->self_k_rot && !inp->self_v_rot);
+    return ds_attn_cache(inp->mctx, inp->get_k_idxs(), inp->get_v_idxs(), inp->get_kq_mask(), q, k, v, sinks, kq_scale, il);
+}
+
+std::vector<ggml_tensor *> llm_graph_context::ds_attn_kv(llm_graph_input_attn_kv_iswa * inp, const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k,
+                                                          const std::vector<ggml_tensor *> & v, const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const {
+    const bool swa = hparams.is_swa(il);
+    GGML_ASSERT(!(swa ? inp->self_k_rot_swa : inp->self_k_rot) && !(swa ? inp->self_v_rot_swa : inp->self_v_rot));
+    return ds_attn_cache(swa ? inp->mctx->get_swa() : inp->mctx->get_base(), swa ? inp->get_k_idxs_swa() : inp->get_k_idxs(),
+                         swa ? inp->get_v_idxs_swa() : inp->get_v_idxs(), swa ? inp->get_kq_mask_swa() : inp->get_kq_mask(), q, k, v, sinks, kq_scale, il);
+}
+
+std::vector<ggml_tensor *> llm_graph_context::ds_attn_cache(const llama_kv_cache_context * mctx_cur, ggml_tensor * k_idxs, ggml_tensor * v_idxs, ggml_tensor * kq_mask,
+                                                             const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k, const std::vector<ggml_tensor *> & v,
+                                                             const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const {
+    GGML_ASSERT(cparams.flash_attn && !cparams.training);
+    // 1. every range's K/V into the cache (these writes run where the cache is, behind the range's projections)
+    ds_skip();
+    for (size_t r = 0; r < ds_r.size(); ++r) {
+        const int64_t nr = ds_r[r].t1 - ds_r[r].t0;
+        ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k[r], ggml_view_1d(ctx0, k_idxs, nr, ds_r[r].t0 * ggml_element_size(k_idxs)), il));
+        ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v[r], ggml_view_1d(ctx0, v_idxs, nr, ds_r[r].t0 * ggml_element_size(v_idxs)), il));
+    }
+    ds_skip();
+    // 2. every range's queries over the whole cache, with its rows of the mask (the cache view is read after both writes: they were issued first)
+    std::vector<ggml_tensor *> out(ds_r.size());
+    for (size_t r = 0; r < ds_r.size(); ++r) {
+        const int64_t nr = ds_r[r].t1 - ds_r[r].t0;
+        ds_skip();
+        ggml_tensor * kc = mctx_cur->get_k(ctx0, il);
+        ggml_tensor * vc = mctx_cur->get_v(ctx0, il);
+        ggml_tensor * m  = ggml_view_4d(ctx0, kq_mask, kq_mask->ne[0], nr, kq_mask->ne[2], kq_mask->ne[3], kq_mask->nb[1], kq_mask->nb[2], kq_mask->nb[3],
+                                        ds_r[r].t0 * kq_mask->nb[1]);
+        out[r] = build_attn_mha(q[r], kc, vc, nullptr, m, sinks.empty() ? nullptr : sinks[r], nullptr, 0, kq_scale, il);
+        ds_pin(ds_r[r].b);
+    }
+    return out;
+}

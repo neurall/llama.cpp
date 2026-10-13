@@ -18,6 +18,10 @@ bool llama_dsplit_ready_fork(const llama_model & model);
 // the copy of weight t on device dev; t itself when t lives on dev or has no copy (routed experts, tensors in host memory)
 ggml_tensor * llama_dsplit_mirror_fork(const llama_model & model, ggml_tensor * t, ggml_backend_dev_t dev);
 
+// a layer as seen from card dev: every dense weight replaced by its copy there (llama_layer holds tensor pointers only)
+struct llama_layer;
+llama_layer llama_dsplit_layer_fork(const llama_model & model, const llama_layer & l, ggml_backend_dev_t dev);
+
 // --moe dense-split=auto: which configuration a prompt pass of n_tokens runs in, chosen from measured pass times (see llama-dsplit-fork.cpp).
 // Called before the graph of a pass is built; returns true when the choice differs from the one the last graph was built with (the graph must be rebuilt).
 bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens);

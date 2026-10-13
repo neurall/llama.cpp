@@ -1010,6 +1010,30 @@ struct llm_graph_context {
     struct moe_range_fork { ggml_backend_t b = nullptr; int64_t t0 = 0, t1 = 0; ggml_tensor * cur = nullptr; ggml_tensor * out = nullptr; };
     mutable std::vector<moe_range_fork> moe_ranges;
 
+    // ---- fork: dense split kit, shared by the model builders that support token ranges (llama-graph.cpp, "dense split kit") ----
+    struct ds_range_fork { ggml_backend_t b = nullptr; ggml_backend_dev_t dev = nullptr; int64_t t0 = 0, t1 = 0; };
+    mutable std::vector<ds_range_fork> ds_r;     // the token ranges of this graph, first = slowest link; empty: no dense split
+    mutable ggml_tensor *              ds_mark = nullptr;
+    // decides the ranges of this graph: dense split chosen for this pass (llama_dsplit_cur_fork), one sequence, no rollback snapshots, at least
+    // --moe dense-split-min tokens and min_tokens; the token share of the first range is --moe dense-split-share (default 0.55)
+    bool                       ds_plan(int64_t min_tokens) const;
+    void                       ds_skip() const;                              // tensors created so far stay unpinned
+    void                       ds_pin(ggml_backend_t b) const;               // tensors created since the last mark run on card b (views and memory writes excepted)
+    ggml_backend_t             ds_backend(ggml_backend_dev_t dev) const;     // the scheduler's backend of a device
+    std::vector<ggml_tensor *> ds_slice(ggml_tensor * x) const;              // per-range views of x along its last non-unit dim (= tokens), not pinned
+    ggml_tensor *              ds_join(const std::vector<ggml_tensor *> & xs, int dim, ggml_backend_t b) const;   // the ranges together again, on card b
+    // KV-cache attention of every range (flash attention): each range's K/V are written to the cache with its slice of the cache indices, each range's
+    // queries attend over the whole cache with its rows of the mask. q/k/v per range (computed on the range's card, after rope), sinks per range (the
+    // range card's copy) or empty; returns the per-range attention outputs [n_embd_head_v * n_head, tokens of the range] on the range cards (before wo).
+    // The iswa form picks the sliding-window or the full cache of layer il.
+    std::vector<ggml_tensor *> ds_attn_kv(llm_graph_input_attn_kv * inp, const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k,
+                                          const std::vector<ggml_tensor *> & v, const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const;
+    std::vector<ggml_tensor *> ds_attn_kv(llm_graph_input_attn_kv_iswa * inp, const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k,
+                                          const std::vector<ggml_tensor *> & v, const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const;
+    std::vector<ggml_tensor *> ds_attn_cache(const llama_kv_cache_context * mctx_cur, ggml_tensor * k_idxs, ggml_tensor * v_idxs, ggml_tensor * kq_mask,
+                                             const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k, const std::vector<ggml_tensor *> & v,
+                                             const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const;
+
     const llm_arch arch;
 
     const llama_hparams & hparams;

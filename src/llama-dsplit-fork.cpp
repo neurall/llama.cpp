@@ -60,8 +60,8 @@ void llama_dsplit_mirror_build_fork(const llama_model & model) {
         std::lock_guard<std::mutex> lk(g_mu);
         g_sets[&model];
     }
-    if (!dsplit_opt_on() || model.arch != LLM_ARCH_GLM5_NEXT) {
-        return;   // the token-range graph exists for GLM-5.3-Flash (glm5-next) only: no copies for other models (they get the expert split alone)
+    if (!dsplit_opt_on() || (model.arch != LLM_ARCH_GLM5_NEXT && model.arch != LLM_ARCH_QWEN3NEXT)) {
+        return;   // a token-range graph exists for these architectures only: no copies for other models (they get the expert split alone)
     }
     std::vector<ggml_backend_dev_t> gpus;
     for (const auto & d : model.devices) {
@@ -251,4 +251,14 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
     }
     g_pending  = -1;
     g_pend_max = 0;
+}
+
+llama_layer llama_dsplit_layer_fork(const llama_model & model, const llama_layer & l, ggml_backend_dev_t dev) {
+    static_assert(sizeof(llama_layer) % sizeof(ggml_tensor *) == 0, "llama_layer is expected to hold tensor pointers only");
+    llama_layer m = l;
+    ggml_tensor ** p = reinterpret_cast<ggml_tensor **>(&m);
+    for (size_t i = 0; i < sizeof(llama_layer) / sizeof(ggml_tensor *); ++i) {
+        if (p[i]) { p[i] = llama_dsplit_mirror_fork(model, p[i], dev); }
+    }
+    return m;
 }
