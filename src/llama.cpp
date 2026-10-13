@@ -275,13 +275,37 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
             }
         }
 
-        // big-batch ops on host weights (e.g. MoE experts with --cpu-moe) are offloaded
-        // to one GPU, so its upload bandwidth bounds prompt processing. GPUs are numbered
-        // by bus order, not slot speed: measure host->GPU upload and offload to the
-        // fastest (x4/x16, PCIe gen and chipset sharing all count, on any OS and
-        // backend). Layers keep bus order: moving them measured ~7% slower decode.
-        size_t gpu_offload = 0;
-        if (gpus.size() > 1) {
+        // add RPC servers at the front of the list to minimize network transfers
+        model->devices.insert(model->devices.begin(), rpc_servers.begin(), rpc_servers.end());
+
+        // add GPUs
+        model->dev_offload = model->devices.size();   // the first local GPU; the measurement below picks the one with the fastest link
+        model->devices.insert(model->devices.end(), gpus.begin(), gpus.end());
+
+        // add integrated GPUs only if no discrete GPUs were found
+        // (RPC servers do not count, otherwise the local iGPU would be dropped on iGPU+RPC setups)
+        if (gpus.empty()) {
+            model->devices.insert(model->devices.end(), igpus.begin(), igpus.end());
+        }
+    }
+
+    // fork: which GPU the big-batch ops on host weights (e.g. MoE experts with --cpu-moe) are offloaded to. Its upload bandwidth bounds prompt processing,
+    // and GPUs are numbered by bus order, not by slot speed: the host -> GPU upload of every local GPU is measured and the fastest one is taken (x4 / x16,
+    // PCIe generation and chipset sharing all count, on any OS and backend). The ORDER of the devices stays as it is: layers keep bus order (moving them
+    // measured ~7% slower decode).
+    // This runs for a default device list and for an explicit one (-dev) alike: an explicit list says WHICH cards are used, not which of them sits in the
+    // fast slot. (Before, an explicit list skipped the measurement and its first card was taken. On a board whose first-numbered card is in the x4-wired
+    // slot, every run with -dev CUDA0,CUDA1 sent prompt processing through the 5.4 GB/s link instead of the 21.6 GB/s one, and the per-GPU probe that
+    // feeds the prefill layer plan never ran.) RPC servers and meta devices are not measured.
+    {
+        std::vector<size_t> local;   // positions in model->devices of the local GPUs
+        for (size_t i = 0; i < model->devices.size(); ++i) {
+            const llama_device & d = model->devices[i];
+            if (d.is_meta || ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (ggml_backend_reg_name(ggml_backend_dev_backend_reg(d.dev)) == std::string("RPC")) { continue; }
+            local.push_back(i);
+        }
+        if (local.size() > 1) {
             constexpr size_t n_bytes = 64u << 20;
             std::vector<uint8_t> host(n_bytes, 1);
             auto h2d_gbs = [&](ggml_backend_dev_t dev) -> double {
@@ -303,40 +327,40 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
                 return best;
             };
             double best = 0.0;
-            for (size_t i = 0; i < gpus.size(); ++i) {
-                const double gbs = h2d_gbs(gpus[i].dev);
-                LLAMA_LOG_INFO("%s: %s host->device upload %.1f GB/s\n", __func__, ggml_backend_dev_name(gpus[i].dev), gbs);
+            for (size_t k = 0; k < local.size(); ++k) {
+                ggml_backend_dev_t dev = model->devices[local[k]].dev;
+                const double gbs = h2d_gbs(dev);
+                LLAMA_LOG_INFO("%s: %s host->device upload %.1f GB/s\n", __func__, ggml_backend_dev_name(dev), gbs);
                 // within 15% counts as equal: identical setups keep the first GPU
-                if (i == 0 || gbs > 1.15*best) {
-                    gpu_offload = i;
+                if (k == 0 || gbs > 1.15*best) {
+                    model->dev_offload = local[k];
                     best = gbs;
                 }
             }
-        }
+            LLAMA_LOG_INFO("%s: prompt processing is offloaded to %s (fastest upload link of %zu GPUs)\n", __func__,
+                    ggml_backend_dev_name(model->devices[model->dev_offload].dev), local.size());
 
-        // fork: per-GPU probe (upload alone and with all cards at once, hand-off latency, compute speed); the results feed the prefill layer plan in
-        // llama_model_base::load_tensors (see llama-gpu-probe-fork.cpp for what is measured and how the plan uses it)
-        if (gpus.size() > 1) {
+            // per-GPU probe (upload alone and with all cards at once, hand-off latency, compute speed); the results feed the prefill layer plan in
+            // llama_model_base::load_tensors (see llama-gpu-probe-fork.cpp for what is measured and how the plan uses it)
             std::vector<ggml_backend_dev_t> probe_devs;
-            for (const auto & g : gpus) { probe_devs.push_back(g.dev); }
+            for (size_t i : local) { probe_devs.push_back(model->devices[i].dev); }
             std::vector<std::vector<double>> probe_conc;
             for (const auto & r : llama_gpu_probe_fork(probe_devs, &probe_conc)) {
                 LLAMA_LOG_INFO("%s: probe %s: upload %.1f GB/s alone, %.1f GB/s with all cards, small copy %.0f us, compute %.3g GB*tokens/s\n", __func__,
                         r.name.c_str(), r.h2d_gbs, r.h2d_conc_gbs, r.lat_us, r.compute / 1e9);
             }
+        } else if (local.size() == 1) {
+            model->dev_offload = local[0];
         }
-
-        // add RPC servers at the front of the list to minimize network transfers
-        model->devices.insert(model->devices.begin(), rpc_servers.begin(), rpc_servers.end());
-
-        // add GPUs
-        model->dev_offload = model->devices.size() + gpu_offload;
-        model->devices.insert(model->devices.end(), gpus.begin(), gpus.end());
-
-        // add integrated GPUs only if no discrete GPUs were found
-        // (RPC servers do not count, otherwise the local iGPU would be dropped on iGPU+RPC setups)
-        if (gpus.empty()) {
-            model->devices.insert(model->devices.end(), igpus.begin(), igpus.end());
+        // --moe offload-dev=NAME (e.g. CUDA0): this card is the offload card, whatever was measured. For tests (run the asymmetric paths with the slow
+        // card as the main one) and for a machine where the link speed is the wrong criterion (a fast slot holding a much slower card).
+        if (const char * want = llama_moe_get_opt("offload-dev")) {
+            for (size_t i : local) {
+                if (strcmp(ggml_backend_dev_name(model->devices[i].dev), want) == 0) {
+                    model->dev_offload = i;
+                    LLAMA_LOG_WARN("%s: prompt processing is offloaded to %s (--moe offload-dev)\n", __func__, want);
+                }
+            }
         }
     }
 
