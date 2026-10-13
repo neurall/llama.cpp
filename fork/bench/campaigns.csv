@@ -1526,3 +1526,7 @@ bench-2026-10-13-1705,2026-10-13 17:05:47,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.
 bench-2026-10-13-1711,2026-10-13 17:11:08,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan67 variants v test pf4k n=1,,
 bench-2026-10-13-1713,2026-10-13 17:13:53,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan68 variants v test pf4k n=1,,
 bench-2026-10-13-1717,2026-10-13 17:17:00,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan68 variants v test pf8k n=1,,
+bench-2026-10-13-1726,2026-10-13 17:26:11,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds plan69 variants v test pf4k n=1,,
+bench-2026-10-13-1728,2026-10-13 17:28:15,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds plan69 variants v test pf4k n=1,,
+bench-2026-10-13-1730,2026-10-13 17:30:08,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds plan69 variants v test pf8k n=1,,
+bench-2026-10-13-1732,2026-10-13 17:32:41,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds plan69 variants v test pf8k n=1,,
