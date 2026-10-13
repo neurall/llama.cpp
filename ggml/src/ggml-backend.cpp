@@ -1884,6 +1884,10 @@ void ggml_backend_sched_sync_stat_add(int site, long long us) {
     if (site >= 0 && site < 10) { g_sync_us[site].fetch_add(us); g_sync_n[site].fetch_add(1); }
 }
 #define SYNC_TIMED(site, call) do { const int64_t _t = ggml_time_us(); call; ggml_backend_sched_sync_stat_add(site, ggml_time_us() - _t); } while (0)
+// same, and with GGML_PF_STATS=2 the tensor and the backends of every wait over 1 ms are logged (which input makes the scheduler thread wait, and for whom)
+#define SYNC_TIMED_NAMED(site, call, tname, sb, db) do { const int64_t _t = ggml_time_us(); call; const int64_t _d = ggml_time_us() - _t; ggml_backend_sched_sync_stat_add(site, _d); \
+    static const bool _v = getenv("GGML_PF_STATS") && atoi(getenv("GGML_PF_STATS")) >= 2; \
+    if (_v && _d > 1000) { GGML_LOG_WARN("sync-wait %lld us at site %d: input %s, from %s to %s abs %lld\n", (long long) _d, site, tname, sb, db, (long long) _t); } } while (0)
 
 static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggml_backend_sched_split * split, struct ggml_tensor * input, std::vector<ggml_backend_t> & d2h_pending) {
     const int split_backend_id = split->backend_id;
@@ -1894,9 +1898,9 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
     if (input->flags & GGML_TENSOR_FLAG_INPUT) {
         // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
-            SYNC_TIMED(1, ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]));
+            SYNC_TIMED_NAMED(1, ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]), input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
         } else {
-            SYNC_TIMED(1, ggml_backend_synchronize(split_backend));
+            SYNC_TIMED_NAMED(1, ggml_backend_synchronize(split_backend), input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
         }
         ggml_backend_tensor_copy(input, input_cpy);
         return;
@@ -1930,11 +1934,11 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
     // try async copy, but if not possible, we can still use a sync copy without synchronizing the dst backend, since we handle the synchronization here with multiple copies and events
     // TODO: add public function to facilitate this, since applications do not have direct access to the backend interface
     if (!split_backend->iface.cpy_tensor_async || !split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
-        SYNC_TIMED(2, ggml_backend_synchronize(input_backend));
+        SYNC_TIMED_NAMED(2, ggml_backend_synchronize(input_backend), input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
-            SYNC_TIMED(2, ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]));
+            SYNC_TIMED_NAMED(2, ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]), input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
         } else {
-            SYNC_TIMED(2, ggml_backend_synchronize(split_backend));
+            SYNC_TIMED_NAMED(2, ggml_backend_synchronize(split_backend), input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
         }
         const int64_t _tc = ggml_time_us(); ggml_backend_tensor_copy(input, input_cpy); ggml_backend_sched_sync_stat_add(2, ggml_time_us() - _tc);
     }
@@ -2277,6 +2281,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
         pft_cur = split_id;
+        static const bool pf_trace_all = getenv("GGML_PF_TRACE") && atoi(getenv("GGML_PF_TRACE")) == 2;
+        if (pf_trace_all && sched->n_splits >= 40 && split->graph.n_nodes > 0) {   // GGML_PF_TRACE=2: every split launch, to find the splits that take the host long
+            const ggml_tensor * n0 = split->graph.nodes[0];
+            GGML_LOG_WARN("launch-trace: split %d/%d card %s nodes %d first %s %s inputs %d at %lld us abs %lld\n", split_id, sched->n_splits, ggml_backend_name(split_backend), split->graph.n_nodes,
+                    ggml_op_name(n0->op), n0->name, split->n_inputs, (long long) (ggml_time_us() - pft_t0), (long long) ggml_time_us());
+        }
         if (pf_trace && sched->n_splits > 300 && split->graph.n_nodes > 0 && split->graph.nodes[0]->op == GGML_OP_MUL_MAT_ID) {
             GGML_LOG_WARN("pf-trace: launch split %d card %s MUL_MAT_ID at %lld us (staged %s)\n", split_id, ggml_backend_name(split_backend), (long long) (ggml_time_us() - pft_t0),
                     (pf_on && lookahead[split_id].slot != -1) ? "yes" : "no");
