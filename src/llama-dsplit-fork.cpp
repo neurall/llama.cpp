@@ -21,8 +21,10 @@
 #include "llama-model.h"
 #include "llama.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <string>
@@ -41,7 +43,12 @@ std::map<const llama_model *, dsplit_set>  g_sets;
 
 bool dsplit_opt_on() {
     const char * e = llama_moe_get_opt("dense-split");
-    return e && atoi(e) != 0;
+    return e && (atoi(e) != 0 || strcmp(e, "auto") == 0);
+}
+
+bool dsplit_opt_auto() {
+    const char * e = llama_moe_get_opt("dense-split");
+    return e && strcmp(e, "auto") == 0;
 }
 
 }  // namespace
@@ -132,4 +139,98 @@ ggml_tensor * llama_dsplit_mirror_fork(const llama_model & model, ggml_tensor * 
     if (mt == it->second.mirror.end()) { return t; }
     auto tt = mt->second.find(t);
     return tt == mt->second.end() ? t : tt->second;
+}
+
+// ---- --moe dense-split=auto: which cards a prompt pass runs on, per pass size, from measured pass times ------------------------------------------------------
+// Whether a second card pays back depends on the pass size: a short pass is bound by the uploads of the experts (every pass uploads all of them), where the
+// second card's link adds bandwidth but its share of the experts must fit its link, and every layer pays fixed hand-off costs; a long pass is bound by
+// compute, which the split divides. Measured on GLM-5.3-Flash, x16 + x4 (prompt tokens per second, one card / split): 1.8k 403 / 354, 5.5k 589 / 776,
+// 8k 566 / 790. The break-even depends on the cards, their links and the model, so it is measured, not assumed:
+//   configurations  0 = one card (the default layout: experts and dense on the fastest link), 1 = dense + expert split over the cards
+//   buckets         pass sizes in steps of sqrt(2) (256, 362, 512, ... 8192, 11585, ...); a bucket keeps the mean wall time per prompt token of each
+//                   configuration (from llama_context::synchronize: all passes of one decode call, attributed to the size of its largest pass)
+//   choice          both measured: the faster, and the slower one again every 16 passes of the bucket (to follow the machine); one measured: the other
+//                   one (once); none: the nearest bucket with both measured; no data at all: the split from 3072 tokens (the break-even measured above)
+// --moe dense-split=1 / =0 force the split on / off for every pass of --moe dense-split-min tokens or more.
+namespace {
+struct dsplit_bucket { double us_tok[2] = { 0.0, 0.0 }; int n[2] = { 0, 0 }; int passes = 0; };
+std::map<int, dsplit_bucket> g_buckets;
+int     g_cur      = -1;   // choice for the graph being built
+int     g_built    = -1;   // choice the last graph was built with
+int     g_pending  = -1;   // choice of the passes not reported yet (-2: mixed)
+int64_t g_pend_max = 0;    // their largest pass
+
+int dsplit_bucket_of(int64_t n) {
+    int b = 0;
+    double edge = 256.0;
+    while ((double) n > edge * 1.2 && b < 40) { edge *= 1.41421356; ++b; }
+    return b;
+}
+}  // namespace
+
+bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_sets.find(&model);
+    int choice = -1;
+    if (it != g_sets.end() && !it->second.mirror.empty() && n_tokens >= 64) {
+        if (!dsplit_opt_auto()) {
+            choice = 1;   // forced on (the graph builder still applies dense-split-min)
+        } else {
+            const int b = dsplit_bucket_of(n_tokens);
+            dsplit_bucket & B = g_buckets[b];
+            if (B.n[0] > 0 && B.n[1] > 0) {
+                const int best = B.us_tok[1] < B.us_tok[0] ? 1 : 0;
+                choice = (B.passes % 16 == 15) ? 1 - best : best;
+            } else if (B.n[0] > 0 || B.n[1] > 0) {
+                choice = B.n[0] > 0 ? 1 : 0;
+            } else {
+                int found = -1, dist = 1 << 20;
+                for (const auto & kv : g_buckets) {
+                    if (kv.second.n[0] > 0 && kv.second.n[1] > 0 && std::abs(kv.first - b) < dist) {
+                        dist = std::abs(kv.first - b);
+                        found = kv.second.us_tok[1] < kv.second.us_tok[0] ? 1 : 0;
+                    }
+                }
+                choice = found >= 0 ? found : (n_tokens >= 3072 ? 1 : 0);
+            }
+            B.passes++;
+        }
+    }
+    g_cur = choice;
+    if (choice >= 0) {
+        g_pending  = g_pending == -1 || g_pending == choice ? choice : -2;
+        g_pend_max = std::max(g_pend_max, n_tokens);
+    }
+    const bool changed = choice != g_built;
+    g_built = choice;
+    return changed;
+}
+
+int llama_dsplit_cur_fork() {
+    return g_cur;
+}
+
+void llama_dsplit_reserve_fork(const llama_model & model) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_sets.find(&model);
+    g_cur = it != g_sets.end() && !it->second.mirror.empty() ? 1 : -1;
+}
+
+void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_pending >= 0 && n_tokens > 0 && us > 0 && dsplit_opt_auto()) {
+        dsplit_bucket & B = g_buckets[dsplit_bucket_of(g_pend_max)];
+        const int c = g_pending;
+        const double v = (double) us / (double) n_tokens;
+        B.us_tok[c] = B.n[c] == 0 ? v : 0.5 * (B.us_tok[c] + v);   // the newer measurement weighs half
+        B.n[c]++;
+        static int logged = 0;
+        if (logged++ < 64) {
+            LLAMA_LOG_WARN("dense split: %lld prompt tokens (largest pass %lld) %s: %.1f tokens/s; this size: one card %s, split %s\n", (long long) n_tokens,
+                    (long long) g_pend_max, c ? "split" : "one card", 1e6 / v,
+                    B.n[0] ? std::to_string((int) (1e6 / B.us_tok[0])).c_str() : "-", B.n[1] ? std::to_string((int) (1e6 / B.us_tok[1])).c_str() : "-");
+        }
+    }
+    g_pending  = -1;
+    g_pend_max = 0;
 }

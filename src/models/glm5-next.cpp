@@ -649,7 +649,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
     {
         static const double  share0  = [] { const char * e = llama_moe_get_opt("dense-split-share"); return e ? atof(e) : 0.3; }();
         static const int64_t min_tok = [] { const char * e = llama_moe_get_opt("dense-split-min");   return e ? (int64_t) atoll(e) : (int64_t) 512; }();
-        if (sched && llama_dsplit_ready_fork(model) && n_seqs == 1 && cparams.n_rs_seq == 0 && n_tokens >= std::max<int64_t>(min_tok, 4 * d_conv) &&
+        if (sched && llama_dsplit_cur_fork() == 1 && n_seqs == 1 && cparams.n_rs_seq == 0 && n_tokens >= std::max<int64_t>(min_tok, 4 * d_conv) &&
                 !cparams.embeddings_nextn) {
             std::vector<std::pair<double, ggml_backend_t>> gpus;   // (upload rate, backend)
             for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {

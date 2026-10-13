@@ -5,6 +5,7 @@
 #include <thread>
 
 #include "llama-moecache-fork.h"
+#include "llama-dsplit-fork.h"
 #include "llama-kv-cache.h"
 #include "llama-moestate-fork.h"
 
@@ -1245,6 +1246,7 @@ void llama_context::synchronize() {
         if (!cparams.no_perf) {
             t_p_eval_us += ggml_time_us() - t_compute_start_us;
         }
+        llama_dsplit_report_fork(n_queued_tokens, ggml_time_us() - t_compute_start_us);   // fork: --moe dense-split=auto learns which configuration is faster
         n_p_eval += n_queued_tokens;
     }
 
@@ -2193,7 +2195,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
     const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
-    if (!graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork()) {
+    // fork: --moe dense-split: the configuration of this pass (one card or split over the cards), chosen before the graph is built; a changed choice rebuilds
+    const bool ds_changed = llama_dsplit_decide_fork(model, ubatch.n_tokens);
+    if (!graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork() && !ds_changed) {
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
 
         // with pipeline parallelism, the previous graph_compute_async may still be running
@@ -3460,6 +3464,7 @@ ggml_cgraph * llama_context::graph_reserve(
 
     res->reset();
 
+    llama_dsplit_reserve_fork(model);   // fork: reserve for the larger (split) graph when the dense split may be used
     auto * gf = model.build_graph(gparams);
 
     this->n_input_tensors = llama_graph_n_input_tensors(gf);

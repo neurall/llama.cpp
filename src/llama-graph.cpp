@@ -3,6 +3,7 @@
 #include <typeinfo>
 
 #include "llama-moecache-fork.h"
+#include "llama-dsplit-fork.h"
 
 #include "llama-impl.h"
 #include "llama-moestate-fork.h"
@@ -2949,7 +2950,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     std::vector<split_part> parts;
     if (!mcache && n_tokens >= 32 && sched && !up_exps_b && !gate_exps_b && !down_exps_b && !gate_up_exps_b && loras->empty()) {
         const float alpha = llama_moe_cache_prefill_alpha_fork();
-        if (alpha > 0.0f) {
+        if (alpha > 0.0f && llama_dsplit_cur_fork() != 0) {   // fork: --moe dense-split=auto chose one card for this pass: no expert split either
             for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
                 ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
                 ggml_backend_dev_t d = ggml_backend_get_device(b);
