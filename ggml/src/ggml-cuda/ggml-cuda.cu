@@ -3154,6 +3154,7 @@ static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const 
 // is used. GGML_CUDA_XCOPY=peer restores the single peer copy (and the scheduler's wait for the destination's tail).
 struct ggml_cuda_xstage_block {
     void *      host     = nullptr;
+    void *      dev      = nullptr;   // the block as the cards address it (mapped pinned memory), nullptr: the write half is a copy-engine upload
     size_t      cap      = 0;
     bool        mapped   = false;     // anonymous memory registered with the driver (released with cudaHostUnregister + munmap), else cudaHostAlloc
     cudaEvent_t d2h_done = nullptr;   // on the source stream, after the read into the block
@@ -3161,7 +3162,7 @@ struct ggml_cuda_xstage_block {
     bool        used     = false;
 };
 static const int    GGML_CUDA_XSTAGE_N_SMALL = 16;
-static const int    GGML_CUDA_XSTAGE_N_BIG   = 2;   // one large tensor crosses a pair of cards per layer and direction: two blocks keep the awaited write a layer old
+static const int    GGML_CUDA_XSTAGE_N_BIG   = 4;   // large tensors crossing a pair of cards per layer and direction (hidden states, partial sums): four blocks keep the awaited write a layer old
 static const size_t GGML_CUDA_XSTAGE_SMALL   = 1u << 20;
 struct ggml_cuda_xstage_ring {
     ggml_cuda_xstage_block small[GGML_CUDA_XSTAGE_N_SMALL];
@@ -3170,6 +3171,41 @@ struct ggml_cuda_xstage_ring {
 };
 static std::mutex            g_xstage_mu;
 static ggml_cuda_xstage_ring g_xstage[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_DEVICES];
+
+// The write half of the staged copy is a KERNEL on the destination card that reads the pinned host block over PCIe (zero-copy), not an upload on the copy
+// engine. A card's uploads run one after the other on its copy engine, first in, first out, and the prefetch ring queues the next layers' expert uploads there
+// early: a hand-off of a few MB that needed the engine waited behind them (nsys, GLM-5.3-Flash 8k, dense split: a 14.8 MB partial sum for the x4 card waited
+// 130 ms behind three 278 MB expert uploads, the x16's router input 55 ms behind three 515 MB ones; the cards waited 198 and 239 ms of a 301 ms layer). Kernel
+// reads share the link with the uploads but never wait for them. GGML_CUDA_XCOPY_ZC=0 writes with the copy engine as before.
+static __global__ void k_xstage_read16(uint4 * __restrict__ dst, const uint4 * __restrict__ src, const size_t n16) {
+    for (size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x; i < n16; i += (size_t) gridDim.x * blockDim.x) {
+        dst[i] = __ldcv(src + i);   // uncached: the block is reused, a stale line must never be read
+    }
+}
+static __global__ void k_xstage_read1(uint8_t * __restrict__ dst, const uint8_t * __restrict__ src, const size_t n) {
+    for (size_t i = (size_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (size_t) gridDim.x * blockDim.x) {
+        dst[i] = *(const volatile uint8_t *) (src + i);
+    }
+}
+static bool ggml_cuda_xstage_zc_on() {
+    static const bool on = !(getenv("GGML_CUDA_XCOPY_ZC") && atoi(getenv("GGML_CUDA_XCOPY_ZC")) == 0);
+    return on;
+}
+static void ggml_cuda_xstage_read(void * dst, const void * src_dev, size_t n, cudaStream_t stream) {
+    const int threads = 256;
+    if ((((uintptr_t) dst | (uintptr_t) src_dev) & 15) == 0 && n >= 16) {
+        const size_t n16 = n / 16;
+        const int blocks = (int) std::min<size_t>(2048, (n16 + threads - 1) / threads);
+        k_xstage_read16<<<blocks, threads, 0, stream>>>((uint4 *) dst, (const uint4 *) src_dev, n16);
+        if (n % 16) {
+            k_xstage_read1<<<1, threads, 0, stream>>>((uint8_t *) dst + n16 * 16, (const uint8_t *) src_dev + n16 * 16, n % 16);
+        }
+    } else {
+        const int blocks = (int) std::min<size_t>(2048, (n + threads - 1) / threads);
+        k_xstage_read1<<<blocks, threads, 0, stream>>>((uint8_t *) dst, (const uint8_t *) src_dev, n);
+    }
+    CUDA_CHECK(cudaGetLastError());
+}
 
 static bool ggml_cuda_xstage_on() {
     static const bool on = !(getenv("GGML_CUDA_XCOPY") && strcmp(getenv("GGML_CUDA_XCOPY"), "peer") == 0);
@@ -3197,7 +3233,7 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
             if (e.mapped) { CUDA_CHECK(cudaHostUnregister(e.host)); munmap(e.host, e.cap); } else
 #endif
             { CUDA_CHECK(cudaFreeHost(e.host)); }
-            e.host = nullptr; e.cap = 0; e.used = false; e.mapped = false;
+            e.host = nullptr; e.dev = nullptr; e.cap = 0; e.used = false; e.mapped = false;
         }
         const size_t cap = small ? GGML_CUDA_XSTAGE_SMALL : GGML_PAD(n, (size_t) 2 << 20);
         ggml_cuda_set_device(ctx_src->device);
@@ -3210,7 +3246,7 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
             if (p != MAP_FAILED) {
                 (void) madvise(p, cap, MADV_HUGEPAGE);
                 memset(p, 0, cap);
-                if (cudaHostRegister(p, cap, cudaHostRegisterPortable) == cudaSuccess) {
+                if (cudaHostRegister(p, cap, cudaHostRegisterPortable | cudaHostRegisterMapped) == cudaSuccess) {
                     e.host = p; e.mapped = true;
                 } else {
                     (void) cudaGetLastError();
@@ -3220,12 +3256,19 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
         }
 #endif
         // portable: pinned for every CUDA context, the two cards read and write the same block
-        if (e.host == nullptr && cudaHostAlloc(&e.host, cap, cudaHostAllocPortable) != cudaSuccess) {
+        if (e.host == nullptr && cudaHostAlloc(&e.host, cap, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess) {
             (void) cudaGetLastError();
             e.host = nullptr;
             return false;
         }
         e.cap = cap;
+        // the address the destination card reads the block at (with unified addressing the same pointer, asked for anyway)
+        e.dev = nullptr;
+        if (ggml_cuda_xstage_zc_on()) {
+            ggml_cuda_set_device(ctx_dst->device);
+            void * d = nullptr;
+            if (cudaHostGetDevicePointer(&d, e.host, 0) == cudaSuccess) { e.dev = d; } else { (void) cudaGetLastError(); }
+        }
     }
     ggml_cuda_set_device(ctx_src->device);
     if (e.used) {
@@ -3235,7 +3278,11 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
     CUDA_CHECK(cudaEventRecord(e.d2h_done, ctx_src->stream()));
     ggml_cuda_set_device(ctx_dst->device);
     CUDA_CHECK(cudaStreamWaitEvent(ctx_dst->stream(), e.d2h_done, 0));
-    CUDA_CHECK(cudaMemcpyAsync(dst_data, e.host, n, cudaMemcpyHostToDevice, ctx_dst->stream()));
+    if (e.dev != nullptr) {
+        ggml_cuda_xstage_read(dst_data, e.dev, n, ctx_dst->stream());   // zero-copy: the destination card reads the block itself, the copy engine stays with the uploads
+    } else {
+        CUDA_CHECK(cudaMemcpyAsync(dst_data, e.host, n, cudaMemcpyHostToDevice, ctx_dst->stream()));
+    }
     CUDA_CHECK(cudaEventRecord(e.h2d_done, ctx_dst->stream()));
     e.used = true;
     return true;
