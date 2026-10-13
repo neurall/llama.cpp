@@ -2540,6 +2540,40 @@ static void moe_split_cb(ggml_backend_t backend, void * ud) {
     flush_tables();
 }
 
+// The prompt pass's staging fill (ggml-backend.cpp, the prefetch upload) asks which experts of an id range this card already holds, and copies those on the card
+// instead of uploading them again (every pass used to upload every expert, also the ones in this pool). Same lookup as moe_src_cb below, for a whole range under
+// one lock, and WITHOUT its side effects: nothing is counted, the admit boot is not ended (a pass asks for every expert of every layer). A block whose upload
+// is still in flight counts as missing. --moe pf-resident=0 does not register it (the old single upload of the range).
+extern "C" {
+    typedef int (*ggml_backend_moe_where_fn_t)(const ggml_tensor *, int32_t, int32_t, ggml_backend_dev_t, const void **, ggml_backend_buffer_t *, void *);
+    GGML_API void ggml_backend_set_moe_where_fn_fork(ggml_backend_moe_where_fn_t fn, void * user_data);   // ggml-backend.cpp (declared there, no shared header)
+}
+static int moe_where_cb(const ggml_tensor * weight, int32_t lo, int32_t hi, ggml_backend_dev_t dev, const void ** data, ggml_backend_buffer_t * buffer, void * ud) {
+    moe_cache * mc = (moe_cache *) ud;
+    auto it = mc->by_src.find(weight);
+    if (it == mc->by_src.end()) {
+        return 0;
+    }
+    layer_state & ls = mc->layers[it->second.first];
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    ggml_tensor * c = it->second.second == 0 ? ls.pub.up_c : it->second.second == 1 ? ls.pub.gate_c : ls.pub.down_c;
+    if (!c || !c->buffer || c->nb[2] < weight->nb[2] || c->nb[1] != weight->nb[1] ||
+        ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
+        return 0;
+    }
+    int n = 0;
+    for (int32_t e = std::max<int32_t>(lo, 0); e < hi && e < (int32_t) ls.expert_slot.size(); ++e) {
+        const int32_t s = ls.expert_slot[e];
+        if (s < 0 || ((size_t) s < ls.slot_in_flight.size() && ls.slot_in_flight[s])) {
+            continue;
+        }
+        data[e - lo] = (const uint8_t *) c->data + (size_t) s*c->nb[2];
+        ++n;
+    }
+    *buffer = c->buffer;
+    return n;
+}
+
 static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t dev,
                 const void ** data, ggml_backend_buffer_t * buffer, void * ud) {
     moe_cache * mc = (moe_cache *) ud;
@@ -3811,6 +3845,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             if (!e || e[0] != '0') {
                 ggml_backend_set_moe_src_callback(moe_src_cb, mc);
                 ggml_backend_set_moe_fill_callback(moe_fill_cb, mc);
+            }
+            const char * r = moe_opt("pf-resident");   // the staging fill of a prompt pass copies what the card holds (moe_where_cb); 0 = upload everything
+            if (!r || r[0] != '0') {
+                ggml_backend_set_moe_where_fn_fork(moe_where_cb, mc);
             }
         }
         g_cache = mc;
@@ -5363,6 +5401,7 @@ void llama_moe_cache_free_fork() {
     ggml_set_moe_phase_callback(nullptr, nullptr);
     ggml_backend_set_moe_src_callback(nullptr, nullptr);
     ggml_backend_set_moe_fill_callback(nullptr, nullptr);
+    ggml_backend_set_moe_where_fn_fork(nullptr, nullptr);
     ggml_backend_set_split_callback(nullptr, nullptr);
     if (!mc->l3_thr.empty()) {
         {

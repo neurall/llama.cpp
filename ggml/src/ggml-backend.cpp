@@ -661,6 +661,23 @@ void ggml_backend_set_moe_src_callback(ggml_backend_moe_src_cb_t cb, void * user
 static ggml_backend_moe_fill_cb_t g_moe_fill_cb = NULL;
 static void *                     g_moe_fill_ud = NULL;
 
+// fork: which experts of a staged range a card already holds (the expert cache's blocks on that card), for the prompt pass's staging fill (the prefetch upload
+// in graph_compute_async): those are copied on the card instead of crossing the link again. Without it every pass uploaded every expert of every layer, also
+// the ones the card's pool held (Qwen3.8-Flash-Next, 3k tokens: 49 GB per pass on the x16 card while its pool held about 40% of the experts). The query has no
+// side effects (ggml_backend_moe_src counts a use per call); an expert whose block is still being uploaded counts as missing. Returns how many of [lo, hi) the
+// card holds, data[id - lo] = the expert's bytes on the card or NULL, *buffer = the buffer they are in. Declared locally (no shared header, see g_xcopy_dst_ordered).
+typedef int (*ggml_backend_moe_where_fn_t)(const struct ggml_tensor * weight, int32_t lo, int32_t hi, ggml_backend_dev_t dev, const void ** data,
+                                           ggml_backend_buffer_t * buffer, void * user_data);
+static ggml_backend_moe_where_fn_t g_moe_where_fn = NULL;
+static void *                      g_moe_where_ud = NULL;
+extern "C" {
+    GGML_API void ggml_backend_set_moe_where_fn_fork(ggml_backend_moe_where_fn_t fn, void * user_data);
+}
+void ggml_backend_set_moe_where_fn_fork(ggml_backend_moe_where_fn_t fn, void * user_data) {
+    g_moe_where_fn = fn;
+    g_moe_where_ud = user_data;
+}
+
 static ggml_backend_split_cb_t g_split_cb = NULL;
 static void *                  g_split_ud = NULL;
 
@@ -2614,6 +2631,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     // GGML_PF_STATS=1: one line per prompt graph on stderr, how many splits were staged by the prefetch ring and why the others were not (see prefetch_target for 1..5)
     static const bool pf_stats = getenv("GGML_PF_STATS") != NULL;
     int pfs_fired = 0, pfs_why[7] = {0}, pfs_card = 0, pfs_dev = 0, pfs_prep = 0, pfs_off = pf_on ? 0 : 1;
+    double pfs_res_b = 0.0, pfs_up_b = 0.0;   // staged bytes copied on the card from its expert cache / uploaded from host memory
     // GGML_PF_TRACE=1: for graphs of 300+ splits, one line per staged copy (split, card, expert range, microseconds since the graph started, the split being launched at that moment)
     // and one per launched split (card, first node), to read the issue order of both cards' copies against an nsys timeline.
     static const bool pf_trace = getenv("GGML_PF_TRACE") && atoi(getenv("GGML_PF_TRACE")) == 1;
@@ -2737,7 +2755,78 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             const size_t esz = input->nb[2];
             const size_t off = (size_t) p.lo*esz;
             const size_t pad = p.hi < input->ne[2] ? ggml_backend_sched_expert_pad(sched, s->backend_id, input) : 0;
-            ggml_backend_tensor_set_async(R->backend, input_cpy, (const char *) input->data + off, off, (size_t) (p.hi - p.lo)*esz + pad);
+            // Staging fill from what the card already holds. The card's expert cache keeps experts for generation in its pool (Qwen3.8-Flash-Next on the x16
+            // card: 19 GB, about 40% of all experts); a prompt pass used to upload every expert of the range from host memory anyway, those included. Now the
+            // experts the cache holds on this card are copied on the card (one kernel for all of them, CUDA: ggml_backend_cuda_copy_slices_fork, else one copy
+            // each) and only the runs of missing ones cross the link. Both go on the ring's own stream, so the ready event below covers them, as before. The
+            // MMQ padding rule stays: the bytes after the range come from host memory (the run that reaches `hi` carries them), and the tensor's end is zeroed.
+            // --moe pf-resident=0 (no query registered) is the old single upload.
+            std::vector<const void *> where;
+            ggml_backend_buffer_t where_buf = NULL;
+            int n_res = 0;
+            if (g_moe_where_fn) {
+                where.assign((size_t) (p.hi - p.lo), NULL);
+                n_res = g_moe_where_fn(input, (int32_t) p.lo, (int32_t) p.hi, s_backend->device, where.data(), &where_buf, g_moe_where_ud);
+            }
+            if (n_res <= 0 || where_buf == NULL) {
+                ggml_backend_tensor_set_async(R->backend, input_cpy, (const char *) input->data + off, off, (size_t) (p.hi - p.lo)*esz + pad);
+                pfs_up_b += (double) (p.hi - p.lo)*esz;
+            } else {
+                typedef bool (*copy_slices_t)(ggml_backend_t, const void * const *, void * const *, size_t, size_t);
+                static std::mutex slices_mu;
+                static ggml_backend_dev_t slices_dev[16] = {};
+                static copy_slices_t      slices_fn [16] = {};
+                copy_slices_t copy_slices = NULL;
+                {
+                    std::lock_guard<std::mutex> lk(slices_mu);
+                    int k = 0;
+                    while (k < 16 && slices_dev[k] != NULL && slices_dev[k] != s_backend->device) { k++; }
+                    if (k < 16 && slices_dev[k] == NULL) {
+                        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(s_backend->device);
+                        slices_dev[k] = s_backend->device;
+                        slices_fn[k]  = reg ? (copy_slices_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_copy_slices_fork") : NULL;
+                    }
+                    copy_slices = k < 16 ? slices_fn[k] : NULL;
+                }
+                // GGML_PF_SLICES=1 (test): the one-launch slice kernel. Off by default: it takes its pointer arrays from the backend's CUDA pool, and with the
+                // compute alias that pool is served from lent blocks the compute stream uses at the same time (Qwen3.8-Flash-Next perplexity, chunk 2: illegal
+                // memory access). One device copy per expert instead (a few microseconds of host time each).
+                static const bool use_slices = getenv("GGML_PF_SLICES") && atoi(getenv("GGML_PF_SLICES")) == 1;
+                if (!use_slices) { copy_slices = NULL; }
+                std::vector<const void *> srcs;
+                std::vector<void *> dsts;
+                int64_t run0 = -1;
+                for (int64_t id = p.lo; id <= p.hi; ++id) {
+                    const bool res = id < p.hi && where[(size_t) (id - p.lo)] != NULL;
+                    if (id < p.hi && !res) {
+                        if (run0 < 0) { run0 = id; }
+                        continue;
+                    }
+                    if (run0 >= 0) {   // a run of missing experts ends here: one upload (with the padding when it reaches the range's end)
+                        const size_t o = (size_t) run0*esz;
+                        const size_t n = (size_t) (id - run0)*esz + (id == p.hi ? pad : 0);
+                        ggml_backend_tensor_set_async(R->backend, input_cpy, (const char *) input->data + o, o, n);
+                        pfs_up_b += (double) (id - run0)*esz;
+                        run0 = -1;
+                    } else if (id == p.hi && pad > 0) {   // the range ended with a resident expert: the padding bytes still come from host memory
+                        ggml_backend_tensor_set_async(R->backend, input_cpy, (const char *) input->data + (size_t) p.hi*esz, (size_t) p.hi*esz, pad);
+                    }
+                    if (res) {
+                        srcs.push_back(where[(size_t) (id - p.lo)]);
+                        dsts.push_back((uint8_t *) input_cpy->data + (size_t) id*esz);
+                    }
+                }
+                if (!srcs.empty() && !(copy_slices && copy_slices(R->backend, srcs.data(), dsts.data(), srcs.size(), esz))) {
+                    for (size_t i = 0; i < srcs.size(); ++i) {
+                        ggml_tensor sv = {}, dv = {};
+                        sv.type = GGML_TYPE_I8; sv.buffer = where_buf; sv.data = (void *) srcs[i];
+                        sv.ne[0] = (int64_t) esz; sv.ne[1] = sv.ne[2] = sv.ne[3] = 1; sv.nb[0] = 1; sv.nb[1] = sv.nb[2] = sv.nb[3] = esz;
+                        dv = sv; dv.buffer = input_cpy->buffer; dv.data = dsts[i];
+                        ggml_backend_tensor_copy_async(R->backend, R->backend, &sv, &dv);
+                    }
+                }
+                pfs_res_b += (double) srcs.size()*esz;
+            }
             if (p.hi == input->ne[2]) {
                 ggml_backend_tensor_zero_tail_fork(R->backend, input_cpy);   // the range ends at the tensor's end: zeros behind it (see there)
             }
@@ -3165,6 +3254,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     if (pf_stats && sched->n_splits >= 30) {
         const struct ggml_cgraph & lg = splits[sched->n_splits - 1].graph;
         const long long n_tok = lg.n_nodes > 0 ? (long long) lg.nodes[lg.n_nodes - 1]->ne[1] : 0;
+        GGML_LOG_WARN("pf-stats (%lld tokens): staged %.2f GB, %.2f GB of it copied on the card from its expert cache, %.2f GB uploaded\n", n_tok,
+                (pfs_res_b + pfs_up_b) / 1e9, pfs_res_b / 1e9, pfs_up_b / 1e9);
         GGML_LOG_WARN("pf-stats (%lld tokens, %d slots, prefetch %s): %d splits, prefetch fired for %d; not staged: no inputs %d, first node not MUL_MAT_ID %d, weight not an input %d, "
                 "weight not host-resident %d, few ids %d, range part of the card split %d, region on another card %d, staging stream on another card %d, no slots %d\n",
                 n_tok, sched->prefetch_n_slots, pf_on ? "on" : "OFF", sched->n_splits, pfs_fired, pfs_why[1], pfs_why[2], pfs_why[3], pfs_why[4], pfs_why[5], pfs_why[6],
