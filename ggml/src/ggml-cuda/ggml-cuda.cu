@@ -2498,9 +2498,80 @@ static __global__ void k_obs_count(const char * ids, int64_t ne0, int64_t nb0, i
     }
 }
 
+// fork: the same counters for PROMPT batches, for the expert cache's heat (which experts a prompt used: the ones the answer is likely to need next). The
+// host used to count them per expert and tensor through a callback (GGML_PF_COUNT, off for its host cost); here one histogram kernel per expert matmul adds
+// the batch's expert ids on the card, and the cache reads all layers once per prompt (ggml_backend_cuda_obs_prompt_read_fork). The arrays are allocated
+// once at load (ggml_backend_cuda_obs_prompt_init_fork), never at run time. Gate tensor only: one count per layer.
+static std::atomic<bool> g_obs_prompt_on{false};
+static std::mutex        g_obs_prompt_mtx;
+static uint32_t *        g_obs_prompt[GGML_CUDA_MAX_DEVICES] = {};   // per device: n_layer x n_expert counters
+static int               g_obs_prompt_layers = 0, g_obs_prompt_experts = 0;
+
+static bool ggml_backend_cuda_obs_prompt_init_fork(int device, int n_layer, int n_expert) {
+    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES || n_layer <= 0 || n_expert <= 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lk(g_obs_prompt_mtx);
+    if (g_obs_prompt[device]) {
+        return true;
+    }
+    ggml_cuda_set_device(device);
+    void * p = nullptr;
+    if (cudaMalloc(&p, (size_t) n_layer * n_expert * sizeof(uint32_t)) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    CUDA_CHECK(cudaMemset(p, 0, (size_t) n_layer * n_expert * sizeof(uint32_t)));
+    g_obs_prompt[device]  = (uint32_t *) p;
+    g_obs_prompt_layers   = n_layer;
+    g_obs_prompt_experts  = n_expert;
+    g_obs_prompt_on       = true;
+    return true;
+}
+
+// used[(layer)*n_expert + e] |= 1 for every expert some card counted since the last read; the counters are cleared. Call when the cards are idle (after a
+// prompt's synchronize). Returns false when nothing was counted.
+static bool ggml_backend_cuda_obs_prompt_read_fork(int n_layer, int n_expert, uint8_t * used) {
+    std::lock_guard<std::mutex> lk(g_obs_prompt_mtx);
+    if (n_layer != g_obs_prompt_layers || n_expert != g_obs_prompt_experts) {
+        return false;
+    }
+    bool any = false;
+    std::vector<uint32_t> h((size_t) n_layer * n_expert);
+    for (int d = 0; d < GGML_CUDA_MAX_DEVICES; ++d) {
+        if (!g_obs_prompt[d]) {
+            continue;
+        }
+        ggml_cuda_set_device(d);
+        if (cudaMemcpy(h.data(), g_obs_prompt[d], h.size() * sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess) {
+            (void) cudaGetLastError();
+            continue;
+        }
+        CUDA_CHECK(cudaMemset(g_obs_prompt[d], 0, h.size() * sizeof(uint32_t)));
+        for (size_t i = 0; i < h.size(); ++i) {
+            if (h[i]) { used[i] = 1; any = true; }
+        }
+    }
+    return any;
+}
+
 static void ggml_cuda_obs_count(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * ids) {
     const char * nm = src0->name;
-    if (strncmp(nm, "blk.", 4) != 0 || !strstr(nm, "ffn_gate_exps") || ids->type != GGML_TYPE_I32 || ids->ne[1] > 8) {   // > 8 tokens: a prompt batch, not the answer
+    if (strncmp(nm, "blk.", 4) != 0 || !strstr(nm, "ffn_gate_exps") || ids->type != GGML_TYPE_I32) {
+        return;
+    }
+    if (ids->ne[1] > 8) {   // > 8 tokens: a prompt batch, not the answer: the prompt counters (when the expert cache asked for them)
+        const int il = atoi(nm + 4);
+        uint32_t * base = g_obs_prompt_on.load(std::memory_order_relaxed) && ctx.device < GGML_CUDA_MAX_DEVICES ? g_obs_prompt[ctx.device] : nullptr;
+        if (!base || il < 0 || il >= g_obs_prompt_layers || (int) src0->ne[2] != g_obs_prompt_experts) {
+            return;
+        }
+        const int64_t n = ids->ne[0]*ids->ne[1];
+        k_obs_count<<<(unsigned) ((n + 127)/128), 128, 0, ctx.stream()>>>((const char *) ids->data, ids->ne[0], ids->nb[0], ids->nb[1], n,
+                base + (size_t) il*g_obs_prompt_experts, g_obs_prompt_experts);
+        return;
+    }
+    if (!g_obs_on.load(std::memory_order_relaxed)) {
         return;
     }
     const int il = atoi(nm + 4);
@@ -2552,7 +2623,7 @@ static void ggml_backend_cuda_obs_enable(bool on) {
 }
 
 static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
-    if (g_obs_on.load(std::memory_order_relaxed)) {
+    if (g_obs_on.load(std::memory_order_relaxed) || g_obs_prompt_on.load(std::memory_order_relaxed)) {
         ggml_cuda_obs_count(ctx, dst->src[0], dst->src[2]);
     }
     if (dst->op_params[1] != 0) {
@@ -6849,6 +6920,12 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_copy_slices_fork") == 0) {
         return (void *)ggml_backend_cuda_copy_slices_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_obs_prompt_init_fork") == 0) {
+        return (void *)ggml_backend_cuda_obs_prompt_init_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_obs_prompt_read_fork") == 0) {
+        return (void *)ggml_backend_cuda_obs_prompt_read_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_set_tensor_nosync_fork") == 0) {
         return (void *)ggml_backend_cuda_set_tensor_nosync_fork;
