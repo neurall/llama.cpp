@@ -2356,6 +2356,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         // copy the input tensors to the split backend
         // the weights in host memory are copied last, so that the copy callback can read the other inputs of the split
         std::vector<ggml_backend_t> d2h_pending;
+        NVTX_PUSH("COPY inputs (not weights)");
         for (int input_id = 0; input_id < split->n_inputs && !ahead_done[split_id]; input_id++) {
             if (pf && split->inputs[input_id] == pf->input) {
                 continue;   // staged by the prefetch
@@ -2364,6 +2365,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id], d2h_pending);
             }
         }
+        NVTX_POP();
+        NVTX_PUSH("COPY weights (expert copy callback)");
         for (int input_id = 0; input_id < split->n_inputs && !ahead_w_done[split_id]; input_id++) {
             if (pf && split->inputs[input_id] == pf->input) {
                 continue;
@@ -2372,6 +2375,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id], d2h_pending);
             }
         }
+        NVTX_POP();
         for (ggml_backend_t b : d2h_pending) {
             SYNC_TIMED(4, ggml_backend_synchronize(b));
         }
@@ -2445,7 +2449,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
         if (!sched->callback_eval) {
-            enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
+            NVTX_PUSH("LAUNCH graph_compute_async"); enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph); NVTX_POP();
             if (pf) {
                 // the kernels have captured the slot address at launch: the staging copy may point back, the slot is free once this split is done
                 ggml_backend_event_record(sched->prefetch_ring[pf->ring].free[pf->slot], split_backend);
@@ -2454,7 +2458,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 pf->input_cpy->data   = pf->saved_data;
             }
             if (pf_on) {
+                NVTX_PUSH("FIRE_AHEAD prefetch for next splits");
                 fire_ahead(split_id);
+                NVTX_POP();
             }
             if (ec != GGML_STATUS_SUCCESS) {
                 return ec;
