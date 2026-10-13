@@ -2894,12 +2894,19 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_RMS_NORM_BACK:
             ggml_cuda_op_rms_norm_back(ctx, dst);
             break;
-        case GGML_OP_MUL_MAT:
-            ggml_cuda_mul_mat(ctx, dst->src[0], dst->src[1], dst);
-            break;
-        case GGML_OP_MUL_MAT_ID:
-            ggml_cuda_mul_mat_id(ctx, dst);
-            break;
+        case GGML_OP_MUL_MAT: {
+            // fork, diagnostics: GGML_CUDA_DENSE_REPEAT=N runs a prompt-sized (32+ token) dense matmul N times (same result, the output is rewritten) to give a small model the
+            // compute-to-upload ratio of a big one (OLMoE standing in for GLM in scheduler tests). Also used for the attention below.
+            static const int rep_dense = getenv("GGML_CUDA_DENSE_REPEAT") ? std::max(1, atoi(getenv("GGML_CUDA_DENSE_REPEAT"))) : 1;
+            const int n_rep = dst->ne[1] >= 32 ? rep_dense : 1;
+            for (int r = 0; r < n_rep; ++r) { ggml_cuda_mul_mat(ctx, dst->src[0], dst->src[1], dst); }
+        } break;
+        case GGML_OP_MUL_MAT_ID: {
+            // fork, diagnostics: GGML_CUDA_MMID_REPEAT=N runs a prompt-sized expert matmul N times (same result), see GGML_CUDA_DENSE_REPEAT
+            static const int rep_mmid = getenv("GGML_CUDA_MMID_REPEAT") ? std::max(1, atoi(getenv("GGML_CUDA_MMID_REPEAT"))) : 1;
+            const int n_rep = dst->src[2]->ne[1] >= 32 ? rep_mmid : 1;
+            for (int r = 0; r < n_rep; ++r) { ggml_cuda_mul_mat_id(ctx, dst); }
+        } break;
         case GGML_OP_OUT_PROD:
             ggml_cuda_out_prod(ctx, dst);
             break;
@@ -3005,9 +3012,11 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_ARGSORT:
             ggml_cuda_op_argsort(ctx, dst);
             break;
-        case GGML_OP_FLASH_ATTN_EXT:
-            ggml_cuda_flash_attn_ext(ctx, dst);
-            break;
+        case GGML_OP_FLASH_ATTN_EXT: {
+            static const int rep_fa = getenv("GGML_CUDA_DENSE_REPEAT") ? std::max(1, atoi(getenv("GGML_CUDA_DENSE_REPEAT"))) : 1;
+            const int n_rep = dst->src[0]->ne[1] >= 32 ? rep_fa : 1;
+            for (int r = 0; r < n_rep; ++r) { ggml_cuda_flash_attn_ext(ctx, dst); }
+        } break;
         case GGML_OP_CROSS_ENTROPY_LOSS:
             ggml_cuda_cross_entropy_loss(ctx, dst);
             break;
