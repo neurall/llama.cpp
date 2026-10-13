@@ -2745,10 +2745,20 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 // work", and a chain issued first holds the others back: nsys, GLM 8k, split 0.5: the x4's chain (30 ms) ran alone, then the x16's (111 ms), per layer.
                 static const bool fast_first = [] { const char * e = llama_moe_get_opt("split-order"); return e && strcmp(e, "fast") == 0; }();
                 std::sort(parts.begin(), parts.end(), [](const split_part & x, const split_part & y) { return fast_first ? x.gbs > y.gbs : x.gbs < y.gbs; });
+                // --moe split-slow-share=F: the cards that are not on the fastest link hold F of the experts together (e.g. 0.25: a quarter of the experts is uploaded to and
+                // computed on the x4 card, the rest on the x16 card), split among themselves by link rate. Without it the share is alpha x the link share, which for
+                // x16 25.8 + x4 6.5 GB/s is at most 20% (alpha 1) and 10% at alpha 0.5: measured by nsys, GLM 8k, the x4 card then received 11% of the uploaded bytes.
+                static const double slow_share = [] { const char * e = llama_moe_get_opt("split-slow-share"); return e ? atof(e) : -1.0; }();
+                double slow_sum = 0.0, top = 0.0;
+                for (const auto & pt : parts) { top = std::max(top, pt.gbs); }
+                for (const auto & pt : parts) { if (pt.gbs < top) { slow_sum += pt.gbs; } }
                 int64_t lo = 0;
                 std::vector<split_part> kept;
                 for (size_t i = 0; i < parts.size(); ++i) {
-                    const double share = (1.0 - alpha) * (parts[i].b == fast_b) + alpha * parts[i].gbs / sum;
+                    double share = (1.0 - alpha) * (parts[i].b == fast_b) + alpha * parts[i].gbs / sum;
+                    if (slow_share >= 0.0 && slow_sum > 0.0) {
+                        share = parts[i].gbs < top ? slow_share * parts[i].gbs / slow_sum : (1.0 - slow_share) * parts[i].gbs / (sum - slow_sum);
+                    }
                     const int64_t hi = i + 1 == parts.size() ? n_expert : std::min<int64_t>(n_expert, lo + llround(share * n_expert));
                     if (hi > lo) { kept.push_back({ parts[i].b, parts[i].gbs, lo, hi }); }
                     lo = hi;
