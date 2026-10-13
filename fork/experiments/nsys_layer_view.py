@@ -10,7 +10,8 @@ Lanes, top to bottom (time in ms from the layer start):
   8  x16 link, % of X16_PEAK and GB/s                 9  x4 link, % of X4_PEAK and GB/s
 An upload (a copy of 100 MB or more) belongs to the layer whose expert matmul reads it (copies and matmuls of a card matched in order: the ring is first in, first out).
 Expert matmuls = the heavy mul_mat_q kernels (x16: longer than MIN_KERNEL_MS; x4: longer than 1.5 ms); dense attention matmuls are shorter and not drawn."""
-import sqlite3, sys, bisect
+import sqlite3, sys, bisect, os
+GAP = float(os.environ.get("NSYS_GAP_MS", "400")) * 1e6; X4THR = float(os.environ.get("NSYS_X4_MS", "1.5")) * 1e6; UPMB = float(os.environ.get("NSYS_UP_MB", "100")) * (1 << 20)   # burst gap; x4 expert matmul size limit
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,12 +22,14 @@ c = sqlite3.connect(path)
 ks = c.execute("select k.start,k.end,k.deviceId,n.value from CUPTI_ACTIVITY_KIND_KERNEL k join StringIds n on n.id=k.shortName order by k.start").fetchall()
 bursts, cur = [], [ks[0]]
 for k in ks[1:]:
-    if k[0] - cur[-1][1] > 400e6: bursts.append(cur); cur = [k]
+    if k[0] - cur[-1][1] > GAP: bursts.append(cur); cur = [k]
     else: cur.append(k)
-bursts.append(cur); b = max(bursts, key=lambda x: x[-1][1] - x[0][0]); s = b[0][0]; e = max(k[1] for k in b)
+bursts.append(cur)
+big = [x for x in bursts if len(x) >= 0.8 * max(len(y) for y in bursts)]; b = big[-1] if os.environ.get("NSYS_PICK", "last") == "last" else max(bursts, key=len)
+s = b[0][0]; e = max(k[1] for k in b)
 cps = c.execute("select start,end,deviceId,copyKind,bytes from CUPTI_ACTIVITY_KIND_MEMCPY where end>=? and start<=? order by start", (s - 1_000_000_000, e)).fetchall()
 mmq = [k for k in b if k[3].startswith("mul_mat_q")]
-heavy = {1: [k for k in mmq if k[2] == 1 and k[1] - k[0] > thr * 1e6], 0: [k for k in mmq if k[2] == 0 and k[1] - k[0] > 1.5e6]}
+heavy = {1: [k for k in mmq if k[2] == 1 and k[1] - k[0] > thr * 1e6], 0: [k for k in mmq if k[2] == 0 and k[1] - k[0] > X4THR]}
 trip = [heavy[1][i:i + 3] for i in range(0, len(heavy[1]) - 2, 3)]
 def layer_end(i):
     a, z = trip[i][0][0], (trip[i + 1][0][0] if i + 1 < len(trip) else e)
@@ -35,7 +38,7 @@ ends = [layer_end(i) for i in range(len(trip))]
 layer_of = lambda t: bisect.bisect_left(ends, t)
 up = {0: [], 1: []}
 for d in (0, 1):
-    big = [x for x in cps if x[2] == d and x[3] == 1 and x[4] >= 100 << 20 and not (120 << 20 <= x[4] <= 140 << 20)]
+    big = [x for x in cps if x[2] == d and x[3] == 1 and x[4] >= UPMB and not (120 << 20 <= x[4] <= 140 << 20)]
     mats = sorted(heavy[d], key=lambda k: k[0]); j = 0
     for st, en, _, _, by in sorted(big, key=lambda x: x[1]):
         while j < len(mats) and mats[j][0] < en - 2e6: j += 1
@@ -44,9 +47,9 @@ a, z = ends[L - 1], ends[L]; T = (z - a) / 1e6
 mine = [x for d in (0, 1) for x in up[d] if x[3] == L]; nxt = [x for d in (0, 1) for x in up[d] if x[3] == L + 1]
 x_lo = max(a - 700e6, min([a] + [x[0] for x in mine])); x_hi = z
 rel = lambda t: (t - a) / 1e6
-fig = plt.figure(figsize=(15, 14.6))
-gs = fig.add_gridspec(13, 1, height_ratios=[1, 1, 1, 1, 1, 1, 1, 1, 1.5, 1.5, 1.5, 0.8, 0.8], hspace=0.28)
-axs = [fig.add_subplot(gs[i, 0]) for i in range(13)]
+fig = plt.figure(figsize=(15, 16.6))
+gs = fig.add_gridspec(15, 1, height_ratios=[1, 1, 1, 1, 1, 1, 1, 1, 1.5, 1.5, 1.5, 0.8, 0.8, 1.0, 1.0], hspace=0.28)
+axs = [fig.add_subplot(gs[i, 0]) for i in range(15)]
 for ax in axs[1:]: ax.sharex(axs[0])
 names = ["1  UPLOAD x16: experts used by layer %d" % L, "2  UPLOAD x4: experts used by layer %d" % L, "3  COMPUTE x16: expert matmuls", "4  COMPUTE x16: dense + other kernels",
          "5  COMPUTE x4: expert matmuls", "6  COMPUTE x4: dense + other kernels", "7  PREFETCH x16: experts for layer %d" % (L + 1), "8  PREFETCH x4: experts for layer %d" % (L + 1),
@@ -86,14 +89,33 @@ def rate(dev):
 xs = (edges[:-1] - a) / 1e6
 import nsys_states as NS
 ns_d = NS.load(path, thr); ns_out, ns_T = NS.classify(ns_d, a, z)
-SCOL = ["#2a6f2a", "#4f81bd", "#e69f00", "#d9a0a0", "#c0504d", "#7a3f98", "#888888", "#bbbbbb", "#000000"]
+SCOL = ["#2a6f2a", "#4f81bd", "#e69f00", "#d9a0a0", "#c0504d", "#7a3f98", "#888888", "#bbbbbb", "#000000", "#00a6a6", "#f0d000", "#ff00ff"]
 for ax, dv, lab in ((axs[11], 1, "12  STATE x16 (every ms)"), (axs[12], 0, "13  STATE x4 (every ms)")):
     st_arr = ns_out[dv]
     for i in range(len(st_arr)):
         ax.barh(0, 0.25, left=i * 0.25, height=0.9, color=SCOL[st_arr[i]], linewidth=0)
     ax.set_yticks([]); ax.set_ylim(-0.5, 0.5); ax.set_ylabel(lab, rotation=0, ha="right", va="center", fontsize=9)
 from matplotlib.patches import Patch
-axs[12].legend(handles=[Patch(color=SCOL[i], label="%s (x16 %.0f / x4 %.0f ms)" % (NS.STATES[i], (ns_out[1] == i).sum() * 0.25, (ns_out[0] == i).sum() * 0.25)) for i in range(9)], loc="upper center", bbox_to_anchor=(0.5, -0.55), ncol=3, fontsize=8, frameon=False)
+# scheduler thread, from the NVTX ranges of the run (GGML_NVTX=1, nsys --trace=cuda,nvtx): lane 14 = split launches (blue = x16 split, red = x4 split, grey = other), lane 15 = what the thread does inside them
+has_nvtx = c.execute("select count(*) from sqlite_master where name='NVTX_EVENTS'").fetchone()[0] > 0
+if has_nvtx:
+    nv = c.execute("select start,end,text from NVTX_EVENTS where end>=? and start<=?", (a, z)).fetchall()
+    for st, en, tx in nv:
+        x0, x1 = rel(max(st, a)), rel(min(en, z))
+        if tx.startswith("SPLIT"):
+            col = "#4f81bd" if "CUDA1" in tx else "#c0504d" if "CUDA0" in tx else "#aaaaaa"
+            axs[13].barh(0, x1 - x0, left=x0, height=0.8, color=col, edgecolor="white", linewidth=0.4)
+            if x1 - x0 > 1.5: axs[13].text((x0 + x1) / 2, 0, tx.split()[-1].replace("ffn_moe_", "").replace("-" + tx.split()[-1].split("-")[-1], ""), ha="center", va="center", fontsize=6, color="white")
+        elif tx.startswith(("COPY inputs", "LAUNCH", "WAIT", "TENSOR_COPY")):
+            col = "#e69f00" if tx.startswith("COPY inputs") else "#2a6f2a" if tx.startswith("LAUNCH") else "#7a3f98" if tx.startswith("WAIT") else "#000000"
+            hgt = 0.8 if tx.startswith(("COPY inputs", "LAUNCH")) else 0.45
+            axs[14].barh(0 if hgt == 0.8 else 0.18, x1 - x0, left=x0, height=hgt, color=col, edgecolor="none")
+    axs[13].set_ylabel("14  HOST scheduler thread:\nsplit launches (blue x16, red x4)", rotation=0, ha="right", va="center", fontsize=9)
+    axs[14].set_ylabel("15  HOST inside a launch:\norange = COPY inputs (sync), green = LAUNCH,\npurple/black = named WAIT / sync copy", rotation=0, ha="right", va="center", fontsize=8)
+    for i in (13, 14): axs[i].set_yticks([]); axs[i].set_ylim(-0.5, 0.5)
+else:
+    for i in (13, 14): axs[i].axis("off")
+axs[12].legend(handles=[Patch(color=SCOL[i], label="%s (x16 %.0f / x4 %.0f ms)" % (NS.STATES[i], (ns_out[1] == i).sum() * 0.25, (ns_out[0] == i).sum() * 0.25)) for i in range(12) if ((ns_out[1] == i).sum() + (ns_out[0] == i).sum()) > 0], loc="upper center", bbox_to_anchor=(0.5, -0.55), ncol=3, fontsize=8, frameon=False)
 for ax, dev, peak, lab, col in ((axs[8], None, RAM, names[8], "#555555"), (axs[9], 1, P16, names[9], "#2f5f9e"), (axs[10], 0, P4, names[10], "#b03a36")):
     r = rate(dev); ax.fill_between(xs, 0, np.minimum(100 * r / peak, 160), step="post", color=col, alpha=0.85)
     ax.set_ylim(0, 105); ax.axhline(100, color="k", lw=0.6, ls=":")
@@ -103,7 +125,8 @@ for ax in axs:
     ax.axvline(0, color="k", lw=2.2); ax.axvline(T, color="k", lw=2.2); ax.grid(axis="x", alpha=0.25)
 axs[0].text(0, 0.62, " LAYER %d START (0 ms)" % L, fontsize=10, weight="bold", ha="left", va="bottom", transform=axs[0].get_xaxis_transform())
 axs[0].text(T, 0.62, "LAYER %d END (%.0f ms) " % (L, T), fontsize=10, weight="bold", ha="right", va="bottom", transform=axs[0].get_xaxis_transform())
-axs[0].set_xlim(rel(x_lo) - 2, T + 3); axs[12].set_xlabel("ms from the start of layer %d  (grey area = before the layer starts: prefetch during the layer before)" % L)
+axs[0].set_xlim(rel(x_lo) - 2, T + 3); axs[14].set_xlabel("ms from the start of layer %d  (grey area = before the layer starts: prefetch during the layer before)" % L)
 for ax in axs[:-1]: plt.setp(ax.get_xticklabels(), visible=False)
+for ax in axs: ax.set_xlim(rel(x_lo) - 2, T + 3)
 fig.suptitle("%s: GLM 8k prompt, one pass, layer %d (%.0f ms)" % (path.split("/")[-1].replace(".sqlite", ""), L, T), fontsize=12, y=0.92)
 plt.savefig(out, dpi=100, bbox_inches="tight"); print("wrote", out, "layer %d: %.0f ms" % (L, T))
