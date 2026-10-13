@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <atomic>
 #include <unordered_map>
 #include <vector>
 
@@ -1884,9 +1885,9 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
     if (input->flags & GGML_TENSOR_FLAG_INPUT) {
         // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
-            ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
+            SYNC_TIMED(1, ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]));
         } else {
-            ggml_backend_synchronize(split_backend);
+            SYNC_TIMED(1, ggml_backend_synchronize(split_backend));
         }
         ggml_backend_tensor_copy(input, input_cpy);
         return;
@@ -1920,16 +1921,25 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
     // try async copy, but if not possible, we can still use a sync copy without synchronizing the dst backend, since we handle the synchronization here with multiple copies and events
     // TODO: add public function to facilitate this, since applications do not have direct access to the backend interface
     if (!split_backend->iface.cpy_tensor_async || !split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
-        ggml_backend_synchronize(input_backend);
+        SYNC_TIMED(2, ggml_backend_synchronize(input_backend));
         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
-            ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
+            SYNC_TIMED(2, ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]));
         } else {
-            ggml_backend_synchronize(split_backend);
+            SYNC_TIMED(2, ggml_backend_synchronize(split_backend));
         }
-        ggml_backend_tensor_copy(input, input_cpy);
+        const int64_t _tc = ggml_time_us(); ggml_backend_tensor_copy(input, input_cpy); ggml_backend_sched_sync_stat_add(2, ggml_time_us() - _tc);
     }
 }
 
+
+// Time the host thread spends in the blocking calls of the split loop, by call site (GGML_PF_STATS=1 prints them per big graph). Sites: 1 copy_input waits for the split's own
+// card, 2 copy_input synchronous cross-card fallback, 3 the expert copy callback reading the router ids (llama_context::sched_copy_experts), 4 D2H fetches before a split,
+// 5 the previous card before a split without inputs, 6 copy-ahead of the next split's inputs, 7 tracing, 8 end of an eval-callback split.
+static std::atomic<long long> g_sync_us[10], g_sync_n[10];
+void ggml_backend_sched_sync_stat_add(int site, long long us) {
+    if (site >= 0 && site < 10) { g_sync_us[site].fetch_add(us); g_sync_n[site].fetch_add(1); }
+}
+#define SYNC_TIMED(site, call) do { const int64_t _t = ggml_time_us(); call; ggml_backend_sched_sync_stat_add(site, ggml_time_us() - _t); } while (0)
 
 // the staging ring of card `dev`; created on first use with the configured slot count (NULL when the table of rings is full)
 static struct sched_pf_ring * ggml_backend_sched_pf_ring_for(ggml_backend_sched_t sched, ggml_backend_dev_t dev) {
@@ -2294,9 +2304,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         };
         if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id && prev_reads_buffer_of_split_backend()) {
             if (sched->events[prev_backend_id][sched->cur_copy] != NULL) {
-                ggml_backend_event_synchronize(sched->events[prev_backend_id][sched->cur_copy]);
+                SYNC_TIMED(5, ggml_backend_event_synchronize(sched->events[prev_backend_id][sched->cur_copy]));
             } else {
-                ggml_backend_synchronize(sched->backends[prev_backend_id]);
+                SYNC_TIMED(5, ggml_backend_synchronize(sched->backends[prev_backend_id]));
             }
         }
 
@@ -2326,7 +2336,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
         for (ggml_backend_t b : d2h_pending) {
-            ggml_backend_synchronize(b);
+            SYNC_TIMED(4, ggml_backend_synchronize(b));
         }
         if (copy_ahead && !sched->callback_eval && split_id + 1 < sched->n_splits && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
             struct ggml_backend_sched_split * nx = &splits[split_id + 1];
@@ -2346,7 +2356,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             ggml_backend_sched_copy_input(sched, nx, nx->inputs[i], nx_d2h);
                         }
                     }
-                    for (ggml_backend_t b2 : nx_d2h) { ggml_backend_synchronize(b2); }
+                    for (ggml_backend_t b2 : nx_d2h) { SYNC_TIMED(6, ggml_backend_synchronize(b2)); }
                     ahead_done[split_id + 1] = 1;
                     // The host-weight inputs of the next split (the experts: the copy callback reads the split's ids, which are copied above, and queues the copies of the
                     // experts it uses on THAT card's stream) are issued now too, before this split is launched. Left to the next split's own turn, the two cards' expert
@@ -2359,13 +2369,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 ggml_backend_sched_copy_input(sched, nx, nx->inputs[i], nx_d2h);
                             }
                         }
-                        for (ggml_backend_t b2 : nx_d2h) { ggml_backend_synchronize(b2); }
+                        for (ggml_backend_t b2 : nx_d2h) { SYNC_TIMED(6, ggml_backend_synchronize(b2)); }
                         ahead_w_done[split_id + 1] = 1;
                     }
                 }
             }
         }
-        if (tracing) { ggml_backend_synchronize(split_backend); }   // the copies have arrived
+        if (tracing) { SYNC_TIMED(7, ggml_backend_synchronize(split_backend)); }   // the copies have arrived
         const int64_t p_t1 = prof ? ggml_time_us() : 0;
         const int64_t tr_tc = tracing ? ggml_time_us() : 0;
 
@@ -2443,7 +2453,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
 
         if (tracing) {
-            ggml_backend_synchronize(split_backend);   // the kernels are done
+            SYNC_TIMED(8, ggml_backend_synchronize(split_backend));   // the kernels are done
             const int64_t tr_td = ggml_time_us();
             size_t in_bytes = 0, hw_bytes = 0;
             for (int input_id = 0; input_id < split->n_inputs; input_id++) {
@@ -2496,6 +2506,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 "weight not host-resident %d, few ids %d, range part of the card split %d, region on another card %d, staging stream on another card %d, no slots %d\n",
                 n_tok, sched->prefetch_n_slots, pf_on ? "on" : "OFF", sched->n_splits, pfs_fired, pfs_why[1], pfs_why[2], pfs_why[3], pfs_why[4], pfs_why[5], pfs_why[6],
                 pfs_card, pfs_dev, pfs_prep);
+        GGML_LOG_WARN("pf-stats sync (cumulative host ms / calls): copy_input-own-card %lld/%lld, cross-card-fallback %lld/%lld, expert-ids-read %lld/%lld, d2h %lld/%lld, prev-card %lld/%lld, copy-ahead %lld/%lld, trace %lld/%lld, eval-cb %lld/%lld\n",
+                g_sync_us[1].load()/1000, g_sync_n[1].load(), g_sync_us[2].load()/1000, g_sync_n[2].load(), g_sync_us[3].load()/1000, g_sync_n[3].load(), g_sync_us[4].load()/1000, g_sync_n[4].load(),
+                g_sync_us[5].load()/1000, g_sync_n[5].load(), g_sync_us[6].load()/1000, g_sync_n[6].load(), g_sync_us[7].load()/1000, g_sync_n[7].load(), g_sync_us[8].load()/1000, g_sync_n[8].load());
     }
 
     return GGML_STATUS_SUCCESS;
