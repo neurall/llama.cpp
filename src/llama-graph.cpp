@@ -3025,6 +3025,35 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     }
                     const double bytes_layer = (double) ((up_exps ? ggml_nbytes(up_exps) : 0) + (gate_exps ? ggml_nbytes(gate_exps) : 0) + (down_exps ? ggml_nbytes(down_exps) : 0));
                     if (owner_i < parts.size()) { n_of = split_ctl_counts(il, n_tokens, cards, owner_i, n_expert, n_embd, bytes_layer); }
+                    // --moe split-pattern=a:b:c (tests): the experts every helper holds, per layer, cycled over the layers (0 = helper off, the owner keeps the
+                    // rest and at least one). The controller's results depend on timing; this gives every shape it can produce on demand: a layer with one
+                    // card only next to split layers, a card with a single expert, a card with all but one. Each must give the same perplexity as one card.
+                    static const std::vector<int64_t> pattern = [] {
+                        std::vector<int64_t> p;
+                        const char * e = llama_moe_get_opt("split-pattern");
+                        for (const char * s = e; s && *s; ) { p.push_back(atoll(s)); s = strchr(s, ':'); if (s) { ++s; } }
+                        return p;
+                    }();
+                    // --moe split-pattern-after=N: the pattern applies once the controller has read N measurements (the start shares before that). A change
+                    // of shape from one graph to the next is what the controller does after its first measurement; this makes that change repeatable.
+                    static const long pattern_after = [] { const char * e = llama_moe_get_opt("split-pattern-after"); return e ? atol(e) : 0L; }();
+                    if (!pattern.empty() && owner_i < parts.size() && g_split_ctl.n_updates >= pattern_after) {
+                        n_of.assign(parts.size(), 0);
+                        int64_t used = 0;
+                        for (size_t i = 0; i < parts.size(); ++i) {
+                            if (i == owner_i) { continue; }
+                            n_of[i] = std::max<int64_t>(0, std::min<int64_t>(n_expert - 1 - used, pattern[(size_t) il % pattern.size()]));
+                            used += n_of[i];
+                        }
+                        n_of[owner_i] = n_expert - used;
+                    }
+                    if (!n_of.empty() && getenv("LLAMA_SPLIT_CTL_DEBUG") && atoi(getenv("LLAMA_SPLIT_CTL_DEBUG")) >= 2) {
+                        std::string txt;
+                        for (size_t i = 0; i < parts.size(); ++i) {
+                            txt += std::string(" ") + ggml_backend_name(parts[i].b) + (i == owner_i ? "(owner) " : " ") + std::to_string(n_of[i]);
+                        }
+                        LLAMA_LOG_WARN("prefill split: layer %d, %lld tokens:%s\n", il, (long long) n_tokens, txt.c_str());
+                    }
                 }
                 int64_t lo = 0;
                 std::vector<split_part> kept;
@@ -3054,9 +3083,16 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     }
                     parts = cut;
                 }
-            }
-            if (parts.size() < 2) {
-                parts.clear();
+                // One card may be left here (the share controller switched the other cards off for this layer, or a share rounded to no expert): the layer
+                // stays in the split path with that one card holding every expert. It used to drop to the generic chain, whose matmuls are not pinned: the
+                // scheduler then gave them to the first backend that takes host weights, whichever card the controller had meant, in the middle of a graph
+                // whose other layers are pinned. Measured on Qwen3.8-Flash-Next with the x4-linked card listed first: 17 of 48 layers switched off after the
+                // first pass, their experts all went to the x4 card, and the second perplexity chunk came out NaN (one card: 1.1086). A graph is now split
+                // in every expert layer or in none. --moe split-single=generic restores the old behaviour (to reproduce that fault).
+                static const bool single_generic = [] { const char * e = llama_moe_get_opt("split-single"); return e && strcmp(e, "generic") == 0; }();
+                if (single_generic && parts.size() < 2) { parts.clear(); }
+            } else {
+                parts.clear();   // one GPU: nothing to split
             }
         }
     }
