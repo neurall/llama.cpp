@@ -663,6 +663,19 @@ static void *                     g_moe_fill_ud = NULL;
 static ggml_backend_split_cb_t g_split_cb = NULL;
 static void *                  g_split_ud = NULL;
 
+// fork: a backend tells the scheduler that its copy between two of its devices (cpy_tensor_async) writes the destination tensor on the DESTINATION's own stream,
+// i.e. in stream order behind everything queued on that card before. Such a copy needs no wait for the destination card at all (see ggml_backend_sched_copy_input:
+// the stock code drains the destination on the host, the fork made the SOURCE stream wait for the destination's tail on the device, which parked the source card's
+// compute behind the other card). Declared locally by the backend that sets it (no shared header: a header edit rebuilds every CUDA source).
+typedef bool (*ggml_backend_xcopy_dst_ordered_t)(ggml_backend_t src, ggml_backend_t dst);
+static ggml_backend_xcopy_dst_ordered_t g_xcopy_dst_ordered = NULL;
+extern "C" {
+    GGML_API void ggml_backend_sched_set_xcopy_dst_ordered(ggml_backend_xcopy_dst_ordered_t fn);
+}
+void ggml_backend_sched_set_xcopy_dst_ordered(ggml_backend_xcopy_dst_ordered_t fn) {
+    g_xcopy_dst_ordered = fn;
+}
+
 void ggml_backend_set_split_callback(ggml_backend_split_cb_t cb, void * user_data) {
     g_split_cb = cb;
     g_split_ud = user_data;
@@ -1553,6 +1566,32 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                 }
             }
 
+            // fork: inside an expert matmul split of the multi-GPU prompt split (first node a MUL_MAT_ID with an id range, op_params 8 and 9), a node that reads a tensor
+            // computed on ANOTHER GPU and not yet copied to this card starts a new split. A split's inputs are copied before its first node runs, so without this the
+            // matmul waited for an input only a later node reads: the layer owner's `down` matmul for the helper card's partial sum (read by the add behind it), a
+            // helper's `down` matmul for the router weights (read by the mul behind it). nsys, OLMoE 3.4k tokens, x16 owner + x4 helper: the owner idle 8 ms per layer
+            // in front of its own `down`. Any number of cards: every add of another card's partial sum becomes its own wait point on the owner. GGML_SCHED_XSPLIT=0 turns off.
+            static const bool xsplit = !(getenv("GGML_SCHED_XSPLIT") && atoi(getenv("GGML_SCHED_XSPLIT")) == 0);
+            if (xsplit && !need_new_split && node_backend_id == cur_backend_id && i > split->i_start &&
+                    ggml_backend_dev_type(ggml_backend_get_device(sched->backends[cur_backend_id])) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                const struct ggml_tensor * first = graph->nodes[split->i_start];
+                if (first->op == GGML_OP_MUL_MAT_ID && first->op_params[9] > first->op_params[8]) {
+                    for (int j = 0; j < GGML_MAX_SRC; j++) {
+                        struct ggml_tensor * src = node->src[j];
+                        if (src == NULL || (src->buffer != NULL && src->buffer->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS)) {
+                            continue;
+                        }
+                        const int src_backend_id = tensor_backend_id(src);
+                        if (src_backend_id != -1 && src_backend_id != cur_backend_id && tensor_id_copy(hash_id(src), cur_backend_id, 0) == NULL &&
+                                ggml_backend_dev_type(ggml_backend_get_device(sched->backends[src_backend_id])) == GGML_BACKEND_DEVICE_TYPE_GPU &&
+                                !ggml_backend_sched_buffer_supported(sched, src, cur_backend_id)) {
+                            need_new_split = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
             if (node_backend_id != cur_backend_id || need_new_split) {
                 split->i_end = i;
                 i_split++;
@@ -1951,7 +1990,16 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
         // input coming from another GPU backend with events; anything else (CPU inputs, backends without events) keeps the drain. GGML_SCHED_DRAIN=1 restores the drain everywhere.
         static const bool drain = getenv("GGML_SCHED_DRAIN") && atoi(getenv("GGML_SCHED_DRAIN")) == 1;
         bool waited = false;
+        // Third form, the one used when the backend offers it (g_xcopy_dst_ordered): the copy runs in two halves through pinned host memory, the read on the source
+        // stream and the WRITE on the destination's own stream. Stream order on the destination is then the whole protection, nobody waits for anybody here, and the
+        // source card's compute is never parked behind the destination card. nsys, OLMoE 3.4k tokens, x16 owner + x4 helper, with the tail wait: the 110 KB router
+        // weights for the x4's `down` sat in the x16's compute stream until the x4 had finished `gate` and `up` and one of its own expert uploads, about 11 ms per layer
+        // with no kernel on the x16; the hidden state itself held the x16's stream for the 5.8 ms the x4's link needs to take it.
         if (!drain && input_backend != split_backend && split_backend->iface.cpy_tensor_async != NULL &&
+                g_xcopy_dst_ordered != NULL && g_xcopy_dst_ordered(input_backend, split_backend)) {
+            waited = true;
+        }
+        if (!waited && !drain && input_backend != split_backend && split_backend->iface.cpy_tensor_async != NULL &&
                 ggml_backend_dev_type(ggml_backend_get_device(input_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU &&
                 ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
             if (sched->tail_ev[split_backend_id] == NULL) {

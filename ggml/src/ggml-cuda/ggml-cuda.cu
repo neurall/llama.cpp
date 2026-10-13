@@ -3138,6 +3138,87 @@ static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const 
         data, stride_data, (const char *) tensor->data + offset, stride_tensor, size, n_copies, cudaMemcpyDeviceToHost, cuda_ctx->stream()));
 }
 
+// ---- fork: copy between two cards in two halves through pinned host memory ---------------------------------------------------------------------------------
+// The stock copy is one cudaMemcpyPeerAsync queued on the SOURCE card's compute stream. Without peer-to-peer in the driver (the normal case on consumer cards) the
+// driver stages it through host memory itself, and the whole thing, read from the source AND write into the destination over the destination's link, occupies the
+// source's stream. A fast card that hands a tensor to a card on a slow link then does nothing until the slow link has taken it: nsys, OLMoE 3.4k tokens, x16 -> x4,
+// 28 MB of hidden state: 5.8 ms per layer with no kernel on the x16, although the x16 needs 1.1 ms to give the bytes away.
+// Here the two halves are separate copies on separate streams:
+//     read   device -> pinned host block   on the SOURCE's compute stream   (stream order: after the tensor's producer, before anything that may reuse its memory)
+//     write  pinned host block -> device   on the DESTINATION's compute stream (stream order: after everything queued on that card, so no wait for its tail is
+//                                          needed; it waits on the device for the read's event)
+// Each card is busy only for its own half at its own link rate, and neither stream ever waits for the other card except the destination for data it needs anyway.
+// Host blocks: a ring per (source, destination) pair, any number of cards. A block is reused only after the write that read it (its event; the next read into the
+// block waits for it on the device). Small tensors (ids, router weights, up to 1 MiB) rotate through 16 blocks, large ones (a hidden state) through 4 that grow to
+// the largest tensor seen, so in steady state the awaited write is several layers old and the wait is free. Memory: 16 MiB + 4 x the largest tensor per pair that
+// is used. GGML_CUDA_XCOPY=peer restores the single peer copy (and the scheduler's wait for the destination's tail).
+struct ggml_cuda_xstage_block {
+    void *      host     = nullptr;
+    size_t      cap      = 0;
+    cudaEvent_t d2h_done = nullptr;   // on the source stream, after the read into the block
+    cudaEvent_t h2d_done = nullptr;   // on the destination stream, after the write from the block
+    bool        used     = false;
+};
+static const int    GGML_CUDA_XSTAGE_N_SMALL = 16;
+static const int    GGML_CUDA_XSTAGE_N_BIG   = 4;
+static const size_t GGML_CUDA_XSTAGE_SMALL   = 1u << 20;
+struct ggml_cuda_xstage_ring {
+    ggml_cuda_xstage_block small[GGML_CUDA_XSTAGE_N_SMALL];
+    ggml_cuda_xstage_block big[GGML_CUDA_XSTAGE_N_BIG];
+    unsigned cur_small = 0, cur_big = 0;
+};
+static std::mutex            g_xstage_mu;
+static ggml_cuda_xstage_ring g_xstage[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_DEVICES];
+
+static bool ggml_cuda_xstage_on() {
+    static const bool on = !(getenv("GGML_CUDA_XCOPY") && strcmp(getenv("GGML_CUDA_XCOPY"), "peer") == 0);
+    return on;
+}
+
+// false: no pinned memory for the block (the caller falls back to the peer copy)
+static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_backend_cuda_context * ctx_dst, const void * src_data, void * dst_data, size_t n) {
+    std::lock_guard<std::mutex> lk(g_xstage_mu);
+    ggml_cuda_xstage_ring & R = g_xstage[ctx_src->device][ctx_dst->device];
+    const bool small = n <= GGML_CUDA_XSTAGE_SMALL;
+    ggml_cuda_xstage_block & e = small ? R.small[R.cur_small++ % GGML_CUDA_XSTAGE_N_SMALL] : R.big[R.cur_big++ % GGML_CUDA_XSTAGE_N_BIG];
+    if (e.d2h_done == nullptr) {
+        ggml_cuda_set_device(ctx_src->device);
+        CUDA_CHECK(cudaEventCreateWithFlags(&e.d2h_done, cudaEventDisableTiming));
+        ggml_cuda_set_device(ctx_dst->device);
+        CUDA_CHECK(cudaEventCreateWithFlags(&e.h2d_done, cudaEventDisableTiming));
+    }
+    if (e.cap < n) {
+        if (e.host != nullptr) {
+            // the block grows (a longer batch than any before): the write still reading the old block must finish first. Rare, so a host wait is fine here.
+            ggml_cuda_set_device(ctx_dst->device);
+            if (e.used) { CUDA_CHECK(cudaEventSynchronize(e.h2d_done)); }
+            CUDA_CHECK(cudaFreeHost(e.host));
+            e.host = nullptr; e.cap = 0; e.used = false;
+        }
+        const size_t cap = small ? GGML_CUDA_XSTAGE_SMALL : GGML_PAD(n, (size_t) 2 << 20);
+        ggml_cuda_set_device(ctx_src->device);
+        // portable: pinned for every CUDA context, the two cards read and write the same block
+        if (cudaHostAlloc(&e.host, cap, cudaHostAllocPortable) != cudaSuccess) {
+            (void) cudaGetLastError();
+            e.host = nullptr;
+            return false;
+        }
+        e.cap = cap;
+    }
+    ggml_cuda_set_device(ctx_src->device);
+    if (e.used) {
+        CUDA_CHECK(cudaStreamWaitEvent(ctx_src->stream(), e.h2d_done, 0));   // the previous user of this block has written it out
+    }
+    CUDA_CHECK(cudaMemcpyAsync(e.host, src_data, n, cudaMemcpyDeviceToHost, ctx_src->stream()));
+    CUDA_CHECK(cudaEventRecord(e.d2h_done, ctx_src->stream()));
+    ggml_cuda_set_device(ctx_dst->device);
+    CUDA_CHECK(cudaStreamWaitEvent(ctx_dst->stream(), e.d2h_done, 0));
+    CUDA_CHECK(cudaMemcpyAsync(dst_data, e.host, n, cudaMemcpyHostToDevice, ctx_dst->stream()));
+    CUDA_CHECK(cudaEventRecord(e.h2d_done, ctx_dst->stream()));
+    e.used = true;
+    return true;
+}
+
 static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
     ggml_backend_buffer_t buf_src = src->view_src ? src->view_src->buffer : src->buffer;
     ggml_backend_buffer_t buf_dst = dst->view_src ? dst->view_src->buffer : dst->buffer;
@@ -3173,6 +3254,10 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
         if (src_physical == dst_physical) {
             CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, ggml_nbytes(dst), cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
         } else {
+            // fork: two halves through pinned host memory, each on its own card's stream (see ggml_cuda_xstage_copy); the events are queued there
+            if (ggml_cuda_xstage_on() && ggml_cuda_xstage_copy(cuda_ctx_src, cuda_ctx_dst, src->data, dst->data, ggml_nbytes(dst))) {
+                return true;
+            }
 #ifdef GGML_CUDA_NO_PEER_COPY
             return false;
 #else
@@ -3195,6 +3280,21 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
         CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, ggml_nbytes(dst), cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
     }
     return true;
+}
+
+// fork: tells the scheduler which copies are written on the destination's own stream (the two-half copy above), so it does not wait for the destination card
+// before them. The setter lives in ggml-backend.cpp and is declared here, not in a shared header (a header edit rebuilds every CUDA source).
+extern "C" {
+    typedef bool (*ggml_backend_xcopy_dst_ordered_t)(ggml_backend_t src, ggml_backend_t dst);
+    GGML_API void ggml_backend_sched_set_xcopy_dst_ordered(ggml_backend_xcopy_dst_ordered_t fn);
+}
+static bool ggml_backend_cuda_xcopy_dst_ordered(ggml_backend_t src, ggml_backend_t dst) {
+    if (!ggml_cuda_xstage_on() || src == dst || !ggml_backend_is_cuda(src) || !ggml_backend_is_cuda(dst)) {
+        return false;
+    }
+    const ggml_backend_cuda_context * s = (const ggml_backend_cuda_context *) src->context;
+    const ggml_backend_cuda_context * d = (const ggml_backend_cuda_context *) dst->context;
+    return ggml_cuda_get_physical_device(s->device) != ggml_cuda_get_physical_device(d->device);
 }
 
 static void ggml_backend_cuda_synchronize(ggml_backend_t backend) {
@@ -6760,6 +6860,7 @@ ggml_backend_t ggml_backend_cuda_init(int device) {
         GGML_LOG_ERROR("%s: failed to allocate context\n", __func__);
         return nullptr;
     }
+    ggml_backend_sched_set_xcopy_dst_ordered(ggml_backend_cuda_xcopy_dst_ordered);   // fork: see ggml_cuda_xstage_copy
 
     ggml_backend_t cuda_backend = new ggml_backend {
         /* .guid    = */ ggml_backend_cuda_guid(),

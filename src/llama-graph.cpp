@@ -2787,11 +2787,36 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     }
     ggml_tensor * experts = nullptr;
     if (!parts.empty()) {
+        // The OWNER of the layer is the card that holds its dense weights (attention, norms, router): the router weight says which. Nothing below assumes two cards or
+        // a particular link: any number of cards, each with its own expert range, and the owner may be any of them (or none: a layer whose dense part is on the CPU).
+        // Three rules keep the owner's compute stream free of the other cards (nsys, OLMoE 3.4k tokens, x16 owner + x4 helper, the owner idle 27 ms of a 77 ms layer):
+        //  1. The id helpers f and f1 are put in the graph here, right behind the router, so they are computed by the owner. Left to the first id mask that reads
+        //     them, f1 landed among the FIRST chain's pinned nodes, i.e. on the helper card, and the owner's own id mask then waited for a copy back from the helper.
+        //  2. The owner's id mask is built first (it joins the owner's dense split), the owner's expert chain last: the helpers' input copies are issued before the
+        //     owner's matmuls are queued, so they leave the owner right after the dense part.
+        //  3. The partial sums are added on the owner AFTER its own chain: sum = owner's part, then + each helper's part. The scheduler starts a new split at an add
+        //     that reads another card's tensor (see pass 5 in ggml_backend_sched_split_graph), so the owner's own matmuls never wait for a helper's result.
+        ggml_backend_t owner_b = nullptr;
+        if (gate_inp && gate_inp->buffer) {
+            const ggml_backend_dev_t owner_dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(gate_inp->buffer));
+            for (const auto & pt : parts) { if (owner_dev && ggml_backend_get_device(pt.b) == owner_dev) { owner_b = pt.b; } }
+        }
+        if (owner_b) {
+            std::stable_partition(parts.begin(), parts.end(), [&](const split_part & pt) { return pt.b != owner_b; });   // helpers first, the owner's chain(s) last
+        }
         // id in [lo, hi) -> kept, else -1 (on the integer-valued floats: clamp(id - lo + 1, 0, 1) * clamp(hi - id, 0, 1))
         ggml_tensor * f  = ggml_cast(ctx0, ggml_cont(ctx0, selected_experts), GGML_TYPE_F32);
         ggml_tensor * f1 = ggml_scale_bias(ctx0, f, 1.0f, 1.0f);
+        ggml_build_forward_expand(gf, f1);   // rule 1
         std::vector<ggml_tensor *> ids(parts.size());
-        for (size_t i = 0; i < parts.size(); ++i) {
+        // Rule 4: a helper takes its own copy of the router weights together with its id mask, at the very start of its chain. Read straight from the owner by the
+        // mul behind the helper's `down` matmul, the 110 KB copy was issued behind that matmul and stood on the helper's link behind the helper's own expert upload
+        // of the next layer (nsys, same run: 3.5 ms, which the owner then waited for the partial sum). Early, it travels with the id helpers while the link is free.
+        std::vector<ggml_tensor *> w_part(parts.size(), nullptr);
+        std::vector<size_t> mask_order;      // rule 2: the owner's masks first
+        for (size_t i = 0; i < parts.size(); ++i) { if (parts[i].b == owner_b) { mask_order.push_back(i); } }
+        for (size_t i = 0; i < parts.size(); ++i) { if (parts[i].b != owner_b) { mask_order.push_back(i); } }
+        for (size_t i : mask_order) {
             // Every operation of a card's id mask is pinned to that card. Left free, the scheduler put them next to the first chain, so the second chain took
             // its ids from the first chain's split and had to wait for it (nsys, GLM 8k: the x16's chain started when the x4's ended).
             auto pin = [&](ggml_tensor * t) { ggml_backend_sched_set_tensor_backend(sched, t, parts[i].b); return t; };
@@ -2803,11 +2828,15 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             // all id sets before any chain: the scheduler copies only the used experts of a host weight when the
             // MUL_MAT_ID is the first node of its split (the ids must exist before the split starts)
             ggml_build_forward_expand(gf, ids[i]);
+            if (owner_b && parts[i].b != owner_b && !weight_before_ffn) {   // rule 4
+                w_part[i] = pin(ggml_cont(ctx0, weights));
+                ggml_build_forward_expand(gf, w_part[i]);
+            }
         }
         // each GPU weights and sums its experts ([n_embd, n_tokens] crosses between the GPUs, not [n_embd, n_expert_used, n_tokens])
-        auto reduce = [&](ggml_tensor * e, ggml_backend_t b) {
+        auto reduce = [&](ggml_tensor * e, ggml_backend_t b, ggml_tensor * w) {
             if (!weight_before_ffn) {
-                e = ggml_mul(ctx0, e, weights);
+                e = ggml_mul(ctx0, e, w ? w : weights);
                 ggml_backend_sched_set_tensor_backend(sched, e, b);
             }
             ggml_tensor * sum = ggml_view_2d(ctx0, e, n_embd, n_tokens, e->nb[2], 0);
@@ -2821,17 +2850,26 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
             return sum;
         };
-        ggml_tensor * moe_out = nullptr;
+        std::vector<ggml_tensor *> partial(parts.size());
         for (size_t i = 0; i < parts.size(); ++i) {
             mm_id_backend = parts[i].b;
             mm_id_lo = (int32_t) parts[i].lo;
             mm_id_hi = (int32_t) parts[i].hi;
-            ggml_tensor * p = reduce(expert_chain(cur, ids[i]), parts[i].b);
+            partial[i] = reduce(expert_chain(cur, ids[i]), parts[i].b, w_part[i]);
             mm_id_backend = nullptr;
             mm_id_lo = mm_id_hi = 0;
-            ggml_build_forward_expand(gf, p); // in this order: slowest link's chain issued first
-            moe_out = moe_out ? ggml_add(ctx0, moe_out, p) : p;
+            ggml_build_forward_expand(gf, partial[i]); // in this order: the helpers' chains issued first (slowest link first), the owner's last
         }
+        // rule 3: every partial sum goes straight to the owner and is added there, the owner's own part first. (Added as the chains were built, the sum of two
+        // helpers was computed on the second helper: one card's result crossed to another helper and only then to the owner.)
+        ggml_tensor * moe_out = nullptr;
+        auto add_part = [&](size_t i) {
+            if (!moe_out) { moe_out = partial[i]; return; }
+            moe_out = ggml_add(ctx0, moe_out, partial[i]);
+            if (owner_b) { ggml_backend_sched_set_tensor_backend(sched, moe_out, owner_b); }
+        };
+        for (size_t i = 0; i < parts.size(); ++i) { if (parts[i].b == owner_b) { add_part(i); } }
+        for (size_t i = 0; i < parts.size(); ++i) { if (parts[i].b != owner_b) { add_part(i); } }
         cb(moe_out, "ffn_moe_out", il);
         return moe_out;
     } else {
