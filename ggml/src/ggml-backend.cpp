@@ -2352,14 +2352,24 @@ static bool ggml_backend_sched_prefetch_prepare(ggml_backend_sched_t sched, stru
     }
     sched->prefetch_slot_bytes = std::max(sched->prefetch_slot_bytes, size);
 
-    // slots inside a buffer the host owns (the expert cache lends the blocks): no allocation here
-    if (R->region_buf != NULL && R->region_cap >= (size_t) n * size) {
-        uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(R->region_buf) + R->region_off;
-        for (int i = 0; i < n; i++) {
-            slot_buf[i]  = R->region_buf;
-            slot_data[i] = base + (size_t) i * size;
+    // slots inside a buffer the host owns (the expert cache lends the blocks): no allocation here. As many slots as the lent region holds, up to the
+    // configured number: the region is what the pool could lend next to THIS graph, so a big micro-batch gets fewer slots instead of the micro-batch
+    // being cut down to make room for all of them (MiMo-V2.6-Flash 3-bit, 4k prompt: 6 slots forced 512-token passes, 127 prompt tokens/s; one pass
+    // of 4k without slots ran 544). At least 3: fewer cannot keep an upload in flight safely (fire_ahead keeps up to n_slots - 1 per card).
+    if (R->region_buf != NULL && size > 0) {
+        const int fit = (int) std::min<size_t>((size_t) sched->prefetch_n_slots, R->region_cap / size);
+        if (fit >= 3) {
+            if (R->n_slots != fit) {
+                R->n_slots = fit;
+                R->cur %= fit;
+            }
+            uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(R->region_buf) + R->region_off;
+            for (int i = 0; i < fit; i++) {
+                slot_buf[i]  = R->region_buf;
+                slot_data[i] = base + (size_t) i * size;
+            }
+            return true;
         }
-        return true;
     }
 
     if (R->region_only) {
@@ -2850,7 +2860,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         for (int j = k + 1; j < sched->n_splits && j <= k + PF_WINDOW; j++) {
             const int b = splits[j].backend_id;
             if (lookahead[j].slot != -1) { pend[b]++; continue; }
-            if (pend[b] >= PF_PER_CARD || held[b]) { continue; }
+            // a card whose ring got fewer slots for this graph (the lent region holds fewer, see prefetch_prepare) keeps fewer uploads in flight: one less than its slots,
+            // or the ring would hand an upload the slot of a split that has not run yet
+            const struct sched_pf_ring * Rb = ggml_backend_sched_pf_ring_for(sched, sched->backends[b]->device);
+            const int lim = Rb ? std::min(PF_PER_CARD, std::max(LOOKAHEAD + 1, Rb->n_slots - 1)) : PF_PER_CARD;
+            if (pend[b] >= lim || held[b]) { continue; }
             pf_deferred = false;
             fire_prefetch(j);
             if (pf_deferred) { held[b] = 1; }

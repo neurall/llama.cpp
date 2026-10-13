@@ -1,6 +1,7 @@
 #include "llama-moecache-fork.h"
 #include "llama-gpu-probe-fork.h"
 #include "llama-moestate-fork.h"
+#include "llama-dsplit-fork.h"
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -253,8 +254,23 @@ struct moe_cache {
         size_t                small     = 0;    // the most scratch a small graph (< 64 tokens) asked for
         int32_t               last_n    = 0;    // the previous graph: its tokens and the scratch it was lent (the rate is corrected from it)
         size_t                last_scr  = 0;
+        size_t                slot_b    = 0;    // staging slot size of this card (the largest staged expert range), 0 until a prompt graph was seen
+        int                   n_stage   = 0;    // staging slots the last graph got (0: it ran without prefetch)
+        int                   n_cfg     = 0;    // staging slots a graph may use at most (the scheduler's ring size, --moe pf-slots)
+        size_t                graph_tok = 0;    // graph bytes per batch token of the biggest prompt graphs seen (the prompt pass planner)
+        // Lending from every size class (--moe alias-all, default on): the classes lie one after the other in the buffer (the first one at 0), so the lent
+        // range [0, bytes) can run past the first class into the next ones. Each class gives the blocks the range covers; the class's last block (its zero
+        // block, the "uncached" target of the decode tables) is zeroed again when the range leaves it. One class only (the old rule) capped the micro-batch
+        // at what the biggest class holds (MiMo-V2.6-Flash: 4 GB of a 15 GB pool, Qwen3.8-Flash-Next: 4.8 GB of 19 GB).
+        struct seg { int32_t pcls = -1; size_t base = 0; size_t B = 0; int32_t n = 0; int32_t blocked = 0; bool zero_dirty = false; };
+        std::vector<seg>      segs;
+        size_t                span   = 0;       // lendable bytes: up to the last class's last expert block
+        size_t                want_b = 0;       // bytes the last graph needed (what alias_release keeps)
     };
     std::vector<alias_pool> alias;   // block pool: the lifetime count of the busiest expert of ANY layer, the common scale of scores compared across layers
+    bool pf_count_on      = false;   // prompt hit counters on the cards (see pf-count)
+    int  pf_count_layers  = 0;
+    int  pf_count_experts = 0;
     std::map<const ggml_tensor *, size_t> by_up_src;
     std::map<const ggml_tensor *, std::pair<size_t, int>> by_src; // host weight -> (layer, 0 up / 1 gate / 2 down)
 
@@ -2630,7 +2646,7 @@ std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork() {
         return out;
     }
     for (const auto & ap : mc->alias) {
-        out.push_back({ ap.buf, ap.dev, (size_t) ap.n * ap.B });   // never the zero block behind the class
+        out.push_back({ ap.buf, ap.dev, ap.span });   // up to the last class's last expert block (zero blocks inside are restored, see alias_release)
     }
     return out;
 }
@@ -2661,7 +2677,7 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
             ggml_backend_t be = ggml_backend_sched_get_backend(sched, i);
             if (ggml_backend_get_device(be) == ap.dev) { peak = ggml_backend_sched_graph_peak(sched, be); }
         }
-        const size_t cap     = (size_t) ap.n * ap.B;
+        const size_t cap     = ap.span;
         const size_t scratch = ap.cuda_dev >= 0 || strncmp(ggml_backend_dev_name(ap.dev), "CUDA", 4) == 0
                              ? GGML_PAD((size_t) n_tokens * alias_tok_bytes(mc, ap), (size_t) 2 << 20) : 0;
         const size_t base    = GGML_PAD(GGML_PAD(peak, 256) + scratch, 256);
@@ -2694,6 +2710,8 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
     }
     return fit;
 }
+
+static std::atomic<int> g_pp_k { -1 };   // staging slots the pass planner gave the prompt it sized last (-1: no plan, a prompt graph takes what fits)
 
 void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     moe_cache * mc = g_cache;
@@ -2747,96 +2765,119 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         // after the graph and its scratch; only on the GPU that prompt batches are offloaded to
         size_t stage = 0;
         const size_t stage_off = GGML_PAD(peak_al + scratch, 256);
-        // every card that runs staged expert matmuls in this graph gets its slots from its own pool (the multi-GPU prompt split runs half of the experts on each card)
-        stage = ggml_backend_sched_prefetch_slot_bytes_dev(sched, ap.dev) * (size_t) std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
-        const int32_t need_all = std::min<int32_t>(ap.n, (int32_t) ((stage_off + stage + ap.B - 1) / ap.B));
-        ap.want = need_all;
+        // every card that runs staged expert matmuls in this graph gets its slots from its own pool (the multi-GPU prompt split runs half of the experts on each card).
+        // As many slots as the class still holds behind the graph, up to the configured number, at least 3 (the scheduler's ring adapts to the region it gets,
+        // see ggml_backend_sched_prefetch_prepare): a big micro-batch runs with fewer slots, or none, instead of the micro-batch being cut for them.
+        {
+            const size_t slot_b = ggml_backend_sched_prefetch_slot_bytes_dev(sched, ap.dev);
+            const size_t cap_b  = ap.span;
+            const int    n_cfg  = std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
+            int          fit    = slot_b > 0 && cap_b > stage_off ? (int) std::min<size_t>((size_t) n_cfg, (cap_b - stage_off) / slot_b) : 0;
+            if (n_tokens >= 64 && g_pp_k.load() >= 0) { fit = std::min(fit, g_pp_k.load()); }   // the pass planner's choice: more slots evict more cached experts
+            stage = fit >= 3 ? slot_b * (size_t) fit : 0;
+            ap.slot_b  = slot_b;
+            ap.n_stage = fit >= 3 ? fit : 0;
+            ap.n_cfg   = n_cfg;
+            if (n_tokens >= 64) { ap.graph_tok = std::max(ap.graph_tok, (peak + n_tokens - 1) / n_tokens); }   // graph bytes per token (the prompt pass planner)
+        }
+        const size_t need_b = stage_off + stage;   // the bytes this graph borrows from the start of the buffer: its tensors, the CUDA scratch, the staging slots
+        ap.want_b = std::min(need_b, ap.span);
+        ap.want   = ap.segs.empty() ? 0 : (int32_t) std::min<size_t>((size_t) ap.n, (ap.want_b + ap.B - 1) / ap.B);
         if (ap.cuda_dev >= 0) {
             scratch_fn(ap.cuda_dev, scratch > 0 ? (char *) ggml_backend_buffer_get_base(ap.buf) + peak_al : nullptr, scratch);
         }
         {
-            // the staging slots come only from lent blocks: if the class cannot lend them, this card's splits of this graph run without prefetch (never a new buffer)
-            if (stage > 0 && (size_t) need_all * ap.B >= stage_off + stage) {
+            // the staging slots come only from lent blocks: if the pool cannot lend them, this card's splits of this graph run without prefetch (never a new buffer)
+            if (stage > 0 && need_b <= ap.span) {
                 ggml_backend_sched_set_prefetch_region_dev(sched, ap.dev, ap.buf, stage_off, stage, true);
             } else {
                 ggml_backend_sched_set_prefetch_region_dev(sched, ap.dev, nullptr, 0, 0, true);
             }
         }
-        const int32_t need = need_all;
         static const bool dbg = moe_log_has("a");   // --moe log=a: the compute alias per graph
         if (dbg) {
-            LLAMA_LOG_WARN("moe-cache: alias %s: %d tokens, graph %.1f MiB + scratch %.1f MiB (largest asked so far %.1f MiB) = %d of %d blocks, %d lent\n",
-                    ggml_backend_dev_name(ap.dev), n_tokens, peak / 1048576.0, scratch / 1048576.0, ap.hwm / 1048576.0, need, ap.n, ap.blocked);
+            LLAMA_LOG_WARN("moe-cache: alias %s: %d tokens, graph %.1f MiB + scratch %.1f MiB + %d staging slots (largest scratch asked so far %.1f MiB) = %.1f of %.1f MiB lendable\n",
+                    ggml_backend_dev_name(ap.dev), n_tokens, peak / 1048576.0, scratch / 1048576.0, ap.n_stage, ap.hwm / 1048576.0, need_b / 1048576.0, ap.span / 1048576.0);
         }
-        if (need <= ap.blocked) {
-            continue;
-        }
-        auto & ps = mc->pool[ap.pcls];
-        // uploads into these blocks: a queued one is dropped, a finished but unpublished one is discarded, a running one is awaited (one copy);
-        // an adoption is cancelled (its device copy was queued before this graph on the same stream). The step publishes uploads only later,
-        // so waiting for the publish would never end.
-        const size_t want_pcls = (size_t) ap.pcls;
-        auto in_zone = [&](const upload_job & j) {
-            return j.layer_idx < mc->layers.size() && mc->layers[j.layer_idx].pcls == (int32_t) want_pcls && j.slot >= ap.blocked && j.slot < need;
-        };
-        auto drop_job = [&](const upload_job & j) {
-            layer_state & lo = mc->layers[j.layer_idx];
-            lo.slot_in_flight[j.slot] = false;
-            if (j.expert >= 0 && j.expert < (int32_t) lo.queued.size()) { lo.queued[j.expert] = 0; }
-        };
-        for (int spin = 0; ; ++spin) {
-            bool busy = false;
-            {
-                std::lock_guard<std::mutex> wlk(mc->wmtx);
-                std::lock_guard<std::mutex> lk(mc->mtx);
-                for (auto it = mc->todo.begin(); it != mc->todo.end(); ) {
-                    if (in_zone(*it)) { drop_job(*it); it = mc->todo.erase(it); } else { ++it; }
-                }
-                for (size_t k = 0; k < mc->done.size(); ) {
-                    if (in_zone(mc->done[k])) { drop_job(mc->done[k]); mc->done[k] = mc->done.back(); mc->done.pop_back(); } else { ++k; }
-                }
-                for (int32_t b = ap.blocked; b < need && !busy; ++b) {
-                    const int32_t o = ps.owner[b];
-                    if (o < 0 || !mc->layers[o].slot_in_flight[b]) {
-                        continue;
+        for (auto & sg : ap.segs) {
+            // the blocks of this class the range covers, and whether it reaches the class's zero block
+            const size_t cov = need_b > sg.base ? need_b - sg.base : 0;
+            const int32_t need = (int32_t) std::min<size_t>((size_t) sg.n, (cov + sg.B - 1) / sg.B);
+            if (cov > (size_t) sg.n * sg.B) {
+                sg.zero_dirty = true;
+            }
+            if (need <= sg.blocked) {
+                continue;
+            }
+            auto & ps = mc->pool[sg.pcls];
+            const int32_t blocked = sg.blocked;
+            // uploads into these blocks: a queued one is dropped, a finished but unpublished one is discarded, a running one is awaited (one copy);
+            // an adoption is cancelled (its device copy was queued before this graph on the same stream). The step publishes uploads only later,
+            // so waiting for the publish would never end.
+            const int32_t want_pcls = sg.pcls;
+            auto in_zone = [&](const upload_job & j) {
+                return j.layer_idx < mc->layers.size() && mc->layers[j.layer_idx].pcls == want_pcls && j.slot >= blocked && j.slot < need;
+            };
+            auto drop_job = [&](const upload_job & j) {
+                layer_state & lo = mc->layers[j.layer_idx];
+                lo.slot_in_flight[j.slot] = false;
+                if (j.expert >= 0 && j.expert < (int32_t) lo.queued.size()) { lo.queued[j.expert] = 0; }
+            };
+            for (int spin = 0; ; ++spin) {
+                bool busy = false;
+                {
+                    std::lock_guard<std::mutex> wlk(mc->wmtx);
+                    std::lock_guard<std::mutex> lk(mc->mtx);
+                    for (auto it = mc->todo.begin(); it != mc->todo.end(); ) {
+                        if (in_zone(*it)) { drop_job(*it); it = mc->todo.erase(it); } else { ++it; }
                     }
-                    layer_state & lo = mc->layers[o];
-                    bool adoption = false;
-                    for (size_t i = 0; i < lo.adopted.size(); ++i) {
-                        const int32_t e = lo.adopted[i];
-                        if (lo.adopt_slot[e] == b) {
-                            lo.adopt_slot[e] = -1;
-                            lo.adopt_mask[e] = 0;
-                            lo.adopted.erase(lo.adopted.begin() + (ptrdiff_t) i);
-                            lo.slot_in_flight[b] = false;
-                            adoption = true;
-                            break;
+                    for (size_t k = 0; k < mc->done.size(); ) {
+                        if (in_zone(mc->done[k])) { drop_job(mc->done[k]); mc->done[k] = mc->done.back(); mc->done.pop_back(); } else { ++k; }
+                    }
+                    for (int32_t b = blocked; b < need && !busy; ++b) {
+                        const int32_t o = ps.owner[b];
+                        if (o < 0 || !mc->layers[o].slot_in_flight[b]) {
+                            continue;
                         }
+                        layer_state & lo = mc->layers[o];
+                        bool adoption = false;
+                        for (size_t i = 0; i < lo.adopted.size(); ++i) {
+                            const int32_t e = lo.adopted[i];
+                            if (lo.adopt_slot[e] == b) {
+                                lo.adopt_slot[e] = -1;
+                                lo.adopt_mask[e] = 0;
+                                lo.adopted.erase(lo.adopted.begin() + (ptrdiff_t) i);
+                                lo.slot_in_flight[b] = false;
+                                adoption = true;
+                                break;
+                            }
+                        }
+                        busy = !adoption;   // a worker is copying into it right now
                     }
-                    busy = !adoption;   // a worker is copying into it right now
                 }
+                if (!busy) {
+                    break;
+                }
+                GGML_ASSERT(spin < 200000 && "compute alias: an upload into the borrowed blocks never finished");
+                std::this_thread::sleep_for(std::chrono::microseconds(50));
             }
-            if (!busy) {
-                break;
+            std::lock_guard<std::mutex> lk(mc->mtx);
+            for (int32_t b = blocked; b < need; ++b) {
+                const int32_t o = ps.owner[b];
+                if (o >= 0) {
+                    layer_state & lo = mc->layers[o];
+                    evict_slot(mc, lo, b);
+                    lo.n_own--;
+                } else if (o == -1) {
+                    auto it = std::find(ps.free.begin(), ps.free.end(), b);
+                    if (it != ps.free.end()) { ps.free.erase(it); }
+                }
+                ps.owner[b] = -2;
             }
-            GGML_ASSERT(spin < 200000 && "compute alias: an upload into the borrowed blocks never finished");
-            std::this_thread::sleep_for(std::chrono::microseconds(50));
+            sg.blocked = need;
+            changed = true;
         }
-        std::lock_guard<std::mutex> lk(mc->mtx);
-        for (int32_t b = ap.blocked; b < need; ++b) {
-            const int32_t o = ps.owner[b];
-            if (o >= 0) {
-                layer_state & lo = mc->layers[o];
-                evict_slot(mc, lo, b);
-                lo.n_own--;
-            } else if (o == -1) {
-                auto it = std::find(ps.free.begin(), ps.free.end(), b);
-                if (it != ps.free.end()) { ps.free.erase(it); }
-            }
-            ps.owner[b] = -2;
-        }
-        ap.blocked = need;
-        changed = true;
+        ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
     }
     if (changed) {
         flush_tables();
@@ -2847,17 +2888,32 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
 // at a sync point: blocks above what the last graph needed go back to the cache
 static void alias_release(moe_cache * mc) {
     for (auto & ap : mc->alias) {
-        if (ap.want >= ap.blocked) {
-            continue;
-        }
-        auto & ps = mc->pool[ap.pcls];
-        for (int32_t b = ap.want; b < ap.blocked; ++b) {
-            if (ps.owner[b] == -2) {
-                ps.owner[b] = -1;
-                ps.free.push_back(b);
+        for (auto & sg : ap.segs) {
+            const size_t  cov  = ap.want_b > sg.base ? ap.want_b - sg.base : 0;
+            const int32_t keep = (int32_t) std::min<size_t>((size_t) sg.n, (cov + sg.B - 1) / sg.B);
+            if (keep < sg.blocked) {
+                auto & ps = mc->pool[sg.pcls];
+                for (int32_t b = keep; b < sg.blocked; ++b) {
+                    if (ps.owner[b] == -2) {
+                        ps.owner[b] = -1;
+                        ps.free.push_back(b);
+                    }
+                }
+                sg.blocked = keep;
+            }
+            if (sg.zero_dirty && cov <= (size_t) sg.n * sg.B) {
+                // the range has left this class's zero block: zeros again before a decode graph reads it (the tables point uncached experts there)
+                ggml_tensor z = {};
+                z.type   = GGML_TYPE_I8;
+                z.buffer = ap.buf;
+                z.data   = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + sg.base + (size_t) sg.n * sg.B;
+                z.ne[0]  = (int64_t) sg.B; z.ne[1] = z.ne[2] = z.ne[3] = 1;
+                z.nb[0]  = 1; z.nb[1] = z.nb[2] = z.nb[3] = sg.B;
+                ggml_backend_tensor_memset(&z, 0, 0, sg.B);
+                sg.zero_dirty = false;
             }
         }
-        ap.blocked = ap.want;
+        ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
     }
 }
 
@@ -3180,6 +3236,17 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     ap.pcls = (int32_t) (pool0 + order[0]);
                     ap.B    = pl.cls[order[0]].B;
                     ap.n    = nblk[order[0]];
+                    static const bool alias_all = [] { const char * e = moe_opt("alias-all"); return !e || atoi(e) != 0; }();
+                    for (size_t c : order) {
+                        moe_cache::alias_pool::seg sg;
+                        sg.pcls = (int32_t) (pool0 + c);
+                        sg.base = pl.cls[c].base;
+                        sg.B    = pl.cls[c].B;
+                        sg.n    = nblk[c];
+                        ap.segs.push_back(sg);
+                        ap.span = sg.base + (size_t) sg.n * sg.B;
+                        if (!alias_all) { break; }
+                    }
                     mc->alias.push_back(ap);
                 }
                 mc->bufs.push_back(pbuf);
@@ -3850,6 +3917,27 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             if (!r || r[0] != '0') {
                 ggml_backend_set_moe_where_fn_fork(moe_where_cb, mc);
             }
+            // Prompt hit counting on the cards (--moe pf-count, default on; 0 = off): the CUDA backend counts the expert ids of every prompt expert matmul in
+            // per-layer histograms (one small kernel per layer), read once per prompt in llama_moe_cache_prefill_report_fork: which experts the prompt used goes
+            // into the cache's use counts (its heat for the answer), as the host callback did when it was on (GGML_PF_COUNT), without its host cost.
+            const char * pc = moe_opt("pf-count");
+            if ((!pc || pc[0] != '0') && !mc->layers.empty() && mc->layers[0].pub.up_src) {
+                ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+                typedef bool (*obs_init_t)(int, int, int);
+                obs_init_t init = reg ? (obs_init_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_obs_prompt_init_fork") : nullptr;
+                int n_layer = 0;
+                for (const auto & l : mc->layers) { n_layer = std::max(n_layer, l.pub.il + 1); }
+                const int n_expert = (int) mc->layers[0].pub.up_src->ne[2];
+                for (size_t i = 0; init && i < ggml_backend_dev_count(); ++i) {
+                    ggml_backend_dev_t d = ggml_backend_dev_get(i);
+                    const char * nm = ggml_backend_dev_name(d);
+                    if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU && nm && strncmp(nm, "CUDA", 4) == 0) {
+                        mc->pf_count_on = init(atoi(nm + 4), n_layer, n_expert) || mc->pf_count_on;
+                    }
+                }
+                mc->pf_count_layers  = n_layer;
+                mc->pf_count_experts = n_expert;
+            }
         }
         g_cache = mc;
         g_init_done = true;
@@ -4117,6 +4205,31 @@ static void prefill_split_tune(moe_cache * mc, double batch_us) {
 
 float llama_moe_cache_prefill_alpha_fork() {
     return g_split_share;
+}
+
+// The share of layer il's experts that card `dev` holds ready in its pool: 0 when the layer's cache lives on another card (the prompt split's planner:
+// a card that holds a layer's experts computes them without uploading them).
+double llama_moe_cache_resident_frac_fork(int il, ggml_backend_dev_t dev) {
+    moe_cache * mc = g_cache;
+    if (!mc || !dev) {
+        return 0.0;
+    }
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    for (const auto & l : mc->layers) {
+        if (l.pub.il != il || !l.pub.up_src || !l.pub.up_c || !l.pub.up_c->buffer) {
+            continue;
+        }
+        if (ggml_backend_buft_get_device(ggml_backend_buffer_get_type(l.pub.up_c->buffer)) != dev) {
+            return 0.0;
+        }
+        int64_t held = 0;
+        for (size_t e = 0; e < l.expert_slot.size(); ++e) {
+            const int32_t sl = l.expert_slot[e];
+            if (sl >= 0 && !((size_t) sl < l.slot_in_flight.size() && l.slot_in_flight[sl])) { held++; }
+        }
+        return (double) held / (double) std::max<int64_t>(1, l.pub.up_src->ne[2]);
+    }
+    return 0.0;
 }
 
 double llama_moe_cache_link_gbs_fork(ggml_backend_dev_t dev) {
@@ -5376,9 +5489,206 @@ void llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int n
     }
 }
 
+// ---- prompt pass planner ------------------------------------------------------------------------------------------------------------------------------------
+// A prompt runs in passes; every pass walks all layers and streams every expert the card does not hold (Qwen3.8-Flash-Next: 34 GB of 49 per pass on the
+// x16 card, 1.3 s; MiMo-V2.6-Flash 3-bit: about 90 GB, 3.5 s). The staging slots hide that upload under the compute, but they take pool memory next to the
+// graph, and a big graph leaves room for fewer of them, or none. So the number of passes is a trade, decided per prompt from what is known:
+//   U      the upload of one pass on the offload card: the expert bytes of every layer minus what this card's pool holds of them, over its link (measured)
+//   C(u)   the compute of a pass of u tokens: c x u, c measured from earlier prompt passes on this card (unknown at first: then fewest passes)
+//   k(u)   staging slots that fit next to a graph of u tokens: (what the class lends - graph and scratch bytes per token x u) / slot size, at most the
+//          configured number; fewer than 3 = no prefetch
+//   pass   k >= 6: max(U, C) (uploads hidden); 3..5: max(U, C) + a quarter of the smaller (the next layer's copies wait for this layer's matmuls);
+//          no slots: U + C
+//   prompt P passes of ceil(n / P) tokens: P x pass; P from the fewest (n / ub_max) up to four more, the cheapest wins.
+// Measured on MiMo, 4k prompt, one x16: 8 passes with 6 slots 127 t/s, 2 passes with 2 slots 471, one pass without slots 544: one pass wins when the upload
+// dominates; Qwen3.8-Flash-Next at 8k (compute 6.4 s against 1.3 s of upload) wins with two staged passes. --moe pass-plan=0: equal passes as before.
+static std::mutex g_pp_mu;
+static double     g_pp_c_us  = 0.0;   // compute of one prompt token on the offload card in a pass (us), 0 = not measured yet
+static uint32_t   g_pp_n     = 0;     // the last planned prompt: its tokens, passes, pass size and upload estimate (to read its measurement)
+static uint32_t   g_pp_P     = 0;
+static uint32_t   g_pp_ub    = 0;
+static double     g_pp_U_us  = 0.0;
+
+// The experts a prompt pass streams to `dev`: every layer's expert bytes (E), and how many of those bytes this card's pool holds now (R), ready, not in flight.
+static void pp_expert_bytes(moe_cache * mc, ggml_backend_dev_t dev, double & E, double & R) {
+    E = 0.0; R = 0.0;
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    for (const auto & l : mc->layers) {
+        if (!l.pub.up_src || !l.pub.gate_src || !l.pub.down_src) {
+            continue;
+        }
+        const double  lb    = (double) ggml_nbytes(l.pub.up_src) + (double) ggml_nbytes(l.pub.gate_src) + (double) ggml_nbytes(l.pub.down_src);
+        const int64_t n_exp = std::max<int64_t>(1, l.pub.up_src->ne[2]);
+        int64_t held = 0;
+        const ggml_tensor * c = l.pub.up_c;
+        if (c && c->buffer && ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) == dev) {
+            for (size_t e = 0; e < l.expert_slot.size(); ++e) {
+                const int32_t sl = l.expert_slot[e];
+                if (sl >= 0 && !((size_t) sl < l.slot_in_flight.size() && l.slot_in_flight[sl])) { held++; }
+            }
+        }
+        E += lb;
+        R += lb * (double) std::min<int64_t>(held, n_exp) / (double) n_exp;
+    }
+}
+
+
+// what a prompt sized without the planner is measured against: its passes and the upload of one (the compute per token is read from every prompt pass on
+// one card, also the first ones, which the split planner needs before it can say anything)
+static uint32_t pp_record(moe_cache * mc, uint32_t n, uint32_t ub) {
+    double U = 0.0;
+    if (mc->n_links > 0 && mc->link_dev[0]) {
+        const double gbs = llama_moe_cache_link_gbs_fork(mc->link_dev[0]);
+        double E = 0.0, R = 0.0;
+        pp_expert_bytes(mc, mc->link_dev[0], E, R);
+        U = gbs > 0.0 ? std::max(0.0, E - R) / (gbs * 1e3) : 0.0;
+    }
+    std::lock_guard<std::mutex> lk(g_pp_mu);
+    g_pp_n = n; g_pp_P = (n + ub - 1) / std::max<uint32_t>(1, ub); g_pp_ub = std::min(ub, n); g_pp_U_us = U; g_pp_k = -1;
+    return ub;
+}
+
+static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub_old) {
+    static const bool on = [] { const char * e = moe_opt("pass-plan"); return !e || atoi(e) != 0; }();
+    if (!on || mc->alias.empty() || mc->n_links <= 0 || !mc->link_dev[0]) {
+        return pp_record(mc, n, ub_old);
+    }
+    const moe_cache::alias_pool * ap = nullptr;
+    for (const auto & a : mc->alias) { if (a.dev == mc->link_dev[0]) { ap = &a; } }
+    if (!ap || ap->slot_b == 0 || ap->graph_tok == 0 || ap->span == 0) {
+        return pp_record(mc, n, ub_old);   // no prompt graph seen yet: slot and graph sizes unknown
+    }
+    const double gbs = llama_moe_cache_link_gbs_fork(mc->link_dev[0]);
+    if (gbs <= 0.0) {
+        return pp_record(mc, n, ub_old);
+    }
+    double E = 0.0, R_now = 0.0;
+    pp_expert_bytes(mc, mc->link_dev[0], E, R_now);
+    // what the pool holds per byte that is not lent now: lending L bytes leaves rho x (span - L) of the experts in place (a lent block's experts are evicted)
+    const double free_now = (double) ap->span - (double) std::min(ap->want_b, ap->span);
+    const double rho      = free_now > 0.0 ? std::min(1.0, R_now / free_now) : 0.0;
+    double c_us;
+    {
+        std::lock_guard<std::mutex> lk(g_pp_mu);
+        c_us = g_pp_c_us;
+    }
+    const double per_t = (double) (ap->graph_tok + ap->tok_bytes);
+    const int    n_cfg = std::max(0, ap->n_cfg);
+    const int    k_full = std::max(3, std::min(6, n_cfg));   // slots enough to keep the next layer's three uploads going
+    // one pass of u tokens with k staging slots: upload (what the pool does not hold after lending), compute, and how they overlap
+    auto pass_us = [&](uint32_t u, int k, double * U_out) {
+        const double L = per_t * (double) u + (double) k * (double) ap->slot_b;
+        if (L > (double) ap->span) { return -1.0; }
+        const double U = std::max(0.0, E - rho * ((double) ap->span - L)) / (gbs * 1e3);
+        if (U_out) { *U_out = U; }
+        const double C = c_us * (double) u;
+        if (k >= k_full) { return std::max(U, C); }
+        if (k >= 3)      { return std::max(U, C) + 0.25 * std::min(U, C); }
+        return U + C;
+    };
+    const uint32_t P0 = std::max<uint32_t>(1, (n + ub_max - 1) / ub_max);
+    uint32_t best_ub = ub_old, best_P = 0;
+    int      best_k  = 0;
+    double   best_t  = 0.0, best_U = 0.0;
+    for (uint32_t P = P0; P <= P0 + 4; ++P) {
+        const uint32_t u = std::min<uint32_t>(ub_max, ((n + P - 1) / P + 31) / 32 * 32);
+        for (int k = 0; k <= n_cfg; ++k) {
+            if (k > 0 && k < 3) { continue; }
+            double U = 0.0;
+            const double tp = pass_us(u, k, &U);
+            if (tp < 0.0) { continue; }
+            const double t = (double) P * tp;
+            if (best_P == 0 || t < best_t * 0.98) { best_t = t; best_P = P; best_ub = u; best_k = k; best_U = U; }   // 2%: a change must clearly win
+        }
+    }
+    if (best_P == 0) {
+        return pp_record(mc, n, ub_old);
+    }
+    static const bool dbg = moe_log_has("w");   // --moe log=w: the pass planner's choice per prompt
+    if (dbg) {
+        LLAMA_LOG_WARN("moe-cache: pass plan: %u tokens: %u passes of %u, %d staging slots, upload %.0f ms per pass (the pool holds %.1f of %.1f GB), compute %.1f us per token%s, modelled %.0f ms\n",
+                n, (n + best_ub - 1) / best_ub, best_ub, best_k, best_U / 1e3, rho * ((double) ap->span - (per_t * best_ub + best_k * (double) ap->slot_b)) / 1e9, E / 1e9,
+                c_us, c_us > 0 ? "" : " (not measured yet)", best_t / 1e3);
+    }
+    std::lock_guard<std::mutex> lk(g_pp_mu);
+    g_pp_n = n; g_pp_P = (n + best_ub - 1) / best_ub; g_pp_ub = best_ub; g_pp_U_us = best_U; g_pp_k = best_k;
+    return best_ub;
+}
+
+// The measured time of a planned prompt (all its passes, from the context's synchronize): the compute per token is read from it. With slots that hide the
+// upload a pass takes max(U, C): above U it is the compute; at U it only says the compute is not more (an upper bound, kept when lower). Without slots C = t - U.
+// A split pass (two cards) says nothing about one card: not used.
+void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
+    moe_cache * mc = g_cache;
+    if (mc && mc->pf_count_on) {
+        // the prompt's expert use, counted on the cards: once per expert and prompt, as the host callback counted it (the cards are idle here: after synchronize)
+        typedef bool (*obs_read_t)(int, int, uint8_t *);
+        static obs_read_t rd = [] {
+            ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+            return reg ? (obs_read_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_obs_prompt_read_fork") : (obs_read_t) nullptr;
+        }();
+        std::vector<uint8_t> used((size_t) mc->pf_count_layers * mc->pf_count_experts, 0);
+        if (rd && rd(mc->pf_count_layers, mc->pf_count_experts, used.data())) {
+            std::lock_guard<std::mutex> lock(mc->mtx);
+            for (auto & ls : mc->layers) {
+                if (ls.pub.il < 0 || ls.pub.il >= mc->pf_count_layers) {
+                    continue;
+                }
+                const uint8_t * u = used.data() + (size_t) ls.pub.il * mc->pf_count_experts;
+                for (int e = 0; e < mc->pf_count_experts && e < (int) ls.expert_count.size(); ++e) {
+                    if (u[e]) {
+                        ls.expert_count[e]++;
+                        ls.glob_max = std::max(ls.glob_max, ++ls.glob_count[e]);
+                    }
+                }
+            }
+        }
+    }
+    if (!mc || us <= 0 || llama_dsplit_cur_fork() == 1) {
+        return;
+    }
+    std::lock_guard<std::mutex> lk(g_pp_mu);
+    if (n_tokens != g_pp_n || g_pp_P == 0 || g_pp_ub == 0) {
+        return;
+    }
+    int k = 0;
+    for (const auto & a : mc->alias) { if (mc->n_links > 0 && a.dev == mc->link_dev[0]) { k = a.n_stage; } }
+    const double t_pass = (double) us / (double) g_pp_P;
+    const double U = g_pp_U_us;
+    double c_new = -1.0;
+    if (k >= 3) {
+        if (t_pass > 1.3 * U) {
+            c_new = t_pass / (double) g_pp_ub;
+        } else if (g_pp_c_us > 0.0) {
+            c_new = std::min(g_pp_c_us, t_pass / (double) g_pp_ub);
+        }
+    } else {
+        c_new = std::max(0.0, t_pass - U) / (double) g_pp_ub;
+    }
+    if (c_new >= 0.0) {
+        g_pp_c_us = g_pp_c_us > 0.0 ? 0.5 * (g_pp_c_us + c_new) : c_new;
+    }
+    g_pp_n = 0;   // read once
+}
+
+// the pass planner's measured compute of one prompt token on the offload card, all layers, us (0 = not measured yet)
+double llama_moe_cache_compute_us_fork() {
+    std::lock_guard<std::mutex> lk(g_pp_mu);
+    return g_pp_c_us;
+}
+
 uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
     static const bool on = [] { const char * e = moe_opt("prefill-equal"); return !e || atoi(e) != 0; }();
     const uint32_t mb = (uint32_t) std::max<int64_t>(1, llama_moe_cache_max_batch_fork());
+    if (on && g_cache && n > mb && ub_max > mb) {
+        // the pass planner (above); its fallback is the rule below
+        uint32_t ub_old = ub_max;
+        if (n > ub_max && n % ub_max > mb) {
+            const uint32_t passes = (n + ub_max - 1) / ub_max;
+            ub_old = (n + passes - 1) / passes;
+        }
+        return pp_plan(g_cache, n, ub_max, ub_old);
+    }
     if (!on || n <= ub_max || ub_max <= mb) {
         return ub_max;
     }

@@ -1017,6 +1017,21 @@ bool llama_context::moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size
     if (graph_fits && stage_fits) {
         return false;
     }
+    // The staging slots alone never cut the micro-batch (--moe stage-shrink=1: the old rule). Every pass streams every expert the cards do not hold, so
+    // a pass more costs a whole upload, while the slots only hide uploads under compute: MiMo-V2.6-Flash 3-bit, 4k prompt, one x16 card, prompt tokens/s:
+    // 6 slots 127 (cut to 512-token passes, 8 passes), 3 slots 128 (same), 2 slots 471 (2208, 2 passes), no slots 544 (5504, one pass). A graph gets as
+    // many slots as the pool still lends next to it (llama_moe_cache_alias_fork, at least 3), and the prompt's passes are sized by the pass planner
+    // (llama_moe_cache_prefill_ubatch_fork), which knows that a big pass may run without slots.
+    static const bool stage_shrink = [] { const char * e = llama_moe_get_opt("stage-shrink"); return e && atoi(e) != 0; }();
+    if (graph_fits && !stage_shrink) {
+        static bool said = false;
+        if (!said) {
+            said = true;
+            LLAMA_LOG_WARN("%s: the pool lends %.0f MiB, graph + scratch + all staging slots need %.0f MiB at micro-batch %u: big passes get fewer or no slots, the micro-batch stays\n",
+                    __func__, cap / 1048576.0, need / 1048576.0, cparams.n_ubatch);
+        }
+        return false;
+    }
     if (cparams.n_ubatch > 512) {
         // need grows about linearly with the tokens: scale by what the pool lends (halving overshot: MiMo fit 12416 but landed on 8192), and step down
         // by at least one 32-token granule so the loop ends
@@ -1255,6 +1270,7 @@ void llama_context::synchronize() {
             t_p_eval_us += ggml_time_us() - t_compute_start_us;
         }
         llama_dsplit_report_fork(n_queued_tokens, ggml_time_us() - t_compute_start_us);   // fork: --moe dense-split=auto learns which configuration is faster
+        llama_moe_cache_prefill_report_fork((uint32_t) n_queued_tokens, ggml_time_us() - t_compute_start_us);   // fork: the pass planner learns the compute per token
         n_p_eval += n_queued_tokens;
     }
 

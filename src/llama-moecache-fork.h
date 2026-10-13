@@ -100,10 +100,14 @@ void    llama_moe_cache_probe_stream_fork(bool on);   // force passes above 0 to
 // ubatch for one decode call of n_tokens new tokens, at most ub_max (the compute buffer is sized for it): equal passes, and a tail that fits the
 // cache path (<= max-batch) is left to it instead of a nearly empty streaming pass that pays a whole expert upload. `--moe prefill-equal=0` = ub_max.
 uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n_tokens, uint32_t ub_max);
+// the measured time of the prompt that the pass planner sized last (all its passes): the planner reads the compute per token from it
+void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us);
 // multi-GPU prefill: alpha (1 = experts over all GPUs by link bandwidth, 0 = fastest GPU only), measured or LLAMA_PREFILL_SPLIT
 float llama_moe_cache_prefill_alpha_fork();
 // a GPU's measured upload link GB/s (startup probe, refined by uploads); 0 if unknown
 double llama_moe_cache_link_gbs_fork(ggml_backend_dev_t dev);
+double llama_moe_cache_resident_frac_fork(int il, ggml_backend_dev_t dev);   // share of layer il's experts ready in dev's pool (0: the layer's cache is elsewhere)
+double llama_moe_cache_compute_us_fork();                                     // measured compute of one prompt token on the offload card, all layers, us (0: not yet)
 // before the first compute-buffer reserve: time each GPU's host link, reserve the prefill split only when it can pay
 void llama_moe_cache_prefill_decide_fork(const std::vector<ggml_backend_dev_t> & gpus);
 // --moe layer-heat=1: per layer device in / out; true when a layer moved (the most concentrated expert layers to the GPU with the slower host link)
