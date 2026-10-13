@@ -1916,6 +1916,19 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
     struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
 
     if (input->flags & GGML_TENSOR_FLAG_INPUT) {
+        // fork: a user input already sitting in host memory (positions, masks, output ids) is queued as an async upload on the destination card's own stream. Stream order puts
+        // it after everything queued there before, which is what the drain below protects, and the host buffer is not rewritten before the next graph (the caller synchronizes
+        // before setting new inputs). Measured (nsys + NVTX, OLMoE split over two cards): the drain before inp_pos held the scheduler thread 247 ms of a 396 ms pass.
+        // GGML_SCHED_DRAIN=1 keeps the drain.
+        static const bool drain_in = getenv("GGML_SCHED_DRAIN") && atoi(getenv("GGML_SCHED_DRAIN")) == 1;
+        if (!drain_in && sched->events[split_backend_id][sched->cur_copy] == NULL && input->buffer && ggml_backend_buffer_is_host(input->buffer) &&
+                split_backend->iface.set_tensor_async != NULL && ggml_is_contiguous(input) && ggml_is_contiguous(input_cpy) &&
+                ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+            NVTX_PUSH("ASYNC user input %s -> %s", input->name, ggml_backend_name(split_backend));
+            ggml_backend_tensor_set_async(split_backend, input_cpy, input->data, 0, ggml_nbytes(input));
+            NVTX_POP();
+            return;
+        }
         // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
             SYNC_TIMED_NAMED(1, ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]), input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend));
