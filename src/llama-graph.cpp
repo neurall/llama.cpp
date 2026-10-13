@@ -42,9 +42,10 @@
 // the helper idles when it arrives before. No formula gets this right for every model, card and link: the balance depends on each card's compute, the bytes
 // of the layer's expert tensors (they differ between layers: mixed quantisations), the hop of the hidden state over the helper's link, the power caps.
 // So it is measured and tuned, per layer, as the user specified (2026-10-13):
-//   start   from the prompt length (see split_ctl_counts): a card that is not on the fastest link starts with its upload-balanced share (its upload rate
-//           over the sum of all rates: both links finish the layer's uploads together) times (0.5 + 0.14 per 1000 tokens of the pass), between 0.5 and 2
-//           times; the cards on the fastest link share the rest. Short passes are bound by the uploads, long ones by compute.
+//   start   a card that is not on the fastest link starts with its upload-balanced share (its upload rate over the sum of all rates: every link finishes
+//           the layer's uploads together), the cards on the fastest link share the rest. No fitted constants: the best share depends on the prompt
+//           length AND on the model (expert bytes per layer, quantisation, dense-to-expert ratio) and the cards; the bisection below finds it per layer and
+//           per pass size, and a size never seen starts from the nearest tuned size.
 //   tune    after every prompt pass the scheduler reports, per layer and card, when the card's expert chain started and ended and when a helper's partial
 //           sum had left it (time stamps in stream order, ggml_sched_chain_stat). delta = t_out(helper) - t_end(owner): positive, the owner waited, the
 //           helper gets fewer experts; negative, the helper waited and gets more. The step is 5% of the experts (--moe split-step) and is halved every
@@ -115,10 +116,14 @@ void split_ctl_update(int64_t n_expert, int64_t n_embd) {
     double sum_wait = 0, sum_early = 0, sum_share = 0, sum_period = 0;
     int n_h = 0, n_moved = 0, n_off = 0, n_capped = 0, n_period = 0;
     int64_t tokens = 0;
-    // the owner's chain start per layer: two consecutive layers give the layer period
+    // the reference chain's start per layer (the owner's: the chain without a hand-off; in range mode the card holding the most experts): two
+    // consecutive layers give the layer period
     std::map<int, int64_t> o_start;
     for (const auto & kv : by_layer) {
-        for (const auto * e : kv.second) { if (e->t_out == 0 && e->t_start != 0) { o_start[kv.first] = e->t_start; } }
+        const ggml_sched_chain_stat * ref = nullptr;
+        for (const auto * e : kv.second) { if (e->t_out == 0) { ref = e; } }
+        if (!ref) { for (const auto * e : kv.second) { if (!ref || (e->hi - e->lo) > (ref->hi - ref->lo)) { ref = e; } } }
+        if (ref && ref->t_start != 0) { o_start[kv.first] = ref->t_start; }
     }
     for (const auto & kv : by_layer) {
         const ggml_sched_chain_stat * o = nullptr;
@@ -164,7 +169,10 @@ void split_ctl_update(int64_t n_expert, int64_t n_embd) {
             const double n_meas = (double) (h->hi - h->lo);
             const double per_h  = (double) (h->t_end - h->t_start) / n_meas;
             const double tau    = per_o + per_h;
-            const double delta  = (double) ((range_mode ? h->t_end : h->t_out) - o->t_end);
+            // range mode: the chains start at different times (each waits for the other card's ranges), so their DURATIONS are compared: a card whose
+            // chain takes longer (its upload or its compute) holds too many experts. (Compared by their ends, the x4 card looked early because the x16's
+            // chain waited for the x4's tokens, and its share ran away to more than half.)
+            const double delta  = range_mode ? (double) ((h->t_end - h->t_start) - (o->t_end - o->t_start)) : (double) (h->t_out - o->t_end);
             double move = 0.0;
             if (std::fabs(delta) >= 0.5 * tau) {
                 auto sit = c.step.find(key);
@@ -207,12 +215,10 @@ std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vecto
     std::lock_guard<std::mutex> lk(c.mu);
     if (bytes_layer > 0 && n_expert > 0) { c.bytes_expert[il] = bytes_layer / (double) n_expert; }
     split_ctl_update(n_expert, n_embd);
-    // Start share from the prompt length (replaces the fixed coefficient 1.4 on the link ratio of the first version). A short pass is bound by the expert
-    // uploads, where the slow link's card should hold no more than its upload-balanced share (its rate over the sum of the rates), less what the hand-offs
-    // take from its link; a long pass is bound by compute, where it can hold more. Measured best on GLM-5.3-Flash, x16 + x4 (upload-balanced share 19.7%),
-    // x4 at 55% of the tokens: 15% at 1.8k tokens (x 0.75), 25% at 5.5k (x 1.27). Factor = 0.5 + 0.14 per 1000 tokens of the pass, between 0.5 and 2.
-    // Only the start: the bisection below moves every layer from there, per pass size.
-    const double len_f = std::max(0.5, std::min(2.0, 0.5 + 0.14 * (double) n_tokens / 1000.0));
+    // Start share: the upload-balanced share (replaces the fixed 1.4 x link ratio of the first version and a factor fitted to GLM-5.3-Flash: measured
+    // there, the best x4 share was 15% at 1.8k tokens and 25% at 5.5k against 19.7% upload-balanced, but that curve belongs to that model and those
+    // cards; the bisection tunes each layer and pass size from here).
+    const double len_f = 1.0;
     static const long   retry = (long) split_opt("split-retry", 32);
     const int bk = split_bucket(n_tokens);
     std::vector<double> v(cards.size(), 0.0);

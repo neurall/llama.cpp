@@ -17,6 +17,7 @@
 
 #include "llama-dsplit-fork.h"
 
+#include "llama-arch.h"
 #include "llama-impl.h"
 #include "llama-model.h"
 #include "llama.h"
@@ -54,8 +55,13 @@ bool dsplit_opt_auto() {
 }  // namespace
 
 void llama_dsplit_mirror_build_fork(const llama_model & model) {
-    if (!dsplit_opt_on()) {
-        return;
+    {
+        // the per-pass choice (--moe dense-split=auto) is managed for any model on two or more GPUs, with or without copies
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_sets[&model];
+    }
+    if (!dsplit_opt_on() || model.arch != LLM_ARCH_GLM5_NEXT) {
+        return;   // the token-range graph exists for GLM-5.3-Flash (glm5-next) only: no copies for other models (they get the expert split alone)
     }
     std::vector<ggml_backend_dev_t> gpus;
     for (const auto & d : model.devices) {
@@ -113,6 +119,14 @@ void llama_dsplit_mirror_build_fork(const llama_model & model) {
     g_sets[&model] = std::move(S);
 }
 
+namespace {
+int dsplit_n_gpus(const llama_model & model) {
+    int n = 0;
+    for (const auto & d : model.devices) { n += ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU; }
+    return n;
+}
+}  // namespace
+
 void llama_dsplit_mirror_free_fork(const llama_model & model) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
@@ -150,7 +164,10 @@ ggml_tensor * llama_dsplit_mirror_fork(const llama_model & model, ggml_tensor * 
 //   buckets         pass sizes in steps of sqrt(2) (256, 362, 512, ... 8192, 11585, ...); a bucket keeps the mean wall time per prompt token of each
 //                   configuration (from llama_context::synchronize: all passes of one decode call, attributed to the size of its largest pass)
 //   choice          both measured: the faster, and the slower one again every 16 passes of the bucket (to follow the machine); one measured: the other
-//                   one (once); none: the nearest bucket with both measured; no data at all: the split from 3072 tokens (the break-even measured above)
+//                   one (once); none: the nearest bucket with both measured; no data at all: the split first. No switch point is built in: it depends
+//                   on the model (expert bytes per layer, quantisation, dense-to-expert ratio, attention) and on the cards, so every size is measured.
+//   models          any model on two or more GPUs: config 1 is the expert split, plus the dense split where the model has a token-range graph
+//                   (glm5-next); config 0 is one card.
 // --moe dense-split=1 / =0 force the split on / off for every pass of --moe dense-split-min tokens or more.
 namespace {
 struct dsplit_bucket { double us_tok[2] = { 0.0, 0.0 }; int n[2] = { 0, 0 }; int passes = 0; };
@@ -172,7 +189,8 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
     int choice = -1;
-    if (it != g_sets.end() && !it->second.mirror.empty() && n_tokens >= 64) {
+    const bool managed = it != g_sets.end() && dsplit_n_gpus(model) >= 2 && (dsplit_opt_auto() || !it->second.mirror.empty());
+    if (managed && n_tokens >= 64) {
         if (!dsplit_opt_auto()) {
             choice = 1;   // forced on (the graph builder still applies dense-split-min)
         } else {
@@ -191,7 +209,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
                         found = kv.second.us_tok[1] < kv.second.us_tok[0] ? 1 : 0;
                     }
                 }
-                choice = found >= 0 ? found : (n_tokens >= 3072 ? 1 : 0);
+                choice = found >= 0 ? found : 1;   // nothing measured anywhere yet: the split first, one card next
             }
             B.passes++;
         }
@@ -213,7 +231,7 @@ int llama_dsplit_cur_fork() {
 void llama_dsplit_reserve_fork(const llama_model & model) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
-    g_cur = it != g_sets.end() && !it->second.mirror.empty() ? 1 : -1;
+    g_cur = it != g_sets.end() && dsplit_n_gpus(model) >= 2 && (dsplit_opt_auto() || !it->second.mirror.empty()) ? 1 : -1;
 }
 
 void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
