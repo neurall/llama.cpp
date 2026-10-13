@@ -2241,6 +2241,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     // first chain is launched, the event sits right after the attention part and both chains start together.
     static const bool copy_ahead = !(getenv("GGML_SCHED_COPY_AHEAD") && atoi(getenv("GGML_SCHED_COPY_AHEAD")) == 0);
     std::vector<char> ahead_done(sched->n_splits, 0);
+    std::vector<char> ahead_w_done(sched->n_splits, 0);   // the same for the host-weight inputs (expert copy callback), see below
     for (int split_id = 0; split_id < sched->n_splits; split_id++) {
         struct ggml_backend_sched_split * split = &splits[split_id];
         int split_backend_id = split->backend_id;
@@ -2292,7 +2293,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id], d2h_pending);
             }
         }
-        for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+        for (int input_id = 0; input_id < split->n_inputs && !ahead_w_done[split_id]; input_id++) {
             if (pf && split->inputs[input_id] == pf->input) {
                 continue;
             }
@@ -2323,6 +2324,20 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     }
                     for (ggml_backend_t b2 : nx_d2h) { ggml_backend_synchronize(b2); }
                     ahead_done[split_id + 1] = 1;
+                    // The host-weight inputs of the next split (the experts: the copy callback reads the split's ids, which are copied above, and queues the copies of the
+                    // experts it uses on THAT card's stream) are issued now too, before this split is launched. Left to the next split's own turn, the two cards' expert
+                    // copies of a layer were issued one after the other (nsys, GLM 8k, split: the x4's copy ended and only then its compute began, 60-110 ms after the x16's
+                    // upload started). A split staged by the prefetch ring keeps that path. GGML_SCHED_COPY_AHEAD_W=0 turns this part off.
+                    static const bool ahead_w = !(getenv("GGML_SCHED_COPY_AHEAD_W") && atoi(getenv("GGML_SCHED_COPY_AHEAD_W")) == 0);
+                    if (ahead_w && !(pf_on && lookahead[split_id + 1].slot != -1)) {
+                        for (int i = 0; i < nx->n_inputs; i++) {
+                            if (ggml_backend_sched_is_host_weight(nx->inputs[i])) {
+                                ggml_backend_sched_copy_input(sched, nx, nx->inputs[i], nx_d2h);
+                            }
+                        }
+                        for (ggml_backend_t b2 : nx_d2h) { ggml_backend_synchronize(b2); }
+                        ahead_w_done[split_id + 1] = 1;
+                    }
                 }
             }
         }
