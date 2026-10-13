@@ -27,25 +27,34 @@ big = [k for k in mm if k[2] == 1 and k[1] - k[0] > thr * 1e6]
 starts = [big[i][0] for i in range(0, len(big) - 2, 3)] + [e]
 a, z = starts[first], starts[first + nl]
 r = lambda x: (x - t0) / 1e6
-lanes = ["hand-off / merge (hidden state between the cards)", "x4  other kernels", "x4  quantized matmuls (experts+dense)", "x4  expert upload", "x16 other kernels", "x16 quantized matmuls (experts+dense)", "x16 expert upload"]
+lanes = ["MERGE: hidden state x4<->x16 (copy)", "x4  COMPUTE: other kernels", "x4  COMPUTE: matmuls", "x4  UPLOAD: experts (copy)", "x16 COMPUTE: other kernels", "x16 COMPUTE: matmuls", "x16 UPLOAD: experts (copy)"]
 col = {0: "#c0504d", 1: "#4f81bd"}
-fig, ax = plt.subplots(figsize=(15, 5.2))
+fig, ax = plt.subplots(figsize=(15, 6.2))
 def bar(lane, x0, x1, color, label=None):
     if x1 < a or x0 > z: return
     ax.barh(lanes.index(lane), max(r(x1) - r(x0), 0.4), left=r(x0), height=0.7, color=color, edgecolor="none")
 for k in b:
     d = k[2]; nm = "x4 " if d == 0 else "x16"
-    if k[3].startswith("mul_mat_q"): bar(f"{nm} quantized matmuls (experts+dense)", k[0], k[1], "#2a6f2a")
-    else: bar(f"{nm} other kernels", k[0], k[1], "#9a9a9a")
+    if k[3].startswith("mul_mat_q"): bar(f"{nm} COMPUTE: matmuls", k[0], k[1], "#2a6f2a")
+    else: bar(f"{nm} COMPUTE: other kernels", k[0], k[1], "#9a9a9a")
 for st, en, d, kind, by in cps:
     nm = "x4 " if d == 0 else "x16"
-    if kind == 1 and by >= 1 << 20: bar(f"{nm} expert upload", st, en, col[d])
-    elif 120 << 20 <= by <= 140 << 20 and kind in (1, 2): bar("hand-off / merge (hidden state between the cards)", st, en, "#e69f00")
+    if kind == 1 and by >= 1 << 20: bar(f"{nm} UPLOAD: experts (copy)", st, en, col[d])
+    elif 120 << 20 <= by <= 140 << 20 and kind in (1, 2): bar("MERGE: hidden state x4<->x16 (copy)", st, en, "#e69f00")
 for i in range(first, first + nl + 1):
     ax.axvline(r(starts[i]), color="k", ls="--", lw=0.9)
     if i < first + nl: ax.text(r(starts[i]) + 2, len(lanes) - 0.35, f"layer {i}  ({r(starts[i+1]) - r(starts[i]):.0f} ms)", fontsize=9, va="bottom")
 ax.set_yticks(range(len(lanes))); ax.set_yticklabels(lanes, fontsize=9)
 ax.set_xlim(r(a) - 5, r(z) + 5); ax.set_xlabel("ms from the first expert upload of the pass"); ax.grid(axis="x", alpha=0.25)
 ax.set_title("%s: GLM 8k prompt, one pass; layers %d-%d" % (path.split("/")[-1].replace(".sqlite", ""), first, first + nl - 1), fontsize=11)
-plt.tight_layout(); plt.savefig(out, dpi=110)
+from matplotlib.patches import Patch
+ax.legend(handles=[Patch(color="#4f81bd", label="UPLOAD x16 (host to GPU copy of experts)"), Patch(color="#c0504d", label="UPLOAD x4 (host to GPU copy of experts)"),
+                   Patch(color="#2a6f2a", label="COMPUTE: quantized matmuls (experts and dense attention)"), Patch(color="#9a9a9a", label="COMPUTE: all other kernels"),
+                   Patch(color="#e69f00", label="MERGE copy of the hidden state between the cards")], loc="lower center", bbox_to_anchor=(0.5, -0.32), ncol=3, fontsize=8, frameon=False)
+for st, en, d, kind, by in cps:
+    if kind == 1 and by >= 1 << 20 and r(en) - r(st) >= 18 and a <= st <= z:
+        ax.text(r(st) + (r(en) - r(st)) / 2, lanes.index(("x4  UPLOAD: experts (copy)" if d == 0 else "x16 UPLOAD: experts (copy)")), "%.0f ms" % (r(en) - r(st)), ha="center", va="center", fontsize=7, color="white")
+for i, ln in enumerate(lanes):
+    if "UPLOAD" in ln: ax.axhspan(i - 0.5, i + 0.5, color="#dde8f5" if ln.startswith("x16") else "#f5dede", alpha=0.5, zorder=0)
+plt.tight_layout(); plt.savefig(out, dpi=110, bbox_inches="tight")
 print("wrote", out)
