@@ -1962,6 +1962,14 @@ static bool ggml_backend_sched_prefetch_target(ggml_backend_sched_t sched, struc
         *why = 2;
         return false;
     }
+    // The expert matmuls of the multi-GPU prompt split (each card an id range [lo, hi), op_params 8 and 9) are not staged ahead: their copies are the layer's own
+    // transfer, issued for BOTH cards together before either chain is launched (copy-ahead in ggml_backend_sched_compute_splits). Run as prefetch, the x4 card's
+    // copy was queued behind its slot's last reader and began after the x16's had ended (nsys, GLM 8k, 25% on the x4 card). GGML_PF_SPLIT=1 stages them again.
+    static const bool pf_split = getenv("GGML_PF_SPLIT") && atoi(getenv("GGML_PF_SPLIT")) == 1;
+    if (!pf_split && node->op_params[9] > node->op_params[8]) {
+        *why = 6;
+        return false;
+    }
     for (int i = 0; i < s->n_inputs; i++) {
         ggml_tensor * cand = s->inputs[i];
         if (cand->flags & GGML_TENSOR_FLAG_INPUT) {
@@ -2150,7 +2158,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     }
     // GGML_PF_STATS=1: one line per prompt graph on stderr, how many splits were staged by the prefetch ring and why the others were not (see prefetch_target for 1..5)
     static const bool pf_stats = getenv("GGML_PF_STATS") != NULL;
-    int pfs_fired = 0, pfs_why[6] = {0}, pfs_card = 0, pfs_dev = 0, pfs_prep = 0, pfs_off = pf_on ? 0 : 1;
+    int pfs_fired = 0, pfs_why[7] = {0}, pfs_card = 0, pfs_dev = 0, pfs_prep = 0, pfs_off = pf_on ? 0 : 1;
     const auto fire_prefetch = [&](int target_id) {
         if (!pf_on || target_id >= sched->n_splits || lookahead[target_id].slot != -1 || sched->prefetch_n_slots < 2) {
             return;
@@ -2469,8 +2477,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         const struct ggml_cgraph & lg = splits[sched->n_splits - 1].graph;
         const long long n_tok = lg.n_nodes > 0 ? (long long) lg.nodes[lg.n_nodes - 1]->ne[1] : 0;
         GGML_LOG_WARN("pf-stats (%lld tokens, %d slots, prefetch %s): %d splits, prefetch fired for %d; not staged: no inputs %d, first node not MUL_MAT_ID %d, weight not an input %d, "
-                "weight not host-resident %d, few ids %d, region on another card %d, staging stream on another card %d, no slots %d\n",
-                n_tok, sched->prefetch_n_slots, pf_on ? "on" : "OFF", sched->n_splits, pfs_fired, pfs_why[1], pfs_why[2], pfs_why[3], pfs_why[4], pfs_why[5],
+                "weight not host-resident %d, few ids %d, range part of the card split %d, region on another card %d, staging stream on another card %d, no slots %d\n",
+                n_tok, sched->prefetch_n_slots, pf_on ? "on" : "OFF", sched->n_splits, pfs_fired, pfs_why[1], pfs_why[2], pfs_why[3], pfs_why[4], pfs_why[5], pfs_why[6],
                 pfs_card, pfs_dev, pfs_prep);
     }
 
