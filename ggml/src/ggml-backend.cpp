@@ -1885,7 +1885,7 @@ static void ggml_backend_nvtx_init() {
     static bool done = false;
     if (done) { return; }
     done = true;
-    if (!(getenv("GGML_NVTX") && atoi(getenv("GGML_NVTX")) == 1)) { return; }
+    if (!(getenv("GGML_NVTX") && atoi(getenv("GGML_NVTX")) >= 1)) { return; }
     ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
     if (!reg) { return; }
     g_nvtx_push = (void (*)(const char *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nvtx_push_fork");

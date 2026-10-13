@@ -5148,7 +5148,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 GGML_UNUSED(integrated);
 #endif  // NDEBUG
 
+                // fork diagnostics: GGML_NVTX=2 puts an NVTX range around every node, so Nsight Systems shows which op holds the host thread inside a launch
+                static const bool nvtx_nodes = getenv("GGML_NVTX") && atoi(getenv("GGML_NVTX")) == 2;
+                if (nvtx_nodes) { char nb[128]; snprintf(nb, sizeof nb, "NODE %s %s", ggml_op_desc(node), node->name); nvtxRangePushA(nb); }
                 bool ok = ggml_cuda_compute_forward(*cuda_ctx, node);
+                if (nvtx_nodes) { nvtxRangePop(); }
                 if (!ok) {
                     GGML_LOG_ERROR("%s: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
                 }
