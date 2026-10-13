@@ -1876,6 +1876,25 @@ static bool ggml_backend_sched_is_host_weight(const struct ggml_tensor * t) {
         ggml_backend_buffer_is_host(t->buffer);
 }
 
+// NVTX ranges (GGML_NVTX=1): the scheduler thread names what it is doing, Nsight Systems shows it with the CUDA calls it contains. Function pointers from the CUDA backend.
+static void (*g_nvtx_push)(const char *) = NULL;
+static void (*g_nvtx_pop)(void) = NULL;
+static bool g_nvtx_on = false;
+static void ggml_backend_nvtx_init() {
+    static bool done = false;
+    if (done) { return; }
+    done = true;
+    if (!(getenv("GGML_NVTX") && atoi(getenv("GGML_NVTX")) == 1)) { return; }
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+    if (!reg) { return; }
+    g_nvtx_push = (void (*)(const char *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nvtx_push_fork");
+    g_nvtx_pop  = (void (*)(void)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nvtx_pop_fork");
+    g_nvtx_on = g_nvtx_push && g_nvtx_pop;
+}
+#define NVTX_PUSH(...) do { if (g_nvtx_on) { char _b[200]; snprintf(_b, sizeof _b, __VA_ARGS__); g_nvtx_push(_b); } } while (0)
+#define NVTX_POP() do { if (g_nvtx_on) { g_nvtx_pop(); } } while (0)
+struct nvtx_scope { bool on; explicit nvtx_scope(const char * n) : on(g_nvtx_on) { if (on) { g_nvtx_push(n); } } ~nvtx_scope() { if (on) { g_nvtx_pop(); } } };   // a range that ends with the scope (also on early returns)
+
 // Time the host thread spends in the blocking calls of the split loop, by call site (GGML_PF_STATS=1 prints them per big graph). Sites: 1 copy_input waits for the split's own
 // card, 2 copy_input synchronous cross-card fallback, 3 the expert copy callback reading the router ids (llama_context::sched_copy_experts), 4 D2H fetches before a split,
 // 5 the previous card before a split without inputs, 6 copy-ahead of the next split's inputs, 7 tracing, 8 end of an eval-callback split.
@@ -1883,9 +1902,9 @@ static std::atomic<long long> g_sync_us[10], g_sync_n[10];
 void ggml_backend_sched_sync_stat_add(int site, long long us) {
     if (site >= 0 && site < 10) { g_sync_us[site].fetch_add(us); g_sync_n[site].fetch_add(1); }
 }
-#define SYNC_TIMED(site, call) do { const int64_t _t = ggml_time_us(); call; ggml_backend_sched_sync_stat_add(site, ggml_time_us() - _t); } while (0)
+#define SYNC_TIMED(site, call) do { NVTX_PUSH("WAIT site%d", site); const int64_t _t = ggml_time_us(); call; NVTX_POP(); ggml_backend_sched_sync_stat_add(site, ggml_time_us() - _t); } while (0)
 // same, and with GGML_PF_STATS=2 the tensor and the backends of every wait over 1 ms are logged (which input makes the scheduler thread wait, and for whom)
-#define SYNC_TIMED_NAMED(site, call, tname, sb, db) do { const int64_t _t = ggml_time_us(); call; const int64_t _d = ggml_time_us() - _t; ggml_backend_sched_sync_stat_add(site, _d); \
+#define SYNC_TIMED_NAMED(site, call, tname, sb, db) do { NVTX_PUSH("WAIT site%d %s %s->%s", site, tname, sb, db); const int64_t _t = ggml_time_us(); call; NVTX_POP(); const int64_t _d = ggml_time_us() - _t; ggml_backend_sched_sync_stat_add(site, _d); \
     static const bool _v = getenv("GGML_PF_STATS") && atoi(getenv("GGML_PF_STATS")) >= 2; \
     if (_v && _d > 1000) { GGML_LOG_WARN("sync-wait %lld us at site %d: input %s, from %s to %s abs %lld\n", (long long) _d, site, tname, sb, db, (long long) _t); } } while (0)
 
@@ -2117,6 +2136,7 @@ static bool ggml_backend_sched_prefetch_prepare(ggml_backend_sched_t sched, stru
 
 static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
+    ggml_backend_nvtx_init();
     struct ggml_backend_sched_split * splits = sched->splits;
 
     int prev_backend_id = -1;
@@ -2181,6 +2201,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     const int64_t pft_t0 = ggml_time_us();
     int pft_cur = -1;
     const auto fire_prefetch = [&](int target_id) {
+        char nvtx_pf[120] = "";
+        if (g_nvtx_on) { snprintf(nvtx_pf, sizeof nvtx_pf, "PREFETCH issue split %d %s", target_id, target_id < sched->n_splits ? ggml_backend_name(sched->backends[splits[target_id].backend_id]) : "-"); }
+        nvtx_scope nvtx_pfs(nvtx_pf);
         if (!pf_on || target_id >= sched->n_splits || lookahead[target_id].slot != -1 || sched->prefetch_n_slots < 2) {
             return;
         }
@@ -2281,6 +2304,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
         pft_cur = split_id;
+        char nvtx_name[200] = "";
+        if (g_nvtx_on && split->graph.n_nodes > 0) { snprintf(nvtx_name, sizeof nvtx_name, "SPLIT %d %s %s %s", split_id, ggml_backend_name(split_backend), ggml_op_name(split->graph.nodes[0]->op), split->graph.nodes[0]->name); }
+        nvtx_scope nvtx_split(nvtx_name);
         static const bool pf_trace_all = getenv("GGML_PF_TRACE") && atoi(getenv("GGML_PF_TRACE")) == 2;
         if (pf_trace_all && sched->n_splits >= 40 && split->graph.n_nodes > 0) {   // GGML_PF_TRACE=2: every split launch, to find the splits that take the host long
             const ggml_tensor * n0 = split->graph.nodes[0];

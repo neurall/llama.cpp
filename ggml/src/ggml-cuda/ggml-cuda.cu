@@ -6589,6 +6589,12 @@ static __global__ void k_copy_slices_fork(const char * const * srcs, char * cons
         d[i] = s[i];
     }
 }
+// fork: NVTX ranges for the scheduler thread (GGML_NVTX=1 in ggml-backend.cpp): Nsight Systems draws them on the host thread next to the CUDA calls and kernels they launched,
+// on the same clock, so a long wait shows up with the name the scheduler gave it. Reached through the proc address, no shared header.
+#include <nvtx3/nvToolsExt.h>
+static void ggml_backend_cuda_nvtx_push_fork(const char * name) { nvtxRangePushA(name); }
+static void ggml_backend_cuda_nvtx_pop_fork() { nvtxRangePop(); }
+
 static bool ggml_backend_cuda_copy_slices_fork(ggml_backend_t backend, const void * const * srcs, void * const * dsts, size_t n, size_t bytes) {
     if (n == 0) { return true; }
     if (bytes % 16 != 0) { return false; }
@@ -6619,6 +6625,12 @@ static void ggml_backend_cuda_thread_sync_fork() {
 
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
+    if (strcmp(name, "ggml_backend_cuda_nvtx_push_fork") == 0) {
+        return (void *)ggml_backend_cuda_nvtx_push_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_nvtx_pop_fork") == 0) {
+        return (void *)ggml_backend_cuda_nvtx_pop_fork;
+    }
     if (strcmp(name, "ggml_backend_cuda_copy_slices_fork") == 0) {
         return (void *)ggml_backend_cuda_copy_slices_fork;
     }
