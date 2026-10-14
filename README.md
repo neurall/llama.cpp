@@ -49,6 +49,16 @@ On smaller cards the gain grows, see the next section (an 8 GB laptop: decode 2.
 
 **Q2_0 rows:** the 2-bit Qwen3.6 file (`qwen36.gguf`) is no longer on any of our machines, so these two rows are the last measurement of 2026-09-30 (build b11648); the AVX2 Q2_0 dot product is in b12844 and in the merged tree, but it has not been re-measured since.
 
+**Prompt speed against output length (GLM-5.3-Flash 3.0-bit, 12k prompt):** the fork spends cache blocks on the prompt pass and gets them back afterwards, so a request is faster overall as long as the answer is shorter than the break-even length below, and the decode after the prompt is somewhat slower than before. Prompt time is 12,454 tokens divided by the prompt rate; decode is ms per generated token.
+
+| build | prompt time | decode ms/token | faster than b12686 up to |
+|---|---|---|---|
+| b12686 (previous release) | 35.1 s | 61.7 (16.2 t/s) | - |
+| b12719 (`-c 16384`) | 16.5 s | 62.9 (15.9 t/s) | about 15,000 tokens out |
+| b12825 | 25.7 s | 69.9 (14.3 t/s) | about 1,150 tokens out |
+
+A 600-token answer (the game cell) is faster on every row; a 2,000-token answer on b12825 is not. The release should choose how much to lend from the expected answer length (`-n`, or the 600-token default); that is not built yet.
+
 **Known issue in b12844 (found while updating this table):** after a 12k prompt, Qwen3.8-Flash-Next decodes at 35 t/s where b12686 gives 50 t/s, and GLM-5.3-Flash at 14.3 vs 16.2 t/s (the prompt itself is 1.3-1.4x faster). Not fixed yet; the prefill changes of this release are the suspected cause, a fix is next.
 
 **Results, 2x RTX 3090 (one AM4 CPU PCIe 4.0 x16, one X570 chipset x4 slot) + Ryzen 7 3700X + 125 GB DDR4,
