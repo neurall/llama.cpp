@@ -15,19 +15,18 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 ### Best gainers so far (measured 2026-10-14, 2x RTX 3090 24 GB, one x16 and one x4 link)
 
-Same prompts as below, each build on its own defaults (only `-np 1`, `-c` for stock). "stock" is the newest upstream build that was measured on that cell (build in the last column); the fork rows are the best measured build of this release line (dev builds `plan100` / `b12686`; the published b12844 is being re-measured the same way, see the known-issue note).
+`pp` = prompt processing tokens/s, `t/s` = generated tokens/s. Same prompts as below, each build on its own defaults (only `-np 1`, `-c` for stock). "stock" is the newest upstream build that was measured on that cell (build in the last column); the fork rows are the best measured build of this release line (dev builds `plan100` / `b12686`; the published b12844 is being re-measured the same way, see the known-issue note).
 
-| model | cell | stock | fork | gain | fork build / stock build |
-|---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit (106 GB) | 12k prompt: prompt processing | 42.8 t/s | **485 t/s** | **11.3x** | plan100 / b11381 |
-| GLM-5.3-Flash 3.0-bit | 1k edit: prompt processing | 41.5 t/s | **495 t/s** | **11.9x** | plan100 / b11452 |
-| GLM-5.3-Flash 3.0-bit | 1k edit: decode | 12.4 t/s | **19.0 t/s** | 1.53x | plan100 / b11452 |
-| Qwen3.8-Flash-Next IQ3_S (78 GB) | 12k prompt: prompt processing | 201 t/s | **1048 t/s** | **5.2x** | plan100 / b11381 |
-| Qwen3.8-Flash-Next IQ3_S | 1k edit: prompt processing | 160 t/s | **962 t/s** | **6.0x** | plan100 / b11452 |
-| Qwen3.8-Flash-Next IQ3_S | 1k edit: decode | 30.6 t/s | **54.0 t/s** | 1.76x | plan100 / b11452 |
-| Qwen3.8-Flash-Next IQ3_S | game, 600 tokens: decode | 30.6 t/s | **54.2 t/s** | 1.77x | b12686 / b11381 |
-| Qwen3.6-35B-A3B hybrid (fits VRAM) | 12k, edit | at parity | at parity | 1.0x | no cache needed |
-| OLMoE-1B-7B Q4_K_M (fits VRAM) | game | 466 t/s | 472 t/s | 1.01x | plan100 / b11574 |
+| model | cell | stock pp | fork pp | **pp gain** | stock t/s | fork t/s | **t/s gain** | fork build / stock build |
+|---|---|---|---|---|---|---|---|---|
+| GLM-5.3-Flash 3.0-bit (106 GB) | 12k prompt, 32 out | 42.8 | **486** | **11.3x** | 11.5 | **14.3** | 1.24x | plan100 / b11381 |
+| GLM-5.3-Flash 3.0-bit | 1k edit, 128 out | 41.5 | **495** | **11.9x** | 12.4 | **19.0** | 1.53x | plan100 / b11452 |
+| GLM-5.3-Flash 3.0-bit | game, 600 out | 15.3 | **19.4** | 1.27x | 12.4 | **18.5** | 1.49x | b12686 / b11452 |
+| Qwen3.8-Flash-Next IQ3_S (78 GB) | 12k prompt, 32 out | 201 | **1048** | **5.2x** | 29.6 | **35.3** | 1.19x | plan100 / b11381 |
+| Qwen3.8-Flash-Next IQ3_S | 1k edit, 128 out | 160 | **962** | **6.0x** | 30.6 | **54.0** | 1.76x | plan100 / b11452 |
+| Qwen3.8-Flash-Next IQ3_S | game, 600 out | 40.9 | **68.0** | 1.66x | 31.0 | **54.2** | 1.75x | b12686 / b11452 |
+| Qwen3.6-35B-A3B hybrid (fits VRAM) | 4k prompt | 3061 | **3084** | 1.01x | 140 | **142** | 1.01x | plan100 / b11574 |
+| OLMoE-1B-7B Q4_K_M (fits VRAM) | game, 600 out | 213 | **315** | 1.48x | 466 | **472** | 1.01x | plan100 / b11574 |
 
 On smaller cards the gain grows, see the next section (an 8 GB laptop: decode 2.7-3.6x; a simulated 16 GB card: GLM 6.5x decode, Qwen3.8-Flash-Next 3.4x on two cards).
 
