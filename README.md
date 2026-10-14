@@ -26,6 +26,7 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 | Qwen3.8-Flash-Next UD-IQ4_XS (88 GB) | 12k prompt, 32 out | b11707 b11381 | 201 | **553** | 29.6 | **45.9** | - | - | **2.8x** | 1.55x |
 | Qwen3.8-Flash-Next UD-IQ4_XS | 1k edit, 128 out | b12364 b11452 | 160 | **599** | 30.6 | **45.8** | - | - | **3.7x** | 1.50x |
 | Qwen3.8-Flash-Next UD-IQ4_XS | game, 600 out | b11707 b11452 | 40.9 | **58.8** | 31.0 | **50.5** | - | - | 1.44x | 1.63x |
+| MiMo-V2.6-Flash IQ3_XXS (132 GB) | chat, 1500 out (short prompt) | b11707 b11381 | - | - | 4.9 | **10.5** | - | - | - | **2.1x** |
 | MiMo-V2.6-Flash IQ3_XXS (132 GB) | 12k prompt, 32 out | b11707 b11381 | 37.3 | **122** | 5.2 | **9.0** | - | - | **3.3x** | 1.73x |
 | Qwen3.8-Flash-Next IQ3_S (78 GB), perplexity only | 2 chunks | b12844 b11574 | - | - | - | - | 1.1113 | 1.1151 | - | - |
 | Qwen3.6-35B-A3B hybrid (fits VRAM) | 4k prompt | b12825 b11574 | 3061 | **3084** | 140 | **142** | 1.522 | pending | 1.01x | 1.01x |
