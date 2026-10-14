@@ -18,6 +18,47 @@ CPU frequency governor `performance`, single stream, temp 0.** Short = 1500-toke
 12k-token code prompt (llama.cpp sources): prompt processing, then decode. The prompts and a script to
 reproduce these tests are in [`fork/bench/`](fork/bench/).
 
+## Release "parallel-prefill": small cards first (2026-10-14)
+
+Each build runs on **its own defaults**: only `-np 1` (and `-c` for stock, whose 4096 default rejects long prompts). No thread, batch or `--moe` settings on either side.
+`prompt` = prompt processing t/s, `gen` = generation t/s. Single stream, temperature 0. Multipliers are fork / stock.
+
+**An 8 GB laptop** (RTX 4060 Laptop 8 GB, 31 GB RAM, Windows 10, `llama-cli`). Stock = upstream b11514 (`de7fa0a3c`), the newest upstream binary tried on this machine.
+Qwen3.6-35B-A3B-GSQ-hybrid is 11.4 GiB, so it does not fit the card; stock crashes or crawls here, the fork picks its own placement and micro-batch.
+
+| model, prompt | stock prompt / gen | fork prompt / gen | prompt | gen |
+|---|---|---|---|---|
+| Qwen3.6-35B-A3B 11.4 GiB, 17 tokens | 20.2 / 15.6 | 98.0 / 56.5 | **4.9x** | **3.6x** |
+| Qwen3.6-35B-A3B, 12k tokens | 687 / 13.6 | 918 / 45.6 | 1.34x | **3.4x** |
+| Qwen3.6-35B-A3B, 40k tokens | 584 / 11.7 | 726 / 35.9 | 1.24x | **3.1x** |
+| Qwen3.6-35B-A3B, 125k tokens | 448 / 9.2 | 557 / 25.2 | 1.24x | **2.7x** |
+| Qwen3.8-27B IQ3_S 12.1 GB (dense), 10 tokens | 19.0 / 3.0 | 17.4 / 3.1 | 0.92x ‡ | 1.03x |
+| Qwen3.8-27B IQ3_S (dense), 12k tokens | 270 / 2.2 | 258 / 2.2 | 0.96x ‡ | 1.00x |
+
+‡ Dense models get no gain from the fork on a small card (no experts to cache; the layers that do not fit go through the CPU as in stock).
+The 4-8% are inside this laptop's run-to-run noise (stock itself measured 270, 312, 313 and 337 on the 12k cell), the 27B is being re-measured with 3+ runs per build.
+
+**A 16 GB card** (RTX 3090 limited to 16 GB with a memory holder, `-dev CUDA1`, x16 link) and **two 16 GB cards** (x16 + x4), Ryzen 7 3700X, 125 GB RAM. Stock = upstream b11574.
+
+| model (size) | cell | cards | stock gen | fork gen | gen | stock prompt | fork prompt | prompt |
+|---|---|---|---|---|---|---|---|---|
+| GLM-5.3-Flash 3.0-bit (106 GB) | game: 600 tokens | 1 x 16 GB | 1.7 | 11.2 | **6.5x** | 1.2 | 13.8 | **11x** |
+| Qwen3.8-Flash-Next IQ3_S (78 GB) | game | 1 x 16 GB | 22.4 | 27.5 | 1.23x | 14.0 | 47.2 | **3.4x** |
+| Qwen3.8-Flash-Next | 4k prompt | 1 x 16 GB | 24.8 | 33.5 | 1.35x | 159 | 1214 | **7.6x** |
+| Qwen3.8-Flash-Next | game | 2 x 16 GB | 15.0 | 51.1 | **3.4x** | 8.4 | 78.6 | **9.4x** |
+| Qwen3.8-Flash-Next | 4k prompt | 2 x 16 GB | 16.5 | 29.1 | 1.76x | 72 | 1067 | **15x** |
+| Qwen3.6-35B-A3B hybrid (fits) | game | 1 x 16 GB | 150.0 | 144.1 | 0.96x ¶ | 121 | 161 | 1.33x |
+| Qwen3.6-35B-A3B hybrid (fits) | 4k prompt | 1 x 16 GB | 141.1 | 135.3 | 0.96x ¶ | 3009 | 2622 | 0.87x ¶ |
+| Qwen3.6-35B-A3B hybrid (fits) | 4k prompt | 2 x 16 GB | 142.3 | 142.2 | 1.00x | 3370 | 3137 | 0.93x ¶ |
+| OLMoE-1B-7B Q4_K_M (fits) | game | 1 x 16 GB | 460.9 | 454.1 | 0.99x | 213 | 322 | 1.5x |
+
+¶ **Known gap:** a model that fits entirely in VRAM runs 0-4% slower on decode and 7-13% slower on prompt than stock (fork overhead on a path that has nothing to cache or to split).
+The fix is queued: models that fit leave every fork hook, so the path is stock's.
+
+**Fixed in this release:** a clean start on small cards. The previous release crashed with "CUDA error: out of memory" at the first kernel on an 8 GB laptop for models larger than VRAM (the cache pool was sized
+from the whole model, then the compute buffer of a context-sized micro-batch did not fit). Now the pool is counted once, a 512 MiB / 8% margin is kept on cards of 12 GiB and less, the scheduler no longer reserves 12 GB of
+split bookkeeping at a 14k-token micro-batch (which Windows refused), and a start that still runs out of memory restarts itself with half the micro-batch.
+
 **Stock llama.cpp vs this fork**, tokens/s, model already in RAM (*). "mmap": weights
 memory-mapped (models bigger than RAM, `llama-cli`); "pinned": weights in pinned RAM, what
 `llama-server` does by itself when the model fits in RAM; "+ MTP": plus the model's MTP draft head
