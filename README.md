@@ -15,28 +15,28 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 ### Best gainers so far (measured 2026-10-14, 2x RTX 3090 24 GB, one x16 and one x4 link)
 
-`pp` = prompt processing tokens/s, `t/s` = generated tokens/s. In every `pp`, `t/s` and `ppl` cell the stock value is on top and the fork value below it, with the gain in brackets. Sorted by the larger of the two gains. Same prompts as below, each build on its own defaults (only `-np 1`, `-c` for stock). "stock" is the newest upstream build that was measured on that cell (build in the last column); the fork rows are the best measured build of this release line (builds are given by build number, the commit is in the release notes and `fork/bench`; the published b12844 is being re-measured the same way, see the known-issue note).
+`pp` = prompt processing tokens/s, `t/s` = generated tokens/s. In every `pp`, `t/s` and `ppl` cell the stock value is on top and the fork value below it, with the gain in brackets. `fork load` is how the fork's weights were loaded in that run, read from the run log: `pin` = pinned RAM, `mmap`, `n/r` = not recorded (older runs; from now on every measured run of our builds passes `--load-mode pin`). Sorted by the larger of the two gains. Same prompts as below, each build on its own defaults (only `-np 1`, `-c` for stock). "stock" is the newest upstream build that was measured on that cell (build in the last column); the fork rows are the best measured build of this release line (builds are given by build number, the commit is in the release notes and `fork/bench`; the published b12844 is being re-measured the same way, see the known-issue note).
 
-| model | cell | builds fork stock | pp: stock / **fork** (gain) | t/s: stock / **fork** (gain) | ppl: stock / fork |
-|---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit (106 GB) | 12k prompt, `-c 16384` (best pp) | b12719 b11381 | 42.8<br>**756** (17.7x) | 11.5<br>**15.9** (1.38x) | 1.4294<br>pending |
-| GLM-5.3-Flash 3.0-bit | 1k edit, 128 out | b12825 b11452 | 41.5<br>**495** (11.9x) | 12.4<br>**19.0** (1.53x) | - |
-| Qwen3.8-Flash-Next UD-IQ4_XS (88 GB) | 1k edit (best pp) | b12364 b11452 | 160<br>**599** (3.7x) | 30.6<br>**45.8** (1.50x) | - |
-| Qwen3.8-Flash-Next UD-IQ4_XS | 12k prompt | b11707 b11381 | 201<br>**553** (2.8x) | 29.6<br>**45.9** (1.55x) | - |
-| MiMo-V2.6-Flash IQ3_XXS (132 GB) | 1k edit (best pp) | b12250 b11381 | 30.0<br>**73.6** (2.5x) | 4.8<br>**9.0** (1.88x) | - |
-| GLM-5.3-Flash 3.0-bit | game, 600 out (best t/s) | b12209 b11381 | - | 11.7<br>**27.8** (2.4x) | - |
-| MiMo-V2.6-Flash IQ3_XXS | chat, short prompt (best t/s) | b11707 b11381 | - | 4.9<br>**10.5** (2.1x) | - |
-| Qwen3.8-Flash-Next UD-IQ4_XS | chat, short prompt (best t/s) | b11365 b11381 | 41.8<br>**63.3** (1.51x) | 30.9<br>**60.9** (1.97x) | - |
-| GLM-5.3-Flash 3.5-bit (137 GB) | 1k edit (best pp) | b12250 b11381 | 26.2<br>**49.0** (1.87x) | 9.7<br>**9.9** (1.02x) | - |
-| Qwen3.8-Flash-Next IQ3_S (78 GB) | 1k edit (best pp) | b12128 b11381 | 376<br>**683** (1.82x) | 42.7<br>**54.2** (1.27x) | 1.1113<br>1.1151 |
-| Qwen3.6-35B-A3B hybrid (fits VRAM) | game, 600 out | b12824 b11381 | 85.0<br>**145** (1.71x) | 153<br>**155** (1.01x) | 1.522<br>pending |
-| GLM-5.3-Flash 3.5-bit | game (best t/s) | b11707 b11381 | 3.7<br>**5.4** (1.46x) | 6.9<br>**10.5** (1.52x) | - |
-| Qwen3.8-27B MTP Q5_K_M (dense, fits 24 GB), both with MTP | 1k edit | b12193 b11381 | 1531<br>**1616** (1.06x) | 62.5<br>**64.4** (1.03x) | - |
-| OLMoE-1B-7B Q4_K_M (fits VRAM) | game, 600 out | b12824 b11574 | 213<br>**315** (1.48x) | 466<br>**472** (1.01x) | - |
-| Qwen3.8-27B MTP Q5_K_M, both with MTP | game, 600 out | b12193 b11381 | 32.4<br>**34.1** (1.05x) | 74.9<br>**65.7** (0.88x) | - |
-| Qwen3.8-Flash-Next IQ3_S | game (best t/s) | b11707 b11381 | 26.5<br>**29.9** (1.13x) | 42.1<br>**56.2** (1.33x) | - |
-| Qwen3.8-Flash-Next IQ1_M | 1k edit | b12128 b11381 | 1165<br>**1409** (1.21x) | 65.0<br>**65.9** (1.01x) | - |
-| Qwen3.8-27B IQ4_NL (dense, fits 24 GB) | 1k edit | b11707 b11381 | 1714<br>**1730** (1.01x) | 44.3<br>**44.3** (1.00x) | - |
+| model | cell | builds fork stock | fork load | pp: stock / **fork** (gain) | t/s: stock / **fork** (gain) | ppl: stock / fork |
+|---|---|---|---|---|---|---|
+| GLM-5.3-Flash 3.0-bit (106 GB) | 12k prompt, `-c 16384` (best pp) | b12719 b11381 | pin | 42.8<br>**756** (17.7x) | 11.5<br>**15.9** (1.38x) | 1.4294<br>pending |
+| GLM-5.3-Flash 3.0-bit | 1k edit, 128 out | b12825 b11452 | pin | 41.5<br>**495** (11.9x) | 12.4<br>**19.0** (1.53x) | - |
+| Qwen3.8-Flash-Next UD-IQ4_XS (88 GB) | 1k edit (best pp) | b12364 b11452 | n/r | 160<br>**599** (3.7x) | 30.6<br>**45.8** (1.50x) | - |
+| Qwen3.8-Flash-Next UD-IQ4_XS | 12k prompt | b11707 b11381 | n/r | 201<br>**553** (2.8x) | 29.6<br>**45.9** (1.55x) | - |
+| MiMo-V2.6-Flash IQ3_XXS (132 GB) | 1k edit (best pp) | b12250 b11381 | n/r | 30.0<br>**73.6** (2.5x) | 4.8<br>**9.0** (1.88x) | - |
+| GLM-5.3-Flash 3.0-bit | game, 600 out (best t/s) | b12209 b11381 | n/r | - | 11.7<br>**27.8** (2.4x) | - |
+| MiMo-V2.6-Flash IQ3_XXS | chat, short prompt (best t/s) | b11707 b11381 | n/r | - | 4.9<br>**10.5** (2.1x) | - |
+| Qwen3.8-Flash-Next UD-IQ4_XS | chat, short prompt (best t/s) | b11365 b11381 | n/r | 41.8<br>**63.3** (1.51x) | 30.9<br>**60.9** (1.97x) | - |
+| GLM-5.3-Flash 3.5-bit (137 GB) | 1k edit (best pp) | b12250 b11381 | n/r | 26.2<br>**49.0** (1.87x) | 9.7<br>**9.9** (1.02x) | - |
+| Qwen3.8-Flash-Next IQ3_S (78 GB) | 1k edit (best pp) | b12128 b11381 | n/r | 376<br>**683** (1.82x) | 42.7<br>**54.2** (1.27x) | 1.1113<br>1.1151 |
+| Qwen3.6-35B-A3B hybrid (fits VRAM) | game, 600 out | b12824 b11381 | mmap | 85.0<br>**145** (1.71x) | 153<br>**155** (1.01x) | 1.522<br>pending |
+| GLM-5.3-Flash 3.5-bit | game (best t/s) | b11707 b11381 | n/r | 3.7<br>**5.4** (1.46x) | 6.9<br>**10.5** (1.52x) | - |
+| Qwen3.8-27B MTP Q5_K_M (dense, fits 24 GB), both with MTP | 1k edit | b12193 b11381 | n/r | 1531<br>**1616** (1.06x) | 62.5<br>**64.4** (1.03x) | - |
+| OLMoE-1B-7B Q4_K_M (fits VRAM) | game, 600 out | b12824 b11574 | mmap | 213<br>**315** (1.48x) | 466<br>**472** (1.01x) | - |
+| Qwen3.8-27B MTP Q5_K_M, both with MTP | game, 600 out | b12193 b11381 | n/r | 32.4<br>**34.1** (1.05x) | 74.9<br>**65.7** (0.88x) | - |
+| Qwen3.8-Flash-Next IQ3_S | game (best t/s) | b11707 b11381 | n/r | 26.5<br>**29.9** (1.13x) | 42.1<br>**56.2** (1.33x) | - |
+| Qwen3.8-Flash-Next IQ1_M | 1k edit | b12128 b11381 | n/r | 1165<br>**1409** (1.21x) | 65.0<br>**65.9** (1.01x) | - |
+| Qwen3.8-27B IQ4_NL (dense, fits 24 GB) | 1k edit | b11707 b11381 | n/r | 1714<br>**1730** (1.01x) | 44.3<br>**44.3** (1.00x) | - |
 
 On smaller cards the gain grows, see the next section (an 8 GB laptop: decode 2.7-3.6x; a simulated 16 GB card: GLM 6.5x decode, Qwen3.8-Flash-Next 3.4x on two cards).
 
