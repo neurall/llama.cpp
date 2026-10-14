@@ -1525,17 +1525,11 @@ static void moe_auto_abort_cb(const char * msg) {
     const bool oom = msg && (strstr(msg, "CUDA error") || strstr(msg, "out of memory"));
     if (msg) { fprintf(stderr, "%s\n", msg); fflush(stderr); }   // the callback replaces ggml's own print: without this a failed start is silent
     if (!oom) { return; }
-    const std::string file = g_moe_auto_file;   // moe_auto_mark_failed clears the mode, not the file
     moe_auto_mark_failed();
     const char * tries = getenv("LLAMA_FORK_RETRY");
     const int    n_try = tries ? atoi(tries) : 0;
     if (g_moe_auto_ub_auto <= 512 || n_try >= 4) { return; }
     const std::string cap = std::to_string(g_moe_auto_ub_auto / 2), nt = std::to_string(n_try + 1);
-    if (!file.empty()) {   // learned: the next start of this model on this GPU set begins at the size that is known to fit (no restart, no 5-10 s lost)
-        std::string section, prefix;
-        moe_auto_split(file, section, prefix);
-        llama_state_set(section.c_str(), (prefix + ".ubcap").c_str(), string_format("%s %d", cap.c_str(), (int) (g_moe_auto_vram_free >> 20)).c_str());
-    }
     fprintf(stderr, "fork: out of memory while starting with micro-batch %u: restarting with %s\n", g_moe_auto_ub_auto, cap.c_str());
     fflush(stderr);
 #if defined(_WIN32)
@@ -1983,19 +1977,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
         if (params.n_ctx > 0) {
             params.n_batch = std::min<uint32_t>(params.n_batch, std::max<uint32_t>(params.n_ctx, ub));
         }
-        int learned_cap = 0;   // the size a previous start of this model on this GPU set was restarted to (valid while about as little VRAM is free as then)
-        if (!getenv("LLAMA_FORK_UB_CAP") && !g_moe_auto_file.empty()) {
-            std::string section, prefix; char lb[64];
-            moe_auto_split(g_moe_auto_file, section, prefix);
-            int cap = 0, mib = 0;
-            if (llama_state_get(section.c_str(), (prefix + ".ubcap").c_str(), lb, sizeof lb) && sscanf(lb, "%d %d", &cap, &mib) == 2 && cap >= 128 &&
-                (double) g_moe_auto_vram_free < 1.25 * (double) mib * 1048576.0) {
-                learned_cap = cap;
-            }
-        }
-        const char * env_cap = getenv("LLAMA_FORK_UB_CAP");   // set by moe_auto_abort_cb: the previous start of this process ran out of memory at this size
-        if (env_cap || learned_cap > 0) {
-            ub = std::max<uint32_t>(128, std::min<uint32_t>(ub, (uint32_t) (env_cap ? atoi(env_cap) : learned_cap)));
+        if (const char * cap = getenv("LLAMA_FORK_UB_CAP")) {   // set by moe_auto_abort_cb: the previous start of this process ran out of memory at this size
+            ub = std::max<uint32_t>(128, std::min<uint32_t>(ub, (uint32_t) atoi(cap)));
             params.n_batch = std::min<uint32_t>(params.n_batch, std::max<uint32_t>(2 * ub, 512));
             LOG_WRN("%s: micro-batch capped to %u after an out-of-memory start\n", __func__, ub);
         }
