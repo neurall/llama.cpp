@@ -23,9 +23,11 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 | GLM-5.3-Flash 3.0-bit | 12k prompt, 32 out (b12825, no `-c`) | b12825 | b11381 | 42.8 | 486 | 11.5 | 14.3 | 1.4294 | pending | 11.3x | 1.24x |
 | GLM-5.3-Flash 3.0-bit | 1k edit, 128 out | b12825 | b11452 | 41.5 | **495** | 12.4 | **19.0** | 1.4294 | pending | **11.9x** | 1.53x |
 | GLM-5.3-Flash 3.0-bit | game, 600 out | b12686 | b11452 | 15.3 | **19.4** | 12.4 | **18.5** | 1.4294 | pending | 1.27x | 1.49x |
-| Qwen3.8-Flash-Next IQ3_S (78 GB) | 12k prompt, 32 out | b12825 | b11381 | 201 | **1048** | 29.6 | **35.3** | 1.1113 | 1.1151 | **5.2x** | 1.19x |
-| Qwen3.8-Flash-Next IQ3_S | 1k edit, 128 out | b12825 | b11452 | 160 | **962** | 30.6 | **54.0** | 1.1113 | 1.1151 | **6.0x** | 1.76x |
-| Qwen3.8-Flash-Next IQ3_S | game, 600 out | b12686 | b11452 | 40.9 | **68.0** | 31.0 | **54.2** | 1.1113 | 1.1151 | 1.66x | 1.75x |
+| Qwen3.8-Flash-Next UD-IQ4_XS (88 GB) | 12k prompt, 32 out | b11707 | b11381 | 201 | **553** | 29.6 | **45.9** | - | - | **2.8x** | 1.55x |
+| Qwen3.8-Flash-Next UD-IQ4_XS | 1k edit, 128 out | b12364 | b11452 | 160 | **599** | 30.6 | **45.8** | - | - | **3.7x** | 1.50x |
+| Qwen3.8-Flash-Next UD-IQ4_XS | game, 600 out | b11707 | b11452 | 40.9 | **58.8** | 31.0 | **50.5** | - | - | 1.44x | 1.63x |
+| MiMo-V2.6-Flash IQ3_XXS (132 GB) | 12k prompt, 32 out | b11707 | b11381 | 37.3 | **122** | 5.2 | **9.0** | - | - | **3.3x** | 1.73x |
+| Qwen3.8-Flash-Next IQ3_S (78 GB), perplexity only | 2 chunks | b12844 | b11574 | - | - | - | - | 1.1113 | 1.1151 | - | - |
 | Qwen3.6-35B-A3B hybrid (fits VRAM) | 4k prompt | b12825 | b11574 | 3061 | **3084** | 140 | **142** | 1.522 | pending | 1.01x | 1.01x |
 | Qwen3.6-35B-A3B hybrid (fits VRAM) | 12k prompt, 32 out | b12844 | b11574 | 3625 | 3361 | 133.1 | **136.2** | 1.522 | pending | 0.93x | 1.02x |
 | Qwen3.8-27B IQ3_S (dense, fits 24 GB) | game, 600 out | b12844 | b11574 | 105.5 | 102.1 | 40.5 | **40.8** | - | pending | 0.97x | 1.01x |
@@ -67,7 +69,6 @@ The 4-8% are inside this laptop's run-to-run noise (stock itself measured 270, 3
 | model (size) | cell | cards | stock gen | fork gen | gen | stock prompt | fork prompt | prompt |
 |---|---|---|---|---|---|---|---|---|
 | GLM-5.3-Flash 3.0-bit (106 GB) | game: 600 tokens | 1 x 16 GB | 1.7 | 11.2 | **6.5x** | 1.2 | 13.8 | **11x** |
-| Qwen3.8-Flash-Next IQ3_S (78 GB) | game | 1 x 16 GB | 22.4 | 27.5 | 1.23x | 14.0 | 47.2 | **3.4x** |
 | Qwen3.8-Flash-Next | 4k prompt | 1 x 16 GB | 24.8 | 33.5 | 1.35x | 159 | 1214 | **7.6x** |
 | Qwen3.8-Flash-Next | game | 2 x 16 GB | 15.0 | 51.1 | **3.4x** | 8.4 | 78.6 | **9.4x** |
 | Qwen3.8-Flash-Next | 4k prompt | 2 x 16 GB | 16.5 | 29.1 | 1.76x | 72 | 1067 | **15x** |
