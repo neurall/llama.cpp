@@ -49,15 +49,7 @@ On smaller cards the gain grows, see the next section (an 8 GB laptop: decode 2.
 
 **Q2_0 rows:** the 2-bit Qwen3.6 file (`qwen36.gguf`) is no longer on any of our machines, so these two rows are the last measurement of 2026-09-30 (build b11648); the AVX2 Q2_0 dot product is in b12844 and in the merged tree, but it has not been re-measured since.
 
-**Prompt speed against output length (GLM-5.3-Flash 3.0-bit, 12k prompt):** the fork spends cache blocks on the prompt pass and gets them back afterwards, so a request is faster overall as long as the answer is shorter than the break-even length below, and the decode after the prompt is somewhat slower than before. Prompt time is 12,454 tokens divided by the prompt rate; decode is ms per generated token.
-
-| build | prompt time | decode ms/token | faster than b12686 up to |
-|---|---|---|---|
-| b12686 (previous release) | 35.1 s | 61.7 (16.2 t/s) | - |
-| b12719 (`-c 16384`) | 16.5 s | 62.9 (15.9 t/s) | about 15,000 tokens out |
-| b12825 | 25.7 s | 69.9 (14.3 t/s) | about 1,150 tokens out |
-
-A 600-token answer (the game cell) is faster on every row; a 2,000-token answer on b12825 is not. The release should choose how much to lend from the expected answer length (`-n`, or the 600-token default); that is not built yet.
+**Decode right after a long prompt (GLM-5.3-Flash 3.0-bit, 12k prompt):** the decode rates in the table above are the average of the first 32 generated tokens, while the pool is still refilling the blocks the prompt borrowed. How the rate develops over a long answer after a long prompt has not been measured yet (a run with 128, 512 and 2,000 output tokens on b12686, b12825 and b12844 is queued). What is measured: with a short prompt and a 600-token answer (cache warm, nothing to refill) b12825 decodes at 15.6 t/s against 18.5 t/s for b12686, so part of the slowdown is not the refill.
 
 **Known issue in b12844 (found while updating this table):** after a 12k prompt, Qwen3.8-Flash-Next decodes at 35 t/s where b12686 gives 50 t/s, and GLM-5.3-Flash at 14.3 vs 16.2 t/s (the prompt itself is 1.3-1.4x faster). Not fixed yet; the prefill changes of this release are the suspected cause, a fix is next.
 
