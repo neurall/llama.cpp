@@ -334,6 +334,10 @@ int moe_log_num(char letter, int dflt) {
     return p && isdigit((unsigned char) p[1]) ? atoi(p + 1) : dflt;
 }
 
+#ifdef _WIN32
+#define setenv(n, v, o) _putenv_s((n), (v))   // MSVC has no setenv
+#endif
+
 // --moe settings
 static std::map<std::string, std::string> g_moe_opts;   // node based: the returned pointers stay valid
 static std::mutex g_opt_mtx;                             // its own lock: the state file code reads options while it holds g_mtx

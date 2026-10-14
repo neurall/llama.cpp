@@ -1743,3 +1743,4 @@ v19-olm-16g-single-pf4k,2026-10-14 12:46:25,"bench /m/o/8/4/OLMoE-1B-7B-0924-Ins
 v19-qwe-16g-single-game4c,2026-10-14 12:47:32,"bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds plan100,stock-b11574-8bb3cf0d2 variants v test game4c n=2",,
 v19-qwe-16g-single-pf4k,2026-10-14 12:49:18,"bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds plan100,stock-b11574-8bb3cf0d2 variants v test pf4k n=2",,
 v19-qwe-16g-single-game4c,2026-10-14 12:50:55,"bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds plan100,stock-b11574-8bb3cf0d2 variants v test game4c n=2",,
+v19-qwe-16g-single-pf4k,2026-10-14 12:57:06,"bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds plan100,stock-b11574-8bb3cf0d2 variants v test pf4k n=2",,
