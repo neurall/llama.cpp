@@ -2002,7 +2002,7 @@ static void (*g_nvtx_pop)(void) = NULL;
 static bool g_nvtx_on = false;
 // The CUDA backend's range functions (GGML_NVTX=1, nsys timelines) are handed in by the library that can look the backend up (llama_context: ggml_backend_reg_by_name lives in
 // the ggml library, not in ggml-base: a call from here is an unresolved symbol when ggml-base is linked as a DLL on Windows, and the Windows build failed on it).
-void ggml_backend_nvtx_set_fork(void (*push)(const char *), void (*pop)(void)) {
+GGML_API void ggml_backend_nvtx_set_fork(void (*push)(const char *), void (*pop)(void)) {
     g_nvtx_push = push;
     g_nvtx_pop  = pop;
     g_nvtx_on   = push && pop;
