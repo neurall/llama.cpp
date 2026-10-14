@@ -19,6 +19,7 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 | model | cell | builds stock fork | pp: stock / **fork** (gain) | t/s: stock / **fork** (gain) | ppl: stock / fork |
 | --- | --- | --- | --- | --- | --- |
+| GLM-5.3-Flash 3.0-bit (106 GB) | <sub>12k prompt, hand-set `-ub 12416 -b 12416 pf-slots=3`, one x16 card, pinned (best raw pp; decode not recorded)</sub> | <sub>b11381 b12375</sub> | 42.8<br>**805**&nbsp;<sub>[(18.8x)](fork/bench/REPRO.md#glm-12k-pinned)</sub> | - | 1.4294<br>pending |
 | GLM-5.3-Flash 3.0-bit (106 GB) | <sub>12k prompt, `-c 16384` (best pp)</sub> | <sub>b11381 b12719</sub> | 42.8<br>**756**&nbsp;<sub>[(17.7x)](fork/bench/REPRO.md#glm-12k)</sub> | 11.5<br>**15.9**&nbsp;<sub>[(1.38x)](fork/bench/REPRO.md#glm-12k)</sub> | 1.4294<br>pending |
 | GLM-5.3-Flash 3.0-bit | <sub>1k edit, 128 out</sub> | <sub>b11452 b12825</sub> | 41.5<br>**495**&nbsp;<sub>[(11.9x)](fork/bench/REPRO.md#glm-edit)</sub> | 12.4<br>**19.0**&nbsp;<sub>[(1.53x)](fork/bench/REPRO.md#glm-edit)</sub> | 1.4294<br>pending |
 | Qwen3.6-35B-A3B hybrid (11.4 GiB) on an 8 GB laptop (4060) | <sub>17-token prompt, 100 out</sub> | <sub>b11514 b12843</sub> | 20.2<br>**98.0**&nbsp;<sub>[(4.9x)](fork/bench/REPRO.md#laptop-17)</sub> | 15.6<br>**56.5**&nbsp;<sub>[(3.6x)](fork/bench/REPRO.md#laptop-17)</sub> | 1.522<br>pending |
