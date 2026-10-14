@@ -1854,7 +1854,10 @@ static void common_moe_cache_auto_impl(common_params & params) {
             // clearly bigger than the free VRAM, it wins there on every measured model; stock first otherwise), one run each when the gap is clear
             // measuring: the placement with fewer recorded runs (ties: the first), so each gets two runs before it decides
             mode = st.n == ca.n ? first : (st.n < ca.n ? "stock" : "cache");
-            if (clearly_bigger && mode == "stock") {
+            // Only until the cache has its two recorded runs: after that stock is measured too (once, 2 runs) and the faster placement per request wins. Before, stock was never
+            // tried on such a model and a cache that was slower per prompt token than stock (RTX 4060 Laptop 8 GB, Qwen3.6-35B: 35 prompt t/s against 43) stayed for ever.
+            // A stock start that cannot happen is recorded as failed (moe_auto_mark_failed) and the cache stays.
+            if (clearly_bigger && mode == "stock" && ca.n < 2) {
                 // not for a model clearly bigger than the free VRAM: the cache won 1.2x to 2.4x on every one measured, and the stock placement may not even start there
                 // (MiMo 132 GB and GLM 3.5-bit on 2 x 24 GB: cudaMalloc of a 27 GiB layer buffer fails, the second start of every new state died); the stock arm of a
                 // comparison is the stock build, or --moe mode=stock
@@ -1863,7 +1866,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
             g_moe_auto_file = path;
             g_moe_auto_mode = mode;
             LOG_INF("%s: MoE placement: measuring %s this run (stock %d runs, cache %d runs recorded; both need 2 before the faster one is kept%s; %s)\n", __func__,
-                mode.c_str(), st.n, ca.n, clearly_bigger ? "; stock is not tried: the model is clearly bigger than the free VRAM" : "", path.c_str());
+                mode.c_str(), st.n, ca.n, clearly_bigger && ca.n < 2 ? "; stock is tried after the cache has 2 runs" : "", path.c_str());
         }
         use_cache = mode != "stock";
         if (!g_moe_auto_mode.empty()) {
