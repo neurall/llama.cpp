@@ -1656,7 +1656,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         for (size_t i = 0; i < n_devices(); ++i) { size_t f, t; ggml_backend_dev_memory(devices[i].dev, &f, &t); free_b += (double) f; }
         bw_default = model_b > 0.9 * free_b;
     }
-    if (all_zero && ((!o_split && bw_default) || (o_split && strcmp(o_split, "bw") == 0))) {   // overrides the plan above: split=bw is the explicit request (the plan is computed and logged either way)
+    // the default for a MoE model that does not fit is split=dec since 2026-10-14 (below): split=bw only when asked for
+    if (all_zero && o_split && strcmp(o_split, "bw") == 0) {   // overrides the plan above: split=bw is the explicit request (the plan is computed and logged either way)
         bool ok = n_devices() > 1;
         std::vector<float> bw(n_devices(), 0.0f);
         for (size_t i = 0; i < n_devices() && ok; ++i) {
@@ -1712,7 +1713,10 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // 46.5 with split=bw. The order lives here only: the -dev list and every other per-device rule keep the user's order.
     std::vector<size_t> order(n_devices());
     std::iota(order.begin(), order.end(), 0);
-    if (all_zero && o_split && strcmp(o_split, "dec") == 0 && n_devices() > 1) {
+    // decode by memory is the default where split=bw was (a MoE model bigger than the free VRAM): 50/50 x16 first measured Qwen3.8-Flash-Next game4c 53.6
+    // decode t/s against 44.7, MiMo after 8k 30.7 vs 27.0, GLM within noise; prompt speed within 2%
+    const bool dec_on = all_zero && n_devices() > 1 && ((o_split && strcmp(o_split, "dec") == 0) || (!o_split && bw_default));
+    if (dec_on) {
         std::vector<double> link(n_devices(), 0.0);
         for (size_t i = 0; i < n_devices(); ++i) {
             const auto * r = llama_gpu_probe_find_fork(devices[i].dev);
@@ -1784,7 +1788,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     {   // fork: the layer layout in one line, always (warning level: shown at the default -lv 3); fork/run.py records it. rule: ts (the user's -ts), bw (--moe split=bw, the default when a MoE model
         // does not fit), plan (prefill-plan=apply), dec (--moe split=dec), mem (free memory). The ranges show any move by layer-heat.
         const char * rule = !all_zero ? "ts" : apply_plan ? "bw" : (prefill_plan.size() == n_devices() && o_plan && strcmp(o_plan, "apply") == 0) ? "plan"
-                          : (o_split && strcmp(o_split, "dec") == 0) ? "dec" : "mem";
+                          : dec_on ? "dec" : "mem";
         std::string txt;
         for (size_t i = 0; i < n_devices(); ++i) {
             std::string rng;

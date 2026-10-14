@@ -5861,7 +5861,10 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
         // a pass that splits keeps the dense split's copies in front of its graph (mirror_b, 0 without mirror-pool): counted for every pass (the plan is made
         // before the split choice), so a pass that does not split is planned up to mirror_b smaller than it could be
         const double L = per_t * (double) u + (double) k * (double) ap->slot_b + (double) ap->mirror_b;
-        if (L > (double) ap->span) { return -1.0; }
+        // --moe pf-lend-max=F (default 0.5): a pass may borrow at most this share of the pool. Lending all of it (passes as long as the context, 2026-10-14)
+        // left decode after a 12k prompt without most of its cache: Qwen3.8-Flash-Next 36.8 decode t/s against 47.0 with 2048-token passes, MiMo 17.3 vs 24.7
+        static const double lend_max = [] { const char * e = moe_opt("pf-lend-max"); return e ? std::max(0.05, std::min(1.0, atof(e))) : 0.5; }();
+        if (L > lend_max * (double) ap->span) { return -1.0; }
         const double U = std::max(0.0, E - rho * ((double) ap->span - L)) / (gbs * 1e3);
         if (U_out) { *U_out = U; }
         const double C = c_us * (double) u;
