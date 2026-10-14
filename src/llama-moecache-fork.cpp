@@ -5688,6 +5688,7 @@ void llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int n
 // dominates; Qwen3.8-Flash-Next at 8k (compute 6.4 s against 1.3 s of upload) wins with two staged passes. --moe pass-plan=0: equal passes as before.
 static std::mutex g_pp_mu;
 static double     g_pp_c_us  = 0.0;   // compute of one prompt token on the offload card in a pass (us), 0 = not measured yet
+static void pp_c_us_stored();   // an earlier start's value until this start measured its own (below)
 static uint32_t   g_pp_n     = 0;     // the last planned prompt: its tokens, passes, pass size and upload estimate (to read its measurement)
 static uint32_t   g_pp_P     = 0;
 static uint32_t   g_pp_ub    = 0;
@@ -5754,6 +5755,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     double c_us;
     {
         std::lock_guard<std::mutex> lk(g_pp_mu);
+        pp_c_us_stored();
         c_us = g_pp_c_us;
     }
     const double per_t = (double) (ap->graph_tok + ap->tok_bytes);
@@ -5871,13 +5873,37 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     }
     if (c_new >= 0.0) {
         g_pp_c_us = g_pp_c_us > 0.0 ? 0.5 * (g_pp_c_us + c_new) : c_new;
+        // kept in the state file (model section, key per GPU set: the placement's prefix) when it moved by more than 5%, so the next start plans its first
+        // prompt from it (see pp_c_us_stored)
+        static double saved = 0.0;
+        if (!mc->profile.empty() && !moe_state_place().empty() && (saved <= 0.0 || std::fabs(g_pp_c_us / saved - 1.0) > 0.05)) {
+            saved = g_pp_c_us;
+            moe_state_set(mc->profile, { { moe_state_place() + ".pp_c_us", tr_fmt("%.4f", g_pp_c_us) } });
+        }
     }
     g_pp_n = 0;   // read once
+}
+
+// The compute of one prompt token measured by an earlier start on these cards (state file), until this start measures its own (under g_pp_mu). Without it the
+// first prompt of every start had no plan (the split planner needs this number), ran on one card to measure it, and only the next prompts could split
+// (Qwen3.8-Flash-Next 8.8k on x16 + x4: the first prompt 1201 prompt t/s on one card, the planner's split 1432 from the second, 1590 tuned).
+static void pp_c_us_stored() {
+    static bool tried = false;
+    if (tried || g_pp_c_us > 0.0 || !g_cache || g_cache->profile.empty() || moe_state_place().empty()) {
+        return;
+    }
+    tried = true;
+    std::string v;
+    if (moe_state_get(g_cache->profile, moe_state_place() + ".pp_c_us", v) && atof(v.c_str()) > 0.0) {
+        g_pp_c_us = atof(v.c_str());
+        LLAMA_LOG_WARN("moe-cache: compute of one prompt token %.2f us (stored by an earlier start on these cards): the first prompt is planned from it\n", g_pp_c_us);
+    }
 }
 
 // the pass planner's measured compute of one prompt token on the offload card, all layers, us (0 = not measured yet)
 double llama_moe_cache_compute_us_fork() {
     std::lock_guard<std::mutex> lk(g_pp_mu);
+    pp_c_us_stored();
     return g_pp_c_us;
 }
 
