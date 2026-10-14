@@ -1668,6 +1668,28 @@ static void ggml_cuda_hugefs_evict(const std::string & dir, size_t need) {
     }
 }
 
+// Before a load maps its cache file: remove the unfinished fills (.w.part) a killed load left behind. A running process holds a lock on its
+// file, so only the dead ones go. Complete files stay (a wrong-size file of this key is replaced below, the rest is evicted by use).
+static void ggml_cuda_hugefs_purge(const std::string & dir) {
+    DIR * d = opendir(dir.c_str());
+    if (!d) {
+        return;
+    }
+    while (struct dirent * e = readdir(d)) {
+        const std::string n = e->d_name;
+        if (!(n.size() > 7 && n.compare(n.size() - 7, 7, ".w.part") == 0)) { continue; }
+        const std::string path = dir + "/" + n;
+        const int fd = open(path.c_str(), O_RDWR);
+        if (fd < 0) { continue; }
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+            fprintf(stderr, "ggml_cuda_host_malloc_registered: removing unfinished fill %s\n", path.c_str());
+            unlink(path.c_str());
+        }
+        close(fd);
+    }
+    closedir(d);
+}
+
 static char * ggml_cuda_hugefs_map(size_t size, const std::string & key, std::unique_ptr<ggml_cuda_reg_state> & st) {
     const char * dir = getenv("GGML_CUDA_HUGEFS");
     if (!dir || !*dir || key.empty()) {
@@ -1676,6 +1698,7 @@ static char * ggml_cuda_hugefs_map(size_t size, const std::string & key, std::un
     const size_t gib = (size_t) 1 << 30, len = (size + gib - 1) & ~(gib - 1);
     st->fin  = std::string(dir) + "/" + key + ".w";
     st->part = st->fin + ".part";
+    ggml_cuda_hugefs_purge(dir);
     int fd = open(st->fin.c_str(), O_RDWR);
     bool warm = false;
     struct stat sb;
@@ -1698,6 +1721,26 @@ static char * ggml_cuda_hugefs_map(size_t size, const std::string & key, std::un
     if (p == MAP_FAILED) {
         close(fd);
         if (!warm) { unlink(st->part.c_str()); }
+        // The pool cannot back the file although no process holds a cache file (a locked file means a second server is using the pool: then this
+        // load falls back as before). The pool is broken (pages leaked by a killed process, fragmented, mount stale): bail so the harness can
+        // unmount and mount it again (run.py hugepool) and start this server once more.
+        bool held = false;
+        if (DIR * d = opendir(dir)) {
+            while (struct dirent * e = readdir(d)) {
+                const std::string n = e->d_name;
+                if (n == "." || n == "..") { continue; }
+                const int f2 = open((std::string(dir) + "/" + n).c_str(), O_RDWR);
+                if (f2 >= 0) { held = held || flock(f2, LOCK_EX | LOCK_NB) != 0; close(f2); }
+            }
+            closedir(d);
+        }
+        if (!held) {
+            fprintf(stderr, "ggml_cuda_host_malloc_registered: [PIN_FAIL] %.1f GiB cache file cannot be mapped from the huge page pool (%.0f GiB free of the pool), "
+                            "no other process holds it: bailing with exit code 75 so the harness can unmount and mount the pool again\n",
+                    len / 1073741824.0, ggml_cuda_hugefs_avail_bytes() / 1073741824.0);
+            fflush(stderr);
+            _exit(75);
+        }
         return nullptr;
     }
     st->fd = fd; st->warm = warm; st->map_len = len;

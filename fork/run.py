@@ -13,7 +13,7 @@ Everything is a parameter: models, builds, variants (--variant NAME=ARGS), test,
 BUILD is a subdirectory of the current directory (or $PERF_BUILDS) holding a build's bin/
 contents, e.g. b11214-a3768a8; on another machine, a subdirectory of that machine's --root. Results go to run-history.csv in
 fork/bench ($RUN_DATA). MODEL=/path/model.gguf is required for run/ctl; PERF_MODELS_DIR=/dir drops other *.gguf under it from RAM before
-measuring. Every measured run is preceded by a discarded run with the same settings (hot runs; --no-warm skips it); every run gets its own server
+measuring. A measured run can be preceded by a discarded run with the same settings (hot runs; off by default, --warm turns it on); every run gets its own server
 or process, the build's own libs (LD_LIBRARY_PATH: native builds bake their build dir into RUNPATH) and a pinned GPU order
 (-dev CUDA0,CUDA1). The build number and commit of each row come from the binary's own --version. Self-tune decisions of a
 run go to table tune_log.
@@ -1369,6 +1369,16 @@ def server_start(build, env, args):
         try:
             return _server_start_once(build, env, args)
         except RuntimeError as e:
+            if "[PIN_FAIL]" in str(e) and attempt < PIN_ATTEMPTS:
+                # the engine could not map its cache file from the pool and nothing else holds it: mount the pool again, same size
+                print(f"pin pool broken, attempt {attempt}/{PIN_ATTEMPTS}: {str(e)[-200:]}: unmount + mount", flush=True)
+                try:
+                    n_pool = int(open(HUGE_NR).read().strip())
+                    cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
+                    cmd_hugepool(argparse.Namespace(action="mount", what=[f"{n_pool}g"] if n_pool > 0 else []))
+                except SystemExit as x:
+                    sys.exit(f"pin pool remount failed: {x}")
+                continue
             if "[PIN_STALL]" not in str(e):
                 raise
             print(f"pin stall, attempt {attempt}/{PIN_ATTEMPTS}: {str(e)[-200:]}", flush=True)
@@ -1436,7 +1446,8 @@ def _server_start_once(build, env, args):
         if "listening on" in log:
             return p, logf
         if p.poll() is not None:
-            raise RuntimeError(("server bailed, pinning stalled (exit code 75, [PIN_STALL]): " if p.returncode == 75 else "server exited: ") + log[-300:])
+            raise RuntimeError(("server bailed, pool broken (exit code 75, [PIN_FAIL]): " if p.returncode == 75 and "[PIN_FAIL]" in log else
+                               "server bailed, pinning stalled (exit code 75, [PIN_STALL]): " if p.returncode == 75 else "server exited: ") + log[-300:])
         if "couldn't bind" in log:
             stop(p)
             raise RuntimeError("port busy: " + log[-300:])
@@ -2380,7 +2391,7 @@ def cmd_run(a):
     prep_model()
     for i in range(a.n):
         for build in a.builds:
-            run_cell(build.rstrip("/"), a.test, extra, a.plain, a.args, a.bare, a.note, warm=not a.no_warm)
+            run_cell(build.rstrip("/"), a.test, extra, a.plain, a.args, a.bare, a.note, warm=a.warm)
 
 
 def cmd_show(a):
@@ -2750,7 +2761,7 @@ def cmd_bench(a):
                     STATE_FILE["v"] = sf
                 else:
                     STATE_FILE["v"] = None
-                warm = not a.no_warm and i == 0 and not a.cold_hot  # one discarded run per cell, before its first repetition (never with --cold-hot: it would write the state)
+                warm = a.warm and i == 0 and not a.cold_hot  # one discarded run per cell, before its first repetition (never with --cold-hot: it would write the state)
                 KNOBS_NOW["v"] = CELL_KNOBS.get((build, name))
                 if m:
                     remote_cell(a.machine, m, build, a.test, args, a.note, warm=warm, env=env)
@@ -4777,7 +4788,8 @@ if __name__ == "__main__":
     r.add_argument("--campaign", help="name written to the campaign column of every row")
     r.add_argument("--bare", action="store_true", help="only -m (plus --args): the defaults a new user gets")
     r.add_argument("--plain", action="store_true", help="no cache flags (autofit), like stock")
-    r.add_argument("--no-warm", action="store_true", help="no discarded run before the measured one: the first run as a user sees it")
+    r.add_argument("--warm", action="store_true", help="a discarded run before the measured one (hot run); default off: the first run as a user sees it")
+    r.add_argument("--no-warm", action="store_true", help=argparse.SUPPRESS)   # the old default, kept so scripts keep working
     r.add_argument("--args", help="extra server args, e.g. '-fitt 8000'")
     add_overrides(r)
     b = sp.add_parser("bench", help="MODELS x BUILDS x VARIANTS, every cell recorded, then the report")
@@ -4796,7 +4808,8 @@ if __name__ == "__main__":
     b.add_argument("--tol", type=float, help="flag cells below TOL x stock as REGRESSION (e.g. 0.95)")
     b.add_argument("--note")
     b.add_argument("--no-probe", action="store_true", help="skip the knob probe (one token per cell before the first measured run; prints requested against used settings)")
-    b.add_argument("--no-warm", action="store_true", help="no discarded run before each measured one: the first run as a user sees it")
+    b.add_argument("--warm", action="store_true", help="a discarded run before each measured one (hot run); default off: the first run as a user sees it")
+    b.add_argument("--no-warm", action="store_true", help=argparse.SUPPRESS)   # the old default, kept so scripts keep working
     b.add_argument("--sampler", help="extra sampling parameters for every request, comma separated, e.g. repeat_penalty=1.1,dry_multiplier=0.8 (anti-repetition tests); temperature 0 / top_k 1 stay unless overridden")
     b.add_argument("--keep-loops", action="store_true", help="keep repetition-loop outputs as normal runs (default: stored as ok=0, loop=1 and repeated up to 3 times)")
     b.add_argument("--templated", action="store_true", help="chat tests: render the model's chat template with the server's /apply-template and send the text to /completion (the loop guard then applies)")
