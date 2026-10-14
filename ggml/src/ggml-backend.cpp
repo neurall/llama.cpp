@@ -2000,17 +2000,14 @@ static bool ggml_backend_sched_is_host_weight(const struct ggml_tensor * t) {
 static void (*g_nvtx_push)(const char *) = NULL;
 static void (*g_nvtx_pop)(void) = NULL;
 static bool g_nvtx_on = false;
-static void ggml_backend_nvtx_init() {
-    static bool done = false;
-    if (done) { return; }
-    done = true;
-    if (!(getenv("GGML_NVTX") && atoi(getenv("GGML_NVTX")) >= 1)) { return; }
-    ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-    if (!reg) { return; }
-    g_nvtx_push = (void (*)(const char *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nvtx_push_fork");
-    g_nvtx_pop  = (void (*)(void)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nvtx_pop_fork");
-    g_nvtx_on = g_nvtx_push && g_nvtx_pop;
+// The CUDA backend's range functions (GGML_NVTX=1, nsys timelines) are handed in by the library that can look the backend up (llama_context: ggml_backend_reg_by_name lives in
+// the ggml library, not in ggml-base: a call from here is an unresolved symbol when ggml-base is linked as a DLL on Windows, and the Windows build failed on it).
+void ggml_backend_nvtx_set_fork(void (*push)(const char *), void (*pop)(void)) {
+    g_nvtx_push = push;
+    g_nvtx_pop  = pop;
+    g_nvtx_on   = push && pop;
 }
+static void ggml_backend_nvtx_init() {}
 #define NVTX_PUSH(...) do { if (g_nvtx_on) { char _b[200]; snprintf(_b, sizeof _b, __VA_ARGS__); g_nvtx_push(_b); } } while (0)
 #define NVTX_POP() do { if (g_nvtx_on) { g_nvtx_pop(); } } while (0)
 struct nvtx_scope { bool on; explicit nvtx_scope(const char * n) : on(g_nvtx_on) { if (on) { g_nvtx_push(n); } } ~nvtx_scope() { if (on) { g_nvtx_pop(); } } };   // a range that ends with the scope (also on early returns)

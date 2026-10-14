@@ -295,6 +295,15 @@ llama_context::llama_context(
     cparams.op_offload = params.op_offload;
     cparams.prefetch_experts_slots = params.prefetch_experts_slots;
     cparams.moe_cache = params.n_moe_cache_slots != 0;
+    {   // GGML_NVTX=1: the CUDA backend's nsys range functions for the scheduler (declared here, see ggml_backend_nvtx_set_fork in ggml-backend.cpp)
+        extern "C++" void ggml_backend_nvtx_set_fork(void (*)(const char *), void (*)(void));
+        const char * nv = getenv("GGML_NVTX");
+        ggml_backend_reg_t reg = nv && atoi(nv) >= 1 ? ggml_backend_reg_by_name("CUDA") : nullptr;
+        if (reg) {
+            ggml_backend_nvtx_set_fork((void (*)(const char *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nvtx_push_fork"),
+                                       (void (*)(void)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nvtx_pop_fork"));
+        }
+    }
     cparams.kv_unified = params.kv_unified;
 
     // initialized later
