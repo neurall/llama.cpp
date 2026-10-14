@@ -2297,7 +2297,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
     // fork: --moe dense-split: the configuration of this pass (one card or split over the cards), chosen before the graph is built; a changed choice rebuilds
-    const bool ds_changed = llama_dsplit_decide_fork(model, ubatch.n_tokens);
+    const bool ds_changed = !fork_resident && llama_dsplit_decide_fork(model, ubatch.n_tokens);   // the per-pass split decision (and its log line) is part of what the exit skips
     // fork: the share controller of the expert split (llama-graph.cpp) moves the cards' expert counts from the measurement of an earlier pass; a changed count
     // needs a new graph
     const bool ctl_changed = ubatch.n_tokens >= 32 && llama_split_ctl_poll_fork((int64_t) model.hparams.n_expert, (int64_t) model.hparams.n_embd);
