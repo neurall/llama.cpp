@@ -118,12 +118,23 @@ bool cli_context::init() {
 
         spinner.emplace("\n\nLoading model...");
 
-        server.emplace();
-        if (!server->start(params)) {
-            ui::show_error("server start failed");
-            return false;
+        // A start that dies (CUDA out of memory with the expert cache on a small card) records its placement as failed (common_moe_cache_auto: the abort callback), so the
+        // next start places differently: try again, up to two more times, instead of leaving the user with a crash he would repeat for ever.
+        bool ready = false;
+        for (int attempt = 0; attempt < 3 && !ready; ++attempt) {
+            server.emplace();
+            if (!server->start(params)) {
+                ui::show_error("server start failed");
+                return false;
+            }
+            ready = server->wait_ready(should_stop);
+            if (!ready && !should_stop() && attempt < 2) {
+                spinner.reset();
+                ui::show_message("the server did not start, trying again with a different placement");
+                spinner.emplace("\n\nLoading model...");
+            }
         }
-        if (!server->wait_ready(should_stop)) {
+        if (!ready) {
             if (!should_stop()) {
                 ui::show_error("the server exited before becoming ready");
             }
