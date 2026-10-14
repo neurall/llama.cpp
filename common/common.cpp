@@ -1901,6 +1901,9 @@ static void common_moe_cache_auto_impl(common_params & params) {
             // The maximum is the context; the context's shrink-to-fit halves it until the pool can lend the graph, and the per-prompt rule picks equal passes under it.
             ub = params.n_ctx > 0 ? params.n_ctx : params.n_batch;
             ub = std::max<uint32_t>(512, ub);
+            // cap: a pass as long as a big context makes the attention masks of some models grow with its square (GLM-5.3-Flash at -c 140000: the memory fit asked for
+            // 432 GB and the server died before loading). Gains flatten from 8192 to 12416 tokens anyway; the per-prompt rule makes equal passes under this maximum.
+            ub = std::min<uint32_t>(ub, 16384);
             LOG_INF("%s: ubatch %u: experts stream from RAM, the compute alias lends the graph (maximum = context, lowered to what the pool can lend; prompt passes are sized per request)\n", __func__, ub);
         } else {
             ub = common_auto_ubatch(params);
