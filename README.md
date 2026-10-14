@@ -15,26 +15,28 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 ### Best gainers so far (measured 2026-10-14, 2x RTX 3090 24 GB, one x16 and one x4 link)
 
-`pp` = prompt processing tokens/s, `t/s` = generated tokens/s. Same prompts as below, each build on its own defaults (only `-np 1`, `-c` for stock). "stock" is the newest upstream build that was measured on that cell (build in the last column); the fork rows are the best measured build of this release line (builds are given by build number, the commit is in the release notes and `fork/bench`; the published b12844 is being re-measured the same way, see the known-issue note).
+`pp` = prompt processing tokens/s, `t/s` = generated tokens/s. Sorted by the larger of the two gains. Same prompts as below, each build on its own defaults (only `-np 1`, `-c` for stock). "stock" is the newest upstream build that was measured on that cell (build in the last column); the fork rows are the best measured build of this release line (builds are given by build number, the commit is in the release notes and `fork/bench`; the published b12844 is being re-measured the same way, see the known-issue note).
 
 | model | cell | builds fork stock | stock pp | fork pp | stock t/s | fork t/s | stock ppl | fork ppl | **pp gain** | **t/s gain** |
 |---|---|---|---|---|---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit (106 GB) | 12k prompt, `-c 16384` | b12719 b11381 | 42.8 | **756** | 11.5 | **15.9** | 1.4294 | pending | **17.7x** | 1.38x |
-| GLM-5.3-Flash 3.0-bit | 12k prompt, no `-c` | b12825 b11381 | 42.8 | 486 | 11.5 | 14.3 | 1.4294 | pending | 11.3x | 1.24x |
-| GLM-5.3-Flash 3.0-bit | 1k edit, 128 out | b12825 b11452 | 41.5 | **495** | 12.4 | **19.0** | 1.4294 | pending | **11.9x** | 1.53x |
-| GLM-5.3-Flash 3.0-bit | game, 600 out | b12686 b11452 | 15.3 | **19.4** | 12.4 | **18.5** | 1.4294 | pending | 1.27x | 1.49x |
-| Qwen3.8-Flash-Next UD-IQ4_XS (88 GB) | 12k prompt, 32 out | b11707 b11381 | 201 | **553** | 29.6 | **45.9** | - | - | **2.8x** | 1.55x |
-| Qwen3.8-Flash-Next UD-IQ4_XS | 1k edit, 128 out | b12364 b11452 | 160 | **599** | 30.6 | **45.8** | - | - | **3.7x** | 1.50x |
-| Qwen3.8-Flash-Next UD-IQ4_XS | game, 600 out | b11707 b11452 | 40.9 | **58.8** | 31.0 | **50.5** | - | - | 1.44x | 1.63x |
-| MiMo-V2.6-Flash IQ3_XXS (132 GB) | chat, 1500 out (short prompt) | b11707 b11381 | - | - | 4.9 | **10.5** | - | - | - | **2.1x** |
-| MiMo-V2.6-Flash IQ3_XXS (132 GB) | 12k prompt, 32 out | b11707 b11381 | 37.3 | **122** | 5.2 | **9.0** | - | - | **3.3x** | 1.73x |
-| Qwen3.8-Flash-Next IQ3_S (78 GB), perplexity only | 2 chunks | b12844 b11574 | - | - | - | - | 1.1113 | 1.1151 | - | - |
-| Qwen3.6-35B-A3B hybrid (fits VRAM) | 4k prompt | b12825 b11574 | 3061 | **3084** | 140 | **142** | 1.522 | pending | 1.01x | 1.01x |
-| Qwen3.6-35B-A3B hybrid (fits VRAM) | 12k prompt, 32 out | b12844 b11574 | 3625 | 3361 | 133.1 | **136.2** | 1.522 | pending | 0.93x | 1.02x |
-| Qwen3.8-27B IQ3_S (dense, fits 24 GB) | game, 600 out | b12844 b11574 | 105.5 | 102.1 | 40.5 | **40.8** | - | pending | 0.97x | 1.01x |
-| OLMoE-1B-7B Q4_K_M (fits VRAM) | game, 600 out | b12825 b11574 | 213 | **315** | 466 | **472** | - | pending | 1.48x | 1.01x |
-
-`ppl` = perplexity of the same text (lower is better, equal means the compute path is unchanged); measured with `llama-perplexity`, 2 chunks, same text, stock b11574 against the release b12844 (the batched `pplb` variant gives 1.1086 for b12844 and b12686 against 1.1142 for stock). GLM, Qwen3.6, OLMoE and MiMo are `pending` and filled as the runs finish.
+| GLM-5.3-Flash 3.0-bit (106 GB) | 12k prompt, `-c 16384` (best pp) | b12719 b11381 | 42.8 | **756** | 11.5 | **15.9** | 1.4294 | pending | **17.7x** | 1.38x |
+| GLM-5.3-Flash 3.0-bit | 1k edit, 128 out | b12825 b11452 | 41.5 | **495** | 12.4 | **19.0** | - | - | **11.9x** | 1.53x |
+| Qwen3.8-Flash-Next UD-IQ4_XS (88 GB) | 1k edit (best pp) | b12364 b11452 | 160 | **599** | 30.6 | **45.8** | - | - | **3.7x** | 1.50x |
+| Qwen3.8-Flash-Next UD-IQ4_XS | 12k prompt | b11707 b11381 | 201 | **553** | 29.6 | **45.9** | - | - | **2.8x** | 1.55x |
+| MiMo-V2.6-Flash IQ3_XXS (132 GB) | 1k edit (best pp) | b12250 b11381 | 30.0 | **73.6** | 4.8 | **9.0** | - | - | **2.5x** | 1.88x |
+| GLM-5.3-Flash 3.0-bit | game, 600 out (best t/s) | b12209 b11381 | - | - | 11.7 | **27.8** | - | - | - | **2.4x** |
+| MiMo-V2.6-Flash IQ3_XXS | chat, short prompt (best t/s) | b11707 b11381 | - | - | 4.9 | **10.5** | - | - | - | **2.1x** |
+| Qwen3.8-Flash-Next UD-IQ4_XS | chat, short prompt (best t/s) | b11365 b11381 | 41.8 | **63.3** | 30.9 | **60.9** | - | - | 1.51x | 1.97x |
+| GLM-5.3-Flash 3.5-bit (137 GB) | 1k edit (best pp) | b12250 b11381 | 26.2 | **49.0** | 9.7 | **9.9** | - | - | 1.87x | 1.02x |
+| Qwen3.8-Flash-Next IQ3_S (78 GB) | 1k edit (best pp) | b12128 b11381 | 376 | **683** | 42.7 | **54.2** | 1.1113 | 1.1151 | 1.82x | 1.27x |
+| Qwen3.6-35B-A3B hybrid (fits VRAM) | game, 600 out | b12824 b11381 | 85.0 | **145** | 153 | **155** | 1.522 | pending | 1.71x | 1.01x |
+| GLM-5.3-Flash 3.5-bit | game (best t/s) | b11707 b11381 | 3.7 | **5.4** | 6.9 | **10.5** | - | - | 1.46x | 1.52x |
+| Qwen3.8-27B MTP Q5_K_M (dense, fits 24 GB) | 1k edit (best t/s with MTP) | b12193 b11381 | 1531 | **1616** | 42.7 | **64.4** | - | - | 1.06x | 1.51x |
+| OLMoE-1B-7B Q4_K_M (fits VRAM) | game, 600 out | b12824 b11574 | 213 | **315** | 466 | **472** | - | - | 1.48x | 1.01x |
+| Qwen3.8-27B MTP Q5_K_M | game, 600 out | b12193 b11381 | 32.4 | **34.1** | 45.7 | **65.7** | - | - | 1.05x | 1.44x |
+| Qwen3.8-Flash-Next IQ3_S | game (best t/s) | b11707 b11381 | 26.5 | **29.9** | 42.1 | **56.2** | - | - | 1.13x | 1.33x |
+| Qwen3.8-Flash-Next IQ1_M | 1k edit | b12128 b11381 | 1165 | **1409** | 65.0 | **65.9** | - | - | 1.21x | 1.01x |
+| Qwen3.8-27B IQ4_NL (dense, fits 24 GB) | 1k edit | b11707 b11381 | 1714 | **1730** | 44.3 | **44.3** | - | - | 1.01x | 1.00x |
 
 On smaller cards the gain grows, see the next section (an 8 GB laptop: decode 2.7-3.6x; a simulated 16 GB card: GLM 6.5x decode, Qwen3.8-Flash-Next 3.4x on two cards).
 
