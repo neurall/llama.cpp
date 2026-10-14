@@ -357,8 +357,6 @@ llama_model_mimo2::graph::graph(const llama_model & model, const llm_graph_param
 
     cb(cur, "result_output", -1);
     res->t_logits = cur;
-
-    ggml_build_forward_expand(gf, cur);
 }
 
 // Mirrors MiMo's appended NextN block: normalize and fuse token and hidden inputs, run the decoder block,
@@ -501,5 +499,4 @@ llama_model_mimo2::graph_mtp::graph_mtp(const llama_model & model, const llm_gra
     cb(cur, "result_output", -1);
 
     res->t_logits = cur;
-    ggml_build_forward_expand(gf, cur);
 }
