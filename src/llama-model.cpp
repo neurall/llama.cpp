@@ -1703,11 +1703,36 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         std::copy(tensor_split, tensor_split + n_devices(), splits.begin());
     }
 
-    // sum and normalize the splits to get the split points
+    // fork: --moe split=dec (the decode layout): the layers by free memory like the default split, but the card with the fastest host link takes the FIRST
+    // layers and the slower cards the later ones. The models here have their flattest layers first (the hottest half of a layer's experts covers 80-87% of its
+    // uses in the first layers and up to 97% later: saved hot maps of Qwen3.8-Flash-Next, MiMo, GLM), so the card that refills slowly holds the layers that
+    // swap least. Why not split=bw for decode: a card on a slow link gets few layers, caches every expert of them and leaves the rest of its memory unused
+    // (plan98, 2026-10-14: Qwen3.8-Flash-Next 8 layers on the x4 card, 8.1 GB pool, 15.9 GB of the card free; MiMo 7 layers, 8.5 GB free) while the fast
+    // card holds a fifth to a half of its layers' experts. Qwen3.8-Flash-Next game4c, one run each: 54.1 decode t/s with 50/50 and the x16 card first,
+    // 46.5 with split=bw. The order lives here only: the -dev list and every other per-device rule keep the user's order.
+    std::vector<size_t> order(n_devices());
+    std::iota(order.begin(), order.end(), 0);
+    if (all_zero && o_split && strcmp(o_split, "dec") == 0 && n_devices() > 1) {
+        std::vector<double> link(n_devices(), 0.0);
+        for (size_t i = 0; i < n_devices(); ++i) {
+            const auto * r = llama_gpu_probe_find_fork(devices[i].dev);
+            link[i] = r ? r->h2d_gbs : 0.0;
+        }
+        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return link[a] > link[b]; });
+        std::string txt;
+        for (size_t k = 0; k < order.size(); ++k) {
+            txt += format("%s%s (%.1f GB/s)", k ? ", then " : "", ggml_backend_dev_name(devices[order[k]].dev), link[order[k]]);
+        }
+        LLAMA_LOG_WARN("%s: split=dec: layers by free memory, first layers on %s\n", __func__, txt.c_str());
+    }
+    // sum and normalize the splits to get the split points (in `order`: point k ends the layers of device order[k])
     float split_sum = 0.0f;
-    for (size_t i = 0; i < n_devices(); ++i) {
-        split_sum += splits[i];
-        splits[i] = split_sum;
+    {
+        std::vector<float> in(splits);
+        for (size_t k = 0; k < n_devices(); ++k) {
+            split_sum += in[order[k]];
+            splits[k] = split_sum;
+        }
     }
     for (size_t i = 0; i < n_devices(); ++i) {
         splits[i] /= split_sum;
@@ -1722,7 +1747,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             return {cpu_dev, &pimpl->cpu_buft_list};
         }
         const int layer_gpu = std::upper_bound(splits.begin(), splits.begin() + n_devices(), float(il - i_gpu_start)/act_gpu_layers) - splits.begin();
-        auto * dev = devices.at(layer_gpu).dev;
+        auto * dev = devices.at(order.at(std::min<size_t>(layer_gpu, n_devices() - 1))).dev;
         LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to device %s, is_swa = %d\n", il, ggml_backend_dev_name(dev), is_swa);
         return {dev, &pimpl->gpu_buft_list.at(dev)};
     };
@@ -1739,7 +1764,14 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     {   // fork: --moe layer-heat=1 puts the expert layers whose caches hit most on the GPU with the slower host link (same count per GPU)
         std::vector<ggml_backend_dev_t> ld(n_layer_all);
         for (int il = 0; il < n_layer_all; ++il) { ld[il] = pimpl->dev_layer[il].dev; }
-        if (llama_moe_layer_heat_fork(*this, ld)) {
+        std::vector<double> lay_dense_b(n_layer_all, 0.0), lay_exp_b(n_layer_all, 0.0);   // bytes per layer: everything but the routed experts, the routed experts
+        for (const auto & kv : ml.weights_map) {
+            if (kv.first.compare(0, 4, "blk.") != 0 || !kv.second.tensor) { continue; }
+            const int il = atoi(kv.first.c_str() + 4);
+            if (il < 0 || il >= n_layer_all) { continue; }
+            (kv.first.find("_exps") != std::string::npos ? lay_exp_b : lay_dense_b)[il] += (double) ggml_nbytes(kv.second.tensor);
+        }
+        if (llama_moe_layer_heat_fork(*this, ld, lay_dense_b, lay_exp_b)) {
             for (int il = 0; il < n_layer_all; ++il) {
                 if (ld[il] != pimpl->dev_layer[il].dev) { pimpl->dev_layer[il] = { ld[il], &pimpl->gpu_buft_list.at(ld[il]) }; }
             }

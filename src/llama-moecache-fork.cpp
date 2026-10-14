@@ -4451,12 +4451,33 @@ static double early_link_gbs(ggml_backend_dev_t d) {
     return gbs;
 }
 
-// --moe layer-heat=1, two GPUs: the expert layers whose saved usage is most concentrated (the share of the layer's expert uses that its top quarter
-// of experts carries, from hot.<layer> of the state file) go to the GPU with the slower host link. Their caches hit more, so that link uploads
-// less. The number of layers per GPU stays what the split gave; only which layers changes. Without a saved profile nothing moves.
-bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backend_dev_t> & layer_dev) {
+// --moe layer-heat=1|fit: which expert layers each GPU holds for decode, by how HOT they are. Any number of GPUs.
+//
+// Why. A decode step computes a missed expert on the CPU and uploads it for later; the step waits for the uploads of the step before. Behind a slow link
+// that wait is what a layer costs: MiMo-V2.6-Flash, x16 + x4, layers by share in model order, decode after a 12k prompt: 30% of the layers on the x4
+// card 28.8 tokens/s, 40% 24.3, 50% 20.5, at the same 82-84% hit rate (at 50% the x4's layers are 37% resident, their misses cross the x4 link). A layer
+// whose expert use is concentrated misses rarely with few of its experts in VRAM, and the saved hot maps (state file, hot.<layer>) say that layers
+// differ a lot: the hottest half of a layer's experts carries 80% of its uses in the first layers of Qwen3.8-Flash-Next and 97% in layers 15 and 31
+// (MiMo 69-97%, GLM-5.3-Flash 63-87%; the first layers are the flattest in all three, and the plain split gives exactly those to the first GPU).
+//
+// Rule. The weakest card takes the hottest layers.
+//   cards   ranked by ONE measured number, the time to feed a card and get its result: the upload of one expert (its bytes over the bulk rate plus the
+//           fixed latency of a small copy) plus the result latency of the probe (one token's activations up, a small quantised matmul, the result
+//           down, end to end). It holds link rate, link latency and compute, so a card ranks low whatever makes it slow: a fast card in a narrow
+//           slot, a slow card in a wide one. Capability = 1 / that time; any mix of cards and links.
+//   layers  ranked by the area under their coverage curve (the share of uses the hottest k experts carry, averaged over k): hottest first.
+//   =1      every card keeps the NUMBER of layers the split gave it; only which layers changes.
+//   =fit    the numbers follow from memory and the cards' miss budgets: a card may miss in proportion to its capability (the strongest card lambda,
+//           a card that is c times weaker lambda / c), a layer needs its dense weights plus the experts that keep its misses under that budget
+//           (coverage curve), and each card, weakest first, takes the hottest remaining layers that fit; the strongest takes the rest. lambda is the
+//           smallest value for which the rest fits the strongest card (bisection). A slow card so ends up with as many hot layers as fit nearly
+//           whole, a fast one with the flat layers at whatever residency its memory allows.
+// Without a saved hot map nothing moves (the first run of a model learns it). The placement is made at load: weights and memory are allocated for it.
+bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backend_dev_t> & layer_dev, const std::vector<double> & lay_dense_b,
+        const std::vector<double> & lay_exp_b) {
     const char * e = moe_opt("layer-heat");
-    if (!e || atoi(e) == 0) {
+    const int mode = !e ? 0 : strcmp(e, "fit") == 0 ? 2 : atoi(e) != 0 ? 1 : 0;
+    if (mode == 0) {
         return false;
     }
     std::vector<ggml_backend_dev_t> gpus;
@@ -4465,7 +4486,7 @@ bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backe
             gpus.push_back(d);
         }
     }
-    if (gpus.size() != 2) {
+    if (gpus.size() < 2) {
         return false;
     }
     std::vector<std::pair<std::string, std::string>> kv;
@@ -4477,16 +4498,16 @@ bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backe
         LLAMA_LOG_WARN("moe-cache: layer-heat: no saved usage profile for %s, layers stay where the split put them\n", name.c_str());
         return false;
     }
-    const double g0 = early_link_gbs(gpus[0]), g1 = early_link_gbs(gpus[1]);
-    ggml_backend_dev_t slow = g0 <= g1 ? gpus[0] : gpus[1], fast = g0 <= g1 ? gpus[1] : gpus[0];
-    std::vector<std::pair<double, int>> heat;   // (concentration, layer) of the expert layers on either GPU
-    int n_slow = 0;
+    // the layers: coverage curve and heat
+    struct lay { int il; double heat; std::vector<double> cov; };   // cov[k]: share of the uses carried by the k + 1 hottest experts
+    std::vector<lay> lays;
+    double exp_b_sum = 0.0, n_exp_sum = 0.0;
     for (const auto & p : kv) {
         if (p.first.compare(0, 4, "hot.") != 0) {
             continue;
         }
         const int il = atoi(p.first.c_str() + 4);
-        if (il < 0 || il >= (int) layer_dev.size() || (layer_dev[il] != slow && layer_dev[il] != fast)) {
+        if (il < 0 || il >= (int) layer_dev.size() || std::find(gpus.begin(), gpus.end(), layer_dev[il]) == gpus.end()) {
             continue;
         }
         std::vector<double> c;
@@ -4497,22 +4518,96 @@ bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backe
             continue;
         }
         std::sort(c.rbegin(), c.rend());
-        const double top = std::accumulate(c.begin(), c.begin() + std::max<size_t>(1, c.size() / 4), 0.0);
-        heat.push_back({ top / tot, il });
-        n_slow += layer_dev[il] == slow;
+        lay l; l.il = il; l.heat = 0.0; l.cov.resize(c.size());
+        double run = 0.0;
+        for (size_t k = 0; k < c.size(); ++k) { run += c[k]; l.cov[k] = run / tot; l.heat += l.cov[k]; }
+        l.heat /= (double) c.size();
+        if ((size_t) il < lay_exp_b.size()) { exp_b_sum += lay_exp_b[il]; n_exp_sum += (double) c.size(); }
+        lays.push_back(std::move(l));
     }
-    if (heat.empty()) {
+    if (lays.empty()) {
         return false;
     }
-    std::sort(heat.rbegin(), heat.rend());
-    std::string on_slow;
-    for (size_t i = 0; i < heat.size(); ++i) {
-        const bool to_slow = (int) i < n_slow;
-        layer_dev[heat[i].second] = to_slow ? slow : fast;
-        if (to_slow) { on_slow += tr_fmt(" %d", heat[i].second); }
+    std::sort(lays.begin(), lays.end(), [](const lay & a, const lay & b) { return a.heat > b.heat; });   // hottest first
+    // the cards: capability = 1 / (one expert upload + the result latency), weakest first
+    const double exp_b = n_exp_sum > 0 ? exp_b_sum / n_exp_sum : 2e6;   // bytes of one expert (up + gate + down)
+    struct card { ggml_backend_dev_t dev; double cap, gbs, res_us, free_b; int n_now; };
+    std::vector<card> cards;
+    bool all_res = true;   // the result latency of every card or of none (it must be the same measurement on all of them to compare)
+    for (ggml_backend_dev_t d : gpus) { const auto * r = llama_gpu_probe_find_fork(d); all_res = all_res && r && r->res_us > 0; }
+    for (ggml_backend_dev_t d : gpus) {
+        const auto * r = llama_gpu_probe_find_fork(d);
+        const double gbs = r && r->h2d_gbs > 0 ? r->h2d_gbs : early_link_gbs(d);
+        const double lat = r && r->lat_us > 0 ? r->lat_us : 0.0;
+        const double up_us = lat + exp_b / (std::max(0.1, gbs) * 1e3);   // one expert upload, us
+        const double res = all_res ? r->res_us : 0.0;
+        size_t f = 0, t = 0;
+        ggml_backend_dev_memory(d, &f, &t);
+        cards.push_back({ d, 1.0 / (up_us + res), gbs, res, (double) f, 0 });
     }
-    LLAMA_LOG_WARN("moe-cache: layer-heat: %d of %zu expert layers on %s (host link %.1f GB/s, %s %.1f GB/s), the most concentrated:%s\n", n_slow, heat.size(),
-            ggml_backend_dev_name(slow), std::min(g0, g1), ggml_backend_dev_name(fast), std::max(g0, g1), on_slow.c_str());
+    for (const auto & l : lays) {
+        for (auto & c : cards) { c.n_now += layer_dev[l.il] == c.dev; }
+    }
+    std::sort(cards.begin(), cards.end(), [](const card & a, const card & b) { return a.cap < b.cap; });   // weakest first
+    const double cap_max = cards.back().cap;
+    std::vector<int> n_take(cards.size(), 0);
+    double lambda = -1.0;
+    if (mode == 1) {
+        for (size_t g = 0; g < cards.size(); ++g) { n_take[g] = cards[g].n_now; }
+    } else {
+        // experts a layer needs (as a share of its experts) to miss at most m of its uses
+        const auto need_frac = [](const lay & l, double m) {
+            const size_t k = (size_t) (std::lower_bound(l.cov.begin(), l.cov.end(), 1.0 - m) - l.cov.begin());
+            return (double) std::min(l.cov.size(), k + 1) / (double) l.cov.size();
+        };
+        const auto bytes_of = [&](const lay & l, double m) {
+            const double d = (size_t) l.il < lay_dense_b.size() ? lay_dense_b[l.il] : 0.0, x = (size_t) l.il < lay_exp_b.size() ? lay_exp_b[l.il] : 0.0;
+            return d + x * need_frac(l, m);
+        };
+        static const double reserve = 2.0 * (1ull << 30);   // per card: compute buffers, K/V, the backend's own pool (the pool takes what is left after load)
+        // the rest fits the strongest card at its miss budget lam? fills take[] on the way
+        const auto place = [&](double lam, std::vector<int> & take) {
+            size_t li = 0;
+            for (size_t g = 0; g + 1 < cards.size(); ++g) {
+                const double m = lam * cards[g].cap / cap_max;   // a weaker card may miss less
+                double left = cards[g].free_b - reserve;
+                take[g] = 0;
+                while (li < lays.size() && bytes_of(lays[li], m) <= left) { left -= bytes_of(lays[li], m); ++li; ++take[g]; }
+            }
+            double need = 0.0;
+            for (size_t i = li; i < lays.size(); ++i) { need += bytes_of(lays[i], lam); }
+            take.back() = (int) (lays.size() - li);
+            return need <= cards.back().free_b - reserve;
+        };
+        std::vector<int> take(cards.size(), 0);
+        if (!place(1.0, take)) {
+            LLAMA_LOG_WARN("moe-cache: layer-heat=fit: the layers do not fit the cards even with every expert outside VRAM, layers stay where the split put them\n");
+            return false;
+        }
+        double lo = 0.0, hi = 1.0;
+        for (int it = 0; it < 30; ++it) {
+            const double mid = 0.5 * (lo + hi);
+            if (place(mid, take)) { hi = mid; } else { lo = mid; }
+        }
+        place(hi, n_take);
+        lambda = hi;
+    }
+    size_t li = 0;
+    std::string txt;
+    for (size_t g = 0; g < cards.size(); ++g) {
+        std::vector<int> mine;
+        for (int k = 0; k < n_take[g] && li < lays.size(); ++k, ++li) {
+            layer_dev[lays[li].il] = cards[g].dev;
+            mine.push_back(lays[li].il);
+        }
+        std::sort(mine.begin(), mine.end());
+        std::string ls;
+        for (int il : mine) { ls += tr_fmt(" %d", il); }
+        txt += tr_fmt("%s%s (capability %.2f of the strongest: link %.1f GB/s, result latency %.0f us): %zu layers:%s", g ? "; " : "",
+                ggml_backend_dev_name(cards[g].dev), cards[g].cap / cap_max, cards[g].gbs, cards[g].res_us, mine.size(), ls.c_str());
+    }
+    LLAMA_LOG_WARN("moe-cache: layer-heat=%s: hottest layers on the weakest card%s: %s\n", mode == 2 ? "fit" : "1",
+            lambda >= 0 ? tr_fmt(" (miss budget of the strongest card %.3f)", lambda).c_str() : "", txt.c_str());
     return true;
 }
 

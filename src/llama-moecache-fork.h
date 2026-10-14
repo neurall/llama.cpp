@@ -114,7 +114,8 @@ double llama_moe_cache_compute_us_fork();                                     //
 // before the first compute-buffer reserve: time each GPU's host link, reserve the prefill split only when it can pay
 void llama_moe_cache_prefill_decide_fork(const std::vector<ggml_backend_dev_t> & gpus);
 // --moe layer-heat=1: per layer device in / out; true when a layer moved (the most concentrated expert layers to the GPU with the slower host link)
-bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backend_dev_t> & layer_dev);
+bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backend_dev_t> & layer_dev, const std::vector<double> & lay_dense_b,
+        const std::vector<double> & lay_exp_b);
 // layers il_a and il_b trade GPUs: their expert caches trade cards (cached experts move along as far as free blocks allow); false: not possible
 bool llama_moe_cache_swap_layers_fork(int il_a, int il_b);
 // compute alias (--moe alias=1): the pool buffers whose first blocks the scheduler may use for its compute graphs, and the bytes it may use
