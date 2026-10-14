@@ -1110,6 +1110,7 @@ struct ggml_backend_sched {
     struct ggml_backend_sched_split * splits;
     int n_splits;
     int splits_capacity;
+    size_t max_splits;       // bound the context and id arrays were sized for (see ggml_backend_sched_new)
 
     // pipeline parallelism support
     int n_copies;
@@ -1675,6 +1676,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
             if (node_backend_id != cur_backend_id || need_new_split) {
                 split->i_end = i;
                 i_split++;
+                GGML_ASSERT((size_t) i_split < sched->max_splits && "more graph splits than the scheduler reserved room for (ggml_backend_sched_new caps them at 16384)");
                 if (i_split >= sched->splits_capacity) {
                     int old_cap = sched->splits_capacity;
                     sched->splits_capacity *= 2;
@@ -3316,7 +3318,12 @@ ggml_backend_sched_t ggml_backend_sched_new(
     sched->hv_tensor_backend_ids = (int *) malloc(sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
     sched->hv_tensor_copies      = (ggml_tensor **) malloc(sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
 
-    const size_t ggml_sched_max_splits = graph_size; // at most there is one split for each node in the graph
+    // At most one split per node is the proof-safe bound, but it costs ~21 KB per node (30 inputs x 2 tensors per split, plus the id arrays): at the 575k-node graph
+    // of a 14336-token micro-batch that is 12 GB, committed at once. Linux overcommits it unseen; Windows refuses ("GGML_ASSERT(ctx->mem_buffer != NULL)" in ggml_init
+    // right after the weights loaded, an 8 GB laptop with 15 GiB of RAM left, any micro-batch from ~12000 tokens). Real graphs have a few hundred to a few thousand
+    // splits (one per backend change), so the bound is capped and checked where a split is added.
+    const size_t ggml_sched_max_splits = std::min<size_t>(graph_size, 16384);
+    sched->max_splits = ggml_sched_max_splits;
     const size_t nodes_size = graph_size + ggml_sched_max_splits*GGML_SCHED_MAX_SPLIT_INPUTS*2;
     sched->node_backend_ids = (int *) calloc(nodes_size, sizeof(sched->node_backend_ids[0]));
     sched->leaf_backend_ids = (int *) calloc(nodes_size, sizeof(sched->leaf_backend_ids[0]));
