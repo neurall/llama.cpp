@@ -980,6 +980,8 @@ enum common_decision_type {
     COMMON_DECISION_TYPE_LAYA,    // score of one marker token per option, read from the embeddings output
     COMMON_DECISION_TYPE_CLEF,    // all questions in one prompt, score of option i read from the embeddings output at row i
     COMMON_DECISION_TYPE_PPLX_DECIDER, // same as openjev, label codes of 1 or 2 letters
+    COMMON_DECISION_TYPE_LFM2_D1, // same as openjev, the labels depend on the question type
+    COMMON_DECISION_TYPE_LFM2_D1_OMNI, // same as laya, other prompt layout
     COMMON_DECISION_TYPE_UNKNOWN, // a decision model of a type that is not supported
 };
 
@@ -1316,12 +1318,13 @@ struct common_prompt_checkpoint {
             llama_seq_id seq_id,
             llama_state_seq_flags flags);
 
-    void load_tgt(
+    // return false if the state could not be restored
+    bool load_tgt(
             llama_context * ctx,
             llama_seq_id seq_id,
             llama_state_seq_flags flags) const;
 
-    void load_dft(
+    bool load_dft(
             llama_context * ctx,
             llama_seq_id seq_id,
             llama_state_seq_flags flags) const;
