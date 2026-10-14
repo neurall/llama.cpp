@@ -1,4 +1,4 @@
-#include "llama-moe-backend-fork.h"
+#include "llama-moe-backend.h"
 #include "llama-moecache-fork.h"
 #include "llama-gpu-probe-fork.h"
 #include "llama-moestate-fork.h"
@@ -941,10 +941,10 @@ struct stock_heat_t {
 } g_heat;
 std::atomic<bool> g_heat_live{false};            // counting right now (stops after observe-steps decode calls; the counts stay for the save): read without the lock once per decode call
 
-// the function of the GPU backend named like the legacy CUDA symbol ("ggml_backend_cuda_obs_enable" -> fn "obs_enable"): neutral name first, see llama-moe-backend-fork.h
+// accepts the legacy CUDA symbol names of the older call sites
 void * cuda_obs_proc(const char * name) {
     static const char * const legacy = "ggml_backend_cuda_";
-    return moe_backend::proc(strncmp(name, legacy, strlen(legacy)) == 0 ? name + strlen(legacy) : name);
+    return llama_moe_backend_get_proc(strncmp(name, legacy, strlen(legacy)) == 0 ? name + strlen(legacy) : name);
 }
 
 void stock_obs_cb(const char * name, const struct ggml_tensor * ids, const struct ggml_tensor *, void *) {
@@ -2727,7 +2727,7 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
             if (ggml_backend_get_device(be) == ap.dev) { peak = ggml_backend_sched_graph_peak(sched, be); }
         }
         const size_t cap     = ap.span;
-        const size_t scratch = ap.cuda_dev >= 0 || (ggml_backend_dev_type(ap.dev) == GGML_BACKEND_DEVICE_TYPE_GPU && moe_backend::proc("scratch_fork") != nullptr)
+        const size_t scratch = ap.cuda_dev >= 0 || (ggml_backend_dev_type(ap.dev) == GGML_BACKEND_DEVICE_TYPE_GPU && llama_moe_backend_get_proc("scratch_fork") != nullptr)
                              ? GGML_PAD((size_t) n_tokens * alias_tok_bytes(mc, ap), (size_t) 2 << 20) : 0;
         const size_t base    = GGML_PAD(ap.base_off + GGML_PAD(peak, 256) + scratch, 256);   // behind the dense split's copies when the reserved graph splits
         fit.cap  = std::min(fit.cap ? fit.cap : cap, cap);
@@ -2902,10 +2902,10 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         // 12284). It is not a pure function of the batch: one 4092-token graph deep in the context asked for 75 KB per token. A graph that
         // asks for more than it was lent takes the rest from the device pool (the VRAM margin), once; small graphs get the most a small one asked.
         static size_t (*scratch_fn)(int, void *, size_t) = [] {
-            return (size_t (*)(int, void *, size_t)) moe_backend::proc("scratch_fork");
+            return (size_t (*)(int, void *, size_t)) llama_moe_backend_get_proc("scratch_fork");
         }();
         if (ap.cuda_dev < 0 && scratch_fn) {
-            if (ggml_backend_dev_type(ap.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { ap.cuda_dev = moe_backend::dev_index(ap.dev); }   // the backend that has scratch_fn owns the device
+            if (ggml_backend_dev_type(ap.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { ap.cuda_dev = llama_moe_backend_get_dev_index(ap.dev); }   // the backend that has scratch_fn owns the device
         }
         size_t scratch = 0;
         if (ap.cuda_dev >= 0) {
@@ -4191,14 +4191,14 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             const char * pc = moe_opt("pf-count");
             if ((!pc || pc[0] != '0') && !mc->layers.empty() && mc->layers[0].pub.up_src) {
                 typedef bool (*obs_init_t)(int, int, int);
-                obs_init_t init = (obs_init_t) moe_backend::proc("obs_prompt_init_fork");
+                obs_init_t init = (obs_init_t) llama_moe_backend_get_proc("obs_prompt_init_fork");
                 int n_layer = 0;
                 for (const auto & l : mc->layers) { n_layer = std::max(n_layer, l.pub.il + 1); }
                 const int n_expert = (int) mc->layers[0].pub.up_src->ne[2];
                 for (size_t i = 0; init && i < ggml_backend_dev_count(); ++i) {
                     ggml_backend_dev_t d = ggml_backend_dev_get(i);
-                    if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU && moe_backend::dev_index(d) >= 0) {
-                        mc->pf_count_on = init(moe_backend::dev_index(d), n_layer, n_expert) || mc->pf_count_on;
+                    if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU && llama_moe_backend_get_dev_index(d) >= 0) {
+                        mc->pf_count_on = init(llama_moe_backend_get_dev_index(d), n_layer, n_expert) || mc->pf_count_on;
                     }
                 }
                 mc->pf_count_layers  = n_layer;
@@ -6024,7 +6024,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         // the prompt's expert use, counted on the cards: once per expert and prompt, as the host callback counted it (the cards are idle here: after synchronize)
         typedef bool (*obs_read_t)(int, int, uint8_t *);
         static obs_read_t rd = [] {
-            return (obs_read_t) moe_backend::proc("obs_prompt_read_fork");
+            return (obs_read_t) llama_moe_backend_get_proc("obs_prompt_read_fork");
         }();
         std::vector<uint8_t> used((size_t) mc->pf_count_layers * mc->pf_count_experts, 0);
         if (rd && rd(mc->pf_count_layers, mc->pf_count_experts, used.data())) {

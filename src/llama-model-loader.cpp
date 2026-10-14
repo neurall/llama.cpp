@@ -1,5 +1,5 @@
 #include "llama-model-loader.h"
-#include "llama-moe-backend-fork.h"
+#include "llama-moe-backend.h"
 #include "llama-moestate-fork.h"
 
 #if defined(__linux__)
@@ -1532,7 +1532,7 @@ bool llama_model_loader::load_all_data(
     int (*host_cache)(int, void *) = nullptr;
     std::set<ggml_backend_buffer_t> cache_warm, cache_cold;
     if (getenv("GGML_CUDA_HUGEFS") && !use_mmap && !check_tensors) {
-        host_cache = (int (*)(int, void *)) moe_backend::proc("host_cache");
+        host_cache = (int (*)(int, void *)) llama_moe_backend_get_proc("host_cache");
         if (host_cache) {
             for (auto & kv : bufs) {
                 const int st = host_cache(1, kv.second);

@@ -3,7 +3,7 @@
 The cache engine (`src/llama-moecache-fork.cpp`, `llama-moestate-fork.cpp`, `llama-dsplit-fork.cpp`) talks to a GPU backend only through the generic ggml
 backend API plus a small set of **optional functions** found with `ggml_backend_reg_get_proc_address`. They are looked up by device (the registry of the first GPU
 device) under the neutral name `ggml_backend_moe_<fn>`; the legacy name `ggml_backend_cuda_<fn>` is still accepted, so the CUDA backend needed no change.
-The lookup is `moe_backend::proc("<fn>")` in `src/llama-moe-backend-fork.h`.
+The lookup is `llama_moe_backend_get_proc("<fn>")` in `src/llama-moe-backend.h`.
 
 | fn | signature | purpose | when the backend has none |
 |---|---|---|---|
