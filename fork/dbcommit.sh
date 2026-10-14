@@ -6,11 +6,15 @@ set -e
 R=$(git rev-parse --show-toplevel); DB=$R/fork/runs.db; T=$(mktemp -d)
 python3 - "$DB" "$T/runs.db" <<'PY'
 import sqlite3, sys
-c = sqlite3.connect(sys.argv[1], timeout=60)
-sys.path.insert(0, sys.argv[1].rsplit("/", 1)[0])
-import runstats
-runstats.refresh(c)                       # the statistics of records added since the last query are current in the published file
-c.execute("VACUUM INTO ?", (sys.argv[2],))   # compact copy: no free pages
+DBP, OUT = sys.argv[1], sys.argv[2]
+c = sqlite3.connect(DBP, timeout=60)
+# run.py carries runstats as one of its merged sections (registered as module `runstats`): load run.py as a module, not as a program
+import importlib.util
+sys.argv = ['run.py']
+sp = importlib.util.spec_from_file_location("run", DBP.rsplit("/", 1)[0] + "/run.py")
+runmod = importlib.util.module_from_spec(sp); sp.loader.exec_module(runmod)
+sys.modules["runstats"].refresh(c)                       # the statistics of records added since the last query are current in the published file
+c.execute("VACUUM INTO ?", (OUT,))   # compact copy: no free pages
 PY
 N=$(python3 -c "import sqlite3,sys; print(sqlite3.connect('$T/runs.db').execute('select count(*) from runs').fetchone()[0])")
 B=$(git -C "$R" hash-object -w "$T/runs.db")
