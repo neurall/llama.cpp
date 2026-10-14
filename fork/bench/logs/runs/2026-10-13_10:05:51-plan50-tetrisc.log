@@ -1,38 +1,0 @@
-0.00.001.230 I srv  llama_server: initializing ...
-0.00.256.108 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
-0.00.256.501 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
-0.00.258.506 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
-ggml_cuda_host_malloc_registered: 3.7 GiB populated in 0.3 s (3.0 reserved 1024 MiB pages, 0.5 THP, 0.2 small)
-ggml_cuda_host_malloc_registered: registered in 0.3 s
-0.02.210.321 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
-0.02.236.580 I cmn          init: llama threadpool init, n_threads = 8
-0.02.316.887 W moe-cache: 9 expert layers cached on CUDA0 (CUDA0), upload link slower
-0.02.316.896 W moe-cache: 7 expert layers cached on CUDA1 (CUDA1), upload link fastest
-0.02.318.475 W moe-cache: block pool on CUDA0: 9 layers, 1049.3 MiB, size classes: 128 x 3.92 MiB (4 layers), 160 x 3.38 MiB (5 layers); no blocks reserved per layer
-0.02.319.711 W moe-cache: block pool on CUDA1: 7 layers, 833.3 MiB, size classes: 96 x 3.38 MiB (3 layers), 128 x 3.92 MiB (4 layers); no blocks reserved per layer
-0.02.320.079 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
-0.03.117.227 W moe-cache: probe: links alone link 0 21.9 link 1 5.4 GB/s; CPU threads:GB/s alone/with links 1:25.4/41.9 2:40.7/44.2 3:41.1/44.4 4:38.9/44.0 -> CPU 41.1 GB/s (saturated by 2 threads), RAM budget 44.4 GB/s
-0.03.117.268 W moe-cache: 9 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
-0.03.117.309 W operator(): MoE expert cache enabled: 16 layers, slots/layer 96..160, 2 inserts/step, 23122.9 MiB device memory
-0.05.246.109 W moe-cache: max-batch auto = 112 (timed batches, cache path c / streamed s: c16=92ms c64=130ms c128=156ms s64=147ms s128=150ms s256=156ms s512=168ms)
-0.05.246.279 W moe_probe_costs_fork: cache-path probe took 2.1 s
-0.05.262.272 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, kv_unified = 'true'
-0.05.264.733 I srv  llama_server: model loaded
-0.05.264.743 I srv  llama_server: listening on http://127.0.0.1:8099
-0.06.122.656 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
-0.06.122.746 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
-0.07.129.262 I slot print_timing: id  3 | task 0 | prompt eval time =      70.45 ms /    20 tokens (    3.52 ms per token,   283.88 tokens per second)
-0.07.129.266 I slot print_timing: id  3 | task 0 |        eval time =     936.02 ms /   120 tokens (    7.87 ms per token,   127.13 tokens per second)
-0.07.129.267 I slot print_timing: id  3 | task 0 |       total time =    1006.48 ms /   140 tokens
-0.07.129.270 I slot print_timing: id  3 | task 0 |    graphs reused =        125
-0.07.129.309 I slot print_timing: id  3 | task 0 |        moe cache = on, hit 78.3% this request / 78.5% overall, 25..40 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
-0.07.129.312 I slot print_timing: id  3 | task 0 |        moe churn = 724 uploads, 738 evictions, 2754.3 MiB uploaded (this request)
-0.07.129.313 I slot print_timing: id  3 | task 0 |          threads = 4 decode / 8 batch, batch 2048, ubatch 2048
-0.07.129.358 I slot      release: id  3 | task 0 | stop processing: n_tokens = 139, truncated = 0
-0.08.158.242 I srv    operator(): operator(): cleaning up before exit...
-0.08.162.539 W moe-cache: steps=136 hits=53651 misses=14693 hit-rate=78.5%, prefill experts from cache 0/0, kept from prefill 0
-Collecting data...
-Generating '/tmp/nsys-report-9447.qdstrm'
-[1/1] [0%                          ] osrt.nsys-rep[1/1] [0%                          ] osrt.nsys-rep[1/1] [8%                          ] osrt.nsys-rep[1/1] [9%                          ] osrt.nsys-rep[1/1] [10%                         ] osrt.nsys-rep[1/1] [8%                          ] osrt.nsys-rep[1/1] [6%                          ] osrt.nsys-rep[1/1] [5%                          ] osrt.nsys-rep[1/1] [0%                          ] osrt.nsys-rep[1/1] [5%                          ] osrt.nsys-rep[1/1] [6%                          ] osrt.nsys-rep[1/1] [7%                          ] osrt.nsys-rep[1/1] [8%                          ] osrt.nsys-rep[1/1] [9%                          ] osrt.nsys-rep[1/1] [10%                         ] osrt.nsys-rep[1/1] [11%                         ] osrt.nsys-rep[1/1] [13%                         ] osrt.nsys-rep[1/1] [14%                         ] osrt.nsys-rep[1/1] [=15%                        ] osrt.nsys-rep[1/1] [=16%                        ] osrt.nsys-rep[1/1] [=17%                        ] osrt.nsys-rep[1/1] [==18%                       ] osrt.nsys-rep[1/1] [==19%                       ] osrt.nsys-rep[1/1] [==21%                       ] osrt.nsys-rep[1/1] [===22%                      ] osrt.nsys-rep[1/1] [===23%                      ] osrt.nsys-rep[1/1] [===24%                      ] osrt.nsys-rep[1/1] [====25%                     ] osrt.nsys-rep[1/1] [====26%                     ] osrt.nsys-rep[1/1] [====27%                     ] osrt.nsys-rep[1/1] [=====29%                    ] osrt.nsys-rep[1/1] [=====30%                    ] osrt.nsys-rep[1/1] [=====31%                    ] osrt.nsys-rep[1/1] [=====32%                    ] osrt.nsys-rep[1/1] [======33%                   ] osrt.nsys-rep[1/1] [======34%                   ] osrt.nsys-rep[1/1] [======35%                   ] osrt.nsys-rep[1/1] [=======37%                  ] osrt.nsys-rep[1/1] [=======38%                  ] osrt.nsys-rep[1/1] [=======39%                  ] osrt.nsys-rep[1/1] [========40%                 ] osrt.nsys-rep[1/1] [========41%                 ] osrt.nsys-rep[1/1] [=========43%                ] osrt.nsys-rep[1/1] [=========44%                ] osrt.nsys-rep[1/1] [=========45%                ] osrt.nsys-rep[1/1] [=========46%                ] osrt.nsys-rep[1/1] [==========47%               ] osrt.nsys-rep[1/1] [==========49%               ] osrt.nsys-rep[1/1] [===========50%              ] osrt.nsys-rep[1/1] [========================100%] osrt.nsys-rep[1/1] [========================100%] osrt.nsys-rep
-Generated:
-	/p/bw/data/q5h/nsys/osrt.nsys-rep

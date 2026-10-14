@@ -1,62 +1,0 @@
-0.00.001.183 I srv  llama_server: initializing ...
-0.00.256.163 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
-0.00.256.560 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
-0.00.258.497 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
-ggml_cuda_host_malloc_registered: 3.7 GiB populated in 0.3 s (3.0 reserved 1024 MiB pages, 0.5 THP, 0.2 small)
-ggml_cuda_host_malloc_registered: registered in 0.3 s
-0.02.120.032 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
-0.02.149.280 I cmn          init: llama threadpool init, n_threads = 8
-0.02.231.032 W moe-cache: 9 expert layers cached on CUDA0 (CUDA0), upload link slower
-0.02.231.038 W moe-cache: 7 expert layers cached on CUDA1 (CUDA1), upload link fastest
-0.02.232.617 W moe-cache: block pool on CUDA0: 9 layers, 1049.3 MiB, size classes: 128 x 3.92 MiB (4 layers), 160 x 3.38 MiB (5 layers); no blocks reserved per layer
-0.02.233.859 W moe-cache: block pool on CUDA1: 7 layers, 833.3 MiB, size classes: 96 x 3.38 MiB (3 layers), 128 x 3.92 MiB (4 layers); no blocks reserved per layer
-0.02.234.232 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
-0.03.029.136 W moe-cache: probe: links alone link 0 22.1 link 1 5.5 GB/s; CPU threads:GB/s alone/with links 1:25.4/41.6 2:40.5/44.9 3:41.2/44.8 4:39.3/44.7 -> CPU 41.2 GB/s (saturated by 2 threads), RAM budget 44.9 GB/s
-0.03.029.179 W moe-cache: 9 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
-0.03.029.218 W operator(): MoE expert cache enabled: 16 layers, slots/layer 96..160, 2 inserts/step, 23122.9 MiB device memory
-0.05.521.631 W moe-cache: max-batch auto = 128 (timed batches, cache path c / streamed s: c16=91ms c64=133ms c128=156ms s64=182ms s128=193ms s256=200ms s512=225ms)
-0.05.521.798 W moe_probe_costs_fork: cache-path probe took 2.5 s
-0.05.538.000 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, kv_unified = 'true'
-0.05.540.939 I srv  llama_server: model loaded
-0.05.540.945 I srv  llama_server: listening on http://127.0.0.1:8099
-0.06.148.752 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
-0.06.148.829 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
-0.07.149.877 I slot print_timing: id  3 | task 0 | prompt eval time =      68.37 ms /    20 tokens (    3.42 ms per token,   292.51 tokens per second)
-0.07.149.882 I slot print_timing: id  3 | task 0 |        eval time =     932.64 ms /   120 tokens (    7.84 ms per token,   127.60 tokens per second)
-0.07.149.883 I slot print_timing: id  3 | task 0 |       total time =    1001.01 ms /   140 tokens
-0.07.149.887 I slot print_timing: id  3 | task 0 |    graphs reused =        125
-0.07.149.934 I slot print_timing: id  3 | task 0 |        moe cache = on, hit 78.3% this request / 78.5% overall, 25..40 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
-0.07.149.939 I slot print_timing: id  3 | task 0 |        moe churn = 718 uploads, 737 evictions, 2743.7 MiB uploaded (this request)
-0.07.149.940 I slot print_timing: id  3 | task 0 |          threads = 4 decode / 8 batch, batch 2048, ubatch 2048
-0.07.149.996 I slot      release: id  3 | task 0 | stop processing: n_tokens = 139, truncated = 0
-0.07.152.294 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.144
-0.07.159.655 I slot launch_slot_: id  3 | task 121 | processing task, is_child = 0
-0.07.159.676 W slot   operator(): id  3 | task 121 | need to evaluate at least 1 token for each active slot (n_past = 20, task.n_tokens() = 20)
-0.07.159.676 W slot   operator(): id  3 | task 121 | n_past was set to 19
-0.08.039.932 I slot print_timing: id  3 | task 121 | prompt eval time =       6.43 ms /     1 tokens (    6.43 ms per token,   155.45 tokens per second)
-0.08.039.937 I slot print_timing: id  3 | task 121 |        eval time =     873.82 ms /   120 tokens (    7.34 ms per token,   136.18 tokens per second)
-0.08.039.938 I slot print_timing: id  3 | task 121 |       total time =     880.25 ms /   121 tokens
-0.08.039.939 I slot print_timing: id  3 | task 121 |    graphs reused =        245
-0.08.039.977 I slot print_timing: id  3 | task 121 |        moe cache = on, hit 82.7% this request / 79.3% overall, 25..39 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
-0.08.039.979 I slot print_timing: id  3 | task 121 |        moe churn = 506 uploads, 526 evictions, 1926.3 MiB uploaded (this request)
-0.08.039.984 I slot print_timing: id  3 | task 121 |          threads = 6 decode / 8 batch, batch 2048, ubatch 2048
-0.08.040.012 I slot      release: id  3 | task 121 | stop processing: n_tokens = 139, truncated = 0
-0.08.042.137 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.144
-0.08.049.368 I slot launch_slot_: id  3 | task 242 | processing task, is_child = 0
-0.08.049.387 W slot   operator(): id  3 | task 242 | need to evaluate at least 1 token for each active slot (n_past = 20, task.n_tokens() = 20)
-0.08.049.389 W slot   operator(): id  3 | task 242 | n_past was set to 19
-0.08.884.780 I slot print_timing: id  3 | task 242 | prompt eval time =       6.10 ms /     1 tokens (    6.10 ms per token,   163.91 tokens per second)
-0.08.884.784 I slot print_timing: id  3 | task 242 |        eval time =     829.28 ms /   120 tokens (    6.97 ms per token,   143.50 tokens per second)
-0.08.884.785 I slot print_timing: id  3 | task 242 |       total time =     835.39 ms /   121 tokens
-0.08.884.786 I slot print_timing: id  3 | task 242 |    graphs reused =        365
-0.08.884.816 I slot print_timing: id  3 | task 242 |        moe cache = on, hit 82.6% this request / 79.8% overall, 26..40 slots/layer, margin 3 gate 3 wait 1 big 0 predict 0
-0.08.884.817 I slot print_timing: id  3 | task 242 |        moe churn = 360 uploads, 375 evictions, 1370.8 MiB uploaded (this request)
-0.08.884.818 I slot print_timing: id  3 | task 242 |          threads = 6 decode / 8 batch, batch 2048, ubatch 2048
-0.08.884.848 I slot      release: id  3 | task 242 | stop processing: n_tokens = 139, truncated = 0
-0.09.184.776 I srv    operator(): operator(): cleaning up before exit...
-0.09.186.023 W moe-cache: steps=376 hits=79037 misses=20027 hit-rate=79.8%, prefill experts from cache 0/0, kept from prefill 0
-Collecting data...
-Generating '/tmp/nsys-report-4a2c.qdstrm'
-[1/1] [0%                          ] wn-split25.nsys-rep[1/1] [0%                          ] wn-split25.nsys-rep[1/1] [12%                         ] wn-split25.nsys-rep[1/1] [9%                          ] wn-split25.nsys-rep[1/1] [8%                          ] wn-split25.nsys-rep[1/1] [=17%                        ] wn-split25.nsys-rep[1/1] [14%                         ] wn-split25.nsys-rep[1/1] [12%                         ] wn-split25.nsys-rep[1/1] [11%                         ] wn-split25.nsys-rep[1/1] [=16%                        ] wn-split25.nsys-rep[1/1] [=15%                        ] wn-split25.nsys-rep[1/1] [13%                         ] wn-split25.nsys-rep[1/1] [12%                         ] wn-split25.nsys-rep[1/1] [11%                         ] wn-split25.nsys-rep[1/1] [10%                         ] wn-split25.nsys-rep[1/1] [9%                          ] wn-split25.nsys-rep[1/1] [8%                          ] wn-split25.nsys-rep[1/1] [7%                          ] wn-split25.nsys-rep[1/1] [6%                          ] wn-split25.nsys-rep[1/1] [5%                          ] wn-split25.nsys-rep[1/1] [5%                          ] wn-split25.nsys-rep[1/1] [6%                          ] wn-split25.nsys-rep[1/1] [7%                          ] wn-split25.nsys-rep[1/1] [8%                          ] wn-split25.nsys-rep[1/1] [9%                          ] wn-split25.nsys-rep[1/1] [10%                         ] wn-split25.nsys-rep[1/1] [11%                         ] wn-split25.nsys-rep[1/1] [12%                         ] wn-split25.nsys-rep[1/1] [13%                         ] wn-split25.nsys-rep[1/1] [14%                         ] wn-split25.nsys-rep[1/1] [=15%                        ] wn-split25.nsys-rep[1/1] [=16%                        ] wn-split25.nsys-rep[1/1] [=17%                        ] wn-split25.nsys-rep[1/1] [==18%                       ] wn-split25.nsys-rep[1/1] [==19%                       ] wn-split25.nsys-rep[1/1] [==20%                       ] wn-split25.nsys-rep[1/1] [==21%                       ] wn-split25.nsys-rep[1/1] [===22%                      ] wn-split25.nsys-rep[1/1] [===23%                      ] wn-split25.nsys-rep[1/1] [===24%                      ] wn-split25.nsys-rep[1/1] [====25%                     ] wn-split25.nsys-rep[1/1] [====26%                     ] wn-split25.nsys-rep[1/1] [====27%                     ] wn-split25.nsys-rep[1/1] [====28%                     ] wn-split25.nsys-rep[1/1] [=====29%                    ] wn-split25.nsys-rep[1/1] [=====30%                    ] wn-split25.nsys-rep[1/1] [=====31%                    ] wn-split25.nsys-rep[1/1] [=====32%                    ] wn-split25.nsys-rep[1/1] [======33%                   ] wn-split25.nsys-rep[1/1] [======34%                   ] wn-split25.nsys-rep[1/1] [======35%                   ] wn-split25.nsys-rep[1/1] [=======36%                  ] wn-split25.nsys-rep[1/1] [=======37%                  ] wn-split25.nsys-rep[1/1] [=======38%                  ] wn-split25.nsys-rep[1/1] [=======39%                  ] wn-split25.nsys-rep[1/1] [========40%                 ] wn-split25.nsys-rep[1/1] [========41%                 ] wn-split25.nsys-rep[1/1] [========42%                 ] wn-split25.nsys-rep[1/1] [=========43%                ] wn-split25.nsys-rep[1/1] [=========44%                ] wn-split25.nsys-rep[1/1] [=========45%                ] wn-split25.nsys-rep[1/1] [=========46%                ] wn-split25.nsys-rep[1/1] [==========47%               ] wn-split25.nsys-rep[1/1] [==========48%               ] wn-split25.nsys-rep[1/1] [==========49%               ] wn-split25.nsys-rep[1/1] [===========50%              ] wn-split25.nsys-rep[1/1] [========================100%] wn-split25.nsys-rep[1/1] [========================100%] wn-split25.nsys-rep
-Generated:
-	/p/bw/data/q5h/nsys/wn-split25.nsys-rep

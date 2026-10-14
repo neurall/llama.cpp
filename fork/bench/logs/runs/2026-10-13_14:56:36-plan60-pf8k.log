@@ -1,50 +1,0 @@
-0.00.001.131 I srv  llama_server: initializing ...
-0.00.246.940 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
-0.00.247.338 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
-0.00.249.253 I srv    load_model: loading model '/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf'
-0.00.642.512 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 0 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf 117481680096place.g2.6b6844dc.v3)
-0.00.642.657 I common_moe_cache_auto_impl: MoE model (109.4 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 32768, ubatch 8192, threads 6, weights pinned (settings you pass win)
-0.02.017.911 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
-0.02.017.915 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
-ggml_cuda_host_malloc_registered: 100.5 GiB hugetlbfs cache (warm) mapped in 0.0 s
-ggml_cuda_host_malloc_registered: registered in 2.6 s
-0.07.585.845 I common_init_result: weights pinned (swapped 0.0 GiB while loading, 10.6 GiB RAM left)
-ggml_cuda_host_malloc_registered: 1.2 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 1.2 THP, 0.0 small)
-ggml_cuda_host_malloc_registered: registered in 0.1 s
-0.07.975.092 I cmn          init: llama threadpool init, n_threads = 6
-0.08.365.183 W moe-cache: 5 expert layers cached on CUDA0 (CUDA0), upload link slower
-0.08.365.190 W moe-cache: 37 expert layers cached on CUDA1 (CUDA1), upload link fastest
-0.08.475.918 W moe-cache: block pool on CUDA0: 5 layers, 14510.4 MiB, size classes: 711 x 13.50 MiB (3 layers), 474 x 10.31 MiB (2 layers); no blocks reserved per layer
-0.08.492.753 W moe-cache: block pool on CUDA1: 37 layers, 12945.9 MiB, size classes: 44 x 10.31 MiB (1 layers), 1584 x 7.88 MiB (36 layers); no blocks reserved per layer
-0.08.493.877 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
-0.09.294.027 W moe-cache: probe: links alone link 0 24.6 link 1 5.7 GB/s; CPU threads:GB/s alone/with links 1:26.1/43.3 2:41.5/45.3 3:41.3/44.6 4:39.5/44.9 -> CPU 41.5 GB/s (saturated by 2 threads), RAM budget 45.3 GB/s
-0.09.296.862 W moe-cache: 5 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
-0.09.296.884 W operator(): MoE expert cache enabled: 42 layers, slots/layer 44..1584, 2 inserts/step, 1464623.4 MiB device memory
-ggml_cuda_host_malloc_registered: 1.2 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 1.2 THP, 0.0 small)
-ggml_cuda_host_malloc_registered: registered in 0.1 s
-0.09.798.866 W moe_alias_shrink_fork: the pool lends 9598 MiB, graph + scratch + prefetch staging need 12651 MiB at micro-batch 8192: micro-batch 6016
-0.10.257.637 W moe-cache: max-batch auto = 128 (stored probe)
-0.12.384.381 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 32768, kv_unified = 'false'
-0.12.403.754 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
-0.12.403.783 I srv  llama_server: model loaded
-0.12.403.787 I srv  llama_server: listening on http://127.0.0.1:8099
-0.13.134.318 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
-0.13.134.374 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
-0.22.883.545 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   1976, progress = 0.25, t =   9.75 s / 202.68 tokens per second
-0.37.042.234 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   7992, progress = 1.00, t =  23.91 s / 334.28 tokens per second
-0.37.705.335 I slot print_timing: id  0 | task 0 | prompt eval time =   24264.59 ms /  7996 tokens (    3.03 ms per token,   329.53 tokens per second)
-0.37.705.338 I slot print_timing: id  0 | task 0 |        eval time =     306.34 ms /     4 tokens (  102.11 ms per token,     9.79 tokens per second)
-0.37.705.339 I slot print_timing: id  0 | task 0 |       total time =   24570.93 ms /  8000 tokens
-0.37.705.342 I slot print_timing: id  0 | task 0 |    graphs reused =          2
-0.37.705.386 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 37.3% this request / 29.0% overall, 3..237 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
-0.37.705.390 I slot print_timing: id  0 | task 0 |        moe churn = 0 uploads, 1552 evictions, 2854.3 MiB uploaded (this request)
-0.37.705.392 I slot print_timing: id  0 | task 0 |          threads = 6 decode / 6 batch, batch 8192, ubatch 6016
-0.37.705.787 I slot      release: id  0 | task 0 | stop processing: n_tokens = 7999, truncated = 0
-0.38.310.533 I srv    operator(): operator(): cleaning up before exit...
-0.38.311.299 I ~common_init_result: MoE placement: too few tokens this run to record cache (7998 prompt, 3 generated)
-0.38.311.534 W moe-cache: steps=7 hits=878 misses=2146 hit-rate=29.0%, prefill experts from cache 0/0, kept from prefill 0
-Collecting data...
-Generating '/tmp/nsys-report-0c4d.qdstrm'
-[1/1] [0%                          ] glm60-ds.nsys-rep[1/1] [0%                          ] glm60-ds.nsys-rep[1/1] [==18%                       ] glm60-ds.nsys-rep[1/1] [=15%                        ] glm60-ds.nsys-rep[1/1] [===24%                      ] glm60-ds.nsys-rep[1/1] [==20%                       ] glm60-ds.nsys-rep[1/1] [==18%                       ] glm60-ds.nsys-rep[1/1] [=16%                        ] glm60-ds.nsys-rep[1/1] [==21%                       ] glm60-ds.nsys-rep[1/1] [==18%                       ] glm60-ds.nsys-rep[1/1] [=17%                        ] glm60-ds.nsys-rep[1/1] [=15%                        ] glm60-ds.nsys-rep[1/1] [14%                         ] glm60-ds.nsys-rep[1/1] [13%                         ] glm60-ds.nsys-rep[1/1] [12%                         ] glm60-ds.nsys-rep[1/1] [11%                         ] glm60-ds.nsys-rep[1/1] [10%                         ] glm60-ds.nsys-rep[1/1] [9%                          ] glm60-ds.nsys-rep[1/1] [8%                          ] glm60-ds.nsys-rep[1/1] [7%                          ] glm60-ds.nsys-rep[1/1] [6%                          ] glm60-ds.nsys-rep[1/1] [5%                          ] glm60-ds.nsys-rep[1/1] [5%                          ] glm60-ds.nsys-rep[1/1] [6%                          ] glm60-ds.nsys-rep[1/1] [8%                          ] glm60-ds.nsys-rep[1/1] [9%                          ] glm60-ds.nsys-rep[1/1] [10%                         ] glm60-ds.nsys-rep[1/1] [11%                         ] glm60-ds.nsys-rep[1/1] [12%                         ] glm60-ds.nsys-rep[1/1] [13%                         ] glm60-ds.nsys-rep[1/1] [14%                         ] glm60-ds.nsys-rep[1/1] [=15%                        ] glm60-ds.nsys-rep[1/1] [=17%                        ] glm60-ds.nsys-rep[1/1] [==18%                       ] glm60-ds.nsys-rep[1/1] [==19%                       ] glm60-ds.nsys-rep[1/1] [==20%                       ] glm60-ds.nsys-rep[1/1] [==21%                       ] glm60-ds.nsys-rep[1/1] [===22%                      ] glm60-ds.nsys-rep[1/1] [===24%                      ] glm60-ds.nsys-rep[1/1] [====25%                     ] glm60-ds.nsys-rep[1/1] [====26%                     ] glm60-ds.nsys-rep[1/1] [====27%                     ] glm60-ds.nsys-rep[1/1] [====28%                     ] glm60-ds.nsys-rep[1/1] [=====30%                    ] glm60-ds.nsys-rep[1/1] [=====31%                    ] glm60-ds.nsys-rep[1/1] [=====32%                    ] glm60-ds.nsys-rep[1/1] [======33%                   ] glm60-ds.nsys-rep[1/1] [======34%                   ] glm60-ds.nsys-rep[1/1] [=======36%                  ] glm60-ds.nsys-rep[1/1] [=======37%                  ] glm60-ds.nsys-rep[1/1] [=======38%                  ] glm60-ds.nsys-rep[1/1] [=======39%                  ] glm60-ds.nsys-rep[1/1] [========40%                 ] glm60-ds.nsys-rep[1/1] [========42%                 ] glm60-ds.nsys-rep[1/1] [=========43%                ] glm60-ds.nsys-rep[1/1] [=========44%                ] glm60-ds.nsys-rep[1/1] [=========45%                ] glm60-ds.nsys-rep[1/1] [=========46%                ] glm60-ds.nsys-rep[1/1] [==========48%               ] glm60-ds.nsys-rep[1/1] [==========49%               ] glm60-ds.nsys-rep[1/1] [===========50%              ] glm60-ds.nsys-rep[1/1] [===========51%              ] glm60-ds.nsys-rep[1/1] [========================100%] glm60-ds.nsys-rep[1/1] [========================100%] glm60-ds.nsys-rep
-Generated:
-	/p/bw/data/q5h/nsys/glm60-ds.nsys-rep

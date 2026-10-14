@@ -161,3 +161,4 @@ fork/bench/embhot.csv
 
 # build logs of run.py build (one per build, local)
 fork/bench/logs/build-*.log
+fork/bench/logs/runs/
