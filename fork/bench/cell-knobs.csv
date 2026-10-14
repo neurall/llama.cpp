@@ -724,3 +724,4 @@ ts,campaign,model,build,variant,requested,used,mismatch
 2026-10-14 15:35:12,v19-qwe-8g-dual-pf4k,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,plan100,v,{} | -np 1,,
 2026-10-14 15:37:13,v19-qwe-8g-one-pf4k,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,plan100,v,"{} | -np 1 --moe dense-split=0,prefill-split=0",,
 2026-10-14 15:38:37,v19-qwe-8g-dense-pf4k,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,plan100,v,"{} | -np 1 --moe dense-split=1,split-experts=0",,
+2026-10-14 15:47:18,bench-2026-10-14-1546,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,plan101,v,{} | -np 1 --spec-type draft-mtp -ub 2048 -b 2048,,

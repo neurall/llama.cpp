@@ -1779,3 +1779,4 @@ v19-qwe-8g-dual-game4c,2026-10-14 15:33:52,"bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hy
 v19-qwe-8g-dual-pf4k,2026-10-14 15:34:55,"bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds plan100,stock-b11574-8bb3cf0d2 variants v test pf4k n=2",,
 v19-qwe-8g-one-pf4k,2026-10-14 15:36:57,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds plan100 variants v test pf4k n=2,,
 v19-qwe-8g-dense-pf4k,2026-10-14 15:38:20,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds plan100 variants v test pf4k n=2,,
+bench-2026-10-14-1546,2026-10-14 15:46:54,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan101 variants v test pf12k n=1,,
