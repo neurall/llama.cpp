@@ -1806,8 +1806,13 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 const double bar = std::max(0.05, std::max(moe_auto_noise(st), moe_auto_noise(ca)));
                 const double off_g = (ca.last_g > 0 && ca.g_ms > 0) ? ca.last_g / ca.g_ms - 1.0 : 0.0;
                 const double off_p = (ca.last_p > 0 && ca.p_ms > 0) ? ca.last_p / ca.p_ms - 1.0 : 0.0;
-                // only stock is re-measured: it cannot be slower than stock, while another try of a losing cache could
-                if (mode == "cache" && since >= 2 && (off_g > bar || off_p > bar)) {
+                // only stock is re-measured: it cannot be slower than stock, while another try of a losing cache could. The trigger is the time per
+                // generated token; the time per prompt token only past three noise bars, since it moves with the prompt length and the prompt options
+                // (passes, the split): the old trigger on it fired on 3 of about 8 starts of a benchmark that varied them (2026-10-14). Never with a layer
+                // split of the user's (-ts): stock places the experts by it and did not fit (Qwen3.8-Flash-Next at -ts 50,50: 27.8 GB on one card, the
+                // start failed and the server exited).
+                const bool user_ts = std::any_of(params.tensor_split, params.tensor_split + llama_max_devices(), [](float x) { return x != 0.0f; });
+                if (mode == "cache" && since >= 2 && !user_ts && (off_g > bar || off_p > 3.0 * bar)) {
                     mode = "stock"; since = 0;
                     LOG_INF("%s: MoE placement: re-measuring stock this run (the last cache run was %.0f%% slower per %s token than its median, noise bar %.0f%%)\n", __func__,
                         100.0 * std::max(off_g, off_p), off_g >= off_p ? "generated" : "prompt", 100.0 * bar);
