@@ -2743,9 +2743,6 @@ struct llama_model_kimi_k3 : public llama_model_base {
 
 struct llama_model_glm5_next : public llama_model_base {
     llama_model_glm5_next(const struct llama_model_params & params) : llama_model_base(params) {}
-
-    // False for trunk only GGUFs and no_mtp loads.
-    bool mtp_ready = false;
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
@@ -2805,16 +2802,6 @@ struct llama_model_glm5_next : public llama_model_base {
                                       const llama_memory_hybrid_idx_context * mctx_hyb, llm_graph_input_attn_k * inp_attn,
                                       llm_graph_input_kpool * inp_kpool, ggml_tensor ** prev_sel, int il);
 
-    protected:
-        // for graph_mtp
-        struct no_trunk_t {};
-        graph(const llama_model & model, const llm_graph_params & params, no_trunk_t) :
-            llm_build_delta_net_base(params), model(model) {}
-    };
-
-    // Draft head, the Nextn block as a non hyper connected DSA layer
-    struct graph_mtp : public graph {
-        graph_mtp(const llama_model & model, const llm_graph_params & params);
     };
 
     // the NextN / MTP draft head: one DSA block appended after the trunk
