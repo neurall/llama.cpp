@@ -2746,6 +2746,14 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
                     }
                 }
             }
+            // Seed the pass planner (pp_plan) from this worst-case reserve: it needs the slot size and the graph bytes per token of the card, and used to learn
+            // them only when a prompt graph first asked for lent blocks. The first prompt of every start was therefore planned by the old equal-passes rule, and
+            // a benchmark (or a user) who looks at the first request saw that plan. --moe pp-seed=0 switches the seeding off.
+            static const bool seed = [] { const char * e = moe_opt("pp-seed"); return !e || atoi(e) != 0; }();
+            if (seed && n_tokens >= 64) {
+                if (ap.slot_b == 0 && slot_b > 0) { ap.slot_b = slot_b; }
+                if (ap.graph_tok == 0 && peak > 0) { ap.graph_tok = (peak + (size_t) n_tokens - 1) / (size_t) n_tokens; }
+            }
             const size_t stage = slot_b * (size_t) std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
             if (stage > 0 && base + stage > cap) {
                 fit.stage = false;
@@ -5965,7 +5973,11 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
         if (L > (double) ap->span) { return -1.0; }
         const double U = std::max(0.0, E - rho * ((double) ap->span - L)) / (gbs * 1e3);
         if (U_out) { *U_out = U; }
-        const double C = c_us * (double) u;
+        // No measured compute yet (a first start of this model on these cards, nothing in the state file): the model used C = 0, in which case staging slots
+        // gain nothing (max(U, 0) = U, like no slots) and the first prompt was planned WITHOUT prefetch overlap, so its whole upload sat on top of its compute.
+        // A guess keeps the overlap in the plan: the compute of a prompt pass is not less than about half of its upload on these models (measured pass: 0.5 to
+        // 3 times), so slots are worth their pool blocks. The first measured pass replaces the guess.
+        const double C = c_us > 0.0 ? c_us * (double) u : 0.5 * U;
         if (k >= k_full) { return std::max(U, C); }
         if (k >= 3)      { return std::max(U, C) + 0.25 * std::min(U, C); }
         return U + C;
