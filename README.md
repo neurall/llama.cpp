@@ -26,6 +26,8 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 | Qwen3.8-Flash-Next IQ3_S | 1k edit, 128 out | plan100 / b11452 | 160 | **962** | 30.6 | **54.0** | 1.1118 | pending | **6.0x** | 1.76x |
 | Qwen3.8-Flash-Next IQ3_S | game, 600 out | b12686 / b11452 | 40.9 | **68.0** | 31.0 | **54.2** | 1.1118 | pending | 1.66x | 1.75x |
 | Qwen3.6-35B-A3B hybrid (fits VRAM) | 4k prompt | plan100 / b11574 | 3061 | **3084** | 140 | **142** | 1.522 | pending | 1.01x | 1.01x |
+| Qwen3.6-35B-A3B hybrid (fits VRAM) | 12k prompt, 32 out | b12844 / b11574 | 3625 | 3361 | 133.1 | **136.2** | 1.522 | pending | 0.93x | 1.02x |
+| Qwen3.8-27B IQ3_S (dense, fits 24 GB) | game, 600 out | b12844 / b11574 | 105.5 | 102.1 | 40.5 | **40.8** | - | pending | 0.97x | 1.01x |
 | OLMoE-1B-7B Q4_K_M (fits VRAM) | game, 600 out | plan100 / b11574 | 213 | **315** | 466 | **472** | - | pending | 1.48x | 1.01x |
 
 `ppl` = perplexity of the same text (lower is better, equal means the compute path is unchanged); stock numbers are from b11381 on the same files, the fork column is being filled from a same-protocol run of the release (`pending`).
