@@ -10,6 +10,7 @@ RUN = os.path.join(HERE, "..", "run.py")
 # id: (model, test, extra args, fork build, stock build, note)
 ROWS = {
  "glm-12k":     ("/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf", "12kin_1kout_code_review", "-c 16384", "plan16", "stock-b11381-836d57176", ""),
+ "glm-12k-pinned": ("/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf", "12kin_1kout_code_review", "-dev CUDA1 -c 16384 -b 12416 -ub 12416 -t 6 -tb 6 --cpu-moe --load-mode pin --moe pf-slots=3,borrow=0", "inplace", "stock-b11381-836d57176", "build `inplace` = branch moe-tail-inplace (tag archive/moe-tail-inplace, commit 5d311d71f, b12375); hand-set arguments, one card; the decode rate of this run was not recorded"),
  "glm-edit":    ("/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf", "1kin_1kout_edit_src", "", "plan100", "stock-b11452-4fbc76dec", ""),
  "glm-game":    ("/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf", "1kout_make_game", "", "release-b12209", "stock-b11381-836d57176", "completion endpoint, 600 tokens"),
  "glm35-edit":  ("/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf", "1kin_1kout_edit_src", "", "release-b12250", "stock-b11381-836d57176", ""),

@@ -27,6 +27,15 @@ W10 laptop (4060 8 GB), llama-cli: stock b5cf8ce02 (b11261) against release b116
 python3 fork/run.py bench --models /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf --builds plan16,stock-b11381-836d57176 --variant "v=-np 1 -c 16384" --variants v -t 12kin_1kout_code_review -n 3
 ```
 
+<a id="glm-12k-pinned"></a>
+## glm-12k-pinned
+
+build `inplace` = branch moe-tail-inplace (tag archive/moe-tail-inplace, commit 5d311d71f, b12375); hand-set arguments, one card; the decode rate of this run was not recorded
+
+```
+python3 fork/run.py bench --models /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf --builds inplace,stock-b11381-836d57176 --variant "v=-np 1 -dev CUDA1 -c 16384 -b 12416 -ub 12416 -t 6 -tb 6 --cpu-moe --load-mode pin --moe pf-slots=3,borrow=0" --variants v -t 12kin_1kout_code_review -n 3
+```
+
 <a id="glm-edit"></a>
 ## glm-edit
 
