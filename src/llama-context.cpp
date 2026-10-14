@@ -1344,8 +1344,10 @@ void llama_context::synchronize() {
         if (!cparams.no_perf) {
             t_p_eval_us += ggml_time_us() - t_compute_start_us;
         }
-        llama_dsplit_report_fork(n_queued_tokens, ggml_time_us() - t_compute_start_us);   // fork: --moe dense-split=auto learns which configuration is faster
-        llama_moe_cache_prefill_report_fork((uint32_t) n_queued_tokens, ggml_time_us() - t_compute_start_us);   // fork: the pass planner learns the compute per token
+        if (!fork_resident) {
+            llama_dsplit_report_fork(n_queued_tokens, ggml_time_us() - t_compute_start_us);   // fork: --moe dense-split=auto learns which configuration is faster
+            llama_moe_cache_prefill_report_fork((uint32_t) n_queued_tokens, ggml_time_us() - t_compute_start_us);   // fork: the pass planner learns the compute per token
+        }
         n_p_eval += n_queued_tokens;
     }
 
@@ -2617,7 +2619,28 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
 
 int llama_context::decode(const llama_batch_ext & batch_inp) {
     moe_decoded = true;
-    if (!cparams.moe_cache && !moe_observe_started && !moe_cache_defer) {
+    if (!fork_resident_checked) {
+        fork_resident_checked = true;
+        bool all_gpu = !cparams.moe_cache && !model.tensors_by_name.empty();
+        for (const auto & kv : model.tensors_by_name) {
+            const ggml_tensor * t = kv.second;
+            if (!all_gpu) { break; }
+            if (!t || !t->buffer) { continue; }
+            ggml_backend_dev_t d = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer));
+            all_gpu = d != nullptr && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU;
+        }
+        const char * rx = moe_opt("resident-exit");   // --moe resident-exit=0 keeps the hooks for a model that sits in VRAM (A/B of this exit)
+        const char * fo = moe_opt("fork-off");        // --fork off: the same exit whatever the placement is
+        if ((all_gpu && (!rx || atoi(rx) != 0)) || (fo && atoi(fo) != 0)) {
+            fork_resident = true;
+        }
+        if (fork_resident) {
+            thr.on  = false;   // the decode and batch thread tuners: no CPU op in the graph
+            thrb.on = false;
+            LLAMA_LOG_INFO("%s: the fork's per-call hooks are skipped (stock path): %s\n", __func__, fo && atoi(fo) != 0 ? "--fork off" : "all weights are on the GPU and there is no expert cache");
+        }
+    }
+    if (!fork_resident && !cparams.moe_cache && !moe_observe_started && !moe_cache_defer) {
         moe_observe_started = true;
         llama_moe_observe_start(model);
     }
@@ -2651,7 +2674,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         thread_cap_from_probe(llama_moe_cache_cpu_sat_threads_fork());
         sched_reserve(); // the compute graph now includes the cache chain
     }
-    if (!cparams.moe_cache && !moe_mirrors_placed) {
+    if (!fork_resident && !cparams.moe_cache && !moe_mirrors_placed) {
         moe_mirrors_placed = true;
         llama_dsplit_mirror_place_fork(model, moe_alias_bufs);   // no pool: the copies get buffers of their own
         if (llama_dsplit_ready_fork(model)) {

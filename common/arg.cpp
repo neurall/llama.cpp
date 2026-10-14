@@ -2599,6 +2599,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.fork_off = true;
                 // read before common_init_from_params runs: the thread tuner (an engine setting), and the CUDA backend's plain host buffers (a backend variable)
                 llama_moe_set_opt("thread-tune", "0");
+                llama_moe_set_opt("fork-off", "1");   // the engine's per-call hooks too (observer, dense-split report, pass planner report): the same exit as for a model that sits in VRAM
 #ifdef _WIN32
                 _putenv_s("GGML_CUDA_NO_REGISTERED", "1");
 #else

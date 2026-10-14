@@ -78,6 +78,10 @@ struct llama_context {
     void moe_mirror_fill();
     std::vector<size_t> moe_alias_off;   // per pool buffer: where the scheduler places graphs now
     bool moe_mirrors_placed = false;
+    // fork: every weight of the model sits in GPU memory and there is no expert cache: nothing to cache, split, observe or tune, so the fork's per-call hooks are skipped and
+    // the decode path is the stock one (fits-in-VRAM models ran 0.2x to 0.6x stock in llama-perplexity, whose calls are many and small, because each call paid them)
+    bool fork_resident_checked = false;
+    bool fork_resident         = false;
 
     void synchronize();
 
