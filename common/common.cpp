@@ -1861,7 +1861,11 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 // split of the user's (-ts): stock places the experts by it and did not fit (Qwen3.8-Flash-Next at -ts 50,50: 27.8 GB on one card, the
                 // start failed and the server exited).
                 const bool user_ts = std::any_of(params.tensor_split, params.tensor_split + llama_max_devices(), [](float x) { return x != 0.0f; });
-                if (mode == "cache" && since >= 2 && !user_ts && (off_g > bar || off_p > 3.0 * bar)) {
+                // 2026-10-15: the prompt trigger is gone. A re-measure of stock is a user-visible run on the slower placement (Qwen3.8-Flash-Next 8k: 556 prompt t/s
+                // against 1500 to 1580 with the cache and the split), and the time per prompt token moves with the split, the pass plan and the prompt length,
+                // so a "95% slower than the median" reading was noise or an older plan. Only the decode rate, which none of those change, triggers a trial.
+                (void) off_p;
+                if (mode == "cache" && since >= 2 && !user_ts && off_g > bar) {
                     mode = "stock"; since = 0;
                     LOG_INF("%s: MoE placement: re-measuring stock this run (the last cache run was %.0f%% slower per %s token than its median, noise bar %.0f%%)\n", __func__,
                         100.0 * std::max(off_g, off_p), off_g >= off_p ? "generated" : "prompt", 100.0 * bar);
