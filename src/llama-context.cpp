@@ -1232,6 +1232,8 @@ void llama_context::moe_mirror_fill() {
         LLAMA_LOG_WARN("%s: dense split: %.1f MiB of copies filled on %s in %.0f ms (pool blocks lent to this prompt)\n", __func__, bytes / 1048576.0,
                 ggml_backend_dev_name(ab.dev), (ggml_time_us() - t0) / 1e3);
     }
+}
+
 void llama_context::sched_new(size_t max_nodes, bool parallel) {
     sched.reset(ggml_backend_sched_new(
             backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, parallel, cparams.op_offload));
