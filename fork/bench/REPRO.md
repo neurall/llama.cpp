@@ -10,6 +10,11 @@ come from `run.py build --stock --ref <commit>` (llama.cpp upstream at that buil
 
 PC2 (Ryzen 5 3600), llama-cli -dev none -ngl 0: stock 05af0d2b1 (b11302) against release b11648, qwen36.gguf = Qwen3.6-35B-A3B Q2_0, `cli-t100` (file no longer on disk)
 
+<a id="q36-cpu"></a>
+## q36-cpu
+
+PC2 (12 cores, clang, no GPU): `llama-cli -m /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -dev none -p 'write smallest html tetris game' -n 48` (short) or `-f src_1k.cpp -n 32 -c 4096` (edit); stock = upstream master 37d6d653e built with the same compiler, fork = the b12844 CPU archive (llama-release-b12844-...-bin-ubuntu-x64.tar.gz) and the merged tree
+
 <a id="q2-laptop"></a>
 ## q2-laptop
 

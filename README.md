@@ -92,10 +92,14 @@ The 4-8% are inside this laptop's run-to-run noise (stock itself measured 270, 3
 The fix is queued: models that fit leave every fork hook, so the path is stock's.
 
 **CPU only** (Ryzen, 12 cores, 60 GB RAM, clang, no GPU, `-dev none`, 3 runs each, each build on its defaults). Stock = upstream master 37d6d653e (b11631).
-There is nothing to cache or to split without a GPU, so this is the same-speed check, not a gain table; the CPU archives of the release are the same binaries without the CUDA backend.
+There is nothing to cache or to split without a GPU. What the CPU-only build adds is the kernels: **a 2-bit Q2_0 model runs 1.8x faster on decode and 3.7x faster on prompt than upstream (top table), because upstream has only a scalar dot product for that type on x86**; for the other quantizations the gain is the thread and batch tuning (+13 to +18% prompt, +5% decode on the 35B hybrid below). the CPU archives of the release are the same binaries without the CUDA backend.
 
 | model, cell | builds stock fork | pp: stock / **fork** | t/s: stock / **fork** |
 |---|---|---|---|
+| Qwen3.6-35B-A3B hybrid (12 GB), short prompt | b11631 b12844 | 32.1<br>[**36.2**](fork/bench/REPRO.md#q36-cpu) (1.13x) | 10.7<br>[**11.3**](fork/bench/REPRO.md#q36-cpu) (1.06x) |
+| Qwen3.6-35B-A3B hybrid (12 GB), 1k edit | b11631 b12844 | 41.9<br>[**49.3**](fork/bench/REPRO.md#q36-cpu) (1.18x) | 10.4<br>[**10.9**](fork/bench/REPRO.md#q36-cpu) (1.05x) |
+| Qwen3.6-35B-A3B hybrid, short prompt, merged tree | b11631 b13086 | 32.1<br>31.6 (0.98x) | 10.7<br>[**11.1**](fork/bench/REPRO.md#q36-cpu) (1.04x) |
+| Qwen3.6-35B-A3B hybrid, 1k edit, merged tree | b11631 b13086 | 41.9<br>[**46.0**](fork/bench/REPRO.md#q36-cpu) (1.10x) | 10.4<br>[**10.8**](fork/bench/REPRO.md#q36-cpu) (1.04x) |
 | OLMoE Q4_K_M, short prompt | b11631 b13086 (merged tree) | 144<br>**145** | 47.6<br>**48.0** |
 | OLMoE Q4_K_M, 1k edit | b11631 b12844 (release) | 198<br>**184** (0.93x) | 36.7<br>**36.1** (0.98x) |
 | OLMoE Q4_K_M, 1k edit | b11631 b13086 (merged tree) | 198<br>**196** | 36.7<br>**33.5** (0.91x) |

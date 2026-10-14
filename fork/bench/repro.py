@@ -30,6 +30,7 @@ ROWS = {
 }
 # the 8 GB laptop rows are llama-cli on Windows (N:\\smallcard8 = b12843, N:\\stock-de7fa0a3c = b11514), prompts p10.txt / p12k.txt / p40k.txt / p125k.txt are the first N tokens of fork/bench/src_128k.cpp
 Q2 = {"q2-cpu": "PC2 (Ryzen 5 3600), llama-cli -dev none -ngl 0: stock 05af0d2b1 (b11302) against release b11648, qwen36.gguf = Qwen3.6-35B-A3B Q2_0, `cli-t100` (file no longer on disk)",
+      "q36-cpu": "PC2 (12 cores, clang, no GPU): `llama-cli -m /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -dev none -p 'write smallest html tetris game' -n 48` (short) or `-f src_1k.cpp -n 32 -c 4096` (edit); stock = upstream master 37d6d653e built with the same compiler, fork = the b12844 CPU archive (llama-release-b12844-...-bin-ubuntu-x64.tar.gz) and the merged tree",
       "q2-laptop": "W10 laptop (4060 8 GB), llama-cli: stock b5cf8ce02 (b11261) against release b11648, same file, `cli-t100` (file no longer on disk)"}
 LAPTOP = {"laptop-17": ("p10.txt", 2048), "laptop-12k": ("p12k.txt", 14336), "laptop-40k": ("p40k.txt", 46000), "laptop-125k": ("p125k.txt", 131072)}
 def command(i):
