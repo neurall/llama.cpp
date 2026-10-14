@@ -19,30 +19,30 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 | model | cell | builds stock fork | fork load | pp: stock / **fork** (gain) | t/s: stock / **fork** (gain) | ppl: stock / fork |
 |---|---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit (106 GB) | 12k prompt, `-c 16384` (best pp) | b11381 b12719 | pin | 42.8<br>**756** [(17.7x)](fork/bench/REPRO.md#glm-12k) | 11.5<br>**15.9** [(1.38x)](fork/bench/REPRO.md#glm-12k) | 1.4294<br>pending |
-| GLM-5.3-Flash 3.0-bit | 1k edit, 128 out | b11452 b12825 | pin | 41.5<br>**495** [(11.9x)](fork/bench/REPRO.md#glm-edit) | 12.4<br>**19.0** [(1.53x)](fork/bench/REPRO.md#glm-edit) | - |
-| Qwen3.6-35B-A3B hybrid (11.4 GiB) on an 8 GB laptop (4060) | 17-token prompt, 100 out | b11514 b12843 | pin | 20.2<br>**98.0** [(4.9x)](fork/bench/REPRO.md#laptop-17) | 15.6<br>**56.5** [(3.6x)](fork/bench/REPRO.md#laptop-17) | - |
-| Qwen3.8-Flash-Next UD-IQ4_XS (88 GB) | 1k edit (best pp) | b11452 b12364 | n/r | 160<br>**599** [(3.7x)](fork/bench/REPRO.md#qni4-edit) | 30.6<br>**45.8** [(1.50x)](fork/bench/REPRO.md#qni4-edit) | - |
-| Qwen3.6-35B-A3B Q2_0 (CPU only, Ryzen 5 3600) | short prompt, 100 out (CLI) | b11302 b11648 | n/r | 10.2<br>**37.6** [(3.7x)](fork/bench/REPRO.md#q2-cpu) | 6.3<br>**11.3** [(1.79x)](fork/bench/REPRO.md#q2-cpu) | - |
-| Qwen3.6-35B-A3B hybrid on an 8 GB laptop | 12k prompt, 32 out | b11514 b12843 | pin | 687<br>**918** [(1.34x)](fork/bench/REPRO.md#laptop-12k) | 13.6<br>**45.6** [(3.4x)](fork/bench/REPRO.md#laptop-12k) | - |
-| Qwen3.6-35B-A3B hybrid on an 8 GB laptop | 40k prompt, 32 out | b11514 b12843 | pin | 584<br>**726** [(1.24x)](fork/bench/REPRO.md#laptop-40k) | 11.7<br>**35.9** [(3.1x)](fork/bench/REPRO.md#laptop-40k) | - |
-| Qwen3.8-Flash-Next UD-IQ4_XS | 12k prompt | b11381 b11707 | n/r | 201<br>**553** [(2.8x)](fork/bench/REPRO.md#qni4-12k) | 29.6<br>**45.9** [(1.55x)](fork/bench/REPRO.md#qni4-12k) | - |
-| Qwen3.6-35B-A3B hybrid on an 8 GB laptop | 125k prompt, 32 out | b11514 b12843 | pin | 448<br>**557** [(1.24x)](fork/bench/REPRO.md#laptop-125k) | 9.2<br>**25.2** [(2.7x)](fork/bench/REPRO.md#laptop-125k) | - |
-| MiMo-V2.6-Flash IQ3_XXS (132 GB) | 1k edit (best pp) | b11381 b12250 | n/r | 30.0<br>**73.6** [(2.5x)](fork/bench/REPRO.md#mimo-edit) | 4.8<br>**9.0** [(1.88x)](fork/bench/REPRO.md#mimo-edit) | - |
-| Qwen3.6-35B-A3B Q2_0 on an 8 GB laptop (4060) | short prompt, 100 out (CLI) | b11261 b11648 | n/r | 41.5<br>**101.9** [(2.5x)](fork/bench/REPRO.md#q2-laptop) | 28.9<br>**58.6** [(2.0x)](fork/bench/REPRO.md#q2-laptop) | - |
-| GLM-5.3-Flash 3.0-bit | game, 600 out (best t/s) | b11381 b12209 | n/r | - | 11.7<br>**27.8** [(2.4x)](fork/bench/REPRO.md#glm-game) | - |
-| MiMo-V2.6-Flash IQ3_XXS | chat, short prompt (best t/s) | b11381 b11707 | n/r | - | 4.9<br>**10.5** [(2.1x)](fork/bench/REPRO.md#mimo-chat) | - |
-| Qwen3.8-Flash-Next UD-IQ4_XS | chat, short prompt (best t/s) | b11381 b11365 | n/r | 41.8<br>**63.3** [(1.51x)](fork/bench/REPRO.md#qni4-chat) | 30.9<br>**60.9** [(1.97x)](fork/bench/REPRO.md#qni4-chat) | - |
-| GLM-5.3-Flash 3.5-bit (137 GB) | 1k edit (best pp) | b11381 b12250 | n/r | 26.2<br>**49.0** [(1.87x)](fork/bench/REPRO.md#glm35-edit) | 9.7<br>**9.9** [(1.02x)](fork/bench/REPRO.md#glm35-edit) | - |
-| Qwen3.8-Flash-Next IQ3_S (78 GB) | 1k edit (best pp) | b11381 b12128 | n/r | 376<br>**683** [(1.82x)](fork/bench/REPRO.md#qni3-edit) | 42.7<br>**54.2** [(1.27x)](fork/bench/REPRO.md#qni3-edit) | [**1.1113**](fork/bench/REPRO.md#qni3-edit)<br>1.1151 |
-| Qwen3.6-35B-A3B hybrid (fits VRAM) | game, 600 out | b11381 b12824 | mmap | 85.0<br>**145** [(1.71x)](fork/bench/REPRO.md#q36-game) | 153<br>**155** [(1.01x)](fork/bench/REPRO.md#q36-game) | 1.522<br>pending |
-| GLM-5.3-Flash 3.5-bit | game (best t/s) | b11381 b11707 | n/r | 3.7<br>**5.4** [(1.46x)](fork/bench/REPRO.md#glm35-game) | 6.9<br>**10.5** [(1.52x)](fork/bench/REPRO.md#glm35-game) | - |
-| OLMoE-1B-7B Q4_K_M (fits VRAM) | game, 600 out | b11574 b12824 | mmap | 213<br>**315** [(1.48x)](fork/bench/REPRO.md#olmoe-game) | 466<br>**472** [(1.01x)](fork/bench/REPRO.md#olmoe-game) | - |
-| Qwen3.8-Flash-Next IQ3_S | game (best t/s) | b11381 b11707 | n/r | 26.5<br>**29.9** [(1.13x)](fork/bench/REPRO.md#qni3-game) | 42.1<br>**56.2** [(1.33x)](fork/bench/REPRO.md#qni3-game) | - |
-| Qwen3.8-Flash-Next IQ1_M | 1k edit | b11381 b12128 | n/r | 1165<br>**1409** [(1.21x)](fork/bench/REPRO.md#qn1-edit) | 65.0<br>**65.9** [(1.01x)](fork/bench/REPRO.md#qn1-edit) | - |
-| Qwen3.8-27B MTP Q5_K_M (dense, fits 24 GB), both with MTP | 1k edit | b11381 b12193 | n/r | 1531<br>**1616** [(1.06x)](fork/bench/REPRO.md#q27mtp-edit) | 62.5<br>**64.4** [(1.03x)](fork/bench/REPRO.md#q27mtp-edit) | - |
-| Qwen3.8-27B MTP Q5_K_M, both with MTP | game, 600 out | b11381 b12193 | n/r | 32.4<br>**34.1** [(1.05x)](fork/bench/REPRO.md#q27mtp-game) | 74.9<br>**65.7** (0.88x) | - |
-| Qwen3.8-27B IQ4_NL (dense, fits 24 GB) | 1k edit | b11381 b11707 | n/r | 1714<br>**1730** [(1.01x)](fork/bench/REPRO.md#q27nl-edit) | 44.3<br>**44.3** (1.00x) | - |
+| GLM-5.3-Flash 3.0-bit (106 GB) | 12k prompt, `-c 16384` (best pp) | b11381 b12719 | pin | 42.8<br>**756**&nbsp;[(17.7x)](fork/bench/REPRO.md#glm-12k) | 11.5<br>**15.9**&nbsp;[(1.38x)](fork/bench/REPRO.md#glm-12k) | 1.4294<br>pending |
+| GLM-5.3-Flash 3.0-bit | 1k edit, 128 out | b11452 b12825 | pin | 41.5<br>**495**&nbsp;[(11.9x)](fork/bench/REPRO.md#glm-edit) | 12.4<br>**19.0**&nbsp;[(1.53x)](fork/bench/REPRO.md#glm-edit) | - |
+| Qwen3.6-35B-A3B hybrid (11.4 GiB) on an 8 GB laptop (4060) | 17-token prompt, 100 out | b11514 b12843 | pin | 20.2<br>**98.0**&nbsp;[(4.9x)](fork/bench/REPRO.md#laptop-17) | 15.6<br>**56.5**&nbsp;[(3.6x)](fork/bench/REPRO.md#laptop-17) | - |
+| Qwen3.8-Flash-Next UD-IQ4_XS (88 GB) | 1k edit (best pp) | b11452 b12364 | n/r | 160<br>**599**&nbsp;[(3.7x)](fork/bench/REPRO.md#qni4-edit) | 30.6<br>**45.8**&nbsp;[(1.50x)](fork/bench/REPRO.md#qni4-edit) | - |
+| Qwen3.6-35B-A3B Q2_0 (CPU only, Ryzen 5 3600) | short prompt, 100 out (CLI) | b11302 b11648 | n/r | 10.2<br>**37.6**&nbsp;[(3.7x)](fork/bench/REPRO.md#q2-cpu) | 6.3<br>**11.3**&nbsp;[(1.79x)](fork/bench/REPRO.md#q2-cpu) | - |
+| Qwen3.6-35B-A3B hybrid on an 8 GB laptop | 12k prompt, 32 out | b11514 b12843 | pin | 687<br>**918**&nbsp;[(1.34x)](fork/bench/REPRO.md#laptop-12k) | 13.6<br>**45.6**&nbsp;[(3.4x)](fork/bench/REPRO.md#laptop-12k) | - |
+| Qwen3.6-35B-A3B hybrid on an 8 GB laptop | 40k prompt, 32 out | b11514 b12843 | pin | 584<br>**726**&nbsp;[(1.24x)](fork/bench/REPRO.md#laptop-40k) | 11.7<br>**35.9**&nbsp;[(3.1x)](fork/bench/REPRO.md#laptop-40k) | - |
+| Qwen3.8-Flash-Next UD-IQ4_XS | 12k prompt | b11381 b11707 | n/r | 201<br>**553**&nbsp;[(2.8x)](fork/bench/REPRO.md#qni4-12k) | 29.6<br>**45.9**&nbsp;[(1.55x)](fork/bench/REPRO.md#qni4-12k) | - |
+| Qwen3.6-35B-A3B hybrid on an 8 GB laptop | 125k prompt, 32 out | b11514 b12843 | pin | 448<br>**557**&nbsp;[(1.24x)](fork/bench/REPRO.md#laptop-125k) | 9.2<br>**25.2**&nbsp;[(2.7x)](fork/bench/REPRO.md#laptop-125k) | - |
+| MiMo-V2.6-Flash IQ3_XXS (132 GB) | 1k edit (best pp) | b11381 b12250 | n/r | 30.0<br>**73.6**&nbsp;[(2.5x)](fork/bench/REPRO.md#mimo-edit) | 4.8<br>**9.0**&nbsp;[(1.88x)](fork/bench/REPRO.md#mimo-edit) | - |
+| Qwen3.6-35B-A3B Q2_0 on an 8 GB laptop (4060) | short prompt, 100 out (CLI) | b11261 b11648 | n/r | 41.5<br>**101.9**&nbsp;[(2.5x)](fork/bench/REPRO.md#q2-laptop) | 28.9<br>**58.6**&nbsp;[(2.0x)](fork/bench/REPRO.md#q2-laptop) | - |
+| GLM-5.3-Flash 3.0-bit | game, 600 out (best t/s) | b11381 b12209 | n/r | - | 11.7<br>**27.8**&nbsp;[(2.4x)](fork/bench/REPRO.md#glm-game) | - |
+| MiMo-V2.6-Flash IQ3_XXS | chat, short prompt (best t/s) | b11381 b11707 | n/r | - | 4.9<br>**10.5**&nbsp;[(2.1x)](fork/bench/REPRO.md#mimo-chat) | - |
+| Qwen3.8-Flash-Next UD-IQ4_XS | chat, short prompt (best t/s) | b11381 b11365 | n/r | 41.8<br>**63.3**&nbsp;[(1.51x)](fork/bench/REPRO.md#qni4-chat) | 30.9<br>**60.9**&nbsp;[(1.97x)](fork/bench/REPRO.md#qni4-chat) | - |
+| GLM-5.3-Flash 3.5-bit (137 GB) | 1k edit (best pp) | b11381 b12250 | n/r | 26.2<br>**49.0**&nbsp;[(1.87x)](fork/bench/REPRO.md#glm35-edit) | 9.7<br>**9.9**&nbsp;[(1.02x)](fork/bench/REPRO.md#glm35-edit) | - |
+| Qwen3.8-Flash-Next IQ3_S (78 GB) | 1k edit (best pp) | b11381 b12128 | n/r | 376<br>**683**&nbsp;[(1.82x)](fork/bench/REPRO.md#qni3-edit) | 42.7<br>**54.2**&nbsp;[(1.27x)](fork/bench/REPRO.md#qni3-edit) | [**1.1113**](fork/bench/REPRO.md#qni3-edit)<br>1.1151 |
+| Qwen3.6-35B-A3B hybrid (fits VRAM) | game, 600 out | b11381 b12824 | mmap | 85.0<br>**145**&nbsp;[(1.71x)](fork/bench/REPRO.md#q36-game) | 153<br>**155**&nbsp;[(1.01x)](fork/bench/REPRO.md#q36-game) | 1.522<br>pending |
+| GLM-5.3-Flash 3.5-bit | game (best t/s) | b11381 b11707 | n/r | 3.7<br>**5.4**&nbsp;[(1.46x)](fork/bench/REPRO.md#glm35-game) | 6.9<br>**10.5**&nbsp;[(1.52x)](fork/bench/REPRO.md#glm35-game) | - |
+| OLMoE-1B-7B Q4_K_M (fits VRAM) | game, 600 out | b11574 b12824 | mmap | 213<br>**315**&nbsp;[(1.48x)](fork/bench/REPRO.md#olmoe-game) | 466<br>**472**&nbsp;[(1.01x)](fork/bench/REPRO.md#olmoe-game) | - |
+| Qwen3.8-Flash-Next IQ3_S | game (best t/s) | b11381 b11707 | n/r | 26.5<br>**29.9**&nbsp;[(1.13x)](fork/bench/REPRO.md#qni3-game) | 42.1<br>**56.2**&nbsp;[(1.33x)](fork/bench/REPRO.md#qni3-game) | - |
+| Qwen3.8-Flash-Next IQ1_M | 1k edit | b11381 b12128 | n/r | 1165<br>**1409**&nbsp;[(1.21x)](fork/bench/REPRO.md#qn1-edit) | 65.0<br>**65.9**&nbsp;[(1.01x)](fork/bench/REPRO.md#qn1-edit) | - |
+| Qwen3.8-27B MTP Q5_K_M (dense, fits 24 GB), both with MTP | 1k edit | b11381 b12193 | n/r | 1531<br>**1616**&nbsp;[(1.06x)](fork/bench/REPRO.md#q27mtp-edit) | 62.5<br>**64.4**&nbsp;[(1.03x)](fork/bench/REPRO.md#q27mtp-edit) | - |
+| Qwen3.8-27B MTP Q5_K_M, both with MTP | game, 600 out | b11381 b12193 | n/r | 32.4<br>**34.1**&nbsp;[(1.05x)](fork/bench/REPRO.md#q27mtp-game) | 74.9<br>**65.7**&nbsp;(0.88x) | - |
+| Qwen3.8-27B IQ4_NL (dense, fits 24 GB) | 1k edit | b11381 b11707 | n/r | 1714<br>**1730**&nbsp;[(1.01x)](fork/bench/REPRO.md#q27nl-edit) | 44.3<br>**44.3**&nbsp;(1.00x) | - |
 
 On smaller cards the gain grows, see the next section (an 8 GB laptop: decode 2.7-3.6x; a simulated 16 GB card: GLM 6.5x decode, Qwen3.8-Flash-Next 3.4x on two cards).
 
@@ -96,13 +96,13 @@ There is nothing to cache or to split without a GPU. What the CPU-only build add
 
 | model, cell | builds stock fork | pp: stock / **fork** | t/s: stock / **fork** |
 |---|---|---|---|
-| Qwen3.6-35B-A3B hybrid (12 GB), short prompt | b11631 b12844 | 32.1<br>**36.2** [(1.13x)](fork/bench/REPRO.md#q36-cpu) | 10.7<br>**11.3** [(1.06x)](fork/bench/REPRO.md#q36-cpu) |
-| Qwen3.6-35B-A3B hybrid (12 GB), 1k edit | b11631 b12844 | 41.9<br>**49.3** [(1.18x)](fork/bench/REPRO.md#q36-cpu) | 10.4<br>**10.9** [(1.05x)](fork/bench/REPRO.md#q36-cpu) |
-| Qwen3.6-35B-A3B hybrid, short prompt, merged tree | b11631 b13086 | 32.1<br>31.6 (0.98x) | 10.7<br>**11.1** [(1.04x)](fork/bench/REPRO.md#q36-cpu) |
-| Qwen3.6-35B-A3B hybrid, 1k edit, merged tree | b11631 b13086 | 41.9<br>**46.0** [(1.10x)](fork/bench/REPRO.md#q36-cpu) | 10.4<br>**10.8** [(1.04x)](fork/bench/REPRO.md#q36-cpu) |
+| Qwen3.6-35B-A3B hybrid (12 GB), short prompt | b11631 b12844 | 32.1<br>**36.2**&nbsp;[(1.13x)](fork/bench/REPRO.md#q36-cpu) | 10.7<br>**11.3**&nbsp;[(1.06x)](fork/bench/REPRO.md#q36-cpu) |
+| Qwen3.6-35B-A3B hybrid (12 GB), 1k edit | b11631 b12844 | 41.9<br>**49.3**&nbsp;[(1.18x)](fork/bench/REPRO.md#q36-cpu) | 10.4<br>**10.9**&nbsp;[(1.05x)](fork/bench/REPRO.md#q36-cpu) |
+| Qwen3.6-35B-A3B hybrid, short prompt, merged tree | b11631 b13086 | 32.1<br>31.6&nbsp;(0.98x) | 10.7<br>**11.1**&nbsp;[(1.04x)](fork/bench/REPRO.md#q36-cpu) |
+| Qwen3.6-35B-A3B hybrid, 1k edit, merged tree | b11631 b13086 | 41.9<br>**46.0**&nbsp;[(1.10x)](fork/bench/REPRO.md#q36-cpu) | 10.4<br>**10.8**&nbsp;[(1.04x)](fork/bench/REPRO.md#q36-cpu) |
 | OLMoE Q4_K_M, short prompt | b11631 b13086 (merged tree) | 144<br>**145** | 47.6<br>**48.0** |
-| OLMoE Q4_K_M, 1k edit | b11631 b12844 (release) | 198<br>**184** (0.93x) | 36.7<br>**36.1** (0.98x) |
-| OLMoE Q4_K_M, 1k edit | b11631 b13086 (merged tree) | 198<br>**196** | 36.7<br>**33.5** (0.91x) |
+| OLMoE Q4_K_M, 1k edit | b11631 b12844 (release) | 198<br>**184**&nbsp;(0.93x) | 36.7<br>**36.1**&nbsp;(0.98x) |
+| OLMoE Q4_K_M, 1k edit | b11631 b13086 (merged tree) | 198<br>**196** | 36.7<br>**33.5**&nbsp;(0.91x) |
 | Qwen3.8-27B IQ3_S, short prompt | b11631 b13086 (merged tree) | 5.8<br>**6.0** | 1.7<br>**1.8** |
 | Qwen3.8-27B IQ3_S, 1k edit | b11631 b13086 (merged tree) | 10.2<br>**10.3** | 1.7<br>**1.8** |
 
