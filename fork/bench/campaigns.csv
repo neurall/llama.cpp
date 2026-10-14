@@ -1738,3 +1738,8 @@ regress-expert-parallel-20811144a-1014-1037-Qwen3.,2026-10-14 10:46:25,quick reg
 k14q-pf12k,2026-10-14 12:00:25,"bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds plan101,plan100 variants v test pf12k n=2",,
 k14g-pf12k,2026-10-14 12:05:36,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan101,plan100 variants v test pf12k n=2",,
 k14b-pf128k,2026-10-14 12:14:06,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan101 variants v test pf128k n=1,,
+v19-olm-16g-single-game4c,2026-10-14 12:44:56,"bench /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf builds plan100,stock-b11574-8bb3cf0d2 variants v test game4c n=2",,
+v19-olm-16g-single-pf4k,2026-10-14 12:46:25,"bench /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf builds plan100,stock-b11574-8bb3cf0d2 variants v test pf4k n=2",,
+v19-qwe-16g-single-game4c,2026-10-14 12:47:32,"bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds plan100,stock-b11574-8bb3cf0d2 variants v test game4c n=2",,
+v19-qwe-16g-single-pf4k,2026-10-14 12:49:18,"bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds plan100,stock-b11574-8bb3cf0d2 variants v test pf4k n=2",,
+v19-qwe-16g-single-game4c,2026-10-14 12:50:55,"bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds plan100,stock-b11574-8bb3cf0d2 variants v test game4c n=2",,

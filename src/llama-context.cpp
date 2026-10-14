@@ -185,6 +185,9 @@ static const llm_fused_op_probe llm_fused_op_dsv4_hc_post_probe = {
     /*.n_tokens_per_seq =*/ 1,
 };
 
+// fork: nsys range hooks for the scheduler (GGML_NVTX=1), defined in ggml-backend.cpp
+GGML_API void ggml_backend_nvtx_set_fork(void (*)(const char *), void (*)(void));
+
 llama_context::llama_context(
         const llama_model & model,
               llama_context_params params) :
@@ -380,7 +383,6 @@ llama_context::llama_context(
     cparams.prefetch_experts_slots = params.prefetch_experts_slots;
     cparams.moe_cache = params.n_moe_cache_slots != 0;
     {   // GGML_NVTX=1: the CUDA backend's nsys range functions for the scheduler (declared here, see ggml_backend_nvtx_set_fork in ggml-backend.cpp)
-        extern "C++" void ggml_backend_nvtx_set_fork(void (*)(const char *), void (*)(void));
         const char * nv = getenv("GGML_NVTX");
         ggml_backend_reg_t reg = nv && atoi(nv) >= 1 ? ggml_backend_reg_by_name("CUDA") : nullptr;
         if (reg) {
