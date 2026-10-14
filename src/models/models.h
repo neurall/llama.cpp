@@ -914,6 +914,23 @@ struct llama_model_gemma_embedding : public llama_model_base {
 };
 
 
+struct llama_model_gemma_embedding2 : public llama_model_base {
+    llama_model_gemma_embedding2(const struct llama_model_params & params) : llama_model_base(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    struct graph : public llm_graph_context {
+        const llama_model & model;
+
+        graph(const llama_model & model, const llm_graph_params & params);
+
+        ggml_tensor * build_inp_per_layer(ggml_tensor * inpL);
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
+
 struct llama_model_starcoder2 : public llama_model_base {
     llama_model_starcoder2(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
@@ -2727,6 +2744,10 @@ struct llama_model_glm5_next : public llama_model_base {
     struct graph : public llm_build_delta_net_base {
         graph(const llama_model & model, const llm_graph_params & params);
 
+        // build the helpers without the trunk, so graph_mtp can reuse them
+        struct no_build {};
+        graph(const llama_model & model, const llm_graph_params & params, no_build);
+
         // collapse the hc streams with per-stream weights
         ggml_tensor * build_hc_pre(
                 ggml_tensor * x,
@@ -2781,6 +2802,11 @@ struct llama_model_glm5_next : public llama_model_base {
     };
 
     // Draft head, the Nextn block as a non hyper connected DSA layer
+    struct graph_mtp : public graph {
+        graph_mtp(const llama_model & model, const llm_graph_params & params);
+    };
+
+    // the NextN / MTP draft head: one DSA block appended after the trunk
     struct graph_mtp : public graph {
         graph_mtp(const llama_model & model, const llm_graph_params & params);
     };
@@ -2848,6 +2874,20 @@ struct llama_model_spark2_5 : public llama_model_base {
 
     struct graph : public llm_graph_context {
         graph(const llama_model & model, const llm_graph_params & params);
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
+struct llama_model_k2_horizon : public llama_model_base {
+    llama_model_k2_horizon(const struct llama_model_params & params) : llama_model_base(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    struct graph : public llm_graph_context {
+        graph(const llama_model & model, const llm_graph_params & params);
+
+        ggml_tensor * build_routed_value(const llama_layer & layer, ggml_tensor * cur, int il) const;
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
