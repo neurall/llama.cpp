@@ -365,8 +365,7 @@ passes, what the pool lends to the pass and which cards take part are calculated
 | measured choice | one card or split, when the plan puts the two closer than 15% | prompt speed of both on real passes of this size |
 | split tuner | the final shares for this pass size | prompt speed of the split passes: one share at a time, the step halves when it gets slower, at most 12 passes, then it stays |
 
-The split is on by default (`dense-split=auto`, switch it off with `dense-split=0`): its copies of the dense weights come out of the expert pool (Qwen3.8-Flash-Next: 635 MiB less pool on  
-the x16 card, about 4% on short prompts that do not split).
+The split is on by default (`dense-split=auto`, switch it off with `dense-split=0`): its copies of the dense weights live in expert-pool blocks that are lent only to prompt passes that split (`mirror-pool`), so decode keeps the full cache; a card with no pool, or whose copies would take more than half of it, keeps them in a buffer of its own.
 
 | key | default | meaning |
 |---|---|---|
