@@ -193,6 +193,9 @@ int     g_cur      = -1;   // choice for the graph being built
 int     g_built    = -1;   // choice the last graph was built with
 int     g_pending  = -1;   // choice of the passes not reported yet (-2: mixed)
 int64_t g_pend_max = 0;    // their largest pass
+// the per-prompt decision line (llama_dsplit_report_fork): why the passes not reported yet run as they do, and the cards (names, once)
+const char * g_why      = "";
+std::string  g_dev_off, g_dev_rest, g_dev_all;
 
 int dsplit_bucket_of(int64_t n) {
     int b = 0;
@@ -464,13 +467,25 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
         static bool verified = false;
         if (!verified && n_tokens >= 64 && it != g_sets.end() && getenv("LLAMA_DS_VERIFY")) { verified = true; dsplit_verify(it->second); }
     }
+    if (g_dev_all.empty() && model.dev_offload < model.devices.size()) {
+        for (const auto & d : model.devices) {
+            if (ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            const std::string nm = ggml_backend_dev_name(d.dev);
+            g_dev_all += (g_dev_all.empty() ? "" : "+") + nm;
+            if (d.dev != model.devices[model.dev_offload].dev) { g_dev_rest += (g_dev_rest.empty() ? "" : "+") + nm; }
+        }
+        g_dev_off = ggml_backend_dev_name(model.devices[model.dev_offload].dev);
+    }
     int choice = -1;
+    const char * why = "";
     const bool managed = it != g_sets.end() && dsplit_n_gpus(model) >= 2 && (dsplit_opt_auto() || !it->second.mirror.empty());
     if (managed && n_tokens >= 64) {
         if (dsplit_opt_one()) {
             choice = 0;   // forced to one card (tests)
+            why = "forced: dense-split=one";
         } else if (!dsplit_opt_auto()) {
             choice = 1;   // forced on (the graph builder still applies dense-split-min)
+            why = "forced: dense-split=1";
         } else {
             const int b = dsplit_bucket_of(n_tokens);
             dsplit_bucket & B = g_buckets[b];
@@ -480,12 +495,16 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
             if (B.n[0] > 0 && B.n[1] > 0) {
                 const int best = B.us_tok[1] < B.us_tok[0] ? 1 : 0;
                 choice = (B.passes % 16 == 15) ? 1 - best : best;
+                why = choice == best ? "measured: faster at this size" : "measured: the slower one again (every 16th pass of a size)";
             } else if (plan_sure) {
                 choice = plan.split ? 1 : 0;
+                why = "planner: more than 15% apart";
             } else if (B.n[0] > 0 || B.n[1] > 0) {
                 choice = B.n[0] > 0 ? 1 : 0;
+                why = "measuring: the other one once";
             } else if (plan.valid) {
                 choice = plan.split ? 1 : 0;
+                why = "planner: close call, measured next";
             } else {
                 int found = -1, dist = 1 << 20;
                 for (const auto & kv : g_buckets) {
@@ -495,6 +514,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
                     }
                 }
                 choice = found >= 0 ? found : 0;   // nothing measured and no plan yet: one card first (it measures the compute the planner needs)
+                why = found >= 0 ? "measured: the nearest size" : "no plan or measurement yet: one card first";
             }
             B.passes++;
         }
@@ -503,6 +523,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     if (choice >= 0) {
         g_pending  = g_pending == -1 || g_pending == choice ? choice : -2;
         g_pend_max = std::max(g_pend_max, n_tokens);
+        g_why      = why;
     }
     bool tuned = false;
     {
@@ -597,8 +618,64 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
                     B.n[0] ? std::to_string((int) (1e6 / B.us_tok[0])).c_str() : "-", B.n[1] ? std::to_string((int) (1e6 / B.us_tok[1])).c_str() : "-");
         }
     }
+    if (n_tokens >= 64 && us > 0) {
+        // One line per decode call with prompt passes, always (-lv 3): which cards the prompt ran on, how it was split and why. fork/run.py records the fields
+        // (run-history.csv, runs.db), so a choice that goes against what was measured before shows up (a second card skipped where the split was faster).
+        //   mode     one-card: the experts of every layer on the card with the fastest link (the other cards only run the dense part of their own layers);
+        //            dense-split / dense+expert-split: the dense part of every layer on all cards by token ranges, the experts on the fastest card only / on
+        //            all; expert-split: the experts by link ratio (decided at load); mixed: passes of both kinds in one call
+        //   helper_token_share  the other cards' share of the tokens; helper_expert_share  their mean share of a layer's experts (-1: the per-layer controller)
+        uint32_t passes = 0, pass = 0;
+        int slots = -1;
+        if (!llama_moe_cache_pass_plan_fork((uint32_t) n_tokens, passes, pass, slots)) {
+            pass   = (uint32_t) (g_pend_max > 0 ? g_pend_max : n_tokens);
+            passes = (uint32_t) ((n_tokens + pass - 1) / std::max<uint32_t>(1, pass));
+        }
+        std::string mode = "one-card", gpus = g_dev_off.empty() ? "?" : g_dev_off, skipped = g_dev_rest.empty() ? "-" : g_dev_rest, by = g_why;
+        double tok_share = 0.0, exp_share = 0.0;
+        if (g_pending == 1 || g_pending == -2) {
+            const int b = dsplit_bucket_of(g_pend_max);
+            std::lock_guard<std::mutex> pk(g_plan_mu);
+            const auto pit = g_plans.find(b);
+            const auto tt  = g_tune.find(b);
+            const bool have_plan = pit != g_plans.end() && pit->second.plan.valid;
+            const double gx = tt != g_tune.end() ? tt->second.gx : 1.0;
+            tok_share = tt != g_tune.end() && tt->second.s > 0.0 ? tt->second.s : have_plan ? pit->second.plan.share : 0.55;
+            const int em = llama_dsplit_experts_mode_fork();
+            if (em == 0) {
+                exp_share = 0.0;
+            } else if (em == 1 || !have_plan || pit->second.f_help.empty()) {
+                exp_share = -1.0;
+            } else {
+                double s = 0.0;
+                for (double f : pit->second.f_help) { s += std::min(1.0, f * gx); }
+                exp_share = s / (double) pit->second.f_help.size();
+            }
+            mode    = g_pending == -2 ? "mixed" : exp_share == 0.0 ? "dense-split" : "dense+expert-split";
+            gpus    = g_dev_all.empty() ? "?" : g_dev_all;
+            skipped = "-";
+            if (tt != g_tune.end() && tt->second.phase >= 2) { by += ", tuner settled"; } else if (tt != g_tune.end() && tt->second.n > 0) { by += ", tuner measuring"; }
+        } else if (g_pending == -1) {
+            double sp = 0.0;
+            const bool es = llama_moe_cache_expert_split_fork(&sp);
+            if (es && !g_dev_rest.empty()) { mode = "expert-split"; gpus = g_dev_all.empty() ? "?" : g_dev_all; skipped = "-"; }
+            by = format("dense split not set up (--moe dense-split); expert split %s at load (transfer speedup %.2fx)", es ? "reserved" : "not reserved", sp);
+        }
+        std::string one = "-", spl = "-";
+        if (g_pend_max > 0) {
+            const auto bit = g_buckets.find(dsplit_bucket_of(g_pend_max));
+            if (bit != g_buckets.end()) {
+                if (bit->second.n[0]) { one = std::to_string((int) (1e6 / bit->second.us_tok[0])); }
+                if (bit->second.n[1]) { spl = std::to_string((int) (1e6 / bit->second.us_tok[1])); }
+            }
+        }
+        LLAMA_LOG_INFO("prefill decision: prompt_tokens=%lld passes=%u pass_tokens=%u staging_slots=%d mode=%s gpus=%s skipped=%s helper_token_share=%.2f "
+                "helper_expert_share=%.2f prompt_tps=%.1f one_card_tps=%s split_tps=%s chosen_by=\"%s\"\n", (long long) n_tokens, passes, pass, slots, mode.c_str(),
+                gpus.c_str(), skipped.c_str(), tok_share, exp_share, (double) n_tokens * 1e6 / (double) us, one.c_str(), spl.c_str(), by.c_str());
+    }
     g_pending  = -1;
     g_pend_max = 0;
+    g_why      = "";
 }
 
 llama_layer llama_dsplit_layer_fork(const llama_model & model, const llama_layer & l, ggml_backend_dev_t dev) {

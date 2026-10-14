@@ -102,6 +102,9 @@ void    llama_moe_cache_probe_stream_fork(bool on);   // force passes above 0 to
 uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n_tokens, uint32_t ub_max);
 // the measured time of the prompt that the pass planner sized last (all its passes): the planner reads the compute per token from it
 void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us);
+// for the per-prompt decision line (llama_dsplit_report_fork): the pass plan of that prompt, and the expert split decided at load
+bool llama_moe_cache_pass_plan_fork(uint32_t n_tokens, uint32_t & passes, uint32_t & pass_tokens, int & slots);
+bool llama_moe_cache_expert_split_fork(double * speedup);
 // multi-GPU prefill: alpha (1 = experts over all GPUs by link bandwidth, 0 = fastest GPU only), measured or LLAMA_PREFILL_SPLIT
 float llama_moe_cache_prefill_alpha_fork();
 // a GPU's measured upload link GB/s (startup probe, refined by uploads); 0 if unknown

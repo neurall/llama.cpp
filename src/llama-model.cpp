@@ -1749,6 +1749,27 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // assign the output layer
     pimpl->dev_output = get_layer_buft_list(n_layer_all);
 
+    {   // fork: the layer layout in one line, always (-lv 3); fork/run.py records it. rule: ts (the user's -ts), bw (--moe split=bw, the default when a MoE model
+        // does not fit), plan (prefill-plan=apply), dec (--moe split=dec), mem (free memory). The ranges show any move by layer-heat.
+        const char * rule = !all_zero ? "ts" : apply_plan ? "bw" : (prefill_plan.size() == n_devices() && o_plan && strcmp(o_plan, "apply") == 0) ? "plan"
+                          : (o_split && strcmp(o_split, "dec") == 0) ? "dec" : "mem";
+        std::string txt;
+        for (size_t i = 0; i < n_devices(); ++i) {
+            std::string rng;
+            int n = 0;
+            for (int il = 0; il < n_layer_all; ) {
+                if (pimpl->dev_layer[il].dev != devices[i].dev) { ++il; continue; }
+                int j = il;
+                while (j + 1 < n_layer_all && pimpl->dev_layer[j + 1].dev == devices[i].dev) { ++j; }
+                rng += format("%s%d%s", rng.empty() ? "" : ",", il, j > il ? format("-%d", j).c_str() : "");
+                n += j - il + 1;
+                il = j + 1;
+            }
+            txt += format(" %s=%d(%s)", ggml_backend_dev_name(devices[i].dev), n, rng.empty() ? "-" : rng.c_str());
+        }
+        LLAMA_LOG_INFO("%s: layer layout: rule=%s%s output=%s\n", __func__, rule, txt.c_str(), ggml_backend_dev_name(pimpl->dev_output.dev));
+    }
+
     const auto TENSOR_NOT_REQUIRED = llama_model_loader::TENSOR_NOT_REQUIRED;
 
     // create tensors for the weights

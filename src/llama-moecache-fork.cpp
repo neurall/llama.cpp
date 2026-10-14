@@ -54,6 +54,7 @@ static uint64_t g_pred_epoch = 0, g_pred_epoch_built = 0;   // bumped when a lay
 static float    g_split_share = 0.0f; // alpha: 1 = all GPUs by link bandwidth, 0 = fastest GPU only
 static uint64_t g_split_epoch = 0, g_split_epoch_built = 0;
 static bool     g_split_enabled = false; // the compute buffers were reserved for a split (decided before the first reserve)
+static double   g_split_speedup = 0.0;   // the transfer speedup that decision was judged by (the per-prompt decision line)
 static std::vector<std::pair<ggml_backend_dev_t, double>> g_early_gbs; // early link probe, until the cache's own probe
 
 namespace {
@@ -4641,6 +4642,7 @@ void llama_moe_cache_prefill_decide_fork(const std::vector<ggml_backend_dev_t> &
     const int verdict = llama_prefill_split_verdict_fork();
     g_split_enabled = verdict >= 0 ? verdict == 1 : (speedup >= 1.25 && worst >= 0.7 * best);
     g_split_share   = g_split_enabled ? 1.0f : 0.0f;
+    g_split_speedup = speedup;
     LLAMA_LOG_WARN("moe-cache: prefill links (GB/s):%s -> split's transfer speedup %.2fx: %s\n", log.c_str(), speedup,
         g_split_enabled ? "reserved, alpha measured on prompt batches" : "one GPU (the split's compute buffers would cost more cache)");
 }
@@ -5775,6 +5777,24 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
 // The measured time of a planned prompt (all its passes, from the context's synchronize): the compute per token is read from it. With slots that hide the
 // upload a pass takes max(U, C): above U it is the compute; at U it only says the compute is not more (an upper bound, kept when lower). Without slots C = t - U.
 // A split pass (two cards) says nothing about one card: not used.
+// The per-prompt decision line (llama_dsplit_report_fork, called just before the report below) reads the plan of the prompt it reports: its passes, pass size
+// and staging slots. False when the last plan is not of this prompt (no alias, --moe pass-plan=0, or already read).
+bool llama_moe_cache_pass_plan_fork(uint32_t n_tokens, uint32_t & passes, uint32_t & pass_tokens, int & slots) {
+    if (n_tokens != g_pp_n || g_pp_P == 0 || g_pp_ub == 0) {
+        return false;
+    }
+    passes      = g_pp_P;
+    pass_tokens = g_pp_ub;
+    slots       = g_pp_k.load();
+    return true;
+}
+
+// the expert split of prompt batches over the cards' links, as decided at load (llama_moe_cache_prefill_decide_fork); *speedup: the transfer speedup it was judged by
+bool llama_moe_cache_expert_split_fork(double * speedup) {
+    if (speedup) { *speedup = g_split_speedup; }
+    return g_split_enabled;
+}
+
 void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     moe_cache * mc = g_cache;
     if (mc && mc->pf_count_on) {
