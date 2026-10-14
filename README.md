@@ -19,7 +19,8 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 | model | cell | fork build / stock build | stock pp | fork pp | stock t/s | fork t/s | stock ppl | fork ppl | **pp gain** | **t/s gain** |
 |---|---|---|---|---|---|---|---|---|---|---|
-| GLM-5.3-Flash 3.0-bit (106 GB) | 12k prompt, 32 out | b12825 / b11381 | 42.8 | **486** | 11.5 | **14.3** | 1.4294 | pending | **11.3x** | 1.24x |
+| GLM-5.3-Flash 3.0-bit (106 GB) | 12k prompt, 32 out (best: `-np 1 -c 16384`) | b12719 / b11381 | 42.8 | **756** | 11.5 | **15.9** | 1.4294 | pending | **17.7x** | 1.38x |
+| GLM-5.3-Flash 3.0-bit | 12k prompt, 32 out (b12825, no `-c`) | b12825 / b11381 | 42.8 | 486 | 11.5 | 14.3 | 1.4294 | pending | 11.3x | 1.24x |
 | GLM-5.3-Flash 3.0-bit | 1k edit, 128 out | b12825 / b11452 | 41.5 | **495** | 12.4 | **19.0** | 1.4294 | pending | **11.9x** | 1.53x |
 | GLM-5.3-Flash 3.0-bit | game, 600 out | b12686 / b11452 | 15.3 | **19.4** | 12.4 | **18.5** | 1.4294 | pending | 1.27x | 1.49x |
 | Qwen3.8-Flash-Next IQ3_S (78 GB) | 12k prompt, 32 out | b12825 / b11381 | 201 | **1048** | 29.6 | **35.3** | 1.1113 | 1.1151 | **5.2x** | 1.19x |
