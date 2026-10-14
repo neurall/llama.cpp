@@ -1808,3 +1808,4 @@ v29-olmoe-pplb,2026-10-14 18:17:34,"bench /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_
 v29-mimo--ppl,2026-10-14 18:18:57,"bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds parallel-prefill,release-b12686-0c552f71e,stock-b11574-8bb3cf0d2 variants v test ppl n=1",,
 v36-inplace-pf12k,2026-10-14 18:34:36,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds inplace variants v test pf12k n=3,,
 v36-auto-pf12k,2026-10-14 18:35:58,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds inplace,release-b12686-0c552f71e,stock-b11381-836d57176 variants v test pf12k n=3",,
+v37-n32-l0.25-pf12k,2026-10-14 18:43:17,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds parallel-prefill variants v test pf12k n=2,,

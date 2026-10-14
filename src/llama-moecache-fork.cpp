@@ -5960,11 +5960,9 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
         // a pass that splits keeps the dense split's copies in front of its graph (mirror_b, 0 without mirror-pool): counted for every pass (the plan is made
         // before the split choice), so a pass that does not split is planned up to mirror_b smaller than it could be
         const double L = per_t * (double) u + (double) k * (double) ap->slot_b + (double) ap->mirror_b;
-        // --moe pf-lend-max=F (default 1.0 = no cap): a pass may borrow at most this share of the pool. A cap of 0.5 (added 2026-10-14 against the lower decode after a
-        // 12k prompt: Qwen3.8-Flash-Next 36.8 t/s against 52.6) did not recover that decode (35.3 with the cap) and cost the prompt (GLM 12k: 756 prompt t/s without it,
-        // 486 with it), so it is back to no cap; the knob stays for the sweep that looks for a rule (0.25 / 0.5 / 1.0 against the expected answer length).
-        static const double lend_max = [] { const char * e = moe_opt("pf-lend-max"); return e ? std::max(0.05, std::min(1.0, atof(e))) : 1.0; }();
-        if (L > lend_max * (double) ap->span) { return -1.0; }
+        // No cap on how much of the pool a pass may borrow: a cap of 0.5 (2026-10-14) did not recover the decode after a long prompt (the loss there is a fixed
+        // ~0.26 s of refill, not a rate) and the GLM 12k prompt did not improve with it; a pass that does not fit the pool (L > span) is not planned.
+        if (L > (double) ap->span) { return -1.0; }
         const double U = std::max(0.0, E - rho * ((double) ap->span - L)) / (gbs * 1e3);
         if (U_out) { *U_out = U; }
         const double C = c_us * (double) u;
