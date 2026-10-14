@@ -3614,6 +3614,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         // predicted uploads, so a wrong guess never evicts a cached expert
         const int32_t n_stream = predict > 0 ? 4 : 0;
         size_t vram = 0;
+        std::vector<ggml_backend_buffer_t> pool_seen;
         for (auto & ls : mc->layers) {
             const int64_t n_expert = ls.pub.up_src->ne[2];
             const int32_t ns = ls.pub.n_slots;
@@ -3672,7 +3673,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             mc->by_src[ls.pub.up_src]   = { (size_t) (&ls - mc->layers.data()), 0 };
             mc->by_src[ls.pub.gate_src] = { (size_t) (&ls - mc->layers.data()), 1 };
             mc->by_src[ls.pub.down_src] = { (size_t) (&ls - mc->layers.data()), 2 };
-            vram += ggml_nbytes(ls.pub.up_c) + ggml_nbytes(ls.pub.gate_c) + ggml_nbytes(ls.pub.down_c);
+            if (ls.pcls < 0) { vram += ggml_nbytes(ls.pub.up_c) + ggml_nbytes(ls.pub.gate_c) + ggml_nbytes(ls.pub.down_c); }
+            else if (ls.pub.up_c->buffer && std::find(pool_seen.begin(), pool_seen.end(), ls.pub.up_c->buffer) == pool_seen.end()) {   // pool: the layers' tensors are views of one buffer, counted once (the sum of the views said 546 GB for a 4.5 GB pool)
+                pool_seen.push_back(ls.pub.up_c->buffer);
+                vram += ggml_backend_buffer_get_size(ls.pub.up_c->buffer);
+            }
             LLAMA_LOG_DEBUG("moe-cache: init layer %d '%s' %zu bytes/expert\n",
                     ls.pub.il, ls.pub.up_src->name, ls.pub.up_src->nb[2]);
         }

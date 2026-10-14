@@ -1513,6 +1513,15 @@ static void moe_auto_mark_failed() {
     g_moe_auto_mode.clear();
 }
 
+// A CUDA out-of-memory is a GGML_ABORT, not an exception: the process dies and none of the failure handling above ran, so the next start chose the same placement and
+// died the same way, for ever (RTX 4060 Laptop 8 GB, Qwen3.6-35B, b12686: three starts in a row, "CUDA error: out of memory" right after "MoE expert cache enabled").
+// The abort callback records the failed placement with the free VRAM it saw (the other placement is used from the next start on), then the abort goes on.
+static void moe_auto_abort_cb(const char * msg) {
+    if (msg && strncmp(msg, "CUDA error", 10) == 0) {
+        moe_auto_mark_failed();
+    }
+}
+
 // typical agentic coding turn when the command line says nothing (server, chat): the system prompt and tool definitions come from
 // the KV cache, so a turn adds ~2000 new prompt tokens (tool output, file contents) and generates ~600 (edits, tool calls)
 static double moe_auto_est_prompt(const common_params & params) {
@@ -1699,7 +1708,12 @@ static void common_moe_cache_auto(common_params & params) {
     // 0.1 MiB per ubatch token is 1.2x the worst of them, floor 200: GLM aborted with out of memory at ub 512 with 51 (-at off keeps the 384 MiB default; --moe margin_mb=N overrides)
     if (params.n_moe_cache_slots != 0 && common_autotune_on(params) && params.moe_opts.find("margin_mb") == std::string::npos &&
         !llama_moe_get_opt("vram-reserve-mb")) {
-        params.moe_opts += (params.moe_opts.empty() ? "" : ",") + std::string("margin_mb=") + std::to_string(std::max(200, (int) std::ceil(0.1 * params.n_ubatch)));
+        // small cards: the CUDA runtime loads kernels lazily and the display and other programs keep taking VRAM (WDDM), so 200 MiB of headroom is not enough on
+        // 8 GB (RTX 4060 Laptop, 6.9 GiB free: the pool took everything and the first kernel launch ran out of memory). 8% of the card up to 12 GiB, floor 512 MiB.
+        size_t vf = 0, vm = 0; int ng = 0;
+        common_gpu_free(vf, vm, ng);
+        const int small_floor = ng > 0 && vm > 0 && vm <= ((size_t) 12 << 30) ? std::max(512, (int) std::ceil(0.08 * (double) (vm >> 20))) : 0;
+        params.moe_opts += (params.moe_opts.empty() ? "" : ",") + std::string("margin_mb=") + std::to_string(std::max({ 200, small_floor, (int) std::ceil(0.1 * params.n_ubatch) }));
     }
     COM_DBG("moe_cache_slots=%d ctx=%d batch=%d ubatch=%d threads=%d threads_batch=%d repack=%s ngl=%d tensor_overrides=%zu fit=%s\n",
         params.n_moe_cache_slots, params.n_ctx, params.n_batch, params.n_ubatch, params.cpuparams.n_threads,
@@ -1852,6 +1866,9 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 mode.c_str(), st.n, ca.n, clearly_bigger ? "; stock is not tried: the model is clearly bigger than the free VRAM" : "", path.c_str());
         }
         use_cache = mode != "stock";
+        if (!g_moe_auto_mode.empty()) {
+            ggml_set_abort_callback(moe_auto_abort_cb);   // a decision that is recorded may also be recorded as failed
+        }
     }
 
     // stock placement (the model fitter places layers): only the expert cache and what exists for it stays off (experts on the
