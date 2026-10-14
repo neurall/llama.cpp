@@ -1865,7 +1865,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 // against 1500 to 1580 with the cache and the split), and the time per prompt token moves with the split, the pass plan and the prompt length,
                 // so a "95% slower than the median" reading was noise or an older plan. Only the decode rate, which none of those change, triggers a trial.
                 (void) off_p;
-                if (mode == "cache" && since >= 2 && !user_ts && off_g > bar) {
+                static const bool retrial = [] { const char * e = getenv("LLAMA_FORK_STOCK_RETRIAL"); return e && atoi(e) != 0; }();   // off: a trial is a user run on the placement known to be slower
+                if (retrial && mode == "cache" && since >= 2 && !user_ts && off_g > bar) {
                     mode = "stock"; since = 0;
                     LOG_INF("%s: MoE placement: re-measuring stock this run (the last cache run was %.0f%% slower per %s token than its median, noise bar %.0f%%)\n", __func__,
                         100.0 * std::max(off_g, off_p), off_g >= off_p ? "generated" : "prompt", 100.0 * bar);
