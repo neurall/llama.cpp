@@ -1876,6 +1876,11 @@ static void common_moe_cache_auto_impl(common_params & params) {
             llama_moe_set_opt("pin-budget", std::to_string(params.load_pin_budget).c_str());
         }
     }
+    // the default context is set before the micro-batch below, which takes the context as its maximum. Set after it (as until 2026-10-14), a run without -c
+    // got the batch size instead: passes of 2048 tokens, Qwen3.8-Flash-Next 8k prompt in 4 passes at 798 prompt t/s where one pass gives 1201
+    if (params.n_ctx == 0) {
+        params.n_ctx = 32768; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more
+    }
     if (!params.ubatch_user && common_autotune_on(params)) {
         uint32_t ub;
         // Experts in RAM: every prompt pass uploads all of them (4.1 s on full GLM 3.0-bit, about 2400 tokens' worth of compute), so a bigger pass amortizes the
@@ -1994,9 +1999,6 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 LOG_INF("%s: %d compute threads on physical cores%s (%d L3 domains)\n", __func__, nt, pl.c_str(), n_dom);
             }
         }
-    }
-    if (params.n_ctx == 0) {
-        params.n_ctx = 32768; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more
     }
     LOG_INF("%s: MoE model (%.1f GiB) exceeds free VRAM (%.1f GiB): experts in RAM + GPU expert cache, no repack, "
         "ctx %d, ubatch %d, threads %d, weights %s (settings you pass win)\n", __func__, model_size / 1073741824.0, vram_free / 1073741824.0,
