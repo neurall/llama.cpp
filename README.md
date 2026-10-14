@@ -13,6 +13,27 @@ compute cached experts while the CPU computes the rest, in parallel.
 
 llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
+### Best gainers so far (measured 2026-10-14, 2x RTX 3090 24 GB, one x16 and one x4 link)
+
+`pp` = prompt processing tokens/s, `t/s` = generated tokens/s. Same prompts as below, each build on its own defaults (only `-np 1`, `-c` for stock). "stock" is the newest upstream build that was measured on that cell (build in the last column); the fork rows are the best measured build of this release line (dev builds `plan100` / `b12686`; the published b12844 is being re-measured the same way, see the known-issue note).
+
+| model | cell | fork build / stock build | stock pp | fork pp | stock t/s | fork t/s | stock ppl | fork ppl | **pp gain** | **t/s gain** |
+|---|---|---|---|---|---|---|---|---|---|---|
+| GLM-5.3-Flash 3.0-bit (106 GB) | 12k prompt, 32 out | plan100 / b11381 | 42.8 | **486** | 11.5 | **14.3** | 1.4294 | pending | **11.3x** | 1.24x |
+| GLM-5.3-Flash 3.0-bit | 1k edit, 128 out | plan100 / b11452 | 41.5 | **495** | 12.4 | **19.0** | 1.4294 | pending | **11.9x** | 1.53x |
+| GLM-5.3-Flash 3.0-bit | game, 600 out | b12686 / b11452 | 15.3 | **19.4** | 12.4 | **18.5** | 1.4294 | pending | 1.27x | 1.49x |
+| Qwen3.8-Flash-Next IQ3_S (78 GB) | 12k prompt, 32 out | plan100 / b11381 | 201 | **1048** | 29.6 | **35.3** | 1.1118 | pending | **5.2x** | 1.19x |
+| Qwen3.8-Flash-Next IQ3_S | 1k edit, 128 out | plan100 / b11452 | 160 | **962** | 30.6 | **54.0** | 1.1118 | pending | **6.0x** | 1.76x |
+| Qwen3.8-Flash-Next IQ3_S | game, 600 out | b12686 / b11452 | 40.9 | **68.0** | 31.0 | **54.2** | 1.1118 | pending | 1.66x | 1.75x |
+| Qwen3.6-35B-A3B hybrid (fits VRAM) | 4k prompt | plan100 / b11574 | 3061 | **3084** | 140 | **142** | 1.522 | pending | 1.01x | 1.01x |
+| OLMoE-1B-7B Q4_K_M (fits VRAM) | game, 600 out | plan100 / b11574 | 213 | **315** | 466 | **472** | - | pending | 1.48x | 1.01x |
+
+`ppl` = perplexity of the same text (lower is better, equal means the compute path is unchanged); stock numbers are from b11381 on the same files, the fork column is being filled from a same-protocol run of the release (`pending`).
+
+On smaller cards the gain grows, see the next section (an 8 GB laptop: decode 2.7-3.6x; a simulated 16 GB card: GLM 6.5x decode, Qwen3.8-Flash-Next 3.4x on two cards).
+
+**Known issue in b12844 (found while updating this table):** after a 12k prompt, Qwen3.8-Flash-Next decodes at 35 t/s where b12686 gives 50 t/s, and GLM-5.3-Flash at 14.3 vs 16.2 t/s (the prompt itself is 1.3-1.4x faster). Not fixed yet; the prefill changes of this release are the suspected cause, a fix is next.
+
 **Results, 2x RTX 3090 (one AM4 CPU PCIe 4.0 x16, one X570 chipset x4 slot) + Ryzen 7 3700X + 125 GB DDR4,
 CPU frequency governor `performance`, single stream, temp 0.** Short = 1500-token chat reply to "write smallest html tetris game". Long =
 12k-token code prompt (llama.cpp sources): prompt processing, then decode. The prompts and a script to
@@ -489,3 +510,4 @@ The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-or
 - [nlohmann/json](https://github.com/nlohmann/json) - Single-header JSON library, used by various tools/examples - MIT License
 - [mackron/miniaudio](https://github.com/mackron/miniaudio) - Single-header audio format decoder, used by multimodal subsystem - Public domain
 - [sheredom/subprocess.h](https://github.com/sheredom/subprocess.h) - Single-header process launching solution for C and C++ - Public domain
+- [homeofe](https://github.com/homeofe) - AVX2 dot products for IQ3_S and IQ3_XXS on x86 CPUs (`ggml-cpu`), merged into this fork (in the release after b12844) - MIT license
