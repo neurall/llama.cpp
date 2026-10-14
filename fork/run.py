@@ -2391,7 +2391,7 @@ def cmd_run(a):
     prep_model()
     for i in range(a.n):
         for build in a.builds:
-            run_cell(build.rstrip("/"), a.test, extra, a.plain, a.args, a.bare, a.note, warm=a.warm)
+            run_cell(build.rstrip("/"), a.test, extra, a.plain, a.args, a.bare, a.note, warm=warm_wanted(a.warm, a.no_warm, MODEL))
 
 
 def cmd_show(a):
@@ -2761,7 +2761,7 @@ def cmd_bench(a):
                     STATE_FILE["v"] = sf
                 else:
                     STATE_FILE["v"] = None
-                warm = a.warm and i == 0 and not a.cold_hot  # one discarded run per cell, before its first repetition (never with --cold-hot: it would write the state)
+                warm = warm_wanted(a.warm, a.no_warm, model) and i == 0 and not a.cold_hot  # one discarded run per cell, before its first repetition (never with --cold-hot: it would write the state)
                 KNOBS_NOW["v"] = CELL_KNOBS.get((build, name))
                 if m:
                     remote_cell(a.machine, m, build, a.test, args, a.note, warm=warm, env=env)
@@ -3119,7 +3119,7 @@ def cmd_build(a):
             subprocess.run(["scp", "-q", bundle, f"{host}:C:/Users/o/{ref}.bundle"], stdout=lf, stderr=subprocess.STDOUT, check=True)
             cmd = (f"cd /d N:\\llama.cpp && git fetch -q C:\\Users\\o\\{ref}.bundle {ref} && git checkout -q FETCH_HEAD && call N:\\llama.cpp\\release-out\\winbuild.bat"
                    f" && (if not exist N:\\build mkdir N:\\build) && (if not exist N:\\build\\{name} mkdir N:\\build\\{name}) && xcopy /q /y N:\\llama.cpp\\build-cuda-dl\\bin\\* N:\\build\\{name}\\"
-                   f" && copy /y N:\\build\\admit-pin-b12353-10d6c1e5c\\*140*.dll N:\\build\\{name}\\ && echo PKG_OK {short}")
+                   f" & (copy /y N:\\build\\admit-pin-b12353-10d6c1e5c\\*140*.dll N:\\build\\{name}\\ >nul 2>&1) & echo PKG_OK {short}")   # the VC runtime DLLs of an old build, when it is still there: the release zip takes them from the b11214 zip anyway
             subprocess.run(ssh + [cmd], stdout=lf, stderr=subprocess.STDOUT)
         os.remove(bundle)
         ok = f"PKG_OK {short}" in open(log).read()
@@ -3384,6 +3384,12 @@ def cmd_stop(a):
             if m:
                 r = subprocess.run(["sudo", "-n", NVSMI, "-i", m.group(1), "-pl", m.group(2)], capture_output=True, text=True)
                 print(f"stop: GPU {m.group(1)} power limit {m.group(2)} W" + ("" if r.returncode == 0 else f"  (failed: {r.stderr.strip()[:80]})"))
+
+
+def warm_wanted(flag, no_flag, model):
+    """discarded run before the measured one: only with --warm (user 2026-10-14: no warm-up runs; a bigger-than-pool model gets a second measured pass at
+    the end of a campaign instead, and the better number stands)."""
+    return bool(flag) and not no_flag
 
 
 def cmd_hugepool(a):
@@ -4788,8 +4794,8 @@ if __name__ == "__main__":
     r.add_argument("--campaign", help="name written to the campaign column of every row")
     r.add_argument("--bare", action="store_true", help="only -m (plus --args): the defaults a new user gets")
     r.add_argument("--plain", action="store_true", help="no cache flags (autofit), like stock")
-    r.add_argument("--warm", action="store_true", help="a discarded run before the measured one (hot run); default off: the first run as a user sees it")
-    r.add_argument("--no-warm", action="store_true", help=argparse.SUPPRESS)   # the old default, kept so scripts keep working
+    r.add_argument("--warm", action="store_true", help="force a discarded run before the measured one (hot run); default off")
+    r.add_argument("--no-warm", action="store_true", help="never a discarded run: the first run as a user sees it")
     r.add_argument("--args", help="extra server args, e.g. '-fitt 8000'")
     add_overrides(r)
     b = sp.add_parser("bench", help="MODELS x BUILDS x VARIANTS, every cell recorded, then the report")
@@ -4808,8 +4814,8 @@ if __name__ == "__main__":
     b.add_argument("--tol", type=float, help="flag cells below TOL x stock as REGRESSION (e.g. 0.95)")
     b.add_argument("--note")
     b.add_argument("--no-probe", action="store_true", help="skip the knob probe (one token per cell before the first measured run; prints requested against used settings)")
-    b.add_argument("--warm", action="store_true", help="a discarded run before each measured one (hot run); default off: the first run as a user sees it")
-    b.add_argument("--no-warm", action="store_true", help=argparse.SUPPRESS)   # the old default, kept so scripts keep working
+    b.add_argument("--warm", action="store_true", help="force a discarded run before each measured one (hot run); default off")
+    b.add_argument("--no-warm", action="store_true", help="never a discarded run: the first run as a user sees it")
     b.add_argument("--sampler", help="extra sampling parameters for every request, comma separated, e.g. repeat_penalty=1.1,dry_multiplier=0.8 (anti-repetition tests); temperature 0 / top_k 1 stay unless overridden")
     b.add_argument("--keep-loops", action="store_true", help="keep repetition-loop outputs as normal runs (default: stored as ok=0, loop=1 and repeated up to 3 times)")
     b.add_argument("--templated", action="store_true", help="chat tests: render the model's chat template with the server's /apply-template and send the text to /completion (the loop guard then applies)")
