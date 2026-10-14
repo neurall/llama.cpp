@@ -3107,13 +3107,13 @@ def cmd_build(a):
         with open(log, "w") as lf:
             subprocess.run(["scp", "-q", bundle, f"{host}:C:/Users/o/{ref}.bundle"], stdout=lf, stderr=subprocess.STDOUT, check=True)
             cmd = (f"cd /d N:\\llama.cpp && git fetch -q C:\\Users\\o\\{ref}.bundle {ref} && git checkout -q FETCH_HEAD && call N:\\llama.cpp\\release-out\\winbuild.bat"
-                   f" && (if not exist N:\\{name} mkdir N:\\{name}) && xcopy /q /y N:\\llama.cpp\\build-cuda-dl\\bin\\* N:\\{name}\\"
-                   f" && copy /y N:\\admit-pin-b12353-10d6c1e5c\\*140*.dll N:\\{name}\\ && echo PKG_OK {short}")
+                   f" && (if not exist N:\\build mkdir N:\\build) && (if not exist N:\\build\\{name} mkdir N:\\build\\{name}) && xcopy /q /y N:\\llama.cpp\\build-cuda-dl\\bin\\* N:\\build\\{name}\\"
+                   f" && copy /y N:\\build\\admit-pin-b12353-10d6c1e5c\\*140*.dll N:\\build\\{name}\\ && echo PKG_OK {short}")
             subprocess.run(ssh + [cmd], stdout=lf, stderr=subprocess.STDOUT)
         os.remove(bundle)
         ok = f"PKG_OK {short}" in open(log).read()
         if ok and a.release:   # the zip the way every published Windows release was made (build-cuda-dl\bin + the VC runtime DLLs + LICENSE)
-            vout = subprocess.run(ssh + [f"N:\\{name}\\llama-server.exe --version"], capture_output=True, text=True)
+            vout = subprocess.run(ssh + [f"N:\\build\\{name}\\llama-server.exe --version"], capture_output=True, text=True)
             v = re.search(r"build (\d+)", vout.stdout + vout.stderr); c = re.search(r"commit ([0-9a-f]+)", vout.stdout + vout.stderr)
             if not v or not c:
                 sys.exit(f"release zip: no version from llama-server.exe: {(vout.stdout + vout.stderr)[-300:]}")
@@ -3127,8 +3127,8 @@ def cmd_build(a):
                 ok = "ZIP_OK" in open(log).read() and subprocess.run(["scp", "-q", f"{host}:N:/llama.cpp/release-out/{z}", os.path.join(REL_OUT, z)], stdout=lf, stderr=subprocess.STDOUT).returncode == 0
             print(f"release zip {z}: " + (f"OK, N:\\llama.cpp\\release-out and {REL_OUT}" if ok else f"FAILED, see {log}"), flush=True)
         if ok and a.release:   # N:\rel\latest always points at the newest release build (a junction, no admin rights needed)
-            subprocess.run(ssh + [f"if exist N:\\rel\\latest rmdir N:\\rel\\latest & mklink /J N:\\rel\\latest N:\\{name}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"build {name} on pc3 ({short}): {'OK, N:\\' + name if ok else 'FAILED, see ' + log}", flush=True)
+            subprocess.run(ssh + [f"if exist N:\\rel\\latest rmdir N:\\rel\\latest & mklink /J N:\\rel\\latest N:\\build\\{name}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"build {name} on pc3 ({short}): {'OK, N:\\build\\' + name if ok else 'FAILED, see ' + log}", flush=True)
         sys.exit(0 if ok else 1)
     tmp = None
     if a.commit:

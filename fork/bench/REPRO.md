@@ -173,30 +173,30 @@ python3 fork/run.py bench --models /m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.ggu
 ## laptop-17
 
 ```
-N:\stock-de7fa0a3c\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 2048 -f N:\p10.txt
-N:\smallcard8\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 2048 -f N:\p10.txt
+N:\build\stock-de7fa0a3c\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 2048 -f N:\bench\prompts\p10.txt
+N:\build\smallcard8\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 2048 -f N:\bench\prompts\p10.txt
 ```
 
 <a id="laptop-12k"></a>
 ## laptop-12k
 
 ```
-N:\stock-de7fa0a3c\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 14336 -f N:\p12k.txt
-N:\smallcard8\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 14336 -f N:\p12k.txt
+N:\build\stock-de7fa0a3c\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 14336 -f N:\bench\prompts\p12k.txt
+N:\build\smallcard8\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 14336 -f N:\bench\prompts\p12k.txt
 ```
 
 <a id="laptop-40k"></a>
 ## laptop-40k
 
 ```
-N:\stock-de7fa0a3c\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 46000 -f N:\p40k.txt
-N:\smallcard8\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 46000 -f N:\p40k.txt
+N:\build\stock-de7fa0a3c\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 46000 -f N:\bench\prompts\p40k.txt
+N:\build\smallcard8\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 46000 -f N:\bench\prompts\p40k.txt
 ```
 
 <a id="laptop-125k"></a>
 ## laptop-125k
 
 ```
-N:\stock-de7fa0a3c\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 131072 -f N:\p125k.txt
-N:\smallcard8\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 131072 -f N:\p125k.txt
+N:\build\stock-de7fa0a3c\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 131072 -f N:\bench\prompts\p125k.txt
+N:\build\smallcard8\llama-cli.exe -m N:\m\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c 131072 -f N:\bench\prompts\p125k.txt
 ```

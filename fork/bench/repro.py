@@ -29,7 +29,7 @@ ROWS = {
  "q36-game":    ("/m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf", "1kout_make_game", "", "plan99", "stock-b11381-836d57176", ""),
  "olmoe-game":  ("/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf", "1kout_make_game", "", "plan99", "stock-b11574-8bb3cf0d2", ""),
 }
-# the 8 GB laptop rows are llama-cli on Windows (N:\\smallcard8 = b12843, N:\\stock-de7fa0a3c = b11514), prompts p10.txt / p12k.txt / p40k.txt / p125k.txt are the first N tokens of fork/bench/src_128k.cpp
+# the 8 GB laptop rows are llama-cli on Windows (N:\\build\\smallcard8 = b12843, N:\\build\\stock-de7fa0a3c = b11514), prompts p10.txt / p12k.txt / p40k.txt / p125k.txt are the first N tokens of fork/bench/src_128k.cpp
 Q2 = {"q2-cpu": "PC2 (Ryzen 5 3600), llama-cli -dev none -ngl 0: stock 05af0d2b1 (b11302) against release b11648, qwen36.gguf = Qwen3.6-35B-A3B Q2_0, `cli-t100` (file no longer on disk)",
       "q36-cpu": "PC2 (12 cores, clang, no GPU): `llama-cli -m /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -dev none -p 'write smallest html tetris game' -n 48` (short) or `-f src_1k.cpp -n 32 -c 4096` (edit); stock = upstream master 37d6d653e built with the same compiler, fork = the b12844 CPU archive (llama-release-b12844-...-bin-ubuntu-x64.tar.gz) and the merged tree",
       "q2-laptop": "W10 laptop (4060 8 GB), llama-cli: stock b5cf8ce02 (b11261) against release b11648, same file, `cli-t100` (file no longer on disk)"}
@@ -37,7 +37,7 @@ LAPTOP = {"laptop-17": ("p10.txt", 2048), "laptop-12k": ("p12k.txt", 14336), "la
 def command(i):
     if i in LAPTOP:
         f, c = LAPTOP[i]
-        return [f'{b}\\llama-cli.exe -m N:\\m\\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c {c} -f N:\\{f}' for b in ("N:\\stock-de7fa0a3c", "N:\\smallcard8")]
+        return [f'{b}\\llama-cli.exe -m N:\\m\\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c {c} -f N:\\bench\\prompts\\{f}' for b in ("N:\\build\\stock-de7fa0a3c", "N:\\build\\smallcard8")]
     m, t, a, fk, st, note = ROWS[i]
     var = ("-np 1 " + a).strip()
     return [f'python3 fork/run.py bench --models {m} --builds {fk},{st} --variant "v={var}" --variants v -t {t} -n 3']
