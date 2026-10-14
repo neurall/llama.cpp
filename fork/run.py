@@ -3126,6 +3126,8 @@ def cmd_build(a):
                 r = subprocess.run(ssh + [pkg], stdout=lf, stderr=subprocess.STDOUT)
                 ok = "ZIP_OK" in open(log).read() and subprocess.run(["scp", "-q", f"{host}:N:/llama.cpp/release-out/{z}", os.path.join(REL_OUT, z)], stdout=lf, stderr=subprocess.STDOUT).returncode == 0
             print(f"release zip {z}: " + (f"OK, N:\\llama.cpp\\release-out and {REL_OUT}" if ok else f"FAILED, see {log}"), flush=True)
+        if ok and a.release:   # N:\rel\latest always points at the newest release build (a junction, no admin rights needed)
+            subprocess.run(ssh + [f"if exist N:\\rel\\latest rmdir N:\\rel\\latest & mklink /J N:\\rel\\latest N:\\{name}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"build {name} on pc3 ({short}): {'OK, N:\\' + name if ok else 'FAILED, see ' + log}", flush=True)
         sys.exit(0 if ok else 1)
     tmp = None
