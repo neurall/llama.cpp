@@ -1659,7 +1659,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
     TAGBOX["v"] = test   # game4 and edit4 add their prompt below
     if test in ("ppl", "ppl3", "pplb", "pplc"):
         nb, nub = {"ppl": ("1", "1"), "ppl3": ("3", "3"), "pplb": ("1024", "1024"), "pplc": ("1024", "256")}[test]   # pplb: 1024-token batches = the big-batch (prefill) path; pplc: the same batch in 256-token ubatches (4 ubatches per decode call)
-        args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", "2", "-b", nb, "-ub", nub]
+        args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", os.environ.get("PERF_PPL_CHUNKS", "2"), "-b", nb, "-ub", nub]   # PERF_PPL_CHUNKS=12: a paired comparison of two compute paths needs more than 2 chunks (a valid path differs by +-0.5% per chunk)
         env, args = drop_moe_flag(build, env, args)   # the b11509 arm of the regress cell failed on --moe autotune=0,...
         if build.startswith("stock"):   # stock has no --moe-expert-cache
             i = args.index("--moe-expert-cache") if "--moe-expert-cache" in args else -1
@@ -4665,7 +4665,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog="tools (each has its own --help): " + ", ".join(sorted(TOOLS)))
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "pplb", "pplc", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf4k", "pf6k", "pf8k", "pf10k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
+    TESTS = ["ppl", "ppl3", "pplb", "pplc", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf6k", "pf8k", "pf10k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
     r = sp.add_parser("run", help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", choices=TESTS + list(ALIASES))

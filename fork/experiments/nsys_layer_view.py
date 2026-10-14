@@ -45,14 +45,14 @@ for d in (0, 1):
         if j < len(mats): up[d].append((st, en, by, layer_of(mats[j][1]))); j += 1
 a, z = ends[L - 1], ends[L]; T = (z - a) / 1e6
 mine = [x for d in (0, 1) for x in up[d] if x[3] == L]; nxt = [x for d in (0, 1) for x in up[d] if x[3] == L + 1]
-x_lo = a if os.environ.get("NSYS_FROM_START", "0") == "1" else max(a - 700e6, min([a] + [x[0] for x in mine])); x_hi = z   # default: from this layer's first own upload (its data), only its own activity
+x_lo = a if os.environ.get("NSYS_FROM_START", "1") == "1" else max(a - 700e6, min([a] + [x[0] for x in mine])); x_hi = z   # default: from this layer's first own upload (its data), only its own activity
 rel = lambda t: (t - a) / 1e6
 fig = plt.figure(figsize=(15, 16.6))
 gs = fig.add_gridspec(15, 1, height_ratios=[1, 1, 1, 1, 1, 1, 1, 1, 1.5, 1.5, 1.5, 0.8, 0.8, 1.0, 1.0], hspace=0.28)
 axs = [fig.add_subplot(gs[i, 0]) for i in range(15)]
 for ax in axs[1:]: ax.sharex(axs[0])
 names = ["1  UPLOAD x16: experts used by layer %d" % L, "2  UPLOAD x4: experts used by layer %d" % L, "3  COMPUTE x16: expert matmuls", "4  COMPUTE x16: dense + other kernels",
-         "5  COMPUTE x4: expert matmuls", "6  COMPUTE x4: dense + other kernels", "7  PREFETCH x16: experts for layer %d" % (L + 1), "8  PREFETCH x4: experts for layer %d" % (L + 1),
+         "5  COMPUTE x4: expert matmuls", "6  COMPUTE x4: dense + other kernels", "7  PREFETCH x16: experts of later layers", "8  PREFETCH x4: experts of later layers",
          "9  host memory read", "10  x16 link", "11  x4 link"]
 cols = ["#2f5f9e", "#b03a36", "#2a6f2a", "#2a6f2a", "#8fb3dd", "#e3a09c"]
 def draw(ax, ivs, color, label_ms=False):
@@ -60,6 +60,12 @@ def draw(ax, ivs, color, label_ms=False):
         if en < x_lo or st > x_hi: continue
         ax.barh(0, rel(en) - rel(st), left=rel(st), height=0.8, color=color)
         if label_ms and en - st > 14e6: ax.text((rel(st) + rel(en)) / 2, 0, "%.0f ms" % ((en - st) / 1e6), ha="center", va="center", fontsize=8, color="white")
+# this layer's uploads that ran before the layer started (prefetched during the previous one): noted as text, the axis stays on the layer itself
+for ax_i, dd in ((0, 1), (1, 0)):
+    early = [x for x in up[dd] if x[3] == L and x[1] <= a]
+    if early:
+        axs[ax_i].text(0.5, 0, "  %d copies done earlier (%.0f ms of copying, finished %.0f ms before the start)" % (len(early), sum(x[1] - x[0] for x in early) / 1e6, (a - max(x[1] for x in early)) / 1e6),
+                       ha="left", va="center", fontsize=7, color="#444444")
 draw(axs[0], [(x[0], x[1]) for x in up[1] if x[3] == L], cols[0], True)
 draw(axs[1], [(x[0], x[1]) for x in up[0] if x[3] == L], cols[1], True)
 isexp = lambda k, dv: k in heavy_set[dv]
@@ -69,13 +75,13 @@ draw(axs[2], [(k[0], k[1]) for k in heavy[1] if win(k)], "#2a6f2a")
 draw(axs[3], [(k[0], k[1]) for k in b if k[2] == 1 and id(k) not in heavy_set[1] and win(k)], "#7a7a7a")
 draw(axs[4], [(k[0], k[1]) for k in heavy[0] if win(k)], "#2a6f2a")
 draw(axs[5], [(k[0], k[1]) for k in b if k[2] == 0 and id(k) not in heavy_set[0] and win(k)], "#7a7a7a")
-draw(axs[6], [(x[0], x[1]) for x in up[1] if x[3] == L + 1], cols[4], False)
-draw(axs[7], [(x[0], x[1]) for x in up[0] if x[3] == L + 1], cols[5], False)
+draw(axs[6], [(x[0], x[1]) for x in up[1] if x[3] > L], cols[4], True)
+draw(axs[7], [(x[0], x[1]) for x in up[0] if x[3] > L], cols[5], True)
 for i in range(8):
     axs[i].set_yticks([]); axs[i].set_ylim(-0.5, 0.5); axs[i].set_ylabel(names[i], rotation=0, ha="right", va="center", fontsize=9)
     axs[i].axvspan(rel(x_lo), 0, color="#f2f2f2", zorder=0)           # before the layer starts
 # bandwidth lanes: bytes of every host-to-device copy per 2 ms bin
-own_or_next = set((x[0], x[1]) for dd in (0, 1) for x in up[dd] if x[3] in (L, L + 1))
+own_or_next = set((x[0], x[1]) for dd in (0, 1) for x in up[dd] if x[3] >= L)
 binw = 2e6; edges = np.arange(x_lo, x_hi + binw, binw); nb = len(edges) - 1
 def rate(dev):
     by = np.zeros(nb)
@@ -92,10 +98,17 @@ xs = (edges[:-1] - a) / 1e6
 import nsys_states as NS
 ns_d = NS.load(path, thr); ns_out, ns_T = NS.classify(ns_d, a, z)
 SCOL = ["#2a6f2a", "#4f81bd", "#e69f00", "#d9a0a0", "#c0504d", "#7a3f98", "#888888", "#bbbbbb", "#000000", "#00a6a6", "#f0d000", "#ff00ff"]
+SHORT = ["compute", "upload", "copy", "wait other card upload", "wait other card compute", "host sync", "host launching", "host memcpy", "unexplained", "host CPU in launch", "host CPU in input copy", "host outside loop"]
 for ax, dv, lab in ((axs[11], 1, "12  STATE x16 (every ms)"), (axs[12], 0, "13  STATE x4 (every ms)")):
-    st_arr = ns_out[dv]
-    for i in range(len(st_arr)):
-        ax.barh(0, 0.25, left=i * 0.25, height=0.9, color=SCOL[st_arr[i]], linewidth=0)
+    st_arr = ns_out[dv]; i = 0
+    while i < len(st_arr):
+        j = i
+        while j < len(st_arr) and st_arr[j] == st_arr[i]: j += 1
+        x0, w = i * 0.25, (j - i) * 0.25
+        ax.barh(0, w, left=x0, height=0.9, color=SCOL[st_arr[i]], linewidth=0)
+        if w >= 2.0 * T / 46.0:
+            ax.text(x0 + w / 2, 0, SHORT[st_arr[i]], ha="center", va="center", fontsize=6.5, color="white" if st_arr[i] in (0, 1, 4, 5, 8) else "black", clip_on=True)
+        i = j
     ax.set_yticks([]); ax.set_ylim(-0.5, 0.5); ax.set_ylabel(lab, rotation=0, ha="right", va="center", fontsize=9)
 from matplotlib.patches import Patch
 # scheduler thread, from the NVTX ranges of the run (GGML_NVTX=1, nsys --trace=cuda,nvtx): lane 14 = split launches (blue = x16 split, red = x4 split, grey = other), lane 15 = what the thread does inside them
@@ -117,7 +130,7 @@ if has_nvtx:
     for i in (13, 14): axs[i].set_yticks([]); axs[i].set_ylim(-0.5, 0.5)
 else:
     for i in (13, 14): axs[i].axis("off")
-axs[12].legend(handles=[Patch(color=SCOL[i], label="%s (x16 %.0f / x4 %.0f ms)" % (NS.STATES[i], (ns_out[1] == i).sum() * 0.25, (ns_out[0] == i).sum() * 0.25)) for i in range(12) if ((ns_out[1] == i).sum() + (ns_out[0] == i).sum()) > 0], loc="upper center", bbox_to_anchor=(0.5, -0.55), ncol=3, fontsize=8, frameon=False)
+fig.legend(handles=[Patch(color=SCOL[i], label="%s (x16 %.0f / x4 %.0f ms)" % (NS.STATES[i], (ns_out[1] == i).sum() * 0.25, (ns_out[0] == i).sum() * 0.25)) for i in range(12) if ((ns_out[1] == i).sum() + (ns_out[0] == i).sum()) > 0], loc="lower center", bbox_to_anchor=(0.5, -0.02), ncol=3, fontsize=8, frameon=False, title="STATE lanes 12-13: every ms of each card (ms: x16 / x4)", title_fontsize=9)
 for ax, dev, peak, lab, col in ((axs[8], None, RAM, names[8], "#555555"), (axs[9], 1, P16, names[9], "#2f5f9e"), (axs[10], 0, P4, names[10], "#b03a36")):
     r = rate(dev); ax.fill_between(xs, 0, np.minimum(100 * r / peak, 160), step="post", color=col, alpha=0.85)
     ax.set_ylim(0, 105); ax.axhline(100, color="k", lw=0.6, ls=":")
