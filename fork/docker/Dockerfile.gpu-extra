@@ -1,0 +1,15 @@
+# Extra GPU backends on top of the release builder (docker build -t llama-rel-el8-gpu -f fork/docker/Dockerfile.gpu-extra fork/docker):
+#   Vulkan: LunarG SDK tarball (glslc, headers, loader; EL8's packages have no glslc), same version as the Windows build host.
+#   HIP:    AMD's ROCm pip wheels from the repo upstream's release job uses (rocm[libraries,devel]), `rocm-sdk path --root` gives HIP_PATH.
+# Build flags follow upstream's release.yml: ubuntu-vulkan (-DGGML_VULKAN=ON) and ubuntu-24-rocm (-DGGML_HIP=ON -DHIP_PLATFORM=amd), with -DGGML_BACKEND_DL=ON so each
+# backend is one more loadable library next to CUDA in the same tarball. Not used for the CUDA release itself.
+FROM llama-rel-el8
+ARG VULKAN_SDK_VERSION=1.4.363.0
+RUN cd /opt && wget -q https://sdk.lunarg.com/sdk/download/${VULKAN_SDK_VERSION}/linux/vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz \
+ && tar xf vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz && rm vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz && ln -s /opt/${VULKAN_SDK_VERSION}/x86_64 /opt/vulkan
+ENV VULKAN_SDK=/opt/vulkan PATH=/opt/vulkan/bin:$PATH LD_LIBRARY_PATH=/opt/vulkan/lib:$LD_LIBRARY_PATH CMAKE_PREFIX_PATH=/opt/vulkan
+ARG ROCM_VERSION=10.0.0
+RUN dnf install -y python3.11 python3.11-pip && dnf clean all && python3.11 -m venv /opt/rocm-venv \
+ && /opt/rocm-venv/bin/pip install --no-cache-dir --upgrade pip \
+ && /opt/rocm-venv/bin/pip install --no-cache-dir --index-url https://stable.repo.amd.com/rocm/whl-next/ "rocm[libraries,devel]==${ROCM_VERSION}" \
+ && /opt/rocm-venv/bin/rocm-sdk init

@@ -235,3 +235,5 @@ v19-qwe-16g-single-pf4k,2026-10-14 13:04:01,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-000
 v19-qwe-16g-single-pf4k,2026-10-14 13:04:01,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pf4k,180+220,-dev ?,2,158.7,-dev CUDA1,2,1213.7,0.131
 v19-glm-16g-single-game4c,2026-10-14 13:18:28,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,game4c,180+220,-dev CUDA1,2,13.8,-dev CUDA1,2,13.8,1
 v19-glm-16g-single-game4c,2026-10-14 13:18:28,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,game4c,180+220,-dev ?,2,1.2,-dev CUDA1,2,13.8,0.088
+v19-olm-8g-single-game4c,2026-10-14 15:24:49,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,game4c,180+220,-dev CUDA1,2,324.1,-dev CUDA1,2,324.1,1
+v19-qwe-8g-single-game4c,2026-10-14 15:27:29,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,game4c,180+220,-dev CUDA1,2,86.6,-dev CUDA1,2,86.6,1
