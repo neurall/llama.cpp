@@ -1762,3 +1762,4 @@ v19-qwe-16g-one-pf4k,2026-10-14 14:15:29,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO
 v19-qwe-16g-dense-pf4k,2026-10-14 14:17:36,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds plan100 variants v test pf4k n=2,,
 v19-qwe-16g-both-pf4k,2026-10-14 14:19:48,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds plan100 variants v test pf4k n=2,,
 v19-glm-16g-dual-game4c,2026-10-14 14:21:53,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan100,stock-b11574-8bb3cf0d2 variants v test game4c n=2",,
+v19-glm-16g-dual-pf4k,2026-10-14 14:36:15,"bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds plan100,stock-b11574-8bb3cf0d2 variants v test pf4k n=2",,
