@@ -116,7 +116,9 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
         if (ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpus.push_back(d.dev); }
     }
     if (gpus.size() < 2) {
-        LLAMA_LOG_WARN("%s: dense split needs two GPUs, %zu found: off\n", __func__, gpus.size());
+        if (llama_moe_get_opt("dense-split")) {   // a default-on switch is not worth a warning on a one-GPU machine
+            LLAMA_LOG_WARN("%s: dense split needs two GPUs, %zu found: off\n", __func__, gpus.size());
+        }
         return;
     }
     const int n_layer = (int) model.hparams.n_layer();
