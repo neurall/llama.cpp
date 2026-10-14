@@ -216,3 +216,7 @@ ts,commit,line
 2026-10-09 20:55:29,049a163c2,knob given here is never self-tuned. autotune=0: no
 2026-10-09 20:55:33,049a163c2,knob given here is never self-tuned. autotune=0: no
 2026-10-09 20:55:37,049a163c2,knob given here is never self-tuned. autotune=0: no
+2026-10-14 01:50:19,edd9b40e8,"moe-cache: self-tune: GATE ms/token 0:6.48 3:5.88 -> 3 (best mean, 8 slices each)"
+2026-10-14 01:50:39,edd9b40e8,"moe-cache: self-tune: GATE ms/token 0:6.49 3:5.79 -> 3 (best mean, 8 slices each)"
+2026-10-14 01:50:39,edd9b40e8,"moe-cache: self-tune: WAIT ms/token 0:5.55 1:5.85 -> 0 (clear, 4 slices each)"
+2026-10-14 01:53:13,edd9b40e8,"moe-cache: self-tune: GATE ms/token 0:6.35 3:5.68 -> 3 (best mean, 8 slices each)"
