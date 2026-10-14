@@ -31,9 +31,9 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 | Qwen3.8-Flash-Next IQ3_S (78 GB) | 1k edit (best pp) | b12128 b11381 | 376 | **683** | 42.7 | **54.2** | 1.1113 | 1.1151 | 1.82x | 1.27x |
 | Qwen3.6-35B-A3B hybrid (fits VRAM) | game, 600 out | b12824 b11381 | 85.0 | **145** | 153 | **155** | 1.522 | pending | 1.71x | 1.01x |
 | GLM-5.3-Flash 3.5-bit | game (best t/s) | b11707 b11381 | 3.7 | **5.4** | 6.9 | **10.5** | - | - | 1.46x | 1.52x |
-| Qwen3.8-27B MTP Q5_K_M (dense, fits 24 GB) | 1k edit (best t/s with MTP) | b12193 b11381 | 1531 | **1616** | 42.7 | **64.4** | - | - | 1.06x | 1.51x |
+| Qwen3.8-27B MTP Q5_K_M (dense, fits 24 GB), both with MTP | 1k edit | b12193 b11381 | 1531 | 1616 | 62.5 | 64.4 | - | - | 1.06x | 1.03x |
 | OLMoE-1B-7B Q4_K_M (fits VRAM) | game, 600 out | b12824 b11574 | 213 | **315** | 466 | **472** | - | - | 1.48x | 1.01x |
-| Qwen3.8-27B MTP Q5_K_M | game, 600 out | b12193 b11381 | 32.4 | **34.1** | 45.7 | **65.7** | - | - | 1.05x | 1.44x |
+| Qwen3.8-27B MTP Q5_K_M, both with MTP | game, 600 out | b12193 b11381 | 32.4 | 34.1 | 74.9 | 65.7 | - | - | 1.05x | 0.88x |
 | Qwen3.8-Flash-Next IQ3_S | game (best t/s) | b11707 b11381 | 26.5 | **29.9** | 42.1 | **56.2** | - | - | 1.13x | 1.33x |
 | Qwen3.8-Flash-Next IQ1_M | 1k edit | b12128 b11381 | 1165 | **1409** | 65.0 | **65.9** | - | - | 1.21x | 1.01x |
 | Qwen3.8-27B IQ4_NL (dense, fits 24 GB) | 1k edit | b11707 b11381 | 1714 | **1730** | 44.3 | **44.3** | - | - | 1.01x | 1.00x |
