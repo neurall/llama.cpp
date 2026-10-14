@@ -1135,7 +1135,9 @@ slot_pick pick_slot(moe_cache * mc, size_t li, Rank rank, double & best) {
     if (ls.pcls >= 0) {
         auto & ps = mc->pool[ls.pcls];
         if (!ps.free.empty()) {
-            p.slot = ps.free.back();
+            // the highest free block: prompts borrow the pool from its start (compute alias), so experts placed best first (preload, refill) end at the
+            // back, where a prompt does not reach, and the front holds the cold ones it may evict (see keep_hot_move)
+            p.slot = *std::max_element(ps.free.begin(), ps.free.end());
             best = 0;
             return p;
         }
@@ -1264,6 +1266,11 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     LLAMA_LOG_INFO("moe-cache: usage profile from %s\n", from);
     size_t queued = 0;
     std::lock_guard<std::mutex> lk(mc->wmtx);
+    // each layer's hottest experts (its share of the pool), then placed hottest first over ALL layers: pick_slot hands out the highest free block,
+    // so the hottest experts of the model sit at the back of the pool and a prompt, which borrows from the front, evicts the coldest ones
+    // (placed layer by layer, layer 0's hottest experts took the first blocks: the first ones every prompt pass borrows)
+    struct pick { double heat; size_t il; int32_t e; };
+    std::vector<pick> picks;
     for (size_t il = 0; il < mc->layers.size(); ++il) {
         auto & ls = mc->layers[il];
         ls.glob_count = counts[il];
@@ -1277,20 +1284,27 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             }
         }
         std::sort(ids.begin(), ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
+        uint64_t total = 0;
+        for (uint64_t c : ls.glob_count) { total += c; }
         for (int32_t i = 0; i < std::min<int32_t>(ls.n_cache, (int32_t) ids.size()); ++i) {
-            double best;
-            const int32_t s = pick_slot(mc, il, [](layer_state &, size_t, int32_t) { return -1.0; }, best).slot;   // free blocks only
-            if (s < 0) {
-                break;
-            }
-            pool_take(mc, il, s);
-            ls.slot_in_flight[s] = true;
-            ls.queued[ids[i]]    = 1;
-            upload_job pj { il, ids[i], s };
-            pj.t_queued = ggml_time_us();
-            mc->todo.push_back(pj);
-            queued++;
+            picks.push_back({ (double) ls.glob_count[ids[i]] / (double) std::max<uint64_t>(1, total), il, ids[i] });   // share of the layer's picks: comparable across layers
         }
+    }
+    std::stable_sort(picks.begin(), picks.end(), [](const pick & a, const pick & b) { return a.heat > b.heat; });
+    for (const auto & pk : picks) {
+        auto & ls = mc->layers[pk.il];
+        double best;
+        const int32_t s = pick_slot(mc, pk.il, [](layer_state &, size_t, int32_t) { return -1.0; }, best).slot;   // free blocks only
+        if (s < 0) {
+            continue;   // this layer's class is full
+        }
+        pool_take(mc, pk.il, s);
+        ls.slot_in_flight[s] = true;
+        ls.queued[pk.e]      = 1;
+        upload_job pj { pk.il, pk.e, s };
+        pj.t_queued = ggml_time_us();
+        mc->todo.push_back(pj);
+        queued++;
     }
     mc->wcv.notify_all();
     return queued;
