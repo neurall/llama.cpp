@@ -1516,10 +1516,45 @@ static void moe_auto_mark_failed() {
 // A CUDA out-of-memory is a GGML_ABORT, not an exception: the process dies and none of the failure handling above ran, so the next start chose the same placement and
 // died the same way, for ever (RTX 4060 Laptop 8 GB, Qwen3.6-35B, b12686: three starts in a row, "CUDA error: out of memory" right after "MoE expert cache enabled").
 // The abort callback records the failed placement with the free VRAM it saw (the other placement is used from the next start on), then the abort goes on.
+static uint32_t g_moe_auto_ub_auto = 0;   // the micro-batch maximum we chose ourselves (0: the user's -ub or none): what a startup out-of-memory halves
+
+// a CUDA out-of-memory while the server is still starting (the compute graph of a big micro-batch on a small card) is a GGML_ABORT: no exception, no retry.
+// Restart this process with half the micro-batch (LLAMA_FORK_UB_CAP, read where the micro-batch is chosen) instead of dying, down to 512; the placement that
+// failed is recorded first, so a later start with a different free VRAM does not repeat it. The user's own -ub is never changed.
 static void moe_auto_abort_cb(const char * msg) {
-    if (msg && strncmp(msg, "CUDA error", 10) == 0) {
-        moe_auto_mark_failed();
+    const bool oom = msg && (strstr(msg, "CUDA error") || strstr(msg, "out of memory"));
+    if (msg) { fprintf(stderr, "%s\n", msg); fflush(stderr); }   // the callback replaces ggml's own print: without this a failed start is silent
+    if (!oom) { return; }
+    moe_auto_mark_failed();
+    const char * tries = getenv("LLAMA_FORK_RETRY");
+    const int    n_try = tries ? atoi(tries) : 0;
+    if (g_moe_auto_ub_auto <= 512 || n_try >= 4) { return; }
+    const std::string cap = std::to_string(g_moe_auto_ub_auto / 2), nt = std::to_string(n_try + 1);
+    fprintf(stderr, "fork: out of memory while starting with micro-batch %u: restarting with %s\n", g_moe_auto_ub_auto, cap.c_str());
+    fflush(stderr);
+#if defined(_WIN32)
+    _putenv_s("LLAMA_FORK_UB_CAP", cap.c_str());
+    _putenv_s("LLAMA_FORK_RETRY", nt.c_str());
+    STARTUPINFOW si = {}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+    std::wstring cmd = GetCommandLineW();
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD code = 1; GetExitCodeProcess(pi.hProcess, &code);
+        ExitProcess(code);
     }
+#else
+    setenv("LLAMA_FORK_UB_CAP", cap.c_str(), 1);
+    setenv("LLAMA_FORK_RETRY", nt.c_str(), 1);
+    std::vector<std::string> args;
+    { std::ifstream f("/proc/self/cmdline", std::ios::binary); std::string a; while (std::getline(f, a, '\0')) { args.push_back(a); } }
+    char exe[4096]; const ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0 && !args.empty()) {
+        exe[n] = 0;
+        std::vector<char *> av; for (auto & a : args) { av.push_back(a.data()); } av.push_back(nullptr);
+        execv(exe, av.data());
+    }
+#endif
 }
 
 // typical agentic coding turn when the command line says nothing (server, chat): the system prompt and tool definitions come from
@@ -1932,6 +1967,12 @@ static void common_moe_cache_auto_impl(common_params & params) {
         if (params.n_ctx > 0) {
             params.n_batch = std::min<uint32_t>(params.n_batch, std::max<uint32_t>(params.n_ctx, ub));
         }
+        if (const char * cap = getenv("LLAMA_FORK_UB_CAP")) {   // set by moe_auto_abort_cb: the previous start of this process ran out of memory at this size
+            ub = std::max<uint32_t>(128, std::min<uint32_t>(ub, (uint32_t) atoi(cap)));
+            params.n_batch = std::min<uint32_t>(params.n_batch, std::max<uint32_t>(2 * ub, 512));
+            LOG_WRN("%s: micro-batch capped to %u after an out-of-memory start\n", __func__, ub);
+        }
+        g_moe_auto_ub_auto = ub;
         params.n_ubatch = ub;
     }
     // leave one core per GPU to drive it (measured on 2 GPUs: 6 of 8 cores beats 8)
