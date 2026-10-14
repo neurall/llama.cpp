@@ -122,6 +122,15 @@ bool cli_context::init() {
         // next start places differently: try again, up to two more times, instead of leaving the user with a crash he would repeat for ever.
         bool ready = false;
         for (int attempt = 0; attempt < 3 && !ready; ++attempt) {
+            if (attempt > 0) {
+                // a start died: load every CUDA kernel at start (not lazily at its first launch, where the missing memory showed up as the out of memory), so the free VRAM the
+                // placement sees is the real one
+#ifdef _WIN32
+                _putenv_s("CUDA_MODULE_LOADING", "EAGER");
+#else
+                setenv("CUDA_MODULE_LOADING", "EAGER", 1);
+#endif
+            }
             server.emplace();
             if (!server->start(params)) {
                 ui::show_error("server start failed");
