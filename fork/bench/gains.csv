@@ -237,3 +237,7 @@ v19-glm-16g-single-game4c,2026-10-14 13:18:28,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,
 v19-glm-16g-single-game4c,2026-10-14 13:18:28,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,game4c,180+220,-dev ?,2,1.2,-dev CUDA1,2,13.8,0.088
 v19-olm-8g-single-game4c,2026-10-14 15:24:49,OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf,game4c,180+220,-dev CUDA1,2,324.1,-dev CUDA1,2,324.1,1
 v19-qwe-8g-single-game4c,2026-10-14 15:27:29,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,game4c,180+220,-dev CUDA1,2,86.6,-dev CUDA1,2,86.6,1
+v25-def-pf4k,2026-10-14 15:59:44,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf4k,180+220,-dev CUDA1,5,2494.9,-dev CUDA1,5,2494.9,1
+v25-def-pf4k,2026-10-14 15:59:44,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf4k,180+220,-dev ?,5,3129.9,-dev CUDA1,5,2494.9,1.255
+v25-def-game4c,2026-10-14 16:01:58,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,game4c,180+220,-dev CUDA1,5,87,-dev CUDA1,5,87,1
+v25-off-pf4k,2026-10-14 16:04:05,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf4k,180+220,-dev CUDA1,5,2562,-dev CUDA1,5,2562,1

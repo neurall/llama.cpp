@@ -29,6 +29,8 @@ ROWS = {
  "olmoe-game":  ("/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf", "1kout_make_game", "", "plan99", "stock-b11574-8bb3cf0d2", ""),
 }
 # the 8 GB laptop rows are llama-cli on Windows (N:\\smallcard8 = b12843, N:\\stock-de7fa0a3c = b11514), prompts p10.txt / p12k.txt / p40k.txt / p125k.txt are the first N tokens of fork/bench/src_128k.cpp
+Q2 = {"q2-cpu": "PC2 (Ryzen 5 3600), llama-cli -dev none -ngl 0: stock 05af0d2b1 (b11302) against release b11648, qwen36.gguf = Qwen3.6-35B-A3B Q2_0, `cli-t100` (file no longer on disk)",
+      "q2-laptop": "W10 laptop (4060 8 GB), llama-cli: stock b5cf8ce02 (b11261) against release b11648, same file, `cli-t100` (file no longer on disk)"}
 LAPTOP = {"laptop-17": ("p10.txt", 2048), "laptop-12k": ("p12k.txt", 14336), "laptop-40k": ("p40k.txt", 46000), "laptop-125k": ("p125k.txt", 131072)}
 def command(i):
     if i in LAPTOP:
@@ -39,6 +41,8 @@ def command(i):
     return [f'python3 fork/run.py bench --models {m} --builds {fk},{st} --variant "v={var}" --variants v -t {t} -n 3']
 def md():
     out = ["# Reproducing the README rows", "", __doc__.strip().split("\n\n")[0], ""]
+    for i in list(Q2):
+        out += [f'<a id="{i}"></a>', f"## {i}", "", Q2[i], ""]
     for i in list(ROWS) + list(LAPTOP):
         out += [f'<a id="{i}"></a>', f"## {i}", ""]
         if i in ROWS and ROWS[i][5]: out += [ROWS[i][5], ""]
