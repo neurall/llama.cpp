@@ -1842,71 +1842,19 @@ static void common_moe_cache_auto_impl(common_params & params) {
             mode = "stock";
             LOG_INF("%s: MoE placement: stock (the cache cannot fit: about %.1f GiB for the non-expert weights, KV cache and compute buffers > free VRAM %.1f GiB)\n", __func__,
                 cache_need / 1073741824.0, vram_free / 1073741824.0);
-        } else if ((st.n >= 2 && ca.n >= 2) || (st.n >= 1 && ca.n >= 1 && moe_auto_clear_gap(st, ca, params))) {
-            // both placements measured on at least two runs (the first of each may be cold), or once each when one of them wins this
-            // request by more than 10%: decide for this request
-            mode = moe_auto_decide_for(st, ca, params, path, decided);
-            // while the cache wins, stock is measured again when the cache lost its edge: the last cache run was slower than the cache's own median by more than
-            // the noise bar (a changed machine, a lucky first run, a browser eating VRAM bandwidth). Decided at every start, a trial at most once in three starts.
-            {
-                std::string sec, pre; moe_auto_split(path, sec, pre);
-                char b[32] = {0};
-                int since = llama_state_get(sec.c_str(), (pre + ".since").c_str(), b, sizeof b) ? atoi(b) : 0;
-                const double bar = std::max(0.05, std::max(moe_auto_noise(st), moe_auto_noise(ca)));
-                const double off_g = (ca.last_g > 0 && ca.g_ms > 0) ? ca.last_g / ca.g_ms - 1.0 : 0.0;
-                const double off_p = (ca.last_p > 0 && ca.p_ms > 0) ? ca.last_p / ca.p_ms - 1.0 : 0.0;
-                // only stock is re-measured: it cannot be slower than stock, while another try of a losing cache could. The trigger is the time per
-                // generated token; the time per prompt token only past three noise bars, since it moves with the prompt length and the prompt options
-                // (passes, the split): the old trigger on it fired on 3 of about 8 starts of a benchmark that varied them (2026-10-14). Never with a layer
-                // split of the user's (-ts): stock places the experts by it and did not fit (Qwen3.8-Flash-Next at -ts 50,50: 27.8 GB on one card, the
-                // start failed and the server exited).
-                const bool user_ts = std::any_of(params.tensor_split, params.tensor_split + llama_max_devices(), [](float x) { return x != 0.0f; });
-                // 2026-10-15: the prompt trigger is gone. A re-measure of stock is a user-visible run on the slower placement (Qwen3.8-Flash-Next 8k: 556 prompt t/s
-                // against 1500 to 1580 with the cache and the split), and the time per prompt token moves with the split, the pass plan and the prompt length,
-                // so a "95% slower than the median" reading was noise or an older plan. Only the decode rate, which none of those change, triggers a trial.
-                (void) off_p;
-                static const bool retrial = [] { const char * e = getenv("LLAMA_FORK_STOCK_RETRIAL"); return e && atoi(e) != 0; }();   // off: a trial is a user run on the placement known to be slower
-                if (retrial && mode == "cache" && since >= 2 && !user_ts && off_g > bar) {
-                    mode = "stock"; since = 0;
-                    LOG_INF("%s: MoE placement: re-measuring stock this run (the last cache run was %.0f%% slower per %s token than its median, noise bar %.0f%%)\n", __func__,
-                        100.0 * std::max(off_g, off_p), off_g >= off_p ? "generated" : "prompt", 100.0 * bar);
-                } else {
-                    since = mode == "cache" ? since + 1 : 0;
-                }
-                llama_state_set(sec.c_str(), (pre + ".since").c_str(), std::to_string(since).c_str());
-            }
-            g_moe_auto_np = moe_auto_p_known(st, ca) ? moe_auto_est_prompt(params) : 0.0;
-            g_moe_auto_ng = moe_auto_est_gen(params);
-            // keep recording this placement: a cold first run (page cache, mmap) is replaced by any faster later run
-            g_moe_auto_file = path;
-            g_moe_auto_mode = mode;
-            LOG_INF("%s: MoE placement: %s (measured: stock %.2f/%.2f, cache %.2f/%.2f ms per prompt/generated token; %s)\n", __func__,
-                mode.c_str(), st.p_ms, st.g_ms, ca.p_ms, ca.g_ms, path.c_str());
         } else {
-            // first run, nothing measured yet (PC1 IQ3_S 83 GB on one 24 GB GPU: stock 23.6 vs cache 42-49 t/s): the cache when the model is clearly bigger than the free VRAM (PC1 IQ1_M 54 GB on 2 x 24 GB: stock 108.9/60.4 vs cache 80.4/54.4 prompt/gen t/s); a prompt of thousands of tokens starts with stock, where the cache's slow prompt
-            // processing costs more than its faster generation gains; the measured runs then keep stock only where it is faster)
-            // first start: the cache when the model is clearly bigger than the free VRAM (under ~80% of it fits: the cache won on every such model measured, 1.2x
-            // to 2.4x on MiMo, GLM and Qwen Next, and records that never get written leave it on the usual winner), stock near the fit line (Qwen Next IQ1_M,
-            // 87% in VRAM: a tie). The other placement is measured on the next start and kept only when it wins by more than the noise bar.
+            // 2026-10-15 (user: "stored stock or cache is bad design, remove it"): the placement is a static rule, not a comparison of stored per-token
+            // times. Those times moved with the prompt length, the split and the pass plan, so the same build on the same model landed on stock (a third of
+            // the speed) on some starts and on the cache on others, and the numbers a first benchmark sees depended on what the state file held.
+            // Rule: the cache when the model is clearly bigger than the free VRAM (it won 1.2x to 2.4x on every such model measured, and stock may not even
+            // start there), stock when it fits or is near the fit line. A start that could not happen is still remembered (st_failed / ca_failed above).
+            // --moe mode=stock|cache decides by hand.
             const bool clearly_bigger = (double) model_size > 1.25 * (double) vram_free;
-            const std::string first = clearly_bigger ? "cache" : "stock";
-            // nothing is assumed from the model's size: both placements are measured on real requests (the cache first when the model is
-            // clearly bigger than the free VRAM, it wins there on every measured model; stock first otherwise), one run each when the gap is clear
-            // measuring: the placement with fewer recorded runs (ties: the first), so each gets two runs before it decides
-            mode = st.n == ca.n ? first : (st.n < ca.n ? "stock" : "cache");
-            // Only until the cache has its two recorded runs: after that stock is measured too (once, 2 runs) and the faster placement per request wins. Before, stock was never
-            // tried on such a model and a cache that was slower per prompt token than stock (RTX 4060 Laptop 8 GB, Qwen3.6-35B: 35 prompt t/s against 43) stayed for ever.
-            // A stock start that cannot happen is recorded as failed (moe_auto_mark_failed) and the cache stays.
-            if (clearly_bigger && mode == "stock" && ca.n < 2) {
-                // not for a model clearly bigger than the free VRAM: the cache won 1.2x to 2.4x on every one measured, and the stock placement may not even start there
-                // (MiMo 132 GB and GLM 3.5-bit on 2 x 24 GB: cudaMalloc of a 27 GiB layer buffer fails, the second start of every new state died); the stock arm of a
-                // comparison is the stock build, or --moe mode=stock
-                mode = "cache";
-            }
-            g_moe_auto_file = path;
+            mode = clearly_bigger ? "cache" : "stock";
+            g_moe_auto_file = path;   // the run is still recorded (for the failed-start memory and for reading by hand), never read to decide
             g_moe_auto_mode = mode;
-            LOG_INF("%s: MoE placement: measuring %s this run (stock %d runs, cache %d runs recorded; both need 2 before the faster one is kept%s; %s)\n", __func__,
-                mode.c_str(), st.n, ca.n, clearly_bigger && ca.n < 2 ? "; stock is tried after the cache has 2 runs" : "", path.c_str());
+            LOG_INF("%s: MoE placement: %s (static rule: model %.1f GiB, free VRAM %.1f GiB; --moe mode=stock|cache decides by hand; %s)\n", __func__,
+                mode.c_str(), model_size / 1073741824.0, vram_free / 1073741824.0, path.c_str());
         }
         use_cache = mode != "stock";
         if (!g_moe_auto_mode.empty()) {
