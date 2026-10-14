@@ -1,4 +1,0 @@
-unrecognised option '--sampling-frequency=8000'
-
-usage: nsys profile [<args>] [application] [<application args>]
-Try 'nsys profile --help' for more information.

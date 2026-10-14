@@ -1,74 +1,0 @@
-0.00.001.164 I srv  llama_server: initializing ...
-0.00.262.080 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
-0.00.262.460 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
-0.00.264.365 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
-ggml_cuda_host_malloc_registered: 3.7 GiB populated in 0.2 s (3.0 reserved 1024 MiB pages, 0.7 THP, 0.0 small)
-ggml_cuda_host_malloc_registered: registered in 0.2 s
-0.03.269.351 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
-0.03.321.083 I cmn          init: llama threadpool init, n_threads = 8
-0.03.390.674 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
-0.03.390.680 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/11, cross-card-fallback 0/99, expert-ids-read 0/0, d2h 0/16, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
-0.03.415.716 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
-0.03.415.722 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/22, cross-card-fallback 2/198, expert-ids-read 0/0, d2h 0/32, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
-0.03.416.426 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 4096, kv_unified = 'true'
-0.03.418.695 I srv  llama_server: model loaded
-0.03.418.701 I srv  llama_server: listening on http://127.0.0.1:8099
-0.04.143.076 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
-0.04.143.122 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
-0.04.235.230 W sync-wait 5727 us at site 9: input ffn_moe_topk-0, from CUDA0 to CUDA1 abs 128711033910
-0.04.243.411 W sync-wait 2482 us at site 9: input ffn_inp-0, from CUDA0 to CUDA1 abs 128711045340
-0.04.258.690 W sync-wait 7697 us at site 9: input ffn_norm-1 (reshaped), from CUDA0 to CUDA1 abs 128711055404
-0.04.268.711 W sync-wait 9844 us at site 9: input ffn_moe_topk-1, from CUDA0 to CUDA1 abs 128711063275
-0.04.276.737 W sync-wait 7806 us at site 9: input ffn_moe_weights-1, from CUDA0 to CUDA1 abs 128711073342
-0.04.286.313 W sync-wait 8448 us at site 9: input l_out-1, from CUDA1 to CUDA0 abs 128711082276
-0.04.294.792 W sync-wait 7991 us at site 9: input ffn_norm-2 (reshaped), from CUDA0 to CUDA1 abs 128711091212
-0.04.304.734 W sync-wait 9774 us at site 9: input ffn_moe_topk-2, from CUDA0 to CUDA1 abs 128711099371
-0.04.311.488 W sync-wait 6595 us at site 9: input ffn_moe_weights-2, from CUDA0 to CUDA1 abs 128711109304
-0.04.320.951 W sync-wait 8414 us at site 9: input l_out-2, from CUDA1 to CUDA0 abs 128711116947
-0.04.329.312 W sync-wait 7890 us at site 9: input ffn_norm-3 (reshaped), from CUDA0 to CUDA1 abs 128711125826
-0.04.339.246 W sync-wait 9689 us at site 9: input ffn_moe_topk-3, from CUDA0 to CUDA1 abs 128711133968
-0.04.343.177 W sync-wait 3682 us at site 9: input ffn_moe_weights-3, from CUDA0 to CUDA1 abs 128711143906
-0.04.345.215 W sync-wait 2013 us at site 9: input ffn_inp-3, from CUDA0 to CUDA1 abs 128711147613
-0.04.353.897 W sync-wait 8412 us at site 9: input l_out-3, from CUDA1 to CUDA0 abs 128711149897
-0.04.362.235 W sync-wait 7827 us at site 9: input ffn_norm-4 (reshaped), from CUDA0 to CUDA1 abs 128711158820
-0.04.372.277 W sync-wait 9872 us at site 9: input ffn_moe_topk-4, from CUDA0 to CUDA1 abs 128711166816
-0.04.380.326 W sync-wait 7890 us at site 9: input ffn_moe_weights-4, from CUDA0 to CUDA1 abs 128711176847
-0.04.389.759 W sync-wait 8371 us at site 9: input l_out-4, from CUDA1 to CUDA0 abs 128711185799
-0.04.398.272 W sync-wait 8075 us at site 9: input ffn_norm-5 (reshaped), from CUDA0 to CUDA1 abs 128711194607
-0.04.408.299 W sync-wait 9849 us at site 9: input ffn_moe_topk-5, from CUDA0 to CUDA1 abs 128711202861
-0.04.415.057 W sync-wait 6594 us at site 9: input ffn_moe_weights-5, from CUDA0 to CUDA1 abs 128711212874
-0.04.424.528 W sync-wait 8417 us at site 9: input l_out-5, from CUDA1 to CUDA0 abs 128711220522
-0.04.432.906 W sync-wait 7931 us at site 9: input ffn_norm-6 (reshaped), from CUDA0 to CUDA1 abs 128711229386
-0.04.442.943 W sync-wait 9868 us at site 9: input ffn_moe_topk-6, from CUDA0 to CUDA1 abs 128711237486
-0.04.449.735 W sync-wait 6611 us at site 9: input ffn_moe_weights-6, from CUDA0 to CUDA1 abs 128711247535
-0.04.459.213 W sync-wait 8439 us at site 9: input l_out-6, from CUDA1 to CUDA0 abs 128711255186
-0.04.467.634 W sync-wait 7948 us at site 9: input ffn_norm-7 (reshaped), from CUDA0 to CUDA1 abs 128711264096
-0.04.477.615 W sync-wait 9802 us at site 9: input ffn_moe_topk-7, from CUDA0 to CUDA1 abs 128711272224
-0.04.485.714 W sync-wait 7931 us at site 9: input ffn_moe_weights-7, from CUDA0 to CUDA1 abs 128711282193
-0.04.495.228 W sync-wait 8431 us at site 9: input l_out-7, from CUDA1 to CUDA0 abs 128711291208
-0.04.503.790 W sync-wait 8113 us at site 9: input ffn_norm-8 (reshaped), from CUDA0 to CUDA1 abs 128711300088
-0.04.513.803 W sync-wait 9847 us at site 9: input ffn_moe_topk-8, from CUDA0 to CUDA1 abs 128711308367
-0.04.520.320 W sync-wait 6362 us at site 9: input ffn_moe_weights-8, from CUDA0 to CUDA1 abs 128711318369
-0.04.527.232 W sync-wait 5827 us at site 1: input inp_pos, from CPU to CUDA1 abs 128711325816
-0.04.604.606 W sync-wait 61440 us at site 1: input out_ids, from CPU to CUDA1 abs 128711347573
-0.04.614.546 W pf-stats (1 tokens, 3 slots, prefetch on): 57 splits, prefetch fired for 45; not staged: no inputs 1, first node not MUL_MAT_ID 147, weight not an input 24, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
-0.04.614.551 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 67/33, cross-card-fallback 11/207, expert-ids-read 0/0, d2h 8/33, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
-0.04.636.538 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
-0.04.636.546 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 67/44, cross-card-fallback 12/261, expert-ids-read 0/0, d2h 8/49, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
-0.04.657.867 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
-0.04.657.874 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 67/55, cross-card-fallback 12/315, expert-ids-read 0/0, d2h 9/65, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
-0.04.674.518 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
-0.04.674.525 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 67/66, cross-card-fallback 13/369, expert-ids-read 0/0, d2h 11/81, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
-0.04.674.812 I slot print_timing: id  3 | task 0 | prompt eval time =     471.92 ms /  3434 tokens (    0.14 ms per token,  7276.64 tokens per second)
-0.04.674.814 I slot print_timing: id  3 | task 0 |        eval time =      59.72 ms /     4 tokens (   19.91 ms per token,    50.23 tokens per second)
-0.04.674.814 I slot print_timing: id  3 | task 0 |       total time =     531.64 ms /  3438 tokens
-0.04.674.817 I slot print_timing: id  3 | task 0 |    graphs reused =          3
-0.04.674.834 I slot print_timing: id  3 | task 0 |        moe cache = off
-0.04.674.836 I slot print_timing: id  3 | task 0 |          threads = 4 decode / 8 batch, batch 4096, ubatch 4096
-0.04.675.018 I slot      release: id  3 | task 0 | stop processing: n_tokens = 3437, truncated = 0
-0.05.175.480 I srv    operator(): operator(): cleaning up before exit...
-Collecting data...
-Generating '/tmp/nsys-report-90ae.qdstrm'
-[1/1] [0%                          ] ol2n.nsys-rep[1/1] [0%                          ] ol2n.nsys-rep[1/1] [===22%                      ] ol2n.nsys-rep[1/1] [====28%                     ] ol2n.nsys-rep[1/1] [======34%                   ] ol2n.nsys-rep[1/1] [========40%                 ] ol2n.nsys-rep[1/1] [=========43%                ] ol2n.nsys-rep[1/1] [==============62%           ] ol2n.nsys-rep[1/1] [================71%         ] ol2n.nsys-rep[1/1] [========================100%] ol2n.nsys-rep[1/1] [========================100%] ol2n.nsys-rep
-Generated:
-	/p/bw/data/q5h/nsys/ol2n.nsys-rep

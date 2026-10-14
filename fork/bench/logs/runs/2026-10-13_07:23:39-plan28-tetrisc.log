@@ -1,45 +1,0 @@
-0.00.001.155 I srv  llama_server: initializing ...
-0.00.256.947 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
-0.00.257.335 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
-0.00.259.237 I srv    load_model: loading model '/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf'
-0.00.610.885 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 0 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf 117481680096place.g2.6b6844dc.v3)
-0.00.610.995 I common_moe_cache_auto_impl: ubatch 2048: experts stream from RAM, the compute alias lends the graph (maximum = context, lowered to what the pool can lend; prompt passes are sized per request)
-0.00.610.999 I common_moe_cache_auto_impl: MoE model (109.4 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 2048, ubatch 2048, threads 6, weights pinned (settings you pass win)
-0.01.831.063 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
-0.01.831.067 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
-ggml_cuda_host_malloc_registered: 100.5 GiB populated in 6.4 s (100.0 reserved 1024 MiB pages, 0.5 THP, 0.0 small)
-ggml_cuda_host_malloc_registered: registered in 2.6 s
-0.42.766.785 I common_init_result: weights pinned (swapped 0.0 GiB while loading, 11.5 GiB RAM left)
-0.42.929.796 I cmn          init: llama threadpool init, n_threads = 6
-0.43.242.156 W moe-cache: 5 expert layers cached on CUDA0 (CUDA0), upload link slower
-0.43.242.165 W moe-cache: 37 expert layers cached on CUDA1 (CUDA1), upload link fastest
-0.43.266.262 W moe-cache: block pool on CUDA0: 5 layers, 17566.7 MiB, size classes: 861 x 13.50 MiB (3 layers), 574 x 10.31 MiB (2 layers); no blocks reserved per layer
-0.43.305.485 W moe-cache: block pool on CUDA1: 37 layers, 15296.4 MiB, size classes: 52 x 10.31 MiB (1 layers), 1872 x 7.88 MiB (36 layers); no blocks reserved per layer
-0.43.307.002 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
-0.44.105.747 W moe-cache: probe: links alone link 0 24.5 link 1 5.7 GB/s; CPU threads:GB/s alone/with links 1:26.0/44.0 2:41.7/45.2 3:41.6/45.0 4:39.7/45.0 -> CPU 41.7 GB/s (saturated by 2 threads), RAM budget 45.2 GB/s
-0.44.105.786 W moe-cache: 5 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
-0.44.105.813 W operator(): MoE expert cache enabled: 42 layers, slots/layer 52..1872, 2 inserts/step, 1734227.4 MiB device memory
-1.28.885.651 W moe-cache: max-batch auto = 128 (timed batches, cache path c / streamed s: c16=874ms c64=2202ms c128=3130ms s64=2434ms s128=4322ms s256=4400ms s512=4580ms)
-1.28.885.850 W moe_probe_costs_fork: cache-path probe took 44.6 s
-1.29.041.871 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 2048, kv_unified = 'false'
-1.29.062.378 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
-1.29.062.415 I srv  llama_server: model loaded
-1.29.062.421 I srv  llama_server: listening on http://127.0.0.1:8099
-1.29.187.252 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
-1.29.187.295 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
-1.37.056.819 I slot print_timing: id  0 | task 0 | n_gen =    100, tg =  15.09 t/s, tg_3s =  15.24 t/s
-1.38.241.922 I slot print_timing: id  0 | task 0 | prompt eval time =    1307.39 ms /    19 tokens (   68.81 ms per token,    14.53 tokens per second)
-1.38.241.927 I slot print_timing: id  0 | task 0 |        eval time =    7747.21 ms /   120 tokens (   65.10 ms per token,    15.36 tokens per second)
-1.38.241.928 I slot print_timing: id  0 | task 0 |       total time =    9054.60 ms /   139 tokens
-1.38.241.931 I slot print_timing: id  0 | task 0 |    graphs reused =        125
-1.38.241.984 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 56.4% this request / 52.1% overall, 42..250 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
-1.38.241.988 I slot print_timing: id  0 | task 0 |        moe churn = 5438 uploads, 4629 evictions, 49737.4 MiB uploaded (this request)
-1.38.241.990 I slot print_timing: id  0 | task 0 |          threads = 4 decode / 6 batch, batch 2048, ubatch 2048
-1.38.242.054 I slot      release: id  0 | task 0 | stop processing: n_tokens = 138, truncated = 0
-1.39.246.412 I srv    operator(): operator(): cleaning up before exit...
-1.39.248.470 W moe-cache: steps=138 hits=98050 misses=90110 hit-rate=52.1%, prefill experts from cache 26598/201330, kept from prefill 2345
-Collecting data...
-Generating '/tmp/nsys-report-acaa.qdstrm'
-[1/1] [0%                          ] par-split.nsys-rep[1/1] [0%                          ] par-split.nsys-rep[1/1] [0%                          ] par-split.nsys-rep[1/1] [=17%                        ] par-split.nsys-rep[1/1] [=16%                        ] par-split.nsys-rep[1/1] [=15%                        ] par-split.nsys-rep[1/1] [14%                         ] par-split.nsys-rep[1/1] [13%                         ] par-split.nsys-rep[1/1] [===23%                      ] par-split.nsys-rep[1/1] [===22%                      ] par-split.nsys-rep[1/1] [==21%                       ] par-split.nsys-rep[1/1] [==20%                       ] par-split.nsys-rep[1/1] [====25%                     ] par-split.nsys-rep[1/1] [===24%                      ] par-split.nsys-rep[1/1] [===23%                      ] par-split.nsys-rep[1/1] [===22%                      ] par-split.nsys-rep[1/1] [==21%                       ] par-split.nsys-rep[1/1] [==20%                       ] par-split.nsys-rep[1/1] [==21%                       ] par-split.nsys-rep[1/1] [===22%                      ] par-split.nsys-rep[1/1] [===23%                      ] par-split.nsys-rep[1/1] [===24%                      ] par-split.nsys-rep[1/1] [====25%                     ] par-split.nsys-rep[1/1] [====26%                     ] par-split.nsys-rep[1/1] [====27%                     ] par-split.nsys-rep[1/1] [====28%                     ] par-split.nsys-rep[1/1] [=====29%                    ] par-split.nsys-rep[1/1] [=====30%                    ] par-split.nsys-rep[1/1] [=====31%                    ] par-split.nsys-rep[1/1] [=====32%                    ] par-split.nsys-rep[1/1] [======33%                   ] par-split.nsys-rep[1/1] [======34%                   ] par-split.nsys-rep[1/1] [======35%                   ] par-split.nsys-rep[1/1] [=======36%                  ] par-split.nsys-rep[1/1] [=======37%                  ] par-split.nsys-rep[1/1] [=======38%                  ] par-split.nsys-rep[1/1] [=======39%                  ] par-split.nsys-rep[1/1] [========40%                 ] par-split.nsys-rep[1/1] [========41%                 ] par-split.nsys-rep[1/1] [========42%                 ] par-split.nsys-rep[1/1] [=========43%                ] par-split.nsys-rep[1/1] [=========44%                ] par-split.nsys-rep[1/1] [=========45%                ] par-split.nsys-rep[1/1] [=========46%                ] par-split.nsys-rep[1/1] [==========47%               ] par-split.nsys-rep[1/1] [==========48%               ] par-split.nsys-rep[1/1] [==========49%               ] par-split.nsys-rep[1/1] [===========50%              ] par-split.nsys-rep[1/1] [===========51%              ] par-split.nsys-rep[1/1] [===========52%              ] par-split.nsys-rep[1/1] [===========53%              ] par-split.nsys-rep[1/1] [============54%             ] par-split.nsys-rep[1/1] [============55%             ] par-split.nsys-rep[1/1] [============56%             ] par-split.nsys-rep[1/1] [============57%             ] par-split.nsys-rep[1/1] [=============58%            ] par-split.nsys-rep[1/1] [=============59%            ] par-split.nsys-rep[1/1] [=============60%            ] par-split.nsys-rep[1/1] [==============61%           ] par-split.nsys-rep[1/1] [==============62%           ] par-split.nsys-rep[1/1] [==============63%           ] par-split.nsys-rep[1/1] [==============64%           ] par-split.nsys-rep[1/1] [===============65%          ] par-split.nsys-rep[1/1] [===============66%          ] par-split.nsys-rep[1/1] [===============67%          ] par-split.nsys-rep[1/1] [========================100%] par-split.nsys-rep[1/1] [========================100%] par-split.nsys-rep
-Generated:
-	/p/bw/data/q5h/nsys/par-split.nsys-rep
