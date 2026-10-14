@@ -87,6 +87,19 @@ The 4-8% are inside this laptop's run-to-run noise (stock itself measured 270, 3
 ¶ **Known gap:** a model that fits entirely in VRAM runs 0-4% slower on decode and 7-13% slower on prompt than stock (fork overhead on a path that has nothing to cache or to split).
 The fix is queued: models that fit leave every fork hook, so the path is stock's.
 
+**CPU only** (Ryzen, 12 cores, 60 GB RAM, clang, no GPU, `-dev none`, 3 runs each, each build on its defaults). Stock = upstream master 37d6d653e (b11631).
+There is nothing to cache or to split without a GPU, so this is the same-speed check, not a gain table; the CPU archives of the release are the same binaries without the CUDA backend.
+
+| model, cell | builds stock fork | pp: stock / **fork** | t/s: stock / **fork** |
+|---|---|---|---|
+| OLMoE Q4_K_M, short prompt | b11631 b13086 (merged tree) | 144<br>**145** | 47.6<br>**48.0** |
+| OLMoE Q4_K_M, 1k edit | b11631 b12844 (release) | 198<br>**184** (0.93x) | 36.7<br>**36.1** (0.98x) |
+| OLMoE Q4_K_M, 1k edit | b11631 b13086 (merged tree) | 198<br>**196** | 36.7<br>**33.5** (0.91x) |
+| Qwen3.8-27B IQ3_S, short prompt | b11631 b13086 (merged tree) | 5.8<br>**6.0** | 1.7<br>**1.8** |
+| Qwen3.8-27B IQ3_S, 1k edit | b11631 b13086 (merged tree) | 10.2<br>**10.3** | 1.7<br>**1.8** |
+
+Two open items from this table: the release is 7% slower on prompt on CPU, and the merged tree is 9% slower on decode after a 1k prompt (neither `autotune=0` nor `--fork off` changes it).
+
 **Fixed in this release:** a clean start on small cards. The previous release crashed with "CUDA error: out of memory" at the first kernel on an 8 GB laptop for models larger than VRAM (the cache pool was sized
 from the whole model, then the compute buffer of a context-sized micro-batch did not fit). Now the pool is counted once, a 512 MiB / 8% margin is kept on cards of 12 GiB and less, the scheduler no longer reserves 12 GB of
 split bookkeeping at a 14k-token micro-batch (which Windows refused), and a start that still runs out of memory restarts itself with half the micro-batch.
