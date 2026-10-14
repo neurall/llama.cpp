@@ -1345,8 +1345,26 @@ READY_MAX = int(os.environ.get("PERF_READY_MAX", "1800"))        # seconds from 
 PIN_ATTEMPTS = int(os.environ.get("PERF_PIN_ATTEMPTS", "3"))
 
 
+def _pin_flag_needed(build, args):
+    """Measurements of our builds always run with the weights pinned (user 2026-10-14: "always pinned when measuring our builds, even the CLI"): the fork's own auto rule
+    pins only for llama-server (and llama-cli since the CLI sets auto_pin), and only when the model fits the RAM available, so a harness run could silently be an mmap run
+    (a different cell: pageable uploads). Unless the cell names a load mode itself or the model is bigger than the available RAM (then the engine's hybrid pin budget
+    decides), `--load-mode pin` is added for every non-stock build."""
+    if build.startswith("stock") or "--load-mode" in args or "-lm" in args:
+        return False
+    try:
+        import glob as _g
+        size = sum(os.path.getsize(f) for f in _g.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", MODEL))) if MODEL and os.path.exists(MODEL) else 0
+        avail = int(re.search(r"MemAvailable:\s+(\d+)", open("/proc/meminfo").read()).group(1)) * 1024
+        return 0 < size < avail
+    except Exception:
+        return False
+
+
 def server_start(build, env, args):
     """a server that bails with exit code 75 (the engine's [PIN_STALL]: pinning the weights stalled) is started again, three attempts in all; then this run.py exits"""
+    if _pin_flag_needed(build, list(args)):
+        args = list(args) + ["--load-mode", "pin"]
     for attempt in range(1, PIN_ATTEMPTS + 1):
         try:
             return _server_start_once(build, env, args)
@@ -2480,6 +2498,8 @@ def push_prompt(m, name, text):
 def remote_run(m, build, test, args, env=None):
     """The CLI version of a test (llama-cli, one prompt, greedy): what most people run. Returns a row like run_one."""
     exe, win = remote_exe(m, build), m["win"]
+    if not build.startswith("stock") and "--load-mode" not in args and "-lm" not in args:
+        args = f"{args} --load-mode pin".strip()   # pinned weights for every measured run of our builds, the CLI too
     envp = "".join((f"set {k}={v}&& " if win else f"{k}={v} ") for k, v in (env or {}).items())  # variant environment (env: words)
     if test in ("ppl", "ppl3", "pplb", "pplc"):  # the precise decode comparator on that machine: llama-perplexity, one token per call, longsrc.cpp (copy it to <root>\\<build>\\longsrc.cpp)
         sep = "\\" if win else "/"
