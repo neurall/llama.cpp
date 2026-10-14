@@ -72,6 +72,12 @@ struct llama_context {
     bool moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size_t need, size_t cap);
     void moe_probe_costs_fork();   // --moe max-batch=auto: timed cache-path batches at the first decode
     std::vector<llama_moe_alias_buf_fork> moe_alias_bufs;
+    // --moe mirror-pool: the dense split's copies live at the start of the pool buffers; graphs that split are placed behind them (moe_mirror_offsets, before a
+    // graph is placed), and the copies are filled again after the region was reused (moe_mirror_fill, after the pool lent the blocks)
+    void moe_mirror_offsets();
+    void moe_mirror_fill();
+    std::vector<size_t> moe_alias_off;   // per pool buffer: where the scheduler places graphs now
+    bool moe_mirrors_placed = false;
 
     void synchronize();
 

@@ -120,6 +120,10 @@ bool llama_moe_cache_swap_layers_fork(int il_a, int il_b);
 // compute alias (--moe alias=1): the pool buffers whose first blocks the scheduler may use for its compute graphs, and the bytes it may use
 struct llama_moe_alias_buf_fork { ggml_backend_buffer_t buf; ggml_backend_dev_t dev; size_t capacity; };
 std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork();
+// --moe mirror-pool: the dense split's copies at the start of dev's pool (the pass planner keeps room), and per graph where its tensors start (behind them
+// when it splits, else 0); the lent range covers the copies too
+void llama_moe_cache_alias_mirror_fork(ggml_backend_dev_t dev, size_t bytes);
+void llama_moe_cache_alias_offset_fork(ggml_backend_dev_t dev, size_t off);
 // after a graph is allocated, before its inputs are set: lend the blocks it reaches to it (evict their experts)
 void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens);
 // after a worst-case reserve with the alias: does the graph (+ CUDA scratch) fit in the lent blocks, and the prefetch staging slots too? need / cap in bytes

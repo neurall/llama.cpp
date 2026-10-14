@@ -1066,12 +1066,76 @@ void llama_context::apply_moe_alias() {
         }
         ggml_backend_sched_set_prefetch_experts_slots(sched.get(), n);
     }
-    for (const auto & ab : moe_alias_bufs) {
+    // a new scheduler reserves its worst case: a pass that splits (behind the dense split's copies, --moe mirror-pool) when the split may be used
+    moe_alias_off.assign(moe_alias_bufs.size(), 0);
+    for (size_t i = 0; i < moe_alias_bufs.size(); ++i) {
+        const auto & ab = moe_alias_bufs[i];
+        const size_t off = std::min(ab.capacity, llama_dsplit_mirror_offset_fork(model, ab.dev, true));
+        moe_alias_off[i] = off;
+        llama_moe_cache_alias_offset_fork(ab.dev, off);
         for (auto & be : backends) {
             if (ggml_backend_get_device(be.get()) == ab.dev) {
-                ggml_backend_sched_set_external_buffer(sched.get(), be.get(), ab.buf, 0, ab.capacity);
+                ggml_backend_sched_set_external_buffer(sched.get(), be.get(), ab.buf, off, ab.capacity - off);
             }
         }
+    }
+}
+
+// --moe mirror-pool, before a graph is placed: a pass that splits goes behind the dense split's copies in each card's pool, any other graph to the start
+// of the pool (over the copies, which are then gone). A change only costs the allocator a new placement plan of that graph, nothing is allocated or freed.
+void llama_context::moe_mirror_offsets() {
+    for (size_t i = 0; i < moe_alias_bufs.size() && i < moe_alias_off.size(); ++i) {
+        const auto & ab = moe_alias_bufs[i];
+        const size_t off = std::min(ab.capacity, llama_dsplit_mirror_offset_fork(model, ab.dev, false));
+        if (off == 0) {
+            llama_dsplit_mirror_invalidate_fork(model, ab.dev);
+        }
+        if (off == moe_alias_off[i]) {
+            continue;
+        }
+        moe_alias_off[i] = off;
+        llama_moe_cache_alias_offset_fork(ab.dev, off);
+        for (auto & be : backends) {
+            if (ggml_backend_get_device(be.get()) == ab.dev) {
+                ggml_backend_sched_set_external_buffer(sched.get(), be.get(), ab.buf, off, ab.capacity - off);
+            }
+        }
+    }
+}
+
+// --moe mirror-pool, after the pool lent this graph its blocks: copies that the region lost since they were last filled are copied in again from the cards
+// that hold the originals (card to card). The graph runs only after this on the receiving card's stream.
+void llama_context::moe_mirror_fill() {
+    for (const auto & ab : moe_alias_bufs) {
+        const auto todo = llama_dsplit_mirror_take_upload_fork(model, ab.dev);
+        if (todo.empty()) {
+            continue;
+        }
+        ggml_backend_t bd = nullptr;
+        for (auto & be : backends) {
+            if (ggml_backend_get_device(be.get()) == ab.dev) { bd = be.get(); }
+        }
+        const int64_t t0 = ggml_time_us();
+        size_t bytes = 0;
+        for (const auto & pr : todo) {
+            ggml_backend_dev_t ds = pr.first->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(pr.first->buffer)) : nullptr;
+            ggml_backend_t bs = nullptr;
+            for (auto & be : backends) {
+                if (ggml_backend_get_device(be.get()) == ds) { bs = be.get(); }
+            }
+            if (bs != nullptr && bd != nullptr) {
+                ggml_backend_tensor_copy_async(bs, bd, pr.first, pr.second);
+            } else {
+                ggml_backend_tensor_copy(pr.first, pr.second);
+            }
+            bytes += ggml_nbytes(pr.first);
+        }
+        ggml_backend_sched_synchronize(sched.get());
+        for (auto & be : backends) {
+            ggml_backend_synchronize(be.get());
+        }
+        LLAMA_LOG_INFO("%s: dense split: %.1f MiB of copies filled on %s in %.0f ms (pool blocks lent to this prompt)\n", __func__, bytes / 1048576.0,
+                ggml_backend_dev_name(ab.dev), (ggml_time_us() - t0) / 1e3);
     }
 }
 
@@ -2257,6 +2321,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             return nullptr;
         }
 
+        moe_mirror_offsets();   // fork: --moe mirror-pool: a pass that splits behind the dense split's copies, any other graph over them
+
         if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
             ret = GGML_STATUS_ALLOC_FAILED;
@@ -2275,6 +2341,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         }
     }
     llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);   // fork: --moe alias=1 lends the pool blocks this graph's tensors reach to it
+    moe_mirror_fill();   // fork: --moe mirror-pool: the dense split's copies, when the region lost them since they were last filled
 
     // set the input data for the input tensors
     {
@@ -2561,11 +2628,25 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 cparams.moe_predict, cparams.moe_predict_train);
         if (alias) {
             moe_alias_bufs = llama_moe_cache_alias_buffers_fork();   // applied to every scheduler created from now on (sched_reserve makes a new one)
+        }
+        // --moe mirror-pool: the dense split's copies get their places now that the pools exist (the start of each card's pool, or a buffer of their own);
+        // the reserve below then sizes the worst case behind them
+        moe_mirrors_placed = true;
+        llama_dsplit_mirror_place_fork(model, moe_alias_bufs);
+        if (alias) {
             apply_moe_alias();
             sched_need_reserve = true;
         }
         thread_cap_from_probe(llama_moe_cache_cpu_sat_threads_fork());
         sched_reserve(); // the compute graph now includes the cache chain
+    }
+    if (!cparams.moe_cache && !moe_mirrors_placed) {
+        moe_mirrors_placed = true;
+        llama_dsplit_mirror_place_fork(model, moe_alias_bufs);   // no pool: the copies get buffers of their own
+        if (llama_dsplit_ready_fork(model)) {
+            sched_need_reserve = true;   // the split may be used from now on: its worst case
+            sched_reserve();
+        }
     }
     if (cparams.moe_cache_started && !moe_probe_done) {   // --moe max-batch=auto: time the cache path once, before the first real batch
         moe_probe_done = true;

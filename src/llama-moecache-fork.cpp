@@ -271,6 +271,8 @@ struct moe_cache {
         std::vector<seg>      segs;
         size_t                span   = 0;       // lendable bytes: up to the last class's last expert block
         size_t                want_b = 0;       // bytes the last graph needed (what alias_release keeps)
+        size_t                mirror_b = 0;     // the dense split's copies at the start of the buffer (--moe mirror-pool, see llama_dsplit_mirror_place_fork)
+        size_t                base_off = 0;     // where the graph being built starts: mirror_b when it splits (the copies before it), else 0
     };
     std::vector<alias_pool> alias;   // block pool: the lifetime count of the busiest expert of ANY layer, the common scale of scores compared across layers
     bool pf_count_on      = false;   // prompt hit counters on the cards (see pf-count)
@@ -2648,6 +2650,28 @@ void llama_moe_cache_alias_drop_fork() {
     g_alias_dropped = true;
 }
 
+// the dense split's copies sit at the start of dev's pool buffer (llama_dsplit_mirror_place_fork): the pass planner keeps room for them
+void llama_moe_cache_alias_mirror_fork(ggml_backend_dev_t dev, size_t bytes) {
+    moe_cache * mc = g_cache;
+    if (!mc) {
+        return;
+    }
+    for (auto & ap : mc->alias) {
+        if (ap.dev == dev) { ap.mirror_b = bytes; }
+    }
+}
+
+// before a graph is allocated (and before a reserve): its tensors start at off in dev's pool buffer, the lent range covers [0, off) too
+void llama_moe_cache_alias_offset_fork(ggml_backend_dev_t dev, size_t off) {
+    moe_cache * mc = g_cache;
+    if (!mc) {
+        return;
+    }
+    for (auto & ap : mc->alias) {
+        if (ap.dev == dev) { ap.base_off = off; }
+    }
+}
+
 std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork() {
     std::vector<llama_moe_alias_buf_fork> out;
     moe_cache * mc = g_cache;
@@ -2689,7 +2713,7 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
         const size_t cap     = ap.span;
         const size_t scratch = ap.cuda_dev >= 0 || strncmp(ggml_backend_dev_name(ap.dev), "CUDA", 4) == 0
                              ? GGML_PAD((size_t) n_tokens * alias_tok_bytes(mc, ap), (size_t) 2 << 20) : 0;
-        const size_t base    = GGML_PAD(GGML_PAD(peak, 256) + scratch, 256);
+        const size_t base    = GGML_PAD(ap.base_off + GGML_PAD(peak, 256) + scratch, 256);   // behind the dense split's copies when the reserved graph splits
         fit.cap  = std::min(fit.cap ? fit.cap : cap, cap);
         fit.need = std::max(fit.need, base);
         if (base > cap) {
@@ -2813,7 +2837,8 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             ap.last_n   = n_tokens;
             ap.last_scr = scratch;
         }
-        const size_t peak_al = GGML_PAD(peak, 256);
+        // the graph's tensors start at base_off: behind the dense split's copies when the graph splits (llama_moe_cache_alias_offset_fork), else at 0
+        const size_t peak_al = GGML_PAD(ap.base_off + peak, 256);
         // prefetch overlap: the staging slots of the prompt batch (full expert tensors uploaded ahead on a second stream) are lent blocks too,
         // after the graph and its scratch; only on the GPU that prompt batches are offloaded to
         size_t stage = 0;
@@ -5736,7 +5761,9 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     const int    k_full = std::max(3, std::min(6, n_cfg));   // slots enough to keep the next layer's three uploads going
     // one pass of u tokens with k staging slots: upload (what the pool does not hold after lending), compute, and how they overlap
     auto pass_us = [&](uint32_t u, int k, double * U_out) {
-        const double L = per_t * (double) u + (double) k * (double) ap->slot_b;
+        // a pass that splits keeps the dense split's copies in front of its graph (mirror_b, 0 without mirror-pool): counted for every pass (the plan is made
+        // before the split choice), so a pass that does not split is planned up to mirror_b smaller than it could be
+        const double L = per_t * (double) u + (double) k * (double) ap->slot_b + (double) ap->mirror_b;
         if (L > (double) ap->span) { return -1.0; }
         const double U = std::max(0.0, E - rho * ((double) ap->span - L)) / (gbs * 1e3);
         if (U_out) { *U_out = U; }

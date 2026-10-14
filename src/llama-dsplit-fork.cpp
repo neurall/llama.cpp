@@ -38,10 +38,42 @@
 
 namespace {
 
+// --moe mirror-pool (default on with the compute alias): one card's copies live at the start of its expert pool buffer, in the blocks a prompt pass that
+// splits borrows anyway (llama_moe_cache_alias_fork lends them, the graph is placed behind them). Decode never reads a copy (a layer's dense part runs on
+// the card that holds the layer), so in decode those blocks hold experts again, and the next pass that splits copies the weights back in (cross-card,
+// card to card): MiMo-V2.6-Flash keeps ~9 GB of copies, which a load-time buffer took from the expert cache for the whole session.
+struct dsplit_copies {
+    std::vector<std::pair<ggml_tensor *, ggml_tensor *>> pairs;   // original, copy
+    std::vector<size_t> off;       // byte offset of each copy in the region
+    size_t              bytes  = 0;
+    ggml_context *      ctx    = nullptr;
+    bool                placed = false;   // the copies have memory: the pool region, or a buffer of their own
+    bool                pooled = false;   // in the pool region: they hold the weights only from an upload until a graph that does not split reuses it
+    bool                valid  = false;
+};
 struct dsplit_set {
     std::vector<std::pair<ggml_context *, ggml_backend_buffer_t>> bufs;
     std::map<ggml_backend_dev_t, std::unordered_map<const ggml_tensor *, ggml_tensor *>> mirror;
+    std::map<ggml_backend_dev_t, dsplit_copies> copies;
+    bool failed = false;   // a card's copies got no memory: the dense split stays off
 };
+
+bool dsplit_pool_mode() {
+    const char * e = llama_moe_get_opt("mirror-pool");
+    const char * a = llama_moe_get_opt("alias");
+    const char * p = llama_moe_get_opt("pool");
+    return !(e && atoi(e) == 0) && !(a && atoi(a) == 0) && !(p && atoi(p) == 0);
+}
+
+// the model's precision rules are keyed by the weight tensor: a copy takes the rule of its original
+void dsplit_copy_prec(llama_model & model, const ggml_tensor * src, ggml_tensor * dst) {
+    // (llama_prec_policy: "this weight cannot take 4-bit activations"). Without it the copies of such weights ran with 4-bit activations on the other card
+    // (Qwen3.8-Flash-Next, the linear-attention weights: perplexity 4360 where one card gives 1.125, with copies that were byte for byte right).
+    auto p1 = model.prec_policy.prec_src1.find(src);
+    if (p1 != model.prec_policy.prec_src1.end()) { const ggml_prec v = p1->second; model.prec_policy.prec_src1[dst] = v; }
+    auto pa = model.prec_policy.prec_acc.find(src);
+    if (pa != model.prec_policy.prec_acc.end()) { const ggml_prec v = pa->second; model.prec_policy.prec_acc[dst] = v; }
+}
 
 std::mutex                                 g_mu;
 std::map<const llama_model *, dsplit_set>  g_sets;
@@ -108,6 +140,26 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
             ggml_set_name(m, t->name);
             dst.push_back(m);
         }
+        if (dsplit_pool_mode()) {
+            // the copies wait for this card's expert pool (llama_dsplit_mirror_place_fork): only their places are laid out here, nothing is allocated
+            dsplit_copies c;
+            c.ctx = ctx;
+            ggml_backend_buffer_type_t bt = ggml_backend_dev_buffer_type(D);
+            size_t cur = 0;
+            for (size_t i = 0; i < src.size(); ++i) {
+                cur = GGML_PAD(cur, 256);
+                c.pairs.push_back({ src[i], dst[i] });
+                c.off.push_back(cur);
+                cur += ggml_backend_buft_get_alloc_size(bt, dst[i]);
+                S.mirror[D][src[i]] = dst[i];
+                dsplit_copy_prec(model, src[i], dst[i]);
+            }
+            c.bytes = GGML_PAD(cur, (size_t) 2 << 20);
+            LLAMA_LOG_INFO("%s: dense split: %zu dense tensors (%.1f MiB) for %s, held in its expert pool only while a prompt pass splits\n", __func__, src.size(),
+                    c.bytes / 1048576.0, ggml_backend_dev_name(D));
+            S.copies[D] = std::move(c);
+            continue;
+        }
         ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, ggml_backend_dev_buffer_type(D));
         if (buf == nullptr) {
             LLAMA_LOG_WARN("%s: no room for %.1f MiB of dense weights on %s: dense split off\n", __func__, bytes / 1048576.0, ggml_backend_dev_name(D));
@@ -120,13 +172,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
         for (size_t i = 0; i < src.size(); ++i) {
             ggml_backend_tensor_copy(src[i], dst[i]);
             S.mirror[D][src[i]] = dst[i];
-            // The model's per-tensor precision rules are keyed by the weight tensor (llama_prec_policy: "this weight cannot take 4-bit activations").
-            // A copy takes the rule of its original: without it the copies of such weights ran with 4-bit activations on the other card
-            // (Qwen3.8-Flash-Next, the linear-attention weights: perplexity 4360 where one card gives 1.125, with copies that were byte for byte right).
-            auto p1 = model.prec_policy.prec_src1.find(src[i]);
-            if (p1 != model.prec_policy.prec_src1.end()) { const ggml_prec v = p1->second; model.prec_policy.prec_src1[dst[i]] = v; }
-            auto pa = model.prec_policy.prec_acc.find(src[i]);
-            if (pa != model.prec_policy.prec_acc.end()) { const ggml_prec v = pa->second; model.prec_policy.prec_acc[dst[i]] = v; }
+            dsplit_copy_prec(model, src[i], dst[i]);
         }
         S.bufs.push_back({ ctx, buf });
         LLAMA_LOG_INFO("%s: dense split: %zu dense tensors (%.1f MiB) copied to %s in %.2f s\n", __func__, src.size(), bytes / 1048576.0,
@@ -152,13 +198,106 @@ void llama_dsplit_mirror_free_fork(const llama_model & model) {
         ggml_backend_buffer_free(b.second);
         ggml_free(b.first);
     }
+    for (auto & kv : it->second.copies) {
+        if (kv.second.ctx) { ggml_free(kv.second.ctx); }   // the pooled copies' headers (a buffer of their own took its context into bufs)
+    }
     g_sets.erase(it);
 }
+
+namespace {
+// the copies can be used: made, and every card's placed (mirror-pool places them at the first decode)
+bool dsplit_copies_ready(const dsplit_set & S) {
+    if (S.mirror.empty() || S.failed) { return false; }
+    for (const auto & kv : S.copies) {
+        if (!kv.second.placed) { return false; }
+    }
+    return true;
+}
+}  // namespace
 
 bool llama_dsplit_ready_fork(const llama_model & model) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
-    return it != g_sets.end() && !it->second.mirror.empty();
+    return it != g_sets.end() && dsplit_copies_ready(it->second);
+}
+
+void llama_dsplit_mirror_place_fork(const llama_model & model, const std::vector<llama_moe_alias_buf_fork> & pools) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_sets.find(&model);
+    if (it == g_sets.end()) {
+        return;
+    }
+    dsplit_set & S = it->second;
+    for (auto & kv : S.copies) {
+        dsplit_copies & c = kv.second;
+        if (c.placed) {
+            continue;
+        }
+        const llama_moe_alias_buf_fork * pb = nullptr;
+        for (const auto & p : pools) {
+            if (p.dev == kv.first) { pb = &p; }
+        }
+        // at most half of what the pool lends: the graph, its scratch and the staging slots of a split pass go behind the copies
+        if (pb != nullptr && c.bytes <= pb->capacity / 2) {
+            uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(pb->buf);
+            for (size_t i = 0; i < c.pairs.size(); ++i) {
+                ggml_tensor * t = c.pairs[i].second;
+                t->buffer = pb->buf;
+                t->data   = base + c.off[i];
+            }
+            c.placed = true;
+            c.pooled = true;
+            c.valid  = false;
+            llama_moe_cache_alias_mirror_fork(kv.first, c.bytes);   // the pass planner keeps room for them
+            LLAMA_LOG_INFO("%s: dense split: the %.1f MiB of copies for %s sit at the start of its expert pool (%.1f GiB lendable): filled when a prompt pass "
+                    "splits, expert blocks again in decode\n", __func__, c.bytes / 1048576.0, ggml_backend_dev_name(kv.first), pb->capacity / 1073741824.0);
+            continue;
+        }
+        // no pool on this card, or the copies would take more than half of it: a buffer of their own, filled now (the behaviour before mirror-pool)
+        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(c.ctx, ggml_backend_dev_buffer_type(kv.first));
+        if (buf == nullptr) {
+            LLAMA_LOG_WARN("%s: no room for %.1f MiB of dense weights on %s: dense split off\n", __func__, c.bytes / 1048576.0, ggml_backend_dev_name(kv.first));
+            S.failed = true;
+            continue;
+        }
+        ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        for (auto & pr : c.pairs) {
+            ggml_backend_tensor_copy(pr.first, pr.second);
+        }
+        S.bufs.push_back({ c.ctx, buf });
+        c.ctx    = nullptr;
+        c.placed = true;
+        c.pooled = false;
+        c.valid  = true;
+        LLAMA_LOG_INFO("%s: dense split: %.1f MiB of copies for %s in a buffer of their own (%s)\n", __func__, c.bytes / 1048576.0, ggml_backend_dev_name(kv.first),
+                pb ? "more than half of the pool" : "no expert pool on the card");
+    }
+}
+
+std::vector<std::pair<ggml_tensor *, ggml_tensor *>> llama_dsplit_mirror_take_upload_fork(const llama_model & model, ggml_backend_dev_t dev) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_sets.find(&model);
+    if (it == g_sets.end()) {
+        return {};
+    }
+    auto ct = it->second.copies.find(dev);
+    if (ct == it->second.copies.end() || !ct->second.pooled || ct->second.valid) {
+        return {};
+    }
+    ct->second.valid = true;   // the caller fills them before the graph runs
+    return ct->second.pairs;
+}
+
+void llama_dsplit_mirror_invalidate_fork(const llama_model & model, ggml_backend_dev_t dev) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_sets.find(&model);
+    if (it == g_sets.end()) {
+        return;
+    }
+    auto ct = it->second.copies.find(dev);
+    if (ct != it->second.copies.end() && ct->second.pooled) {
+        ct->second.valid = false;
+    }
 }
 
 ggml_tensor * llama_dsplit_mirror_fork(const llama_model & model, ggml_tensor * t, ggml_backend_dev_t dev) {
@@ -478,7 +617,8 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     }
     int choice = -1;
     const char * why = "";
-    const bool managed = it != g_sets.end() && dsplit_n_gpus(model) >= 2 && (dsplit_opt_auto() || !it->second.mirror.empty());
+    const bool managed = it != g_sets.end() && dsplit_n_gpus(model) >= 2 && (dsplit_opt_auto() || !it->second.mirror.empty()) &&
+                         (it->second.mirror.empty() || dsplit_copies_ready(it->second));   // mirror-pool: not before the copies are placed
     if (managed && n_tokens >= 64) {
         if (dsplit_opt_one()) {
             choice = 0;   // forced to one card (tests)
@@ -543,7 +683,8 @@ int llama_dsplit_cur_fork() {
 void llama_dsplit_reserve_fork(const llama_model & model) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
-    g_cur = it != g_sets.end() && dsplit_n_gpus(model) >= 2 && (dsplit_opt_auto() || !it->second.mirror.empty()) ? 1 : -1;
+    g_cur = it != g_sets.end() && dsplit_n_gpus(model) >= 2 && (dsplit_opt_auto() || !it->second.mirror.empty()) &&
+            (it->second.mirror.empty() || dsplit_copies_ready(it->second)) ? 1 : -1;
 }
 
 // one measured split pass of size bucket b, us per token: the tuner's step (see dsplit_tune)
@@ -700,4 +841,15 @@ llama_layer llama_dsplit_layer_fork(const llama_model & model, const llama_layer
         if (!orig) { p[i] = llama_dsplit_mirror_fork(model, p[i], dev); }
     }
     return m;
+}
+
+// (after g_cur) the copies' bytes the graph being built keeps in front of it (see llama-dsplit-fork.h)
+size_t llama_dsplit_mirror_offset_fork(const llama_model & model, ggml_backend_dev_t dev, bool reserve) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_sets.find(&model);
+    if (it == g_sets.end() || (!reserve && g_cur != 1)) {
+        return 0;
+    }
+    auto ct = it->second.copies.find(dev);
+    return ct != it->second.copies.end() && ct->second.pooled ? ct->second.bytes : 0;
 }

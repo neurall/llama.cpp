@@ -5,6 +5,9 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 
+#include <utility>
+#include <vector>
+
 struct llama_model;
 
 // --moe dense-split=1: copies the dense (non-expert) weights of every trunk layer once to every other GPU, at load. Nothing when the option is off or
@@ -12,8 +15,21 @@ struct llama_model;
 void llama_dsplit_mirror_build_fork(llama_model & model);   // also gives every copy the precision rule of its original (model.prec_policy)
 void llama_dsplit_mirror_free_fork(const llama_model & model);
 
-// true when the copies exist (the graph builder may cut a prompt pass into token ranges)
+// true when the copies exist and have memory (the graph builder may cut a prompt pass into token ranges)
 bool llama_dsplit_ready_fork(const llama_model & model);
+
+// --moe mirror-pool (default with the compute alias): the copies live at the start of each card's expert pool buffer, in the blocks a prompt pass that
+// splits borrows; decode never reads them, so there those blocks hold experts. place: once, at the first decode, with the pool buffers of the cards
+// (llama_moe_cache_alias_buffers_fork); a card without a pool, or whose copies would take more than half of it, gets a buffer of its own.
+struct llama_moe_alias_buf_fork;
+void   llama_dsplit_mirror_place_fork(const llama_model & model, const std::vector<llama_moe_alias_buf_fork> & pools);
+// bytes at the start of dev's pool the graph being built keeps for the copies (0: it does not split, or the copies are not in the pool): its tensors go behind.
+// reserve: the worst case of a new scheduler (a pass that splits), whatever the graph being built is
+size_t llama_dsplit_mirror_offset_fork(const llama_model & model, ggml_backend_dev_t dev, bool reserve);
+// the copies of dev that must be filled before the graph being built runs (original, copy); they count as filled from now on. Empty: nothing to do.
+std::vector<std::pair<ggml_tensor *, ggml_tensor *>> llama_dsplit_mirror_take_upload_fork(const llama_model & model, ggml_backend_dev_t dev);
+// a graph that does not split is placed over dev's copies: they have to be filled again before the next split
+void   llama_dsplit_mirror_invalidate_fork(const llama_model & model, ggml_backend_dev_t dev);
 
 // the copy of weight t on device dev; t itself when t lives on dev or has no copy (routed experts, tensors in host memory)
 ggml_tensor * llama_dsplit_mirror_fork(const llama_model & model, ggml_tensor * t, ggml_backend_dev_t dev);
