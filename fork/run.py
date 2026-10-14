@@ -1251,7 +1251,86 @@ def cache_stats(log):
     p = re.findall(r"moe-pred: hit=([\d.]+) hit_without_est=([\d.]+) boost_pts=([\d.]+) up=(\d+) pub=(\d+) used=(\d+) late=(\d+) stale=(\d+) cov1=([\d.]+) cov2=([\d.]+) cov3=([\d.]+)", log)
     if p:  # the predictor's hit rate (share of expert uses already uploaded in time) and its counters, from the last moe-pred line
         d.update(zip(("pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3"), p[-1]))
+    d.update(decisions(log))
     return d
+
+
+DECISION_COLS = ["layout", "placement", "ubatch_max", "pf_mode", "pf_gpus", "pf_skipped", "pf_tok_share", "pf_exp_share", "pf_passes", "pf_pass", "pf_slots",
+                 "pf_one_tps", "pf_split_tps", "pf_by", "pf_all"]
+
+
+def decisions(log):
+    """the engine's automatic choices of a run, from its server log (builds from 2026-10-14 on; older builds leave them empty):
+    layout     "layer layout:" at load: rule (ts, bw, plan, dec, mem) and per card its layer count and ranges
+    placement  "MoE placement:" cache or stock, "(re-measure)" when the cache run was swapped for a stock re-measurement
+    ubatch_max the prompt micro-batch maximum the auto settings chose
+    pf_*       the "prefill decision:" line of the run's largest prompt: mode (one-card, dense-split, dense+expert-split, expert-split, mixed), the cards it ran
+               on and the ones skipped, the helpers' token and expert shares, passes, pass size, staging slots, the measured one-card / split prompt t/s of
+               that pass size so far, and why (chosen_by); pf_all lists every prompt of the run as tokens:mode/cards"""
+    d = {}
+    m = re.findall(r"layer layout: rule=(\S+)((?: \S+=\d+\([^)]*\))+) output=(\S+)", log)
+    if m:
+        d["layout"] = (m[-1][0] + m[-1][1]).strip()
+    p = re.findall(r"MoE placement: (cache|stock)\b", log)
+    if p:
+        d["placement"] = p[-1] + (" (re-measure)" if "re-measuring stock this run" in log else "")
+    u = re.findall(r"MoE model .*?ubatch (\d+)", log)
+    if u:
+        d["ubatch_max"] = int(u[-1])
+    rows = []
+    for line in re.findall(r"prefill decision: (.*)", log):
+        rows.append({k: v.strip('"') for k, v in re.findall(r'(\w+)=("[^"]*"|\S+)', line)})
+    if rows:
+        top = max(rows, key=lambda r: int(r.get("prompt_tokens", 0) or 0))
+        for k, c in (("mode", "pf_mode"), ("gpus", "pf_gpus"), ("skipped", "pf_skipped"), ("helper_token_share", "pf_tok_share"), ("helper_expert_share", "pf_exp_share"),
+                     ("passes", "pf_passes"), ("pass_tokens", "pf_pass"), ("staging_slots", "pf_slots"), ("one_card_tps", "pf_one_tps"), ("split_tps", "pf_split_tps"),
+                     ("chosen_by", "pf_by")):
+            if k in top:
+                d[c] = top[k]
+        d["pf_all"] = ";".join(f"{r.get('prompt_tokens')}:{r.get('mode')}/{r.get('gpus')}" for r in rows)
+    return d
+
+
+RUN_COLS += DECISION_COLS
+
+
+def cmd_misfires(a):
+    """runs whose prompt ran in the slower mode: per model, machine and pass size (sqrt(2) steps, as the engine's buckets), the prompt speed of each mode
+    the engine chose in any run; a run is listed when another mode of the same key was faster by more than --tol. Also every stock re-measurement."""
+    import math
+    since = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - a.days * 86400))
+    rows = [r for r in csv_load("run-history.csv") if r.get("pf_mode") and r.get("ts", "") >= since and (not a.model or a.model.lower() in r.get("model", "").lower())]
+    def key(r):
+        n = num(r, "pf_pass") or 0
+        return (r.get("model", ""), r.get("hw", ""), round(2 * math.log2(n)) if n > 0 else -1)
+    best = {}   # key -> mode -> (best prompt t/s, row)
+    for r in rows:
+        pp = num(r, "pp")
+        if pp:
+            m = best.setdefault(key(r), {})
+            if pp > m.get(r["pf_mode"], (0, None))[0]:
+                m[r["pf_mode"]] = (pp, r)
+    out = []
+    for r in rows:
+        pp = num(r, "pp")
+        if not pp:
+            continue
+        others = [(v[0], k) for k, v in best.get(key(r), {}).items() if k != r["pf_mode"]]
+        if others:
+            bp, bm = max(others)
+            if bp > pp * (1 + a.tol):
+                out.append((r["ts"], r.get("build", ""), os.path.basename(r.get("model", ""))[:28], r.get("test", ""), r.get("pf_pass", ""), r["pf_mode"],
+                            f"{pp:.0f}", bm, f"{bp:.0f}", f"{100 * (bp / pp - 1):.0f}%", r.get("pf_by", "")[:60]))
+    print(f"misfires since {since}: {len(out)} of {len(rows)} runs with a prefill decision")
+    if out:
+        print("| time | build | model | test | pass | chosen | prompt t/s | faster mode | its t/s | lost | why chosen |\n|" + "---|" * 11)
+        for o in sorted(out):
+            print("| " + " | ".join(o) + " |")
+    st = [r for r in csv_load("run-history.csv") if "re-measure" in r.get("placement", "") and r.get("ts", "") >= since]
+    if st:
+        print(f"\nstock re-measurements of the placement (the cache run before was slower than its median): {len(st)}")
+        for r in st:
+            print(f"  {r['ts']} {r.get('build', '')} {os.path.basename(r.get('model', ''))[:40]} {r.get('test', '')} campaign {r.get('campaign', '')}")
 
 
 _EMB_OFF = os.path.getsize(os.path.join(DATA, "embhot.csv")) if os.path.exists(os.path.join(DATA, "embhot.csv")) else 0
@@ -4785,7 +4864,12 @@ if __name__ == "__main__":
     s_.add_argument("-t", "--test")
     s_.add_argument("-b", "--build")
     s_.add_argument("--runs", action="store_true")
+    mf = sp.add_parser("misfires", help="automatic choices that went against what was measured: a prompt run on one card where the split of the same model and pass "
+                                         "size was faster in another run, and the reverse; stock re-measurements of the placement (from the pf_* / placement columns)")
+    mf.add_argument("--days", type=float, default=7.0, help="look at runs of the last N days")
+    mf.add_argument("--tol", type=float, default=0.05, help="a choice counts as wrong when the other mode was faster by more than this share")
+    mf.add_argument("--model", help="part of the model name")
     a = ap.parse_args()
     {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "misfires": cmd_misfires,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
