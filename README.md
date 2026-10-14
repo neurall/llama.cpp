@@ -23,11 +23,13 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 | GLM-5.3-Flash 3.0-bit | 1k edit, 128 out | b11452 b12825 | pin | 41.5<br>[$\color{blue}{\mathbf{495}}$](fork/bench/REPRO.md#glm-edit) (11.9x) | 12.4<br>[$\color{blue}{\mathbf{19.0}}$](fork/bench/REPRO.md#glm-edit) (1.53x) | - |
 | Qwen3.6-35B-A3B hybrid (11.4 GiB) on an 8 GB laptop (4060) | 17-token prompt, 100 out | b11514 b12843 | pin | 20.2<br>[$\color{blue}{\mathbf{98.0}}$](fork/bench/REPRO.md#laptop-17) (**4.9x**) | 15.6<br>[$\color{blue}{\mathbf{56.5}}$](fork/bench/REPRO.md#laptop-17) (**3.6x**) | - |
 | Qwen3.8-Flash-Next UD-IQ4_XS (88 GB) | 1k edit (best pp) | b11452 b12364 | n/r | 160<br>[$\color{blue}{\mathbf{599}}$](fork/bench/REPRO.md#qni4-edit) (3.7x) | 30.6<br>[$\color{blue}{\mathbf{45.8}}$](fork/bench/REPRO.md#qni4-edit) (1.50x) | - |
+| Qwen3.6-35B-A3B Q2_0 (CPU only, Ryzen 5 3600) | short prompt, 100 out (CLI) | b11302 b11648 | n/r | 10.2<br>[$\color{blue}{\mathbf{37.6}}$](fork/bench/REPRO.md#q2-cpu) (**3.7x**) | 6.3<br>[$\color{blue}{\mathbf{11.3}}$](fork/bench/REPRO.md#q2-cpu) (1.79x) | - |
 | Qwen3.6-35B-A3B hybrid on an 8 GB laptop | 12k prompt, 32 out | b11514 b12843 | pin | 687<br>[$\color{blue}{\mathbf{918}}$](fork/bench/REPRO.md#laptop-12k) (1.34x) | 13.6<br>[$\color{blue}{\mathbf{45.6}}$](fork/bench/REPRO.md#laptop-12k) (**3.4x**) | - |
 | Qwen3.6-35B-A3B hybrid on an 8 GB laptop | 40k prompt, 32 out | b11514 b12843 | pin | 584<br>[$\color{blue}{\mathbf{726}}$](fork/bench/REPRO.md#laptop-40k) (1.24x) | 11.7<br>[$\color{blue}{\mathbf{35.9}}$](fork/bench/REPRO.md#laptop-40k) (**3.1x**) | - |
 | Qwen3.8-Flash-Next UD-IQ4_XS | 12k prompt | b11381 b11707 | n/r | 201<br>[$\color{blue}{\mathbf{553}}$](fork/bench/REPRO.md#qni4-12k) (2.8x) | 29.6<br>[$\color{blue}{\mathbf{45.9}}$](fork/bench/REPRO.md#qni4-12k) (1.55x) | - |
 | Qwen3.6-35B-A3B hybrid on an 8 GB laptop | 125k prompt, 32 out | b11514 b12843 | pin | 448<br>[$\color{blue}{\mathbf{557}}$](fork/bench/REPRO.md#laptop-125k) (1.24x) | 9.2<br>[$\color{blue}{\mathbf{25.2}}$](fork/bench/REPRO.md#laptop-125k) (**2.7x**) | - |
 | MiMo-V2.6-Flash IQ3_XXS (132 GB) | 1k edit (best pp) | b11381 b12250 | n/r | 30.0<br>[$\color{blue}{\mathbf{73.6}}$](fork/bench/REPRO.md#mimo-edit) (2.5x) | 4.8<br>[$\color{blue}{\mathbf{9.0}}$](fork/bench/REPRO.md#mimo-edit) (1.88x) | - |
+| Qwen3.6-35B-A3B Q2_0 on an 8 GB laptop (4060) | short prompt, 100 out (CLI) | b11261 b11648 | n/r | 41.5<br>[$\color{blue}{\mathbf{101.9}}$](fork/bench/REPRO.md#q2-laptop) (2.5x) | 28.9<br>[$\color{blue}{\mathbf{58.6}}$](fork/bench/REPRO.md#q2-laptop) (**2.0x**) | - |
 | GLM-5.3-Flash 3.0-bit | game, 600 out (best t/s) | b11381 b12209 | n/r | - | 11.7<br>[$\color{blue}{\mathbf{27.8}}$](fork/bench/REPRO.md#glm-game) (2.4x) | - |
 | MiMo-V2.6-Flash IQ3_XXS | chat, short prompt (best t/s) | b11381 b11707 | n/r | - | 4.9<br>[$\color{blue}{\mathbf{10.5}}$](fork/bench/REPRO.md#mimo-chat) (2.1x) | - |
 | Qwen3.8-Flash-Next UD-IQ4_XS | chat, short prompt (best t/s) | b11381 b11365 | n/r | 41.8<br>[$\color{blue}{\mathbf{63.3}}$](fork/bench/REPRO.md#qni4-chat) (1.51x) | 30.9<br>[$\color{blue}{\mathbf{60.9}}$](fork/bench/REPRO.md#qni4-chat) (1.97x) | - |
@@ -43,6 +45,8 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 | Qwen3.8-27B IQ4_NL (dense, fits 24 GB) | 1k edit | b11381 b11707 | n/r | 1714<br>[$\color{blue}{\mathbf{1730}}$](fork/bench/REPRO.md#q27nl-edit) (1.01x) | 44.3<br>**44.3** (1.00x) | - |
 
 On smaller cards the gain grows, see the next section (an 8 GB laptop: decode 2.7-3.6x; a simulated 16 GB card: GLM 6.5x decode, Qwen3.8-Flash-Next 3.4x on two cards).
+
+**Q2_0 rows:** the 2-bit Qwen3.6 file (`qwen36.gguf`) is no longer on any of our machines, so these two rows are the last measurement of 2026-09-30 (build b11648); the AVX2 Q2_0 dot product is in b12844 and in the merged tree, but it has not been re-measured since.
 
 **Known issue in b12844 (found while updating this table):** after a 12k prompt, Qwen3.8-Flash-Next decodes at 35 t/s where b12686 gives 50 t/s, and GLM-5.3-Flash at 14.3 vs 16.2 t/s (the prompt itself is 1.3-1.4x faster). Not fixed yet; the prefill changes of this release are the suspected cause, a fix is next.
 

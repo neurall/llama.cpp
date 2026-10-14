@@ -5,6 +5,16 @@ Every row is: model file, README cell (run.py test alias), arguments (always onl
 Build names are directories under the builds directory of run.py (PERF_BUILDS); fork builds are the dev builds of the commit given in the README, stock builds
 come from `run.py build --stock --ref <commit>` (llama.cpp upstream at that build number). The load mode of our builds is --load-mode pin (run.py adds it).
 
+<a id="q2-cpu"></a>
+## q2-cpu
+
+PC2 (Ryzen 5 3600), llama-cli -dev none -ngl 0: stock 05af0d2b1 (b11302) against release b11648, qwen36.gguf = Qwen3.6-35B-A3B Q2_0, `cli-t100` (file no longer on disk)
+
+<a id="q2-laptop"></a>
+## q2-laptop
+
+W10 laptop (4060 8 GB), llama-cli: stock b5cf8ce02 (b11261) against release b11648, same file, `cli-t100` (file no longer on disk)
+
 <a id="glm-12k"></a>
 ## glm-12k
 
