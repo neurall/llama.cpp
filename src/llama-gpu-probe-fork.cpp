@@ -127,17 +127,23 @@ double latency_us(ggml_tensor * t, const void * src) {
 
 // Portable fallback for backends without their own loop probe: one small ggml graph, a mul_mat of Q4_K weights (4096 wide, 1024 rows, 2 MB, the real
 // quantised kernels of the backend) against 512 fake tokens, run a few times; the fastest batch of four runs is taken. Result in weight bytes x tokens per second.
-double graph_compute(ggml_backend_dev_t dev) {
+// res_us (optional): the result latency of the card, see llama_gpu_probe_fork_result::res_us: the same weights against ONE token, the activations set
+// from the host and the result read back, every time (64 samples after 4 warm-ups, the median).
+double graph_compute(ggml_backend_dev_t dev, double * res_us = nullptr) {
     ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
     if (!be) { return 0.0; }
     double result = 0.0;
     {
-        dev_ctx c(ggml_tensor_overhead() * 8);
+        dev_ctx c(ggml_tensor_overhead() * 16 + ggml_graph_overhead());
         const int64_t K = 4096, rows = 1024, tokens = 512;
         ggml_tensor * w = ggml_new_tensor_2d(c.ctx, GGML_TYPE_Q4_K, K, rows);
         ggml_tensor * x = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32, K, tokens);
         ggml_cgraph * gf = ggml_new_graph(c.ctx);
         ggml_build_forward_expand(gf, ggml_mul_mat(c.ctx, w, x));
+        ggml_tensor * x1 = ggml_new_tensor_2d(c.ctx, GGML_TYPE_F32, K, 1);
+        ggml_tensor * y1 = ggml_mul_mat(c.ctx, w, x1);
+        ggml_cgraph * g1 = ggml_new_graph(c.ctx);
+        ggml_build_forward_expand(g1, y1);
         if (c.alloc(dev)) {
             std::vector<uint8_t> bytes(ggml_nbytes(w), 1);
             ggml_backend_tensor_set(w, bytes.data(), 0, bytes.size());
@@ -153,6 +159,18 @@ double graph_compute(ggml_backend_dev_t dev) {
                 best_us = std::min(best_us, (double) (ggml_time_us() - t0) / 4.0);
             }
             result = (double) ggml_nbytes(w) * tokens / (best_us / 1e6);
+            if (res_us) {
+                std::vector<float> in1((size_t) K, 1.0f), out1((size_t) ggml_nelements(y1));
+                std::vector<double> v;
+                for (int i = 0; i < 64 + 4; ++i) {
+                    const int64_t t0 = ggml_time_us();
+                    ggml_backend_tensor_set(x1, in1.data(), 0, in1.size() * sizeof(float));
+                    ggml_backend_graph_compute(be, g1);
+                    ggml_backend_tensor_get(y1, out1.data(), 0, out1.size() * sizeof(float));
+                    if (i >= 4) { v.push_back((double) (ggml_time_us() - t0)); }
+                }
+                *res_us = median(v);
+            }
         }
     }
     ggml_backend_free(be);
@@ -178,7 +196,7 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
         }
     }
     // compute: the portable graph on every card, through the backend's own matmul kernels (see graph_compute); same unit for all cards
-    for (size_t i = 0; i < gpus.size(); ++i) { out[i].compute = graph_compute(gpus[i]); }
+    for (size_t i = 0; i < gpus.size(); ++i) { out[i].compute = graph_compute(gpus[i], &out[i].res_us); }
     // every subset of cards uploading at once (and the singles alone): each member's rate = its bytes over its own time after a common start. Cards behind one
     // root complex or the chipset uplink slow each other down; the subset table is what the plan reads to see what a card steals from the others.
     const size_t n = gpus.size();

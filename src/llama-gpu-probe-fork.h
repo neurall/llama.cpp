@@ -15,6 +15,9 @@ struct llama_gpu_probe_fork_result {
     double h2d_conc_gbs = 0.0;   // the same upload while every probed card uploads at once: shared root complex, chipset uplink and RAM contention
     double lat_us       = 0.0;   // median time of one small (4 KB) synchronous upload: the fixed cost of a hand-off between layers
     double compute      = 0.0;   // compute throughput of a small quantised matmul through the backend's own kernels (weight bytes x tokens per second); only the ratio between cards means anything
+    double res_us       = 0.0;   // result latency: one token's activations up (16 KB), one small quantised matmul, the result down (4 KB), end to end and
+                                 // synchronous (median). What a card costs whoever waits for its result in decode: link latency both ways and compute in ONE
+                                 // number, so cards rank right whatever makes them slow (a fast card in a narrow slot, a slow card in a wide one)
 };
 
 // Runs the probe on every GPU (about 1 s per card) and remembers the results for llama_gpu_probe_find_fork().

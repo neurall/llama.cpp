@@ -346,8 +346,8 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
             for (size_t i : local) { probe_devs.push_back(model->devices[i].dev); }
             std::vector<std::vector<double>> probe_conc;
             for (const auto & r : llama_gpu_probe_fork(probe_devs, &probe_conc)) {
-                LLAMA_LOG_INFO("%s: probe %s: upload %.1f GB/s alone, %.1f GB/s with all cards, small copy %.0f us, compute %.3g GB*tokens/s\n", __func__,
-                        r.name.c_str(), r.h2d_gbs, r.h2d_conc_gbs, r.lat_us, r.compute / 1e9);
+                LLAMA_LOG_INFO("%s: probe %s: upload %.1f GB/s alone, %.1f GB/s with all cards, small copy %.0f us, compute %.3g GB*tokens/s, result latency %.0f us\n", __func__,
+                        r.name.c_str(), r.h2d_gbs, r.h2d_conc_gbs, r.lat_us, r.compute / 1e9, r.res_us);
             }
         } else if (local.size() == 1) {
             model->dev_offload = local[0];
