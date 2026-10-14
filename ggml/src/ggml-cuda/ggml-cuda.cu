@@ -1,13 +1,10 @@
 #if defined(__linux__)
-// fork: NVTX ranges for diagnostics (GGML_NVTX). Windows CUDA toolkits ship the header without usable
-// symbols for this build, so the ranges are Linux-only; elsewhere they compile to nothing.
-#ifdef _WIN32
+#include <sys/mman.h>
+#include <nvtx3/nvToolsExt.h>   // fork: NVTX ranges for diagnostics (GGML_NVTX), Linux only
+#else
+// fork: no NVTX outside Linux builds: the ranges compile to nothing
 #define nvtxRangePushA(x) ((void)(x))
 #define nvtxRangePop() ((void)0)
-#else
-#include <nvtx3/nvToolsExt.h>
-#endif
-#include <sys/mman.h>
 #endif
 #include "ggml-cuda.h"
 #include "ggml-impl.h"
