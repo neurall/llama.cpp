@@ -1,0 +1,35 @@
+0.00.000.899 I srv  llama_server: initializing ...
+0.00.274.639 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.275.044 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.276.748 I srv    load_model: loading model '/m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf'
+0.00.666.567 I moe_auto_decide_for: MoE placement: picks: prefill stock, generation cache; this request is generation-heavy -> cache
+0.00.666.576 I moe_auto_decide_for: MoE placement: request ~2000 prompt + 600 generated tokens; the cache wins for prompts under ~12967 tokens at that answer length
+0.00.667.466 I common_moe_cache_auto_impl: MoE placement: re-measuring stock this run (the last cache run was 43% slower per prompt token than its median, noise bar 8%)
+0.00.669.267 I common_moe_cache_auto_impl: MoE placement: stock (measured: stock 0.88/23.90, cache 1.07/19.77 ms per prompt/generated token; Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf 83617662656place.g2.6b6844dc.v3)
+0.02.125.672 I common_auto_ubatch: ubatch 128 (request ~2000 prompt + 600 generated tokens, compute buffer 0.56 -> 16.68 GiB at 32 -> 2048 probed, rest extrapolated, 12.6 GiB left for the cache)
+0.02.125.679 I common_moe_cache_auto_impl: MoE model (77.9 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 32768, ubatch 128, threads 6, weights pinned (settings you pass win)
+ggml_cuda_host_malloc_registered: 8.4 GiB hugetlbfs cache (cold, filling) mapped in 0.6 s
+ggml_cuda_host_malloc_registered: registered in 0.3 s
+0.30.585.628 I common_init_result: weights pinned (swapped 0.0 GiB while loading, 13.8 GiB RAM left)
+0.30.623.570 I cmn          init: llama threadpool init, n_threads = 6
+0.30.777.541 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 32768, kv_unified = 'false'
+0.30.783.300 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.30.783.344 I srv  llama_server: model loaded
+0.30.783.349 I srv  llama_server: listening on http://127.0.0.1:8099
+0.31.012.736 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.31.012.790 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.31.035.740 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 450.00 MiB on device 1: cudaMalloc failed: out of memory
+0.38.725.271 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   2048, progress = 0.41, t =   7.71 s / 265.55 tokens per second
+0.46.424.081 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   4096, progress = 0.83, t =  15.41 s / 265.78 tokens per second
+0.49.129.211 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   4806, progress = 0.97, t =  18.12 s / 265.28 tokens per second
+0.49.658.068 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   4934, progress = 1.00, t =  18.65 s / 264.63 tokens per second
+0.52.762.614 I slot print_timing: id  0 | task 0 | n_gen =    128, tg =  42.33 t/s, tg_3s =  42.67 t/s
+0.53.510.100 I slot print_timing: id  0 | task 0 | prompt eval time =   18749.71 ms /  4938 tokens (    3.80 ms per token,   263.36 tokens per second)
+0.53.510.103 I slot print_timing: id  0 | task 0 |        eval time =    3747.56 ms /   160 tokens (   23.57 ms per token,    42.43 tokens per second)
+0.53.510.104 I slot print_timing: id  0 | task 0 |       total time =   22497.28 ms /  5098 tokens
+0.53.510.107 I slot print_timing: id  0 | task 0 |    graphs reused =        159
+0.53.510.124 I slot print_timing: id  0 | task 0 |        moe cache = off
+0.53.510.126 I slot print_timing: id  0 | task 0 |          threads = 6 decode / 6 batch, batch 2048, ubatch 128
+0.53.510.296 I slot      release: id  0 | task 0 | stop processing: n_tokens = 5097, truncated = 0
+0.54.165.540 I srv    operator(): operator(): cleaning up before exit...
+0.54.177.502 I ~common_init_result: MoE placement decided: cache (stock 1.51/23.90, cache 1.07/19.77 ms per prompt/generated token)

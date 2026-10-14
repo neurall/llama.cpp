@@ -1,0 +1,54 @@
+0.00.246.748 I srv  llama_server: initializing ...
+0.00.246.759 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.247.091 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.248.990 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+ggml_cuda_host_malloc_registered: 3.7 GiB populated in 0.2 s (3.0 reserved 1024 MiB pages, 0.7 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.02.343.838 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.02.396.397 I cmn          init: llama threadpool init, n_threads = 8
+0.02.461.259 W moe-cache: 16 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.02.463.885 W moe-cache: block pool on CUDA1: 16 layers, 1875.4 MiB, size classes: 256 x 3.92 MiB (8 layers), 256 x 3.38 MiB (8 layers); no blocks reserved per layer
+0.02.464.220 W moe-cache: 1 upload workers, from pinned host memory (direct DMA)
+0.03.259.593 W moe-cache: probe: links alone link 0 22.2 GB/s; CPU threads:GB/s alone/with links 1:26.0/40.0 2:41.8/44.5 3:41.7/44.6 4:40.1/44.6 -> CPU 41.8 GB/s (saturated by 2 threads), RAM budget 44.6 GB/s
+0.03.261.624 W operator(): MoE expert cache enabled: 16 layers, slots/layer 256..256, 2 inserts/step, 44891.6 MiB device memory
+0.03.262.481 W moe-cache: max-batch auto = 128 (stored probe)
+0.03.348.406 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 4096, kv_unified = 'true'
+0.03.350.746 I srv  llama_server: model loaded
+0.03.350.751 I srv  llama_server: listening on http://127.0.0.1:8099
+0.04.143.894 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.04.143.931 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.04.550.645 I slot print_timing: id  3 | task 0 | prompt eval time =     380.79 ms /  3434 tokens (    0.11 ms per token,  9018.07 tokens per second)
+0.04.550.648 I slot print_timing: id  3 | task 0 |        eval time =      25.89 ms /     4 tokens (    8.63 ms per token,   115.90 tokens per second)
+0.04.550.649 I slot print_timing: id  3 | task 0 |       total time =     406.68 ms /  3438 tokens
+0.04.550.652 I slot print_timing: id  3 | task 0 |    graphs reused =          3
+0.04.550.693 I slot print_timing: id  3 | task 0 |        moe cache = on, hit 94.4% this request / 57.8% overall, 32..32 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.04.550.696 I slot print_timing: id  3 | task 0 |        moe churn = 0 uploads, 4 evictions, 14.5 MiB uploaded (this request)
+0.04.550.698 I slot print_timing: id  3 | task 0 |          threads = 4 decode / 8 batch, batch 4096, ubatch 4096
+0.04.550.879 I slot      release: id  3 | task 0 | stop processing: n_tokens = 3437, truncated = 0
+0.04.555.435 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.999
+0.04.555.461 I slot launch_slot_: id  3 | task 5 | processing task, is_child = 0
+0.04.913.550 I slot print_timing: id  3 | task 5 | prompt eval time =     339.99 ms /  3434 tokens (    0.10 ms per token, 10100.24 tokens per second)
+0.04.913.554 I slot print_timing: id  3 | task 5 |        eval time =      18.07 ms /     4 tokens (    6.02 ms per token,   166.07 tokens per second)
+0.04.913.554 I slot print_timing: id  3 | task 5 |       total time =     358.06 ms /  3438 tokens
+0.04.913.555 I slot print_timing: id  3 | task 5 |    graphs reused =          5
+0.04.913.590 I slot print_timing: id  3 | task 5 |        moe cache = on, hit 96.7% this request / 72.6% overall, 32..32 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.04.913.593 I slot print_timing: id  3 | task 5 |        moe churn = 0 uploads, 6 evictions, 21.8 MiB uploaded (this request)
+0.04.913.594 I slot print_timing: id  3 | task 5 |          threads = 4 decode / 8 batch, batch 4096, ubatch 4096
+0.04.913.793 I slot      release: id  3 | task 5 | stop processing: n_tokens = 3437, truncated = 0
+0.04.918.167 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.999
+0.04.918.191 I slot launch_slot_: id  3 | task 10 | processing task, is_child = 0
+0.05.318.093 I slot print_timing: id  3 | task 10 | prompt eval time =     381.92 ms /  3434 tokens (    0.11 ms per token,  8991.46 tokens per second)
+0.05.318.099 I slot print_timing: id  3 | task 10 |        eval time =      17.95 ms /     4 tokens (    5.98 ms per token,   167.18 tokens per second)
+0.05.318.100 I slot print_timing: id  3 | task 10 |       total time =     399.86 ms /  3438 tokens
+0.05.318.100 I slot print_timing: id  3 | task 10 |    graphs reused =          7
+0.05.318.135 I slot print_timing: id  3 | task 10 |        moe cache = on, hit 96.7% this request / 79.2% overall, 30..33 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.05.318.138 I slot print_timing: id  3 | task 10 |        moe churn = 1 uploads, 2 evictions, 7.8 MiB uploaded (this request)
+0.05.318.139 I slot print_timing: id  3 | task 10 |          threads = 4 decode / 8 batch, batch 4096, ubatch 4096
+0.05.318.310 I slot      release: id  3 | task 10 | stop processing: n_tokens = 3437, truncated = 0
+0.06.183.289 I srv    operator(): operator(): cleaning up before exit...
+0.06.184.082 W moe-cache: steps=13 hits=1128 misses=296 hit-rate=79.2%, prefill experts from cache 0/0, kept from prefill 0
+Collecting data...
+Generating '/tmp/nsys-report-7e4e.qdstrm'
+[1/1] [0%                          ] wm-single.nsys-rep[1/1] [0%                          ] wm-single.nsys-rep[1/1] [=16%                        ] wm-single.nsys-rep[1/1] [13%                         ] wm-single.nsys-rep[1/1] [===22%                      ] wm-single.nsys-rep[1/1] [==18%                       ] wm-single.nsys-rep[1/1] [=16%                        ] wm-single.nsys-rep[1/1] [===22%                      ] wm-single.nsys-rep[1/1] [==21%                       ] wm-single.nsys-rep[1/1] [===23%                      ] wm-single.nsys-rep[1/1] [====25%                     ] wm-single.nsys-rep[1/1] [====28%                     ] wm-single.nsys-rep[1/1] [=====30%                    ] wm-single.nsys-rep[1/1] [=======37%                  ] wm-single.nsys-rep[1/1] [=========44%                ] wm-single.nsys-rep[1/1] [===========51%              ] wm-single.nsys-rep[1/1] [=============58%            ] wm-single.nsys-rep[1/1] [========================100%] wm-single.nsys-rep[1/1] [========================100%] wm-single.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/wm-single.nsys-rep

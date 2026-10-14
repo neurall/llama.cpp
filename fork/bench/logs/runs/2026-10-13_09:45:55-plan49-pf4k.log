@@ -1,0 +1,26 @@
+0.00.001.178 I srv  llama_server: initializing ...
+0.00.247.170 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.247.550 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.249.449 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+ggml_cuda_host_malloc_registered: 3.7 GiB populated in 0.2 s (3.0 reserved 1024 MiB pages, 0.7 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.03.075.957 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.03.131.100 I cmn          init: llama threadpool init, n_threads = 8
+0.03.233.171 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 4096, kv_unified = 'true'
+0.03.235.470 I srv  llama_server: model loaded
+0.03.235.476 I srv  llama_server: listening on http://127.0.0.1:8099
+0.04.137.390 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.04.137.442 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.04.755.346 I slot print_timing: id  3 | task 0 | prompt eval time =     557.43 ms /  3434 tokens (    0.16 ms per token,  6160.38 tokens per second)
+0.04.755.349 I slot print_timing: id  3 | task 0 |        eval time =      60.42 ms /     4 tokens (   20.14 ms per token,    49.65 tokens per second)
+0.04.755.350 I slot print_timing: id  3 | task 0 |       total time =     617.86 ms /  3438 tokens
+0.04.755.354 I slot print_timing: id  3 | task 0 |    graphs reused =          3
+0.04.755.371 I slot print_timing: id  3 | task 0 |        moe cache = off
+0.04.755.373 I slot print_timing: id  3 | task 0 |          threads = 4 decode / 8 batch, batch 4096, ubatch 4096
+0.04.755.563 I slot      release: id  3 | task 0 | stop processing: n_tokens = 3437, truncated = 0
+0.05.171.825 I srv    operator(): operator(): cleaning up before exit...
+Collecting data...
+Generating '/tmp/nsys-report-298e.qdstrm'
+[1/1] [0%                          ] sim-split25.nsys-rep[1/1] [0%                          ] sim-split25.nsys-rep[1/1] [===22%                      ] sim-split25.nsys-rep[1/1] [====27%                     ] sim-split25.nsys-rep[1/1] [======33%                   ] sim-split25.nsys-rep[1/1] [=======38%                  ] sim-split25.nsys-rep[1/1] [========41%                 ] sim-split25.nsys-rep[1/1] [=============60%            ] sim-split25.nsys-rep[1/1] [================70%         ] sim-split25.nsys-rep[1/1] [========================100%] sim-split25.nsys-rep[1/1] [========================100%] sim-split25.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/sim-split25.nsys-rep

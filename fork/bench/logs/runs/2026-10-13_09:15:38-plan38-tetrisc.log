@@ -1,0 +1,25 @@
+0.00.259.788 I srv  llama_server: initializing ...
+0.00.259.799 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.260.121 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.262.026 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+0.00.578.508 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.00.698.412 I common_init_result: weights NOT pinned: mmap / page cache (load mode auto)
+0.00.725.526 I cmn          init: llama threadpool init, n_threads = 8
+0.00.812.297 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, kv_unified = 'true'
+0.00.814.645 I srv  llama_server: model loaded
+0.00.814.650 I srv  llama_server: listening on http://127.0.0.1:8099
+0.01.158.269 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.01.158.352 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.03.189.046 I slot print_timing: id  3 | task 0 | prompt eval time =     164.86 ms /    20 tokens (    8.24 ms per token,   121.31 tokens per second)
+0.03.189.051 I slot print_timing: id  3 | task 0 |        eval time =    1865.79 ms /   120 tokens (   15.68 ms per token,    63.78 tokens per second)
+0.03.189.052 I slot print_timing: id  3 | task 0 |       total time =    2030.65 ms /   140 tokens
+0.03.189.056 I slot print_timing: id  3 | task 0 |    graphs reused =        119
+0.03.189.073 I slot print_timing: id  3 | task 0 |        moe cache = off
+0.03.189.075 I slot print_timing: id  3 | task 0 |          threads = 6 decode / 8 batch, batch 2048, ubatch 2048
+0.03.189.113 I slot      release: id  3 | task 0 | stop processing: n_tokens = 139, truncated = 0
+0.04.204.383 I srv    operator(): operator(): cleaning up before exit...
+Collecting data...
+Generating '/tmp/nsys-report-21e1.qdstrm'
+[1/1] [0%                          ] ol1.nsys-rep[1/1] [0%                          ] ol1.nsys-rep[1/1] [7%                          ] ol1.nsys-rep[1/1] [===23%                      ] ol1.nsys-rep[1/1] [=======39%                  ] ol1.nsys-rep[1/1] [===========53%              ] ol1.nsys-rep[1/1] [========================100%] ol1.nsys-rep[1/1] [========================100%] ol1.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/ol1.nsys-rep

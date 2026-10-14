@@ -1,0 +1,134 @@
+0.00.000.947 I srv  llama_server: initializing ...
+0.00.269.672 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.270.074 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.271.743 I srv    load_model: loading model '/p/bw/data/q5h/standin/QN12-IQ3S.gguf'
+ggml_cuda_host_malloc_registered: 11.1 GiB hugetlbfs cache (warm) mapped in 0.0 s
+ggml_cuda_host_malloc_registered: registered in 0.3 s
+0.02.335.547 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.02.344.946 W moe-cache: prefill links (GB/s): CUDA1 26.0 CUDA0 6.4 -> split's transfer speedup 1.25x: one GPU (the split's compute buffers would cost more cache)
+ggml_cuda_host_malloc_registered: 5.4 GiB populated in 0.4 s (5.0 reserved 1024 MiB pages, 0.4 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.02.946.587 I cmn          init: llama threadpool init, n_threads = 8
+0.03.079.967 W moe-cache: 7 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.03.079.970 W moe-cache: 5 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.03.085.032 W moe-cache: block pool on CUDA0: 7 layers, 2345.5 MiB, size classes: 180 x 2.10 MiB (1 layers), 180 x 1.44 MiB (1 layers), 900 x 1.89 MiB (5 layers); no blocks reserved per layer
+0.03.089.153 W moe-cache: block pool on CUDA1: 5 layers, 1583.3 MiB, size classes: 180 x 2.10 MiB (1 layers), 360 x 1.44 MiB (2 layers), 360 x 1.89 MiB (2 layers); no blocks reserved per layer
+0.03.089.532 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+0.03.883.901 W moe-cache: probe: links alone link 0 0.6 link 1 0.5 GB/s; CPU threads:GB/s alone/with links 1:25.8/31.8 2:42.0/45.0 3:41.9/45.0 4:40.0/45.0 -> CPU 42.0 GB/s (saturated by 2 threads), RAM budget 45.0 GB/s
+0.03.886.523 W moe-cache: 7 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.03.886.644 W operator(): MoE expert cache enabled: 12 layers, slots/layer 180..900, 2 inserts/step, 35807.2 MiB device memory
+0.04.007.894 E ggml_gallocr_reserve_n_impl: graph needs 17034.5 MiB in 1 chunk(s), the external CUDA1 buffer holds 1581.2 MiB
+0.04.007.897 E graph_reserve: failed to allocate compute buffers
+0.04.007.905 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 8192: micro-batch 6176
+0.04.038.255 E ggml_gallocr_reserve_n_impl: graph needs 12843.6 MiB in 1 chunk(s), the external CUDA1 buffer holds 1581.2 MiB
+0.04.038.258 E graph_reserve: failed to allocate compute buffers
+0.04.038.264 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 6176: micro-batch 4672
+0.04.061.581 E ggml_gallocr_reserve_n_impl: graph needs 9717.0 MiB in 1 chunk(s), the external CUDA1 buffer holds 1581.2 MiB
+0.04.061.586 E graph_reserve: failed to allocate compute buffers
+0.04.061.592 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 4672: micro-batch 3520
+0.04.080.166 E ggml_gallocr_reserve_n_impl: graph needs 7322.2 MiB in 1 chunk(s), the external CUDA1 buffer holds 1581.2 MiB
+0.04.080.169 E graph_reserve: failed to allocate compute buffers
+0.04.080.175 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 3520: micro-batch 2656
+0.04.094.154 E ggml_gallocr_reserve_n_impl: graph needs 5526.1 MiB in 1 chunk(s), the external CUDA1 buffer holds 1581.2 MiB
+0.04.094.156 E graph_reserve: failed to allocate compute buffers
+0.04.094.163 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 2656: micro-batch 1984
+0.04.105.401 E ggml_gallocr_reserve_n_impl: graph needs 4129.1 MiB in 1 chunk(s), the external CUDA1 buffer holds 1581.2 MiB
+0.04.105.404 E graph_reserve: failed to allocate compute buffers
+0.04.105.411 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 1984: micro-batch 1472
+0.04.111.526 E ggml_gallocr_reserve_n_impl: graph needs 3064.8 MiB in 1 chunk(s), the external CUDA1 buffer holds 1581.2 MiB
+0.04.111.529 E graph_reserve: failed to allocate compute buffers
+0.04.111.537 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 1472: micro-batch 1088
+0.04.120.956 E ggml_gallocr_reserve_n_impl: graph needs 2266.5 MiB in 1 chunk(s), the external CUDA1 buffer holds 1581.2 MiB
+0.04.120.959 E graph_reserve: failed to allocate compute buffers
+0.04.120.966 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 1088: micro-batch 800
+0.04.133.089 E ggml_gallocr_reserve_n_impl: graph needs 1681.1 MiB in 1 chunk(s), the external CUDA1 buffer holds 1581.2 MiB
+0.04.133.092 E graph_reserve: failed to allocate compute buffers
+0.04.133.100 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 800: micro-batch 576
+0.04.242.325 W moe_alias_shrink_fork: the pool lends 1581 MiB, graph + scratch + all staging slots need 3937 MiB at micro-batch 576: big passes get fewer or no slots, the micro-batch stays
+0.04.243.380 W moe-cache: max-batch auto = 56 (stored probe)
+0.04.378.778 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 262144, kv_unified = 'false'
+0.04.384.207 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.04.384.239 I srv  llama_server: model loaded
+0.04.384.243 I srv  llama_server: listening on http://127.0.0.1:8099
+0.05.032.345 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.05.032.402 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.05.037.025 W prefill split: graph of 483 tokens built and placed in 1.3 ms
+0.05.505.539 W prefill split: graph of 483 tokens built and placed in 1.3 ms
+0.05.914.197 W prefill split: graph of 483 tokens built and placed in 1.4 ms
+0.06.345.700 W prefill split: graph of 483 tokens built and placed in 1.4 ms
+0.06.773.071 W prefill split: graph of 479 tokens built and placed in 1.4 ms
+0.07.233.316 W prefill split: graph of 576 tokens built and placed in 1.4 ms
+0.07.827.493 I slot print_timing: id  0 | task 0 | prompt eval time =    2750.70 ms /  2991 tokens (    0.92 ms per token,  1087.36 tokens per second)
+0.07.827.499 I slot print_timing: id  0 | task 0 |        eval time =      44.35 ms /     4 tokens (   14.78 ms per token,    67.64 tokens per second)
+0.07.827.500 I slot print_timing: id  0 | task 0 |       total time =    2795.05 ms /  2995 tokens
+0.07.827.503 I slot print_timing: id  0 | task 0 |    graphs reused =          2
+0.07.827.546 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 63.6% this request / 49.5% overall, 26..180 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.07.827.551 I slot print_timing: id  0 | task 0 |        moe churn = 738 uploads, 1449 evictions, 1468.3 MiB uploaded (this request)
+0.07.827.555 I slot print_timing: id  0 | task 0 |          threads = 6 decode / 8 batch, batch 8192, ubatch 576
+0.07.827.682 I slot      release: id  0 | task 0 | stop processing: n_tokens = 2994, truncated = 0
+0.07.834.712 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.999
+0.07.834.741 I slot launch_slot_: id  0 | task 7 | processing task, is_child = 0
+0.07.841.310 W prefill split: graph of 483 tokens built and placed in 1.4 ms
+0.08.223.370 W prefill split: graph of 483 tokens built and placed in 1.3 ms
+0.08.623.716 W prefill split: graph of 483 tokens built and placed in 1.4 ms
+0.09.046.830 W prefill split: graph of 483 tokens built and placed in 1.3 ms
+0.09.467.168 W prefill split: graph of 479 tokens built and placed in 1.3 ms
+0.09.919.050 W prefill split: graph of 576 tokens built and placed in 1.3 ms
+0.10.454.309 I slot print_timing: id  0 | task 7 | prompt eval time =    2583.02 ms /  2991 tokens (    0.86 ms per token,  1157.95 tokens per second)
+0.10.454.314 I slot print_timing: id  0 | task 7 |        eval time =      36.53 ms /     4 tokens (   12.18 ms per token,    82.12 tokens per second)
+0.10.454.315 I slot print_timing: id  0 | task 7 |       total time =    2619.55 ms /  2995 tokens
+0.10.454.315 I slot print_timing: id  0 | task 7 |    graphs reused =          4
+0.10.454.352 I slot print_timing: id  0 | task 7 |        moe cache = on, hit 63.3% this request / 55.6% overall, 25..182 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.10.454.354 I slot print_timing: id  0 | task 7 |        moe churn = 601 uploads, 755 evictions, 1203.0 MiB uploaded (this request)
+0.10.454.355 I slot print_timing: id  0 | task 7 |          threads = 6 decode / 8 batch, batch 8192, ubatch 576
+0.10.454.469 I slot      release: id  0 | task 7 | stop processing: n_tokens = 2994, truncated = 0
+0.10.461.337 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.999
+0.10.461.361 I slot launch_slot_: id  0 | task 14 | processing task, is_child = 0
+0.10.467.822 W prefill split: graph of 483 tokens built and placed in 1.4 ms
+0.10.849.391 W prefill split: graph of 483 tokens built and placed in 1.3 ms
+0.11.250.026 W prefill split: graph of 483 tokens built and placed in 1.3 ms
+0.11.673.024 W prefill split: graph of 483 tokens built and placed in 1.3 ms
+0.12.093.472 W prefill split: graph of 479 tokens built and placed in 1.3 ms
+0.12.546.595 W prefill split: graph of 576 tokens built and placed in 1.3 ms
+0.13.084.089 I slot print_timing: id  0 | task 14 | prompt eval time =    2583.75 ms /  2991 tokens (    0.86 ms per token,  1157.62 tokens per second)
+0.13.084.096 I slot print_timing: id  0 | task 14 |        eval time =      38.96 ms /     4 tokens (   12.99 ms per token,    77.01 tokens per second)
+0.13.084.097 I slot print_timing: id  0 | task 14 |       total time =    2622.71 ms /  2995 tokens
+0.13.084.098 I slot print_timing: id  0 | task 14 |    graphs reused =          6
+0.13.084.134 I slot print_timing: id  0 | task 14 |        moe cache = on, hit 66.2% this request / 58.8% overall, 28..182 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.13.084.135 I slot print_timing: id  0 | task 14 |        moe churn = 590 uploads, 766 evictions, 1197.5 MiB uploaded (this request)
+0.13.084.136 I slot print_timing: id  0 | task 14 |          threads = 6 decode / 8 batch, batch 8192, ubatch 576
+0.13.084.250 I slot      release: id  0 | task 14 | stop processing: n_tokens = 2994, truncated = 0
+0.13.090.859 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.999
+0.13.090.891 I slot launch_slot_: id  0 | task 21 | processing task, is_child = 0
+0.13.098.959 W prefill split: graph of 483 tokens built and placed in 1.7 ms
+0.13.481.795 W prefill split: graph of 483 tokens built and placed in 1.3 ms
+0.13.882.172 W prefill split: graph of 483 tokens built and placed in 1.3 ms
+0.14.305.278 W prefill split: graph of 483 tokens built and placed in 1.3 ms
+0.14.725.649 W prefill split: graph of 479 tokens built and placed in 1.3 ms
+0.15.178.783 W prefill split: graph of 576 tokens built and placed in 1.3 ms
+0.15.715.023 I slot print_timing: id  0 | task 21 | prompt eval time =    2585.29 ms /  2991 tokens (    0.86 ms per token,  1156.93 tokens per second)
+0.15.715.031 I slot print_timing: id  0 | task 21 |        eval time =      38.82 ms /     4 tokens (   12.94 ms per token,    77.27 tokens per second)
+0.15.715.031 I slot print_timing: id  0 | task 21 |       total time =    2624.12 ms /  2995 tokens
+0.15.715.032 I slot print_timing: id  0 | task 21 |    graphs reused =          8
+0.15.715.064 I slot print_timing: id  0 | task 21 |        moe cache = on, hit 66.2% this request / 60.5% overall, 28..182 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.15.715.066 I slot print_timing: id  0 | task 21 |        moe churn = 593 uploads, 767 evictions, 1199.9 MiB uploaded (this request)
+0.15.715.066 I slot print_timing: id  0 | task 21 |          threads = 6 decode / 8 batch, batch 8192, ubatch 576
+0.15.715.183 I slot      release: id  0 | task 21 | stop processing: n_tokens = 2994, truncated = 0
+0.15.722.015 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.999
+0.15.722.040 I slot launch_slot_: id  0 | task 28 | processing task, is_child = 0
+0.15.728.791 W prefill split: graph of 483 tokens built and placed in 1.4 ms
+0.16.110.556 W prefill split: graph of 483 tokens built and placed in 1.3 ms
+0.16.511.413 W prefill split: graph of 483 tokens built and placed in 1.4 ms
+0.16.935.200 W prefill split: graph of 483 tokens built and placed in 1.3 ms
+0.17.356.243 W prefill split: graph of 479 tokens built and placed in 1.3 ms
+0.17.809.071 W prefill split: graph of 576 tokens built and placed in 1.3 ms
+0.18.345.466 I slot print_timing: id  0 | task 28 | prompt eval time =    2585.59 ms /  2991 tokens (    0.86 ms per token,  1156.79 tokens per second)
+0.18.345.470 I slot print_timing: id  0 | task 28 |        eval time =      37.82 ms /     4 tokens (   12.61 ms per token,    79.33 tokens per second)
+0.18.345.471 I slot print_timing: id  0 | task 28 |       total time =    2623.41 ms /  2995 tokens
+0.18.345.472 I slot print_timing: id  0 | task 28 |    graphs reused =         10
+0.18.345.516 I slot print_timing: id  0 | task 28 |        moe cache = on, hit 64.0% this request / 61.2% overall, 26..182 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.18.345.518 I slot print_timing: id  0 | task 28 |        moe churn = 599 uploads, 766 evictions, 1206.6 MiB uploaded (this request)
+0.18.345.520 I slot print_timing: id  0 | task 28 |          threads = 6 decode / 8 batch, batch 8192, ubatch 576
+0.18.345.633 I slot      release: id  0 | task 28 | stop processing: n_tokens = 2994, truncated = 0
+0.19.115.843 I srv    operator(): operator(): cleaning up before exit...
+0.19.116.452 W moe-cache: steps=31 hits=2618 misses=1662 hit-rate=61.2%, prefill experts from cache 21438/124020, kept from prefill 662

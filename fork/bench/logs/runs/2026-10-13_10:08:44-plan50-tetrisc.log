@@ -1,0 +1,38 @@
+0.00.001.242 I srv  llama_server: initializing ...
+0.00.450.251 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.450.653 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.452.637 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+ggml_cuda_host_malloc_registered: 3.7 GiB populated in 0.2 s (3.0 reserved 1024 MiB pages, 0.7 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.02.615.225 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.02.642.244 I cmn          init: llama threadpool init, n_threads = 8
+0.02.669.422 W moe-cache: 9 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.02.669.432 W moe-cache: 7 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.02.671.031 W moe-cache: block pool on CUDA0: 9 layers, 1049.3 MiB, size classes: 128 x 3.92 MiB (4 layers), 160 x 3.38 MiB (5 layers); no blocks reserved per layer
+0.02.672.268 W moe-cache: block pool on CUDA1: 7 layers, 833.3 MiB, size classes: 96 x 3.38 MiB (3 layers), 128 x 3.92 MiB (4 layers); no blocks reserved per layer
+0.02.672.608 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+0.03.467.418 W moe-cache: probe: links alone link 0 22.1 link 1 5.5 GB/s; CPU threads:GB/s alone/with links 1:25.6/41.8 2:41.2/44.8 3:41.3/44.6 4:40.1/44.6 -> CPU 41.3 GB/s (saturated by 2 threads), RAM budget 44.8 GB/s
+0.03.467.457 W moe-cache: 9 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.03.467.497 W operator(): MoE expert cache enabled: 16 layers, slots/layer 96..160, 2 inserts/step, 23122.9 MiB device memory
+0.06.829.477 W moe-cache: max-batch auto = 107 (timed batches, cache path c / streamed s: c16=90ms c64=132ms c128=158ms s64=147ms s128=150ms s256=156ms s512=168ms)
+0.06.829.658 W moe_probe_costs_fork: cache-path probe took 3.4 s
+0.06.845.666 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, kv_unified = 'true'
+0.06.849.008 I srv  llama_server: model loaded
+0.06.849.015 I srv  llama_server: listening on http://127.0.0.1:8099
+0.07.142.660 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.07.142.713 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.08.139.862 I slot print_timing: id  3 | task 0 | prompt eval time =      67.14 ms /    20 tokens (    3.36 ms per token,   297.89 tokens per second)
+0.08.139.868 I slot print_timing: id  3 | task 0 |        eval time =     929.98 ms /   120 tokens (    7.81 ms per token,   127.96 tokens per second)
+0.08.139.869 I slot print_timing: id  3 | task 0 |       total time =     997.12 ms /   140 tokens
+0.08.139.871 I slot print_timing: id  3 | task 0 |    graphs reused =        125
+0.08.139.915 I slot print_timing: id  3 | task 0 |        moe cache = on, hit 78.3% this request / 78.5% overall, 25..38 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.08.139.919 I slot print_timing: id  3 | task 0 |        moe churn = 718 uploads, 731 evictions, 2715.7 MiB uploaded (this request)
+0.08.139.920 I slot print_timing: id  3 | task 0 |          threads = 4 decode / 8 batch, batch 2048, ubatch 2048
+0.08.139.969 I slot      release: id  3 | task 0 | stop processing: n_tokens = 139, truncated = 0
+0.09.169.761 I srv    operator(): operator(): cleaning up before exit...
+0.09.170.951 W moe-cache: steps=136 hits=53676 misses=14668 hit-rate=78.5%, prefill experts from cache 0/0, kept from prefill 0
+Collecting data...
+Generating '/tmp/nsys-report-c1f3.qdstrm'
+[1/1] [0%                          ] ml-EAGER.nsys-rep[1/1] [0%                          ] ml-EAGER.nsys-rep[1/1] [11%                         ] ml-EAGER.nsys-rep[1/1] [12%                         ] ml-EAGER.nsys-rep[1/1] [9%                          ] ml-EAGER.nsys-rep[1/1] [8%                          ] ml-EAGER.nsys-rep[1/1] [9%                          ] ml-EAGER.nsys-rep[1/1] [7%                          ] ml-EAGER.nsys-rep[1/1] [6%                          ] ml-EAGER.nsys-rep[1/1] [=15%                        ] ml-EAGER.nsys-rep[1/1] [13%                         ] ml-EAGER.nsys-rep[1/1] [11%                         ] ml-EAGER.nsys-rep[1/1] [10%                         ] ml-EAGER.nsys-rep[1/1] [9%                          ] ml-EAGER.nsys-rep[1/1] [14%                         ] ml-EAGER.nsys-rep[1/1] [12%                         ] ml-EAGER.nsys-rep[1/1] [11%                         ] ml-EAGER.nsys-rep[1/1] [10%                         ] ml-EAGER.nsys-rep[1/1] [9%                          ] ml-EAGER.nsys-rep[1/1] [8%                          ] ml-EAGER.nsys-rep[1/1] [7%                          ] ml-EAGER.nsys-rep[1/1] [6%                          ] ml-EAGER.nsys-rep[1/1] [5%                          ] ml-EAGER.nsys-rep[1/1] [5%                          ] ml-EAGER.nsys-rep[1/1] [6%                          ] ml-EAGER.nsys-rep[1/1] [7%                          ] ml-EAGER.nsys-rep[1/1] [8%                          ] ml-EAGER.nsys-rep[1/1] [9%                          ] ml-EAGER.nsys-rep[1/1] [10%                         ] ml-EAGER.nsys-rep[1/1] [11%                         ] ml-EAGER.nsys-rep[1/1] [12%                         ] ml-EAGER.nsys-rep[1/1] [14%                         ] ml-EAGER.nsys-rep[1/1] [=15%                        ] ml-EAGER.nsys-rep[1/1] [=16%                        ] ml-EAGER.nsys-rep[1/1] [=17%                        ] ml-EAGER.nsys-rep[1/1] [==18%                       ] ml-EAGER.nsys-rep[1/1] [==19%                       ] ml-EAGER.nsys-rep[1/1] [==20%                       ] ml-EAGER.nsys-rep[1/1] [===22%                      ] ml-EAGER.nsys-rep[1/1] [===23%                      ] ml-EAGER.nsys-rep[1/1] [===24%                      ] ml-EAGER.nsys-rep[1/1] [====25%                     ] ml-EAGER.nsys-rep[1/1] [====26%                     ] ml-EAGER.nsys-rep[1/1] [====27%                     ] ml-EAGER.nsys-rep[1/1] [====28%                     ] ml-EAGER.nsys-rep[1/1] [=====30%                    ] ml-EAGER.nsys-rep[1/1] [=====31%                    ] ml-EAGER.nsys-rep[1/1] [=====32%                    ] ml-EAGER.nsys-rep[1/1] [======33%                   ] ml-EAGER.nsys-rep[1/1] [======34%                   ] ml-EAGER.nsys-rep[1/1] [======35%                   ] ml-EAGER.nsys-rep[1/1] [=======36%                  ] ml-EAGER.nsys-rep[1/1] [=======38%                  ] ml-EAGER.nsys-rep[1/1] [=======39%                  ] ml-EAGER.nsys-rep[1/1] [========40%                 ] ml-EAGER.nsys-rep[1/1] [========41%                 ] ml-EAGER.nsys-rep[1/1] [========42%                 ] ml-EAGER.nsys-rep[1/1] [=========44%                ] ml-EAGER.nsys-rep[1/1] [=========45%                ] ml-EAGER.nsys-rep[1/1] [=========46%                ] ml-EAGER.nsys-rep[1/1] [==========47%               ] ml-EAGER.nsys-rep[1/1] [==========48%               ] ml-EAGER.nsys-rep[1/1] [===========50%              ] ml-EAGER.nsys-rep[1/1] [========================100%] ml-EAGER.nsys-rep[1/1] [========================100%] ml-EAGER.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/ml-EAGER.nsys-rep

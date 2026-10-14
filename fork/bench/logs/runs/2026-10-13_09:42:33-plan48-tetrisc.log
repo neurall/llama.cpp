@@ -1,0 +1,26 @@
+0.00.256.923 I srv  llama_server: initializing ...
+0.00.256.934 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.257.250 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.259.195 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+ggml_cuda_host_malloc_registered: 3.7 GiB populated in 0.2 s (3.0 reserved 1024 MiB pages, 0.7 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.01.339.177 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.01.366.411 I cmn          init: llama threadpool init, n_threads = 8
+0.01.459.804 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, kv_unified = 'true'
+0.01.462.171 I srv  llama_server: model loaded
+0.01.462.178 I srv  llama_server: listening on http://127.0.0.1:8099
+0.02.143.903 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.02.143.982 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.04.255.395 I slot print_timing: id  3 | task 0 | prompt eval time =     167.61 ms /    20 tokens (    8.38 ms per token,   119.33 tokens per second)
+0.04.255.399 I slot print_timing: id  3 | task 0 |        eval time =    1943.77 ms /   120 tokens (   16.33 ms per token,    61.22 tokens per second)
+0.04.255.399 I slot print_timing: id  3 | task 0 |       total time =    2111.37 ms /   140 tokens
+0.04.255.402 I slot print_timing: id  3 | task 0 |    graphs reused =        119
+0.04.255.420 I slot print_timing: id  3 | task 0 |        moe cache = off
+0.04.255.421 I slot print_timing: id  3 | task 0 |          threads = 6 decode / 8 batch, batch 2048, ubatch 2048
+0.04.255.456 I slot      release: id  3 | task 0 | stop processing: n_tokens = 139, truncated = 0
+0.05.192.896 I srv    operator(): operator(): cleaning up before exit...
+Collecting data...
+Generating '/tmp/nsys-report-03c9.qdstrm'
+[1/1] [0%                          ] sim-single.nsys-rep[1/1] [0%                          ] sim-single.nsys-rep[1/1] [6%                          ] sim-single.nsys-rep[1/1] [7%                          ] sim-single.nsys-rep[1/1] [8%                          ] sim-single.nsys-rep[1/1] [6%                          ] sim-single.nsys-rep[1/1] [==21%                       ] sim-single.nsys-rep[1/1] [=16%                        ] sim-single.nsys-rep[1/1] [13%                         ] sim-single.nsys-rep[1/1] [11%                         ] sim-single.nsys-rep[1/1] [==18%                       ] sim-single.nsys-rep[1/1] [=16%                        ] sim-single.nsys-rep[1/1] [14%                         ] sim-single.nsys-rep[1/1] [12%                         ] sim-single.nsys-rep[1/1] [11%                         ] sim-single.nsys-rep[1/1] [10%                         ] sim-single.nsys-rep[1/1] [9%                          ] sim-single.nsys-rep[1/1] [8%                          ] sim-single.nsys-rep[1/1] [7%                          ] sim-single.nsys-rep[1/1] [8%                          ] sim-single.nsys-rep[1/1] [11%                         ] sim-single.nsys-rep[1/1] [14%                         ] sim-single.nsys-rep[1/1] [=17%                        ] sim-single.nsys-rep[1/1] [==20%                       ] sim-single.nsys-rep[1/1] [===23%                      ] sim-single.nsys-rep[1/1] [====27%                     ] sim-single.nsys-rep[1/1] [=====30%                    ] sim-single.nsys-rep[1/1] [======33%                   ] sim-single.nsys-rep[1/1] [=======36%                  ] sim-single.nsys-rep[1/1] [=======39%                  ] sim-single.nsys-rep[1/1] [========42%                 ] sim-single.nsys-rep[1/1] [=========45%                ] sim-single.nsys-rep[1/1] [==========49%               ] sim-single.nsys-rep[1/1] [===========51%              ] sim-single.nsys-rep[1/1] [========================100%] sim-single.nsys-rep[1/1] [========================100%] sim-single.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/sim-single.nsys-rep

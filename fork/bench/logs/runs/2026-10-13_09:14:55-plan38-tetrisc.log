@@ -1,0 +1,20 @@
+0.00.268.208 I srv  llama_server: initializing ...
+0.00.268.219 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.268.540 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.270.197 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+0.00.569.325 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.00.688.605 I common_init_result: weights NOT pinned: mmap / page cache (load mode auto)
+0.00.713.314 I cmn          init: llama threadpool init, n_threads = 8
+0.00.790.803 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, kv_unified = 'true'
+0.00.793.124 I srv  llama_server: model loaded
+0.00.793.128 I srv  llama_server: listening on http://127.0.0.1:8099
+0.01.019.598 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.01.019.648 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.02.965.017 I slot print_timing: id  3 | task 0 | prompt eval time =     161.90 ms /    20 tokens (    8.10 ms per token,   123.53 tokens per second)
+0.02.965.022 I slot print_timing: id  3 | task 0 |        eval time =    1783.43 ms /   120 tokens (   14.99 ms per token,    66.73 tokens per second)
+0.02.965.023 I slot print_timing: id  3 | task 0 |       total time =    1945.34 ms /   140 tokens
+0.02.965.027 I slot print_timing: id  3 | task 0 |    graphs reused =        119
+0.02.965.045 I slot print_timing: id  3 | task 0 |        moe cache = off
+0.02.965.047 I slot print_timing: id  3 | task 0 |          threads = 6 decode / 8 batch, batch 2048, ubatch 2048
+0.02.965.088 I slot      release: id  3 | task 0 | stop processing: n_tokens = 139, truncated = 0
+0.04.067.842 I srv    operator(): operator(): cleaning up before exit...

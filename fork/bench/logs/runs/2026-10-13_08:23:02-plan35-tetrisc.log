@@ -1,0 +1,44 @@
+0.00.001.142 I srv  llama_server: initializing ...
+0.00.263.506 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.263.895 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.265.730 I srv    load_model: loading model '/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf'
+0.00.635.592 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 0 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf 117481680096place.g2.6b6844dc.v3)
+0.00.635.705 I common_moe_cache_auto_impl: MoE model (109.4 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 2048, ubatch 8192, threads 6, weights pinned (settings you pass win)
+0.01.862.683 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.01.862.687 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+ggml_cuda_host_malloc_registered: 100.5 GiB populated in 6.5 s (100.0 reserved 1024 MiB pages, 0.5 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 3.0 s
+0.42.117.217 I common_init_result: weights pinned (swapped 0.0 GiB while loading, 11.3 GiB RAM left)
+0.42.285.201 I cmn          init: llama threadpool init, n_threads = 6
+0.42.571.631 W moe-cache: 5 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.42.571.635 W moe-cache: 37 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.42.595.726 W moe-cache: block pool on CUDA0: 5 layers, 17566.7 MiB, size classes: 861 x 13.50 MiB (3 layers), 574 x 10.31 MiB (2 layers); no blocks reserved per layer
+0.42.634.609 W moe-cache: block pool on CUDA1: 37 layers, 15296.4 MiB, size classes: 52 x 10.31 MiB (1 layers), 1872 x 7.88 MiB (36 layers); no blocks reserved per layer
+0.42.635.747 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+0.43.432.196 W moe-cache: probe: links alone link 0 24.7 link 1 5.7 GB/s; CPU threads:GB/s alone/with links 1:26.0/43.8 2:41.3/45.0 3:41.2/44.9 4:39.4/44.4 -> CPU 41.3 GB/s (saturated by 2 threads), RAM budget 45.0 GB/s
+0.43.432.234 W moe-cache: 5 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.43.432.266 W operator(): MoE expert cache enabled: 42 layers, slots/layer 52..1872, 2 inserts/step, 1734227.4 MiB device memory
+1.37.498.435 W moe-cache: max-batch auto = 128 (timed batches, cache path c / streamed s: c16=878ms c64=2190ms c128=3126ms s64=2655ms s128=5678ms s256=5822ms s512=6086ms)
+1.37.498.653 W moe_probe_costs_fork: cache-path probe took 53.9 s
+1.37.648.507 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 2048, kv_unified = 'false'
+1.37.672.324 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.37.672.368 I srv  llama_server: model loaded
+1.37.672.373 I srv  llama_server: listening on http://127.0.0.1:8099
+1.38.197.293 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+1.38.197.332 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+1.45.829.127 I slot print_timing: id  0 | task 0 | n_gen =    100, tg =  15.55 t/s, tg_3s =  15.71 t/s
+1.47.007.363 I slot print_timing: id  0 | task 0 | prompt eval time =    1265.88 ms /    19 tokens (   66.63 ms per token,    15.01 tokens per second)
+1.47.007.369 I slot print_timing: id  0 | task 0 |        eval time =    7544.12 ms /   120 tokens (   63.40 ms per token,    15.77 tokens per second)
+1.47.007.370 I slot print_timing: id  0 | task 0 |       total time =    8810.00 ms /   139 tokens
+1.47.007.374 I slot print_timing: id  0 | task 0 |    graphs reused =        125
+1.47.007.428 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 57.2% this request / 52.2% overall, 41..256 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+1.47.007.433 I slot print_timing: id  0 | task 0 |        moe churn = 5324 uploads, 4559 evictions, 47925.0 MiB uploaded (this request)
+1.47.007.434 I slot print_timing: id  0 | task 0 |          threads = 4 decode / 6 batch, batch 2048, ubatch 2048
+1.47.007.491 I slot      release: id  0 | task 0 | stop processing: n_tokens = 138, truncated = 0
+1.48.256.184 I srv    operator(): operator(): cleaning up before exit...
+1.48.257.977 W moe-cache: steps=138 hits=98312 misses=89848 hit-rate=52.2%, prefill experts from cache 28859/180636, kept from prefill 2586
+Collecting data...
+Generating '/tmp/nsys-report-9b7b.qdstrm'
+[1/1] [0%                          ] t35u20.nsys-rep[1/1] [0%                          ] t35u20.nsys-rep[1/1] [0%                          ] t35u20.nsys-rep[1/1] [=16%                        ] t35u20.nsys-rep[1/1] [=15%                        ] t35u20.nsys-rep[1/1] [14%                         ] t35u20.nsys-rep[1/1] [13%                         ] t35u20.nsys-rep[1/1] [12%                         ] t35u20.nsys-rep[1/1] [===22%                      ] t35u20.nsys-rep[1/1] [==21%                       ] t35u20.nsys-rep[1/1] [==20%                       ] t35u20.nsys-rep[1/1] [===24%                      ] t35u20.nsys-rep[1/1] [===23%                      ] t35u20.nsys-rep[1/1] [===22%                      ] t35u20.nsys-rep[1/1] [==21%                       ] t35u20.nsys-rep[1/1] [==20%                       ] t35u20.nsys-rep[1/1] [==19%                       ] t35u20.nsys-rep[1/1] [==20%                       ] t35u20.nsys-rep[1/1] [==21%                       ] t35u20.nsys-rep[1/1] [===22%                      ] t35u20.nsys-rep[1/1] [===23%                      ] t35u20.nsys-rep[1/1] [===24%                      ] t35u20.nsys-rep[1/1] [====25%                     ] t35u20.nsys-rep[1/1] [====26%                     ] t35u20.nsys-rep[1/1] [====27%                     ] t35u20.nsys-rep[1/1] [====28%                     ] t35u20.nsys-rep[1/1] [=====29%                    ] t35u20.nsys-rep[1/1] [=====30%                    ] t35u20.nsys-rep[1/1] [=====31%                    ] t35u20.nsys-rep[1/1] [=====32%                    ] t35u20.nsys-rep[1/1] [======33%                   ] t35u20.nsys-rep[1/1] [======34%                   ] t35u20.nsys-rep[1/1] [======35%                   ] t35u20.nsys-rep[1/1] [=======36%                  ] t35u20.nsys-rep[1/1] [=======37%                  ] t35u20.nsys-rep[1/1] [=======38%                  ] t35u20.nsys-rep[1/1] [=======39%                  ] t35u20.nsys-rep[1/1] [========40%                 ] t35u20.nsys-rep[1/1] [========41%                 ] t35u20.nsys-rep[1/1] [========42%                 ] t35u20.nsys-rep[1/1] [=========43%                ] t35u20.nsys-rep[1/1] [=========44%                ] t35u20.nsys-rep[1/1] [=========45%                ] t35u20.nsys-rep[1/1] [=========46%                ] t35u20.nsys-rep[1/1] [==========47%               ] t35u20.nsys-rep[1/1] [==========48%               ] t35u20.nsys-rep[1/1] [==========49%               ] t35u20.nsys-rep[1/1] [===========50%              ] t35u20.nsys-rep[1/1] [===========51%              ] t35u20.nsys-rep[1/1] [===========52%              ] t35u20.nsys-rep[1/1] [===========53%              ] t35u20.nsys-rep[1/1] [============54%             ] t35u20.nsys-rep[1/1] [============55%             ] t35u20.nsys-rep[1/1] [============56%             ] t35u20.nsys-rep[1/1] [============57%             ] t35u20.nsys-rep[1/1] [=============58%            ] t35u20.nsys-rep[1/1] [=============59%            ] t35u20.nsys-rep[1/1] [=============60%            ] t35u20.nsys-rep[1/1] [==============61%           ] t35u20.nsys-rep[1/1] [==============62%           ] t35u20.nsys-rep[1/1] [==============63%           ] t35u20.nsys-rep[1/1] [==============64%           ] t35u20.nsys-rep[1/1] [===============65%          ] t35u20.nsys-rep[1/1] [===============66%          ] t35u20.nsys-rep[1/1] [===============67%          ] t35u20.nsys-rep[1/1] [========================100%] t35u20.nsys-rep[1/1] [========================100%] t35u20.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/t35u20.nsys-rep

@@ -1,0 +1,97 @@
+0.00.001.106 I srv  llama_server: initializing ...
+0.00.256.482 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.256.857 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.258.766 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+ggml_cuda_host_malloc_registered: 3.7 GiB populated in 0.2 s (3.0 reserved 1024 MiB pages, 0.7 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.02.972.212 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.03.026.779 I cmn          init: llama threadpool init, n_threads = 8
+0.03.096.834 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.03.096.840 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/11, cross-card-fallback 0/99, expert-ids-read 0/0, d2h 0/16, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.03.121.813 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.03.121.820 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/22, cross-card-fallback 2/198, expert-ids-read 0/0, d2h 0/32, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.03.122.526 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 4096, kv_unified = 'true'
+0.03.124.802 I srv  llama_server: model loaded
+0.03.124.808 I srv  llama_server: listening on http://127.0.0.1:8099
+0.04.140.025 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.04.140.066 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.04.153.714 W launch-trace: split 0/57 card CPU nodes 2 first GET_ROWS embd inputs 0 at 2358 us abs 128246375331
+0.04.158.306 W launch-trace: split 1/57 card CUDA0 nodes 39 first DUP node_2 inputs 8 at 6948 us abs 128246379921
+0.04.228.126 W launch-trace: split 2/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-0 inputs 3 at 76769 us abs 128246449742
+0.04.234.949 W launch-trace: split 3/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-0 inputs 1 at 83596 us abs 128246456569
+0.04.239.301 W launch-trace: split 4/57 card CUDA1 nodes 18 first MUL_MAT_ID ffn_moe_down-0 inputs 3 at 87948 us abs 128246460921
+0.04.249.241 W launch-trace: split 5/57 card CUDA0 nodes 37 first RMS_NORM norm-1 inputs 1 at 97889 us abs 128246470862
+0.04.249.820 W launch-trace: split 6/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-1 inputs 3 at 98467 us abs 128246471440
+0.04.267.747 W launch-trace: split 7/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-1 inputs 1 at 116395 us abs 128246489368
+0.04.267.812 W launch-trace: split 8/57 card CUDA1 nodes 18 first MUL_MAT_ID ffn_moe_down-1 inputs 3 at 116460 us abs 128246489433
+0.04.276.723 W launch-trace: split 9/57 card CUDA0 nodes 37 first RMS_NORM norm-2 inputs 1 at 125371 us abs 128246498344
+0.04.285.560 W launch-trace: split 10/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-2 inputs 3 at 134207 us abs 128246507180
+0.04.303.776 W launch-trace: split 11/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-2 inputs 1 at 152424 us abs 128246525397
+0.04.303.840 W launch-trace: split 12/57 card CUDA1 nodes 18 first MUL_MAT_ID ffn_moe_down-2 inputs 3 at 152488 us abs 128246525461
+0.04.311.485 W launch-trace: split 13/57 card CUDA0 nodes 37 first RMS_NORM norm-3 inputs 1 at 160133 us abs 128246533106
+0.04.320.281 W launch-trace: split 14/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-3 inputs 3 at 168929 us abs 128246541902
+0.04.338.310 W launch-trace: split 15/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-3 inputs 1 at 186958 us abs 128246559931
+0.04.338.370 W launch-trace: split 16/57 card CUDA1 nodes 18 first MUL_MAT_ID ffn_moe_down-3 inputs 3 at 187018 us abs 128246559991
+0.04.345.991 W launch-trace: split 17/57 card CUDA0 nodes 37 first RMS_NORM norm-4 inputs 1 at 194639 us abs 128246567612
+0.04.354.806 W launch-trace: split 18/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-4 inputs 3 at 203454 us abs 128246576427
+0.04.372.880 W launch-trace: split 19/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-4 inputs 1 at 221528 us abs 128246594501
+0.04.372.945 W launch-trace: split 20/57 card CUDA1 nodes 18 first MUL_MAT_ID ffn_moe_down-4 inputs 3 at 221593 us abs 128246594566
+0.04.381.893 W launch-trace: split 21/57 card CUDA0 nodes 37 first RMS_NORM norm-5 inputs 1 at 230541 us abs 128246603514
+0.04.390.729 W launch-trace: split 22/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-5 inputs 3 at 239376 us abs 128246612349
+0.04.408.995 W launch-trace: split 23/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-5 inputs 1 at 257643 us abs 128246630616
+0.04.409.058 W launch-trace: split 24/57 card CUDA1 nodes 18 first MUL_MAT_ID ffn_moe_down-5 inputs 3 at 257707 us abs 128246630680
+0.04.416.708 W launch-trace: split 25/57 card CUDA0 nodes 37 first RMS_NORM norm-6 inputs 1 at 265355 us abs 128246638328
+0.04.425.547 W launch-trace: split 26/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-6 inputs 3 at 274194 us abs 128246647167
+0.04.443.509 W launch-trace: split 27/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-6 inputs 1 at 292157 us abs 128246665130
+0.04.443.574 W launch-trace: split 28/57 card CUDA1 nodes 18 first MUL_MAT_ID ffn_moe_down-6 inputs 3 at 292222 us abs 128246665195
+0.04.451.086 W launch-trace: split 29/57 card CUDA0 nodes 37 first RMS_NORM norm-7 inputs 1 at 299733 us abs 128246672706
+0.04.459.947 W launch-trace: split 30/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-7 inputs 3 at 308594 us abs 128246681567
+0.04.477.821 W launch-trace: split 31/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-7 inputs 1 at 326468 us abs 128246699441
+0.04.477.884 W launch-trace: split 32/57 card CUDA1 nodes 18 first MUL_MAT_ID ffn_moe_down-7 inputs 3 at 326532 us abs 128246699505
+0.04.486.702 W launch-trace: split 33/57 card CUDA0 nodes 37 first RMS_NORM norm-8 inputs 1 at 335350 us abs 128246708323
+0.04.495.567 W launch-trace: split 34/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-8 inputs 3 at 344215 us abs 128246717188
+0.04.513.504 W launch-trace: split 35/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-8 inputs 1 at 362152 us abs 128246735125
+0.04.513.571 W launch-trace: split 36/57 card CUDA1 nodes 55 first MUL_MAT_ID ffn_moe_down-8 inputs 7 at 362219 us abs 128246735192
+0.04.526.794 W sync-wait 5730 us at site 1: input inp_pos, from CPU to CUDA1 abs 128246742684
+0.04.540.229 W launch-trace: split 37/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-9 inputs 1 at 388870 us abs 128246761843
+0.04.540.327 W launch-trace: split 38/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-9 inputs 1 at 388975 us abs 128246761948
+0.04.540.409 W launch-trace: split 39/57 card CUDA1 nodes 55 first MUL_MAT_ID ffn_moe_down-9 inputs 1 at 389057 us abs 128246762030
+0.04.540.831 W launch-trace: split 40/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-10 inputs 1 at 389478 us abs 128246762451
+0.04.540.886 W launch-trace: split 41/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-10 inputs 1 at 389534 us abs 128246762507
+0.04.540.956 W launch-trace: split 42/57 card CUDA1 nodes 55 first MUL_MAT_ID ffn_moe_down-10 inputs 1 at 389604 us abs 128246762577
+0.04.541.353 W launch-trace: split 43/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-11 inputs 1 at 390000 us abs 128246762973
+0.04.541.423 W launch-trace: split 44/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-11 inputs 1 at 390072 us abs 128246763045
+0.04.541.486 W launch-trace: split 45/57 card CUDA1 nodes 55 first MUL_MAT_ID ffn_moe_down-11 inputs 1 at 390134 us abs 128246763107
+0.04.541.812 W launch-trace: split 46/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-12 inputs 1 at 390460 us abs 128246763433
+0.04.541.866 W launch-trace: split 47/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-12 inputs 1 at 390515 us abs 128246763488
+0.04.541.925 W launch-trace: split 48/57 card CUDA1 nodes 55 first MUL_MAT_ID ffn_moe_down-12 inputs 1 at 390573 us abs 128246763546
+0.04.542.248 W launch-trace: split 49/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-13 inputs 1 at 390896 us abs 128246763869
+0.04.542.302 W launch-trace: split 50/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-13 inputs 1 at 390950 us abs 128246763923
+0.04.542.360 W launch-trace: split 51/57 card CUDA1 nodes 55 first MUL_MAT_ID ffn_moe_down-13 inputs 1 at 391008 us abs 128246763981
+0.04.542.695 W launch-trace: split 52/57 card CUDA1 nodes 1 first MUL_MAT_ID ffn_moe_gate-14 inputs 1 at 391342 us abs 128246764315
+0.04.542.748 W launch-trace: split 53/57 card CUDA1 nodes 2 first MUL_MAT_ID ffn_moe_up-14 inputs 1 at 391396 us abs 128246764369
+0.04.542.800 W launch-trace: split 54/57 card CUDA1 nodes 57 first MUL_MAT_ID ffn_moe_down-14 inputs 2 at 391448 us abs 128246764421
+0.04.602.054 W sync-wait 59250 us at site 1: input out_ids, from CPU to CUDA1 abs 128246764423
+0.04.602.415 W launch-trace: split 55/57 card CPU nodes 4 first MUL_MAT_ID ffn_moe_gate-15 inputs 2 at 451062 us abs 128246824035
+0.04.610.527 W launch-trace: split 56/57 card CUDA1 nodes 20 first MUL ffn_moe_weighted-15 inputs 1 at 459171 us abs 128246832144
+0.04.610.682 W pf-stats (1 tokens, 3 slots, prefetch on): 57 splits, prefetch fired for 45; not staged: no inputs 1, first node not MUL_MAT_ID 147, weight not an input 24, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.04.610.685 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 65/33, cross-card-fallback 11/207, expert-ids-read 0/0, d2h 7/33, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.04.631.144 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.04.631.153 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 65/44, cross-card-fallback 12/261, expert-ids-read 0/0, d2h 7/49, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.04.651.230 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.04.651.236 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 65/55, cross-card-fallback 12/315, expert-ids-read 0/0, d2h 8/65, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.04.666.761 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.04.666.769 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 65/66, cross-card-fallback 12/369, expert-ids-read 0/0, d2h 10/81, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.04.667.045 I slot print_timing: id  3 | task 0 | prompt eval time =     471.07 ms /  3434 tokens (    0.14 ms per token,  7289.77 tokens per second)
+0.04.667.047 I slot print_timing: id  3 | task 0 |        eval time =      55.87 ms /     4 tokens (   18.62 ms per token,    53.70 tokens per second)
+0.04.667.048 I slot print_timing: id  3 | task 0 |       total time =     526.94 ms /  3438 tokens
+0.04.667.051 I slot print_timing: id  3 | task 0 |    graphs reused =          3
+0.04.667.066 I slot print_timing: id  3 | task 0 |        moe cache = off
+0.04.667.068 I slot print_timing: id  3 | task 0 |          threads = 4 decode / 8 batch, batch 4096, ubatch 4096
+0.04.667.242 I slot      release: id  3 | task 0 | stop processing: n_tokens = 3437, truncated = 0
+0.05.171.416 I srv    operator(): operator(): cleaning up before exit...
+Collecting data...
+Generating '/tmp/nsys-report-d5a2.qdstrm'
+[1/1] [0%                          ] ol2h.nsys-rep[1/1] [0%                          ] ol2h.nsys-rep[1/1] [=====30%                    ] ol2h.nsys-rep[1/1] [=====31%                    ] ol2h.nsys-rep[1/1] [=======38%                  ] ol2h.nsys-rep[1/1] [=========45%                ] ol2h.nsys-rep[1/1] [===========52%              ] ol2h.nsys-rep[1/1] [=============59%            ] ol2h.nsys-rep[1/1] [===================79%      ] ol2h.nsys-rep[1/1] [========================100%] ol2h.nsys-rep[1/1] [========================100%] ol2h.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/ol2h.nsys-rep

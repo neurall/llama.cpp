@@ -1,0 +1,26 @@
+0.00.001.113 I srv  llama_server: initializing ...
+0.00.253.245 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.253.637 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.255.581 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+ggml_cuda_host_malloc_registered: 3.7 GiB populated in 0.2 s (3.0 reserved 1024 MiB pages, 0.7 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.01.927.431 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.01.954.512 I cmn          init: llama threadpool init, n_threads = 8
+0.02.051.935 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, kv_unified = 'true'
+0.02.054.316 I srv  llama_server: model loaded
+0.02.054.321 I srv  llama_server: listening on http://127.0.0.1:8099
+0.02.146.508 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.02.146.586 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.04.275.748 I slot print_timing: id  3 | task 0 | prompt eval time =     175.99 ms /    20 tokens (    8.80 ms per token,   113.65 tokens per second)
+0.04.275.755 I slot print_timing: id  3 | task 0 |        eval time =    1953.14 ms /   120 tokens (   16.41 ms per token,    60.93 tokens per second)
+0.04.275.755 I slot print_timing: id  3 | task 0 |       total time =    2129.12 ms /   140 tokens
+0.04.275.759 I slot print_timing: id  3 | task 0 |    graphs reused =        119
+0.04.275.779 I slot print_timing: id  3 | task 0 |        moe cache = off
+0.04.275.780 I slot print_timing: id  3 | task 0 |          threads = 6 decode / 8 batch, batch 2048, ubatch 2048
+0.04.275.815 I slot      release: id  3 | task 0 | stop processing: n_tokens = 139, truncated = 0
+0.05.188.901 I srv    operator(): operator(): cleaning up before exit...
+Collecting data...
+Generating '/tmp/nsys-report-8b45.qdstrm'
+[1/1] [0%                          ] sim-layersplit.nsys-rep[1/1] [0%                          ] sim-layersplit.nsys-rep[1/1] [6%                          ] sim-layersplit.nsys-rep[1/1] [7%                          ] sim-layersplit.nsys-rep[1/1] [8%                          ] sim-layersplit.nsys-rep[1/1] [9%                          ] sim-layersplit.nsys-rep[1/1] [6%                          ] sim-layersplit.nsys-rep[1/1] [==21%                       ] sim-layersplit.nsys-rep[1/1] [=16%                        ] sim-layersplit.nsys-rep[1/1] [13%                         ] sim-layersplit.nsys-rep[1/1] [11%                         ] sim-layersplit.nsys-rep[1/1] [==18%                       ] sim-layersplit.nsys-rep[1/1] [=16%                        ] sim-layersplit.nsys-rep[1/1] [14%                         ] sim-layersplit.nsys-rep[1/1] [12%                         ] sim-layersplit.nsys-rep[1/1] [11%                         ] sim-layersplit.nsys-rep[1/1] [10%                         ] sim-layersplit.nsys-rep[1/1] [9%                          ] sim-layersplit.nsys-rep[1/1] [8%                          ] sim-layersplit.nsys-rep[1/1] [7%                          ] sim-layersplit.nsys-rep[1/1] [8%                          ] sim-layersplit.nsys-rep[1/1] [11%                         ] sim-layersplit.nsys-rep[1/1] [14%                         ] sim-layersplit.nsys-rep[1/1] [=17%                        ] sim-layersplit.nsys-rep[1/1] [==20%                       ] sim-layersplit.nsys-rep[1/1] [===23%                      ] sim-layersplit.nsys-rep[1/1] [====26%                     ] sim-layersplit.nsys-rep[1/1] [=====29%                    ] sim-layersplit.nsys-rep[1/1] [=====31%                    ] sim-layersplit.nsys-rep[1/1] [======34%                   ] sim-layersplit.nsys-rep[1/1] [=======37%                  ] sim-layersplit.nsys-rep[1/1] [========40%                 ] sim-layersplit.nsys-rep[1/1] [=========44%                ] sim-layersplit.nsys-rep[1/1] [==========47%               ] sim-layersplit.nsys-rep[1/1] [===========50%              ] sim-layersplit.nsys-rep[1/1] [===========51%              ] sim-layersplit.nsys-rep[1/1] [========================100%] sim-layersplit.nsys-rep[1/1] [========================100%] sim-layersplit.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/sim-layersplit.nsys-rep

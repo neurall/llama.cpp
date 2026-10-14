@@ -1,0 +1,673 @@
+0.00.000.987 I srv  llama_server: initializing ...
+0.00.255.332 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.255.723 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.257.630 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+ggml_cuda_host_malloc_registered: 3.7 GiB populated in 0.2 s (3.0 reserved 1024 MiB pages, 0.7 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.03.220.162 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.03.276.196 I cmn          init: llama threadpool init, n_threads = 6
+0.03.350.808 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.03.350.820 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/11, cross-card-fallback 1/99, expert-ids-read 0/0, d2h 0/16, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.03.354.025 W moe-cache: 9 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.03.354.027 W moe-cache: 7 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.03.356.949 W moe-cache: block pool on CUDA0: 9 layers, 626.0 MiB, size classes: 76 x 3.92 MiB (4 layers), 95 x 3.38 MiB (5 layers); no blocks reserved per layer
+0.03.359.409 W moe-cache: block pool on CUDA1: 7 layers, 497.8 MiB, size classes: 57 x 3.38 MiB (3 layers), 76 x 3.92 MiB (4 layers); no blocks reserved per layer
+0.03.360.141 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+0.04.156.526 W moe-cache: probe: links alone link 0 19.6 link 1 5.0 GB/s; CPU threads:GB/s alone/with links 1:25.8/42.5 2:40.7/44.9 3:41.3/44.8 4:39.2/44.8 -> CPU 41.3 GB/s (saturated by 2 threads), RAM budget 44.9 GB/s
+0.04.158.621 W moe-cache: 9 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.04.158.646 W operator(): MoE expert cache enabled: 16 layers, slots/layer 57..95, 2 inserts/step, 13752.8 MiB device memory
+0.04.175.836 E ggml_gallocr_reserve_n_impl: graph needs 880.3 MiB in 1 chunk(s), the external CUDA1 buffer holds 298.1 MiB
+0.04.175.838 E graph_reserve: failed to allocate compute buffers
+0.04.175.844 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 4096: micro-batch 3072
+0.04.178.053 E ggml_gallocr_reserve_n_impl: graph needs 729.2 MiB in 1 chunk(s), the external CUDA1 buffer holds 298.1 MiB
+0.04.178.056 E graph_reserve: failed to allocate compute buffers
+0.04.178.061 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 3072: micro-batch 2304
+0.04.181.267 E ggml_gallocr_reserve_n_impl: graph needs 591.2 MiB in 1 chunk(s), the external CUDA1 buffer holds 298.1 MiB
+0.04.181.269 E graph_reserve: failed to allocate compute buffers
+0.04.181.275 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 2304: micro-batch 1728
+0.04.183.575 E ggml_gallocr_reserve_n_impl: graph needs 379.6 MiB in 1 chunk(s), the external CUDA1 buffer holds 298.1 MiB
+0.04.183.577 E graph_reserve: failed to allocate compute buffers
+0.04.183.582 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 1728: micro-batch 1280
+0.04.185.483 E ggml_gallocr_reserve_n_impl: graph needs 327.1 MiB in 1 chunk(s), the external CUDA1 buffer holds 298.1 MiB
+0.04.185.485 E graph_reserve: failed to allocate compute buffers
+0.04.185.490 W moe_alias_shrink_fork: the pool lends 0 MiB, graph + scratch need 0 MiB at micro-batch 1280: micro-batch 960
+0.04.200.486 W moe_alias_shrink_fork: the pool lends 298 MiB, graph + scratch + prefetch staging need 575 MiB at micro-batch 960: micro-batch 512
+0.04.213.937 W moe_alias_shrink_fork: no room for the prefetch staging slots at micro-batch 512: prefetch is skipped for graphs that cannot lend them
+0.04.214.987 W moe-cache: max-batch auto = 128 (stored probe)
+0.04.244.810 W pf-stats (1 tokens, 3 slots, prefetch on): 66 splits, prefetch fired for 0; not staged: no inputs 654, first node not MUL_MAT_ID 654, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.04.244.816 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/22, cross-card-fallback 4/198, expert-ids-read 0/0, d2h 0/32, prev-card 0/16, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.04.291.652 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 4096, kv_unified = 'true'
+0.04.294.578 I srv  llama_server: model loaded
+0.04.294.583 I srv  llama_server: listening on http://127.0.0.1:8099
+0.05.147.873 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.05.147.933 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.05.154.124 W pf-dump: split 1 on CUDA0, why 2, 49 nodes, 8 inputs; nodes:0.05.154.125 W  [DUP node_2]0.05.154.125 W  [SET_ROWS  (view)]0.05.154.126 W  [RMS_NORM norm-0]0.05.154.126 W  [MUL attn_norm-0]0.05.154.126 W  [MUL_MAT Qcur-0]0.05.154.126 W  [RMS_NORM norm-0]0.05.154.126 W  inputs:0.05.154.127 W  [inp_mixed_embd]0.05.154.127 W  [node_1]0.05.154.127 W  [inp_mixed_slots]0.05.154.127 W  [embd]0.05.154.127 W  [inp_pos]0.05.154.127 W  [attn_inp_k_idxs]0.05.154.127 W 
+0.05.154.128 W pf-dump: split 2 on CUDA1, why 2, 9 nodes, 2 inputs; nodes:0.05.154.129 W  [SCALE node_51]0.05.154.129 W  [CLAMP node_52]0.05.154.130 W  [SCALE node_53]0.05.154.130 W  [CLAMP node_54]0.05.154.130 W  [MUL node_55]0.05.154.130 W  [MUL node_56]0.05.154.130 W  inputs:0.05.154.131 W  [ffn_moe_topk-0 (cont) (copy)]0.05.154.131 W  [node_47]0.05.154.131 W 
+0.05.154.743 W pf-dump: split 9 on CUDA0, why 2, 47 nodes, 1 inputs; nodes:0.05.154.743 W  [RMS_NORM norm-1]0.05.154.744 W  [MUL attn_norm-1]0.05.154.744 W  [MUL_MAT Qcur-1]0.05.154.744 W  [RMS_NORM norm-1]0.05.154.744 W  [MUL Qcur_normed-1]0.05.154.744 W  [RESHAPE Qcur_normed-1 (reshaped)]0.05.154.744 W  inputs:0.05.154.745 W  [l_out-0]0.05.154.745 W 
+0.05.154.746 W pf-dump: split 10 on CUDA1, why 2, 9 nodes, 2 inputs; nodes:0.05.154.746 W  [SCALE node_149]0.05.154.746 W  [CLAMP node_150]0.05.154.746 W  [SCALE node_151]0.05.154.747 W  [CLAMP node_152]0.05.154.747 W  [MUL node_153]0.05.154.747 W  [MUL node_154]0.05.154.747 W  inputs:0.05.154.747 W  [ffn_moe_topk-1 (cont) (copy)]0.05.154.747 W  [node_145]0.05.154.748 W 
+0.05.154.775 W pf-dump: split 17 on CUDA0, why 2, 47 nodes, 1 inputs; nodes:0.05.154.775 W  [RMS_NORM norm-2]0.05.154.775 W  [MUL attn_norm-2]0.05.154.776 W  [MUL_MAT Qcur-2]0.05.154.776 W  [RMS_NORM norm-2]0.05.154.776 W  [MUL Qcur_normed-2]0.05.154.776 W  [RESHAPE Qcur_normed-2 (reshaped)]0.05.154.776 W  inputs:0.05.154.777 W  [l_out-1]0.05.154.777 W 
+0.05.154.778 W pf-dump: split 18 on CUDA1, why 2, 9 nodes, 2 inputs; nodes:0.05.154.778 W  [SCALE node_247]0.05.154.778 W  [CLAMP node_248]0.05.154.779 W  [SCALE node_249]0.05.154.779 W  [CLAMP node_250]0.05.154.779 W  [MUL node_251]0.05.154.779 W  [MUL node_252]0.05.154.779 W  inputs:0.05.154.780 W  [ffn_moe_topk-2 (cont) (copy)]0.05.154.780 W  [node_243]0.05.154.780 W 
+0.05.155.371 W pf-dump: split 1 on CUDA0, why 2, 49 nodes, 8 inputs; nodes:0.05.155.372 W  [DUP node_2]0.05.155.372 W  [SET_ROWS  (view)]0.05.155.372 W  [RMS_NORM norm-0]0.05.155.372 W  [MUL attn_norm-0]0.05.155.373 W  [MUL_MAT Qcur-0]0.05.155.373 W  [RMS_NORM norm-0]0.05.155.373 W  inputs:0.05.155.373 W  [inp_mixed_embd]0.05.155.373 W  [node_1]0.05.155.373 W  [inp_mixed_slots]0.05.155.374 W  [embd]0.05.155.374 W  [inp_pos]0.05.155.374 W  [attn_inp_k_idxs]0.05.155.374 W 
+0.05.155.375 W pf-dump: split 2 on CUDA1, why 2, 9 nodes, 2 inputs; nodes:0.05.155.375 W  [SCALE node_51]0.05.155.376 W  [CLAMP node_52]0.05.155.376 W  [SCALE node_53]0.05.155.376 W  [CLAMP node_54]0.05.155.376 W  [MUL node_55]0.05.155.376 W  [MUL node_56]0.05.155.376 W  inputs:0.05.155.377 W  [ffn_moe_topk-0 (cont) (copy)]0.05.155.377 W  [node_47]0.05.155.377 W 
+0.05.155.405 W pf-dump: split 9 on CUDA0, why 2, 47 nodes, 1 inputs; nodes:0.05.155.405 W  [RMS_NORM norm-1]0.05.155.405 W  [MUL attn_norm-1]0.05.155.405 W  [MUL_MAT Qcur-1]0.05.155.406 W  [RMS_NORM norm-1]0.05.155.406 W  [MUL Qcur_normed-1]0.05.155.406 W  [RESHAPE Qcur_normed-1 (reshaped)]0.05.155.406 W  inputs:0.05.155.406 W  [l_out-0]0.05.155.407 W 
+0.05.155.408 W pf-dump: split 10 on CUDA1, why 2, 9 nodes, 2 inputs; nodes:0.05.155.408 W  [SCALE node_149]0.05.155.408 W  [CLAMP node_150]0.05.155.408 W  [SCALE node_151]0.05.155.408 W  [CLAMP node_152]0.05.155.408 W  [MUL node_153]0.05.155.409 W  [MUL node_154]0.05.155.409 W  inputs:0.05.155.409 W  [ffn_moe_topk-1 (cont) (copy)]0.05.155.409 W  [node_145]0.05.155.409 W 
+0.05.155.437 W pf-dump: split 17 on CUDA0, why 2, 47 nodes, 1 inputs; nodes:0.05.155.437 W  [RMS_NORM norm-2]0.05.155.437 W  [MUL attn_norm-2]0.05.155.437 W  [MUL_MAT Qcur-2]0.05.155.438 W  [RMS_NORM norm-2]0.05.155.438 W  [MUL Qcur_normed-2]0.05.155.438 W  [RESHAPE Qcur_normed-2 (reshaped)]0.05.155.438 W  inputs:0.05.155.438 W  [l_out-1]0.05.155.438 W 
+0.05.155.439 W pf-dump: split 18 on CUDA1, why 2, 9 nodes, 2 inputs; nodes:0.05.155.440 W  [SCALE node_247]0.05.155.440 W  [CLAMP node_248]0.05.155.440 W  [SCALE node_249]0.05.155.440 W  [CLAMP node_250]0.05.155.440 W  [MUL node_251]0.05.155.441 W  [MUL node_252]0.05.155.441 W  inputs:0.05.155.441 W  [ffn_moe_topk-2 (cont) (copy)]0.05.155.441 W  [node_243]0.05.155.441 W 
+0.05.206.983 W pf-dump: split 2 on CUDA1, why 2, 9 nodes, 2 inputs; nodes:0.05.206.986 W  [SCALE node_51]0.05.206.987 W  [CLAMP node_52]0.05.206.987 W  [SCALE node_53]0.05.206.987 W  [CLAMP node_54]0.05.206.987 W  [MUL node_55]0.05.206.988 W  [MUL node_56]0.05.206.988 W  inputs:0.05.206.988 W  [ffn_moe_topk-0 (cont) (copy)]0.05.206.988 W  [node_47]0.05.206.988 W 
+0.05.207.054 W pf-dump: split 9 on CUDA0, why 2, 47 nodes, 1 inputs; nodes:0.05.207.055 W  [RMS_NORM norm-1]0.05.207.055 W  [MUL attn_norm-1]0.05.207.055 W  [MUL_MAT Qcur-1]0.05.207.056 W  [RMS_NORM norm-1]0.05.207.056 W  [MUL Qcur_normed-1]0.05.207.056 W  [RESHAPE Qcur_normed-1 (reshaped)]0.05.207.056 W  inputs:0.05.207.057 W  [l_out-0]0.05.207.057 W 
+0.05.215.834 W sync-wait 3361 us at site 9: input blk.0.ffn_gate_exps.weight, from CPU to CUDA1 abs 128944762564
+0.05.223.154 W sync-wait 1652 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA1 abs 128944771594
+0.05.229.013 W sync-wait 1199 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA0 abs 128944777905
+0.05.231.648 W sync-wait 2218 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA0 abs 128944779522
+0.05.234.248 W sync-wait 2410 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA0 abs 128944781930
+0.05.238.529 W sync-wait 4178 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA1 abs 128944784443
+0.05.241.205 W sync-wait 2189 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA1 abs 128944789108
+0.05.245.526 W sync-wait 4037 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA1 abs 128944791582
+0.05.250.691 W sync-wait 4475 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA0 abs 128944796307
+0.05.253.938 W sync-wait 2841 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA0 abs 128944801189
+0.05.257.138 W sync-wait 3049 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA0 abs 128944804182
+0.05.260.966 W sync-wait 3771 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA1 abs 128944807287
+0.05.263.670 W sync-wait 2244 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA1 abs 128944811518
+0.05.268.011 W sync-wait 4072 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA1 abs 128944814031
+0.05.272.175 W sync-wait 3479 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA0 abs 128944818788
+0.05.275.422 W sync-wait 2869 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA0 abs 128944822646
+0.05.278.632 W sync-wait 3054 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA0 abs 128944825670
+0.05.282.434 W sync-wait 3748 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA1 abs 128944828778
+0.05.285.072 W sync-wait 2139 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA1 abs 128944833025
+0.05.289.374 W sync-wait 4035 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA1 abs 128944835432
+0.05.293.487 W sync-wait 3410 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA0 abs 128944840169
+0.05.296.267 W sync-wait 2389 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA0 abs 128944843970
+0.05.299.032 W sync-wait 2581 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA0 abs 128944846543
+0.05.303.545 W sync-wait 4431 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA1 abs 128944849207
+0.05.306.077 W sync-wait 2089 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA1 abs 128944854081
+0.05.310.270 W sync-wait 3918 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA1 abs 128944856444
+0.05.315.252 W sync-wait 4286 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA0 abs 128944861059
+0.05.318.539 W sync-wait 2902 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA0 abs 128944865729
+0.05.321.777 W sync-wait 3081 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA0 abs 128944868789
+0.05.325.589 W sync-wait 3760 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA1 abs 128944871922
+0.05.328.179 W sync-wait 2102 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA1 abs 128944876169
+0.05.332.442 W sync-wait 3978 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA1 abs 128944878556
+0.05.336.493 W sync-wait 3324 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA0 abs 128944883262
+0.05.339.353 W sync-wait 2494 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA0 abs 128944886951
+0.05.342.190 W sync-wait 2673 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA0 abs 128944889609
+0.05.345.630 W sync-wait 3381 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA1 abs 128944892341
+0.05.348.188 W sync-wait 2079 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA1 abs 128944896201
+0.05.352.411 W sync-wait 3951 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA1 abs 128944898552
+0.05.356.458 W sync-wait 3350 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA0 abs 128944903200
+0.05.358.535 W sync-wait 1666 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA0 abs 128944906962
+0.05.360.585 W sync-wait 1863 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA0 abs 128944908814
+0.05.364.051 W sync-wait 3381 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA1 abs 128944910763
+0.05.366.456 W sync-wait 1964 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA1 abs 128944914584
+0.05.370.552 W sync-wait 3820 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA1 abs 128944916824
+0.05.375.414 W sync-wait 4161 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA0 abs 128944921346
+0.05.378.281 W sync-wait 2501 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA0 abs 128944925872
+0.05.381.117 W sync-wait 2680 us at site 9: input blk.8.ffn_down_exps.weight, from CPU to CUDA0 abs 128944928529
+0.05.384.573 W sync-wait 3401 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA1 abs 128944931264
+0.05.387.000 W sync-wait 1952 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA1 abs 128944935140
+0.05.391.095 W sync-wait 3814 us at site 1: input inp_pos, from CPU to CUDA1 abs 128944937373
+0.05.406.740 W sync-wait 2813 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA0 abs 128944954017
+0.05.409.826 W sync-wait 2896 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA0 abs 128944957023
+0.05.414.303 W sync-wait 2262 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA1 abs 128944962133
+0.05.417.607 W sync-wait 2291 us at site 9: input blk.10.ffn_gate_exps.weight, from CPU to CUDA0 abs 128944965408
+0.05.420.489 W sync-wait 2624 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA0 abs 128944967957
+0.05.423.379 W sync-wait 2704 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA0 abs 128944970768
+0.05.425.694 W sync-wait 1821 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA1 abs 128944973965
+0.05.428.753 W sync-wait 2817 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA1 abs 128944976029
+0.05.433.430 W sync-wait 3796 us at site 9: input blk.11.ffn_gate_exps.weight, from CPU to CUDA0 abs 128944979727
+0.05.436.473 W sync-wait 2807 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA0 abs 128944983759
+0.05.439.523 W sync-wait 2863 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA0 abs 128944986752
+0.05.441.318 W sync-wait 1232 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA1 abs 128944990178
+0.05.443.911 W sync-wait 2306 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA1 abs 128944991697
+0.05.447.217 W sync-wait 2393 us at site 9: input blk.12.ffn_gate_exps.weight, from CPU to CUDA0 abs 128944994916
+0.05.450.068 W sync-wait 2626 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA0 abs 128944997534
+0.05.452.927 W sync-wait 2681 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA0 abs 128945000339
+0.05.454.575 W sync-wait 1148 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA1 abs 128945003519
+0.05.457.006 W sync-wait 2146 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA1 abs 128945004952
+0.05.460.212 W sync-wait 2387 us at site 9: input blk.13.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945007918
+0.05.462.749 W sync-wait 2296 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA0 abs 128945010546
+0.05.465.276 W sync-wait 2359 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA0 abs 128945013009
+0.05.467.594 W sync-wait 1881 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA1 abs 128945015805
+0.05.470.653 W sync-wait 2863 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA1 abs 128945017883
+0.05.475.328 W sync-wait 3970 us at site 9: input blk.14.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945021450
+0.05.477.670 W sync-wait 2123 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA0 abs 128945025640
+0.05.479.988 W sync-wait 2175 us at site 9: input blk.14.ffn_down_exps.weight, from CPU to CUDA0 abs 128945027906
+0.05.482.088 W sync-wait 1714 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA1 abs 128945030467
+0.05.484.931 W sync-wait 2671 us at site 1: input out_ids, from CPU to CUDA1 abs 128945032353
+0.05.488.245 W sync-wait 2969 us at site 2: input ffn_moe_topk-15, from CUDA1 to CPU abs 128945035369
+0.05.488.281 W pf-stats (0 tokens, 3 slots, prefetch on): 123 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 663, weight not an input 24, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 1988
+0.05.488.283 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 6/33, cross-card-fallback 8/210, expert-ids-read 0/30, d2h 0/33, prev-card 0/16, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.05.495.897 W sync-wait 1588 us at site 9: input blk.0.ffn_up_exps.weight, from CPU to CUDA0 abs 128945044402
+0.05.497.934 W sync-wait 1844 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA0 abs 128945046182
+0.05.501.408 W sync-wait 3388 us at site 9: input blk.0.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945048113
+0.05.504.078 W sync-wait 2197 us at site 9: input blk.0.ffn_up_exps.weight, from CPU to CUDA1 abs 128945051974
+0.05.508.385 W sync-wait 3989 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA1 abs 128945054488
+0.05.513.611 W sync-wait 4489 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945059214
+0.05.516.241 W sync-wait 2132 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA0 abs 128945064201
+0.05.518.843 W sync-wait 2418 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA0 abs 128945066517
+0.05.523.128 W sync-wait 4184 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945069036
+0.05.525.787 W sync-wait 2166 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA1 abs 128945073713
+0.05.530.108 W sync-wait 4010 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA1 abs 128945076190
+0.05.535.309 W sync-wait 4499 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945080902
+0.05.538.534 W sync-wait 2662 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA0 abs 128945085964
+0.05.541.742 W sync-wait 3053 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA0 abs 128945088781
+0.05.545.564 W sync-wait 3768 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945091888
+0.05.548.152 W sync-wait 2066 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA1 abs 128945096179
+0.05.552.419 W sync-wait 3949 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA1 abs 128945098562
+0.05.556.499 W sync-wait 3313 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945103278
+0.05.559.767 W sync-wait 2834 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA0 abs 128945107026
+0.05.563.008 W sync-wait 3086 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA0 abs 128945110015
+0.05.566.846 W sync-wait 3781 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945113158
+0.05.569.416 W sync-wait 2060 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA1 abs 128945117448
+0.05.573.628 W sync-wait 3893 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA1 abs 128945119827
+0.05.577.738 W sync-wait 3390 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945124440
+0.05.580.526 W sync-wait 2330 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA0 abs 128945128288
+0.05.583.293 W sync-wait 2591 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA0 abs 128945130794
+0.05.587.808 W sync-wait 4432 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945133468
+0.05.590.471 W sync-wait 2221 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA1 abs 128945138343
+0.05.594.823 W sync-wait 4069 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA1 abs 128945140847
+0.05.600.058 W sync-wait 4520 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945145630
+0.05.603.343 W sync-wait 2818 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA0 abs 128945150617
+0.05.606.585 W sync-wait 3076 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA0 abs 128945153601
+0.05.610.396 W sync-wait 3758 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945156730
+0.05.612.934 W sync-wait 2046 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA1 abs 128945160980
+0.05.617.155 W sync-wait 3879 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA1 abs 128945163368
+0.05.621.222 W sync-wait 3374 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945167940
+0.05.623.724 W sync-wait 2056 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA0 abs 128945171760
+0.05.626.200 W sync-wait 2301 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA0 abs 128945173991
+0.05.629.297 W sync-wait 3033 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945176357
+0.05.631.896 W sync-wait 2107 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA1 abs 128945179881
+0.05.636.143 W sync-wait 3921 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA1 abs 128945182314
+0.05.640.260 W sync-wait 3395 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945186957
+0.05.642.921 W sync-wait 2165 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA0 abs 128945190848
+0.05.645.542 W sync-wait 2436 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA0 abs 128945193198
+0.05.649.809 W sync-wait 4181 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945195720
+0.05.652.329 W sync-wait 2036 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA1 abs 128945200385
+0.05.656.530 W sync-wait 3878 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA1 abs 128945202744
+0.05.661.567 W sync-wait 4321 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945207339
+0.05.664.432 W sync-wait 2451 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA0 abs 128945212074
+0.05.667.270 W sync-wait 2669 us at site 9: input blk.8.ffn_down_exps.weight, from CPU to CUDA0 abs 128945214694
+0.05.670.744 W sync-wait 3420 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945217417
+0.05.673.294 W sync-wait 2033 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA1 abs 128945221354
+0.05.677.509 W sync-wait 3915 us at site 1: input inp_pos, from CPU to CUDA1 abs 128945223686
+0.05.681.695 W sync-wait 3188 us at site 9: input blk.9.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945228600
+0.05.684.796 W sync-wait 2844 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA0 abs 128945232044
+0.05.687.883 W sync-wait 2913 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA0 abs 128945235063
+0.05.689.874 W sync-wait 1464 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA1 abs 128945238502
+0.05.692.668 W sync-wait 2514 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA1 abs 128945240246
+0.05.696.199 W sync-wait 1900 us at site 9: input blk.10.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945244391
+0.05.698.911 W sync-wait 2412 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA0 abs 128945246592
+0.05.701.602 W sync-wait 2498 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA0 abs 128945249196
+0.05.704.046 W sync-wait 1932 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA1 abs 128945252207
+0.05.707.258 W sync-wait 2983 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA1 abs 128945254367
+0.05.712.187 W sync-wait 3900 us at site 9: input blk.11.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945258379
+0.05.714.873 W sync-wait 2426 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA0 abs 128945262540
+0.05.717.556 W sync-wait 2494 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA0 abs 128945265154
+0.05.719.176 W sync-wait 1098 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA1 abs 128945268170
+0.05.721.597 W sync-wait 2124 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA1 abs 128945269566
+0.05.724.771 W sync-wait 2174 us at site 9: input blk.12.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945272689
+0.05.727.442 W sync-wait 2408 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA0 abs 128945275127
+0.05.730.141 W sync-wait 2518 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA0 abs 128945277716
+0.05.731.730 W sync-wait 1108 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA1 abs 128945280714
+0.05.734.106 W sync-wait 2119 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA1 abs 128945282080
+0.05.737.294 W sync-wait 2288 us at site 9: input blk.13.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945285099
+0.05.740.017 W sync-wait 2479 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA0 abs 128945287631
+0.05.742.723 W sync-wait 2549 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA0 abs 128945290267
+0.05.745.075 W sync-wait 1951 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA1 abs 128945293217
+0.05.748.182 W sync-wait 2931 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA1 abs 128945295344
+0.05.752.976 W sync-wait 3594 us at site 9: input blk.14.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945299474
+0.05.755.311 W sync-wait 2118 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA0 abs 128945303286
+0.05.757.628 W sync-wait 2181 us at site 9: input blk.14.ffn_down_exps.weight, from CPU to CUDA0 abs 128945305539
+0.05.759.782 W sync-wait 1764 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA1 abs 128945308110
+0.05.762.671 W sync-wait 2721 us at site 1: input out_ids, from CPU to CUDA1 abs 128945310043
+0.05.766.112 W sync-wait 3110 us at site 2: input ffn_moe_topk-15, from CUDA1 to CPU abs 128945313094
+0.05.766.176 W pf-stats (0 tokens, 3 slots, prefetch on): 123 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 663, weight not an input 24, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 1988
+0.05.766.179 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 13/44, cross-card-fallback 13/222, expert-ids-read 0/60, d2h 0/34, prev-card 0/16, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.05.774.177 W sync-wait 1866 us at site 9: input blk.0.ffn_up_exps.weight, from CPU to CUDA0 abs 128945322403
+0.05.776.400 W sync-wait 2035 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA0 abs 128945324458
+0.05.780.138 W sync-wait 3655 us at site 9: input blk.0.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945326575
+0.05.782.761 W sync-wait 2215 us at site 9: input blk.0.ffn_up_exps.weight, from CPU to CUDA1 abs 128945330638
+0.05.787.030 W sync-wait 4047 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA1 abs 128945333075
+0.05.792.274 W sync-wait 4642 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945337725
+0.05.794.899 W sync-wait 2261 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA0 abs 128945342730
+0.05.797.498 W sync-wait 2406 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA0 abs 128945345184
+0.05.801.782 W sync-wait 4201 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945347673
+0.05.804.454 W sync-wait 2262 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA1 abs 128945352285
+0.05.808.791 W sync-wait 4127 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA1 abs 128945354756
+0.05.814.081 W sync-wait 4688 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945359485
+0.05.817.299 W sync-wait 2894 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA0 abs 128945364497
+0.05.820.502 W sync-wait 3028 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA0 abs 128945367566
+0.05.824.341 W sync-wait 3788 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945370646
+0.05.826.986 W sync-wait 2235 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA1 abs 128945374843
+0.05.831.245 W sync-wait 4038 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA1 abs 128945377299
+0.05.835.459 W sync-wait 3611 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945381941
+0.05.838.743 W sync-wait 2935 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA0 abs 128945385901
+0.05.841.982 W sync-wait 3091 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA0 abs 128945388984
+0.05.845.812 W sync-wait 3778 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945392126
+0.05.848.323 W sync-wait 2088 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA1 abs 128945396327
+0.05.852.486 W sync-wait 3939 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA1 abs 128945398639
+0.05.856.626 W sync-wait 3526 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945403192
+0.05.859.413 W sync-wait 2424 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA0 abs 128945407081
+0.05.862.171 W sync-wait 2570 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA0 abs 128945409693
+0.05.866.698 W sync-wait 4448 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945412343
+0.05.869.175 W sync-wait 2083 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA1 abs 128945417185
+0.05.873.336 W sync-wait 3936 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA1 abs 128945419492
+0.05.878.367 W sync-wait 4430 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945424030
+0.05.881.641 W sync-wait 2929 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA0 abs 128945428804
+0.05.884.883 W sync-wait 3094 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA0 abs 128945431881
+0.05.888.715 W sync-wait 3776 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945435032
+0.05.891.305 W sync-wait 2176 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA1 abs 128945439221
+0.05.895.557 W sync-wait 4033 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA1 abs 128945441616
+0.05.899.719 W sync-wait 3566 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945446246
+0.05.902.389 W sync-wait 2348 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA0 abs 128945450133
+0.05.905.046 W sync-wait 2486 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA0 abs 128945452653
+0.05.908.340 W sync-wait 3234 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945455198
+0.05.910.860 W sync-wait 2093 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA1 abs 128945458860
+0.05.915.023 W sync-wait 3938 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA1 abs 128945461177
+0.05.919.120 W sync-wait 3504 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945465708
+0.05.921.385 W sync-wait 1905 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA0 abs 128945469573
+0.05.923.619 W sync-wait 2048 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA0 abs 128945471664
+0.05.927.344 W sync-wait 3640 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945473796
+0.05.929.698 W sync-wait 1959 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA1 abs 128945477831
+0.05.933.728 W sync-wait 3783 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA1 abs 128945480037
+0.05.938.639 W sync-wait 4285 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945484446
+0.05.941.502 W sync-wait 2527 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA0 abs 128945489067
+0.05.944.369 W sync-wait 2708 us at site 9: input blk.8.ffn_down_exps.weight, from CPU to CUDA0 abs 128945491748
+0.05.947.839 W sync-wait 3353 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945494577
+0.05.950.494 W sync-wait 2161 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA1 abs 128945498425
+0.05.954.781 W sync-wait 4078 us at site 1: input inp_pos, from CPU to CUDA1 abs 128945500795
+0.05.959.168 W sync-wait 3458 us at site 9: input blk.9.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945505801
+0.05.962.310 W sync-wait 2785 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA0 abs 128945509618
+0.05.965.395 W sync-wait 2905 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA0 abs 128945512582
+0.05.967.160 W sync-wait 1273 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA1 abs 128945515978
+0.05.969.702 W sync-wait 2264 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA1 abs 128945517531
+0.05.973.081 W sync-wait 2576 us at site 9: input blk.10.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945520597
+0.05.975.785 W sync-wait 2445 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA0 abs 128945523431
+0.05.978.491 W sync-wait 2488 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA0 abs 128945526095
+0.05.980.634 W sync-wait 1629 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA1 abs 128945529097
+0.05.983.524 W sync-wait 2658 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA1 abs 128945530958
+0.05.988.034 W sync-wait 3747 us at site 9: input blk.11.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945534379
+0.05.990.718 W sync-wait 2439 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA0 abs 128945538372
+0.05.993.401 W sync-wait 2502 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA0 abs 128945540991
+0.05.994.961 W sync-wait 1042 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA1 abs 128945544011
+0.05.997.313 W sync-wait 2064 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA1 abs 128945545341
+0.06.000.503 W sync-wait 2397 us at site 9: input blk.12.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945548198
+0.06.002.998 W sync-wait 2264 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA0 abs 128945550826
+0.06.005.502 W sync-wait 2322 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA0 abs 128945553273
+0.06.007.174 W sync-wait 1194 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA1 abs 128945556073
+0.06.009.633 W sync-wait 2205 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA1 abs 128945557520
+0.06.012.985 W sync-wait 2645 us at site 9: input blk.13.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945560433
+0.06.015.513 W sync-wait 2290 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA0 abs 128945563316
+0.06.018.030 W sync-wait 2359 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA0 abs 128945565763
+0.06.020.160 W sync-wait 1711 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA1 abs 128945568542
+0.06.023.043 W sync-wait 2690 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA1 abs 128945570445
+0.06.027.545 W sync-wait 3920 us at site 9: input blk.14.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945573717
+0.06.030.057 W sync-wait 2311 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA0 abs 128945577839
+0.06.032.561 W sync-wait 2381 us at site 9: input blk.14.ffn_down_exps.weight, from CPU to CUDA0 abs 128945580272
+0.06.034.728 W sync-wait 1807 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA1 abs 128945583013
+0.06.037.658 W sync-wait 2769 us at site 1: input out_ids, from CPU to CUDA1 abs 128945584981
+0.06.041.223 W sync-wait 3226 us at site 2: input ffn_moe_topk-15, from CUDA1 to CPU abs 128945588089
+0.06.041.265 W pf-stats (0 tokens, 3 slots, prefetch on): 123 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 663, weight not an input 24, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 1988
+0.06.041.267 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 20/55, cross-card-fallback 17/234, expert-ids-read 0/90, d2h 0/35, prev-card 0/16, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.06.049.532 W sync-wait 1869 us at site 9: input blk.0.ffn_up_exps.weight, from CPU to CUDA0 abs 128945597754
+0.06.051.752 W sync-wait 2029 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA0 abs 128945599815
+0.06.055.502 W sync-wait 3668 us at site 9: input blk.0.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945601927
+0.06.058.124 W sync-wait 2200 us at site 9: input blk.0.ffn_up_exps.weight, from CPU to CUDA1 abs 128945606016
+0.06.062.429 W sync-wait 4090 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA1 abs 128945608432
+0.06.067.731 W sync-wait 4675 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945613148
+0.06.070.356 W sync-wait 2237 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA0 abs 128945618211
+0.06.072.943 W sync-wait 2391 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA0 abs 128945620644
+0.06.077.216 W sync-wait 4192 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945623117
+0.06.079.876 W sync-wait 2258 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA1 abs 128945627710
+0.06.084.205 W sync-wait 4116 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA1 abs 128945630181
+0.06.089.559 W sync-wait 4761 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945634890
+0.06.092.788 W sync-wait 2898 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA0 abs 128945639982
+0.06.095.989 W sync-wait 3039 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA0 abs 128945643042
+0.06.099.792 W sync-wait 3748 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945646137
+0.06.102.478 W sync-wait 2291 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA1 abs 128945650279
+0.06.106.825 W sync-wait 4142 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA1 abs 128945652775
+0.06.111.128 W sync-wait 3708 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945657512
+0.06.114.369 W sync-wait 2907 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA0 abs 128945661555
+0.06.117.573 W sync-wait 3057 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA0 abs 128945664609
+0.06.121.376 W sync-wait 3751 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945667717
+0.06.123.893 W sync-wait 2096 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA1 abs 128945671889
+0.06.128.059 W sync-wait 3945 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA1 abs 128945674206
+0.06.132.253 W sync-wait 3578 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945678767
+0.06.135.036 W sync-wait 2444 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA0 abs 128945682684
+0.06.137.797 W sync-wait 2580 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA0 abs 128945685309
+0.06.142.328 W sync-wait 4449 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945687972
+0.06.144.847 W sync-wait 2144 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA1 abs 128945692795
+0.06.149.069 W sync-wait 3997 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA1 abs 128945695164
+0.06.154.208 W sync-wait 4531 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945699769
+0.06.157.494 W sync-wait 2946 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA0 abs 128945704640
+0.06.160.737 W sync-wait 3094 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA0 abs 128945707735
+0.06.164.535 W sync-wait 3747 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945710881
+0.06.167.001 W sync-wait 2057 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA1 abs 128945715037
+0.06.171.134 W sync-wait 3913 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA1 abs 128945717314
+0.06.175.257 W sync-wait 3524 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945721826
+0.06.177.752 W sync-wait 2167 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA0 abs 128945725677
+0.06.180.228 W sync-wait 2313 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA0 abs 128945728008
+0.06.183.322 W sync-wait 3031 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945730383
+0.06.185.877 W sync-wait 2151 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA1 abs 128945733818
+0.06.190.068 W sync-wait 3969 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA1 abs 128945736192
+0.06.194.290 W sync-wait 3589 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945740793
+0.06.196.361 W sync-wait 1719 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA0 abs 128945744734
+0.06.198.406 W sync-wait 1864 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA0 abs 128945746635
+0.06.201.880 W sync-wait 3388 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945748584
+0.06.204.276 W sync-wait 2002 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA1 abs 128945752367
+0.06.208.376 W sync-wait 3878 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA1 abs 128945754591
+0.06.213.417 W sync-wait 4430 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945759079
+0.06.216.276 W sync-wait 2540 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA0 abs 128945763829
+0.06.219.110 W sync-wait 2675 us at site 9: input blk.8.ffn_down_exps.weight, from CPU to CUDA0 abs 128945766528
+0.06.222.574 W sync-wait 3404 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945769262
+0.06.225.127 W sync-wait 2139 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA1 abs 128945773080
+0.06.229.367 W sync-wait 4011 us at site 1: input inp_pos, from CPU to CUDA1 abs 128945775448
+0.06.233.723 W sync-wait 3466 us at site 9: input blk.9.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945780349
+0.06.236.638 W sync-wait 2653 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA0 abs 128945784077
+0.06.239.544 W sync-wait 2726 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA0 abs 128945786911
+0.06.241.531 W sync-wait 1477 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA1 abs 128945790146
+0.06.244.287 W sync-wait 2496 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA1 abs 128945791883
+0.06.247.953 W sync-wait 2899 us at site 9: input blk.10.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945795147
+0.06.250.468 W sync-wait 2249 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA0 abs 128945798311
+0.06.252.999 W sync-wait 2341 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA0 abs 128945800751
+0.06.255.143 W sync-wait 1641 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA1 abs 128945803594
+0.06.258.033 W sync-wait 2646 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA1 abs 128945805479
+0.06.262.592 W sync-wait 3834 us at site 9: input blk.11.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945808851
+0.06.265.468 W sync-wait 2635 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA0 abs 128945812925
+0.06.268.344 W sync-wait 2690 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA0 abs 128945815746
+0.06.269.949 W sync-wait 1102 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA1 abs 128945818939
+0.06.272.339 W sync-wait 2111 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA1 abs 128945820320
+0.06.275.618 W sync-wait 2506 us at site 9: input blk.12.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945823204
+0.06.277.927 W sync-wait 2078 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA0 abs 128945825941
+0.06.280.246 W sync-wait 2139 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA0 abs 128945828200
+0.06.281.809 W sync-wait 1074 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA1 abs 128945830827
+0.06.284.123 W sync-wait 2059 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA1 abs 128945832157
+0.06.287.406 W sync-wait 2582 us at site 9: input blk.13.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945834917
+0.06.289.926 W sync-wait 2290 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA0 abs 128945837728
+0.06.292.438 W sync-wait 2356 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA0 abs 128945840174
+0.06.294.661 W sync-wait 1825 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA1 abs 128945842929
+0.06.297.648 W sync-wait 2801 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA1 abs 128945844940
+0.06.302.357 W sync-wait 4126 us at site 9: input blk.14.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945848323
+0.06.304.685 W sync-wait 2123 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA0 abs 128945852654
+0.06.307.004 W sync-wait 2191 us at site 9: input blk.14.ffn_down_exps.weight, from CPU to CUDA0 abs 128945854906
+0.06.309.149 W sync-wait 1781 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA1 abs 128945857460
+0.06.312.044 W sync-wait 2734 us at site 1: input out_ids, from CPU to CUDA1 abs 128945859402
+0.06.315.609 W sync-wait 3246 us at site 2: input ffn_moe_topk-15, from CUDA1 to CPU abs 128945862455
+0.06.315.652 W pf-stats (0 tokens, 3 slots, prefetch on): 123 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 663, weight not an input 24, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 1988
+0.06.315.655 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 26/66, cross-card-fallback 22/246, expert-ids-read 0/120, d2h 0/36, prev-card 0/16, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.06.323.952 W sync-wait 1863 us at site 9: input blk.0.ffn_up_exps.weight, from CPU to CUDA0 abs 128945872181
+0.06.326.175 W sync-wait 2041 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA0 abs 128945874227
+0.06.329.913 W sync-wait 3657 us at site 9: input blk.0.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945876349
+0.06.332.579 W sync-wait 2255 us at site 9: input blk.0.ffn_up_exps.weight, from CPU to CUDA1 abs 128945880416
+0.06.336.913 W sync-wait 4119 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA1 abs 128945882886
+0.06.342.312 W sync-wait 4777 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945887627
+0.06.344.940 W sync-wait 2252 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA0 abs 128945892780
+0.06.347.533 W sync-wait 2400 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA0 abs 128945895226
+0.06.351.786 W sync-wait 4167 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945897712
+0.06.354.448 W sync-wait 2266 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA1 abs 128945902275
+0.06.358.796 W sync-wait 4132 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA1 abs 128945904757
+0.06.364.205 W sync-wait 4802 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945909495
+0.06.367.430 W sync-wait 2886 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA0 abs 128945914636
+0.06.370.633 W sync-wait 3042 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA0 abs 128945917684
+0.06.374.469 W sync-wait 3783 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945920779
+0.06.377.149 W sync-wait 2260 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA1 abs 128945924982
+0.06.381.499 W sync-wait 4133 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA1 abs 128945927458
+0.06.385.892 W sync-wait 3782 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945932203
+0.06.389.137 W sync-wait 2894 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA0 abs 128945936335
+0.06.392.345 W sync-wait 3049 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA0 abs 128945939389
+0.06.396.185 W sync-wait 3787 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945942490
+0.06.398.853 W sync-wait 2264 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA1 abs 128945946681
+0.06.403.162 W sync-wait 4095 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA1 abs 128945949159
+0.06.407.555 W sync-wait 3793 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945953855
+0.06.410.526 W sync-wait 2620 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA0 abs 128945957998
+0.06.413.467 W sync-wait 2760 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA0 abs 128945960800
+0.06.418.266 W sync-wait 4717 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945963642
+0.06.420.828 W sync-wait 2171 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA1 abs 128945968749
+0.06.425.063 W sync-wait 4021 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA1 abs 128945971134
+0.06.430.362 W sync-wait 4706 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945975748
+0.06.433.637 W sync-wait 2927 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA0 abs 128945980803
+0.06.436.872 W sync-wait 3073 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA0 abs 128945983892
+0.06.440.708 W sync-wait 3779 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA1 abs 128945987022
+0.06.443.334 W sync-wait 2213 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA1 abs 128945991213
+0.06.447.624 W sync-wait 4062 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA1 abs 128945993654
+0.06.451.967 W sync-wait 3723 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA0 abs 128945998337
+0.06.455.016 W sync-wait 2718 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA0 abs 128946002391
+0.06.458.038 W sync-wait 2848 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA0 abs 128946005283
+0.06.461.656 W sync-wait 3561 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946008187
+0.06.464.297 W sync-wait 2216 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA1 abs 128946012174
+0.06.468.566 W sync-wait 4058 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA1 abs 128946014601
+0.06.472.936 W sync-wait 3717 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946019312
+0.06.475.403 W sync-wait 2099 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA0 abs 128946023396
+0.06.477.839 W sync-wait 2252 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA0 abs 128946025680
+0.06.481.852 W sync-wait 3925 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946028020
+0.06.484.282 W sync-wait 2026 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA1 abs 128946032348
+0.06.488.383 W sync-wait 3861 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA1 abs 128946034614
+0.06.493.490 W sync-wait 4465 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946039117
+0.06.496.349 W sync-wait 2518 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA0 abs 128946043924
+0.06.499.189 W sync-wait 2681 us at site 9: input blk.8.ffn_down_exps.weight, from CPU to CUDA0 abs 128946046600
+0.06.502.625 W sync-wait 3380 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946049337
+0.06.505.258 W sync-wait 2218 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA1 abs 128946053132
+0.06.509.546 W sync-wait 4067 us at site 1: input inp_pos, from CPU to CUDA1 abs 128946055571
+0.06.514.089 W sync-wait 3631 us at site 9: input blk.9.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946060550
+0.06.517.379 W sync-wait 3031 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA0 abs 128946064440
+0.06.520.650 W sync-wait 3087 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA0 abs 128946067655
+0.06.522.745 W sync-wait 1565 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA1 abs 128946071272
+0.06.525.619 W sync-wait 2582 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA1 abs 128946073130
+0.06.529.440 W sync-wait 3024 us at site 9: input blk.10.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946076509
+0.06.532.685 W sync-wait 2994 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA0 abs 128946079784
+0.06.535.934 W sync-wait 3062 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA0 abs 128946082965
+0.06.538.442 W sync-wait 2021 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA1 abs 128946086513
+0.06.541.750 W sync-wait 3083 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA1 abs 128946088760
+0.06.546.948 W sync-wait 4457 us at site 9: input blk.11.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946092583
+0.06.550.006 W sync-wait 2805 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA0 abs 128946097293
+0.06.553.059 W sync-wait 2869 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA0 abs 128946100283
+0.06.555.078 W sync-wait 1517 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA1 abs 128946103653
+0.06.557.870 W sync-wait 2517 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA1 abs 128946105445
+0.06.561.629 W sync-wait 2981 us at site 9: input blk.12.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946108740
+0.06.564.662 W sync-wait 2811 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA0 abs 128946111943
+0.06.567.716 W sync-wait 2869 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA0 abs 128946114939
+0.06.569.653 W sync-wait 1464 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA1 abs 128946118282
+0.06.572.365 W sync-wait 2468 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA1 abs 128946119990
+0.06.576.056 W sync-wait 2985 us at site 9: input blk.13.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946123164
+0.06.578.944 W sync-wait 2668 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA0 abs 128946126368
+0.06.581.835 W sync-wait 2738 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA0 abs 128946129189
+0.06.584.237 W sync-wait 2003 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA1 abs 128946132326
+0.06.587.394 W sync-wait 2975 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA1 abs 128946134511
+0.06.592.434 W sync-wait 4457 us at site 9: input blk.14.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946138069
+0.06.595.127 W sync-wait 2498 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA0 abs 128946142721
+0.06.597.806 W sync-wait 2555 us at site 9: input blk.14.ffn_down_exps.weight, from CPU to CUDA0 abs 128946145343
+0.06.600.255 W sync-wait 2105 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA1 abs 128946148242
+0.06.603.453 W sync-wait 3050 us at site 1: input out_ids, from CPU to CUDA1 abs 128946150496
+0.06.607.552 W sync-wait 3796 us at site 2: input ffn_moe_topk-15, from CUDA1 to CPU abs 128946153848
+0.06.607.595 W pf-stats (0 tokens, 3 slots, prefetch on): 123 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 663, weight not an input 24, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 1988
+0.06.607.597 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 34/77, cross-card-fallback 27/258, expert-ids-read 0/150, d2h 0/37, prev-card 0/16, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.06.615.886 W sync-wait 1682 us at site 9: input blk.0.ffn_up_exps.weight, from CPU to CUDA0 abs 128946164295
+0.06.617.932 W sync-wait 1847 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA0 abs 128946166177
+0.06.621.399 W sync-wait 3377 us at site 9: input blk.0.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946168114
+0.06.624.023 W sync-wait 2217 us at site 9: input blk.0.ffn_up_exps.weight, from CPU to CUDA1 abs 128946171898
+0.06.628.293 W sync-wait 4053 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA1 abs 128946174332
+0.06.633.694 W sync-wait 4777 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946179010
+0.06.636.309 W sync-wait 2255 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA0 abs 128946184147
+0.06.638.909 W sync-wait 2418 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA0 abs 128946186583
+0.06.643.173 W sync-wait 4171 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946189094
+0.06.645.838 W sync-wait 2279 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA1 abs 128946193651
+0.06.650.157 W sync-wait 4103 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA1 abs 128946196147
+0.06.655.633 W sync-wait 4885 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946200840
+0.06.658.860 W sync-wait 2906 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA0 abs 128946206046
+0.06.662.065 W sync-wait 3054 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA0 abs 128946209104
+0.06.665.905 W sync-wait 3786 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946212212
+0.06.668.505 W sync-wait 2188 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA1 abs 128946216409
+0.06.672.765 W sync-wait 4035 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA1 abs 128946218823
+0.06.677.130 W sync-wait 3737 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946223485
+0.06.680.180 W sync-wait 2708 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA0 abs 128946227565
+0.06.683.206 W sync-wait 2865 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA0 abs 128946230433
+0.06.686.855 W sync-wait 3595 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946233353
+0.06.689.073 W sync-wait 1779 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA1 abs 128946237386
+0.06.692.946 W sync-wait 3618 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA1 abs 128946239420
+0.06.696.978 W sync-wait 3165 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946243904
+0.06.699.607 W sync-wait 2178 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA0 abs 128946247521
+0.06.702.188 W sync-wait 2388 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA0 abs 128946249892
+0.06.706.461 W sync-wait 4173 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946252380
+0.06.708.605 W sync-wait 1676 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA1 abs 128946257022
+0.06.712.422 W sync-wait 3544 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA1 abs 128946258970
+0.06.717.188 W sync-wait 3948 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946263332
+0.06.720.120 W sync-wait 2545 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA0 abs 128946267667
+0.06.723.003 W sync-wait 2687 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA0 abs 128946270409
+0.06.726.489 W sync-wait 3413 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946273168
+0.06.728.735 W sync-wait 1729 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA1 abs 128946277098
+0.06.732.648 W sync-wait 3662 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA1 abs 128946279079
+0.06.736.679 W sync-wait 3252 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946283520
+0.06.738.793 W sync-wait 1772 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA0 abs 128946287113
+0.06.740.888 W sync-wait 1925 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA0 abs 128946289055
+0.06.743.622 W sync-wait 2670 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946291045
+0.06.745.793 W sync-wait 1731 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA1 abs 128946294154
+0.06.749.602 W sync-wait 3567 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA1 abs 128946296127
+0.06.753.555 W sync-wait 3314 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946300333
+0.06.755.649 W sync-wait 1697 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA0 abs 128946304044
+0.06.757.702 W sync-wait 1872 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA0 abs 128946305923
+0.06.761.159 W sync-wait 3367 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946307884
+0.06.763.289 W sync-wait 1710 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA1 abs 128946311671
+0.06.767.096 W sync-wait 3546 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA1 abs 128946313643
+0.06.771.849 W sync-wait 4083 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946317858
+0.06.774.344 W sync-wait 2145 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA0 abs 128946322291
+0.06.776.812 W sync-wait 2315 us at site 9: input blk.8.ffn_down_exps.weight, from CPU to CUDA0 abs 128946324590
+0.06.779.911 W sync-wait 3039 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946326964
+0.06.782.073 W sync-wait 1724 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA1 abs 128946330441
+0.06.785.901 W sync-wait 3583 us at site 1: input inp_pos, from CPU to CUDA1 abs 128946332410
+0.06.790.065 W sync-wait 3217 us at site 9: input blk.9.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946336940
+0.06.792.802 W sync-wait 2474 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA0 abs 128946340421
+0.06.795.526 W sync-wait 2532 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA0 abs 128946343086
+0.06.797.196 W sync-wait 1123 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA1 abs 128946346166
+0.06.799.658 W sync-wait 2183 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA1 abs 128946347567
+0.06.803.134 W sync-wait 2685 us at site 9: input blk.10.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946350542
+0.06.805.645 W sync-wait 2257 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA0 abs 128946353481
+0.06.808.147 W sync-wait 2316 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA0 abs 128946355924
+0.06.810.372 W sync-wait 1743 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA1 abs 128946358721
+0.06.813.357 W sync-wait 2753 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA1 abs 128946360697
+0.06.818.226 W sync-wait 4109 us at site 9: input blk.11.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946364210
+0.06.820.731 W sync-wait 2258 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA0 abs 128946368565
+0.06.823.233 W sync-wait 2310 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA0 abs 128946371015
+0.06.826.770 W sync-wait 1884 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA1 abs 128946374978
+0.06.829.939 W sync-wait 2349 us at site 9: input blk.12.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946377682
+0.06.832.243 W sync-wait 2081 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA0 abs 128946380255
+0.06.834.564 W sync-wait 2143 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA0 abs 128946382513
+0.06.836.075 W sync-wait 1036 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA1 abs 128946385131
+0.06.838.376 W sync-wait 2044 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA1 abs 128946386424
+0.06.841.727 W sync-wait 2649 us at site 9: input blk.13.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946389170
+0.06.843.874 W sync-wait 1912 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA0 abs 128946392054
+0.06.846.010 W sync-wait 1977 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA0 abs 128946394126
+0.06.848.008 W sync-wait 1595 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA1 abs 128946396505
+0.06.850.775 W sync-wait 2578 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA1 abs 128946398290
+0.06.855.301 W sync-wait 3945 us at site 9: input blk.14.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946401448
+0.06.857.470 W sync-wait 1947 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA0 abs 128946405616
+0.06.859.607 W sync-wait 2004 us at site 9: input blk.14.ffn_down_exps.weight, from CPU to CUDA0 abs 128946407695
+0.06.861.422 W sync-wait 1457 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA1 abs 128946410057
+0.06.864.011 W sync-wait 2422 us at site 1: input out_ids, from CPU to CUDA1 abs 128946411681
+0.06.867.276 W sync-wait 2949 us at site 2: input ffn_moe_topk-15, from CUDA1 to CPU abs 128946414419
+0.06.867.316 W pf-stats (0 tokens, 3 slots, prefetch on): 123 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 663, weight not an input 24, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 1988
+0.06.867.321 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 40/88, cross-card-fallback 31/270, expert-ids-read 0/180, d2h 0/38, prev-card 0/16, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.06.876.206 W sync-wait 1814 us at site 9: input blk.0.ffn_up_exps.weight, from CPU to CUDA0 abs 128946424483
+0.06.878.422 W sync-wait 2012 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA0 abs 128946426502
+0.06.882.128 W sync-wait 3624 us at site 9: input blk.0.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946428597
+0.06.884.760 W sync-wait 2171 us at site 9: input blk.0.ffn_up_exps.weight, from CPU to CUDA1 abs 128946432682
+0.06.889.037 W sync-wait 3993 us at site 9: input blk.0.ffn_down_exps.weight, from CPU to CUDA1 abs 128946435137
+0.06.894.523 W sync-wait 4805 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946439810
+0.06.897.147 W sync-wait 2209 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA0 abs 128946445030
+0.06.899.753 W sync-wait 2416 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA0 abs 128946447430
+0.06.904.011 W sync-wait 4174 us at site 9: input blk.1.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946449929
+0.06.906.676 W sync-wait 2211 us at site 9: input blk.1.ffn_up_exps.weight, from CPU to CUDA1 abs 128946454557
+0.06.910.969 W sync-wait 4010 us at site 9: input blk.1.ffn_down_exps.weight, from CPU to CUDA1 abs 128946457051
+0.06.916.507 W sync-wait 4863 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946461736
+0.06.919.736 W sync-wait 2855 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA0 abs 128946466973
+0.06.922.937 W sync-wait 3048 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA0 abs 128946469982
+0.06.926.737 W sync-wait 3747 us at site 9: input blk.2.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946473083
+0.06.929.375 W sync-wait 2169 us at site 9: input blk.2.ffn_up_exps.weight, from CPU to CUDA1 abs 128946477298
+0.06.933.652 W sync-wait 4016 us at site 9: input blk.2.ffn_down_exps.weight, from CPU to CUDA1 abs 128946479729
+0.06.938.098 W sync-wait 3772 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946484418
+0.06.941.160 W sync-wait 2671 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA0 abs 128946488582
+0.06.944.185 W sync-wait 2861 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA0 abs 128946491416
+0.06.947.813 W sync-wait 3573 us at site 9: input blk.3.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946494333
+0.06.950.416 W sync-wait 2133 us at site 9: input blk.3.ffn_up_exps.weight, from CPU to CUDA1 abs 128946498375
+0.06.954.660 W sync-wait 3968 us at site 9: input blk.3.ffn_down_exps.weight, from CPU to CUDA1 abs 128946500784
+0.06.959.091 W sync-wait 3761 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946505422
+0.06.962.054 W sync-wait 2584 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA0 abs 128946509562
+0.06.964.999 W sync-wait 2769 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA0 abs 128946512322
+0.06.969.795 W sync-wait 4717 us at site 9: input blk.4.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946515170
+0.06.972.236 W sync-wait 2007 us at site 9: input blk.4.ffn_up_exps.weight, from CPU to CUDA1 abs 128946520321
+0.06.976.359 W sync-wait 3849 us at site 9: input blk.4.ffn_down_exps.weight, from CPU to CUDA1 abs 128946522603
+0.06.981.554 W sync-wait 4526 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946527120
+0.06.984.831 W sync-wait 2893 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA0 abs 128946532031
+0.06.988.075 W sync-wait 3081 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA0 abs 128946535086
+0.06.991.886 W sync-wait 3757 us at site 9: input blk.5.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946538221
+0.06.994.429 W sync-wait 2086 us at site 9: input blk.5.ffn_up_exps.weight, from CPU to CUDA1 abs 128946542436
+0.06.998.632 W sync-wait 3932 us at site 9: input blk.5.ffn_down_exps.weight, from CPU to CUDA1 abs 128946544793
+0.07.002.991 W sync-wait 3660 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946549423
+0.07.005.480 W sync-wait 2116 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA0 abs 128946553456
+0.07.007.950 W sync-wait 2306 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA0 abs 128946555737
+0.07.011.046 W sync-wait 3029 us at site 9: input blk.6.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946558110
+0.07.013.522 W sync-wait 2007 us at site 9: input blk.6.ffn_up_exps.weight, from CPU to CUDA1 abs 128946561607
+0.07.017.638 W sync-wait 3829 us at site 9: input blk.6.ffn_down_exps.weight, from CPU to CUDA1 abs 128946563901
+0.07.021.942 W sync-wait 3578 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946568456
+0.07.024.235 W sync-wait 1889 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA0 abs 128946572439
+0.07.026.488 W sync-wait 2068 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA0 abs 128946574512
+0.07.030.214 W sync-wait 3638 us at site 9: input blk.7.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946576668
+0.07.032.529 W sync-wait 1865 us at site 9: input blk.7.ffn_up_exps.weight, from CPU to CUDA1 abs 128946580757
+0.07.036.521 W sync-wait 3693 us at site 9: input blk.7.ffn_down_exps.weight, from CPU to CUDA1 abs 128946582921
+0.07.041.609 W sync-wait 4370 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946587331
+0.07.044.647 W sync-wait 2674 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA0 abs 128946592065
+0.07.047.667 W sync-wait 2857 us at site 9: input blk.8.ffn_down_exps.weight, from CPU to CUDA0 abs 128946594902
+0.07.051.319 W sync-wait 3593 us at site 9: input blk.8.ffn_gate_exps.weight, from CPU to CUDA1 abs 128946597818
+0.07.053.702 W sync-wait 1898 us at site 9: input blk.8.ffn_up_exps.weight, from CPU to CUDA1 abs 128946601896
+0.07.057.747 W sync-wait 3748 us at site 1: input inp_pos, from CPU to CUDA1 abs 128946604091
+0.07.062.155 W sync-wait 3370 us at site 9: input blk.9.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946608877
+0.07.065.036 W sync-wait 2616 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA0 abs 128946612512
+0.07.067.910 W sync-wait 2686 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA0 abs 128946615317
+0.07.069.770 W sync-wait 1321 us at site 9: input blk.9.ffn_up_exps.weight, from CPU to CUDA1 abs 128946618541
+0.07.072.412 W sync-wait 2347 us at site 9: input blk.9.ffn_down_exps.weight, from CPU to CUDA1 abs 128946620157
+0.07.076.148 W sync-wait 2822 us at site 9: input blk.10.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946623419
+0.07.078.658 W sync-wait 2249 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA0 abs 128946626501
+0.07.081.160 W sync-wait 2307 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA0 abs 128946628945
+0.07.083.595 W sync-wait 1933 us at site 9: input blk.10.ffn_up_exps.weight, from CPU to CUDA1 abs 128946631754
+0.07.086.799 W sync-wait 2975 us at site 9: input blk.10.ffn_down_exps.weight, from CPU to CUDA1 abs 128946633917
+0.07.091.981 W sync-wait 4319 us at site 9: input blk.11.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946637754
+0.07.094.661 W sync-wait 2440 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA0 abs 128946642313
+0.07.097.347 W sync-wait 2502 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA0 abs 128946644938
+0.07.099.049 W sync-wait 1175 us at site 9: input blk.11.ffn_up_exps.weight, from CPU to CUDA1 abs 128946647966
+0.07.101.534 W sync-wait 2196 us at site 9: input blk.11.ffn_down_exps.weight, from CPU to CUDA1 abs 128946649430
+0.07.105.126 W sync-wait 2684 us at site 9: input blk.12.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946652534
+0.07.107.616 W sync-wait 2254 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA0 abs 128946655454
+0.07.110.131 W sync-wait 2330 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA0 abs 128946657893
+0.07.111.811 W sync-wait 1190 us at site 9: input blk.12.ffn_up_exps.weight, from CPU to CUDA1 abs 128946660713
+0.07.114.286 W sync-wait 2205 us at site 9: input blk.12.ffn_down_exps.weight, from CPU to CUDA1 abs 128946662174
+0.07.117.844 W sync-wait 2746 us at site 9: input blk.13.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946665191
+0.07.120.188 W sync-wait 2099 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA0 abs 128946668182
+0.07.122.522 W sync-wait 2175 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA0 abs 128946670440
+0.07.124.709 W sync-wait 1752 us at site 9: input blk.13.ffn_up_exps.weight, from CPU to CUDA1 abs 128946673049
+0.07.127.652 W sync-wait 2739 us at site 9: input blk.13.ffn_down_exps.weight, from CPU to CUDA1 abs 128946675005
+0.07.132.499 W sync-wait 4171 us at site 9: input blk.14.ffn_gate_exps.weight, from CPU to CUDA0 abs 128946678421
+0.07.135.063 W sync-wait 2349 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA0 abs 128946682806
+0.07.137.607 W sync-wait 2413 us at site 9: input blk.14.ffn_down_exps.weight, from CPU to CUDA0 abs 128946685287
+0.07.139.651 W sync-wait 1665 us at site 9: input blk.14.ffn_up_exps.weight, from CPU to CUDA1 abs 128946688079
+0.07.142.470 W sync-wait 2639 us at site 1: input out_ids, from CPU to CUDA1 abs 128946689924
+0.07.147.689 W pf-stats (1 tokens, 3 slots, prefetch on): 125 splits, prefetch fired for 0; not staged: no inputs 49, first node not MUL_MAT_ID 687, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 1988
+0.07.147.695 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 46/99, cross-card-fallback 32/279, expert-ids-read 0/210, d2h 3/39, prev-card 0/17, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.07.173.326 W pf-stats (1 tokens, 3 slots, prefetch on): 66 splits, prefetch fired for 0; not staged: no inputs 654, first node not MUL_MAT_ID 654, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.07.173.332 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 46/110, cross-card-fallback 35/333, expert-ids-read 0/210, d2h 4/55, prev-card 0/33, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.07.198.083 W pf-stats (1 tokens, 3 slots, prefetch on): 66 splits, prefetch fired for 0; not staged: no inputs 654, first node not MUL_MAT_ID 654, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.07.198.090 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 46/121, cross-card-fallback 39/387, expert-ids-read 0/210, d2h 5/71, prev-card 0/49, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.07.212.087 W pf-stats (1 tokens, 3 slots, prefetch on): 66 splits, prefetch fired for 0; not staged: no inputs 654, first node not MUL_MAT_ID 654, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.07.212.092 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 46/132, cross-card-fallback 42/441, expert-ids-read 0/210, d2h 7/87, prev-card 0/65, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.07.212.667 I slot print_timing: id  3 | task 0 | prompt eval time =    2000.48 ms /  3434 tokens (    0.58 ms per token,  1716.59 tokens per second)
+0.07.212.672 I slot print_timing: id  3 | task 0 |        eval time =      64.21 ms /     4 tokens (   21.40 ms per token,    46.72 tokens per second)
+0.07.212.673 I slot print_timing: id  3 | task 0 |       total time =    2064.69 ms /  3438 tokens
+0.07.212.677 I slot print_timing: id  3 | task 0 |    graphs reused =          2
+0.07.212.725 I slot print_timing: id  3 | task 0 |        moe cache = on, hit 40.6% this request / 24.8% overall, 9..22 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.07.212.729 I slot print_timing: id  3 | task 0 |        moe churn = 133 uploads, 223 evictions, 546.2 MiB uploaded (this request)
+0.07.212.730 I slot print_timing: id  3 | task 0 |          threads = 6 decode / 8 batch, batch 4096, ubatch 512
+0.07.212.940 I slot      release: id  3 | task 0 | stop processing: n_tokens = 3437, truncated = 0
+0.08.184.088 I srv    operator(): operator(): cleaning up before exit...
+0.08.185.001 W moe-cache: steps=5 hits=159 misses=481 hit-rate=24.8%, prefill experts from cache 1224/7572, kept from prefill 2
+Collecting data...
+Generating '/tmp/nsys-report-0abb.qdstrm'
+[1/1] [0%                          ] or1.nsys-rep[1/1] [0%                          ] or1.nsys-rep[1/1] [=16%                        ] or1.nsys-rep[1/1] [13%                         ] or1.nsys-rep[1/1] [11%                         ] or1.nsys-rep[1/1] [==19%                       ] or1.nsys-rep[1/1] [=17%                        ] or1.nsys-rep[1/1] [14%                         ] or1.nsys-rep[1/1] [13%                         ] or1.nsys-rep[1/1] [==18%                       ] or1.nsys-rep[1/1] [=16%                        ] or1.nsys-rep[1/1] [14%                         ] or1.nsys-rep[1/1] [=15%                        ] or1.nsys-rep[1/1] [=17%                        ] or1.nsys-rep[1/1] [==18%                       ] or1.nsys-rep[1/1] [==19%                       ] or1.nsys-rep[1/1] [==20%                       ] or1.nsys-rep[1/1] [===24%                      ] or1.nsys-rep[1/1] [====28%                     ] or1.nsys-rep[1/1] [=====32%                    ] or1.nsys-rep[1/1] [=======36%                  ] or1.nsys-rep[1/1] [========41%                 ] or1.nsys-rep[1/1] [=========45%                ] or1.nsys-rep[1/1] [===========50%              ] or1.nsys-rep[1/1] [============54%             ] or1.nsys-rep[1/1] [============55%             ] or1.nsys-rep[1/1] [========================100%] or1.nsys-rep[1/1] [========================100%] or1.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/or1.nsys-rep

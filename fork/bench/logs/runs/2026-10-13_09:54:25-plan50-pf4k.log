@@ -1,0 +1,33 @@
+0.00.000.811 I srv  llama_server: initializing ...
+0.00.276.063 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.276.451 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.278.121 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+ggml_cuda_host_malloc_registered: 3.7 GiB populated in 0.2 s (3.0 reserved 1024 MiB pages, 0.6 THP, 0.1 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.01.890.158 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.01.940.574 I cmn          init: llama threadpool init, n_threads = 8
+0.02.004.048 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.02.004.061 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 0/99, expert-ids-read 0/0, d2h 0/16, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.02.026.895 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.02.026.903 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 2/198, expert-ids-read 0/0, d2h 0/32, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.02.027.579 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 4096, kv_unified = 'false'
+0.02.029.832 I srv  llama_server: model loaded
+0.02.029.838 I srv  llama_server: listening on http://127.0.0.1:8099
+0.03.036.649 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.03.036.693 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.03.574.583 W pf-stats (1 tokens, 3 slots, prefetch on): 57 splits, prefetch fired for 45; not staged: no inputs 1, first node not MUL_MAT_ID 147, weight not an input 24, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.03.574.588 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 11/207, expert-ids-read 0/0, d2h 114/33, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.03.593.359 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.03.593.365 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 11/261, expert-ids-read 0/0, d2h 115/49, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.03.610.879 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.03.610.884 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 11/315, expert-ids-read 0/0, d2h 116/65, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.03.625.975 W pf-stats (1 tokens, 3 slots, prefetch on): 34 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 276, weight not an input 263, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.03.625.980 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 12/369, expert-ids-read 0/0, d2h 118/81, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.03.626.222 I slot print_timing: id  0 | task 0 | prompt eval time =     538.36 ms /  3434 tokens (    0.16 ms per token,  6378.66 tokens per second)
+0.03.626.223 I slot print_timing: id  0 | task 0 |        eval time =      51.15 ms /     4 tokens (   17.05 ms per token,    58.66 tokens per second)
+0.03.626.224 I slot print_timing: id  0 | task 0 |       total time =     589.50 ms /  3438 tokens
+0.03.626.227 I slot print_timing: id  0 | task 0 |    graphs reused =          3
+0.03.626.243 I slot print_timing: id  0 | task 0 |        moe cache = off
+0.03.626.245 I slot print_timing: id  0 | task 0 |          threads = 4 decode / 8 batch, batch 4096, ubatch 4096
+0.03.626.418 I slot      release: id  0 | task 0 | stop processing: n_tokens = 3437, truncated = 0
+0.03.649.445 I srv    operator(): operator(): cleaning up before exit...

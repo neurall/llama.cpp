@@ -1,0 +1,21 @@
+0.00.001.105 I srv  llama_server: initializing ...
+0.00.257.312 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.257.695 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.259.589 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+0.01.094.178 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance
+0.01.223.980 I common_init_result: weights NOT pinned: mmap / page cache (load mode auto)
+0.01.276.914 I cmn          init: llama threadpool init, n_threads = 8
+0.01.373.478 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 4096, kv_unified = 'true'
+0.01.375.754 I srv  llama_server: model loaded
+0.01.375.759 I srv  llama_server: listening on http://127.0.0.1:8099
+0.02.147.597 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.02.147.661 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.02.147.701 E srv    send_error: task id = 0, error: request (5688 tokens) exceeds the available context size (4096 tokens), try increasing it
+0.02.147.709 I slot      release: id  3 | task 0 | stop processing: n_tokens = 0, truncated = 0
+0.02.147.722 W srv          stop: cancel task, id_task = 0
+0.03.190.311 I srv    operator(): operator(): cleaning up before exit...
+Collecting data...
+Generating '/tmp/nsys-report-bee4.qdstrm'
+[1/1] [0%                          ] ol2.nsys-rep[1/1] [0%                          ] ol2.nsys-rep[1/1] [11%                         ] ol2.nsys-rep[1/1] [===23%                      ] ol2.nsys-rep[1/1] [====27%                     ] ol2.nsys-rep[1/1] [=====32%                    ] ol2.nsys-rep[1/1] [======33%                   ] ol2.nsys-rep[1/1] [===============66%          ] ol2.nsys-rep[1/1] [========================100%] ol2.nsys-rep[1/1] [========================100%] ol2.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/ol2.nsys-rep

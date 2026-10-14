@@ -1,0 +1,85 @@
+0.00.000.867 I srv  llama_server: initializing ...
+0.00.275.281 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.275.678 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.277.365 I srv    load_model: loading model '/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf'
+0.00.657.955 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 0 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf 117481680096place.g2.6b6844dc.v3)
+0.00.658.091 I common_moe_cache_auto_impl: MoE model (109.4 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 32768, ubatch 8192, threads 6, weights pinned (settings you pass win)
+0.02.042.206 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.02.042.211 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+ggml_cuda_host_malloc_registered: 100.5 GiB hugetlbfs cache (warm) mapped in 0.0 s
+ggml_cuda_host_malloc_registered: registered in 2.6 s
+0.07.553.462 I common_init_result: weights pinned (swapped 0.0 GiB while loading, 10.4 GiB RAM left)
+ggml_cuda_host_malloc_registered: 1.2 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 1.2 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.1 s
+0.07.920.565 I cmn          init: llama threadpool init, n_threads = 6
+0.08.284.275 W pf-stats (1 tokens, 6 slots, prefetch on): 87 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 1798, weight not an input 1753, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.08.284.283 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 10/357, expert-ids-read 0/0, d2h 0/42, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.08.292.137 W moe-cache: 5 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.08.292.138 W moe-cache: 37 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.08.404.038 W moe-cache: block pool on CUDA0: 5 layers, 14510.4 MiB, size classes: 711 x 13.50 MiB (3 layers), 474 x 10.31 MiB (2 layers); no blocks reserved per layer
+0.08.421.038 W moe-cache: block pool on CUDA1: 37 layers, 12945.9 MiB, size classes: 44 x 10.31 MiB (1 layers), 1584 x 7.88 MiB (36 layers); no blocks reserved per layer
+0.08.421.999 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+0.09.219.994 W moe-cache: probe: links alone link 0 25.2 link 1 5.8 GB/s; CPU threads:GB/s alone/with links 1:26.2/44.1 2:41.9/44.9 3:42.1/45.2 4:39.9/44.8 -> CPU 42.1 GB/s (saturated by 2 threads), RAM budget 45.2 GB/s
+0.09.222.838 W moe-cache: 5 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.09.222.859 W operator(): MoE expert cache enabled: 42 layers, slots/layer 44..1584, 2 inserts/step, 1464623.4 MiB device memory
+ggml_cuda_host_malloc_registered: 1.2 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 1.2 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.1 s
+0.09.736.739 W moe_alias_shrink_fork: the pool lends 9598 MiB, graph + scratch + prefetch staging need 12651 MiB at micro-batch 8192: micro-batch 6016
+0.10.186.685 W moe-cache: max-batch auto = 128 (stored probe)
+0.10.490.998 W pf-stats (1 tokens, 6 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.10.491.006 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 35/714, expert-ids-read 0/0, d2h 0/84, prev-card 0/42, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.11.941.048 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 32768, kv_unified = 'false'
+0.11.960.615 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.11.960.648 I srv  llama_server: model loaded
+0.11.960.652 I srv  llama_server: listening on http://127.0.0.1:8099
+0.12.006.431 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.12.006.476 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.21.543.532 W pf-stats (0 tokens, 6 slots, prefetch on): 901 splits, prefetch fired for 252; not staged: no inputs 3525, first node not MUL_MAT_ID 17192, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.21.543.538 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 59/822, expert-ids-read 0/0, d2h 0/84, prev-card 8475/134, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.21.552.910 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   1976, progress = 0.25, t =   9.55 s / 206.99 tokens per second
+0.35.657.772 W pf-stats (0 tokens, 6 slots, prefetch on): 901 splits, prefetch fired for 252; not staged: no inputs 3525, first node not MUL_MAT_ID 17192, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.35.657.778 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 182/930, expert-ids-read 0/0, d2h 0/84, prev-card 20960/226, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.35.685.239 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   7992, progress = 1.00, t =  23.68 s / 337.52 tokens per second
+0.36.017.761 W pf-stats (1 tokens, 6 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.36.017.773 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 195/1287, expert-ids-read 0/0, d2h 0/126, prev-card 20960/268, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.36.118.185 W pf-stats (1 tokens, 6 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.36.118.194 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 197/1518, expert-ids-read 0/0, d2h 8/168, prev-card 20960/310, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.36.214.323 W pf-stats (1 tokens, 6 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.36.214.331 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 198/1749, expert-ids-read 0/0, d2h 26/210, prev-card 20960/352, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.36.277.247 W pf-stats (1 tokens, 6 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.36.277.255 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 199/1980, expert-ids-read 0/0, d2h 45/252, prev-card 20960/394, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.36.278.446 I slot print_timing: id  0 | task 0 | prompt eval time =   24012.93 ms /  7996 tokens (    3.00 ms per token,   332.99 tokens per second)
+0.36.278.447 I slot print_timing: id  0 | task 0 |        eval time =     259.01 ms /     4 tokens (   86.34 ms per token,    11.58 tokens per second)
+0.36.278.448 I slot print_timing: id  0 | task 0 |       total time =   24271.95 ms /  8000 tokens
+0.36.278.451 I slot print_timing: id  0 | task 0 |    graphs reused =          2
+0.36.278.491 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 37.3% this request / 29.0% overall, 3..237 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.36.278.494 I slot print_timing: id  0 | task 0 |        moe churn = 0 uploads, 1552 evictions, 2854.3 MiB uploaded (this request)
+0.36.278.496 I slot print_timing: id  0 | task 0 |          threads = 6 decode / 6 batch, batch 8192, ubatch 6016
+0.36.278.887 I slot      release: id  0 | task 0 | stop processing: n_tokens = 7999, truncated = 0
+0.36.285.813 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+0.36.285.843 I slot launch_slot_: id  0 | task 7 | processing task, is_child = 0
+0.45.620.029 W pf-stats (0 tokens, 6 slots, prefetch on): 901 splits, prefetch fired for 252; not staged: no inputs 3525, first node not MUL_MAT_ID 17192, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.45.620.033 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 223/2088, expert-ids-read 0/0, d2h 45/252, prev-card 29883/486, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.45.682.629 I slot print_timing: id  0 | task 7 | prompt processing, n_tokens =   1976, progress = 0.25, t =   9.40 s / 210.29 tokens per second
+0.59.648.372 W pf-stats (0 tokens, 6 slots, prefetch on): 901 splits, prefetch fired for 252; not staged: no inputs 3525, first node not MUL_MAT_ID 17192, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.59.648.377 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 346/2196, expert-ids-read 0/0, d2h 45/252, prev-card 42773/578, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.59.786.785 I slot print_timing: id  0 | task 7 | prompt processing, n_tokens =   7992, progress = 1.00, t =  23.50 s / 340.07 tokens per second
+1.00.109.109 W pf-stats (1 tokens, 6 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+1.00.109.119 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 361/2553, expert-ids-read 0/0, d2h 45/294, prev-card 42773/620, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+1.00.203.776 W pf-stats (1 tokens, 6 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+1.00.203.785 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 362/2784, expert-ids-read 0/0, d2h 55/336, prev-card 42773/662, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+1.00.290.925 W pf-stats (1 tokens, 6 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+1.00.290.932 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 363/3015, expert-ids-read 0/0, d2h 73/378, prev-card 42773/704, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+1.00.351.901 W pf-stats (1 tokens, 6 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+1.00.351.907 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 364/3246, expert-ids-read 0/0, d2h 92/420, prev-card 42773/746, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+1.00.353.114 I slot print_timing: id  0 | task 7 | prompt eval time =   23824.58 ms /  7996 tokens (    2.98 ms per token,   335.62 tokens per second)
+1.00.353.117 I slot print_timing: id  0 | task 7 |        eval time =     242.67 ms /     4 tokens (   80.89 ms per token,    12.36 tokens per second)
+1.00.353.118 I slot print_timing: id  0 | task 7 |       total time =   24067.25 ms /  8000 tokens
+1.00.353.119 I slot print_timing: id  0 | task 7 |    graphs reused =          4
+1.00.353.157 I slot print_timing: id  0 | task 7 |        moe cache = on, hit 43.3% this request / 35.3% overall, 5..237 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+1.00.353.160 I slot print_timing: id  0 | task 7 |        moe churn = 32 uploads, 421 evictions, 3470.8 MiB uploaded (this request)
+1.00.353.162 I slot print_timing: id  0 | task 7 |          threads = 6 decode / 6 batch, batch 8192, ubatch 6016
+1.00.353.675 I slot      release: id  0 | task 7 | stop processing: n_tokens = 7999, truncated = 0
+1.01.302.219 I srv    operator(): operator(): cleaning up before exit...
+1.01.302.854 I ~common_init_result: MoE placement: too few tokens this run to record cache (15994 prompt, 6 generated)
+1.01.302.929 W moe-cache: steps=13 hits=1896 misses=3480 hit-rate=35.3%, prefill experts from cache 0/0, kept from prefill 0

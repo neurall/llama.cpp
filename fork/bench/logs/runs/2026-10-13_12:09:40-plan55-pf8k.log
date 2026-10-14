@@ -1,0 +1,63 @@
+0.00.001.209 I srv  llama_server: initializing ...
+0.00.249.512 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.249.900 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.251.835 I srv    load_model: loading model '/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf'
+0.00.612.207 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 0 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf 117481680096place.g2.6b6844dc.v3)
+0.00.612.350 I common_moe_cache_auto_impl: MoE model (109.4 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 32768, ubatch 8192, threads 6, weights pinned (settings you pass win)
+0.01.990.013 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.01.990.017 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+ggml_cuda_host_malloc_registered: 100.5 GiB hugetlbfs cache (warm) mapped in 0.0 s
+ggml_cuda_host_malloc_registered: registered in 2.6 s
+0.05.699.055 I common_init_result: weights pinned (swapped 0.0 GiB while loading, 11.0 GiB RAM left)
+0.05.702.629 W moe-cache: prefill links (GB/s): CUDA1 26.1 CUDA0 6.4 -> split's transfer speedup 1.24x: one GPU (the split's compute buffers would cost more cache)
+ggml_cuda_host_malloc_registered: 1.2 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 1.2 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.06.129.026 I cmn          init: llama threadpool init, n_threads = 6
+0.06.514.144 W pf-stats (1 tokens, 3 slots, prefetch on): 87 splits, prefetch fired for 0; not staged: no inputs 1, first node not MUL_MAT_ID 1798, weight not an input 1753, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.06.514.149 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 4/357, expert-ids-read 0/0, d2h 0/42, prev-card 0/0, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.06.522.321 W moe-cache: 5 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.06.522.323 W moe-cache: 37 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.06.645.048 W moe-cache: block pool on CUDA0: 5 layers, 17566.7 MiB, size classes: 861 x 13.50 MiB (3 layers), 574 x 10.31 MiB (2 layers); no blocks reserved per layer
+0.06.664.115 W moe-cache: block pool on CUDA1: 37 layers, 14708.8 MiB, size classes: 50 x 10.31 MiB (1 layers), 1800 x 7.88 MiB (36 layers); no blocks reserved per layer
+0.06.665.305 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+0.07.464.327 W moe-cache: probe: links alone link 0 24.7 link 1 5.7 GB/s; CPU threads:GB/s alone/with links 1:26.1/43.8 2:41.4/45.4 3:41.2/44.7 4:39.5/44.2 -> CPU 41.4 GB/s (saturated by 2 threads), RAM budget 45.4 GB/s
+0.07.467.163 W moe-cache: 5 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.07.467.188 W operator(): MoE expert cache enabled: 42 layers, slots/layer 50..1800, 2 inserts/step, 1672929.6 MiB device memory
+ggml_cuda_host_malloc_registered: 1.2 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 1.2 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.07.983.630 W moe-cache: max-batch auto = 128 (stored probe)
+0.08.395.048 W pf-stats (1 tokens, 3 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.08.395.061 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 27/714, expert-ids-read 0/0, d2h 0/84, prev-card 0/42, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.10.827.618 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 32768, kv_unified = 'false'
+0.10.847.522 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.10.847.553 I srv  llama_server: model loaded
+0.10.847.558 I srv  llama_server: listening on http://127.0.0.1:8099
+0.11.131.614 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.11.131.663 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.24.766.646 W pf-stats (0 tokens, 3 slots, prefetch on): 134 splits, prefetch fired for 126; not staged: no inputs 1, first node not MUL_MAT_ID 75, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.24.766.652 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 205/819, expert-ids-read 0/0, d2h 0/84, prev-card 0/42, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.25.343.467 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   7992, progress = 1.00, t =  14.21 s / 562.35 tokens per second
+0.25.687.010 W pf-stats (1 tokens, 3 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.25.687.021 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 213/1176, expert-ids-read 0/0, d2h 0/126, prev-card 0/84, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.25.799.508 W pf-stats (1 tokens, 3 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.25.799.519 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 214/1407, expert-ids-read 0/0, d2h 1/168, prev-card 0/126, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.25.916.079 W pf-stats (1 tokens, 3 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.25.916.089 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 216/1638, expert-ids-read 0/0, d2h 19/210, prev-card 0/168, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.25.985.490 W pf-stats (1 tokens, 3 slots, prefetch on): 171 splits, prefetch fired for 0; not staged: no inputs 4452, first node not MUL_MAT_ID 4476, weight not an input 0, weight not host-resident 0, few ids 0, range part of the card split 0, region on another card 0, staging stream on another card 0, no slots 0
+0.25.985.496 W pf-stats sync (cumulative host ms / calls): copy_input-own-card 0/0, cross-card-fallback 217/1869, expert-ids-read 0/0, d2h 37/252, prev-card 0/210, copy-ahead 0/0, trace 0/0, eval-cb 0/0
+0.25.986.709 I slot print_timing: id  0 | task 0 | prompt eval time =   14557.00 ms /  7996 tokens (    1.82 ms per token,   549.29 tokens per second)
+0.25.986.711 I slot print_timing: id  0 | task 0 |        eval time =     298.02 ms /     4 tokens (   99.34 ms per token,    10.07 tokens per second)
+0.25.986.711 I slot print_timing: id  0 | task 0 |       total time =   14855.02 ms /  8000 tokens
+0.25.986.714 I slot print_timing: id  0 | task 0 |    graphs reused =          2
+0.25.986.758 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 43.0% this request / 33.4% overall, 4..287 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.25.986.760 I slot print_timing: id  0 | task 0 |        moe churn = 0 uploads, 1393 evictions, 2621.2 MiB uploaded (this request)
+0.25.986.761 I slot print_timing: id  0 | task 0 |          threads = 6 decode / 6 batch, batch 8192, ubatch 8192
+0.25.987.186 I slot      release: id  0 | task 0 | stop processing: n_tokens = 7999, truncated = 0
+0.27.250.575 I srv    operator(): operator(): cleaning up before exit...
+0.27.251.231 I ~common_init_result: MoE placement: too few tokens this run to record cache (7998 prompt, 3 generated)
+0.27.251.473 W moe-cache: steps=6 hits=1011 misses=2013 hit-rate=33.4%, prefill experts from cache 0/0, kept from prefill 0
+Collecting data...
+Generating '/tmp/nsys-report-39e3.qdstrm'
+[1/1] [0%                          ] glm-base.nsys-rep[1/1] [0%                          ] glm-base.nsys-rep[1/1] [=15%                        ] glm-base.nsys-rep[1/1] [12%                         ] glm-base.nsys-rep[1/1] [===22%                      ] glm-base.nsys-rep[1/1] [==19%                       ] glm-base.nsys-rep[1/1] [=16%                        ] glm-base.nsys-rep[1/1] [14%                         ] glm-base.nsys-rep[1/1] [==19%                       ] glm-base.nsys-rep[1/1] [=17%                        ] glm-base.nsys-rep[1/1] [=15%                        ] glm-base.nsys-rep[1/1] [14%                         ] glm-base.nsys-rep[1/1] [13%                         ] glm-base.nsys-rep[1/1] [12%                         ] glm-base.nsys-rep[1/1] [11%                         ] glm-base.nsys-rep[1/1] [10%                         ] glm-base.nsys-rep[1/1] [9%                          ] glm-base.nsys-rep[1/1] [8%                          ] glm-base.nsys-rep[1/1] [7%                          ] glm-base.nsys-rep[1/1] [6%                          ] glm-base.nsys-rep[1/1] [5%                          ] glm-base.nsys-rep[1/1] [6%                          ] glm-base.nsys-rep[1/1] [7%                          ] glm-base.nsys-rep[1/1] [9%                          ] glm-base.nsys-rep[1/1] [10%                         ] glm-base.nsys-rep[1/1] [12%                         ] glm-base.nsys-rep[1/1] [14%                         ] glm-base.nsys-rep[1/1] [=16%                        ] glm-base.nsys-rep[1/1] [=17%                        ] glm-base.nsys-rep[1/1] [==19%                       ] glm-base.nsys-rep[1/1] [==21%                       ] glm-base.nsys-rep[1/1] [===23%                      ] glm-base.nsys-rep[1/1] [====25%                     ] glm-base.nsys-rep[1/1] [====26%                     ] glm-base.nsys-rep[1/1] [====28%                     ] glm-base.nsys-rep[1/1] [=====30%                    ] glm-base.nsys-rep[1/1] [=====32%                    ] glm-base.nsys-rep[1/1] [======34%                   ] glm-base.nsys-rep[1/1] [=======36%                  ] glm-base.nsys-rep[1/1] [=======37%                  ] glm-base.nsys-rep[1/1] [=======39%                  ] glm-base.nsys-rep[1/1] [========41%                 ] glm-base.nsys-rep[1/1] [=========43%                ] glm-base.nsys-rep[1/1] [=========45%                ] glm-base.nsys-rep[1/1] [=========46%                ] glm-base.nsys-rep[1/1] [==========48%               ] glm-base.nsys-rep[1/1] [===========50%              ] glm-base.nsys-rep[1/1] [===========52%              ] glm-base.nsys-rep[1/1] [========================100%] glm-base.nsys-rep[1/1] [========================100%] glm-base.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/glm-base.nsys-rep

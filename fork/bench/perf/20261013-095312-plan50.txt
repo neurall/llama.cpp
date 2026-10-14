@@ -1,0 +1,60 @@
+    51.33%  libggml-cpu-haswell.so    [.] ggml_vec_dot_q4_K_q8_K
+    23.96%  libomp.so                 [.] kmp_flag_64<false, true>::wait(kmp_info*, int, void*)
+    14.77%  libggml-cpu-haswell.so    [.] ggml_vec_dot_q6_K_q8_K
+     4.01%  libomp.so                 [.] __kmp_hardware_timestamp
+     1.57%  libggml-cpu-haswell.so    [.] ggml_compute_forward_mul_mat_id_impl
+     0.27%  libomp.so                 [.] kmp_flag_native<unsigned long long, (flag_type)1, true>::notdone_check()
+     0.15%  libggml-base.so.0.26.0    [.] quantize_row_q8_K_ref
+     0.15%  [unknown]                 [k] 0xffffffffb3eb2bbf
+     0.15%  libggml-cpu-haswell.so    [.] void tiled_run_microtile<16, false, 32, true>(tiled_tile_src0 const&, tiled_tile_src1 const&, int, int, int, int, float*, int)
+     0.14%  libc.so.6                 [.] __memmove_avx_unaligned
+     0.13%  libcuda.so.595.104.02     [.] 0x000000000022c220
+     0.11%  libcuda.so.595.104.02     [.] 0x000000000021ea79
+     0.10%  libggml-cpu-haswell.so    [.] ggml_vec_swiglu_f32
+     0.09%  libllama-common.so.0.6.0  [.] common_sampler::set_logits(llama_context*, int)
+     0.08%  libomp.so                 [.] __kmp_hyper_barrier_gather(barrier_type, kmp_info*, int, int, void (*)(void*, void*), void*)
+     0.06%  libggml-cpu-haswell.so    [.] ggml_compute_forward_mul_mat_id_tiled
+     0.05%  [unknown]                 [k] 0xffffffffb2b542d7
+     0.05%  [unknown]                 [k] 0xffffffffb2800080
+     0.05%  libcuda.so.595.104.02     [.] 0x00000000004166f9
+     0.05%  [vdso]                    [.] 0x0000000000000998
+     0.04%  libcuda.so.595.104.02     [.] 0x000000000021ea66
+     0.04%  libggml-cpu-haswell.so    [.] memcpy@plt
+     0.04%  libomp.so                 [.] __kmp_barrier
+     0.04%  libomp.so                 [.] __kmp_hyper_barrier_release(barrier_type, kmp_info*, int, int, int, void*)
+     0.04%  [unknown]                 [k] 0xffffffffb3eb8ef5
+     0.04%  libcuda.so.595.104.02     [.] 0x000000000021ea62
+     0.03%  libcuda.so.595.104.02     [.] 0x000000000021ea5f
+     0.03%  libomp.so                 [.] __kmp_get_global_thread_id
+     0.03%  libcuda.so.595.104.02     [.] 0x0000000000416700
+     0.03%  libc.so.6                 [.] __sched_yield
+     0.03%  libggml-cpu-haswell.so    [.] ggml::cpu::repack::extra_buffer_type::get_tensor_traits(ggml_tensor const*)
+     0.03%  libggml-base.so.0.26.0    [.] ggml_backend_sched_copy_input(ggml_backend_sched*, ggml_backend_sched_split*, ggml_tensor*, std::vector<ggml_backend*, std::allocator<ggml_backend*> >&)
+     0.03%  [unknown]                 [k] 0xffffffffb3ecd3de
+     0.03%  libggml-cpu-haswell.so    [.] ggml_graph_compute_thread
+     0.03%  [unknown]                 [k] 0xffffffffb2b0edd0
+     0.03%  [unknown]                 [k] 0xffffffffb3ec31a7
+     0.03%  [unknown]                 [k] 0xffffffffb2c04103
+     0.03%  libcuda.so.595.104.02     [.] 0x00000000004165af
+     0.03%  libcuda.so.595.104.02     [.] 0x000000000021ea5d
+     0.03%  libomp.so                 [.] __kmp_fork_call
+     0.03%  [unknown]                 [k] 0xffffffffb2d17660
+     0.03%  libggml-base.so.0.26.0    [.] ggml_backend_sched_compute_splits(ggml_backend_sched*)::$_2::operator()(int) const
+     0.03%  libc.so.6                 [.] _int_free
+     0.03%  libcuda.so.595.104.02     [.] 0x00000000004166e0
+     0.02%  libc.so.6                 [.] pthread_mutex_unlock@@GLIBC_2.2.5
+     0.02%  [unknown]                 [k] 0xffffffffb2c27d0e
+     0.02%  libcuda.so.595.104.02     [.] 0x00000000002ddd74
+     0.02%  libcudart.so.13.2.75      [.] 0x000000000002b3d8
+     0.01%  libcuda.so.595.104.02     [.] 0x00000000002a51d9
+     0.01%  [unknown]                 [k] 0xffffffffb2bf639d
+     0.01%  libcuda.so.595.104.02     [.] 0x0000000000260edc
+     0.01%  libcuda.so.595.104.02     [.] 0x0000000001177e40
+     0.01%  libcuda.so.595.104.02     [.] 0x00000000003cd41c
+     0.01%  libcuda.so.595.104.02     [.] 0x000000000023e470
+     0.01%  [unknown]                 [k] 0xffffffffb3eb2b71
+     0.01%  libomp.so                 [.] __kmp_get_global_thread_id_reg
+     0.01%  libcuda.so.595.104.02     [.] 0x00000000003b5d0e
+     0.01%  [unknown]                 [k] 0xffffffffb2c499cc
+     0.01%  [unknown]                 [k] 0xffffffffb2bebedb
+     0.01%  [unknown]                 [k] 0xffffffffb3ecd3e3

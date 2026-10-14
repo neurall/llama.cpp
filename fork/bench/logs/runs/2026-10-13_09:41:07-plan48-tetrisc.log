@@ -1,0 +1,26 @@
+0.00.270.683 I srv  llama_server: initializing ...
+0.00.270.697 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.271.024 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.272.933 I srv    load_model: loading model '/m/o/8/4/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf'
+ggml_cuda_host_malloc_registered: 3.7 GiB populated in 0.2 s (3.0 reserved 1024 MiB pages, 0.6 THP, 0.1 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.01.353.934 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.01.379.314 I cmn          init: llama threadpool init, n_threads = 8
+0.01.470.238 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 2048, kv_unified = 'true'
+0.01.472.601 I srv  llama_server: model loaded
+0.01.472.606 I srv  llama_server: listening on http://127.0.0.1:8099
+0.02.147.007 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+0.02.147.083 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+0.04.190.698 I slot print_timing: id  3 | task 0 | prompt eval time =     166.65 ms /    20 tokens (    8.33 ms per token,   120.02 tokens per second)
+0.04.190.705 I slot print_timing: id  3 | task 0 |        eval time =    1876.93 ms /   120 tokens (   15.77 ms per token,    63.40 tokens per second)
+0.04.190.706 I slot print_timing: id  3 | task 0 |       total time =    2043.58 ms /   140 tokens
+0.04.190.709 I slot print_timing: id  3 | task 0 |    graphs reused =        119
+0.04.190.726 I slot print_timing: id  3 | task 0 |        moe cache = off
+0.04.190.727 I slot print_timing: id  3 | task 0 |          threads = 6 decode / 8 batch, batch 2048, ubatch 2048
+0.04.190.761 I slot      release: id  3 | task 0 | stop processing: n_tokens = 139, truncated = 0
+0.05.197.527 I srv    operator(): operator(): cleaning up before exit...
+Collecting data...
+Generating '/tmp/nsys-report-208a.qdstrm'
+[1/1] [0%                          ] cal11.nsys-rep[1/1] [0%                          ] cal11.nsys-rep[1/1] [6%                          ] cal11.nsys-rep[1/1] [5%                          ] cal11.nsys-rep[1/1] [6%                          ] cal11.nsys-rep[1/1] [10%                         ] cal11.nsys-rep[1/1] [====26%                     ] cal11.nsys-rep[1/1] [========41%                 ] cal11.nsys-rep[1/1] [============55%             ] cal11.nsys-rep[1/1] [========================100%] cal11.nsys-rep[1/1] [========================100%] cal11.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/cal11.nsys-rep

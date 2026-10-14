@@ -1,0 +1,103 @@
+0.00.000.863 I srv  llama_server: initializing ...
+0.00.272.661 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.273.057 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.274.714 I srv    load_model: loading model '/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf'
+0.00.617.027 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 0 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf 117481680096place.g2.6b6844dc.v3)
+0.00.617.167 I common_moe_cache_auto_impl: MoE model (109.4 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 32768, ubatch 8192, threads 6, weights pinned (settings you pass win)
+0.02.014.297 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.02.014.302 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+ggml_cuda_host_malloc_registered: 100.5 GiB hugetlbfs cache (warm) mapped in 0.0 s
+ggml_cuda_host_malloc_registered: registered in 2.6 s
+0.07.465.384 I common_init_result: weights pinned (swapped 0.0 GiB while loading, 11.8 GiB RAM left)
+ggml_cuda_host_malloc_registered: 1.2 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 1.2 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.07.898.564 I cmn          init: llama threadpool init, n_threads = 6
+0.08.257.831 W moe-cache: 5 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.08.257.838 W moe-cache: 37 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.08.372.846 W moe-cache: block pool on CUDA0: 5 layers, 14510.4 MiB, size classes: 711 x 13.50 MiB (3 layers), 474 x 10.31 MiB (2 layers); no blocks reserved per layer
+0.08.389.711 W moe-cache: block pool on CUDA1: 37 layers, 12945.9 MiB, size classes: 44 x 10.31 MiB (1 layers), 1584 x 7.88 MiB (36 layers); no blocks reserved per layer
+0.08.390.780 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+0.09.188.418 W moe-cache: probe: links alone link 0 25.2 link 1 5.7 GB/s; CPU threads:GB/s alone/with links 1:25.9/44.2 2:42.2/45.2 3:40.3/45.5 4:40.0/45.4 -> CPU 42.2 GB/s (saturated by 2 threads), RAM budget 45.5 GB/s
+0.09.191.215 W moe-cache: 5 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.09.191.237 W operator(): MoE expert cache enabled: 42 layers, slots/layer 44..1584, 2 inserts/step, 1464623.4 MiB device memory
+ggml_cuda_host_malloc_registered: 1.2 GiB populated in 0.1 s (0.0 reserved 0 MiB pages, 1.2 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 0.2 s
+0.09.814.425 W moe-cache: max-batch auto = 128 (stored probe)
+0.11.913.591 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 32768, kv_unified = 'false'
+0.11.933.328 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.11.933.358 I srv  llama_server: model loaded
+0.11.933.361 I srv  llama_server: listening on http://127.0.0.1:8099
+0.12.024.310 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.12.024.356 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.19.283.826 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   5472, progress = 1.00, t =   7.26 s / 753.78 tokens per second
+0.19.315.472 W dense split: 5472 prompt tokens (largest pass 5472) split: 750.7 tokens/s; this size: one card -, split 750
+0.19.847.806 I slot print_timing: id  0 | task 0 | prompt eval time =    7565.43 ms /  5476 tokens (    1.38 ms per token,   723.82 tokens per second)
+0.19.847.809 I slot print_timing: id  0 | task 0 |        eval time =     258.00 ms /     4 tokens (   86.00 ms per token,    11.63 tokens per second)
+0.19.847.810 I slot print_timing: id  0 | task 0 |       total time =    7823.42 ms /  5480 tokens
+0.19.847.812 I slot print_timing: id  0 | task 0 |    graphs reused =          2
+0.19.847.856 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 41.7% this request / 32.4% overall, 4..237 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.19.847.859 I slot print_timing: id  0 | task 0 |        moe churn = 0 uploads, 1510 evictions, 2641.7 MiB uploaded (this request)
+0.19.847.859 I slot print_timing: id  0 | task 0 |          threads = 6 decode / 6 batch, batch 8192, ubatch 8192
+0.19.848.168 I slot      release: id  0 | task 0 | stop processing: n_tokens = 5479, truncated = 0
+0.19.853.552 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.999
+0.19.853.585 I slot launch_slot_: id  0 | task 6 | processing task, is_child = 0
+0.29.457.708 I slot print_timing: id  0 | task 6 | prompt processing, n_tokens =   5472, progress = 1.00, t =   9.60 s / 569.76 tokens per second
+0.29.488.213 W dense split: 5472 prompt tokens (largest pass 5472) one card: 568.5 tokens/s; this size: one card 568, split 750
+0.30.040.938 I slot print_timing: id  0 | task 6 | prompt eval time =    9931.40 ms /  5476 tokens (    1.81 ms per token,   551.38 tokens per second)
+0.30.040.946 I slot print_timing: id  0 | task 6 |        eval time =     255.93 ms /     4 tokens (   85.31 ms per token,    11.72 tokens per second)
+0.30.040.946 I slot print_timing: id  0 | task 6 |       total time =   10187.34 ms /  5480 tokens
+0.30.040.948 I slot print_timing: id  0 | task 6 |    graphs reused =          4
+0.30.040.981 I slot print_timing: id  0 | task 6 |        moe cache = on, hit 33.6% this request / 33.0% overall, 8..237 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.30.040.983 I slot print_timing: id  0 | task 6 |        moe churn = 64 uploads, 690 evictions, 3168.6 MiB uploaded (this request)
+0.30.040.983 I slot print_timing: id  0 | task 6 |          threads = 6 decode / 6 batch, batch 8192, ubatch 8192
+0.30.041.270 I slot      release: id  0 | task 6 | stop processing: n_tokens = 5479, truncated = 0
+0.30.045.794 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.999
+0.30.045.822 I slot launch_slot_: id  0 | task 12 | processing task, is_child = 0
+0.30.061.856 W prefill split: layer 8 helper CUDA1 has no count for bucket 7 (tokens 5472)
+0.30.061.859 W prefill split: layer 9 helper CUDA1 has no count for bucket 7 (tokens 5472)
+0.30.061.860 W prefill split: layer 10 helper CUDA1 has no count for bucket 7 (tokens 5472)
+0.30.061.861 W prefill split: layer 11 helper CUDA1 has no count for bucket 7 (tokens 5472)
+0.30.061.862 W prefill split: layer 12 helper CUDA1 has no count for bucket 7 (tokens 5472)
+0.30.061.862 W prefill split: layer 13 helper CUDA1 has no count for bucket 7 (tokens 5472)
+0.30.061.863 W prefill split: layer 14 helper CUDA1 has no count for bucket 7 (tokens 5472)
+0.30.061.863 W prefill split: layer 15 helper CUDA1 has no count for bucket 7 (tokens 5472)
+0.30.061.875 W prefill split: pass 1 of 5472 tokens measured over 5 layer chains: layer 200.9 ms, the owner waited 25.78 ms per layer, a helper 0.00 ms; helper share now 56.3% on average, 5 layers moved, 2 capped by the link, 0 skipped
+0.36.641.834 I slot print_timing: id  0 | task 12 | prompt processing, n_tokens =   5472, progress = 1.00, t =   6.60 s / 829.60 tokens per second
+0.36.672.381 W dense split: 5472 prompt tokens (largest pass 5472) split: 826.7 tokens/s; this size: one card 568, split 786
+0.37.109.830 I slot print_timing: id  0 | task 12 | prompt eval time =    6863.38 ms /  5476 tokens (    1.25 ms per token,   797.86 tokens per second)
+0.37.109.833 I slot print_timing: id  0 | task 12 |        eval time =     200.61 ms /     4 tokens (   66.87 ms per token,    14.95 tokens per second)
+0.37.109.834 I slot print_timing: id  0 | task 12 |       total time =    7063.99 ms /  5480 tokens
+0.37.109.835 I slot print_timing: id  0 | task 12 |    graphs reused =          6
+0.37.109.871 I slot print_timing: id  0 | task 12 |        moe cache = on, hit 59.0% this request / 40.9% overall, 7..238 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.37.109.873 I slot print_timing: id  0 | task 12 |        moe churn = 65 uploads, 134 evictions, 2897.2 MiB uploaded (this request)
+0.37.109.874 I slot print_timing: id  0 | task 12 |          threads = 6 decode / 6 batch, batch 8192, ubatch 8192
+0.37.110.174 I slot      release: id  0 | task 12 | stop processing: n_tokens = 5479, truncated = 0
+0.37.114.865 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.999
+0.37.114.893 I slot launch_slot_: id  0 | task 18 | processing task, is_child = 0
+0.37.131.023 W prefill split: pass 2 of 5472 tokens measured over 5 layer chains: layer 139.7 ms, the owner waited 8.29 ms per layer, a helper 14.93 ms; helper share now 57.9% on average, 5 layers moved, 3 capped by the link, 0 skipped
+0.44.132.701 I slot print_timing: id  0 | task 18 | prompt processing, n_tokens =   5472, progress = 1.00, t =   7.02 s / 779.74 tokens per second
+0.44.164.123 W dense split: 5472 prompt tokens (largest pass 5472) split: 777.1 tokens/s; this size: one card 568, split 781
+0.44.580.457 I slot print_timing: id  0 | task 18 | prompt eval time =    7260.06 ms /  5476 tokens (    1.33 ms per token,   754.26 tokens per second)
+0.44.580.462 I slot print_timing: id  0 | task 18 |        eval time =     205.49 ms /     4 tokens (   68.50 ms per token,    14.60 tokens per second)
+0.44.580.462 I slot print_timing: id  0 | task 18 |       total time =    7465.55 ms /  5480 tokens
+0.44.580.463 I slot print_timing: id  0 | task 18 |    graphs reused =          8
+0.44.580.498 I slot print_timing: id  0 | task 18 |        moe cache = on, hit 60.3% this request / 45.4% overall, 8..238 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.44.580.499 I slot print_timing: id  0 | task 18 |        moe churn = 110 uploads, 256 evictions, 2387.4 MiB uploaded (this request)
+0.44.580.500 I slot print_timing: id  0 | task 18 |          threads = 6 decode / 6 batch, batch 8192, ubatch 8192
+0.44.580.780 I slot      release: id  0 | task 18 | stop processing: n_tokens = 5479, truncated = 0
+0.44.585.274 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.999
+0.44.585.308 I slot launch_slot_: id  0 | task 24 | processing task, is_child = 0
+0.44.601.805 W prefill split: pass 3 of 5472 tokens measured over 5 layer chains: layer 156.5 ms, the owner waited 18.61 ms per layer, a helper 0.00 ms; helper share now 57.6% on average, 5 layers moved, 3 capped by the link, 0 skipped
+0.51.215.063 I slot print_timing: id  0 | task 24 | prompt processing, n_tokens =   5472, progress = 1.00, t =   6.63 s / 825.38 tokens per second
+0.51.248.637 W dense split: 5472 prompt tokens (largest pass 5472) split: 822.2 tokens/s; this size: one card 568, split 801
+0.51.665.002 I slot print_timing: id  0 | task 24 | prompt eval time =    6869.56 ms /  5476 tokens (    1.25 ms per token,   797.14 tokens per second)
+0.51.665.006 I slot print_timing: id  0 | task 24 |        eval time =     210.11 ms /     4 tokens (   70.04 ms per token,    14.28 tokens per second)
+0.51.665.006 I slot print_timing: id  0 | task 24 |       total time =    7079.67 ms /  5480 tokens
+0.51.665.007 I slot print_timing: id  0 | task 24 |    graphs reused =         10
+0.51.665.048 I slot print_timing: id  0 | task 24 |        moe cache = on, hit 61.7% this request / 48.5% overall, 8..238 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.51.665.051 I slot print_timing: id  0 | task 24 |        moe churn = 150 uploads, 284 evictions, 2749.3 MiB uploaded (this request)
+0.51.665.051 I slot print_timing: id  0 | task 24 |          threads = 6 decode / 6 batch, batch 8192, ubatch 8192
+0.51.665.353 I slot      release: id  0 | task 24 | stop processing: n_tokens = 5479, truncated = 0
+0.52.265.992 I srv    operator(): operator(): cleaning up before exit...
+0.52.266.493 I ~common_init_result: MoE placement: too few tokens this run to record cache (27382 prompt, 15 generated)
+0.52.266.589 W moe-cache: steps=26 hits=6029 misses=6403 hit-rate=48.5%, prefill experts from cache 0/0, kept from prefill 0

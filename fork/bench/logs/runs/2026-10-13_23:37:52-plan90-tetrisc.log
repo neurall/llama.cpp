@@ -1,0 +1,70 @@
+0.00.001.286 I srv  llama_server: initializing ...
+0.00.261.932 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.262.337 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.264.219 I srv    load_model: loading model '/m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf'
+0.00.636.527 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 0 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf 83617662656place.g2.6b6844dc.v3)
+0.00.636.563 I common_moe_cache_auto_impl: MoE model (77.9 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 2048, ubatch 8192, threads 6, weights mmap (settings you pass win)
+ggml_cuda_host_malloc_registered: 47.2 GiB hugetlbfs cache (warm) mapped in 0.0 s
+ggml_cuda_host_malloc_registered: registered in 1.3 s
+0.04.590.537 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.04.617.861 W dense split: graph of 2048 tokens: CUDA0 tokens 0-1270, CUDA1 tokens 1270-2048
+0.04.661.546 W dense split: graph of 2048 tokens: CUDA0 tokens 0-1270, CUDA1 tokens 1270-2048
+0.04.671.775 I cmn          init: llama threadpool init, n_threads = 6
+0.04.876.263 W moe-cache: 8 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.04.876.269 W moe-cache: 40 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.04.887.953 W moe-cache: block pool on CUDA0: 8 layers, 7721.3 MiB, size classes: 1022 x 2.10 MiB (2 layers), 511 x 1.44 MiB (1 layers), 2555 x 1.89 MiB (5 layers); no blocks reserved per layer
+0.04.919.133 W moe-cache: block pool on CUDA1: 40 layers, 19139.1 MiB, size classes: 964 x 1.44 MiB (4 layers), 2410 x 1.89 MiB (10 layers), 723 x 1.67 MiB (3 layers), 2892 x 2.10 MiB (12 layers), 2169 x 2.24 MiB (9 layers), 241 x 1.81 MiB (1 layers), 241 x 2.54 MiB (1 layers); no blocks reserved per layer
+0.04.920.727 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+0.05.715.860 W moe-cache: probe: links alone link 0 18.5 link 1 5.3 GB/s; CPU threads:GB/s alone/with links 1:25.6/40.4 2:41.0/43.8 3:40.7/44.4 4:38.8/44.2 -> CPU 41.0 GB/s (saturated by 2 threads), RAM budget 44.4 GB/s
+0.05.715.906 W moe-cache: 8 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.05.715.952 W operator(): MoE expert cache enabled: 48 layers, slots/layer 241..2892, 2 inserts/step, 604655.3 MiB device memory
+0.05.737.964 W dense split: graph of 2048 tokens: CUDA0 tokens 0-1270, CUDA1 tokens 1270-2048
+0.05.785.430 W dense split: graph of 2048 tokens: CUDA0 tokens 0-1270, CUDA1 tokens 1270-2048
+0.08.330.903 W moe-cache: alias CUDA0: a 64-token graph asked for 10.2 MiB of scratch, 4.0 MiB were lent: 51200 -> 166400 bytes per token from now on
+0.08.331.007 W moe-cache: alias CUDA1: a 64-token graph asked for 10.2 MiB of scratch, 4.0 MiB were lent: 51200 -> 166400 bytes per token from now on
+0.28.004.596 W moe-cache: max-batch auto = 128 (timed batches, cache path c / streamed s: c16=539ms c64=1092ms c128=1383ms s64=1966ms s128=1985ms s256=1991ms s512=2076ms)
+0.28.004.835 W moe_probe_costs_fork: cache-path probe took 22.2 s
+0.28.095.598 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 2048, kv_unified = 'false'
+0.28.101.053 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+0.28.101.084 I srv  llama_server: model loaded
+0.28.101.088 I srv  llama_server: listening on http://127.0.0.1:8099
+0.29.046.341 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.29.046.405 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.34.236.617 I slot print_timing: id  0 | task 0 | n_gen =    100, tg =  29.87 t/s, tg_3s =  30.17 t/s
+0.34.841.082 I slot print_timing: id  0 | task 0 | prompt eval time =    1876.06 ms /    59 tokens (   31.80 ms per token,    31.45 tokens per second)
+0.34.841.085 I slot print_timing: id  0 | task 0 |        eval time =    3918.59 ms /   120 tokens (   32.93 ms per token,    30.37 tokens per second)
+0.34.841.086 I slot print_timing: id  0 | task 0 |       total time =    5794.65 ms /   179 tokens
+0.34.841.088 I slot print_timing: id  0 | task 0 |    graphs reused =        125
+0.34.841.135 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 70.0% this request / 64.3% overall, 137..294 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.34.841.138 I slot print_timing: id  0 | task 0 |        moe churn = 4994 uploads, 0 evictions, 15481.9 MiB uploaded (this request)
+0.34.841.141 I slot print_timing: id  0 | task 0 |          threads = 4 decode / 6 batch, batch 2048, ubatch 2048
+0.34.841.195 I slot      release: id  0 | task 0 | stop processing: n_tokens = 178, truncated = 0
+0.34.844.115 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.331
+0.34.945.418 I slot launch_slot_: id  0 | task 123 | processing task, is_child = 0
+0.38.085.399 I slot print_timing: id  0 | task 123 | n_gen =    104, tg =  34.02 t/s, tg_3s =  34.35 t/s
+0.38.559.301 I slot print_timing: id  0 | task 123 | prompt eval time =     112.53 ms /     4 tokens (   28.13 ms per token,    35.55 tokens per second)
+0.38.559.304 I slot print_timing: id  0 | task 123 |        eval time =    3501.34 ms /   120 tokens (   29.42 ms per token,    33.99 tokens per second)
+0.38.559.304 I slot print_timing: id  0 | task 123 |       total time =    3613.86 ms /   124 tokens
+0.38.559.305 I slot print_timing: id  0 | task 123 |    graphs reused =        243
+0.38.559.337 I slot print_timing: id  0 | task 123 |        moe cache = on, hit 97.7% this request / 70.1% overall, 143..324 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+0.38.559.339 I slot print_timing: id  0 | task 123 |        moe churn = 323 uploads, 5 evictions, 1517.8 MiB uploaded (this request)
+0.38.559.340 I slot print_timing: id  0 | task 123 |          threads = 6 decode / 6 batch, batch 2048, ubatch 2048
+0.38.559.380 I slot      release: id  0 | task 123 | stop processing: n_tokens = 178, truncated = 0
+0.38.562.119 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.331
+0.38.665.145 I slot launch_slot_: id  0 | task 244 | processing task, is_child = 0
+0.41.775.060 I slot print_timing: id  0 | task 244 | n_gen =    105, tg =  34.55 t/s, tg_3s =  34.89 t/s
+0.42.203.430 I slot print_timing: id  0 | task 244 | prompt eval time =     100.07 ms /     4 tokens (   25.02 ms per token,    39.97 tokens per second)
+0.42.203.432 I slot print_timing: id  0 | task 244 |        eval time =    3438.19 ms /   120 tokens (   28.89 ms per token,    34.61 tokens per second)
+0.42.203.433 I slot print_timing: id  0 | task 244 |       total time =    3538.26 ms /   124 tokens
+0.42.203.434 I slot print_timing: id  0 | task 244 |    graphs reused =        361
+0.42.203.469 I slot print_timing: id  0 | task 244 |        moe cache = on, hit 98.5% this request / 74.3% overall, 149..328 slots/layer, margin 4 gate 3 wait 1 big 0 predict 0
+0.42.203.471 I slot print_timing: id  0 | task 244 |        moe churn = 143 uploads, 16 evictions, 494.2 MiB uploaded (this request)
+0.42.203.472 I slot print_timing: id  0 | task 244 |          threads = 6 decode / 6 batch, batch 2048, ubatch 2048
+0.42.203.510 I slot      release: id  0 | task 244 | stop processing: n_tokens = 178, truncated = 0
+0.43.151.915 I srv    operator(): operator(): cleaning up before exit...
+0.43.154.102 W moe-cache: steps=378 hits=298047 misses=103253 hit-rate=74.3%, prefill experts from cache 0/0, kept from prefill 0
+Collecting data...
+Generating '/tmp/nsys-report-328e.qdstrm'
+[1/1] [0%                          ] q4.nsys-rep[1/1] [0%                          ] q4.nsys-rep[1/1] [7%                          ] q4.nsys-rep[1/1] [====26%                     ] q4.nsys-rep[1/1] [===23%                      ] q4.nsys-rep[1/1] [==21%                       ] q4.nsys-rep[1/1] [==19%                       ] q4.nsys-rep[1/1] [===22%                      ] q4.nsys-rep[1/1] [==20%                       ] q4.nsys-rep[1/1] [==19%                       ] q4.nsys-rep[1/1] [=17%                        ] q4.nsys-rep[1/1] [=16%                        ] q4.nsys-rep[1/1] [=15%                        ] q4.nsys-rep[1/1] [14%                         ] q4.nsys-rep[1/1] [13%                         ] q4.nsys-rep[1/1] [12%                         ] q4.nsys-rep[1/1] [11%                         ] q4.nsys-rep[1/1] [10%                         ] q4.nsys-rep[1/1] [9%                          ] q4.nsys-rep[1/1] [8%                          ] q4.nsys-rep[1/1] [7%                          ] q4.nsys-rep[1/1] [6%                          ] q4.nsys-rep[1/1] [5%                          ] q4.nsys-rep[1/1] [0%                          ] q4.nsys-rep[1/1] [5%                          ] q4.nsys-rep[1/1] [6%                          ] q4.nsys-rep[1/1] [7%                          ] q4.nsys-rep[1/1] [8%                          ] q4.nsys-rep[1/1] [9%                          ] q4.nsys-rep[1/1] [10%                         ] q4.nsys-rep[1/1] [11%                         ] q4.nsys-rep[1/1] [12%                         ] q4.nsys-rep[1/1] [13%                         ] q4.nsys-rep[1/1] [14%                         ] q4.nsys-rep[1/1] [=15%                        ] q4.nsys-rep[1/1] [=16%                        ] q4.nsys-rep[1/1] [=17%                        ] q4.nsys-rep[1/1] [==18%                       ] q4.nsys-rep[1/1] [==19%                       ] q4.nsys-rep[1/1] [==20%                       ] q4.nsys-rep[1/1] [==21%                       ] q4.nsys-rep[1/1] [===22%                      ] q4.nsys-rep[1/1] [===23%                      ] q4.nsys-rep[1/1] [===24%                      ] q4.nsys-rep[1/1] [====25%                     ] q4.nsys-rep[1/1] [====26%                     ] q4.nsys-rep[1/1] [====27%                     ] q4.nsys-rep[1/1] [====28%                     ] q4.nsys-rep[1/1] [=====29%                    ] q4.nsys-rep[1/1] [=====30%                    ] q4.nsys-rep[1/1] [=====31%                    ] q4.nsys-rep[1/1] [=====32%                    ] q4.nsys-rep[1/1] [======33%                   ] q4.nsys-rep[1/1] [======34%                   ] q4.nsys-rep[1/1] [======35%                   ] q4.nsys-rep[1/1] [=======36%                  ] q4.nsys-rep[1/1] [=======37%                  ] q4.nsys-rep[1/1] [=======38%                  ] q4.nsys-rep[1/1] [=======39%                  ] q4.nsys-rep[1/1] [========40%                 ] q4.nsys-rep[1/1] [========41%                 ] q4.nsys-rep[1/1] [========42%                 ] q4.nsys-rep[1/1] [=========43%                ] q4.nsys-rep[1/1] [=========44%                ] q4.nsys-rep[1/1] [=========45%                ] q4.nsys-rep[1/1] [=========46%                ] q4.nsys-rep[1/1] [==========47%               ] q4.nsys-rep[1/1] [==========48%               ] q4.nsys-rep[1/1] [==========49%               ] q4.nsys-rep[1/1] [===========50%              ] q4.nsys-rep[1/1] [========================100%] q4.nsys-rep[1/1] [========================100%] q4.nsys-rep
+Generated:
+	/p/bw/data/q5h/nsys/q4.nsys-rep

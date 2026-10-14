@@ -1,0 +1,56 @@
+0.00.000.909 I srv  llama_server: initializing ...
+0.00.276.623 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.277.051 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.278.754 I srv    load_model: loading model '/m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf'
+0.00.558.706 I common_moe_cache_auto_impl: MoE placement: measuring cache this run (stock 0 runs, cache 0 runs recorded; both need 2 before the faster one is kept; stock is not tried: the model is clearly bigger than the free VRAM; MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf 115678863104place.g2.6b6844dc.v3)
+0.00.558.736 I common_moe_cache_auto_impl: MoE model (107.7 GiB) exceeds free VRAM (46.6 GiB): experts in RAM + GPU expert cache, no repack, ctx 2048, ubatch 8192, threads 6, weights mmap (settings you pass win)
+0.01.500.405 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+ggml_cuda_host_malloc_registered: 102.3 GiB populated in 6.5 s (101.0 reserved 1024 MiB pages, 1.3 THP, 0.0 small)
+ggml_cuda_host_malloc_registered: registered in 3.0 s
+0.31.401.940 I common_init_result: weights NOT pinned: mmap / page cache (load mode none)
+0.31.442.930 W moe-cache: prefill links (GB/s): CUDA1 26.1 CUDA0 6.4 -> split's transfer speedup 1.25x: one GPU (the split's compute buffers would cost more cache)
+0.31.498.080 I cmn          init: llama threadpool init, n_threads = 6
+0.31.729.147 W moe-cache: 7 expert layers cached on CUDA0 (CUDA0), upload link slower
+0.31.729.156 W moe-cache: 40 expert layers cached on CUDA1 (CUDA1), upload link fastest
+0.31.748.919 W moe-cache: block pool on CUDA0: 7 layers, 14294.4 MiB, size classes: 1530 x 7.88 MiB (6 layers), 255 x 8.74 MiB (1 layers); no blocks reserved per layer
+0.31.800.596 W moe-cache: block pool on CUDA1: 40 layers, 17791.2 MiB, size classes: 600 x 7.88 MiB (12 layers), 100 x 8.74 MiB (2 layers), 400 x 8.74 MiB (8 layers), 100 x 10.31 MiB (2 layers), 250 x 9.59 MiB (5 layers), 250 x 8.74 MiB (5 layers), 50 x 9.59 MiB (1 layers), 100 x 9.59 MiB (2 layers), 100 x 9.50 MiB (2 layers), 50 x 11.98 MiB (1 layers); no blocks reserved per layer
+0.31.801.445 W moe-cache: 2 upload workers (per link), from pinned host memory (direct DMA)
+0.32.595.564 W moe-cache: probe: links alone link 0 24.9 link 1 5.7 GB/s; CPU threads:GB/s alone/with links 1:22.4/42.8 2:41.4/45.5 3:41.6/44.9 4:40.1/45.1 -> CPU 41.6 GB/s (saturated by 2 threads), RAM budget 45.5 GB/s
+0.32.595.601 W moe-cache: 7 layers on slower-link GPUs: always-hot experts 0.0/layer, pinned 0.0/layer, min stay 0 steps
+0.32.595.638 W operator(): MoE expert cache enabled: 47 layers, slots/layer 50..1530, 2 inserts/step, 572843.3 MiB device memory
+0.34.646.476 W prefill split: graph of 64 tokens built and placed in 5.8 ms
+0.38.928.375 W prefill split: graph of 128 tokens built and placed in 9.0 ms
+0.44.022.849 W prefill split: graph of 64 tokens built and placed in 2.6 ms
+0.47.318.544 W prefill split: graph of 128 tokens built and placed in 2.1 ms
+0.51.735.910 W prefill split: graph of 256 tokens built and placed in 2.7 ms
+0.57.028.133 W prefill split: graph of 512 tokens built and placed in 2.2 ms
+1.03.379.382 W moe-cache: max-batch auto = 52 (timed batches, cache path c / streamed s: c16=855ms c64=1898ms c128=2556ms s64=1628ms s128=2236ms s256=2624ms s512=3183ms)
+1.03.379.739 W moe_probe_costs_fork: cache-path probe took 30.7 s
+1.03.537.540 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 2048, kv_unified = 'false'
+1.03.550.035 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.03.550.069 I srv  llama_server: model loaded
+1.03.550.076 I srv  llama_server: listening on http://127.0.0.1:8099
+1.04.042.993 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+1.04.043.051 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+1.09.721.351 I slot print_timing: id  0 | task 0 | n_gen =    100, tg =  20.38 t/s, tg_3s =  20.59 t/s
+1.10.786.661 I slot print_timing: id  0 | task 0 | prompt eval time =     820.40 ms /    14 tokens (   58.60 ms per token,    17.06 tokens per second)
+1.10.786.667 I slot print_timing: id  0 | task 0 |        eval time =    5923.18 ms /   120 tokens (   49.77 ms per token,    20.09 tokens per second)
+1.10.786.668 I slot print_timing: id  0 | task 0 |       total time =    6743.58 ms /   134 tokens
+1.10.786.672 I slot print_timing: id  0 | task 0 |    graphs reused =        125
+1.10.786.725 I slot print_timing: id  0 | task 0 |        moe cache = on, hit 63.3% this request / 61.2% overall, 39..224 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+1.10.786.730 I slot print_timing: id  0 | task 0 |        moe churn = 4533 uploads, 4325 evictions, 41734.8 MiB uploaded (this request)
+1.10.786.731 I slot print_timing: id  0 | task 0 |          threads = 4 decode / 6 batch, batch 2048, ubatch 2048
+1.10.786.785 I slot      release: id  0 | task 0 | stop processing: n_tokens = 133, truncated = 0
+1.10.798.341 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.105
+1.10.809.128 I slot launch_slot_: id  0 | task 122 | processing task, is_child = 0
+1.15.220.849 I slot print_timing: id  0 | task 122 | n_gen =    100, tg =  23.43 t/s, tg_3s =  23.67 t/s
+1.16.253.277 I slot print_timing: id  0 | task 122 | prompt eval time =     186.09 ms /     5 tokens (   37.22 ms per token,    26.87 tokens per second)
+1.16.253.283 I slot print_timing: id  0 | task 122 |        eval time =    5258.03 ms /   120 tokens (   44.19 ms per token,    22.63 tokens per second)
+1.16.253.284 I slot print_timing: id  0 | task 122 |       total time =    5444.12 ms /   125 tokens
+1.16.253.285 I slot print_timing: id  0 | task 122 |    graphs reused =        243
+1.16.253.325 I slot print_timing: id  0 | task 122 |        moe cache = on, hit 70.9% this request / 63.0% overall, 41..232 slots/layer, margin 0 gate 3 wait 1 big 0 predict 0
+1.16.253.328 I slot print_timing: id  0 | task 122 |        moe churn = 3345 uploads, 3628 evictions, 31815.0 MiB uploaded (this request)
+1.16.253.330 I slot print_timing: id  0 | task 122 |          threads = 6 decode / 6 batch, batch 2048, ubatch 2048
+1.16.253.370 I slot      release: id  0 | task 122 | stop processing: n_tokens = 133, truncated = 0
+1.17.204.192 I srv    operator(): operator(): cleaning up before exit...
+1.17.211.861 W moe-cache: steps=258 hits=158665 misses=93191 hit-rate=63.0%, prefill experts from cache 27213/119304, kept from prefill 2938

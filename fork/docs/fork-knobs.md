@@ -67,8 +67,10 @@ With `--fork off` the fork behaves as upstream apart from unrelated changes (the
 | `autotune=0` | autotune on | no self-tuning (same as `-at off`) |
 | `tag=NAME` | none | research: put NAME into the file names of `log=x` (`routing/<model>.<NAME>.<time>.routing`); `fork/run.py` sets it to the test and prompt (`game4-racing`, `edit4-2`, `long1k`) |
 | `expert-owner=1` | off | **research, prompt batches only:** the experts of a layer are uploaded to and computed on the card that owns the layer, over that card's own link, instead of all of them on the offload card. Meant for use with `split=bw`: each link then works on its own layers at the same time. Without a staging ring on the second card its uploads take the synchronous path, so judge it by the `nsys` timeline (x4 link share of the upload, stalls in the x16 upload stream) before relying on it. |
-| `split=bw` | **on by default** with 2+ GPUs when the model does not fit in VRAM and is a MoE (`split=mem`: free-memory split) | **layers by upload bandwidth:** with two or more GPUs the layers are shared out in proportion to each card's pinned host-to-device upload rate (measured by the per-GPU probe at start), not its free memory. A prompt pass is bound by the expert transfer, compute is faster than the transfer, and a layer owned by a card on a slow link makes the offload card wait for it (x4 + x16: about 20% / 80%). A `-ts` of your own always wins. Decode can prefer more layers on the slow card (more cache capacity), so this is opt-in until measured. |
+| `split=bw` | **on by default** with 2+ GPUs when the model does not fit in VRAM and is a MoE (`split=mem`: free-memory split) | **layers by upload bandwidth:** with two or more GPUs the layers are shared out in proportion to each card's pinned host-to-device upload rate (measured by the per-GPU probe at start), not its free memory. A prompt pass is bound by the expert transfer, compute is faster than the transfer, and a layer owned by a card on a slow link makes the offload card wait for it (x4 + x16: about 20% / 80%). A `-ts` of your own always wins. Decode prefers the memory split: Qwen3.8-Flash-Next game4c (2026-10-14, one run each) 46.5 decode t/s with this split (x4 card first, 15% of the layers, hit rate 92.5%) against 54.1 with 50/50 and the x16 card first (`-dev CUDA1,CUDA0 -ts 50,50`, hit rate 97.9%); a decode layout by memory is being worked on. |
 | `split-slow-scale` | `0.75` | Factor on the bandwidth share of every card that is not on the fastest link when `split=bw` shares out the layers (the slow card also pays for the hand-offs of its layers). **Measured calibration**: GLM and MiMo on x16 + x4 are best at a 15% x4 share (bandwidth share 20% x 0.75); 20% costs MiMo 10% prompt speed | `split-slow-scale=1` = pure bandwidth share |
+| `layer-heat=1\|fit` | off | **research, crashes on the first prompt longer than the cache path (2026-10-14: CUDA invalid argument in the cross-card copy, being fixed):** which layers sit on which card by how well their caches hit (the saved hot map: the share of a layer's uses its hottest half of the experts covers), the hottest on the weakest card, where a layer that swaps little loses least. Cards are ranked by capability = 1 / (link latency + one expert's upload + result latency of the probe). `1`: each card keeps its layer count; `fit`: counts by memory, each weaker card takes the hottest layers that keep its misses within a budget scaled by its capability |
+| `swap-test=A:B` | off | research: trades layers A and B between their cards at the first decode step (`llama_context::swap_layers_fork`: weights, KV and cached experts move through host memory, nothing is allocated) |
 | `pipe-stock=1` | off | **research:** turn on the stock micro-batch pipeline across the cards although the experts are host-resident (tensor overrides normally switch it off). Needs `-b` larger than `-ub`; micro-batch k+1 then runs on one card while k runs on the other | `--moe pipe-stock=1 -b 16384 -ub 4096` |
 | `split-order=fast` | off (slowest link first) | **research:** in the multi-GPU prompt split (`prefill-split`) issue the fastest card's expert chain first instead of the slowest link's. With staged weights the slow link has nothing to stream ahead, and the first chain held the second back (per layer: x4 chain 30 ms alone, then x16 chain 111 ms) | `--moe prefill-split=0.5,split-order=fast` |
 | `split-slow-share=F` | off (alpha x link share) | **research:** in the multi-GPU prompt split (`prefill-split`) the cards not on the fastest link hold F of the experts together (0.25: a quarter is uploaded to and computed on the x4 card). Without it the x4 share is at most 20% (alpha 1) and ~10% at alpha 0.5 (nsys, GLM 8k: the x4 card received 11% of the uploaded bytes) | `split-slow-share=0.25` | pending |
@@ -346,8 +348,71 @@ Every run also writes its effective settings (autotune result, `admit`, load mod
 | `tuned.lK = NAME=value ...` | what the self-tuner settled on, for K upload links (GPUs) |
 | `place.g<gpus>.<GPU hash>.v3.cache`, `.stock`, `.decided` | measured prompt and decode speed of cache and stock placement for this GPU set, and which one won |
 | `place.g<gpus>.<GPU hash>.v3.link<k>` | the link bandwidth (GB/s, rounded to half octaves) seen when the placement was measured; a later probe that differs by a factor of 2 or more drops this hardware's placement records |
+| `place.g<gpus>.<GPU hash>.v3.pp_c_us` | compute of one prompt token on the offload card, all layers, in microseconds (measured on one-card passes): a new start plans its first prompt from it (pass sizes, and whether a second card pays for the split) instead of running it on one card to measure |
 
 Counts only seed the start; during a run the cache scores by recent use. It is plain text, safe to edit or delete.
+
+## Prompt processing: passes, staging and the second GPU
+
+A prompt pass walks every layer over all its tokens. The experts of a layer stream from RAM into a ring of staging slots on the card, ahead of the  
+compute; the dense weights (attention, router, norms) stay on the cards. Every pass streams every expert the card does not hold, so the number of  
+passes, what the pool lends to the pass and which cards take part are calculated per prompt, then corrected by what the passes measure.
+
+| step | decides | from |
+|---|---|---|
+| pass planner | passes per prompt and staging slots per pass | compute per prompt token (measured on every one-card pass), the upload of one pass (expert bytes the pool does not hold over the link rate), what the pool can lend |
+| split planner | whether a second card pays for a pass of this size; the helper's share of the tokens; per layer its share of the experts | the same compute and link rates, each card's held experts, the hand-offs between the cards |
+| measured choice | one card or split, when the plan puts the two closer than 15% | prompt speed of both on real passes of this size |
+| split tuner | the final shares for this pass size | prompt speed of the split passes: one share at a time, the step halves when it gets slower, at most 12 passes, then it stays |
+
+The split is opt-in (`dense-split=auto`): its copies of the dense weights come out of the expert pool (Qwen3.8-Flash-Next: 635 MiB less pool on  
+the x16 card, about 4% on short prompts that do not split).
+
+| key | default | meaning |
+|---|---|---|
+| `dense-split=auto\|1\|0\|one` | `0` | the dense part of every layer runs on all cards at once, each card on its own token range. Needs a copy of every layer's dense weights on every card, made once at load out of that card's expert pool (Qwen3.8-Flash-Next: 3.6 GB onto the x4 card, 0.6 GB onto the x16; GLM-5.3-Flash: 6.8 GB and 1.5 GB). `auto`: the split planner and the measured choice decide per pass size. `1`: every pass of `dense-split-min` tokens or more is split. `one`: the copies are made, every pass runs on one card (tests). Token-range graphs exist for GLM-5.3, Qwen3-Next, Qwen3.8-Flash-Next, MiMo-V2, Qwen3.5 MoE and DeepSeek-4 (compiles, not run: no model here); other models get the expert split alone |
+| `dense-split-min=N` | `512` | the smallest pass that is split |
+| `dense-split-share=F` | planned | the helper cards' share of the tokens, fixed by hand (tests). Unset: the split planner's share, then the tuner's; `0.55` when there is no plan |
+| `split-plan=0` | on | no split planner: the measured choice alone (one card first, then one split pass, then the faster of the two) with the link-ratio start shares |
+| `split-tune=0` | on | the planner's shares stay, nothing is tuned from measured passes |
+| `split-experts=auto\|0\|1` | `auto` | whether the helper cards of a dense split also compute experts. `auto`: the split planner per layer and the tuner. `0`: dense only, the helpers take token ranges of the dense part and the card with the fastest link computes every expert (Qwen3.8-Flash-Next 3k on x16 + x4: 1390 prompt tokens/s against 1237 with 21% of the experts on the x4 card, whose link then carries 41 ms of uploads per 49 ms layer). `1`: experts by link ratio with the per-layer share controller, whatever the planner says |
+| `one-range=1` | off | research, with `dense-split=auto\|one`: a pass that runs on one card runs as one token range on the card with the fastest link, the dense part of every layer from that card's copies, so nothing is handed to the cards that own the other layers. Measured slower on x16 + x4 (Qwen3.8-Flash-Next 3k: 1091-1146 prompt tokens/s against 1132-1211), same perplexity |
+| `split-f16=0\|in` | on | the hidden states that cross between the cards travel as f16; `0`: f32; `in`: f16 to the card that computes the experts, f32 back. Perplexity of all three within noise of one card (Qwen3.8-Flash-Next, 10 chunks paired: -0.09..+0.06% +-0.13..0.19%); `in` ~3% slower at 3k, f32 ~2% |
+| `split-auto=0` | on | stops the per-layer expert share controller of the expert split: the shares stay at their start |
+| `alias=0` | on | the compute buffer of a graph is not lent from the expert pool but allocated beside it for the whole session (it then costs cache slots while decoding) |
+| `alias-all=0` | on | a prompt pass borrows blocks of the biggest size class only (as before 2026-10-13). On: of every size class, so the largest pass no longer depends on which class is the biggest |
+| `stage-shrink=1` | off | old behaviour: the micro-batch is halved until the graph and all `pf-slots` staging slots fit the pool. Off: the pass keeps its size and the ring takes the slots that fit, at least 3 (MiMo 4k: 8 passes of 512 tokens at 127 prompt tokens/s became one pass at 543) |
+| `pass-plan=0` | on | no pass planner: equal passes up to `-ub`, `pf-slots` slots |
+| `pf-resident=0` | on | every pass uploads every expert. On: the staging fill copies the experts the card's pool holds on the card and uploads the runs between them (Qwen3.8-Flash-Next: about 40% of the 49 GB of a pass) |
+| `pf-count=0` | on | no counting of the experts a prompt batch uses on the GPU (the counts feed the cache's lifetime scores once per expert and prompt) |
+| `log=w` | | prints the pass planner's choice per prompt |
+| `reheat=0` | on | after a prompt the blocks it borrowed come back empty; on: each is refilled at once with the best-scored expert not cached (background uploads that never delay a decode step and cost no swap budget). Off: they fill only as decode misses earn them |
+| `log=f` | | the pool per card before a prompt, right after it (its blocks back) and 8 / 32 / 128 decode steps later: blocks holding experts, uploading, free, lent, the card's free memory. `fork/experiments/pool_fill.py LOG...` turns the lines into a table |
+
+Known gap (2026-10-14): the dense-split copies are separate buffers made at load and kept for the whole session, so with the split on they cost expert  
+cache in decode too (the x4 card holds 3.6 GB of Qwen3.8-Flash-Next copies). Planned: the copies live in blocks lent for the prompt only.
+
+### What the server reports about its choices
+
+Every automatic choice is printed at the default log level (`-lv 3`), and `fork/run.py` records it in `run-history.csv` and `runs.db`:
+
+| log line | when | run.py columns |
+|---|---|---|
+| `layer layout: rule=bw CUDA0=8(0-7) CUDA1=40(8-47) output=CUDA1` | load | `layout` (rule: `ts` your `-ts`, `bw`, `plan`, `dec`, `mem` free memory) |
+| `MoE placement: cache\|stock (...)`, `re-measuring stock this run` | load | `placement` (`stock (re-measure)` when a cache start was given to a stock measurement) |
+| `MoE model ... ctx N, ubatch N` | load | `ubatch_max` |
+| `prefill decision: prompt_tokens= passes= pass_tokens= staging_slots= mode= gpus= skipped= helper_token_share= helper_expert_share= prompt_tps= one_card_tps= split_tps= chosen_by="..."` | every decode call with prompt passes | `pf_mode`, `pf_gpus`, `pf_skipped`, `pf_tok_share`, `pf_exp_share`, `pf_passes`, `pf_pass`, `pf_slots`, `pf_one_tps`, `pf_split_tps`, `pf_by` (largest prompt of the run), `pf_all` (every prompt) |
+
+`mode`: `one-card` (every layer's experts on the card with the fastest link; the other cards run only the dense part of their own layers), `dense-split`  
+(the dense part on all cards by token ranges, the experts on the fastest card), `dense+expert-split`, `expert-split` (decided at load), `mixed`.  
+`chosen_by` says why: an option forced it, the planner was sure (more than 15% apart) or close, the faster measured mode of that pass size, the slower one  
+measured again (every 16th pass), the other one measured once, the nearest measured size, the tuner's state, or the load-time expert split.
+
+`fork/run.py misfires [--days 7] [--tol 0.05] [--model M]` lists runs whose prompt ran in a mode another run of the same model, machine and pass size  
+beat by more than `tol` (a second card skipped where the split was faster, or the reverse), and every stock re-measurement of the placement.
+
+Limits: the split planner handles two GPUs (with more, the measured choice decides and the shares start from the link ratio); its split estimate was  
+21-26% short of the measured pass before calibration, one card within 4%.
 
 ## Several GPUs and MTP
 
