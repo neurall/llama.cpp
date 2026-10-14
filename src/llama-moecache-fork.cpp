@@ -2782,6 +2782,83 @@ static void pool_fill_log(moe_cache * mc, const char * when) {
     LLAMA_LOG_WARN("moe-cache: pool %s:%s\n", when, s.c_str());
 }
 
+// --moe keep-hot (default 1, 0 = off): a prompt pass borrows the first blocks of the pool (its graph, scratch and staging slots) and the experts in them
+// are evicted, whatever their heat: the block's position decides, not the expert. After a long prompt decode then starts without part of its hottest
+// experts and pays their upload in its first tokens (12k prompt + 32 tokens, passes as long as the context: Qwen3.8-Flash-Next 35.5 decode t/s against
+// 51.0 with 2k passes, GLM-5.3-Flash 14.4 vs 16.3; the prompt itself 1092 vs 850 and 501 vs 355 t/s). Here, before the blocks [from, to) of a class
+// are lent, each expert cached in them is moved, card to card inside the pool buffer, into the block outside the range that holds the coldest
+// expert of the class (a free block first), as long as it scores higher than that expert (xscore, the scale the refill and eviction use). So the
+// prompt evicts the coldest experts of the pool instead of the ones that happened to sit in front. A block copy runs at the card's memory speed
+// (a 15 GB move is ~0.05 s on a 3090) against the PCIe refill of the same bytes (~1.3 s on x16). mc->mtx held.
+static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache::alias_pool & ap, const moe_cache::alias_pool::seg & sg, int32_t from, int32_t to) {
+    static const bool on = [] { const char * e = moe_opt("keep-hot"); return !e || atoi(e) != 0; }();
+    if (!on || to <= from) {
+        return;
+    }
+    auto & ps = mc->pool[sg.pcls];
+    struct ent { double sc; int32_t b; };
+    std::vector<ent> hot, cold;   // experts in the range (hottest first), blocks behind it (free, then coldest first)
+    for (int32_t b = from; b < to; ++b) {
+        const int32_t o = ps.owner[b];
+        if (o < 0) { continue; }
+        layer_state & lo = mc->layers[o];
+        const int32_t e = lo.slot_expert[b];
+        if (e < 0 || lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
+        hot.push_back({ xscore(mc, lo, e), b });
+    }
+    if (hot.empty()) {
+        return;
+    }
+    for (int32_t b = to; b < (int32_t) ps.owner.size(); ++b) {
+        const int32_t o = ps.owner[b];
+        if (o == -2) { continue; }
+        if (o < 0) { cold.push_back({ -1.0, b }); continue; }
+        layer_state & lo = mc->layers[o];
+        if (lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
+        const int32_t e = lo.slot_expert[b];
+        cold.push_back({ e < 0 ? -1.0 : xscore(mc, lo, e), b });
+    }
+    std::sort(hot.begin(),  hot.end(),  [](const ent & a, const ent & b) { return a.sc > b.sc; });
+    std::sort(cold.begin(), cold.end(), [](const ent & a, const ent & b) { return a.sc < b.sc; });
+    // a decode graph may still read the blocks that are overwritten (their experts are evicted now)
+    ggml_backend_sched_synchronize(sched);
+    const int64_t t0 = ggml_time_us();
+    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + sg.base;
+    auto view = [&](int32_t b) {
+        ggml_tensor t = {};
+        t.type   = GGML_TYPE_I8;
+        t.buffer = ap.buf;
+        t.data   = base + (size_t) b * sg.B;
+        t.ne[0]  = (int64_t) sg.B; t.ne[1] = t.ne[2] = t.ne[3] = 1;
+        t.nb[0]  = 1; t.nb[1] = t.nb[2] = t.nb[3] = sg.B;
+        return t;
+    };
+    size_t n_moved = 0;
+    for (size_t i = 0; i < hot.size() && i < cold.size() && hot[i].sc > cold[i].sc; ++i) {
+        const int32_t src = hot[i].b, dst = cold[i].b;
+        const size_t  li  = (size_t) ps.owner[src];
+        layer_state & ls  = mc->layers[li];
+        const int32_t e   = ls.slot_expert[src];
+        if (ps.owner[dst] >= 0) {
+            evict_slot(mc, mc->layers[ps.owner[dst]], dst);
+        }
+        pool_take(mc, li, dst);
+        ggml_tensor s = view(src), d = view(dst);
+        ggml_backend_tensor_copy(&s, &d);
+        ls.slot_expert[dst]   = e;
+        ls.expert_slot[e]     = dst;
+        ls.slot_last_use[dst] = ls.slot_last_use[src];
+        ls.slot_expert[src]   = -1;   // the range's eviction below finds the block empty
+        set_table_entry(ls.pub, e, dst);
+        n_moved++;
+    }
+    static int logged = 0;
+    if (n_moved > 0 && logged++ < 16) {
+        LLAMA_LOG_WARN("moe-cache: keep-hot %s: %zu of %zu experts in the %d blocks a prompt borrows moved to colder blocks in %.1f ms (%.2f GB)\n",
+                ggml_backend_dev_name(ap.dev), n_moved, hot.size(), to - from, (ggml_time_us() - t0) / 1e3, (double) n_moved * (double) sg.B / 1e9);
+    }
+}
+
 void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     moe_cache * mc = g_cache;
     if (!mc || !alias_on() || mc->alias.empty()) {
@@ -2940,6 +3017,9 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 std::this_thread::sleep_for(std::chrono::microseconds(50));
             }
             std::lock_guard<std::mutex> lk(mc->mtx);
+            if (n_tokens > llama_moe_cache_max_batch_fork()) {
+                keep_hot_move(mc, sched, ap, sg, blocked, need);
+            }
             for (int32_t b = blocked; b < need; ++b) {
                 const int32_t o = ps.owner[b];
                 if (o >= 0) {
