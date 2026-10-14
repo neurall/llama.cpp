@@ -365,12 +365,12 @@ passes, what the pool lends to the pass and which cards take part are calculated
 | measured choice | one card or split, when the plan puts the two closer than 15% | prompt speed of both on real passes of this size |
 | split tuner | the final shares for this pass size | prompt speed of the split passes: one share at a time, the step halves when it gets slower, at most 12 passes, then it stays |
 
-The split is opt-in (`dense-split=auto`): its copies of the dense weights come out of the expert pool (Qwen3.8-Flash-Next: 635 MiB less pool on  
+The split is on by default (`dense-split=auto`, switch it off with `dense-split=0`): its copies of the dense weights come out of the expert pool (Qwen3.8-Flash-Next: 635 MiB less pool on  
 the x16 card, about 4% on short prompts that do not split).
 
 | key | default | meaning |
 |---|---|---|
-| `dense-split=auto\|1\|0\|one` | `0` | the dense part of every layer runs on all cards at once, each card on its own token range. Needs a copy of every layer's dense weights on every card, made once at load out of that card's expert pool (Qwen3.8-Flash-Next: 3.6 GB onto the x4 card, 0.6 GB onto the x16; GLM-5.3-Flash: 6.8 GB and 1.5 GB). `auto`: the split planner and the measured choice decide per pass size. `1`: every pass of `dense-split-min` tokens or more is split. `one`: the copies are made, every pass runs on one card (tests). Token-range graphs exist for GLM-5.3, Qwen3-Next, Qwen3.8-Flash-Next, MiMo-V2, Qwen3.5 MoE and DeepSeek-4 (compiles, not run: no model here); other models get the expert split alone |
+| `dense-split=auto\|1\|0\|one` | `auto` | the dense part of every layer runs on all cards at once, each card on its own token range. Needs a copy of every layer's dense weights on every card, made once at load out of that card's expert pool (Qwen3.8-Flash-Next: 3.6 GB onto the x4 card, 0.6 GB onto the x16; GLM-5.3-Flash: 6.8 GB and 1.5 GB). `auto`: the split planner and the measured choice decide per pass size. `1`: every pass of `dense-split-min` tokens or more is split. `one`: the copies are made, every pass runs on one card (tests). Token-range graphs exist for GLM-5.3, Qwen3-Next, Qwen3.8-Flash-Next, MiMo-V2, Qwen3.5 MoE and DeepSeek-4 (compiles, not run: no model here); other models get the expert split alone |
 | `dense-split-min=N` | `512` | the smallest pass that is split |
 | `dense-split-share=F` | planned | the helper cards' share of the tokens, fixed by hand (tests). Unset: the split planner's share, then the tuner's; `0.55` when there is no plan |
 | `split-plan=0` | on | no split planner: the measured choice alone (one card first, then one split pass, then the faster of the two) with the link-ratio start shares |

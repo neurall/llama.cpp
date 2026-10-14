@@ -78,20 +78,26 @@ void dsplit_copy_prec(llama_model & model, const ggml_tensor * src, ggml_tensor 
 std::mutex                                 g_mu;
 std::map<const llama_model *, dsplit_set>  g_sets;
 
-bool dsplit_opt_on() {
+// --moe dense-split=auto|1|0|one. Default auto (user 2026-10-14: the prompt features are on by default, as every release before): on two or more GPUs the dense
+// weights are copied to every card once at load (out of the expert pool) and the planner / measured choice picks one card or the split per prompt size.
+// dense-split=0 turns it off (no copies, no pool cost, the expert split alone).
+const char * dsplit_opt() {
     const char * e = llama_moe_get_opt("dense-split");
-    return e && (atoi(e) != 0 || strcmp(e, "auto") == 0 || strcmp(e, "one") == 0);
+    return e ? e : "auto";
+}
+
+bool dsplit_opt_on() {
+    const char * e = dsplit_opt();
+    return atoi(e) != 0 || strcmp(e, "auto") == 0 || strcmp(e, "one") == 0;
 }
 
 // --moe dense-split=one (tests): the copies are made, every prompt pass runs on one card (with --moe one-range=1: as one token range on the fastest card)
 bool dsplit_opt_one() {
-    const char * e = llama_moe_get_opt("dense-split");
-    return e && strcmp(e, "one") == 0;
+    return strcmp(dsplit_opt(), "one") == 0;
 }
 
 bool dsplit_opt_auto() {
-    const char * e = llama_moe_get_opt("dense-split");
-    return e && strcmp(e, "auto") == 0;
+    return strcmp(dsplit_opt(), "auto") == 0;
 }
 
 }  // namespace
@@ -800,7 +806,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
             double sp = 0.0;
             const bool es = llama_moe_cache_expert_split_fork(&sp);
             if (es && !g_dev_rest.empty()) { mode = "expert-split"; gpus = g_dev_all.empty() ? "?" : g_dev_all; skipped = "-"; }
-            by = format("dense split not set up (--moe dense-split); expert split %s at load (transfer speedup %.2fx)", es ? "reserved" : "not reserved", sp);
+            by = format("dense split not set up (--moe dense-split=0, or fewer than two GPUs, or an architecture without a token-range graph); expert split %s at load (transfer speedup %.2fx)", es ? "reserved" : "not reserved", sp);
         }
         std::string one = "-", spl = "-";
         if (g_pend_max > 0) {
