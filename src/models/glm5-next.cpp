@@ -784,14 +784,14 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
     // of the pools this pass completes. Only for the masked flash-attention path (prompt passes); --moe dense-split-attn=0 runs these layers for all tokens on
     // the layer's card. (nsys, GLM-5.3-Flash 5.5k: the attention layer for all tokens took 125 ms on the x16 card while the x4 card waited 130 ms.)
     static const bool dsa_opt = [] { const char * e = llama_moe_get_opt("dense-split-attn"); return !e || atoi(e) != 0; }();
-    const bool dsa_split = dsa_opt && !inp_kpool->gather && inp_kpool->reuse_sel == nullptr && cparams.flash_attn && cparams.fused_lid;
+    const bool dsa_split = dsa_opt && cparams.flash_attn && cparams.fused_lid;
 
     if (!R.empty()) {
         const size_t NR = R.size();
         std::vector<ggml_tensor *> x(NR), res(NR), post(NR), comb(NR), cr(NR);
         std::vector<ggml_tensor *> prev_sel_r(NR, nullptr);   // the selection mask of the last full-indexer layer, per range
         // The per-range slices of the attention inputs (masks and cache indices) are cut ONCE per pass: a slice made per layer is a new tensor each time and
-        // the scheduler copied it to the range's card for every attention layer (kq_mask 34 MB, gather_mask 25 MB, pool_mask 8.5 MB per layer for 3k tokens),
+        // the scheduler copied it to the range's card for every attention layer (kq_mask 34 MB, sel_mask 25 MB, pool_mask 8.5 MB per layer for 3k tokens),
         // as an upload queued behind that card's expert uploads (nsys, GLM-5.3-Flash 5.5k: the x16 card waited 64 ms of a 231 ms attention layer for it).
         std::vector<ggml_tensor *> dsa_kqm(NR), dsa_pm(NR), dsa_gm(NR), dsa_tail(NR), dsa_kim(NR), dsa_kil(NR);
         if (dsa_split) {
@@ -800,13 +800,13 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
             ggml_tensor * k_lid   = inp_kpool->k_idxs;
             const int64_t n_kv_   = mctx_hyb->get_idx()->get_n_kv();
             const int64_t n_pool_ = inp_kpool->pool_cells->ne[0];
-            const int64_t n_sel_  = inp_kpool->gather_mask->ne[0];
+            const int64_t n_sel_  = inp_kpool->sel_mask->ne[0];
             for (size_t r = 0; r < NR; ++r) {
                 const int64_t nr = R[r].t1 - R[r].t0, t0 = R[r].t0;
                 dsa_kqm[r]  = ggml_view_2d(ctx0, kq_mask, n_kv_, nr, kq_mask->nb[1], t0 * kq_mask->nb[1]);
                 dsa_pm[r]   = ggml_view_2d(ctx0, inp_kpool->pool_mask, n_pool_, nr, inp_kpool->pool_mask->nb[1], t0 * inp_kpool->pool_mask->nb[1]);
-                dsa_gm[r]   = ggml_reshape_2d(ctx0, ggml_view_4d(ctx0, inp_kpool->gather_mask, n_sel_, 1, 1, nr, inp_kpool->gather_mask->nb[1],
-                                    inp_kpool->gather_mask->nb[2], inp_kpool->gather_mask->nb[3], t0 * inp_kpool->gather_mask->nb[3]), n_sel_, nr);
+                dsa_gm[r]   = ggml_reshape_2d(ctx0, ggml_view_4d(ctx0, inp_kpool->sel_mask, n_sel_, 1, 1, nr, inp_kpool->sel_mask->nb[1],
+                                    inp_kpool->sel_mask->nb[2], inp_kpool->sel_mask->nb[3], t0 * inp_kpool->sel_mask->nb[3]), n_sel_, nr);
                 dsa_tail[r] = ggml_view_2d(ctx0, inp_kpool->tail_idxs, inp_kpool->tail_idxs->ne[0], nr, inp_kpool->tail_idxs->nb[1], t0 * inp_kpool->tail_idxs->nb[1]);
                 dsa_kim[r]  = ggml_view_1d(ctx0, k_mla, nr, t0 * ggml_element_size(k_mla));
                 dsa_kil[r]  = ggml_view_1d(ctx0, k_lid, nr, t0 * ggml_element_size(k_lid));
@@ -983,7 +983,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                             sel_idx = ggml_concat(ctx0, sel_idx, dsa_tail[r], 0);
                         }
                         const int64_t n_sel = sel_idx->ne[0];
-                        GGML_ASSERT(inp_kpool->gather_mask->ne[0] == n_sel);
+                        GGML_ASSERT(inp_kpool->sel_mask->ne[0] == n_sel);
                         ggml_tensor * mask_all = ggml_repeat_4d(ctx0, ggml_fill(ctx0, ggml_new_tensor_4d(ctx0, kq_mask->type, n_kv + n_sel, 1, 1, 1), -INFINITY), n_kv + n_sel, nr, 1, 1);
                         mask_all = ggml_reshape_3d(ctx0, mask_all, 1, n_kv + n_sel, nr);
                         ggml_tensor * zeros = ggml_repeat_4d(ctx0, ggml_fill(ctx0, ggml_new_tensor_4d(ctx0, kq_mask->type, n_sel, 1, 1, 1), 0.0f), n_sel, nr, 1, 1);
