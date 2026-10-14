@@ -213,6 +213,8 @@ struct upload_job {
     bool    skipped = false; // dropped by the worker: its layer had started (slot freed at publish)
     uint64_t step   = 0;     // step the prediction was made in
     int64_t t_queued = 0;    // ggml_time_us() when queued (trace)
+    bool    bg      = false; // refill of a free block after a prompt (reheat_free_blocks): the step does not wait for it, a worker takes it only when no other
+                             // job waits on its link, and it does not count against the swap budget
 };
 
 struct moe_cache {
@@ -234,6 +236,8 @@ struct moe_cache {
     struct pool_state {
         std::vector<int32_t> owner;   // block -> index into layers, -1 free
         std::vector<int32_t> free;    // free blocks (stack)
+        ggml_backend_dev_t   dev = nullptr;   // the card of the class's buffer (pool_fill_log)
+        size_t               B   = 0;         // bytes of one block
     };
     std::vector<pool_state> pool;
     int64_t  n_expert_used = 0;   // experts per token (the compute alias sizes the CUDA scratch from it)
@@ -325,7 +329,11 @@ struct moe_cache {
     std::vector<upload_job>  done;
     bool                     stop = false;
     int                      in_flight = 0; // jobs popped by a worker, not yet in done
-    int                      in_flight_stream = 0; // of those, stream jobs (the step doesn't wait for them)
+    int                      in_flight_stream = 0; // of those, stream and background jobs (the step doesn't wait for them)
+    int32_t                  graph_tokens_last = 0; // tokens of the last graph that asked for lent blocks (llama_moe_cache_alias_fork): a decode graph or a prompt pass
+    uint64_t                 n_reheat = 0;          // experts queued by reheat_free_blocks, all prompts
+    int64_t                  fill_from = -1;        // decode step at which the last prompt was over (pool_fill_log follows the refill), -1: not watching
+    int64_t                  fill_t0   = 0;
     std::condition_variable  dcv;           // signalled when a job lands in done
 
     // swap cost accounting (guarded by wmtx for the upload side)
@@ -2713,11 +2721,55 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
 
 static std::atomic<int> g_pp_k { -1 };   // staging slots the pass planner gave the prompt it sized last (-1: no plan, a prompt graph takes what fits)
 
+// --moe log=f: what the blocks of the pool hold, per card: before a prompt's first pass, when the prompt is over (its borrowed blocks back) and 8 / 32 / 128
+// decode steps later. Blocks holding a published expert, being uploaded, free, lent to a graph (its tensors, the CUDA scratch, the staging slots), and the
+// card's free memory. A prompt must leave nothing behind: after it the lent count falls back to what a decode graph borrows and the refill
+// (reheat_free_blocks) turns the free blocks into experts again.
+static void pool_fill_log(moe_cache * mc, const char * when) {
+    static const bool on = moe_log_has("f");
+    if (!on) {
+        return;
+    }
+    struct agg { ggml_backend_dev_t dev = nullptr; size_t n = 0, held = 0, up = 0, fr = 0, lent = 0; double b_held = 0, b_all = 0; };
+    std::vector<agg> a;
+    for (const auto & ps : mc->pool) {
+        agg * g = nullptr;
+        for (auto & x : a) { if (x.dev == ps.dev) { g = &x; } }
+        if (g == nullptr) { a.emplace_back(); g = &a.back(); g->dev = ps.dev; }
+        for (size_t b = 0; b < ps.owner.size(); ++b) {
+            const int32_t o = ps.owner[b];
+            g->n++;
+            g->b_all += (double) ps.B;
+            if (o == -2)                                     { g->lent++; }
+            else if (o < 0)                                  { g->fr++; }
+            else if (mc->layers[o].slot_in_flight[b])        { g->up++; }
+            else if (mc->layers[o].slot_expert[b] >= 0)      { g->held++; g->b_held += (double) ps.B; }
+            else                                             { g->fr++; }   // owned and empty (an adoption that did not complete)
+        }
+    }
+    std::string s;
+    for (const auto & g : a) {
+        size_t fm = 0, tm = 0;
+        if (g.dev != nullptr) { ggml_backend_dev_memory(g.dev, &fm, &tm); }
+        s += tr_fmt(" %s: %zu of %zu blocks hold experts (%.2f of %.2f GB), %zu uploading, %zu free, %zu lent, card %.2f GB free;",
+                g.dev ? ggml_backend_dev_name(g.dev) : "?", g.held, g.n, g.b_held / 1e9, g.b_all / 1e9, g.up, g.fr, g.lent, fm / 1e9);
+    }
+    LLAMA_LOG_WARN("moe-cache: pool %s:%s\n", when, s.c_str());
+}
+
 void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     moe_cache * mc = g_cache;
     if (!mc || !alias_on() || mc->alias.empty()) {
         return;
     }
+    {
+        const int32_t mb = (int32_t) std::max<int64_t>(8, llama_moe_cache_max_batch_fork());
+        if (n_tokens > mb && mc->graph_tokens_last <= mb) {
+            pool_fill_log(mc, tr_fmt("before a prompt (first pass %d tokens)", n_tokens).c_str());
+            mc->fill_from = -1;
+        }
+    }
+    mc->graph_tokens_last = n_tokens;
     bool changed = false;
     for (auto & ap : mc->alias) {
         size_t peak = 0;
@@ -2885,8 +2937,9 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     }
 }
 
-// at a sync point: blocks above what the last graph needed go back to the cache
-static void alias_release(moe_cache * mc) {
+// at a sync point: blocks above what the last graph needed go back to the cache. Returns how many came back.
+static size_t alias_release(moe_cache * mc) {
+    size_t n_back = 0;
     for (auto & ap : mc->alias) {
         for (auto & sg : ap.segs) {
             const size_t  cov  = ap.want_b > sg.base ? ap.want_b - sg.base : 0;
@@ -2897,6 +2950,7 @@ static void alias_release(moe_cache * mc) {
                     if (ps.owner[b] == -2) {
                         ps.owner[b] = -1;
                         ps.free.push_back(b);
+                        n_back++;
                     }
                 }
                 sg.blocked = keep;
@@ -2915,6 +2969,85 @@ static void alias_release(moe_cache * mc) {
         }
         ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
     }
+    return n_back;
+}
+
+// After a prompt: fill the blocks it borrowed.
+// The passes of a prompt take pool blocks for their graph, the backend's scratch and the staging slots (llama_moe_cache_alias_fork) and drop the experts
+// that sat in them; the blocks come back free at the first decode steps (alias_release). Left alone they fill slowly: a missed expert takes even a free
+// block only after `admit` uses within 64 tokens, a step schedules a few uploads per layer, and nothing the prompt staged is kept on the staged path
+// (GGML_PF_COUNT). So every answer after a long prompt started with a part of its cache empty, and its first tokens computed those experts on the CPU.
+// Here every free block of a size class gets the best expert that is not cached, by the cache's own score on the scale that compares layers (xscore:
+// recent use, which the prompt's hit counters feed, plus the lifetime share that the saved hot map seeds), best first over all layers of the class, so
+// the blocks go where the score says an expert is missed most, as in the steady state. The uploads are background jobs (upload_job::bg): the decode step
+// does not wait for them, a worker takes one only when no miss-driven upload waits on its link, and they cost no swap budget (a free block evicts
+// nothing). The link is idle right after a prompt: the refill of 10 GB takes about 0.5 s of a x16 link, 2 s of a x4.
+// --moe reheat=0 turns it off. With --moe fixed=1 (repeatable runs) the jobs are ordinary ones the step waits for and publishes in order.
+static size_t reheat_free_blocks(moe_cache * mc, bool wait) {
+    static const bool on = [] { const char * e = moe_opt("reheat"); return !e || atoi(e) != 0; }();
+    if (!on) {
+        return 0;
+    }
+    struct cand { double sc; size_t li; int32_t e; };
+    std::vector<upload_job> jobs;
+    double bytes = 0.0;
+    for (size_t pc = 0; pc < mc->pool.size(); ++pc) {
+        const size_t n_free = mc->pool[pc].free.size();
+        if (n_free == 0) {
+            continue;
+        }
+        std::vector<cand> c;
+        for (size_t li = 0; li < mc->layers.size(); ++li) {
+            const layer_state & ls = mc->layers[li];
+            if (ls.pcls != (int32_t) pc) {
+                continue;
+            }
+            for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) {
+                if (ls.expert_slot[e] >= 0 || ls.queued[e] || ls.adopt_slot[e] >= 0) {
+                    continue;
+                }
+                const double sc = xscore(mc, ls, e);
+                if (sc > 0.0) {
+                    c.push_back({ sc, li, e });
+                }
+            }
+        }
+        const size_t n = std::min(n_free, c.size());
+        std::partial_sort(c.begin(), c.begin() + (ptrdiff_t) n, c.end(), [](const cand & a, const cand & b) { return a.sc > b.sc; });
+        for (size_t i = 0; i < n; ++i) {
+            layer_state & ls = mc->layers[c[i].li];
+            double best;
+            const int32_t slot = pick_slot(mc, c[i].li, [](layer_state &, size_t, int32_t) { return -1.0; }, best).slot;   // free blocks only
+            if (slot < 0) {
+                break;
+            }
+            pool_take(mc, c[i].li, slot);
+            ls.slot_in_flight[slot] = true;
+            ls.queued[c[i].e]       = 1;
+            upload_job j { c[i].li, c[i].e, slot };
+            j.bg       = !wait;
+            j.t_queued = ggml_time_us();
+            jobs.push_back(j);
+            bytes += (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
+        }
+    }
+    if (jobs.empty()) {
+        return 0;
+    }
+    {
+        std::lock_guard<std::mutex> wlk(mc->wmtx);
+        for (const auto & j : jobs) {
+            mc->todo.push_back(j);
+        }
+        mc->n_reheat += jobs.size();
+    }
+    mc->wcv.notify_all();
+    static int logged = 0;
+    if (logged++ < 16) {
+        LLAMA_LOG_WARN("moe-cache: after the prompt: %zu experts (%.2f GB) queued to refill the blocks it borrowed, best score first%s\n", jobs.size(), bytes / 1e9,
+                wait ? "" : " (background uploads)");
+    }
+    return jobs.size();
 }
 
 // ---- block pool layout -------------------------------------------------------------------------------------------------------------------------
@@ -3202,6 +3335,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 std::string cls_txt;
                 for (size_t c = 0; c < pl.cls.size(); ++c) {
                     moe_cache::pool_state ps;
+                    ps.dev = ggml_backend_buft_get_device(buft);
+                    ps.B   = pl.cls[c].B;
                     ps.owner.assign(nblk[c], -1);
                     for (int32_t b = nblk[c] - 1; b >= 0; --b) { ps.free.push_back(b); }
                     mc->pool.push_back(std::move(ps));
@@ -3502,11 +3637,19 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     // the first queued job on this worker's link (-1: any)
                     const int link = mc->worker_link[w];
                     auto mine = [mc, link]() {
-                        auto it = mc->todo.begin();
-                        while (it != mc->todo.end() && link >= 0 && mc->layers[it->layer_idx].link != link) {
-                            ++it;
+                        auto bg = mc->todo.end();   // the first background refill, taken only when no other job waits on this link
+                        for (auto it = mc->todo.begin(); it != mc->todo.end(); ++it) {
+                            if (link >= 0 && mc->layers[it->layer_idx].link != link) {
+                                continue;
+                            }
+                            if (!it->bg) {
+                                return it;
+                            }
+                            if (bg == mc->todo.end()) {
+                                bg = it;
+                            }
                         }
-                        return it;
+                        return bg;
                     };
                     mc->wcv.wait(lk, [mc, &mine]() { return mc->stop || mine() != mc->todo.end(); });
                     if (mc->stop) {
@@ -3516,7 +3659,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     j = *it;
                     mc->todo.erase(it);
                     mc->in_flight++;
-                    mc->in_flight_stream += j.stream;
+                    mc->in_flight_stream += j.stream || j.bg;
                 }
                 auto & ls = mc->layers[j.layer_idx];
                 // ponytail: unlocked reads of gpu_started / n_steps; a race only delays or keeps one stale job
@@ -3526,7 +3669,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     j.done    = true;
                     mc->done.push_back(j);
                     mc->in_flight--;
-                    mc->in_flight_stream -= j.stream;
+                    mc->in_flight_stream -= j.stream || j.bg;
                     mc->n_stream_stale++;
                     mc->dcv.notify_all();
                     if (tr_on()) {
@@ -3657,7 +3800,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     j.done = true;
                     mc->done.push_back(j);
                     mc->in_flight--;
-                    mc->in_flight_stream -= j.stream;
+                    mc->in_flight_stream -= j.stream || j.bg;
                 }
                 mc->dcv.notify_all();
             }
@@ -4707,7 +4850,7 @@ void llama_moe_cache_step_fork() {
             // wait for the cache swaps only; a stream copy still running lands later and is published at a split
             mc->dcv.wait(wlk, [mc]() {
                 return mc->in_flight == mc->in_flight_stream &&
-                    std::none_of(mc->todo.begin(), mc->todo.end(), [](const upload_job & j) { return !j.stream; });
+                    std::none_of(mc->todo.begin(), mc->todo.end(), [](const upload_job & j) { return !j.stream && !j.bg; });
             });
             std::sort(mc->done.begin(), mc->done.end(), [](const upload_job & a, const upload_job & b) {
                 return a.layer_idx != b.layer_idx ? a.layer_idx < b.layer_idx : a.slot < b.slot;
@@ -4806,7 +4949,7 @@ void llama_moe_cache_step_fork() {
         if (mc->upload_us <= 0 || step_us <= 0) {
             budget_total = (int) mc->layers.size(); // bootstrap: ~1 per layer until measured
         } else {
-            budget_total = (int) (frac*step_us*mc->workers.size()/mc->upload_us) - (int) mc->todo.size();
+            budget_total = (int) (frac*step_us*mc->workers.size()/mc->upload_us) - (int) std::count_if(mc->todo.begin(), mc->todo.end(), [](const upload_job & j) { return !j.bg; });
         }
         // static budget: LLAMA_MOE_CACHE_SWAPS_PER_STEP swaps per step (deterministic mode: default 8)
         const int fixed_budget = (int) knobs().budget;
@@ -5074,9 +5217,23 @@ void llama_moe_cache_step_fork() {
         }
     }
 
-    alias_release(mc);
+    const size_t n_back = alias_release(mc);
     mc->gmax_all = 1;
     for (const auto & l : mc->layers) { mc->gmax_all = std::max(mc->gmax_all, l.glob_max); }
+    // blocks came back and the graph that just ran was a decode graph: the prompt is over (between the passes of a prompt nothing comes back, and
+    // after a smaller pass that is still a prompt pass the next pass may take the blocks again)
+    if (n_back > 0 && mc->graph_tokens_last <= (int32_t) std::max<int64_t>(8, llama_moe_cache_max_batch_fork())) {
+        pool_fill_log(mc, "after a prompt (its blocks back)");
+        reheat_free_blocks(mc, det);
+        mc->fill_from = (int64_t) mc->n_steps;
+        mc->fill_t0   = ggml_time_us();
+    } else if (mc->fill_from >= 0) {
+        const int64_t d = (int64_t) mc->n_steps - mc->fill_from;
+        if (d == 8 || d == 32 || d == 128) {
+            pool_fill_log(mc, tr_fmt("%" PRId64 " decode steps (%.0f ms) after a prompt", d, (ggml_time_us() - mc->fill_t0) / 1e3).c_str());
+            if (d == 128) { mc->fill_from = -1; }
+        }
+    }
     // 2) schedule new uploads: evict at a sync point (clear the victim's table
     //    entry now), then hand the slice copies to the worker
     const size_t n_layers = mc->layers.size();
