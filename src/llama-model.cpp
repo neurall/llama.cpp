@@ -1,4 +1,5 @@
 #include "llama-model.h"
+#include "llama-moe-backend-fork.h"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -2078,9 +2079,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 int (*host_cache)(int, void *) = nullptr;
                 std::string cache_key;
                 if (getenv("GGML_CUDA_HUGEFS") && (!ml.use_mmap || ml.pin_budget > 0) && strstr(ggml_backend_buft_name(buft), "Host") != nullptr) {   // (mmap with a pin budget: the pinned part of the hybrid)
-                    if (auto * reg = ggml_backend_reg_by_name("CUDA")) {
-                        host_cache = (int (*)(int, void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_cache");
-                    }
+                    host_cache = (int (*)(int, void *)) moe_backend::proc("host_cache");
                     if (host_cache) {
                         uint64_t h = 1469598103934665603ull; // FNV-1a
                         auto mix = [&h](const void * d, size_t n) { for (size_t i = 0; i < n; i++) { h = (h ^ ((const uint8_t *) d)[i]) * 1099511628211ull; } };

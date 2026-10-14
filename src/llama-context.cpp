@@ -1,4 +1,5 @@
 #include "llama-context.h"
+#include "llama-moe-backend-fork.h"
 #include <fstream>
 #include <filesystem>
 #include <map>
@@ -300,10 +301,9 @@ llama_context::llama_context(
     cparams.moe_cache = params.n_moe_cache_slots != 0;
     {   // GGML_NVTX=1: the CUDA backend's nsys range functions for the scheduler (declared here, see ggml_backend_nvtx_set_fork in ggml-backend.cpp)
         const char * nv = getenv("GGML_NVTX");
-        ggml_backend_reg_t reg = nv && atoi(nv) >= 1 ? ggml_backend_reg_by_name("CUDA") : nullptr;
-        if (reg) {
-            ggml_backend_nvtx_set_fork((void (*)(const char *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nvtx_push_fork"),
-                                       (void (*)(void)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nvtx_pop_fork"));
+        if (nv && atoi(nv) >= 1 && moe_backend::gpu_reg()) {
+            ggml_backend_nvtx_set_fork((void (*)(const char *)) moe_backend::proc("nvtx_push_fork"),
+                                       (void (*)(void)) moe_backend::proc("nvtx_pop_fork"));
         }
     }
     cparams.kv_unified = params.kv_unified;
@@ -3775,8 +3775,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
     {
         auto it = slices_fn.find(dev);
         if (it == slices_fn.end()) {
-            ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
-            it = slices_fn.emplace(dev, reg ? (copy_slices_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_copy_slices_fork") : nullptr).first;
+            it = slices_fn.emplace(dev, (copy_slices_t) moe_backend::proc(ggml_backend_dev_backend_reg(dev), "copy_slices_fork")).first;
         }
         copy_slices = it->second;
     }
