@@ -13,6 +13,26 @@ compute cached experts while the CPU computes the rest, in parallel.
 
 llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
+### Best gainers so far (measured 2026-10-14, 2x RTX 3090 24 GB, one x16 and one x4 link)
+
+Same prompts as below, each build on its own defaults (only `-np 1`, `-c` for stock). "stock" is the newest upstream build that was measured on that cell (build in the last column); the fork rows are the best measured build of this release line (dev builds `plan100` / `b12686`; the published b12844 is being re-measured the same way, see the known-issue note).
+
+| model | cell | stock | fork | gain | fork build / stock build |
+|---|---|---|---|---|---|
+| GLM-5.3-Flash 3.0-bit (106 GB) | 12k prompt: prompt processing | 42.8 t/s | **485 t/s** | **11.3x** | plan100 / b11381 |
+| GLM-5.3-Flash 3.0-bit | 1k edit: prompt processing | 41.5 t/s | **495 t/s** | **11.9x** | plan100 / b11452 |
+| GLM-5.3-Flash 3.0-bit | 1k edit: decode | 12.4 t/s | **19.0 t/s** | 1.53x | plan100 / b11452 |
+| Qwen3.8-Flash-Next IQ3_S (78 GB) | 12k prompt: prompt processing | 201 t/s | **1048 t/s** | **5.2x** | plan100 / b11381 |
+| Qwen3.8-Flash-Next IQ3_S | 1k edit: prompt processing | 160 t/s | **962 t/s** | **6.0x** | plan100 / b11452 |
+| Qwen3.8-Flash-Next IQ3_S | 1k edit: decode | 30.6 t/s | **54.0 t/s** | 1.76x | plan100 / b11452 |
+| Qwen3.8-Flash-Next IQ3_S | game, 600 tokens: decode | 30.6 t/s | **54.2 t/s** | 1.77x | b12686 / b11381 |
+| Qwen3.6-35B-A3B hybrid (fits VRAM) | 12k, edit | at parity | at parity | 1.0x | no cache needed |
+| OLMoE-1B-7B Q4_K_M (fits VRAM) | game | 466 t/s | 472 t/s | 1.01x | plan100 / b11574 |
+
+On smaller cards the gain grows, see the next section (an 8 GB laptop: decode 2.7-3.6x; a simulated 16 GB card: GLM 6.5x decode, Qwen3.8-Flash-Next 3.4x on two cards).
+
+**Known issue in b12844 (found while updating this table):** after a 12k prompt, Qwen3.8-Flash-Next decodes at 35 t/s where b12686 gives 50 t/s, and GLM-5.3-Flash at 14.3 vs 16.2 t/s (the prompt itself is 1.3-1.4x faster). Not fixed yet; the prefill changes of this release are the suspected cause, a fix is next.
+
 **Results, 2x RTX 3090 (one AM4 CPU PCIe 4.0 x16, one X570 chipset x4 slot) + Ryzen 7 3700X + 125 GB DDR4,
 CPU frequency governor `performance`, single stream, temp 0.** Short = 1500-token chat reply to "write smallest html tetris game". Long =
 12k-token code prompt (llama.cpp sources): prompt processing, then decode. The prompts and a script to
