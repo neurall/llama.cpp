@@ -1134,7 +1134,7 @@ void llama_context::moe_mirror_fill() {
         for (auto & be : backends) {
             ggml_backend_synchronize(be.get());
         }
-        LLAMA_LOG_INFO("%s: dense split: %.1f MiB of copies filled on %s in %.0f ms (pool blocks lent to this prompt)\n", __func__, bytes / 1048576.0,
+        LLAMA_LOG_WARN("%s: dense split: %.1f MiB of copies filled on %s in %.0f ms (pool blocks lent to this prompt)\n", __func__, bytes / 1048576.0,
                 ggml_backend_dev_name(ab.dev), (ggml_time_us() - t0) / 1e3);
     }
 }

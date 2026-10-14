@@ -155,7 +155,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
                 dsplit_copy_prec(model, src[i], dst[i]);
             }
             c.bytes = GGML_PAD(cur, (size_t) 2 << 20);
-            LLAMA_LOG_INFO("%s: dense split: %zu dense tensors (%.1f MiB) for %s, held in its expert pool only while a prompt pass splits\n", __func__, src.size(),
+            LLAMA_LOG_WARN("%s: dense split: %zu dense tensors (%.1f MiB) for %s, held in its expert pool only while a prompt pass splits\n", __func__, src.size(),
                     c.bytes / 1048576.0, ggml_backend_dev_name(D));
             S.copies[D] = std::move(c);
             continue;
@@ -249,7 +249,7 @@ void llama_dsplit_mirror_place_fork(const llama_model & model, const std::vector
             c.pooled = true;
             c.valid  = false;
             llama_moe_cache_alias_mirror_fork(kv.first, c.bytes);   // the pass planner keeps room for them
-            LLAMA_LOG_INFO("%s: dense split: the %.1f MiB of copies for %s sit at the start of its expert pool (%.1f GiB lendable): filled when a prompt pass "
+            LLAMA_LOG_WARN("%s: dense split: the %.1f MiB of copies for %s sit at the start of its expert pool (%.1f GiB lendable): filled when a prompt pass "
                     "splits, expert blocks again in decode\n", __func__, c.bytes / 1048576.0, ggml_backend_dev_name(kv.first), pb->capacity / 1073741824.0);
             continue;
         }
@@ -269,7 +269,7 @@ void llama_dsplit_mirror_place_fork(const llama_model & model, const std::vector
         c.placed = true;
         c.pooled = false;
         c.valid  = true;
-        LLAMA_LOG_INFO("%s: dense split: %.1f MiB of copies for %s in a buffer of their own (%s)\n", __func__, c.bytes / 1048576.0, ggml_backend_dev_name(kv.first),
+        LLAMA_LOG_WARN("%s: dense split: %.1f MiB of copies for %s in a buffer of their own (%s)\n", __func__, c.bytes / 1048576.0, ggml_backend_dev_name(kv.first),
                 pb ? "more than half of the pool" : "no expert pool on the card");
     }
 }
@@ -760,7 +760,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
         }
     }
     if (n_tokens >= 64 && us > 0) {
-        // One line per decode call with prompt passes, always (-lv 3): which cards the prompt ran on, how it was split and why. fork/run.py records the fields
+        // One line per decode call with prompt passes, always (a warning-level line: libllama info lines are hidden at the default -lv 3): which cards the prompt ran on, how it was split and why. fork/run.py records the fields
         // (run-history.csv, runs.db), so a choice that goes against what was measured before shows up (a second card skipped where the split was faster).
         //   mode     one-card: the experts of every layer on the card with the fastest link (the other cards only run the dense part of their own layers);
         //            dense-split / dense+expert-split: the dense part of every layer on all cards by token ranges, the experts on the fastest card only / on
@@ -810,7 +810,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
                 if (bit->second.n[1]) { spl = std::to_string((int) (1e6 / bit->second.us_tok[1])); }
             }
         }
-        LLAMA_LOG_INFO("prefill decision: prompt_tokens=%lld passes=%u pass_tokens=%u staging_slots=%d mode=%s gpus=%s skipped=%s helper_token_share=%.2f "
+        LLAMA_LOG_WARN("prefill decision: prompt_tokens=%lld passes=%u pass_tokens=%u staging_slots=%d mode=%s gpus=%s skipped=%s helper_token_share=%.2f "
                 "helper_expert_share=%.2f prompt_tps=%.1f one_card_tps=%s split_tps=%s chosen_by=\"%s\"\n", (long long) n_tokens, passes, pass, slots, mode.c_str(),
                 gpus.c_str(), skipped.c_str(), tok_share, exp_share, (double) n_tokens * 1e6 / (double) us, one.c_str(), spl.c_str(), by.c_str());
     }
