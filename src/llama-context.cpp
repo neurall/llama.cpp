@@ -297,7 +297,11 @@ llama_context::llama_context(
     cparams.prefetch_experts_slots = params.prefetch_experts_slots;
     cparams.moe_cache = params.n_moe_cache_slots != 0;
     cparams.kv_unified = params.kv_unified;
-    cparams.moe_cache_size = params.moe_cache_size;
+    // fork: the graph's MoE path is the fork's own cache (--moe-expert-cache); upstream's slot path (--moe-cache-mib) is not wired into it
+    cparams.moe_cache_size = 0;
+    if (params.moe_cache_size > 0) {
+        LLAMA_LOG_WARN("%s: --moe-cache-mib (upstream MoE cache) is not supported by this fork, ignored; the fork's expert cache is used\n", __func__);
+    }
 
     // initialized later
     cparams.pipeline_parallel = false;
@@ -465,7 +469,8 @@ llama_context::llama_context(
             cparams.offload_kqv &&
             // --moe pipe-stock=1 (research): the stock micro-batch pipeline across the cards although the experts are host-resident (tensor overrides). A prompt of several
             // micro-batches (-b > -ub) then has card 1 work on micro-batch k+1 while card 2 works on k: the overlap the single-pass traces lack.
-            (!model.has_tensor_overrides() || [] { const char * e = llama_moe_get_opt("pipe-stock"); return e && atoi(e) != 0; }());
+            (!model.has_tensor_overrides() || [] { const char * e = llama_moe_get_opt("pipe-stock"); return e && atoi(e) != 0; }()) &&
+            cparams.moe_cache_size == 0; // not supported by upstream's MoE cache
 
         // pipeline parallelism requires support for async compute and events in all devices
         if (pipeline_parallel) {
@@ -503,26 +508,9 @@ llama_context::llama_context(
             llama_moe_cache_prefill_decide_fork(gpus);
         }
 
-        // upstream's llama_moe_cache (--moe-cache-mib): one GPU only; independent of the fork's cache
+        // upstream's llama_moe_cache (--moe-cache-mib): never on in the fork, see the cparams setup above
         if (cparams.moe_cache_size > 0) {
-            // fork: the graph's MoE path is the fork's own cache (--moe-expert-cache); upstream's slot path is not wired into it
-            LLAMA_LOG_WARN("%s: --moe-cache-mib (upstream MoE cache) is not supported by this fork, ignored; the fork's expert cache is used\n", __func__);
-            cparams.moe_cache_size = 0;
-        }
-        if (cparams.moe_cache_size > 0) {
-            if (cparams.pipeline_parallel || model.n_devices() > 1) {
-                throw std::runtime_error("MoE cache does not support multiple devices");
-            }
-            for (size_t i = 0; i < backend_ptrs.size(); ++i) {
-                const auto type = ggml_backend_dev_type(ggml_backend_get_device(backend_ptrs[i]));
-                if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
-                    moe_cache = std::make_unique<llama_moe_cache>(model, backend_ptrs[i], backend_buft[i], cparams.moe_cache_size);
-                    break;
-                }
-            }
-            if (!moe_cache) {
-                throw std::runtime_error("MoE cache requires a GPU backend");
-            }
+            moe_cache = std::make_unique<llama_moe_cache>(model, backend_ptrs, backend_buft, cparams.moe_cache_size);
         }
 
         sched_reserve();
