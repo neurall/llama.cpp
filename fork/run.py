@@ -1779,14 +1779,15 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             COMMON = list(extra_args)
         _pfn = re.fullmatch(r"pf(\d+)k", test)   # pf4k, pf6k, pf8k ...: the first N thousand tokens of the frozen 12k source (one pass when -ub >= N thousand)
         if test in ("pf12k", "pf12k-stock", "pf128k", "fix12k") or (_pfn and int(_pfn.group(1)) not in (12, 128)):
-            pf_ctx = str(OVR.get("ctx") or (131072 if test == "pf128k" else 16384))
+            pf_ctx = str(OVR.get("ctx") or (131072 if test == "pf128k" else (int(_pfn.group(1)) + 2) * 1024 if _pfn and int(_pfn.group(1)) > 14 else 16384))
             dev = (["-t", THREADS] if THREADS else []) + ["-dev", os.environ.get("PERF_PF_DEV") or ("CUDA1,CUDA0" if DEVS == "CUDA0,CUDA1" else DEVS), "-c", pf_ctx, "-ub", "2048", "-b", "2048"]
             args = list(extra_args) if BARE else dev + ((["--moe-expert-cache", "0"] if test == "pf12k-stock" and not build.startswith("stock") else []) if test == "pf12k-stock" or plain or build.startswith("stock") else ["--cpu-moe", "-nr", "--moe-expert-cache", "-1"]) + list(extra_args)
             if BARE and (plain or build.startswith("stock")) and "-c" not in args:
                 args += ["-c", pf_ctx]  # stock's default context (4096) rejects the 12k prompt (HTTP 400); the fork sets 32k itself
-            _pf_text = open(os.path.join(PROMPTS, "src_128k.cpp" if test == "pf128k" else "src_12k.cpp")).read()
-            if _pfn and int(_pfn.group(1)) not in (12, 128):   # the 12k file is 12294 tokens (GLM tokenizer): cut it in proportion
-                _pf_text = _pf_text[:int(len(_pf_text) * int(_pfn.group(1)) * 1000 / 12294)]
+            _pf_big = test == "pf128k" or (_pfn and int(_pfn.group(1)) > 12)   # pf40k, pf64k ...: the first N thousand tokens of the 128k source
+            _pf_text = open(os.path.join(PROMPTS, "src_128k.cpp" if _pf_big else "src_12k.cpp")).read()
+            if _pfn and int(_pfn.group(1)) not in (12, 128):   # the 12k file is 12294 tokens (GLM tokenizer, 4.4 characters each): cut in proportion
+                _pf_text = _pf_text[:int(54092 * int(_pfn.group(1)) * 1000 / 12294)]
             _pf_text = OVR.get("prefix", "") + _pf_text
             if OVR.get("prefix"):   # an instruction (12kin_1kout_code_review): an instruct model needs its chat template or a long answer loops, so it goes through the chat endpoint
                 res, logf = server_run(build, env, args, "/v1/chat/completions",
