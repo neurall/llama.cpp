@@ -185,6 +185,9 @@ bool split_ctl_update(int64_t n_expert, int64_t n_embd) {
             if (h == o || h->t_start == 0 || h->t_end <= h->t_start || h->hi <= h->lo) { continue; }
             const int bk_h = split_bucket(h->n_tokens);
             if (c.frozen[bk_h]) { continue; }   // settled: nothing moves for this pass size
+            // dense split with a plan: the planner's counts stay. Equal expert-chain durations are not the shortest layer there: on Qwen3.8-Flash-Next the
+            // experts are 17 of 41 ms, and the balance of the chains left 21% of them on the x4 card, link-bound (48.7 ms per layer against 42 with none).
+            if (range_mode && llama_dsplit_plan_helper_f_fork(kv.first, h->n_tokens) >= 0.0) { continue; }
             const llama_split_ctl::key_t key(bk_h, kv.first, ggml_backend_get_device(h->backend));
             auto it = c.held.find(key);
             if (it == c.held.end()) {
@@ -286,7 +289,7 @@ bool split_ctl_update(int64_t n_expert, int64_t n_embd) {
 }
 
 // experts each card holds in layer il for a pass of n_tokens (cards: device and upload rate; the owner keeps what the helpers do not hold)
-std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vector<std::pair<ggml_backend_dev_t, double>> & cards, size_t owner, int64_t n_expert, int64_t n_embd, double bytes_layer) {
+std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vector<std::pair<ggml_backend_dev_t, double>> & cards, size_t owner, int64_t n_expert, int64_t n_embd, double bytes_layer, bool range_mode) {
     llama_split_ctl & c = g_split_ctl;
     std::lock_guard<std::mutex> lk(c.mu);
     if (bytes_layer > 0 && n_expert > 0) { c.bytes_expert[il] = bytes_layer / (double) n_expert; }
@@ -311,6 +314,12 @@ std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vecto
         return cards[i].second < 0.999 * u_max ? slow_scale * slow_start(i) : (1.0 - slow_scale * slow_sum) / std::max(1, n_fast);
     };
     const auto seed = [&](size_t i) {
+        // dense split (token ranges): the split planner's share of this layer's experts for the helper, when it has a plan for this pass size (it counts the
+        // uploads net of what each card holds and the hops on the helper's link; Qwen3.8-Flash-Next on x16 + x4: none on the x4)
+        if (range_mode) {
+            const double fp = llama_dsplit_plan_helper_f_fork(il, n_tokens);
+            if (fp >= 0.0) { return fp * (double) n_expert; }
+        }
         double v0 = start_share(i) * (double) n_expert;
         // The link cap for a pass size not measured yet: the layer period per token of the nearest measured size, scaled to this size (the period grows
         // about with the tokens). No size measured at all: the start share stands, and the first measured pass corrects it.
@@ -333,6 +342,15 @@ std::vector<int64_t> split_ctl_counts(int il, int64_t n_tokens, const std::vecto
     for (size_t i = 0; i < cards.size(); ++i) {
         if (i == owner) { continue; }
         const llama_split_ctl::key_t key(bk, il, cards[i].first);
+        // dense split with a plan: the planner's share for this layer, scaled by the split tuner (llama-dsplit-fork.cpp), read on every graph build
+        if (range_mode) {
+            const double fp = llama_dsplit_plan_helper_f_fork(il, n_tokens);
+            if (fp >= 0.0) {
+                v[i] = fp * (double) n_expert;
+                sum_h += v[i];
+                continue;
+            }
+        }
         auto it = c.held.find(key);
         if (it == c.held.end()) {
             it = c.held.emplace(key, seed(i)).first;
@@ -3110,7 +3128,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                         if (od && cards.back().first == od) { owner_i = i; }
                     }
                     const double bytes_layer = (double) ((up_exps ? ggml_nbytes(up_exps) : 0) + (gate_exps ? ggml_nbytes(gate_exps) : 0) + (down_exps ? ggml_nbytes(down_exps) : 0));
-                    if (owner_i < parts.size()) { n_of = split_ctl_counts(il, n_tokens, cards, owner_i, n_expert, n_embd, bytes_layer); }
+                    if (owner_i < parts.size()) { n_of = split_ctl_counts(il, n_tokens, cards, owner_i, n_expert, n_embd, bytes_layer, !moe_ranges.empty()); }
                     // --moe split-pattern=a:b:c (tests): the experts every helper holds, per layer, cycled over the layers (0 = helper off, the owner keeps the
                     // rest and at least one). The controller's results depend on timing; this gives every shape it can produce on demand: a layer with one
                     // card only next to split layers, a card with a single expert, a card with all but one. Each must give the same perplexity as one card.
@@ -3224,8 +3242,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // the helper's link in both directions: GLM-5.3-Flash at 8k tokens 131 MB each way, 20 ms + 21 ms of a x4 link per layer, which is what bounds the
         // share the helper can finish in time (and 5 ms + 5 ms of the owner's stream). Half the bytes as f16: the owner casts once for all helpers, a helper
         // casts back in its mask split (so the hidden state arrives with the id helpers, at the very start of its chain), and returns its sum as f16.
-        // The expert matmuls quantise their input to 8 bits anyway; the partial sum loses bits 12 and below. --moe split-f16=0 keeps f32.
-        static const bool hop_f16 = split_opt("split-f16", 1) != 0;
+        // The expert matmuls quantise their input to 8 bits anyway; the partial sum loses bits 12 and below. --moe split-f16=0 keeps f32, split-f16=in
+        // sends the hidden state as f16 and takes the sum back as f32 (llama_dsplit_hop_mode_fork: what each choice costs in perplexity and speed).
+        static const bool hop_f16     = llama_dsplit_hop_mode_fork() != 0;   // the hidden state, to the card that computes experts on it
+        static const bool hop_f16_out = llama_dsplit_hop_mode_fork() == 1;   // the experts' sum, back to the card that holds the tokens
         ggml_tensor * cur16 = nullptr;
         std::vector<ggml_tensor *> cur_part(parts.size(), nullptr);
         if (owner_b && hop_f16 && cur->type == GGML_TYPE_F32 && moe_ranges.empty()) {
@@ -3326,7 +3346,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             partial[i] = reduce(expert_chain(chain_in, ids[i]), parts[i].b, w_part[i]);
             mm_id_backend = nullptr;
             mm_id_lo = mm_id_hi = 0;
-            if (cur_part[i]) {   // rule 5: the partial sum leaves the helper as f16 and becomes f32 again on the owner
+            if (cur_part[i] && hop_f16_out) {   // rule 5: the partial sum leaves the helper as f16 and becomes f32 again on the owner
                 ggml_tensor * p16 = ggml_cast(ctx0, partial[i], GGML_TYPE_F16);
                 ggml_backend_sched_set_tensor_backend(sched, p16, parts[i].b);
                 ggml_build_forward_expand(gf, p16);
@@ -3347,10 +3367,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                         if ((parts[i].b == rg.b) != (pass == 0)) { continue; }
                         ggml_tensor * v = ggml_view_2d(ctx0, partial[i], n_embd, nr, partial[i]->nb[1], rg.t0 * partial[i]->nb[1]);
                         if (parts[i].b != rg.b) {
-                            v = hop_f16 ? ggml_cast(ctx0, v, GGML_TYPE_F16) : ggml_cont(ctx0, v);
+                            v = hop_f16_out ? ggml_cast(ctx0, v, GGML_TYPE_F16) : ggml_cont(ctx0, v);
                             ggml_backend_sched_set_tensor_backend(sched, v, parts[i].b);
                             ggml_build_forward_expand(gf, v);
-                            if (hop_f16) {
+                            if (hop_f16_out) {
                                 v = ggml_cast(ctx0, v, GGML_TYPE_F32);
                                 ggml_backend_sched_set_tensor_backend(sched, v, rg.b);
                             }
@@ -5167,9 +5187,17 @@ bool llm_graph_context::ds_plan(int64_t min_tokens) const {
     ds_r.clear();
     ds_cut.clear();
     ds_mark = nullptr;
-    static const double  share0  = [] { const char * e = llama_moe_get_opt("dense-split-share"); return e ? atof(e) : 0.55; }();
+    static const double  share0  = [] { const char * e = llama_moe_get_opt("dense-split-share"); return e ? atof(e) : -1.0; }();   // set: fixed by hand (tests)
     static const int64_t min_tok = [] { const char * e = llama_moe_get_opt("dense-split-min");   return e ? (int64_t) atoll(e) : (int64_t) 512; }();
-    if (!sched || llama_dsplit_cur_fork() != 1 || ubatch.n_seqs != 1 || cparams.n_rs_seq != 0 || n_tokens < std::max(min_tok, min_tokens)) {
+    // --moe one-range=1 (research, off): a pass that runs on one card (the split planner or the measured choice said so) still takes the token-range path, as
+    // ONE range on the card with the fastest link: every layer's dense part then runs there from that card's copies of the other cards' layers, instead of on
+    // the card that owns the layer with two hand-offs per layer (nsys, Qwen3.8-Flash-Next 3k tokens on one x16: the x4's 8 layers cost about 0.27 s of a
+    // 2.46 s pass). Measured (same model and prompt, four passes each): same perplexity as the plain one-card pass (1.1251 / 1.1086), but SLOWER, 1091-1146
+    // prompt tokens/s against 1132-1211: the x16 card then computes the 8 layers the x4 card ran, and its pool is 635 MiB smaller by the copies.
+    static const bool one_range = [] { const char * e = llama_moe_get_opt("one-range"); return e && atoi(e) != 0; }();
+    const int cur = llama_dsplit_cur_fork();
+    const bool single = cur == 0 && one_range;
+    if (!sched || (cur != 1 && !single) || ubatch.n_seqs != 1 || cparams.n_rs_seq != 0 || n_tokens < std::max(min_tok, min_tokens)) {
         return false;
     }
     if (!loras->empty()) {
@@ -5186,8 +5214,15 @@ bool llm_graph_context::ds_plan(int64_t min_tokens) const {
         return false;
     }
     std::stable_sort(gpus.begin(), gpus.end(), [](const auto & x, const auto & y) { return x.first < y.first; });   // slowest link first
+    if (single) {
+        ds_r.push_back({ gpus.back().second, ggml_backend_get_device(gpus.back().second), 0, n_tokens });
+        return true;
+    }
     // two ranges for now (the slowest and the fastest card); more cards: more ranges, same kit
-    const int64_t edge = std::max<int64_t>(min_tokens, std::min<int64_t>(n_tokens - min_tokens, (int64_t) llround(share0 * (double) n_tokens)));
+    // the slow-link card's share of the tokens: the split planner's (llama-dsplit-fork.cpp: the compute balance after its hops), 0.55 until it has a plan
+    double share = share0 >= 0.0 ? share0 : llama_dsplit_plan_share_fork(n_tokens);
+    if (share < 0.0) { share = 0.55; }
+    const int64_t edge = std::max<int64_t>(min_tokens, std::min<int64_t>(n_tokens - min_tokens, (int64_t) llround(share * (double) n_tokens)));
     ds_r.push_back({ gpus.front().second, ggml_backend_get_device(gpus.front().second), 0, edge });
     ds_r.push_back({ gpus.back().second,  ggml_backend_get_device(gpus.back().second),  edge, n_tokens });
     static int logged = 0;

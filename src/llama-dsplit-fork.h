@@ -22,6 +22,26 @@ ggml_tensor * llama_dsplit_mirror_fork(const llama_model & model, ggml_tensor * 
 struct llama_layer;
 llama_layer llama_dsplit_layer_fork(const llama_model & model, const llama_layer & l, ggml_backend_dev_t dev);
 
+// the split planner (see llama-dsplit-fork.cpp): for prompt passes of n_tokens, does the second card pay, and with which start shares. valid = it could be
+// computed (a measured compute per token exists, two GPUs).
+struct llama_dsplit_plan_fork {
+    bool   valid      = false;
+    bool   split      = false;   // the split beats one card by more than 5%
+    double share      = 0.55;    // tokens of the first range (the card with the slower link)
+    double t_one_ms   = 0.0;
+    double t_split_ms = 0.0;
+};
+llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int64_t n_tokens);
+// --moe split-experts: -1 auto (planner + tuner), 0 dense split only (helpers hold no experts), 1 dense split plus experts (link-ratio start + controller)
+int llama_dsplit_experts_mode_fork();
+// --moe split-f16: how the hidden states and the experts' sums cross between the cards. 0: f32 both ways; 1: f16 both ways; 2 (split-f16=in): f16 to the
+// card that computes the experts, f32 back (see llama-dsplit-fork.cpp)
+int llama_dsplit_hop_mode_fork();
+// the helper's share of the tokens from the plan of that pass size (-1: no plan)
+double llama_dsplit_plan_share_fork(int64_t n_tokens);
+// the helper's share of layer il's experts from the plan of that pass size (-1: no plan)
+double llama_dsplit_plan_helper_f_fork(int il, int64_t n_tokens);
+
 // --moe dense-split=auto: which configuration a prompt pass of n_tokens runs in, chosen from measured pass times (see llama-dsplit-fork.cpp).
 // Called before the graph of a pass is built; returns true when the choice differs from the one the last graph was built with (the graph must be rebuilt).
 bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens);

@@ -1044,7 +1044,12 @@ struct ggml_backend_sched_split {
 };
 
 #ifndef GGML_SCHED_MAX_PREFETCH_SLOTS
-#define GGML_SCHED_MAX_PREFETCH_SLOTS 8   // fork: two layers of three expert tensors fit (pf-slots=6); 4 silently capped pf-slots=6
+// fork: the most staging slots a ring can have (pf-slots up to 15 = five layers of three expert tensors). The limit is only the size of the tables: 4
+// silently capped pf-slots=6. Two layers (6) is what the tests use; a deeper ring was tried because in the multi-GPU prompt split a card's slots are
+// released only behind its hand-offs (nsys, Qwen3.8-Flash-Next 3k tokens, dense split: the x16's copy engine busy 30 of every 42 ms, waiting on slot
+// releases) and LOST on x16 + x4: pf-slots=12 gave 1201-1279 prompt tokens/s against 1290-1394 with 6 (four passes each; the extra slots are pool blocks
+// that otherwise hold experts the staging fill copies on the card). Left open for links where the upload is not what a pass waits for.
+#define GGML_SCHED_MAX_PREFETCH_SLOTS 16
 #endif
 
 #ifndef GGML_SCHED_MAX_PF_RINGS

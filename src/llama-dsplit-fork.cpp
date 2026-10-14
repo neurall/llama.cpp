@@ -16,6 +16,8 @@
 // Memory: the copies come out of the expert cache pool of the receiving card (the pool is sized from the memory that is free after the model is loaded).
 
 #include "llama-dsplit-fork.h"
+#include "llama-gpu-probe-fork.h"
+#include "llama-moecache-fork.h"
 
 #include "llama-arch.h"
 #include "llama-impl.h"
@@ -23,6 +25,8 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -44,7 +48,13 @@ std::map<const llama_model *, dsplit_set>  g_sets;
 
 bool dsplit_opt_on() {
     const char * e = llama_moe_get_opt("dense-split");
-    return e && (atoi(e) != 0 || strcmp(e, "auto") == 0);
+    return e && (atoi(e) != 0 || strcmp(e, "auto") == 0 || strcmp(e, "one") == 0);
+}
+
+// --moe dense-split=one (tests): the copies are made, every prompt pass runs on one card (with --moe one-range=1: as one token range on the fastest card)
+bool dsplit_opt_one() {
+    const char * e = llama_moe_get_opt("dense-split");
+    return e && strcmp(e, "one") == 0;
 }
 
 bool dsplit_opt_auto() {
@@ -219,6 +229,234 @@ static void dsplit_verify(const dsplit_set & S) {
     LLAMA_LOG_WARN("dense split: %zu copies of dense weights checked against their originals, %zu differ\n", n, n_bad);
 }
 
+// ---- the split planner: does a second card pay for a prompt pass of n tokens, and with which shares ---------------------------------------------------
+// The choice that comes first (the measured choice below only confirms it): the split runs only where this model says the second card pays on THIS model
+// and THESE cards, and it hands the split its start shares. Per layer and card, from what is known at run time:
+//   compute  c: the measured compute of one prompt token on the offload card, all layers (the pass planner, llama_moe_cache_compute_us_fork). Split per
+//            layer by the weights a token reads: the experts' part X = active expert elements over all elements of the layer (Qwen3.8-Flash-Next: 39%;
+//            nsys at 3k tokens: 17 of 41 ms), the dense part D the rest. The helper computes at its probed speed relative to the offload card.
+//   uploads  every pass streams the experts a card computes and does not hold: f x E_l x (1 - held_l) / link rate, held_l = the share of layer l's
+//            experts in that card's pool (llama_moe_cache_resident_frac_fork). They run ahead of the compute, so a card's layer time is the larger of the two.
+//   hops     the token ranges' hidden states cross the helper's link: to the card that computes the experts and back (f16, n_embd per token); both cards
+//            wait for them (they sit on the layer's critical path).
+//   layer    one card: max(c_l x T, upload_l). Split with the helper's token share s and expert share f_l: the larger of the two cards' times.
+// The search: s from 0.30 to 0.85, per layer the f_l that gives the shortest layer (0 to 1 in steps of 5%); the split is taken when its sum beats one card
+// by 5%. Measured (Qwen3.8-Flash-Next, 3k tokens, x16 + x4, ms per layer): one card 51, split with f = 0 and s = 0.62: 42 (model 39); f = 5%: slower,
+// as the model says (the x4's link carries the extra hops); the controller's 21% of the experts on the x4: 48.7.
+namespace {
+struct dsplit_plan_cache {
+    int64_t n_tokens = 0;
+    double  c_us     = 0.0;
+    llama_dsplit_plan_fork plan;
+    std::vector<double> f_help;   // per layer
+};
+std::map<int, dsplit_plan_cache> g_plans;   // per pass-size bucket
+std::mutex g_plan_mu;
+// The split tuner (under g_plan_mu): the planner gives the start, the measured pass times of a size decide (the model is good to 20-25% on the split;
+// a share it gets wrong costs every pass of that size). Per pass-size bucket, one parameter at a time, steps halved when the time gets worse:
+//   phase 0  gx, a factor on the plan's per-layer expert shares of the helper (0 = no experts on it, the dense split alone): step 0.5, down to 0.125
+//   phase 1  s, the helper's share of the tokens: step 0.08, down to 0.02
+//   phase 2  settled: the best measured (gx, s) stays for the rest of the run; at most 12 measurements per size
+// Every change rebuilds the graph of the next pass of that size (llama_dsplit_decide_fork says "changed").
+struct dsplit_tune {
+    int    phase = 0, dir = -1, n = 0;
+    double gx = 1.0, s = -1.0, step = 0.5;
+    double best_gx = 1.0, best_s = -1.0, best_t = 0.0;
+};
+std::map<int, dsplit_tune> g_tune;
+bool g_tune_changed = false;
+}
+
+static std::atomic<double> g_split_calib { 1.0 };   // measured over modelled split time (EMA over measured split passes)
+
+static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_us, llama_dsplit_plan_fork & out, std::vector<double> & f_help) {
+    out = llama_dsplit_plan_fork();
+    f_help.clear();
+    std::vector<ggml_backend_dev_t> gpus;
+    for (const auto & d : model.devices) {
+        if (ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpus.push_back(d.dev); }
+    }
+    if (gpus.size() != 2 || model.dev_offload >= model.devices.size() || c_us <= 0.0 || T <= 0) {
+        return;   // two cards only for now (the token ranges are two, see ds_plan)
+    }
+    ggml_backend_dev_t dm = model.devices[model.dev_offload].dev;
+    ggml_backend_dev_t dh = gpus[0] == dm ? gpus[1] : gpus[0];
+    const double Bm = llama_moe_cache_link_gbs_fork(dm), Bh = llama_moe_cache_link_gbs_fork(dh);
+    if (Bm <= 0.0 || Bh <= 0.0) {
+        return;
+    }
+    double rel = 1.0;   // the helper's compute against the offload card's
+    {
+        const auto * pm = llama_gpu_probe_find_fork(dm);
+        const auto * ph = llama_gpu_probe_find_fork(dh);
+        if (pm && ph && pm->compute > 0 && ph->compute > 0) { rel = ph->compute / pm->compute; }
+    }
+    const int    L      = (int) model.hparams.n_layer();
+    const double n_used = (double) std::max<uint32_t>(1, model.hparams.n_expert_used_max());
+    const double n_exp  = (double) std::max<uint32_t>(1, model.hparams.n_expert);
+    // per layer: the share of the layer's compute in the whole token (by weight elements), its expert share, its expert bytes
+    std::vector<double> w(L, 0.0), xf(L, 0.0), E(L, 0.0);
+    double w_sum = 0.0;
+    for (int il = 0; il < L && il < (int) model.layers.size(); ++il) {
+        const llama_layer & ly = model.layers[il];
+        const ggml_tensor * const * p = reinterpret_cast<const ggml_tensor * const *>(&ly);
+        double dense = 0.0, act = 0.0;
+        for (size_t i = 0; i < sizeof(llama_layer) / sizeof(ggml_tensor *); ++i) {
+            const ggml_tensor * t = p[i];
+            if (!t || ggml_n_dims(t) < 2) { continue; }
+            if (strstr(t->name, "_exps")) {
+                act  += (double) ggml_nelements(t) * n_used / n_exp;
+                E[il] += (double) ggml_nbytes(t);
+            } else if (!strstr(t->name, "nextn")) {
+                dense += (double) ggml_nelements(t);
+            }
+        }
+        w[il]  = dense + act;
+        xf[il] = w[il] > 0.0 ? act / w[il] : 0.0;
+        w_sum += w[il];
+    }
+    if (w_sum <= 0.0) {
+        return;
+    }
+    // bytes per token that cross per layer, there and back (llama_dsplit_hop_mode_fork: f16 both ways, f16 there and f32 back, or f32 both ways)
+    const int    hop_mode = llama_dsplit_hop_mode_fork();
+    double t_one = 0.0, best_split = -1.0, best_s = 0.55;
+    std::vector<double> best_f(L, 0.0), cur_f(L, 0.0);
+    for (int il = 0; il < L; ++il) {
+        const double cl = c_us * (double) T * w[il] / w_sum;                                    // us: the layer on one card
+        const double up = E[il] * (1.0 - llama_moe_cache_resident_frac_fork(il, dm)) / (Bm * 1e3);
+        t_one += std::max(cl, up);
+    }
+    std::vector<double> held_m(L), held_h(L);
+    for (int il = 0; il < L; ++il) { held_m[il] = llama_moe_cache_resident_frac_fork(il, dm); held_h[il] = llama_moe_cache_resident_frac_fork(il, dh); }
+    // One split layer, as the graph runs it (build_moe_ffn, range mode). Times in us from the start of the layer:
+    //   dense    both cards at once, each on its own tokens: the helper s x D / rel, the offload card (1 - s) x D
+    //   hand-in  an expert chain reads the hidden state of ALL tokens, so it starts when its own card's dense part is done AND the other card's tokens
+    //            have crossed the helper's link. This is what the first version of this model missed: it let the offload card compute experts while the
+    //            helper was still in its dense part, and so put 80-85% of the tokens on the helper. Measured, Qwen3.8-Flash-Next, 8.8k tokens, no experts
+    //            on the x4: 85% of the tokens there 135 ms per layer, 77% 127 ms (model then: 89 ms; this one: 150 and 142, the same slope).
+    //   chains   the offload card (1 - f) x X, the helper f x X / rel; a chain cannot end before its card's uploads of this layer have arrived
+    //   hand-out every range gets the other card's sum for its tokens back over the helper's link
+    //   link     the helper's link carries its expert uploads and all four hand-offs: the layer is never shorter than their sum
+    const double b_in = (double) model.hparams.n_embd * (hop_mode != 0 ? 2.0 : 4.0), b_out = (double) model.hparams.n_embd * (hop_mode == 1 ? 2.0 : 4.0);
+    const auto layer_us = [&](int il, double s, double f) {
+        const double cl = c_us * (double) T * w[il] / w_sum;
+        const double D = cl * (1.0 - xf[il]), X = cl * xf[il];
+        const double tok_h = s * (double) T, tok_m = (1.0 - s) * (double) T;
+        const double dense_h = s * D / rel, dense_m = (1.0 - s) * D;
+        const double in_m  = f < 1.0 ? tok_h * b_in  / (Bh * 1e3) : 0.0;   // the helper's tokens, to the offload card's chain
+        const double in_h  = f > 0.0 ? tok_m * b_in  / (Bh * 1e3) : 0.0;   // the offload card's tokens, to the helper's chain
+        const double out_h = f < 1.0 ? tok_h * b_out / (Bh * 1e3) : 0.0;   // the offload card's sum for the helper's tokens
+        const double out_m = f > 0.0 ? tok_m * b_out / (Bh * 1e3) : 0.0;   // the helper's sum for the offload card's tokens
+        const double up_m  = E[il] * (1.0 - f) * (1.0 - held_m[il]) / (Bm * 1e3);
+        const double up_h  = E[il] * f         * (1.0 - held_h[il]) / (Bh * 1e3);
+        const double end_m = f < 1.0 ? std::max(std::max(dense_m, dense_h + in_m) + (1.0 - f) * X,   up_m) : dense_m;
+        const double end_h = f > 0.0 ? std::max(std::max(dense_h, dense_m + in_h) + f * X / rel,     up_h) : dense_h;
+        const double t = std::max(std::max(end_h, end_m + out_h), std::max(end_m, f > 0.0 ? end_h + out_m : 0.0));
+        return std::max(t, up_h + in_m + in_h + out_h + out_m);
+    };
+    for (double s = 0.20; s <= 0.801; s += 0.02) {
+        double sum = 0.0;
+        for (int il = 0; il < L; ++il) {
+            double best_l = -1.0, bf = 0.0;
+            for (int k = 0; k <= 20; ++k) {
+                if (E[il] <= 0.0 && k > 0) { break; }   // a dense layer: no experts to share
+                const double t = layer_us(il, s, k / 20.0);
+                // experts move to the helper only for a clear win (10% of the layer): its hops and their stream synchronisations cost more than the model counts
+                // (Qwen3.8-Flash-Next, 3k tokens: 5% of the experts on the x4 cost about 3 ms per layer, measured)
+                if (best_l < 0.0 || (k == 0 ? t < best_l : t < 0.90 * best_l)) { best_l = t; bf = k / 20.0; }
+            }
+            cur_f[il] = bf;
+            sum += best_l;
+        }
+        if (best_split < 0.0 || sum < best_split) { best_split = sum; best_s = s; best_f = cur_f; }
+    }
+    // the split's estimate is scaled by what earlier split passes measured against their plan (llama_dsplit_report_fork); one card's estimate held to
+    // within 4% (Qwen3.8-Flash-Next: 2603 / 2697 ms at 3k, 2038 / 2104 at 1.9k), the split's was 21-26% short (waits the model does not see)
+    best_split *= g_split_calib.load();
+    out.valid      = true;
+    out.split      = best_split > 0.0 && best_split < 0.95 * t_one;
+    out.share      = best_s;
+    out.t_one_ms   = t_one / 1e3;
+    out.t_split_ms = best_split / 1e3;
+    f_help = best_f;
+}
+
+llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int64_t n_tokens) {
+    static const bool plan_on = [] { const char * e = llama_moe_get_opt("split-plan"); return !e || atoi(e) != 0; }();   // --moe split-plan=0: no model, the measured choice and the old start shares
+    if (!plan_on) {
+        return llama_dsplit_plan_fork();
+    }
+    const double c_us = llama_moe_cache_compute_us_fork();
+    std::lock_guard<std::mutex> lk(g_plan_mu);
+    const int b = dsplit_bucket_of(n_tokens);
+    auto & pc = g_plans[b];
+    if (pc.n_tokens != n_tokens || pc.c_us != c_us) {
+        pc.n_tokens = n_tokens;
+        pc.c_us     = c_us;
+        dsplit_plan_compute(model, n_tokens, c_us, pc.plan, pc.f_help);
+        static int logged = 0;
+        if (pc.plan.valid && logged++ < 32) {
+            double fa = 0.0; for (double f : pc.f_help) { fa += f; } fa /= std::max<size_t>(1, pc.f_help.size());
+            LLAMA_LOG_WARN("split planner: %lld tokens: one card %.0f ms, split %.0f ms (helper: %.0f%% of the tokens, %.0f%% of the experts on average): %s\n",
+                    (long long) n_tokens, pc.plan.t_one_ms, pc.plan.t_split_ms, 100.0 * pc.plan.share, 100.0 * fa, pc.plan.split ? "split" : "one card");
+        }
+    }
+    return pc.plan;
+}
+
+double llama_dsplit_plan_share_fork(int64_t n_tokens) {
+    std::lock_guard<std::mutex> lk(g_plan_mu);
+    const int b = dsplit_bucket_of(n_tokens);
+    auto tt = g_tune.find(b);
+    if (tt != g_tune.end() && tt->second.s >= 0.0) { return tt->second.s; }
+    auto it = g_plans.find(b);
+    return it == g_plans.end() || !it->second.plan.valid ? -1.0 : it->second.plan.share;
+}
+
+// --moe split-experts=auto|0|1: who decides whether the helpers in a split also take experts. auto (default): the split planner and the tuner, per layer and
+// pass size. 0: dense split only, the helpers take token ranges of the dense part and no experts (the card with the fastest link computes them all).
+// 1: dense split plus experts as before the planner (the link-ratio start and the per-layer controller), whatever the planner says.
+int llama_dsplit_experts_mode_fork() {
+    static const int mode = [] {
+        const char * e = llama_moe_get_opt("split-experts");
+        if (!e || strcmp(e, "auto") == 0) { return -1; }
+        return atoi(e) != 0 ? 1 : 0;
+    }();
+    return mode;
+}
+
+// --moe split-f16=1|in|0: the precision of what crosses between the cards in a split layer (expert split and dense split alike). Two tensors cross per
+// layer, both [n_embd, tokens]: the hidden state, to the card that computes experts on it, and the experts' weighted sum, back to the card that holds the
+// tokens. As f16 they are half the bytes on the helper's link, where they sit on the layer's critical path (GLM-5.3-Flash, 8k tokens: 131 MB each way,
+// 20 ms + 21 ms of a x4 link per layer as f32).
+//   1   f16 both ways: half the bytes
+//   in  f16 there, f32 back: the experts' matmuls quantise their input to 8 bits anyway, the sum that goes into the residual stream keeps all its bits
+//   0   f32 both ways: bit-for-bit what one card computes, up to the order of the additions
+int llama_dsplit_hop_mode_fork() {
+    static const int mode = [] {
+        const char * e = llama_moe_get_opt("split-f16");
+        if (!e) { return 1; }
+        if (strcmp(e, "in") == 0) { return 2; }
+        return atoi(e) != 0 ? 1 : 0;
+    }();
+    return mode;
+}
+
+double llama_dsplit_plan_helper_f_fork(int il, int64_t n_tokens) {
+    const int mode = llama_dsplit_experts_mode_fork();
+    if (mode == 0) { return 0.0; }    // dense only
+    if (mode == 1) { return -1.0; }   // the old start and controller
+    std::lock_guard<std::mutex> lk(g_plan_mu);
+    auto it = g_plans.find(dsplit_bucket_of(n_tokens));
+    if (it == g_plans.end() || !it->second.plan.valid || il < 0 || il >= (int) it->second.f_help.size()) {
+        return -1.0;
+    }
+    auto tt = g_tune.find(dsplit_bucket_of(n_tokens));
+    const double gx = tt != g_tune.end() ? tt->second.gx : 1.0;
+    return std::min(1.0, it->second.f_help[il] * gx);
+}
+
 bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
@@ -229,16 +467,25 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     int choice = -1;
     const bool managed = it != g_sets.end() && dsplit_n_gpus(model) >= 2 && (dsplit_opt_auto() || !it->second.mirror.empty());
     if (managed && n_tokens >= 64) {
-        if (!dsplit_opt_auto()) {
+        if (dsplit_opt_one()) {
+            choice = 0;   // forced to one card (tests)
+        } else if (!dsplit_opt_auto()) {
             choice = 1;   // forced on (the graph builder still applies dense-split-min)
         } else {
             const int b = dsplit_bucket_of(n_tokens);
             dsplit_bucket & B = g_buckets[b];
+            // the split planner first (see above): sure when it puts the two more than 15% apart; then nothing is tried against it
+            const llama_dsplit_plan_fork plan = llama_dsplit_plan_get_fork(model, n_tokens);
+            const bool plan_sure = plan.valid && std::fabs(plan.t_split_ms - plan.t_one_ms) >= 0.15 * plan.t_one_ms;
             if (B.n[0] > 0 && B.n[1] > 0) {
                 const int best = B.us_tok[1] < B.us_tok[0] ? 1 : 0;
                 choice = (B.passes % 16 == 15) ? 1 - best : best;
+            } else if (plan_sure) {
+                choice = plan.split ? 1 : 0;
             } else if (B.n[0] > 0 || B.n[1] > 0) {
                 choice = B.n[0] > 0 ? 1 : 0;
+            } else if (plan.valid) {
+                choice = plan.split ? 1 : 0;
             } else {
                 int found = -1, dist = 1 << 20;
                 for (const auto & kv : g_buckets) {
@@ -247,7 +494,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
                         found = kv.second.us_tok[1] < kv.second.us_tok[0] ? 1 : 0;
                     }
                 }
-                choice = found >= 0 ? found : 1;   // nothing measured anywhere yet: the split first, one card next
+                choice = found >= 0 ? found : 0;   // nothing measured and no plan yet: one card first (it measures the compute the planner needs)
             }
             B.passes++;
         }
@@ -257,7 +504,13 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
         g_pending  = g_pending == -1 || g_pending == choice ? choice : -2;
         g_pend_max = std::max(g_pend_max, n_tokens);
     }
-    const bool changed = choice != g_built;
+    bool tuned = false;
+    {
+        std::lock_guard<std::mutex> pk(g_plan_mu);
+        tuned = g_tune_changed && choice == 1;
+        if (choice == 1) { g_tune_changed = false; }
+    }
+    const bool changed = choice != g_built || tuned;
     g_built = choice;
     return changed;
 }
@@ -272,12 +525,69 @@ void llama_dsplit_reserve_fork(const llama_model & model) {
     g_cur = it != g_sets.end() && dsplit_n_gpus(model) >= 2 && (dsplit_opt_auto() || !it->second.mirror.empty()) ? 1 : -1;
 }
 
+// one measured split pass of size bucket b, us per token: the tuner's step (see dsplit_tune)
+static void dsplit_tune_step(int b, double v) {
+    std::lock_guard<std::mutex> pk(g_plan_mu);
+    auto pit = g_plans.find(b);
+    if (pit == g_plans.end() || !pit->second.plan.valid) {
+        return;
+    }
+    dsplit_tune & T = g_tune[b];
+    if (T.phase >= 2) {
+        return;
+    }
+    if (T.s < 0.0) { T.s = pit->second.plan.share; T.best_s = T.s; }
+    T.n++;
+    const bool better = T.best_t == 0.0 || v < T.best_t;
+    if (better) { T.best_t = v; T.best_gx = T.gx; T.best_s = T.s; }
+    bool any_f = false;
+    for (double f : pit->second.f_help) { any_f = any_f || f > 0.0; }
+    const double gx0 = T.gx, s0 = T.s;
+    auto next_phase = [&]() {
+        T.gx = T.best_gx; T.s = T.best_s;
+        T.phase++; T.dir = -1; T.step = T.phase == 1 ? 0.08 : 0.0;
+        if (T.phase == 1) { T.s = std::max(0.10, std::min(0.90, T.best_s - T.step)); }
+    };
+    if (T.phase == 0 && (!any_f || llama_dsplit_experts_mode_fork() >= 0)) {
+        next_phase();   // the plan puts no experts on the helper, or split-experts fixes them: nothing to scale
+    } else if (T.phase == 0) {
+        if (T.n > 1 && !better) { T.dir = -T.dir; T.step *= 0.5; }
+        if (T.step < 0.125) { next_phase(); }
+        else { T.gx = std::max(0.0, std::min(4.0, T.best_gx + T.dir * T.step)); }
+    } else if (T.phase == 1) {
+        if (!better) { T.dir = -T.dir; T.step *= 0.5; }
+        if (T.step < 0.02) { next_phase(); }
+        else { T.s = std::max(0.10, std::min(0.90, T.best_s + T.dir * T.step)); }
+    }
+    if (T.n >= 12 && T.phase < 2) { T.gx = T.best_gx; T.s = T.best_s; T.phase = 2; }
+    if (T.phase >= 2) {
+        LLAMA_LOG_WARN("split tuner: passes of up to %lld tokens settled after %d measurements: helper %.0f%% of the tokens, its experts x%.2f of the plan, %.1f prompt tokens/s\n",
+                (long long) pit->second.n_tokens, T.n, 100.0 * T.s, T.gx, 1e6 / T.best_t);
+    }
+    if (T.gx != gx0 || T.s != s0) { g_tune_changed = true; }
+}
+
 void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
     std::lock_guard<std::mutex> lk(g_mu);
+    static const bool tune_on = [] { const char * e = llama_moe_get_opt("split-tune"); return !e || atoi(e) != 0; }();   // --moe split-tune=0: the plan's shares stay
+    if (g_pending == 1 && n_tokens > 0 && us > 0 && tune_on) {
+        dsplit_tune_step(dsplit_bucket_of(g_pend_max), (double) us / (double) n_tokens);
+    }
     if (g_pending >= 0 && n_tokens > 0 && us > 0 && dsplit_opt_auto()) {
         dsplit_bucket & B = g_buckets[dsplit_bucket_of(g_pend_max)];
         const int c = g_pending;
         const double v = (double) us / (double) n_tokens;
+        if (c == 1) {
+            // the split planner's calibration: this measurement against the plan it ran with (both per token)
+            std::lock_guard<std::mutex> pk(g_plan_mu);
+            auto pit = g_plans.find(dsplit_bucket_of(g_pend_max));
+            if (pit != g_plans.end() && pit->second.plan.valid && pit->second.plan.t_split_ms > 0.0 && pit->second.n_tokens > 0) {
+                const double model_us_tok = pit->second.plan.t_split_ms * 1e3 / g_split_calib.load() / (double) pit->second.n_tokens;   // the raw model
+                const double r = std::max(0.5, std::min(3.0, v / model_us_tok));
+                g_split_calib.store(0.7 * g_split_calib.load() + 0.3 * r);
+                pit->second.c_us = -1.0;   // recompute the plan of this size with the new calibration
+            }
+        }
         B.us_tok[c] = B.n[c] == 0 ? v : 0.5 * (B.us_tok[c] + v);   // the newer measurement weighs half
         B.n[c]++;
         static int logged = 0;
