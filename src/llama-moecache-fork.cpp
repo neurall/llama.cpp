@@ -6220,6 +6220,7 @@ void llama_moe_cache_free_fork() {
     for (auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
     LLAMA_LOG_WARN("moe-cache: steps=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " hit-rate=%.1f%%, prefill experts from cache %" PRIu64 "/%" PRIu64 ", kept from prefill %" PRIu64 "\n",
             mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0, mc->n_src_hit, mc->n_src_query, mc->n_adopted);
+    alias_cost_log("at exit");
     // --moe layer-stats=1: how many cache slots each layer holds filled at the end of the run, and its hit rate (does a fixed per-layer share fill up evenly?)
     if (const char * e = moe_opt("layer-stats"); e && atoi(e) != 0) {
         for (const auto & ls : mc->layers) {
