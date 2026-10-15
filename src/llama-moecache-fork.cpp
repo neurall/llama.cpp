@@ -2812,11 +2812,25 @@ static void pool_fill_log(moe_cache * mc, const char * when) {
 // expert of the class (a free block first), as long as it scores higher than that expert (xscore, the scale the refill and eviction use). So the
 // prompt evicts the coldest experts of the pool instead of the ones that happened to sit in front. A block copy runs at the card's memory speed
 // (a 15 GB move is ~0.05 s on a 3090) against the PCIe refill of the same bytes (~1.3 s on x16). mc->mtx held.
+// --moe log=a: where the alias spends host time (us, calls): the lend itself, the hot-expert moves, the release at the first decode steps, the sync it forces
+static struct alias_cost {
+    std::atomic<int64_t> lend_us{0}, lend_n{0}, keephot_us{0}, keephot_n{0}, release_us{0}, release_n{0}, sync_us{0}, sync_n{0}, drain_us{0}, evict_n{0};
+} g_ac;
+static void alias_cost_log(const char * why) {
+    static const bool on = moe_log_has("a");
+    if (!on) { return; }
+    LLAMA_LOG_WARN("moe-cache: alias cost (%s): lend %lld calls %.1f ms | keep-hot %lld calls %.1f ms | sync %lld calls %.1f ms | in-flight drain %.1f ms | release %lld calls %.1f ms | %lld blocks evicted\n",
+            why, (long long) g_ac.lend_n.load(), g_ac.lend_us.load() / 1e3, (long long) g_ac.keephot_n.load(), g_ac.keephot_us.load() / 1e3,
+            (long long) g_ac.sync_n.load(), g_ac.sync_us.load() / 1e3, g_ac.drain_us.load() / 1e3, (long long) g_ac.release_n.load(), g_ac.release_us.load() / 1e3,
+            (long long) g_ac.evict_n.load());
+}
 static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache::alias_pool & ap, const moe_cache::alias_pool::seg & sg, int32_t from, int32_t to) {
     static const bool on = [] { const char * e = moe_opt("keep-hot"); return !e || atoi(e) != 0; }();
     if (!on || to <= from) {
         return;
     }
+    const int64_t kh_t0 = ggml_time_us();
+    struct kh_done { int64_t t0; ~kh_done() { g_ac.keephot_us += ggml_time_us() - t0; g_ac.keephot_n++; } } kh_guard{kh_t0};
     auto & ps = mc->pool[sg.pcls];
     struct ent { double sc; int32_t b; };
     std::vector<ent> hot, cold;   // experts in the range (hottest first), blocks behind it (free, then coldest first)
@@ -2843,7 +2857,7 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
     std::sort(hot.begin(),  hot.end(),  [](const ent & a, const ent & b) { return a.sc > b.sc; });
     std::sort(cold.begin(), cold.end(), [](const ent & a, const ent & b) { return a.sc < b.sc; });
     // a decode graph may still read the blocks that are overwritten (their experts are evicted now)
-    ggml_backend_sched_synchronize(sched);
+    { const int64_t s0 = ggml_time_us(); ggml_backend_sched_synchronize(sched); g_ac.sync_us += ggml_time_us() - s0; g_ac.sync_n++; }
     const int64_t t0 = ggml_time_us();
     uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + sg.base;
     auto view = [&](int32_t b) {
@@ -2886,6 +2900,7 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     if (!mc || !alias_on() || mc->alias.empty()) {
         return;
     }
+    struct lend_done { int64_t t0 = ggml_time_us(); int32_t n; ~lend_done() { g_ac.lend_us += ggml_time_us() - t0; g_ac.lend_n++; if (n > 64 && (g_ac.lend_n.load() % 8) == 0) { alias_cost_log("prompt"); } } } lend_guard{ggml_time_us(), n_tokens};
     {
         const int32_t mb = (int32_t) std::max<int64_t>(8, llama_moe_cache_max_batch_fork());
         if (n_tokens > mb && mc->graph_tokens_last <= mb) {
@@ -3036,6 +3051,7 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                     break;
                 }
                 GGML_ASSERT(spin < 200000 && "compute alias: an upload into the borrowed blocks never finished");
+                g_ac.drain_us += 50;
                 std::this_thread::sleep_for(std::chrono::microseconds(50));
             }
             std::lock_guard<std::mutex> lk(mc->mtx);
@@ -3048,6 +3064,7 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                     layer_state & lo = mc->layers[o];
                     evict_slot(mc, lo, b);
                     lo.n_own--;
+                    g_ac.evict_n++;
                 } else if (o == -1) {
                     auto it = std::find(ps.free.begin(), ps.free.end(), b);
                     if (it != ps.free.end()) { ps.free.erase(it); }
@@ -3060,13 +3077,16 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
     }
     if (changed) {
+        const int64_t s0 = ggml_time_us();
         flush_tables();
         ggml_backend_sched_synchronize(sched);   // the previous graph may still read those blocks; this graph's inputs are written next
+        g_ac.sync_us += ggml_time_us() - s0; g_ac.sync_n++;
     }
 }
 
 // at a sync point: blocks above what the last graph needed go back to the cache. Returns how many came back.
 static size_t alias_release(moe_cache * mc) {
+    struct rel_done { int64_t t0 = ggml_time_us(); ~rel_done() { g_ac.release_us += ggml_time_us() - t0; g_ac.release_n++; } } rel_guard;
     size_t n_back = 0;
     for (auto & ap : mc->alias) {
         for (auto & sg : ap.segs) {
