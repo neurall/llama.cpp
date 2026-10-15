@@ -194,7 +194,7 @@ llama_model_mimo2::graph::graph(const llama_model & model, const llm_graph_param
             }
             // the ranges back together for the output head, on the output card; the output rows are taken here
             inpL = ds_join(x, 1, ds_backend(model.dev_output()));
-            if (crop_last_layer) {
+            if (crop_before_nextn(inp_out_ids) && !extract_final_inp) {
                 inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
             }
             ds_done = true;
