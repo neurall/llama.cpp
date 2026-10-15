@@ -667,6 +667,10 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
             B.passes++;
         }
     }
+    if (choice == 1 && n_tokens >= g_veto_tokens) {
+        choice = 0;   // the split graph of this size did not fit behind the mirror copies once: one card
+        why    = "one card: the split pass did not fit behind the copies";
+    }
     g_cur = choice;
     if (choice >= 0) {
         g_pending  = g_pending == -1 || g_pending == choice ? choice : -2;
@@ -682,6 +686,12 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     const bool changed = choice != g_built || tuned;
     g_built = choice;
     return changed;
+}
+
+// a split pass whose graph did not fit behind the copies (llama_context::process_ubatch): passes of this many tokens or more run on one card from now on
+static int g_veto_tokens = INT32_MAX;
+void llama_dsplit_veto_fork(int n_tokens) {
+    g_veto_tokens = std::min(g_veto_tokens, n_tokens);
 }
 
 int llama_dsplit_cur_fork() {

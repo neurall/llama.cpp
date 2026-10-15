@@ -2392,6 +2392,8 @@ bool llama_context::set_adapter_cvec(
     return res;
 }
 
+extern void llama_dsplit_veto_fork(int n_tokens);   // llama-dsplit-fork.cpp (declared here, no shared header)
+
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
     if (mctx && !mctx->apply()) {
@@ -2429,25 +2431,38 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         gf_res_prev_active = nullptr;
         res->reset();
 
-        ggml_backend_sched_reset(sched.get());
-        set_eval_cb();
+        // fork: a split pass places its graph behind the dense split's copies, where the pool has less room than for a one-card pass. When that graph does not
+        // fit (a request failed with "graph needs 2597 MiB, the external buffer holds 2366 MiB"), the passes of this size run on one card from now on and the graph
+        // is built again, instead of the request failing.
+        for (int attempt = 0; ; ++attempt) {
+            ggml_backend_sched_reset(sched.get());
+            set_eval_cb();
 
-        //const auto t_start_us = ggml_time_us();
+            //const auto t_start_us = ggml_time_us();
 
-        gf = model.build_graph(gparams);
-        llama_moe_cache_graph_built_fork();
+            gf = model.build_graph(gparams);
+            llama_moe_cache_graph_built_fork();
 
-        //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+            //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
 
-        if (!gf) {
-            LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
-            ret = GGML_STATUS_FAILED;
-            return nullptr;
-        }
+            if (!gf) {
+                LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
+                ret = GGML_STATUS_FAILED;
+                return nullptr;
+            }
 
-        moe_mirror_offsets();   // fork: --moe mirror-pool: a pass that splits behind the dense split's copies, any other graph over them
+            moe_mirror_offsets();   // fork: --moe mirror-pool: a pass that splits behind the dense split's copies, any other graph over them
 
-        if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
+            if (ggml_backend_sched_alloc_graph(sched.get(), gf)) {
+                break;
+            }
+            if (attempt == 0 && !fork_resident && llama_dsplit_cur_fork() == 1) {
+                LLAMA_LOG_WARN("%s: a split pass of %d tokens does not fit behind the dense-split copies: one card for passes of this size\n", __func__, (int) ubatch.n_tokens);
+                llama_dsplit_veto_fork((int) ubatch.n_tokens);
+                (void) llama_dsplit_decide_fork(model, ubatch.n_tokens);
+                res->reset();
+                continue;
+            }
             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
