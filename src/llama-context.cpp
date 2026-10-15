@@ -5898,7 +5898,6 @@ static void llama_log_tuning(const char * fn, const llama_context * ctx) {
         LLAMA_LOG_INFO("%s:    moe cache = off\n", fn);
     }
     LLAMA_LOG_INFO("%s:    threads   = %d decode / %d batch, batch %d, ubatch %d\n", fn, t.n_threads, t.n_threads_batch, t.n_batch, t.n_ubatch);
-    LLAMA_LOG_INFO("%s:   graph reallocs = %10d    / %5d        (same size) / (changed size)\n", __func__, data.n_reallocs_same, data.n_reallocs_diff);
 }
 
 void llama_perf_context_reset(llama_context * ctx) {

@@ -56,6 +56,7 @@ struct llama_cparams {
     bool training;           // set by llama_opt_init()
 
     bool moe_cache = false; // --moe-expert-cache requested: the graph gets the cache chain
+    size_t moe_cache_size = 0; // upstream's expert cache size in bytes (inert here: the fork's own cache is --moe)
     int  moe_cache_slots   = 0; // cache size (-1 = auto), started on the first non-warmup decode
     int  moe_cache_inserts = 2;
     int  moe_cache_window  = 64;
