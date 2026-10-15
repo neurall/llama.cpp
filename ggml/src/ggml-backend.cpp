@@ -2974,7 +2974,31 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 const struct ggml_tensor * in = prev->inputs[j];
                 ggml_backend_buffer_t buf = in->view_src ? in->view_src->buffer : in->buffer;
                 if (!buf || ggml_backend_buffer_get_type(buf) == sched->bufts[split_backend_id]) {
-                    if (buf && ordered) { continue; }
+                    if (buf && ordered) {
+                        // GGML_SCHED_XORDER_CHECK=1: does the shortcut ever skip a barrier that matters? A barrier matters when a node of THIS split writes into the
+                        // region that the previous split's copy reads (the allocator reused it). Counted and the first few named; no effect on the schedule.
+                        static const bool chk = [] { const char * e = getenv("GGML_SCHED_XORDER_CHECK"); return e && atoi(e) != 0; }();
+                        if (chk) {
+                            static std::atomic<int> n_skipped{0}, n_overlap{0};
+                            const uint8_t * a0 = (const uint8_t *) in->data, * a1 = a0 + ggml_nbytes(in);
+                            n_skipped++;
+                            for (int k = 0; k < split->graph.n_nodes; k++) {
+                                const struct ggml_tensor * w = split->graph.nodes[k];
+                                const uint8_t * b0 = (const uint8_t *) w->data, * b1 = b0 + ggml_nbytes(w);
+                                if (w->data && a0 && a0 < b1 && b0 < a1 && w->buffer == in->buffer) {
+                                    if (n_overlap++ < 8) {
+                                        GGML_LOG_WARN("sched-check: split %d node %s (%s) overwrites the region of %s that split %d's copy reads (%d of %d skipped barriers overlap)\n",
+                                            split_id, w->name, ggml_op_name(w->op), in->name, split_id - 1, n_overlap.load(), n_skipped.load());
+                                    }
+                                    break;
+                                }
+                            }
+                            if (n_skipped % 2000 == 0) {
+                                GGML_LOG_WARN("sched-check: %d skipped barriers, %d with an overlapping write\n", n_skipped.load(), n_overlap.load());
+                            }
+                        }
+                        continue;
+                    }
                     return true;
                 }
             }
