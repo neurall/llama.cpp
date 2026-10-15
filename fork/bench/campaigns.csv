@@ -1834,3 +1834,8 @@ c-q36-pf12k,2026-10-15 22:14:03,"bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf b
 c-q36-edit4c,2026-10-15 22:16:53,"bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds stock-b11639-a0e6dc738,m-clang128,m-clang134 variants v test edit4c n=3",,
 instr-on-edit4c,2026-10-15 22:19:42,bench /p/bw/data/q5h/standin/GLM12-3.0bit.gguf builds fastup-instr variants v test edit4c n=3,,
 instr-off-edit4c,2026-10-15 22:22:07,bench /p/bw/data/q5h/standin/GLM12-3.0bit.gguf builds fastup-instr variants v test edit4c n=3,,
+instr-on1-edit4c,2026-10-15 22:26:29,bench /p/bw/data/q5h/standin/GLM12-3.0bit.gguf builds fastup-instr2 variants v test edit4c n=1,,
+a2-alias0-edit4c,2026-10-15 22:27:56,bench /p/bw/data/q5h/standin/GLM12-3.0bit.gguf builds fastup-clang-7944c0bc3 variants v test edit4c n=5,,
+a2-pf0pp0-edit4c,2026-10-15 22:31:04,bench /p/bw/data/q5h/standin/GLM12-3.0bit.gguf builds fastup-clang-7944c0bc3 variants v test edit4c n=5,,
+a2-pf0pp0kh-edit4c,2026-10-15 22:34:28,bench /p/bw/data/q5h/standin/GLM12-3.0bit.gguf builds fastup-clang-7944c0bc3 variants v test edit4c n=5,,
+a2-default-edit4c,2026-10-15 22:37:50,bench /p/bw/data/q5h/standin/GLM12-3.0bit.gguf builds fastup-clang-7944c0bc3 variants v test edit4c n=5,,

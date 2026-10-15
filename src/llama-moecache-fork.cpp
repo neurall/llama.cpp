@@ -2589,6 +2589,7 @@ extern "C" {
     typedef int (*ggml_backend_moe_where_fn_t)(const ggml_tensor *, int32_t, int32_t, ggml_backend_dev_t, const void **, ggml_backend_buffer_t *, void *);
     GGML_API void ggml_backend_set_moe_where_fn_fork(ggml_backend_moe_where_fn_t fn, void * user_data);   // ggml-backend.cpp (declared there, no shared header)
 }
+static void moe_where_count(int64_t range, int64_t found, int64_t inflight, int64_t wrongdev);
 static int moe_where_cb(const ggml_tensor * weight, int32_t lo, int32_t hi, ggml_backend_dev_t dev, const void ** data, ggml_backend_buffer_t * buffer, void * ud) {
     moe_cache * mc = (moe_cache *) ud;
     auto it = mc->by_src.find(weight);
@@ -2600,17 +2601,23 @@ static int moe_where_cb(const ggml_tensor * weight, int32_t lo, int32_t hi, ggml
     ggml_tensor * c = it->second.second == 0 ? ls.pub.up_c : it->second.second == 1 ? ls.pub.gate_c : ls.pub.down_c;
     if (!c || !c->buffer || c->nb[2] < weight->nb[2] || c->nb[1] != weight->nb[1] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
+        moe_where_count(hi - lo, 0, 0, hi - lo);
         return 0;
     }
-    int n = 0;
+    int n = 0, inflight = 0;
     for (int32_t e = std::max<int32_t>(lo, 0); e < hi && e < (int32_t) ls.expert_slot.size(); ++e) {
         const int32_t s = ls.expert_slot[e];
-        if (s < 0 || ((size_t) s < ls.slot_in_flight.size() && ls.slot_in_flight[s])) {
+        if (s < 0) {
+            continue;
+        }
+        if ((size_t) s < ls.slot_in_flight.size() && ls.slot_in_flight[s]) {
+            inflight++;
             continue;
         }
         data[e - lo] = (const uint8_t *) c->data + (size_t) s*c->nb[2];
         ++n;
     }
+    moe_where_count(hi - lo, n, inflight, 0);
     *buffer = c->buffer;
     return n;
 }
@@ -2815,7 +2822,11 @@ static void pool_fill_log(moe_cache * mc, const char * when) {
 // --moe log=a: where the alias spends host time (us, calls): the lend itself, the hot-expert moves, the release at the first decode steps, the sync it forces
 static struct alias_cost {
     std::atomic<int64_t> lend_us{0}, lend_n{0}, keephot_us{0}, keephot_n{0}, release_us{0}, release_n{0}, sync_us{0}, sync_n{0}, drain_us{0}, evict_n{0};
+    std::atomic<int64_t> where_calls{0}, where_range{0}, where_found{0}, where_inflight{0}, where_wrongdev{0};
 } g_ac;
+static void moe_where_count(int64_t range, int64_t found, int64_t inflight, int64_t wrongdev) {
+    g_ac.where_calls++; g_ac.where_range += range; g_ac.where_found += found; g_ac.where_inflight += inflight; g_ac.where_wrongdev += wrongdev;
+}
 static void alias_cost_log(const char * why) {
     static const bool on = moe_log_has("a");
     if (!on) { return; }
@@ -2823,6 +2834,8 @@ static void alias_cost_log(const char * why) {
             why, (long long) g_ac.lend_n.load(), g_ac.lend_us.load() / 1e3, (long long) g_ac.keephot_n.load(), g_ac.keephot_us.load() / 1e3,
             (long long) g_ac.sync_n.load(), g_ac.sync_us.load() / 1e3, g_ac.drain_us.load() / 1e3, (long long) g_ac.release_n.load(), g_ac.release_us.load() / 1e3,
             (long long) g_ac.evict_n.load());
+    LLAMA_LOG_WARN("moe-cache: staging lookups: %lld range calls, %lld experts asked, %lld found on the card, %lld found but still in flight, %lld asked of the wrong card\n",
+            (long long) g_ac.where_calls.load(), (long long) g_ac.where_range.load(), (long long) g_ac.where_found.load(), (long long) g_ac.where_inflight.load(), (long long) g_ac.where_wrongdev.load());
 }
 static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache::alias_pool & ap, const moe_cache::alias_pool::seg & sg, int32_t from, int32_t to) {
     static const bool on = [] { const char * e = moe_opt("keep-hot"); return !e || atoi(e) != 0; }();
