@@ -1845,3 +1845,8 @@ full-glm-on-game4c,2026-10-15 23:21:37,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bi
 full-glm-off-edit4c,2026-10-15 23:27:01,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds fastup-fix1-5efa4bbe8 variants v test edit4c n=3,,
 full-glm-off-pf12k,2026-10-15 23:34:03,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds fastup-fix1-5efa4bbe8 variants v test pf12k n=3,,
 full-glm-off-game4c,2026-10-15 23:44:36,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds fastup-fix1-5efa4bbe8 variants v test game4c n=3,,
+full-qni3-on-edit4c,2026-10-15 23:50:09,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds fastup-fix1-5efa4bbe8 variants v test edit4c n=3,,
+full-qni3-on-pf12k,2026-10-15 23:53:15,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds fastup-fix1-5efa4bbe8 variants v test pf12k n=3,,
+full-qni3-on-game4c,2026-10-15 23:56:26,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds fastup-fix1-5efa4bbe8 variants v test game4c n=3,,
+full-qni3-off-edit4c,2026-10-15 23:59:19,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds fastup-fix1-5efa4bbe8 variants v test edit4c n=3,,
+full-qni3-off-pf12k,2026-10-16 00:02:43,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds fastup-fix1-5efa4bbe8 variants v test pf12k n=3,,
