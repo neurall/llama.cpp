@@ -646,19 +646,23 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
             // the split planner first (see above): sure when it puts the two more than 15% apart; then nothing is tried against it
             const llama_dsplit_plan_fork plan = llama_dsplit_plan_get_fork(model, n_tokens);
             const bool plan_sure = plan.valid && std::fabs(plan.t_split_ms - plan.t_one_ms) >= 0.15 * plan.t_one_ms;
+            // No trials by default: a pass is never run in the configuration the model expects to be slower just to find out. The planner decides; the split must be
+            // predicted clearly ahead (8%) to be used, a close call stays on one card. --moe split-explore=1 brings the old trial-and-error back (the other
+            // configuration once per size bucket, the slower one again every 16th pass).
+            static const bool explore = [] { const char * e = llama_moe_get_opt("split-explore"); return e && atoi(e) != 0; }();
             if (B.n[0] > 0 && B.n[1] > 0) {
                 const int best = B.us_tok[1] < B.us_tok[0] ? 1 : 0;
-                choice = (B.passes % 16 == 15) ? 1 - best : best;
+                choice = (explore && B.passes % 16 == 15) ? 1 - best : best;
                 why = choice == best ? "measured: faster at this size" : "measured: the slower one again (every 16th pass of a size)";
             } else if (plan_sure) {
                 choice = plan.split ? 1 : 0;
                 why = "planner: more than 15% apart";
-            } else if (B.n[0] > 0 || B.n[1] > 0) {
+            } else if (explore && (B.n[0] > 0 || B.n[1] > 0)) {
                 choice = B.n[0] > 0 ? 1 : 0;
                 why = "measuring: the other one once";
             } else if (plan.valid) {
-                choice = plan.split ? 1 : 0;
-                why = "planner: close call, measured next";
+                choice = (plan.t_split_ms <= 0.92 * plan.t_one_ms) ? 1 : 0;
+                why = choice ? "planner: split predicted 8% or more ahead" : "planner: close call, one card (no trial)";
             } else {
                 int found = -1, dist = 1 << 20;
                 for (const auto & kv : g_buckets) {
