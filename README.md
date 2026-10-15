@@ -17,6 +17,25 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 `pp` = prompt processing tokens/s, `t/s` = generated tokens/s. Perplexity: lower is better; `missing` is a run that is not finished or was never made. A blue (linked) gain is a fork result that beats stock, and in the `ppl` column the lower of the two numbers is linked; click it for the exact command that reproduces the row (`fork/bench/repro.py ID`, listed in [REPRO.md](fork/bench/REPRO.md)). In every `pp`, `t/s` and `ppl` cell the stock value is on top and the fork value below it, with the gain in brackets. Every measured run of our builds passes `--load-mode pin` (pinned weights) from now on. Sorted by the larger of the two gains. Same prompts as below, each build on its own defaults (only `-np 1`, `-c` for stock). "stock" is the newest upstream build that was measured on that cell (build in the last column); the fork rows are the best measured build of this release line (builds are given by build number, the commit is in the release notes and `fork/bench`; the published b12844 is being re-measured the same way, see the known-issue note).
 
+<!--latest-->
+## Latest measurements: build b13176 against latest upstream master (2026-10-15)
+
+Each build on its own defaults (auto against auto), `-np 1` only, 3 runs per cell, no warm-up run. Stock over ours, gain in brackets. **i** = long prompt, prompt speed; **io** = 1k in and 1k out, prompt speed and token speed; **o** = short prompt, long answer, token speed. Older rows below are earlier measurements and stay as they were.  
+
+| Model | i: prompt t/s | io: prompt t/s | io: tokens t/s | o: tokens t/s |
+|---|---|---|---|---|
+| MiMo-V2.6-Flash 3-bit | 54<br>**1074**&nbsp;<sub>(19.81x)</sub> | 48<br>**587**&nbsp;<sub>(12.29x)</sub> | 14.1<br>**33.7**&nbsp;<sub>(2.39x)</sub> | 14.1<br>**36.6**&nbsp;<sub>(2.60x)</sub> |
+| GLM-5.3-Flash 3.0-bit | 43<br>**660**&nbsp;<sub>(15.43x)</sub> | 40<br>**393**&nbsp;<sub>(9.94x)</sub> | 12.5<br>**22.9**&nbsp;<sub>(1.83x)</sub> | 12.6<br>**22.5**&nbsp;<sub>(1.78x)</sub> |
+| Qwen3.8-Flash-Next UD-IQ4_XS | 207<br>**1376**&nbsp;<sub>(6.64x)</sub> | 200<br>**801**&nbsp;<sub>(4.00x)</sub> | 29.9<br>**28.7**&nbsp;<sub>(0.96x)</sub> | missing |
+| Qwen3.8-Flash-Next IQ3_S (78 GB) | 344<br>**1410**&nbsp;<sub>(4.10x)</sub> | 358<br>**643**&nbsp;<sub>(1.79x)</sub> | 42.5<br>**30.7**&nbsp;<sub>(0.72x)</sub> | missing |
+| Qwen3.8-27B MTP Q5_K_M (both with MTP) | 1573<br>**1131**&nbsp;<sub>(0.72x)</sub> | 1378<br>**1040**&nbsp;<sub>(0.75x)</sub> | 34.5<br>**45.5**&nbsp;<sub>(1.32x)</sub> | 35.2<br>**32.3**&nbsp;<sub>(0.92x)</sub> |
+| OLMoE-1B-7B Q4_K_M (fits VRAM) | missing | 13653<br>**15097**&nbsp;<sub>(1.11x)</sub> | 359.9<br>**359.1**&nbsp;<sub>(1.00x)</sub> | 486.6<br>**498.2**&nbsp;<sub>(1.02x)</sub> |
+| Qwen3.6-35B-A3B hybrid (fits VRAM) | 5257<br>**4727**&nbsp;<sub>(0.90x)</sub> | 3762<br>**3445**&nbsp;<sub>(0.92x)</sub> | 146.6<br>**148.6**&nbsp;<sub>(1.01x)</sub> | 150.4<br>**152.4**&nbsp;<sub>(1.01x)</sub> |
+| Qwen3.8-Flash-Next IQ1_M | 1247<br>**915**&nbsp;<sub>(0.73x)</sub> | 1212<br>**618**&nbsp;<sub>(0.51x)</sub> | 61.2<br>**60.9**&nbsp;<sub>(1.00x)</sub> | 62.3<br>**62.7**&nbsp;<sub>(1.01x)</sub> |
+| Qwen3.8-27B IQ4_NL (dense) | 1748<br>**1562**&nbsp;<sub>(0.89x)</sub> | 1482<br>**1340**&nbsp;<sub>(0.90x)</sub> | 42.4<br>**42.5**&nbsp;<sub>(1.00x)</sub> | 43.3<br>**43.3**&nbsp;<sub>(1.00x)</sub> |
+| GLM-5.3-Flash 3.5-bit (137 GB) | missing | missing | missing | missing |
+
+<!--/latest-->
 | model | cell | builds stock fork | pp: stock / **fork** (gain) | t/s: stock / **fork** (gain) | ppl: stock / fork |
 | --- | --- | --- | --- | --- | --- |
 | GLM-5.3-Flash 3.0-bit (106 GB) | <sub>12k prompt, `-c 16384` (best pp)</sub> | <sub>b11381 b12719</sub> | 42.8<br>**756**&nbsp;<sub>[(17.7x)](fork/bench/REPRO.md#glm-12k)</sub> | 11.5<br>**15.9**&nbsp;<sub>[(1.38x)](fork/bench/REPRO.md#glm-12k)</sub> | [**1.4191**](fork/bench/REPRO.md#glm-12k)<br>1.4234\* |
