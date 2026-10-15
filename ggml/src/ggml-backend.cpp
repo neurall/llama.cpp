@@ -2969,11 +2969,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             // on the source stream; g_xcopy_dst_ordered says so), so this split's kernels on that card are queued behind the read and cannot overwrite the tensor
             // before it has been read: no barrier for such inputs. With the dense split (token ranges on two cards, splits alternating between them) the barrier
             // held the scheduler thread 42.8 s over 746 calls in two GLM-5.3-Flash 8k passes (pf-stats site 5) and made the cards run one after the other.
-            // 2026-10-15: the shortcut is OFF by default (user: keep the barrier for the dense split, where a missed one corrupts a pass without a crash; the
-            // CPU/GPU splits keep the buffer-type rule above and no barrier). GGML_SCHED_XORDER=1 brings the shortcut back (the dense split's scheduler thread
-            // no longer waits between the alternating cards: faster, and unverified against perplexity until the paired check is in).
-            static const bool xorder = [] { const char * e = getenv("GGML_SCHED_XORDER"); return e && atoi(e) != 0; }();
-            const bool ordered = xorder && g_xcopy_dst_ordered != NULL && g_xcopy_dst_ordered(sched->backends[split_backend_id], sched->backends[prev->backend_id]);
+            const bool ordered = g_xcopy_dst_ordered != NULL && g_xcopy_dst_ordered(sched->backends[split_backend_id], sched->backends[prev->backend_id]);
             for (int j = 0; j < prev->n_inputs; j++) {
                 const struct ggml_tensor * in = prev->inputs[j];
                 ggml_backend_buffer_t buf = in->view_src ? in->view_src->buffer : in->buffer;
