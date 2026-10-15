@@ -1595,9 +1595,9 @@ bool llama_model_loader::load_all_data(
             host_cache = (int (*)(int, void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_cache");
         }
         if (host_cache) {
-            for (auto & kv : bufs) {
-                const int st = host_cache(1, kv.second);
-                if (st == 2) { cache_warm.insert(kv.second); } else if (st == 1) { cache_cold.insert(kv.second); }
+            for (auto buf : bufs) {   // upstream keeps the buffers in a vector now (it was a map from the file index)
+                const int st = host_cache(1, buf);
+                if (st == 2) { cache_warm.insert(buf); } else if (st == 1) { cache_cold.insert(buf); }
             }
             if (!cache_warm.empty()) { LLAMA_LOG_INFO("%s: weights are in the hugetlbfs cache, not reading them\n", __func__); }
         }
