@@ -1117,7 +1117,12 @@ void llama_context::moe_mirror_offsets() {
 // --moe mirror-pool, after the pool lent this graph its blocks: copies that the region lost since they were last filled are copied in again from the cards
 // that hold the originals (card to card). The graph runs only after this on the receiving card's stream.
 void llama_context::moe_mirror_fill() {
-    for (const auto & ab : moe_alias_bufs) {
+    for (size_t i = 0; i < moe_alias_bufs.size(); ++i) {
+        const auto & ab = moe_alias_bufs[i];
+        // a pass that does not split has its graph at the start of the pool, where the copies are: filling them now would overwrite that graph's tensors
+        if (i < moe_alias_off.size() && moe_alias_off[i] == 0) {
+            continue;
+        }
         const auto todo = llama_dsplit_mirror_take_upload_fork(model, ab.dev);
         if (todo.empty()) {
             continue;
