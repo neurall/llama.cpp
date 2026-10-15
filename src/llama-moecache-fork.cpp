@@ -3117,6 +3117,7 @@ static size_t alias_release(moe_cache * mc) {
         }
         ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
     }
+    if (n_back > 0) { alias_cost_log("after a prompt"); }
     return n_back;
 }
 
