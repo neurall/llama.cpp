@@ -6346,6 +6346,26 @@ static bool ggml_backend_cuda_get_available_uma_memory(long * available_memory_k
 }
 #endif // defined(__linux__)
 
+// fork: cudaGetDeviceProperties fills a big struct and costs about 1.5 ms with the CUDA 12 runtime (CUDA 13 answers from a cache). The device type and the
+// memory query are asked per graph by the scheduler and per step by the expert cache (43,801 calls in 8 tokens, 96% of the run), and only need this one
+// field, so it is read once per device.
+static bool ggml_cuda_device_integrated(int physical_id) {
+    static std::atomic<int> known[64];   // 0 = not read yet, 1 = discrete, 2 = integrated
+    if (physical_id < 0 || physical_id >= 64) {
+        cudaDeviceProp prop;
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, physical_id));
+        return prop.integrated != 0;
+    }
+    int v = known[physical_id].load(std::memory_order_relaxed);
+    if (v == 0) {
+        cudaDeviceProp prop;
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, physical_id));
+        v = prop.integrated ? 2 : 1;
+        known[physical_id].store(v, std::memory_order_relaxed);
+    }
+    return v == 2;
+}
+
 static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
     ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *)dev->context;
     ggml_cuda_set_device(ctx->device);
@@ -6361,11 +6381,8 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
 // ref: https://github.com/ggml-org/llama.cpp/pull/17368
 #if defined(__linux__) && !defined(GGML_USE_HIP)
     // Check if this is a UMA (Unified Memory Architecture) system
-    cudaDeviceProp prop;
-    CUDA_CHECK(cudaGetDeviceProperties(&prop, ggml_cuda_get_physical_device(ctx->device)));
-
     // Check if UMA is explicitly enabled via environment variable
-    bool is_uma = prop.integrated > 0 || ggml_cuda_unified_memory_enabled();
+    bool is_uma = ggml_cuda_device_integrated(ggml_cuda_get_physical_device(ctx->device)) || ggml_cuda_unified_memory_enabled();
 
     if (is_uma) {
         // For UMA systems (like DGX Spark), use system memory info
@@ -6389,10 +6406,7 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
 static enum ggml_backend_dev_type ggml_backend_cuda_device_get_type(ggml_backend_dev_t dev) {
     ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *) dev->context;
 
-    cudaDeviceProp prop;
-    CUDA_CHECK(cudaGetDeviceProperties(&prop, ggml_cuda_get_physical_device(ctx->device)));
-
-    return prop.integrated
+    return ggml_cuda_device_integrated(ggml_cuda_get_physical_device(ctx->device))
         ? GGML_BACKEND_DEVICE_TYPE_IGPU
         : GGML_BACKEND_DEVICE_TYPE_GPU;
 }
