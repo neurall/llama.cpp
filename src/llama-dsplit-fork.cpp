@@ -607,6 +607,12 @@ double llama_dsplit_plan_helper_f_fork(int il, int64_t n_tokens) {
     return std::min(1.0, it->second.f_help[il] * gx);
 }
 
+// a split pass whose graph did not fit behind the copies (llama_context::process_ubatch): passes of this many tokens or more run on one card from now on
+static int g_veto_tokens = INT32_MAX;
+void llama_dsplit_veto_fork(int n_tokens) {
+    g_veto_tokens = std::min(g_veto_tokens, n_tokens);
+}
+
 bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
@@ -686,12 +692,6 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     const bool changed = choice != g_built || tuned;
     g_built = choice;
     return changed;
-}
-
-// a split pass whose graph did not fit behind the copies (llama_context::process_ubatch): passes of this many tokens or more run on one card from now on
-static int g_veto_tokens = INT32_MAX;
-void llama_dsplit_veto_fork(int n_tokens) {
-    g_veto_tokens = std::min(g_veto_tokens, n_tokens);
 }
 
 int llama_dsplit_cur_fork() {
