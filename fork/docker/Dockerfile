@@ -1,5 +1,5 @@
-# Linux release builder: CUDA 13.2 on Rocky Linux 8 (glibc 2.28: the binaries run on RHEL 8+, Ubuntu 20.04+, Debian 10+ and everything newer)
-FROM nvidia/cuda:13.2.0-devel-rockylinux8
+# Linux release builder: CUDA 13.4 on Rocky Linux 8 (glibc 2.28: the binaries run on RHEL 8+, Ubuntu 20.04+, Debian 10+ and everything newer)
+FROM nvidia/cuda:13.4.1-devel-rockylinux8
 RUN dnf install -y --disablerepo=cuda epel-release && dnf install -y --disablerepo=cuda gcc-toolset-13 git make cmake python3 perl-core wget tar xz which diffutils ccache && dnf clean all
 # OpenSSL 3 built from source, static, so HTTPS works on every distro with no libssl dependency (EL8 only ships 1.1.1)
 ARG OPENSSL=3.0.15

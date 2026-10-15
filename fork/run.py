@@ -3053,7 +3053,7 @@ def _build_stock(a):
 
 
 def _package_linux(a, W, binp, log):
-    """the release archives of a release build: llama-release-b<build>-<commit>-bin-ubuntu-cuda-13.2-x64.tar.gz (binaries, LICENSE, the libomp.so the clang
+    """the release archives of a release build: llama-release-b<build>-<commit>-bin-ubuntu-cuda-13.4-x64.tar.gz (binaries, LICENSE, the libomp.so the clang
     build links dynamically) and the matching cudart archive, smoke-started in SMOKE_IMAGES; DEVBUILDS/NAME = both archives unpacked (what users get)"""
     uid = f"{os.getuid()}:{os.getgid()}"
     dk = lambda *args: subprocess.run(["docker", "run", "--rm", "--user", uid] + list(args), capture_output=True, text=True)
@@ -3061,7 +3061,7 @@ def _package_linux(a, W, binp, log):
     v = re.search(r"build (\d+)", vout.stdout + vout.stderr); c = re.search(r"commit ([0-9a-f]+)", vout.stdout + vout.stderr)
     if not v or not c:
         sys.exit(f"release: no version from llama-server --version: {(vout.stdout + vout.stderr)[-300:]}")
-    N = f"llama-release-b{v.group(1)}-{c.group(1)}-bin-ubuntu-cuda-13.2-x64"; C = "cudart-" + N
+    N = f"llama-release-b{v.group(1)}-{c.group(1)}-bin-ubuntu-cuda-13.4-x64"; C = "cudart-" + N
     os.makedirs(REL_OUT, exist_ok=True)
     for d in (N, C):
         shutil.rmtree(os.path.join(REL_OUT, d), ignore_errors=True); os.makedirs(os.path.join(REL_OUT, d))
