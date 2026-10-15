@@ -1085,6 +1085,14 @@ static bool ggml_gallocr_node_needs_realloc(ggml_gallocr_t galloc, struct ggml_t
 }
 
 static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph * graph) {
+    // fork: a buffer that was released (ggml_gallocr_set_external_buffer) and not reserved again holds nothing: a graph of the same shape still has to be
+    // reserved before it is placed in it (placing it dereferenced the missing buffer)
+    for (int i = 0; i < galloc->n_buffers; i++) {
+        if (galloc->buffers[i] == NULL && galloc->buf_tallocs[i] != NULL && ggml_dyn_tallocr_max_size(galloc->buf_tallocs[i], 0) > 0) {
+            return true;
+        }
+    }
+
     if (galloc->n_nodes != graph->n_nodes) {
 #ifndef NDEBUG
         GGML_LOG_DEBUG("%s: graph has different number of nodes\n", __func__);
