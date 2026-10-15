@@ -446,7 +446,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     const double n_exp  = (double) std::max<uint32_t>(1, model.hparams.n_expert);
     // per layer: the share of the layer's compute in the whole token (by weight elements), its expert share, its expert bytes
     std::vector<double> w(L, 0.0), xf(L, 0.0), E(L, 0.0);
-    double w_sum = 0.0;
+    double w_sum = 0.0, dense_bytes = 0.0;
     for (int il = 0; il < L && il < (int) model.layers.size(); ++il) {
         const llama_layer & ly = model.layers[il];
         const ggml_tensor * const * p = reinterpret_cast<const ggml_tensor * const *>(&ly);
@@ -459,6 +459,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
                 E[il] += (double) ggml_nbytes(t);
             } else if (!strstr(t->name, "nextn")) {
                 dense += (double) ggml_nelements(t);
+                dense_bytes += (double) ggml_nbytes(t);
             }
         }
         w[il]  = dense + act;
@@ -524,6 +525,14 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     // the split's estimate is scaled by what earlier split passes measured against their plan (llama_dsplit_report_fork); one card's estimate held to
     // within 4% (Qwen3.8-Flash-Next: 2603 / 2697 ms at 3k, 2038 / 2104 at 1.9k), the split's was 21-26% short (waits the model does not see)
     best_split *= g_split_calib.load();
+    // What the split costs after the prompt: its mirror copies of the dense weights sit in lent cache blocks, and the experts they displaced have to be
+    // uploaded again before decode is back at full speed. How much of that a prompt really displaces grows with its length and saturates: the fraction of a
+    // layer's experts that n tokens touch, 1 - (1 - k/E)^n (a 1-token prompt displaces nothing worth counting, a long one the whole lent area). The refill
+    // is one more upload of the lent bytes over the offload card's link, charged to the split's time (one-off seconds, same unit as the pass).
+    {
+        const double touched = 1.0 - std::pow(1.0 - n_used / n_exp, (double) T);
+        best_split += touched * dense_bytes / (Bm * 1e3);
+    }
     out.valid      = true;
     out.split      = best_split > 0.0 && best_split < 0.95 * t_one;
     out.share      = best_s;
