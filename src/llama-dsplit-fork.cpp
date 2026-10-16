@@ -441,7 +441,7 @@ static void dsplit_calib_load(const llama_model & model) {
     if (!g_calib_section.empty()) { return; }
     g_calib_section = moe_state_section(model);
     std::string v;
-    if (!g_calib_section.empty() && moe_state_get(g_calib_section, "dsplit_calib", v)) {
+    if (!g_calib_section.empty() && moe_state_get(g_calib_section, "dsplit_calib2", v)) {
         const double c = atof(v.c_str());
         if (c >= 0.5 && c <= 3.0) { g_split_calib.store(c); g_calib_n = 1; LLAMA_LOG_WARN("split planner: calibration %.2f from the state file\n", c); }
     }
@@ -818,7 +818,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
                 // the first measurement sets the factor, later ones average in half and half
                 const double nc = g_calib_n.fetch_add(1) == 0 ? r : 0.5 * g_split_calib.load() + 0.5 * r;
                 g_split_calib.store(nc);
-                if (!g_calib_section.empty()) { char b2[32]; snprintf(b2, sizeof b2, "%.3f", nc); moe_state_set(g_calib_section, { { "dsplit_calib", b2 } }); }
+                if (!g_calib_section.empty()) { char b2[32]; snprintf(b2, sizeof b2, "%.3f", nc); moe_state_set(g_calib_section, { { "dsplit_calib2", b2 } }); }
                 pit->second.c_us = -1.0;   // recompute the plan of this size with the new calibration
             }
         }
