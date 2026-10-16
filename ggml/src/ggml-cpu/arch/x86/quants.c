@@ -2736,6 +2736,70 @@ static const int8_t keven_signs_q2xs[1024] = {
 };
 #endif
 
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512DQ__) && defined(__AVX512VNNI__) && defined(__AVX512VBMI__)
+// IQ2_XXS with AVX-512 VBMI. Every byte of the grid is 8, 25 or 43, so an 8-byte entry is a 16-bit code (2 bits per weight). The code of 32 indices is looked up with
+// vpermi2b (two byte tables of 256 entries), put into one qword per index, expanded to 8 bytes with a multishift and the 8/25/43 values from one vpshufb: the grid comes out
+// in natural weight order, so the activations need no rearranging. Signs: 7-bit fields by multishift, sign bytes by vpermi2b over the 128-byte table, applied as masked
+// subtracts. vpdpbusd for the dot (grid <= 43, maddubs never saturated: same integer sums).
+static void ggml_vec_dot_iq2_xxs_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    static uint8_t cdl[256] __attribute__((aligned(64))), cdh[256] __attribute__((aligned(64)));
+    static uint8_t pat[4][64] __attribute__((aligned(64))), seli[64] __attribute__((aligned(64))), sels[64] __attribute__((aligned(64)));
+    static int ready = 0;
+    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) {   // identical values, so two threads racing here write the same bytes
+        for (int e = 0; e < 256; ++e) {
+            unsigned code = 0;
+            for (int b = 0; b < 8; ++b) { const unsigned v = (iq2xxs_grid[e] >> (8 * b)) & 255; code |= (v == 8 ? 0u : v == 25 ? 1u : 2u) << (2 * b); }
+            cdl[e] = (uint8_t) (code & 255); cdh[e] = (uint8_t) (code >> 8);
+        }
+        for (int k = 0; k < 4; ++k) { for (int l = 0; l < 64; ++l) { pat[k][l] = 0; } for (int q = 0; q < 8; ++q) { pat[k][8 * q] = (uint8_t) (8 * k + q); pat[k][8 * q + 1] = (uint8_t) (64 + 8 * k + q); } }
+        for (int l = 0; l < 64; ++l) { seli[l] = (uint8_t) (l < 32 ? 8 * (l >> 2) + (l & 3) : 0); sels[l] = (uint8_t) (l < 32 ? 8 * (l >> 2) + 4 + (l & 3) : 0); }
+        __atomic_store_n(&ready, 1, __ATOMIC_RELEASE);
+    }
+    const block_iq2_xxs * GGML_RESTRICT x = vx;
+    const block_q8_K    * GGML_RESTRICT y = vy;
+    const int nb = n / QK_K;
+    const __m512i L0 = _mm512_load_si512((const void *) cdl), L1 = _mm512_load_si512((const void *) (cdl + 64)), L2 = _mm512_load_si512((const void *) (cdl + 128)), L3 = _mm512_load_si512((const void *) (cdl + 192));
+    const __m512i H0 = _mm512_load_si512((const void *) cdh), H1 = _mm512_load_si512((const void *) (cdh + 64)), H2 = _mm512_load_si512((const void *) (cdh + 128)), H3 = _mm512_load_si512((const void *) (cdh + 192));
+    const __m512i P0 = _mm512_load_si512((const void *) pat[0]), P1 = _mm512_load_si512((const void *) pat[1]), P2 = _mm512_load_si512((const void *) pat[2]), P3 = _mm512_load_si512((const void *) pat[3]);
+    const __m512i SI = _mm512_load_si512((const void *) seli), SS = _mm512_load_si512((const void *) sels);
+    const __m512i K0 = _mm512_loadu_si512((const void *) ksigns_iq2xs), K1 = _mm512_loadu_si512((const void *) (ksigns_iq2xs + 64));
+    const __m256i msc = _mm256_set_epi8(53, 46, 39, 32, 21, 14, 7, 0, 53, 46, 39, 32, 21, 14, 7, 0, 53, 46, 39, 32, 21, 14, 7, 0, 53, 46, 39, 32, 21, 14, 7, 0);
+    const __m512i bsc = _mm512_set1_epi64(0x0e0c0a0806040200ll);   // byte i takes the bits 2i..2i+7 of the qword: the 2-bit code of weight i in the low bits
+    const __m512i three = _mm512_set1_epi8(3);
+    const __m512i tab = _mm512_broadcast_i32x4(_mm_setr_epi8(8, 25, 43, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+    const __m256i m127 = _mm256_set1_epi8(127);
+    const __m512i zero = _mm512_setzero_si512();
+    __m512 facc = _mm512_setzero_ps();
+    for (int i = 0; i < nb; ++i) {
+        const __m512i B = _mm512_loadu_si512((const void *) x[i].qs);
+        const __m512i idxb = _mm512_permutexvar_epi8(SI, B);
+        const __m512i sgd  = _mm512_permutexvar_epi8(SS, B);
+        const __mmask64 hi = _mm512_movepi8_mask(idxb);
+        const __m512i CL = _mm512_mask_blend_epi8(hi, _mm512_permutex2var_epi8(L0, idxb, L1), _mm512_permutex2var_epi8(L2, idxb, L3));
+        const __m512i CH = _mm512_mask_blend_epi8(hi, _mm512_permutex2var_epi8(H0, idxb, H1), _mm512_permutex2var_epi8(H2, idxb, H3));
+        const __m256i gas = _mm512_castsi512_si256(sgd);
+        const __m256i sf = _mm256_and_si256(_mm256_multishift_epi64_epi8(msc, gas), m127);
+        const __m512i sb = _mm512_permutex2var_epi8(K0, _mm512_castsi256_si512(sf), K1);
+        uint64_t sm[4]; _mm256_storeu_si256((__m256i *) sm, _mm512_castsi512_si256(sb));
+        uint32_t ls[8]; _mm256_storeu_si256((__m256i *) ls, _mm256_srli_epi32(gas, 28));
+        const __m512i Pk[4] = { P0, P1, P2, P3 };
+        __m512i sum = zero;
+        for (int k = 0; k < 4; ++k) {
+            const __m512i W = _mm512_permutex2var_epi8(CL, Pk[k], CH);
+            const __m512i G = _mm512_shuffle_epi8(tab, _mm512_and_si512(_mm512_multishift_epi64_epi8(bsc, W), three));
+            const __m512i a  = _mm512_loadu_si512((const void *) (y[i].qs + 64 * k));
+            const __m512i as = _mm512_mask_sub_epi8(a, (__mmask64) sm[k], zero, a);
+            const __m512i dot = _mm512_dpbusd_epi32(zero, G, as);
+            const __m512i sv = _mm512_mask_set1_epi32(_mm512_set1_epi32((int) (2 * ls[2 * k] + 1)), 0xFF00, (int) (2 * ls[2 * k + 1] + 1));
+            sum = _mm512_add_epi32(sum, _mm512_mullo_epi32(dot, sv));
+        }
+        const float d = GGML_CPU_FP16_TO_FP32(x[i].d) * y[i].d;
+        facc = _mm512_fmadd_ps(_mm512_set1_ps(d), _mm512_cvtepi32_ps(sum), facc);
+    }
+    *s = 0.125f * _mm512_reduce_add_ps(facc);
+}
+#endif
+
 void ggml_vec_dot_iq2_xxs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);
     assert(nrc == 1);
@@ -2749,7 +2813,10 @@ void ggml_vec_dot_iq2_xxs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
 
     const int nb = n / QK_K;
 
-#if defined(__AVX2__)
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512DQ__) && defined(__AVX512VNNI__) && defined(__AVX512VBMI__)
+    UNUSED(nb);
+    ggml_vec_dot_iq2_xxs_q8_K_vbmi_kernel(n, s, vx, vy);
+#elif defined(__AVX2__)
 
     const uint64_t * signs64 = (const uint64_t *)keven_signs_q2xs;
 
