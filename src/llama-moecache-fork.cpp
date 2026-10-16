@@ -3232,7 +3232,7 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
         llama_kv_tail_stat_fork st;
         st.dev = ggml_backend_dev_name(ap.dev);
         size_t cap = (size_t) -1;
-        for (auto & r : ap.kvt) { st.kv_cells += r.cells; st.kv_bytes += std::min(r.bytes, r.cells * r.row); cap = std::min(cap, llama_moe_cache_kv_tail_cap_fork(r.owner)); }
+        for (auto & r : ap.kvt) { st.kv_cells = std::max(st.kv_cells, r.cells); st.kv_bytes += std::min(r.bytes, r.cells * r.row); cap = std::min(cap, llama_moe_cache_kv_tail_cap_fork(r.owner)); }   // cells: the longest cache (a model with a window cache and a global one holds the same tokens in both)
         st.cap_tokens = cap == (size_t) -1 ? 0 : cap;
         for (auto & sg : ap.segs) {
             const auto & ps = mc->pool[sg.pcls];
@@ -3249,7 +3249,7 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
         llama_kv_tail_stat_fork st;
         st.dev = ggml_backend_dev_name(ar.dev);
         size_t cap = (size_t) -1;
-        for (auto & q : ar.runs) { const size_t c = q.rows ? q.rows() : 0; st.kv_cells += c; st.kv_bytes += c * q.row; cap = std::min(cap, q.row > 0 ? (size_t) std::max<int64_t>(0, q.end_off) / q.row : 0); }
+        for (auto & q : ar.runs) { const size_t c = q.rows ? q.rows() : 0; st.kv_cells = std::max(st.kv_cells, c); st.kv_bytes += c * q.row; cap = std::min(cap, q.row > 0 ? (size_t) std::max<int64_t>(0, q.end_off) / q.row : 0); }
         st.cap_tokens = cap == (size_t) -1 ? 0 : cap;
         out.push_back(std::move(st));
     }
