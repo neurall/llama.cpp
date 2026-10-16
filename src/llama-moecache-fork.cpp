@@ -3493,7 +3493,7 @@ static size_t alias_release(moe_cache * mc) {
 // does not wait for them, a worker takes one only when no miss-driven upload waits on its link, and they cost no swap budget (a free block evicts
 // nothing). The link is idle right after a prompt: the refill of 10 GB takes about 0.5 s of a x16 link, 2 s of a x4.
 // --moe reheat=0 turns it off. With --moe fixed=1 (repeatable runs) the jobs are ordinary ones the step waits for and publishes in order.
-static size_t reheat_free_blocks(moe_cache * mc, bool wait) {
+static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = false) {   // ini_only: by the lifetime counts alone (the state ini's hot map and this run's use), no recent window
     static const bool on = [] { const char * e = moe_opt("reheat"); return !e || atoi(e) != 0; }();
     if (!on) {
         return 0;
@@ -3516,7 +3516,7 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait) {
                 if (ls.expert_slot[e] >= 0 || ls.queued[e] || ls.adopt_slot[e] >= 0) {
                     continue;
                 }
-                const double sc = xscore(mc, ls, e);
+                const double sc = ini_only ? (double) ls.glob_count[e] / (double) std::max<uint64_t>(1, mc->gmax_all) : xscore(mc, ls, e);
                 if (sc > 0.0) {
                     c.push_back({ sc, li, e });
                 }
@@ -5858,7 +5858,7 @@ void llama_moe_cache_step_fork() {
 
     const size_t n_back = alias_release(mc);
     if (mc->kv_gave_back.exchange(false)) {   // the expert cache grew at the start of a request: the freed blocks get the hottest experts the cache misses (scores seeded from the state ini)
-        reheat_free_blocks(mc, det);
+        reheat_free_blocks(mc, det, true);
     }
     mc->gmax_all = 1;
     for (const auto & l : mc->layers) { mc->gmax_all = std::max(mc->gmax_all, l.glob_max); }
@@ -6456,6 +6456,52 @@ bool llama_moe_cache_expert_split_fork(double * speedup) {
     return g_split_enabled;
 }
 
+
+// kv-tail, at the end of a prompt (its preheat counters were just read): the hottest experts the prompt used that the cache does not hold replace the coldest
+// cached experts the prompt did not use. At most a twentieth of a class's blocks per prompt, background uploads (the link is idle after a prompt): the cache
+// follows the request without churning it. The expert that leaves is evicted now (its table goes back to uncached at the next step's flush).
+static std::vector<upload_job> preheat_swap(moe_cache * mc, const std::vector<uint8_t> & used, int n_exp) {   // mc->mtx held; the caller queues the jobs after releasing it (lock order: wmtx before mtx)
+    bool tail = false;
+    for (auto & ap : mc->alias) { tail = tail || !ap.kvt.empty(); }
+    std::vector<upload_job> jobs;
+    if (!tail || mc->starved.load()) { return jobs; }
+    for (size_t pc = 0; pc < mc->pool.size(); ++pc) {
+        struct cand { double sc; size_t li; int32_t e; int32_t b; };
+        std::vector<cand> hot, cold;
+        for (size_t li = 0; li < mc->layers.size(); ++li) {
+            layer_state & ls = mc->layers[li];
+            if (ls.pcls != (int32_t) pc || ls.pub.il < 0) { continue; }
+            const uint8_t * u = used.data() + (size_t) ls.pub.il * n_exp;
+            for (int32_t e = 0; e < (int32_t) ls.expert_slot.size() && e < n_exp; ++e) {
+                const int32_t b = ls.expert_slot[e];
+                if (b < 0) {
+                    if (u[e] && !ls.queued[e] && ls.adopt_slot[e] < 0) { hot.push_back({ (double) ls.glob_count[e], li, e, -1 }); }
+                } else if (!u[e] && !ls.slot_in_flight[b] && !ls.is_stream[b]) {
+                    cold.push_back({ xscore(mc, ls, e), li, e, b });
+                }
+            }
+        }
+        const size_t budget = std::max<size_t>(1, mc->pool[pc].owner.size() / 20);
+        const size_t n = std::min({ hot.size(), cold.size(), budget });
+        if (n == 0) { continue; }
+        std::partial_sort(hot.begin(), hot.begin() + (ptrdiff_t) n, hot.end(), [](const cand & a, const cand & b) { return a.sc > b.sc; });
+        std::partial_sort(cold.begin(), cold.begin() + (ptrdiff_t) n, cold.end(), [](const cand & a, const cand & b) { return a.sc < b.sc; });
+        for (size_t i = 0; i < n; ++i) {
+            layer_state & lo = mc->layers[cold[i].li];
+            evict_slot(mc, lo, cold[i].b);
+            pool_take(mc, hot[i].li, cold[i].b);
+            layer_state & ls = mc->layers[hot[i].li];
+            ls.slot_in_flight[cold[i].b] = true;
+            ls.queued[hot[i].e] = 1;
+            upload_job j { hot[i].li, hot[i].e, cold[i].b };
+            j.bg = true;
+            j.t_queued = ggml_time_us();
+            jobs.push_back(j);
+        }
+    }
+    return jobs;
+}
+
 void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     moe_cache * mc = g_cache;
     if (mc && mc->pf_count_on) {
@@ -6466,6 +6512,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             return reg ? (obs_read_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_obs_prompt_read_fork") : (obs_read_t) nullptr;
         }();
         std::vector<uint8_t> used((size_t) mc->pf_count_layers * mc->pf_count_experts, 0);
+        std::vector<upload_job> swaps;
         if (rd && rd(mc->pf_count_layers, mc->pf_count_experts, used.data())) {
             std::lock_guard<std::mutex> lock(mc->mtx);
             for (auto & ls : mc->layers) {
@@ -6480,6 +6527,16 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                     }
                 }
             }
+            swaps = preheat_swap(mc, used, mc->pf_count_experts);
+        }
+        if (!swaps.empty()) {
+            {
+                std::lock_guard<std::mutex> wlk(mc->wmtx);
+                for (const auto & j : swaps) { mc->todo.push_back(j); }
+                mc->n_reheat += swaps.size();
+            }
+            mc->wcv.notify_all();
+            if (moe_log_has("k")) { LLAMA_LOG_WARN("moe-cache: kv-tail: after the prompt %zu cold experts replaced by the prompt's hottest missing ones\n", swaps.size()); }
         }
     }
     if (!mc || us <= 0 || llama_dsplit_cur_fork() == 1) {
