@@ -22,7 +22,10 @@ unclaimed cell.
   watermark the cache published when it allocated the cells (`find_slot`).
 * release: when the highest used cell drops (sequence removed, context shifted), blocks above the new watermark become free expert blocks (metadata only; they
   refill by uploads like blocks after a prompt, `reheat_free_blocks`).
-* sizing: the pool is sized without the KV reserve; a context that needs more than the pool can give (keeping a minimum of experts) is refused with the numbers.
+* sizing (rule): nothing is reserved at start, the pool is sized as if the model had no KV. A request claims what it needs before its first pass (the server knows the
+  prompt length), generation claims a few more blocks before the graph that writes a cell past the claim, and the end of the request drops the claim to what the
+  next request keeps (reused prefix cells). A request that needs more than the pool can give while keeping a minimum of experts is refused with the numbers.
+  `-c` only caps the largest request.
 
 ## Limits
 
