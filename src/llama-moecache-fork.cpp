@@ -276,7 +276,7 @@ struct moe_cache {
         size_t                mirror_b = 0;     // the dense split's copies at the start of the buffer (--moe mirror-pool, see llama_dsplit_mirror_place_fork)
         size_t                base_off = 0;     // where the graph being built starts: mirror_b when it splits (the copies before it), else 0
         // KV cache at the tail (--moe kv-tail=1): the records of the caches on this card, stacked from tail_end downward; blocks under their used rows are owner -3
-        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0, pad = 1; int64_t end_off = 0; std::function<size_t()> rows; size_t cells = 0, plan = 0, eff = 0; };   // plan: the cells the prompt being planned will hold (kept until decode starts)
+        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0, pad = 1; int64_t end_off = 0; std::function<size_t()> rows; size_t cells = 0, plan = 0, eff = 0, zhi = 0, last_cells = 0; };   // plan: the cells the prompt being planned will hold (kept until decode starts)
         std::vector<kvt_run>  kvt;
         size_t                tail_end  = 0;    // end of the last class's expert blocks (where the first record ends)
         size_t                span_full = 0;    // span before any claim: ap.span is the part in front of the lowest claimed block
@@ -3057,20 +3057,6 @@ static void kv_tail_claim(moe_cache * mc, bool & changed, size_t plan_extra = 0,
                 }
                 ps.owner[b] = -3;
             }
-            {   // the padding rows the attention reads (masked, but read) must be numbers: a taken block holds expert bytes, so it is zeroed (consecutive blocks in one call)
-                size_t i0 = 0;
-                while (i0 < take.size()) {
-                    size_t i1 = i0;
-                    while (i1 + 1 < take.size() && take[i1 + 1] == take[i1] + 1) { ++i1; }
-                    ggml_tensor z = {};
-                    z.type = GGML_TYPE_I8; z.buffer = ap.buf;
-                    z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + sg.base + (size_t) take[i0] * sg.B;
-                    z.ne[0] = (int64_t) ((i1 - i0 + 1) * sg.B); z.ne[1] = z.ne[2] = z.ne[3] = 1;
-                    z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = (size_t) z.ne[0];
-                    ggml_backend_tensor_memset(&z, 0, 0, (size_t) z.ne[0]);
-                    i0 = i1 + 1;
-                }
-            }
             if (!free_mark.empty()) {
                 ps.free.erase(std::remove_if(ps.free.begin(), ps.free.end(), [&](int32_t b) { return free_mark[b] != 0; }), ps.free.end());
             }
@@ -3196,6 +3182,33 @@ bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell) {
     return true;
 }
 
+
+// The attention reads the cells rounded up to the pad (256): the rows between the used cells and that boundary are masked, but they are read, and in the tail they are bytes of
+// experts (NaN/Inf in a half float: 0 x NaN is NaN in the softmax). Only that window is zeroed: no block is cleared at a claim; the window moves once per 256 generated tokens
+// (at most 256 rows of the record) and is set up again when a request starts.
+static void kv_tail_pad_zero(moe_cache * mc) {
+    for (auto & ap : mc->alias) {
+        for (auto & r : ap.kvt) {
+            const size_t cells = r.rows ? r.rows() : 0;
+            if (cells < r.last_cells) { r.zhi = 0; }   // the cache shrank (a new request): the window is set up again
+            r.last_cells = cells;
+            if (cells == 0) { continue; }
+            const size_t hi = std::min<size_t>((cells + r.pad - 1) / r.pad * r.pad, r.row ? r.bytes / r.row : 0);
+            const size_t lo = std::max(r.zhi, cells);
+            if (hi <= lo) { continue; }
+            const int64_t b1 = r.end_off - (int64_t) (lo * r.row), b0 = r.end_off - (int64_t) (hi * r.row);   // [b0, b1) of the pool buffer
+            if (b0 < 0) { continue; }
+            ggml_tensor z = {};
+            z.type = GGML_TYPE_I8; z.buffer = ap.buf;
+            z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + b0;
+            z.ne[0] = b1 - b0; z.ne[1] = z.ne[2] = z.ne[3] = 1;
+            z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = (size_t) z.ne[0];
+            ggml_backend_tensor_memset(&z, 0, 0, (size_t) z.ne[0]);
+            r.zhi = hi;
+        }
+    }
+}
+
 std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool reset) {
     std::vector<llama_kv_tail_stat_fork> out;
     moe_cache * mc = g_cache;
@@ -3248,7 +3261,8 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     }
     mc->graph_tokens_last = n_tokens;
     bool changed = false;
-    kv_tail_claim(mc, changed, 0, n_tokens < 64);   // the KV rows this graph writes first: the lend below stops in front of them (ap.span); a decode graph ends the plan of the last prompt
+    kv_tail_claim(mc, changed, 0, n_tokens < 64);
+    kv_tail_pad_zero(mc);   // the KV rows this graph writes first: the lend below stops in front of them (ap.span); a decode graph ends the plan of the last prompt
     for (auto & ap : mc->alias) {
         size_t peak = 0;
         for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {

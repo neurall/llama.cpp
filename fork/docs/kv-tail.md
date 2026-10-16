@@ -62,6 +62,14 @@ is outside and the capacity reported for a hybrid model is slightly optimistic (
 * the prompt's tokens are claimed when its passes are planned (before the micro-batch is sized), so the planner sees the lendable bytes that are really left; a decode graph ends that plan;
 * the compute graph borrows from the front: a graph that would reach into the KV rows is refused with the numbers (never silently).
 
+## Why the padding rows must be cleaned
+
+`llama_kv_cache::get_n_kv` rounds the number of cells the attention reads up to a multiple of 256 (the flash-attention tile; it also keeps the graph the same size between
+steps so it can be reused). The rows between the used cells and that boundary are masked but read. The normal cache zero-fills its buffer at allocation, so they are always
+finite numbers. In the tail they are memory that held experts: arbitrary bytes, and 0 x NaN is NaN in the softmax. So the invariant is "every row the attention can read is
+finite". It is kept by zeroing the pad window only (the rows from the used count to the next multiple of 256), once per 256 generated tokens and at the start of a request;
+no claimed block is cleared. The claim covers the padded count, so these rows are always the KV's.
+
 ## Limits
 
 * one slot (`-np 1`): the used cells must be a prefix. With several slots cells scatter; compaction (moving rows) is a later step.
