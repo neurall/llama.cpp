@@ -2159,28 +2159,34 @@ void ggml_vec_dot_q4_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
         const __m128i sc128  = _mm256_extracti128_si256(mins_and_scales, 0);
         const __m256i scales = MM256_SET_M128I(sc128, sc128);
 
-        __m256i sumi = _mm256_setzero_si256();
+        // Four independent integer accumulators. With AVX-512 VNNI code generation the compiler fuses the multiply-add with the accumulate (vpdpwssd) and a
+        // single accumulator then forms a chain of eight dependent ~5-cycle operations per super-block: Zen 4, 9.3 ns per 256 weights against 5.4 with the AVX2
+        // instructions. Independent accumulators keep the fused form and cut the chain to two.
+        __m256i sumi0 = _mm256_setzero_si256(), sumi1 = _mm256_setzero_si256(), sumi2 = _mm256_setzero_si256(), sumi3 = _mm256_setzero_si256();
 
-        for (int j = 0; j < QK_K/64; ++j) {
+        for (int j = 0; j < QK_K/64; j += 2) {
+            const __m256i scale_l0 = _mm256_shuffle_epi8(scales, get_scale_shuffle_k4(2*j+0));
+            const __m256i scale_h0 = _mm256_shuffle_epi8(scales, get_scale_shuffle_k4(2*j+1));
+            const __m256i scale_l1 = _mm256_shuffle_epi8(scales, get_scale_shuffle_k4(2*j+2));
+            const __m256i scale_h1 = _mm256_shuffle_epi8(scales, get_scale_shuffle_k4(2*j+3));
 
-            const __m256i scale_l = _mm256_shuffle_epi8(scales, get_scale_shuffle_k4(2*j+0));
-            const __m256i scale_h = _mm256_shuffle_epi8(scales, get_scale_shuffle_k4(2*j+1));
+            const __m256i q4bits0 = _mm256_loadu_si256((const __m256i*)q4);
+            const __m256i q4bits1 = _mm256_loadu_si256((const __m256i*)(q4 + 32)); q4 += 64;
+            const __m256i q8l0 = _mm256_loadu_si256((const __m256i*)q8);
+            const __m256i q8h0 = _mm256_loadu_si256((const __m256i*)(q8 + 32));
+            const __m256i q8l1 = _mm256_loadu_si256((const __m256i*)(q8 + 64));
+            const __m256i q8h1 = _mm256_loadu_si256((const __m256i*)(q8 + 96)); q8 += 128;
 
-            const __m256i q4bits = _mm256_loadu_si256((const __m256i*)q4); q4 += 32;
-            const __m256i q4l = _mm256_and_si256(q4bits, m4);
-            const __m256i q4h = _mm256_and_si256(_mm256_srli_epi16(q4bits, 4), m4);
-
-            const __m256i q8l = _mm256_loadu_si256((const __m256i*)q8); q8 += 32;
-            __m256i p16l = _mm256_maddubs_epi16(q4l, q8l);
-            p16l = _mm256_madd_epi16(scale_l, p16l);
-
-            const __m256i q8h = _mm256_loadu_si256((const __m256i*)q8); q8 += 32;
-            __m256i p16h = _mm256_maddubs_epi16(q4h, q8h);
-            p16h = _mm256_madd_epi16(scale_h, p16h);
-            const __m256i sumj = _mm256_add_epi32(p16l, p16h);
-
-            sumi = _mm256_add_epi32(sumi, sumj);
+            const __m256i p0l = _mm256_maddubs_epi16(_mm256_and_si256(q4bits0, m4), q8l0);
+            const __m256i p0h = _mm256_maddubs_epi16(_mm256_and_si256(_mm256_srli_epi16(q4bits0, 4), m4), q8h0);
+            const __m256i p1l = _mm256_maddubs_epi16(_mm256_and_si256(q4bits1, m4), q8l1);
+            const __m256i p1h = _mm256_maddubs_epi16(_mm256_and_si256(_mm256_srli_epi16(q4bits1, 4), m4), q8h1);
+            sumi0 = _mm256_add_epi32(sumi0, _mm256_madd_epi16(scale_l0, p0l));
+            sumi1 = _mm256_add_epi32(sumi1, _mm256_madd_epi16(scale_h0, p0h));
+            sumi2 = _mm256_add_epi32(sumi2, _mm256_madd_epi16(scale_l1, p1l));
+            sumi3 = _mm256_add_epi32(sumi3, _mm256_madd_epi16(scale_h1, p1h));
         }
+        const __m256i sumi = _mm256_add_epi32(_mm256_add_epi32(sumi0, sumi1), _mm256_add_epi32(sumi2, sumi3));
 
         __m256 vd = _mm256_set1_ps(d);
         acc = _mm256_fmadd_ps(vd, _mm256_cvtepi32_ps(sumi), acc);
