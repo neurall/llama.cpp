@@ -3422,8 +3422,25 @@ def cmd_cell(a):
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, GGML_CUDA_HUGEFS="/mnt/huge1g", PERF_LOG="r")
     for kv in (a.env or []):
         k, _, v = kv.partition("="); env[k] = v
-    with open(out, "w") as f:
-        rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).returncode
+    holder = None
+    if a.hold:   # simulated smaller cards: "0:16 1:16" keeps 16 GiB of GPU 0 and of GPU 1 occupied for the whole cell (a 24 GB card then behaves as an 8 GB one)
+        hold = a.hold.split()
+        env["PERF_HOLD_MB"] = str(int(max(float(x.split(":")[1]) for x in hold) * 1024))
+        holder = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.realpath(__file__)), "experiments", "vram-sim", "vramhold.py")] + hold, env=dict(os.environ),
+                                  stdout=subprocess.PIPE, text=True, start_new_session=True)
+        ok = False
+        for _ in range(120):
+            if "holding" in (holder.stdout.readline() or ""): ok = True; break
+            if holder.poll() is not None: break
+        if not ok:
+            sys.exit(f"cell: the VRAM holder did not start ({a.hold})")
+    try:
+        with open(out, "w") as f:
+            rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).returncode
+    finally:
+        if holder:
+            try: os.killpg(os.getpgid(holder.pid), signal.SIGKILL)
+            except OSError: pass
     lines = [l.rstrip()[:200] for l in open(out, errors="replace") if re.search(r"n= *\d+ .* t/s", l)]
     with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
         f.write(f"== {a.test} {args}\n" + "".join(l + "\n" for l in lines))
@@ -5061,6 +5078,7 @@ if __name__ == "__main__":
     ce.add_argument("tag"); ce.add_argument("model"); ce.add_argument("builds"); ce.add_argument("n", type=int); ce.add_argument("test")
     ce.add_argument("args", nargs="?", default="", help="server args after -np 1")
     ce.add_argument("--wrap", help="command prefix for the server (nsys / ncu)")
+    ce.add_argument("--hold", help="GPU:GiB list kept occupied during the cell (simulates smaller cards), e.g. '0:16 1:16' = 8 GB cards on 24 GB ones")
     ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
     ce.add_argument("--tokens", type=int, help="generated tokens instead of the test's own")
     ce.add_argument("--ctx", type=int, help="context size instead of the test's own (a -c in the args loses to the test's own -c)")
