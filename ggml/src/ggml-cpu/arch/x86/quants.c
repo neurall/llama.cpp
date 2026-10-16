@@ -4359,7 +4359,7 @@ void ggml_vec_dot_iq1_s_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const vo
 #if defined __AVX2__
 
     __m256 accum = _mm256_setzero_ps();
-    float accum1 = 0;
+    __m256 accum1v = _mm256_setzero_ps();   // the delta part, kept in vector form (it was 18% of the time as scalar code)
     for (int i = 0; i < nb; ++i) {
 
         const int8_t   * q8 = y[i].qs;
@@ -4367,7 +4367,6 @@ void ggml_vec_dot_iq1_s_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const vo
         const uint16_t * qh = x[i].qh;
 
         __m256i sumi = _mm256_setzero_si256();
-        int sumi1 = 0;
         for (int ib = 0; ib < QK_K/32; ib += 2) {
 #ifdef __BMI2__
             const uint64_t packed_idx1 = _pdep_u64(*(const uint32_t *)qs, 0x00ff00ff00ff00ffULL) | _pdep_u64(qh[ib], 0x700070007000700ULL);
@@ -4394,17 +4393,23 @@ void ggml_vec_dot_iq1_s_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const vo
             const __m256i p2 = _mm256_madd_epi16(dot2, _mm256_set1_epi16(ls2));
 
             sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(p1, p2));
-            sumi1 += (y[i].bsums[2*ib+0] + y[i].bsums[2*ib+1]) * (qh[ib+0] & 0x8000 ? -1 : 1) * ls1
-                   + (y[i].bsums[2*ib+2] + y[i].bsums[2*ib+3]) * (qh[ib+1] & 0x8000 ? -1 : 1) * ls2;
         }
 
         const float d = y[i].d * GGML_CPU_FP16_TO_FP32(x[i].d);
         accum = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(sumi), accum);
-        accum1 += d * sumi1;
+        {
+            // sum over the 8 groups of 32 weights of (sum of the activations of the group) * (+-1 from qh bit 15) * (2 * scale + 1)
+            const __m128i w = _mm_loadu_si128((const __m128i *) qh);
+            const __m128i ls = _mm_add_epi16(_mm_slli_epi16(_mm_and_si128(_mm_srli_epi16(w, 12), _mm_set1_epi16(7)), 1), _mm_set1_epi16(1));
+            const __m128i neg = _mm_srai_epi16(w, 15);
+            const __m128i sls = _mm_sub_epi16(_mm_xor_si128(ls, neg), neg);
+            const __m256i sg = _mm256_madd_epi16(_mm256_loadu_si256((const __m256i *) y[i].bsums), _mm256_set1_epi16(1));
+            accum1v = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(_mm256_mullo_epi32(sg, _mm256_cvtepi16_epi32(sls))), accum1v);
+        }
 
     }
 
-    *s = hsum_float_8(accum) + IQ1S_DELTA * accum1;
+    *s = hsum_float_8(accum) + IQ1S_DELTA * hsum_float_8(accum1v);
 
 #elif defined __AVX__
     __m256 accum = _mm256_setzero_ps();
