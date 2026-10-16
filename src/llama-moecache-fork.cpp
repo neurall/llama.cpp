@@ -3034,6 +3034,7 @@ static void kv_tail_claim(moe_cache * mc, bool & changed) {
                 std::this_thread::sleep_for(std::chrono::microseconds(50));
             }
             std::lock_guard<std::mutex> lk(mc->mtx);
+            std::vector<char> free_mark;
             for (int32_t b : take) {
                 const int32_t o = ps.owner[b];
                 if (o >= 0) {
@@ -3042,12 +3043,15 @@ static void kv_tail_claim(moe_cache * mc, bool & changed) {
                     lo.n_own--;
                     n_evict++;
                 } else if (o == -1) {
-                    auto it = std::find(ps.free.begin(), ps.free.end(), b);
-                    if (it != ps.free.end()) { ps.free.erase(it); }
+                    if (free_mark.empty()) { free_mark.assign(ps.owner.size(), 0); }
+                    free_mark[b] = 1;   // leaves the free list in the one pass below (a find + erase per block was O(blocks x free))
                 } else if (o == -2) {
                     sg.blocked = std::min(sg.blocked, b);   // the compute alias had lent it: the lend of this graph starts over below the KV
                 }
                 ps.owner[b] = -3;
+            }
+            if (!free_mark.empty()) {
+                ps.free.erase(std::remove_if(ps.free.begin(), ps.free.end(), [&](int32_t b) { return free_mark[b] != 0; }), ps.free.end());
             }
             n_take += take.size();
         }
