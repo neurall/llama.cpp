@@ -32,6 +32,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <set>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -437,14 +438,53 @@ static std::atomic<double> g_split_calib { 1.0 };   // measured over modelled sp
 // requests kept choosing a split that lost to one card by 18%) and kept per model in the state file, so a restart starts from what was measured.
 static std::atomic<int> g_calib_n { 0 };
 static std::string g_calib_section;
+// Everything learned here is stored under a key of the HARDWARE it was learned on: the cards in model order, each as name, PCI bus id (the physical slot), memory and
+// the measured link class (rounded to 5 GB/s). Move a card to another slot, add or remove one, or reorder the devices and the key changes: the old entries stay in the
+// file, are not used, and the planner starts again from its model. Same cards in the same slots find their entries again.
+static std::string g_hw_key;
+static std::string dsplit_hw_key(const llama_model & model) {
+    std::string desc;
+    for (const auto & d : model.devices) {
+        if (ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+        ggml_backend_dev_props p; ggml_backend_dev_get_props(d.dev, &p);
+        const llama_gpu_probe_fork_result * pr = llama_gpu_probe_find_fork(d.dev);
+        char b[256]; snprintf(b, sizeof b, "%s|%s|%.0fG|link%d;", p.name ? p.name : "?", p.device_id ? p.device_id : "?", (double) p.memory_total / 1073741824.0, pr ? (int) (std::lround(pr->h2d_gbs / 5.0) * 5) : -1);
+        desc += b;
+    }
+    uint64_t h = 1469598103934665603ull; for (char ch : desc) { h = (h ^ (uint8_t) ch) * 1099511628211ull; }
+    char k[24]; snprintf(k, sizeof k, "%08x", (unsigned) (h ^ (h >> 32)));
+    LLAMA_LOG_WARN("split planner: hardware key %s for %s\n", k, desc.c_str());
+    return k;
+}
 static void dsplit_calib_load(const llama_model & model) {
     if (!g_calib_section.empty()) { return; }
     g_calib_section = moe_state_section(model);
+    g_hw_key = dsplit_hw_key(model);
     std::string v;
-    if (!g_calib_section.empty() && moe_state_get(g_calib_section, "dsplit_calib2", v)) {
+    if (!g_calib_section.empty() && moe_state_get(g_calib_section, "dsplit_calib2@" + g_hw_key, v)) {
         const double c = atof(v.c_str());
         if (c >= 0.5 && c <= 3.0) { g_split_calib.store(c); g_calib_n = 1; LLAMA_LOG_WARN("split planner: calibration %.2f from the state file\n", c); }
     }
+}
+// the measured per-token time of each arm in a size bucket, kept per hardware: "us_one n_one us_split n_split" (counts capped at 3 so new measurements still move it)
+static std::set<int> g_bucket_loaded;
+static void dsplit_bucket_load(int b) {
+    if (g_calib_section.empty() || g_hw_key.empty() || !g_bucket_loaded.insert(b).second) { return; }
+    std::string v;
+    if (!moe_state_get(g_calib_section, "dsplit_arm_b" + std::to_string(b) + "@" + g_hw_key, v)) { return; }
+    double u0, u1; int n0, n1;
+    if (sscanf(v.c_str(), "%lf %d %lf %d", &u0, &n0, &u1, &n1) == 4 && u0 >= 0 && u1 >= 0) {
+        dsplit_bucket & B = g_buckets[b];
+        if (n0 > 0 && B.n[0] == 0) { B.us_tok[0] = u0; B.n[0] = n0; }
+        if (n1 > 0 && B.n[1] == 0) { B.us_tok[1] = u1; B.n[1] = n1; }
+        LLAMA_LOG_WARN("split planner: size bucket %d from the state file: one card %s, split %s\n", b, n0 > 0 ? (std::to_string((int) (1e6 / u0)) + " tokens/s").c_str() : "-", n1 > 0 ? (std::to_string((int) (1e6 / u1)) + " tokens/s").c_str() : "-");
+    }
+}
+static void dsplit_bucket_save(int b) {
+    if (g_calib_section.empty() || g_hw_key.empty()) { return; }
+    const dsplit_bucket & B = g_buckets[b];
+    char v[96]; snprintf(v, sizeof v, "%.3f %d %.3f %d", B.us_tok[0], std::min(B.n[0], 3), B.us_tok[1], std::min(B.n[1], 3));
+    moe_state_set(g_calib_section, { { "dsplit_arm_b" + std::to_string(b) + "@" + g_hw_key, v } });
 }
 
 static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_us, llama_dsplit_plan_fork & out, std::vector<double> & f_help) {
@@ -689,6 +729,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
             dsplit_bucket & B = g_buckets[b];
             // the split planner first (see above): sure when it puts the two more than 15% apart; then nothing is tried against it
             const llama_dsplit_plan_fork plan = llama_dsplit_plan_get_fork(model, n_tokens);
+            dsplit_bucket_load(b);   // what an earlier run measured on these cards in this size bucket
             const bool plan_sure = plan.valid && std::fabs(plan.t_split_ms - plan.t_one_ms) >= 0.15 * plan.t_one_ms;
             // No trials by default: a pass is never run in the configuration the model expects to be slower just to find out. The planner decides; the split must be
             // predicted clearly ahead (8%) to be used, a close call stays on one card. --moe split-explore=1 brings the old trial-and-error back (the other
@@ -818,12 +859,13 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
                 // the first measurement sets the factor, later ones average in half and half
                 const double nc = g_calib_n.fetch_add(1) == 0 ? r : 0.5 * g_split_calib.load() + 0.5 * r;
                 g_split_calib.store(nc);
-                if (!g_calib_section.empty()) { char b2[32]; snprintf(b2, sizeof b2, "%.3f", nc); moe_state_set(g_calib_section, { { "dsplit_calib2", b2 } }); }
+                if (!g_calib_section.empty()) { char b2[32]; snprintf(b2, sizeof b2, "%.3f", nc); moe_state_set(g_calib_section, { { "dsplit_calib2@" + g_hw_key, b2 } }); }
                 pit->second.c_us = -1.0;   // recompute the plan of this size with the new calibration
             }
         }
         B.us_tok[c] = B.n[c] == 0 ? v : 0.5 * (B.us_tok[c] + v);   // the newer measurement weighs half
         B.n[c]++;
+        dsplit_bucket_save(dsplit_bucket_of(g_pend_max));
         static int logged = 0;
         if (logged++ < 64) {
             LLAMA_LOG_WARN("dense split: %lld prompt tokens (largest pass %lld) %s: %.1f tokens/s; this size: one card %s, split %s\n", (long long) n_tokens,
