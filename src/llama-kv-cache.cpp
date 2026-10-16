@@ -389,7 +389,7 @@ llama_kv_cache::llama_kv_cache(
             reg.dev   = tdev;
             reg.bytes = r.row * (size_t) kv_size;
             reg.row   = r.row;
-            reg.pad   = n_pad;
+            reg.pad   = std::max(n_pad, 256u);   // the attention reads the cells rounded up as get_n_kv does (at least 256): those rows must be claimed and finite
             reg.rows  = [this]() -> size_t { return v_cells.empty() ? 0 : (size_t) v_cells[0].used_max_p1(); };
             reg.detach = [this]() {
                 GGML_ASSERT((v_cells.empty() || v_cells[0].used_max_p1() == 0) && "kv-tail: the pool starts while the cache holds cells");
