@@ -1178,7 +1178,8 @@ extern "C" {
         int32_t  kvt_n;
         char     kvt_dev[4][16];
         uint64_t kvt_cells[4], kvt_cap[4];   // tokens in use / tokens the card can back now
-        uint64_t kvt_cap_min;                // the smallest capacity over the cards: the tokens a request can really have
+        uint64_t kvt_cap_min, kvt_ctx_train;   // capacity / the model's trained context: the context that fits is the smaller
+                       // the smallest capacity over the cards: the tokens a request can really have
 
         double   kvt_kv_mib[4], kvt_moe_gib[4];
         uint64_t kvt_blocks[4], kvt_free[4], kvt_lent[4], kvt_kv_blocks[4];

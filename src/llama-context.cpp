@@ -5908,6 +5908,7 @@ void llama_get_tuning_info(const llama_context * ctx, llama_tuning_info * info) 
     info->margin = info->gate = info->wait = info->big = info->predict = info->self_tune = -1;
     info->moe_slots_min = info->moe_slots_max = info->moe_layers = -1;
     info->moe_active = llama_moe_cache_get_info_fork(info);
+    info->kvt_ctx_train = ctx->get_model().hparams.n_ctx_train;
     info->n_threads       = (int32_t) ctx->get_cparams().n_threads;
     info->n_threads_batch = (int32_t) ctx->get_cparams().n_threads_batch;
     info->n_batch         = (int32_t) ctx->n_batch();

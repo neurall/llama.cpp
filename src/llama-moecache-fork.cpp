@@ -3141,8 +3141,9 @@ void llama_moe_cache_kv_arena_start_fork() {
         ar->runs.push_back(kv_arena_run{ r.owner, r.row, (int64_t) ar->size - (int64_t) placed, r.rows });
         if (r.attach) { r.attach(ar->buf, (uint8_t *) ((uintptr_t) ggml_backend_buffer_get_base(ar->buf) + (uintptr_t) ar->runs.back().end_off - (uintptr_t) r.bytes)); }
         r.attached = true;
-        LLAMA_LOG_WARN("kv-arena: %s: %.1f MiB, record of %.1f MiB (%zu B per token) ends at %.1f MiB: room for %zu tokens\n", ggml_backend_dev_name(r.dev), ar->size / 1048576.0,
-                r.bytes / 1048576.0, r.row, ar->runs.back().end_off / 1048576.0, r.row ? (size_t) ar->runs.back().end_off / r.row : 0);
+        LLAMA_LOG_WARN("kv-arena: %s: %.1f MiB, record of %.1f MiB (%zu B per token) ends at %.1f MiB: room for %zu tokens (KV capacity), max context that fits %zu (model cap %zu)\n", ggml_backend_dev_name(r.dev), ar->size / 1048576.0,
+                r.bytes / 1048576.0, r.row, ar->runs.back().end_off / 1048576.0, r.row ? (size_t) ar->runs.back().end_off / r.row : 0,
+                r.row ? std::min<size_t>((size_t) ar->runs.back().end_off / r.row, r.bytes / r.row) : 0, r.row ? r.bytes / r.row : 0);
     }
 }
 
@@ -3922,7 +3923,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             ap.kvt.push_back(kr);
                             if (r.attach) { r.attach(pbuf, (uint8_t *) ((uintptr_t) base + (uintptr_t) off - (uintptr_t) r.bytes)); }
                             r.attached = true;
-                            LLAMA_LOG_WARN("%s: kv-tail: record of %.1f MiB (%zu B per cell) ends %.1f MiB into the pool of %.1f MiB on %s\n", __func__, r.bytes / 1048576.0, r.row, off / 1048576.0, ap.tail_end / 1048576.0, ggml_backend_dev_name(ap.dev));
+                            {   // what fits: all the expert cache given up except what a decode graph borrows (at least two blocks); the context is the smaller of that and the record (the model's trained maximum)
+                                size_t bmax = 0; for (auto & sg2 : ap.segs) { bmax = std::max(bmax, sg2.B); }
+                                const size_t cap = r.row ? (size_t) std::max<int64_t>(0, off - (int64_t) (2 * bmax)) / r.row : 0;
+                                LLAMA_LOG_WARN("%s: kv-tail: record of %.1f MiB (%zu B per token) ends %.1f MiB into the pool of %.1f MiB on %s: KV capacity %zu tokens, max context that fits %zu tokens (model cap %zu)\n", __func__, r.bytes / 1048576.0, r.row, off / 1048576.0, ap.tail_end / 1048576.0, ggml_backend_dev_name(ap.dev), cap, std::min(cap, r.row ? r.bytes / r.row : 0), r.row ? r.bytes / r.row : 0);
+                            }
                             off -= (int64_t) r.bytes;
                         }
                     }

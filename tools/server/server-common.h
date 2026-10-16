@@ -432,7 +432,7 @@ struct server_slot_stats {
             kvt.push_back({ {"dev", t.kvt_dev[i]}, {"kv_cells", t.kvt_cells[i]}, {"cap_tokens", t.kvt_cap[i]}, {"kv_mib", t.kvt_kv_mib[i]}, {"moe_gib", t.kvt_moe_gib[i]}, {"blocks", t.kvt_blocks[i]},
                             {"blocks_free", t.kvt_free[i]}, {"blocks_lent", t.kvt_lent[i]}, {"blocks_kv", t.kvt_kv_blocks[i]} });
         }
-        if (t.kvt_n > 0) { m["kv_tail"] = { {"kv_tokens", t.kvt_cells[0]}, {"capacity_tokens", t.kvt_cap_min}, {"cards", kvt}, {"claimed_blocks", t.kvt_claim_n}, {"released_blocks", t.kvt_release_n}, {"experts_evicted", t.kvt_evicted} }; }
+        if (t.kvt_n > 0) { m["kv_tail"] = { {"kv_tokens", t.kvt_cells[0]}, {"capacity_tokens", t.kvt_cap_min}, {"max_ctx", std::min<uint64_t>(t.kvt_cap_min, t.kvt_ctx_train)}, {"n_ctx_train", t.kvt_ctx_train}, {"cards", kvt}, {"claimed_blocks", t.kvt_claim_n}, {"released_blocks", t.kvt_release_n}, {"experts_evicted", t.kvt_evicted} }; }
         tuning = { {"moe_cache", m}, {"n_threads", t.n_threads}, {"n_threads_batch", t.n_threads_batch}, {"n_batch", t.n_batch}, {"n_ubatch", t.n_ubatch} };
     }
 
