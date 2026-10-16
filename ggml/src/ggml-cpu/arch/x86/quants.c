@@ -4352,6 +4352,50 @@ void ggml_vec_dot_iq3_s_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const vo
 #endif
 }
 
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512DQ__) && defined(__AVX512VNNI__)
+// IQ1_S with AVX-512 gathers (no VBMI needed). The 11-bit grid index (qs byte + 3 bits of qh) is built in dwords; four 8-wide qword gathers fetch the 32 grid entries (8 weights
+// each, bytes -1/0/+1) of the block in natural weight order. The grid is shifted by +1 to 0/1/2 so vpdpbusd can take it against the signed activations; the shift is paid back
+// with the sums of the activations the block already carries (bsums), which also give the delta term. Scale 2*s+1 per group of 32 weights as in the other IQ1_S kernels.
+static void ggml_vec_dot_iq1_s_q8_K_gather_kernel(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    const block_iq1_s * GGML_RESTRICT x = vx;
+    const block_q8_K  * GGML_RESTRICT y = vy;
+    const int nb = n / QK_K;
+    const __m512i one8 = _mm512_set1_epi8(1), zero = _mm512_setzero_si512();
+    const __m512i P0 = _mm512_set_epi32(3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0), P1 = _mm512_set_epi32(7, 7, 7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4);
+    const __m512i SH = _mm512_set_epi32(9, 6, 3, 0, 9, 6, 3, 0, 9, 6, 3, 0, 9, 6, 3, 0), m7 = _mm512_set1_epi32(7);
+    __m512 facc = _mm512_setzero_ps();
+    __m256 faccs = _mm256_setzero_ps();
+    for (int i = 0; i < nb; ++i) {
+        const __m256i qs = _mm256_loadu_si256((const __m256i *) x[i].qs);
+        const __m128i qw = _mm_loadu_si128((const __m128i *) x[i].qh);                 // 8 qh words, one per group of 4 indices
+        const __m512i qhd = _mm512_castsi256_si512(_mm256_cvtepu16_epi32(qw));
+        const __m512i h0 = _mm512_slli_epi32(_mm512_and_si512(_mm512_srlv_epi32(_mm512_permutexvar_epi32(P0, qhd), SH), m7), 8);
+        const __m512i h1 = _mm512_slli_epi32(_mm512_and_si512(_mm512_srlv_epi32(_mm512_permutexvar_epi32(P1, qhd), SH), m7), 8);
+        const __m512i ix0 = _mm512_or_si512(_mm512_cvtepu8_epi32(_mm256_castsi256_si128(qs)), h0);           // indices 0..15
+        const __m512i ix1 = _mm512_or_si512(_mm512_cvtepu8_epi32(_mm256_extracti128_si256(qs, 1)), h1);      // indices 16..31
+        const __m512i G[4] = {
+            _mm512_i32gather_epi64(_mm512_castsi512_si256(ix0), (const void *) iq1s_grid, 8), _mm512_i32gather_epi64(_mm512_extracti64x4_epi64(ix0, 1), (const void *) iq1s_grid, 8),
+            _mm512_i32gather_epi64(_mm512_castsi512_si256(ix1), (const void *) iq1s_grid, 8), _mm512_i32gather_epi64(_mm512_extracti64x4_epi64(ix1, 1), (const void *) iq1s_grid, 8) };
+        const __m128i ls16 = _mm_add_epi16(_mm_slli_epi16(_mm_and_si128(_mm_srli_epi16(qw, 12), _mm_set1_epi16(7)), 1), _mm_set1_epi16(1));
+        const __m256i lsd = _mm256_cvtepi16_epi32(ls16);
+        const __m512i lsz = _mm512_castsi256_si512(lsd);
+        __m512i sum = zero;
+        for (int k = 0; k < 4; ++k) {
+            const __m512i a = _mm512_loadu_si512((const void *) (y[i].qs + 64 * k));
+            const __m512i lsk = _mm512_permutexvar_epi32(_mm512_add_epi32(_mm512_set_epi32(1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0), _mm512_set1_epi32(2 * k)), lsz);
+            sum = _mm512_add_epi32(sum, _mm512_mullo_epi32(_mm512_dpbusd_epi32(zero, _mm512_add_epi8(G[k], one8), a), lsk));
+        }
+        const float d = GGML_CPU_FP16_TO_FP32(x[i].d) * y[i].d;
+        facc = _mm512_fmadd_ps(_mm512_set1_ps(d), _mm512_cvtepi32_ps(sum), facc);
+        const __m256i sg = _mm256_madd_epi16(_mm256_loadu_si256((const __m256i *) y[i].bsums), _mm256_set1_epi16(1));
+        const __m256i neg = _mm256_cvtepi16_epi32(_mm_srai_epi16(qw, 15));
+        const __m256 coef = _mm256_fmadd_ps(_mm256_set1_ps(IQ1S_DELTA), _mm256_cvtepi32_ps(_mm256_or_si256(neg, _mm256_set1_epi32(1))), _mm256_set1_ps(-1.0f));
+        faccs = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_mul_ps(coef, _mm256_cvtepi32_ps(_mm256_mullo_epi32(sg, lsd))), faccs);
+    }
+    *s = _mm512_reduce_add_ps(facc) + hsum_float_8(faccs);
+}
+#endif
+
 #if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512DQ__) && defined(__AVX512VNNI__) && defined(__AVX512VBMI__)
 // IQ1_S with AVX-512 VBMI. The grid bytes are -1, 0, +1, so an 8-byte entry is a 16-bit code of u = byte + 1 in {0,1,2}. The 11-bit index is the qs byte plus 3 bits of qh:
 // the code planes are looked up in 8 chunks of 256 entries (vpermi2b) and the chunk is picked per index by those 3 bits. The grid is expanded in natural weight order
@@ -4430,9 +4474,9 @@ void ggml_vec_dot_iq1_s_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const vo
 
     const int nb = n / QK_K;
 
-#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512DQ__) && defined(__AVX512VNNI__) && defined(__AVX512VBMI__)
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512DQ__) && defined(__AVX512VNNI__)
     UNUSED(nb);
-    ggml_vec_dot_iq1_s_q8_K_vbmi_kernel(n, s, vx, vy);
+    ggml_vec_dot_iq1_s_q8_K_gather_kernel(n, s, vx, vy);
 #elif defined __AVX2__
 
     __m256 accum = _mm256_setzero_ps();
