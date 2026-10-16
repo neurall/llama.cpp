@@ -1154,6 +1154,13 @@ extern "C" {
     LLAMA_API void         llama_moe_set_opt(const char * key, const char * value);
     LLAMA_API const char * llama_moe_get_opt(const char * key);
 
+    // fork: live parameters of the running process (read at every use, changed over HTTP: GET / POST /moe/params in the server). name -> double.
+    // llama_moe_live_get returns NAN for an unknown name; set clamps to the parameter's range and returns false for an unknown name.
+    LLAMA_API double llama_moe_live_get(const char * name);
+    LLAMA_API bool   llama_moe_live_set(const char * name, double value);
+    // all parameters as JSON {"name": {"value": v, "default": d, "min": a, "max": b, "help": "..."}, ...}, truncated to cap bytes (0-terminated); returns the length
+    LLAMA_API int    llama_moe_live_json(char * buf, int cap);
+
     // One flat INI file for what the engine learns per model (hot experts, tuner decisions, MoE placement): [section] key = value.
     // LLAMA_MOE_STATE=<file> moves it, =0 turns it off. The section of the running model is set once with llama_state_set_model().
     LLAMA_API bool llama_state_get(const char * section, const char * key, char * value, size_t n); // false: missing / off / too small

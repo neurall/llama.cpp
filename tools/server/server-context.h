@@ -135,6 +135,8 @@ struct server_routes {
     server_http_context::handler_t post_slots;
     server_http_context::handler_t get_props;
     server_http_context::handler_t post_props;
+    server_http_context::handler_t get_live_params;   // fork: GET /moe/params
+    server_http_context::handler_t post_live_params;  // fork: POST /moe/params {"name": value, ...}
     server_http_context::handler_t post_infill;
     server_http_context::handler_t post_completions;
     server_http_context::handler_t post_completions_oai;

@@ -5,6 +5,8 @@
 #include "../include/llama.h"
 
 #include <algorithm>
+#include <atomic>
+#include <string>
 #include <cctype>
 #ifndef _WIN32
 #include <unistd.h>
@@ -355,6 +357,47 @@ const char * llama_moe_get_opt(const char * key) {
     std::lock_guard<std::mutex> lk(g_opt_mtx);
     const auto it = g_moe_opts.find(key);
     return it == g_moe_opts.end() ? nullptr : it->second.c_str();
+}
+
+// ---- live parameters ---------------------------------------------------------------------------------------------------------------------------
+// Values the user may change while the server runs (POST /moe/params), read at every use. Each has a default, a range and a one-line help.
+namespace {
+struct live_param {
+    const char * name; double def, lo, hi; const char * help; std::atomic<double> v;
+    live_param(const char * n, double d, double l, double h, const char * hp) : name(n), def(d), lo(l), hi(h), help(hp), v(d) {}
+};
+live_param g_live[] = {
+    { "min_in_len",     16,   1,    4096,  "tokens of the shortest real prompt: the chat template's own tokens plus one (the server sets it at load from the model's template; \"2+2=\" through the template is 13-16)" },
+    { "def_out_len",    256,  1,    65536, "tokens a request is expected to generate when it sets no limit: the room kept for the answer when an over-long prompt is cut" },
+    { "prompt_overflow",1,    0,    1,     "1: a prompt longer than the context is cut (start and end kept) and run; 0: refused with an error" },
+    { "cut_head_frac",  0.5,  0.05, 0.95,  "share of the kept prompt that is its start when the middle is cut (the rest is the end)" },
+    { "split_min_gain", 0.08, 0.0,  0.5,   "the dense split needs to be predicted this much faster than one card (fraction of the one-card time) to be used" },
+    { "refill_weight",  1.0,  0.0,  10.0,  "scale of the planner's charge for refilling the cache blocks a split pass lends (0 = not charged)" },
+};
+}
+double llama_moe_live_get(const char * name) {
+    for (auto & p : g_live) { if (strcmp(p.name, name) == 0) { return p.v.load(std::memory_order_relaxed); } }
+    return std::nan("");
+}
+bool llama_moe_live_set(const char * name, double value) {
+    for (auto & p : g_live) {
+        if (strcmp(p.name, name) == 0) { p.v.store(std::min(p.hi, std::max(p.lo, value)), std::memory_order_relaxed); return true; }
+    }
+    return false;
+}
+int llama_moe_live_json(char * buf, int cap) {
+    std::string o = "{";
+    for (size_t i = 0; i < sizeof(g_live) / sizeof(g_live[0]); ++i) {
+        const live_param & p = g_live[i];
+        char b[640];
+        snprintf(b, sizeof b, "%s\"%s\":{\"value\":%g,\"default\":%g,\"min\":%g,\"max\":%g,\"help\":\"%s\"}", i ? "," : "", p.name, p.v.load(), p.def, p.lo, p.hi, p.help);
+        o += b;
+    }
+    o += "}";
+    if (cap <= 0) { return (int) o.size(); }
+    const int n = std::min<int>((int) o.size(), cap - 1);
+    memcpy(buf, o.data(), n); buf[n] = 0;
+    return n;
 }
 
 const char * moe_opt(const char * key) {

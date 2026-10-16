@@ -531,7 +531,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     // is one more upload of the lent bytes over the offload card's link, charged to the split's time (one-off seconds, same unit as the pass).
     {
         const double touched = 1.0 - std::pow(1.0 - n_used / n_exp, (double) T);
-        best_split += touched * dense_bytes / (Bm * 1e3);
+        best_split += touched * dense_bytes / (Bm * 1e3) * llama_moe_live_get("refill_weight");   // live: POST /moe/params
     }
     out.valid      = true;
     out.split      = best_split > 0.0 && best_split < 0.95 * t_one;
@@ -670,8 +670,8 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
                 choice = B.n[0] > 0 ? 1 : 0;
                 why = "measuring: the other one once";
             } else if (plan.valid) {
-                choice = (plan.t_split_ms <= 0.92 * plan.t_one_ms) ? 1 : 0;
-                why = choice ? "planner: split predicted 8% or more ahead" : "planner: close call, one card (no trial)";
+                choice = (plan.t_split_ms <= (1.0 - llama_moe_live_get("split_min_gain")) * plan.t_one_ms) ? 1 : 0;   // live: POST /moe/params
+                why = choice ? "planner: split predicted clearly ahead (split_min_gain)" : "planner: close call, one card (no trial)";
             } else {
                 int found = -1, dist = 1 << 20;
                 for (const auto & kv : g_buckets) {
