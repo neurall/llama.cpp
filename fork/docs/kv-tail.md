@@ -25,7 +25,8 @@ unclaimed cell.
 * sizing (rule): nothing is reserved at start, the pool is sized as if the model had no KV. A request claims what it needs before its first pass (the server knows the
   prompt length), generation claims a few more blocks before the graph that writes a cell past the claim, and the end of the request drops the claim to what the
   next request keeps (reused prefix cells). A request that needs more than the pool can give while keeping a minimum of experts is refused with the numbers.
-  `-c` only caps the largest request.
+  `-c` is ignored in this mode: the context of a request is calculated from the request and what the pool can give (upper bound: the model's trained context),
+  a static reserve only hurts. A `-c` given by hand is still a cap.
 
 ## Limits
 
