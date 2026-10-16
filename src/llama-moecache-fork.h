@@ -161,6 +161,7 @@ void llama_moe_cache_kv_arena_start_fork();
 struct llama_kv_tail_stat_fork {
     std::string dev;
     size_t kv_cells = 0, kv_bytes = 0;          // cells in use, bytes the pool holds for them
+    size_t cap_tokens = 0;                      // tokens the pool (or arena) of this card can back for its records now (the smallest over its records)
     size_t moe_bytes = 0;                       // bytes of the blocks the experts can use now
     size_t blocks = 0, blocks_free = 0, blocks_kv = 0, blocks_lent = 0;   // expert blocks of the pool: all, free, under the KV, lent to the compute graph
     size_t claim_n = 0, release_n = 0, evicted = 0;   // since the last call of this function with reset: blocks claimed, released, experts evicted by claims

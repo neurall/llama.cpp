@@ -3156,7 +3156,9 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
     for (auto & ap : mc->alias) {
         llama_kv_tail_stat_fork st;
         st.dev = ggml_backend_dev_name(ap.dev);
-        for (auto & r : ap.kvt) { st.kv_cells += r.cells; st.kv_bytes += std::min(r.bytes, r.cells * r.row); }
+        size_t cap = (size_t) -1;
+        for (auto & r : ap.kvt) { st.kv_cells += r.cells; st.kv_bytes += std::min(r.bytes, r.cells * r.row); cap = std::min(cap, llama_moe_cache_kv_tail_cap_fork(r.owner)); }
+        st.cap_tokens = cap == (size_t) -1 ? 0 : cap;
         for (auto & sg : ap.segs) {
             const auto & ps = mc->pool[sg.pcls];
             for (int32_t b = 0; b < sg.n; ++b) {
@@ -3166,6 +3168,14 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
                 if (o != -2 && o != -3) { st.moe_bytes += sg.B; }   // blocks the experts can use now (cached, uploading or free)
             }
         }
+        out.push_back(std::move(st));
+    }
+    for (auto & ar : g_kv_arena) {   // dense: the cards with an arena
+        llama_kv_tail_stat_fork st;
+        st.dev = ggml_backend_dev_name(ar.dev);
+        size_t cap = (size_t) -1;
+        for (auto & q : ar.runs) { const size_t c = q.rows ? q.rows() : 0; st.kv_cells += c; st.kv_bytes += c * q.row; cap = std::min(cap, q.row > 0 ? (size_t) std::max<int64_t>(0, q.end_off) / q.row : 0); }
+        st.cap_tokens = cap == (size_t) -1 ? 0 : cap;
         out.push_back(std::move(st));
     }
     if (!out.empty()) {
@@ -6046,9 +6056,10 @@ bool llama_moe_cache_get_info_fork(struct llama_tuning_info * info) {
         info->kvt_n = (int32_t) std::min<size_t>(kt.size(), 4);
         for (int i = 0; i < info->kvt_n; ++i) {
             snprintf(info->kvt_dev[i], sizeof info->kvt_dev[i], "%s", kt[i].dev.c_str());
-            info->kvt_cells[i] = kt[i].kv_cells; info->kvt_kv_mib[i] = kt[i].kv_bytes / 1048576.0; info->kvt_moe_gib[i] = kt[i].moe_bytes / 1073741824.0;
+            info->kvt_cells[i] = kt[i].kv_cells; info->kvt_cap[i] = kt[i].cap_tokens; info->kvt_kv_mib[i] = kt[i].kv_bytes / 1048576.0; info->kvt_moe_gib[i] = kt[i].moe_bytes / 1073741824.0;
             info->kvt_blocks[i] = kt[i].blocks; info->kvt_free[i] = kt[i].blocks_free; info->kvt_lent[i] = kt[i].blocks_lent; info->kvt_kv_blocks[i] = kt[i].blocks_kv;
         }
+        if (!kt.empty()) { info->kvt_cap_min = info->kvt_cap[0]; for (int i = 1; i < info->kvt_n; ++i) { info->kvt_cap_min = std::min(info->kvt_cap_min, info->kvt_cap[i]); } }
         if (!kt.empty()) { info->kvt_claim_n = kt[0].claim_n; info->kvt_release_n = kt[0].release_n; info->kvt_evicted = kt[0].evicted; }
     }
     return true;

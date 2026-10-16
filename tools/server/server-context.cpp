@@ -844,8 +844,8 @@ struct server_slot {
                             tu.value("margin", -1), tu.value("gate", -1), tu.value("wait", -1), tu.value("big", -1), tu.value("predict", -1));
                     if (m.contains("kv_tail")) {
                         for (const auto & cd : m["kv_tail"]["cards"]) {
-                            SLT_INF(*this, "       kv-tail %s = KV %llu cells (%.1f MiB), expert cache %.2f GiB (%llu of %llu blocks free, %llu lent, %llu under the KV)\n", cd.value("dev", "?").c_str(),
-                                    (unsigned long long) cd.value("kv_cells", (uint64_t) 0), cd.value("kv_mib", 0.0), cd.value("moe_gib", 0.0), (unsigned long long) cd.value("blocks_free", (uint64_t) 0),
+                            SLT_INF(*this, "       kv-tail %s = KV %llu of %llu tokens (%.1f MiB), expert cache %.2f GiB (%llu of %llu blocks free, %llu lent, %llu under the KV)\n", cd.value("dev", "?").c_str(),
+                                    (unsigned long long) cd.value("kv_cells", (uint64_t) 0), (unsigned long long) cd.value("cap_tokens", (uint64_t) 0), cd.value("kv_mib", 0.0), cd.value("moe_gib", 0.0), (unsigned long long) cd.value("blocks_free", (uint64_t) 0),
                                     (unsigned long long) cd.value("blocks", (uint64_t) 0), (unsigned long long) cd.value("blocks_lent", (uint64_t) 0), (unsigned long long) cd.value("blocks_kv", (uint64_t) 0));
                         }
                     }
