@@ -5,6 +5,14 @@
 #include "ggml-cpu.h"
 #include "gguf.h"
 #include "../../ggml/src/ggml-cpu/quants.h"
+extern "C" {
+#define FORMS(X) X(iq1_s) X(iq1_m) X(iq2_xxs) X(iq2_xs) X(iq2_s) X(iq3_xxs) X(iq3_s)
+#define DECL(n) void ggml_vec_dot_##n##_q8_K_avx2(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
+                void ggml_vec_dot_##n##_q8_K_vnni(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
+                void ggml_vec_dot_##n##_q8_K_avx512(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
+                void ggml_vec_dot_##n##_q8_K_vbmi(int, float *, size_t, const void *, size_t, const void *, size_t, int);
+FORMS(DECL)
+}
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -19,9 +27,15 @@ int main(int argc, char ** argv) {
         { "iq2_xxs", GGML_TYPE_IQ2_XXS, ggml_vec_dot_iq2_xxs_q8_K_generic }, { "iq2_xs", GGML_TYPE_IQ2_XS, ggml_vec_dot_iq2_xs_q8_K_generic },
         { "iq2_s", GGML_TYPE_IQ2_S, ggml_vec_dot_iq2_s_q8_K_generic }, { "iq3_xxs", GGML_TYPE_IQ3_XXS, ggml_vec_dot_iq3_xxs_q8_K_generic },
         { "iq3_s", GGML_TYPE_IQ3_S, ggml_vec_dot_iq3_s_q8_K_generic } };
+    // every form by name (the tuner only runs inside a graph, so GGML_CPU_KERNEL_FORM does not reach a direct call): FORM=avx2|vnni|avx512|vbmi in the environment
+    struct { const char * n; ggml_vec_dot_t f[4]; } FN[] = {
+#define ROW(n) { #n, { ggml_vec_dot_##n##_q8_K_avx2, ggml_vec_dot_##n##_q8_K_vnni, ggml_vec_dot_##n##_q8_K_avx512, ggml_vec_dot_##n##_q8_K_vbmi } },
+        FORMS(ROW) };
+    const char * form = getenv("FORM"); int fi = !form ? -1 : !strcmp(form, "avx2") ? 0 : !strcmp(form, "vnni") ? 1 : !strcmp(form, "avx512") ? 2 : !strcmp(form, "vbmi") ? 3 : -1;
     ggml_type type = GGML_TYPE_COUNT; ggml_vec_dot_t ref = nullptr;
     for (auto & e : T) { if (!strcmp(e.name, argv[2])) { type = e.t; ref = e.ref; } }
     if (!ref) { fprintf(stderr, "unknown type\n"); return 1; }
+    ggml_vec_dot_t formfn = nullptr; for (auto & e : FN) { if (!strcmp(e.n, argv[2]) && fi >= 0) { formfn = e.f[fi]; } }
     gguf_init_params gp = { true, nullptr };
     gguf_context * g = gguf_init_from_file(argv[1], gp);
     if (!g) { fprintf(stderr, "cannot read %s\n", argv[1]); return 1; }
@@ -42,7 +56,7 @@ int main(int argc, char ** argv) {
         double tw = 0; long td = 0;
         for (int r = 0; r < 256; ++r) {
             float s = 0, s0 = 0;
-            tr->vec_dot(n, &s, 0, w.data() + r * rb, 0, a8.data(), 0, 1);
+            (formfn ? formfn : tr->vec_dot)(n, &s, 0, w.data() + r * rb, 0, a8.data(), 0, 1);
             ref(n, &s0, 0, w.data() + r * rb, 0, a8.data(), 0, 1);
             const double rel = fabs((double) s - s0) / (fabs((double) s0) + 1e-3);
             if (rel > tw) tw = rel;
@@ -51,6 +65,6 @@ int main(int argc, char ** argv) {
         printf("%-28s max rel diff %.2e, %ld of 256 rows differ\n", name, tw, td);
         worst = std::max(worst, tw); rows += 256; diffrows += td; ++used;
     }
-    printf("%s: %d tensors, worst %.2e, %ld of %ld rows differ from the C reference\n", argv[2], used, worst, diffrows, rows);
+    printf("%s %s: %d tensors, worst %.2e, %ld of %ld rows differ from the C reference\n", argv[2], form ? form : "default", used, worst, diffrows, rows);
     return 0;
 }
