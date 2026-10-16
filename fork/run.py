@@ -3314,6 +3314,35 @@ def _sudo_write(path, val):
         sys.exit(f"hugepool: writing {path} needs root (sudo -n): {r.stderr.strip()}")
 
 
+def cmd_queue(a):
+    """Adds tasks to the bench queue the safe way: under the queue's own file lock (queued.py read-modify-writes tasks.csv; an edit without that lock is lost to its next
+    rewrite - a hand edit was, once), after a backup of tasks.csv with the last 3 versions kept in queue/backups. `backups` lists them."""
+    import fcntl, shutil
+    Q = "/p/bw/data/q5h/queue"; INI = os.path.join(Q, "tasks.csv"); BK = os.path.join(Q, "backups")
+    COLS = ["id", "order", "status", "campaign", "created", "start", "stop", "exit", "pid", "env", "cli", "log", "note"]
+    if a.action == "backups":
+        for f in sorted(os.listdir(BK)) if os.path.isdir(BK) else []: print(os.path.join(BK, f))
+        return 0
+    if a.action == "add":
+        if not a.task_id or not a.cli: sys.exit("queue add TASK_ID --cli '...'")
+        new = [{"id": a.task_id, "order": a.order, "cli": a.cli, "note": a.note}]
+    else:
+        new = json.load(sys.stdin)
+    with open(INI + ".lock", "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        os.makedirs(BK, exist_ok=True)
+        if os.path.exists(INI): shutil.copy2(INI, os.path.join(BK, "tasks-" + time.strftime("%Y%m%d-%H%M%S") + ".csv"))
+        for f in sorted(os.listdir(BK))[:-3]: os.remove(os.path.join(BK, f))
+        rows = list(csv.DictReader(open(INI, newline="")))
+        have = {r["id"] for r in rows}
+        for t in new:
+            if t["id"] in have: print("exists, skipped:", t["id"]); continue
+            r = {c: "" for c in COLS}; r.update(status="next", created=time.strftime("%F %T"), campaign=t["id"], log=os.path.join(Q, "logs", t["id"] + ".log")); r.update({k: str(v) for k, v in t.items()})
+            rows.append(r); print("added:", t["id"])
+        with open(INI + ".tmp", "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=COLS, lineterminator="\n"); w.writeheader(); [w.writerow({c: r.get(c, "") for c in COLS}) for r in rows]
+        os.replace(INI + ".tmp", INI)
+    return 0
 def cmd_stop(a):
     """Stops a running measurement chain for real: the harness (bench, regress, exp, run, quick, ctl, prompt with their flock wrappers), the servers and tools of our builds and an nsys around them, every descendant of it (the
     servers and tools it started: a killed script does not take its children with it, and a lone kill of the harness lets the parent script start the next cell),
@@ -4929,6 +4958,12 @@ if __name__ == "__main__":
     st.add_argument("--grace", type=float, default=10.0, help="seconds between SIGTERM and SIGKILL")
     st.add_argument("--wait-gpu", type=float, default=60.0, help="seconds to wait until the GPUs have no memory in use")
     st.add_argument("--no-power", action="store_true", help="leave the power limits alone")
+    qq = sp.add_parser("queue", help="the bench queue (queued.service): add TASK_ID --cli '...' [--order N] [--note ..]  |  add-json (a JSON list on stdin)  |  backups; edits take the queue's own file lock and keep the last 3 versions of tasks.csv")
+    qq.add_argument("action", choices=["add", "add-json", "backups"])
+    qq.add_argument("task_id", nargs="?")
+    qq.add_argument("--cli", help="the command line the queue runs (bash m111log.sh ... or a run.py line)")
+    qq.add_argument("--order", type=float, default=-100, help="run order, ascending (default -100 = ahead of the waiting tasks)")
+    qq.add_argument("--note", default="")
     s_ = sp.add_parser("show")
     s_.add_argument("-t", "--test")
     s_.add_argument("-b", "--build")
@@ -4940,5 +4975,5 @@ if __name__ == "__main__":
     mf.add_argument("--model", help="part of the model name")
     a = ap.parse_args()
     {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "misfires": cmd_misfires,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "misfires": cmd_misfires,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
