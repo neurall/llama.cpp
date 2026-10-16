@@ -247,7 +247,20 @@ llama_context::llama_context(
         const char * given = llama_moe_get_opt("kv-ctx-given");   // set by the common code: 1 when the user passed -c
         if ((!ac || atoi(ac) != 0) && tail_possible) {
             llama_moe_set_opt("kv-user-ctx", std::to_string(cparams.n_ctx).c_str());   // what the user asked for (or the default): the cache goes back to it when it cannot use the tail layout
-            if (!(given && atoi(given) != 0)) { cparams.n_ctx = hparams.n_ctx_train; }   // no -c: the model's maximum; an explicit -c is the cap of a request (like -n), nothing is reserved
+            if (!(given && atoi(given) != 0)) {   // no -c: the smaller of the model's maximum and what the machine can hold (a 1M-token model must not get a 1M-token context: the structures that scale with it, the masks, fill the host)
+                uint64_t row = 0, free_b = 0;   // KV bytes of one token over all layers, free VRAM over all GPUs
+                for (uint32_t il = 0; il < hparams.n_layer_all; ++il) {
+                    if (hparams.has_kv(il)) { row += ggml_row_size(params.type_k, hparams.n_embd_k_gqa(il)) + ggml_row_size(params.type_v, hparams.n_embd_v_gqa(il)); }
+                }
+                for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                    ggml_backend_dev_t d = ggml_backend_dev_get(i);
+                    if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); free_b += f; }
+                }
+                uint64_t fit = row > 0 && free_b > 0 ? free_b / row : (uint64_t) hparams.n_ctx_train;
+                fit = std::max<uint64_t>(4096, fit / 256 * 256);
+                cparams.n_ctx = (uint32_t) std::min<uint64_t>(hparams.n_ctx_train, fit);
+                LLAMA_LOG_WARN("%s: kv-tail: no -c: context %u tokens (the model's maximum is %u, the free VRAM holds about %llu tokens of KV)\n", __func__, cparams.n_ctx, hparams.n_ctx_train, (unsigned long long) fit);
+            }
         } else if (!tail_possible) {
             LLAMA_LOG_WARN("%s: kv-tail is not possible here (needs flash attention, one sequence, equal K and V types, a GPU): the normal KV cache with n_ctx = %u\n", __func__, cparams.n_ctx);
         }
