@@ -4374,32 +4374,33 @@ void ggml_vec_dot_iq4_nl_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const v
 
 #if defined __AVX2__
 
-    const __m128i values128 = _mm_loadu_si128((const __m128i*)kvalues_iq4nl);
-    const __m128i m4b  = _mm_set1_epi8(0x0f);
+    // 256-bit table lookup (one shuffle for both nibble halves instead of two 128-bit shuffles and an insert per block) and four independent float
+    // accumulators over four blocks per step. The integer dot products are exact, only the order the float sums are added in differs.
+    const __m256i values256 = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i*)kvalues_iq4nl));
+    const __m256i m4b  = _mm256_set1_epi8(0x0f);
     const __m256i mone = _mm256_set1_epi16(1);
 
-    __m256 accum1 = _mm256_setzero_ps();
-    __m256 accum2 = _mm256_setzero_ps();
-    for (; ib + 1 < nb; ib += 2) {
-        const __m128i q4bits_1 = _mm_loadu_si128((const __m128i*)x[ib + 0].qs);
-        const __m128i q4bits_2 = _mm_loadu_si128((const __m128i*)x[ib + 1].qs);
-        const __m256i q8b_1 = _mm256_loadu_si256((const __m256i *)y[ib + 0].qs);
-        const __m256i q8b_2 = _mm256_loadu_si256((const __m256i *)y[ib + 1].qs);
-        const __m256i q4b_1 = MM256_SET_M128I(_mm_shuffle_epi8(values128, _mm_and_si128(_mm_srli_epi16(q4bits_1, 4), m4b)),
-                                              _mm_shuffle_epi8(values128, _mm_and_si128(q4bits_1, m4b)));
-        const __m256i q4b_2 = MM256_SET_M128I(_mm_shuffle_epi8(values128, _mm_and_si128(_mm_srli_epi16(q4bits_2, 4), m4b)),
-                                              _mm_shuffle_epi8(values128, _mm_and_si128(q4bits_2, m4b)));
-        const __m256i p16_1 = mul_add_epi8(q4b_1, q8b_1);
-        const __m256i p16_2 = mul_add_epi8(q4b_2, q8b_2);
-        const __m256i p_1 = _mm256_madd_epi16(p16_1, mone);
-        const __m256i p_2 = _mm256_madd_epi16(p16_2, mone);
-        accum1 = _mm256_fmadd_ps(_mm256_set1_ps(GGML_CPU_FP16_TO_FP32(y[ib + 0].d)*GGML_CPU_FP16_TO_FP32(x[ib + 0].d)),
-                _mm256_cvtepi32_ps(p_1), accum1);
-        accum2 = _mm256_fmadd_ps(_mm256_set1_ps(GGML_CPU_FP16_TO_FP32(y[ib + 1].d)*GGML_CPU_FP16_TO_FP32(x[ib + 1].d)),
-                _mm256_cvtepi32_ps(p_2), accum2);
+    __m256 accum0 = _mm256_setzero_ps(), accum1 = _mm256_setzero_ps(), accum2 = _mm256_setzero_ps(), accum3 = _mm256_setzero_ps();
+    #define IQ4NL_BLOCK(K, ACC)                                                                                                              \
+        {                                                                                                                                    \
+            const __m128i q4bits = _mm_loadu_si128((const __m128i*)x[ib + (K)].qs);                                                          \
+            const __m256i q8b    = _mm256_loadu_si256((const __m256i *)y[ib + (K)].qs);                                                      \
+            const __m256i q4b    = _mm256_shuffle_epi8(values256, _mm256_and_si256(MM256_SET_M128I(_mm_srli_epi16(q4bits, 4), q4bits), m4b));  \
+            const __m256i p      = _mm256_madd_epi16(mul_add_epi8(q4b, q8b), mone);                                                          \
+            ACC = _mm256_fmadd_ps(_mm256_set1_ps(GGML_CPU_FP16_TO_FP32(y[ib + (K)].d)*GGML_CPU_FP16_TO_FP32(x[ib + (K)].d)), _mm256_cvtepi32_ps(p), ACC); \
+        }
+    for (; ib + 3 < nb; ib += 4) {
+        IQ4NL_BLOCK(0, accum0)
+        IQ4NL_BLOCK(1, accum1)
+        IQ4NL_BLOCK(2, accum2)
+        IQ4NL_BLOCK(3, accum3)
     }
+    for (; ib < nb; ++ib) {
+        IQ4NL_BLOCK(0, accum0)
+    }
+    #undef IQ4NL_BLOCK
 
-    sumf = hsum_float_8(_mm256_add_ps(accum1, accum2));
+    sumf = hsum_float_8(_mm256_add_ps(_mm256_add_ps(accum0, accum1), _mm256_add_ps(accum2, accum3)));
 
 #elif defined __AVX__
     const __m128i values128 = _mm_loadu_si128((const __m128i*)kvalues_iq4nl);
