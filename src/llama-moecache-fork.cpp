@@ -274,7 +274,7 @@ struct moe_cache {
         size_t                mirror_b = 0;     // the dense split's copies at the start of the buffer (--moe mirror-pool, see llama_dsplit_mirror_place_fork)
         size_t                base_off = 0;     // where the graph being built starts: mirror_b when it splits (the copies before it), else 0
         // KV cache at the tail (--moe kv-tail=1): the records of the caches on this card, stacked from tail_end downward; blocks under their used rows are owner -3
-        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0, end_off = 0; std::function<size_t()> rows; size_t cells = 0; };
+        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0; int64_t end_off = 0; std::function<size_t()> rows; size_t cells = 0; };
         std::vector<kvt_run>  kvt;
         size_t                tail_end  = 0;    // end of the last class's expert blocks (where the first record ends)
         size_t                span_full = 0;    // span before any claim: ap.span is the part in front of the lowest claimed block
@@ -2965,8 +2965,9 @@ static void kv_tail_claim(moe_cache * mc, bool & changed) {
         ap.kv_cells_sum = sum;
         std::vector<std::pair<size_t, size_t>> rng;   // byte ranges [lo, hi) of the pool buffer under the used rows
         for (auto & r : ap.kvt) {
-            const size_t w = r.cells > 0 ? std::min(r.bytes, (r.cells + HEAD) * r.row) : 0;
-            if (w > 0) { rng.push_back({ r.end_off - w, r.end_off }); }
+            size_t w = r.cells > 0 ? std::min(r.bytes, (r.cells + HEAD) * r.row) : 0;
+            w = std::min<size_t>(w, (size_t) std::max<int64_t>(0, r.end_off));   // never below the start of the buffer
+            if (w > 0) { rng.push_back({ (size_t) (r.end_off - (int64_t) w), (size_t) r.end_off }); }
         }
         size_t lowest = ap.span_full, n_take = 0, n_give = 0, n_evict = 0;
         for (auto & sg : ap.segs) {
@@ -3058,6 +3059,25 @@ static void kv_tail_claim(moe_cache * mc, bool & changed) {
                     ggml_backend_dev_name(ap.dev), cells_before, sum, n_take, n_evict, n_give, held, (double) held * (ap.segs.empty() ? 0.0 : (double) ap.segs.back().B) / 1048576.0, ap.span / 1048576.0);
         }
     }
+}
+
+
+// find_slot's limit: the tokens the record may hold. Below the floor (a tenth of the pool, at least three blocks of the biggest class) the experts keep their blocks, so a
+// context that would take more is "full" for the cache: the server stops the answer or refuses the prompt, as with a full KV cache.
+size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
+    moe_cache * mc = g_cache;
+    if (!mc) { return (size_t) -1; }
+    for (auto & ap : mc->alias) {
+        for (auto & r : ap.kvt) {
+            if (r.owner != owner) { continue; }
+            size_t bmax = 0;
+            for (auto & sg : ap.segs) { bmax = std::max(bmax, sg.B); }
+            const int64_t floor_b = (int64_t) std::max<size_t>(ap.span_full / 10, 3 * bmax);
+            const int64_t room = std::max<int64_t>(0, r.end_off - floor_b);
+            return r.row > 0 ? (size_t) room / r.row : 0;
+        }
+    }
+    return (size_t) -1;   // the pool does not exist yet (before the first decode): no limit
 }
 
 std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool reset) {
@@ -3728,19 +3748,20 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     ap.span_full = ap.span;
                     {   // the records of the KV caches on this card (--moe kv-tail=1) sit at the tail of the expert blocks, stacked downward
                         std::lock_guard<std::mutex> klk(g_kvt_mtx);
-                        size_t off = ap.tail_end;
+                        int64_t off = (int64_t) ap.tail_end;
                         for (auto & r : g_kvt) {
                             if (r.dev != ap.dev) { continue; }
-                            if (r.bytes > off || ap.span != ap.tail_end) {
-                                LLAMA_LOG_ERROR("%s: kv-tail: the KV record of %s (%.1f MiB) does not fit the pool (%.1f MiB of expert blocks)\n", __func__, ggml_backend_dev_name(ap.dev), r.bytes / 1048576.0, off / 1048576.0);
-                                GGML_ABORT("kv-tail record does not fit the pool");
+                            if (ap.span != ap.tail_end) {
+                                LLAMA_LOG_ERROR("%s: kv-tail needs --moe alias-all (the record is placed behind every size class)\n", __func__);
+                                GGML_ABORT("kv-tail without alias-all");
                             }
-                            off -= r.bytes;
+                            // the record is virtual: it may be larger than the pool (the model's full context); only the rows the cap allows are ever backed (kv_tail_cap)
                             moe_cache::alias_pool::kvt_run kr;
-                            kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.end_off = off + r.bytes; kr.rows = r.rows;
+                            kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.end_off = off; kr.rows = r.rows;
                             ap.kvt.push_back(kr);
-                            if (r.attach) { r.attach(pbuf, base + off); }
-                            LLAMA_LOG_INFO("%s: kv-tail: record of %.1f MiB (%zu B per cell) placed at the tail of the pool on %s\n", __func__, r.bytes / 1048576.0, r.row, ggml_backend_dev_name(ap.dev));
+                            if (r.attach) { r.attach(pbuf, (uint8_t *) ((uintptr_t) base + (uintptr_t) off - (uintptr_t) r.bytes)); }
+                            LLAMA_LOG_INFO("%s: kv-tail: record of %.1f MiB (%zu B per cell) ends %.1f MiB into the pool of %.1f MiB on %s\n", __func__, r.bytes / 1048576.0, r.row, off / 1048576.0, ap.tail_end / 1048576.0, ggml_backend_dev_name(ap.dev));
+                            off -= (int64_t) r.bytes;
                         }
                     }
                     mc->alias.push_back(ap);

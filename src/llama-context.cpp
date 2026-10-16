@@ -240,6 +240,9 @@ llama_context::llama_context(
     cparams.pooling_type      = params.pooling_type;
 
     cparams.n_ctx            = params.n_ctx           == 0    ? hparams.n_ctx_train           : params.n_ctx;
+    if (const char * kt = llama_moe_get_opt("kv-tail"); kt && atoi(kt) != 0) {   // the context of a request is calculated from the request, -c is not used (fork/docs/kv-tail.md)
+        cparams.n_ctx = hparams.n_ctx_train;
+    }
     cparams.rope_freq_base   = params.rope_freq_base  == 0.0f ? hparams.rope_freq_base_train  : params.rope_freq_base;
     cparams.rope_freq_scale  = params.rope_freq_scale == 0.0f ? hparams.rope_freq_scale_train : params.rope_freq_scale;
 

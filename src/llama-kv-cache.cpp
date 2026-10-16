@@ -385,6 +385,7 @@ llama_kv_cache::llama_kv_cache(
                 }
             };
             llama_moe_cache_kv_tail_add_fork(reg);
+            kv_tail_on = true;
         }
     }
 
@@ -1111,6 +1112,7 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
         res.idxs[s].reserve(n_tokens);
 
         const auto & cells = v_cells[seq_to_stream[seq_id]];
+        const uint32_t csize = kv_tail_cap(cells.size());   // kv-tail: the cells the expert pool can hold (with a floor of experts kept), else all
 
         uint32_t head_cur = v_heads[seq_to_stream[seq_id]];
 
@@ -1120,8 +1122,8 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
             head_cur = 0;
         }
 
-        if (n_tokens > cells.size()) {
-            LLAMA_LOG_ERROR("%s: n_tokens = %d > size = %u\n", __func__, n_tokens, cells.size());
+        if (n_tokens > csize) {
+            LLAMA_LOG_ERROR("%s: n_tokens = %d > size = %u\n", __func__, n_tokens, csize);
             return { };
         }
 
@@ -1132,8 +1134,8 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
         const uint32_t n_test = cont ? n_tokens : 1;
 
         while (true) {
-            if (head_cur + n_test > cells.size()) {
-                n_tested += cells.size() - head_cur;
+            if (head_cur + n_test > csize) {
+                n_tested += csize - head_cur;
                 head_cur = 0;
                 continue;
             }
@@ -1191,7 +1193,7 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
                 res.idxs[s].clear();
             }
 
-            if (n_tested >= cells.size()) {
+            if (n_tested >= csize) {
                 //LLAMA_LOG_ERROR("%s: failed to find a slot for %d tokens\n", __func__, n_tokens);
                 return { };
             }
@@ -3186,3 +3188,10 @@ void llama_kv_cache_context::get_prev_tokens(const llama_ubatch & ubatch, uint32
 
 void llama_moe_cache_kv_tail_remove_fork(void * owner);
 llama_kv_cache::tail_guard::~tail_guard() { llama_moe_cache_kv_tail_remove_fork(o); }
+
+size_t llama_moe_cache_kv_tail_cap_fork(void * owner);
+uint32_t llama_kv_cache::kv_tail_cap(uint32_t n) const {
+    if (!kv_tail_on) { return n; }
+    const size_t c = llama_moe_cache_kv_tail_cap_fork((void *) this);
+    return (uint32_t) std::min<size_t>(n, c);
+}
