@@ -1,4 +1,4 @@
-// Generated list: every vec_dot exported by arch/x86/quants.c, renamed with the suffix _avx2form so the second compile of that file (quants-alt.c, AVX-512 off) can live
+// Generated list: every vec_dot exported by arch/x86/quants.c, renamed with the suffix _avx2form so the second compile of that file (quants-avx2-form.c, AVX-512 off) can live
 // in the same library. Regenerate with:  grep -oP '^(void|size_t) \Kggml_\w+(?=\()' arch/x86/quants.c
 #pragma once
 #define ggml_vec_dot_iq1_m_q8_K ggml_vec_dot_iq1_m_q8_K_avx2form

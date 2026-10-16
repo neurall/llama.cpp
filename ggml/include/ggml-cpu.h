@@ -86,6 +86,8 @@ extern "C" {
     GGML_BACKEND_API int ggml_cpu_has_bmi2       (void);
     GGML_BACKEND_API int ggml_cpu_has_f16c       (void);
     GGML_BACKEND_API int ggml_cpu_has_fma        (void);
+    // fork: pick the faster form of the dot product of a quant type (default or AVX2 form, see ggml-cpu.c); done automatically before the first graph that uses the type
+    GGML_BACKEND_API void ggml_cpu_tune_vec_dot(enum ggml_type type);
     GGML_BACKEND_API int ggml_cpu_has_avx512     (void);
     GGML_BACKEND_API int ggml_cpu_has_avx512_vbmi(void);
     GGML_BACKEND_API int ggml_cpu_has_avx512_vnni(void);

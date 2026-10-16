@@ -29,6 +29,7 @@ int main(int argc, char ** argv) {
         const auto * trc = ggml_get_type_traits_cpu(t);
         const auto * q8  = ggml_get_type_traits_cpu(trc->vec_dot_type);
         if (!trc->vec_dot) { continue; }
+        ggml_cpu_tune_vec_dot(t);   // pick the faster form of this type's dot product (GGML_CPU_KERNEL_TUNE=log prints it, =0 keeps the default form)
         ggml_quantize_init(t);
         const size_t rb = ggml_row_size(t, n);
         std::vector<uint8_t> uq(rb * urows);

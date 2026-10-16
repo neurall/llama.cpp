@@ -2996,7 +2996,7 @@ static const struct { enum ggml_type type; ggml_vec_dot_t avx2form; } g_avx2form
     { GGML_TYPE_IQ1_S, ggml_vec_dot_iq1_s_q8_K_avx2form }, { GGML_TYPE_IQ1_M, ggml_vec_dot_iq1_m_q8_K_avx2form },
 };
 
-static void ggml_cpu_tune_vec_dot(enum ggml_type type) {
+void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     static int tuned[GGML_TYPE_COUNT];
     if (type < 0 || type >= GGML_TYPE_COUNT || __atomic_exchange_n(&tuned[type], 1, __ATOMIC_ACQ_REL)) { return; }
     const char * env = getenv("GGML_CPU_KERNEL_TUNE");
@@ -3046,7 +3046,7 @@ static void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     free(w); free(q);
 }
 #else
-static void ggml_cpu_tune_vec_dot(enum ggml_type type) { (void) type; }
+void ggml_cpu_tune_vec_dot(enum ggml_type type) { (void) type; }
 #endif
 
 struct ggml_cplan ggml_graph_plan(
