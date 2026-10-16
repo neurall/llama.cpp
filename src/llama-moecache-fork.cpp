@@ -3092,10 +3092,47 @@ static void kv_tail_claim(moe_cache * mc, bool & changed) {
 }
 
 
+
+// ---- KV arena for the cards without an expert pool (dense models) ----
+struct kv_arena_run { void * owner; size_t row; int64_t end_off; std::function<size_t()> rows; size_t cells = 0; };
+struct kv_arena_t { ggml_backend_dev_t dev = nullptr; ggml_backend_buffer_t buf = nullptr; size_t size = 0; std::vector<kv_arena_run> runs; };
+static std::vector<kv_arena_t> g_kv_arena;
+
+void llama_moe_cache_kv_arena_start_fork() {
+    std::lock_guard<std::mutex> lk(g_kvt_mtx);
+    for (auto & r : g_kvt) {
+        if (r.attached || !r.dev) { continue; }
+        kv_arena_t * ar = nullptr;
+        for (auto & x : g_kv_arena) { if (x.dev == r.dev) { ar = &x; } }
+        if (!ar) {
+            size_t free_b = 0, total = 0;
+            ggml_backend_dev_memory(r.dev, &free_b, &total);
+            const size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 384) * 1024 * 1024;
+            if (free_b <= margin + (64u << 20)) { LLAMA_LOG_ERROR("kv-arena: %s has %.1f MiB free: no room for the KV\n", ggml_backend_dev_name(r.dev), free_b / 1048576.0); continue; }
+            const size_t size = free_b - margin;
+            ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(r.dev), size);   // the one allocation of the KV, at start
+            if (!buf) { LLAMA_LOG_ERROR("kv-arena: could not allocate %.1f MiB on %s\n", size / 1048576.0, ggml_backend_dev_name(r.dev)); continue; }
+            g_kv_arena.push_back(kv_arena_t{ r.dev, buf, size, {} });
+            ar = &g_kv_arena.back();
+        }
+        // placement: the record ends where the records placed before it begin (the first one at the end of the buffer)
+        size_t placed = 0;
+        for (auto & x : g_kvt) { if (&x == &r) { break; } if (x.attached && x.dev == r.dev) { placed += x.bytes; } }
+        ar->runs.push_back(kv_arena_run{ r.owner, r.row, (int64_t) ar->size - (int64_t) placed, r.rows });
+        if (r.attach) { r.attach(ar->buf, (uint8_t *) ((uintptr_t) ggml_backend_buffer_get_base(ar->buf) + (uintptr_t) ar->runs.back().end_off - (uintptr_t) r.bytes)); }
+        r.attached = true;
+        LLAMA_LOG_INFO("kv-arena: %s: %.1f MiB, record of %.1f MiB (%zu B per token) ends at %.1f MiB: room for %zu tokens\n", ggml_backend_dev_name(r.dev), ar->size / 1048576.0,
+                r.bytes / 1048576.0, r.row, ar->runs.back().end_off / 1048576.0, r.row ? (size_t) ar->runs.back().end_off / r.row : 0);
+    }
+}
+
 // find_slot's limit: the tokens the record may hold. The KV may take the whole expert cache (starved experts are streamed experts, still faster than a starved KV); what it
 // leaves is the part of the pool a decode graph borrows (its tensors, the scratch): a context that would take more is "full" for the cache, the server stops the answer
 // or refuses the prompt, as with a full KV cache. Prompt passes shrink to what is left (the pass planner reads the lendable bytes).
 size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
+    for (auto & ar : g_kv_arena) {
+        for (auto & q : ar.runs) { if (q.owner == owner) { return q.row > 0 ? (size_t) std::max<int64_t>(0, q.end_off) / q.row : 0; } }
+    }
     moe_cache * mc = g_cache;
     if (!mc) { return (size_t) -1; }
     for (auto & ap : mc->alias) {
@@ -3792,6 +3829,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.end_off = off; kr.rows = r.rows;
                             ap.kvt.push_back(kr);
                             if (r.attach) { r.attach(pbuf, (uint8_t *) ((uintptr_t) base + (uintptr_t) off - (uintptr_t) r.bytes)); }
+                            r.attached = true;
                             LLAMA_LOG_INFO("%s: kv-tail: record of %.1f MiB (%zu B per cell) ends %.1f MiB into the pool of %.1f MiB on %s\n", __func__, r.bytes / 1048576.0, r.row, off / 1048576.0, ap.tail_end / 1048576.0, ggml_backend_dev_name(ap.dev));
                             off -= (int64_t) r.bytes;
                         }

@@ -2804,6 +2804,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         thread_cap_from_probe(llama_moe_cache_cpu_sat_threads_fork());
         sched_reserve(); // the compute graph now includes the cache chain
     }
+    llama_moe_cache_kv_arena_start_fork();   // --moe kv-tail=1: KV records no expert pool took (dense models) get their buffer, once, at the first real decode
     if (!fork_resident && !cparams.moe_cache && !moe_mirrors_placed) {
         moe_mirrors_placed = true;
         llama_dsplit_mirror_place_fork(model, moe_alias_bufs);   // no pool: the copies get buffers of their own

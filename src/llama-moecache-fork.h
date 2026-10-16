@@ -148,11 +148,15 @@ struct llama_kv_tail_fork {
     std::function<size_t()>                  rows;
     std::function<void()>                    detach;
     std::function<void(ggml_backend_buffer_t, uint8_t *)> attach;
+    bool               attached = false;   // placed in a pool's tail or in an arena
 };
 void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec);
 void llama_moe_cache_kv_tail_remove_fork(void * owner);
 // before the pool is created: the small backing buffers go back to the card (the pool is sized with that memory)
 void llama_moe_cache_kv_tail_detach_fork();
+// records that no expert pool took (a dense model, or a card without experts): one buffer per card of its free VRAM (less the margin) is allocated, once, the records sit at its tail and
+// a request may use as many tokens as the buffer holds. Called after the pool start at the first real decode.
+void llama_moe_cache_kv_arena_start_fork();
 // what the cache and the pool hold now, per card (the per-request log line and the "stats" field of a response)
 struct llama_kv_tail_stat_fork {
     std::string dev;
