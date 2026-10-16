@@ -24,7 +24,7 @@ unclaimed cell.
   refill by uploads like blocks after a prompt, `reheat_free_blocks`).
 * sizing (rule): nothing is reserved at start, the pool is sized as if the model had no KV. A request claims what it needs before its first pass (the server knows the
   prompt length), generation claims a few more blocks before the graph that writes a cell past the claim, and the end of the request drops the claim to what the
-  next request keeps (reused prefix cells). A request that needs more than the pool can give while keeping a minimum of experts is refused with the numbers.
+  next request keeps (reused prefix cells). The KV may take the whole expert cache (starved experts are streamed experts, still faster than a starved KV). What it leaves is the part of the pool a decode graph borrows from the front (measured per graph, at least two blocks): a request that needs more is refused with the numbers, and long prompts run in smaller passes (the pass planner reads what the pool can still lend).
   `-c` is ignored in this mode: the context of a request is calculated from the request and what the pool can give (upper bound: the model's trained context),
   a static reserve only hurts. A `-c` given by hand is still a cap.
 

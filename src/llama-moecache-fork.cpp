@@ -280,6 +280,7 @@ struct moe_cache {
         size_t                span_full = 0;    // span before any claim: ap.span is the part in front of the lowest claimed block
         size_t                kv_cells_sum = (size_t) -1;   // the cells of the last claim (nothing to do while they stay the same)
         size_t                kv_blocks = 0;    // blocks under the KV rows now
+        size_t                dec_need  = 0;    // the most a decode graph (< 64 tokens) borrowed from the start of the buffer: the KV never takes that
     };
     std::vector<alias_pool> alias;   // block pool: the lifetime count of the busiest expert of ANY layer, the common scale of scores compared across layers
     bool pf_count_on      = false;   // prompt hit counters on the cards (see pf-count)
@@ -3062,8 +3063,9 @@ static void kv_tail_claim(moe_cache * mc, bool & changed) {
 }
 
 
-// find_slot's limit: the tokens the record may hold. Below the floor (a tenth of the pool, at least three blocks of the biggest class) the experts keep their blocks, so a
-// context that would take more is "full" for the cache: the server stops the answer or refuses the prompt, as with a full KV cache.
+// find_slot's limit: the tokens the record may hold. The KV may take the whole expert cache (starved experts are streamed experts, still faster than a starved KV); what it
+// leaves is the part of the pool a decode graph borrows (its tensors, the scratch): a context that would take more is "full" for the cache, the server stops the answer
+// or refuses the prompt, as with a full KV cache. Prompt passes shrink to what is left (the pass planner reads the lendable bytes).
 size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
     moe_cache * mc = g_cache;
     if (!mc) { return (size_t) -1; }
@@ -3072,7 +3074,7 @@ size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
             if (r.owner != owner) { continue; }
             size_t bmax = 0;
             for (auto & sg : ap.segs) { bmax = std::max(bmax, sg.B); }
-            const int64_t floor_b = (int64_t) std::max<size_t>(ap.span_full / 10, 3 * bmax);
+            const int64_t floor_b = (int64_t) std::max<size_t>(ap.dec_need, 2 * bmax);
             const int64_t room = std::max<int64_t>(0, r.end_off - floor_b);
             return r.row > 0 ? (size_t) room / r.row : 0;
         }
@@ -3187,6 +3189,7 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         }
         const size_t need_b = stage_off + stage;   // the bytes this graph borrows from the start of the buffer: its tensors, the CUDA scratch, the staging slots
         ap.want_b = std::min(need_b, ap.span);
+        if (n_tokens < 64) { ap.dec_need = std::max(ap.dec_need, need_b); }
         ap.want   = ap.segs.empty() ? 0 : (int32_t) std::min<size_t>((size_t) ap.n, (ap.want_b + ap.B - 1) / ap.B);
         if (ap.cuda_dev >= 0) {
             scratch_fn(ap.cuda_dev, scratch > 0 ? (char *) ggml_backend_buffer_get_base(ap.buf) + peak_al : nullptr, scratch);
