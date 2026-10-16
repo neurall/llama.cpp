@@ -6458,7 +6458,7 @@ bool llama_moe_cache_expert_split_fork(double * speedup) {
 
 
 // kv-tail, at the end of a prompt (its preheat counters were just read): the hottest experts the prompt used that the cache does not hold replace the coldest
-// cached experts the prompt did not use. At most a twentieth of a class's blocks per prompt, background uploads (the link is idle after a prompt): the cache
+// cached experts the prompt did not use, but only where the prompt's expert scores higher (the cache's common score, which the prompt counts just raised). At most a twentieth of a class's blocks per prompt, background uploads (the link is idle after a prompt): the cache
 // follows the request without churning it. The expert that leaves is evicted now (its table goes back to uncached at the next step's flush).
 static std::vector<upload_job> preheat_swap(moe_cache * mc, const std::vector<uint8_t> & used, int n_exp) {   // mc->mtx held; the caller queues the jobs after releasing it (lock order: wmtx before mtx)
     bool tail = false;
@@ -6475,7 +6475,7 @@ static std::vector<upload_job> preheat_swap(moe_cache * mc, const std::vector<ui
             for (int32_t e = 0; e < (int32_t) ls.expert_slot.size() && e < n_exp; ++e) {
                 const int32_t b = ls.expert_slot[e];
                 if (b < 0) {
-                    if (u[e] && !ls.queued[e] && ls.adopt_slot[e] < 0) { hot.push_back({ (double) ls.glob_count[e], li, e, -1 }); }
+                    if (u[e] && !ls.queued[e] && ls.adopt_slot[e] < 0) { hot.push_back({ xscore(mc, ls, e), li, e, -1 }); }
                 } else if (!u[e] && !ls.slot_in_flight[b] && !ls.is_stream[b]) {
                     cold.push_back({ xscore(mc, ls, e), li, e, b });
                 }
@@ -6487,6 +6487,7 @@ static std::vector<upload_job> preheat_swap(moe_cache * mc, const std::vector<ui
         std::partial_sort(hot.begin(), hot.begin() + (ptrdiff_t) n, hot.end(), [](const cand & a, const cand & b) { return a.sc > b.sc; });
         std::partial_sort(cold.begin(), cold.begin() + (ptrdiff_t) n, cold.end(), [](const cand & a, const cand & b) { return a.sc < b.sc; });
         for (size_t i = 0; i < n; ++i) {
+            if (hot[i].sc <= cold[i].sc) { break; }   // the question's experts are not always the answer's: a swap only when the prompt's expert scores higher than the cached one
             layer_state & lo = mc->layers[cold[i].li];
             evict_slot(mc, lo, cold[i].b);
             pool_take(mc, hot[i].li, cold[i].b);
