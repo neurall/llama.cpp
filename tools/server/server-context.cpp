@@ -3876,6 +3876,28 @@ private:
                                 return;
                             }
 
+                            {   // --moe kv-tail: the length of a request is its prompt plus its answer. Only -c: the answer is what -c leaves after the prompt; only -n: the context of
+                                // this request is prompt + n (nothing was reserved); both: -n bounds the answer. What the card can hold is checked now, with the numbers.
+                                llama_tuning_info ti;
+                                llama_get_tuning_info(ctx_tgt, &ti);
+                                if (ti.kvt_n > 0) {
+                                    const int32_t  n_in = (int32_t) slot.task->n_tokens();
+                                    const char *   cg   = llama_moe_get_opt("kv-ctx-given");
+                                    if (slot.n_predict_max < 0 && cg && atoi(cg) != 0) { slot.n_predict_max = std::max(0, slot.n_ctx - n_in); }
+                                    const uint64_t max_ctx = std::min<uint64_t>(ti.kvt_cap_min, ti.kvt_ctx_train);
+                                    const uint64_t need    = (uint64_t) n_in + (slot.n_predict_max >= 0 ? (uint64_t) slot.n_predict_max : 0);
+                                    if (max_ctx > 0 && need > max_ctx) {
+                                        send_error(slot,
+                                                   string_format("request needs %llu tokens (prompt %d + answer %d) but this machine can hold %llu (KV capacity %llu tokens, model cap %llu)",
+                                                                 (unsigned long long) need, n_in, (int) std::max(0, slot.n_predict_max), (unsigned long long) max_ctx,
+                                                                 (unsigned long long) ti.kvt_cap_min, (unsigned long long) ti.kvt_ctx_train),
+                                                   ERROR_TYPE_EXCEED_CONTEXT_SIZE);
+                                        slot.release();
+                                        return;
+                                    }
+                                }
+                            }
+
                             // the outputs of a decision are read from one batch
                             const int32_t n_decision_first = slot.task->type == SERVER_TASK_TYPE_DECISION ? slot.task->decision.pos_first() : -1;
                             if (n_decision_first >= 0 && slot.task->n_tokens() - n_decision_first > n_batch) {

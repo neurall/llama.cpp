@@ -70,6 +70,15 @@ finite numbers. In the tail they are memory that held experts: arbitrary bytes, 
 finite". It is kept by zeroing the pad window only (the rows from the used count to the next multiple of 256), once per 256 generated tokens and at the start of a request;
 no claimed block is cleared. The claim covers the padded count, so these rows are always the KV's.
 
+## Length of a request
+
+The memory of a request is its prompt plus its answer; nothing is reserved at start.
+* `-c N` only: the answer is what N leaves after the prompt (N is in + out, like the end of the old context).
+* `-n M` only (or `n_predict` in the request): the context of this request is prompt + M, calculated at its start; no `-c` is needed.
+* both: `-n` bounds the answer, `-c` is not applied.
+* neither: the answer ends at its end token or when the machine's capacity is reached.
+A request that needs more than the machine holds (the smaller of the KV capacity and the model's trained context) is refused at its start with the numbers.
+
 ## Limits
 
 * one slot (`-np 1`): the used cells must be a prefix. With several slots cells scatter; compaction (moving rows) is a later step.
