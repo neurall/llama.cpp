@@ -3314,6 +3314,36 @@ def _sudo_write(path, val):
         sys.exit(f"hugepool: writing {path} needs root (sudo -n): {r.stderr.strip()}")
 
 
+def cmd_branches(a):
+    """Local branches not contained in TARGET (commits ahead, last commit date); --merge a,b merges them one by one, only inside a checkout of TARGET."""
+    def git(*args, cwd=None):
+        return subprocess.run(["git", *args], cwd=cwd or a.repo, capture_output=True, text=True)
+    cur = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if git("rev-parse", "--verify", a.target).returncode:
+        sys.exit(f"no branch {a.target}")
+    if a.merge:
+        if cur != a.target:
+            sys.exit(f"{a.repo} has {cur} checked out, not {a.target}: nothing merged (use --repo with the worktree of {a.target})")
+        if git("status", "--porcelain", "--untracked-files=no").stdout.strip():
+            sys.exit("uncommitted changes in the checkout: nothing merged")
+        for b in a.merge.split(","):
+            r = git("merge", "--no-ff", "-q", "-m", f"{a.target}: merge {b}", b)
+            if r.returncode:
+                print(f"CONFLICT {b}: {' '.join(git('diff', '--name-only', '--diff-filter=U').stdout.split())}  (merge left open, resolve then commit)")
+                return
+            print(f"merged {b}")
+        return
+    rows = []
+    for b in git("for-each-ref", "--format=%(refname:short)", "refs/heads", "--sort=-committerdate").stdout.split():
+        if b == a.target:
+            continue
+        n = int(git("rev-list", "--count", f"{a.target}..{b}").stdout.strip() or 0)
+        if n:
+            rows.append((n, b, git("log", "-1", "--format=%cs", b).stdout.strip()))
+    print(f"{len(rows)} local branches with commits not in {a.target} (checked out here: {cur})")
+    for n, b, d in rows[:a.limit]:
+        print(f"{n:5d}  {d}  {b}")
+
 def cmd_queue(a):
     """Adds tasks to the bench queue the safe way: under the queue's own file lock (queued.py read-modify-writes tasks.csv; an edit without that lock is lost to its next
     rewrite - a hand edit was, once), after a backup of tasks.csv with the last 3 versions kept in queue/backups. `backups` lists them."""
@@ -4964,6 +4994,11 @@ if __name__ == "__main__":
     qq.add_argument("--cli", help="the command line the queue runs (bash m111log.sh ... or a run.py line)")
     qq.add_argument("--order", type=float, default=-100, help="run order, ascending (default -100 = ahead of the waiting tasks)")
     qq.add_argument("--note", default="")
+    br = sp.add_parser("branches", help="local branches with commits not in TARGET (counts, dates); --merge a,b,c merges them in the checkout of TARGET (refuses on another branch or a dirty tree)")
+    br.add_argument("target", nargs="?", default="prerelease2")
+    br.add_argument("--repo", default=os.getcwd(), help="the checkout to look at / merge in")
+    br.add_argument("--merge", help="comma-separated branch names")
+    br.add_argument("--limit", type=int, default=60)
     s_ = sp.add_parser("show")
     s_.add_argument("-t", "--test")
     s_.add_argument("-b", "--build")
@@ -4975,5 +5010,5 @@ if __name__ == "__main__":
     mf.add_argument("--model", help="part of the model name")
     a = ap.parse_args()
     {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "misfires": cmd_misfires,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "branches": cmd_branches, "misfires": cmd_misfires,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
