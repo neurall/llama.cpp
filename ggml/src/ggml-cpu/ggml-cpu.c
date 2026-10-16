@@ -3077,15 +3077,19 @@ void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     for (int i = 0; i < N; ++i) { x ^= x << 13; x ^= x >> 17; x ^= x << 5; imp[i] = ((int32_t) x) * (1.0f / 2147483648.0f); }
     type_traits_cpu[vt].from_float(imp, a, N);
 
-    // safety gate: a form whose sums differ from the default's on this sample (beyond float rounding order) is a wrong kernel, never use it
+    // safety gate: a form whose sums differ from the default's on this sample (beyond float rounding order) is a wrong kernel, never use it. The integer sums of every
+    // form are meant to be identical, so the allowed difference is float rounding only (2e-5 of |sum| + 1e-3); the largest relative difference is logged.
+    double maxdiff[GGML_FORM_COUNT] = { 0 };
     bool rejected[GGML_FORM_COUNT] = { false };
     for (int k = 1; k < GGML_FORM_COUNT; ++k) {
         if (!f[k]) { continue; }
-        for (int row = 0; row < ROWS && !rejected[k]; ++row) {
+        for (int row = 0; row < ROWS; ++row) {
             float r0, r1; f[0](N, &r0, 0, q + rb * row, 0, a, 0, 1); f[k](N, &r1, 0, q + rb * row, 0, a, 0, 1);
-            if (!(fabsf(r0 - r1) <= 1e-4f * (fabsf(r0) + 1.0f))) { rejected[k] = true; }
+            const double rel = fabs((double) r0 - (double) r1) / (fabs((double) r0) + 1e-3);
+            if (rel > maxdiff[k]) { maxdiff[k] = rel; }
+            if (!(rel <= 2e-5)) { rejected[k] = true; }
         }
-        if (rejected[k]) { GGML_LOG_WARN("cpu kernel %s: form %s gives different sums than the default, not used\n", ggml_type_name(type), g_form_names[k]); f[k] = NULL; }
+        if (rejected[k]) { GGML_LOG_WARN("cpu kernel %s: form %s differs from the default by up to %.2e (relative), not used\n", ggml_type_name(type), g_form_names[k], maxdiff[k]); f[k] = NULL; }
     }
 
     float sink = 0.0f;
