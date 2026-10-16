@@ -40,12 +40,10 @@ static inline __m128i mul_sum_i8_pairs(const __m128i x, const __m128i y) {
 
 #if __AVX__ || __AVX2__ || __AVX512F__
 // horizontally add 8 floats
-// acc += pairs of 16-bit products (what madd + add does) in one instruction where the CPU has VNNI: AVX-VNNI (the _vnni form: Alder Lake, Zen 5) or AVX512-VNNI with VL (Zen 4, Ice Lake)
+// acc += pairs of 16-bit products (what madd + add does) in one instruction where the CPU has AVX-VNNI (the _vnni form: Alder Lake, Zen 5)
 #if defined(__AVXVNNI__)
 #define GGML_MADD_ADD_EPI16(acc, a, b) _mm256_dpwssd_avx_epi32((acc), (a), (b))
-#elif defined(__AVX512VNNI__) && defined(__AVX512VL__)
-#define GGML_MADD_ADD_EPI16(acc, a, b) _mm256_dpwssd_epi32((acc), (a), (b))
-#else
+#else   // not on Zen 4 (AVX512-VNNI): measured slower than madd + add there (Q4_K 7.6 vs 5.4 ns, Q5_K 7.2 vs 6.8, Q6_K 6.0 vs 5.6); the tuner times the _vnni form wherever AVX-VNNI exists
 #define GGML_MADD_ADD_EPI16(acc, a, b) _mm256_add_epi32((acc), _mm256_madd_epi16((a), (b)))
 #endif
 
