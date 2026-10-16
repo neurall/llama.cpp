@@ -244,9 +244,10 @@ llama_context::llama_context(
     if (const char * kt = llama_moe_get_opt("kv-tail"); kt && atoi(kt) != 0) {   // the context of a request is calculated from the request, -c is not used (fork/docs/kv-tail.md)
         const char * ac = llama_moe_get_opt("kv-auto-ctx");   // --moe kv-auto-ctx=0: -c is accepted again (the cap of the virtual record)
         const bool tail_possible = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && params.n_seq_max <= 1 && params.type_k == params.type_v && !model.devices.empty();
+        const char * given = llama_moe_get_opt("kv-ctx-given");   // set by the common code: 1 when the user passed -c
         if ((!ac || atoi(ac) != 0) && tail_possible) {
-            llama_moe_set_opt("kv-user-ctx", std::to_string(cparams.n_ctx).c_str());   // what the user asked for: the cache goes back to it when it cannot use the tail layout
-            cparams.n_ctx = hparams.n_ctx_train;
+            llama_moe_set_opt("kv-user-ctx", std::to_string(cparams.n_ctx).c_str());   // what the user asked for (or the default): the cache goes back to it when it cannot use the tail layout
+            if (!(given && atoi(given) != 0)) { cparams.n_ctx = hparams.n_ctx_train; }   // no -c: the model's maximum; an explicit -c is the cap of a request (like -n), nothing is reserved
         } else if (!tail_possible) {
             LLAMA_LOG_WARN("%s: kv-tail is not possible here (needs flash attention, one sequence, equal K and V types, a GPU): the normal KV cache with n_ctx = %u\n", __func__, cparams.n_ctx);
         }

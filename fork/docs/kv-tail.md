@@ -36,8 +36,8 @@ first real decode, a warm-up decode would run on a KV without memory: with `kv-t
 
 ## Switches
 
-* `--moe kv-tail=1` (needs `kv-token-major=2`, flash attention): the tail layout; the context of a request is calculated, `-c` is not used.
-* `--moe kv-auto-ctx=0` (with kv-tail=1): `-c` is accepted again, as the cap of the virtual record.
+* `--moe kv-tail=1` (needs `kv-token-major=2`, flash attention): the tail layout; no memory is reserved for the context. Without `-c` a request may use as many tokens as the buffer holds (up to the model's trained maximum); an explicit `-c N` is the cap of a request, prompt plus answer (it stops an answer like `-n`), and costs nothing in VRAM.
+* `--moe kv-auto-ctx=0` (with kv-tail=1): the context is always `-c` (or the default 32768), as the size of the virtual record.
 * `--moe kv-tail=0` (default): the normal KV cache, `-c` as always.
 * Quantized K and V (`-ctk q8_0 -ctv q8_0`, ...) work in the record: rows of whole blocks, one extra alignment unit per cell in the record; the gather between cards uses the row size of the type.
 * Flash attention is required: without it V is stored transposed (one row per dimension, not per token), which cannot be a record per cell; the cache then keeps the old layout and says so.
