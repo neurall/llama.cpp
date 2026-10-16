@@ -4,16 +4,18 @@
 #include "ggml-cpu.h"
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <vector>
-int main() {
+int main(int argc, char ** argv) {
+    const int nn = argc > 1 ? atoi(argv[1]) : 4096;   // row length (the model's hidden size): the wider the row, the sooner a tile outgrows L1 / L2
     ggml_cpu_init();
-    const int n = 4096, urows = 256, Tmax = 32;
+    const int n = nn, urows = 256, Tmax = 32;
     std::mt19937 rng(3); std::normal_distribution<float> nd(0.f, 1.f);
     std::vector<float> w((size_t) urows * n), imp(n, 1.0f); for (auto & v : w) v = nd(rng) * 0.05f;
     const ggml_type types[] = { GGML_TYPE_Q4_K, GGML_TYPE_Q8_0, GGML_TYPE_IQ4_NL };
-    const int Rs[] = { 4, 8, 16, 32 }, Ts[] = { 1, 4, 16, 32 };
+    const int Rs[] = { 2, 4, 8, 16, 32 }, Ts[] = { 4, 16, 32 };
     for (ggml_type t : types) {
         const auto * trc = ggml_get_type_traits_cpu(t); const auto * q8 = ggml_get_type_traits_cpu(trc->vec_dot_type);
         ggml_quantize_init(t);
