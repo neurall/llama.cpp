@@ -76,7 +76,7 @@ The memory of a request is its prompt plus its answer; nothing is reserved at st
 * `-c N` only: the answer is what N leaves after the prompt (N is in + out, like the end of the old context).
 * `-n M` only (or `n_predict` in the request): the context of this request is prompt + M, calculated at its start; no `-c` is needed.
 * both: `-n` bounds the answer, `-c` is not applied.
-* neither: the answer ends at its end token or when the machine's capacity is reached.
+* neither: llama.cpp's own defaults (`-c 0` = the model's trained context, `-n -1` = until the end token); the answer also ends when the machine's capacity is reached. The fork's default context of 32768 is not injected in this mode (it only existed to keep the KV reserve from starving the cache).
 A request that needs more than the machine holds (the smaller of the KV capacity and the model's trained context) is refused at its start with the numbers.
 
 ## Limits
