@@ -46,6 +46,8 @@ struct llama_dsplit_plan_fork {
     double share      = 0.55;    // tokens of the first range (the card with the slower link)
     double t_one_ms   = 0.0;
     double t_split_ms = 0.0;
+    double t_raw_ms   = 0.0;   // the split's modelled time before the learned factor and before the one-off copy and refill terms
+    double t_add_ms   = 0.0;   // those one-off terms (not scaled by the factor, and not part of what the factor is learned from)
 };
 llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int64_t n_tokens);
 // --moe split-experts: -1 auto (planner + tuner), 0 dense split only (helpers hold no experts), 1 dense split plus experts (link-ratio start + controller)
