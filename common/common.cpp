@@ -1901,7 +1901,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     }
     // the default context is set before the micro-batch below, which takes the context as its maximum. Set after it (as until 2026-10-14), a run without -c
     // got the batch size instead: passes of 2048 tokens, Qwen3.8-Flash-Next 8k prompt in 4 passes at 798 prompt t/s where one pass gives 1201
-    llama_moe_set_opt("kv-ctx-given", params.n_ctx != 0 ? "1" : "0");   // --moe kv-tail=1: an explicit -c caps the length of a request (prompt + answer), nothing is reserved for it
+    llama_moe_set_opt("kv-ctx-given", (params.n_ctx != 0 && params.n_predict < 0) ? "1" : "0");   // --moe kv-tail=1: an explicit -c caps the length of a request (prompt + answer), nothing is reserved for it; with -n present -n bounds the answer and -c is not applied
     if (params.n_ctx == 0) {
         params.n_ctx = 32768; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more
     }
