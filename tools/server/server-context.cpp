@@ -1795,6 +1795,22 @@ private:
                 /* force_pure_content    */ params_base.force_pure_content_parser
             };
 
+            {   // the shortest real prompt: one character of user text through this model's chat template (live parameter min_in_len)
+                try {
+                    common_chat_templates_inputs in;
+                    in.use_jinja = chat_params.use_jinja;
+                    in.add_generation_prompt = true;
+                    common_chat_msg m; m.role = "user"; m.content = "x";
+                    in.messages = { m };
+                    const auto r = common_chat_templates_apply(chat_params.tmpls.get(), in);
+                    const int n = (int) common_tokenize(llama_model_get_vocab(model_tgt), r.prompt, true, true).size();
+                    llama_moe_live_set("min_in_len", n);
+                    SRV_INF("shortest prompt through the chat template: %d tokens (live parameter min_in_len)\n", n);
+                } catch (const std::exception & e) {
+                    SRV_WRN("could not measure the chat template minimum: %s\n", e.what());
+                }
+            }
+
             {
                 auto caps = common_chat_templates_get_caps(chat_params.tmpls.get());
                 auto it = params_base.default_template_kwargs.find("preserve_reasoning");
@@ -3837,18 +3853,18 @@ private:
                                 // fork: a prompt longer than the slot's context is cut to fit and run instead of failing (--moe prompt-overflow=error keeps the error).
                                 // The middle goes: the first half of the room keeps the start (instruction, system part, the top of a file), the second half the end (the
                                 // question). Room = context minus the tokens to generate (n_predict, 1024 when unlimited, never more than half the context). Text prompts only.
-                                const char * ovf = llama_moe_get_opt("prompt-overflow");
-                                const bool   can_cut = (!ovf || strcmp(ovf, "error") != 0) && slot.task->tokens.find_next_media_chunk(0).first == nullptr;
+                                // live parameters (POST /moe/params): prompt_overflow 1/0, def_out_len, cut_head_frac
+                                const bool   can_cut = llama_moe_live_get("prompt_overflow") > 0.5 && slot.task->tokens.find_next_media_chunk(0).first == nullptr;
                                 if (can_cut) {
-                                    const int n_gen  = slot.task->params.n_predict > 0 ? slot.task->params.n_predict : 1024;
+                                    const int n_gen  = slot.task->params.n_predict > 0 ? slot.task->params.n_predict : (int) llama_moe_live_get("def_out_len");
                                     const int room   = slot.n_ctx - std::min(n_gen, slot.n_ctx / 2) - 1;
                                     const llama_tokens full = slot.task->tokens.get_text_tokens();
                                     if (room > 16 && (int) full.size() > room) {
-                                        const int head = room / 2, tail = room - head;
+                                        const int head = (int) (room * llama_moe_live_get("cut_head_frac")), tail = room - head;
                                         llama_tokens cut(full.begin(), full.begin() + head);
                                         cut.insert(cut.end(), full.end() - tail, full.end());
                                         SLT_WRN(slot, "prompt of %d tokens does not fit the context (%d, %d kept for the answer): cut to %d, first %d and last %d tokens kept, "
-                                                      "the %d in between dropped (--moe prompt-overflow=error refuses instead)\n",
+                                                      "the %d in between dropped (prompt_overflow = 0 refuses instead)\n",
                                                 (int) full.size(), slot.n_ctx, n_gen, room, head, tail, (int) full.size() - room);
                                         // the task is owned by the slot and not shared: its prompt may change before it is processed
                                         const_cast<server_task &>(*slot.task).tokens = server_tokens(cut, false);
@@ -5623,6 +5639,30 @@ void server_routes::init_routes() {
         } else {
             res->ok(get_res_props(*meta, params, false));
         }
+        return res;
+    };
+
+    // fork: live parameters (src/llama-moestate-fork.cpp): value, default, range and help of each; POST {"name": value} changes them while the server runs
+    this->get_live_params = [this](const server_http_req &) {
+        auto res = create_response(true);
+        std::vector<char> buf(8192);
+        llama_moe_live_json(buf.data(), (int) buf.size());
+        res->ok(json::parse(buf.data()));
+        return res;
+    };
+
+    this->post_live_params = [this](const server_http_req & req) {
+        auto res = create_response();
+        json body = json::parse(req.body);
+        json changed = json::object();
+        for (auto it = body.begin(); it != body.end(); ++it) {
+            if (!it.value().is_number() || !llama_moe_live_set(it.key().c_str(), it.value().get<double>())) {
+                res->error(format_error_response("unknown parameter or not a number: " + it.key(), ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+            changed[it.key()] = llama_moe_live_get(it.key().c_str());
+        }
+        res->ok(changed);
         return res;
     };
 
