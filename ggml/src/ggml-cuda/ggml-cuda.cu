@@ -3519,7 +3519,7 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
     // fork: a gappy source view (a layer's K or V inside the token-major KV record) into a compact destination: only the rows cross, as one 2D copy
     // (the scheduler makes the destination compact; see ggml_backend_tensor_is_gappy)
     const bool rows_copy = !ggml_are_same_layout(src, dst) && src->type == dst->type && ggml_are_same_shape(src, dst) && !ggml_is_quantized(src->type) &&
-                           src->nb[0] == dst->nb[0] && ggml_is_contiguous(dst) && src->ne[2] == 1 && src->ne[3] == 1;
+                           src->nb[0] == dst->nb[0] && ggml_is_contiguous(dst);
     if (!ggml_are_same_layout(src, dst) && !rows_copy) {
         return false;
     }
@@ -3536,7 +3536,13 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
         const void * sdata = src->data;
         if (rows_copy) {
             rows_tmp.alloc(ggml_nbytes(dst));
-            CUDA_CHECK(cudaMemcpy2DAsync(rows_tmp.get(), (size_t) src->ne[0]*ggml_type_size(src->type), src->data, src->nb[1], (size_t) src->ne[0]*ggml_type_size(src->type), (size_t) src->ne[1], cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
+            // K and V views have one plane per KV head (ne[2] > 1): one 2D copy per plane (a row-wise fallback was 2.3 million tiny copies per prompt, nsys, MiMo)
+            const size_t rowb = (size_t) src->ne[0]*ggml_type_size(src->type);
+            for (int64_t i3 = 0; i3 < src->ne[3]; i3++) {
+                for (int64_t i2 = 0; i2 < src->ne[2]; i2++) {
+                    CUDA_CHECK(cudaMemcpy2DAsync(rows_tmp.get() + i3*dst->nb[3] + i2*dst->nb[2], rowb, (const char *) src->data + i3*src->nb[3] + i2*src->nb[2], src->nb[1], rowb, (size_t) src->ne[1], cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
+                }
+            }
             sdata = rows_tmp.get();
         }
         if (src_physical == dst_physical) {
@@ -3566,7 +3572,12 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
     } else {
         // src and dst are on the same backend
         if (rows_copy) {
-            CUDA_CHECK(cudaMemcpy2DAsync(dst->data, dst->nb[1], src->data, src->nb[1], (size_t) src->ne[0]*ggml_type_size(src->type), (size_t) src->ne[1], cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
+            const size_t rowb = (size_t) src->ne[0]*ggml_type_size(src->type);
+            for (int64_t i3 = 0; i3 < src->ne[3]; i3++) {
+                for (int64_t i2 = 0; i2 < src->ne[2]; i2++) {
+                    CUDA_CHECK(cudaMemcpy2DAsync((char *) dst->data + i3*dst->nb[3] + i2*dst->nb[2], dst->nb[1], (const char *) src->data + i3*src->nb[3] + i2*src->nb[2], src->nb[1], rowb, (size_t) src->ne[1], cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
+                }
+            }
         } else {
             CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, ggml_nbytes(dst), cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
         }
