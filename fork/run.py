@@ -3350,6 +3350,16 @@ def cmd_queue(a):
     import fcntl, shutil
     Q = "/p/bw/data/q5h/queue"; INI = os.path.join(Q, "tasks.csv"); BK = os.path.join(Q, "backups")
     COLS = ["id", "order", "status", "campaign", "created", "start", "stop", "exit", "pid", "env", "cli", "log", "note"]
+    if a.action in ("pause", "resume", "status"):
+        # the daemon starts nothing while queue/STOP exists (a running task finishes first); no restart, no REST call needed
+        stop = os.path.join(Q, "STOP")
+        if a.action == "pause": open(stop, "a").close()
+        if a.action == "resume" and os.path.exists(stop): os.remove(stop)
+        rows = list(csv.DictReader(open(INI, newline="")))
+        run_ = [r["id"] for r in rows if r["status"] == "running"]; nxt = sorted((r for r in rows if r["status"] == "next"), key=lambda r: float(r["order"] or 0))
+        print(("PAUSED: nothing new starts" if os.path.exists(stop) else "running: the next waiting task starts when the current one ends") + f" | running: {', '.join(run_) or '-'} | waiting: {len(nxt)}" +
+              (f" (next: {nxt[0]['id']})" if nxt else ""))
+        return 0
     if a.action == "backups":
         for f in sorted(os.listdir(BK)) if os.path.isdir(BK) else []: print(os.path.join(BK, f))
         return 0
@@ -4988,8 +4998,8 @@ if __name__ == "__main__":
     st.add_argument("--grace", type=float, default=10.0, help="seconds between SIGTERM and SIGKILL")
     st.add_argument("--wait-gpu", type=float, default=60.0, help="seconds to wait until the GPUs have no memory in use")
     st.add_argument("--no-power", action="store_true", help="leave the power limits alone")
-    qq = sp.add_parser("queue", help="the bench queue (queued.service): add TASK_ID --cli '...' [--order N] [--note ..]  |  add-json (a JSON list on stdin)  |  backups; edits take the queue's own file lock and keep the last 3 versions of tasks.csv")
-    qq.add_argument("action", choices=["add", "add-json", "backups"])
+    qq = sp.add_parser("queue", help="the bench queue (queued.service): add TASK_ID --cli '...' [--order N] [--note ..]  |  add-json (a JSON list on stdin)  |  backups  |  pause (no new task starts; the running one finishes) / resume / status; edits take the queue's own file lock and keep the last 3 versions of tasks.csv")
+    qq.add_argument("action", choices=["add", "add-json", "backups", "pause", "resume", "status"])
     qq.add_argument("task_id", nargs="?")
     qq.add_argument("--cli", help="the command line the queue runs (bash m111log.sh ... or a run.py line)")
     qq.add_argument("--order", type=float, default=-100, help="run order, ascending (default -100 = ahead of the waiting tasks)")
