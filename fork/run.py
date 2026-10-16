@@ -3375,6 +3375,20 @@ def cmd_queue(a):
         for f in sorted(os.listdir(BK))[:-3]: os.remove(os.path.join(BK, f))
         rows = list(csv.DictReader(open(INI, newline="")))
         have = {r["id"] for r in rows}
+        # one task = one test: a queue task from m111.sh / m111log.sh with several tests is split into one task per test (a pause, a stop or a failure then
+        # costs one cell, not the bundle); the id gets the test as suffix, order stays in sequence
+        split = []
+        for t in new:
+            tok = shlex.split(t.get("cli", "")) if t.get("cli") else []
+            wi = next((i for i, x in enumerate(tok) if os.path.basename(x) in ("m111.sh", "m111log.sh")), None)
+            if wi is not None and len(tok) > wi + 5 and len(tok[wi + 5].split()) > 1:
+                for k, test in enumerate(tok[wi + 5].split()):
+                    u = dict(t); tk = list(tok); tk[wi + 5] = test; tk[wi + 1] = tok[wi + 1] + "-" + test
+                    u["id"] = t["id"] + "-" + test; u["cli"] = shlex.join(tk); u["order"] = float(t.get("order", -100)) + 0.01 * k
+                    split.append(u)
+            else:
+                split.append(t)
+        new = split
         for t in new:
             if t["id"] in have: print("exists, skipped:", t["id"]); continue
             r = {c: "" for c in COLS}; r.update(status="next", created=time.strftime("%F %T"), campaign=t["id"], log=os.path.join(Q, "logs", t["id"] + ".log")); r.update({k: str(v) for k, v in t.items()})
