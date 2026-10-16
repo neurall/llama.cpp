@@ -76,7 +76,7 @@ The memory of a request is its prompt plus its answer; nothing is reserved at st
 * `-c N` only: the answer is what N leaves after the prompt (N is in + out, like the end of the old context).
 * `-n M` only (or `n_predict` in the request): the context of this request is prompt + M, calculated at its start; no `-c` is needed.
 * both: `-n` bounds the answer, `-c` is not applied.
-* neither: the context is min(the model's trained maximum, what the free VRAM holds of KV, what a quarter of the free RAM allows for the host structures that scale with the context); the answer is unlimited (`-n -1`) until its end token or until the machine's capacity is reached. (A 1M-token model on a full 125 GB host froze PC1 before the RAM term existed.) The fork's default context of 13312 is not injected in this mode (it only existed to keep the KV reserve from starving the cache).
+* neither: the context is min(the model's trained maximum, what the free VRAM holds of KV); the answer is unlimited (`-n -1`) until its end token or until the machine's capacity is reached. (A 1M-token model got its 1M trained context and froze PC1 before the VRAM term existed.) The fork's default context of 13312 is not injected in this mode (it only existed to keep the KV reserve from starving the cache).
 A request that needs more than the machine holds (the smaller of the KV capacity and the model's trained context) is refused at its start with the numbers.
 
 ## Limits
