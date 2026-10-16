@@ -3,11 +3,14 @@
 #include "ggml.h"
 #include "ggml-cpu.h"
 #include <chrono>
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <vector>
-int main() {
+int main(int argc, char ** argv) {
+    const double mb = argc > 1 ? atof(argv[1]) : 96.0;   // working set per type: 96 = memory-bound, 0.25 = in L2 (the pure compute speed of the kernel)
     ggml_cpu_init();
     const int n = 4096, urows = 256;
     std::mt19937 rng(3); std::normal_distribution<float> nd(0.f, 1.f);
@@ -30,14 +33,14 @@ int main() {
         const size_t rb = ggml_row_size(t, n);
         std::vector<uint8_t> uq(rb * urows);
         ggml_quantize_chunk(t, w.data(), uq.data(), 0, urows, n, imp.data());
-        const size_t total = (size_t) 96 << 20, rows = total / rb;
+        const size_t total = (size_t) (mb * (1 << 20)), rows = std::max<size_t>(1, total / rb);
         std::vector<uint8_t> big(rows * rb);
         for (size_t r = 0; r < rows; ++r) memcpy(big.data() + r * rb, uq.data() + (r % urows) * rb, rb);
         std::vector<uint8_t> a8(ggml_row_size(trc->vec_dot_type, n));
         q8->from_float(act.data(), a8.data(), n);
         float sink = 0;
         for (size_t r = 0; r < rows; ++r) { float s; trc->vec_dot(n, &s, 0, big.data() + r * rb, 0, a8.data(), 0, 1); sink += s; }   // warm
-        const int reps = 3; auto t0 = std::chrono::steady_clock::now();
+        const int reps = mb < 8 ? 3000 : 3; auto t0 = std::chrono::steady_clock::now();
         for (int k = 0; k < reps; ++k) for (size_t r = 0; r < rows; ++r) { float s; trc->vec_dot(n, &s, 0, big.data() + r * rb, 0, a8.data(), 0, 1); sink += s; }
         double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         const double blocks = (double) reps * rows * (n / 256.0);
