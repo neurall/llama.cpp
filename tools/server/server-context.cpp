@@ -848,6 +848,13 @@ struct server_slot {
                 } else {
                     SLT_INF(*this, "       moe cache = %s\n", "off");
                 }
+                if (m.contains("kv_tail")) {
+                    for (const auto & cd : m["kv_tail"]["cards"]) {
+                        SLT_INF(*this, "       kv-tail %s = KV %llu of %llu tokens (max context that fits %llu, model cap %llu) (%.1f MiB), expert cache %.2f GiB (%llu of %llu blocks free, %llu lent, %llu under the KV)\n", cd.value("dev", "?").c_str(),
+                                (unsigned long long) cd.value("kv_cells", (uint64_t) 0), (unsigned long long) cd.value("cap_tokens", (uint64_t) 0), (unsigned long long) m["kv_tail"].value("max_ctx", (uint64_t) 0), (unsigned long long) m["kv_tail"].value("n_ctx_train", (uint64_t) 0), cd.value("kv_mib", 0.0), cd.value("moe_gib", 0.0), (unsigned long long) cd.value("blocks_free", (uint64_t) 0),
+                                (unsigned long long) cd.value("blocks", (uint64_t) 0), (unsigned long long) cd.value("blocks_lent", (uint64_t) 0), (unsigned long long) cd.value("blocks_kv", (uint64_t) 0));
+                    }
+                }
                 SLT_INF(*this, "         threads = %d decode / %d batch, batch %d, ubatch %d\n",
                         tj.value("n_threads", 0), tj.value("n_threads_batch", 0), tj.value("n_batch", 0), tj.value("n_ubatch", 0));
             }
@@ -3883,6 +3890,28 @@ private:
                                            ERROR_TYPE_EXCEED_CONTEXT_SIZE);
                                 slot.release();
                                 return;
+                            }
+
+                            {   // --moe kv-tail: the length of a request is its prompt plus its answer. Only -c: the answer is what -c leaves after the prompt; only -n: the context of
+                                // this request is prompt + n (nothing was reserved); both: -n bounds the answer. What the card can hold is checked now, with the numbers.
+                                llama_tuning_info ti;
+                                llama_get_tuning_info(ctx_tgt, &ti);
+                                if (ti.kvt_n > 0) {
+                                    const int32_t  n_in = (int32_t) slot.task->n_tokens();
+                                    const char *   cg   = llama_moe_get_opt("kv-ctx-given");
+                                    if (slot.n_predict_max < 0 && cg && atoi(cg) != 0) { slot.n_predict_max = std::max(0, slot.n_ctx - n_in); }
+                                    const uint64_t max_ctx = std::min<uint64_t>(ti.kvt_cap_min, ti.kvt_ctx_train);
+                                    const uint64_t need    = (uint64_t) n_in + (slot.n_predict_max >= 0 ? (uint64_t) slot.n_predict_max : 0);
+                                    if (max_ctx > 0 && need > max_ctx) {
+                                        send_error(slot,
+                                                   string_format("request needs %llu tokens (prompt %d + answer %d) but this machine can hold %llu (KV capacity %llu tokens, model cap %llu)",
+                                                                 (unsigned long long) need, n_in, (int) std::max(0, slot.n_predict_max), (unsigned long long) max_ctx,
+                                                                 (unsigned long long) ti.kvt_cap_min, (unsigned long long) ti.kvt_ctx_train),
+                                                   ERROR_TYPE_EXCEED_CONTEXT_SIZE);
+                                        slot.release();
+                                        return;
+                                    }
+                                }
                             }
 
                             // the outputs of a decision are read from one batch

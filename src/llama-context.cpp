@@ -1,4 +1,5 @@
 #include "llama-context.h"
+void llama_moe_set_opt(const char * key, const char * value);
 #include <fstream>
 #include <filesystem>
 #include <map>
@@ -240,6 +241,30 @@ llama_context::llama_context(
     cparams.pooling_type      = params.pooling_type;
 
     cparams.n_ctx            = params.n_ctx           == 0    ? hparams.n_ctx_train           : params.n_ctx;
+    if (const char * kt = llama_moe_get_opt("kv-tail"); kt && atoi(kt) != 0) {   // the context of a request is calculated from the request, -c is not used (fork/docs/kv-tail.md)
+        const char * ac = llama_moe_get_opt("kv-auto-ctx");   // --moe kv-auto-ctx=0: -c is accepted again (the cap of the virtual record)
+        const bool tail_possible = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && params.n_seq_max <= 1 && params.type_k == params.type_v && !model.devices.empty();
+        const char * given = llama_moe_get_opt("kv-ctx-given");   // set by the common code: 1 when the user passed -c
+        if ((!ac || atoi(ac) != 0) && tail_possible) {
+            llama_moe_set_opt("kv-user-ctx", std::to_string(cparams.n_ctx).c_str());   // what the user asked for (or the default): the cache goes back to it when it cannot use the tail layout
+            if (!(given && atoi(given) != 0)) {   // no -c: the smaller of the model's maximum and what the machine can hold (a 1M-token model must not get a 1M-token context: the structures that scale with it, the masks, fill the host)
+                uint64_t row = 0, free_b = 0;   // KV bytes of one token over all layers, free VRAM over all GPUs
+                for (uint32_t il = 0; il < hparams.n_layer_all; ++il) {
+                    if (hparams.has_kv(il)) { row += ggml_row_size(params.type_k, hparams.n_embd_k_gqa(il)) + ggml_row_size(params.type_v, hparams.n_embd_v_gqa(il)); }
+                }
+                for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                    ggml_backend_dev_t d = ggml_backend_dev_get(i);
+                    if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); free_b += f; }
+                }
+                uint64_t fit = row > 0 && free_b > 0 ? free_b / row : (uint64_t) hparams.n_ctx_train;
+                fit = std::max<uint64_t>(4096, fit / 256 * 256);
+                cparams.n_ctx = (uint32_t) std::min<uint64_t>(hparams.n_ctx_train, fit);
+                LLAMA_LOG_WARN("%s: kv-tail: no -c: context %u tokens = min(model max %u, free VRAM %.1f GiB holds %llu tokens of KV)\n", __func__, cparams.n_ctx, hparams.n_ctx_train, free_b / 1073741824.0, (unsigned long long) (row ? free_b / row : 0));
+            }
+        } else if (!tail_possible) {
+            LLAMA_LOG_WARN("%s: kv-tail is not possible here (needs flash attention, one sequence, equal K and V types, a GPU): the normal KV cache with n_ctx = %u\n", __func__, cparams.n_ctx);
+        }
+    }
     cparams.rope_freq_base   = params.rope_freq_base  == 0.0f ? hparams.rope_freq_base_train  : params.rope_freq_base;
     cparams.rope_freq_scale  = params.rope_freq_scale == 0.0f ? hparams.rope_freq_scale_train : params.rope_freq_scale;
 
@@ -2784,6 +2809,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 }
             }
         }
+        llama_moe_cache_kv_tail_detach_fork();   // --moe kv-tail=1: the KV records' small buffers go back to the card before the pool is sized
         llama_moe_cache_init_fork(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots < 0 ? 3 : cparams.prefetch_experts_slots, cparams.moe_cache_window,
                 cparams.moe_predict, cparams.moe_predict_train);
         if (alias) {
@@ -2800,6 +2826,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         thread_cap_from_probe(llama_moe_cache_cpu_sat_threads_fork());
         sched_reserve(); // the compute graph now includes the cache chain
     }
+    llama_moe_cache_kv_arena_start_fork();   // --moe kv-tail=1: KV records no expert pool took (dense models) get their buffer, once, at the first real decode
     if (!fork_resident && !cparams.moe_cache && !moe_mirrors_placed) {
         moe_mirrors_placed = true;
         llama_dsplit_mirror_place_fork(model, moe_alias_bufs);   // no pool: the copies get buffers of their own
@@ -5875,6 +5902,7 @@ static void llama_log_tuning(const char * fn, const llama_context * ctx);
 
 void llama_perf_context_print(const llama_context * ctx) {
     const auto data = llama_perf_context(ctx);
+    llama_moe_cache_kv_tail_report_fork("end of run");   // --moe kv-tail=1: KV cells and the expert cache per card (-lv 3)
 
     const double t_end_ms = 1e-3 * ggml_time_us();
 
@@ -5893,6 +5921,7 @@ void llama_get_tuning_info(const llama_context * ctx, llama_tuning_info * info) 
     info->margin = info->gate = info->wait = info->big = info->predict = info->self_tune = -1;
     info->moe_slots_min = info->moe_slots_max = info->moe_layers = -1;
     info->moe_active = llama_moe_cache_get_info_fork(info);
+    info->kvt_ctx_train = ctx->get_model().hparams.n_ctx_train;
     info->n_threads       = (int32_t) ctx->get_cparams().n_threads;
     info->n_threads_batch = (int32_t) ctx->get_cparams().n_threads_batch;
     info->n_batch         = (int32_t) ctx->n_batch();

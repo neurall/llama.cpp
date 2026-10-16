@@ -1903,8 +1903,9 @@ static void common_moe_cache_auto_impl(common_params & params) {
     }
     // the default context is set before the micro-batch below, which takes the context as its maximum. Set after it (as until 2026-10-14), a run without -c
     // got the batch size instead: passes of 2048 tokens, Qwen3.8-Flash-Next 8k prompt in 4 passes at 798 prompt t/s where one pass gives 1201
+    llama_moe_set_opt("kv-ctx-given", (params.n_ctx != 0 && params.n_predict < 0) ? "1" : "0");   // --moe kv-tail=1: an explicit -c caps the length of a request (prompt + answer), nothing is reserved for it; with -n present -n bounds the answer and -c is not applied
     if (params.n_ctx == 0) {
-        params.n_ctx = 32768; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more
+        params.n_ctx = 13312; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more (13312 = 12k prompt + 1k answer; with --moe kv-tail=1 there is no default at all)
     }
     if (!params.ubatch_user && common_autotune_on(params)) {
         uint32_t ub;
@@ -2482,6 +2483,12 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
         common_set_adapter_lora(lctx, params.lora_adapters);
     }
 
+    // --moe kv-tail=1: the KV record has no memory until the expert pool exists (it lives at the pool's tail, no allocation of its own), and the pool starts at the first
+    // real decode, so there is no warm-up decode before it
+    const char * kv_tail_on = llama_moe_get_opt("kv-tail");
+    if (params.warmup && kv_tail_on && atoi(kv_tail_on) != 0) {
+        COM_TRC("%s", "kv-tail: no warm-up run (the KV cache has no memory before the expert pool starts)\n");
+    } else
     if (params.warmup) {
         COM_TRC("%s", "warming up the model with an empty run - please wait ... (--no-warmup to disable)\n");
 

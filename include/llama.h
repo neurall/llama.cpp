@@ -1181,6 +1181,16 @@ extern "C" {
         int32_t  moe_layers, moe_slots_min, moe_slots_max;
         int32_t  margin, gate, wait, big, predict, self_tune;
         int32_t  n_threads, n_threads_batch, n_batch, n_ubatch;
+        // per card (the first 4): KV at the tail of the expert pool (--moe kv-tail=1): cells in use, the pool's blocks and what they hold now
+        int32_t  kvt_n;
+        char     kvt_dev[4][16];
+        uint64_t kvt_cells[4], kvt_cap[4];   // tokens in use / tokens the card can back now
+        uint64_t kvt_cap_min, kvt_ctx_train;   // capacity / the model's trained context: the context that fits is the smaller
+                       // the smallest capacity over the cards: the tokens a request can really have
+
+        double   kvt_kv_mib[4], kvt_moe_gib[4];
+        uint64_t kvt_blocks[4], kvt_free[4], kvt_lent[4], kvt_kv_blocks[4];
+        uint64_t kvt_claim_n, kvt_release_n, kvt_evicted;   // blocks claimed / given back / experts evicted by claims since the process started
     };
     LLAMA_API void llama_get_tuning_info(const struct llama_context * ctx, struct llama_tuning_info * info);
 
