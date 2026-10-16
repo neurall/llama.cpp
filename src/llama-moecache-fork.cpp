@@ -2954,9 +2954,12 @@ static void kv_tail_claim(moe_cache * mc, bool & changed) {
         if (ap.kvt.empty()) { continue; }
         size_t sum = 0;
         for (auto & r : ap.kvt) { r.cells = r.rows ? r.rows() : 0; sum += r.cells; }
-        // hysteresis: a claim covers HEAD cells more than are in use (generation adds a cell per token, a block is several MB), and a claim is given back only
-        // when it exceeds the need by two heads: steady decode claims once every few hundred tokens and never releases in the middle of an answer
-        constexpr size_t HEAD = 256;
+        // hysteresis: a claim covers one block more than the cells in use need (generation adds a cell per token, a block is a few MB: some 50 cells), and a claim is
+        // given back only when it exceeds the need by two blocks: steady decode takes one block every ~50 tokens and never releases in the middle of an answer
+        size_t HEAD = 256;
+        for (const auto & r : ap.kvt) {
+            if (!ap.segs.empty() && r.row > 0) { HEAD = std::max<size_t>(1, (ap.segs.back().B + r.row - 1) / r.row); break; }
+        }
         if (ap.kv_cells_sum != (size_t) -1 && sum <= ap.kv_cells_sum + HEAD && ap.kv_cells_sum <= sum + 2 * HEAD) { continue; }
         const size_t cells_before = ap.kv_cells_sum == (size_t) -1 ? 0 : ap.kv_cells_sum;
         ap.kv_cells_sum = sum;
