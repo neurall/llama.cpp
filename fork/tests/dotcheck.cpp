@@ -22,8 +22,8 @@ int main() {
         const size_t rb = ggml_row_size(t, n);
         std::vector<uint8_t> q(rb * rows); ggml_quantize_chunk(t, w.data(), q.data(), 0, rows, n, imp.data());
         std::vector<uint8_t> a8(ggml_row_size(trc->vec_dot_type, n)); q8->from_float(act.data(), a8.data(), n);
-        std::vector<float> deq(n), aq(n);
-        ggml_get_type_traits(trc->vec_dot_type)->to_float(a8.data(), aq.data(), n);   // the activations as the kernel sees them
+        std::vector<float> deq(n);
+        const std::vector<float> & aq = act;   // the float activations: the Q8 rounding is the same in every build compared, the checksum shows it
         double maxrel = 0, cs = 0; unsigned long long bits = 0;
         for (int r = 0; r < rows; ++r) {
             float s = 0; trc->vec_dot(n, &s, 0, q.data() + r * rb, 0, a8.data(), 0, 1);
