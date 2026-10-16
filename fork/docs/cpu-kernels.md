@@ -30,3 +30,10 @@ The figure that matters for a kernel is **in-cache nanoseconds per 256 weights**
 * The IQ2/IQ3 family is limited by scalar table loads (about 24 loads per 64 weights for IQ2_XXS against two load ports: a floor near 13 ns per 256 weights,
   1.4x better than now). More needs gather instructions (cheap on recent Intel / Zen 4) or AVX-512 permutes in the ISA-specific backends.
 * Not worth it: compiler unrolling (`-funroll-loops`: no change for any type).
+
+## Zen 4 (Ryzen 9 8945HS laptop, Windows, clang 20, native build; 2026-10-16)
+
+In cache, ns per 256 weights, Zen 2 -> Zen 4: Q2_K 6.4 -> 4.5, Q3_K 9.0 -> 6.8, **Q4_K 7.7 -> 9.3 (slower)**, Q5_K 9.6 -> 6.7, Q6_K 7.8 -> 5.3, Q8_0 8.4 -> 5.7, Q4_0 11.0 -> 7.4,
+IQ4_NL 10.5 -> 8.4, IQ4_XS 10.1 -> 6.9, **MXFP4 10.4 -> 12.3 (slower)**, IQ3_S 29 -> 21, IQ3_XXS 25.6 -> 16.7, IQ2_S 17.5 -> 13.5, IQ2_XS 23.6 -> 18.5, IQ2_XXS 19.1 -> 17.6, Q2_0 12.7 -> 8.0.
+Single-thread memory read 40.6 GB/s (Zen 2 box: 24). No x86 dot product has an AVX-512 path; VNNI (`dpbusd`) is reached only through the shared helper used by Q4_0/Q4_1/Q5_x/Q8_0/MXFP4/NVFP4/IQ4_NL/IQ4_XS/IQ1_x;
+the K-quants and the IQ2/IQ3 kernels call `maddubs` + `madd` directly. Q4_K and MXFP4 are slower on Zen 4 than on Zen 2: the first targets (compiler version differs, to be checked).
