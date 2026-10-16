@@ -3346,6 +3346,11 @@ def cmd_branches(a):
     for n, b, d in rows[:a.limit]:
         print(f"{n:5d}  {d}  {b}")
 
+def _cell_cli(tok, wi):
+    """an m111(log).sh command line as the equivalent run.py cell line (WRAP=... in front becomes --wrap)"""
+    wrap = next((x[5:] for x in tok[:wi] if x.startswith("WRAP=")), None)
+    rest = tok[wi + 1:wi + 7]
+    return shlex.join(["python3", "/p/bw/wt-main/fork/run.py", "cell"] + rest + (["--wrap", wrap] if wrap else []))
 def cmd_queue(a):
     """Adds tasks to the bench queue the safe way: under the queue's own file lock (queued.py read-modify-writes tasks.csv; an edit without that lock is lost to its next
     rewrite - a hand edit was, once), after a backup of tasks.csv with the last 3 versions kept in queue/backups. `backups` lists them."""
@@ -3386,8 +3391,10 @@ def cmd_queue(a):
             if wi is not None and len(tok) > wi + 5 and len(tok[wi + 5].split()) > 1:
                 for k, test in enumerate(tok[wi + 5].split()):
                     u = dict(t); tk = list(tok); tk[wi + 5] = test; tk[wi + 1] = tok[wi + 1] + "-" + test
-                    u["id"] = t["id"] + "-" + test; u["cli"] = shlex.join(tk); u["order"] = float(t.get("order", -100)) + 0.01 * k
+                    u["id"] = t["id"] + "-" + test; u["cli"] = _cell_cli(tk, wi); u["order"] = float(t.get("order", -100)) + 0.01 * k
                     split.append(u)
+            elif wi is not None and len(tok) > wi + 5:
+                u = dict(t); u["cli"] = _cell_cli(tok, wi); split.append(u)
             else:
                 split.append(t)
         new = split
@@ -3398,6 +3405,34 @@ def cmd_queue(a):
         with open(INI + ".tmp", "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=COLS, lineterminator="\n"); w.writeheader(); [w.writerow({c: r.get(c, "") for c in COLS}) for r in rows]
         os.replace(INI + ".tmp", INI)
+    return 0
+def cmd_cell(a):
+    """One queue cell (what m111.sh / m111log.sh did, for one test): wait until both GPUs are free, run `bench` for the builds side by side with the campaign TAG-TEST,
+    keep the run output in q5h/TAG-TEST.run.out, add the result lines to q5h/TAG.out, log a failed cell (no result line) to the shared error log and exit 1 (the queue marks
+    the task failed), keep the server log as TAG.server.log when one build ran."""
+    Q5 = "/p/bw/data/q5h"; U = "/p/bw/p2p/userspace-595/usr/lib/x86_64-linux-gnu"; SMI = "/p/bw/p2p/bin595/nvidia-smi"
+    while True:   # nothing may still hold GPU memory (a killed script leaves its children running)
+        r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True)
+        if r.stdout.split() and max(int(x) for x in r.stdout.split()) < 600 + int(os.environ.get("PERF_HOLD_MB", "0")): break
+        time.sleep(5)
+    args = "-np 1 " + (a.args or "")
+    out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
+    cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
+           "-t", a.test, "-n", str(a.n), "--campaign", f"{a.tag}-{a.test}"] + (["--wrap", a.wrap] if a.wrap else [])
+    env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, GGML_CUDA_HUGEFS="/mnt/huge1g", PERF_LOG="r")
+    with open(out, "w") as f:
+        rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).returncode
+    lines = [l.rstrip()[:200] for l in open(out, errors="replace") if re.search(r"n= *\d+ .* t/s", l)]
+    with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
+        f.write(f"== {a.test} {args}\n" + "".join(l + "\n" for l in lines))
+    if a.builds.count(",") == 0:
+        try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
+        except OSError: pass
+    if not lines:
+        errs = [l.rstrip()[:240] for l in open(out, errors="replace") if re.search(r"FAIL|Traceback|Error|error:|PIN_FAIL|out of memory|Compute error|Segmentation|abort|Killed", l)][-4:]
+        with open(os.path.join(Q5, "queue", "errors.log"), "a") as f:
+            f.write(f"{time.strftime('%F %T')} ERROR {a.tag} {a.test} builds={a.builds} model={os.path.basename(a.model)} run.py exit={rc}\n" + "".join(e + "\n" for e in errs))
+        return 1
     return 0
 def cmd_stop(a):
     """Stops a running measurement chain for real: the harness (bench, regress, exp, run, quick, ctl, prompt with their flock wrappers), the servers and tools of our builds and an nsys around them, every descendant of it (the
@@ -5020,6 +5055,10 @@ if __name__ == "__main__":
     qq.add_argument("--cli", help="the command line the queue runs (bash m111log.sh ... or a run.py line)")
     qq.add_argument("--order", type=float, default=-100, help="run order, ascending (default -100 = ahead of the waiting tasks)")
     qq.add_argument("--note", default="")
+    ce = sp.add_parser("cell", help="one queue cell: wait for free GPUs, bench BUILDS (comma separated, side by side) on MODEL for one TEST, results to q5h/TAG.out (replaces m111.sh)")
+    ce.add_argument("tag"); ce.add_argument("model"); ce.add_argument("builds"); ce.add_argument("n", type=int); ce.add_argument("test")
+    ce.add_argument("args", nargs="?", default="", help="server args after -np 1")
+    ce.add_argument("--wrap", help="command prefix for the server (nsys / ncu)")
     br = sp.add_parser("branches", help="local branches with commits not in TARGET (counts, dates); --merge a,b,c merges them in the checkout of TARGET (refuses on another branch or a dirty tree)")
     br.add_argument("target", nargs="?", default="prerelease2")
     br.add_argument("--repo", default=os.getcwd(), help="the checkout to look at / merge in")
@@ -5036,5 +5075,5 @@ if __name__ == "__main__":
     mf.add_argument("--model", help="part of the model name")
     a = ap.parse_args()
     {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "branches": cmd_branches, "misfires": cmd_misfires,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
