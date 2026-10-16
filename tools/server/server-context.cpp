@@ -3834,9 +3834,35 @@ private:
                             }
                         } else {
                             if (slot.task->n_tokens() >= slot.n_ctx) {
+                                // fork: a prompt longer than the slot's context is cut to fit and run instead of failing (--moe prompt-overflow=error keeps the error).
+                                // The middle goes: the first half of the room keeps the start (instruction, system part, the top of a file), the second half the end (the
+                                // question). Room = context minus the tokens to generate (n_predict, 1024 when unlimited, never more than half the context). Text prompts only.
+                                const char * ovf = llama_moe_get_opt("prompt-overflow");
+                                const bool   can_cut = (!ovf || strcmp(ovf, "error") != 0) && slot.task->tokens.find_next_media_chunk(0).first == nullptr;
+                                if (can_cut) {
+                                    const int n_gen  = slot.task->params.n_predict > 0 ? slot.task->params.n_predict : 1024;
+                                    const int room   = slot.n_ctx - std::min(n_gen, slot.n_ctx / 2) - 1;
+                                    const llama_tokens full = slot.task->tokens.get_text_tokens();
+                                    if (room > 16 && (int) full.size() > room) {
+                                        const int head = room / 2, tail = room - head;
+                                        llama_tokens cut(full.begin(), full.begin() + head);
+                                        cut.insert(cut.end(), full.end() - tail, full.end());
+                                        SLT_WRN(slot, "prompt of %d tokens does not fit the context (%d, %d kept for the answer): cut to %d, first %d and last %d tokens kept, "
+                                                      "the %d in between dropped (--moe prompt-overflow=error refuses instead)\n",
+                                                (int) full.size(), slot.n_ctx, n_gen, room, head, tail, (int) full.size() - room);
+                                        // the task is owned by the slot and not shared: its prompt may change before it is processed
+                                        const_cast<server_task &>(*slot.task).tokens = server_tokens(cut, false);
+                                    }
+                                }
+                            }
+                            if (slot.task->n_tokens() >= slot.n_ctx) {
+                                // fork: say which limit binds. -c cannot lift the model's training context (OLMoE-1B-7B: 4096), and a longer prompt there is
+                                // outside what the model learned (positions beyond it need rope scaling and cost quality)
+                                const bool train_bound = slot.n_ctx >= llama_model_n_ctx_train(model_tgt) && llama_n_ctx_seq(ctx_tgt) > slot.n_ctx;
                                 send_error(slot,
-                                           string_format("request (%d tokens) exceeds the available context size (%d "
-                                                         "tokens), try increasing it",
+                                           string_format(train_bound ? "request (%d tokens) exceeds the context this model was trained for (%d tokens); "
+                                                                       "-c does not lift it, use a model with a longer training context or rope scaling"
+                                                                     : "request (%d tokens) exceeds the available context size (%d tokens), try increasing it",
                                                          slot.task->n_tokens(), slot.n_ctx),
                                            ERROR_TYPE_EXCEED_CONTEXT_SIZE);
                                 slot.release();
