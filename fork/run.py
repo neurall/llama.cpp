@@ -1683,6 +1683,32 @@ def server_run(build, env, args, path, body, render=None):
             while len([f for f in os.listdir(d) if f.startswith(f"b{BAR_N[0]}-")]) < int(n) and time.time() - t_b < 240:
                 time.sleep(0.05)
         t_req[0] = time.time()
+        npar = int(OVR.get("par") or 1)
+        if npar > 1:   # --par N: N requests at once against a server started with -np N (parallel slots); aggregate throughput, every failure counted
+            import threading
+            outs, errs = [None] * npar, []
+            def _one(i):
+                try:
+                    outs[i] = post(path, {**body, "cache_prompt": False})
+                except Exception as e:   # a crash of the server or an HTTP error: the run is a failure, not a missing number
+                    errs.append(f"req {i}: {type(e).__name__}: {str(e)[:120]}")
+            ths = [threading.Thread(target=_one, args=(i,)) for i in range(npar)]
+            t_par = time.time()
+            for th in ths: th.start()
+            for th in ths: th.join()
+            wall = time.time() - t_par
+            t_req[1] = time.time()
+            ok = [o for o in outs if o]
+            PROCSTAT.update(par_n=npar, par_ok=len(ok), par_wall_s=round(wall, 1), par_errors=" | ".join(errs)[:300])
+            if errs or not ok:
+                raise RuntimeError("parallel requests failed: %d of %d: %s" % (len(errs), npar, " | ".join(errs)[:300]))
+            tm = [o.get("timings") or {} for o in ok]
+            gen = sum(t.get("predicted_n", 0) for t in tm); pn = sum(t.get("prompt_n", 0) for t in tm)
+            pms = max(t.get("prompt_ms", 0) for t in tm) / 1000.0
+            PROCSTAT["par_req_tps_mean"] = round(sum(t.get("predicted_per_second", 0) for t in tm) / len(tm), 2)
+            res = dict(ok[0]); res["timings"] = {**tm[0], "predicted_n": gen, "prompt_n": pn,
+                      "predicted_per_second": gen / max(wall - pms, 1e-3), "prompt_per_second": pn / max(pms, 1e-3), "prompt_ms": pms * 1000}
+            return res, logf
         rep = max(1, int(OVR.get("repeat") or 1))   # --repeat N: N requests to this server, the last one is the result (warm)
         for i_rep in range(rep):
             res = (post_loopguard(path, body) if path == "/completion" and not KEEP_LOOPS and int(body.get("n_predict", 0)) >= 800 else post(path, body))
@@ -2436,7 +2462,7 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
     if getattr(a, "test", None) in ALIAS_TOKENS and "tokens" not in OVR:
@@ -2908,6 +2934,7 @@ def add_overrides(sub):
     sub.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), metavar="N[k]",
                      help="cut the prompt of the test to N tokens (8k = 8000, so it fits one -ub 8192 pass), measured with the server's own /tokenize, for any model; raw-prompt tests only")
     sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
+    sub.add_argument("--par", type=int, help="send N identical requests at once (start the server with -np N too, e.g. --variant 'v=-np 10'); the row is the aggregate: generated tokens of all requests over the wall time, prompt tokens of all over the longest prompt phase; a failed request fails the run")
     sub.add_argument("--pidx", type=int, help="game4 / edit4: use prompt N of the four for every repetition (default: repetition k uses prompt k mod 4)")
 
 
