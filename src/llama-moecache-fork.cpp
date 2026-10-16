@@ -284,6 +284,7 @@ struct moe_cache {
         size_t                kv_blocks = 0;    // blocks under the KV rows now
         size_t                dec_need  = 0;    // the most a decode graph (< 64 tokens) borrowed from the start of the buffer: the KV never takes that
     };
+    std::atomic<bool> kv_gave_back{false};   // kv-tail: blocks came back from the KV (a new, shorter request): the next step refills them with the hottest missing experts
     std::atomic<bool> starved{false};   // kv-tail: the KV holds every expert block of the cards that have a record: no expert can be cached, the per-step cache logic is off
     std::vector<alias_pool> alias;   // block pool: the lifetime count of the busiest expert of ANY layer, the common scale of scores compared across layers
     bool pf_count_on      = false;   // prompt hit counters on the cards (see pf-count)
@@ -3074,6 +3075,7 @@ static void kv_tail_claim(moe_cache * mc, bool & changed, size_t plan_extra = 0,
             ps.active_end = e;
         }
         g_kvs.claim_n += n_take; g_kvs.release_n += n_give; g_kvs.evicted += n_evict;
+        if (n_give > 0) { mc->kv_gave_back = true; }
         if (n_take > 0 || n_give > 0) {
             changed = true;
             if (moe_log_has("k")) LLAMA_LOG_WARN("moe-cache: kv-tail %s: %zu -> %zu cells, %zu blocks taken from the experts (%zu experts evicted), %zu given back; %zu blocks under the KV (%.1f MiB), the compute alias may lend %.1f MiB\n",
@@ -3149,7 +3151,7 @@ size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
             for (auto & sg : ap.segs) { bmax = std::max(bmax, sg.B); }
             const int64_t floor_b = (int64_t) std::max<size_t>(ap.dec_need, 2 * bmax);
             const int64_t room = std::max<int64_t>(0, r.end_off - floor_b);
-            return r.row > 0 ? (size_t) room / r.row : 0;
+            return r.row > 0 ? std::min<size_t>((size_t) room / r.row, r.bytes / r.row) : 0;   // never more than the record's cells (the model's context)
         }
     }
     return (size_t) -1;   // the pool does not exist yet (before the first decode): no limit
@@ -5855,6 +5857,9 @@ void llama_moe_cache_step_fork() {
     }
 
     const size_t n_back = alias_release(mc);
+    if (mc->kv_gave_back.exchange(false)) {   // the expert cache grew at the start of a request: the freed blocks get the hottest experts the cache misses (scores seeded from the state ini)
+        reheat_free_blocks(mc, det);
+    }
     mc->gmax_all = 1;
     for (const auto & l : mc->layers) { mc->gmax_all = std::max(mc->gmax_all, l.glob_max); }
     // blocks came back and the graph that just ran was a decode graph: the prompt is over (between the passes of a prompt nothing comes back, and
