@@ -3114,7 +3114,7 @@ void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     if (!(env && strcmp(env, "quiet") == 0)) {
         const double blocks = 12.0 * ROWS * (N / 256.0);
         char line[384]; int n = snprintf(line, sizeof line, "cpu kernel %-8s ns/256w:", ggml_type_name(type));
-        for (int k = 0; k < GGML_FORM_COUNT && n < (int) sizeof line - 60; ++k) { if (f[k]) { n += snprintf(line + n, sizeof line - n, " %s %.2f;", g_form_names[k], best[k] * 1000.0 / blocks); } }
+        for (int k = 0; k < GGML_FORM_COUNT && n < (int) sizeof line - 60; ++k) { if (f[k]) { n += snprintf(line + n, sizeof line - n, " %s %.2f (diff %.0e);", g_form_names[k], best[k] * 1000.0 / blocks, k ? maxdiff[k] : 0.0); } }
         const bool lost = pick == GGML_FORM_DEFAULT;
         GGML_LOG_INFO("%s picked %s (%s)%s\n", line, g_form_names[pick],
                       lost ? "no form is 5% quicker than the default" : "5% or more quicker than the default and the quickest of the forms", sink == 12345.0f ? "!" : "");
