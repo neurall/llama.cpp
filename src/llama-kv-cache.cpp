@@ -175,6 +175,7 @@ llama_kv_cache::llama_kv_cache(
     const char * o_tm = llama_moe_get_opt("kv-token-major");
     const bool   tm_on = o_tm && atoi(o_tm) != 0 && !other && n_stream == 1 && !v_trans && type_k == type_v &&
                          (type_k == GGML_TYPE_F16 || type_k == GGML_TYPE_BF16 || type_k == GGML_TYPE_F32) && !share;
+    kv_rev = tm_on && atoi(o_tm) == 2;
     if (o_tm && atoi(o_tm) != 0 && !tm_on) {
         LLAMA_LOG_WARN("%s: kv-token-major needs K and V of the same float type, one stream, flash attention and no shared cells: old layout\n", __func__);
     }
@@ -1362,7 +1363,7 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
             ggml_row_size(k->type, hparams.n_embd_head_k(il)),
             k->nb[1],                    // one cell (the tensor's own stride: wider than the row in the token-major layout)
             k->nb[2],
-            k->nb[2]*sinfo.s0);
+            k->nb[2]*sinfo.s0 + (kv_rev ? (size_t) (get_size() - n_kv)*k->nb[1] : 0));   // reversed record: the used cells are its last n_kv rows (cell n_kv-1 first)
 }
 
 ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const {
@@ -1385,7 +1386,7 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
                 ggml_row_size(v->type, hparams.n_embd_head_v(il)),          // v->nb[1]
                 v->nb[1],                                               // one cell
                 v->nb[2],                                               // one stream
-                v->nb[2]*sinfo.s0);
+                v->nb[2]*sinfo.s0 + (kv_rev ? (size_t) (get_size() - n_kv)*v->nb[1] : 0));
     }
 
     // note: v->nb[1] > v->nb[2]
@@ -1551,7 +1552,7 @@ void llama_kv_cache::set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ub
         const int64_t offs = sinfo.strm[s]*get_size();
 
         for (uint32_t i = 0; i < sinfo.size(); ++i) {
-            data[s*sinfo.size() + i] = offs + sinfo.idxs[s][i];
+            data[s*sinfo.size() + i] = offs + kv_row(sinfo.idxs[s][i]);
         }
     }
 }
@@ -1568,7 +1569,7 @@ void llama_kv_cache::set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ub
             const int64_t offs = sinfo.strm[s]*get_size();
 
             for (uint32_t i = 0; i < sinfo.size(); ++i) {
-                data[s*sinfo.size() + i] = offs + sinfo.idxs[s][i];
+                data[s*sinfo.size() + i] = offs + kv_row(sinfo.idxs[s][i]);
             }
         }
     } else {
@@ -1598,7 +1599,8 @@ void llama_kv_cache::set_input_k_shift(ggml_tensor * dst) const {
         const auto & cells = v_cells[s];
 
         for (uint32_t i = 0; i < cells.size(); ++i) {
-            data[s*cells.size() + i] = cells.is_empty(i) ? 0 : cells.get_shift(i);
+            const uint32_t c = kv_rev ? (uint32_t) (cells.size() - 1 - i) : i;   // row i holds cell c
+            data[s*cells.size() + i] = cells.is_empty(c) ? 0 : cells.get_shift(c);
         }
     }
 }
@@ -1947,6 +1949,14 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
         set_input_kq_mask_impl<ggml_fp16_t>(args, (ggml_fp16_t *) dst->data, causal_attn);
     } else {
         set_input_kq_mask_impl<float>(args, (float *) dst->data, causal_attn);
+    }
+
+    if (kv_rev) {   // the view of a reversed record lists the cells from n_kv-1 down to 0: the columns of every mask row too
+        const int64_t n_rows = (int64_t) (ggml_nelements(dst)/n_kv);
+        for (int64_t r = 0; r < n_rows; ++r) {
+            if (dst->type == GGML_TYPE_F16) { ggml_fp16_t * d = (ggml_fp16_t *) dst->data + r*n_kv; std::reverse(d, d + n_kv); }
+            else                            { float * d = (float *) dst->data + r*n_kv;           std::reverse(d, d + n_kv); }
+        }
     }
 
     //const int64_t t_end = ggml_time_us();
@@ -2436,10 +2446,10 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
         // Read each range of cells of k_size length and write out
         for (const auto & range : cr.data) {
             const size_t range_size = range.second - range.first;
-            if (k->nb[1] == k_size_row) {
+            if (k->nb[1] == k_size_row && !kv_rev) {
                 io.write_tensor(k, range.first * k_size_row, range_size * k_size_row);
             } else {   // token-major layout: the cells are one record apart
-                for (size_t c = range.first; c < range.second; ++c) { io.write_tensor(k, c * k->nb[1], k_size_row); }
+                for (size_t c = range.first; c < range.second; ++c) { io.write_tensor(k, kv_row(c) * k->nb[1], k_size_row); }
             }
         }
     }
@@ -2466,10 +2476,10 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
             // Read each range of cells of v_size length and write out
             for (const auto & range : cr.data) {
                 const size_t range_size = range.second - range.first;
-                if (v->nb[1] == v_size_row) {
+                if (v->nb[1] == v_size_row && !kv_rev) {
                     io.write_tensor(v, range.first * v_size_row, range_size * v_size_row);
                 } else {
-                    for (size_t c = range.first; c < range.second; ++c) { io.write_tensor(v, c * v->nb[1], v_size_row); }
+                    for (size_t c = range.first; c < range.second; ++c) { io.write_tensor(v, kv_row(c) * v->nb[1], v_size_row); }
                 }
             }
         }
@@ -2773,10 +2783,10 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
         }
 
         for (const auto & r : runs) {
-            if (k->nb[1] == k_size_row) {
+            if (k->nb[1] == k_size_row && !kv_rev) {
                 io.read_tensor(k, (size_t) r.from * k_size_row, (size_t) (r.to - r.from) * k_size_row);
             } else {
-                for (size_t c = r.from; c < r.to; ++c) { io.read_tensor(k, c * k->nb[1], k_size_row); }
+                for (size_t c = r.from; c < r.to; ++c) { io.read_tensor(k, kv_row(c) * k->nb[1], k_size_row); }
             }
         }
     }
@@ -2811,10 +2821,10 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
             }
 
             for (const auto & r : runs) {
-                if (v->nb[1] == v_size_row) {
+                if (v->nb[1] == v_size_row && !kv_rev) {
                     io.read_tensor(v, (size_t) r.from * v_size_row, (size_t) (r.to - r.from) * v_size_row);
                 } else {
-                    for (size_t c = r.from; c < r.to; ++c) { io.read_tensor(v, c * v->nb[1], v_size_row); }
+                    for (size_t c = r.from; c < r.to; ++c) { io.read_tensor(v, kv_row(c) * v->nb[1], v_size_row); }
                 }
             }
         }
@@ -2925,11 +2935,11 @@ void llama_kv_cache::state_clear(llama_seq_id seq_id, uint32_t strm, const slot_
 
         const size_t k_size_row = ggml_row_size(k->type, n_embd_k_gqa);
 
-        if (is_contiguous && k->nb[1] == k_size_row) {
+        if (is_contiguous && k->nb[1] == k_size_row && !kv_rev) {
             llama_clear_tensor_data(k, sinfo.head() * k_size_row, cell_count * k_size_row);
         } else {   // scattered cells, or the token-major layout where the cells of one layer are a record apart
             for (uint32_t i = 0; i < cell_count; ++i) {
-                llama_clear_tensor_data(k, (is_contiguous ? sinfo.head() + i : sinfo.idxs[0][i]) * k->nb[1], k_size_row);
+                llama_clear_tensor_data(k, kv_row(is_contiguous ? sinfo.head() + i : sinfo.idxs[0][i]) * k->nb[1], k_size_row);
             }
         }
     }
@@ -2947,11 +2957,11 @@ void llama_kv_cache::state_clear(llama_seq_id seq_id, uint32_t strm, const slot_
         if (!v_trans) {
             const size_t v_size_row = ggml_row_size(v->type, n_embd_v_gqa);
 
-            if (is_contiguous && v->nb[1] == v_size_row) {
+            if (is_contiguous && v->nb[1] == v_size_row && !kv_rev) {
                 llama_clear_tensor_data(v, sinfo.head() * v_size_row, cell_count * v_size_row);
             } else {
                 for (uint32_t i = 0; i < cell_count; ++i) {
-                    llama_clear_tensor_data(v, (is_contiguous ? sinfo.head() + i : sinfo.idxs[0][i]) * v->nb[1], v_size_row);
+                    llama_clear_tensor_data(v, kv_row(is_contiguous ? sinfo.head() + i : sinfo.idxs[0][i]) * v->nb[1], v_size_row);
                 }
             }
         } else {

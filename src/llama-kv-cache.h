@@ -275,6 +275,10 @@ private:
     };
 
     bool v_trans = true;  // the value tensor is transposed
+    // fork: --moe kv-token-major=2: cell c sits in record row kv_size-1-c, so the used cells are the LAST rows of the record and the unused ones come first (the growth of
+    // the cache is then a range that moves toward the start of the record: the tail of the pool buffer, see kv_row)
+    bool kv_rev = false;
+    size_t kv_row(size_t c) const { return kv_rev ? (size_t) get_size() - 1 - c : c; }
 
     const uint32_t n_seq_max = 1;
     const uint32_t n_stream  = 1;
