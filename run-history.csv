@@ -14791,3 +14791,49 @@ warning: 360	../csu/libc-start.c: No such file or directory
 2026-10-16 23:21:29,unknown,,22.82,16.274,63.3,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,-np 1,tetrisc,pc1,1,pr2,70909b92,rkvsim-in12k-out1k-c131072-pf12k-probe,knob probe (one token),,,120,fork,"{""bare"":""1"",""ctx"":""2048"",""tokens"":""120""}",-np 1 -c 2048,200+200,v1,,,,,,,,89.1,108582304,26,4976,4792,47983.1,,,,,,,,,,,pagecache=5%,,
 2026-10-16 23:23:21,unknown,,24.126,763.18,83.4,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,-np 1,pf12k,pc1,1,pr2,,rkvsim-in12k-out1k-c131072-pf12k,prompt_n=12454 prompt_s=16.3,,,1024,fork,"{""bare"":""1"",""ctx"":""131072"",""tokens"":""1024""}",-np 1,200+200,v1,0,,,,,,,101.4,112435912,0,,,,,,,,,,,,,,pagecache=5%,,
 2026-10-16 23:25:11,unknown,,25.098,764.893,83,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,-np 1,pf12k,pc1,1,pr2,,rkvsim-in12k-out1k-c131072-pf12k,prompt_n=12454 prompt_s=16.3,,,1024,fork,"{""bare"":""1"",""ctx"":""131072"",""tokens"":""1024""}",-np 1,200+200,v1,1,,,,,,,99.4,112435560,0,,,,,,,,,,,,,,pagecache=5%,,
+2026-10-16 23:25:51,unknown,,482.955,475.225,,OLMoE-1B-7B-0924-Q4_K_M.gguf,-np 1 --moe-expert-cache 90 --moe log=w,tetrisc,pc1,1,kvt2,31f80a8e,olmoe2-base-tetris-probe,knob probe (one token),,,120,fork,"{""bare"":""1"",""ctx"":""2048"",""tokens"":""120""}",-np 1 --moe-expert-cache 90 --moe log=w -c 2048,200+200,v1,,,,,,,,3.1,937192,0,,,,,,,,,,,,,,pagecache=100%,,
+2026-10-16 23:26:03,unknown,,483.029,788.288,,OLMoE-1B-7B-0924-Q4_K_M.gguf,-np 1 --moe-expert-cache 90 --moe log=w,tetris,pc1,1,kvt2,f0d5eeea,olmoe2-base-tetris,,,,300,fork,"{""bare"":""1"",""tokens"":""300""}",-np 1 --moe-expert-cache 90 --moe log=w -c 1024,200+200,v1,0,,,,,,,3.1,823596,0,,,,,,,,,,,,,,pagecache=99%,,
+2026-10-16 23:26:16,unknown,,483.718,776.225,,OLMoE-1B-7B-0924-Q4_K_M.gguf,-np 1 --moe-expert-cache 90 --moe log=w,tetris,pc1,1,kvt2,f0d5eeea,olmoe2-base-tetris,,,,300,fork,"{""bare"":""1"",""tokens"":""300""}",-np 1 --moe-expert-cache 90 --moe log=w -c 1024,200+200,v1,1,,,,,,,3.1,823984,0,,,,,,,,,,,,,,pagecache=99%,,
+2026-10-16 23:26:31,unknown,,484.269,459.495,,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 90 --moe kv-token-major=2,log=w",tetrisc,pc1,1,kvt2,e327f054,olmoe2-tm2-tetris-probe,knob probe (one token),,,120,fork,"{""bare"":""1"",""ctx"":""2048"",""tokens"":""120""}","-np 1 --moe-expert-cache 90 --moe kv-token-major=2,log=w -c 2048",200+200,v1,,,,,,,,3.1,937616,0,,,,,,,,,,,,,,pagecache=100%,,
+2026-10-16 23:26:44,unknown,,470.067,713.267,,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 90 --moe kv-token-major=2,log=w",tetris,pc1,1,kvt2,6b9f0837,olmoe2-tm2-tetris,,,,300,fork,"{""bare"":""1"",""tokens"":""300""}","-np 1 --moe-expert-cache 90 --moe kv-token-major=2,log=w -c 1024",200+200,v1,0,,,,,,,3,824252,0,,,,,,,,,,,,,,pagecache=99%,,
+2026-10-16 23:26:56,unknown,,480.061,792.842,,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 90 --moe kv-token-major=2,log=w",tetris,pc1,1,kvt2,6b9f0837,olmoe2-tm2-tetris,,,,300,fork,"{""bare"":""1"",""tokens"":""300""}","-np 1 --moe-expert-cache 90 --moe kv-token-major=2,log=w -c 1024",200+200,v1,1,,,,,,,3.1,823936,0,,,,,,,,,,,,,,pagecache=99%,,
+2026-10-16 23:27:07,unknown,,,,,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 90 --moe kv-token-major=2,kv-tail=1,log=w",tetrisc,pc1,0,kvt2,,olmoe2-tail-tetris-probe,"knob probe (one token) | server exited: 00 <main>, argc=15, argv=0x7ffccb3bd6c8, init=<optimized out>, fini=<optimized out>, rtld_fini=<optimized out>, stack_end=0x7ffccb3bd6b8) at ../csu/libc-start.c:360
+warning: 360	../csu/libc-start.c: No such file or directory
+#14 0x000000000040033e in _start ()
+[Inferior 1 (process 352567) detached]
+",,,,fork,"{""bare"":""1"",""ctx"":""2048"",""tokens"":""120""}",,200+200,v1,,,,,,,,,,,,,,,,,,,,,,,,,,
+2026-10-16 23:27:15,unknown,,,,,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 90 --moe kv-token-major=2,kv-tail=1,log=w",tetris,pc1,0,kvt2,,olmoe2-tail-tetris,"server exited: 00 <main>, argc=15, argv=0x7ffcfb8faf58, init=<optimized out>, fini=<optimized out>, rtld_fini=<optimized out>, stack_end=0x7ffcfb8faf48) at ../csu/libc-start.c:360
+warning: 360	../csu/libc-start.c: No such file or directory
+#14 0x000000000040033e in _start ()
+[Inferior 1 (process 352645) detached]
+",,,,fork,"{""bare"":""1"",""tokens"":""300""}",,200+200,v1,0,,,,,,,,,,,,,,,,,,,,,,,,,
+2026-10-16 23:27:24,unknown,,,,,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 90 --moe kv-token-major=2,kv-tail=1,log=w",tetris,pc1,0,kvt2,,olmoe2-tail-tetris,"server exited: 00 <main>, argc=15, argv=0x7ffc6c4dfa68, init=<optimized out>, fini=<optimized out>, rtld_fini=<optimized out>, stack_end=0x7ffc6c4dfa58) at ../csu/libc-start.c:360
+warning: 360	../csu/libc-start.c: No such file or directory
+#14 0x000000000040033e in _start ()
+[Inferior 1 (process 352718) detached]
+",,,,fork,"{""bare"":""1"",""tokens"":""300""}",,200+200,v1,1,,,,,,,,,,,,,,,,,,,,,,,,,
+2026-10-16 23:27:34,unknown,,,,,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 6 --moe kv-token-major=2,kv-tail=1,log=w",tetrisc,pc1,0,kvt2,,olmoe2-tiny-tetris-probe,"knob probe (one token) | server exited: 00 <main>, argc=15, argv=0x7ffe78a532a8, init=<optimized out>, fini=<optimized out>, rtld_fini=<optimized out>, stack_end=0x7ffe78a53298) at ../csu/libc-start.c:360
+warning: 360	../csu/libc-start.c: No such file or directory
+#14 0x000000000040033e in _start ()
+[Inferior 1 (process 352836) detached]
+",,,,fork,"{""bare"":""1"",""ctx"":""2048"",""tokens"":""120""}",,200+200,v1,,,,,,,,,,,,,,,,,,,,,,,,,,
+2026-10-16 23:27:42,unknown,,,,,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 6 --moe kv-token-major=2,kv-tail=1,log=w",tetris,pc1,0,kvt2,,olmoe2-tiny-tetris,"server exited: 00 <main>, argc=15, argv=0x7fffba929768, init=<optimized out>, fini=<optimized out>, rtld_fini=<optimized out>, stack_end=0x7fffba929758) at ../csu/libc-start.c:360
+warning: 360	../csu/libc-start.c: No such file or directory
+#14 0x000000000040033e in _start ()
+[Inferior 1 (process 352943) detached]
+",,,,fork,"{""bare"":""1"",""tokens"":""300""}",,200+200,v1,0,,,,,,,,,,,,,,,,,,,,,,,,,
+2026-10-16 23:27:51,unknown,,,,,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 6 --moe kv-token-major=2,kv-tail=1,log=w",tetris,pc1,0,kvt2,,olmoe2-tiny-tetris,"server exited: 00 <main>, argc=15, argv=0x7ffd99996338, init=<optimized out>, fini=<optimized out>, rtld_fini=<optimized out>, stack_end=0x7ffd99996328) at ../csu/libc-start.c:360
+warning: 360	../csu/libc-start.c: No such file or directory
+#14 0x000000000040033e in _start ()
+[Inferior 1 (process 353052) detached]
+",,,,fork,"{""bare"":""1"",""tokens"":""300""}",,200+200,v1,1,,,,,,,,,,,,,,,,,,,,,,,,,
+2026-10-16 23:28:05,unknown,,484.315,481.595,,OLMoE-1B-7B-0924-Q4_K_M.gguf,-np 1 --moe-expert-cache 90 --moe log=w,tetrisc,pc1,1,kvt2,31f80a8e,olmoe2-ppl-base-ppl-probe,knob probe (one token),,,120,fork,"{""bare"":""1"",""ctx"":""2048"",""tokens"":""120""}",-np 1 --moe-expert-cache 90 --moe log=w -c 2048,200+200,v1,,,,,,,,3.1,937268,0,,,,,,,,,,,,,,pagecache=100%,,
+2026-10-16 23:28:47,unknown,,234.862,,100,OLMoE-1B-7B-0924-Q4_K_M.gguf,-np 1 --moe-expert-cache 90 --moe log=w,ppl,pc1,1,kvt2,,olmoe2-ppl-base-ppl,,2.069,4.36,,fork,"{""bare"":""1""}","--cpu-moe -nr --moe-expert-cache -1 -dev CUDA0,CUDA1 -np 1 --moe-expert-cache 90 --moe log=w -f /p/bw/wt-main/fork/bench/longsrc.cpp -c 1024 --chunks 12 -b 1 -ub 1",200+200,v1,0,,,,,,,36.3,,,,,,,,,,,,,,,,,,
+2026-10-16 23:29:01,unknown,,478.577,485.413,,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 90 --moe kv-token-major=2,log=w",tetrisc,pc1,1,kvt2,e327f054,olmoe2-ppl-tm2-ppl-probe,knob probe (one token),,,120,fork,"{""bare"":""1"",""ctx"":""2048"",""tokens"":""120""}","-np 1 --moe-expert-cache 90 --moe kv-token-major=2,log=w -c 2048",200+200,v1,,,,,,,,3.1,936816,0,,,,,,,,,,,,,,pagecache=100%,,
+2026-10-16 23:29:43,unknown,,233.257,,100,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 90 --moe kv-token-major=2,log=w",ppl,pc1,1,kvt2,,olmoe2-ppl-tm2-ppl,,2.069,4.39,,fork,"{""bare"":""1""}","--cpu-moe -nr --moe-expert-cache -1 -dev CUDA0,CUDA1 -np 1 --moe-expert-cache 90 --moe kv-token-major=2,log=w -f /p/bw/wt-main/fork/bench/longsrc.cpp -c 1024 --chunks 12 -b 1 -ub 1",200+200,v1,0,,,,,,,36.6,,,,,,,,,,,,,,,,,,
+2026-10-16 23:29:54,unknown,,,,,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 90 --moe kv-token-major=2,kv-tail=1,log=w",tetrisc,pc1,0,kvt2,,olmoe2-ppl-tail-ppl-probe,"knob probe (one token) | server exited: 00 <main>, argc=15, argv=0x7ffd94e07608, init=<optimized out>, fini=<optimized out>, rtld_fini=<optimized out>, stack_end=0x7ffd94e075f8) at ../csu/libc-start.c:360
+warning: 360	../csu/libc-start.c: No such file or directory
+#14 0x000000000040033e in _start ()
+[Inferior 1 (process 354465) detached]
+",,,,fork,"{""bare"":""1"",""ctx"":""2048"",""tokens"":""120""}",,200+200,v1,,,,,,,,,,,,,,,,,,,,,,,,,,
+2026-10-16 23:30:36,unknown,,225.551,,100,OLMoE-1B-7B-0924-Q4_K_M.gguf,"-np 1 --moe-expert-cache 90 --moe kv-token-major=2,kv-tail=1,log=w",ppl,pc1,1,kvt2,,olmoe2-ppl-tail-ppl,"ppl failed, exit 0: 0.34.887.751 W prefill decision: prompt_tokens=513 passes=1 pass_tokens=513 staging_slots=-1 mode=expert-split gpus=CUDA0+CUDA1 skipped=- helper_token_share=0.00 helper_expert_share=0.00 prompt_tps=394.0 one_card_tps=- split_tps=- chosen_by=""dense split not set up (--moe dense-split=0, or fewer than",,4.54,,fork,"{""bare"":""1""}","--cpu-moe -nr --moe-expert-cache -1 -dev CUDA0,CUDA1 -np 1 --moe-expert-cache 90 --moe kv-token-major=2,kv-tail=1,log=w -f /p/bw/wt-main/fork/bench/longsrc.cpp -c 1024 --chunks 12 -b 1 -ub 1",200+200,v1,0,,,,,,,36.6,,,,,,,,,,,,,,,,,,
