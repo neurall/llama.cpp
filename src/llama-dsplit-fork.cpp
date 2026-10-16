@@ -350,7 +350,7 @@ ggml_tensor * llama_dsplit_mirror_fork(const llama_model & model, ggml_tensor * 
 //                   (glm5-next); config 0 is one card.
 // --moe dense-split=1 / =0 force the split on / off for every pass of --moe dense-split-min tokens or more.
 namespace {
-struct dsplit_bucket { double us_tok[2] = { 0.0, 0.0 }; int n[2] = { 0, 0 }; int passes = 0; };
+struct dsplit_bucket { double us_tok[2] = { 0.0, 0.0 }; int n[2] = { 0, 0 }; int passes = 0; bool prior[2] = { false, false }; };   // prior: loaded from the state file, replaced by the first live measurement
 std::map<int, dsplit_bucket> g_buckets;
 int     g_cur      = -1;   // choice for the graph being built
 int     g_built    = -1;   // choice the last graph was built with
@@ -482,7 +482,7 @@ static void dsplit_calib_load(const llama_model & model) {
     std::string v;
     if (!g_calib_section.empty() && moe_state_get(g_calib_section, "dsplit_calib2@" + g_hw_key, v)) {
         const double c = atof(v.c_str());
-        if (c >= 0.5 && c <= 3.0) { g_split_calib.store(c); g_calib_n = 1; LLAMA_LOG_WARN("split planner: calibration %.2f from the state file\n", c); }
+        if (c >= 0.5 && c <= 3.0) { g_split_calib.store(c); g_calib_n = 0; LLAMA_LOG_WARN("split planner: calibration %.2f from the state file (a prior: the first measured split pass replaces it)\n", c); }
     }
 }
 // the measured per-token time of each arm in a size bucket, kept per hardware: "us_one n_one us_split n_split" (counts capped at 3 so new measurements still move it)
@@ -494,8 +494,8 @@ static void dsplit_bucket_load(int b) {
     double u0, u1; int n0, n1;
     if (sscanf(v.c_str(), "%lf %d %lf %d", &u0, &n0, &u1, &n1) == 4 && u0 >= 0 && u1 >= 0) {
         dsplit_bucket & B = g_buckets[b];
-        if (n0 > 0 && B.n[0] == 0) { B.us_tok[0] = u0; B.n[0] = n0; }
-        if (n1 > 0 && B.n[1] == 0) { B.us_tok[1] = u1; B.n[1] = n1; }
+        if (n0 > 0 && B.n[0] == 0) { B.us_tok[0] = u0; B.n[0] = n0; B.prior[0] = true; }
+        if (n1 > 0 && B.n[1] == 0) { B.us_tok[1] = u1; B.n[1] = n1; B.prior[1] = true; }
         LLAMA_LOG_WARN("split planner: size bucket %d from the state file: one card %s, split %s\n", b, n0 > 0 ? (std::to_string((int) (1e6 / u0)) + " tokens/s").c_str() : "-", n1 > 0 ? (std::to_string((int) (1e6 / u1)) + " tokens/s").c_str() : "-");
     }
 }
@@ -882,7 +882,8 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
                 pit->second.c_us = -1.0;   // recompute the plan of this size with the new calibration
             }
         }
-        B.us_tok[c] = B.n[c] == 0 ? v : 0.5 * (B.us_tok[c] + v);   // the newer measurement weighs half
+        B.us_tok[c] = (B.n[c] == 0 || B.prior[c]) ? v : 0.5 * (B.us_tok[c] + v);   // the newer measurement weighs half; a stored value is only a prior and is replaced
+        if (B.prior[c]) { B.prior[c] = false; B.n[c] = 0; }
         B.n[c]++;
         dsplit_bucket_save(dsplit_bucket_of(g_pend_max));
         static int logged = 0;
