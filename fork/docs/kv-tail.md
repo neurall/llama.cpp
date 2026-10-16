@@ -28,6 +28,12 @@ unclaimed cell.
   `-c` is ignored in this mode: the context of a request is calculated from the request and what the pool can give (upper bound: the model's trained context),
   a static reserve only hurts. A `-c` given by hand is still a cap.
 
+## No allocation, no free
+
+The record has no memory of its own: its tensors sit in a zero-size buffer until the pool exists, and the pool places the record in its own buffer (an offset, a
+pointer record). Claiming and giving back blocks is an owner change in the pool's block table, never a CUDA allocation or free. Because the pool starts at the
+first real decode, a warm-up decode would run on a KV without memory: with `kv-tail=1` there is no warm-up run.
+
 ## Limits
 
 * one slot (`-np 1`): the used cells must be a prefix. With several slots cells scatter; compaction (moving rows) is a later step.

@@ -339,20 +339,13 @@ llama_kv_cache::llama_kv_cache(
         ggml_backend_dev_t tdev = ggml_backend_buft_get_device(buft);
         const bool tail_here = kv_tail && !hparams.no_alloc && tm_it != tm_map.end() && tm_it->second.rec && tdev && ggml_backend_dev_type(tdev) == GGML_BACKEND_DEVICE_TYPE_GPU;
         if (tail_here) {
+            // no memory of its own: a zero-size buffer so the scheduler sees the tensors as allocated; the pool places the record at its tail (attach below).
+            // Nothing runs on the KV before that (no warm-up decode with kv-tail, the pool starts at the first real decode), and nothing is allocated or freed.
             tm_rec & r = tm_it->second;
-            const size_t R  = r.row * (size_t) kv_size;
-            const size_t S0 = std::min(R, r.row * (size_t) 4096);   // 4096 cells back the record until the pool takes over (warmup, small tests)
-            buf = ggml_backend_buft_alloc_buffer(buft, S0);
-            if (buf) {
-                uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
-                r.rec->buffer = buf;
-                r.rec->data   = (void *) ((uintptr_t) base + S0 - R);
-                for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) {
-                    if (t != r.rec && t->view_src == r.rec) { t->buffer = buf; t->data = (uint8_t *) r.rec->data + t->view_offs; }
-                }
-                LLAMA_LOG_INFO("%s: kv-tail: record of %.1f MiB (%zu B per cell, %u cells) on %s, %.1f MiB backed until the expert pool takes it\n", __func__,
-                        R / 1048576.0, r.row, kv_size, ggml_backend_dev_name(tdev), S0 / 1048576.0);
-            }
+            const size_t R = r.row * (size_t) kv_size;
+            buf = ggml_backend_buft_alloc_buffer(buft, 0);
+            for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) { t->buffer = buf; }
+            LLAMA_LOG_INFO("%s: kv-tail: record of %.1f MiB (%zu B per cell, %u cells) on %s has no memory of its own\n", __func__, R / 1048576.0, r.row, kv_size, ggml_backend_dev_name(tdev));
         } else
         if (hparams.no_alloc) {
             buf = ggml_backend_buft_alloc_buffer(buft, /*size =*/ 0); // dummy buffer
@@ -368,7 +361,7 @@ llama_kv_cache::llama_kv_cache(
 
         LLAMA_LOG_INFO("%s: %10s KV buffer size = %8.2f MiB\n", __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf)/1024.0/1024.0);
 
-        ggml_backend_buffer_clear(buf, 0);
+        if (!tail_here) { ggml_backend_buffer_clear(buf, 0); }
         ctxs_bufs.emplace_back(std::move(ctx), buf);
         if (tail_here) {
             tm_rec & r = tm_it->second;
@@ -381,9 +374,8 @@ llama_kv_cache::llama_kv_cache(
             reg.bytes = r.row * (size_t) kv_size;
             reg.row   = r.row;
             reg.rows  = [this]() -> size_t { return v_cells.empty() ? 0 : (size_t) v_cells[0].used_max_p1(); };
-            reg.detach = [this, idx, buft]() {
+            reg.detach = [this]() {
                 GGML_ASSERT((v_cells.empty() || v_cells[0].used_max_p1() == 0) && "kv-tail: the pool starts while the cache holds cells");
-                ctxs_bufs[idx].second.reset(ggml_backend_buft_alloc_buffer(buft, 0));   // the small backing goes back to the card
             };
             reg.attach = [rec, cx](ggml_backend_buffer_t pb, uint8_t * at) {
                 rec->buffer = pb;

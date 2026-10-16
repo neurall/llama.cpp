@@ -2480,6 +2480,12 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
         common_set_adapter_lora(lctx, params.lora_adapters);
     }
 
+    // --moe kv-tail=1: the KV record has no memory until the expert pool exists (it lives at the pool's tail, no allocation of its own), and the pool starts at the first
+    // real decode, so there is no warm-up decode before it
+    const char * kv_tail_on = llama_moe_get_opt("kv-tail");
+    if (params.warmup && kv_tail_on && atoi(kv_tail_on) != 0) {
+        COM_TRC("%s", "kv-tail: no warm-up run (the KV cache has no memory before the expert pool starts)\n");
+    } else
     if (params.warmup) {
         COM_TRC("%s", "warming up the model with an empty run - please wait ... (--no-warmup to disable)\n");
 

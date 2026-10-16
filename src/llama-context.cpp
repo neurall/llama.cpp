@@ -5876,6 +5876,7 @@ static void llama_log_tuning(const char * fn, const llama_context * ctx);
 
 void llama_perf_context_print(const llama_context * ctx) {
     const auto data = llama_perf_context(ctx);
+    llama_moe_cache_kv_tail_report_fork("end of run");   // --moe kv-tail=1: KV cells and the expert cache per card (-lv 3)
 
     const double t_end_ms = 1e-3 * ggml_time_us();
 

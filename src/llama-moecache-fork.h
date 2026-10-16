@@ -157,10 +157,12 @@ void llama_moe_cache_kv_tail_detach_fork();
 struct llama_kv_tail_stat_fork {
     std::string dev;
     size_t kv_cells = 0, kv_bytes = 0;          // cells in use, bytes the pool holds for them
+    size_t moe_bytes = 0;                       // bytes of the blocks the experts can use now
     size_t blocks = 0, blocks_free = 0, blocks_kv = 0, blocks_lent = 0;   // expert blocks of the pool: all, free, under the KV, lent to the compute graph
     size_t claim_n = 0, release_n = 0, evicted = 0;   // since the last call of this function with reset: blocks claimed, released, experts evicted by claims
 };
 std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool reset);
+void llama_moe_cache_kv_tail_report_fork(const char * when);   // the same as one log line per card (info level)
 bool    llama_moe_cache_active_fork();
 bool    llama_moe_cache_wants_probs_fork();   // --moe policy=r: the gate op of every cached layer also gets the router probabilities (src[6]) for the relevance score
 // startup probe: how many reader threads reach 95% of the CPU's RAM read rate (0: not measured)

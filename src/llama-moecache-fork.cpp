@@ -2935,6 +2935,12 @@ void llama_moe_cache_kv_tail_remove_fork(void * owner) {
         }
     }
 }
+void llama_moe_cache_kv_tail_report_fork(const char * when) {
+    for (const auto & st : llama_moe_cache_kv_tail_stats_fork(false)) {
+        LLAMA_LOG_INFO("moe-cache: %s %s: KV %zu cells (%.1f MiB), expert cache %.2f GiB in %zu of %zu blocks (%zu free, %zu lent to the graph, %zu under the KV)\n", when, st.dev.c_str(),
+                st.kv_cells, st.kv_bytes / 1048576.0, st.moe_bytes / 1073741824.0, st.blocks - st.blocks_kv - st.blocks_lent, st.blocks, st.blocks_free, st.blocks_lent, st.blocks_kv);
+    }
+}
 void llama_moe_cache_kv_tail_detach_fork() {
     std::lock_guard<std::mutex> lk(g_kvt_mtx);
     for (auto & r : g_kvt) { if (r.detach) { r.detach(); } }
@@ -3066,6 +3072,7 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
                 st.blocks++;
                 const int32_t o = ps.owner[b];
                 if (o == -1) { st.blocks_free++; } else if (o == -2) { st.blocks_lent++; } else if (o == -3) { st.blocks_kv++; }
+                if (o != -2 && o != -3) { st.moe_bytes += sg.B; }   // blocks the experts can use now (cached, uploading or free)
             }
         }
         out.push_back(std::move(st));
@@ -5934,6 +5941,16 @@ bool llama_moe_cache_get_info_fork(struct llama_tuning_info * info) {
     info->margin = mc->last_margin; // the value in use (the tuner's pick, a fixed MARGIN, or the timing rule's)
     info->gate = (int32_t) knobs().gate; info->wait = (int32_t) knobs().wait; info->big = (int32_t) knobs().big;
     info->predict = (int32_t) knobs().predict; info->self_tune = (int32_t) knobs().self_tune;
+    {
+        const auto kt = llama_moe_cache_kv_tail_stats_fork(false);
+        info->kvt_n = (int32_t) std::min<size_t>(kt.size(), 4);
+        for (int i = 0; i < info->kvt_n; ++i) {
+            snprintf(info->kvt_dev[i], sizeof info->kvt_dev[i], "%s", kt[i].dev.c_str());
+            info->kvt_cells[i] = kt[i].kv_cells; info->kvt_kv_mib[i] = kt[i].kv_bytes / 1048576.0; info->kvt_moe_gib[i] = kt[i].moe_bytes / 1073741824.0;
+            info->kvt_blocks[i] = kt[i].blocks; info->kvt_free[i] = kt[i].blocks_free; info->kvt_lent[i] = kt[i].blocks_lent; info->kvt_kv_blocks[i] = kt[i].blocks_kv;
+        }
+        if (!kt.empty()) { info->kvt_claim_n = kt[0].claim_n; info->kvt_release_n = kt[0].release_n; info->kvt_evicted = kt[0].evicted; }
+    }
     return true;
 }
 
