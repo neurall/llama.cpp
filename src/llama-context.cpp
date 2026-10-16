@@ -1,4 +1,5 @@
 #include "llama-context.h"
+void llama_moe_set_opt(const char * key, const char * value);
 #include <fstream>
 #include <filesystem>
 #include <map>
@@ -242,7 +243,13 @@ llama_context::llama_context(
     cparams.n_ctx            = params.n_ctx           == 0    ? hparams.n_ctx_train           : params.n_ctx;
     if (const char * kt = llama_moe_get_opt("kv-tail"); kt && atoi(kt) != 0) {   // the context of a request is calculated from the request, -c is not used (fork/docs/kv-tail.md)
         const char * ac = llama_moe_get_opt("kv-auto-ctx");   // --moe kv-auto-ctx=0: -c is accepted again (the cap of the virtual record)
-        if (!ac || atoi(ac) != 0) { cparams.n_ctx = hparams.n_ctx_train; }
+        const bool tail_possible = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && params.n_seq_max <= 1 && params.type_k == params.type_v && !model.devices.empty();
+        if ((!ac || atoi(ac) != 0) && tail_possible) {
+            llama_moe_set_opt("kv-user-ctx", std::to_string(cparams.n_ctx).c_str());   // what the user asked for: the cache goes back to it when it cannot use the tail layout
+            cparams.n_ctx = hparams.n_ctx_train;
+        } else if (!tail_possible) {
+            LLAMA_LOG_WARN("%s: kv-tail is not possible here (needs flash attention, one sequence, equal K and V types, a GPU): the normal KV cache with n_ctx = %u\n", __func__, cparams.n_ctx);
+        }
     }
     cparams.rope_freq_base   = params.rope_freq_base  == 0.0f ? hparams.rope_freq_base_train  : params.rope_freq_base;
     cparams.rope_freq_scale  = params.rope_freq_scale == 0.0f ? hparams.rope_freq_scale_train : params.rope_freq_scale;

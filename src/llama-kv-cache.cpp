@@ -105,6 +105,19 @@ llama_kv_cache::llama_kv_cache(
         }
     }
 
+    {   // --moe kv-tail=1 made the context the model's trained maximum (llama_context); a cache that cannot take the record layout goes back to the context the user asked for
+        const char * kt = llama_moe_get_opt("kv-tail");
+        const char * uc = llama_moe_get_opt("kv-user-ctx");
+        const char * tm = llama_moe_get_opt("kv-token-major");
+        const bool can = tm && atoi(tm) == 2 && !other && n_stream == 1 && !v_trans && type_k == type_v && !share && offload;
+        if (kt && atoi(kt) != 0 && uc && !can) {
+            const uint32_t user = GGML_PAD((uint32_t) atoi(uc), n_pad);
+            if (user < kv_size) {
+                LLAMA_LOG_WARN("%s: kv-tail is not possible for this cache (needs flash attention, one stream, equal K and V types, no shared layers, GPU offload): the normal layout with %u cells\n", __func__, user);
+                kv_size = user;
+            }
+        }
+    }
     GGML_ASSERT(kv_size % n_pad == 0);
 
     const uint32_t n_layer = hparams.n_layer_all;
