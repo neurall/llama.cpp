@@ -3364,7 +3364,15 @@ def cmd_queue(a):
         if a.action == "resume" and os.path.exists(stop): os.remove(stop)
         rows = list(csv.DictReader(open(INI, newline="")))
         run_ = [r["id"] for r in rows if r["status"] == "running"]; nxt = sorted((r for r in rows if r["status"] == "next"), key=lambda r: float(r["order"] or 0))
-        print(("PAUSED: nothing new starts" if os.path.exists(stop) else "running: the next waiting task starts when the current one ends") + f" | running: {', '.join(run_) or '-'} | waiting: {len(nxt)}" +
+        el = ""
+        for r_ in rows:   # how long the running task has been going: a cell is normally 1-3 minutes, over 10 is flagged
+            if r_["status"] == "running" and r_.get("start"):
+                try:
+                    sec = time.time() - time.mktime(time.strptime(r_["start"], "%Y-%m-%d %H:%M:%S"))
+                    el += f" [{r_['id']} {int(sec // 60)}m{int(sec % 60):02d}s{' - UNUSUALLY LONG' if sec > 600 else ''}]"
+                except ValueError:
+                    pass
+        print(("PAUSED: nothing new starts" if os.path.exists(stop) else "running: the next waiting task starts when the current one ends") + f" | running: {', '.join(run_) or '-'}{el} | waiting: {len(nxt)}" +
               (f" (next: {nxt[0]['id']})" if nxt else ""))
         return 0
     if a.action == "backups":
