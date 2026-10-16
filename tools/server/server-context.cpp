@@ -3841,6 +3841,17 @@ private:
                             }
                         } else {
                             if (slot.task->n_tokens() >= slot.n_ctx) {
+                                llama_tuning_info kti;   // kv-tail: say what the machine can hold (KV capacity, the model's cap), not only the context of this server
+                                llama_get_tuning_info(ctx_tgt, &kti);
+                                if (kti.kvt_n > 0) {
+                                    send_error(slot,
+                                               string_format("request needs %d tokens (prompt) but this machine can hold %llu (context %d, KV capacity %llu tokens, model cap %llu)",
+                                                             (int) slot.task->n_tokens(), (unsigned long long) std::min<uint64_t>(kti.kvt_cap_min, kti.kvt_ctx_train), slot.n_ctx,
+                                                             (unsigned long long) kti.kvt_cap_min, (unsigned long long) kti.kvt_ctx_train),
+                                               ERROR_TYPE_EXCEED_CONTEXT_SIZE);
+                                    slot.release();
+                                    return;
+                                }
                                 // fork: a prompt longer than the slot's context is cut to fit and run instead of failing (--moe prompt-overflow=error keeps the error).
                                 // The middle goes: the first half of the room keeps the start (instruction, system part, the top of a file), the second half the end (the
                                 // question). Room = context minus the tokens to generate (n_predict, 1024 when unlimited, never more than half the context). Text prompts only.
