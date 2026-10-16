@@ -1010,6 +1010,11 @@ CHAT_LONG = ("write smallest html tetris game. Requirements: a single self-conta
              "readable: one function for collision tests, one for locking a piece, one for clearing lines, one for drawing, and a requestAnimationFrame loop with a fixed time "
              "step. Do not use any frameworks. Answer with the complete html file only, in a single code block, without any explanation before or after it.")
 TAGBOX = {"v": ""}   # the running test and prompt (game4-racing, edit4-2, long1k, ...): --moe tag= puts it into the routing file name
+def _ctx_args(default):
+    """-c for a test: --ctx N, else the test's own; --ctx -1 passes no -c at all (the engine decides: kv-tail makes it the model's maximum)"""
+    c = OVR.get("ctx")
+    return [] if c is not None and int(c) < 0 else ["-c", str(c or default)]
+
 IDX = 0    # run counter: test chatv answers prompt IDX mod len(CHAT_PROMPTS) (a repeated temp-0 answer would reuse exactly the cached experts)
 CHAT_PROMPTS = [
     "Write a Python function that parses a CSV file and returns the average of each column.",
@@ -1885,26 +1890,26 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         base = CHAT_TESTS.get(test, test)
         if base in ("tetris", "t100", "fix"):
             # t100: what most people run on a CLI: one short prompt, 100 tokens, -c 1024, temperature 0 (GREEDY)
-            args = COMMON + ["-c", str(OVR.get("ctx") or (2048 if base == "fix" else 1024))]
+            args = COMMON + _ctx_args((2048 if base == "fix" else 1024))
             res, logf, text = generate(build, env, args, ovr_prompt("generate smallest html tetris game." if base == "tetris" else "write smallest html tetris game"),
                                        int(OVR.get("tokens") or (-1 if base == "tetris" else 1024 if base == "fix" else 100)), chat, FIXED if base == "fix" else None)
         elif base == "game4":
             word = GAME_WARM if WARMING else GAME_WORDS[(OVR.get('pidx', REP or 0)) % len(GAME_WORDS)]
             TAGBOX["v"] = "game4-" + word.replace(" ", "_") + ("-chat" if chat else "")
-            args = COMMON + ["-c", str(OVR.get("ctx") or 1024)]
+            args = COMMON + _ctx_args(1024)
             res, logf, text = generate(build, env, args, ovr_prompt(f"write smallest html {word} game"), int(OVR.get("tokens") or 100), chat, {"cache_prompt": False})
         elif base == "long1k":   # a prompt of about 1024 tokens (src_1k.cpp = the first 4.4k characters of src_3k.cpp) asking for a bug fix, 1024 tokens out, -c 4096: a long prefill and a long decode
             snippet = open(os.path.join(PROMPTS, "src_1k.cpp")).read()
-            args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
+            args = COMMON + _ctx_args(4096)
             res, logf, text = generate(build, env, args, snippet + "\n\n" + LONG2K_INSTR, int(OVR.get("tokens") or 1024), chat, {"cache_prompt": False})
         elif base == "edit4":
             snippet = open(os.path.join(PROMPTS, OVR.get("snippet") or "src_3k.cpp")).read()
             ins = EDIT_WARM if WARMING else EDIT_INSTR[(OVR.get('pidx', REP or 0)) % len(EDIT_INSTR)]
             TAGBOX["v"] = "edit4-%d" % ((REP or 0) % len(EDIT_INSTR)) + ("-chat" if chat else "")
-            args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
+            args = COMMON + _ctx_args(4096)
             res, logf, text = generate(build, env, args, snippet + "\n\n" + ins, int(OVR.get("tokens") or 128), chat, {"cache_prompt": False})
         else:
-            args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
+            args = COMMON + _ctx_args(4096)
             chatv = test == "chatv"  # varied prompts (index = run counter), thinking off: the topic switches the cache has to follow
             res, logf = server_run(build, env, args, "/v1/chat/completions",
                                    {"messages": [{"role": "user", "content": ovr_prompt(CHAT_PROMPTS[OVR.get("pidx", IDX) % len(CHAT_PROMPTS)] if chatv else CHAT_LONG if test == "chat2" else "write smallest html tetris game")}],
@@ -3444,7 +3449,7 @@ def cmd_cell(a):
     if a.hold:   # simulated smaller cards: "0:16 1:16" keeps 16 GiB of GPU 0 and of GPU 1 occupied for the whole cell (a 24 GB card then behaves as an 8 GB one)
         hold = a.hold.split()
         env["PERF_HOLD_MB"] = str(int(max(float(x.split(":")[1]) for x in hold) * 1024))
-        holder = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.realpath(__file__)), "experiments", "vram-sim", "vramhold.py")] + hold, env=dict(os.environ),
+        holder = subprocess.Popen([os.environ.get("FORK_TORCH_PYTHON", "/home/o/v/bin/python3" if os.path.exists("/home/o/v/bin/python3") else sys.executable), os.path.join(os.path.dirname(os.path.realpath(__file__)), "experiments", "vram-sim", "vramhold.py")] + hold, env=dict(os.environ),
                                   stdout=subprocess.PIPE, text=True, start_new_session=True)
         ok = False
         for _ in range(120):
