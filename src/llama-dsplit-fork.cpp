@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -442,18 +443,36 @@ static std::string g_calib_section;
 // the measured link class (rounded to 5 GB/s). Move a card to another slot, add or remove one, or reorder the devices and the key changes: the old entries stay in the
 // file, are not used, and the planner starts again from its model. Same cards in the same slots find their entries again.
 static std::string g_hw_key;
+static std::string dsplit_pci_file(const std::string & busid, const char * file) {   // one line of /sys/bus/pci/devices/<id>/<file> (Linux), "" elsewhere or when missing
+    std::string path = "/sys/bus/pci/devices/" + busid + "/" + file, line;
+    for (auto & ch : path) { ch = (char) std::tolower((unsigned char) ch); }
+    FILE * f = fopen(path.c_str(), "r");
+    if (!f) { return ""; }
+    char buf[128] = {0}; if (fgets(buf, sizeof buf, f)) { line = buf; }
+    fclose(f);
+    while (!line.empty() && (line.back() == '\n' || line.back() == ' ')) { line.pop_back(); }
+    return line;
+}
 static std::string dsplit_hw_key(const llama_model & model) {
     std::string desc;
     for (const auto & d : model.devices) {
         if (ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
         ggml_backend_dev_props p; ggml_backend_dev_get_props(d.dev, &p);
-        const llama_gpu_probe_fork_result * pr = llama_gpu_probe_find_fork(d.dev);
-        char b[256]; snprintf(b, sizeof b, "%s|%s|%.0fG|link%d;", p.name ? p.name : "?", p.device_id ? p.device_id : "?", (double) p.memory_total / 1073741824.0, pr ? (int) (std::lround(pr->h2d_gbs / 5.0) * 5) : -1);
-        desc += b;
+        const std::string bus = p.device_id ? p.device_id : "";
+        // vendor + device id and the slot say which card sits where; "generation x width" the link it has there (4x16 = PCIe 4.0 x16): short, stable, no measuring
+        std::string ven = dsplit_pci_file(bus, "vendor"), dev = dsplit_pci_file(bus, "device"), spd = dsplit_pci_file(bus, "current_link_speed"), wid = dsplit_pci_file(bus, "current_link_width");
+        if (ven.compare(0, 2, "0x") == 0) { ven = ven.substr(2); }
+        if (dev.compare(0, 2, "0x") == 0) { dev = dev.substr(2); }
+        const double gt = atof(spd.c_str());   // "16.0 GT/s PCIe"
+        const int gen = gt >= 31.0 ? 5 : gt >= 15.0 ? 4 : gt >= 7.0 ? 3 : gt >= 4.0 ? 2 : gt > 0.0 ? 1 : 0;
+        std::string one = ven.empty() ? std::string(p.name ? p.name : "?") : ven + dev;   // no sysfs (Windows): the name stands in
+        one += "@" + (bus.size() > 5 ? bus.substr(5) : bus);   // 0000:0b:00.0 -> 0b:00.0
+        one += "/" + (gen ? std::to_string(gen) : std::string("?")) + "x" + (wid.empty() ? std::string("?") : wid);
+        desc += one + ";";
     }
     uint64_t h = 1469598103934665603ull; for (char ch : desc) { h = (h ^ (uint8_t) ch) * 1099511628211ull; }
     char k[24]; snprintf(k, sizeof k, "%08x", (unsigned) (h ^ (h >> 32)));
-    LLAMA_LOG_WARN("split planner: hardware key %s for %s\n", k, desc.c_str());
+    LLAMA_LOG_WARN("split planner: hardware key %s = %s\n", k, desc.c_str());
     return k;
 }
 static void dsplit_calib_load(const llama_model & model) {
