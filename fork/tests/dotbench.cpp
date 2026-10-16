@@ -40,9 +40,11 @@ int main(int argc, char ** argv) {
         std::vector<uint8_t> a8(ggml_row_size(trc->vec_dot_type, n));
         q8->from_float(act.data(), a8.data(), n);
         float sink = 0;
+        const int pf = getenv("PF") ? atoi(getenv("PF")) : 0;   // PF=N: software prefetch of the row N rows ahead (all its cache lines) before each dot product
+        auto pre = [&](size_t r) { if (pf && r + pf < rows) { const char * p = (const char *) big.data() + (r + pf) * rb; for (size_t o = 0; o < rb; o += 64) __builtin_prefetch(p + o, 0, 0); } };
         for (size_t r = 0; r < rows; ++r) { float s; trc->vec_dot(n, &s, 0, big.data() + r * rb, 0, a8.data(), 0, 1); sink += s; }   // warm
         const int reps = mb < 8 ? 3000 : 3; auto t0 = std::chrono::steady_clock::now();
-        for (int k = 0; k < reps; ++k) for (size_t r = 0; r < rows; ++r) { float s; trc->vec_dot(n, &s, 0, big.data() + r * rb, 0, a8.data(), 0, 1); sink += s; }
+        for (int k = 0; k < reps; ++k) for (size_t r = 0; r < rows; ++r) { pre(r); float s; trc->vec_dot(n, &s, 0, big.data() + r * rb, 0, a8.data(), 0, 1); sink += s; }
         double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         const double blocks = (double) reps * rows * (n / 256.0);
         printf("%-9s %8.2f %10.2f %8.2f%s\n", ggml_type_name(t), rb * 8.0 / n, sec * 1e9 / blocks, (double) reps * rows * rb / sec / 1e9, sink == 1.234f ? "!" : "");
