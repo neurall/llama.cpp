@@ -213,6 +213,16 @@ void llama_dsplit_mirror_free_fork(const llama_model & model) {
 }
 
 namespace {
+// Bytes of mirror copies that have to be written before the next split pass (max over the cards: both fill at once, each over its own link). The copies live
+// in lent cache blocks (mirror-pool), decode reuses those blocks for experts, so EVERY request that splits starts with this copy. Measured: GLM 3-bit 1k-token
+// prompt 419 prompt t/s split against 512 on one card, MiMo 538 against 691 (a difference of 0.44 s and 0.40 s, 2.3-2.7 GB at ~6.6 GB/s over the x4 link).
+static std::atomic<double> g_mirror_fill_bytes { 0.0 };
+static void dsplit_update_fill(const dsplit_set & S) {
+    double mx = 0.0;
+    for (const auto & kv : S.copies) { if (kv.second.pooled && !kv.second.valid) { mx = std::max(mx, (double) kv.second.bytes); } }
+    g_mirror_fill_bytes.store(mx);
+}
+
 // the copies can be used: made, and every card's placed (mirror-pool places them at the first decode)
 bool dsplit_copies_ready(const dsplit_set & S) {
     if (S.mirror.empty() || S.failed) { return false; }
@@ -256,6 +266,7 @@ void llama_dsplit_mirror_place_fork(const llama_model & model, const std::vector
             c.placed = true;
             c.pooled = true;
             c.valid  = false;
+            dsplit_update_fill(S);
             llama_moe_cache_alias_mirror_fork(kv.first, c.bytes);   // the pass planner keeps room for them
             LLAMA_LOG_WARN("%s: dense split: the %.1f MiB of copies for %s sit at the start of its expert pool (%.1f GiB lendable): filled when a prompt pass "
                     "splits, expert blocks again in decode\n", __func__, c.bytes / 1048576.0, ggml_backend_dev_name(kv.first), pb->capacity / 1073741824.0);
@@ -293,6 +304,7 @@ std::vector<std::pair<ggml_tensor *, ggml_tensor *>> llama_dsplit_mirror_take_up
         return {};
     }
     ct->second.valid = true;   // the caller fills them before the graph runs
+    dsplit_update_fill(it->second);
     return ct->second.pairs;
 }
 
@@ -305,6 +317,7 @@ void llama_dsplit_mirror_invalidate_fork(const llama_model & model, ggml_backend
     auto ct = it->second.copies.find(dev);
     if (ct != it->second.copies.end() && ct->second.pooled) {
         ct->second.valid = false;
+        dsplit_update_fill(it->second);
     }
 }
 
@@ -397,6 +410,7 @@ namespace {
 struct dsplit_plan_cache {
     int64_t n_tokens = 0;
     double  c_us     = 0.0;
+    double  fill     = -1.0;   // the pending mirror fill the plan was made with: the first pass of a request pays it, the later ones do not
     llama_dsplit_plan_fork plan;
     std::vector<double> f_help;   // per layer
 };
@@ -529,6 +543,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     // uploaded again before decode is back at full speed. How much of that a prompt really displaces grows with its length and saturates: the fraction of a
     // layer's experts that n tokens touch, 1 - (1 - k/E)^n (a 1-token prompt displaces nothing worth counting, a long one the whole lent area). The refill
     // is one more upload of the lent bytes over the offload card's link, charged to the split's time (one-off seconds, same unit as the pass).
+    best_split += g_mirror_fill_bytes.load() / (std::min(Bm, Bh) * 1e3);   // the copy of the dense weights into the lent blocks, before the first layer (slower link)
     {
         const double touched = 1.0 - std::pow(1.0 - n_used / n_exp, (double) T);
         best_split += touched * dense_bytes / (Bm * 1e3) * llama_moe_live_get("refill_weight");   // live: POST /moe/params
@@ -550,7 +565,9 @@ llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int
     std::lock_guard<std::mutex> lk(g_plan_mu);
     const int b = dsplit_bucket_of(n_tokens);
     auto & pc = g_plans[b];
-    if (pc.n_tokens != n_tokens || pc.c_us != c_us) {
+    const double fill_now = g_mirror_fill_bytes.load();
+    if (pc.n_tokens != n_tokens || pc.c_us != c_us || pc.fill != fill_now) {
+        pc.fill     = fill_now;
         pc.n_tokens = n_tokens;
         pc.c_us     = c_us;
         dsplit_plan_compute(model, n_tokens, c_us, pc.plan, pc.f_help);
