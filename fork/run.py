@@ -1710,6 +1710,15 @@ def server_run(build, env, args, path, body, render=None):
                       "predicted_per_second": gen / max(wall - pms, 1e-3), "prompt_per_second": pn / max(pms, 1e-3), "prompt_ms": pms * 1000}
             return res, logf
         rep = max(1, int(OVR.get("repeat") or 1))   # --repeat N: N requests to this server, the last one is the result (warm)
+        if OVR.get("lead"):   # --lead N: a request with a prompt of about N tokens to the same server first (the KV grows for it, the measured request then shrinks it)
+            src = open(os.path.join(PROMPTS, "src_12k.cpp" if int(OVR["lead"]) > 3000 else "longsrc.cpp"), errors="replace").read()
+            src = (src * (1 + int(OVR["lead"]) * 4 // max(1, len(src))))[: int(OVR["lead"]) * 4]   # ~4 characters per token
+            lb = dict(body); lb["n_predict"] = 16
+            if "messages" in lb: lb["messages"] = [{"role": "user", "content": "Summarize this code in one sentence:\n" + src}]
+            else: lb["prompt"] = "// summary of the code below\n" + src
+            r0 = post(path, lb)
+            PROCSTAT["lead_pp"] = (r0.get("timings") or {}).get("prompt_per_second")
+            PROCSTAT["lead_n"] = (r0.get("timings") or {}).get("prompt_n")
         for i_rep in range(rep):
             res = (post_loopguard(path, body) if path == "/completion" and not KEEP_LOOPS and int(body.get("n_predict", 0)) >= 800 else post(path, body))
             if i_rep == 0 and rep > 1:
@@ -2462,7 +2471,7 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par", "lead"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
     if getattr(a, "test", None) in ALIAS_TOKENS and "tokens" not in OVR:
@@ -2933,6 +2942,7 @@ def add_overrides(sub):
     sub.add_argument("--ctx", type=int, help="context size instead of the test's own")
     sub.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), metavar="N[k]",
                      help="cut the prompt of the test to N tokens (8k = 8000, so it fits one -ub 8192 pass), measured with the server's own /tokenize, for any model; raw-prompt tests only")
+    sub.add_argument("--lead", type=int, help="first a request with a prompt of about N tokens to the same server, then the measured one (the KV grows, then shrinks)")
     sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
     sub.add_argument("--par", type=int, help="send N identical requests at once (start the server with -np N too, e.g. --variant 'v=-np 10'); the row is the aggregate: generated tokens of all requests over the wall time, prompt tokens of all over the longest prompt phase; a failed request fails the run")
     sub.add_argument("--pidx", type=int, help="game4 / edit4: use prompt N of the four for every repetition (default: repetition k uses prompt k mod 4)")
@@ -3426,7 +3436,7 @@ def cmd_cell(a):
     args = "-np 1 " + (a.args or "")
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
-           "-t", a.test, "-n", str(a.n), "--campaign", f"{a.tag}-{a.test}"] + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else [])
+           "-t", a.test, "-n", str(a.n), "--campaign", f"{a.tag}-{a.test}"] + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, GGML_CUDA_HUGEFS="/mnt/huge1g", PERF_LOG="r")
     for kv in (a.env or []):
         k, _, v = kv.partition("="); env[k] = v
@@ -5088,6 +5098,7 @@ if __name__ == "__main__":
     ce.add_argument("--wrap", help="command prefix for the server (nsys / ncu)")
     ce.add_argument("--hold", help="GPU:GiB list kept occupied during the cell (simulates smaller cards), e.g. '0:16 1:16' = 8 GB cards on 24 GB ones")
     ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
+    ce.add_argument("--lead", type=int, help="a request of about N prompt tokens first, same server")
     ce.add_argument("--tokens", type=int, help="generated tokens instead of the test's own")
     ce.add_argument("--ctx", type=int, help="context size instead of the test's own (a -c in the args loses to the test's own -c)")
     br = sp.add_parser("branches", help="local branches with commits not in TARGET (counts, dates); --merge a,b,c merges them in the checkout of TARGET (refuses on another branch or a dirty tree)")
