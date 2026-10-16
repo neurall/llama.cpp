@@ -3052,6 +3052,15 @@ void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     }
     const enum ggml_type vt = type_traits_cpu[type].vec_dot_type;
     if (!any || !f[0] || type_traits_cpu[vt].from_float == NULL) { return; }
+    // GGML_CPU_KERNEL_FORM=default|avx2|vnni|avx512|vbmi forces one form for every type that has it (perplexity and correctness runs per kernel): no timing, no fallback
+    const char * forced = getenv("GGML_CPU_KERNEL_FORM");
+    if (forced && forced[0]) {
+        int pick = -1;
+        for (int k = 0; k < GGML_FORM_COUNT; ++k) { if (strcmp(forced, k == 0 ? "default" : g_form_names[k]) == 0) { pick = k; } }
+        if (pick > 0 && f[pick]) { type_traits_cpu[type].vec_dot = f[pick]; }
+        GGML_LOG_INFO("cpu kernel %-8s forced form %s: %s\n", ggml_type_name(type), forced, pick == 0 ? "default" : (pick > 0 && f[pick]) ? "used" : "not available on this CPU, default kept");
+        return;
+    }
 
     enum { N = 4096, ROWS = 48, ROUNDS = 7 };
     const size_t rb = ggml_row_size(type, N);
