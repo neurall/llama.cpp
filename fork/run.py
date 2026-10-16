@@ -1299,6 +1299,24 @@ def decisions(log):
 RUN_COLS += DECISION_COLS
 
 
+def cmd_cells(a):
+    """A markdown table of the cells of one campaign prefix (decode, prompt speed, hit rate) with what the server log says about the memory: the context the server
+    ran with (n_ctx_slot) and the pool of the first card, so a cell that did not get the setting it was queued for shows at once."""
+    import csv as _csv
+    rows = list(_csv.reader(open(os.path.join(HERE, "bench", "run-history.csv"), newline="")))
+    hd = rows[0]; ix = {k: i for i, k in enumerate(hd)}
+    print("| cell | decode t/s | prompt t/s | hit rate % | n_ctx_slot | pool card 0 (MiB) |\n|---|---|---|---|---|---|")
+    for x in rows[1:]:
+        c = x[ix["campaign"]]
+        if not c.startswith(a.prefix) or c.endswith("probe") or x[ix["ok"]] != "1":
+            continue
+        tag = c.rsplit("-", 1)[0]; lg = f"/p/bw/data/q5h/{tag}.server.log"; pool = ctx = ""
+        if os.path.exists(lg):
+            t = open(lg, errors="replace").read()
+            m = re.search(r"block pool on CUDA0: \d+ layers, ([\d.]+) MiB", t); pool = m.group(1) if m else ""
+            m = re.search(r"n_ctx_slot = (\d+)", t); ctx = m.group(1) if m else ""
+        print(f"| {tag} | {x[ix['tps']]} | {x[ix['pp']]} | {x[ix['hit']]} | {ctx} | {pool} |")
+    return 0
 def cmd_misfires(a):
     """runs whose prompt ran in the slower mode: per model, machine and pass size (sqrt(2) steps, as the engine's buckets), the prompt speed of each mode
     the engine chose in any run; a run is listed when another mode of the same key was faster by more than --tol. Also every stock re-measurement."""
@@ -5115,6 +5133,8 @@ if __name__ == "__main__":
     s_.add_argument("-t", "--test")
     s_.add_argument("-b", "--build")
     s_.add_argument("--runs", action="store_true")
+    cl = sp.add_parser("cells", help="markdown table of the cells of a campaign prefix, with the context and the pool the server really ran with")
+    cl.add_argument("prefix")
     mf = sp.add_parser("misfires", help="automatic choices that went against what was measured: a prompt run on one card where the split of the same model and pass "
                                          "size was faster in another run, and the reverse; stock re-measurements of the placement (from the pf_* / placement columns)")
     mf.add_argument("--days", type=float, default=7.0, help="look at runs of the last N days")
@@ -5122,5 +5142,5 @@ if __name__ == "__main__":
     mf.add_argument("--model", help="part of the model name")
     a = ap.parse_args()
     {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
