@@ -44,6 +44,17 @@ first real decode, a warm-up decode would run on a KV without memory: with `kv-t
 * Dense models (no expert pool on a card): one buffer of the card's free VRAM less the margin is allocated once at the first real decode and the record sits at its tail (kv-arena);
   a request may use as many tokens as the buffer holds.
 
+## Layout of the one buffer per card (high addresses first)
+
+1. the fixed part (hybrid recurrent state, static copies): at the very end, never moves
+2. the KV record: its used rows grow downward from just below the fixed part
+3. expert blocks: all the rest below, what the KV takes from
+4. compute lend: at the front, grows up
+
+The pool buffer gets the fixed part's bytes after its last block; the record's end offset is unchanged. In the dense arena the record ends the fixed part's size before the
+buffer end and capacity is (buffer - fixed) / bytes per token. Until the recurrent memory takes its state from the buffer (a pointer instead of its own allocation) the state
+is outside and the capacity reported for a hybrid model is slightly optimistic (the log line says so).
+
 ## Limits
 
 * one slot (`-np 1`): the used cells must be a prefix. With several slots cells scatter; compaction (moving rows) is a later step.
