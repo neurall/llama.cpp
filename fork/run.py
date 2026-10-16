@@ -1303,7 +1303,7 @@ def cmd_cells(a):
     """A markdown table of the cells of one campaign prefix (decode, prompt speed, hit rate) with what the server log says about the memory: the context the server
     ran with (n_ctx_slot) and the pool of the first card, so a cell that did not get the setting it was queued for shows at once."""
     import csv as _csv
-    rows = list(_csv.reader(open(os.path.join(HERE, "bench", "run-history.csv"), newline="")))
+    rows = list(_csv.reader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "run-history.csv"), newline="")))
     hd = rows[0]; ix = {k: i for i, k in enumerate(hd)}
     print("| cell | decode t/s | prompt t/s | hit rate % | n_ctx_slot | pool card 0 (MiB) |\n|---|---|---|---|---|---|")
     for x in rows[1:]:
