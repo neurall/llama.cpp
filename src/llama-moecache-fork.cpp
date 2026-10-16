@@ -269,7 +269,7 @@ struct moe_cache {
         // range [0, bytes) can run past the first class into the next ones. Each class gives the blocks the range covers; the class's last block (its zero
         // block, the "uncached" target of the decode tables) is zeroed again when the range leaves it. One class only (the old rule) capped the micro-batch
         // at what the biggest class holds (MiMo-V2.6-Flash: 4 GB of a 15 GB pool, Qwen3.8-Flash-Next: 4.8 GB of 19 GB).
-        struct seg { int32_t pcls = -1; size_t base = 0; size_t B = 0; int32_t n = 0; int32_t blocked = 0; bool zero_dirty = false; };
+        struct seg { int32_t pcls = -1; size_t base = 0; size_t B = 0; int32_t n = 0; int32_t blocked = 0; int32_t hwm = 0; bool zero_dirty = false; };   // hwm: the most blocks the lend took in this class
         std::vector<seg>      segs;
         size_t                span   = 0;       // lendable bytes: up to the last class's last expert block
         size_t                want_b = 0;       // bytes the last graph needed (what alias_release keeps)
@@ -1150,6 +1150,17 @@ slot_pick pick_slot(moe_cache * mc, size_t li, Rank rank, double & best) {
             // the highest free block: prompts borrow the pool from its start (compute alias), so experts placed best first (preload, refill) end at the
             // back, where a prompt does not reach, and the front holds the cold ones it may evict (see keep_hot_move)
             p.slot = *std::max_element(ps.free.begin(), ps.free.end());
+            // kv-tail: the back is the KV's (it grows down from there for a whole request), the front is the lend's (during prompts): the free block just past the
+            // furthest the lend reached, so experts placed best first lie from there toward the tail and a KV claim takes the coldest first (no copies at a claim)
+            for (const auto & ap : mc->alias) {
+                if (ap.kvt.empty()) { continue; }
+                for (const auto & sg : ap.segs) {
+                    if (sg.pcls != ls.pcls) { continue; }
+                    int32_t lo = -1;
+                    for (int32_t b : ps.free) { if (b >= sg.hwm && (lo < 0 || b < lo)) { lo = b; } }
+                    if (lo >= 0) { p.slot = lo; }
+                }
+            }
             best = 0;
             return p;
         }
@@ -3433,6 +3444,7 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 ps.owner[b] = -2;
             }
             sg.blocked = need;
+            sg.hwm = std::max(sg.hwm, need);
             changed = true;
         }
         ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
