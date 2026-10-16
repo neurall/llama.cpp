@@ -6613,6 +6613,7 @@ uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
     if (g_cache && n > 0) {   // kv-tail: the prompt's KV is claimed before its passes are planned, so the planner sees what the pool can still lend
         bool changed = false;
         kv_tail_claim(g_cache, changed, n, false);
+        for (auto & ap : g_cache->alias) { for (auto & sg : ap.segs) { sg.hwm = 0; } }   // the lend's reach is this request's (the micro-batch is fixed per request): placement follows it
         if (changed) { flush_tables(); }   // between requests nothing runs: the tables reach the GPU, no scheduler sync needed
     }
     static const bool on = [] { const char * e = moe_opt("prefill-equal"); return !e || atoi(e) != 0; }();
