@@ -212,7 +212,7 @@ typedef pthread_t ggml_thread_t;
 #include <TargetConditionals.h>
 #endif
 
-static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
+static struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {   // not const: ggml_cpu_tune_vec_dot() may swap a vec_dot
     [GGML_TYPE_F32] = {
         .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_fp32,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
@@ -2971,6 +2971,84 @@ void ggml_threadpool_resume(struct ggml_threadpool * threadpool) {
 #endif
 }
 
+
+// ---- per-type choice between the two forms of the x86 dot products -----------------------------------------------------------------------------------------
+// quants.c is compiled twice (arch/x86/quants-alt.c: AVX-512 / VNNI code generation off, every function renamed *_alt). Which form is faster depends on the quant
+// type and the CPU (Zen 4, in cache, ns per 256 weights, default / AVX2: Q4_K 9.3 / 5.4, Q6_K 5.3 / 5.9, Q8_0 5.7 / 6.4, IQ2_XXS 17.6 / 21.4), so the first graph
+// that multiplies a given type times both on a small in-cache sample and keeps the faster one for that type (the default unless the other is 5% quicker).
+// GGML_CPU_KERNEL_TUNE=0 switches the timing off; GGML_CPU_KERNEL_TUNE=log prints each decision. Nothing happens on a CPU without AVX-512 (the two forms are the same code).
+#if defined(GGML_CPU_HAS_ALT_KERNELS)
+#define GGML_ALT_DOT(name) void name##_alt(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
+GGML_ALT_DOT(ggml_vec_dot_q4_0_q8_0) GGML_ALT_DOT(ggml_vec_dot_q4_1_q8_1) GGML_ALT_DOT(ggml_vec_dot_q5_0_q8_0) GGML_ALT_DOT(ggml_vec_dot_q5_1_q8_1) GGML_ALT_DOT(ggml_vec_dot_q8_0_q8_0)
+GGML_ALT_DOT(ggml_vec_dot_mxfp4_q8_0) GGML_ALT_DOT(ggml_vec_dot_iq4_nl_q8_0) GGML_ALT_DOT(ggml_vec_dot_q2_0_q8_0)
+GGML_ALT_DOT(ggml_vec_dot_q2_K_q8_K) GGML_ALT_DOT(ggml_vec_dot_q3_K_q8_K) GGML_ALT_DOT(ggml_vec_dot_q4_K_q8_K) GGML_ALT_DOT(ggml_vec_dot_q5_K_q8_K) GGML_ALT_DOT(ggml_vec_dot_q6_K_q8_K)
+GGML_ALT_DOT(ggml_vec_dot_iq2_xxs_q8_K) GGML_ALT_DOT(ggml_vec_dot_iq2_xs_q8_K) GGML_ALT_DOT(ggml_vec_dot_iq2_s_q8_K) GGML_ALT_DOT(ggml_vec_dot_iq3_xxs_q8_K) GGML_ALT_DOT(ggml_vec_dot_iq3_s_q8_K)
+GGML_ALT_DOT(ggml_vec_dot_iq4_xs_q8_K) GGML_ALT_DOT(ggml_vec_dot_iq1_s_q8_K) GGML_ALT_DOT(ggml_vec_dot_iq1_m_q8_K)
+
+static const struct { enum ggml_type type; ggml_vec_dot_t alt; } g_alt_dots[] = {
+    { GGML_TYPE_Q4_0, ggml_vec_dot_q4_0_q8_0_alt }, { GGML_TYPE_Q4_1, ggml_vec_dot_q4_1_q8_1_alt }, { GGML_TYPE_Q5_0, ggml_vec_dot_q5_0_q8_0_alt },
+    { GGML_TYPE_Q5_1, ggml_vec_dot_q5_1_q8_1_alt }, { GGML_TYPE_Q8_0, ggml_vec_dot_q8_0_q8_0_alt }, { GGML_TYPE_MXFP4, ggml_vec_dot_mxfp4_q8_0_alt },
+    { GGML_TYPE_IQ4_NL, ggml_vec_dot_iq4_nl_q8_0_alt }, { GGML_TYPE_Q2_0, ggml_vec_dot_q2_0_q8_0_alt },
+    { GGML_TYPE_Q2_K, ggml_vec_dot_q2_K_q8_K_alt }, { GGML_TYPE_Q3_K, ggml_vec_dot_q3_K_q8_K_alt }, { GGML_TYPE_Q4_K, ggml_vec_dot_q4_K_q8_K_alt },
+    { GGML_TYPE_Q5_K, ggml_vec_dot_q5_K_q8_K_alt }, { GGML_TYPE_Q6_K, ggml_vec_dot_q6_K_q8_K_alt },
+    { GGML_TYPE_IQ2_XXS, ggml_vec_dot_iq2_xxs_q8_K_alt }, { GGML_TYPE_IQ2_XS, ggml_vec_dot_iq2_xs_q8_K_alt }, { GGML_TYPE_IQ2_S, ggml_vec_dot_iq2_s_q8_K_alt },
+    { GGML_TYPE_IQ3_XXS, ggml_vec_dot_iq3_xxs_q8_K_alt }, { GGML_TYPE_IQ3_S, ggml_vec_dot_iq3_s_q8_K_alt }, { GGML_TYPE_IQ4_XS, ggml_vec_dot_iq4_xs_q8_K_alt },
+    { GGML_TYPE_IQ1_S, ggml_vec_dot_iq1_s_q8_K_alt }, { GGML_TYPE_IQ1_M, ggml_vec_dot_iq1_m_q8_K_alt },
+};
+
+static void ggml_cpu_tune_vec_dot(enum ggml_type type) {
+    static int tuned[GGML_TYPE_COUNT];
+    if (type < 0 || type >= GGML_TYPE_COUNT || __atomic_exchange_n(&tuned[type], 1, __ATOMIC_ACQ_REL)) { return; }
+    const char * env = getenv("GGML_CPU_KERNEL_TUNE");
+    if (env && env[0] == '0') { return; }
+    if (!ggml_cpu_has_avx512()) { return; }
+    ggml_vec_dot_t alt = NULL;
+    for (size_t i = 0; i < sizeof(g_alt_dots) / sizeof(g_alt_dots[0]); ++i) { if (g_alt_dots[i].type == type) { alt = g_alt_dots[i].alt; } }
+    const ggml_vec_dot_t def = type_traits_cpu[type].vec_dot;
+    const enum ggml_type vt = type_traits_cpu[type].vec_dot_type;
+    if (!alt || !def || type_traits_cpu[vt].from_float == NULL) { return; }
+
+    enum { N = 4096, ROWS = 48, ROUNDS = 7 };
+    const size_t rb = ggml_row_size(type, N);
+    float * w = (float *) malloc(sizeof(float) * (size_t) N * (ROWS + 1));
+    float * imp = w + (size_t) N * ROWS;
+    uint8_t * q = (uint8_t *) malloc(rb * ROWS + ggml_row_size(vt, N));
+    if (!w || !q) { free(w); free(q); return; }
+    uint32_t x = 2463534242u;
+    for (size_t i = 0; i < (size_t) N * ROWS; ++i) { x ^= x << 13; x ^= x >> 17; x ^= x << 5; w[i] = ((int32_t) x) * (0.05f / 2147483648.0f) * 4.0f; }
+    for (int i = 0; i < N; ++i) { imp[i] = 1.0f; }
+    ggml_quantize_init(type);
+    ggml_quantize_chunk(type, w, q, 0, ROWS, N, imp);
+    uint8_t * a = q + rb * ROWS;
+    for (int i = 0; i < N; ++i) { x ^= x << 13; x ^= x >> 17; x ^= x << 5; imp[i] = ((int32_t) x) * (1.0f / 2147483648.0f); }
+    type_traits_cpu[vt].from_float(imp, a, N);
+
+    float sink = 0.0f;
+    int64_t best_def = INT64_MAX, best_alt = INT64_MAX;
+    for (int r = 0; r < ROUNDS; ++r) {
+        for (int k = 0; k < 2; ++k) {
+            const ggml_vec_dot_t f = k ? alt : def;
+            const int64_t t0 = ggml_time_us();
+            for (int rep = 0; rep < 12; ++rep) {
+                for (int row = 0; row < ROWS; ++row) { float s; f(N, &s, 0, q + rb * row, 0, a, 0, 1); sink += s; }
+            }
+            const int64_t dt = ggml_time_us() - t0;
+            if (k) { if (dt < best_alt) { best_alt = dt; } } else { if (dt < best_def) { best_def = dt; } }
+        }
+    }
+    const bool use_alt = best_alt * 100 < best_def * 95;
+    if (use_alt) { type_traits_cpu[type].vec_dot = alt; }
+    if (env && strcmp(env, "log") == 0) {
+        const double blocks = 12.0 * ROWS * (N / 256.0);
+        fprintf(stderr, "ggml-cpu: %-8s dot product: default %.2f ns/256w, AVX2 form %.2f ns/256w -> %s%s\n", ggml_type_name(type),
+                best_def * 1000.0 / blocks, best_alt * 1000.0 / blocks, use_alt ? "AVX2 form" : "default", sink == 12345.0f ? "!" : "");
+    }
+    free(w); free(q);
+}
+#else
+static void ggml_cpu_tune_vec_dot(enum ggml_type type) { (void) type; }
+#endif
+
 struct ggml_cplan ggml_graph_plan(
           const struct ggml_cgraph * cgraph,
                                int   n_threads,
@@ -3007,6 +3085,10 @@ struct ggml_cplan ggml_graph_plan(
         const int n_tasks = ggml_get_n_tasks(node, n_threads);
 
         max_tasks = MAX(max_tasks, n_tasks);
+
+        if ((node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID) && node->src[0] && ggml_is_quantized(node->src[0]->type)) {
+            ggml_cpu_tune_vec_dot(node->src[0]->type);   // the first time a quant type is multiplied: pick the faster form of its dot product
+        }
 
         size_t cur = 0;
 

@@ -285,6 +285,15 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
             ggml-cpu/arch/x86/repack.cpp
             )
 
+        # the same dot products compiled a second time with AVX-512 / VNNI code generation off (quants-alt.c): a start-up timing picks the faster form per quant type
+        if (NOT MSVC AND NOT GGML_CPU_NO_ALT_KERNELS)
+            list(APPEND GGML_CPU_SOURCES ggml-cpu/arch/x86/quants-alt.c ggml-cpu/arch/x86/quants-alt-rename.h)
+            set_source_files_properties(ggml-cpu/arch/x86/quants-alt.c PROPERTIES
+                COMPILE_OPTIONS "-mno-avx512f;-mno-avxvnni"
+                COMPILE_DEFINITIONS "GGML_CPU_ALT_AVX2")
+            list(APPEND ARCH_DEFINITIONS GGML_CPU_HAS_ALT_KERNELS)
+        endif()
+
         if (MSVC)
             # instruction set detection for MSVC only
             if (GGML_NATIVE)
