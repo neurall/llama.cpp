@@ -1,5 +1,7 @@
 #include "llama-kv-cache.h"
 #include "llama-moecache-fork.h"
+#include <algorithm>
+#include <cstdint>
 
 #include "llama-impl.h"
 #include "llama-io.h"
@@ -325,8 +327,33 @@ llama_kv_cache::llama_kv_cache(
     }
 
     // allocate tensors and initialize the buffers to avoid NaNs in the padding
+    // fork: --moe kv-tail=1 (needs kv-token-major=2): on a GPU the record starts in a small buffer that only backs its LAST rows (the record's address range is
+    // virtual: nothing below the backed part is ever read or written); when the expert pool is created it takes the memory back, the record is placed at the
+    // tail of the pool and the blocks under the used rows are claimed per graph (llama_moe_cache_kv_tail_*, fork/docs/kv-tail.md)
+    const char * o_kt = llama_moe_get_opt("kv-tail");
+    const bool   kv_tail = kv_rev && o_kt && atoi(o_kt) != 0;
+    if (o_kt && atoi(o_kt) != 0 && !kv_rev) { LLAMA_LOG_WARN("%s: kv-tail needs kv-token-major=2: the KV stays in its own buffer\n", __func__); }
     for (auto & [buft, ctx] : ctx_map) {
         ggml_backend_buffer_t buf;
+        auto tm_it = tm_map.find(buft);
+        ggml_backend_dev_t tdev = ggml_backend_buft_get_device(buft);
+        const bool tail_here = kv_tail && !hparams.no_alloc && tm_it != tm_map.end() && tm_it->second.rec && tdev && ggml_backend_dev_type(tdev) == GGML_BACKEND_DEVICE_TYPE_GPU;
+        if (tail_here) {
+            tm_rec & r = tm_it->second;
+            const size_t R  = r.row * (size_t) kv_size;
+            const size_t S0 = std::min(R, r.row * (size_t) 4096);   // 4096 cells back the record until the pool takes over (warmup, small tests)
+            buf = ggml_backend_buft_alloc_buffer(buft, S0);
+            if (buf) {
+                uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
+                r.rec->buffer = buf;
+                r.rec->data   = (void *) ((uintptr_t) base + S0 - R);
+                for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) {
+                    if (t != r.rec && t->view_src == r.rec) { t->buffer = buf; t->data = (uint8_t *) r.rec->data + t->view_offs; }
+                }
+                LLAMA_LOG_INFO("%s: kv-tail: record of %.1f MiB (%zu B per cell, %u cells) on %s, %.1f MiB backed until the expert pool takes it\n", __func__,
+                        R / 1048576.0, r.row, kv_size, ggml_backend_dev_name(tdev), S0 / 1048576.0);
+            }
+        } else
         if (hparams.no_alloc) {
             buf = ggml_backend_buft_alloc_buffer(buft, /*size =*/ 0); // dummy buffer
             for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) {
@@ -343,6 +370,30 @@ llama_kv_cache::llama_kv_cache(
 
         ggml_backend_buffer_clear(buf, 0);
         ctxs_bufs.emplace_back(std::move(ctx), buf);
+        if (tail_here) {
+            tm_rec & r = tm_it->second;
+            const size_t idx = ctxs_bufs.size() - 1;
+            ggml_tensor * rec = r.rec;
+            ggml_context * cx = ctxs_bufs[idx].first.get();
+            llama_kv_tail_fork reg;
+            reg.owner = this;
+            reg.dev   = tdev;
+            reg.bytes = r.row * (size_t) kv_size;
+            reg.row   = r.row;
+            reg.rows  = [this]() -> size_t { return v_cells.empty() ? 0 : (size_t) v_cells[0].used_max_p1(); };
+            reg.detach = [this, idx, buft]() {
+                GGML_ASSERT((v_cells.empty() || v_cells[0].used_max_p1() == 0) && "kv-tail: the pool starts while the cache holds cells");
+                ctxs_bufs[idx].second.reset(ggml_backend_buft_alloc_buffer(buft, 0));   // the small backing goes back to the card
+            };
+            reg.attach = [rec, cx](ggml_backend_buffer_t pb, uint8_t * at) {
+                rec->buffer = pb;
+                rec->data   = at;
+                for (ggml_tensor * t = ggml_get_first_tensor(cx); t != nullptr; t = ggml_get_next_tensor(cx, t)) {
+                    if (t != rec && t->view_src == rec) { t->buffer = pb; t->data = at + t->view_offs; }
+                }
+            };
+            llama_moe_cache_kv_tail_add_fork(reg);
+        }
     }
 
     {
@@ -3140,3 +3191,6 @@ void llama_kv_cache_context::set_input_v_rot(ggml_tensor * dst) const {
 void llama_kv_cache_context::get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const {
     kv->get_prev_tokens(ubatch, n, res);
 }
+
+void llama_moe_cache_kv_tail_remove_fork(void * owner);
+llama_kv_cache::tail_guard::~tail_guard() { llama_moe_cache_kv_tail_remove_fork(o); }

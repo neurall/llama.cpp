@@ -26,6 +26,9 @@
 // Enabled via llama_context_params.n_moe_cache_slots (CLI: --moe-expert-cache).
 
 #include <cstdint>
+#include <functional>
+#include <string>
+#include <vector>
 
 #include "ggml-backend.h"
 
@@ -132,6 +135,32 @@ struct llama_moe_alias_fit_fork { bool graph = true; bool stage = true; size_t n
 llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sched, int32_t n_tokens);
 // the pool cannot lend the smallest worst-case graph: the alias stays off from now on
 void llama_moe_cache_alias_drop_fork();
+
+// KV cache at the tail of the pool (--moe kv-tail=1, needs kv-token-major=2, see fork/docs/kv-tail.md). The cache registers its record of one card: `bytes` is the
+// virtual size of the record (all cells), `row` the bytes of one cell, `rows()` the cells in use now (highest used cell + 1; the used rows are the LAST rows of the
+// record), `detach()` frees the small backing buffer the cache starts with, `attach(base)` points the record at `base` (its first byte, `bytes` before the end of
+// the pool's expert blocks). The pool claims the blocks under the used rows before a graph runs and gives them back to the experts when the rows shrink.
+struct llama_kv_tail_fork {
+    void *             owner = nullptr;
+    ggml_backend_dev_t dev   = nullptr;
+    size_t             bytes = 0;
+    size_t             row   = 0;
+    std::function<size_t()>                  rows;
+    std::function<void()>                    detach;
+    std::function<void(ggml_backend_buffer_t, uint8_t *)> attach;
+};
+void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec);
+void llama_moe_cache_kv_tail_remove_fork(void * owner);
+// before the pool is created: the small backing buffers go back to the card (the pool is sized with that memory)
+void llama_moe_cache_kv_tail_detach_fork();
+// what the cache and the pool hold now, per card (the per-request log line and the "stats" field of a response)
+struct llama_kv_tail_stat_fork {
+    std::string dev;
+    size_t kv_cells = 0, kv_bytes = 0;          // cells in use, bytes the pool holds for them
+    size_t blocks = 0, blocks_free = 0, blocks_kv = 0, blocks_lent = 0;   // expert blocks of the pool: all, free, under the KV, lent to the compute graph
+    size_t claim_n = 0, release_n = 0, evicted = 0;   // since the last call of this function with reset: blocks claimed, released, experts evicted by claims
+};
+std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool reset);
 bool    llama_moe_cache_active_fork();
 bool    llama_moe_cache_wants_probs_fork();   // --moe policy=r: the gate op of every cached layer also gets the router probabilities (src[6]) for the relevance score
 // startup probe: how many reader threads reach 95% of the CPU's RAM read rate (0: not measured)

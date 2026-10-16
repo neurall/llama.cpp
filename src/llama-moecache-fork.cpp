@@ -273,6 +273,13 @@ struct moe_cache {
         size_t                want_b = 0;       // bytes the last graph needed (what alias_release keeps)
         size_t                mirror_b = 0;     // the dense split's copies at the start of the buffer (--moe mirror-pool, see llama_dsplit_mirror_place_fork)
         size_t                base_off = 0;     // where the graph being built starts: mirror_b when it splits (the copies before it), else 0
+        // KV cache at the tail (--moe kv-tail=1): the records of the caches on this card, stacked from tail_end downward; blocks under their used rows are owner -3
+        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0, end_off = 0; std::function<size_t()> rows; size_t cells = 0; };
+        std::vector<kvt_run>  kvt;
+        size_t                tail_end  = 0;    // end of the last class's expert blocks (where the first record ends)
+        size_t                span_full = 0;    // span before any claim: ap.span is the part in front of the lowest claimed block
+        size_t                kv_cells_sum = (size_t) -1;   // the cells of the last claim (nothing to do while they stay the same)
+        size_t                kv_blocks = 0;    // blocks under the KV rows now
     };
     std::vector<alias_pool> alias;   // block pool: the lifetime count of the busiest expert of ANY layer, the common scale of scores compared across layers
     bool pf_count_on      = false;   // prompt hit counters on the cards (see pf-count)
@@ -1143,8 +1150,8 @@ slot_pick pick_slot(moe_cache * mc, size_t li, Rank rank, double & best) {
         }
         for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
             const int32_t o = ps.owner[b];
-            if (o == -2) {
-                continue;   // lent to the compute buffer (alias)
+            if (o == -2 || o == -3) {
+                continue;   // lent to the compute buffer (alias), or under the KV rows (kv-tail)
             }
             if (o < 0) { p.slot = b; best = 0; return p; }
             layer_state & lo = mc->layers[o];
@@ -2784,7 +2791,7 @@ static void pool_fill_log(moe_cache * mc, const char * when) {
     if (!on) {
         return;
     }
-    struct agg { ggml_backend_dev_t dev = nullptr; size_t n = 0, held = 0, up = 0, fr = 0, lent = 0; double b_held = 0, b_all = 0; };
+    struct agg { ggml_backend_dev_t dev = nullptr; size_t n = 0, held = 0, up = 0, fr = 0, lent = 0, kv = 0; double b_held = 0, b_all = 0; };
     std::vector<agg> a;
     for (const auto & ps : mc->pool) {
         agg * g = nullptr;
@@ -2795,6 +2802,7 @@ static void pool_fill_log(moe_cache * mc, const char * when) {
             g->n++;
             g->b_all += (double) ps.B;
             if (o == -2)                                     { g->lent++; }
+            else if (o == -3)                                { g->kv++; }
             else if (o < 0)                                  { g->fr++; }
             else if (mc->layers[o].slot_in_flight[b])        { g->up++; }
             else if (mc->layers[o].slot_expert[b] >= 0)      { g->held++; g->b_held += (double) ps.B; }
@@ -2805,8 +2813,8 @@ static void pool_fill_log(moe_cache * mc, const char * when) {
     for (const auto & g : a) {
         size_t fm = 0, tm = 0;
         if (g.dev != nullptr) { ggml_backend_dev_memory(g.dev, &fm, &tm); }
-        s += tr_fmt(" %s: %zu of %zu blocks hold experts (%.2f of %.2f GB), %zu uploading, %zu free, %zu lent, card %.2f GB free;",
-                g.dev ? ggml_backend_dev_name(g.dev) : "?", g.held, g.n, g.b_held / 1e9, g.b_all / 1e9, g.up, g.fr, g.lent, fm / 1e9);
+        s += tr_fmt(" %s: %zu of %zu blocks hold experts (%.2f of %.2f GB), %zu uploading, %zu free, %zu lent, %zu under the KV rows, card %.2f GB free;",
+                g.dev ? ggml_backend_dev_name(g.dev) : "?", g.held, g.n, g.b_held / 1e9, g.b_all / 1e9, g.up, g.fr, g.lent, g.kv, fm / 1e9);
     }
     LLAMA_LOG_WARN("moe-cache: pool %s:%s\n", when, s.c_str());
 }
@@ -2860,7 +2868,7 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
     }
     for (int32_t b = to; b < (int32_t) ps.owner.size(); ++b) {
         const int32_t o = ps.owner[b];
-        if (o == -2) { continue; }
+        if (o == -2 || o == -3) { continue; }
         if (o < 0) { cold.push_back({ -1.0, b }); continue; }
         layer_state & lo = mc->layers[o];
         if (lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
@@ -2908,6 +2916,167 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
     }
 }
 
+
+// ---- KV cache at the tail of the pool (--moe kv-tail=1, fork/docs/kv-tail.md) ----
+static std::mutex                  g_kvt_mtx;
+static std::vector<llama_kv_tail_fork> g_kvt;
+static struct { std::atomic<size_t> claim_n{0}, release_n{0}, evicted{0}; } g_kvs;
+
+void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec) {
+    std::lock_guard<std::mutex> lk(g_kvt_mtx);
+    g_kvt.push_back(rec);
+}
+void llama_moe_cache_kv_tail_remove_fork(void * owner) {
+    std::lock_guard<std::mutex> lk(g_kvt_mtx);
+    g_kvt.erase(std::remove_if(g_kvt.begin(), g_kvt.end(), [&](const llama_kv_tail_fork & r) { return r.owner == owner; }), g_kvt.end());
+    if (moe_cache * mc = g_cache) {
+        for (auto & ap : mc->alias) {
+            ap.kvt.erase(std::remove_if(ap.kvt.begin(), ap.kvt.end(), [&](const moe_cache::alias_pool::kvt_run & r) { return r.owner == owner; }), ap.kvt.end());
+        }
+    }
+}
+void llama_moe_cache_kv_tail_detach_fork() {
+    std::lock_guard<std::mutex> lk(g_kvt_mtx);
+    for (auto & r : g_kvt) { if (r.detach) { r.detach(); } }
+}
+
+// the blocks under the used rows of the records of every card belong to the KV, the others to the experts: experts in blocks that are taken are evicted
+// (uploads into them dropped or awaited, as the compute alias does), blocks the rows left go back to the free list. ap.span (what the compute alias may
+// lend from the front) ends at the lowest block the KV holds. Called before every graph; nothing to do while the cells stay the same.
+static void kv_tail_claim(moe_cache * mc, bool & changed) {
+    for (auto & ap : mc->alias) {
+        if (ap.kvt.empty()) { continue; }
+        size_t sum = 0;
+        for (auto & r : ap.kvt) { r.cells = r.rows ? r.rows() : 0; sum += r.cells; }
+        // hysteresis: a claim covers HEAD cells more than are in use (generation adds a cell per token, a block is several MB), and a claim is given back only
+        // when it exceeds the need by two heads: steady decode claims once every few hundred tokens and never releases in the middle of an answer
+        constexpr size_t HEAD = 256;
+        if (ap.kv_cells_sum != (size_t) -1 && sum <= ap.kv_cells_sum + HEAD && ap.kv_cells_sum <= sum + 2 * HEAD) { continue; }
+        const size_t cells_before = ap.kv_cells_sum == (size_t) -1 ? 0 : ap.kv_cells_sum;
+        ap.kv_cells_sum = sum;
+        std::vector<std::pair<size_t, size_t>> rng;   // byte ranges [lo, hi) of the pool buffer under the used rows
+        for (auto & r : ap.kvt) {
+            const size_t w = r.cells > 0 ? std::min(r.bytes, (r.cells + HEAD) * r.row) : 0;
+            if (w > 0) { rng.push_back({ r.end_off - w, r.end_off }); }
+        }
+        size_t lowest = ap.span_full, n_take = 0, n_give = 0, n_evict = 0;
+        for (auto & sg : ap.segs) {
+            auto & ps = mc->pool[sg.pcls];
+            std::vector<int32_t> take, give;
+            for (int32_t b = 0; b < sg.n; ++b) {
+                const size_t b0 = sg.base + (size_t) b * sg.B, b1 = b0 + sg.B;
+                bool want = false;
+                for (const auto & q : rng) { if (q.first < b1 && q.second > b0) { want = true; break; } }
+                const int32_t o = ps.owner[b];
+                if (want) { lowest = std::min(lowest, b0); if (o != -3) { take.push_back(b); } }
+                else if (o == -3) { give.push_back(b); }
+            }
+            if (!give.empty()) {
+                std::lock_guard<std::mutex> lk(mc->mtx);
+                for (int32_t b : give) { ps.owner[b] = -1; ps.free.push_back(b); }
+                n_give += give.size();
+            }
+            if (take.empty()) { continue; }
+            const int32_t want_pcls = sg.pcls;
+            auto in_zone = [&](const upload_job & j) {
+                return j.layer_idx < mc->layers.size() && mc->layers[j.layer_idx].pcls == want_pcls && std::binary_search(take.begin(), take.end(), j.slot);
+            };
+            auto drop_job = [&](const upload_job & j) {
+                layer_state & lo = mc->layers[j.layer_idx];
+                lo.slot_in_flight[j.slot] = false;
+                if (j.expert >= 0 && j.expert < (int32_t) lo.queued.size()) { lo.queued[j.expert] = 0; }
+            };
+            for (int spin = 0; ; ++spin) {
+                bool busy = false;
+                {
+                    std::lock_guard<std::mutex> wlk(mc->wmtx);
+                    std::lock_guard<std::mutex> lk(mc->mtx);
+                    for (auto it = mc->todo.begin(); it != mc->todo.end(); ) {
+                        if (in_zone(*it)) { drop_job(*it); it = mc->todo.erase(it); } else { ++it; }
+                    }
+                    for (size_t k = 0; k < mc->done.size(); ) {
+                        if (in_zone(mc->done[k])) { drop_job(mc->done[k]); mc->done[k] = mc->done.back(); mc->done.pop_back(); } else { ++k; }
+                    }
+                    for (int32_t b : take) {
+                        const int32_t o = ps.owner[b];
+                        if (o < 0 || !mc->layers[o].slot_in_flight[b]) { continue; }
+                        layer_state & lo = mc->layers[o];
+                        bool adoption = false;
+                        for (size_t i = 0; i < lo.adopted.size(); ++i) {
+                            const int32_t e = lo.adopted[i];
+                            if (lo.adopt_slot[e] == b) {
+                                lo.adopt_slot[e] = -1; lo.adopt_mask[e] = 0;
+                                lo.adopted.erase(lo.adopted.begin() + (ptrdiff_t) i);
+                                lo.slot_in_flight[b] = false;
+                                adoption = true;
+                                break;
+                            }
+                        }
+                        if (!adoption) { busy = true; break; }   // a worker is copying into it right now
+                    }
+                }
+                if (!busy) { break; }
+                GGML_ASSERT(spin < 200000 && "kv-tail: an upload into the blocks taken for the KV never finished");
+                std::this_thread::sleep_for(std::chrono::microseconds(50));
+            }
+            std::lock_guard<std::mutex> lk(mc->mtx);
+            for (int32_t b : take) {
+                const int32_t o = ps.owner[b];
+                if (o >= 0) {
+                    layer_state & lo = mc->layers[o];
+                    evict_slot(mc, lo, b);
+                    lo.n_own--;
+                    n_evict++;
+                } else if (o == -1) {
+                    auto it = std::find(ps.free.begin(), ps.free.end(), b);
+                    if (it != ps.free.end()) { ps.free.erase(it); }
+                } else if (o == -2) {
+                    sg.blocked = std::min(sg.blocked, b);   // the compute alias had lent it: the lend of this graph starts over below the KV
+                }
+                ps.owner[b] = -3;
+            }
+            n_take += take.size();
+        }
+        ap.span = std::min(ap.span_full, lowest);
+        ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
+        size_t held = 0;
+        for (auto & sg : ap.segs) { for (int32_t b = 0; b < sg.n; ++b) { if (mc->pool[sg.pcls].owner[b] == -3) { held++; } } }
+        ap.kv_blocks = held;
+        g_kvs.claim_n += n_take; g_kvs.release_n += n_give; g_kvs.evicted += n_evict;
+        if (n_take > 0 || n_give > 0) {
+            changed = true;
+            LLAMA_LOG_INFO("moe-cache: kv-tail %s: %zu -> %zu cells, %zu blocks taken from the experts (%zu experts evicted), %zu given back; %zu blocks under the KV (%.1f MiB), the compute alias may lend %.1f MiB\n",
+                    ggml_backend_dev_name(ap.dev), cells_before, sum, n_take, n_evict, n_give, held, (double) held * (ap.segs.empty() ? 0.0 : (double) ap.segs.back().B) / 1048576.0, ap.span / 1048576.0);
+        }
+    }
+}
+
+std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool reset) {
+    std::vector<llama_kv_tail_stat_fork> out;
+    moe_cache * mc = g_cache;
+    if (!mc) { return out; }
+    std::lock_guard<std::mutex> lk(mc->mtx);
+    for (auto & ap : mc->alias) {
+        llama_kv_tail_stat_fork st;
+        st.dev = ggml_backend_dev_name(ap.dev);
+        for (auto & r : ap.kvt) { st.kv_cells += r.cells; st.kv_bytes += std::min(r.bytes, r.cells * r.row); }
+        for (auto & sg : ap.segs) {
+            const auto & ps = mc->pool[sg.pcls];
+            for (int32_t b = 0; b < sg.n; ++b) {
+                st.blocks++;
+                const int32_t o = ps.owner[b];
+                if (o == -1) { st.blocks_free++; } else if (o == -2) { st.blocks_lent++; } else if (o == -3) { st.blocks_kv++; }
+            }
+        }
+        out.push_back(std::move(st));
+    }
+    if (!out.empty()) {
+        out[0].claim_n = g_kvs.claim_n.load(); out[0].release_n = g_kvs.release_n.load(); out[0].evicted = g_kvs.evicted.load();
+        if (reset) { g_kvs.claim_n = 0; g_kvs.release_n = 0; g_kvs.evicted = 0; }
+    }
+    return out;
+}
+
 void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     moe_cache * mc = g_cache;
     if (!mc || !alias_on() || mc->alias.empty()) {
@@ -2923,6 +3092,7 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     }
     mc->graph_tokens_last = n_tokens;
     bool changed = false;
+    kv_tail_claim(mc, changed);   // the KV rows this graph writes first: the lend below stops in front of them (ap.span)
     for (auto & ap : mc->alias) {
         size_t peak = 0;
         for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
@@ -3543,6 +3713,25 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         ap.segs.push_back(sg);
                         ap.span = sg.base + (size_t) sg.n * sg.B;
                         if (!alias_all) { break; }
+                    }
+                    ap.tail_end  = pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
+                    ap.span_full = ap.span;
+                    {   // the records of the KV caches on this card (--moe kv-tail=1) sit at the tail of the expert blocks, stacked downward
+                        std::lock_guard<std::mutex> klk(g_kvt_mtx);
+                        size_t off = ap.tail_end;
+                        for (auto & r : g_kvt) {
+                            if (r.dev != ap.dev) { continue; }
+                            if (r.bytes > off || ap.span != ap.tail_end) {
+                                LLAMA_LOG_ERROR("%s: kv-tail: the KV record of %s (%.1f MiB) does not fit the pool (%.1f MiB of expert blocks)\n", __func__, ggml_backend_dev_name(ap.dev), r.bytes / 1048576.0, off / 1048576.0);
+                                GGML_ABORT("kv-tail record does not fit the pool");
+                            }
+                            off -= r.bytes;
+                            moe_cache::alias_pool::kvt_run kr;
+                            kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.end_off = off + r.bytes; kr.rows = r.rows;
+                            ap.kvt.push_back(kr);
+                            if (r.attach) { r.attach(pbuf, base + off); }
+                            LLAMA_LOG_INFO("%s: kv-tail: record of %.1f MiB (%zu B per cell) placed at the tail of the pool on %s\n", __func__, r.bytes / 1048576.0, r.row, ggml_backend_dev_name(ap.dev));
+                        }
                     }
                     mc->alias.push_back(ap);
                 }

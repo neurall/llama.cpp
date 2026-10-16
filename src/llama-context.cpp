@@ -2784,6 +2784,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 }
             }
         }
+        llama_moe_cache_kv_tail_detach_fork();   // --moe kv-tail=1: the KV records' small buffers go back to the card before the pool is sized
         llama_moe_cache_init_fork(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots < 0 ? 3 : cparams.prefetch_experts_slots, cparams.moe_cache_window,
                 cparams.moe_predict, cparams.moe_predict_train);
         if (alias) {
