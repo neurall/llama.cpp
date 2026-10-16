@@ -55,6 +55,13 @@ The pool buffer gets the fixed part's bytes after its last block; the record's e
 buffer end and capacity is (buffer - fixed) / bytes per token. Until the recurrent memory takes its state from the buffer (a pointer instead of its own allocation) the state
 is outside and the capacity reported for a hybrid model is slightly optimistic (the log line says so).
 
+## What keeps the KV from overwriting experts it did not free
+
+* the claim covers the tokens the graph will write (the cache has placed them before the graph runs), plus one block ahead, and a block the KV range touches is taken whole;
+* uploads into taken blocks are dropped or awaited, the slot picker / refill / keep-hot paths skip KV blocks (owner -3);
+* the prompt's tokens are claimed when its passes are planned (before the micro-batch is sized), so the planner sees the lendable bytes that are really left; a decode graph ends that plan;
+* the compute graph borrows from the front: a graph that would reach into the KV rows is refused with the numbers (never silently).
+
 ## Limits
 
 * one slot (`-np 1`): the used cells must be a prefix. With several slots cells scatter; compaction (moving rows) is a later step.

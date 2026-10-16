@@ -276,7 +276,7 @@ struct moe_cache {
         size_t                mirror_b = 0;     // the dense split's copies at the start of the buffer (--moe mirror-pool, see llama_dsplit_mirror_place_fork)
         size_t                base_off = 0;     // where the graph being built starts: mirror_b when it splits (the copies before it), else 0
         // KV cache at the tail (--moe kv-tail=1): the records of the caches on this card, stacked from tail_end downward; blocks under their used rows are owner -3
-        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0; int64_t end_off = 0; std::function<size_t()> rows; size_t cells = 0; };
+        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0; int64_t end_off = 0; std::function<size_t()> rows; size_t cells = 0, plan = 0, eff = 0; };   // plan: the cells the prompt being planned will hold (kept until decode starts)
         std::vector<kvt_run>  kvt;
         size_t                tail_end  = 0;    // end of the last class's expert blocks (where the first record ends)
         size_t                span_full = 0;    // span before any claim: ap.span is the part in front of the lowest claimed block
@@ -2953,11 +2953,16 @@ void llama_moe_cache_kv_tail_detach_fork() {
 // the blocks under the used rows of the records of every card belong to the KV, the others to the experts: experts in blocks that are taken are evicted
 // (uploads into them dropped or awaited, as the compute alias does), blocks the rows left go back to the free list. ap.span (what the compute alias may
 // lend from the front) ends at the lowest block the KV holds. Called before every graph; nothing to do while the cells stay the same.
-static void kv_tail_claim(moe_cache * mc, bool & changed) {
+static void kv_tail_claim(moe_cache * mc, bool & changed, size_t plan_extra = 0, bool reset_plan = false) {
     for (auto & ap : mc->alias) {
         if (ap.kvt.empty()) { continue; }
         size_t sum = 0;
-        for (auto & r : ap.kvt) { r.cells = r.rows ? r.rows() : 0; sum += r.cells; }
+        for (auto & r : ap.kvt) {
+            r.cells = r.rows ? r.rows() : 0;
+            if (plan_extra > 0) { r.plan = r.cells + plan_extra; } else if (reset_plan) { r.plan = 0; }
+            r.eff = std::max(r.cells, r.plan);   // what the claim covers: the cells in use, or the cells the planned prompt will fill
+            sum += r.eff;
+        }
         // hysteresis: a claim covers one block more than the cells in use need (generation adds a cell per token, a block is a few MB: some 50 cells), and a claim is
         // given back only when it exceeds the need by two blocks: steady decode takes one block every ~50 tokens and never releases in the middle of an answer
         size_t HEAD = 256;
@@ -2969,7 +2974,7 @@ static void kv_tail_claim(moe_cache * mc, bool & changed) {
         ap.kv_cells_sum = sum;
         std::vector<std::pair<size_t, size_t>> rng;   // byte ranges [lo, hi) of the pool buffer under the used rows
         for (auto & r : ap.kvt) {
-            size_t w = r.cells > 0 ? std::min(r.bytes, (r.cells + HEAD) * r.row) : 0;
+            size_t w = r.eff > 0 ? std::min(r.bytes, (r.eff + HEAD) * r.row) : 0;
             w = std::min<size_t>(w, (size_t) std::max<int64_t>(0, r.end_off));   // never below the start of the buffer
             if (w > 0) { rng.push_back({ (size_t) (r.end_off - (int64_t) w), (size_t) r.end_off }); }
         }
@@ -3200,7 +3205,7 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     }
     mc->graph_tokens_last = n_tokens;
     bool changed = false;
-    kv_tail_claim(mc, changed);   // the KV rows this graph writes first: the lend below stops in front of them (ap.span)
+    kv_tail_claim(mc, changed, 0, n_tokens < 64);   // the KV rows this graph writes first: the lend below stops in front of them (ap.span); a decode graph ends the plan of the last prompt
     for (auto & ap : mc->alias) {
         size_t peak = 0;
         for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
@@ -3264,6 +3269,11 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             if (n_tokens >= 64) { ap.graph_tok = std::max(ap.graph_tok, (peak + n_tokens - 1) / n_tokens); }   // graph bytes per token (the prompt pass planner)
         }
         const size_t need_b = stage_off + stage;   // the bytes this graph borrows from the start of the buffer: its tensors, the CUDA scratch, the staging slots
+        if (!ap.kvt.empty() && need_b > ap.span) {   // the graph would reach into the KV rows (or the experts behind them): never silently
+            LLAMA_LOG_ERROR("moe-cache: kv-tail %s: a %d-token graph needs %.1f MiB lent from the start of the pool but only %.1f MiB lie in front of the KV (%.1f MiB under it): the context is too long for this card with this micro-batch\n",
+                    ggml_backend_dev_name(ap.dev), n_tokens, need_b / 1048576.0, ap.span / 1048576.0, (ap.span_full - ap.span) / 1048576.0);
+            GGML_ABORT("kv-tail: the compute graph does not fit in front of the KV");
+        }
         ap.want_b = std::min(need_b, ap.span);
         if (n_tokens < 64) { ap.dec_need = std::max(ap.dec_need, need_b); }
         ap.want   = ap.segs.empty() ? 0 : (int32_t) std::min<size_t>((size_t) ap.n, (ap.want_b + ap.B - 1) / ap.B);
@@ -6467,6 +6477,11 @@ double llama_moe_cache_compute_us_fork() {
 }
 
 uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
+    if (g_cache && n > 0) {   // kv-tail: the prompt's KV is claimed before its passes are planned, so the planner sees what the pool can still lend
+        bool changed = false;
+        kv_tail_claim(g_cache, changed, n, false);
+        if (changed) { flush_tables(); }   // between requests nothing runs: the tables reach the GPU, no scheduler sync needed
+    }
     static const bool on = [] { const char * e = moe_opt("prefill-equal"); return !e || atoi(e) != 0; }();
     const uint32_t mb = (uint32_t) std::max<int64_t>(1, llama_moe_cache_max_batch_fork());
     if (on && g_cache && n > mb && ub_max > mb) {
