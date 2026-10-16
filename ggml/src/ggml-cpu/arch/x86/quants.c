@@ -4343,6 +4343,71 @@ void ggml_vec_dot_iq3_s_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const vo
 #endif
 }
 
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512DQ__) && defined(__AVX512VNNI__) && defined(__AVX512VBMI__)
+// IQ1_S with AVX-512 VBMI. The grid bytes are -1, 0, +1, so an 8-byte entry is a 16-bit code of u = byte + 1 in {0,1,2}. The 11-bit index is the qs byte plus 3 bits of qh:
+// the code planes are looked up in 8 chunks of 256 entries (vpermi2b) and the chunk is picked per index by those 3 bits. The grid is expanded in natural weight order
+// (multishift, no table needed: the 2-bit field IS u). The dot is vpdpbusd of u with the activations; the true dot is that minus the sum of the activations of the group,
+// which the block already carries (bsums), and the delta term uses the same sums.
+static void ggml_vec_dot_iq1_s_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    static uint8_t cdl[2048] __attribute__((aligned(64))), cdh[2048] __attribute__((aligned(64))), pat[4][64] __attribute__((aligned(64)));
+    static int ready = 0;
+    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) {
+        for (int e = 0; e < 2048; ++e) {
+            unsigned code = 0;
+            for (int b = 0; b < 8; ++b) { const unsigned v = (unsigned) ((iq1s_grid[e] >> (8 * b)) & 255); code |= (v == 255 ? 0u : v == 0 ? 1u : 2u) << (2 * b); }
+            cdl[e] = (uint8_t) (code & 255); cdh[e] = (uint8_t) (code >> 8);
+        }
+        for (int k = 0; k < 4; ++k) { for (int l = 0; l < 64; ++l) { pat[k][l] = 0; } for (int q = 0; q < 8; ++q) { pat[k][8 * q] = (uint8_t) (8 * k + q); pat[k][8 * q + 1] = (uint8_t) (64 + 8 * k + q); } }
+        __atomic_store_n(&ready, 1, __ATOMIC_RELEASE);
+    }
+    const block_iq1_s * GGML_RESTRICT x = vx;
+    const block_q8_K  * GGML_RESTRICT y = vy;
+    const int nb = n / QK_K;
+    uint8_t seli[64] __attribute__((aligned(64)));
+    for (int l = 0; l < 64; ++l) { seli[l] = (uint8_t) (l < 32 ? 8 * (l >> 2) + (l & 3) : 0); }
+    const __m512i SI = _mm512_load_si512((const void *) seli);
+    const __m512i hsc = _mm512_set1_epi64(0x15120f0c09060300ll);   // byte i: bit offset 3i of the qword (qh word): offsets 0,3,6,9,12,15,18,21
+    const __m512i bsc = _mm512_set1_epi64(0x0e0c0a0806040200ll);
+    const __m512i three = _mm512_set1_epi8(3), seven = _mm512_set1_epi8(7);
+    const __m512i zero = _mm512_setzero_si512();
+    __m512 facc = _mm512_setzero_ps();
+    __m256 faccs = _mm256_setzero_ps();
+    for (int i = 0; i < nb; ++i) {
+        const __m512i idxb = _mm512_zextsi256_si512(_mm256_loadu_si256((const __m256i *) x[i].qs));
+        const __m512i qhq = _mm512_cvtepu16_epi64(_mm_loadu_si128((const __m128i *) x[i].qh));       // 8 qwords, each a qh word
+        const __m512i hb = _mm512_permutexvar_epi8(SI, _mm512_and_si512(_mm512_multishift_epi64_epi8(hsc, qhq), seven));   // index bits 8..10 of the 32 indices
+        const __mmask64 hi7 = _mm512_movepi8_mask(idxb);
+        __m512i P[2];
+        for (int pl = 0; pl < 2; ++pl) {
+            const uint8_t * t = pl ? cdh : cdl;
+            __m512i r = iq2_lookup256(t, idxb, hi7);
+            for (int c = 1; c < 8; ++c) { r = _mm512_mask_blend_epi8(_mm512_cmpeq_epi8_mask(hb, _mm512_set1_epi8((char) c)), r, iq2_lookup256(t + 256 * c, idxb, hi7)); }
+            P[pl] = r;
+        }
+        // per group of 32 weights: scale 2*s+1 (qh bits 12..14) and the delta sign (bit 15)
+        const __m128i qw = _mm_loadu_si128((const __m128i *) x[i].qh);
+        const __m128i ls16 = _mm_add_epi16(_mm_slli_epi16(_mm_and_si128(_mm_srli_epi16(qw, 12), _mm_set1_epi16(7)), 1), _mm_set1_epi16(1));
+        const __m256i lsd = _mm256_cvtepi16_epi32(ls16);
+        const __m512i lsz = _mm512_castsi256_si512(lsd);
+        __m512i sum = zero;
+        for (int k = 0; k < 4; ++k) {
+            const __m512i G = _mm512_and_si512(_mm512_multishift_epi64_epi8(bsc, _mm512_permutex2var_epi8(P[0], _mm512_load_si512((const void *) pat[k]), P[1])), three);
+            const __m512i a = _mm512_loadu_si512((const void *) (y[i].qs + 64 * k));
+            const __m512i lsk = _mm512_permutexvar_epi32(_mm512_add_epi32(_mm512_set_epi32(1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0), _mm512_set1_epi32(2 * k)), lsz);
+            sum = _mm512_add_epi32(sum, _mm512_mullo_epi32(_mm512_dpbusd_epi32(zero, G, a), lsk));
+        }
+        const float d = GGML_CPU_FP16_TO_FP32(x[i].d) * y[i].d;
+        facc = _mm512_fmadd_ps(_mm512_set1_ps(d), _mm512_cvtepi32_ps(sum), facc);
+        // - sum(activations of the group) * scale (the +1 shift of the grid) and + delta * sign * sum * scale
+        const __m256i sg = _mm256_madd_epi16(_mm256_loadu_si256((const __m256i *) y[i].bsums), _mm256_set1_epi16(1));
+        const __m256i neg = _mm256_cvtepi16_epi32(_mm_srai_epi16(qw, 15));   // -1 where the sign bit is set
+        const __m256 coef = _mm256_fmadd_ps(_mm256_set1_ps(IQ1S_DELTA), _mm256_cvtepi32_ps(_mm256_or_si256(neg, _mm256_set1_epi32(1))), _mm256_set1_ps(-1.0f));   // -1 + delta * (+-1)
+        faccs = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_mul_ps(coef, _mm256_cvtepi32_ps(_mm256_mullo_epi32(sg, lsd))), faccs);
+    }
+    *s = _mm512_reduce_add_ps(facc) + hsum_float_8(faccs);
+}
+#endif
+
 void ggml_vec_dot_iq1_s_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);
     assert(nrc == 1);
@@ -4356,7 +4421,10 @@ void ggml_vec_dot_iq1_s_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const vo
 
     const int nb = n / QK_K;
 
-#if defined __AVX2__
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512DQ__) && defined(__AVX512VNNI__) && defined(__AVX512VBMI__)
+    UNUSED(nb);
+    ggml_vec_dot_iq1_s_q8_K_vbmi_kernel(n, s, vx, vy);
+#elif defined __AVX2__
 
     __m256 accum = _mm256_setzero_ps();
     __m256 accum1v = _mm256_setzero_ps();   // the delta part, kept in vector form (it was 18% of the time as scalar code)
