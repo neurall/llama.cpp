@@ -2978,34 +2978,51 @@ void ggml_threadpool_resume(struct ggml_threadpool * threadpool) {
 // that multiplies a given type times both on a small in-cache sample and keeps the faster one for that type (the default unless the other is 5% quicker).
 // GGML_CPU_KERNEL_TUNE=0 switches the timing off; GGML_CPU_KERNEL_TUNE=log prints each decision. The AVX2 form also leaves out BMI2 (pdep/pext, microcoded and ~100x slower than the shift-and-mask fallback on Zen 1 / Zen 2: IQ1_S 373 ns per 256 weights there), so the timing runs on every x86 CPU.
 #if defined(GGML_CPU_HAS_AVX2_FORM)
-#define GGML_AVX2FORM_DOT(name) void name##_avx2form(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
-GGML_AVX2FORM_DOT(ggml_vec_dot_q4_0_q8_0) GGML_AVX2FORM_DOT(ggml_vec_dot_q4_1_q8_1) GGML_AVX2FORM_DOT(ggml_vec_dot_q5_0_q8_0) GGML_AVX2FORM_DOT(ggml_vec_dot_q5_1_q8_1) GGML_AVX2FORM_DOT(ggml_vec_dot_q8_0_q8_0)
-GGML_AVX2FORM_DOT(ggml_vec_dot_mxfp4_q8_0) GGML_AVX2FORM_DOT(ggml_vec_dot_iq4_nl_q8_0) GGML_AVX2FORM_DOT(ggml_vec_dot_q2_0_q8_0)
-GGML_AVX2FORM_DOT(ggml_vec_dot_q2_K_q8_K) GGML_AVX2FORM_DOT(ggml_vec_dot_q3_K_q8_K) GGML_AVX2FORM_DOT(ggml_vec_dot_q4_K_q8_K) GGML_AVX2FORM_DOT(ggml_vec_dot_q5_K_q8_K) GGML_AVX2FORM_DOT(ggml_vec_dot_q6_K_q8_K)
-GGML_AVX2FORM_DOT(ggml_vec_dot_iq2_xxs_q8_K) GGML_AVX2FORM_DOT(ggml_vec_dot_iq2_xs_q8_K) GGML_AVX2FORM_DOT(ggml_vec_dot_iq2_s_q8_K) GGML_AVX2FORM_DOT(ggml_vec_dot_iq3_xxs_q8_K) GGML_AVX2FORM_DOT(ggml_vec_dot_iq3_s_q8_K)
-GGML_AVX2FORM_DOT(ggml_vec_dot_iq4_xs_q8_K) GGML_AVX2FORM_DOT(ggml_vec_dot_iq1_s_q8_K) GGML_AVX2FORM_DOT(ggml_vec_dot_iq1_m_q8_K)
+// every dot product that exists in the extra forms: X(type enum, function name)
+#define GGML_FORM_DOTS(X) \
+    X(Q4_0, q4_0_q8_0) X(Q4_1, q4_1_q8_1) X(Q5_0, q5_0_q8_0) X(Q5_1, q5_1_q8_1) X(Q8_0, q8_0_q8_0) X(MXFP4, mxfp4_q8_0) X(IQ4_NL, iq4_nl_q8_0) X(Q2_0, q2_0_q8_0) \
+    X(Q2_K, q2_K_q8_K) X(Q3_K, q3_K_q8_K) X(Q4_K, q4_K_q8_K) X(Q5_K, q5_K_q8_K) X(Q6_K, q6_K_q8_K) \
+    X(IQ2_XXS, iq2_xxs_q8_K) X(IQ2_XS, iq2_xs_q8_K) X(IQ2_S, iq2_s_q8_K) X(IQ3_XXS, iq3_xxs_q8_K) X(IQ3_S, iq3_s_q8_K) X(IQ4_XS, iq4_xs_q8_K) X(IQ1_S, iq1_s_q8_K) X(IQ1_M, iq1_m_q8_K)
+#define GGML_FORM_DECL(T, f) \
+    void ggml_vec_dot_##f##_avx2form(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
+    void ggml_vec_dot_##f##_vnniform(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
+    void ggml_vec_dot_##f##_avx512form(int, float *, size_t, const void *, size_t, const void *, size_t, int);
+GGML_FORM_DOTS(GGML_FORM_DECL)
 
-static const struct { enum ggml_type type; ggml_vec_dot_t avx2form; } g_avx2form_dots[] = {
-    { GGML_TYPE_Q4_0, ggml_vec_dot_q4_0_q8_0_avx2form }, { GGML_TYPE_Q4_1, ggml_vec_dot_q4_1_q8_1_avx2form }, { GGML_TYPE_Q5_0, ggml_vec_dot_q5_0_q8_0_avx2form },
-    { GGML_TYPE_Q5_1, ggml_vec_dot_q5_1_q8_1_avx2form }, { GGML_TYPE_Q8_0, ggml_vec_dot_q8_0_q8_0_avx2form }, { GGML_TYPE_MXFP4, ggml_vec_dot_mxfp4_q8_0_avx2form },
-    { GGML_TYPE_IQ4_NL, ggml_vec_dot_iq4_nl_q8_0_avx2form }, { GGML_TYPE_Q2_0, ggml_vec_dot_q2_0_q8_0_avx2form },
-    { GGML_TYPE_Q2_K, ggml_vec_dot_q2_K_q8_K_avx2form }, { GGML_TYPE_Q3_K, ggml_vec_dot_q3_K_q8_K_avx2form }, { GGML_TYPE_Q4_K, ggml_vec_dot_q4_K_q8_K_avx2form },
-    { GGML_TYPE_Q5_K, ggml_vec_dot_q5_K_q8_K_avx2form }, { GGML_TYPE_Q6_K, ggml_vec_dot_q6_K_q8_K_avx2form },
-    { GGML_TYPE_IQ2_XXS, ggml_vec_dot_iq2_xxs_q8_K_avx2form }, { GGML_TYPE_IQ2_XS, ggml_vec_dot_iq2_xs_q8_K_avx2form }, { GGML_TYPE_IQ2_S, ggml_vec_dot_iq2_s_q8_K_avx2form },
-    { GGML_TYPE_IQ3_XXS, ggml_vec_dot_iq3_xxs_q8_K_avx2form }, { GGML_TYPE_IQ3_S, ggml_vec_dot_iq3_s_q8_K_avx2form }, { GGML_TYPE_IQ4_XS, ggml_vec_dot_iq4_xs_q8_K_avx2form },
-    { GGML_TYPE_IQ1_S, ggml_vec_dot_iq1_s_q8_K_avx2form }, { GGML_TYPE_IQ1_M, ggml_vec_dot_iq1_m_q8_K_avx2form },
+enum { GGML_FORM_DEFAULT, GGML_FORM_AVX2, GGML_FORM_VNNI, GGML_FORM_AVX512, GGML_FORM_COUNT };
+static const char * const g_form_names[GGML_FORM_COUNT] = { "default", "AVX2", "AVX-VNNI", "AVX-512" };
+static const struct { enum ggml_type type; ggml_vec_dot_t form[GGML_FORM_COUNT]; } g_form_dots[] = {
+#define GGML_FORM_ROW(T, f) { GGML_TYPE_##T, { NULL, ggml_vec_dot_##f##_avx2form, ggml_vec_dot_##f##_vnniform, ggml_vec_dot_##f##_avx512form } },
+    GGML_FORM_DOTS(GGML_FORM_ROW)
 };
+
+// a form compiled with instructions the CPU lacks must never run: ask cpuid at run time (the compile-time ggml_cpu_has_* only describe this library's own flags)
+static bool ggml_cpu_form_runs(int form) {
+#if defined(__GNUC__) || defined(__clang__)
+    __builtin_cpu_init();
+    switch (form) {
+        case GGML_FORM_AVX2:   return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c");
+        case GGML_FORM_VNNI:   return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c") && __builtin_cpu_supports("bmi2") && __builtin_cpu_supports("avxvnni");
+        case GGML_FORM_AVX512: return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c") && __builtin_cpu_supports("bmi2") &&
+                                      __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512vl") && __builtin_cpu_supports("avx512dq") && __builtin_cpu_supports("avx512vnni");
+    }
+#endif
+    return false;
+}
 
 void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     static int tuned[GGML_TYPE_COUNT];
     if (type < 0 || type >= GGML_TYPE_COUNT || __atomic_exchange_n(&tuned[type], 1, __ATOMIC_ACQ_REL)) { return; }
     const char * env = getenv("GGML_CPU_KERNEL_TUNE");
     if (env && env[0] == '0') { return; }
-    ggml_vec_dot_t avx2form = NULL;
-    for (size_t i = 0; i < sizeof(g_avx2form_dots) / sizeof(g_avx2form_dots[0]); ++i) { if (g_avx2form_dots[i].type == type) { avx2form = g_avx2form_dots[i].avx2form; } }
-    const ggml_vec_dot_t def = type_traits_cpu[type].vec_dot;
+    ggml_vec_dot_t f[GGML_FORM_COUNT] = { type_traits_cpu[type].vec_dot, NULL, NULL, NULL };
+    bool any = false;
+    for (size_t i = 0; i < sizeof(g_form_dots) / sizeof(g_form_dots[0]); ++i) {
+        if (g_form_dots[i].type != type) { continue; }
+        for (int k = GGML_FORM_AVX2; k < GGML_FORM_COUNT; ++k) { if (ggml_cpu_form_runs(k)) { f[k] = g_form_dots[i].form[k]; any = true; } }
+    }
     const enum ggml_type vt = type_traits_cpu[type].vec_dot_type;
-    if (!avx2form || !def || type_traits_cpu[vt].from_float == NULL) { return; }
+    if (!any || !f[0] || type_traits_cpu[vt].from_float == NULL) { return; }
 
     enum { N = 4096, ROWS = 48, ROUNDS = 7 };
     const size_t rb = ggml_row_size(type, N);
@@ -3023,24 +3040,28 @@ void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     type_traits_cpu[vt].from_float(imp, a, N);
 
     float sink = 0.0f;
-    int64_t best_def = INT64_MAX, best_avx2form = INT64_MAX;
+    int64_t best[GGML_FORM_COUNT];
+    for (int k = 0; k < GGML_FORM_COUNT; ++k) { best[k] = INT64_MAX; }
     for (int r = 0; r < ROUNDS; ++r) {
-        for (int k = 0; k < 2; ++k) {
-            const ggml_vec_dot_t f = k ? avx2form : def;
+        for (int k = 0; k < GGML_FORM_COUNT; ++k) {
+            if (!f[k]) { continue; }
             const int64_t t0 = ggml_time_us();
             for (int rep = 0; rep < 12; ++rep) {
-                for (int row = 0; row < ROWS; ++row) { float s; f(N, &s, 0, q + rb * row, 0, a, 0, 1); sink += s; }
+                for (int row = 0; row < ROWS; ++row) { float s; f[k](N, &s, 0, q + rb * row, 0, a, 0, 1); sink += s; }
             }
             const int64_t dt = ggml_time_us() - t0;
-            if (k) { if (dt < best_avx2form) { best_avx2form = dt; } } else { if (dt < best_def) { best_def = dt; } }
+            if (dt < best[k]) { best[k] = dt; }
         }
     }
-    const bool use_avx2form = best_avx2form * 100 < best_def * 95;
-    if (use_avx2form) { type_traits_cpu[type].vec_dot = avx2form; }
+    // the default stays unless another form is 5% quicker than it; among the others the quickest wins
+    int pick = GGML_FORM_DEFAULT;
+    for (int k = 1; k < GGML_FORM_COUNT; ++k) { if (f[k] && best[k] < best[pick] && best[k] * 100 < best[GGML_FORM_DEFAULT] * 95) { pick = k; } }
+    if (pick) { type_traits_cpu[type].vec_dot = f[pick]; }
     if (env && strcmp(env, "log") == 0) {
         const double blocks = 12.0 * ROWS * (N / 256.0);
-        fprintf(stderr, "ggml-cpu: %-8s dot product: default %.2f ns/256w, AVX2 form %.2f ns/256w -> %s%s\n", ggml_type_name(type),
-                best_def * 1000.0 / blocks, best_avx2form * 1000.0 / blocks, use_avx2form ? "AVX2 form" : "default", sink == 12345.0f ? "!" : "");
+        char line[256]; int n = snprintf(line, sizeof line, "ggml-cpu: %-8s dot product ns/256w:", ggml_type_name(type));
+        for (int k = 0; k < GGML_FORM_COUNT && n < (int) sizeof line - 40; ++k) { if (f[k]) { n += snprintf(line + n, sizeof line - n, " %s %.2f,", g_form_names[k], best[k] * 1000.0 / blocks); } }
+        fprintf(stderr, "%s -> %s%s\n", line, g_form_names[pick], sink == 12345.0f ? "!" : "");
     }
     free(w); free(q);
 }
