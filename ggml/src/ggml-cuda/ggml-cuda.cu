@@ -3530,19 +3530,26 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
         // in which case a same-device copy (not a peer copy) is required
         const int src_physical = ggml_cuda_get_physical_device(cuda_ctx_src->device);
         const int dst_physical = ggml_cuda_get_physical_device(cuda_ctx_dst->device);
+        // rows are first gathered on the source card (a 2D copy with 1.5 KB rows is far too slow over the link), then the compact block crosses as one transfer
+        ggml_cuda_set_device(cuda_ctx_src->device);
+        ggml_cuda_pool_alloc<char> rows_tmp(cuda_ctx_src->pool());
+        const void * sdata = src->data;
         if (rows_copy) {
-            CUDA_CHECK(cudaMemcpy2DAsync(dst->data, dst->nb[1], src->data, src->nb[1], (size_t) src->ne[0]*ggml_type_size(src->type), (size_t) src->ne[1], cudaMemcpyDefault, cuda_ctx_src->stream()));
-        } else if (src_physical == dst_physical) {
-            CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, ggml_nbytes(dst), cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
+            rows_tmp.alloc(ggml_nbytes(dst));
+            CUDA_CHECK(cudaMemcpy2DAsync(rows_tmp.get(), (size_t) src->ne[0]*ggml_type_size(src->type), src->data, src->nb[1], (size_t) src->ne[0]*ggml_type_size(src->type), (size_t) src->ne[1], cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
+            sdata = rows_tmp.get();
+        }
+        if (src_physical == dst_physical) {
+            CUDA_CHECK(cudaMemcpyAsync(dst->data, sdata, ggml_nbytes(dst), cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
         } else {
             // fork: two halves through pinned host memory, each on its own card's stream (see ggml_cuda_xstage_copy); the events are queued there
-            if (ggml_cuda_xstage_on() && ggml_cuda_xstage_copy(cuda_ctx_src, cuda_ctx_dst, src->data, dst->data, ggml_nbytes(dst))) {
+            if (ggml_cuda_xstage_on() && ggml_cuda_xstage_copy(cuda_ctx_src, cuda_ctx_dst, sdata, dst->data, ggml_nbytes(dst))) {
                 return true;
             }
 #ifdef GGML_CUDA_NO_PEER_COPY
             return false;
 #else
-            CUDA_CHECK(cudaMemcpyPeerAsync(dst->data, dst_physical, src->data, src_physical, ggml_nbytes(dst), cuda_ctx_src->stream()));
+            CUDA_CHECK(cudaMemcpyPeerAsync(dst->data, dst_physical, sdata, src_physical, ggml_nbytes(dst), cuda_ctx_src->stream()));
 #endif // GGML_CUDA_NO_PEER_COPY
         }
 
