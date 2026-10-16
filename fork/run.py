@@ -3130,6 +3130,8 @@ def cmd_build(a):
         sys.exit("build: NAME is needed (the directory under DEVBUILDS)")
     name = a.name
     log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "logs", f"build-{name}" + ("" if a.machine == "pc1" else f"-{a.machine}") + ".log")
+    if a.machine == "pc3" and not a.release:
+        sys.exit("build --machine pc3: only the release recipe (clang 20 for the CPU backend, as every published Windows release); the dev bat uses MSVC and fails on the GCC-style kernels. Add --release.")
     if a.machine == "pc3":
         rev = _git(a.repo, "rev-parse", a.commit or "HEAD") if not a.tree else _git(a.tree, "rev-parse", "HEAD")
         short = rev[:9]; ref = f"run-build-{name}"; bundle = f"/tmp/{ref}.bundle"
