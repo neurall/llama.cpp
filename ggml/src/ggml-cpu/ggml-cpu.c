@@ -2973,7 +2973,7 @@ void ggml_threadpool_resume(struct ggml_threadpool * threadpool) {
 
 
 // ---- per-type choice between the two forms of the x86 dot products -----------------------------------------------------------------------------------------
-// quants.c is compiled twice (arch/x86/quants-avx2-form.c: AVX-512 / VNNI code generation off, every function renamed *_256). Which form is faster depends on the quant
+// quants.c is compiled twice (arch/x86/quants-avx2-form.c: AVX-512 / VNNI code generation off, every function renamed *_avx2). Which form is faster depends on the quant
 // type and the CPU (Zen 4, in cache, ns per 256 weights, default / AVX2: Q4_K 9.3 / 5.4, Q6_K 5.3 / 5.9, Q8_0 5.7 / 6.4, IQ2_XXS 17.6 / 21.4), so the first graph
 // that multiplies a given type times both on a small in-cache sample and keeps the faster one for that type (the default unless the other is 5% quicker).
 // GGML_CPU_KERNEL_TUNE=0 switches the timing off; GGML_CPU_KERNEL_TUNE=log prints each decision. The AVX2 form also leaves out BMI2 (pdep/pext, microcoded and ~100x slower than the shift-and-mask fallback on Zen 1 / Zen 2: IQ1_S 373 ns per 256 weights there), so the timing runs on every x86 CPU.
@@ -2984,9 +2984,9 @@ void ggml_threadpool_resume(struct ggml_threadpool * threadpool) {
     X(Q2_K, q2_K_q8_K) X(Q3_K, q3_K_q8_K) X(Q4_K, q4_K_q8_K) X(Q5_K, q5_K_q8_K) X(Q6_K, q6_K_q8_K) \
     X(IQ2_XXS, iq2_xxs_q8_K) X(IQ2_XS, iq2_xs_q8_K) X(IQ2_S, iq2_s_q8_K) X(IQ3_XXS, iq3_xxs_q8_K) X(IQ3_S, iq3_s_q8_K) X(IQ4_XS, iq4_xs_q8_K) X(IQ1_S, iq1_s_q8_K) X(IQ1_M, iq1_m_q8_K)
 #define GGML_FORM_DECL(T, f) \
-    void ggml_vec_dot_##f##_256(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
+    void ggml_vec_dot_##f##_avx2(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
     void ggml_vec_dot_##f##_vnni(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
-    void ggml_vec_dot_##f##_512(int, float *, size_t, const void *, size_t, const void *, size_t, int);
+    void ggml_vec_dot_##f##_avx512(int, float *, size_t, const void *, size_t, const void *, size_t, int);
 GGML_FORM_DOTS(GGML_FORM_DECL)
 
 enum { GGML_FORM_DEFAULT, GGML_FORM_AVX2, GGML_FORM_VNNI, GGML_FORM_AVX512, GGML_FORM_COUNT };
@@ -3002,25 +3002,40 @@ enum { GGML_FORM_DEFAULT, GGML_FORM_AVX2, GGML_FORM_VNNI, GGML_FORM_AVX512, GGML
 #else
 #define GGML_DEFAULT_ISA "default"
 #endif
-static const char * const g_form_names[GGML_FORM_COUNT] = { GGML_DEFAULT_ISA, "256", "vnni", "512" };
+static const char * const g_form_names[GGML_FORM_COUNT] = { GGML_DEFAULT_ISA, "avx2", "vnni", "avx512" };
 static const struct { enum ggml_type type; ggml_vec_dot_t form[GGML_FORM_COUNT]; } g_form_dots[] = {
-#define GGML_FORM_ROW(T, f) { GGML_TYPE_##T, { NULL, ggml_vec_dot_##f##_256, ggml_vec_dot_##f##_vnni, ggml_vec_dot_##f##_512 } },
+#define GGML_FORM_ROW(T, f) { GGML_TYPE_##T, { NULL, ggml_vec_dot_##f##_avx2, ggml_vec_dot_##f##_vnni, ggml_vec_dot_##f##_avx512 } },
     GGML_FORM_DOTS(GGML_FORM_ROW)
 };
 
-// a form compiled with instructions the CPU lacks must never run: ask cpuid at run time (the compile-time ggml_cpu_has_* only describe this library's own flags)
+// a form compiled with instructions the CPU lacks must never run: ask cpuid (and xgetbv for the register state the OS saves) at run time, the compile-time
+// ggml_cpu_has_* only describe this library's own flags. cpuid.h instead of __builtin_cpu_supports: that needs a compiler-rt symbol the Windows clang link lacks.
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+#include <cpuid.h>
 static bool ggml_cpu_form_runs(int form) {
-#if defined(__GNUC__) || defined(__clang__)
-    __builtin_cpu_init();
-    switch (form) {
-        case GGML_FORM_AVX2:   return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c");
-        case GGML_FORM_VNNI:   return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c") && __builtin_cpu_supports("bmi2") && __builtin_cpu_supports("avxvnni");
-        case GGML_FORM_AVX512: return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c") && __builtin_cpu_supports("bmi2") &&
-                                      __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512vl") && __builtin_cpu_supports("avx512dq") && __builtin_cpu_supports("avx512vnni");
+    unsigned a, b, c, d;
+    if (!__get_cpuid_count(1, 0, &a, &b, &c, &d)) { return false; }
+    const bool osxsave = (c >> 27) & 1, avx = (c >> 28) & 1, fma = (c >> 12) & 1, f16c = (c >> 29) & 1;
+    if (!osxsave || !avx || !fma || !f16c) { return false; }
+    unsigned xlo, xhi; __asm__ volatile("xgetbv" : "=a"(xlo), "=d"(xhi) : "c"(0));
+    if ((xlo & 6) != 6) { return false; }                       // xmm + ymm state
+    if (!__get_cpuid_count(7, 0, &a, &b, &c, &d)) { return false; }
+    const bool avx2 = (b >> 5) & 1, bmi2 = (b >> 8) & 1;
+    if (!avx2) { return false; }
+    if (form == GGML_FORM_AVX2) { return true; }
+    if (form == GGML_FORM_VNNI) {
+        unsigned a1, b1, c1, d1; if (!__get_cpuid_count(7, 1, &a1, &b1, &c1, &d1)) { return false; }
+        return bmi2 && ((a1 >> 4) & 1);                           // AVX-VNNI
     }
-#endif
+    if (form == GGML_FORM_AVX512) {
+        const bool f = (b >> 16) & 1, dq = (b >> 17) & 1, bw = (b >> 30) & 1, vl = (b >> 31) & 1, vnni = (c >> 11) & 1;
+        return bmi2 && f && dq && bw && vl && vnni && (xlo & 0xe0) == 0xe0;   // opmask + zmm state
+    }
     return false;
 }
+#else
+static bool ggml_cpu_form_runs(int form) { (void) form; return false; }
+#endif
 
 void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     static int tuned[GGML_TYPE_COUNT];
@@ -3050,6 +3065,17 @@ void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     uint8_t * a = q + rb * ROWS;
     for (int i = 0; i < N; ++i) { x ^= x << 13; x ^= x >> 17; x ^= x << 5; imp[i] = ((int32_t) x) * (1.0f / 2147483648.0f); }
     type_traits_cpu[vt].from_float(imp, a, N);
+
+    // safety gate: a form whose sums differ from the default's on this sample (beyond float rounding order) is a wrong kernel, never use it
+    bool rejected[GGML_FORM_COUNT] = { false };
+    for (int k = 1; k < GGML_FORM_COUNT; ++k) {
+        if (!f[k]) { continue; }
+        for (int row = 0; row < ROWS && !rejected[k]; ++row) {
+            float r0, r1; f[0](N, &r0, 0, q + rb * row, 0, a, 0, 1); f[k](N, &r1, 0, q + rb * row, 0, a, 0, 1);
+            if (!(fabsf(r0 - r1) <= 1e-4f * (fabsf(r0) + 1.0f))) { rejected[k] = true; }
+        }
+        if (rejected[k]) { GGML_LOG_WARN("cpu kernel %s: form %s gives different sums than the default, not used\n", ggml_type_name(type), g_form_names[k]); f[k] = NULL; }
+    }
 
     float sink = 0.0f;
     int64_t best[GGML_FORM_COUNT];
