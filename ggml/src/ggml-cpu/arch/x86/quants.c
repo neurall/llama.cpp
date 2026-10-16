@@ -2736,39 +2736,6 @@ static const int8_t keven_signs_q2xs[1024] = {
 };
 #endif
 
-#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512VNNI__)
-// IQ2_XXS on 512-bit registers (AVX-512 + VNNI), 64 weights per step. Against the AVX2 code: the sign flip of 64 weights is one masked subtract from a 64-bit mask built from
-// eight table bytes (the AVX2 code loads eight 8-byte sign vectors and needs vpsignb on them), the grid indices come out of two registers with shifts instead of byte loads,
-// and vpdpbusd replaces maddubs + madd (the grid bytes are at most 43, so maddubs never saturated: same integer sums).
-static void ggml_vec_dot_iq2_xxs_q8_K_avx512_kernel(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
-    const block_iq2_xxs * GGML_RESTRICT x = vx;
-    const block_q8_K    * GGML_RESTRICT y = vy;
-    const int nb = n / QK_K;
-    const __m512i zero = _mm512_setzero_si512();
-    __m512 acc = _mm512_setzero_ps();
-    for (int i = 0; i < nb; ++i) {
-        const uint32_t * GGML_RESTRICT q2 = (const uint32_t *) x[i].qs;
-        const int8_t   * GGML_RESTRICT q8 = y[i].qs;
-        __m512i sumi = zero;
-        for (int it = 0; it < 4; ++it) {
-            const uint32_t i0 = q2[4 * it + 0], a0 = q2[4 * it + 1], i1 = q2[4 * it + 2], a1 = q2[4 * it + 3];
-            const __m512i g = _mm512_set_epi64(
-                (long long) iq2xxs_grid[i1 >> 24], (long long) iq2xxs_grid[(i1 >> 16) & 255], (long long) iq2xxs_grid[(i1 >> 8) & 255], (long long) iq2xxs_grid[i1 & 255],
-                (long long) iq2xxs_grid[i0 >> 24], (long long) iq2xxs_grid[(i0 >> 16) & 255], (long long) iq2xxs_grid[(i0 >> 8) & 255], (long long) iq2xxs_grid[i0 & 255]);
-            const uint64_t sm = (uint64_t) ksigns_iq2xs[a0 & 127] | ((uint64_t) ksigns_iq2xs[(a0 >> 7) & 127] << 8) | ((uint64_t) ksigns_iq2xs[(a0 >> 14) & 127] << 16) | ((uint64_t) ksigns_iq2xs[(a0 >> 21) & 127] << 24) |
-                                ((uint64_t) ksigns_iq2xs[a1 & 127] << 32) | ((uint64_t) ksigns_iq2xs[(a1 >> 7) & 127] << 40) | ((uint64_t) ksigns_iq2xs[(a1 >> 14) & 127] << 48) | ((uint64_t) ksigns_iq2xs[(a1 >> 21) & 127] << 56);
-            const __m512i a  = _mm512_loadu_si512((const void *) (q8 + 64 * it));
-            const __m512i as = _mm512_mask_sub_epi8(a, (__mmask64) sm, zero, a);
-            const __m512i dot = _mm512_dpbusd_epi32(zero, g, as);
-            const __m512i sv = _mm512_mask_set1_epi32(_mm512_set1_epi32((int) (2 * (a0 >> 28) + 1)), 0xFF00, (int) (2 * (a1 >> 28) + 1));
-            sumi = _mm512_add_epi32(sumi, _mm512_mullo_epi32(dot, sv));
-        }
-        acc = _mm512_fmadd_ps(_mm512_set1_ps(GGML_CPU_FP16_TO_FP32(x[i].d) * y[i].d), _mm512_cvtepi32_ps(sumi), acc);
-    }
-    *s = 0.125f * _mm512_reduce_add_ps(acc);
-}
-#endif
-
 void ggml_vec_dot_iq2_xxs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_K == 0);
     assert(nrc == 1);
@@ -2782,9 +2749,7 @@ void ggml_vec_dot_iq2_xxs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const 
 
     const int nb = n / QK_K;
 
-#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512VNNI__)
-    ggml_vec_dot_iq2_xxs_q8_K_avx512_kernel(n, s, vx, vy);
-#elif defined(__AVX2__)
+#if defined(__AVX2__)
 
     const uint64_t * signs64 = (const uint64_t *)keven_signs_q2xs;
 
