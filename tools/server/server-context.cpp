@@ -1803,7 +1803,7 @@ private:
                     common_chat_msg m; m.role = "user"; m.content = "x";
                     in.messages = { m };
                     const auto r = common_chat_templates_apply(chat_params.tmpls.get(), in);
-                    const int n = (int) common_tokenize(llama_model_get_vocab(model_tgt), r.prompt, true, true).size();
+                    const int n = (int) common_tokenize(llama_model_get_vocab(model_tgt), r.prompt.str(), true, true).size();
                     llama_moe_live_set("min_in_len", n);
                     SRV_INF("shortest prompt through the chat template: %d tokens (live parameter min_in_len)\n", n);
                 } catch (const std::exception & e) {
