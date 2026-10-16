@@ -282,6 +282,7 @@ struct moe_cache {
         size_t                kv_blocks = 0;    // blocks under the KV rows now
         size_t                dec_need  = 0;    // the most a decode graph (< 64 tokens) borrowed from the start of the buffer: the KV never takes that
     };
+    std::atomic<bool> starved{false};   // kv-tail: the KV holds every expert block of the cards that have a record: no expert can be cached, the per-step cache logic is off
     std::vector<alias_pool> alias;   // block pool: the lifetime count of the busiest expert of ANY layer, the common scale of scores compared across layers
     bool pf_count_on      = false;   // prompt hit counters on the cards (see pf-count)
     int  pf_count_layers  = 0;
@@ -3060,6 +3061,22 @@ static void kv_tail_claim(moe_cache * mc, bool & changed) {
                     ggml_backend_dev_name(ap.dev), cells_before, sum, n_take, n_evict, n_give, held, (double) held * (ap.segs.empty() ? 0.0 : (double) ap.segs.back().B) / 1048576.0, ap.span / 1048576.0);
         }
     }
+    {   // no block left for an expert on any card that holds a KV record (the blocks lent to the graph are not the experts' either)
+        bool any = false, usable = false;
+        for (auto & ap : mc->alias) {
+            if (ap.kvt.empty()) { continue; }
+            any = true;
+            for (auto & sg : ap.segs) {
+                const auto & ps = mc->pool[sg.pcls];
+                for (int32_t b = 0; b < sg.n && !usable; ++b) { if (ps.owner[b] != -3 && ps.owner[b] != -2) { usable = true; } }
+            }
+        }
+        const bool now = any && !usable;
+        if (now != mc->starved.load()) {
+            mc->starved = now;
+            LLAMA_LOG_INFO("moe-cache: kv-tail: %s\n", now ? "the KV holds every expert block: the cache logic is off, experts are streamed" : "expert blocks are free again: the cache logic is on");
+        }
+    }
 }
 
 
@@ -5301,6 +5318,9 @@ void llama_moe_cache_step_fork() {
         return;
     }
     struct flush_at_exit { ~flush_at_exit() { flush_tables(); } } flush_guard; // table changes reach the GPU before the next graph
+    if (mc->starved.load()) {
+        return;   // kv-tail: the KV holds every expert block, nothing to score, admit or upload
+    }
 
     // LLAMA_MOE_CACHE_DETERMINISTIC=1 (benchmarks): publish exactly the uploads
     // scheduled by the previous step, in a fixed order, with a fixed swap budget
