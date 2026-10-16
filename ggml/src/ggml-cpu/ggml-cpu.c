@@ -2973,7 +2973,7 @@ void ggml_threadpool_resume(struct ggml_threadpool * threadpool) {
 
 
 // ---- per-type choice between the two forms of the x86 dot products -----------------------------------------------------------------------------------------
-// quants.c is compiled twice (arch/x86/quants-avx2-form.c: AVX-512 / VNNI code generation off, every function renamed *_avx2form). Which form is faster depends on the quant
+// quants.c is compiled twice (arch/x86/quants-avx2-form.c: AVX-512 / VNNI code generation off, every function renamed *_256). Which form is faster depends on the quant
 // type and the CPU (Zen 4, in cache, ns per 256 weights, default / AVX2: Q4_K 9.3 / 5.4, Q6_K 5.3 / 5.9, Q8_0 5.7 / 6.4, IQ2_XXS 17.6 / 21.4), so the first graph
 // that multiplies a given type times both on a small in-cache sample and keeps the faster one for that type (the default unless the other is 5% quicker).
 // GGML_CPU_KERNEL_TUNE=0 switches the timing off; GGML_CPU_KERNEL_TUNE=log prints each decision. The AVX2 form also leaves out BMI2 (pdep/pext, microcoded and ~100x slower than the shift-and-mask fallback on Zen 1 / Zen 2: IQ1_S 373 ns per 256 weights there), so the timing runs on every x86 CPU.
@@ -2984,15 +2984,27 @@ void ggml_threadpool_resume(struct ggml_threadpool * threadpool) {
     X(Q2_K, q2_K_q8_K) X(Q3_K, q3_K_q8_K) X(Q4_K, q4_K_q8_K) X(Q5_K, q5_K_q8_K) X(Q6_K, q6_K_q8_K) \
     X(IQ2_XXS, iq2_xxs_q8_K) X(IQ2_XS, iq2_xs_q8_K) X(IQ2_S, iq2_s_q8_K) X(IQ3_XXS, iq3_xxs_q8_K) X(IQ3_S, iq3_s_q8_K) X(IQ4_XS, iq4_xs_q8_K) X(IQ1_S, iq1_s_q8_K) X(IQ1_M, iq1_m_q8_K)
 #define GGML_FORM_DECL(T, f) \
-    void ggml_vec_dot_##f##_avx2form(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
-    void ggml_vec_dot_##f##_vnniform(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
-    void ggml_vec_dot_##f##_avx512form(int, float *, size_t, const void *, size_t, const void *, size_t, int);
+    void ggml_vec_dot_##f##_256(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
+    void ggml_vec_dot_##f##_vnni(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
+    void ggml_vec_dot_##f##_512(int, float *, size_t, const void *, size_t, const void *, size_t, int);
 GGML_FORM_DOTS(GGML_FORM_DECL)
 
 enum { GGML_FORM_DEFAULT, GGML_FORM_AVX2, GGML_FORM_VNNI, GGML_FORM_AVX512, GGML_FORM_COUNT };
-static const char * const g_form_names[GGML_FORM_COUNT] = { "default", "AVX2", "AVX-VNNI", "AVX-512" };
+// the name of the default form says what this library was compiled with, so a log line shows which code actually runs
+#if defined(__AVX512VNNI__) && defined(__AVX512VL__)
+#define GGML_DEFAULT_ISA "default(avx512+vnni build)"
+#elif defined(__AVX512F__)
+#define GGML_DEFAULT_ISA "default(avx512 build)"
+#elif defined(__AVXVNNI__)
+#define GGML_DEFAULT_ISA "default(avx2+avxvnni build)"
+#elif defined(__AVX2__)
+#define GGML_DEFAULT_ISA "default(avx2 build)"
+#else
+#define GGML_DEFAULT_ISA "default"
+#endif
+static const char * const g_form_names[GGML_FORM_COUNT] = { GGML_DEFAULT_ISA, "256", "vnni", "512" };
 static const struct { enum ggml_type type; ggml_vec_dot_t form[GGML_FORM_COUNT]; } g_form_dots[] = {
-#define GGML_FORM_ROW(T, f) { GGML_TYPE_##T, { NULL, ggml_vec_dot_##f##_avx2form, ggml_vec_dot_##f##_vnniform, ggml_vec_dot_##f##_avx512form } },
+#define GGML_FORM_ROW(T, f) { GGML_TYPE_##T, { NULL, ggml_vec_dot_##f##_256, ggml_vec_dot_##f##_vnni, ggml_vec_dot_##f##_512 } },
     GGML_FORM_DOTS(GGML_FORM_ROW)
 };
 
@@ -3057,11 +3069,14 @@ void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     int pick = GGML_FORM_DEFAULT;
     for (int k = 1; k < GGML_FORM_COUNT; ++k) { if (f[k] && best[k] < best[pick] && best[k] * 100 < best[GGML_FORM_DEFAULT] * 95) { pick = k; } }
     if (pick) { type_traits_cpu[type].vec_dot = f[pick]; }
-    if (env && strcmp(env, "log") == 0) {
+    // one info line per quant type, always (GGML_CPU_KERNEL_TUNE=quiet silences it): every form that could run with its time, the pick and why
+    if (!(env && strcmp(env, "quiet") == 0)) {
         const double blocks = 12.0 * ROWS * (N / 256.0);
-        char line[256]; int n = snprintf(line, sizeof line, "ggml-cpu: %-8s dot product ns/256w:", ggml_type_name(type));
-        for (int k = 0; k < GGML_FORM_COUNT && n < (int) sizeof line - 40; ++k) { if (f[k]) { n += snprintf(line + n, sizeof line - n, " %s %.2f,", g_form_names[k], best[k] * 1000.0 / blocks); } }
-        fprintf(stderr, "%s -> %s%s\n", line, g_form_names[pick], sink == 12345.0f ? "!" : "");
+        char line[384]; int n = snprintf(line, sizeof line, "cpu kernel %-8s ns/256w:", ggml_type_name(type));
+        for (int k = 0; k < GGML_FORM_COUNT && n < (int) sizeof line - 60; ++k) { if (f[k]) { n += snprintf(line + n, sizeof line - n, " %s %.2f;", g_form_names[k], best[k] * 1000.0 / blocks); } }
+        const bool lost = pick == GGML_FORM_DEFAULT;
+        GGML_LOG_INFO("%s picked %s (%s)%s\n", line, g_form_names[pick],
+                      lost ? "no form is 5% quicker than the default" : "5% or more quicker than the default and the quickest of the forms", sink == 12345.0f ? "!" : "");
     }
     free(w); free(q);
 }

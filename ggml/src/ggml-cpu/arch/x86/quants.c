@@ -3820,8 +3820,50 @@ static void ggml_vec_dot_iq3_s_q8_K_fast(int n, float * GGML_RESTRICT s, size_t 
 
 #endif
 
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512VNNI__) && !defined(GGML_IQ3_NO_FAST_AVX2)
+// IQ3_S with 512-bit registers (AVX-512 + VNNI): 64 weights per step. The sign bits of 64 weights are one 64-bit mask, so the sign flip of the activations is a single masked
+// subtract (the AVX2 code needs a shuffle, an and, a compare, an xor and a subtract); the 16 grid values come from one gather; vpdpbusd replaces maddubs + madd (grid values are
+// 1..15 per byte, so maddubs never saturated and the integer sums are identical).
+static void ggml_vec_dot_iq3_s_q8_K_zmm(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    const block_iq3_s * GGML_RESTRICT x = vx;
+    const block_q8_K  * GGML_RESTRICT y = vy;
+    const int nb = n / QK_K;
+    const __m512i shifts = _mm512_set_epi32(1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8);
+    const __m512i bit8 = _mm512_set1_epi32(256);
+    const __m512i zero = _mm512_setzero_si512();
+    __m512 acc = _mm512_setzero_ps();
+    for (int i = 0; i < nb; ++i) {
+        const uint8_t * GGML_RESTRICT qs = x[i].qs;
+        const uint8_t * GGML_RESTRICT qh = x[i].qh;
+        const uint8_t * GGML_RESTRICT sg = x[i].signs;
+        const int8_t  * GGML_RESTRICT q8 = y[i].qs;
+        __m512i sumi = zero;
+        for (int it = 0; it < 4; ++it) {
+            const __m512i lo   = _mm512_cvtepu8_epi32(_mm_loadu_si128((const __m128i *) (qs + 16 * it)));
+            const __m512i hv   = _mm512_mask_set1_epi32(_mm512_set1_epi32(qh[2 * it]), 0xFF00, qh[2 * it + 1]);
+            const __m512i idx  = _mm512_or_si512(lo, _mm512_and_si512(_mm512_sllv_epi32(hv, shifts), bit8));
+            const __m512i g    = _mm512_i32gather_epi32(idx, (const void *) iq3s_grid, 4);
+            uint64_t sm; memcpy(&sm, sg + 8 * it, 8);
+            const __m512i a    = _mm512_loadu_si512((const void *) (q8 + 64 * it));
+            const __m512i as   = _mm512_mask_sub_epi8(a, (__mmask64) sm, zero, a);
+            const __m512i dot  = _mm512_dpbusd_epi32(zero, g, as);
+            const int l1 = x[i].scales[it] & 0xf, l2 = x[i].scales[it] >> 4;
+            const __m512i sv   = _mm512_mask_set1_epi32(_mm512_set1_epi32(2 * l1 + 1), 0xFF00, 2 * l2 + 1);
+            sumi = _mm512_add_epi32(sumi, _mm512_mullo_epi32(dot, sv));
+        }
+        const float d = GGML_CPU_FP16_TO_FP32(x[i].d) * y[i].d;
+        acc = _mm512_fmadd_ps(_mm512_set1_ps(d), _mm512_cvtepi32_ps(sumi), acc);
+    }
+    *s = _mm512_reduce_add_ps(acc);
+}
+#endif
+
 void ggml_vec_dot_iq3_s_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
-#if !defined(GGML_IQ3_NO_FAST_AVX2) && defined(__AVX2__)
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512VNNI__) && !defined(GGML_IQ3_NO_FAST_AVX2)
+    assert(n % QK_K == 0 && nrc == 1); UNUSED(nrc); UNUSED(bx); UNUSED(by); UNUSED(bs);
+    ggml_vec_dot_iq3_s_q8_K_zmm(n, s, vx, vy);
+    return;
+#elif !defined(GGML_IQ3_NO_FAST_AVX2) && defined(__AVX2__)
     ggml_vec_dot_iq3_s_q8_K_fast(n, s, bs, vx, bx, vy, by, nrc);
     return;
 #endif
