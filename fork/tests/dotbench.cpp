@@ -12,7 +12,7 @@
 int main(int argc, char ** argv) {
     const double mb = argc > 1 ? atof(argv[1]) : 96.0;   // working set per type: 96 = memory-bound, 0.25 = in L2 (the pure compute speed of the kernel)
     ggml_cpu_init();
-    const int n = 4096, urows = 256;
+    const int n = argc > 2 ? atoi(argv[2]) : 4096, urows = 64;   // row length: 4096 = a typical model row; longer rows show the per-call cost (start-up + final sum) separately
     std::mt19937 rng(3); std::normal_distribution<float> nd(0.f, 1.f);
     std::vector<float> act(n), w((size_t) urows * n), imp(n, 1.0f);
     for (auto & v : act) v = nd(rng);
