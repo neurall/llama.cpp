@@ -2190,10 +2190,10 @@ void ggml_vec_dot_q4_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
             const __m256i p0h = _mm256_maddubs_epi16(_mm256_and_si256(_mm256_srli_epi16(q4bits0, 4), m4), q8h0);
             const __m256i p1l = _mm256_maddubs_epi16(_mm256_and_si256(q4bits1, m4), q8l1);
             const __m256i p1h = _mm256_maddubs_epi16(_mm256_and_si256(_mm256_srli_epi16(q4bits1, 4), m4), q8h1);
-            sumi0 = _mm256_add_epi32(sumi0, _mm256_madd_epi16(scale_l0, p0l));
-            sumi1 = _mm256_add_epi32(sumi1, _mm256_madd_epi16(scale_h0, p0h));
-            sumi2 = _mm256_add_epi32(sumi2, _mm256_madd_epi16(scale_l1, p1l));
-            sumi3 = _mm256_add_epi32(sumi3, _mm256_madd_epi16(scale_h1, p1h));
+            sumi0 = GGML_MADD_ADD_EPI16(sumi0, scale_l0, p0l);
+            sumi1 = GGML_MADD_ADD_EPI16(sumi1, scale_h0, p0h);
+            sumi2 = GGML_MADD_ADD_EPI16(sumi2, scale_l1, p1l);
+            sumi3 = GGML_MADD_ADD_EPI16(sumi3, scale_h1, p1h);
         }
         const __m256i sumi = _mm256_add_epi32(_mm256_add_epi32(sumi0, sumi1), _mm256_add_epi32(sumi2, sumi3));
 
@@ -2563,10 +2563,18 @@ void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
             const __m256i q4h_2 = _mm256_and_si256(q4bitsH, _mm256_set1_epi8(48));
             const __m256i q4h_3 = _mm256_srli_epi16(_mm256_and_si256(q4bitsH, _mm256_set1_epi8(-64)), 2);
 
+#if defined(__AVX512VL__)
+            // (low nibble) | (high bits) in one ternary-logic instruction each instead of and + or
+            const __m256i q4_0 = _mm256_ternarylogic_epi32(q4bits1, q4h_0, m15, 0xec);
+            const __m256i q4_1 = _mm256_ternarylogic_epi32(q4bits2, q4h_1, m15, 0xec);
+            const __m256i q4_2 = _mm256_ternarylogic_epi32(_mm256_srli_epi16(q4bits1, 4), q4h_2, m15, 0xec);
+            const __m256i q4_3 = _mm256_ternarylogic_epi32(_mm256_srli_epi16(q4bits2, 4), q4h_3, m15, 0xec);
+#else
             const __m256i q4_0 = _mm256_or_si256(_mm256_and_si256(q4bits1, m15), q4h_0);
             const __m256i q4_1 = _mm256_or_si256(_mm256_and_si256(q4bits2, m15), q4h_1);
             const __m256i q4_2 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(q4bits1, 4), m15), q4h_2);
             const __m256i q4_3 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(q4bits2, 4), m15), q4h_3);
+#endif
 
             const __m256i q8_0 = _mm256_loadu_si256((const __m256i*)q8); q8 += 32;
             const __m256i q8_1 = _mm256_loadu_si256((const __m256i*)q8); q8 += 32;
