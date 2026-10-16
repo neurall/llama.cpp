@@ -145,6 +145,7 @@ struct llama_kv_tail_fork {
     ggml_backend_dev_t dev   = nullptr;
     size_t             bytes = 0;
     size_t             row   = 0;
+    size_t             pad   = 1;   // the attention reads the cells rounded up to this many (masked, but read): the claim covers them
     std::function<size_t()>                  rows;
     std::function<void()>                    detach;
     std::function<void(ggml_backend_buffer_t, uint8_t *)> attach;
@@ -152,6 +153,8 @@ struct llama_kv_tail_fork {
 };
 void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec);
 void llama_moe_cache_kv_tail_remove_fork(void * owner);
+// before the cache writes cells up to `max_cell`: do the claimed blocks cover them? (the cache asserts it)
+bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell);
 // before the pool is created: the small backing buffers go back to the card (the pool is sized with that memory)
 void llama_moe_cache_kv_tail_detach_fork();
 // records that no expert pool took (a dense model, or a card without experts): one buffer per card of its free VRAM (less the margin) is allocated, once, the records sit at its tail and

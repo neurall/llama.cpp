@@ -389,6 +389,7 @@ llama_kv_cache::llama_kv_cache(
             reg.dev   = tdev;
             reg.bytes = r.row * (size_t) kv_size;
             reg.row   = r.row;
+            reg.pad   = n_pad;
             reg.rows  = [this]() -> size_t { return v_cells.empty() ? 0 : (size_t) v_cells[0].used_max_p1(); };
             reg.detach = [this]() {
                 GGML_ASSERT((v_cells.empty() || v_cells[0].used_max_p1() == 0) && "kv-tail: the pool starts while the cache holds cells");
@@ -1605,6 +1606,11 @@ ggml_tensor * llama_kv_cache::build_input_v_rot(ggml_context * ctx) const {
 void llama_kv_cache::set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const {
     const uint32_t n_tokens = ubatch->n_tokens;
     GGML_ASSERT(n_tokens == (int64_t) sinfo.size()*sinfo.n_stream());
+    if (kv_tail_on) {   // the end pointer of this write must lie inside the blocks the pool claimed for it (never over experts it did not free)
+        size_t mx = 0;
+        for (uint32_t s = 0; s < sinfo.n_stream(); ++s) { for (uint32_t i = 0; i < sinfo.size(); ++i) { mx = std::max<size_t>(mx, sinfo.idxs[s][i]); } }
+        GGML_ASSERT(llama_moe_cache_kv_tail_covers_fork((void *) this, mx) && "kv-tail: the cache writes a cell the pool has not claimed");
+    }
 
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
     int64_t * data = (int64_t *) dst->data;

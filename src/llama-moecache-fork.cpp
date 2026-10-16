@@ -276,7 +276,7 @@ struct moe_cache {
         size_t                mirror_b = 0;     // the dense split's copies at the start of the buffer (--moe mirror-pool, see llama_dsplit_mirror_place_fork)
         size_t                base_off = 0;     // where the graph being built starts: mirror_b when it splits (the copies before it), else 0
         // KV cache at the tail (--moe kv-tail=1): the records of the caches on this card, stacked from tail_end downward; blocks under their used rows are owner -3
-        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0; int64_t end_off = 0; std::function<size_t()> rows; size_t cells = 0, plan = 0, eff = 0; };   // plan: the cells the prompt being planned will hold (kept until decode starts)
+        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0, pad = 1; int64_t end_off = 0; std::function<size_t()> rows; size_t cells = 0, plan = 0, eff = 0; };   // plan: the cells the prompt being planned will hold (kept until decode starts)
         std::vector<kvt_run>  kvt;
         size_t                tail_end  = 0;    // end of the last class's expert blocks (where the first record ends)
         size_t                span_full = 0;    // span before any claim: ap.span is the part in front of the lowest claimed block
@@ -1189,6 +1189,7 @@ void pool_take(moe_cache * mc, size_t li, int32_t b) {
     }
     auto & ps = mc->pool[ls.pcls];
     const int32_t o = ps.owner[b];
+    GGML_ASSERT(o != -3 && "kv-tail: an expert is assigned to a block under the KV rows");
     if (o == (int32_t) li) {
         return;
     }
@@ -2960,7 +2961,8 @@ static void kv_tail_claim(moe_cache * mc, bool & changed, size_t plan_extra = 0,
         for (auto & r : ap.kvt) {
             r.cells = r.rows ? r.rows() : 0;
             if (plan_extra > 0) { r.plan = r.cells + plan_extra; } else if (reset_plan) { r.plan = 0; }
-            r.eff = std::max(r.cells, r.plan);   // what the claim covers: the cells in use, or the cells the planned prompt will fill
+            r.eff = std::max(r.cells, r.plan);   // what the claim covers: the cells in use, or the cells the planned prompt will fill ...
+            r.eff = r.eff > 0 ? (r.eff + r.pad - 1) / r.pad * r.pad : 0;   // ... rounded up as the attention reads them (masked, but read: they must be claimed and zero)
             sum += r.eff;
         }
         // hysteresis: a claim covers one block more than the cells in use need (generation adds a cell per token, a block is a few MB: some 50 cells), and a claim is
@@ -3054,6 +3056,20 @@ static void kv_tail_claim(moe_cache * mc, bool & changed, size_t plan_extra = 0,
                     sg.blocked = std::min(sg.blocked, b);   // the compute alias had lent it: the lend of this graph starts over below the KV
                 }
                 ps.owner[b] = -3;
+            }
+            {   // the padding rows the attention reads (masked, but read) must be numbers: a taken block holds expert bytes, so it is zeroed (consecutive blocks in one call)
+                size_t i0 = 0;
+                while (i0 < take.size()) {
+                    size_t i1 = i0;
+                    while (i1 + 1 < take.size() && take[i1 + 1] == take[i1] + 1) { ++i1; }
+                    ggml_tensor z = {};
+                    z.type = GGML_TYPE_I8; z.buffer = ap.buf;
+                    z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + sg.base + (size_t) take[i0] * sg.B;
+                    z.ne[0] = (int64_t) ((i1 - i0 + 1) * sg.B); z.ne[1] = z.ne[2] = z.ne[3] = 1;
+                    z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = (size_t) z.ne[0];
+                    ggml_backend_tensor_memset(&z, 0, 0, (size_t) z.ne[0]);
+                    i0 = i1 + 1;
+                }
             }
             if (!free_mark.empty()) {
                 ps.free.erase(std::remove_if(ps.free.begin(), ps.free.end(), [&](int32_t b) { return free_mark[b] != 0; }), ps.free.end());
@@ -3151,6 +3167,33 @@ size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
         }
     }
     return (size_t) -1;   // the pool does not exist yet (before the first decode): no limit
+}
+
+bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell) {
+    moe_cache * mc = g_cache;
+    if (!mc) { return true; }
+    for (auto & ap : mc->alias) {
+        for (auto & r : ap.kvt) {
+            if (r.owner != owner) { continue; }
+            const size_t need = (max_cell + 1) * r.row;   // bytes from the end of the record up to the lowest byte of the write
+            if (need > r.bytes) { return false; }
+            const int64_t lo = r.end_off - (int64_t) need;
+            if (lo < 0) { return false; }
+            // every block under [lo, end_off) must be the KV's (owner -3)
+            for (auto & sg : ap.segs) {
+                const auto & ps = mc->pool[sg.pcls];
+                for (int32_t b = 0; b < sg.n; ++b) {
+                    const size_t b0 = sg.base + (size_t) b * sg.B, b1 = b0 + sg.B;
+                    if ((int64_t) b1 > lo && (int64_t) b0 < r.end_off && ps.owner[b] != -3) { return false; }
+                }
+            }
+            return true;
+        }
+    }
+    for (auto & ar : g_kv_arena) {
+        for (auto & q : ar.runs) { if (q.owner == owner) { return q.row > 0 && (max_cell + 1) <= (size_t) std::max<int64_t>(0, q.end_off) / q.row; } }
+    }
+    return true;
 }
 
 std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool reset) {
@@ -3846,7 +3889,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             }
                             // the record is virtual: it may be larger than the pool (the model's full context); only the rows the cap allows are ever backed (kv_tail_cap)
                             moe_cache::alias_pool::kvt_run kr;
-                            kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.end_off = off; kr.rows = r.rows;
+                            kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.pad = std::max<size_t>(1, r.pad); kr.end_off = off; kr.rows = r.rows;
+                            GGML_ASSERT(off <= (int64_t) ap.tail_end && "kv-tail: the record ends behind the expert blocks");
                             ap.kvt.push_back(kr);
                             if (r.attach) { r.attach(pbuf, (uint8_t *) ((uintptr_t) base + (uintptr_t) off - (uintptr_t) r.bytes)); }
                             r.attached = true;
