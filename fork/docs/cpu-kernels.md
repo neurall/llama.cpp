@@ -1,0 +1,32 @@
+# CPU dot-product kernels: where the speed is
+
+Measured 2026-10-16 on an AMD Ryzen 5 3600 (Zen 2, AVX2, clang 21, dual-channel DDR4-3200), one thread unless noted. Tools: `fork/tests/dotbench.cpp`
+(speed), `dotcheck.cpp` (accuracy against a double-precision reference), `tilebench.cpp` (weight reuse across tokens), `dotmt.cpp` (threads).  
+The figure that matters for a kernel is **in-cache nanoseconds per 256 weights** (working set 0.25 MB: no memory limit); the RAM-bound figure is a property of the machine.
+
+| Type | ns / 256 w in cache | ns / 256 w from RAM (96 MB) | Note |
+|---|---|---|---|
+| Q2_K | 6.4 | 7.7 | |
+| Q4_K | 7.7 | 10.7 | |
+| Q6_K | 7.8 | 14.4 | |
+| Q3_K | 9.0 | 10.6 | |
+| Q5_K | 9.7 | 13.2 | |
+| Q8_0 | 10.1 -> **8.4** | 17.7 | four independent float accumulators (this branch): 19% faster in cache, sums differ in the last float bits only |
+| IQ4_XS | 10.1 | 12.3 | |
+| MXFP4 | 10.4 | 12.5 | |
+| IQ4_NL | 10.5 | 13.0 | one 256-bit table lookup + four accumulators: 10.70 -> 10.66, **no gain, reverted** |
+| Q4_0 | 11.0 | 13.8 | |
+| IQ2_S | 17.5 | 18.7 | scalar grid loads |
+| IQ2_XXS | 19.1 | 19.6 | scalar grid + sign loads |
+| IQ2_XS | 23.6 | 24.0 | |
+| IQ3_XXS | 25.6 | 26.6 | |
+| IQ3_S | 40.0 -> **29.2** | 30.3 | contributor's index computation (on by default since 2026-10-16) |
+
+* Aggregate throughput with 4-6 threads hits about 40 GB/s on this machine (its RAM limit) for every common type; on a machine with more bandwidth
+  (DDR5, workstation, server) the per-thread compute figure above is what limits, so kernel speed matters there.
+* Batches already reuse weights: the MUL_MAT_ID tile (16 weight rows x 16 tokens, `ggml-cpu.c`) keeps the weight rows in L1/L2 across the tokens.
+  Q4_K: 169 ns per (row x token) at 1 token (RAM-bound), 134 at 4, 126 at 16: with 4+ tokens the kernel is compute-bound again, so a faster kernel
+  helps most for CPU prompt processing and parallel requests. The tile size (4..32 rows) makes no difference.
+* The IQ2/IQ3 family is limited by scalar table loads (about 24 loads per 64 weights for IQ2_XXS against two load ports: a floor near 13 ns per 256 weights,
+  1.4x better than now). More needs gather instructions (cheap on recent Intel / Zen 4) or AVX-512 permutes in the ISA-specific backends.
+* Not worth it: compiler unrolling (`-funroll-loops`: no change for any type).
