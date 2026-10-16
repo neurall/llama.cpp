@@ -2941,7 +2941,7 @@ void llama_moe_cache_kv_tail_remove_fork(void * owner) {
 }
 void llama_moe_cache_kv_tail_report_fork(const char * when) {
     for (const auto & st : llama_moe_cache_kv_tail_stats_fork(false)) {
-        LLAMA_LOG_INFO("moe-cache: %s %s: KV %zu cells (%.1f MiB), expert cache %.2f GiB in %zu of %zu blocks (%zu free, %zu lent to the graph, %zu under the KV)\n", when, st.dev.c_str(),
+        LLAMA_LOG_WARN("moe-cache: %s %s: KV %zu cells (%.1f MiB), expert cache %.2f GiB in %zu of %zu blocks (%zu free, %zu lent to the graph, %zu under the KV)\n", when, st.dev.c_str(),
                 st.kv_cells, st.kv_bytes / 1048576.0, st.moe_bytes / 1073741824.0, st.blocks - st.blocks_kv - st.blocks_lent, st.blocks, st.blocks_free, st.blocks_lent, st.blocks_kv);
     }
 }
@@ -3069,7 +3069,7 @@ static void kv_tail_claim(moe_cache * mc, bool & changed) {
         g_kvs.claim_n += n_take; g_kvs.release_n += n_give; g_kvs.evicted += n_evict;
         if (n_take > 0 || n_give > 0) {
             changed = true;
-            LLAMA_LOG_INFO("moe-cache: kv-tail %s: %zu -> %zu cells, %zu blocks taken from the experts (%zu experts evicted), %zu given back; %zu blocks under the KV (%.1f MiB), the compute alias may lend %.1f MiB\n",
+            if (moe_log_has("k")) LLAMA_LOG_WARN("moe-cache: kv-tail %s: %zu -> %zu cells, %zu blocks taken from the experts (%zu experts evicted), %zu given back; %zu blocks under the KV (%.1f MiB), the compute alias may lend %.1f MiB\n",
                     ggml_backend_dev_name(ap.dev), cells_before, sum, n_take, n_evict, n_give, held, (double) held * (ap.segs.empty() ? 0.0 : (double) ap.segs.back().B) / 1048576.0, ap.span / 1048576.0);
         }
     }
@@ -3086,7 +3086,7 @@ static void kv_tail_claim(moe_cache * mc, bool & changed) {
         const bool now = any && !usable;
         if (now != mc->starved.load()) {
             mc->starved = now;
-            LLAMA_LOG_INFO("moe-cache: kv-tail: %s\n", now ? "the KV holds every expert block: the cache logic is off, experts are streamed" : "expert blocks are free again: the cache logic is on");
+            LLAMA_LOG_WARN("moe-cache: kv-tail: %s\n", now ? "the KV holds every expert block: the cache logic is off, experts are streamed" : "expert blocks are free again: the cache logic is on");
         }
     }
 }
@@ -3121,7 +3121,7 @@ void llama_moe_cache_kv_arena_start_fork() {
         ar->runs.push_back(kv_arena_run{ r.owner, r.row, (int64_t) ar->size - (int64_t) placed, r.rows });
         if (r.attach) { r.attach(ar->buf, (uint8_t *) ((uintptr_t) ggml_backend_buffer_get_base(ar->buf) + (uintptr_t) ar->runs.back().end_off - (uintptr_t) r.bytes)); }
         r.attached = true;
-        LLAMA_LOG_INFO("kv-arena: %s: %.1f MiB, record of %.1f MiB (%zu B per token) ends at %.1f MiB: room for %zu tokens\n", ggml_backend_dev_name(r.dev), ar->size / 1048576.0,
+        LLAMA_LOG_WARN("kv-arena: %s: %.1f MiB, record of %.1f MiB (%zu B per token) ends at %.1f MiB: room for %zu tokens\n", ggml_backend_dev_name(r.dev), ar->size / 1048576.0,
                 r.bytes / 1048576.0, r.row, ar->runs.back().end_off / 1048576.0, r.row ? (size_t) ar->runs.back().end_off / r.row : 0);
     }
 }
@@ -3840,7 +3840,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             ap.kvt.push_back(kr);
                             if (r.attach) { r.attach(pbuf, (uint8_t *) ((uintptr_t) base + (uintptr_t) off - (uintptr_t) r.bytes)); }
                             r.attached = true;
-                            LLAMA_LOG_INFO("%s: kv-tail: record of %.1f MiB (%zu B per cell) ends %.1f MiB into the pool of %.1f MiB on %s\n", __func__, r.bytes / 1048576.0, r.row, off / 1048576.0, ap.tail_end / 1048576.0, ggml_backend_dev_name(ap.dev));
+                            LLAMA_LOG_WARN("%s: kv-tail: record of %.1f MiB (%zu B per cell) ends %.1f MiB into the pool of %.1f MiB on %s\n", __func__, r.bytes / 1048576.0, r.row, off / 1048576.0, ap.tail_end / 1048576.0, ggml_backend_dev_name(ap.dev));
                             off -= (int64_t) r.bytes;
                         }
                     }

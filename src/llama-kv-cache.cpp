@@ -361,7 +361,7 @@ llama_kv_cache::llama_kv_cache(
             const size_t R = r.row * (size_t) kv_size;
             buf = ggml_backend_buft_alloc_buffer(buft, 0);
             for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) { t->buffer = buf; }
-            LLAMA_LOG_INFO("%s: kv-tail: record of %.1f MiB (%zu B per cell, %u cells) on %s has no memory of its own\n", __func__, R / 1048576.0, r.row, kv_size, ggml_backend_dev_name(tdev));
+            LLAMA_LOG_WARN("%s: kv-tail: record of %.1f MiB (%zu B per cell, %u cells) on %s has no memory of its own\n", __func__, R / 1048576.0, r.row, kv_size, ggml_backend_dev_name(tdev));
         } else
         if (hparams.no_alloc) {
             buf = ggml_backend_buft_alloc_buffer(buft, /*size =*/ 0); // dummy buffer
