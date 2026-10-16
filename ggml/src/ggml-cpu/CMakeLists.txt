@@ -289,7 +289,7 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         if (NOT MSVC AND NOT GGML_CPU_NO_AVX2_FORM)
             list(APPEND GGML_CPU_SOURCES ggml-cpu/arch/x86/quants-avx2-form.c ggml-cpu/arch/x86/quants-avx2-form-rename.h)
             set_source_files_properties(ggml-cpu/arch/x86/quants-avx2-form.c PROPERTIES
-                COMPILE_OPTIONS "-mno-avx512f;-mno-avxvnni"
+                COMPILE_OPTIONS "-mno-avx512f;-mno-avxvnni;-mno-bmi2"
                 COMPILE_DEFINITIONS "GGML_CPU_AVX2_FORM")
             list(APPEND ARCH_DEFINITIONS GGML_CPU_HAS_AVX2_FORM)
         endif()

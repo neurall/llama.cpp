@@ -2976,7 +2976,7 @@ void ggml_threadpool_resume(struct ggml_threadpool * threadpool) {
 // quants.c is compiled twice (arch/x86/quants-avx2-form.c: AVX-512 / VNNI code generation off, every function renamed *_avx2form). Which form is faster depends on the quant
 // type and the CPU (Zen 4, in cache, ns per 256 weights, default / AVX2: Q4_K 9.3 / 5.4, Q6_K 5.3 / 5.9, Q8_0 5.7 / 6.4, IQ2_XXS 17.6 / 21.4), so the first graph
 // that multiplies a given type times both on a small in-cache sample and keeps the faster one for that type (the default unless the other is 5% quicker).
-// GGML_CPU_KERNEL_TUNE=0 switches the timing off; GGML_CPU_KERNEL_TUNE=log prints each decision. Nothing happens on a CPU without AVX-512 (the two forms are the same code).
+// GGML_CPU_KERNEL_TUNE=0 switches the timing off; GGML_CPU_KERNEL_TUNE=log prints each decision. The AVX2 form also leaves out BMI2 (pdep/pext, microcoded and ~100x slower than the shift-and-mask fallback on Zen 1 / Zen 2: IQ1_S 373 ns per 256 weights there), so the timing runs on every x86 CPU.
 #if defined(GGML_CPU_HAS_AVX2_FORM)
 #define GGML_AVX2FORM_DOT(name) void name##_avx2form(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
 GGML_AVX2FORM_DOT(ggml_vec_dot_q4_0_q8_0) GGML_AVX2FORM_DOT(ggml_vec_dot_q4_1_q8_1) GGML_AVX2FORM_DOT(ggml_vec_dot_q5_0_q8_0) GGML_AVX2FORM_DOT(ggml_vec_dot_q5_1_q8_1) GGML_AVX2FORM_DOT(ggml_vec_dot_q8_0_q8_0)
@@ -3001,7 +3001,6 @@ void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     if (type < 0 || type >= GGML_TYPE_COUNT || __atomic_exchange_n(&tuned[type], 1, __ATOMIC_ACQ_REL)) { return; }
     const char * env = getenv("GGML_CPU_KERNEL_TUNE");
     if (env && env[0] == '0') { return; }
-    if (!ggml_cpu_has_avx512()) { return; }
     ggml_vec_dot_t avx2form = NULL;
     for (size_t i = 0; i < sizeof(g_avx2form_dots) / sizeof(g_avx2form_dots[0]); ++i) { if (g_avx2form_dots[i].type == type) { avx2form = g_avx2form_dots[i].avx2form; } }
     const ggml_vec_dot_t def = type_traits_cpu[type].vec_dot;
