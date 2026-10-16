@@ -842,18 +842,18 @@ struct server_slot {
                     SLT_INF(*this, "       moe cache = on, hit %.1f%% this request / %.1f%% overall, %d..%d slots/layer, margin %d gate %d wait %d big %d predict %d\n",
                             m.value("hit_rate_request", 0.0), m.value("hit_rate_total", 0.0), m.value("slots_min", 0), m.value("slots_max", 0),
                             tu.value("margin", -1), tu.value("gate", -1), tu.value("wait", -1), tu.value("big", -1), tu.value("predict", -1));
-                    if (m.contains("kv_tail")) {
-                        for (const auto & cd : m["kv_tail"]["cards"]) {
-                            SLT_INF(*this, "       kv-tail %s = KV %llu of %llu tokens (%.1f MiB), expert cache %.2f GiB (%llu of %llu blocks free, %llu lent, %llu under the KV)\n", cd.value("dev", "?").c_str(),
-                                    (unsigned long long) cd.value("kv_cells", (uint64_t) 0), (unsigned long long) cd.value("cap_tokens", (uint64_t) 0), cd.value("kv_mib", 0.0), cd.value("moe_gib", 0.0), (unsigned long long) cd.value("blocks_free", (uint64_t) 0),
-                                    (unsigned long long) cd.value("blocks", (uint64_t) 0), (unsigned long long) cd.value("blocks_lent", (uint64_t) 0), (unsigned long long) cd.value("blocks_kv", (uint64_t) 0));
-                        }
-                    }
                     SLT_INF(*this, "       moe churn = %llu uploads, %llu evictions, %.1f MiB uploaded (this request)\n",
                             (unsigned long long) m.value("uploads_request", (uint64_t) 0), (unsigned long long) m.value("evictions_request", (uint64_t) 0),
                             m.value("upload_mib_request", 0.0));
                 } else {
                     SLT_INF(*this, "       moe cache = %s\n", "off");
+                }
+                if (m.contains("kv_tail")) {
+                    for (const auto & cd : m["kv_tail"]["cards"]) {
+                        SLT_INF(*this, "       kv-tail %s = KV %llu of %llu tokens (%.1f MiB), expert cache %.2f GiB (%llu of %llu blocks free, %llu lent, %llu under the KV)\n", cd.value("dev", "?").c_str(),
+                                (unsigned long long) cd.value("kv_cells", (uint64_t) 0), (unsigned long long) cd.value("cap_tokens", (uint64_t) 0), cd.value("kv_mib", 0.0), cd.value("moe_gib", 0.0), (unsigned long long) cd.value("blocks_free", (uint64_t) 0),
+                                (unsigned long long) cd.value("blocks", (uint64_t) 0), (unsigned long long) cd.value("blocks_lent", (uint64_t) 0), (unsigned long long) cd.value("blocks_kv", (uint64_t) 0));
+                    }
                 }
                 SLT_INF(*this, "         threads = %d decode / %d batch, batch %d, ubatch %d\n",
                         tj.value("n_threads", 0), tj.value("n_threads_batch", 0), tj.value("n_batch", 0), tj.value("n_ubatch", 0));
