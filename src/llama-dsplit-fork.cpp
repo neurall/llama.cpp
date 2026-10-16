@@ -552,6 +552,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     }
     // the split's estimate is scaled by what earlier split passes measured against their plan (llama_dsplit_report_fork); one card's estimate held to
     // within 4% (Qwen3.8-Flash-Next: 2603 / 2697 ms at 3k, 2038 / 2104 at 1.9k), the split's was 21-26% short (waits the model does not see)
+    const double raw_split = best_split;
     best_split *= g_split_calib.load();
     // What the split costs after the prompt: its mirror copies of the dense weights sit in lent cache blocks, and the experts they displaced have to be
     // uploaded again before decode is back at full speed. How much of that a prompt really displaces grows with its length and saturates: the fraction of a
@@ -567,6 +568,8 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     out.share      = best_s;
     out.t_one_ms   = t_one / 1e3;
     out.t_split_ms = best_split / 1e3;
+    out.t_raw_ms   = raw_split / 1e3;
+    out.t_add_ms   = (best_split - raw_split * g_split_calib.load()) / 1e3;
     f_help = best_f;
 }
 
@@ -807,8 +810,11 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
             std::lock_guard<std::mutex> pk(g_plan_mu);
             auto pit = g_plans.find(dsplit_bucket_of(g_pend_max));
             if (pit != g_plans.end() && pit->second.plan.valid && pit->second.plan.t_split_ms > 0.0 && pit->second.n_tokens > 0) {
-                const double model_us_tok = pit->second.plan.t_split_ms * 1e3 / g_split_calib.load() / (double) pit->second.n_tokens;   // the raw model
-                const double r = std::max(0.5, std::min(3.0, v / model_us_tok));
+                // the factor scales the modelled pass only: the one-off copy and refill terms are taken out of the measurement first (they were counted twice before:
+                // GLM at 3.2k learned 1.68, applied to 12k where the true factor is about 1.3 it made the planner choose one card and lose 17%)
+                const double model_us_tok = pit->second.plan.t_raw_ms * 1e3 / (double) pit->second.n_tokens;
+                const double add_us_tok   = pit->second.plan.t_add_ms * 1e3 / (double) pit->second.n_tokens;
+                const double r = std::max(0.5, std::min(3.0, std::max(0.0, v - add_us_tok) / std::max(1e-9, model_us_tok)));
                 // the first measurement sets the factor, later ones average in half and half
                 const double nc = g_calib_n.fetch_add(1) == 0 ? r : 0.5 * g_split_calib.load() + 0.5 * r;
                 g_split_calib.store(nc);
