@@ -18,6 +18,7 @@
 #include "llama-dsplit-fork.h"
 #include "llama-gpu-probe-fork.h"
 #include "llama-moecache-fork.h"
+#include "llama-moestate-fork.h"
 
 #include "llama-arch.h"
 #include "llama-impl.h"
@@ -432,6 +433,19 @@ bool g_tune_changed = false;
 }
 
 static std::atomic<double> g_split_calib { 1.0 };   // measured over modelled split time (EMA over measured split passes)
+// The calibration is learned from the first measured split pass (it was a 30% step per pass from 1.0: GLM 3-bit at 3.2k tokens ran 1.68x its plan, so the first
+// requests kept choosing a split that lost to one card by 18%) and kept per model in the state file, so a restart starts from what was measured.
+static std::atomic<int> g_calib_n { 0 };
+static std::string g_calib_section;
+static void dsplit_calib_load(const llama_model & model) {
+    if (!g_calib_section.empty()) { return; }
+    g_calib_section = moe_state_section(model);
+    std::string v;
+    if (!g_calib_section.empty() && moe_state_get(g_calib_section, "dsplit_calib", v)) {
+        const double c = atof(v.c_str());
+        if (c >= 0.5 && c <= 3.0) { g_split_calib.store(c); g_calib_n = 1; LLAMA_LOG_WARN("split planner: calibration %.2f from the state file\n", c); }
+    }
+}
 
 static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_us, llama_dsplit_plan_fork & out, std::vector<double> & f_help) {
     out = llama_dsplit_plan_fork();
@@ -563,6 +577,7 @@ llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int
     }
     const double c_us = llama_moe_cache_compute_us_fork();
     std::lock_guard<std::mutex> lk(g_plan_mu);
+    dsplit_calib_load(model);
     const int b = dsplit_bucket_of(n_tokens);
     auto & pc = g_plans[b];
     const double fill_now = g_mirror_fill_bytes.load();
@@ -794,7 +809,10 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
             if (pit != g_plans.end() && pit->second.plan.valid && pit->second.plan.t_split_ms > 0.0 && pit->second.n_tokens > 0) {
                 const double model_us_tok = pit->second.plan.t_split_ms * 1e3 / g_split_calib.load() / (double) pit->second.n_tokens;   // the raw model
                 const double r = std::max(0.5, std::min(3.0, v / model_us_tok));
-                g_split_calib.store(0.7 * g_split_calib.load() + 0.3 * r);
+                // the first measurement sets the factor, later ones average in half and half
+                const double nc = g_calib_n.fetch_add(1) == 0 ? r : 0.5 * g_split_calib.load() + 0.5 * r;
+                g_split_calib.store(nc);
+                if (!g_calib_section.empty()) { char b2[32]; snprintf(b2, sizeof b2, "%.3f", nc); moe_state_set(g_calib_section, { { "dsplit_calib", b2 } }); }
                 pit->second.c_us = -1.0;   // recompute the plan of this size with the new calibration
             }
         }
