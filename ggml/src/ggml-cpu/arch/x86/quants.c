@@ -4605,14 +4605,10 @@ void ggml_vec_dot_iq1_m_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const vo
                     iq1s_grid[qs[5] | (((uint16_t)qh[2] << 4) & 0x700)], iq1s_grid[qs[4] | (((uint16_t)qh[2] << 8) & 0x700)]
             );
 
-            const __m256i delta1 = _mm256_set_epi64x(qh[1] & 0x80 ? 0xffffffffffffffff : 0x0101010101010101,
-                                                     qh[1] & 0x08 ? 0xffffffffffffffff : 0x0101010101010101,
-                                                     qh[0] & 0x80 ? 0xffffffffffffffff : 0x0101010101010101,
-                                                     qh[0] & 0x08 ? 0xffffffffffffffff : 0x0101010101010101);
-            const __m256i delta2 = _mm256_set_epi64x(qh[3] & 0x80 ? 0xffffffffffffffff : 0x0101010101010101,
-                                                     qh[3] & 0x08 ? 0xffffffffffffffff : 0x0101010101010101,
-                                                     qh[2] & 0x80 ? 0xffffffffffffffff : 0x0101010101010101,
-                                                     qh[2] & 0x08 ? 0xffffffffffffffff : 0x0101010101010101);
+            // the four delta signs (qh bits 3, 7, 11, 15 of a 16-bit pair) as bytes 0xff / 0x01 per 8 weights, without branches: shift each into bit 0, compare, or with 1
+            const __m256i dsh = _mm256_set_epi64x(15, 11, 7, 3);
+            const __m256i delta1 = _mm256_or_si256(mone8, _mm256_cmpeq_epi64(_mm256_and_si256(_mm256_srlv_epi64(_mm256_set1_epi64x(*(const uint16_t *) qh), dsh), _mm256_set1_epi64x(1)), _mm256_set1_epi64x(1)));
+            const __m256i delta2 = _mm256_or_si256(mone8, _mm256_cmpeq_epi64(_mm256_and_si256(_mm256_srlv_epi64(_mm256_set1_epi64x(*(const uint16_t *) (qh + 2)), dsh), _mm256_set1_epi64x(1)), _mm256_set1_epi64x(1)));
 #endif
             const __m256i q8b_1 = _mm256_loadu_si256((const __m256i*)q8); q8 += 32;
             const __m256i q8b_2 = _mm256_loadu_si256((const __m256i*)q8); q8 += 32;
