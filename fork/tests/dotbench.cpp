@@ -17,7 +17,7 @@ int main(int argc, char ** argv) {
     std::vector<float> act(n), w((size_t) urows * n), imp(n, 1.0f);
     for (auto & v : act) v = nd(rng);
     for (auto & v : w) v = nd(rng) * 0.05f;
-    const ggml_type types[] = { GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_IQ4_NL,
+    const ggml_type types[] = { GGML_TYPE_Q2_0, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_IQ4_NL,
                                 GGML_TYPE_IQ4_XS, GGML_TYPE_IQ3_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_XXS, GGML_TYPE_MXFP4 };
     // memory read speed: sum a 96 MB buffer
     { std::vector<uint64_t> b(12 << 20, 1); uint64_t s = 0; auto t0 = std::chrono::steady_clock::now();

@@ -14,7 +14,7 @@ int main() {
     std::vector<float> act(n), w((size_t) rows * n), imp(n, 1.0f);
     for (auto & v : act) v = nd(rng);
     for (auto & v : w) v = nd(rng) * 0.05f;
-    const ggml_type types[] = { GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_IQ4_NL,
+    const ggml_type types[] = { GGML_TYPE_Q2_0, GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_IQ4_NL,
                                 GGML_TYPE_IQ4_XS, GGML_TYPE_IQ3_S, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_XXS, GGML_TYPE_MXFP4 };
     for (ggml_type t : types) {
         const auto * tr = ggml_get_type_traits(t); const auto * trc = ggml_get_type_traits_cpu(t); const auto * q8 = ggml_get_type_traits_cpu(trc->vec_dot_type);
