@@ -70,6 +70,8 @@ add_library(${TARGET}
     chat.h
     common.cpp
     common.h
+    cpu-topo-fork.cpp
+    cpu-topo-fork.h
     console.cpp
     console.h
     debug.cpp

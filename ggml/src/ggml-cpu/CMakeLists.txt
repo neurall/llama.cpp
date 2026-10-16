@@ -285,6 +285,27 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
             ggml-cpu/arch/x86/repack.cpp
             )
 
+        # the same dot products compiled again with other code generation (quants-<form>-form.c), every function renamed *_<form>form: a start-up timing picks the fastest
+        # form per quant type. avx2: AVX-512 / VNNI / BMI2 off. vnni: AVX2 + AVX-VNNI only. avx512: 512-bit code generation. A form the CPU cannot run is never timed (cpuid in ggml-cpu.c).
+        if (NOT MSVC AND NOT GGML_CPU_NO_AVX2_FORM)
+            foreach (form avx2 vnni avx512 vbmi)
+                list(APPEND GGML_CPU_SOURCES ggml-cpu/arch/x86/quants-${form}-form.c ggml-cpu/arch/x86/quants-${form}-form-rename.h)
+            endforeach()
+            set_source_files_properties(ggml-cpu/arch/x86/quants-avx2-form.c PROPERTIES
+                COMPILE_OPTIONS "-mno-avx512f;-mno-avxvnni;-mno-bmi2"
+                COMPILE_DEFINITIONS "GGML_CPU_AVX2_FORM")
+            set_source_files_properties(ggml-cpu/arch/x86/quants-vnni-form.c PROPERTIES
+                COMPILE_OPTIONS "-mavx2;-mfma;-mf16c;-mbmi2;-mavxvnni;-mno-avx512f"
+                COMPILE_DEFINITIONS "GGML_CPU_VNNI_FORM")
+            set_source_files_properties(ggml-cpu/arch/x86/quants-avx512-form.c PROPERTIES
+                COMPILE_OPTIONS "-mavx2;-mfma;-mf16c;-mbmi2;-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni"
+                COMPILE_DEFINITIONS "GGML_CPU_AVX512_FORM")
+            set_source_files_properties(ggml-cpu/arch/x86/quants-vbmi-form.c PROPERTIES
+                COMPILE_OPTIONS "-mavx2;-mfma;-mf16c;-mbmi2;-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi"
+                COMPILE_DEFINITIONS "GGML_CPU_VBMI_FORM")
+            list(APPEND ARCH_DEFINITIONS GGML_CPU_HAS_AVX2_FORM)
+        endif()
+
         if (MSVC)
             # instruction set detection for MSVC only
             if (GGML_NATIVE)
