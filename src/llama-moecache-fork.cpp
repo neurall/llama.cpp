@@ -4660,6 +4660,9 @@ const llama_moe_cache_layer_fork * llama_moe_cache_lookup_fork(const ggml_tensor
     if (!g_cache) {
         return nullptr;
     }
+    if (g_cache->starved.load()) {
+        return nullptr;   // kv-tail: the KV holds every expert block: the graph is built without the cache chain (no work on experts that cannot be cached), the plain path
+    }
     auto it = g_cache->by_up_src.find(up_exps);
     if (it == g_cache->by_up_src.end()) {
         return nullptr;
@@ -6529,8 +6532,10 @@ bool llama_moe_cache_pred_train_now_fork() {
     return g_pred_train_now;
 }
 
+static bool g_starved_built = false;
 bool llama_moe_cache_graph_reusable_fork() {
-    return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built && g_split_epoch == g_split_epoch_built;
+    const bool starved = g_cache && g_cache->starved.load();
+    return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built && g_split_epoch == g_split_epoch_built && starved == g_starved_built;
 }
 
 int32_t llama_moe_cache_cpu_sat_threads_fork() {
@@ -6538,6 +6543,7 @@ int32_t llama_moe_cache_cpu_sat_threads_fork() {
 }
 
 void llama_moe_cache_graph_built_fork() {
+    g_starved_built = g_cache && g_cache->starved.load();
     g_pred_train_built = g_pred_train_now;
     g_pred_epoch_built = g_pred_epoch;
     g_split_epoch_built = g_split_epoch;
