@@ -37,3 +37,17 @@ In cache, ns per 256 weights, Zen 2 -> Zen 4: Q2_K 6.4 -> 4.5, Q3_K 9.0 -> 6.8, 
 IQ4_NL 10.5 -> 8.4, IQ4_XS 10.1 -> 6.9, **MXFP4 10.4 -> 12.3 (slower)**, IQ3_S 29 -> 21, IQ3_XXS 25.6 -> 16.7, IQ2_S 17.5 -> 13.5, IQ2_XS 23.6 -> 18.5, IQ2_XXS 19.1 -> 17.6, Q2_0 12.7 -> 8.0.
 Single-thread memory read 40.6 GB/s (Zen 2 box: 24). No x86 dot product has an AVX-512 path; VNNI (`dpbusd`) is reached only through the shared helper used by Q4_0/Q4_1/Q5_x/Q8_0/MXFP4/NVFP4/IQ4_NL/IQ4_XS/IQ1_x;
 the K-quants and the IQ2/IQ3 kernels call `maddubs` + `madd` directly. Q4_K and MXFP4 are slower on Zen 4 than on Zen 2: the first targets (compiler version differs, to be checked).
+
+## IQ3_XXS ablation (Zen 2, 2026-10-16; fork/tests/iq3xxs_ablation.cpp)
+
+Where the time of the AVX2 IQ3_XXS dot product goes, ns per 256 weights in cache (same on a Ryzen 7 3700X and a Ryzen 5 3600):
+
+| Variant | ns | Share |
+|---|---|---|
+| original (set_epi32 lookups + 8-byte sign table) | 25.2-26.6 | 100% |
+| lookups through a stack array | 25.0-26.3 | no change |
+| sign step removed | 18.2-18.9 | sign = 28% |
+| lookups removed (constant grid) | 13.7-14.4 | lookups = 46% |
+| sign by byte table + broadcast + shuffle (IQ3_S style) | 27.2-27.8 | slower, same sums |
+
+Lookups already cost about 0.66 cycle each (about one insert per cycle), so AVX2 has little left there. Two AVX-512 attempts that cut the number of loads (IQ3_S gather, IQ2_XXS scalar lookups + mask sign + vpdpbusd) were slower on Zen 4. A real gain needs a different data flow (vpermb register lookups on AVX-512 VBMI CPUs, or decoding the 3-bit grid fields), not fewer loads.
