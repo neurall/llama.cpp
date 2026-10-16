@@ -2781,7 +2781,7 @@ static void ggml_vec_dot_iq2_xxs_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s
         const __m256i sf = _mm256_and_si256(_mm256_multishift_epi64_epi8(msc, gas), m127);
         const __m512i sb = _mm512_permutex2var_epi8(K0, _mm512_castsi256_si512(sf), K1);
         uint64_t sm[4]; _mm256_storeu_si256((__m256i *) sm, _mm512_castsi512_si256(sb));
-        uint32_t ls[8]; _mm256_storeu_si256((__m256i *) ls, _mm256_srli_epi32(gas, 28));
+        const __m512i lsv = _mm512_castsi256_si512(_mm256_or_si256(_mm256_slli_epi32(_mm256_srli_epi32(gas, 28), 1), _mm256_set1_epi32(1)));   // 2*scale+1 of the 8 groups
         const __m512i Pk[4] = { P0, P1, P2, P3 };
         __m512i sum = zero;
         for (int k = 0; k < 4; ++k) {
@@ -2790,7 +2790,7 @@ static void ggml_vec_dot_iq2_xxs_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s
             const __m512i a  = _mm512_loadu_si512((const void *) (y[i].qs + 64 * k));
             const __m512i as = _mm512_mask_sub_epi8(a, (__mmask64) sm[k], zero, a);
             const __m512i dot = _mm512_dpbusd_epi32(zero, G, as);
-            const __m512i sv = _mm512_mask_set1_epi32(_mm512_set1_epi32((int) (2 * ls[2 * k] + 1)), 0xFF00, (int) (2 * ls[2 * k + 1] + 1));
+            const __m512i sv = _mm512_permutexvar_epi32(_mm512_add_epi32(_mm512_set_epi32(1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0), _mm512_set1_epi32(2 * k)), lsv);
             sum = _mm512_add_epi32(sum, _mm512_mullo_epi32(dot, sv));
         }
         const float d = GGML_CPU_FP16_TO_FP32(x[i].d) * y[i].d;
@@ -2946,11 +2946,15 @@ static inline __m512i iq2_expand(__m512i CL, __m512i CH, __m512i P) {
 static void iq2_make_patterns(uint8_t pat[4][64]) {
     for (int k = 0; k < 4; ++k) { for (int l = 0; l < 64; ++l) { pat[k][l] = 0; } for (int q = 0; q < 8; ++q) { pat[k][8 * q] = (uint8_t) (8 * k + q); pat[k][8 * q + 1] = (uint8_t) (64 + 8 * k + q); } }
 }
-// scale of every 16 weights: nibble pair of scales[g]: low = weights 0..15, high = 16..31 of the group of 32. Returns 4 dwords (2*nibble+1) for the 16-weight groups 4k..4k+3
-static inline __m512i iq2_scales16(const uint8_t * sc, int k, __m512i spread) {
-    uint32_t v[4];
-    for (int j = 0; j < 4; ++j) { const int g16 = 4 * k + j; const unsigned b = sc[g16 >> 1]; v[j] = 2u * ((g16 & 1) ? (b >> 4) : (b & 15)) + 1u; }
-    return _mm512_permutexvar_epi32(spread, _mm512_castsi128_si512(_mm_loadu_si128((const __m128i *) v)));
+// scale of every 16 weights: nibble pair of scales[g]: low = weights 0..15, high = 16..31 of the group of 32. All 16 scales (2*nibble+1) as dwords of one register
+static inline __m512i iq2_scales16_all(const uint8_t * sc) {
+    const __m128i v8 = _mm_loadl_epi64((const __m128i *) sc);
+    const __m128i nib = _mm_unpacklo_epi8(_mm_and_si128(v8, _mm_set1_epi8(15)), _mm_and_si128(_mm_srli_epi16(v8, 4), _mm_set1_epi8(15)));   // [lo0 hi0 lo1 hi1 ...]
+    return _mm512_add_epi32(_mm512_slli_epi32(_mm512_cvtepu8_epi32(nib), 1), _mm512_set1_epi32(1));
+}
+// the dwords for the 16-weight groups 4k..4k+3 of the register above, each repeated for its 4 dword lanes
+static inline __m512i iq2_scales16_k(__m512i all, int k) {
+    return _mm512_permutexvar_epi32(_mm512_add_epi32(_mm512_set_epi32(3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0), _mm512_set1_epi32(4 * k)), all);
 }
 #endif
 
@@ -2965,7 +2969,6 @@ static void ggml_vec_dot_iq2_xs_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s,
     const block_q8_K   * GGML_RESTRICT y = vy;
     const int nb = n / QK_K;
     const __m512i K0 = _mm512_loadu_si512((const void *) ksigns_iq2xs), K1 = _mm512_loadu_si512((const void *) (ksigns_iq2xs + 64));
-    const __m512i spread = _mm512_set_epi32(3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0);
     const __m512i zero = _mm512_setzero_si512();
     __m512 facc = _mm512_setzero_ps();
     for (int i = 0; i < nb; ++i) {
@@ -2978,12 +2981,13 @@ static void ggml_vec_dot_iq2_xs_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s,
         const __m512i sf = _mm512_zextsi256_si512(_mm512_cvtepi16_epi8(_mm512_srli_epi16(w, 9)));
         const __m512i sb = _mm512_permutex2var_epi8(K0, sf, K1);
         uint64_t sm[4]; _mm256_storeu_si256((__m256i *) sm, _mm512_castsi512_si256(sb));
+        const __m512i sc16 = iq2_scales16_all(x[i].scales);
         __m512i sum = zero;
         for (int k = 0; k < 4; ++k) {
             const __m512i G = iq2_expand(CL, CH, _mm512_load_si512((const void *) pat[k]));
             const __m512i a  = _mm512_loadu_si512((const void *) (y[i].qs + 64 * k));
             const __m512i as = _mm512_mask_sub_epi8(a, (__mmask64) sm[k], zero, a);
-            sum = _mm512_add_epi32(sum, _mm512_mullo_epi32(_mm512_dpbusd_epi32(zero, G, as), iq2_scales16(x[i].scales, k, spread)));
+            sum = _mm512_add_epi32(sum, _mm512_mullo_epi32(_mm512_dpbusd_epi32(zero, G, as), iq2_scales16_k(sc16, k)));
         }
         facc = _mm512_fmadd_ps(_mm512_set1_ps(GGML_CPU_FP16_TO_FP32(x[i].d) * y[i].d), _mm512_cvtepi32_ps(sum), facc);
     }
@@ -3300,7 +3304,6 @@ static void ggml_vec_dot_iq2_s_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s, 
     const block_iq2_s * GGML_RESTRICT x = vx;
     const block_q8_K  * GGML_RESTRICT y = vy;
     const int nb = n / QK_K;
-    const __m512i spread = _mm512_set_epi32(3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0);
     const __m512i zero = _mm512_setzero_si512();
     __m512 facc = _mm512_setzero_ps();
     for (int i = 0; i < nb; ++i) {
@@ -3315,13 +3318,14 @@ static void ggml_vec_dot_iq2_s_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s, 
             const __m512i r1 = _mm512_mask_blend_epi8(b0, iq2_lookup256(t + 512, idxb, hi7), iq2_lookup256(t + 768, idxb, hi7));
             P[pl] = _mm512_mask_blend_epi8(b1, r0, r1);
         }
+        const __m512i sc16 = iq2_scales16_all(x[i].scales);
         __m512i sum = zero;
         for (int k = 0; k < 4; ++k) {
             uint64_t sm; memcpy(&sm, x[i].qs + 32 + 8 * k, 8);
             const __m512i G = iq2_expand(P[0], P[1], _mm512_load_si512((const void *) pat[k]));
             const __m512i a  = _mm512_loadu_si512((const void *) (y[i].qs + 64 * k));
             const __m512i as = _mm512_mask_sub_epi8(a, (__mmask64) sm, zero, a);
-            sum = _mm512_add_epi32(sum, _mm512_mullo_epi32(_mm512_dpbusd_epi32(zero, G, as), iq2_scales16(x[i].scales, k, spread)));
+            sum = _mm512_add_epi32(sum, _mm512_mullo_epi32(_mm512_dpbusd_epi32(zero, G, as), iq2_scales16_k(sc16, k)));
         }
         facc = _mm512_fmadd_ps(_mm512_set1_ps(GGML_CPU_FP16_TO_FP32(x[i].d) * y[i].d), _mm512_cvtepi32_ps(sum), facc);
     }
