@@ -2986,10 +2986,11 @@ void ggml_threadpool_resume(struct ggml_threadpool * threadpool) {
 #define GGML_FORM_DECL(T, f) \
     void ggml_vec_dot_##f##_avx2(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
     void ggml_vec_dot_##f##_vnni(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
-    void ggml_vec_dot_##f##_avx512(int, float *, size_t, const void *, size_t, const void *, size_t, int);
+    void ggml_vec_dot_##f##_avx512(int, float *, size_t, const void *, size_t, const void *, size_t, int); \
+    void ggml_vec_dot_##f##_vbmi(int, float *, size_t, const void *, size_t, const void *, size_t, int);
 GGML_FORM_DOTS(GGML_FORM_DECL)
 
-enum { GGML_FORM_DEFAULT, GGML_FORM_AVX2, GGML_FORM_VNNI, GGML_FORM_AVX512, GGML_FORM_COUNT };
+enum { GGML_FORM_DEFAULT, GGML_FORM_AVX2, GGML_FORM_VNNI, GGML_FORM_AVX512, GGML_FORM_VBMI, GGML_FORM_COUNT };
 // the name of the default form says what this library was compiled with, so a log line shows which code actually runs
 #if defined(__AVX512VNNI__) && defined(__AVX512VL__)
 #define GGML_DEFAULT_ISA "default(avx512+vnni build)"
@@ -3002,9 +3003,9 @@ enum { GGML_FORM_DEFAULT, GGML_FORM_AVX2, GGML_FORM_VNNI, GGML_FORM_AVX512, GGML
 #else
 #define GGML_DEFAULT_ISA "default"
 #endif
-static const char * const g_form_names[GGML_FORM_COUNT] = { GGML_DEFAULT_ISA, "avx2", "vnni", "avx512" };
+static const char * const g_form_names[GGML_FORM_COUNT] = { GGML_DEFAULT_ISA, "avx2", "vnni", "avx512", "vbmi" };
 static const struct { enum ggml_type type; ggml_vec_dot_t form[GGML_FORM_COUNT]; } g_form_dots[] = {
-#define GGML_FORM_ROW(T, f) { GGML_TYPE_##T, { NULL, ggml_vec_dot_##f##_avx2, ggml_vec_dot_##f##_vnni, ggml_vec_dot_##f##_avx512 } },
+#define GGML_FORM_ROW(T, f) { GGML_TYPE_##T, { NULL, ggml_vec_dot_##f##_avx2, ggml_vec_dot_##f##_vnni, ggml_vec_dot_##f##_avx512, ggml_vec_dot_##f##_vbmi } },
     GGML_FORM_DOTS(GGML_FORM_ROW)
 };
 
@@ -3027,9 +3028,10 @@ static bool ggml_cpu_form_runs(int form) {
         unsigned a1, b1, c1, d1; if (!__get_cpuid_count(7, 1, &a1, &b1, &c1, &d1)) { return false; }
         return bmi2 && ((a1 >> 4) & 1);                           // AVX-VNNI
     }
-    if (form == GGML_FORM_AVX512) {
+    if (form == GGML_FORM_AVX512 || form == GGML_FORM_VBMI) {
         const bool f = (b >> 16) & 1, dq = (b >> 17) & 1, bw = (b >> 30) & 1, vl = (b >> 31) & 1, vnni = (c >> 11) & 1;
-        return bmi2 && f && dq && bw && vl && vnni && (xlo & 0xe0) == 0xe0;   // opmask + zmm state
+        const bool vbmi = (c >> 1) & 1;
+        return bmi2 && f && dq && bw && vl && vnni && (xlo & 0xe0) == 0xe0 && (form == GGML_FORM_AVX512 || vbmi);   // opmask + zmm state
     }
     return false;
 }
@@ -3042,7 +3044,7 @@ void ggml_cpu_tune_vec_dot(enum ggml_type type) {
     if (type < 0 || type >= GGML_TYPE_COUNT || __atomic_exchange_n(&tuned[type], 1, __ATOMIC_ACQ_REL)) { return; }
     const char * env = getenv("GGML_CPU_KERNEL_TUNE");
     if (env && env[0] == '0') { return; }
-    ggml_vec_dot_t f[GGML_FORM_COUNT] = { type_traits_cpu[type].vec_dot, NULL, NULL, NULL };
+    ggml_vec_dot_t f[GGML_FORM_COUNT] = { type_traits_cpu[type].vec_dot, NULL, NULL, NULL, NULL };
     bool any = false;
     for (size_t i = 0; i < sizeof(g_form_dots) / sizeof(g_form_dots[0]); ++i) {
         if (g_form_dots[i].type != type) { continue; }
