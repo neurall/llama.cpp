@@ -176,7 +176,7 @@ llama_kv_cache::llama_kv_cache(
     // Needs equal K and V types of plain floats (rows of whole elements), one stream, flash attention (V not transposed) and no shared cells.
     const char * o_tm = llama_moe_get_opt("kv-token-major");
     const bool   tm_on = o_tm && atoi(o_tm) != 0 && !other && n_stream == 1 && !v_trans && type_k == type_v &&
-                         (type_k == GGML_TYPE_F16 || type_k == GGML_TYPE_BF16 || type_k == GGML_TYPE_F32) && !share;
+                         (type_k == GGML_TYPE_F16 || type_k == GGML_TYPE_BF16 || type_k == GGML_TYPE_F32 || ggml_is_quantized(type_k)) && !share;   // quantized K and V (q8_0, q4_0, ...): rows of whole blocks, the record tensor is rounded down to whole blocks per row
     kv_rev = tm_on && atoi(o_tm) == 2;
     if (o_tm && atoi(o_tm) != 0 && !tm_on) {
         LLAMA_LOG_WARN("%s: kv-token-major needs K and V of the same float type, one stream, flash attention and no shared cells: old layout\n", __func__);
@@ -194,9 +194,12 @@ llama_kv_cache::llama_kv_cache(
             if (!is_mla) { r.row += tm_align(ggml_row_size(type_v, hparams.n_embd_v_gqa(il))); }
         }
         for (auto & [buft, r] : tm_map) {
+            // quantized types: the record tensor must be a whole number of blocks per row, so it gets one more alignment unit than the rows need (its own size is then
+            // never smaller than the K and V views inside it); the registered size of the record is still row x cells
+            if (ggml_is_quantized(type_k)) { r.row += TM_ALIGN; }
             ggml_context * ctx = ctx_for_buft(buft);
             if (!ctx) { throw std::runtime_error("failed to create ggml context for kv cache"); }
-            r.rec = ggml_new_tensor_2d(ctx, type_k, r.row / ggml_type_size(type_k), kv_size);
+            r.rec = ggml_new_tensor_2d(ctx, type_k, (int64_t) (r.row / ggml_type_size(type_k)) * ggml_blck_size(type_k), kv_size);
             ggml_format_name(r.rec, "cache_%skv_record", name_tag);
         }
     }

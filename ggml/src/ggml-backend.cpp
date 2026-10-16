@@ -629,8 +629,8 @@ ggml_backend_dev_t ggml_backend_get_device(ggml_backend_t backend) {
 
 // rows of a gappy view into a compact tensor of the same shape: one transfer per row run of the source (fork; the layout of the token-major KV cache)
 static bool ggml_backend_tensor_copy_rows(const struct ggml_tensor * src, struct ggml_tensor * dst) {
-    if (src->type != dst->type || !ggml_are_same_shape(src, dst) || src->nb[0] != dst->nb[0] || ggml_is_quantized(src->type) || !ggml_is_contiguous(dst)) { return false; }
-    const size_t row = (size_t) src->ne[0]*ggml_type_size(src->type);
+    if (src->type != dst->type || !ggml_are_same_shape(src, dst) || src->nb[0] != dst->nb[0] || !ggml_is_contiguous(dst)) { return false; }
+    const size_t row = ggml_row_size(src->type, src->ne[0]);   // bytes of a row (whole blocks for a quantized type)
     char * tmp = (char *) malloc(row);
     for (int64_t i3 = 0; i3 < src->ne[3]; i3++) { for (int64_t i2 = 0; i2 < src->ne[2]; i2++) { for (int64_t i1 = 0; i1 < src->ne[1]; i1++) {
         const size_t so = i3*src->nb[3] + i2*src->nb[2] + i1*src->nb[1], dof = i3*dst->nb[3] + i2*dst->nb[2] + i1*dst->nb[1];
@@ -1025,8 +1025,8 @@ void ggml_backend_multi_buffer_set_usage(ggml_backend_buffer_t buffer, enum ggml
 // a view whose rows sit far apart (a layer's K or V inside the token-major KV record: one row per cell, the other layers' rows in between): its byte span is several times
 // the bytes it holds. Copying such a view with its own strides moves, and allocates on the other card, the whole span.
 static bool ggml_backend_tensor_is_gappy(const struct ggml_tensor * t) {
-    if (ggml_is_contiguous(t) || ggml_is_quantized(t->type) || t->nb[0] != ggml_type_size(t->type)) { return false; }
-    return ggml_nbytes(t) > 2*ggml_nelements(t)*ggml_type_size(t->type);
+    if (ggml_is_contiguous(t) || t->nb[0] != ggml_type_size(t->type)) { return false; }
+    return ggml_nbytes(t) > 2*ggml_row_size(t->type, t->ne[0])*ggml_nrows(t);
 }
 
 // creates a copy of the tensor with the same memory layout (a compact one, rows only, for a gappy view: the consumers read the copy through its own strides)

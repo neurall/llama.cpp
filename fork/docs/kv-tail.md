@@ -34,6 +34,16 @@ The record has no memory of its own: its tensors sit in a zero-size buffer until
 pointer record). Claiming and giving back blocks is an owner change in the pool's block table, never a CUDA allocation or free. Because the pool starts at the
 first real decode, a warm-up decode would run on a KV without memory: with `kv-tail=1` there is no warm-up run.
 
+## Switches
+
+* `--moe kv-tail=1` (needs `kv-token-major=2`, flash attention): the tail layout; the context of a request is calculated, `-c` is not used.
+* `--moe kv-auto-ctx=0` (with kv-tail=1): `-c` is accepted again, as the cap of the virtual record.
+* `--moe kv-tail=0` (default): the normal KV cache, `-c` as always.
+* Quantized K and V (`-ctk q8_0 -ctv q8_0`, ...) work in the record: rows of whole blocks, one extra alignment unit per cell in the record; the gather between cards uses the row size of the type.
+* Flash attention is required: without it V is stored transposed (one row per dimension, not per token), which cannot be a record per cell; the cache then keeps the old layout and says so.
+* Dense models (no expert pool on a card): one buffer of the card's free VRAM less the margin is allocated once at the first real decode and the record sits at its tail (kv-arena);
+  a request may use as many tokens as the buffer holds.
+
 ## Limits
 
 * one slot (`-np 1`): the used cells must be a prefix. With several slots cells scatter; compaction (moving rows) is a later step.
