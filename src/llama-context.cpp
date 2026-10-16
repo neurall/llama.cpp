@@ -241,7 +241,8 @@ llama_context::llama_context(
     cparams.pooling_type      = params.pooling_type;
 
     cparams.n_ctx            = params.n_ctx           == 0    ? hparams.n_ctx_train           : params.n_ctx;
-    if (const char * kt = llama_moe_get_opt("kv-tail"); kt && atoi(kt) != 0) {   // the context of a request is calculated from the request, -c is not used (fork/docs/kv-tail.md)
+    // the load-time fit measures a context with no_alloc: it must see the small context common handed over, not the tail's per-request size (it counted the KV of 82k tokens and moved experts to the CPU)
+    if (const char * kt = llama_moe_get_opt("kv-tail"); kt && atoi(kt) != 0 && !model.hparams.no_alloc) {   // the context of a request is calculated from the request, -c is not used (fork/docs/kv-tail.md)
         const char * ac = llama_moe_get_opt("kv-auto-ctx");   // --moe kv-auto-ctx=0: -c is accepted again (the cap of the virtual record)
         const bool tail_possible = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && params.n_seq_max <= 1 && params.type_k == params.type_v && !model.devices.empty();
         const char * given = llama_moe_get_opt("kv-ctx-given");   // set by the common code: 1 when the user passed -c
