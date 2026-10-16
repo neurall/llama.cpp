@@ -239,6 +239,8 @@ struct moe_cache {
         std::vector<int32_t> free;    // free blocks (stack)
         ggml_backend_dev_t   dev = nullptr;   // the card of the class's buffer (pool_fill_log)
         size_t               B   = 0;         // bytes of one block
+        int32_t              active_end = -1; // kv-tail: the blocks from here on are all under the KV rows (owner -3): scans stop here (-1: the whole class)
+        int32_t              n_active() const { return active_end < 0 ? (int32_t) owner.size() : active_end; }
     };
     std::vector<pool_state> pool;
     int64_t  n_expert_used = 0;   // experts per token (the compute alias sizes the CUDA scratch from it)
@@ -1150,7 +1152,7 @@ slot_pick pick_slot(moe_cache * mc, size_t li, Rank rank, double & best) {
             best = 0;
             return p;
         }
-        for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
+        for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) {
             const int32_t o = ps.owner[b];
             if (o == -2 || o == -3) {
                 continue;   // lent to the compute buffer (alias), or under the KV rows (kv-tail)
@@ -2868,7 +2870,7 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
     if (hot.empty()) {
         return;
     }
-    for (int32_t b = to; b < (int32_t) ps.owner.size(); ++b) {
+    for (int32_t b = to, nb = ps.n_active(); b < nb; ++b) {
         const int32_t o = ps.owner[b];
         if (o == -2 || o == -3) { continue; }
         if (o < 0) { cold.push_back({ -1.0, b }); continue; }
@@ -3054,6 +3056,12 @@ static void kv_tail_claim(moe_cache * mc, bool & changed) {
         size_t held = 0;
         for (auto & sg : ap.segs) { for (int32_t b = 0; b < sg.n; ++b) { if (mc->pool[sg.pcls].owner[b] == -3) { held++; } } }
         ap.kv_blocks = held;
+        for (auto & sg : ap.segs) {   // the experts' part of each class ends at its last block that is not under the KV
+            auto & ps = mc->pool[sg.pcls];
+            int32_t e = sg.n;
+            while (e > 0 && ps.owner[e - 1] == -3) { --e; }
+            ps.active_end = e;
+        }
         g_kvs.claim_n += n_take; g_kvs.release_n += n_give; g_kvs.evicted += n_evict;
         if (n_take > 0 || n_give > 0) {
             changed = true;
