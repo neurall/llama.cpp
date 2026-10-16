@@ -2769,7 +2769,7 @@ def cmd_bench(a):
                 OVR["pidx"] = pp
                 CAMPAIGN = camp + ("-cold" if i == 0 else "-hot" if i == 1 else "-hot2")
             for build, name, vargs in (cells if i % 2 == 0 else cells[::-1]):
-                if build.startswith("stock") and a.test in ("game4c", "edit4c") and not a.redo_stock:   # a stock cell that is already measured (same build, model and chat test, >= 4 valid runs) is not repeated
+                if build.startswith("stock") and a.test in ("game4c", "edit4c") and not a.redo_stock and not getattr(a, "par", None):   # a stock cell that is already measured (same build, model and chat test, >= 4 valid runs) is not repeated
                     have = [r for r in csv_load("run-history.csv") if r["build"] == build and r["test"] == a.test and os.path.basename(r["model"] or "") == os.path.basename(model) and r["ok"] != "0" and num(r, "tps") is not None]
                     if len(have) >= 4:
                         if i == (0 if a.cold_hot else a.rep_from) and (pp in (None, 0)):
