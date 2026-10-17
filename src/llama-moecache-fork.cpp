@@ -6534,10 +6534,13 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     if (gbs <= 0.0) {
         return pp_record(mc, n, ub_old);
     }
+    // with the KV zone (kv-tail) ap->span is only the lend's reach so far (the zone's start), which a bigger graph moves: the plan must see what the lend can reach
+    // (the pool up to the experts' end, less the zone), else the first prompts are planned into the small span they happen to start with (GLM: 2048-token passes, 0 slots)
+    const double span_eff = (double) std::max(ap->span, kv_lend_potential(*ap));
     double E = 0.0, R_now = 0.0;
     pp_expert_bytes(mc, mc->link_dev[0], E, R_now);
     // what the pool holds per byte that is not lent now: lending L bytes leaves rho x (span - L) of the experts in place (a lent block's experts are evicted)
-    const double free_now = (double) ap->span - (double) std::min(ap->want_b, ap->span);
+    const double free_now = span_eff - (double) std::min(ap->want_b, ap->span);
     const double rho      = free_now > 0.0 ? std::min(1.0, R_now / free_now) : 0.0;
     double c_us;
     {
@@ -6555,8 +6558,8 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
         const double L = per_t * (double) u + (double) k * (double) ap->slot_b + (double) ap->mirror_b;
         // No cap on how much of the pool a pass may borrow: a cap of 0.5 (2026-10-14) did not recover the decode after a long prompt (the loss there is a fixed
         // ~0.26 s of refill, not a rate) and the GLM 12k prompt did not improve with it; a pass that does not fit the pool (L > span) is not planned.
-        if (L > (double) ap->span) { return -1.0; }
-        const double U = std::max(0.0, E - rho * ((double) ap->span - L)) / (gbs * 1e3);
+        if (L > span_eff) { return -1.0; }
+        const double U = std::max(0.0, E - rho * (span_eff - L)) / (gbs * 1e3);
         if (U_out) { *U_out = U; }
         // No measured compute yet (a first start of this model on these cards, nothing in the state file): the model used C = 0, in which case staging slots
         // gain nothing (max(U, 0) = U, like no slots) and the first prompt was planned WITHOUT prefetch overlap, so its whole upload sat on top of its compute.
@@ -6588,7 +6591,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     static const bool dbg = moe_log_has("w");   // --moe log=w: the pass planner's choice per prompt
     if (dbg) {
         LLAMA_LOG_WARN("moe-cache: pass plan: %u tokens: %u passes of %u, %d staging slots, upload %.0f ms per pass (the pool holds %.1f of %.1f GB), compute %.1f us per token%s, modelled %.0f ms\n",
-                n, (n + best_ub - 1) / best_ub, best_ub, best_k, best_U / 1e3, rho * ((double) ap->span - (per_t * best_ub + best_k * (double) ap->slot_b)) / 1e9, E / 1e9,
+                n, (n + best_ub - 1) / best_ub, best_ub, best_k, best_U / 1e3, rho * (span_eff - (per_t * best_ub + best_k * (double) ap->slot_b)) / 1e9, E / 1e9,
                 c_us, c_us > 0 ? "" : " (not measured yet)", best_t / 1e3);
     }
     std::lock_guard<std::mutex> lk(g_pp_mu);
