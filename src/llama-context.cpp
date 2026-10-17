@@ -263,7 +263,12 @@ llama_context::llama_context(
                 LLAMA_LOG_WARN("%s: kv-tail: no -c: context %u tokens = min(model max %u, free VRAM %.1f GiB holds %llu tokens of KV)\n", __func__, cparams.n_ctx, hparams.n_ctx_train, free_b / 1073741824.0, (unsigned long long) (row ? free_b / row : 0));
             }
         } else if (!tail_possible) {
-            LLAMA_LOG_WARN("%s: kv-tail is not possible here (needs flash attention, one sequence, equal K and V types, a GPU): the normal KV cache with n_ctx = %u\n", __func__, cparams.n_ctx);
+            // the common code leaves n_ctx at 0 in tail mode (the tail needs no default), and 0 means the model's trained maximum: a static KV (and context-scaled graph
+            // buffers: 73 GB at 1M cells on the GLM stand-in) of a million cells. Without -c the normal layout gets the fork's default context instead.
+            if (params.n_ctx == 0 && !(given && atoi(given) != 0)) {
+                cparams.n_ctx = std::min<uint32_t>(hparams.n_ctx_train, 17408);
+            }
+            LLAMA_LOG_WARN("%s: kv-tail is not possible here (needs flash attention, one sequence, equal K and V types, no sparse-attention indexer, a GPU): the normal KV cache with n_ctx = %u\n", __func__, cparams.n_ctx);
         }
     }
     cparams.rope_freq_base   = params.rope_freq_base  == 0.0f ? hparams.rope_freq_base_train  : params.rope_freq_base;
