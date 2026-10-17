@@ -37,7 +37,7 @@ first real decode, a warm-up decode would run on a KV without memory: with `kv-t
 ## Switches
 
 * `--moe kv-tail=1` (needs `kv-token-major=2`, flash attention): the tail layout; no memory is reserved for the context. Without `-c` a request may use as many tokens as the buffer holds (up to the model's trained maximum); an explicit `-c N` is the cap of a request, prompt plus answer (it stops an answer like `-n`), and costs nothing in VRAM. If `-n` is also given, `-n` bounds the answer and `-c` is not applied.
-* `--moe kv-auto-ctx=0` (with kv-tail=1): the context is always `-c` (or the default 13312), as the size of the virtual record.
+* `--moe kv-auto-ctx=0` (with kv-tail=1): the context is always `-c` (or the default 17408), as the size of the virtual record.
 * `--moe kv-tail=0` (default): the normal KV cache, `-c` as always.
 * Quantized K and V (`-ctk q8_0 -ctv q8_0`, ...) work in the record: rows of whole blocks, one extra alignment unit per cell in the record; the gather between cards uses the row size of the type.
 * Flash attention is required: without it V is stored transposed (one row per dimension, not per token), which cannot be a record per cell; the cache then keeps the old layout and says so.
@@ -76,7 +76,7 @@ The memory of a request is its prompt plus its answer; nothing is reserved at st
 * `-c N` only: the answer is what N leaves after the prompt (N is in + out, like the end of the old context).
 * `-n M` only (or `n_predict` in the request): the context of this request is prompt + M, calculated at its start; no `-c` is needed.
 * both: `-n` bounds the answer, `-c` is not applied.
-* neither: the context is min(the model's trained maximum, what the free VRAM holds of KV); the answer is unlimited (`-n -1`) until its end token or until the machine's capacity is reached. (A 1M-token model got its 1M trained context and froze PC1 before the VRAM term existed.) The fork's default context of 13312 is not injected in this mode (it only existed to keep the KV reserve from starving the cache).
+* neither: the context is min(the model's trained maximum, what the free VRAM holds of KV); the answer is unlimited (`-n -1`) until its end token or until the machine's capacity is reached. (A 1M-token model got its 1M trained context and froze PC1 before the VRAM term existed.) The fork's default context of 17408 is not injected in this mode (it only existed to keep the KV reserve from starving the cache).
 A request that needs more than the machine holds (the smaller of the KV capacity and the model's trained context) is refused at its start with the numbers.
 
 ## Limits
