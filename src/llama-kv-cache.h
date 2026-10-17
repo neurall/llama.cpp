@@ -164,6 +164,9 @@ public:
     //
 
     uint32_t get_size()     const;
+    // fork: the cells a worst-case reserve sizes the graph for. kv-tail backs only a horizon of the (virtual) context and grows it in steps, so the reserve
+    // takes the first step, not the model's context (GLM: 1M cells x micro-batch 2048 asked for a 73 GB compute buffer)
+    uint32_t get_size_reserve() const;
     uint32_t get_n_seq_max() const;
     uint32_t get_n_stream() const;
 
@@ -279,6 +282,7 @@ private:
     // the cache is then a range that moves toward the start of the record: the tail of the pool buffer, see kv_row)
     bool kv_rev = false;
     bool kv_tail_on = false;   // the record sits in the expert pool: find_slot is limited to the cells the pool can hold
+    uint32_t kv_tail_step = 0; // growth step of the pool's horizon, cells (from the layer pattern: 2048 for mostly full-attention models, else 10240)
     uint32_t kv_tail_cap(uint32_t n) const;
     size_t kv_row(size_t c) const { return kv_rev ? (size_t) get_size() - 1 - c : c; }
     struct tail_guard { void * o; ~tail_guard(); } tail_guard_{this};   // leaves the pool's registry of KV records when the cache goes

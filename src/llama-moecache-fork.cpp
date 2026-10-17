@@ -275,13 +275,20 @@ struct moe_cache {
         size_t                want_b = 0;       // bytes the last graph needed (what alias_release keeps)
         size_t                mirror_b = 0;     // the dense split's copies at the start of the buffer (--moe mirror-pool, see llama_dsplit_mirror_place_fork)
         size_t                base_off = 0;     // where the graph being built starts: mirror_b when it splits (the copies before it), else 0
-        // KV cache at the tail (--moe kv-tail=1): the records of the caches on this card, stacked from tail_end downward; blocks under their used rows are owner -3
-        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0, pad = 1; int64_t end_off = 0; std::function<size_t()> rows; size_t cells = 0, plan = 0, eff = 0, zhi = 0, last_cells = 0; };   // plan: the cells the prompt being planned will hold (kept until decode starts)
+        // KV zone (--moe kv-tail=1, fork/docs/kv-grow.md): the records of the caches on this card interleaved in one combined row per cell (kv_row bytes, record r at
+        // byte `prefix` of it), [kv_start, kv_start + kv_h * kv_row) of the buffer, behind the compute lend and in front of the experts; blocks under it are owner -3
+        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0, pad = 1, prefix = 0, cells_max = 0; bool fixed = false; std::function<size_t()> rows; std::function<void(ggml_backend_buffer_t, uint8_t *, size_t)> attach; size_t cells = 0, plan = 0; };   // plan: the cells the prompt being planned will fill
         std::vector<kvt_run>  kvt;
-        size_t                tail_end  = 0;    // end of the last class's expert blocks (where the first record ends)
-        size_t                span_full = 0;    // span before any claim: ap.span is the part in front of the lowest claimed block
-        size_t                kv_cells_sum = (size_t) -1;   // the cells of the last claim (nothing to do while they stay the same)
-        size_t                kv_blocks = 0;    // blocks under the KV rows now
+        size_t                tail_end  = 0;    // end of the last class's expert blocks (the zone never reaches the last two blocks before it)
+        size_t                span_full = 0;    // the lend's reach without a KV zone
+        size_t                kv_row   = 0;     // bytes of one combined cell (the sum of the growing records' rows)
+        size_t                kv_fixed = 0;     // bytes of the fixed records (fewer cells than the largest record, e.g. MiMo's sliding-window cache: laid out at full size, first in the zone)
+        size_t                kv_start = 0;     // where the zone starts (the lend's reach): moves only when a graph needs more lend than ever before
+        size_t                kv_h     = 0;     // cells the zone backs (the horizon)
+        size_t                kv_step  = 10240; // horizon step (from the layer pattern, llama_kv_cache)
+        size_t                kv_zhi   = 0, kv_last_cells = 0;   // the zeroed pad window ends here; the cells at the last zeroing
+        std::map<int32_t, size_t> need_tok;     // the most a graph of n tokens borrowed from the start of the buffer (graph + scratch + staging slots)
+        size_t                kv_blocks = 0;    // blocks under the KV zone now
         size_t                dec_need  = 0;    // the most a decode graph (< 64 tokens) borrowed from the start of the buffer: the KV never takes that
     };
     std::atomic<bool> kv_gave_back{false};   // kv-tail: blocks came back from the KV (a new, shorter request): the next step refills them with the hottest missing experts
@@ -1150,17 +1157,7 @@ slot_pick pick_slot(moe_cache * mc, size_t li, Rank rank, double & best) {
             // the highest free block: prompts borrow the pool from its start (compute alias), so experts placed best first (preload, refill) end at the
             // back, where a prompt does not reach, and the front holds the cold ones it may evict (see keep_hot_move)
             p.slot = *std::max_element(ps.free.begin(), ps.free.end());
-            // kv-tail: the back is the KV's (it grows down from there for a whole request), the front is the lend's (during prompts): the free block just past the
-            // furthest the lend reached, so experts placed best first lie from there toward the tail and a KV claim takes the coldest first (no copies at a claim)
-            for (const auto & ap : mc->alias) {
-                if (ap.kvt.empty()) { continue; }
-                for (const auto & sg : ap.segs) {
-                    if (sg.pcls != ls.pcls) { continue; }
-                    int32_t lo = -1;
-                    for (int32_t b : ps.free) { if (b >= sg.hwm && (lo < 0 || b < lo)) { lo = b; } }
-                    if (lo >= 0) { p.slot = lo; }
-                }
-            }
+            // kv-tail: the KV zone sits between the lend and the experts and grows into the coldest of them; the hottest stay at the back (the rule above)
             best = 0;
             return p;
         }
@@ -2717,6 +2714,7 @@ void llama_moe_cache_alias_offset_fork(ggml_backend_dev_t dev, size_t off) {
     }
 }
 
+static size_t kv_lend_potential(const moe_cache::alias_pool & ap);   // below (KV zone)
 std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork() {
     std::vector<llama_moe_alias_buf_fork> out;
     moe_cache * mc = g_cache;
@@ -2724,7 +2722,7 @@ std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork() {
         return out;
     }
     for (const auto & ap : mc->alias) {
-        out.push_back({ ap.buf, ap.dev, ap.span });   // up to the last class's last expert block (zero blocks inside are restored, see alias_release)
+        out.push_back({ ap.buf, ap.dev, kv_lend_potential(ap) });   // up to the last class's last expert block, less the KV zone wherever it sits (moe_alias moves it behind a bigger graph)
     }
     return out;
 }
@@ -2755,7 +2753,7 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
             ggml_backend_t be = ggml_backend_sched_get_backend(sched, i);
             if (ggml_backend_get_device(be) == ap.dev) { peak = ggml_backend_sched_graph_peak(sched, be); }
         }
-        const size_t cap     = ap.span;
+        const size_t cap     = kv_lend_potential(ap);
         const size_t scratch = ap.cuda_dev >= 0 || strncmp(ggml_backend_dev_name(ap.dev), "CUDA", 4) == 0
                              ? GGML_PAD((size_t) n_tokens * alias_tok_bytes(mc, ap), (size_t) 2 << 20) : 0;
         const size_t base    = GGML_PAD(ap.base_off + GGML_PAD(peak, 256) + scratch, 256);   // behind the dense split's copies when the reserved graph splits
@@ -2963,142 +2961,187 @@ void llama_moe_cache_kv_tail_detach_fork() {
     for (auto & r : g_kvt) { if (r.detach) { r.detach(); } }
 }
 
-// the blocks under the used rows of the records of every card belong to the KV, the others to the experts: experts in blocks that are taken are evicted
-// (uploads into them dropped or awaited, as the compute alias does), blocks the rows left go back to the free list. ap.span (what the compute alias may
-// lend from the front) ends at the lowest block the KV holds. Called before every graph; nothing to do while the cells stay the same.
-static void kv_tail_claim(moe_cache * mc, bool & changed, size_t plan_extra = 0, bool reset_plan = false) {
-    for (auto & ap : mc->alias) {
-        if (ap.kvt.empty()) { continue; }
-        size_t sum = 0;
-        for (auto & r : ap.kvt) {
-            r.cells = r.rows ? r.rows() : 0;
-            if (plan_extra > 0) { r.plan = r.cells + plan_extra; } else if (reset_plan) { r.plan = 0; }
-            r.eff = std::max(r.cells, r.plan);   // what the claim covers: the cells in use, or the cells the planned prompt will fill ...
-            r.eff = r.eff > 0 ? (r.eff + r.pad - 1) / r.pad * r.pad : 0;   // ... rounded up as the attention reads them (masked, but read: they must be claimed and zero)
-            sum += r.eff;
+// ---- the KV zone of a card (kv-tail, fork/docs/kv-grow.md) ----
+// [kv_start, kv_start + kv_h * kv_row) of the pool buffer holds the combined rows of the card's records (kv_row = the sum of their rows, row c = cell c). The
+// blocks under it belong to the KV (owner -3): experts in blocks the zone takes are evicted (uploads into them dropped or awaited, as the compute alias does),
+// blocks it leaves go back to the free list.
+static void kv_blocks_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t lo, size_t hi, bool do_take, bool do_give,
+                            size_t & n_take, size_t & n_give, size_t & n_evict) {
+    std::vector<std::pair<size_t, size_t>> rng;
+    if (hi > lo) { rng.push_back({ lo, hi }); }
+    for (auto & sg : ap.segs) {
+        auto & ps = mc->pool[sg.pcls];
+        std::vector<int32_t> take, give;
+        for (int32_t b = 0; b < sg.n; ++b) {
+            const size_t b0 = sg.base + (size_t) b * sg.B, b1 = b0 + sg.B;
+            bool want = false;
+            for (const auto & q : rng) { if (q.first < b1 && q.second > b0) { want = true; break; } }
+            const int32_t o = ps.owner[b];
+            if (want) { if (o != -3 && do_take) { take.push_back(b); } }
+            else if (o == -3 && do_give) { give.push_back(b); }
         }
-        // hysteresis: a claim covers one block more than the cells in use need (generation adds a cell per token, a block is a few MB: some 50 cells), and a claim is
-        // given back only when it exceeds the need by two blocks: steady decode takes one block every ~50 tokens and never releases in the middle of an answer
-        size_t HEAD = 256;
-        for (const auto & r : ap.kvt) {
-            if (!ap.segs.empty() && r.row > 0) { HEAD = std::max<size_t>(1, (ap.segs.back().B + r.row - 1) / r.row); break; }
-        }
-        if (ap.kv_cells_sum != (size_t) -1 && sum <= ap.kv_cells_sum + HEAD && ap.kv_cells_sum <= sum + 2 * HEAD) { continue; }
-        const size_t cells_before = ap.kv_cells_sum == (size_t) -1 ? 0 : ap.kv_cells_sum;
-        ap.kv_cells_sum = sum;
-        std::vector<std::pair<size_t, size_t>> rng;   // byte ranges [lo, hi) of the pool buffer under the used rows
-        for (auto & r : ap.kvt) {
-            size_t w = r.eff > 0 ? std::min(r.bytes, (r.eff + HEAD) * r.row) : 0;
-            w = std::min<size_t>(w, (size_t) std::max<int64_t>(0, r.end_off));   // never below the start of the buffer
-            if (w > 0) { rng.push_back({ (size_t) (r.end_off - (int64_t) w), (size_t) r.end_off }); }
-        }
-        size_t lowest = ap.span_full, n_take = 0, n_give = 0, n_evict = 0;
-        for (auto & sg : ap.segs) {
-            auto & ps = mc->pool[sg.pcls];
-            std::vector<int32_t> take, give;
-            for (int32_t b = 0; b < sg.n; ++b) {
-                const size_t b0 = sg.base + (size_t) b * sg.B, b1 = b0 + sg.B;
-                bool want = false;
-                for (const auto & q : rng) { if (q.first < b1 && q.second > b0) { want = true; break; } }
-                const int32_t o = ps.owner[b];
-                if (want) { lowest = std::min(lowest, b0); if (o != -3) { take.push_back(b); } }
-                else if (o == -3) { give.push_back(b); }
-            }
-            if (!give.empty()) {
-                std::lock_guard<std::mutex> lk(mc->mtx);
-                for (int32_t b : give) { ps.owner[b] = -1; ps.free.push_back(b); }
-                n_give += give.size();
-            }
-            if (take.empty()) { continue; }
-            const int32_t want_pcls = sg.pcls;
-            auto in_zone = [&](const upload_job & j) {
-                return j.layer_idx < mc->layers.size() && mc->layers[j.layer_idx].pcls == want_pcls && std::binary_search(take.begin(), take.end(), j.slot);
-            };
-            auto drop_job = [&](const upload_job & j) {
-                layer_state & lo = mc->layers[j.layer_idx];
-                lo.slot_in_flight[j.slot] = false;
-                if (j.expert >= 0 && j.expert < (int32_t) lo.queued.size()) { lo.queued[j.expert] = 0; }
-            };
-            for (int spin = 0; ; ++spin) {
-                bool busy = false;
-                {
-                    std::lock_guard<std::mutex> wlk(mc->wmtx);
-                    std::lock_guard<std::mutex> lk(mc->mtx);
-                    for (auto it = mc->todo.begin(); it != mc->todo.end(); ) {
-                        if (in_zone(*it)) { drop_job(*it); it = mc->todo.erase(it); } else { ++it; }
-                    }
-                    for (size_t k = 0; k < mc->done.size(); ) {
-                        if (in_zone(mc->done[k])) { drop_job(mc->done[k]); mc->done[k] = mc->done.back(); mc->done.pop_back(); } else { ++k; }
-                    }
-                    for (int32_t b : take) {
-                        const int32_t o = ps.owner[b];
-                        if (o < 0 || !mc->layers[o].slot_in_flight[b]) { continue; }
-                        layer_state & lo = mc->layers[o];
-                        bool adoption = false;
-                        for (size_t i = 0; i < lo.adopted.size(); ++i) {
-                            const int32_t e = lo.adopted[i];
-                            if (lo.adopt_slot[e] == b) {
-                                lo.adopt_slot[e] = -1; lo.adopt_mask[e] = 0;
-                                lo.adopted.erase(lo.adopted.begin() + (ptrdiff_t) i);
-                                lo.slot_in_flight[b] = false;
-                                adoption = true;
-                                break;
-                            }
-                        }
-                        if (!adoption) { busy = true; break; }   // a worker is copying into it right now
-                    }
-                }
-                if (!busy) { break; }
-                GGML_ASSERT(spin < 200000 && "kv-tail: an upload into the blocks taken for the KV never finished");
-                std::this_thread::sleep_for(std::chrono::microseconds(50));
-            }
+        if (!give.empty()) {
             std::lock_guard<std::mutex> lk(mc->mtx);
-            std::vector<char> free_mark;
-            for (int32_t b : take) {
-                const int32_t o = ps.owner[b];
-                if (o >= 0) {
-                    layer_state & lo = mc->layers[o];
-                    evict_slot(mc, lo, b);
-                    lo.n_own--;
-                    n_evict++;
-                } else if (o == -1) {
-                    if (free_mark.empty()) { free_mark.assign(ps.owner.size(), 0); }
-                    free_mark[b] = 1;   // leaves the free list in the one pass below (a find + erase per block was O(blocks x free))
-                } else if (o == -2) {
-                    sg.blocked = std::min(sg.blocked, b);   // the compute alias had lent it: the lend of this graph starts over below the KV
+            for (int32_t b : give) { ps.owner[b] = -1; ps.free.push_back(b); }
+            n_give += give.size();
+        }
+        if (take.empty()) { continue; }
+        const int32_t want_pcls = sg.pcls;
+        auto in_zone = [&](const upload_job & j) {
+            return j.layer_idx < mc->layers.size() && mc->layers[j.layer_idx].pcls == want_pcls && std::binary_search(take.begin(), take.end(), j.slot);
+        };
+        auto drop_job = [&](const upload_job & j) {
+            layer_state & lo = mc->layers[j.layer_idx];
+            lo.slot_in_flight[j.slot] = false;
+            if (j.expert >= 0 && j.expert < (int32_t) lo.queued.size()) { lo.queued[j.expert] = 0; }
+        };
+        for (int spin = 0; ; ++spin) {
+            bool busy = false;
+            {
+                std::lock_guard<std::mutex> wlk(mc->wmtx);
+                std::lock_guard<std::mutex> lk(mc->mtx);
+                for (auto it = mc->todo.begin(); it != mc->todo.end(); ) {
+                    if (in_zone(*it)) { drop_job(*it); it = mc->todo.erase(it); } else { ++it; }
                 }
-                ps.owner[b] = -3;
+                for (size_t k = 0; k < mc->done.size(); ) {
+                    if (in_zone(mc->done[k])) { drop_job(mc->done[k]); mc->done[k] = mc->done.back(); mc->done.pop_back(); } else { ++k; }
+                }
+                for (int32_t b : take) {
+                    const int32_t o = ps.owner[b];
+                    if (o < 0 || !mc->layers[o].slot_in_flight[b]) { continue; }
+                    layer_state & lo = mc->layers[o];
+                    bool adoption = false;
+                    for (size_t i = 0; i < lo.adopted.size(); ++i) {
+                        const int32_t e = lo.adopted[i];
+                        if (lo.adopt_slot[e] == b) {
+                            lo.adopt_slot[e] = -1; lo.adopt_mask[e] = 0;
+                            lo.adopted.erase(lo.adopted.begin() + (ptrdiff_t) i);
+                            lo.slot_in_flight[b] = false;
+                            adoption = true;
+                            break;
+                        }
+                    }
+                    if (!adoption) { busy = true; break; }   // a worker is copying into it right now
+                }
             }
-            if (!free_mark.empty()) {
-                ps.free.erase(std::remove_if(ps.free.begin(), ps.free.end(), [&](int32_t b) { return free_mark[b] != 0; }), ps.free.end());
+            if (!busy) { break; }
+            GGML_ASSERT(spin < 200000 && "kv-tail: an upload into the blocks taken for the KV never finished");
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        std::vector<char> free_mark;
+        for (int32_t b : take) {
+            const int32_t o = ps.owner[b];
+            if (o >= 0) {
+                layer_state & lo = mc->layers[o];
+                evict_slot(mc, lo, b);
+                lo.n_own--;
+                n_evict++;
+            } else if (o == -1) {
+                if (free_mark.empty()) { free_mark.assign(ps.owner.size(), 0); }
+                free_mark[b] = 1;   // leaves the free list in the one pass below (a find + erase per block was O(blocks x free))
+            } else if (o == -2) {
+                sg.blocked = std::min(sg.blocked, b);   // the compute alias had lent it: the lend of this graph starts over below the KV
             }
-            n_take += take.size();
+            ps.owner[b] = -3;
         }
-        ap.span = std::min(ap.span_full, lowest);
-        ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
-        size_t held = 0;
-        for (auto & sg : ap.segs) { for (int32_t b = 0; b < sg.n; ++b) { if (mc->pool[sg.pcls].owner[b] == -3) { held++; } } }
-        ap.kv_blocks = held;
-        for (auto & sg : ap.segs) {   // the experts' part of each class ends at its last block that is not under the KV
-            auto & ps = mc->pool[sg.pcls];
-            int32_t e = sg.n;
-            while (e > 0 && ps.owner[e - 1] == -3) { --e; }
-            ps.active_end = e;
+        if (!free_mark.empty()) {
+            ps.free.erase(std::remove_if(ps.free.begin(), ps.free.end(), [&](int32_t b) { return free_mark[b] != 0; }), ps.free.end());
         }
-        g_kvs.claim_n += n_take; g_kvs.release_n += n_give; g_kvs.evicted += n_evict;
-        if (n_give > 0) { mc->kv_gave_back = true; }
-        if (n_take > 0 || n_give > 0) {
-            changed = true;
-            if (moe_log_has("k")) LLAMA_LOG_WARN("moe-cache: kv-tail %s: %zu -> %zu cells, %zu blocks taken from the experts (%zu experts evicted), %zu given back; %zu blocks under the KV (%.1f MiB), the compute alias may lend %.1f MiB\n",
-                    ggml_backend_dev_name(ap.dev), cells_before, sum, n_take, n_evict, n_give, held, (double) held * (ap.segs.empty() ? 0.0 : (double) ap.segs.back().B) / 1048576.0, ap.span / 1048576.0);
-        }
+        n_take += take.size();
     }
-    {   // no block left for an expert on any card that holds a KV record (the blocks lent to the graph are not the experts' either)
+}
+
+static size_t kv_bmax(const moe_cache::alias_pool & ap) {
+    size_t b = 0;
+    for (const auto & sg : ap.segs) { b = std::max(b, sg.B); }
+    return b;
+}
+
+// what the compute alias could lend if the KV zone moved behind the graph: the buffer up to the end of the expert blocks, less the zone and two blocks the
+// experts keep (the scheduler may place a graph up to here; moe_alias moves the zone before such a graph runs)
+static size_t kv_lend_potential(const moe_cache::alias_pool & ap) {
+    if (ap.kvt.empty()) { return ap.span; }
+    const size_t zone = ap.kv_fixed + ap.kv_h * ap.kv_row, keep = 2 * kv_bmax(ap);
+    return ap.tail_end > zone + keep ? ap.tail_end - zone - keep : 0;
+}
+
+// n bytes from `from` to `to` inside the pool buffer, on the card (a device copy at ~800 GB/s: 1 GB of KV in ~2.5 ms on an RTX 3090), in chunks that never
+// overlap their own source
+static void kv_move_bytes(moe_cache::alias_pool & ap, size_t from, size_t to, size_t n) {
+    if (n == 0 || from == to) { return; }
+    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+    const size_t d = from > to ? from - to : to - from;
+    const size_t chunk = std::min<size_t>(d, (size_t) 256 << 20);
+    auto cp = [&](size_t s0, size_t t0, size_t len) {
+        ggml_tensor a = {}, b = {};
+        for (ggml_tensor * t : { &a, &b }) {
+            t->type = GGML_TYPE_I8; t->buffer = ap.buf;
+            t->ne[0] = (int64_t) len; t->ne[1] = t->ne[2] = t->ne[3] = 1;
+            t->nb[0] = 1; t->nb[1] = t->nb[2] = t->nb[3] = len;
+        }
+        a.data = base + s0; b.data = base + t0;
+        ggml_backend_tensor_copy(&a, &b);
+    };
+    if (to > from) {   // moving up: copy from the end
+        for (size_t left = n; left > 0; ) { const size_t len = std::min(chunk, left); left -= len; cp(from + left, to + left, len); }
+    } else {
+        for (size_t done = 0; done < n; ) { const size_t len = std::min(chunk, n - done); cp(from + done, to + done, len); done += len; }
+    }
+}
+
+static std::atomic<int> g_kv_epoch{0};   // bumped when a KV zone moves: graphs built before point at the old place (no reuse)
+static int g_kv_epoch_built = 0;
+
+// lay the zone out for h cells behind a lend of l bytes (rounded up to the largest block): take the new blocks first (their experts out before rows land there),
+// copy the rows in use when the zone moves, give back what it left, point the records at it. Called before a graph is built (prepare, request start) or between
+// a graph's allocation and its inputs (moe_alias, which then has the graph built again). No allocation: the zone is part of the one pool buffer.
+static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size_t l, size_t cells, bool dry) {
+    const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
+    l = (l + bmax - 1) / bmax * bmax;
+    if (h == ap.kv_h && l == ap.kv_start) { return false; }
+    if (dry) { return true; }
+    const size_t lo_old = ap.kv_start, h_old = ap.kv_h, lo = l, hi = l + ap.kv_fixed + h * ap.kv_row;
+    const bool   first  = h_old == 0;   // nothing laid out yet: no rows to move, the fixed part is zeroed below
+    const size_t n_used = first ? 0 : ap.kv_fixed + std::min(cells, std::min(h, h_old)) * ap.kv_row;   // the fixed part and the growing rows in use: one contiguous range
+    size_t n_take = 0, n_give = 0, n_evict = 0;
+    kv_blocks_apply(mc, ap, lo, hi, true, false, n_take, n_give, n_evict);
+    if (lo != lo_old) { kv_move_bytes(ap, lo_old, lo, n_used); }
+    kv_blocks_apply(mc, ap, lo, hi, false, true, n_take, n_give, n_evict);
+    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+    if (first && ap.kv_fixed > 0) {   // the fixed records are read up to their padded cells from the first token on: zero, once (the attention multiplies masked rows too)
+        ggml_tensor z = {};
+        z.type = GGML_TYPE_I8; z.buffer = ap.buf; z.data = base + lo;
+        z.ne[0] = (int64_t) ap.kv_fixed; z.ne[1] = z.ne[2] = z.ne[3] = 1;
+        z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = ap.kv_fixed;
+        ggml_backend_tensor_memset(&z, 0, 0, ap.kv_fixed);
+    }
+    for (auto & r : ap.kvt) {
+        if (!r.attach) { continue; }
+        if (r.fixed) { r.attach(ap.buf, base + lo + r.prefix, r.row); }
+        else         { r.attach(ap.buf, base + lo + ap.kv_fixed + r.prefix, ap.kv_row); }
+    }
+    ap.kv_h = h; ap.kv_start = lo; ap.span = lo;
+    ap.kv_zhi = 0;   // the pad window (rows past the cells in use that the attention reads) is zeroed again
+    ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
+    size_t held = 0;
+    for (auto & sg : ap.segs) { for (int32_t b = 0; b < sg.n; ++b) { if (mc->pool[sg.pcls].owner[b] == -3) { held++; } } }
+    ap.kv_blocks = held;
+    for (auto & sg : ap.segs) { mc->pool[sg.pcls].active_end = -1; }   // the zone sits between the lend and the experts: scans cover the whole class (they skip -3)
+    g_kvs.claim_n += n_take; g_kvs.release_n += n_give; g_kvs.evicted += n_evict;
+    if (n_give > 0) { mc->kv_gave_back = true; }
+    if (lo != lo_old) { g_kv_epoch++; }
+    if (moe_log_has("k") || lo != lo_old) {
+        LLAMA_LOG_WARN("moe-cache: kv-tail %s: zone %zu -> %zu cells at %.1f -> %.1f MiB (%zu B per cell, %zu cells in use%s), %zu blocks taken (%zu experts evicted), %zu given back\n",
+                ggml_backend_dev_name(ap.dev), h_old, h, lo_old / 1048576.0, lo / 1048576.0, ap.kv_row, cells,
+                lo != lo_old ? tr_fmt(", %.1f MiB of rows moved", n_used / 1048576.0).c_str() : "", n_take, n_evict, n_give);
+    }
+    {   // no block left for an expert on any card that holds a KV zone (the blocks lent to the graph are not the experts' either)
         bool any = false, usable = false;
-        for (auto & ap : mc->alias) {
-            if (ap.kvt.empty()) { continue; }
+        for (auto & a2 : mc->alias) {
+            if (a2.kvt.empty()) { continue; }
             any = true;
-            for (auto & sg : ap.segs) {
+            for (auto & sg : a2.segs) {
                 const auto & ps = mc->pool[sg.pcls];
                 for (int32_t b = 0; b < sg.n && !usable; ++b) { if (ps.owner[b] != -3 && ps.owner[b] != -2) { usable = true; } }
             }
@@ -3109,61 +3152,125 @@ static void kv_tail_claim(moe_cache * mc, bool & changed, size_t plan_extra = 0,
             LLAMA_LOG_WARN("moe-cache: kv-tail: %s\n", now ? "the KV holds every expert block: the cache logic is off, experts are streamed" : "expert blocks are free again: the cache logic is on");
         }
     }
+    return true;
 }
 
+// the horizon of every card: the cells in use (or planned for the prompt) rounded to the pad; it grows by kv_step when those pass half of it (the trigger needs
+// no fill-speed measurement: growth happens before the rows are needed, at a point where no graph is built) and shrinks only at a request start. The lend in
+// front of it is the most a graph of this size needed before (moe_alias remembers it), so a known size never moves the zone after its graph is built.
+static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, bool allow_shrink, int32_t n_tokens, bool dry) {
+    bool any = false;
+    for (auto & ap : mc->alias) {
+        if (ap.kvt.empty() || ap.kv_row == 0) { continue; }
+        size_t eff = 0, cells = 0, cells_max = (size_t) -1;
+        for (auto & r : ap.kvt) {
+            if (r.fixed) { continue; }   // laid out at full size
+            const size_t c = r.rows ? r.rows() : 0;
+            if (!dry) {
+                r.cells = c;
+                if (plan_extra > 0) { r.plan = c + plan_extra; } else if (reset_plan) { r.plan = 0; }
+            }
+            const size_t plan = !dry ? r.plan : (plan_extra > 0 ? c + plan_extra : (reset_plan ? 0 : r.plan));
+            size_t e = std::max(c, plan);
+            e = e > 0 ? (e + r.pad - 1) / r.pad * r.pad : 0;
+            eff = std::max(eff, e);
+            cells = std::max(cells, c);
+            cells_max = std::min(cells_max, r.cells_max);
+        }
+        const size_t step = std::max<size_t>(256, ap.kv_step);
+        size_t h = (allow_shrink || ap.kv_h == 0) ? step : ap.kv_h;
+        while (2 * eff > h) { h += step; }
+        size_t l = ap.kv_start;
+        if (n_tokens > 0) {
+            const auto it = ap.need_tok.find(n_tokens);
+            if (it != ap.need_tok.end()) { l = std::max(l, it->second); }
+        }
+        const size_t bmax = kv_bmax(ap);
+        const size_t lr = (l + bmax - 1) / std::max<size_t>(1, bmax) * bmax;
+        const size_t room = ap.tail_end > lr + ap.kv_fixed + 2 * bmax ? (ap.tail_end - lr - ap.kv_fixed - 2 * bmax) / ap.kv_row : 0;   // two blocks stay the experts'
+        h = std::min({ h, cells_max, std::max(room, eff) });
+        if (eff > room && !dry) {
+            LLAMA_LOG_WARN("moe-cache: kv-tail %s: %zu cells do not fit behind a lend of %.1f MiB (room for %zu): the experts give up their last blocks\n",
+                    ggml_backend_dev_name(ap.dev), eff, lr / 1048576.0, room);
+        }
+        any = kv_layout(mc, ap, h, l, cells, dry) || any;
+    }
+    return any;
+}
 
+bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
+    moe_cache * mc = g_cache;
+    if (!mc) { return false; }
+    const bool reset = n_tokens < 64;   // a decode graph ends the plan of the last prompt
+    if (!kv_tail_plan(mc, 0, reset, false, n_tokens, true)) {
+        if (reset) { kv_tail_plan(mc, 0, true, false, n_tokens, false); }   // only the plan resets (no change of the zones)
+        return false;
+    }
+    if (sched) { ggml_backend_sched_synchronize(sched); }   // the previous graph may still read the rows and the blocks that change hands
+    kv_tail_plan(mc, 0, reset, false, n_tokens, false);
+    flush_tables();
+    return g_kv_epoch.load() != g_kv_epoch_built;
+}
 
-// ---- KV arena for the cards without an expert pool (dense models) ----
-struct kv_arena_run { void * owner; size_t row; int64_t end_off; std::function<size_t()> rows; size_t cells = 0; };
-struct kv_arena_t { ggml_backend_dev_t dev = nullptr; ggml_backend_buffer_t buf = nullptr; size_t size = 0; std::vector<kv_arena_run> runs; };
+// ---- KV arena for the cards without an expert pool (dense models): one buffer per card, the records interleaved in one combined row per cell ----
+struct kv_arena_run { void * owner; std::function<size_t()> rows; size_t cells_max; bool fixed; };
+struct kv_arena_t { ggml_backend_dev_t dev = nullptr; ggml_backend_buffer_t buf = nullptr; size_t size = 0, row = 0, fixed = 0; std::vector<kv_arena_run> runs; };
 static std::vector<kv_arena_t> g_kv_arena;
 
 void llama_moe_cache_kv_arena_start_fork() {
     std::lock_guard<std::mutex> lk(g_kvt_mtx);
-    for (auto & r : g_kvt) {
-        if (r.attached || !r.dev) { continue; }
-        kv_arena_t * ar = nullptr;
-        for (auto & x : g_kv_arena) { if (x.dev == r.dev) { ar = &x; } }
-        if (!ar) {
-            size_t free_b = 0, total = 0;
-            ggml_backend_dev_memory(r.dev, &free_b, &total);
-            const size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 384) * 1024 * 1024;
-            if (free_b <= margin + (64u << 20)) { LLAMA_LOG_ERROR("kv-arena: %s has %.1f MiB free: no room for the KV\n", ggml_backend_dev_name(r.dev), free_b / 1048576.0); continue; }
-            const size_t size = free_b - margin;
-            ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(r.dev), size);   // the one allocation of the KV, at start
-            if (!buf) { LLAMA_LOG_ERROR("kv-arena: could not allocate %.1f MiB on %s\n", size / 1048576.0, ggml_backend_dev_name(r.dev)); continue; }
-            g_kv_arena.push_back(kv_arena_t{ r.dev, buf, size, {} });
-            ar = &g_kv_arena.back();
+    std::vector<ggml_backend_dev_t> devs;
+    for (auto & r : g_kvt) { if (!r.attached && r.dev && std::find(devs.begin(), devs.end(), r.dev) == devs.end()) { devs.push_back(r.dev); } }
+    for (ggml_backend_dev_t dev : devs) {
+        size_t row = 0, fixed = 0, cmax = 0;   // growing records in one combined row, smaller ones (sliding window) fixed at full size in front (as in the pool)
+        for (auto & r : g_kvt) { if (!r.attached && r.dev == dev && r.row) { cmax = std::max(cmax, r.bytes / r.row); } }
+        for (auto & r : g_kvt) {
+            if (r.attached || r.dev != dev || !r.row) { continue; }
+            if (r.bytes / r.row < cmax) { fixed += (r.bytes + 255) / 256 * 256; } else { row += r.row; }
         }
-        // placement: the record ends where the records placed before it begin (the first one at the end of the buffer)
-        size_t placed = 0;
-        for (auto & x : g_kvt) { if (&x == &r) { break; } if (x.attached && x.dev == r.dev) { placed += x.bytes; } }
-        ar->runs.push_back(kv_arena_run{ r.owner, r.row, (int64_t) ar->size - (int64_t) placed, r.rows });
-        if (r.attach) { r.attach(ar->buf, (uint8_t *) ((uintptr_t) ggml_backend_buffer_get_base(ar->buf) + (uintptr_t) ar->runs.back().end_off - (uintptr_t) r.bytes)); }
-        r.attached = true;
-        LLAMA_LOG_WARN("kv-arena: %s: %.1f MiB, record of %.1f MiB (%zu B per token) ends at %.1f MiB: room for %zu tokens (KV capacity), max context that fits %zu (model cap %zu)\n", ggml_backend_dev_name(r.dev), ar->size / 1048576.0,
-                r.bytes / 1048576.0, r.row, ar->runs.back().end_off / 1048576.0, r.row ? (size_t) ar->runs.back().end_off / r.row : 0,
-                r.row ? std::min<size_t>((size_t) ar->runs.back().end_off / r.row, r.bytes / r.row) : 0, r.row ? r.bytes / r.row : 0);
+        if (row == 0) { continue; }
+        size_t free_b = 0, total = 0;
+        ggml_backend_dev_memory(dev, &free_b, &total);
+        const size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 384) * 1024 * 1024;
+        if (free_b <= margin + (64u << 20)) { LLAMA_LOG_ERROR("kv-arena: %s has %.1f MiB free: no room for the KV\n", ggml_backend_dev_name(dev), free_b / 1048576.0); continue; }
+        const size_t size = free_b - margin;
+        ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), size);   // the one allocation of the KV, at start
+        if (!buf) { LLAMA_LOG_ERROR("kv-arena: could not allocate %.1f MiB on %s\n", size / 1048576.0, ggml_backend_dev_name(dev)); continue; }
+        ggml_backend_buffer_clear(buf, 0);   // the attention reads the cells rounded up to the pad: those rows must be finite
+        if (fixed + row > size) { LLAMA_LOG_ERROR("kv-arena: %s: the fixed records (%.1f MiB) do not fit in %.1f MiB\n", ggml_backend_dev_name(dev), fixed / 1048576.0, size / 1048576.0); continue; }
+        g_kv_arena.push_back(kv_arena_t{ dev, buf, size - fixed, row, fixed, {} });
+        kv_arena_t & ar = g_kv_arena.back();
+        uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
+        size_t prefix = 0, fpos = 0;
+        for (auto & r : g_kvt) {
+            if (r.attached || r.dev != dev || !r.row) { continue; }
+            const bool fx = r.bytes / r.row < cmax;
+            if (r.attach) { r.attach(buf, fx ? base + fpos : base + fixed + prefix, fx ? r.row : row); }
+            r.attached = true;
+            ar.runs.push_back(kv_arena_run{ r.owner, r.rows, r.bytes / r.row, fx });
+            if (fx) { fpos += (r.bytes + 255) / 256 * 256; } else { prefix += r.row; }
+        }
+        LLAMA_LOG_WARN("kv-arena: %s: %.1f MiB, %zu records (fixed part %.1f MiB, growing part %zu B per cell): room for %zu tokens\n", ggml_backend_dev_name(dev),
+                (size) / 1048576.0, ar.runs.size(), fixed / 1048576.0, row, ar.size / row);
     }
 }
 
-// find_slot's limit: the tokens the record may hold. The KV may take the whole expert cache (starved experts are streamed experts, still faster than a starved KV); what it
-// leaves is the part of the pool a decode graph borrows (its tensors, the scratch): a context that would take more is "full" for the cache, the server stops the answer
-// or refuses the prompt, as with a full KV cache. Prompt passes shrink to what is left (the pass planner reads the lendable bytes).
+// find_slot's limit: the tokens the zone may hold. The KV may take the whole expert cache except what a decode graph borrows and two blocks (starved experts are
+// streamed experts, still faster than a starved KV): a context that would take more is "full" for the cache, the server stops the answer or refuses the prompt.
 size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
     for (auto & ar : g_kv_arena) {
-        for (auto & q : ar.runs) { if (q.owner == owner) { return q.row > 0 ? (size_t) std::max<int64_t>(0, q.end_off) / q.row : 0; } }
+        for (auto & q : ar.runs) { if (q.owner == owner) { return q.fixed ? q.cells_max : std::min(ar.size / std::max<size_t>(1, ar.row), q.cells_max); } }
     }
     moe_cache * mc = g_cache;
     if (!mc) { return (size_t) -1; }
     for (auto & ap : mc->alias) {
         for (auto & r : ap.kvt) {
             if (r.owner != owner) { continue; }
-            size_t bmax = 0;
-            for (auto & sg : ap.segs) { bmax = std::max(bmax, sg.B); }
-            const int64_t floor_b = (int64_t) std::max<size_t>(ap.dec_need, 2 * bmax);
-            const int64_t room = std::max<int64_t>(0, r.end_off - floor_b);
-            return r.row > 0 ? std::min<size_t>((size_t) room / r.row, r.bytes / r.row) : 0;   // never more than the record's cells (the model's context)
+            if (r.fixed || ap.kv_row == 0) { return r.cells_max; }   // laid out at full size
+            const size_t bmax = kv_bmax(ap);
+            const size_t floor_b = std::max(ap.dec_need, 2 * bmax) + 2 * bmax + ap.kv_fixed;
+            const size_t room = ap.tail_end > floor_b ? ap.tail_end - floor_b : 0;
+            return std::min(room / ap.kv_row, r.cells_max);   // never more than the record's cells (the model's context)
         }
     }
     return (size_t) -1;   // the pool does not exist yet (before the first decode): no limit
@@ -3171,55 +3278,57 @@ size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
 
 bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell) {
     moe_cache * mc = g_cache;
-    if (!mc) { return true; }
-    for (auto & ap : mc->alias) {
-        for (auto & r : ap.kvt) {
-            if (r.owner != owner) { continue; }
-            const size_t need = (max_cell + 1) * r.row;   // bytes from the end of the record up to the lowest byte of the write
-            if (need > r.bytes) { return false; }
-            const int64_t lo = r.end_off - (int64_t) need;
-            if (lo < 0) { return false; }
-            // every block under [lo, end_off) must be the KV's (owner -3)
-            for (auto & sg : ap.segs) {
-                const auto & ps = mc->pool[sg.pcls];
-                for (int32_t b = 0; b < sg.n; ++b) {
-                    const size_t b0 = sg.base + (size_t) b * sg.B, b1 = b0 + sg.B;
-                    if ((int64_t) b1 > lo && (int64_t) b0 < r.end_off && ps.owner[b] != -3) { return false; }
+    if (mc) {
+        for (auto & ap : mc->alias) {
+            for (auto & r : ap.kvt) {
+                if (r.owner != owner) { continue; }
+                size_t lo, hi;   // every block under [lo, hi) must be the KV's (owner -3)
+                if (r.fixed) {
+                    if (max_cell + 1 > r.cells_max) { return false; }
+                    lo = ap.kv_start + r.prefix; hi = lo + (max_cell + 1) * r.row;
+                } else {
+                    if (max_cell + 1 > ap.kv_h) { return false; }
+                    lo = ap.kv_start + ap.kv_fixed; hi = lo + (max_cell + 1) * ap.kv_row;
                 }
+                for (auto & sg : ap.segs) {
+                    const auto & ps = mc->pool[sg.pcls];
+                    for (int32_t b = 0; b < sg.n; ++b) {
+                        const size_t b0 = sg.base + (size_t) b * sg.B, b1 = b0 + sg.B;
+                        if (b1 > lo && b0 < hi && ps.owner[b] != -3) { return false; }
+                    }
+                }
+                return true;
             }
-            return true;
         }
     }
     for (auto & ar : g_kv_arena) {
-        for (auto & q : ar.runs) { if (q.owner == owner) { return q.row > 0 && (max_cell + 1) <= (size_t) std::max<int64_t>(0, q.end_off) / q.row; } }
+        for (auto & q : ar.runs) { if (q.owner == owner) { return (max_cell + 1) <= (q.fixed ? q.cells_max : ar.size / std::max<size_t>(1, ar.row)); } }
     }
     return true;
 }
 
 
-// The attention reads the cells rounded up to the pad (256): the rows between the used cells and that boundary are masked, but they are read, and in the tail they are bytes of
-// experts (NaN/Inf in a half float: 0 x NaN is NaN in the softmax). Only that window is zeroed: no block is cleared at a claim; the window moves once per 256 generated tokens
-// (at most 256 rows of the record) and is set up again when a request starts.
+// The attention reads the cells rounded up to the pad (256): the rows between the cells in use and that boundary are masked, but they are read, and in the zone
+// they are bytes of evicted experts (NaN/Inf in a half float: 0 x NaN is NaN in the softmax). Only that window is zeroed (whole combined rows: every record of
+// the card): no block is cleared at a claim; the window moves once per 256 generated tokens and is set up again when a request starts or the zone moves.
 static void kv_tail_pad_zero(moe_cache * mc) {
     for (auto & ap : mc->alias) {
-        for (auto & r : ap.kvt) {
-            const size_t cells = r.rows ? r.rows() : 0;
-            if (cells < r.last_cells) { r.zhi = 0; }   // the cache shrank (a new request): the window is set up again
-            r.last_cells = cells;
-            if (cells == 0) { continue; }
-            const size_t hi = std::min<size_t>((cells + r.pad - 1) / r.pad * r.pad, r.row ? r.bytes / r.row : 0);
-            const size_t lo = std::max(r.zhi, cells);
-            if (hi <= lo) { continue; }
-            const int64_t b1 = r.end_off - (int64_t) (lo * r.row), b0 = r.end_off - (int64_t) (hi * r.row);   // [b0, b1) of the pool buffer
-            if (b0 < 0) { continue; }
-            ggml_tensor z = {};
-            z.type = GGML_TYPE_I8; z.buffer = ap.buf;
-            z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + b0;
-            z.ne[0] = b1 - b0; z.ne[1] = z.ne[2] = z.ne[3] = 1;
-            z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = (size_t) z.ne[0];
-            ggml_backend_tensor_memset(&z, 0, 0, (size_t) z.ne[0]);
-            r.zhi = hi;
-        }
+        if (ap.kvt.empty() || ap.kv_row == 0) { continue; }
+        size_t cells = 0, pad = 1;
+        for (auto & r : ap.kvt) { if (!r.fixed) { cells = std::max(cells, r.rows ? r.rows() : 0); pad = std::max(pad, r.pad); } }
+        if (cells < ap.kv_last_cells) { ap.kv_zhi = 0; }   // the cache shrank (a new request): the window is set up again
+        ap.kv_last_cells = cells;
+        if (cells == 0) { continue; }
+        const size_t hi = std::min<size_t>((cells + pad - 1) / pad * pad, ap.kv_h);
+        const size_t lo = std::max(ap.kv_zhi, cells);
+        if (hi <= lo) { continue; }
+        ggml_tensor z = {};
+        z.type = GGML_TYPE_I8; z.buffer = ap.buf;
+        z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + ap.kv_start + ap.kv_fixed + lo * ap.kv_row;
+        z.ne[0] = (int64_t) ((hi - lo) * ap.kv_row); z.ne[1] = z.ne[2] = z.ne[3] = 1;
+        z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = (size_t) z.ne[0];
+        ggml_backend_tensor_memset(&z, 0, 0, (size_t) z.ne[0]);
+        ap.kv_zhi = hi;
     }
 }
 
@@ -3249,7 +3358,8 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
         llama_kv_tail_stat_fork st;
         st.dev = ggml_backend_dev_name(ar.dev);
         size_t cap = (size_t) -1;
-        for (auto & q : ar.runs) { const size_t c = q.rows ? q.rows() : 0; st.kv_cells = std::max(st.kv_cells, c); st.kv_bytes += c * q.row; cap = std::min(cap, q.row > 0 ? (size_t) std::max<int64_t>(0, q.end_off) / q.row : 0); }
+        for (auto & q : ar.runs) { const size_t c = q.rows ? q.rows() : 0; st.kv_cells = std::max(st.kv_cells, c); if (!q.fixed) { cap = std::min(cap, std::min(ar.size / std::max<size_t>(1, ar.row), q.cells_max)); } }
+        st.kv_bytes = st.kv_cells * ar.row + ar.fixed;
         st.cap_tokens = cap == (size_t) -1 ? 0 : cap;
         out.push_back(std::move(st));
     }
@@ -3260,10 +3370,10 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
     return out;
 }
 
-void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
+bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     moe_cache * mc = g_cache;
     if (!mc || !alias_on() || mc->alias.empty()) {
-        return;
+        return false;
     }
     struct lend_done { int64_t t0 = ggml_time_us(); int32_t n; ~lend_done() { g_ac.lend_us += ggml_time_us() - t0; g_ac.lend_n++; if (n > 64 && (g_ac.lend_n.load() % 8) == 0) { alias_cost_log("prompt"); } } } lend_guard{ggml_time_us(), n_tokens};
     {
@@ -3274,8 +3384,7 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         }
     }
     mc->graph_tokens_last = n_tokens;
-    bool changed = false;
-    kv_tail_claim(mc, changed, 0, n_tokens < 64);
+    bool changed = false;   // (the KV zones were laid out for this graph before it was built: llama_moe_cache_kv_tail_prepare_fork)
     kv_tail_pad_zero(mc);   // the KV rows this graph writes first: the lend below stops in front of them (ap.span); a decode graph ends the plan of the last prompt
     for (auto & ap : mc->alias) {
         size_t peak = 0;
@@ -3329,7 +3438,7 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         // see ggml_backend_sched_prefetch_prepare): a big micro-batch runs with fewer slots, or none, instead of the micro-batch being cut for them.
         {
             const size_t slot_b = ggml_backend_sched_prefetch_slot_bytes_dev(sched, ap.dev);
-            const size_t cap_b  = ap.span;
+            const size_t cap_b  = kv_lend_potential(ap);   // the slots may reach past the KV zone: it moves behind them (above)
             const int    n_cfg  = std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
             int          fit    = slot_b > 0 && cap_b > stage_off ? (int) std::min<size_t>((size_t) n_cfg, (cap_b - stage_off) / slot_b) : 0;
             if (n_tokens >= 64 && g_pp_k.load() >= 0) { fit = std::min(fit, g_pp_k.load()); }   // the pass planner's choice: more slots evict more cached experts
@@ -3340,10 +3449,29 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             if (n_tokens >= 64) { ap.graph_tok = std::max(ap.graph_tok, (peak + n_tokens - 1) / n_tokens); }   // graph bytes per token (the prompt pass planner)
         }
         const size_t need_b = stage_off + stage;   // the bytes this graph borrows from the start of the buffer: its tensors, the CUDA scratch, the staging slots
-        if (!ap.kvt.empty() && need_b > ap.span) {   // the graph would reach into the KV rows (or the experts behind them): never silently
-            LLAMA_LOG_ERROR("moe-cache: kv-tail %s: a %d-token graph needs %.1f MiB lent from the start of the pool but only %.1f MiB lie in front of the KV (%.1f MiB under it): the context is too long for this card with this micro-batch\n",
-                    ggml_backend_dev_name(ap.dev), n_tokens, need_b / 1048576.0, ap.span / 1048576.0, (ap.span_full - ap.span) / 1048576.0);
-            GGML_ABORT("kv-tail: the compute graph does not fit in front of the KV");
+        if (!ap.need_tok.empty() || !ap.kvt.empty()) {   // remembered per graph size: the next graph of this size gets its lend before it is built (prepare)
+            size_t & nt = ap.need_tok[n_tokens];
+            nt = std::max(nt, need_b);
+        }
+        if (!ap.kvt.empty() && need_b > ap.span) {
+            // the graph reaches into the KV zone: the zone moves behind it (a device copy of the rows in use), and since this graph's views of the KV point at the old
+            // place it is built again (the caller). Never silently over the KV, and no abort: only when the zone cannot fit behind the graph at all.
+            const size_t bmax = kv_bmax(ap);
+            const size_t lr = (need_b + bmax - 1) / std::max<size_t>(1, bmax) * bmax;
+            size_t cells = 0;
+            for (auto & r : ap.kvt) { if (!r.fixed) { cells = std::max(cells, r.rows ? r.rows() : 0); } }
+            if (lr + ap.kv_fixed + std::max(cells, (size_t) 1) * ap.kv_row + 2 * bmax > ap.tail_end) {
+                LLAMA_LOG_ERROR("moe-cache: kv-tail %s: a %d-token graph needs %.1f MiB lent from the start of the pool, and %zu cells of KV (%.1f MiB) do not fit behind it in the pool of %.1f MiB\n",
+                        ggml_backend_dev_name(ap.dev), n_tokens, need_b / 1048576.0, cells, cells * ap.kv_row / 1048576.0, ap.tail_end / 1048576.0);
+                GGML_ABORT("kv-tail: the compute graph and the KV do not fit in the pool");
+            }
+            ggml_backend_sched_synchronize(sched);   // the previous graph may still read the rows
+            size_t h = ap.kv_h;
+            const size_t room = (ap.tail_end - lr - ap.kv_fixed - 2 * bmax) / std::max<size_t>(1, ap.kv_row);
+            h = std::min(h, std::max(room, cells));
+            kv_layout(mc, ap, h, lr, cells, false);
+            flush_tables();
+            return true;
         }
         ap.want_b = std::min(need_b, ap.span);
         if (n_tokens < 64) { ap.dec_need = std::max(ap.dec_need, need_b); }
@@ -3456,6 +3584,7 @@ void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         ggml_backend_sched_synchronize(sched);   // the previous graph may still read those blocks; this graph's inputs are written next
         g_ac.sync_us += ggml_time_us() - s0; g_ac.sync_n++;
     }
+    return false;
 }
 
 // at a sync point: blocks above what the last graph needed go back to the cache. Returns how many came back.
@@ -3907,28 +4036,40 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                     ap.tail_end  = pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
                     ap.span_full = ap.span;
-                    {   // the records of the KV caches on this card (--moe kv-tail=1) sit at the tail of the expert blocks, stacked downward
+                    {   // the records of the KV caches on this card (--moe kv-tail=1): one zone of combined rows behind the compute lend, in front of the experts (fork/docs/kv-grow.md).
+                        // It backs no cells yet: the first graph lays it out (llama_moe_cache_kv_tail_prepare_fork), the first graph that needs more lend moves it behind that.
                         std::lock_guard<std::mutex> klk(g_kvt_mtx);
-                        int64_t off = (int64_t) ap.tail_end;
                         for (auto & r : g_kvt) {
                             if (r.dev != ap.dev) { continue; }
                             if (ap.span != ap.tail_end) {
-                                LLAMA_LOG_ERROR("%s: kv-tail needs --moe alias-all (the record is placed behind every size class)\n", __func__);
+                                LLAMA_LOG_ERROR("%s: kv-tail needs --moe alias-all (the zone is laid out across every size class)\n", __func__);
                                 GGML_ABORT("kv-tail without alias-all");
                             }
-                            // the record is virtual: it may be larger than the pool (the model's full context); only the rows the cap allows are ever backed (kv_tail_cap)
                             moe_cache::alias_pool::kvt_run kr;
-                            kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.pad = std::max<size_t>(1, r.pad); kr.end_off = off; kr.rows = r.rows;
-                            GGML_ASSERT(off <= (int64_t) ap.tail_end && "kv-tail: the record ends behind the expert blocks");
+                            kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.pad = std::max<size_t>(1, r.pad); kr.rows = r.rows; kr.attach = r.attach;
+                            kr.cells_max = r.row ? r.bytes / r.row : 0;
+                            if (r.step > 0) { ap.kv_step = r.step; }
                             ap.kvt.push_back(kr);
-                            if (r.attach) { r.attach(pbuf, (uint8_t *) ((uintptr_t) base + (uintptr_t) off - (uintptr_t) r.bytes)); }
                             r.attached = true;
-                            {   // what fits: all the expert cache given up except what a decode graph borrows (at least two blocks); the context is the smaller of that and the record (the model's trained maximum)
-                                size_t bmax = 0; for (auto & sg2 : ap.segs) { bmax = std::max(bmax, sg2.B); }
-                                const size_t cap = r.row ? (size_t) std::max<int64_t>(0, off - (int64_t) (2 * bmax)) / r.row : 0;
-                                LLAMA_LOG_WARN("%s: kv-tail: record of %.1f MiB (%zu B per token) ends %.1f MiB into the pool of %.1f MiB on %s: KV capacity %zu tokens, max context that fits %zu tokens (model cap %zu)\n", __func__, r.bytes / 1048576.0, r.row, off / 1048576.0, ap.tail_end / 1048576.0, ggml_backend_dev_name(ap.dev), cap, std::min(cap, r.row ? r.bytes / r.row : 0), r.row ? r.bytes / r.row : 0);
+                        }
+                        if (!ap.kvt.empty()) {
+                            // records with the most cells (the model's context) grow together in one combined row; smaller ones (a sliding-window cache: its cells are a ring
+                            // of the window plus a batch) are fixed: laid out at full size in front of the growing part
+                            size_t cmax = 0;
+                            for (auto & kr : ap.kvt) { cmax = std::max(cmax, kr.cells_max); }
+                            for (auto & kr : ap.kvt) {
+                                kr.fixed = kr.cells_max < cmax;
+                                if (kr.fixed) { kr.prefix = ap.kv_fixed; ap.kv_fixed += (kr.cells_max * kr.row + 255) / 256 * 256; }
+                                else          { kr.prefix = ap.kv_row;   ap.kv_row   += kr.row; }
                             }
-                            off -= (int64_t) r.bytes;
+                            for (auto & kr : ap.kvt) {   // row 0 at the start of the buffer until the first layout
+                                if (kr.attach) { kr.attach(pbuf, (uint8_t *) base + (kr.fixed ? kr.prefix : ap.kv_fixed + kr.prefix), kr.fixed ? kr.row : ap.kv_row); }
+                            }
+                            ap.kv_start = 0; ap.kv_h = 0;
+                            size_t bmax = 0; for (auto & sg2 : ap.segs) { bmax = std::max(bmax, sg2.B); }
+                            const size_t cap = ap.kv_row && ap.tail_end > 4 * bmax + ap.kv_fixed ? (ap.tail_end - 4 * bmax - ap.kv_fixed) / ap.kv_row : 0;
+                            LLAMA_LOG_WARN("%s: kv-tail: %zu record(s) on %s: fixed part %.1f MiB, growing part %zu B per cell in steps of %zu cells: room for %zu tokens in the pool of %.1f MiB (model cap %zu)\n",
+                                    __func__, ap.kvt.size(), ggml_backend_dev_name(ap.dev), ap.kv_fixed / 1048576.0, ap.kv_row, ap.kv_step, cap, ap.tail_end / 1048576.0, cmax);
                         }
                     }
                     mc->alias.push_back(ap);
@@ -6616,8 +6757,7 @@ double llama_moe_cache_compute_us_fork() {
 
 uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
     if (g_cache && n > 0) {   // kv-tail: the prompt's KV is claimed before its passes are planned, so the planner sees what the pool can still lend
-        bool changed = false;
-        kv_tail_claim(g_cache, changed, n, false);
+        const bool changed = kv_tail_plan(g_cache, n, false, true, 0, false);   // the zone shrinks to this request (a new request) or grows for its prompt
         for (auto & ap : g_cache->alias) { for (auto & sg : ap.segs) { sg.hwm = 0; } }   // the lend's reach is this request's (the micro-batch is fixed per request): placement follows it
         if (changed) { flush_tables(); }   // between requests nothing runs: the tables reach the GPU, no scheduler sync needed
     }
@@ -6750,7 +6890,8 @@ bool llama_moe_cache_pred_train_now_fork() {
 static bool g_starved_built = false;
 bool llama_moe_cache_graph_reusable_fork() {
     const bool starved = g_cache && g_cache->starved.load();
-    return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built && g_split_epoch == g_split_epoch_built && starved == g_starved_built;
+    return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built && g_split_epoch == g_split_epoch_built && starved == g_starved_built &&
+           g_kv_epoch.load() == g_kv_epoch_built;   // a moved KV zone: the old graph's views point at the old place
 }
 
 int32_t llama_moe_cache_cpu_sat_threads_fork() {
@@ -6762,6 +6903,7 @@ void llama_moe_cache_graph_built_fork() {
     g_pred_train_built = g_pred_train_now;
     g_pred_epoch_built = g_pred_epoch;
     g_split_epoch_built = g_split_epoch;
+    g_kv_epoch_built = g_kv_epoch.load();
 }
 
 namespace {

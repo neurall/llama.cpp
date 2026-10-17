@@ -128,27 +128,34 @@ std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork();
 // when it splits, else 0); the lent range covers the copies too
 void llama_moe_cache_alias_mirror_fork(ggml_backend_dev_t dev, size_t bytes);
 void llama_moe_cache_alias_offset_fork(ggml_backend_dev_t dev, size_t off);
-// after a graph is allocated, before its inputs are set: lend the blocks it reaches to it (evict their experts)
-void llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens);
+// after a graph is allocated, before its inputs are set: lend the blocks it reaches to it (evict their experts). Returns true when the graph needed more than the
+// space in front of the KV records (kv-tail): the records were moved forward to make room, so the graph (its views of the KV) must be built again.
+bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens);
+// kv-tail, before a graph is built (process_ubatch): grow the records' space when the cells in use pass half of it, and make room in front of them for the lend
+// a graph of this size needed before. Returns true when the records moved (the previous graph's views are stale: no reuse).
+bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_tokens);
 // after a worst-case reserve with the alias: does the graph (+ CUDA scratch) fit in the lent blocks, and the prefetch staging slots too? need / cap in bytes
 struct llama_moe_alias_fit_fork { bool graph = true; bool stage = true; size_t need = 0; size_t cap = 0; };
 llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sched, int32_t n_tokens);
 // the pool cannot lend the smallest worst-case graph: the alias stays off from now on
 void llama_moe_cache_alias_drop_fork();
 
-// KV cache at the tail of the pool (--moe kv-tail=1, needs kv-token-major=2, see fork/docs/kv-tail.md). The cache registers its record of one card: `bytes` is the
-// virtual size of the record (all cells), `row` the bytes of one cell, `rows()` the cells in use now (highest used cell + 1; the used rows are the LAST rows of the
-// record), `detach()` frees the small backing buffer the cache starts with, `attach(base)` points the record at `base` (its first byte, `bytes` before the end of
-// the pool's expert blocks). The pool claims the blocks under the used rows before a graph runs and gives them back to the experts when the rows shrink.
+// KV cache in the pool (--moe kv-tail=1, token-major record, forward rows: cell c is row c; fork/docs/kv-grow.md). Layout of a card's pool buffer:
+//   [ compute lend from byte 0 ][ record 1: H cells ][ record 2: H cells ] .. [ expert blocks ]
+// The cache registers its record of one card: `bytes` is the virtual size (all cells of the context), `row` the bytes of one cell, `rows()` the cells in use
+// (highest used cell + 1), `step` the growth step in cells (profile from the GGUF: 2k for mostly full-attention models, 10k otherwise), `detach()` frees the
+// small backing buffer the cache starts with, `attach(base)` points the record at `base` (row 0). The pool backs H rows of every record (H grows by `step`
+// when the cells in use pass H/2) and moves the records when H or the lend in front of them grows; the blocks under them are taken from the experts.
 struct llama_kv_tail_fork {
     void *             owner = nullptr;
     ggml_backend_dev_t dev   = nullptr;
     size_t             bytes = 0;
     size_t             row   = 0;
     size_t             pad   = 1;   // the attention reads the cells rounded up to this many (masked, but read): the claim covers them
+    size_t             step  = 0;   // growth step in cells (0: 10240)
     std::function<size_t()>                  rows;
     std::function<void()>                    detach;
-    std::function<void(ggml_backend_buffer_t, uint8_t *)> attach;
+    std::function<void(ggml_backend_buffer_t, uint8_t *, size_t)> attach;   // (buffer, address of row 0 of this record, bytes from one cell to the next)
     bool               attached = false;   // placed in a pool's tail or in an arena
 };
 void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec);

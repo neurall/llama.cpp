@@ -109,7 +109,7 @@ llama_kv_cache::llama_kv_cache(
         const char * kt = llama_moe_get_opt("kv-tail");
         const char * uc = llama_moe_get_opt("kv-user-ctx");
         const char * tm = llama_moe_get_opt("kv-token-major");
-        const bool can = tm && atoi(tm) == 2 && !other && n_stream == 1 && !v_trans && type_k == type_v && !share && offload;
+        const bool can = tm && atoi(tm) != 0 && !other && n_stream == 1 && !v_trans && type_k == type_v && !share && offload;
         if (kt && atoi(kt) != 0 && uc && !can) {
             const uint32_t user = GGML_PAD((uint32_t) atoi(uc), n_pad);
             if (user < kv_size) {
@@ -188,10 +188,16 @@ llama_kv_cache::llama_kv_cache(
     // tensor, which is what lets the KV cache sit in the per-GPU arena and grow and shrink at the end of it (branch dynkv; the arena part is not written yet).
     // Needs equal K and V types of plain floats (rows of whole elements), one stream, flash attention (V not transposed) and no shared cells.
     const char * o_tm = llama_moe_get_opt("kv-token-major");
-    const bool   tm_on = o_tm && atoi(o_tm) != 0 && !other && n_stream == 1 && !v_trans && type_k == type_v &&
-                         (type_k == GGML_TYPE_F16 || type_k == GGML_TYPE_BF16 || type_k == GGML_TYPE_F32 || ggml_is_quantized(type_k)) && !share &&
-                         hparams.indexer_top_k == 0;   // a sparse-attention indexer (GLM5-Next, DeepSeek 3.2, Qwen4Exp) addresses its K rows by CELL number (k-pool gathers and scatters, mask columns): with the reversed rows of the record those rows are wrong and the answer is garbage ('!!!!', 2026-10-17); the old layout until that code maps cell -> row;   // quantized K and V (q8_0, q4_0, ...): rows of whole blocks, the record tensor is rounded down to whole blocks per row
-    kv_rev = tm_on && atoi(o_tm) == 2;
+    const char * o_kt_rev = llama_moe_get_opt("kv-tail");
+    const bool   tail_req = o_kt_rev && atoi(o_kt_rev) != 0;
+    const bool   tm_base = o_tm && atoi(o_tm) != 0 && !other && n_stream == 1 && !v_trans && type_k == type_v &&
+                           (type_k == GGML_TYPE_F16 || type_k == GGML_TYPE_BF16 || type_k == GGML_TYPE_F32 || ggml_is_quantized(type_k)) && !share;
+    // kv-token-major=2 without the tail: cell c in row kv_size-1-c (reversed). The tail keeps forward rows (cell c is row c): its record sits in front of the
+    // experts and grows toward them (fork/docs/kv-grow.md). A sparse-attention indexer (GLM5-Next, DeepSeek 3.2, Qwen4Exp) addresses its K rows by CELL number
+    // (k-pool gathers and scatters, mask columns): with reversed rows those reads were wrong and GLM answered '!!!!' (2026-10-17), so reversed rows are refused there.
+    const bool   rev_req = tm_base && atoi(o_tm) == 2 && !tail_req;
+    const bool   tm_on   = tm_base && !(rev_req && hparams.indexer_top_k > 0);
+    kv_rev = tm_on && rev_req;
     if (o_tm && atoi(o_tm) != 0 && !tm_on) {
         LLAMA_LOG_WARN("%s: kv-token-major needs K and V of the same float type, one stream, flash attention, no shared cells and no sparse-attention indexer: old layout\n", __func__);
     }
@@ -348,8 +354,17 @@ llama_kv_cache::llama_kv_cache(
     // virtual: nothing below the backed part is ever read or written); when the expert pool is created it takes the memory back, the record is placed at the
     // tail of the pool and the blocks under the used rows are claimed per graph (llama_moe_cache_kv_tail_*, fork/docs/kv-tail.md)
     const char * o_kt = llama_moe_get_opt("kv-tail");
-    const bool   kv_tail = kv_rev && o_kt && atoi(o_kt) != 0;
-    if (o_kt && atoi(o_kt) != 0 && !kv_rev) { LLAMA_LOG_WARN("%s: kv-tail needs kv-token-major=2: the KV stays in its own buffer\n", __func__); }
+    const bool   kv_tail = tm_on && !kv_rev && o_kt && atoi(o_kt) != 0;
+    if (o_kt && atoi(o_kt) != 0 && !kv_tail) { LLAMA_LOG_WARN("%s: kv-tail needs the token-major record (kv-token-major=1 or 2): the KV stays in its own buffer\n", __func__); }
+    if (kv_tail) {   // growth step of the pool's horizon from the layer pattern: more than half of the layers keep a full-length KV -> quadratic, small steps
+        uint32_t n_full = 0, n_all = 0;
+        for (uint32_t il = 0; il < hparams.n_layer(); ++il) {
+            n_all++;
+            if (hparams.has_kv(il) && !hparams.is_swa(il) && !hparams.is_recr(il)) { n_full++; }
+        }
+        kv_tail_step = 2 * n_full > n_all ? 2048 : 10240;
+        LLAMA_LOG_INFO("%s: kv-tail: %u of %u layers keep a full-length KV: the pool grows the KV by %u cells\n", __func__, n_full, n_all, kv_tail_step);
+    }
     for (auto & [buft, ctx] : ctx_map) {
         ggml_backend_buffer_t buf;
         auto tm_it = tm_map.find(buft);
@@ -390,16 +405,34 @@ llama_kv_cache::llama_kv_cache(
             reg.dev   = tdev;
             reg.bytes = r.row * (size_t) kv_size;
             reg.row   = r.row;
+            reg.step  = kv_tail_step;
             reg.pad   = std::max(n_pad, 256u);   // the attention reads the cells rounded up as get_n_kv does (at least 256): those rows must be claimed and finite
             reg.rows  = [this]() -> size_t { return v_cells.empty() ? 0 : (size_t) v_cells[0].used_max_p1(); };
             reg.detach = [this]() {
                 GGML_ASSERT((v_cells.empty() || v_cells[0].used_max_p1() == 0) && "kv-tail: the pool starts while the cache holds cells");
             };
-            reg.attach = [rec, cx](ggml_backend_buffer_t pb, uint8_t * at) {
+            // the pool interleaves the records of a card into one combined row per cell (this record's bytes at `at`, the next cell `stride` bytes on): a horizon step
+            // then only appends rows. The record and its views keep their shapes; their row strides (nb[1..3], all multiples of the record's own row, one stream)
+            // are scaled to the combined row. Graphs built afterwards take the new strides from these tensors.
+            const size_t own_row = r.row;
+            reg.attach = [rec, cx, own_row](ggml_backend_buffer_t pb, uint8_t * at, size_t stride) {
+                if (stride == 0) { stride = own_row; }
+                auto restride = [&](ggml_tensor * t) {
+                    const size_t cur = t->nb[1];   // the row stride this tensor has now (its own row, or the combined row of an earlier attach)
+                    for (int j = 1; j < GGML_MAX_DIMS; ++j) {
+                        GGML_ASSERT(cur > 0 && t->nb[j] % cur == 0 && "kv-tail: a view of the record whose stride is not a whole number of rows");
+                        t->nb[j] = t->nb[j] / cur * stride;
+                    }
+                };
                 rec->buffer = pb;
                 rec->data   = at;
+                restride(rec);
                 for (ggml_tensor * t = ggml_get_first_tensor(cx); t != nullptr; t = ggml_get_next_tensor(cx, t)) {
-                    if (t != rec && t->view_src == rec) { t->buffer = pb; t->data = at + t->view_offs; }
+                    if (t != rec && t->view_src == rec) {
+                        GGML_ASSERT(t->view_offs < own_row && "kv-tail: a view of the record that starts beyond its first row (one stream only)");
+                        t->buffer = pb; t->data = at + t->view_offs;
+                        restride(t);
+                    }
                 }
             };
             llama_moe_cache_kv_tail_add_fork(reg);
@@ -3060,7 +3093,7 @@ llama_kv_cache_context::llama_kv_cache_context(llama_memory_status status) : sta
 
 llama_kv_cache_context::llama_kv_cache_context(
         llama_kv_cache * kv) : status(LLAMA_MEMORY_STATUS_SUCCESS), kv(kv) {
-    n_kv = kv->get_size();
+    n_kv = kv->get_size_reserve();
 
     const uint32_t n_stream = kv->get_n_stream();
 
@@ -3213,6 +3246,9 @@ void llama_moe_cache_kv_tail_remove_fork(void * owner);
 llama_kv_cache::tail_guard::~tail_guard() { llama_moe_cache_kv_tail_remove_fork(o); }
 
 size_t llama_moe_cache_kv_tail_cap_fork(void * owner);
+uint32_t llama_kv_cache::get_size_reserve() const {
+    return kv_tail_on && kv_tail_step > 0 ? std::min<uint32_t>(get_size(), kv_tail_step) : get_size();
+}
 uint32_t llama_kv_cache::kv_tail_cap(uint32_t n) const {
     if (!kv_tail_on) { return n; }
     const size_t c = llama_moe_cache_kv_tail_cap_fork((void *) this);

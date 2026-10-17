@@ -244,7 +244,7 @@ llama_context::llama_context(
     // the load-time fit measures a context with no_alloc: it must see the small context common handed over, not the tail's per-request size (it counted the KV of 82k tokens and moved experts to the CPU)
     if (const char * kt = llama_moe_get_opt("kv-tail"); kt && atoi(kt) != 0 && !model.hparams.no_alloc) {   // the context of a request is calculated from the request, -c is not used (fork/docs/kv-tail.md)
         const char * ac = llama_moe_get_opt("kv-auto-ctx");   // --moe kv-auto-ctx=0: -c is accepted again (the cap of the virtual record)
-        const bool tail_possible = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && params.n_seq_max <= 1 && params.type_k == params.type_v && !model.devices.empty() && model.hparams.indexer_top_k == 0;   // indexer models: see llama_kv_cache (token-major) - the old layout with the context the user asked for
+        const bool tail_possible = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && params.n_seq_max <= 1 && params.type_k == params.type_v && !model.devices.empty();
         const char * given = llama_moe_get_opt("kv-ctx-given");   // set by the common code: 1 when the user passed -c
         if ((!ac || atoi(ac) != 0) && tail_possible) {
             llama_moe_set_opt("kv-user-ctx", std::to_string(cparams.n_ctx).c_str());   // what the user asked for (or the default): the cache goes back to it when it cannot use the tail layout
@@ -2435,6 +2435,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         return nullptr;
     }
 
+    // fork: --moe kv-tail: the KV zone of each card grows (cells past half of it) and makes room for the lend a graph of this size needed before, BEFORE the graph
+    // is built: a graph never points at rows that move (a move changes the reuse epoch below)
+    if (cparams.moe_cache) { llama_moe_cache_kv_tail_prepare_fork(sched.get(), (int32_t) ubatch.n_tokens); }
+
     auto * res = get_gf_res_prev();
     auto * gf  = res->get_gf();
 
@@ -2449,7 +2453,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     const bool ctl_changed = ubatch.n_tokens >= 32 && llama_split_ctl_poll_fork((int64_t) model.hparams.n_expert, (int64_t) model.hparams.n_embd);
     const int64_t t_graph0 = ggml_time_us();
     bool graph_rebuilt = false;
-    if (!graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork() && !ds_changed && !ctl_changed) {
+    bool reuse = !graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork() && !ds_changed && !ctl_changed;
+    if (reuse) {
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
 
         // with pipeline parallelism, the previous graph_compute_async may still be running
@@ -2460,7 +2465,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         }
 
         n_reused++;
-    } else {
+        if (llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens)) { reuse = false; }   // fork: the KV zone moved behind this graph: build it again
+    }
+    if (!reuse) {
         gf_res_prev_active = nullptr;
         res->reset();
 
@@ -2487,6 +2494,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             moe_mirror_offsets();   // fork: --moe mirror-pool: a pass that splits behind the dense split's copies, any other graph over them
 
             if (ggml_backend_sched_alloc_graph(sched.get(), gf)) {
+                // fork: --moe alias=1 lends the pool blocks this graph's tensors reach to it; when the graph reached into the KV zone (kv-tail), the zone moved behind
+                // it and this graph's views of the KV point at the old place: it is built again (the next graph of this size gets its lend before it is built)
+                if (llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens) && attempt < 4) {
+                    res->reset();
+                    continue;
+                }
                 break;
             }
             if (attempt == 0 && !fork_resident && llama_dsplit_cur_fork() == 1) {
@@ -2512,7 +2525,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                     ctl_changed ? " (the expert counts changed)" : ds_changed ? " (one card / split choice changed)" : "");
         }
     }
-    llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);   // fork: --moe alias=1 lends the pool blocks this graph's tensors reach to it
     moe_mirror_fill();   // fork: --moe mirror-pool: the dense split's copies, when the region lost them since they were last filled
 
     // set the input data for the input tensors
