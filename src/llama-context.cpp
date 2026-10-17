@@ -1969,6 +1969,18 @@ void llama_context::detach_threadpool() {
 // 65536 tokens) while the base is confirmed. LLAMA_THREAD_AUTOTUNE=0 turns it off.
 // the tuned thread counts of this model on this machine are kept in the state file as "<default> <tuned>", valid while the default
 // is unchanged: a short session (one reply, no time for a cycle) starts from what an earlier one found
+// the tuned counts depend on how much of the experts run on the CPU: 2 threads were best with everything on the GPUs, but the same model on a small card (a
+// fit that leaves quarters of the experts on the CPU) decodes 30% slower on that saved count than on 8 (Qwen3.6, simulated 8 GB card). The quarter of the layers
+// whose experts sit in host memory becomes part of the key; all on the CPU (the common --cpu-moe case) keeps the plain key.
+static std::string threads_key(const llama_model & model, const char * key) {
+    int n = 0, host = 0;
+    for (const auto & l : model.layers) {
+        if (l.ffn_up_exps && l.ffn_up_exps->buffer) { n++; host += ggml_backend_buffer_is_host(l.ffn_up_exps->buffer) ? 1 : 0; }
+    }
+    const int q = n > 0 ? (4 * host + n / 2) / n : 4;
+    return q >= 4 ? std::string(key) : std::string(key) + "_cpu" + std::to_string(q);
+}
+
 static int threads_saved(const llama_model & model, const char * key, int dflt) {
     std::string v;
     int d = 0, t = 0;
@@ -1998,7 +2010,7 @@ void llama_context::set_thread_autotune(bool on) {
     thr.hold  = 40;  // the first tokens run on the default (the counter runs across requests)
     // the thread pool is created for the default count after this call: a saved count above it cannot run, so only lower ones apply
     if (on) {
-        if (const int s = threads_saved(model, "threads", thr.base0)) {
+        if (const int s = threads_saved(model, threads_key(model, "threads").c_str(), thr.base0)) {
             thr.base = std::min(s, thr.base0);
             cparams.n_threads = (uint32_t) thr.base;
         }
@@ -2032,7 +2044,7 @@ void llama_context::set_batch_thread_autotune(bool on, int32_t n_max) {
     thrb.base0 = (int) cparams.n_threads_batch;
     thrb.base  = thrb.base0;
     if (on) {
-        if (const int s = threads_saved(model, "threads_batch", thrb.base0)) {
+        if (const int s = threads_saved(model, threads_key(model, "threads_batch").c_str(), thrb.base0)) {
             thrb.base = std::min(s, std::max(n_max, thrb.base0));
             cparams.n_threads_batch = (uint32_t) thrb.base;
             // a count measured by an earlier session (adopted, or the default confirmed best) stands: exploring five thread counts costs a
@@ -2105,12 +2117,12 @@ void llama_context::thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens) {
     for (size_t i = 1; i < thrb.cand.size(); ++i) { msg += " | " + std::to_string(thrb.cand[i]) + ": " + std::to_string(1e6/mean(i)).substr(0, 6); }
     LLAMA_LOG_INFO("%s: batch thread autotune: base %d %.1f tokens/s%s%s -> %d%s\n", __func__, thrb.cand[0], 1e6/mean(0), msg.c_str(),
             noisy ? " (noisy, void)" : "", adopt ? cand_best : thrb.cand[0], (cand_best >= 0 && !adopt) ? " (leads, confirming)" : "");
-    if (adopt) { thrb.base = cand_best; thrb.pending = -1; thrb.hold_len = 8; thrb.hold = thrb.hold_len; threads_save(model, "threads_batch", thrb.base0, cand_best); }
+    if (adopt) { thrb.base = cand_best; thrb.pending = -1; thrb.hold_len = 8; thrb.hold = thrb.hold_len; threads_save(model, threads_key(model, "threads_batch").c_str(), thrb.base0, cand_best); }
     else if (cand_best >= 0) { thrb.pending = cand_best; thrb.hold = 1; }   // confirm at the next full batch
     else {
         thrb.pending = -1; thrb.hold_len = std::min(thrb.hold_len*2, 64); thrb.hold = thrb.hold_len;
         // a clean cycle in which nothing beat the base: remember the base, the next sessions do not repeat the measurement
-        if (!noisy) { threads_save(model, "threads_batch", thrb.base0, thrb.base); }
+        if (!noisy) { threads_save(model, threads_key(model, "threads_batch").c_str(), thrb.base0, thrb.base); }
     }
     set(thrb.base);
     thrb.cand.clear();
@@ -2210,7 +2222,7 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     LLAMA_LOG_INFO("%s: thread autotune: base %d %.2f ms/token%s%s -> %d%s\n", __func__, thr.cand[0], mean(0)/1000.0, msg.c_str(),
             noisy ? " (noisy, void)" : "", adopted, (cand_best >= 0 && !adopt) ? " (leads, confirming)" : "");
     // an adopted step keeps climbing: the next cycle follows after 128 tokens; a cycle without a win is the plateau, then the rest grows as before
-    if (adopt) { thr.base = adopted; thr.hold_len = 4096; thr.pending = -1; thr.hold = 128; threads_save(model, "threads", thr.base0, adopted); }
+    if (adopt) { thr.base = adopted; thr.hold_len = 4096; thr.pending = -1; thr.hold = 128; threads_save(model, threads_key(model, "threads").c_str(), thr.base0, adopted); }
     else if (cand_best >= 0) { thr.pending = cand_best; thr.hold = 128; }   // second cycle soon
     else { thr.pending = -1; thr.hold_len = noisy ? 4096 : std::min(thr.hold_len*2, 65536); thr.hold = noisy ? 1024 : thr.hold_len; }
     set(thr.base);
