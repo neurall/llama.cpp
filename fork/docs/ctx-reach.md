@@ -88,3 +88,34 @@ GPU0 hidden (`CUDA_VISIBLE_DEVICES=1`), 16 GiB of GPU1 held. 12k-token prompt, 6
 | none (ours auto) | n/a | 100.4 | | n/a | 3922 | |
 
 One run per cell. Ours is flat in `-c` (the KV is claimed per request, the rest of the card keeps the experts); stock falls as the reserved KV pushes layers to the CPU. The first prompt on this card used to abort (one 13720-token pass needing 5.1 GiB of lent graph in a 4.6 GiB pool); a pass is now capped by the exact lend inequality (`pp_cap_to_pool`: lend rounded to whole blocks + KV zone + two blocks <= pool end, graph bytes linear in tokens from the two largest measured sizes). The earlier kvg15 row at 262144 (130 t/s, 2647 prompt t/s) came from the 90%-margin version and is superseded.
+
+## MiMo-V2.6-Flash 3-bit, real 255k-token prompt, no `-c` (2026-10-17, build kvg37, x16 + x4)
+
+Prompt: concatenated C++ sources from the repo (real text, no repetition), cut to 254,826 tokens. No `-c`: the KV grows with the prompt.
+The pinned attention mask caps the pass size (budget 1536 MiB, mask = 2 bytes per pass token per cell, fitted at startup).
+
+| measure | value |
+|---|---|
+| prompt tokens | 254,826 |
+| prompt speed | 336.0 t/s (758 s) |
+| decode speed | 16.16 t/s (64 tokens) |
+| expert cache hit rate | 64.4% |
+| passes | 63 (pass size 8192 at 32k cells down to 2368 at 255k cells) |
+| prefill cards | one (x16) for every pass, split planner's choice |
+| pin stalls, asserts | none |
+
+Time per 32,768-token call, as the context fills:
+
+| cells at end of call | pass size | seconds | prompt t/s |  
+|---|---|---|---|
+| 32,768 | 8192 | 47 | 697 |
+| 65,536 | 6560 | 70 | 468 |
+| 98,304 | 4704 | 83 | 395 |
+| 131,072 | 4096 | 94 | 349 |
+| 163,840 | 3648 | 105 | 312 |
+| 196,608 | 3008 | 119 | 275 |
+| 229,376 | 2752 | 130 | 252 |
+
+The time grows linearly with the cells: attention over the whole context, which the split planner does not model (it estimated 4.0 s for a 2368-token
+pass that took about 11 s). Uploads (about 4.1 s per pass, 63 passes) are about a third of the prefill; attention the rest.
+Stock at `-c 262144` on the same file: not run yet (needs the huge page pool released).

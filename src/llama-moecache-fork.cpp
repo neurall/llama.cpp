@@ -6555,6 +6555,28 @@ static uint32_t   g_pp_n     = 0;     // the last planned prompt: its tokens, pa
 static uint32_t   g_pp_P     = 0;
 static uint32_t   g_pp_ub    = 0;
 static double     g_pp_U_us  = 0.0;
+// The compute of a prompt token grows with the cells its pass attends to (MiMo 3-bit, 255k-token prompt, x16 + x4: 1.4 ms per token at 32k cells, 4.6 ms at 230k;
+// the attention over the whole context). One number per model cannot plan both ends, so the measurement is fitted as c(cells) = c0 + a x cells:
+//   g_pp_c_us  c0, the compute per token with no context
+//   g_pp_a_us  a, per token and cell (0 until two measurements far enough apart in cells say otherwise)
+// The server sends a long prompt as several decode calls (n_batch tokens each) and synchronizes only after the last one, so the context's report covers all of them:
+// every planned call adds its tokens, passes, upload estimate and token-weighted cells to the totals below, and the report reads the totals (before 2026-10-17 it
+// compared the report with the last call alone, and prompts longer than one call never taught it anything: a stale 8 us per token planned a 255k prompt).
+static double     g_pp_a_us  = 0.0;
+static double     g_pp_Usum  = 0.0;   // sum over the planned passes of their upload estimate (us)
+static double     g_pp_xc    = 0.0;   // sum over the planned tokens of the cells each one's pass attends to (about the cells at the middle of its call)
+static uint64_t   g_pp_cells = 0;     // the cells at the end of the call being planned (set by the context, llama_moe_cache_pp_cells_fork)
+static double     g_fit[5]   = {0, 0, 0, 0, 0};   // decayed sums for the fit: weight, x, y, x*x, x*y (x = cells, y = us per token)
+void llama_moe_cache_pp_cells_fork(uint64_t cells_end) { std::lock_guard<std::mutex> lk(g_pp_mu); g_pp_cells = cells_end; }
+// the compute per token at the cells of the call being planned (under g_pp_mu)
+static double pp_c_at() { return g_pp_c_us > 0.0 ? g_pp_c_us + g_pp_a_us * (double) g_pp_cells : 0.0; }
+// one planned call (under g_pp_mu): added to what the next report measures
+static void pp_add(uint32_t n, uint32_t ub, double U, int k) {
+    const uint32_t P = (n + std::max<uint32_t>(1, ub) - 1) / std::max<uint32_t>(1, ub);
+    g_pp_n += n; g_pp_P += P; g_pp_ub = std::min(ub, n); g_pp_U_us = U; g_pp_k = k;
+    g_pp_Usum += (double) P * U;
+    g_pp_xc   += (double) n * std::max(0.0, (double) g_pp_cells - 0.5 * (double) n);
+}
 
 // The experts a prompt pass streams to `dev`: every layer's expert bytes (E), and how many of those bytes this card's pool holds now (R), ready, not in flight.
 static void pp_expert_bytes(moe_cache * mc, ggml_backend_dev_t dev, double & E, double & R) {
@@ -6591,7 +6613,7 @@ static uint32_t pp_record(moe_cache * mc, uint32_t n, uint32_t ub) {
         U = gbs > 0.0 ? std::max(0.0, E - R) / (gbs * 1e3) : 0.0;
     }
     std::lock_guard<std::mutex> lk(g_pp_mu);
-    g_pp_n = n; g_pp_P = (n + ub - 1) / std::max<uint32_t>(1, ub); g_pp_ub = std::min(ub, n); g_pp_U_us = U; g_pp_k = -1;
+    pp_add(n, ub, U, -1);
     return ub;
 }
 
@@ -6659,7 +6681,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     {
         std::lock_guard<std::mutex> lk(g_pp_mu);
         pp_c_us_stored();
-        c_us = g_pp_c_us;
+        c_us = pp_c_at();
     }
     const double per_t = (double) (ap->graph_tok + ap->tok_bytes);
     const int    n_cfg = std::max(0, ap->n_cfg);
@@ -6708,7 +6730,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
                 c_us, c_us > 0 ? "" : " (not measured yet)", best_t / 1e3);
     }
     std::lock_guard<std::mutex> lk(g_pp_mu);
-    g_pp_n = n; g_pp_P = (n + best_ub - 1) / best_ub; g_pp_ub = best_ub; g_pp_U_us = best_U; g_pp_k = best_k;
+    pp_add(n, best_ub, best_U, best_k);
     return best_ub;
 }
 
@@ -6817,38 +6839,47 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             if (moe_log_has("k")) { LLAMA_LOG_WARN("moe-cache: kv-tail: after the prompt %zu cold experts replaced by the prompt's hottest missing ones\n", swaps.size()); }
         }
     }
-    if (!mc || us <= 0 || llama_dsplit_cur_fork() == 1) {
-        return;
-    }
     std::lock_guard<std::mutex> lk(g_pp_mu);
-    if (n_tokens != g_pp_n || g_pp_P == 0 || g_pp_ub == 0) {
+    // a split pass (two cards) says nothing about one card, and a report that is not of the planned calls (an unplanned prompt) neither: the totals start again
+    if (!mc || us <= 0 || llama_dsplit_cur_fork() == 1 || n_tokens != g_pp_n || g_pp_P == 0 || g_pp_ub == 0) {
+        g_pp_n = 0; g_pp_P = 0; g_pp_Usum = 0.0; g_pp_xc = 0.0;
         return;
     }
     int k = 0;
     for (const auto & a : mc->alias) { if (mc->n_links > 0 && a.dev == mc->link_dev[0]) { k = a.n_stage; } }
-    const double t_pass = (double) us / (double) g_pp_P;
-    const double U = g_pp_U_us;
+    // totals over the calls since the last report (pp_add): with staging slots a pass takes max(U, C), without them U + C
+    const double Usum = g_pp_Usum, nt = (double) g_pp_n, x = g_pp_xc / std::max(1.0, nt);
     double c_new = -1.0;
     if (k >= 3) {
-        if (t_pass > 1.3 * U) {
-            c_new = t_pass / (double) g_pp_ub;
+        if ((double) us > 1.3 * Usum) {
+            c_new = (double) us / nt;
         } else if (g_pp_c_us > 0.0) {
-            c_new = std::min(g_pp_c_us, t_pass / (double) g_pp_ub);
+            c_new = std::min(g_pp_c_us + g_pp_a_us * x, (double) us / nt);
         }
     } else {
-        c_new = std::max(0.0, t_pass - U) / (double) g_pp_ub;
+        c_new = std::max(0.0, (double) us - Usum) / nt;
     }
     if (c_new >= 0.0) {
-        g_pp_c_us = g_pp_c_us > 0.0 ? 0.5 * (g_pp_c_us + c_new) : c_new;
+        // the fit c = c0 + a x cells over the measurements, older ones decayed (x 0.7 each): the slope only from points at least 8k cells apart; a stays >= 0
+        for (double & f : g_fit) { f *= 0.7; }
+        g_fit[0] += 1.0; g_fit[1] += x; g_fit[2] += c_new; g_fit[3] += x * x; g_fit[4] += x * c_new;
+        const double var = g_fit[0] * g_fit[3] - g_fit[1] * g_fit[1];   // n^2 x variance of the cells
+        if (g_fit[0] > 1.2 && var > g_fit[0] * g_fit[0] * 4096.0 * 4096.0) {
+            g_pp_a_us = std::max(0.0, (g_fit[0] * g_fit[4] - g_fit[1] * g_fit[2]) / var);
+        }
+        const double c0_new = std::max(0.0, c_new - g_pp_a_us * x);
+        g_pp_c_us = g_pp_c_us > 0.0 ? 0.5 * (g_pp_c_us + c0_new) : c0_new;
+        LLAMA_LOG_WARN("moe-cache: prompt compute measured: %.0f tokens in %.0f ms over %u passes (upload estimate %.0f ms) at %.0f cells: %.1f us per token -> c0 %.1f us + %.5f us per cell\n",
+                nt, us / 1e3, g_pp_P, Usum / 1e3, x, c_new, g_pp_c_us, g_pp_a_us);
         // kept in the state file (model section, key per GPU set: the placement's prefix) when it moved by more than 5%, so the next start plans its first
         // prompt from it (see pp_c_us_stored)
         static double saved = 0.0;
         if (!mc->profile.empty() && !moe_state_place().empty() && (saved <= 0.0 || std::fabs(g_pp_c_us / saved - 1.0) > 0.05)) {
             saved = g_pp_c_us;
-            moe_state_set(mc->profile, { { moe_state_place() + ".pp_c_us", tr_fmt("%.4f", g_pp_c_us) } });
+            moe_state_set(mc->profile, { { moe_state_place() + ".pp_c_us", tr_fmt("%.4f", g_pp_c_us) }, { moe_state_place() + ".pp_a_us", tr_fmt("%.6f", g_pp_a_us) } });
         }
     }
-    g_pp_n = 0;   // read once
+    g_pp_n = 0; g_pp_P = 0; g_pp_Usum = 0.0; g_pp_xc = 0.0;   // read once
 }
 
 // The compute of one prompt token measured by an earlier start on these cards (state file), until this start measures its own (under g_pp_mu). Without it the
@@ -6863,6 +6894,7 @@ static void pp_c_us_stored() {
     std::string v;
     if (moe_state_get(g_cache->profile, moe_state_place() + ".pp_c_us", v) && atof(v.c_str()) > 0.0) {
         g_pp_c_us = atof(v.c_str());
+        if (moe_state_get(g_cache->profile, moe_state_place() + ".pp_a_us", v)) { g_pp_a_us = std::max(0.0, atof(v.c_str())); }
         LLAMA_LOG_WARN("moe-cache: compute of one prompt token %.2f us (stored by an earlier start on these cards): the first prompt is planned from it\n", g_pp_c_us);
     }
 }
@@ -6871,7 +6903,14 @@ static void pp_c_us_stored() {
 double llama_moe_cache_compute_us_fork() {
     std::lock_guard<std::mutex> lk(g_pp_mu);
     pp_c_us_stored();
-    return g_pp_c_us;
+    return pp_c_at();
+}
+// the cells the call being planned ends at (0 = not set yet)
+uint64_t llama_moe_cache_pp_cells_get_fork() { std::lock_guard<std::mutex> lk(g_pp_mu); return g_pp_cells; }
+// the part of it that is attention over the context (a x cells): the split planner shares it by tokens like the rest of the dense part
+double llama_moe_cache_compute_att_us_fork() {
+    std::lock_guard<std::mutex> lk(g_pp_mu);
+    return g_pp_c_us > 0.0 ? g_pp_a_us * (double) g_pp_cells : 0.0;
 }
 
 uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {

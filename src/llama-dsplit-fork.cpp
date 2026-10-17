@@ -516,6 +516,8 @@ static void dsplit_bucket_save(int b) {
     moe_state_set(g_calib_section, { { "dsplit_arm_b" + std::to_string(b) + "@" + g_hw_key, v } });
 }
 
+double   llama_moe_cache_compute_att_us_fork();   // llama-moecache-fork.cpp: the attention part of the compute per token at the planned cells (declared here, no header edit)
+uint64_t llama_moe_cache_pp_cells_get_fork();     // the cells the planned call ends at
 static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_us, llama_dsplit_plan_fork & out, std::vector<double> & f_help) {
     out = llama_dsplit_plan_fork();
     f_help.clear();
@@ -566,12 +568,25 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     if (w_sum <= 0.0) {
         return;
     }
+    // Attention over the context (2026-10-17): c_us is the compute per token at the planned cells, base + a x cells (llama-moecache-fork.cpp, pp_c_at). The
+    // a x cells part is attention, which grows with the context and is spread over the layers evenly, not by weights; it is dense work, so a split shares it by
+    // tokens. MiMo 3-bit at 230k cells: 4.6 ms of a token's compute, three quarters of it attention; the planner without this saw 8 us and an upload-bound pass.
+    // A split range attends to the whole cache of its layer, which sits on the layer's own card: the other card's range reads it over the helper's link, every
+    // layer, every pass (f16 K and V of every cell the layer sees; a sliding-window layer only its window).
+    const double att_tok = std::min(c_us, std::max(0.0, llama_moe_cache_compute_att_us_fork()));
+    const double c_base  = c_us - att_tok;
+    const double cells   = (double) llama_moe_cache_pp_cells_get_fork();
+    std::vector<double> kv_b(L, 0.0);
+    for (int il = 0; il < L; ++il) {
+        const double cl_seen = model.hparams.is_swa(il) ? std::min(cells, (double) model.hparams.n_swa + (double) T) : cells;
+        kv_b[il] = cl_seen * (double) (model.hparams.n_embd_k_gqa(il) + model.hparams.n_embd_v_gqa(il)) * 2.0;
+    }
     // bytes per token that cross per layer, there and back (llama_dsplit_hop_mode_fork: f16 both ways, f16 there and f32 back, or f32 both ways)
     const int    hop_mode = llama_dsplit_hop_mode_fork();
     double t_one = 0.0, best_split = -1.0, best_s = 0.55;
     std::vector<double> best_f(L, 0.0), cur_f(L, 0.0);
     for (int il = 0; il < L; ++il) {
-        const double cl = c_us * (double) T * w[il] / w_sum;                                    // us: the layer on one card
+        const double cl = (c_base * w[il] / w_sum + att_tok / L) * (double) T;               // us: the layer on one card
         const double up = E[il] * (1.0 - llama_moe_cache_resident_frac_fork(il, dm)) / (Bm * 1e3);
         t_one += std::max(cl, up);
     }
@@ -588,10 +603,11 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     //   link     the helper's link carries its expert uploads and all four hand-offs: the layer is never shorter than their sum
     const double b_in = (double) model.hparams.n_embd * (hop_mode != 0 ? 2.0 : 4.0), b_out = (double) model.hparams.n_embd * (hop_mode == 1 ? 2.0 : 4.0);
     const auto layer_us = [&](int il, double s, double f) {
-        const double cl = c_us * (double) T * w[il] / w_sum;
-        const double D = cl * (1.0 - xf[il]), X = cl * xf[il];
+        const double cb = c_base * (double) T * w[il] / w_sum;
+        const double D = cb * (1.0 - xf[il]) + att_tok / L * (double) T, X = cb * xf[il];
+        const double kv_in = kv_b[il] / (Bh * 1e3);   // the cache of this layer to the range on the other card
         const double tok_h = s * (double) T, tok_m = (1.0 - s) * (double) T;
-        const double dense_h = s * D / rel, dense_m = (1.0 - s) * D;
+        const double dense_h = s * D / rel + kv_in, dense_m = (1.0 - s) * D;
         const double in_m  = f < 1.0 ? tok_h * b_in  / (Bh * 1e3) : 0.0;   // the helper's tokens, to the offload card's chain
         const double in_h  = f > 0.0 ? tok_m * b_in  / (Bh * 1e3) : 0.0;   // the offload card's tokens, to the helper's chain
         const double out_h = f < 1.0 ? tok_h * b_out / (Bh * 1e3) : 0.0;   // the offload card's sum for the helper's tokens
@@ -601,7 +617,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
         const double end_m = f < 1.0 ? std::max(std::max(dense_m, dense_h + in_m) + (1.0 - f) * X,   up_m) : dense_m;
         const double end_h = f > 0.0 ? std::max(std::max(dense_h, dense_m + in_h) + f * X / rel,     up_h) : dense_h;
         const double t = std::max(std::max(end_h, end_m + out_h), std::max(end_m, f > 0.0 ? end_h + out_m : 0.0));
-        return std::max(t, up_h + in_m + in_h + out_h + out_m);
+        return std::max(t, up_h + in_m + in_h + out_h + out_m + kv_in);
     };
     for (double s = 0.20; s <= 0.801; s += 0.02) {
         double sum = 0.0;
@@ -627,10 +643,13 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     // uploaded again before decode is back at full speed. How much of that a prompt really displaces grows with its length and saturates: the fraction of a
     // layer's experts that n tokens touch, 1 - (1 - k/E)^n (a 1-token prompt displaces nothing worth counting, a long one the whole lent area). The refill
     // is one more upload of the lent bytes over the offload card's link, charged to the split's time (one-off seconds, same unit as the pass).
-    best_split += g_mirror_fill_bytes.load() / (std::min(Bm, Bh) * 1e3);   // the copy of the dense weights into the lent blocks, before the first layer (slower link)
+    // Both are paid once per request, so they are spread over its passes (before 2026-10-17 every pass carried the whole refill: 63 times over in a 255k prompt).
+    // The passes of the request so far are about cells / T (the call's cells include the earlier calls of the same prompt).
+    const double n_pass = std::max(1.0, cells / std::max<double>(1.0, (double) T));
+    best_split += g_mirror_fill_bytes.load() / (std::min(Bm, Bh) * 1e3) / n_pass;   // the copy of the dense weights into the lent blocks, before the first layer (slower link)
     {
         const double touched = 1.0 - std::pow(1.0 - n_used / n_exp, (double) T);
-        best_split += touched * dense_bytes / (Bm * 1e3) * llama_moe_live_get("refill_weight");   // live: POST /moe/params
+        best_split += touched * dense_bytes / (Bm * 1e3) * llama_moe_live_get("refill_weight") / n_pass;   // live: POST /moe/params
     }
     out.valid      = true;
     out.split      = best_split > 0.0 && best_split < 0.95 * t_one;

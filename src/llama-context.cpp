@@ -192,6 +192,7 @@ GGML_API void ggml_backend_nvtx_set_fork(void (*)(const char *), void (*)(void))
 void llama_kv_reserve_override_fork(uint32_t n);   // llama-kv-cache.cpp
 // host buffer of a pass: H(u, k) = u * (a * k + b) + c for u pass tokens and k cells, fitted from three small reserves at startup (host_calibrate), file level: one context per process
 static double g_host_a = 0.0, g_host_b = 0.0, g_host_c = 0.0;
+void llama_moe_cache_pp_cells_fork(uint64_t cells_end);   // llama-moecache-fork.cpp: the cells the next planned call ends at (its compute grows with them); declared here, no header edit
 static bool   g_host_cal = false, g_host_ok = false;
 
 llama_context::llama_context(
@@ -3090,6 +3091,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             if (cap < n_ubatch_lim) { n_ubatch_lim = (uint32_t) cap; }
         }
     }
+    if (cparams.moe_cache && memory) { llama_moe_cache_pp_cells_fork((uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all); }
     const uint32_t n_ubatch_call = cparams.moe_cache ? llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim) : cparams.n_ubatch;
     if (cparams.moe_cache && memory && n_tokens_all >= 64) {   // the mask math, checkable against the host pins in the same log (--moe log=m not needed: one line per call)
         const uint64_t kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
