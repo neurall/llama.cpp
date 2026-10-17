@@ -38,3 +38,12 @@ The comparison matters most where stock cannot start: an 8 GB, 12 GB or 16 GB ca
 refuses to load, or loads only with a short `-c` and a small micro-batch. We load with the experts in RAM, a cache in what is
 left, and a KV that starts at the horizon and grows. Card sizes to run: 5, 8, 12, 16 and 24 GB; per size the table gives
 stock's maximum `-c` (or "does not load"), its speeds, and ours with no `-c`.
+
+## Reach beyond stock's limit (the claim the table has to prove)
+
+Columns by multiple of stock's out-of-memory context `ctx*`: 1x, 2x, 3x, 5x, 10x, each with prompt and decode speed and a
+note on where the KV sits. Rungs, from kv-fit.md: f16 KV in VRAM (growth), then quantised KV (`k8v8`, `k8v4`, `k4v4`: about
+2x to 4x the cells in the same bytes; K is the sensitive tensor, see the OLMoE ladder), then KV in host RAM
+(`--moe kv-fallback=...,ram`; the user is told upfront which rung a context needs). Status: growth in VRAM works (GLM 125k
+prompt, 133k cells, no -c); the quantised rungs run only as a fixed `-ctk/-ctv` today, and the automatic ladder and the RAM
+rung are not built. The 3x and 10x columns need them.
