@@ -6531,13 +6531,32 @@ static uint32_t pp_record(moe_cache * mc, uint32_t n, uint32_t ub) {
     return ub;
 }
 
+// A pass whose graph does not fit the pool is a crash (kv-tail: "the compute graph and the KV do not fit in the pool", seen on an 8 GiB card with a 12k prompt planned
+// as ONE pass of 13720 tokens: 5.1 GiB of graph for a 4.6 GiB pool). The graph bytes per token are known from any graph the pool has lent for so far (the load-time
+// reserve records them), so a pass is never planned bigger than 90% of what the pool can lend at that rate.
+static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t ub) {
+    double per = 0.0;
+    for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { per = std::max(per, (double) kv.second / (double) kv.first); } }
+    if (per <= 0.0) { return ub; }
+    const double room = 0.9 * ((double) kv_lend_potential(ap) - (double) ap.mirror_b);
+    if (room <= 0.0) { return ub; }
+    const uint32_t cap = std::max<uint32_t>(64, (uint32_t) (room / per) / 32 * 32);
+    return std::min(ub, cap);
+}
+
 static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub_old) {
     static const bool on = [] { const char * e = moe_opt("pass-plan"); return !e || atoi(e) != 0; }();
+    const moe_cache::alias_pool * ap = nullptr;
+    if (!mc->alias.empty() && mc->link_dev[0]) {
+        for (const auto & a : mc->alias) { if (a.dev == mc->link_dev[0]) { ap = &a; } }
+    }
+    if (ap) {   // bounded whatever the plan below does (also before the first prompt graph is known)
+        ub_old = pp_cap_to_pool(*ap, ub_old);
+        ub_max = pp_cap_to_pool(*ap, ub_max);
+    }
     if (!on || mc->alias.empty() || mc->n_links <= 0 || !mc->link_dev[0]) {
         return pp_record(mc, n, ub_old);
     }
-    const moe_cache::alias_pool * ap = nullptr;
-    for (const auto & a : mc->alias) { if (a.dev == mc->link_dev[0]) { ap = &a; } }
     if (!ap || ap->slot_b == 0 || ap->graph_tok == 0 || ap->span == 0) {
         return pp_record(mc, n, ub_old);   // no prompt graph seen yet: slot and graph sizes unknown
     }
