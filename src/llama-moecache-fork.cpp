@@ -3413,7 +3413,7 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
         llama_kv_tail_stat_fork st;
         st.dev = ggml_backend_dev_name(ap.dev);
         size_t cap = (size_t) -1;
-        for (auto & r : ap.kvt) { st.kv_cells = std::max(st.kv_cells, r.cells); st.kv_bytes += std::min(r.bytes, r.cells * r.row); cap = std::min(cap, llama_moe_cache_kv_tail_cap_fork(r.owner)); }   // cells: the longest cache (a model with a window cache and a global one holds the same tokens in both)
+        for (auto & r : ap.kvt) { st.kv_cells = std::max(st.kv_cells, r.cells); st.kv_bytes += std::min(r.bytes, r.cells * r.row); if (!r.fixed) { cap = std::min(cap, llama_moe_cache_kv_tail_cap_fork(r.owner)); } }   /* a fixed record (a sliding-window ring) does not limit how long a request can be: MiMo reported 16640 tokens, the ring size */   // cells: the longest cache (a model with a window cache and a global one holds the same tokens in both)
         st.cap_tokens = cap == (size_t) -1 ? 0 : cap;
         for (auto & sg : ap.segs) {
             const auto & ps = mc->pool[sg.pcls];
