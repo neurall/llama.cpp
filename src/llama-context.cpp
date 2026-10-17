@@ -3008,45 +3008,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     llama_memory_context_ptr mctx;
 
     // prompt batches: equal passes sized from the number of new tokens, a tail the cache path can take is left to it (n_ubatch is the maximum)
-    // The attention mask is a pinned host buffer of (pass tokens x cells the pass sees x 2 bytes), re-pinned whenever the horizon grows: a 255k-token prompt in passes of 13.6k
-    // tokens wanted 6.5 GiB of it, and the kernel could not pin that beside the 108 GiB weight pool (PIN_STALL, exit 75). The pass planner weighs uploads and graph bytes but
-    // not this buffer, so the pass size is capped here: mask budget / (2 x cells at the end of this call). --moe mask-mb=N overrides the calculated budget (0 = no cap).
-    uint32_t n_ubatch_lim = cparams.n_ubatch;
-    double   mask_budget_mib = 0.0;
-    if (cparams.moe_cache && memory) {
-        const char * mm = llama_moe_get_opt("mask-mb");
-        // Calculated, not guessed: the mask is pinned host memory. A pin served by free 1 GiB pool pages is immediate and certain (a 5.0 GiB mask took 0.3 s from 5 free pages),
-        // every page beyond that depends on the kernel finding pinnable memory (the 6.5 GiB request stalled for 180 s). So the budget is the free pool pages right now (at least 1 GiB),
-        // or, with no pool, the available RAM less the 4 GiB margin the weight loader keeps. --moe mask-mb=N overrides.
-        uint64_t budget = 0;
-        if (mm) {
-            budget = (uint64_t) atoll(mm) << 20;
-        } else {
-            uint64_t pool_free = 0, pool_total = 0, avail = 0;
-            if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", "r")) { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_free = v; } fclose(f); }
-            if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages", "r"))   { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_total = v; } fclose(f); }
-            if (FILE * f = fopen("/proc/meminfo", "r")) {
-                char line[256];
-                while (fgets(line, sizeof line, f)) { unsigned long long kb = 0; if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { avail = kb << 10; break; } }
-                fclose(f);
-            }
-            const uint64_t margin = (uint64_t) 4 << 30;
-            budget = pool_total > 0 ? std::max<uint64_t>((uint64_t) 1 << 30, pool_free << 30) : (avail > margin ? avail - margin : (uint64_t) 1 << 30);
-        }
-        const uint64_t n_kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
-        mask_budget_mib = budget / 1048576.0;
-        if (budget > 0 && n_kv_end > 0) {
-            const uint64_t cap = std::max<uint64_t>(256, budget / (2 * n_kv_end) / 32 * 32);
-            if (cap < n_ubatch_lim) { n_ubatch_lim = (uint32_t) cap; }
-        }
-    }
-    const uint32_t n_ubatch_call = cparams.moe_cache ? llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim) : cparams.n_ubatch;
-    if (cparams.moe_cache && memory && n_tokens_all >= 64) {   // the mask math, checkable against the host pins in the same log (--moe log=m not needed: one line per call)
-        const uint64_t kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
-        const uint64_t mask_b = (uint64_t) GGML_PAD(n_ubatch_call, 64) * GGML_PAD(kv_end, 256) * 2;
-        LLAMA_LOG_INFO("%s: pass size: %u tokens in this call, %llu cells at its end, pass of %u (limit %u from the pinned-mask budget %.0f MiB), the mask of a full pass %.0f MiB\n", __func__,
-                n_tokens_all, (unsigned long long) kv_end, n_ubatch_call, n_ubatch_lim, mask_budget_mib, mask_b / 1048576.0);
-    }
+    uint32_t n_ubatch_call = cparams.moe_cache ? llama_moe_cache_prefill_ubatch_fork(n_tokens_all, cparams.n_ubatch) : cparams.n_ubatch;
 
     while (true) {
         mctx = memory->init_batch(*balloc, n_ubatch_call, embd_all);
@@ -3057,6 +3019,40 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         switch (mctx->get_status()) {
             case LLAMA_MEMORY_STATUS_SUCCESS:
                 {
+                    // Does the pass fit the host memory that can be pinned? (first, dumb but reliable version: ask the scheduler for the exact buffer sizes of this pass, halve the pass while the
+                    // host buffer is more than what can be pinned now.) A pin that cannot be served stalls 180 s and kills the process (PIN_STALL), so it must be known before the graph is
+                    // allocated: the attention mask is pass tokens x cells x 2 bytes and a 255k-token prompt in passes of 13.6k wanted 6.5 GiB. Free pool pages pin immediately and certainly.
+                    if (cparams.moe_cache && n_ubatch_call > 256 && n_tokens_all >= 64 && !model.hparams.no_alloc) {
+                        int cpu_i = -1;
+                        for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
+                            if (ggml_backend_dev_type(ggml_backend_get_device(backend_ptrs[bi])) == GGML_BACKEND_DEVICE_TYPE_CPU) { cpu_i = (int) bi; break; }
+                        }
+                        const char * mm = llama_moe_get_opt("mask-mb");   // --moe mask-mb=N: a fixed limit instead (0 = no check)
+                        if (cpu_i >= 0 && !(mm && atoll(mm) == 0)) {
+                            const size_t held = ggml_backend_sched_get_buffer_size(sched.get(), backend_ptrs[cpu_i]);   // the host buffer of the last pass is replaced by the next one
+                            uint64_t pool_free = 0, pool_total = 0, avail = 0;
+                            if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", "r")) { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_free = v; } fclose(f); }
+                            if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages", "r"))   { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_total = v; } fclose(f); }
+                            if (FILE * f = fopen("/proc/meminfo", "r")) {
+                                char line[256];
+                                while (fgets(line, sizeof line, f)) { unsigned long long kb = 0; if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { avail = kb << 10; break; } }
+                                fclose(f);
+                            }
+                            const uint64_t margin = (uint64_t) 4 << 30;   // what the weight loader keeps free too
+                            const uint64_t limit = mm ? ((uint64_t) atoll(mm) << 20)
+                                                      : (pool_total > 0 ? (pool_free << 30) + held : (avail > margin ? avail - margin : 0) + held);
+                            std::vector<size_t> sizes(backend_ptrs.size(), 0);
+                            const uint32_t n_probe = std::min<uint32_t>(n_ubatch_call, n_tokens_all);
+                            graph_reserve(n_probe, 1, 1, mctx.get(), true, sizes.data());
+                            const uint64_t need = sizes[cpu_i];
+                            LLAMA_LOG_INFO("%s: pass probe: a pass of %u tokens needs %.0f MiB of host buffer, %.0f MiB can be pinned (%s)\n", __func__, n_probe, need / 1048576.0, limit / 1048576.0,
+                                    mm ? "mask-mb" : pool_total > 0 ? "free pool pages + the held buffer" : "available RAM less 4 GiB + the held buffer");
+                            if (need > limit && n_ubatch_call > 256) {
+                                n_ubatch_call = std::max<uint32_t>(256, n_ubatch_call / 2 / 32 * 32);
+                                continue;   // plan the call again with the smaller pass
+                            }
+                        }
+                    }
                 } break;
             case LLAMA_MEMORY_STATUS_NO_UPDATE:
                 {
