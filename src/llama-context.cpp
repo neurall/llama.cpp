@@ -1408,13 +1408,17 @@ void llama_context::sched_reserve() {
     // The pinned host buffer of a pass (the attention masks and other inputs that live in host memory) grows with the pass tokens u and the cells k. Measure how, from the real graph of this
     // model, with three small measure-only reserves (nothing is allocated, so nothing can stall): (256, k1) and (512, k1) give c and the per-token bytes at k1; (256, k2) gives how they grow
     // with the cells. H = u * (a * k + b) + c then holds for any model (any mask type, any number of masks) and the pass cap divides the live pinnable budget by it.
+    if (!g_host_cal) {
+        static int said = 0;
+        if (said++ < 3) { LLAMA_LOG_INFO("%s: host calibration check: moe_cache %d, no_alloc %d, memory %d\n", __func__, (int) cparams.moe_cache, (int) model.hparams.no_alloc, (int) (memory != nullptr)); }
+    }
     if (cparams.moe_cache && !model.hparams.no_alloc && !g_host_cal && memory) {
-        g_host_cal = true;
         int cpu_i = -1;
         for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
             if (ggml_backend_dev_type(ggml_backend_get_device(backend_ptrs[bi])) == GGML_BACKEND_DEVICE_TYPE_CPU) { cpu_i = (int) bi; break; }
         }
         if (cpu_i >= 0) {
+            g_host_cal = true;   // measured once, when the cache is on and the memory exists
             auto measure = [&](uint32_t u, uint32_t k) -> double {
                 llama_kv_reserve_override_fork(k);
                 auto mc = memory->init_full();
