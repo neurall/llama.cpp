@@ -1192,9 +1192,9 @@ def wait_vram_free():
 def wait_host_free(limit_s=900):
     """the host side of 'the machine is free': a 100 GB model process needs a while to unmap its memory after it was told to stop, and the next load must not start into
     that (swap, a stalled cudaHostRegister: PIN_STALL, ssh crawling). Waits until no llama process is left (they are not killed here: wait_vram_free already did that
-    for the stale ones), no process holds more than PERF_BIG_RSS_GB (default 8) of resident memory, and MemAvailable is at least PERF_MIN_AVAIL_GB (default 8).
+    for the stale ones), no process holds more than PERF_BIG_RSS_GB (default 8) of resident memory, and MemAvailable is at least PERF_MIN_AVAIL_GB (default 4: with a 108 GiB pool resident only ~6 GiB is available, and 8 made every run wait the full 900 s).
     The hugepage pool is reserved separately and persists on purpose, it is not counted. Gives up (with a message, the run goes on) after limit_s."""
-    big, need = int(os.environ.get("PERF_BIG_RSS_GB", 8)), int(os.environ.get("PERF_MIN_AVAIL_GB", 8))
+    big, need = int(os.environ.get("PERF_BIG_RSS_GB", 8)), int(os.environ.get("PERF_MIN_AVAIL_GB", 4))
     t0, why = time.time(), ""
     while time.time() - t0 < limit_s:
         why = ""

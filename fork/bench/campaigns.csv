@@ -2485,3 +2485,4 @@ m4-o-262k-pf128k,2026-10-17 20:58:52,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bi
 m5-o-256k-pf128k,2026-10-17 20:59:30,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg16 variants v test pf128k n=1,,
 m5-o-256k-pf128k,2026-10-17 21:01:05,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg16 variants v test pf128k n=1,,
 m6-o-256k-pf128k,2026-10-17 21:09:50,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg16 variants v test pf128k n=1,,
+m7-o-256k-pf128k,2026-10-17 21:13:06,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg16 variants v test pf128k n=1,,
