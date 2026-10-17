@@ -3022,6 +3022,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         uint64_t budget = 0;
         if (mm) {
             budget = (uint64_t) atoll(mm) << 20;
+        } else if (const char * sr = getenv("GGML_SIM_RAM_MB")) {   // --moe sim-ram=MB: this much can be pinned (test runs)
+            budget = (uint64_t) atoll(sr) << 20;
         } else {
             uint64_t pool_free = 0, pool_total = 0, avail = 0;
             if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", "r")) { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_free = v; } fclose(f); }
