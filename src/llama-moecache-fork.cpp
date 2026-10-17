@@ -3296,6 +3296,22 @@ size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
     return (size_t) -1;   // the pool does not exist yet (before the first decode): no limit
 }
 
+// why kv_tail_covers_fork says no, for the message before its assert (declared locally in llama-kv-cache.cpp: no header change)
+std::string llama_moe_cache_kv_tail_why_fork(void * owner, size_t max_cell) {
+    moe_cache * mc = g_cache;
+    char buf[400];
+    if (!mc) { return "no cache"; }
+    for (auto & ap : mc->alias) {
+        for (auto & r : ap.kvt) {
+            if (r.owner != owner) { continue; }
+            snprintf(buf, sizeof buf, "%s: record %s, cell %zu: cells_max %zu, horizon kv_h %zu, kv_start %zu, kv_fixed %zu, kv_row %zu, row %zu, tail_end %zu",
+                     ggml_backend_dev_name(ap.dev), r.fixed ? "fixed (sliding-window ring)" : "growing", max_cell, (size_t) r.cells_max, (size_t) ap.kv_h, (size_t) ap.kv_start, (size_t) ap.kv_fixed, (size_t) ap.kv_row, (size_t) r.row, (size_t) ap.tail_end);
+            return buf;
+        }
+    }
+    return "owner not found";
+}
+
 bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell) {
     moe_cache * mc = g_cache;
     if (mc) {

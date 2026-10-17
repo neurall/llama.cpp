@@ -70,6 +70,8 @@ static void ggml_gen_hadamard(ggml_tensor * tensor) {
 // llama_kv_cache
 //
 
+std::string llama_moe_cache_kv_tail_why_fork(void * owner, size_t max_cell);   // llama-moecache-fork.cpp
+
 llama_kv_cache::llama_kv_cache(
         const llama_model & model,
         const llama_hparams & hparams,
@@ -1643,6 +1645,9 @@ void llama_kv_cache::set_input_k_idxs(ggml_tensor * dst, const llama_ubatch * ub
     if (kv_tail_on) {   // the end pointer of this write must lie inside the blocks the pool claimed for it (never over experts it did not free)
         size_t mx = 0;
         for (uint32_t s = 0; s < sinfo.n_stream(); ++s) { for (uint32_t i = 0; i < sinfo.size(); ++i) { mx = std::max<size_t>(mx, sinfo.idxs[s][i]); } }
+        if (!llama_moe_cache_kv_tail_covers_fork((void *) this, mx)) {
+            LLAMA_LOG_ERROR("%s: kv-tail: the cache writes a cell the pool has not claimed: %s (ubatch of %u tokens)\n", __func__, llama_moe_cache_kv_tail_why_fork((void *) this, mx).c_str(), n_tokens);
+        }
         GGML_ASSERT(llama_moe_cache_kv_tail_covers_fork((void *) this, mx) && "kv-tail: the cache writes a cell the pool has not claimed");
     }
 
