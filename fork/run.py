@@ -2698,48 +2698,6 @@ def pin_check(env, knobs):
     return miss
 
 
-def probe_cells(cells, a, model):
-    """Before the first measured run of a bench: every (build, variant) cell of this model is started once, one token through the server, with the cell's own env and args, and the
-    run.knobs line the build writes at exit is read back. REQUESTED and USED are printed side by side, written to cell-knobs.csv and put in knobs_end of every row of the cell;
-    a pin the build does not show is printed as MISMATCH. Builds that write no knob line (b11509 and older) are recorded as such: their settings are their source defaults."""
-    global CAMPAIGN, STATE_FILE, LOG_LETTERS
-    camp = CAMPAIGN
-    saved_letters = LOG_LETTERS
-    if "s" not in LOG_LETTERS:
-        LOG_LETTERS = LOG_LETTERS + "s"   # server_start passes --moe log=<letters>: without s the build writes no state snapshot and so no run.knobs line
-    for build, name, vargs in cells:
-        if build.startswith("stock"):
-            continue
-        args, env = split_variant(build, vargs)
-        sf = "/tmp/runstate/probe-" + re.sub("[^A-Za-z0-9._-]", "_", build + "-" + name) + ".ini"
-        os.makedirs("/tmp/runstate", exist_ok=True)
-        if os.path.exists(sf):
-            os.remove(sf)
-        STATE_FILE["v"] = sf
-        saved = dict(OVR)
-        OVR["tokens"] = "120"; OVR["ctx"] = "2048"   # the build saves its snapshot (run.knobs) only after enough decode steps: a 24-token run writes none
-        CAMPAIGN = camp + "-probe"
-        PROCSTAT.pop("knobs_end", None)
-        try:
-            run_cell(build, "tetrisc", env, False, args, True, "knob probe (one token)", warm=False)
-        except Exception as e:
-            print(f"knob probe failed: {e}", flush=True)
-        finally:
-            OVR.clear(); OVR.update(saved); CAMPAIGN = camp
-        used = PROCSTAT.get("knobs_end") or ""
-        CELL_KNOBS[(build, name)] = used or "(no knob line: source defaults of this build)"
-        pins = [w[4:] for w in vargs.split() if w.startswith("moe:")]
-        miss = pin_check({("LLAMA_MOE_CACHE_" + k.upper().replace("-", "_")): v for k, v in (p.split("=", 1) for p in pins) if k != "autotune"}, used) if used else []
-        miss += pin_check(env, used) if used else []
-        print(f"KNOBS {build} / {name}\n   requested: {' '.join(f'{k}={v}' for k, v in env.items())} | {args}\n   used:      {used or '(this build writes no knob line)'}"
-              + (f"\n   MISMATCH: the build does not show {', '.join(miss)}" if miss else ""), flush=True)
-        csv_append("cell-knobs.csv", ["ts", "campaign", "model", "build", "variant", "requested", "used", "mismatch"],
-                   dict(ts=time.strftime("%F %T"), campaign=camp, model=os.path.basename(model), build=build, variant=name,
-                        requested=json.dumps(env, sort_keys=True) + " | " + args, used=used, mismatch=" ".join(miss)))
-    LOG_LETTERS = saved_letters
-
-
-# ---- bench: models x builds x variants, every cell recorded, then the report ----
 VARIANTS = {"default": "", "cache0": "--moe-expert-cache 0", "atoff": "-at off"}  # --variant NAME=ARGS adds or overrides
 
 
@@ -2804,8 +2762,6 @@ def cmd_bench(a):
             prep_model()
         cells = [(build, name, (stock_variants.get(name, "") if build.startswith("stock") else variants[name]))
                  for build in a.builds.split(",") for name in (list(dict.fromkeys(["default"] + list(stock_variants))) if build.startswith("stock") else names)]
-        if not m and a.probe and not a.no_probe:   # off by default: a side server before the measured run touches the page cache, the pool and the state
-            probe_cells(cells, a, model)
         # a variant may set environment variables: "env:KEY=VALUE" words (e.g. lru='env:LLAMA_MOE_CACHE_POLICY=lru'), the rest are server args
         P = (4 if a.test in ("game4c", "edit4c", "game4", "edit4") else 1) if a.cold_hot else 1   # --cold-hot: every prompt runs twice, 0 = cold (empty state file), 1 = hot (the state that run wrote)
         for pp, i in ([(p, k) for p in range(P) for k in ((0, 1, 2) if (p == 0 and P > 1) else (0, 1))] if a.cold_hot else [(None, k) for k in range(a.rep_from, n)]):  # ABBA: odd repetitions run the cells backwards, so a drift (thermal, page cache) does not favour one cell
@@ -5035,8 +4991,7 @@ if __name__ == "__main__":
     b.add_argument("--last", type=int, help="report the last N runs per cell only (hot runs of a learning autotune)")
     b.add_argument("--tol", type=float, help="flag cells below TOL x stock as REGRESSION (e.g. 0.95)")
     b.add_argument("--note")
-    b.add_argument("--probe", action="store_true", help="run the knob probe (a side server, one short request before the first measured run; prints requested against used settings). Off by default: it warms the page cache and writes state before the measurement")
-    b.add_argument("--no-probe", action="store_true", help="kept for old scripts: the probe is off unless --probe")
+    b.add_argument("--no-probe", action="store_true", help="no effect (the knob probe, a side server with an injected -c 2048 before the measured run, was removed)")
     b.add_argument("--warm", action="store_true", help="force a discarded run before each measured one (hot run); default off")
     b.add_argument("--no-warm", action="store_true", help="never a discarded run: the first run as a user sees it")
     b.add_argument("--sampler", help="extra sampling parameters for every request, comma separated, e.g. repeat_penalty=1.1,dry_multiplier=0.8 (anti-repetition tests); temperature 0 / top_k 1 stay unless overridden")
