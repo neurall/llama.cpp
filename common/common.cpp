@@ -1783,6 +1783,47 @@ static uint32_t common_auto_ubatch(common_params & params) {
     return best;
 }
 
+// kv-grow (--moe kv-tail=1): the load-time compute reserve is made at the START horizon (10240 cells, the larger of the two growth steps), not at the context, so the
+// micro-batch is the largest one whose compute buffer fits next to the weights at that horizon. Two no_alloc probes (2048 and 4096) give the buffer per card; it is
+// linear in the micro-batch (a * ub * cells + b * ub). Without this the maximum of 16384 failed to reserve (40 GB on GLM) and the retry loop halved it after a
+// 10-30 s load each. Later growth of the horizon lends more of the pool to the graph; the per-request pass planner shrinks the passes when it cannot.
+static uint32_t common_kv_grow_ubatch(common_params & params) {
+    const uint32_t HORIZON = 10240, LO = 2048, HI = 4096, SAFE = 2048;
+    std::vector<int64_t> c_lo, c_hi, room;
+    for (int i : { 0, 1 }) {
+        auto mp = common_model_params_to_llama(params);
+        auto cp = common_context_params_to_llama(params);
+        cp.n_ctx    = HORIZON;
+        cp.n_ubatch = i == 0 ? LO : HI;
+        cp.n_batch  = std::max(cp.n_batch, cp.n_ubatch);
+        std::vector<ggml_backend_dev_t> devs;
+        uint32_t ngl = 0, nctx = 0, nexp = 0;
+        try {
+            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {
+                (i == 0 ? c_lo : c_hi).push_back((int64_t) dmd[d].compute);
+                if (i == 0) { room.push_back((int64_t) dmd[d].free - (int64_t) dmd[d].model - (int64_t) dmd[d].context - ((int64_t) 1 << 30)); }
+            }
+        } catch (const std::exception & e) {
+            LOG_WRN("%s: probe failed (%s), micro-batch %u\n", __func__, e.what(), SAFE);
+            return SAFE;
+        }
+    }
+    if (c_lo.empty() || c_lo.size() != c_hi.size()) { return SAFE; }
+    uint32_t best = SAFE;
+    for (uint32_t ub : { 2048u, 3072u, 4096u, 6144u, 8192u, 12288u, 16384u }) {
+        bool fits = true;
+        for (size_t d = 0; d < c_lo.size(); ++d) {
+            const double slope = (double) (c_hi[d] - c_lo[d]) / (double) (HI - LO);
+            if ((double) c_lo[d] + slope * (double) ((int64_t) ub - LO) > (double) room[d]) { fits = false; }
+        }
+        if (fits) { best = ub; }
+    }
+    LOG_INF("%s: micro-batch %u = the largest whose compute buffer fits at the start horizon of %u cells (probed %.2f -> %.2f GiB at %u -> %u on the first card)\n", __func__,
+            best, HORIZON, c_lo[0] / 1073741824.0, c_hi[0] / 1073741824.0, LO, HI);
+    return best;
+}
+
 static void common_moe_cache_auto_impl(common_params & params);
 
 static void common_moe_cache_auto(common_params & params) {
@@ -1974,6 +2015,9 @@ static void common_moe_cache_auto_impl(common_params & params) {
             // cap: a pass as long as a big context makes the attention masks of some models grow with its square (GLM-5.3-Flash at -c 140000: the memory fit asked for
             // 432 GB and the server died before loading). Gains flatten from 8192 to 12416 tokens anyway; the per-prompt rule makes equal passes under this maximum.
             ub = std::min<uint32_t>(ub, 16384);
+            if (const char * kt = llama_moe_get_opt("kv-tail"); kt && atoi(kt) != 0 && params.n_ctx > 0) {
+                ub = std::min(ub, common_kv_grow_ubatch(params));
+            }
             LOG_INF("%s: ubatch %u: experts stream from RAM, the compute alias lends the graph (maximum = context, lowered to what the pool can lend; prompt passes are sized per request)\n", __func__, ub);
         } else {
             ub = common_auto_ubatch(params);
