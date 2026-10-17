@@ -1689,17 +1689,20 @@ def server_run(build, env, args, path, body, render=None):
         perf = (subprocess.Popen(["perf", "record", "-F", "499", "-o", pbase + ".data", "-p", str(p.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL), pbase)
     bwstop = pcie_sampler() if GPULOG else (lambda: None)   # the engine's own byte and time counters are the bandwidth record; the nvidia-smi view only with --gpulog
     try:
-        if render:   # the server renders the model's chat template into the prompt text
-            body = {**body, "prompt": post("/apply-template", {"messages": render})["prompt"]}
-        if OVR.get("clamp") and isinstance(body.get("prompt"), str):   # --clamp N: the prompt is cut to N tokens (the server counts them, so it is right for every tokenizer)
-            txt, n_cl = body["prompt"], int(OVR["clamp"])
+        def clamp_text(txt, n_cl):   # --clamp N: cut to N tokens (the server counts them, so it is right for every tokenizer)
             for _ in range(4):
                 n_tok = len(post("/tokenize", {"content": txt})["tokens"])
                 if n_tok <= n_cl:
                     break
                 txt = txt[:int(len(txt) * n_cl / n_tok * 0.995)]
-            body = {**body, "prompt": txt}
             print(f"clamp: prompt cut to {n_tok} tokens (limit {n_cl})", flush=True)
+            return txt
+        if render:   # the server renders the model's chat template into the prompt text; a clamp cuts the user text first (cutting the rendered text would drop the assistant header)
+            if OVR.get("clamp"):
+                render = [{**m, "content": clamp_text(m["content"], int(OVR["clamp"]))} if m.get("role") == "user" else m for m in render]
+            body = {**body, "prompt": post("/apply-template", {"messages": render})["prompt"]}
+        elif OVR.get("clamp") and isinstance(body.get("prompt"), str):
+            body = {**body, "prompt": clamp_text(body["prompt"], int(OVR["clamp"]))}
         if SYNC and not WARMING:   # start barrier: drop a ready file, wait until N instances have one
             d, n = SYNC.rsplit(":", 1); os.makedirs(d, exist_ok=True); BAR_N[0] += 1
             open(os.path.join(d, f"b{BAR_N[0]}-{PORT}"), "w").close()
@@ -1885,8 +1888,13 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 res, logf = server_run(build, env, args, "/v1/chat/completions",
                                        {"messages": [{"role": "user", "content": _pf_text}], "max_tokens": int(OVR.get("tokens") or 1024), **GREEDY, "cache_prompt": False})
             else:
-              res, logf = server_run(build, env, args, "/completion",
-                                   {"prompt": ovr_prompt(_pf_text), "n_predict": int(OVR.get("tokens") or os.environ.get("PERF_NPRED", 64 if test == "pf128k" else 256 if test == "fix12k" else 32)),
+              _np = int(OVR.get("tokens") or os.environ.get("PERF_NPRED", 64 if test == "pf128k" else 256 if test == "fix12k" else 32))
+              if OVR.get("chat"):   # --chat: an instruct model gets its chat template (raw cut text: Qwen3.8 stopped after 1 token at 40k, 2026-10-18); /completion keeps the clamp and the loop guard
+                  res, logf = server_run(build, env, args, "/completion", {"n_predict": _np, "cache_prompt": False, **GREEDY},
+                                         render=[{"role": "user", "content": OVR["chat"] + "\n\n" + ovr_prompt(_pf_text)}])
+              else:
+                  res, logf = server_run(build, env, args, "/completion",
+                                   {"prompt": ovr_prompt(_pf_text), "n_predict": _np,
                                     "cache_prompt": False, **GREEDY, **(FIXED if test == "fix12k" else {})})
             t = res["timings"]
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
@@ -2507,7 +2515,7 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par", "lead"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par", "lead", "chat"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
     if getattr(a, "test", None) in ALIAS_TOKENS and "tokens" not in OVR:
@@ -2934,6 +2942,7 @@ def add_overrides(sub):
     sub.add_argument("--ctx", type=int, help="context size instead of the test's own")
     sub.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), metavar="N[k]",
                      help="cut the prompt of the test to N tokens (8k = 8000, so it fits one -ub 8192 pass), measured with the server's own /tokenize, for any model; raw-prompt tests only")
+    sub.add_argument("--chat", metavar="INSTR", help="pf tests: send INSTR + the prompt through the model's chat template (instruct models stop or loop on raw cut text); --clamp cuts the text before the template")
     sub.add_argument("--lead", type=int, help="first a request with a prompt of about N tokens to the same server, then the measured one (the KV grows, then shrinks)")
     sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
     sub.add_argument("--par", type=int, help="send N identical requests at once (start the server with -np N too, e.g. --variant 'v=-np 10'); the row is the aggregate: generated tokens of all requests over the wall time, prompt tokens of all over the longest prompt phase; a failed request fails the run")
@@ -3451,7 +3460,7 @@ def cmd_cell(a):
     args = "-np 1 " + (a.args or "")
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
-           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else [])
+           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, GGML_CUDA_HUGEFS="/mnt/huge1g", PERF_LOG="r")
     for kv in (a.env or []):
         k, _, v = kv.partition("="); env[k] = v
@@ -5117,6 +5126,7 @@ if __name__ == "__main__":
     ce.add_argument("--prompt", help="prompt text or @file instead of the test's own")
     ce.add_argument("--tokens", type=int, help="generated tokens instead of the test's own")
     ce.add_argument("--ctx", type=int, help="context size instead of the test's own (a -c in the args loses to the test's own -c)")
+    ce.add_argument("--chat", metavar="INSTR", help="pf tests through the chat template with this instruction in front (instruct models)")
     ce.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), help="cut the prompt to N[k] tokens (pf128k clamped to 48k = a 48k prompt)")
     br = sp.add_parser("branches", help="local branches with commits not in TARGET (counts, dates); --merge a,b,c merges them in the checkout of TARGET (refuses on another branch or a dirty tree)")
     br.add_argument("target", nargs="?", default="prerelease2")
