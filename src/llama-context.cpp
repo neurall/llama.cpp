@@ -3010,11 +3010,28 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     // prompt batches: equal passes sized from the number of new tokens, a tail the cache path can take is left to it (n_ubatch is the maximum)
     // The attention mask is a pinned host buffer of (pass tokens x cells the pass sees x 2 bytes), re-pinned whenever the horizon grows: a 255k-token prompt in passes of 13.6k
     // tokens wanted 6.5 GiB of it, and the kernel could not pin that beside the 108 GiB weight pool (PIN_STALL, exit 75). The pass planner weighs uploads and graph bytes but
-    // not this buffer, so the pass size is capped here: mask budget / (2 x cells at the end of this call). --moe mask-mb=N (default 2048; 0 = no cap).
+    // not this buffer, so the pass size is capped here: mask budget / (2 x cells at the end of this call). --moe mask-mb=N overrides the calculated budget (0 = no cap).
     uint32_t n_ubatch_lim = cparams.n_ubatch;
     if (cparams.moe_cache && memory) {
         const char * mm = llama_moe_get_opt("mask-mb");
-        const uint64_t budget = (uint64_t) (mm ? atoll(mm) : 2048) << 20;
+        // Calculated, not guessed: the mask is pinned host memory. A pin served by free 1 GiB pool pages is immediate and certain (a 5.0 GiB mask took 0.3 s from 5 free pages),
+        // every page beyond that depends on the kernel finding pinnable memory (the 6.5 GiB request stalled for 180 s). So the budget is the free pool pages right now (at least 1 GiB),
+        // or, with no pool, the available RAM less the 4 GiB margin the weight loader keeps. --moe mask-mb=N overrides.
+        uint64_t budget = 0;
+        if (mm) {
+            budget = (uint64_t) atoll(mm) << 20;
+        } else {
+            uint64_t pool_free = 0, pool_total = 0, avail = 0;
+            if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", "r")) { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_free = v; } fclose(f); }
+            if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages", "r"))   { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_total = v; } fclose(f); }
+            if (FILE * f = fopen("/proc/meminfo", "r")) {
+                char line[256];
+                while (fgets(line, sizeof line, f)) { unsigned long long kb = 0; if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { avail = kb << 10; break; } }
+                fclose(f);
+            }
+            const uint64_t margin = (uint64_t) 4 << 30;
+            budget = pool_total > 0 ? std::max<uint64_t>((uint64_t) 1 << 30, pool_free << 30) : (avail > margin ? avail - margin : (uint64_t) 1 << 30);
+        }
         const uint64_t n_kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
         if (budget > 0 && n_kv_end > 0) {
             const uint64_t cap = std::max<uint64_t>(256, budget / (2 * n_kv_end) / 32 * 32);
