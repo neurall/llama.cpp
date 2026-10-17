@@ -262,8 +262,11 @@ llama_context::llama_context(
                 }
                 uint64_t fit = row > 0 && free_b > fixed_b ? (free_b - fixed_b) / row : (uint64_t) hparams.n_ctx_train;
                 fit = std::max<uint64_t>(4096, fit / 256 * 256);
-                cparams.n_ctx = (uint32_t) std::min<uint64_t>(hparams.n_ctx_train, fit);
-                LLAMA_LOG_WARN("%s: kv-tail: no -c: context %u tokens = min(model max %u, free VRAM %.1f GiB holds %llu tokens of KV)\n", __func__, cparams.n_ctx, hparams.n_ctx_train, free_b / 1073741824.0, (unsigned long long) (row ? free_b / row : 0));
+                // No up-front cap (user 2026-10-17): the pool claims KV cells per request, and running out of pool space is what refuses a request (and later what
+                // moves it to quantised KV, then RAM KV). A declared context computed here from guessed terms was wrong for sliding-window models (10x too low on MiMo) and
+                // is not needed: the reserve graph uses min(size, step) cells, so the model's own maximum costs nothing until a request needs it. `fit` is only logged.
+                cparams.n_ctx = hparams.n_ctx_train;
+                LLAMA_LOG_WARN("%s: kv-tail: no -c: context %u tokens (the model maximum; the pool refuses a request it cannot hold; free VRAM %.1f GiB would hold %llu tokens of KV beside nothing else)\n", __func__, cparams.n_ctx, free_b / 1073741824.0, (unsigned long long) (row ? free_b / row : 0));
             }
         } else if (!tail_possible) {
             // the common code leaves n_ctx at 0 in tail mode (the tail needs no default), and 0 means the model's trained maximum: a static KV (and context-scaled graph
