@@ -2010,7 +2010,7 @@ void llama_context::set_thread_autotune(bool on) {
     if (e && atoi(e) == 0) { on = false; }
     // no expert work on the CPU (everything on the GPUs): the decode threads only wait, so the default count costs nothing and there is nothing to tune or store.
     // (A count of 2 tuned in that state was later reused with experts on the CPU: 0.7x of stock decode on a small card.)
-    if (on && threads_cpu_quarter(model) == 0) { on = false; }
+    if (on && threads_cpu_quarter(model) == 0 && !cparams.moe_cache) { on = false; }   // the expert cache computes its misses on the CPU
     thr.on    = on;
     thr.base0 = (int) cparams.n_threads;
     thr.base  = thr.base0;
