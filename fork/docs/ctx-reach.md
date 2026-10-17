@@ -60,3 +60,18 @@ Stock never hits an out-of-memory here: its fit lowers the offloaded layers as `
 | 512k | 23.0 | 346 | 8.1 | 613 | 141.9 | 4404 |
 
 Findings: with a fixed large `-c` our build turns the expert cache off (the KV takes the card), decode is 0.53x / 0.35x of stock at 256k / 512k although prompt speed is 3.3x / 1.8x. The growth path reserves only what the prompt uses, so it stays at the unconstrained speed. Open: growth rows used a 12k prompt; a prompt of 100k+ tokens must be run to show the reach claim. Fixed `-c` must go through the same growth / quantised-KV / RAM-KV ladder (branch qkv-ram-fallback).
+
+## Qwen3.6 35B, one card with 12 GiB free (2026-10-17, build kvg14, fair comparison)
+
+GPU0 hidden (`CUDA_VISIBLE_DEVICES=1`), 12 GiB of GPU1 held. Stock b11639 runs with its own defaults and `-c` 500 / 1000 / 2000; ours runs with no `-c` (auto context and KV). Prompts of 400 / 900 / 1900 tokens, 64 generated.
+
+| prompt tokens | stock decode t/s | ours decode t/s | decode gain | stock prompt t/s | ours prompt t/s | prompt gain |
+|---|---|---|---|---|---|---|
+| 400 | 114.0 | 119.8 | +5% | 1243 | 1431 | +15% |
+| 900 | 115.3 | 118.0 | +2% | 1590 | 1830 | +15% |
+| 1900 | 113.6 | 117.4 | +3% | 1846 | 2242 | +21% |
+
+Measurement pitfalls found on the way (earlier tables in this file that used a hold on one card only, or different `-dev` / `-ub` per build, are not comparable):
+- the `cell` harness starts a stock build with only `-m ... -c N`: variant args and `-dev` are ignored, so stock used both cards; hide a card with `--env CUDA_VISIBLE_DEVICES=1` for both builds;
+- direct same-flag runs on one card give parity (stock 120-121, ours 120-122 t/s at 12 GiB, fork on or off);
+- a saved decode thread count of 2 (tuned with all experts on the GPUs) cost 30% decode with experts on the CPU: now keyed by the place and the CPU share of the experts, and the tuner is off when no expert work runs on the CPU.
