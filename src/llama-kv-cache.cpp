@@ -3254,6 +3254,7 @@ size_t llama_moe_cache_kv_tail_cap_fork(void * owner);
 // the context calibrates the host buffer of a pass with three small reserves at different cell counts (llama_context, host_calibrate): while one runs, the reserve graph sees this many cells
 static std::atomic<uint32_t> g_kv_reserve_override { 0 };
 void llama_kv_reserve_override_fork(uint32_t n) { g_kv_reserve_override.store(n); }
+uint32_t llama_kv_reserve_override_get_fork() { return g_kv_reserve_override.load(); }   // the k-pool sizes follow it (llama-memory-hybrid-idx.cpp)
 
 uint32_t llama_kv_cache::get_size_reserve() const {
     if (const uint32_t o = g_kv_reserve_override.load()) { return std::min<uint32_t>(get_size(), o); }

@@ -191,7 +191,7 @@ GGML_API void ggml_backend_nvtx_set_fork(void (*)(const char *), void (*)(void))
 
 void llama_kv_reserve_override_fork(uint32_t n);   // llama-kv-cache.cpp
 // host buffer of a pass: H(u, k) = u * (a * k + b) + c for u pass tokens and k cells, fitted from three small reserves at startup (host_calibrate), file level: one context per process
-static double g_host_a = 0.0, g_host_b = 0.0, g_host_c = 0.0;
+static double g_host_a = 0.0, g_host_b = 0.0, g_host_c = 0.0, g_host_d = 0.0;
 void llama_moe_cache_pp_cells_fork(uint64_t cells_end);   // llama-moecache-fork.cpp: the cells the next planned call ends at (its compute grows with them); declared here, no header edit
 static bool   g_host_cal = false, g_host_ok = false;
 
@@ -1428,16 +1428,21 @@ void llama_context::sched_reserve() {
                 llama_kv_reserve_override_fork(0);
                 return (double) sz[cpu_i];
             };
+            // four points: H = u x (a x k + b) + d x k + c; d holds what grows with the cells alone (the k-pool indexer's pool index lists, GLM-5.3 and
+            // Qwen3.8-Flash-Next), which three points would have folded into b
             const double k1 = 32768, k2 = 65536, u1 = 256, u2 = 512;
-            const double h11 = measure((uint32_t) u1, (uint32_t) k1), h21 = measure((uint32_t) u2, (uint32_t) k1), h12 = measure((uint32_t) u1, (uint32_t) k2);
+            const double h11 = measure((uint32_t) u1, (uint32_t) k1), h21 = measure((uint32_t) u2, (uint32_t) k1);
+            const double h12 = measure((uint32_t) u1, (uint32_t) k2), h22 = measure((uint32_t) u2, (uint32_t) k2);
             const double s1 = (h21 - h11) / (u2 - u1);               // bytes per pass token at k1 cells
-            g_host_c = h11 - u1 * s1;
-            const double s2 = (h12 - g_host_c) / u1;                  // bytes per pass token at k2 cells
-            g_host_a = (s2 - s1) / (k2 - k1);
-            g_host_b = s1 - g_host_a * k1;
+            const double s2 = (h22 - h12) / (u2 - u1);               // bytes per pass token at k2 cells
+            g_host_a = std::max(0.0, (s2 - s1) / (k2 - k1));
+            g_host_b = std::max(0.0, s1 - g_host_a * k1);
+            const double r1 = h11 - u1 * s1, r2 = h12 - u1 * s2;     // what does not grow with the tokens, at k1 and k2
+            g_host_d = std::max(0.0, (r2 - r1) / (k2 - k1));
+            g_host_c = std::max(0.0, r1 - g_host_d * k1);
             g_host_ok = h21 > 0 && s1 > 0;
-            LLAMA_LOG_WARN("%s: host buffer of a pass: %.0f MiB at (%.0f tokens, %.0f cells), %.0f MiB at (%.0f, %.0f), %.0f MiB at (%.0f, %.0f) -> %.3f bytes per token per cell + %.0f bytes per token + %.0f KiB\n", __func__,
-                    h11 / 1048576.0, u1, k1, h21 / 1048576.0, u2, k1, h12 / 1048576.0, u1, k2, g_host_a, g_host_b, g_host_c / 1024.0);
+            LLAMA_LOG_WARN("%s: host buffer of a pass: %.0f MiB at (%.0f tokens, %.0f cells), %.0f MiB at (%.0f, %.0f), %.0f MiB at (%.0f, %.0f), %.0f MiB at (%.0f, %.0f) -> %.3f bytes per token per cell + %.0f bytes per token + %.3f bytes per cell + %.0f KiB\n", __func__,
+                    h11 / 1048576.0, u1, k1, h21 / 1048576.0, u2, k1, h12 / 1048576.0, u1, k2, h22 / 1048576.0, u2, k2, g_host_a, g_host_b, g_host_d, g_host_c / 1024.0);
         }
     }
 
@@ -3087,7 +3092,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         mask_budget_mib = budget / 1048576.0;
         if (budget > 0 && n_kv_end > 0 && g_host_ok) {
             const double per_tok = std::max(1.0, g_host_a * (double) n_kv_end + g_host_b);   // bytes of host buffer per pass token at that many cells (fitted at startup)
-            const uint64_t cap = std::max<uint64_t>(256, (uint64_t) std::max(0.0, ((double) budget - g_host_c) / per_tok) / 32 * 32);
+            const uint64_t cap = std::max<uint64_t>(256, (uint64_t) std::max(0.0, ((double) budget - g_host_c - g_host_d * (double) n_kv_end) / per_tok) / 32 * 32);
             if (cap < n_ubatch_lim) { n_ubatch_lim = (uint32_t) cap; }
         }
     }
@@ -3098,6 +3103,14 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         const uint64_t mask_b = (uint64_t) GGML_PAD(n_ubatch_call, 64) * GGML_PAD(kv_end, 256) * 2;
         LLAMA_LOG_WARN("%s: pass size: %u tokens in this call, %llu cells at its end, pass of %u (limit %u from the pinned-mask budget %.0f MiB), the mask of a full pass %.0f MiB\n", __func__,
                 n_tokens_all, (unsigned long long) kv_end, n_ubatch_call, n_ubatch_lim, mask_budget_mib, mask_b / 1048576.0);
+        // the startup fit checked against the real graphs, every model: the host buffer the scheduler holds now (the largest graph reserved so far) against
+        // the fit at this call's pass and cells. Actual well above predicted = an input the fit does not see (it grows with something the calibration did not vary).
+        if (g_host_ok && backend_cpu) {
+            const double pred = (double) n_ubatch_call * (g_host_a * (double) kv_end + g_host_b) + g_host_d * (double) kv_end + g_host_c;
+            const double act  = (double) ggml_backend_sched_get_buffer_size(sched.get(), backend_cpu);
+            LLAMA_LOG_WARN("%s: host buffer check: fit %.0f MiB for this call's pass, scheduler holds %.0f MiB (the largest graph so far)%s\n", __func__,
+                    pred / 1048576.0, act / 1048576.0, act > 1.10 * pred + 64.0 * 1048576.0 ? " -- MORE than the fit: an input the calibration misses" : "");
+        }
     }
 
     while (true) {

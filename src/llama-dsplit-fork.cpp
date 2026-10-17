@@ -370,11 +370,19 @@ int64_t g_pend_max = 0;    // their largest pass
 const char * g_why      = "";
 std::string  g_dev_off, g_dev_rest, g_dev_all;
 
+}  // namespace
+uint64_t llama_moe_cache_pp_cells_get_fork();   // llama-moecache-fork.cpp: the cells the planned call ends at
+namespace {
+// A size bucket is the pass size AND the context it runs at (2026-10-17): the time per token grows with the cells (attention), so a speed measured at 2k cells
+// said nothing about the same pass size at 200k, and once stored it decided every later run. Bands: under 16k cells, then each doubling up to 512k.
 int dsplit_bucket_of(int64_t n) {
     int b = 0;
     double edge = 256.0;
     while ((double) n > edge * 1.2 && b < 40) { edge *= 1.41421356; ++b; }
-    return b;
+    const uint64_t cells = llama_moe_cache_pp_cells_get_fork();
+    int band = 0;
+    for (uint64_t c = 16384; cells >= c && band < 6; c *= 2) { ++band; }
+    return b + 64 * band;
 }
 }  // namespace
 
@@ -576,17 +584,25 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     const double att_tok = std::min(c_us, std::max(0.0, llama_moe_cache_compute_att_us_fork()));
     const double c_base  = c_us - att_tok;
     const double cells   = (double) llama_moe_cache_pp_cells_get_fork();
-    std::vector<double> kv_b(L, 0.0);
+    // recurrent layers (Qwen3.5/3.6, Qwen3-Next: linear attention) hold no KV and do no attention over the cells: the attention goes to the others
+    std::vector<double> kv_b(L, 0.0), att_w(L, 0.0);
+    int n_att = 0;
+    for (int il = 0; il < L; ++il) { if (!model.hparams.is_recr(il)) { n_att++; } }
     for (int il = 0; il < L; ++il) {
+        if (model.hparams.is_recr(il)) { continue; }
+        att_w[il] = 1.0 / std::max(1, n_att);
         const double cl_seen = model.hparams.is_swa(il) ? std::min(cells, (double) model.hparams.n_swa + (double) T) : cells;
-        kv_b[il] = cl_seen * (double) (model.hparams.n_embd_k_gqa(il) + model.hparams.n_embd_v_gqa(il)) * 2.0;
+        // MLA (DeepSeek, GLM-DSA, Kimi): the cache holds the compressed latent and its rope part, one K row per cell and no V
+        const double row = model.hparams.is_mla() ? (double) (model.hparams.n_lora_kv + model.hparams.n_rot())
+                                                  : (double) (model.hparams.n_embd_k_gqa(il) + model.hparams.n_embd_v_gqa(il));
+        kv_b[il] = cl_seen * row * 2.0;
     }
     // bytes per token that cross per layer, there and back (llama_dsplit_hop_mode_fork: f16 both ways, f16 there and f32 back, or f32 both ways)
     const int    hop_mode = llama_dsplit_hop_mode_fork();
     double t_one = 0.0, best_split = -1.0, best_s = 0.55;
     std::vector<double> best_f(L, 0.0), cur_f(L, 0.0);
     for (int il = 0; il < L; ++il) {
-        const double cl = (c_base * w[il] / w_sum + att_tok / L) * (double) T;               // us: the layer on one card
+        const double cl = (c_base * w[il] / w_sum + att_tok * att_w[il]) * (double) T;               // us: the layer on one card
         const double up = E[il] * (1.0 - llama_moe_cache_resident_frac_fork(il, dm)) / (Bm * 1e3);
         t_one += std::max(cl, up);
     }
@@ -604,7 +620,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     const double b_in = (double) model.hparams.n_embd * (hop_mode != 0 ? 2.0 : 4.0), b_out = (double) model.hparams.n_embd * (hop_mode == 1 ? 2.0 : 4.0);
     const auto layer_us = [&](int il, double s, double f) {
         const double cb = c_base * (double) T * w[il] / w_sum;
-        const double D = cb * (1.0 - xf[il]) + att_tok / L * (double) T, X = cb * xf[il];
+        const double D = cb * (1.0 - xf[il]) + att_tok * att_w[il] * (double) T, X = cb * xf[il];
         const double kv_in = kv_b[il] / (Bh * 1e3);   // the cache of this layer to the range on the other card
         const double tok_h = s * (double) T, tok_m = (1.0 - s) * (double) T;
         const double dense_h = s * D / rel + kv_in, dense_m = (1.0 - s) * D;

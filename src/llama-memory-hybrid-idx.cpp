@@ -629,12 +629,20 @@ llama_memory_hybrid_idx_context::kpool_access llama_memory_hybrid_idx_context::g
 
 // k-pool DSA indexer (glm5-next, qwen4exp QSA)
 
+uint32_t llama_kv_reserve_override_get_fork();   // llama-kv-cache.cpp (declared here, no header edit)
+
 // Sizes only, used by the full cache context so get_n_kpool() works during graph reserve.
+// fork: the host-buffer calibration (llama-context.cpp) reserves graphs at a given number of cells; the pools then follow those cells (one per kpool
+// cells), else the indexer's pool mask (pass tokens x pools) looks constant and the fit misses it (GLM-5.3, Qwen3.8-Flash-Next).
 llama_memory_hybrid_idx_context::kpool_state llama_memory_hybrid_idx_context::kpool_build_sizes() const {
     const auto & lay = mem->kpool_layout_get();
 
     kpool_state st;
     st.n_pool_real = lay.n_pool_real;
+    if (const uint32_t o = llama_kv_reserve_override_get_fork()) {
+        const uint32_t kp = std::max<uint32_t>(1, mem->get_kpool());
+        st.n_pool_real = (o + kp - 1) / kp;
+    }
 
     return st;
 }
