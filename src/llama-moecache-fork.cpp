@@ -3308,7 +3308,24 @@ std::string llama_moe_cache_kv_tail_why_fork(void * owner, size_t max_cell) {
             if (r.owner != owner) { continue; }
             snprintf(buf, sizeof buf, "%s: record %s, cell %zu: cells_max %zu, horizon kv_h %zu, kv_start %zu, kv_fixed %zu, kv_row %zu, row %zu, tail_end %zu",
                      ggml_backend_dev_name(ap.dev), r.fixed ? "fixed (sliding-window ring)" : "growing", max_cell, (size_t) r.cells_max, (size_t) ap.kv_h, (size_t) ap.kv_start, (size_t) ap.kv_fixed, (size_t) ap.kv_row, (size_t) r.row, (size_t) ap.tail_end);
-            return buf;
+            std::string more;
+            {   // the first block under the range that is not the KV's
+                size_t lo = r.fixed ? ap.kv_start + r.prefix : ap.kv_start + ap.kv_fixed;
+                size_t hi = lo + (max_cell + 1) * (r.fixed ? r.row : ap.kv_row);
+                for (auto & sg : ap.segs) {
+                    const auto & ps = mc->pool[sg.pcls];
+                    for (int32_t b = 0; b < sg.n; ++b) {
+                        const size_t b0 = sg.base + (size_t) b * sg.B, b1 = b0 + sg.B;
+                        if (b1 > lo && b0 < hi && ps.owner[b] != -3) {
+                            char t[300];
+                            snprintf(t, sizeof t, "; first unclaimed block %d of class %d [%zu, %zu) owner %d, range [%zu, %zu), B %zu, span %zu, want_b %zu, base_off %zu, mirror_b %zu", b, sg.pcls, b0, b1, (int) ps.owner[b], lo, hi, (size_t) sg.B, (size_t) ap.span, (size_t) ap.want_b, (size_t) ap.base_off, (size_t) ap.mirror_b);
+                            more = t; break;
+                        }
+                    }
+                    if (!more.empty()) { break; }
+                }
+            }
+            return std::string(buf) + more;
         }
     }
     return "owner not found";
