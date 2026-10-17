@@ -192,7 +192,8 @@ GGML_API void ggml_backend_nvtx_set_fork(void (*)(const char *), void (*)(void))
 void llama_kv_reserve_override_fork(uint32_t n);   // llama-kv-cache.cpp
 // host buffer of a pass: H(u, k) = u * (a * k + b) + c for u pass tokens and k cells, fitted from three small reserves at startup (host_calibrate), file level: one context per process
 static double g_host_a = 0.0, g_host_b = 0.0, g_host_c = 0.0, g_host_d = 0.0;
-void llama_moe_cache_pp_cells_fork(uint64_t cells_end);   // llama-moecache-fork.cpp: the cells the next planned call ends at (its compute grows with them); declared here, no header edit
+void llama_moe_cache_pp_cells_fork(uint64_t cells_end);
+void llama_moe_cache_mask_bpc_fork(double bytes_per_token_cell);   // llama-moecache-fork.cpp: the graph lend's growth with the cells (the cards' copies of the masks)   // llama-moecache-fork.cpp: the cells the next planned call ends at (its compute grows with them); declared here, no header edit
 static bool   g_host_cal = false, g_host_ok = false;
 
 llama_context::llama_context(
@@ -1441,6 +1442,7 @@ void llama_context::sched_reserve() {
             g_host_d = std::max(0.0, (r2 - r1) / (k2 - k1));
             g_host_c = std::max(0.0, r1 - g_host_d * k1);
             g_host_ok = h21 > 0 && s1 > 0;
+            if (g_host_ok) { llama_moe_cache_mask_bpc_fork(g_host_a); }   // the cards get copies of the same inputs: the pool's lend estimate grows with the cells by as much
             LLAMA_LOG_WARN("%s: host buffer of a pass: %.0f MiB at (%.0f tokens, %.0f cells), %.0f MiB at (%.0f, %.0f), %.0f MiB at (%.0f, %.0f), %.0f MiB at (%.0f, %.0f) -> %.3f bytes per token per cell + %.0f bytes per token + %.3f bytes per cell + %.0f KiB\n", __func__,
                     h11 / 1048576.0, u1, k1, h21 / 1048576.0, u2, k1, h12 / 1048576.0, u1, k2, h22 / 1048576.0, u2, k2, g_host_a, g_host_b, g_host_d, g_host_c / 1024.0);
         }
@@ -3085,7 +3087,14 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             // (ggml_cuda_host_malloc_registered); the old buffer is freed before the new one is pinned, so the pages free now, less one, are what it can have.
             // (Until 2026-10-17 the budget was divided by the number of GPUs, from a misread stall: the allocator rounded the pool part down and pinned the
             // tail from transparent huge pages, and that tail stalled. It halved the passes' size at long context: 63 passes instead of about 35 at 255k.)
-            budget = pool_total > 0 ? std::max<uint64_t>((uint64_t) 1 << 30, (pool_free > 1 ? pool_free - 1 : 0) << 30)
+            // The buffer the scheduler holds now is freed before the next one is pinned, so its pool pages count as free (they were budgeted from the pool when it
+            // was pinned: whole pages, rounded up); before 2026-10-17 they did not, and the budget was short by the current buffer (2 GiB of 4 at MiMo's start).
+            uint64_t held_p = 0;
+            if (pool_total > 0 && backend_cpu) {
+                const size_t hb = ggml_backend_sched_get_buffer_size(sched.get(), backend_cpu);
+                held_p = hb > ((size_t) 512 << 20) ? (uint64_t) ((hb + ((size_t) 1 << 30) - 1) >> 30) : 0;
+            }
+            budget = pool_total > 0 ? std::max<uint64_t>((uint64_t) 1 << 30, (pool_free + held_p > 1 ? pool_free + held_p - 1 : 0) << 30)
                                     : std::max<uint64_t>((uint64_t) 1 << 30, avail > margin ? avail - margin : 0);
         }
         const uint64_t n_kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;

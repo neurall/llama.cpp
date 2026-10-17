@@ -22,6 +22,8 @@
 #include <thread>
 #include <unordered_map>
 
+size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens);   // fork: the KV limit for a prompt ubatch (llama-moecache-fork.cpp; declared here, no header edit)
+
 static bool ggml_is_power_of_2(int n) {
     return (n & (n - 1)) == 0;
 }
@@ -1165,7 +1167,10 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
         res.idxs[s].reserve(n_tokens);
 
         const auto & cells = v_cells[seq_to_stream[seq_id]];
-        const uint32_t csize = kv_tail_cap(cells.size());   // kv-tail: the cells the expert pool can hold (with a floor of experts kept), else all
+        uint32_t csize = kv_tail_cap(cells.size());   // kv-tail: the cells the expert pool can hold (with a floor of experts kept), else all
+        if (kv_tail_on && n_tokens >= 64) {   // a prompt ubatch: its pass also needs a prompt graph's lend in front of the KV (llama_moe_cache_kv_tail_cap_n_fork)
+            csize = (uint32_t) std::min<size_t>(csize, llama_moe_cache_kv_tail_cap_n_fork((void *) this, n_tokens));
+        }
 
         uint32_t head_cur = v_heads[seq_to_stream[seq_id]];
 

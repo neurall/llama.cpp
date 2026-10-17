@@ -2095,9 +2095,16 @@ static void common_moe_cache_auto_impl(common_params & params) {
             }
         }
     }
-    LOG_INF("%s: MoE model (%.1f GiB) exceeds free VRAM (%.1f GiB): experts in RAM + GPU expert cache, no repack, "
-        "ctx %d, ubatch %d, threads %d, weights %s (settings you pass win)\n", __func__, model_size / 1073741824.0, vram_free / 1073741824.0,
-        params.n_ctx, params.n_ubatch, params.cpuparams.n_threads, params.load_pinned_auto ? "pinned" : "mmap");
+    {
+        // with the KV at the pool's tail and no -c, n_ctx here is only the fallback for when the tail layout is declined: say what the request really gets
+        const char * kt = llama_moe_get_opt("kv-tail"), * kg = llama_moe_get_opt("kv-ctx-given");
+        const bool tail_ctx = kt && atoi(kt) != 0 && !(kg && atoi(kg) != 0);
+        LOG_INF("%s: MoE model (%.1f GiB) exceeds free VRAM (%.1f GiB): experts in RAM + GPU expert cache, no repack, "
+            "ctx %s, ubatch %d, threads %d, weights %s (settings you pass win)\n", __func__, model_size / 1073741824.0, vram_free / 1073741824.0,
+            tail_ctx ? (std::string("per request up to the model maximum (KV grows in the pool; ") + std::to_string(params.n_ctx) + " only if the tail layout is declined)").c_str()
+                     : std::to_string(params.n_ctx).c_str(),
+            params.n_ubatch, params.cpuparams.n_threads, params.load_pinned_auto ? "pinned" : "mmap");
+    }
 }
 
 static const std::map<common_decision_type, std::string> COMMON_DECISION_TYPE_NAMES = {
