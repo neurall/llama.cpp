@@ -3012,6 +3012,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     // tokens wanted 6.5 GiB of it, and the kernel could not pin that beside the 108 GiB weight pool (PIN_STALL, exit 75). The pass planner weighs uploads and graph bytes but
     // not this buffer, so the pass size is capped here: mask budget / (2 x cells at the end of this call). --moe mask-mb=N overrides the calculated budget (0 = no cap).
     uint32_t n_ubatch_lim = cparams.n_ubatch;
+    double   mask_budget_mib = 0.0;
     if (cparams.moe_cache && memory) {
         const char * mm = llama_moe_get_opt("mask-mb");
         // Calculated, not guessed: the mask is pinned host memory. A pin served by free 1 GiB pool pages is immediate and certain (a 5.0 GiB mask took 0.3 s from 5 free pages),
@@ -3033,12 +3034,19 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             budget = pool_total > 0 ? std::max<uint64_t>((uint64_t) 1 << 30, pool_free << 30) : (avail > margin ? avail - margin : (uint64_t) 1 << 30);
         }
         const uint64_t n_kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
+        mask_budget_mib = budget / 1048576.0;
         if (budget > 0 && n_kv_end > 0) {
             const uint64_t cap = std::max<uint64_t>(256, budget / (2 * n_kv_end) / 32 * 32);
             if (cap < n_ubatch_lim) { n_ubatch_lim = (uint32_t) cap; }
         }
     }
     const uint32_t n_ubatch_call = cparams.moe_cache ? llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim) : cparams.n_ubatch;
+    if (cparams.moe_cache && memory && n_tokens_all >= 64) {   // the mask math, checkable against the host pins in the same log (--moe log=m not needed: one line per call)
+        const uint64_t kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
+        const uint64_t mask_b = (uint64_t) GGML_PAD(n_ubatch_call, 64) * GGML_PAD(kv_end, 256) * 2;
+        LLAMA_LOG_INFO("%s: pass size: %u tokens in this call, %llu cells at its end, pass of %u (limit %u from the pinned-mask budget %.0f MiB), the mask of a full pass %.0f MiB\n", __func__,
+                n_tokens_all, (unsigned long long) kv_end, n_ubatch_call, n_ubatch_lim, mask_budget_mib, mask_b / 1048576.0);
+    }
 
     while (true) {
         mctx = memory->init_batch(*balloc, n_ubatch_call, embd_all);
