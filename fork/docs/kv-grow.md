@@ -24,3 +24,18 @@ Design: fork/docs/kv-fit.md (branch auto-kv-ram-quant-fallback), sections "First
   graph does not fit in front of the KV -> grow L (move) instead.
 * kv_tail_cap -> "cells the horizon can still grow to" (the experts down to their floor); find_slot asks for growth instead of refusing.
 * llama-context / common: no -c -> start horizon 2000 (or measured), micro-batch from the start horizon (no 16384 start + failed reserves).
+
+## Measurements (2026-10-17, PC1, 2x RTX 3090, build kvg5, no -c, one run each)
+
+| model | test | growth prompt t/s | static prompt t/s | growth decode | static decode |
+|---|---|---|---|---|---|
+| GLM-5.3-Flash 3.0-bit | 12k in | 523 | 460 | 18.4 | 17.8 |
+| GLM-5.3-Flash 3.0-bit | 48k in | 446 | 429 | 13.6 | 13.5 |
+| Qwen3.8 Flash Next IQ3_S | 12k in | 1460 | 1495 | 53.3 | 53.9 |
+| Qwen3.6 35B (fits VRAM, arena path) | 12k in | 3737 | 4418 | 145 | 145 |
+
+Qwen Next perplexity (10 chunks) 1.3987 in both layouts. Growth is the default only when the experts stream from RAM
+(common.cpp); models that fit in VRAM keep the calculated static context (the arena path costs a fixed ~0.5 s per prompt).
+Two fixes made GLM win: the pass planner reads the lend's reachable span (not the zone's current start), and the zone moves
+with 25% lend headroom. Open: the load-time micro-batch probe under-predicts GLM's compute buffer 3.8x (16384 fails once
+and retries at 8192, about 40 s of startup, no effect on speed).
