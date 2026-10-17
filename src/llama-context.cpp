@@ -244,7 +244,7 @@ llama_context::llama_context(
     // the load-time fit measures a context with no_alloc: it must see the small context common handed over, not the tail's per-request size (it counted the KV of 82k tokens and moved experts to the CPU)
     if (const char * kt = llama_moe_get_opt("kv-tail"); kt && atoi(kt) != 0 && !model.hparams.no_alloc) {   // the context of a request is calculated from the request, -c is not used (fork/docs/kv-tail.md)
         const char * ac = llama_moe_get_opt("kv-auto-ctx");   // --moe kv-auto-ctx=0: -c is accepted again (the cap of the virtual record)
-        const bool tail_possible = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && params.n_seq_max <= 1 && params.type_k == params.type_v && !model.devices.empty();
+        const bool tail_possible = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && params.n_seq_max <= 1 && params.type_k == params.type_v && !model.devices.empty() && model.hparams.indexer_top_k == 0;   // indexer models: see llama_kv_cache (token-major) - the old layout with the context the user asked for
         const char * given = llama_moe_get_opt("kv-ctx-given");   // set by the common code: 1 when the user passed -c
         if ((!ac || atoi(ac) != 0) && tail_possible) {
             llama_moe_set_opt("kv-user-ctx", std::to_string(cparams.n_ctx).c_str());   // what the user asked for (or the default): the cache goes back to it when it cannot use the tail layout
@@ -263,7 +263,14 @@ llama_context::llama_context(
                 LLAMA_LOG_WARN("%s: kv-tail: no -c: context %u tokens = min(model max %u, free VRAM %.1f GiB holds %llu tokens of KV)\n", __func__, cparams.n_ctx, hparams.n_ctx_train, free_b / 1073741824.0, (unsigned long long) (row ? free_b / row : 0));
             }
         } else if (!tail_possible) {
-            LLAMA_LOG_WARN("%s: kv-tail is not possible here (needs flash attention, one sequence, equal K and V types, a GPU): the normal KV cache with n_ctx = %u\n", __func__, cparams.n_ctx);
+            // the common code leaves n_ctx at 0 in tail mode (the tail needs no default), and 0 means the model's trained maximum: a static KV (and context-scaled graph
+            // buffers: 73 GB at 1M cells on the GLM stand-in) of a million cells. Without -c the normal layout gets the calculated context (common_auto_ctx) instead.
+            if (params.n_ctx == 0 && !(given && atoi(given) != 0)) {
+                const char * bc = llama_moe_get_opt("kv-budget-ctx");   // common_auto_ctx: the largest context that leaves the expert cache most of its VRAM
+                const uint32_t fit_ctx = bc ? (uint32_t) atoi(bc) : 0;
+                cparams.n_ctx = std::min<uint32_t>(hparams.n_ctx_train, fit_ctx ? fit_ctx : 17408);
+            }
+            LLAMA_LOG_WARN("%s: kv-tail is not possible here (needs flash attention, one sequence, equal K and V types, no sparse-attention indexer, a GPU): the normal KV cache with n_ctx = %u\n", __func__, cparams.n_ctx);
         }
     }
     cparams.rope_freq_base   = params.rope_freq_base  == 0.0f ? hparams.rope_freq_base_train  : params.rope_freq_base;
