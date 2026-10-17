@@ -3251,7 +3251,12 @@ void llama_moe_cache_kv_tail_remove_fork(void * owner);
 llama_kv_cache::tail_guard::~tail_guard() { llama_moe_cache_kv_tail_remove_fork(o); }
 
 size_t llama_moe_cache_kv_tail_cap_fork(void * owner);
+// the context calibrates the host buffer of a pass with three small reserves at different cell counts (llama_context, host_calibrate): while one runs, the reserve graph sees this many cells
+static std::atomic<uint32_t> g_kv_reserve_override { 0 };
+void llama_kv_reserve_override_fork(uint32_t n) { g_kv_reserve_override.store(n); }
+
 uint32_t llama_kv_cache::get_size_reserve() const {
+    if (const uint32_t o = g_kv_reserve_override.load()) { return std::min<uint32_t>(get_size(), o); }
     return kv_tail_on && kv_tail_step > 0 && llama_moe_cache_kv_pool_expected_fork() ? std::min<uint32_t>(get_size(), kv_tail_step) : get_size();
 }
 uint32_t llama_kv_cache::kv_tail_cap(uint32_t n) const {

@@ -189,6 +189,11 @@ static const llm_fused_op_probe llm_fused_op_dsv4_hc_post_probe = {
 // fork: nsys range hooks for the scheduler (GGML_NVTX=1), defined in ggml-backend.cpp
 GGML_API void ggml_backend_nvtx_set_fork(void (*)(const char *), void (*)(void));
 
+void llama_kv_reserve_override_fork(uint32_t n);   // llama-kv-cache.cpp
+// host buffer of a pass: H(u, k) = u * (a * k + b) + c for u pass tokens and k cells, fitted from three small reserves at startup (host_calibrate), file level: one context per process
+static double g_host_a = 0.0, g_host_b = 0.0, g_host_c = 0.0;
+static bool   g_host_cal = false, g_host_ok = false;
+
 llama_context::llama_context(
         const llama_model & model,
               llama_context_params params) :
@@ -1398,6 +1403,37 @@ void llama_context::sched_reserve() {
         n_nodes_tg         = ggml_graph_n_nodes(gf);
         n_inputs_tg        = get_gf_res_reserve()->inputs.size();
         n_input_tensors_tg = this->n_input_tensors;
+    }
+
+    // The pinned host buffer of a pass (the attention masks and other inputs that live in host memory) grows with the pass tokens u and the cells k. Measure how, from the real graph of this
+    // model, with three small measure-only reserves (nothing is allocated, so nothing can stall): (256, k1) and (512, k1) give c and the per-token bytes at k1; (256, k2) gives how they grow
+    // with the cells. H = u * (a * k + b) + c then holds for any model (any mask type, any number of masks) and the pass cap divides the live pinnable budget by it.
+    if (cparams.moe_cache && !model.hparams.no_alloc && !g_host_cal && memory) {
+        g_host_cal = true;
+        int cpu_i = -1;
+        for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
+            if (ggml_backend_dev_type(ggml_backend_get_device(backend_ptrs[bi])) == GGML_BACKEND_DEVICE_TYPE_CPU) { cpu_i = (int) bi; break; }
+        }
+        if (cpu_i >= 0) {
+            auto measure = [&](uint32_t u, uint32_t k) -> double {
+                llama_kv_reserve_override_fork(k);
+                auto mc = memory->init_full();
+                std::vector<size_t> sz(backend_ptrs.size(), 0);
+                graph_reserve(u, 1, 1, mc.get(), true, sz.data());
+                llama_kv_reserve_override_fork(0);
+                return (double) sz[cpu_i];
+            };
+            const double k1 = 32768, k2 = 65536, u1 = 256, u2 = 512;
+            const double h11 = measure((uint32_t) u1, (uint32_t) k1), h21 = measure((uint32_t) u2, (uint32_t) k1), h12 = measure((uint32_t) u1, (uint32_t) k2);
+            const double s1 = (h21 - h11) / (u2 - u1);               // bytes per pass token at k1 cells
+            g_host_c = h11 - u1 * s1;
+            const double s2 = (h12 - g_host_c) / u1;                  // bytes per pass token at k2 cells
+            g_host_a = (s2 - s1) / (k2 - k1);
+            g_host_b = s1 - g_host_a * k1;
+            g_host_ok = h21 > 0 && s1 > 0;
+            LLAMA_LOG_INFO("%s: host buffer of a pass: %.0f MiB at (%.0f tokens, %.0f cells), %.0f MiB at (%.0f, %.0f), %.0f MiB at (%.0f, %.0f) -> %.3f bytes per token per cell + %.0f bytes per token + %.0f KiB\n", __func__,
+                    h11 / 1048576.0, u1, k1, h21 / 1048576.0, u2, k1, h12 / 1048576.0, u1, k2, g_host_a, g_host_b, g_host_c / 1024.0);
+        }
     }
 
     // reserve again with pp graph to avoid ggml-alloc reallocations during inference
@@ -3038,8 +3074,9 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         }
         const uint64_t n_kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
         mask_budget_mib = budget / 1048576.0;
-        if (budget > 0 && n_kv_end > 0) {
-            const uint64_t cap = std::max<uint64_t>(256, budget / (2 * n_kv_end) / 32 * 32);
+        if (budget > 0 && n_kv_end > 0 && g_host_ok) {
+            const double per_tok = std::max(1.0, g_host_a * (double) n_kv_end + g_host_b);   // bytes of host buffer per pass token at that many cells (fitted at startup)
+            const uint64_t cap = std::max<uint64_t>(256, (uint64_t) std::max(0.0, ((double) budget - g_host_c) / per_tok) / 32 * 32);
             if (cap < n_ubatch_lim) { n_ubatch_lim = (uint32_t) cap; }
         }
     }
