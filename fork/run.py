@@ -2576,7 +2576,7 @@ def remote_run(m, build, test, args, env=None):
         stf = f'{m["root"]}{sep}perf-stats.txt'
         envs = (f'set LLAMA_MOE_STATE=0&& set LLAMA_MOE_CACHE_TUNED=0&& set LLAMA_MOE_CACHE_STATS=1&& set LLAMA_MOE_CACHE_STATSLOG=32&& set LLAMA_MOE_STATSLOG={stf}&& ' if win else
                 f'LD_LIBRARY_PATH={os.path.dirname(exe)} LLAMA_MOE_STATE=0 LLAMA_MOE_CACHE_TUNED=0 LLAMA_MOE_CACHE_STATS=1 LLAMA_MOE_CACHE_STATSLOG=32 LLAMA_MOE_STATSLOG={stf} ')   # native Linux builds bake their build dir into RUNPATH
-        cmd = envp + envs + f'{exe.replace("llama-cli", "llama-perplexity")} -m {MODEL} -f {m["root"]}{sep}{build}{sep}longsrc.cpp -c 1024 --chunks 2 -b {nb} -ub {nub} {args} ' + ("< nul 2>&1" if win else "< /dev/null 2>&1")
+        cmd = envp + envs + f'{exe.replace("llama-cli", "llama-perplexity")} -m {MODEL} -f {m["root"]}{sep}{build}{sep}{os.environ.get('PERF_PPL_FILE', 'longsrc.cpp')} -c 1024 --chunks {os.environ.get('PERF_PPL_CHUNKS', '2')} -b {nb} -ub {nub} {args} ' + ("< nul 2>&1" if win else "< /dev/null 2>&1")
         out = remote_sh(m, cmd)
         sp_ = re.search(r"([\d.]+) seconds per pass", out)
         pp_ = re.findall(r"PPL = ([\d.]+)", out)
@@ -2983,7 +2983,9 @@ REGRESS_CELLS = [(REGRESS_MODEL, REGRESS_ARGS, "1", None, False),
                  (fcfg.model("qwen36"), "--cpu-moe --moe-expert-cache 90" + _T, "1", None, False),
                  (fcfg.model("qwen38"), "--cpu-moe" + _T, None, 2, True),
                  (fcfg.model("glm"), "--cpu-moe" + _T, None, 2, True),
-                 (fcfg.model("mimo"), "--cpu-moe" + _T, None, 2, True)]
+                 ("/m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf", "--cpu-moe" + _T, None, 2, True),   # the README MiMo (115 GB, fits RAM); the MXFP4 file in the config (169 GB) does not
+                 ("/m/q/4/Qwen3.8-27B-IQ4_NL.gguf", _T.strip(), "1", None, False),   # IQ4_NL: the dense README model (no experts: no cache flags), covers the IQ4 kernels
+                 ("/m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf", "--cpu-moe" + _T, None, 2, True)]   # IQ4_XS gainer
 if os.environ.get("REGRESS_FAST") == "1":
     REGRESS_CELLS = [c for c in REGRESS_CELLS if not c[4]]
 
@@ -3222,7 +3224,7 @@ def cmd_build(a):
              "-DCMAKE_CUDA_HOST_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/gcc -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DBUILD_SHARED_LIBS=ON "
              "-DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_CUDA=ON -DGGML_CUDA_NCCL=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=ON "
              f"-DOPENSSL_USE_STATIC_LIBS=ON -DOPENSSL_ROOT_DIR=/opt/openssl -DLLAMA_BUILD_TESTS={'ON' if a.release else 'OFF'} -DLLAMA_BUILD_UI=OFF "
-             "-DCMAKE_EXE_LINKER_FLAGS=\"$SLD\" -DCMAKE_SHARED_LINKER_FLAGS=\"$SLD\" -DCMAKE_MODULE_LINKER_FLAGS=\"$SLD\" && "
+             "-DCMAKE_EXE_LINKER_FLAGS=\"$SLD -pthread\" -DCMAKE_SHARED_LINKER_FLAGS=\"$SLD\" -DCMAKE_MODULE_LINKER_FLAGS=\"$SLD\" && "
              + (f"cmake --build {B} -j $(nproc)" if a.release else f"cmake --build {B} -j 8 --target llama-server llama-cli llama-perplexity"))
     lk = queue_lock(wait=True)   # no build while a benchmark runs (a build takes the CPU the measurements use)
     iid = _image("llama-rel-el8", keep=a.release)
