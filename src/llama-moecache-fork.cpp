@@ -3076,6 +3076,18 @@ static size_t kv_bmax(const moe_cache::alias_pool & ap) {
     return b;
 }
 
+// where a lend of `bytes` from the start of the buffer really ends: it takes whole blocks of every size class its range overlaps (the classes are stacked in the buffer, each with its own
+// block size), so the end is the furthest of base + ceil((bytes - base) / B) * B over those classes. Rounding by the LARGEST block size (kv_bmax) is wrong when a smaller-block class
+// sits at the start (MiMo: class 0 has 9.2 MB blocks, the largest class 12.6 MB sits at the end: a 10.8 MB lend ended at 18.3 MB, not 12.6 MB)
+static size_t kv_lend_round(const moe_cache::alias_pool & ap, size_t bytes) {
+    size_t end = bytes;
+    for (const auto & sg : ap.segs) {
+        if (sg.base >= bytes || sg.B == 0) { continue; }
+        end = std::max(end, (size_t) sg.base + (bytes - sg.base + sg.B - 1) / sg.B * sg.B);
+    }
+    return end;
+}
+
 // what the compute alias could lend if the KV zone moved behind the graph: the buffer up to the end of the expert blocks, less the zone and two blocks the
 // experts keep (the scheduler may place a graph up to here; moe_alias moves the zone before such a graph runs)
 static size_t kv_lend_potential(const moe_cache::alias_pool & ap) {
@@ -3204,7 +3216,7 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
             if (it != ap.need_tok.end()) { l = std::max(l, it->second); }
         }
         const size_t bmax = kv_bmax(ap);
-        const size_t lr = (l + bmax - 1) / std::max<size_t>(1, bmax) * bmax;
+        const size_t lr = kv_lend_round(ap, l);
         const size_t room = ap.tail_end > lr + ap.kv_fixed + 2 * bmax ? (ap.tail_end - lr - ap.kv_fixed - 2 * bmax) / ap.kv_row : 0;   // two blocks stay the experts'
         h = std::min({ h, cells_max, std::max(room, eff) });
         if (eff > room && !dry) {
@@ -3515,7 +3527,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         }
         // the lend takes whole blocks: a graph of need_b bytes holds ceil(need_b / bmax) * bmax of the buffer (the largest size class), so it reaches the KV zone when THAT passes the
         // zone's start, not need_b (MiMo: a 10.8 MB lend took the 9.2 MB blocks 0 and 1, up to 18.3 MB, while the zone began at 12.6 MB inside block 1 and was never claimed)
-        const size_t lend_end = ap.kvt.empty() ? need_b : (need_b + std::max<size_t>(1, kv_bmax(ap)) - 1) / std::max<size_t>(1, kv_bmax(ap)) * std::max<size_t>(1, kv_bmax(ap));
+        const size_t lend_end = ap.kvt.empty() ? need_b : kv_lend_round(ap, need_b);
         if (!ap.kvt.empty() && lend_end > ap.span) {
             // the graph reaches into the KV zone: the zone moves behind it (a device copy of the rows in use), and since this graph's views of the KV point at the old
             // place it is built again (the caller). Never silently over the KV, and no abort: only when the zone cannot fit behind the graph at all.
@@ -3525,7 +3537,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             for (auto & r : ap.kvt) { if (!r.fixed) { cells = std::max(cells, r.rows ? r.rows() : 0); } }
             const size_t keep = ap.kv_fixed + std::max(cells, (size_t) 1) * ap.kv_row + 2 * bmax;   // the zone as it is now must still fit behind the lend
             const size_t lr_max = ap.tail_end > keep ? ap.tail_end - keep : 0;
-            const size_t lr = std::max((need_b + bmax - 1) / std::max<size_t>(1, bmax) * bmax, std::min((want + bmax - 1) / std::max<size_t>(1, bmax) * bmax, lr_max / bmax * bmax));
+            const size_t lr = std::max(kv_lend_round(ap, need_b), std::min(kv_lend_round(ap, want), lr_max));   // the zone starts where the lend really ends
             if (lr + ap.kv_fixed + std::max(cells, (size_t) 1) * ap.kv_row + 2 * bmax > ap.tail_end) {
                 LLAMA_LOG_ERROR("moe-cache: kv-tail %s: a %d-token graph needs %.1f MiB lent from the start of the pool, and %zu cells of KV (%.1f MiB) do not fit behind it in the pool of %.1f MiB\n",
                         ggml_backend_dev_name(ap.dev), n_tokens, need_b / 1048576.0, cells, cells * ap.kv_row / 1048576.0, ap.tail_end / 1048576.0);
