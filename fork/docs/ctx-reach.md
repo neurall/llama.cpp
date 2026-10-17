@@ -75,3 +75,16 @@ Measurement pitfalls found on the way (earlier tables in this file that used a h
 - the `cell` harness starts a stock build with only `-m ... -c N`: variant args and `-dev` are ignored, so stock used both cards; hide a card with `--env CUDA_VISIBLE_DEVICES=1` for both builds;
 - direct same-flag runs on one card give parity (stock 120-121, ours 120-122 t/s at 12 GiB, fork on or off);
 - a saved decode thread count of 2 (tuned with all experts on the GPUs) cost 30% decode with experts on the CPU: now keyed by the place and the CPU share of the experts, and the tuner is off when no expert work runs on the CPU.
+
+## Qwen3.6 35B, one card with 8 GiB free, fixed `-c` (2026-10-17, build kvg15)
+
+GPU0 hidden (`CUDA_VISIBLE_DEVICES=1`), 16 GiB of GPU1 held. 12k-token prompt, 64 generated tokens. Stock b11639 at its defaults, ours at its defaults (no `-ub`). About 35% of the experts fit beside the dense weights here (model 11.4 GiB, 7.0 GiB free).
+
+| -c | stock decode t/s | ours decode t/s | decode gain | stock prompt t/s | ours prompt t/s | prompt gain |
+|---|---|---|---|---|---|---|
+| 32768 | 71.5 | 99.4 | 1.39x | 964 | 3943 | 4.1x |
+| 131072 | 62.4 | 99.8 | 1.60x | 776 | 3900 | 5.0x |
+| 262144 | 18.8 | 130.3 | 6.9x | 644 | 2647 | 4.1x |
+| none (ours auto) | n/a | 100.3 | | n/a | 3873 | |
+
+One run per cell. Bug found on the way (fixed in kvg15, refined after): the first prompt on this card was planned as one 13720-token pass needing 5.1 GiB of lent graph in a 4.6 GiB pool, and the server aborted; the pass planner now caps a pass by the exact lend inequality.
