@@ -1660,6 +1660,50 @@ bool common_autotune_on(const common_params & params) {
     return params.autotune;
 }
 
+// The context of a run without -c: the largest one that leaves the expert cache most of its VRAM (fork/docs/kv-fit.md, "What fits means"). The KV and the context-scaled
+// graph buffers (attention mask, the indexer's score tensors of the sparse-attention models: GLM 73 KB per context token at a 2048 micro-batch, 7x its KV) are probed as
+// ONE slope: two no_alloc contexts at 8192 and 32768 cells (micro-batch 2048, the size a prompt pass takes) give per card the bytes per cell; the cache VRAM left at 8192 cells
+// may lose AUTO_CTX_SHARE of itself to a longer context. c = 8192 + share * cache0 / slope, the smallest over the cards, rounded down to 256, between 8192 and the model's maximum.
+// Returns 0 when the probe fails (the caller keeps the fork's old default).
+static uint32_t common_auto_ctx(common_params & params) {
+    const double   AUTO_CTX_SHARE = 0.30;
+    const uint32_t C1 = 8192, C2 = 32768;
+    std::vector<int64_t> s1, s2, cache0;
+    uint32_t trained = 0;
+    for (int i : { 0, 1 }) {
+        auto mp = common_model_params_to_llama(params);
+        auto cp = common_context_params_to_llama(params);
+        cp.n_ctx    = i == 0 ? C1 : C2;
+        cp.n_ubatch = 2048;
+        cp.n_batch  = std::max<uint32_t>(cp.n_batch, 2048);
+        std::vector<ggml_backend_dev_t> devs;
+        uint32_t ngl = 0, nctx = 0, nexp = 0;
+        try {
+            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            trained = nctx;
+            for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
+                const int64_t target = d < params.fit_params_target.size() ? (int64_t) params.fit_params_target[d] : 0;
+                (i == 0 ? s1 : s2).push_back((int64_t) (dmd[d].context + dmd[d].compute));
+                if (i == 0) { cache0.push_back(std::max<int64_t>(0, dmd[d].free - (int64_t) (dmd[d].model + dmd[d].context + dmd[d].compute) - target)); }
+            }
+        } catch (const std::exception & e) {
+            COM_DBG("auto context probe failed (%s)\n", e.what());
+            return 0;
+        }
+    }
+    if (s1.empty() || s1.size() != s2.size() || trained == 0) { return 0; }
+    double c = (double) trained;
+    for (size_t d = 0; d < s1.size(); ++d) {
+        const double slope = (double) (s2[d] - s1[d]) / (double) (C2 - C1);   // bytes per cell on this card
+        if (slope <= 0.0) { continue; }
+        c = std::min(c, (double) C1 + AUTO_CTX_SHARE * (double) cache0[d] / slope);
+    }
+    uint32_t ctx = (uint32_t) std::min<double>(c, (double) trained);
+    ctx = std::max<uint32_t>(C1, ctx / 256 * 256);
+    LOG_INF("%s: no -c: context %u tokens = min(model max %u, the size where the KV and the context-scaled graph buffers take %.0f%% of the expert cache VRAM)\n", __func__, ctx, trained, 100 * AUTO_CTX_SHARE);
+    return std::min(ctx, trained);
+}
+
 // -ub from the request and the card, no VRAM tiers: the compute buffer of a ubatch is probed (no_alloc, per candidate) and what it
 // takes from the expert cache is weighed against the prefill time it saves.
 //   time per request, in decode-token units:  np / (PP_PER_TG * (ub/512)^PP_EXP)  +  ng * (1 + extra / cache_vram)
@@ -1905,7 +1949,9 @@ static void common_moe_cache_auto_impl(common_params & params) {
     // got the batch size instead: passes of 2048 tokens, Qwen3.8-Flash-Next 8k prompt in 4 passes at 798 prompt t/s where one pass gives 1201
     llama_moe_set_opt("kv-ctx-given", (params.n_ctx != 0 && params.n_predict < 0) ? "1" : "0");   // --moe kv-tail=1: an explicit -c caps the length of a request (prompt + answer), nothing is reserved for it; with -n present -n bounds the answer and -c is not applied
     if (params.n_ctx == 0) {
-        params.n_ctx = 17408; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more (17408 = the 16294-token "12k" benchmark prompt + 1k answer; with --moe kv-tail=1 there is no default at all)
+        const uint32_t fit_ctx = common_auto_ctx(params);
+        llama_moe_set_opt("kv-budget-ctx", std::to_string(fit_ctx).c_str());   // the context the cache gets when the tail layout is declined (llama_context)
+        params.n_ctx = fit_ctx ? fit_ctx : 17408; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more (17408 = the 16294-token "12k" benchmark prompt + 1k answer; with --moe kv-tail=1 there is no default at all)
     }
     if (!params.ubatch_user && common_autotune_on(params)) {
         uint32_t ub;

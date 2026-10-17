@@ -264,9 +264,11 @@ llama_context::llama_context(
             }
         } else if (!tail_possible) {
             // the common code leaves n_ctx at 0 in tail mode (the tail needs no default), and 0 means the model's trained maximum: a static KV (and context-scaled graph
-            // buffers: 73 GB at 1M cells on the GLM stand-in) of a million cells. Without -c the normal layout gets the fork's default context instead.
+            // buffers: 73 GB at 1M cells on the GLM stand-in) of a million cells. Without -c the normal layout gets the calculated context (common_auto_ctx) instead.
             if (params.n_ctx == 0 && !(given && atoi(given) != 0)) {
-                cparams.n_ctx = std::min<uint32_t>(hparams.n_ctx_train, 17408);
+                const char * bc = llama_moe_get_opt("kv-budget-ctx");   // common_auto_ctx: the largest context that leaves the expert cache most of its VRAM
+                const uint32_t fit_ctx = bc ? (uint32_t) atoi(bc) : 0;
+                cparams.n_ctx = std::min<uint32_t>(hparams.n_ctx_train, fit_ctx ? fit_ctx : 17408);
             }
             LLAMA_LOG_WARN("%s: kv-tail is not possible here (needs flash attention, one sequence, equal K and V types, no sparse-attention indexer, a GPU): the normal KV cache with n_ctx = %u\n", __func__, cparams.n_ctx);
         }
