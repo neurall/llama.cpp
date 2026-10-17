@@ -3074,7 +3074,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 fclose(f);
             }
             const uint64_t margin = (uint64_t) 4 << 30;
-            budget = pool_total > 0 ? std::max<uint64_t>((uint64_t) 1 << 30, pool_free << 30) : (avail > margin ? avail - margin : (uint64_t) 1 << 30);
+            // Every GPU backend has its own pinned host buffer for the graph inputs (two cards: two masks, measured: the 2.0 GiB + 2.5 GiB pins of a 16k pass on MiMo), so the pages are
+            // shared between them, and one page stays free: a request beyond the free pages continues in ordinary huge pages, which stall under memory pressure (PIN_STALL).
+            uint64_t n_gpu_buf = 0;
+            for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) { if (ggml_backend_dev_type(ggml_backend_get_device(backend_ptrs[bi])) == GGML_BACKEND_DEVICE_TYPE_GPU) { n_gpu_buf++; } }
+            n_gpu_buf = std::max<uint64_t>(1, n_gpu_buf);
+            budget = pool_total > 0 ? std::max<uint64_t>((uint64_t) 1 << 30, ((pool_free > 1 ? pool_free - 1 : 0) << 30) / n_gpu_buf)
+                                    : std::max<uint64_t>((uint64_t) 1 << 30, (avail > margin ? avail - margin : 0) / n_gpu_buf);
         }
         const uint64_t n_kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
         mask_budget_mib = budget / 1048576.0;
