@@ -463,6 +463,18 @@ static ggml_cuda_device_info ggml_cuda_init() {
         }
     }
 
+    // --moe sim=N: pretend every card has N GiB by allocating the rest up front (never freed), so the engine only ever sees N GiB free.
+    if (const char * sim = getenv("GGML_CUDA_SIM_GB")) {
+        const size_t keep = (size_t) (atof(sim) * 1073741824.0);
+        for (int id = 0; id < info.device_count; ++id) {
+            size_t fr = 0, tot = 0; void * hog = nullptr;
+            ggml_cuda_set_device(id);
+            if (cudaMemGetInfo(&fr, &tot) == cudaSuccess && fr > keep && cudaMalloc(&hog, fr - keep) == cudaSuccess) {
+                GGML_LOG_INFO("%s: sim: device %d holds %.1f GiB, %.1f GiB left\n", __func__, id, (fr - keep) / 1073741824.0, keep / 1073741824.0);
+            }
+        }
+    }
+
     return info;
 }
 

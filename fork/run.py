@@ -3474,7 +3474,7 @@ def cmd_cell(a):
     args = "-np 1 " + (a.args or "")
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
-           "-t", a.test, "-n", str(a.n), "--campaign", f"{a.tag}-{a.test}"] + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else [])
+           "-t", a.test, "-n", str(a.n), "--campaign", f"{a.tag}-{a.test}"] + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, GGML_CUDA_HUGEFS="/mnt/huge1g", PERF_LOG="r")
     for kv in (a.env or []):
         k, _, v = kv.partition("="); env[k] = v
@@ -3482,7 +3482,7 @@ def cmd_cell(a):
     if a.hold:   # simulated smaller cards: "0:16 1:16" keeps 16 GiB of GPU 0 and of GPU 1 occupied for the whole cell (a 24 GB card then behaves as an 8 GB one)
         hold = a.hold.split()
         env["PERF_HOLD_MB"] = str(int(max(float(x.split(":")[1]) for x in hold) * 1024))
-        holder = subprocess.Popen([os.environ.get("FORK_TORCH_PYTHON", "/home/o/v/bin/python3" if os.path.exists("/home/o/v/bin/python3") else sys.executable), os.path.join(os.path.dirname(os.path.realpath(__file__)), "experiments", "vram-sim", "vramhold.py")] + hold, env=dict(os.environ),
+        holder = subprocess.Popen([os.environ.get("FORK_TORCH_PYTHON", "/home/o/v/bin/python3" if os.path.exists("/home/o/v/bin/python3") else sys.executable), os.path.join(os.path.dirname(os.path.realpath(__file__)), "experiments", "vram-sim", "vramhold.py")] + hold, env=dict(os.environ, LD_LIBRARY_PATH=U + ":" + os.environ.get("LD_LIBRARY_PATH", "")),
                                   stdout=subprocess.PIPE, text=True, start_new_session=True)
         ok = False
         for _ in range(120):
@@ -5137,6 +5137,7 @@ if __name__ == "__main__":
     ce.add_argument("--hold", help="GPU:GiB list kept occupied during the cell (simulates smaller cards), e.g. '0:16 1:16' = 8 GB cards on 24 GB ones")
     ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
     ce.add_argument("--lead", type=int, help="a request of about N prompt tokens first, same server")
+    ce.add_argument("--prompt", help="prompt text or @file instead of the test's own")
     ce.add_argument("--tokens", type=int, help="generated tokens instead of the test's own")
     ce.add_argument("--ctx", type=int, help="context size instead of the test's own (a -c in the args loses to the test's own -c)")
     ce.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), help="cut the prompt to N[k] tokens (pf128k clamped to 48k = a 48k prompt)")

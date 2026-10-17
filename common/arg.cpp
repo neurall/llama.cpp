@@ -2583,6 +2583,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 else if (key == "up-max") { params.n_moe_cache_inserts = v; }
                 else if (key == "recent")  { params.n_moe_cache_window  = v; }
                 else if (key == "pred-top") { params.n_moe_predict       = v; }
+                else if (key == "sim") { setenv("GGML_CUDA_SIM_GB", std::to_string(v).c_str(), 1); } // simulated card size in GiB: the CUDA backend hogs the rest of every card before anything else allocates
                 else if (key == "autotune") { params.autotune = v != 0; }
                 else if (key == "train-every")   { params.n_moe_predict_train = v; if (params.n_moe_predict <= 0) { params.n_moe_predict = 8; } }
                 else { params.moe_opts += (params.moe_opts.empty() ? "" : ",") + kv; } // a tuner knob: the engine checks the name
