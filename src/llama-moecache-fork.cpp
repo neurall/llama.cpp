@@ -3234,6 +3234,7 @@ void llama_moe_cache_kv_arena_start_fork() {
         const size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 384) * 1024 * 1024;
         if (free_b <= margin + (64u << 20)) { LLAMA_LOG_ERROR("kv-arena: %s has %.1f MiB free: no room for the KV\n", ggml_backend_dev_name(dev), free_b / 1048576.0); continue; }
         const size_t size = free_b - margin;
+        const int64_t t_alloc0 = ggml_time_us();
         ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), size);   // the one allocation of the KV, at start
         if (!buf) { LLAMA_LOG_ERROR("kv-arena: could not allocate %.1f MiB on %s\n", size / 1048576.0, ggml_backend_dev_name(dev)); continue; }
         ggml_backend_buffer_clear(buf, 0);   // the attention reads the cells rounded up to the pad: those rows must be finite
@@ -3250,6 +3251,7 @@ void llama_moe_cache_kv_arena_start_fork() {
             ar.runs.push_back(kv_arena_run{ r.owner, r.rows, r.bytes / r.row, fx });
             if (fx) { fpos += (r.bytes + 255) / 256 * 256; } else { prefix += r.row; }
         }
+        LLAMA_LOG_WARN("kv-arena: %s: allocation + clear of %.1f MiB took %.1f ms\n", ggml_backend_dev_name(dev), size / 1048576.0, (ggml_time_us() - t_alloc0) / 1000.0);
         LLAMA_LOG_WARN("kv-arena: %s: %.1f MiB, %zu records (fixed part %.1f MiB, growing part %zu B per cell): room for %zu tokens\n", ggml_backend_dev_name(dev),
                 (size) / 1048576.0, ar.runs.size(), fixed / 1048576.0, row, ar.size / row);
     }

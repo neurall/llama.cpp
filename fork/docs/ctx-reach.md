@@ -30,3 +30,11 @@ prompt as the model needs, answers checked for loops (`run.py` flags them), n >=
 
 2026-10-17: Qwen3.6 35B fits whole on 24 GB cards with its full 262144 context (11.4 GiB weights, 2.5 GiB KV per card), so
 its limit sits on smaller cards: cells `q36-h*` (held-back memory) find it. GLM-5.3 and Qwen3.8 Next do not fit whole.
+
+## Small cards are the headline
+
+The comparison matters most where stock cannot start: an 8 GB, 12 GB or 16 GB card (simulated with `--hold`, the real
+2080 Ti 11 GB report is task 53). Stock needs the model, the KV and the compute buffer resident, so on a small card it either
+refuses to load, or loads only with a short `-c` and a small micro-batch. We load with the experts in RAM, a cache in what is
+left, and a KV that starts at the horizon and grows. Card sizes to run: 5, 8, 12, 16 and 24 GB; per size the table gives
+stock's maximum `-c` (or "does not load"), its speeds, and ours with no `-c`.
