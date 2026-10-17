@@ -1603,6 +1603,7 @@ static void ggml_backend_cuda_host_buffer_free_registered(ggml_backend_buffer_t 
             if (!st->warm && !st->committed) { unlink(st->part.c_str()); } // a fill that never finished leaves nothing behind
             return;
         }
+        if (st->map_len > 0) { munmap(buffer->context, st->map_len); return; }   // the anonymous range, rounded up to whole 1 GiB pages
     }
     munmap(buffer->context, buffer->size);
 }
@@ -1812,14 +1813,18 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
         }
     }
     // the base is 1 GiB aligned so the whole buffer can sit on 1 GiB pages: map 1 GiB more, give back the slack on both sides (unused address space)
+    // The address range is rounded up to whole 1 GiB pages, so the pool can cover the tail of the buffer too (below). Before 2026-10-17 the pool part was
+    // rounded DOWN: a 2.5 GiB attention-mask buffer got 2 pool pages and 0.5 GiB of transparent huge pages, and pinning that half GiB stalled for 180 s
+    // (PIN_STALL) with 5 pool pages free. The free path unmaps the whole range (st->map_len).
     const size_t gib = (size_t) 1 << 30;
-    char * raw = (char *) mmap(nullptr, size + gib, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    const size_t size_r = (size + gib - 1) & ~(gib - 1);
+    char * raw = (char *) mmap(nullptr, size_r + gib, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (raw == MAP_FAILED) {
         return nullptr;
     }
     char * ptr = (char *) (((uintptr_t) raw + gib - 1) & ~(uintptr_t) (gib - 1));
     if (ptr > raw) { munmap(raw, (size_t) (ptr - raw)); }
-    if (raw + size + gib > ptr + size) { munmap(ptr + size, (size_t) (raw + size + gib - (ptr + size))); }
+    if (raw + size_r + gib > ptr + size_r) { munmap(ptr + size_r, (size_t) (raw + size_r + gib - (ptr + size_r))); }
     const size_t two_mb = 2u << 20;
     // 1. reserved huge pages (1 GiB first, then 2 MiB): taken whole from the pool, no compaction, no stall; the part before the first aligned
     //    address and whatever the pool cannot cover go to the paths below
@@ -1827,7 +1832,12 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     for (const size_t page : { (size_t) 1 << 30, two_mb }) {
         const size_t h = (page - ((uintptr_t) ptr & (page - 1))) & (page - 1);
         if (size <= h + page) { continue; }
-        const size_t want = std::min(size - h, ggml_cuda_free_reserved_huge_bytes(page)) & ~(page - 1);
+        // whole pages from the pool; the last one partly used when the pool has it free with one page to spare (the weights, 107.7 GiB of a 108-page
+        // pool, keep their THP tail and leave the last page to the graph buffers) and the buffer is over half a page (small buffers must not eat the
+        // pool); the tail would otherwise go to THP, whose pinning can stall under memory pressure
+        const size_t need_up = (size - h + page - 1) & ~(page - 1);
+        const size_t avail_p = ggml_cuda_free_reserved_huge_bytes(page);
+        const size_t want = (size - h > page / 2 && need_up + page <= avail_p && h + need_up <= size_r) ? need_up : (std::min(size - h, avail_p) & ~(page - 1));
         const int    hsh  = (page == ((size_t) 1 << 30) ? 30 : 21) << 26; // MAP_HUGE_SHIFT
         if (want > 0 && mmap(ptr + h, want, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_HUGETLB | hsh, -1, 0) != MAP_FAILED) {
             head = h; reserved = want; rpage = page;
@@ -1837,12 +1847,12 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     }
     // 2. transparent huge pages for what the free 2 MiB blocks cover (70%: other processes allocate meanwhile, and the kernel keeps free blocks for its own use), 3. the rest 4 KiB pages
     char * rest = ptr + (reserved ? head + reserved : 0);
-    const size_t rest_n = size - (reserved ? head + reserved : 0);
+    const size_t rest_n = reserved && head + reserved >= size ? 0 : size - (reserved ? head + reserved : 0);   // 0: the pool covers the whole buffer
     if (reserved && head > 0) {
         madvise(ptr, head, MADV_NOHUGEPAGE);
         ggml_cuda_populate(ptr, head);
     }
-    const size_t huge = std::min(rest_n, (size_t) ((double) ggml_cuda_free_huge_bytes() * (getenv("GGML_CUDA_THP_SHARE") ? atof(getenv("GGML_CUDA_THP_SHARE")) : 0.7)) & ~(size_t) (two_mb - 1));
+    const size_t huge = rest_n == 0 ? 0 : std::min(rest_n, (size_t) ((double) ggml_cuda_free_huge_bytes() * (getenv("GGML_CUDA_THP_SHARE") ? atof(getenv("GGML_CUDA_THP_SHARE")) : 0.7)) & ~(size_t) (two_mb - 1));
     if (huge > 0) {
         madvise(rest, huge, MADV_HUGEPAGE);
         ggml_cuda_populate(rest, huge);
@@ -1855,8 +1865,9 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     fprintf(stderr, "%s: %.1f GiB populated in %.1f s (%.1f reserved %zu MiB pages, %.1f THP, %.1f small)\n", __func__, size / 1073741824.0,
         (t_pop - t_start) / 1e6, reserved / 1073741824.0, rpage >> 20, huge / 1073741824.0, (rest_n - huge) / 1073741824.0);
     auto st = std::make_unique<ggml_cuda_reg_state>();
+    st->map_len = size_r;
     if (!ggml_cuda_register_chunked(ptr, size, st, t_pop)) {
-        munmap(ptr, size);
+        munmap(ptr, size_r);
         return nullptr;
     }
     return ptr;
