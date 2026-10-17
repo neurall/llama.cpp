@@ -963,7 +963,7 @@ HERE = os.path.abspath(os.environ.get("PERF_BUILDS", os.getcwd()))  # one subdir
 DATA = os.environ.get("RUN_DATA") or PROMPTS   # directory of run-history.csv, campaigns.csv, machines.csv, tune.csv (default: fork/bench, committed)
 MODEL = os.environ.get("MODEL", "")
 MODELS_DIR = os.environ.get("PERF_MODELS_DIR", "")  # other models' pages are dropped from RAM before a run
-PPL_TEXT = os.path.join(PROMPTS, "longsrc.cpp")  # frozen snapshot of llama.cpp common/json-schema-to-grammar.cpp (code, like agent prompts)
+PPL_TEXT = os.path.join(PROMPTS, os.environ.get("PERF_PPL_FILE") or "longsrc.cpp")  # frozen snapshot of llama.cpp common/json-schema-to-grammar.cpp (code, like agent prompts)
 BARE = False
 WRAP = []   # --wrap "CMD ARGS": the server is started as CMD ARGS llama-server ... (a profiler, e.g. nsys profile -o FILE --force-overwrite=true)
 THREADS = os.environ.get("PERF_THREADS", "")                   # decode threads: unset = no -t, so the thread autotune (decode and batch) runs; set only to measure a fixed count (fork/cloud/pod.sh sets it for rented boxes)
@@ -1032,11 +1032,12 @@ CHAT_PROMPTS = [
 ]
 
 
+PROMPT_TWEAK = 0   # set by the loop retry below: the repeated run gets this many newlines appended to its prompt. A greedy run of the same prompt loops again; a changed prompt is cheaper than an anti-repetition sampler (which changes the speed and the cache hit rate being measured)
 def ovr_prompt(default):
     p = OVR.get("prompt")
     if p and p.startswith("@"):
-        return open(p[1:]).read()
-    return p or default
+        p = open(p[1:]).read()
+    return (p or default) + "\n" * PROMPT_TWEAK
 GREEDY = {"temperature": 0, "top_p": 1, "top_k": 1}
 SEED = 424242
 FIXED = {"seed": SEED, "ignore_eos": True}  # protocol v2 (tests fix, fix12k): same prompt, seed and exact token count for every build
@@ -1864,11 +1865,15 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
     else:
         if BARE:
             COMMON = list(extra_args)
+            if OVR.get("ctx") and int(OVR["ctx"]) > 0 and "-c" not in COMMON:
+                COMMON += ["-c", str(OVR["ctx"])]   # --ctx N in bare mode: the pf tests built their own -c and dropped it (a 'static 20k' run had the calculated 203k)
         _pfn = re.fullmatch(r"pf(\d+)k", test)   # pf4k, pf6k, pf8k ...: the first N thousand tokens of the frozen 12k source (one pass when -ub >= N thousand)
         if test in ("pf12k", "pf12k-stock", "pf128k", "fix12k") or (_pfn and int(_pfn.group(1)) not in (12, 128)):
             pf_ctx = str(OVR.get("ctx") or (131072 if test == "pf128k" else (int(_pfn.group(1)) + 2) * 1024 if _pfn and int(_pfn.group(1)) > 14 else 16384))
             dev = (["-t", THREADS] if THREADS else []) + ["-dev", os.environ.get("PERF_PF_DEV") or ("CUDA1,CUDA0" if DEVS == "CUDA0,CUDA1" else DEVS), "-c", pf_ctx, "-ub", "2048", "-b", "2048"]
             args = list(extra_args) if BARE else dev + ((["--moe-expert-cache", "0"] if test == "pf12k-stock" and not build.startswith("stock") else []) if test == "pf12k-stock" or plain or build.startswith("stock") else ["--cpu-moe", "-nr", "--moe-expert-cache", "-1"]) + list(extra_args)
+            if BARE and OVR.get("ctx") and int(OVR["ctx"]) > 0 and "-c" not in args:
+                args += ["-c", str(OVR["ctx"])]   # --ctx N in bare mode (see above)
             if BARE and (plain or build.startswith("stock")) and "-c" not in args:
                 args += ["-c", pf_ctx]  # stock's default context (4096) rejects the 12k prompt (HTTP 400); the fork sets 32k itself
             _pf_big = test == "pf128k" or (_pfn and int(_pfn.group(1)) > 12)   # pf40k, pf64k ...: the first N thousand tokens of the 128k source
@@ -2136,7 +2141,10 @@ def text_class(text):
 
 def is_loop(text):
     """a repetition loop: the last 30% of the words have a unique word 4-gram share below 0.5 (measured: loops 0.01-0.26, real text 0.83-1.0); needs at least 100 words"""
-    w = (text or "").split()
+    t = (text or "").strip()
+    if len(t) >= 20 and len(set(t)) <= 3:   # '!!!!!!...': the logits are NaN or broken, argmax is token 0 (a GLM kv-tail run gave 33 t/s and a 99% hit rate with such an answer, 2026-10-17)
+        return True
+    w = t.split()
     if len(w) < 100:
         return False
     w = w[int(len(w) * 0.7):]
@@ -2414,11 +2422,16 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
         h = hw or os.environ.get("PERF_HW") or os.uname().nodename
         why = "loop (stopped early)" if row.get("loop_abort") else "loop"
         store({**row, "ok": 0}, build, test, {**rec, "retry": str(k + 1)}, f"{why}, repeated", h, version(build))
-        print(f"{why}: repeating ({k + 1}/3)", flush=True)
+        print(f"{why}: repeating ({k + 1}/3) with {k + 1} newline(s) added to the prompt", flush=True)
+        global PROMPT_TWEAK
+        PROMPT_TWEAK = k + 1
+        rec["tweak"] = str(k + 1)
         try:
             row = run_one(build, test, extra, plain, xargs)
         except Exception as e:
             row = {"ok": 0, "note": str(e)[:300]}
+        finally:
+            PROMPT_TWEAK = 0
     hw = hw or os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
     time.sleep(0.3)   # the cache log of the last interval is flushed at the next step
     row.update(cache_csv_totals(build))
@@ -3727,7 +3740,7 @@ def cmd_regress(a):
                 time.sleep(10)
             else:
                 print(f"regress: {os.path.basename(model)} SKIPPED, memory not free (available {av} GiB, swap used {sw} GiB)"); continue
-        ccamp = camp + "-" + os.path.basename(model)[:6]
+        ccamp = camp + "-" + os.path.basename(model)[:24]   # 6 characters made Qwen3.6 and Qwen3.8 one campaign (the second cell printed the first one's rows)
         cmd = [sys.executable, os.path.realpath(__file__), "bench", "--models", model, "--builds", ",".join(builds), "--variants", "c", "--variant", "c=" + margs,
                "-t", "ppl", "-n", str(n_runs), "--clean-state", "--campaign", ccamp, "--note", "quick regression check against the best build (fixed-text comparator)"]
         subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL if not a.verbose else None, stderr=subprocess.STDOUT if a.verbose else subprocess.DEVNULL)
