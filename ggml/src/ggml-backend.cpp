@@ -866,6 +866,18 @@ const char * ggml_backend_dev_description(ggml_backend_dev_t device) {
 void ggml_backend_dev_memory(ggml_backend_dev_t device, size_t * free, size_t * total) {
     GGML_ASSERT(device);
     device->iface.get_memory(device, free, total);
+    // --moe sim-vram=MB: a GPU reports MB of memory (test runs: a small model and a small context see the ratios of a big model on a small card). What is really in use stays in use:
+    // free = sim - (real total - real free), clamped at 0. Kept here, not in a backend, so no CUDA file changes (a .cu edit costs a long rebuild).
+    if (ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+        if (const char * sim = getenv("GGML_CUDA_SIM_MB")) {
+            const size_t sim_b = (size_t) (atof(sim) * 1048576.0);
+            if (sim_b > 0 && sim_b < *total) {
+                const size_t used = *total - *free;
+                *free  = sim_b > used ? sim_b - used : 0;
+                *total = sim_b;
+            }
+        }
+    }
 }
 
 enum ggml_backend_dev_type ggml_backend_dev_type(ggml_backend_dev_t device) {

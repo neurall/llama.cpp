@@ -6409,16 +6409,6 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
         *total = 0;
         return;
     }
-    // --moe sim-vram=MB: this card pretends to have MB of memory (test runs: a small model and a small context see the ratios of a big model on a small card). What is really
-    // in use stays in use: free = sim - (real total - real free), clamped at 0.
-    if (const char * sim = getenv("GGML_CUDA_SIM_MB")) {
-        const size_t sim_b = (size_t) (atof(sim) * 1048576.0);
-        if (sim_b > 0 && sim_b < *total) {
-            const size_t used = *total - *free;
-            *free  = sim_b > used ? sim_b - used : 0;
-            *total = sim_b;
-        }
-    }
 
 // ref: https://github.com/ggml-org/llama.cpp/pull/17368
 #if defined(__linux__) && !defined(GGML_USE_HIP)
