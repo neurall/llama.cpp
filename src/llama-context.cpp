@@ -1969,16 +1969,20 @@ void llama_context::detach_threadpool() {
 // 65536 tokens) while the base is confirmed. LLAMA_THREAD_AUTOTUNE=0 turns it off.
 // the tuned thread counts of this model on this machine are kept in the state file as "<default> <tuned>", valid while the default
 // is unchanged: a short session (one reply, no time for a cycle) starts from what an earlier one found
-// the tuned counts depend on how much of the experts run on the CPU: 2 threads were best with everything on the GPUs, but the same model on a small card (a
-// fit that leaves quarters of the experts on the CPU) decodes 30% slower on that saved count than on 8 (Qwen3.6, simulated 8 GB card). The quarter of the layers
-// whose experts sit in host memory becomes part of the key; all on the CPU (the common --cpu-moe case) keeps the plain key.
-static std::string threads_key(const llama_model & model, const char * key) {
+// how much of the expert work runs on the CPU, in quarters of the layers (4 = all of it, the --cpu-moe case)
+static int threads_cpu_quarter(const llama_model & model) {
     int n = 0, host = 0;
     for (const auto & l : model.layers) {
         if (l.ffn_up_exps && l.ffn_up_exps->buffer) { n++; host += ggml_backend_buffer_is_host(l.ffn_up_exps->buffer) ? 1 : 0; }
     }
-    const int q = n > 0 ? (4 * host + n / 2) / n : 4;
-    return q >= 4 ? std::string(key) : std::string(key) + "_cpu" + std::to_string(q);
+    return n > 0 ? (4 * host + n / 2) / n : 4;
+}
+
+// key of a tuned count: the card set and links it was tuned on (place.g<gpus>.<id>.v3) and the CPU share of the experts
+static std::string threads_key(const llama_model & model, const char * key) {
+    const std::string & pl = moe_state_place();
+    const int q = threads_cpu_quarter(model);
+    return (pl.empty() ? std::string() : pl + ".") + (q >= 4 ? std::string(key) : std::string(key) + "_cpu" + std::to_string(q));
 }
 
 static int threads_saved(const llama_model & model, const char * key, int dflt) {
@@ -2004,6 +2008,9 @@ static void threads_save(const llama_model & model, const char * key, int dflt, 
 void llama_context::set_thread_autotune(bool on) {
     const char * e = moe_opt("thread-tune");
     if (e && atoi(e) == 0) { on = false; }
+    // no expert work on the CPU (everything on the GPUs): the decode threads only wait, so the default count costs nothing and there is nothing to tune or store.
+    // (A count of 2 tuned in that state was later reused with experts on the CPU: 0.7x of stock decode on a small card.)
+    if (on && threads_cpu_quarter(model) == 0) { on = false; }
     thr.on    = on;
     thr.base0 = (int) cparams.n_threads;
     thr.base  = thr.base0;

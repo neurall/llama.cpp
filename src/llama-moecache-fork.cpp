@@ -47,6 +47,12 @@
 #endif
 
 // learned predictors: this decode trains them / the current graph was built with the update nodes
+// values that depend on the card set and its links are stored under the place prefix (place.g<gpus>.<id>.v3, set by the tool), like the link rates
+static std::string hw_key(const std::string & key) {
+    const std::string & pl = moe_state_place();
+    return pl.empty() ? key : pl + "." + key;
+}
+
 static bool g_pred_train_now = false, g_pred_train_built = false;
 static uint64_t g_pred_epoch = 0, g_pred_epoch_built = 0;   // bumped when a layer's predictor is switched on or off
 // 2-GPU prefill: the second GPU's share of the experts in big batches (0: one GPU); set by the prefill tuner, baked into
@@ -821,7 +827,7 @@ void profile_save(const moe_cache * mc) {
         // the self-tuner's decisions of this GPU count: tuned.l<links> = NAME=value NAME=value ...
         std::string v = mc->tuned_text;
         for (char & c : v) { if (c == '\n') { c = ' '; } }
-        kv.emplace_back("tuned.l" + std::to_string(mc->n_links), v);
+        kv.emplace_back(hw_key("tuned.l" + std::to_string(mc->n_links)), v);
     }
     // what this run did, per name the last 9 runs: run.<name> = <median> <last> | <oldest> ... <newest> (hit rate of the cache, evictions, uploads and
     // uploaded MiB per step, share of the prefill's experts found in the cache)
@@ -4515,7 +4521,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             // LLAMA_MOE_CACHE_<NAME> wins) and check again after a while instead of exploring right away
             const char * te = moe_opt("tuned");
             std::string txt;
-            if ((!te || atoi(te) != 0) && !mc->profile.empty()) { moe_state_get(mc->profile, "tuned.l" + std::to_string(mc->n_links), txt); }
+            if ((!te || atoi(te) != 0) && !mc->profile.empty()) { moe_state_get(mc->profile, hw_key("tuned.l" + std::to_string(mc->n_links)), txt); }
             for (char & c : txt) { if (c == ' ') { c = '\n'; } }
             int n = 0;
             size_t pos = 0;
@@ -6428,7 +6434,7 @@ bool llama_moe_cache_probe_wanted_fork() {
     }
     std::string v;
     mb_pts c, st;
-    if (!mc->profile.empty() && moe_state_get(mc->profile, "batch.cost2", v) && mb_decode(v, mc->n_slots, c, st)) {   // stored by an earlier start: no probe, just compute
+    if (!mc->profile.empty() && moe_state_get(mc->profile, hw_key("batch.cost2"), v) && mb_decode(v, mc->n_slots, c, st)) {   // stored by an earlier start: no probe, just compute
         mb_monotone(c); mb_monotone(st);
         g_mb_auto = crossover(c, st);
         LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (stored probe)\n", (long long) g_mb_auto.load());
@@ -6461,7 +6467,7 @@ void llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int n
     for (size_t i = 0; i < st.n.size(); ++i) { msg += " s" + std::to_string((int) st.n[i]) + "=" + std::to_string((int) (st.us[i] / 1e3)) + "ms"; }
     LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (timed batches, cache path c / streamed s:%s)\n", (long long) g_mb_auto.load(), msg.c_str());
     if (!mc->profile.empty()) {
-        moe_state_set(mc->profile, { { "batch.cost2", mb_encode((int) mc->n_slots, c, st) } });
+        moe_state_set(mc->profile, { { hw_key("batch.cost2"), mb_encode((int) mc->n_slots, c, st) } });
     }
 }
 
