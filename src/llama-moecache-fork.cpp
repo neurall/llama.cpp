@@ -3211,7 +3211,9 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
             LLAMA_LOG_WARN("moe-cache: kv-tail %s: %zu cells do not fit behind a lend of %.1f MiB (room for %zu): the experts give up their last blocks\n",
                     ggml_backend_dev_name(ap.dev), eff, lr / 1048576.0, room);
         }
-        any = kv_layout(mc, ap, h, l, cells, dry) || any;
+        // the zone starts at the lend rounded up to whole blocks: from the unrounded end of the graph (12566400 B on MiMo, 16 KB short of 12 MiB) its first block was also the
+        // last lent block (owner -2), never claimable for the KV (owner -3): the first request after the server's own warm-up decode aborted
+        any = kv_layout(mc, ap, h, lr, cells, dry) || any;
     }
     return any;
 }
