@@ -6532,15 +6532,34 @@ static uint32_t pp_record(moe_cache * mc, uint32_t n, uint32_t ub) {
 }
 
 // A pass whose graph does not fit the pool is a crash (kv-tail: "the compute graph and the KV do not fit in the pool", seen on an 8 GiB card with a 12k prompt planned
-// as ONE pass of 13720 tokens: 5.1 GiB of graph for a 4.6 GiB pool). The graph bytes per token are known from any graph the pool has lent for so far (the load-time
-// reserve records them), so a pass is never planned bigger than 90% of what the pool can lend at that rate.
-static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t ub) {
-    double per = 0.0;
-    for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { per = std::max(per, (double) kv.second / (double) kv.first); } }
-    if (per <= 0.0) { return ub; }
-    const double room = 0.9 * ((double) kv_lend_potential(ap) - (double) ap.mirror_b);
-    if (room <= 0.0) { return ub; }
-    const uint32_t cap = std::max<uint32_t>(64, (uint32_t) (room / per) / 32 * 32);
+// as ONE pass of 13720 tokens: 5.1 GiB of graph for a 4.6 GiB pool). The lend of a graph (moe_alias) must satisfy exactly
+//     ceil(need_b / bmax) * bmax + kv_fixed + max(KV rows in use, KV horizon) * kv_row + 2 * bmax <= tail_end
+// and need_b grows linearly with the tokens of the pass (graph tensors, CUDA scratch): a + b * tokens, taken from the two largest graph sizes the pool has lent for so far
+// (a single size: b = need / tokens, a = 0, which is not below the real slope). The largest pass is the biggest u with that inequality, no margin; a graph that still
+// misses (the staging slots are variable) meets the same check in moe_alias.
+static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prompt, uint32_t ub) {
+    if (ap.kvt.empty() || ap.need_tok.empty()) { return ub; }
+    std::vector<std::pair<int32_t, size_t>> pts;
+    for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { pts.push_back({ kv.first, kv.second }); } }
+    if (pts.empty()) { return ub; }
+    double a = 0.0, b = 0.0;
+    const auto & p1 = pts.back();
+    if (pts.size() >= 2 && pts[pts.size() - 2].first != p1.first && p1.second > pts[pts.size() - 2].second) {
+        const auto & p0 = pts[pts.size() - 2];
+        b = (double) (p1.second - p0.second) / (double) (p1.first - p0.first);
+        a = std::max(0.0, (double) p1.second - b * (double) p1.first);
+    } else {
+        b = (double) p1.second / (double) p1.first;
+    }
+    if (b <= 0.0) { return ub; }
+    const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
+    const size_t rows = std::max<size_t>((size_t) n_prompt, ap.kv_h);   // the prompt's KV is claimed before its passes (kv_tail_plan)
+    const double fixed = (double) (ap.kv_fixed + rows * ap.kv_row + 2 * bmax + ap.mirror_b);
+    const double room  = (double) ap.tail_end - fixed;
+    if (room <= (double) bmax + a) { return std::min<uint32_t>(ub, 64); }
+    // the lend is rounded up to whole blocks: leave one block for the rounding
+    const double u = (room - (double) bmax - a) / b;
+    const uint32_t cap = std::max<uint32_t>(64, (uint32_t) std::min(u, 4294967000.0) / 32 * 32);
     return std::min(ub, cap);
 }
 
@@ -6550,9 +6569,9 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     if (!mc->alias.empty() && mc->link_dev[0]) {
         for (const auto & a : mc->alias) { if (a.dev == mc->link_dev[0]) { ap = &a; } }
     }
-    if (ap) {   // bounded whatever the plan below does (also before the first prompt graph is known)
-        ub_old = pp_cap_to_pool(*ap, ub_old);
-        ub_max = pp_cap_to_pool(*ap, ub_max);
+    if (ap) {   // bounded whatever the plan below does (also before the first prompt graph is known; see pp_cap_to_pool)
+        ub_old = pp_cap_to_pool(*ap, n, ub_old);
+        ub_max = pp_cap_to_pool(*ap, n, ub_max);
     }
     if (!on || mc->alias.empty() || mc->n_links <= 0 || !mc->link_dev[0]) {
         return pp_record(mc, n, ub_old);
