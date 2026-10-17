@@ -276,6 +276,16 @@ void llama_dsplit_mirror_place_fork(const llama_model & model, const std::vector
             continue;
         }
         // no pool on this card, or the copies would take more than half of it: a buffer of their own, filled now (the behaviour before mirror-pool)
+        // a card without room to spare (small card, long context): the copies would eat what the graph buffers need later (measured: Qwen3.6 on a simulated 8 GB
+        // card, 1.5 GiB of copies, the next graph allocation failed and decode ran at 0.6x of stock). The split is a prefill gain only: leave them out.
+        size_t mem_free = 0, mem_total = 0;
+        ggml_backend_dev_memory(kv.first, &mem_free, &mem_total);
+        if (mem_free < 2 * c.bytes + ((size_t) 1 << 30)) {
+            LLAMA_LOG_WARN("%s: no room to spare for %.1f MiB of dense weights on %s (%.1f MiB free): dense split off\n", __func__, c.bytes / 1048576.0,
+                    ggml_backend_dev_name(kv.first), mem_free / 1048576.0);
+            S.failed = true;
+            continue;
+        }
         ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(c.ctx, ggml_backend_dev_buffer_type(kv.first));
         if (buf == nullptr) {
             LLAMA_LOG_WARN("%s: no room for %.1f MiB of dense weights on %s: dense split off\n", __func__, c.bytes / 1048576.0, ggml_backend_dev_name(kv.first));
