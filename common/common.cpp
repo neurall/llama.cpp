@@ -1465,6 +1465,7 @@ static void moe_auto_read(const std::string & path, moe_auto_rec & st, moe_auto_
     for (moe_auto_rec * r : { &st, &ca }) {
         if (llama_state_get(section.c_str(), (prefix + (r == &st ? ".stock" : ".cache")).c_str(), buf, sizeof buf)) {
             r->have = sscanf(buf, "%lf %lf %d %lf %lf %d", &r->p_ms, &r->g_ms, &r->n, &r->g_max, &r->p_max, &r->failed_mib) >= 3;
+            r->failed_mib = 0;   // old marks are ignored (see moe_auto_mark_failed)
             if (r->have && r->g_max < r->g_ms) { r->g_max = r->g_ms; }
             if (r->have && r->p_max < r->p_ms) { r->p_max = r->p_ms; }
             char lb[160];
@@ -1495,6 +1496,9 @@ static void moe_auto_write(const std::string & path, const moe_auto_rec & st, co
 // the process could not start with the placement it was measuring (out of memory): record it with the free VRAM it saw, the other placement is used from the next start
 // on (until that much more VRAM is free than at the failure, e.g. another program that held it has gone)
 static void moe_auto_mark_failed() {
+    // No stored "this placement failed" verdicts (2026-10-17): a PIN_STALL exit, an assert from a bug under test or a killed run counted as "the cache could not start with this much
+    // free VRAM", and the next start of MiMo silently took stock placement. Every start decides from what is true now (the static rule); nothing is written, nothing is read back.
+    return;
     if (g_moe_auto_mode.empty()) {
         return;
     }
