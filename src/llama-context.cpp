@@ -249,15 +249,18 @@ llama_context::llama_context(
         if ((!ac || atoi(ac) != 0) && tail_possible) {
             llama_moe_set_opt("kv-user-ctx", std::to_string(cparams.n_ctx).c_str());   // what the user asked for (or the default): the cache goes back to it when it cannot use the tail layout
             if (!(given && atoi(given) != 0)) {   // no -c: the smaller of the model's maximum and what the machine can hold (a 1M-token model must not get a 1M-token context: the structures that scale with it, the masks, fill the host)
-                uint64_t row = 0, free_b = 0;   // KV bytes of one token over all layers, free VRAM over all GPUs
+                uint64_t row = 0, fixed_b = 0, free_b = 0;   // KV bytes per context token (the layers whose cache grows), the bytes of the sliding-window layers (a ring of the window plus a batch: they do not grow with the context), free VRAM over all GPUs
                 for (uint32_t il = 0; il < hparams.n_layer_all; ++il) {
-                    if (hparams.has_kv(il)) { row += ggml_row_size(params.type_k, hparams.n_embd_k_gqa(il)) + ggml_row_size(params.type_v, hparams.n_embd_v_gqa(il)); }
+                    if (!hparams.has_kv(il)) { continue; }
+                    const uint64_t r = ggml_row_size(params.type_k, hparams.n_embd_k_gqa(il)) + ggml_row_size(params.type_v, hparams.n_embd_v_gqa(il));
+                    if (hparams.is_swa(il)) { fixed_b += r * ((uint64_t) hparams.n_swa + params.n_ubatch); }   // MiMo: 39 of 48 layers are sliding-window; counting them per token made the cap 10x too low (196k instead of 1M)
+                    else                    { row += r; }
                 }
                 for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
                     ggml_backend_dev_t d = ggml_backend_dev_get(i);
                     if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); free_b += f; }
                 }
-                uint64_t fit = row > 0 && free_b > 0 ? free_b / row : (uint64_t) hparams.n_ctx_train;
+                uint64_t fit = row > 0 && free_b > fixed_b ? (free_b - fixed_b) / row : (uint64_t) hparams.n_ctx_train;
                 fit = std::max<uint64_t>(4096, fit / 256 * 256);
                 cparams.n_ctx = (uint32_t) std::min<uint64_t>(hparams.n_ctx_train, fit);
                 LLAMA_LOG_WARN("%s: kv-tail: no -c: context %u tokens = min(model max %u, free VRAM %.1f GiB holds %llu tokens of KV)\n", __func__, cparams.n_ctx, hparams.n_ctx_train, free_b / 1073741824.0, (unsigned long long) (row ? free_b / row : 0));
