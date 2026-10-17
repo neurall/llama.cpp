@@ -2804,7 +2804,7 @@ def cmd_bench(a):
             prep_model()
         cells = [(build, name, (stock_variants.get(name, "") if build.startswith("stock") else variants[name]))
                  for build in a.builds.split(",") for name in (list(dict.fromkeys(["default"] + list(stock_variants))) if build.startswith("stock") else names)]
-        if not m and not a.no_probe:
+        if not m and a.probe and not a.no_probe:   # off by default: a side server before the measured run touches the page cache, the pool and the state
             probe_cells(cells, a, model)
         # a variant may set environment variables: "env:KEY=VALUE" words (e.g. lru='env:LLAMA_MOE_CACHE_POLICY=lru'), the rest are server args
         P = (4 if a.test in ("game4c", "edit4c", "game4", "edit4") else 1) if a.cold_hot else 1   # --cold-hot: every prompt runs twice, 0 = cold (empty state file), 1 = hot (the state that run wrote)
@@ -5035,7 +5035,8 @@ if __name__ == "__main__":
     b.add_argument("--last", type=int, help="report the last N runs per cell only (hot runs of a learning autotune)")
     b.add_argument("--tol", type=float, help="flag cells below TOL x stock as REGRESSION (e.g. 0.95)")
     b.add_argument("--note")
-    b.add_argument("--no-probe", action="store_true", help="skip the knob probe (one token per cell before the first measured run; prints requested against used settings)")
+    b.add_argument("--probe", action="store_true", help="run the knob probe (a side server, one short request before the first measured run; prints requested against used settings). Off by default: it warms the page cache and writes state before the measurement")
+    b.add_argument("--no-probe", action="store_true", help="kept for old scripts: the probe is off unless --probe")
     b.add_argument("--warm", action="store_true", help="force a discarded run before each measured one (hot run); default off")
     b.add_argument("--no-warm", action="store_true", help="never a discarded run: the first run as a user sees it")
     b.add_argument("--sampler", help="extra sampling parameters for every request, comma separated, e.g. repeat_penalty=1.1,dry_multiplier=0.8 (anti-repetition tests); temperature 0 / top_k 1 stay unless overridden")
