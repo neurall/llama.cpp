@@ -2486,3 +2486,7 @@ m5-o-256k-pf128k,2026-10-17 20:59:30,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bi
 m5-o-256k-pf128k,2026-10-17 21:01:05,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg16 variants v test pf128k n=1,,
 m6-o-256k-pf128k,2026-10-17 21:09:50,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg16 variants v test pf128k n=1,,
 m7-o-256k-pf128k,2026-10-17 21:13:06,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg16 variants v test pf128k n=1,,
+regress-kv-grow-a03d1b9b2-1017-2114-OLMoE-1B-7B-0924-Instruc,2026-10-17 21:14:55,quick regression check against the best build (fixed-text comparator),,
+regress-kv-grow-a03d1b9b2-1017-2114-Qwen3.6-35B-A3B-GSQ-hybr,2026-10-17 21:21:44,quick regression check against the best build (fixed-text comparator),,
+m8-o-256k-pf128k,2026-10-17 21:25:23,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg17 variants v test pf128k n=1,,
+m9-o-256k-pf128k,2026-10-17 21:25:53,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg18 variants v test pf128k n=1,,

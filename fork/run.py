@@ -3382,6 +3382,27 @@ def cmd_queue(a):
     if a.action == "backups":
         for f in sorted(os.listdir(BK)) if os.path.isdir(BK) else []: print(os.path.join(BK, f))
         return 0
+    if a.action == "del":
+        # queue del TASK_ID | queue del all: remove tasks from tasks.csv (a running task is never removed: stop it first with `run.py stop`); same lock and backup as add
+        if not a.task_id: sys.exit("queue del TASK_ID | queue del all")
+        with open(INI + ".lock", "w") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            os.makedirs(BK, exist_ok=True)
+            if os.path.exists(INI): shutil.copy2(INI, os.path.join(BK, "tasks-" + time.strftime("%Y%m%d-%H%M%S") + ".csv"))
+            for f in sorted(os.listdir(BK))[:-3]: os.remove(os.path.join(BK, f))
+            rows = list(csv.DictReader(open(INI, newline="")))
+            if a.task_id != "all" and not any(r["id"] == a.task_id for r in rows): sys.exit("no such task: " + a.task_id)
+            keep, gone, busy = [], [], []
+            for r in rows:
+                if a.task_id in ("all", r["id"]):
+                    (busy if r["status"] == "running" else gone).append(r["id"])
+                    if r["status"] == "running": keep.append(r)
+                else: keep.append(r)
+            with open(INI + ".tmp", "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=COLS, lineterminator="\n"); w.writeheader(); [w.writerow({c: r.get(c, "") for c in COLS}) for r in keep]
+            os.replace(INI + ".tmp", INI)
+        print(f"deleted {len(gone)} task(s)" + (": " + ", ".join(gone) if len(gone) <= 8 else "") + (f"; kept running: {', '.join(busy)}" if busy else ""))
+        return 0
     if a.action == "add":
         if not a.task_id or not a.cli: sys.exit("queue add TASK_ID --cli '...'")
         new = [{"id": a.task_id, "order": a.order, "cli": a.cli, "note": a.note}]
@@ -5081,7 +5102,7 @@ if __name__ == "__main__":
     st.add_argument("--wait-gpu", type=float, default=60.0, help="seconds to wait until the GPUs have no memory in use")
     st.add_argument("--no-power", action="store_true", help="leave the power limits alone")
     qq = sp.add_parser("queue", help="the bench queue (queued.service): add TASK_ID --cli '...' [--order N] [--note ..]  |  add-json (a JSON list on stdin)  |  backups  |  pause (no new task starts; the running one finishes) / resume / status; edits take the queue's own file lock and keep the last 3 versions of tasks.csv")
-    qq.add_argument("action", choices=["add", "add-json", "backups", "pause", "resume", "status"])
+    qq.add_argument("action", choices=["add", "add-json", "del", "backups", "pause", "resume", "status"])
     qq.add_argument("task_id", nargs="?")
     qq.add_argument("--cli", help="the command line the queue runs (bash m111log.sh ... or a run.py line)")
     qq.add_argument("--order", type=float, default=-100, help="run order, ascending (default -100 = ahead of the waiting tasks)")
