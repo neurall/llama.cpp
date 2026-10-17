@@ -3325,6 +3325,11 @@ std::string llama_moe_cache_kv_tail_why_fork(void * owner, size_t max_cell) {
                     if (!more.empty()) { break; }
                 }
             }
+            {   // the size classes of this card's pool
+                std::string cl = "; classes:";
+                for (auto & sg : ap.segs) { char t[120]; snprintf(t, sizeof t, " [pcls %d base %zu B %zu n %d blocked %d]", sg.pcls, (size_t) sg.base, (size_t) sg.B, (int) sg.n, (int) sg.blocked); cl += t; }
+                char t2[80]; snprintf(t2, sizeof t2, " kv_bmax %zu", kv_bmax(ap)); more += cl + t2;
+            }
             return std::string(buf) + more;
         }
     }
