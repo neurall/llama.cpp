@@ -1899,6 +1899,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             t = res["timings"]
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
                    "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}" + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "")}
+            row["output"] = res.get("content") or ((res.get("choices") or [{}])[0].get("message") or {}).get("content")   # the answer text (runs.db outputs): sanity of long-context runs
             if test == "fix12k":
                 row["md5"] = hashlib.md5(res["content"].encode()).hexdigest()[:8]
             row.update(PROCSTAT)   # load time, rss, GPU log and power of the request window (--gpulog)
