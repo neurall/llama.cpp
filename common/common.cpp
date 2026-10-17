@@ -1687,11 +1687,14 @@ static uint32_t common_auto_ctx(common_params & params) {
                 if (i == 0) { cache0.push_back(std::max<int64_t>(0, dmd[d].free - (int64_t) (dmd[d].model + dmd[d].context + dmd[d].compute) - target)); }
             }
         } catch (const std::exception & e) {
-            COM_DBG("auto context probe failed (%s)\n", e.what());
+            LOG_WRN("%s: auto context probe failed (%s), the default context is used\n", __func__, e.what());
             return 0;
         }
     }
-    if (s1.empty() || s1.size() != s2.size() || trained == 0) { return 0; }
+    if (s1.empty() || s1.size() != s2.size() || trained == 0) {
+        LOG_WRN("%s: auto context probe gave no usable result (cards %zu/%zu, model max %u), the default context is used\n", __func__, s1.size(), s2.size(), trained);
+        return 0;
+    }
     double c = (double) trained;
     for (size_t d = 0; d < s1.size(); ++d) {
         const double slope = (double) (s2[d] - s1[d]) / (double) (C2 - C1);   // bytes per cell on this card
