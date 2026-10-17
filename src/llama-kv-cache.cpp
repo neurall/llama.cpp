@@ -3247,7 +3247,7 @@ llama_kv_cache::tail_guard::~tail_guard() { llama_moe_cache_kv_tail_remove_fork(
 
 size_t llama_moe_cache_kv_tail_cap_fork(void * owner);
 uint32_t llama_kv_cache::get_size_reserve() const {
-    return kv_tail_on && kv_tail_step > 0 ? std::min<uint32_t>(get_size(), kv_tail_step) : get_size();
+    return kv_tail_on && kv_tail_step > 0 && llama_moe_cache_kv_pool_expected_fork() ? std::min<uint32_t>(get_size(), kv_tail_step) : get_size();
 }
 uint32_t llama_kv_cache::kv_tail_cap(uint32_t n) const {
     if (!kv_tail_on) { return n; }

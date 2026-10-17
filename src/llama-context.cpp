@@ -543,6 +543,7 @@ llama_context::llama_context(
         }
     }
 
+    llama_moe_cache_kv_pool_expected_fork(cparams.moe_cache);   // before the memory module: its get_size_reserve reads it
     // init the memory module
     if (!hparams.vocab_only) {
         llama_memory_params params_mem = {

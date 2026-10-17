@@ -2941,6 +2941,9 @@ void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec) {
     std::lock_guard<std::mutex> lk(g_kvt_mtx);
     g_kvt.push_back(rec);
 }
+static std::atomic<bool> g_kv_pool_expected { true };
+void llama_moe_cache_kv_pool_expected_fork(bool on) { g_kv_pool_expected = on; }
+bool llama_moe_cache_kv_pool_expected_fork() { return g_kv_pool_expected.load(); }
 void llama_moe_cache_kv_tail_remove_fork(void * owner) {
     std::lock_guard<std::mutex> lk(g_kvt_mtx);
     g_kvt.erase(std::remove_if(g_kvt.begin(), g_kvt.end(), [&](const llama_kv_tail_fork & r) { return r.owner == owner; }), g_kvt.end());

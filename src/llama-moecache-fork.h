@@ -159,6 +159,10 @@ struct llama_kv_tail_fork {
     bool               attached = false;   // placed in a pool's tail or in an arena
 };
 void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec);
+// does an expert pool (the compute alias lend) exist for this context? Without it (a model that fits in VRAM, KV in the dense arena) the graph buffers are real allocations:
+// reserving them at the growth horizon makes every pass beyond it reallocate (Qwen3.6, 7 reallocs x 80 ms = +0.55 s on a 13.7k prompt), so the reserve is made at the full size.
+void llama_moe_cache_kv_pool_expected_fork(bool on);
+bool llama_moe_cache_kv_pool_expected_fork();
 void llama_moe_cache_kv_tail_remove_fork(void * owner);
 // before the cache writes cells up to `max_cell`: do the claimed blocks cover them? (the cache asserts it)
 bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell);
