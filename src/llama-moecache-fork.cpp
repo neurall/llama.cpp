@@ -2763,6 +2763,15 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
         const size_t scratch = ap.cuda_dev >= 0 || strncmp(ggml_backend_dev_name(ap.dev), "CUDA", 4) == 0
                              ? GGML_PAD((size_t) n_tokens * alias_tok_bytes(mc, ap), (size_t) 2 << 20) : 0;
         const size_t base    = GGML_PAD(ap.base_off + GGML_PAD(peak, 256) + scratch, 256);   // behind the dense split's copies when the reserved graph splits
+        {   // what the shrink-to-fit decided on, once per reserve size (a graph of this many tokens against what the pool can lend)
+            static int said_tok = -1;
+            if (said_tok != n_tokens) {
+                said_tok = n_tokens;
+                LLAMA_LOG_INFO("moe-cache: alias fit %s: %d tokens: graph peak %.1f MiB, CUDA scratch %.1f MiB, base offset %.1f MiB -> need %.1f MiB, the pool can lend %.1f MiB (pool %.1f MiB)\n",
+                        ggml_backend_dev_name(ap.dev), n_tokens, peak / 1048576.0, scratch / 1048576.0, ap.base_off / 1048576.0, base / 1048576.0, cap / 1048576.0,
+                        ap.kvt.empty() ? ap.span / 1048576.0 : ap.tail_end / 1048576.0);
+            }
+        }
         fit.cap  = std::min(fit.cap ? fit.cap : cap, cap);
         fit.need = std::max(fit.need, base);
         if (base > cap) {
