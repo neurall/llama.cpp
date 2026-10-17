@@ -493,12 +493,15 @@ static std::string dsplit_hw_key(const llama_model & model) {
     LLAMA_LOG_WARN("split planner: hardware key %s = %s\n", k, desc.c_str());
     return k;
 }
+// State keys carry a format number (2026-10-17: calib3, arm2): the calibration was learned against the planner's old model (no attention, a stale compute per token),
+// and the arms were bucketed by pass size only. Read under the new model, MiMo's stored 1.714 made every split look 1.7x slower, the planner never chose one, and
+// only a measured split pass can change the calibration: stuck. The old entries stay in the file, unused.
 static void dsplit_calib_load(const llama_model & model) {
     if (!g_calib_section.empty()) { return; }
     g_calib_section = moe_state_section(model);
     g_hw_key = dsplit_hw_key(model);
     std::string v;
-    if (!g_calib_section.empty() && moe_state_get(g_calib_section, "dsplit_calib2@" + g_hw_key, v)) {
+    if (!g_calib_section.empty() && moe_state_get(g_calib_section, "dsplit_calib3@" + g_hw_key, v)) {
         const double c = atof(v.c_str());
         if (c >= 0.5 && c <= 3.0) { g_split_calib.store(c); g_calib_n = 0; LLAMA_LOG_WARN("split planner: calibration %.2f from the state file (a prior: the first measured split pass replaces it)\n", c); }
     }
@@ -508,7 +511,7 @@ static std::set<int> g_bucket_loaded;
 static void dsplit_bucket_load(int b) {
     if (g_calib_section.empty() || g_hw_key.empty() || !g_bucket_loaded.insert(b).second) { return; }
     std::string v;
-    if (!moe_state_get(g_calib_section, "dsplit_arm_b" + std::to_string(b) + "@" + g_hw_key, v)) { return; }
+    if (!moe_state_get(g_calib_section, "dsplit_arm2_b" + std::to_string(b) + "@" + g_hw_key, v)) { return; }
     double u0, u1; int n0, n1;
     if (sscanf(v.c_str(), "%lf %d %lf %d", &u0, &n0, &u1, &n1) == 4 && u0 >= 0 && u1 >= 0) {
         dsplit_bucket & B = g_buckets[b];
@@ -521,7 +524,7 @@ static void dsplit_bucket_save(int b) {
     if (g_calib_section.empty() || g_hw_key.empty()) { return; }
     const dsplit_bucket & B = g_buckets[b];
     char v[96]; snprintf(v, sizeof v, "%.3f %d %.3f %d", B.us_tok[0], std::min(B.n[0], 3), B.us_tok[1], std::min(B.n[1], 3));
-    moe_state_set(g_calib_section, { { "dsplit_arm_b" + std::to_string(b) + "@" + g_hw_key, v } });
+    moe_state_set(g_calib_section, { { "dsplit_arm2_b" + std::to_string(b) + "@" + g_hw_key, v } });
 }
 
 double   llama_moe_cache_compute_att_us_fork();   // llama-moecache-fork.cpp: the attention part of the compute per token at the planned cells (declared here, no header edit)
@@ -923,7 +926,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
                 // the first measurement sets the factor, later ones average in half and half
                 const double nc = g_calib_n.fetch_add(1) == 0 ? r : 0.5 * g_split_calib.load() + 0.5 * r;
                 g_split_calib.store(nc);
-                if (!g_calib_section.empty()) { char b2[32]; snprintf(b2, sizeof b2, "%.3f", nc); moe_state_set(g_calib_section, { { "dsplit_calib2@" + g_hw_key, b2 } }); }
+                if (!g_calib_section.empty()) { char b2[32]; snprintf(b2, sizeof b2, "%.3f", nc); moe_state_set(g_calib_section, { { "dsplit_calib3@" + g_hw_key, b2 } }); }
                 pit->second.c_us = -1.0;   // recompute the plan of this size with the new calibration
             }
         }
