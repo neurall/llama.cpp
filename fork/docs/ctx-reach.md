@@ -47,3 +47,16 @@ note on where the KV sits. Rungs, from kv-fit.md: f16 KV in VRAM (growth), then 
 (`--moe kv-fallback=...,ram`; the user is told upfront which rung a context needs). Status: growth in VRAM works (GLM 125k
 prompt, 133k cells, no -c); the quantised rungs run only as a fixed `-ctk/-ctv` today, and the automatic ladder and the RAM
 rung are not built. The 3x and 10x columns need them.
+
+## Qwen3.6 35B on a simulated 8 GB card (2026-10-17, 12k prompt, 64 tokens, hold 16 GiB per card)
+
+Stock never hits an out-of-memory here: its fit lowers the offloaded layers as `-c` grows, so its speed collapses instead (stock b11639, `-c` = column 1).
+
+| -c | stock decode t/s | stock prompt t/s | ours static -c decode | ours static -c prompt | ours growth (kv-tail) decode | ours growth prompt |
+|---|---|---|---|---|---|---|
+| 32k | 135.5 | 4133 | | | 140.9 (no -c) | 4310 (no -c) |
+| 128k | 99.7 | 1166 | | | | |
+| 256k | 75.8 | 593 | 40.4 | 1929 | 141.5 | 4387 |
+| 512k | 23.0 | 346 | 8.1 | 613 | 141.9 | 4404 |
+
+Findings: with a fixed large `-c` our build turns the expert cache off (the KV takes the card), decode is 0.53x / 0.35x of stock at 256k / 512k although prompt speed is 3.3x / 1.8x. The growth path reserves only what the prompt uses, so it stays at the unconstrained speed. Open: growth rows used a 12k prompt; a prompt of 100k+ tokens must be run to show the reach claim. Fixed `-c` must go through the same growth / quantised-KV / RAM-KV ladder (branch qkv-ram-fallback).
