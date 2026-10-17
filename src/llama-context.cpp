@@ -3011,6 +3011,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     // The attention mask is a pinned host buffer of (pass tokens x cells the pass sees x 2 bytes), re-pinned whenever the horizon grows: a 255k-token prompt in passes of 13.6k
     // tokens wanted 6.5 GiB of it, and the kernel could not pin that beside the 108 GiB weight pool (PIN_STALL, exit 75). The pass planner weighs uploads and graph bytes but
     // not this buffer, so the pass size is capped here: mask budget / (2 x cells at the end of this call). --moe mask-mb=N overrides the calculated budget (0 = no cap).
+    { static bool said = false; if (!said && n_tokens_all >= 64) { said = true; LLAMA_LOG_INFO("%s: pass cap inputs: moe_cache %d, memory %d, n_tokens_all %u, n_ubatch %u\n", __func__, (int) cparams.moe_cache, (int) (memory != nullptr), n_tokens_all, cparams.n_ubatch); } }
     uint32_t n_ubatch_lim = cparams.n_ubatch;
     double   mask_budget_mib = 0.0;
     if (cparams.moe_cache && memory) {
