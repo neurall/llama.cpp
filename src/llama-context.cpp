@@ -1410,7 +1410,7 @@ void llama_context::sched_reserve() {
     // with the cells. H = u * (a * k + b) + c then holds for any model (any mask type, any number of masks) and the pass cap divides the live pinnable budget by it.
     if (!g_host_cal) {
         static int said = 0;
-        if (said++ < 3) { LLAMA_LOG_INFO("%s: host calibration check: moe_cache %d, no_alloc %d, memory %d\n", __func__, (int) cparams.moe_cache, (int) model.hparams.no_alloc, (int) (memory != nullptr)); }
+        if (said++ < 3) { LLAMA_LOG_WARN("%s: host calibration check: moe_cache %d, no_alloc %d, memory %d\n", __func__, (int) cparams.moe_cache, (int) model.hparams.no_alloc, (int) (memory != nullptr)); }
     }
     if (cparams.moe_cache && !model.hparams.no_alloc && !g_host_cal && memory) {
         int cpu_i = -1;
@@ -1435,7 +1435,7 @@ void llama_context::sched_reserve() {
             g_host_a = (s2 - s1) / (k2 - k1);
             g_host_b = s1 - g_host_a * k1;
             g_host_ok = h21 > 0 && s1 > 0;
-            LLAMA_LOG_INFO("%s: host buffer of a pass: %.0f MiB at (%.0f tokens, %.0f cells), %.0f MiB at (%.0f, %.0f), %.0f MiB at (%.0f, %.0f) -> %.3f bytes per token per cell + %.0f bytes per token + %.0f KiB\n", __func__,
+            LLAMA_LOG_WARN("%s: host buffer of a pass: %.0f MiB at (%.0f tokens, %.0f cells), %.0f MiB at (%.0f, %.0f), %.0f MiB at (%.0f, %.0f) -> %.3f bytes per token per cell + %.0f bytes per token + %.0f KiB\n", __func__,
                     h11 / 1048576.0, u1, k1, h21 / 1048576.0, u2, k1, h12 / 1048576.0, u1, k2, g_host_a, g_host_b, g_host_c / 1024.0);
         }
     }
@@ -3051,7 +3051,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     // The attention mask is a pinned host buffer of (pass tokens x cells the pass sees x 2 bytes), re-pinned whenever the horizon grows: a 255k-token prompt in passes of 13.6k
     // tokens wanted 6.5 GiB of it, and the kernel could not pin that beside the 108 GiB weight pool (PIN_STALL, exit 75). The pass planner weighs uploads and graph bytes but
     // not this buffer, so the pass size is capped here: mask budget / (2 x cells at the end of this call). --moe mask-mb=N overrides the calculated budget (0 = no cap).
-    { static bool said = false; if (!said && n_tokens_all >= 64) { said = true; LLAMA_LOG_INFO("%s: pass cap inputs: moe_cache %d, memory %d, n_tokens_all %u, n_ubatch %u\n", __func__, (int) cparams.moe_cache, (int) (memory != nullptr), n_tokens_all, cparams.n_ubatch); } }
+    { static bool said = false; if (!said && n_tokens_all >= 64) { said = true; LLAMA_LOG_WARN("%s: pass cap inputs: moe_cache %d, memory %d, n_tokens_all %u, n_ubatch %u\n", __func__, (int) cparams.moe_cache, (int) (memory != nullptr), n_tokens_all, cparams.n_ubatch); } }
     uint32_t n_ubatch_lim = cparams.n_ubatch;
     double   mask_budget_mib = 0.0;
     if (cparams.moe_cache && memory) {
@@ -3088,7 +3088,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     if (cparams.moe_cache && memory && n_tokens_all >= 64) {   // the mask math, checkable against the host pins in the same log (--moe log=m not needed: one line per call)
         const uint64_t kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
         const uint64_t mask_b = (uint64_t) GGML_PAD(n_ubatch_call, 64) * GGML_PAD(kv_end, 256) * 2;
-        LLAMA_LOG_INFO("%s: pass size: %u tokens in this call, %llu cells at its end, pass of %u (limit %u from the pinned-mask budget %.0f MiB), the mask of a full pass %.0f MiB\n", __func__,
+        LLAMA_LOG_WARN("%s: pass size: %u tokens in this call, %llu cells at its end, pass of %u (limit %u from the pinned-mask budget %.0f MiB), the mask of a full pass %.0f MiB\n", __func__,
                 n_tokens_all, (unsigned long long) kv_end, n_ubatch_call, n_ubatch_lim, mask_budget_mib, mask_b / 1048576.0);
     }
 
