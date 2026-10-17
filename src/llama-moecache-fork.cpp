@@ -3457,9 +3457,12 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             // the graph reaches into the KV zone: the zone moves behind it (a device copy of the rows in use), and since this graph's views of the KV point at the old
             // place it is built again (the caller). Never silently over the KV, and no abort: only when the zone cannot fit behind the graph at all.
             const size_t bmax = kv_bmax(ap);
-            const size_t lr = (need_b + bmax - 1) / std::max<size_t>(1, bmax) * bmax;
+            const size_t want = need_b + need_b / 4;   // 25% headroom: the next bigger graph rarely moves the zone again (the lend only ever grows)
             size_t cells = 0;
             for (auto & r : ap.kvt) { if (!r.fixed) { cells = std::max(cells, r.rows ? r.rows() : 0); } }
+            const size_t keep = ap.kv_fixed + std::max(cells, (size_t) 1) * ap.kv_row + 2 * bmax;   // the zone as it is now must still fit behind the lend
+            const size_t lr_max = ap.tail_end > keep ? ap.tail_end - keep : 0;
+            const size_t lr = std::max((need_b + bmax - 1) / std::max<size_t>(1, bmax) * bmax, std::min((want + bmax - 1) / std::max<size_t>(1, bmax) * bmax, lr_max / bmax * bmax));
             if (lr + ap.kv_fixed + std::max(cells, (size_t) 1) * ap.kv_row + 2 * bmax > ap.tail_end) {
                 LLAMA_LOG_ERROR("moe-cache: kv-tail %s: a %d-token graph needs %.1f MiB lent from the start of the pool, and %zu cells of KV (%.1f MiB) do not fit behind it in the pool of %.1f MiB\n",
                         ggml_backend_dev_name(ap.dev), n_tokens, need_b / 1048576.0, cells, cells * ap.kv_row / 1048576.0, ap.tail_end / 1048576.0);
