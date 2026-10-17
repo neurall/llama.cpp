@@ -6940,7 +6940,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         static double saved = 0.0;
         if (!mc->profile.empty() && !moe_state_place().empty() && (saved <= 0.0 || std::fabs(g_pp_c_us / saved - 1.0) > 0.05)) {
             saved = g_pp_c_us;
-            moe_state_set(mc->profile, { { moe_state_place() + ".pp_c_us", tr_fmt("%.4f", g_pp_c_us) }, { moe_state_place() + ".pp_a_us", tr_fmt("%.6f", g_pp_a_us) } });
+            moe_state_set(mc->profile, { { moe_state_place() + ".pp_c0_us", tr_fmt("%.4f", g_pp_c_us) }, { moe_state_place() + ".pp_a1_us", tr_fmt("%.6f", g_pp_a_us) } });
         }
     }
     g_pp_n = 0; g_pp_P = 0; g_pp_Usum = 0.0; g_pp_xc = 0.0;   // read once
@@ -6949,6 +6949,8 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
 // The compute of one prompt token measured by an earlier start on these cards (state file), until this start measures its own (under g_pp_mu). Without it the
 // first prompt of every start had no plan (the split planner needs this number), ran on one card to measure it, and only the next prompts could split
 // (Qwen3.8-Flash-Next 8.8k on x16 + x4: the first prompt 1201 prompt t/s on one card, the planner's split 1432 from the second, 1590 tuned).
+// Keys pp_c0_us / pp_a1_us (2026-10-17): until then pp_c_us held the whole compute per token of the last prompt it could read, attention included (MiMo: 1265 us
+// measured at about 250k cells); read as c0, the base of the fit, it would plan every short prompt as 20x heavier. Old entries stay in the file, unused.
 static void pp_c_us_stored() {
     static bool tried = false;
     if (tried || g_pp_c_us > 0.0 || !g_cache || g_cache->profile.empty() || moe_state_place().empty()) {
@@ -6956,9 +6958,9 @@ static void pp_c_us_stored() {
     }
     tried = true;
     std::string v;
-    if (moe_state_get(g_cache->profile, moe_state_place() + ".pp_c_us", v) && atof(v.c_str()) > 0.0) {
+    if (moe_state_get(g_cache->profile, moe_state_place() + ".pp_c0_us", v) && atof(v.c_str()) > 0.0) {
         g_pp_c_us = atof(v.c_str());
-        if (moe_state_get(g_cache->profile, moe_state_place() + ".pp_a_us", v)) { g_pp_a_us = std::max(0.0, atof(v.c_str())); }
+        if (moe_state_get(g_cache->profile, moe_state_place() + ".pp_a1_us", v)) { g_pp_a_us = std::max(0.0, atof(v.c_str())); }
         LLAMA_LOG_WARN("moe-cache: compute of one prompt token %.2f us (stored by an earlier start on these cards): the first prompt is planned from it\n", g_pp_c_us);
     }
 }
