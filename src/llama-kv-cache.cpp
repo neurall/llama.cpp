@@ -189,10 +189,11 @@ llama_kv_cache::llama_kv_cache(
     // Needs equal K and V types of plain floats (rows of whole elements), one stream, flash attention (V not transposed) and no shared cells.
     const char * o_tm = llama_moe_get_opt("kv-token-major");
     const bool   tm_on = o_tm && atoi(o_tm) != 0 && !other && n_stream == 1 && !v_trans && type_k == type_v &&
-                         (type_k == GGML_TYPE_F16 || type_k == GGML_TYPE_BF16 || type_k == GGML_TYPE_F32 || ggml_is_quantized(type_k)) && !share;   // quantized K and V (q8_0, q4_0, ...): rows of whole blocks, the record tensor is rounded down to whole blocks per row
+                         (type_k == GGML_TYPE_F16 || type_k == GGML_TYPE_BF16 || type_k == GGML_TYPE_F32 || ggml_is_quantized(type_k)) && !share &&
+                         hparams.indexer_top_k == 0;   // a sparse-attention indexer (GLM5-Next, DeepSeek 3.2, Qwen4Exp) addresses its K rows by CELL number (k-pool gathers and scatters, mask columns): with the reversed rows of the record those rows are wrong and the answer is garbage ('!!!!', 2026-10-17); the old layout until that code maps cell -> row;   // quantized K and V (q8_0, q4_0, ...): rows of whole blocks, the record tensor is rounded down to whole blocks per row
     kv_rev = tm_on && atoi(o_tm) == 2;
     if (o_tm && atoi(o_tm) != 0 && !tm_on) {
-        LLAMA_LOG_WARN("%s: kv-token-major needs K and V of the same float type, one stream, flash attention and no shared cells: old layout\n", __func__);
+        LLAMA_LOG_WARN("%s: kv-token-major needs K and V of the same float type, one stream, flash attention, no shared cells and no sparse-attention indexer: old layout\n", __func__);
     }
     struct tm_rec { ggml_tensor * rec = nullptr; size_t row = 0; size_t used = 0; };
     std::map<ggml_backend_buffer_type_t, tm_rec, ggml_backend_buft_comparator> tm_map;
