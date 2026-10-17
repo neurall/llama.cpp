@@ -3008,7 +3008,20 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     llama_memory_context_ptr mctx;
 
     // prompt batches: equal passes sized from the number of new tokens, a tail the cache path can take is left to it (n_ubatch is the maximum)
-    const uint32_t n_ubatch_call = cparams.moe_cache ? llama_moe_cache_prefill_ubatch_fork(n_tokens_all, cparams.n_ubatch) : cparams.n_ubatch;
+    // The attention mask is a pinned host buffer of (pass tokens x cells the pass sees x 2 bytes), re-pinned whenever the horizon grows: a 255k-token prompt in passes of 13.6k
+    // tokens wanted 6.5 GiB of it, and the kernel could not pin that beside the 108 GiB weight pool (PIN_STALL, exit 75). The pass planner weighs uploads and graph bytes but
+    // not this buffer, so the pass size is capped here: mask budget / (2 x cells at the end of this call). --moe mask-mb=N (default 2048; 0 = no cap).
+    uint32_t n_ubatch_lim = cparams.n_ubatch;
+    if (cparams.moe_cache && memory) {
+        const char * mm = llama_moe_get_opt("mask-mb");
+        const uint64_t budget = (uint64_t) (mm ? atoll(mm) : 2048) << 20;
+        const uint64_t n_kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
+        if (budget > 0 && n_kv_end > 0) {
+            const uint64_t cap = std::max<uint64_t>(256, budget / (2 * n_kv_end) / 32 * 32);
+            if (cap < n_ubatch_lim) { n_ubatch_lim = (uint32_t) cap; }
+        }
+    }
+    const uint32_t n_ubatch_call = cparams.moe_cache ? llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim) : cparams.n_ubatch;
 
     while (true) {
         mctx = memory->init_batch(*balloc, n_ubatch_call, embd_all);
