@@ -2146,6 +2146,12 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
             /*.shares_model =*/ !has_draft, // an MTP context runs on the weights of the main model
         };
 
+        // --moe kv-tail=1 without -c: the KV memory is not reserved at load (it lives at the tail of the pool or in the arena, grown per request), so the fit must not count it
+        // for the whole trained context: it pushed the experts of a 16 GB machine to the CPU (Qwen3.6-35B on 2 x 8 GB: 57 against 150 t/s). A small context here, the real one is set per request.
+        const char * kt_fit = llama_moe_get_opt("kv-tail");
+        const char * kg_fit = llama_moe_get_opt("kv-ctx-given");
+        const uint32_t n_ctx_before_fit = cparams.n_ctx;
+        if (kt_fit && atoi(kt_fit) != 0 && !(kg_fit && atoi(kg_fit) != 0)) { cparams.n_ctx = std::max<uint32_t>(params.fit_params_min_ctx, 4096); }
         common_fit_params(params.model.path.c_str(), &mparams, &cparams,
             params.tensor_split,
             params.tensor_buft_overrides.data(),
@@ -2153,6 +2159,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
             params.fit_params_min_ctx,
             has_draft || spec_mtp ? &extra : nullptr,
             params.verbosity >= LOG_LEVEL_DEBUG ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR);
+        if (kt_fit && atoi(kt_fit) != 0 && !(kg_fit && atoi(kg_fit) != 0)) { cparams.n_ctx = n_ctx_before_fit; }
     }
 
     const size_t swap0 = params.load_pinned_auto ? common_swap_out_bytes() : 0;
