@@ -3508,7 +3508,10 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             size_t & nt = ap.need_tok[n_tokens];
             nt = std::max(nt, need_b);
         }
-        if (!ap.kvt.empty() && need_b > ap.span) {
+        // the lend takes whole blocks: a graph of need_b bytes holds ceil(need_b / bmax) * bmax of the buffer (the largest size class), so it reaches the KV zone when THAT passes the
+        // zone's start, not need_b (MiMo: a 10.8 MB lend took the 9.2 MB blocks 0 and 1, up to 18.3 MB, while the zone began at 12.6 MB inside block 1 and was never claimed)
+        const size_t lend_end = ap.kvt.empty() ? need_b : (need_b + std::max<size_t>(1, kv_bmax(ap)) - 1) / std::max<size_t>(1, kv_bmax(ap)) * std::max<size_t>(1, kv_bmax(ap));
+        if (!ap.kvt.empty() && lend_end > ap.span) {
             // the graph reaches into the KV zone: the zone moves behind it (a device copy of the rows in use), and since this graph's views of the KV point at the old
             // place it is built again (the caller). Never silently over the KV, and no abort: only when the zone cannot fit behind the graph at all.
             const size_t bmax = kv_bmax(ap);
