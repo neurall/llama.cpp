@@ -1959,6 +1959,13 @@ static void common_moe_cache_auto_impl(common_params & params) {
         tbo.insert(std::find_if(tbo.begin(), tbo.end(), [](const auto & o) { return o.pattern == nullptr; }), llm_ffn_exps_cpu_override());
         params.no_extra_bufts    = true;
         params.n_moe_cache_slots = -1;
+        // KV growth (fork/docs/kv-grow.md) is the default whenever the experts stream from RAM: the KV lives in the expert pool behind the compute lend, grows by the
+        // model's step, and takes no VRAM that a context nobody asked for would hold. A run that fits in VRAM keeps the calculated static context (growth only adds a fixed
+        // ~0.5 s there). --moe kv-tail=0 turns it off.
+        if (params.moe_opts.find("kv-tail") == std::string::npos) {
+            llama_moe_set_opt("kv-tail", "1");
+            if (params.moe_opts.find("kv-token-major") == std::string::npos) { llama_moe_set_opt("kv-token-major", "1"); }
+        }
     }
     // pinned weights (no mmap, llama-server only: startup takes longer, pays off over many requests):
     // cache uploads and prompt processing read them by direct DMA,
