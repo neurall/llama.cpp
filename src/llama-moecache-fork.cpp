@@ -4596,6 +4596,11 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             const size_t want = need_b + need_b / 4;   // 25% headroom: the next bigger graph rarely moves the zone again (the lend only ever grows)
             size_t cells = 0;
             for (auto & r : ap.kvt) { if (!r.fixed) { cells = std::max(cells, r.rows ? r.rows() : 0); } }
+            {   // the attention reads the cells in use rounded up to the pad: the zone must hold those rows too (OLMoE on W10, 2026-10-18: 33568 cells in use, a zone of 33740 after the lend grew, padded read 33792, abort in set_input_k_idxs)
+                size_t pad = 1, cmx = (size_t) -1;
+                for (auto & r : ap.kvt) { if (!r.fixed) { pad = std::max(pad, r.pad); cmx = std::min(cmx, r.cells_max); } }
+                cells = std::min((cells + pad - 1) / pad * pad, cmx);
+            }
             const size_t keep = ap.kv_fixed + std::max(cells, (size_t) 1) * ap.kv_row + 2 * bmax;   // the zone as it is now must still fit behind the lend
             const size_t lr_max = ap.tail_end > keep ? ap.tail_end - keep : 0;
             const size_t lr = std::max(kv_lend_round(ap, need_b), std::min(kv_lend_round(ap, want), lr_max));   // the zone starts where the lend really ends
