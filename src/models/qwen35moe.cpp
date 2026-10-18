@@ -335,6 +335,11 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
             }
         }
         inpL = ds_join(x, 1, ds_backend(model.dev_output()));
+        // the output rows are taken here (the layer loop below, which crops at its last layer, does not run with the split): without this nothing read out_ids, the scheduler
+        // never allocated that input and set_input asserted (Qwen3.6, 4.7 GiB squeeze, 2026-10-18), and the logits would have been those of the first rows, not the output rows
+        if (crop_before_nextn(inp_out_ids)) {
+            inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
+        }
     }
 
     // MTP/NextN layers are loaded as extra decoder blocks but not executed in the main pass.
