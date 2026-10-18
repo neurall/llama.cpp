@@ -3154,8 +3154,7 @@ static void moe_where_count(int64_t range, int64_t found, int64_t inflight, int6
     g_ac.where_calls++; g_ac.where_range += range; g_ac.where_found += found; g_ac.where_inflight += inflight; g_ac.where_wrongdev += wrongdev;
 }
 static void alias_cost_log(const char * why) {
-    static const bool on = moe_log_has("a");
-    if (!on) { return; }
+    if (!moe_log_has("a")) { return; }   // not a static: the first call comes before the --moe options are set, a cached false hid the counters for the whole run
     LLAMA_LOG_WARN("moe-cache: alias cost (%s): lend %lld calls %.1f ms | keep-hot %lld calls %.1f ms | sync %lld calls %.1f ms | in-flight drain %.1f ms | release %lld calls %.1f ms | %lld blocks evicted\n",
             why, (long long) g_ac.lend_n.load(), g_ac.lend_us.load() / 1e3, (long long) g_ac.keephot_n.load(), g_ac.keephot_us.load() / 1e3,
             (long long) g_ac.sync_n.load(), g_ac.sync_us.load() / 1e3, g_ac.drain_us.load() / 1e3, (long long) g_ac.release_n.load(), g_ac.release_us.load() / 1e3,
