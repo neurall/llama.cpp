@@ -1282,6 +1282,11 @@ void llama_context::moe_mirror_fill() {
             } else {
                 ggml_backend_tensor_copy(pr.first, pr.second);
             }
+            // the copy sits in pool blocks that held experts until now: the row padding behind a quantized copy holds their bytes, and the matmuls read
+            // past the last row there (a WEIGHTS buffer is not cleared at use): zeros behind it (see ggml_backend_tensor_zero_tail_fork)
+            if (bd != nullptr && ggml_is_quantized(pr.second->type)) {
+                ggml_backend_tensor_zero_tail_fork(bd, pr.second);
+            }
             bytes += ggml_nbytes(pr.first);
         }
         ggml_backend_sched_synchronize(sched.get());

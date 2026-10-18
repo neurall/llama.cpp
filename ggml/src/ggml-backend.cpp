@@ -2222,6 +2222,14 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
         }
         NVTX_PUSH("TENSOR_COPY sync-copy %s %s->%s", input->name, ggml_backend_name(input_backend), ggml_backend_name(split_backend)); const int64_t _tc = ggml_time_us(); ggml_backend_tensor_copy(input, input_cpy); NVTX_POP(); ggml_backend_sched_sync_stat_add(2, ggml_time_us() - _tc);
     }
+    // fork: a quantized tensor copied whole into this graph's memory (a dense weight one card reads from another card in a split graph) gets zeros behind it,
+    // on the destination's stream before any matmul there reads past its last row (see ggml_backend_tensor_zero_tail_fork). The graph memory is not a COMPUTE
+    // buffer any more (the compute alias places it in the expert pool, a WEIGHTS buffer), so the matmuls' own clear of a temporary tensor's padding is skipped.
+    // Measured 2026-10-18 (GGML_SCHED_NAN_CHECK=1): Qwen3.8-Flash-Next, dense split after a 40k prompt, CUDA0's copy of blk.5.ffn_down_shexp [640, 2560]
+    // IQ4_NL: NaN in the last element of every output row, then '!!!!'; the bytes behind the copy were what an expert upload or another tensor had left there.
+    if (ggml_is_quantized(input_cpy->type) && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+        ggml_backend_tensor_zero_tail_fork(split_backend, input_cpy);
+    }
 }
 
 
