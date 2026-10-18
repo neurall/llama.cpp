@@ -1610,12 +1610,14 @@ static void pool_dump_all(void) {
     }
     // stop here: under a debugger break at the bad tensor, else end the process (the rest of the run would only print '!!!!' over the evidence)
     bool traced = false;
+#ifndef _WIN32   // no /proc and no SIGTRAP there: the process just ends
     if (FILE * f = fopen("/proc/self/status", "r")) {
         char line[256];
         while (fgets(line, sizeof line, f)) { int pid = 0; if (sscanf(line, "TracerPid: %d", &pid) == 1) { traced = pid != 0; break; } }
         fclose(f);
     }
     if (traced) { LLAMA_LOG_WARN("pool-dump: debugger attached, SIGTRAP\n"); raise(SIGTRAP); return; }
+#endif
     LLAMA_LOG_ERROR("pool-dump: first NaN, pool dumped, exiting (--moe poison=1)\n");
     fflush(nullptr);
     _exit(3);
