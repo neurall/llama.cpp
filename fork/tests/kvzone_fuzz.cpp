@@ -5,6 +5,7 @@
 //   3. a zone the lend potential promised (lend_potential(min_cells)) can be placed behind a lend of that size
 //   4. a placed zone passes the layout's own invariant check (kvz_bad)
 //   5. lend_potential never grows with the cells asked for
+//   6. the pass cap (kvz_pass_cap): a graph of the capped size (a + b * tokens, rounded up to whole blocks) leaves a gap for the zone of the padded prompt rows
 // build: g++ -O1 -std=c++17 -I src fork/tests/kvzone_fuzz.cpp -o /tmp/kvzone_fuzz && /tmp/kvzone_fuzz [iterations] [seed]
 #include "llama-kvzone-fork.h"
 #include <cstdio>
@@ -58,6 +59,17 @@ int main(int argc, char ** argv) {
             if (lp > 0 && zone > 0) {   // a zone of 0 bytes is no layout
                 const size_t s = kvz_gap_place(ap, bmax, lp, lp, zone);
                 CHECK(s != (size_t) -1, "lend potential %zu promised a zone of %zu B (%zu cells) but no gap holds it", lp, zone, std::max(ap.kv_h, mc));
+            }
+        }
+        // 6. the pass cap leaves the zone a place (unless it is the 64-token floor: nothing smaller exists)
+        {
+            const size_t pad = (size_t) 1 << R(0, 9), n_prompt = R(1, 6000), mirror = rng() % 4 == 0 ? unit * R(0, 8) : 0;
+            const double a = (double) (unit * R(0, 200)), b = (double) R(1, 4000) * 16;
+            const unsigned cap = kvz_pass_cap(ap, n_prompt, 1u << 30, a, b, pad, mirror);
+            if (cap > 64) {
+                const size_t lend = ((size_t) (a + b * cap) + bmax - 1) / bmax * bmax;
+                const size_t rows = (std::max<size_t>(n_prompt, ap.kv_h) + pad - 1) / pad * pad, zone = ap.kv_fixed + rows * ap.kv_row;
+                CHECK(kvz_gap_place(ap, bmax, lend, lend, zone) != (size_t) -1, "pass cap %u (lend %zu, a %.0f b %.0f) leaves no gap for %zu padded rows (%zu B)", cap, lend, a, b, rows, zone);
             }
         }
         // 2 + 4. fit and place agree, the placed zone passes the invariant

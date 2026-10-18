@@ -3764,7 +3764,14 @@ size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
             const size_t bmax = kv_bmax(ap);
             const size_t floor_b = std::max(ap.dec_need, 2 * bmax) + 2 * bmax + ap.kv_fixed;
             const size_t room = ap.tail_end > floor_b ? ap.tail_end - floor_b : 0;
-            return std::min(room / ap.kv_row, r.cells_max);   // never more than the record's cells (the model's context)
+            // the zone lies in ONE gap between the class zero blocks and the attention reads its cells rounded up to the pad: what the pool can really hold is the
+            // largest gap behind the least lend, in whole pads. Not the pool's bytes over the row size (OLMoE 1.0 GiB free: "room for 6308 tokens" on a card whose
+            // largest gap held 3300 rows, the 3440-token prompt was admitted and failed at cell 2949, 2026-10-18)
+            size_t pad = 1;
+            for (const auto & q : ap.kvt) { if (!q.fixed) { pad = std::max<size_t>(pad, q.pad); } }
+            const size_t lend_floor = (kv_lend_round(ap, std::max(ap.dec_need, bmax)) + bmax - 1) / bmax * bmax;
+            const size_t gap_cells  = kv_gap_fit(ap, bmax, lend_floor, ap.kv_row);
+            return std::min(std::min(room / ap.kv_row, gap_cells) / pad * pad, r.cells_max);   // never more than the record's cells (the model's context)
         }
     }
     return (size_t) -1;   // the pool does not exist yet (before the first decode): no limit
@@ -7227,20 +7234,9 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
         b = (double) p1.second / (double) p1.first;
     }
     if (b <= 0.0) { return ub; }
-    const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
-    // the prompt's KV is claimed before its passes (kv_tail_plan), and the attention reads its cells rounded up to the pad: the zone must hold those rows, and it lies in
-    // a gap between the zero blocks, so the lend can reach only what kv_lend_potential says for a zone of that size (OLMoE 3440-token prompt, 1.0 GiB free: planned with
-    // 3440 rows from the pool end, the zone then held 2962 cells behind the lend of a 451-token pass: no slot, 2026-10-18)
     size_t pad = 1;
     for (const auto & r : ap.kvt) { if (!r.fixed) { pad = std::max<size_t>(pad, r.pad); } }
-    const size_t rows = (std::max<size_t>((size_t) n_prompt, ap.kv_h) + pad - 1) / pad * pad;
-    const double lendable = (double) kv_lend_potential(ap, rows);
-    const double room  = lendable - (double) (2 * bmax + ap.mirror_b);
-    if (room <= (double) bmax + a) { return std::min<uint32_t>(ub, 64); }
-    // the lend is rounded up to whole blocks: leave one block for the rounding
-    const double u = (room - (double) bmax - a) / b;
-    const uint32_t cap = std::max<uint32_t>(64, (uint32_t) std::min(u, 4294967000.0) / 32 * 32);
-    return std::min(ub, cap);
+    return kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b);   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
 }
 
 static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub_old) {

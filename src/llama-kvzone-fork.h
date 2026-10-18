@@ -75,3 +75,16 @@ template <class P> static const char * kvz_bad(const P & ap, size_t lend_end) {
     for (const auto & g : kvz_gaps(ap, 0, 1)) { if (lo >= g.first && hi <= g.second) { return nullptr; } }
     return "zone is not inside one gap between the class zero blocks";
 }
+
+// The largest prompt pass (tokens) whose graph still leaves the zone for the whole prompt: the lend is a + b * tokens (graph and scratch, rounded up to whole blocks,
+// one block kept for the rounding), the zone is the prompt's rows rounded up to the attention's pad, in a gap; 64 is the least pass. See pp_cap_to_pool.
+template <class P> static unsigned kvz_pass_cap(const P & ap, size_t n_prompt, unsigned ub, double a, double b, size_t pad, size_t mirror_b) {
+    if (b <= 0.0) { return ub; }
+    const size_t bmax = std::max<size_t>(1, kvz_bmax(ap));
+    const size_t rows = (std::max<size_t>(n_prompt, ap.kv_h) + pad - 1) / pad * pad;
+    const double room = (double) kvz_lend_potential(ap, rows) - (double) (2 * bmax + mirror_b);
+    if (room <= (double) bmax + a) { return std::min<unsigned>(ub, 64); }
+    const double u = (room - (double) bmax - a) / b;
+    const unsigned cap = std::max<unsigned>(64, (unsigned) std::min(u, 4294967000.0) / 32 * 32);
+    return std::min(ub, cap);
+}
