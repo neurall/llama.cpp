@@ -1464,6 +1464,15 @@ static void pool_enter(const moe_cache::alias_pool & ap, size_t lo, size_t hi, b
     }
     g_use.push_back({ &ap, lo, hi, w });
 }
+// A worker never waits for a move: the mover waits for the cache's in-flight uploads (kv_blocks_apply), and a queued upload blocked here is one of them (deadlock,
+// 2026-10-18: "an upload into the blocks taken for the KV never finished"). Inside a move range the job is skipped instead, like a stale stream job.
+static bool pool_try_enter(const moe_cache::alias_pool & ap, size_t lo, size_t hi, bool w) {
+    std::lock_guard<std::mutex> lk(g_map_mu);
+    g_st_calls++;
+    for (const auto & m : g_moving) { if (pool_ovl(m, &ap, lo, hi)) { g_st_enter_n++; return false; } }
+    g_use.push_back({ &ap, lo, hi, w });
+    return true;
+}
 static void pool_leave(const moe_cache::alias_pool & ap, size_t lo, size_t hi, bool w) {
     {
         std::lock_guard<std::mutex> lk(g_map_mu);
@@ -4809,7 +4818,15 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
                 size_t ulo = 0, uhi = 0;
                 const moe_cache::alias_pool * uap = ls.pcls >= 0 ? led_block(mc, ls.pcls, j.slot, ulo, uhi) : nullptr;
-                if (uap) { pool_enter(*uap, ulo, uhi, true); }
+                if (uap && !pool_try_enter(*uap, ulo, uhi, true)) {
+                    std::lock_guard<std::mutex> lk(mc->wmtx);
+                    j.skipped = true; j.done = true;
+                    mc->done.push_back(j);
+                    mc->in_flight--;
+                    mc->in_flight_stream -= j.stream || j.bg;
+                    mc->dcv.notify_all();
+                    continue;
+                }
                 const int64_t t0 = ggml_time_us();
                 led_upload(mc, "up-start", j.layer_idx, j.expert, j.slot, j.bg);
                 const bool busy_start = mc->cpu_busy;
