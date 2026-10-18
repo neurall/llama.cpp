@@ -3559,7 +3559,7 @@ def cmd_stop(a):
         return sub not in ("build", "show", "report", "gains", "machine", "stop", "cells", "branches", "misfires", "hugepool", "")
     def is_tool(argv):   # a server or tool of one of our builds, or an nsys wrapped around one
         exe = argv[0]
-        return os.path.basename(exe) == "nsys" or any(exe.startswith(d) for d in (DEVBUILDS + "/", "/p/bw/rels/", "/p/bw/gh-rel/") if d)
+        return os.path.basename(exe) == "nsys" or any(exe.startswith(d) for d in (DEVBUILDS + "/", "/p/bw/rels/", "/p/bw/gh-rel/") if d) or any(x.endswith("vramhold.py") for x in argv[1:3])
     roots = {p for p, (argv, _) in procs.items() if p not in protected and (is_harness(argv) or is_tool(argv) or (os.path.basename(argv[0]) in ("flock", "timeout") and any(x.endswith("run.py") for x in argv)))}
     scripts = set()
     for r in roots:   # the scripts above the harness: they would start the next cell
