@@ -2584,3 +2584,4 @@ fin3-mimo-pf128k,2026-10-18 10:33:52,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bi
 fin3-glm-pf128k,2026-10-18 10:37:52,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds kvg47 variants v test pf128k n=1,,
 fin3-q38-ladder-pf128k,2026-10-18 10:40:34,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds kvq4 variants v test pf128k n=1,,
 fin3-mimo-h8-ladder-pf128k,2026-10-18 10:42:22,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvq4 variants v test pf128k n=1,,
+w10-map,2026-10-18 11:44:42,bench N:\m\OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf builds N:\build\rel-cuda134-clang variants mapt test pf12k n=1,,

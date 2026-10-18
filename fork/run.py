@@ -3550,11 +3550,17 @@ def cmd_stop(a):
         return len(argv) >= 2 and os.path.basename(argv[0]) in ("bash", "sh") and argv[1].endswith(".sh")
     def is_harness(argv):
         py = os.path.basename(argv[0]).startswith("python")
-        return py and any(x.endswith("run.py") for x in argv[1:4]) and any(x in ("bench", "regress", "exp", "run", "quick", "ctl", "prompt", "baseline") for x in argv[1:6])
+        if not (py and any(x.endswith("run.py") for x in argv[1:4])):
+            return False
+        # every subcommand that runs a model is a harness (cell, queue, ... were missing: `stop` said "nothing running" while a cell loaded its model, 2026-10-18);
+        # only the ones that never start a server are left alone
+        i = next(k for k in range(1, min(len(argv), 4)) if argv[k].endswith("run.py"))
+        sub = next((x for x in argv[i + 1:] if not x.startswith("-")), "")
+        return sub not in ("build", "show", "report", "gains", "machine", "stop", "cells", "branches", "misfires", "hugepool", "")
     def is_tool(argv):   # a server or tool of one of our builds, or an nsys wrapped around one
         exe = argv[0]
         return os.path.basename(exe) == "nsys" or any(exe.startswith(d) for d in (DEVBUILDS + "/", "/p/bw/rels/", "/p/bw/gh-rel/") if d)
-    roots = {p for p, (argv, _) in procs.items() if p not in protected and (is_harness(argv) or is_tool(argv) or (os.path.basename(argv[0]) == "flock" and any(x.endswith("run.py") for x in argv)))}
+    roots = {p for p, (argv, _) in procs.items() if p not in protected and (is_harness(argv) or is_tool(argv) or (os.path.basename(argv[0]) in ("flock", "timeout") and any(x.endswith("run.py") for x in argv)))}
     scripts = set()
     for r in roots:   # the scripts above the harness: they would start the next cell
         pid = procs[r][1]
