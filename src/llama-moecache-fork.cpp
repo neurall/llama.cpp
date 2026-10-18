@@ -3449,13 +3449,21 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
         }
         if (ls + ap.kv_fixed + h * ap.kv_row <= ap.tail_end) { l = ls; }
     }
-    // a zone that still reaches over a zero block (no room to start behind it) shrinks to end in front of it, when the cells in use still fit: the
-    // map keeps its regions apart instead of the overlap being left to the ledger
+    // The attention reads the growing records up to the cells in use rounded up to the pad (256 with flash attention); those pad rows must be the zone's
+    // (kv_tail_pad_zero zeroes them only inside the zone). A horizon clamped to the bare cell count left them in the expert blocks behind the zone: MiMo,
+    // 15 GiB free per card, 11673 cells -> the zone ended at cell 11673, the last query chunk (rows 11520+) read expert bytes as K/V, NaN in layer 0, '!!!!'
+    // from ~9k tokens up (2026-10-18). Whatever clamps h (room, the pool end, the zero-block rule below), it never goes under this.
+    size_t pad = 1, cmax = (size_t) -1, need = cells;   // need: the cells in use or planned for the prompt being laid out, whichever is more
+    for (const auto & r : ap.kvt) { if (!r.fixed) { pad = std::max(pad, r.pad); cmax = std::min(cmax, r.cells_max); need = std::max(need, r.plan); } }
+    const size_t h_min = std::min((need + pad - 1) / pad * pad, cmax);
+    const size_t h_pool = ap.tail_end > l + ap.kv_fixed && ap.kv_row > 0 ? (ap.tail_end - l - ap.kv_fixed) / ap.kv_row : 0;
+    h = std::max(h, std::min(h_min, h_pool));   // never past the pool end: there the cache refuses the cells (llama_moe_cache_kv_tail_covers_fork checks the padded count)
+    // a zone that still reaches over a zero block (no room to start behind it) shrinks to end in front of it, when the padded cells in use still fit
     for (const auto & sg : ap.segs) {
         const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
         if (l < z0 && l + ap.kv_fixed + h * ap.kv_row > z0 && l < z1 && ap.kv_row > 0) {
             const size_t fit = z0 > l + ap.kv_fixed ? (z0 - l - ap.kv_fixed) / ap.kv_row : 0;
-            if (fit >= cells) { h = fit; }
+            if (fit >= h_min) { h = fit; }
         }
     }
     if (h == ap.kv_h && l == ap.kv_start) { return false; }
@@ -3745,8 +3753,10 @@ bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell) {
                     if (max_cell + 1 > r.cells_max) { return false; }
                     lo = ap.kv_start + r.prefix; hi = lo + (max_cell + 1) * r.row;
                 } else {
-                    if (max_cell + 1 > ap.kv_h) { return false; }
-                    lo = ap.kv_start + ap.kv_fixed; hi = lo + (max_cell + 1) * ap.kv_row;
+                    // the attention reads up to the cells rounded up to the pad: all of those rows must be the zone's, not just the cells written
+                    const size_t rd = std::min((max_cell + 1 + r.pad - 1) / r.pad * r.pad, (size_t) r.cells_max);
+                    if (rd > ap.kv_h) { return false; }
+                    lo = ap.kv_start + ap.kv_fixed; hi = lo + rd * ap.kv_row;
                 }
                 for (auto & sg : ap.segs) {
                     const auto & ps = mc->pool[sg.pcls];
