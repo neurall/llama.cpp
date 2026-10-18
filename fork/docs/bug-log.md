@@ -91,6 +91,17 @@ All times are 2026-10-18, PC1 (RTX 3090 x16 + x4), local time.
 | solved | `ggml_backend_tensor_zero_tail_fork` after those copies (commit "stale padding behind quantized copies"); -1 expert ids in split gathers clamped |
 | verified | the reproducer, 40k, ok |
 
+## 8. Lend potential promised a lend whose zone no gap could hold , FIXED
+
+| | |
+|---|---|
+| found | 17:50, by the new fuzz test (no model run hit it yet) |
+| repro (CLI) | `g++ -O1 -std=c++17 -I src fork/tests/kvzone_fuzz.cpp -o /tmp/kvzone_fuzz && /tmp/kvzone_fuzz 200000 1`: 5340 of 200000 random pools fail |
+| where | `src/llama-kvzone-fork.h` `kvz_lend_potential` (was `kv_lend_potential`, `src/llama-moecache-fork.cpp`) |
+| cause | the lend was `(gap end - zone) / bmax * bmax` over gaps that start unrounded; the placement (`kvz_gap_place`) rounds a gap start up to whole blocks. A gap that held the zone only unaligned counted for the lend and for no zone: the zone then got no place (h clamped to 0 or the layout fell back) |
+| solved | the potential walks the same gaps as the placement (starts rounded up to `bmax`) |
+| verified | 4 seeds x 1,000,000 random pools, 0 failures; model cells pending (kvg77) |
+
 ---
 
 ## Tooling bugs (they cost time, fixed)
