@@ -2029,6 +2029,22 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     return res;
 }
 
+// fork: in a multi-GPU prompt split each card computes its share of a layer's experts (mm_id_backend set): its ids hold -1 in the slots whose expert
+// another card computes. The matmul skips them (op_params[1]: their rows come out zero), but a gather BY those ids (per-expert weight scales, expert
+// biases) reads row -1, i.e. the bytes in front of the gathered tensor in the graph buffer: whatever another tensor left there. 0 x NaN is NaN:
+// Qwen3.8-Flash-Next (per-expert scales, GSQ-RCO) answered '!!!!' after long prompts whenever the planner gave the helper card a few experts in some
+// layers, and never with no helper experts or with one card; which runs failed depended on what happened to lie in front of the scale tensor
+// (2026-10-18). The gathers take the ids clamped to a real expert: the rows they scale or shift are the zero rows of skipped slots, any expert is right.
+static ggml_tensor * moe_ids_for_gather(ggml_context * ctx, ggml_tensor * ids, int64_t n_expert, ggml_backend_sched_t sched, ggml_backend_t b) {
+    ggml_tensor * f = ggml_cast(ctx, ids, GGML_TYPE_F32);
+    ggml_tensor * c = ggml_clamp(ctx, f, 0.0f, (float) (n_expert - 1));
+    ggml_tensor * i = ggml_cast(ctx, c, GGML_TYPE_I32);
+    if (sched && b) {
+        for (ggml_tensor * t : { f, c, i }) { ggml_backend_sched_set_tensor_backend(sched, t, b); }
+    }
+    return i;
+}
+
 ggml_tensor * llm_graph_context::build_lora_mm_id(
           ggml_tensor * w,   // ggml_tensor * as
           ggml_tensor * cur, // ggml_tensor * b
@@ -2059,7 +2075,7 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
         const int64_t n_tokens = cur->ne[2];
         ggml_tensor * s = ggml_reshape_3d(ctx0, w_s, 1, n_expert, 1);
         s = ggml_repeat_4d(ctx0, s, 1, n_expert, n_tokens, 1);
-        s = ggml_get_rows(ctx0, s, ids);
+        s = ggml_get_rows(ctx0, s, mm_id_backend ? moe_ids_for_gather(ctx0, ids, n_expert, sched, mm_id_backend) : ids);   // -1 ids: see moe_ids_for_gather
         res = ggml_mul(ctx0, res, s);
     }
     for (const auto & lora : *loras) {
@@ -2995,6 +3011,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // the routed experts' chain (up/gate, activation, down) for expert ids ids_x
     auto expert_chain = [&](ggml_tensor * cur_in, ggml_tensor * ids_x) -> ggml_tensor * {
         ggml_tensor * cur = cur_in;
+        // the expert biases are gathered by id: a card's share of the experts has -1 ids (see moe_ids_for_gather)
+        ggml_tensor * ids_b = nullptr;
+        auto bias_ids = [&]() { if (!ids_b) { ids_b = mm_id_backend ? moe_ids_for_gather(ctx0, ids_x, n_expert, sched, mm_id_backend) : ids_x; } return ids_b; };
         ggml_tensor * up = nullptr;
         ggml_tensor * experts = nullptr;
 
@@ -3008,7 +3027,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
 
             if (gate_up_exps_b) {
-                gate_up = ggml_add_id(ctx0, gate_up, gate_up_exps_b, ids_x);
+                gate_up = ggml_add_id(ctx0, gate_up, gate_up_exps_b, bias_ids());
                 cb(gate_up, "ffn_moe_gate_up_biased", il);
             }
 
@@ -3036,7 +3055,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
 
             if (up_exps_b) {
-                up = ggml_add_id(ctx0, up, up_exps_b, ids_x);
+                up = ggml_add_id(ctx0, up, up_exps_b, bias_ids());
                 cb(up, "ffn_moe_up_biased", il);
             }
 
@@ -3066,7 +3085,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
 
             if (gate_exps_b) {
-                cur = ggml_add_id(ctx0, cur, gate_exps_b, ids_x);
+                cur = ggml_add_id(ctx0, cur, gate_exps_b, bias_ids());
                 cb(cur, "ffn_moe_gate_biased", il);
             }
         }
