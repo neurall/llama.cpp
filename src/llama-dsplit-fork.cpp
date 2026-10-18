@@ -111,9 +111,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
         std::lock_guard<std::mutex> lk(g_mu);
         g_sets[&model];
     }
-    // LLM_ARCH_QWEN4EXP (Qwen3.8-Flash-Next) is NOT in this list: its dense split (task: parallel dense ports) answered '!!!!' after a 40k prompt on kvg42/kvq2 (2026-10-18; forced
-    // --moe dense-split=one gave correct text, the planner chose the split at 1474 vs 1086 prompt t/s). Add it back only with a paired perplexity check and a text check.
-    if (!dsplit_opt_on() || (model.arch != LLM_ARCH_GLM5_NEXT && model.arch != LLM_ARCH_QWEN3NEXT && model.arch != LLM_ARCH_MIMO2 && model.arch != LLM_ARCH_DEEPSEEK4 && model.arch != LLM_ARCH_QWEN35MOE)) {
+    if (!dsplit_opt_on() || (model.arch != LLM_ARCH_GLM5_NEXT && model.arch != LLM_ARCH_QWEN3NEXT && model.arch != LLM_ARCH_QWEN4EXP && model.arch != LLM_ARCH_MIMO2 && model.arch != LLM_ARCH_DEEPSEEK4 && model.arch != LLM_ARCH_QWEN35MOE)) {
         return;   // a token-range graph exists for these architectures only: no copies for other models (they get the expert split alone)
     }
     std::vector<ggml_backend_dev_t> gpus;
