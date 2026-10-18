@@ -3448,25 +3448,47 @@ static int g_kv_epoch_built = 0;
 // lay the zone out for h cells behind a lend of l bytes (rounded up to the largest block): take the new blocks first (their experts out before rows land there),
 // copy the rows in use when the zone moves, give back what it left, point the records at it. Called before a graph is built (prepare, request start) or between
 // a graph's allocation and its inputs (moe_alias, which then has the graph built again). No allocation: the zone is part of the one pool buffer.
-static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size_t l, size_t cells, bool dry) {
+// Where the KV zone may lie: in a gap between the zero blocks (a class's zero block is the slot after its last block, read as zeros by every uncached expert, and
+// the release zeroes it again, so a zone over it would be overwritten or overwrite). The gaps are the stretches of the pool between lo_min (the end of the lend) and
+// tail_end that no zero block cuts. Not a rule that shifts the zone and hopes for room (2026-10-18: MiMo's 1.7 GiB zone had no room behind class 5's zero block and sat
+// on it, 2-6 ledger overlaps per run): the zone is placed in the gap nearest to `want`, or, when no gap holds it, made as large as the largest gap and the cache refuses
+// the cells past it. ap.segs lie in ascending order of address.
+static size_t kv_gap_fit(const moe_cache::alias_pool & ap, size_t bmax, size_t lo_min, size_t row) {   // the most growing cells the largest gap can hold (behind the fixed part)
+    size_t best = 0, a = lo_min;
+    auto gap = [&](size_t g0, size_t g1) {
+        g0 = (g0 + bmax - 1) / bmax * bmax;
+        if (row > 0 && g1 > g0 + ap.kv_fixed) { best = std::max(best, (g1 - g0 - ap.kv_fixed) / row); }
+    };
+    for (const auto & sg : ap.segs) {
+        const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
+        if (z0 > a) { gap(a, z0); }
+        a = std::max(a, z1);
+    }
+    gap(a, ap.tail_end);
+    return best;
+}
+static size_t kv_gap_place(const moe_cache::alias_pool & ap, size_t bmax, size_t lo_min, size_t want, size_t size) {   // start of the zone, or (size_t) -1 when no gap holds it
+    size_t best = (size_t) -1, bestd = (size_t) -1, a = lo_min;
+    auto gap = [&](size_t g0, size_t g1) {
+        g0 = (g0 + bmax - 1) / bmax * bmax;
+        if (g1 < g0 + size) { return; }
+        const size_t s = std::min(std::max(want, g0), (g1 - size) / bmax * bmax);
+        if (s < g0) { return; }
+        const size_t d = s > want ? s - want : want - s;
+        if (d < bestd) { bestd = d; best = s; }
+    };
+    for (const auto & sg : ap.segs) {
+        const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
+        if (z0 > a) { gap(a, z0); }
+        a = std::max(a, z1);
+    }
+    gap(a, ap.tail_end);
+    return best;
+}
+static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size_t l, size_t cells, bool dry, size_t lend_min = 0) {
     const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
     l = (l + bmax - 1) / bmax * bmax;
-    // the zone never covers a size class's zero block: the decode tables point uncached experts there and read it as zeros, and the release zeroes it again
-    // (over KV rows). A zone that would reach over one starts behind it. Found by the pool ledger (2026-10-18, Qwen3.8 decode after a 40k prompt): the zone
-    // had crept over class 0's zero block on CUDA0. The shift is at most a block of that class plus the rounding; when the pool end leaves no room for it the
-    // zone keeps its place and the ledger reports the overlap.
-    {
-        size_t ls = l;
-        for (bool moved = true; moved; ) {
-            moved = false;
-            const size_t hi_try = ls + ap.kv_fixed + h * ap.kv_row;
-            for (const auto & sg : ap.segs) {
-                const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
-                if (ls < z1 && hi_try > z0) { ls = (z1 + bmax - 1) / bmax * bmax; moved = true; }
-            }
-        }
-        if (ls + ap.kv_fixed + h * ap.kv_row <= ap.tail_end) { l = ls; }
-    }
+    lend_min = std::min(l, (lend_min + bmax - 1) / bmax * bmax);   // the zone may go back down to the end of the lend, never into it
     // The attention reads the growing records up to the cells in use rounded up to the pad (256 with flash attention); those pad rows must be the zone's
     // (kv_tail_pad_zero zeroes them only inside the zone). A horizon clamped to the bare cell count left them in the expert blocks behind the zone: MiMo,
     // 15 GiB free per card, 11673 cells -> the zone ended at cell 11673, the last query chunk (rows 11520+) read expert bytes as K/V, NaN in layer 0, '!!!!'
@@ -3474,15 +3496,11 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     size_t pad = 1, cmax = (size_t) -1, need = cells;   // need: the cells in use or planned for the prompt being laid out, whichever is more
     for (const auto & r : ap.kvt) { if (!r.fixed) { pad = std::max(pad, r.pad); cmax = std::min(cmax, r.cells_max); need = std::max(need, r.plan); } }
     const size_t h_min = std::min((need + pad - 1) / pad * pad, cmax);
-    const size_t h_pool = ap.tail_end > l + ap.kv_fixed && ap.kv_row > 0 ? (ap.tail_end - l - ap.kv_fixed) / ap.kv_row : 0;
-    h = std::max(h, std::min(h_min, h_pool));   // never past the pool end: there the cache refuses the cells (llama_moe_cache_kv_tail_covers_fork checks the padded count)
-    // a zone that still reaches over a zero block (no room to start behind it) shrinks to end in front of it, when the padded cells in use still fit
-    for (const auto & sg : ap.segs) {
-        const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
-        if (l < z0 && l + ap.kv_fixed + h * ap.kv_row > z0 && l < z1 && ap.kv_row > 0) {
-            const size_t fit = z0 > l + ap.kv_fixed ? (z0 - l - ap.kv_fixed) / ap.kv_row : 0;
-            if (fit >= h_min) { h = fit; }
-        }
+    const size_t h_pool = ap.kv_row > 0 ? kv_gap_fit(ap, bmax, lend_min, ap.kv_row) : (size_t) -1;   // the largest zone any gap can hold
+    h = std::min(std::max(h, std::min(h_min, h_pool)), h_pool);   // never past what a gap holds: there the cache refuses the cells (llama_moe_cache_kv_tail_covers_fork checks the padded count)
+    {
+        const size_t ls = kv_gap_place(ap, bmax, lend_min, l, ap.kv_fixed + h * ap.kv_row);
+        if (ls != (size_t) -1) { l = ls; }
     }
     if (h == ap.kv_h && l == ap.kv_start) { return false; }
     if (dry) { return true; }
@@ -3581,9 +3599,13 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
         // line up) moved it one block up at every call: 584 MB of rows copied and the graph built again for every decoded token, until it crept over a zero
         // block (2026-10-18, pool ledger). The lend's end is rounded as kv_layout lays it out (whole largest blocks).
         size_t lr = ap.kv_start;
+        size_t lend_min = (kv_lend_round(ap, std::max(ap.dec_need, bmax)) + bmax - 1) / bmax * bmax;   // the least any graph borrows: the zone may go back down to here (the gaps between the zero blocks)
         if (n_tokens > 0) {
             const auto it = ap.need_tok.find(n_tokens);
-            if (it != ap.need_tok.end()) { lr = std::max(lr, (kv_lend_round(ap, need_at_cells(ap, n_tokens, it->second, eff)) + bmax - 1) / bmax * bmax); }
+            if (it != ap.need_tok.end()) {
+                const size_t nb = (kv_lend_round(ap, need_at_cells(ap, n_tokens, it->second, eff)) + bmax - 1) / bmax * bmax;
+                lr = std::max(lr, nb); lend_min = std::max(lend_min, nb);
+            }
         }
         // the end of the pool is a hard limit (nothing past tail_end is the KV's: the claim check cannot even see it). When the cells this call needs do not fit
         // behind the lend, the lend shrinks (the call's passes get smaller: pp_cap_to_pool sees the zone), never below what a decode graph borrows.
@@ -3601,7 +3623,7 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
         }
         // the zone starts at the lend rounded up to whole blocks: from the unrounded end of the graph (12566400 B on MiMo, 16 KB short of 12 MiB) its first block was also the
         // last lent block (owner -2), never claimable for the KV (owner -3): the first request after the server's own warm-up decode aborted
-        any = kv_layout(mc, ap, h, lr, cells, dry) || any;
+        any = kv_layout(mc, ap, h, lr, cells, dry, lend_min) || any;
     }
     return any;
 }
@@ -3967,7 +3989,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             size_t h = ap.kv_h;
             const size_t room = (ap.tail_end - lr - ap.kv_fixed - 2 * bmax) / std::max<size_t>(1, ap.kv_row);
             h = std::min(h, std::max(room, cells));
-            kv_layout(mc, ap, h, lr, cells, false);
+            kv_layout(mc, ap, h, lr, cells, false, lr);
             flush_tables();
             return true;
         }
