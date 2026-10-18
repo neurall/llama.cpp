@@ -245,6 +245,8 @@ struct moe_cache {
         std::vector<int32_t> free;    // free blocks (stack)
         ggml_backend_dev_t   dev = nullptr;   // the card of the class's buffer (pool_fill_log)
         size_t               B   = 0;         // bytes of one block
+        size_t               off[3] = { 0, 0, 0 }, len[3] = { 0, 0, 0 };   // up / gate / down slice: offset in a block and bytes
+        size_t               past[3] = { 0, 0, 0 };   // bytes a quantized matmul reads past the slice's last row (rows not a multiple of 512 values), see pool_layout
         int32_t              active_end = -1; // kv-tail: the blocks from here on are all under the KV rows (owner -3): scans stop here (-1: the whole class)
         int32_t              n_active() const { return active_end < 0 ? (int32_t) owner.size() : active_end; }
     };
@@ -1419,6 +1421,97 @@ static void led_upload(moe_cache * mc, const char * kind, size_t li, int32_t exp
     if (ap->kv_h > 0 && lo < led_kv_end(*ap) && hi > ap->kv_start) {
         led_overlap(led_card(*ap), lo, hi, kind + std::string(" ") + who + tr_fmt(": inside the KV zone [%.1f, %.1f) MiB", ap->kv_start / 1048576.0, led_kv_end(*ap) / 1048576.0));
     }
+}
+// The live region map of one card's pool: where each region starts and ends RIGHT NOW. Computed from the layout fields every layout change updates (lend,
+// zone, class segments), so it cannot go stale; ledger=1 logs it as "map" lines at each change (kv_layout, lend) and the replay tool checks every write
+// against the map that was current at that time. Regions: lend [0, want_b) (graph + scratch + staging, the blocks in it are owner -2), zone (KV rows,
+// blocks under it are owner -3), blocks of each class (experts; each block B bytes = slices + the read-past guard of the last slice), the class's zero block.
+struct pool_region { const char * kind; int32_t pcls; size_t lo, hi; };
+static std::vector<pool_region> pool_map(const moe_cache::alias_pool & ap) {
+    std::vector<pool_region> m;
+    if (ap.want_b > 0)  { m.push_back({ "lend", -1, 0, ap.want_b }); }
+    if (ap.kv_h > 0)    { m.push_back({ "zone", -1, ap.kv_start, led_kv_end(ap) }); }
+    for (const auto & sg : ap.segs) {
+        m.push_back({ "blocks", sg.pcls, sg.base, sg.base + (size_t) sg.n * sg.B });
+        m.push_back({ "zero",   sg.pcls, sg.base + (size_t) sg.n * sg.B, sg.base + (size_t) (sg.n + 1) * sg.B });
+    }
+    return m;
+}
+// The gate every write into an expert block consults first (always on, not only with ledger=1): the block's range must lie in the blocks region, outside the
+// zone and off every zero block. A violating write is refused and counted (logged once per 64), never done: a layout bug then costs an upload, not data.
+// Use counts per byte range (replaces a lock per buffer): everyone who touches a range of a card's pool - an upload DMA (w), a keep-hot copy (w), a graph reading
+// the lend - enters it first and leaves it when its DMA has finished. A mover (zone resize + row move) first announces its range, which holds new entrants back,
+// then waits until no entered user overlaps it, moves, and ends the move. So a move never starts under a running DMA and no write starts under a running move.
+// Everything under g_map_mu; the waits are short (a copy of one block, or one zone move).
+static std::mutex g_map_mu;
+static std::condition_variable g_map_cv;
+struct pool_use_t { const void * ap; size_t lo, hi; bool w; };
+static std::vector<pool_use_t> g_use;
+static std::vector<pool_use_t> g_moving;
+static bool pool_ovl(const pool_use_t & u, const void * ap, size_t lo, size_t hi) { return u.ap == ap && lo < u.hi && hi > u.lo; }
+// stall accounting: a stall is a wait that really blocked (the predicate was false at the first look); the totals are logged at every zone move
+static std::atomic<int64_t> g_st_enter_n{0}, g_st_enter_us{0}, g_st_enter_max{0}, g_st_move_n{0}, g_st_move_us{0}, g_st_calls{0};
+static void pool_enter(const moe_cache::alias_pool & ap, size_t lo, size_t hi, bool w) {
+    std::unique_lock<std::mutex> lk(g_map_mu);
+    auto free_of_moves = [&]() { for (const auto & m : g_moving) { if (pool_ovl(m, &ap, lo, hi)) { return false; } } return true; };
+    g_st_calls++;
+    if (!free_of_moves()) {
+        const int64_t t0 = ggml_time_us();
+        g_map_cv.wait(lk, free_of_moves);
+        const int64_t d = ggml_time_us() - t0;
+        g_st_enter_n++; g_st_enter_us += d;
+        int64_t m = g_st_enter_max.load(); while (d > m && !g_st_enter_max.compare_exchange_weak(m, d)) {}
+    }
+    g_use.push_back({ &ap, lo, hi, w });
+}
+static void pool_leave(const moe_cache::alias_pool & ap, size_t lo, size_t hi, bool w) {
+    {
+        std::lock_guard<std::mutex> lk(g_map_mu);
+        for (size_t i = 0; i < g_use.size(); ++i) { if (g_use[i].ap == &ap && g_use[i].lo == lo && g_use[i].hi == hi && g_use[i].w == w) { g_use.erase(g_use.begin() + i); break; } }
+    }
+    g_map_cv.notify_all();
+}
+static void pool_move_begin(const moe_cache::alias_pool & ap, size_t lo, size_t hi) {
+    std::unique_lock<std::mutex> lk(g_map_mu);
+    g_moving.push_back({ &ap, lo, hi, true });
+    const int64_t t0 = ggml_time_us();
+    auto idle = [&]() { for (const auto & u : g_use) { if (pool_ovl(u, &ap, lo, hi)) { return false; } } return true; };
+    const bool ok = idle() || g_map_cv.wait_for(lk, std::chrono::seconds(10), idle);
+    if (ggml_time_us() - t0 > 50) { g_st_move_n++; g_st_move_us += ggml_time_us() - t0; }
+    if (!ok) {
+        LLAMA_LOG_WARN("pool-map: a move of [%.1f, %.1f) MiB on %s waited 10 s for users of the range\n", lo / 1048576.0, hi / 1048576.0, ggml_backend_dev_name(ap.dev));
+    }
+}
+static void pool_move_end(const moe_cache::alias_pool & ap) {
+    static int64_t shown_us = 0;
+    if (g_st_enter_us.load() + g_st_move_us.load() != shown_us) {   // always when the waiting grew: the time lost to the map is never silent
+        shown_us = g_st_enter_us.load() + g_st_move_us.load();
+        LLAMA_LOG_WARN("pool-map: stalls so far: %lld of %lld range entries waited for a move (%.2f ms, longest %.2f ms); %lld moves waited for users (%.2f ms)\n", (long long) g_st_enter_n.load(),
+                (long long) g_st_calls.load(), g_st_enter_us.load() / 1e3, g_st_enter_max.load() / 1e3, (long long) g_st_move_n.load(), g_st_move_us.load() / 1e3);
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_map_mu);
+        for (size_t i = 0; i < g_moving.size(); ++i) { if (g_moving[i].ap == &ap) { g_moving.erase(g_moving.begin() + i); break; } }
+    }
+    g_map_cv.notify_all();
+}
+static std::atomic<int64_t> g_gate_refused{0};
+static bool pool_gate(const moe_cache::alias_pool & ap, size_t lo, size_t hi, const char * who) {
+    std::vector<pool_region> m = pool_map(ap);
+    for (const auto & r : m) {
+        if ((strcmp(r.kind, "zone") == 0 || strcmp(r.kind, "zero") == 0) && lo < r.hi && hi > r.lo) {
+            if ((g_gate_refused++ & 63) == 0) {
+                LLAMA_LOG_WARN("pool-gate: refused %s [%.3f, %.3f) MiB on %s: it reaches the %s [%.3f, %.3f) MiB (%lld refused)\n", who, lo / 1048576.0, hi / 1048576.0,
+                        ggml_backend_dev_name(ap.dev), r.kind, r.lo / 1048576.0, r.hi / 1048576.0, (long long) g_gate_refused.load());
+            }
+            return false;
+        }
+    }
+    return true;
+}
+static void led_map(const moe_cache::alias_pool & ap, const char * why) {
+    if (!led_on()) { return; }
+    for (const auto & r : pool_map(ap)) { led_line(led_card(ap), "map", r.lo, r.hi, tr_fmt("%s %s class %d", why, r.kind, (int) r.pcls)); }
 }
 // a range that must not touch the zone, the lend [0, want_b) or (zone_too) the zero blocks
 static void led_check_range(const moe_cache::alias_pool & ap, const char * kind, size_t lo, size_t hi, const std::string & who, bool vs_zone, bool vs_lend, bool vs_zero) {
@@ -3046,6 +3139,7 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
         if (ps.owner[dst] >= 0) {
             evict_slot(mc, mc->layers[ps.owner[dst]], dst);
         }
+        if (!pool_gate(ap, sg.base + (size_t) dst * sg.B, sg.base + (size_t) (dst + 1) * sg.B, "keep-hot")) { continue; }
         pool_take(mc, li, dst);
         if (led_on()) {
             const size_t d0 = sg.base + (size_t) dst * sg.B;
@@ -3054,7 +3148,9 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
             led_check_range(ap, "keep-hot", d0, d0 + sg.B, who, true, false, true);
         }
         ggml_tensor s = view(src), d = view(dst);
+        pool_enter(ap, sg.base + (size_t) dst * sg.B, sg.base + (size_t) (dst + 1) * sg.B, true);
         ggml_backend_tensor_copy(&s, &d);
+        pool_leave(ap, sg.base + (size_t) dst * sg.B, sg.base + (size_t) (dst + 1) * sg.B, true);
         ls.slot_expert[dst]   = e;
         ls.expert_slot[e]     = dst;
         ls.slot_last_use[dst] = ls.slot_last_use[src];
@@ -3280,12 +3376,22 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
         }
         if (ls + ap.kv_fixed + h * ap.kv_row <= ap.tail_end) { l = ls; }
     }
+    // a zone that still reaches over a zero block (no room to start behind it) shrinks to end in front of it, when the cells in use still fit: the
+    // map keeps its regions apart instead of the overlap being left to the ledger
+    for (const auto & sg : ap.segs) {
+        const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
+        if (l < z0 && l + ap.kv_fixed + h * ap.kv_row > z0 && l < z1 && ap.kv_row > 0) {
+            const size_t fit = z0 > l + ap.kv_fixed ? (z0 - l - ap.kv_fixed) / ap.kv_row : 0;
+            if (fit >= cells) { h = fit; }
+        }
+    }
     if (h == ap.kv_h && l == ap.kv_start) { return false; }
     if (dry) { return true; }
     const size_t lo_old = ap.kv_start, h_old = ap.kv_h, lo = l, hi = l + ap.kv_fixed + h * ap.kv_row;
     const bool   first  = h_old == 0;   // nothing laid out yet: no rows to move, the fixed part is zeroed below
     const size_t n_used = first ? 0 : ap.kv_fixed + std::min(cells, std::min(h, h_old)) * ap.kv_row;   // the fixed part and the growing rows in use: one contiguous range
     size_t n_take = 0, n_give = 0, n_evict = 0;
+    pool_move_begin(ap, std::min(lo, lo_old), std::max(hi, h_old > 0 ? led_kv_end(ap) : hi));   // no DMA runs in either place, none starts until the move ends
     kv_blocks_apply(mc, ap, lo, hi, true, false, n_take, n_give, n_evict);
     if (led_on()) {
         const std::string who = tr_fmt("%zu -> %zu cells, %zu in use, row %zu B, fixed %zu B", h_old, h, cells, ap.kv_row, ap.kv_fixed);
@@ -3309,6 +3415,8 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
         else         { r.attach(ap.buf, base + lo + ap.kv_fixed + r.prefix, ap.kv_row); }
     }
     ap.kv_h = h; ap.kv_start = lo; ap.span = lo;
+    led_map(ap, "kv_layout");
+    pool_move_end(ap);
     ap.kv_zhi = 0;   // the pad window (rows past the cells in use that the attention reads) is zeroed again
     ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
     size_t held = 0;
@@ -3869,6 +3977,9 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             led_line(led_card(ap), "lend", 0, need_b, who);
             led_check_range(ap, "lend", 0, kv_lend_round(ap, need_b), who, true, false, false);
         }
+        if (ap.kv_h > 0 && kv_lend_round(ap, need_b) > ap.kv_start) {
+            LLAMA_LOG_WARN("pool-gate: lend of %.1f MiB on %s reaches the KV zone at %.1f MiB\n", kv_lend_round(ap, need_b) / 1048576.0, ggml_backend_dev_name(ap.dev), ap.kv_start / 1048576.0);
+        }
     }
     if (changed) {
         const int64_t s0 = ggml_time_us();
@@ -3910,7 +4021,9 @@ static size_t alias_release(moe_cache * mc) {
                 z.data   = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + sg.base + (size_t) sg.n * sg.B;
                 z.ne[0]  = (int64_t) sg.B; z.ne[1] = z.ne[2] = z.ne[3] = 1;
                 z.nb[0]  = 1; z.nb[1] = z.nb[2] = z.nb[3] = sg.B;
+                pool_enter(ap, z0, z0 + sg.B, true);
                 ggml_backend_tensor_memset(&z, 0, 0, sg.B);
+                pool_leave(ap, z0, z0 + sg.B, true);
                 sg.zero_dirty = false;
             }
         }
@@ -4009,6 +4122,8 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
 struct pool_class {
     size_t B      = 0;               // bytes of one block
     size_t off[3] = { 0, 0, 0 };     // up / gate / down: byte offset inside a block
+    size_t len[3] = { 0, 0, 0 };     // up / gate / down: bytes of the slice
+    size_t past[3] = { 0, 0, 0 };    // up / gate / down: bytes read past the slice's last row
     size_t base   = 0;               // byte offset of the class in the buffer
     std::vector<size_t> members;     // indices into the group's layer list
 };
@@ -4031,14 +4146,24 @@ static pool_layout_t pool_layout(const std::vector<const llama_layer *> & ls) {
         if (it == key2cls.end()) {
             it = key2cls.emplace(key, out.cls.size()).first;
             pool_class c;
-            size_t off = 0, q = 128;   // 128: the CUDA buffer alignment
+            size_t off = 0, q = 128, guard = 0;   // 128: the CUDA buffer alignment
             for (int k = 0; k < 3; ++k) {
                 c.off[k] = off;
+                c.len[k] = t[k]->nb[2];
                 off += pool_up(t[k]->nb[2], 128);
                 const size_t ts = ggml_type_size(t[k]->type);
                 q = q / std::gcd(q, ts) * ts;
+                // A quantized matmul reads whole 512-wide tiles of a row, so for rows that are not a multiple of 512 values it reads the last row of a slice
+                // past its end (Qwen3.8-Flash-Next: down rows of 640). In a model's own expert tensor that read lands in the next expert (or, behind the last
+                // one, in the tensor's padding, zero by ggml's rule). A block had no room for it: behind the down slice it read the NEXT block, whatever that
+                // held (a prompt's graph tensors, KV rows). The block now reserves that read behind the down slice, and the upload writes each slice together
+                // with the bytes that follow it in the model's tensor (the worker in llama_moe_cache_init_fork), so a block reads what the tensor reads.
+                if (t[k]->ne[0] % 512 != 0) {
+                    c.past[k] = ggml_row_size(t[k]->type, 512 - t[k]->ne[0] % 512);
+                    guard = std::max(guard, c.past[k]);
+                }
             }
-            c.B = pool_up(off, q);
+            c.B = pool_up(off + guard, q);
             out.cls.push_back(c);
         }
         out.lay_cls[i] = it->second;
@@ -4285,6 +4410,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     moe_cache::pool_state ps;
                     ps.dev = ggml_backend_buft_get_device(buft);
                     ps.B   = pl.cls[c].B;
+                    for (int k = 0; k < 3; ++k) { ps.off[k] = pl.cls[c].off[k]; ps.len[k] = pl.cls[c].len[k]; ps.past[k] = pl.cls[c].past[k]; }
                     ps.owner.assign(nblk[c], -1);
                     for (int32_t b = nblk[c] - 1; b >= 0; --b) { ps.free.push_back(b); }
                     mc->pool.push_back(std::move(ps));
@@ -4668,6 +4794,22 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                     continue;
                 }
+                if (ls.pcls >= 0) {
+                    size_t blo = 0, bhi = 0;
+                    const moe_cache::alias_pool * bap = led_block(mc, ls.pcls, j.slot, blo, bhi);
+                    if (bap && !pool_gate(*bap, blo, bhi, "upload")) {
+                        std::lock_guard<std::mutex> lk(mc->wmtx);
+                        j.skipped = true; j.done = true;
+                        mc->done.push_back(j);
+                        mc->in_flight--;
+                        mc->in_flight_stream -= j.stream || j.bg;
+                        mc->dcv.notify_all();
+                        continue;
+                    }
+                }
+                size_t ulo = 0, uhi = 0;
+                const moe_cache::alias_pool * uap = ls.pcls >= 0 ? led_block(mc, ls.pcls, j.slot, ulo, uhi) : nullptr;
+                if (uap) { pool_enter(*uap, ulo, uhi, true); }
                 const int64_t t0 = ggml_time_us();
                 led_upload(mc, "up-start", j.layer_idx, j.expert, j.slot, j.bg);
                 const bool busy_start = mc->cpu_busy;
@@ -4756,8 +4898,22 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     } else {
                         LLAMA_LOG_ERROR("moe-cache: can't upload repacked '%s' without its file location\n", srcs[k]->name);
                     }
+                    // what a matmul reads past this slice's last row (rows not a multiple of 512 values, see pool_layout): the block reserves it, and it gets
+                    // the bytes that follow the slice in the model's tensor (the next expert), as the tensor itself would give; behind the last expert the
+                    // tensor's padding, zeros. Same stream as the slice, before the next slice (up's read region reaches into gate, which is written next).
+                    if (ls.pcls >= 0 && mc->pool[ls.pcls].past[k] > 0) {
+                        static const std::vector<uint8_t> zeros(1u << 16, 0);
+                        const size_t pb   = std::min(mc->pool[ls.pcls].past[k], zeros.size());
+                        const bool   next = j.expert + 1 < srcs[k]->ne[2] && ggml_backend_buffer_is_host(srcs[k]->buffer);
+                        const char * from = next ? (const char *) srcs[k]->data + (size_t) (j.expert + 1) * sz : (const char *) zeros.data();
+                        const size_t doff = (size_t) j.slot * dsts[k]->nb[2] + sz;
+                        const cuda_set_nosync_t ns = ggml_backend_buffer_is_host(dsts[k]->buffer) ? nullptr : cuda_set_nosync();
+                        if (ns) { ns(dsts[k], from, doff, pb); nosync_used = true; }
+                        else    { ggml_backend_tensor_set(dsts[k], from, doff, pb); }
+                    }
                 }
                 if (nosync_used) { cuda_thread_sync(); }
+                if (uap) { pool_leave(*uap, ulo, uhi, true); }
                 led_upload(mc, "up-done", j.layer_idx, j.expert, j.slot, j.bg);
                 j.t_done  = ggml_time_us();
                 if (j.stream) {
