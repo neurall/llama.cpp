@@ -3803,30 +3803,42 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens) {
         for (auto & r : ap.kvt) {
             if (r.owner != owner) { continue; }
             if (r.fixed || ap.kv_row == 0) { return cap; }
-            size_t cells = 0;
-            for (auto & q : ap.kvt) { if (!q.fixed) { cells = std::max(cells, q.rows ? q.rows() : 0); } }
-            std::vector<std::pair<int32_t, size_t>> pts;
-            for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, cells) }); } }
-            if (pts.empty()) { return cap; }
-            double a = 0.0, b = 0.0;
-            const auto & p1 = pts.back();
-            if (pts.size() >= 2 && pts[pts.size() - 2].first != p1.first && p1.second > pts[pts.size() - 2].second) {
-                const auto & p0 = pts[pts.size() - 2];
-                b = (double) (p1.second - p0.second) / (double) (p1.first - p0.first);
-                a = std::max(0.0, (double) p1.second - b * (double) p1.first);
-            } else {
-                b = (double) p1.second / (double) p1.first;
-            }
-            const size_t bmax  = std::max<size_t>(1, kv_bmax(ap));
-            const size_t lend  = (kv_lend_round(ap, (size_t) (a + 64.0 * b)) + bmax - 1) / bmax * bmax;
-            const size_t floor_b = lend + ap.kv_fixed + 3 * bmax;   // two blocks stay the experts', one for the rounding
-            const size_t room  = ap.tail_end > floor_b ? (ap.tail_end - floor_b) / ap.kv_row : 0;
-            // the zone must lie in ONE gap between the zero blocks behind THIS lend (a prompt graph borrows more than a decode graph, so fewer gaps hold the zone), in whole pads
-            // (OLMoE 1900-token prompt, 0.8 GiB free: advertised 2048 cells, the gap behind the 98 MiB lend held 1481, cell 1343 was written to a zone read to 1536, 2026-10-18)
+            if (ap.need_tok.empty()) { return cap; }
+            bool any = false;
+            for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { any = true; } }
+            if (!any) { return cap; }
+            const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
             size_t pad = 1;
             for (const auto & q : ap.kvt) { if (!q.fixed) { pad = std::max<size_t>(pad, q.pad); } }
-            const size_t gap_cells = kv_gap_fit(ap, bmax, lend, ap.kv_row);
-            return std::min(cap, std::min(room, gap_cells) / pad * pad);
+            // the lend of a pass of n_tokens when the cache holds c cells (the graph's inputs grow with them), from the two largest sizes measured as pp_cap_to_pool fits them
+            auto lend_at = [&](size_t c) -> size_t {
+                std::vector<std::pair<int32_t, size_t>> pts;
+                for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, c) }); } }
+                double a = 0.0, b = 0.0;
+                const auto & p1 = pts.back();
+                if (pts.size() >= 2 && pts[pts.size() - 2].first != p1.first && p1.second > pts[pts.size() - 2].second) {
+                    const auto & p0 = pts[pts.size() - 2];
+                    b = (double) (p1.second - p0.second) / (double) (p1.first - p0.first);
+                    a = std::max(0.0, (double) p1.second - b * (double) p1.first);
+                } else {
+                    b = (double) p1.second / (double) p1.first;
+                }
+                return (kv_lend_round(ap, (size_t) (a + (double) n_tokens * b)) + bmax - 1) / bmax * bmax;
+            };
+            // the most cells c (whole pads) for which a zone of c cells lies in ONE gap between the zero blocks behind THE LEND OF THIS PASS AT c CELLS, and the pool holds lend + zone
+            // + the experts' two blocks and one for the rounding. Not at the decode lend or the 64-token lend: the pass the call really runs borrows more, and fewer gaps hold the zone
+            // (OLMoE 1900-token prompt, 0.8 GiB free: advertised 2048 cells, the 64-token pass at 1088 cells borrowed 125 MiB, the gap behind it held 1481, cell 1343 was written to a
+            // zone read to 1536, 2026-10-18). The lend only grows with c and the gap only shrinks with the lend: bisection.
+            auto fits = [&](size_t c) -> bool {
+                const size_t lend = lend_at(c);
+                return lend + ap.kv_fixed + 3 * bmax + c * ap.kv_row <= ap.tail_end && kv_gap_fit(ap, bmax, lend, ap.kv_row) >= c;
+            };
+            size_t lo = 0, hi = cap / pad;   // in pads: lo fits (0 cells), hi is the advertised limit
+            while (lo < hi) {
+                const size_t mid = (lo + hi + 1) / 2;
+                if (fits(mid * pad)) { lo = mid; } else { hi = mid - 1; }
+            }
+            return lo * pad;
         }
     }
     return cap;
