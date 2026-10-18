@@ -1527,13 +1527,19 @@ static bool poison_on() {
     static const bool on = [] { const char * e = moe_opt("poison"); return e && atoi(e) != 0; }();
     return on;
 }
+// poison=2: every region is filled with 0xFF instead of its id: NaN as a float, NaN as a half, a NaN scale in every quantized block. A read of bytes that nobody
+// wrote then breaks at once (the first NaN names the tensor). Only the reads by design stay finite: the pad window, the weight read-past guards, the zero blocks.
+static bool poison_nan() {
+    static const bool on = [] { const char * e = moe_opt("poison"); return e && atoi(e) >= 2; }();
+    return on;
+}
 static void pool_fill(const moe_cache::alias_pool & ap, size_t lo, size_t hi, uint8_t v) {
     if (!poison_on() || !ap.buf || hi <= lo) { return; }
     ggml_tensor z = {};
     z.type = GGML_TYPE_I8; z.buffer = ap.buf; z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + lo;
     z.ne[0] = (int64_t) (hi - lo); z.ne[1] = z.ne[2] = z.ne[3] = 1;
     z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = hi - lo;
-    ggml_backend_tensor_memset(&z, v, 0, hi - lo);
+    ggml_backend_tensor_memset(&z, poison_nan() ? 0xFF : v, 0, hi - lo);
 }
 static void led_map(const moe_cache::alias_pool & ap, const char * why) {
     if (!led_on()) { return; }
