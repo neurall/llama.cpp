@@ -20,6 +20,7 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#define setenv(k, v, overwrite) _putenv_s(k, v)   // the --moe test options (sim-vram, sim-ram) set env vars for the backends
 #endif
 
 #include <algorithm>
