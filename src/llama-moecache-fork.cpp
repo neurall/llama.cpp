@@ -286,7 +286,7 @@ struct moe_cache {
         size_t                base_off = 0;     // where the graph being built starts: mirror_b when it splits (the copies before it), else 0
         // KV zone (--moe kv-tail=1, fork/docs/kv-grow.md): the records of the caches on this card interleaved in one combined row per cell (kv_row bytes, record r at
         // byte `prefix` of it), [kv_start, kv_start + kv_h * kv_row) of the buffer, behind the compute lend and in front of the experts; blocks under it are owner -3
-        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0, pad = 1, prefix = 0, cells_max = 0; bool fixed = false; std::function<size_t()> rows; std::function<void(ggml_backend_buffer_t, uint8_t *, size_t)> attach; size_t cells = 0, plan = 0; };   // plan: the cells the prompt being planned will fill
+        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0, pad = 1, prefix = 0, cells_max = 0; bool fixed = false; std::function<size_t()> rows; std::function<void(ggml_backend_buffer_t, uint8_t *, size_t)> attach; size_t cells = 0, plan = 0; float bpv = 2.0f; };   // plan: the cells the prompt being planned will fill; bpv: bytes per value of the record's types
         std::vector<kvt_run>  kvt;
         size_t                tail_end  = 0;    // end of the last class's expert blocks (the zone never reaches the last two blocks before it)
         size_t                span_full = 0;    // the lend's reach without a KV zone
@@ -3669,6 +3669,15 @@ const char * llama_moe_cache_kv_tail_unplaced_fork(int32_t n_tokens) {
 bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     moe_cache * mc = g_cache;
     if (!mc) { return false; }
+    static bool tiers_logged = false;
+    if (!tiers_logged) {
+        const llama_kv_fit_caps cp = llama_moe_cache_kv_fit_caps_fork();
+        if (cp.valid) {
+            tiers_logged = true;
+            LLAMA_LOG_WARN("kv-fit: KV tiers with the expert cache at its floor: f16 up to %zu tokens, q8_0/q8_0 up to %zu, q4_0/q4_0 up to %zu (%.1f KB of f16 KV per token over all cards); beyond that the KV would have to live in RAM\n",
+                    cp.f16, cp.k8v8, cp.k4v4, cp.row_f16 / 1024.0);
+        }
+    }
     const bool reset = n_tokens < 64;   // a decode graph ends the plan of the last prompt
     if (!kv_tail_plan(mc, 0, reset, false, n_tokens, true)) {
         if (reset) { kv_tail_plan(mc, 0, true, false, n_tokens, false); }   // only the plan resets (no change of the zones)
@@ -3761,6 +3770,29 @@ const char * llama_moe_cache_kv_arena_unplaced_fork() {
     std::lock_guard<std::mutex> lk(g_kvt_mtx);
     for (auto & r : g_kvt) { if (!r.attached && r.row) { return g_kv_arena_err.c_str(); } }
     return nullptr;
+}
+
+llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork() {
+    llama_kv_fit_caps out;
+    moe_cache * mc = g_cache;
+    if (!mc) { return out; }
+    size_t c16 = (size_t) -1, c8 = (size_t) -1, c4 = (size_t) -1, row16 = 0;
+    for (auto & ap : mc->alias) {
+        if (ap.kvt.empty() || ap.kv_row == 0) { continue; }
+        float bpv = 2.0f;
+        for (auto & r : ap.kvt) { if (!r.fixed) { bpv = r.bpv; break; } }
+        const size_t bmax    = kv_bmax(ap);
+        const size_t floor_b = std::max(ap.dec_need, 2 * bmax) + 2 * bmax + ap.kv_fixed;   // as kv_tail_cap: the experts keep what a decode graph borrows and two blocks
+        const double room    = ap.tail_end > floor_b ? (double) (ap.tail_end - floor_b) : 0.0;
+        const double row_f16 = (double) ap.kv_row * 2.0 / bpv;   // this card's combined row as f16
+        c16 = std::min(c16, (size_t) (room / row_f16));
+        c8  = std::min(c8,  (size_t) (room / (row_f16 * 1.0625 / 2.0)));
+        c4  = std::min(c4,  (size_t) (room / (row_f16 * 0.5625 / 2.0)));
+        row16 += (size_t) row_f16;
+    }
+    if (c16 == (size_t) -1) { return out; }
+    out.valid = true; out.f16 = c16; out.k8v8 = c8; out.k4v4 = c4; out.row_f16 = row16;
+    return out;
 }
 
 // find_slot's limit: the tokens the zone may hold. The KV may take the whole expert cache except what a decode graph borrows and two blocks (starved experts are
@@ -4721,7 +4753,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                                 GGML_ABORT("kv-tail without alias-all");
                             }
                             moe_cache::alias_pool::kvt_run kr;
-                            kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.pad = std::max<size_t>(1, r.pad); kr.rows = r.rows; kr.attach = r.attach;
+                            kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.pad = std::max<size_t>(1, r.pad); kr.rows = r.rows; kr.attach = r.attach; kr.bpv = r.bpv;
                             kr.cells_max = r.row ? r.bytes / r.row : 0;
                             if (r.step > 0) { ap.kv_step = r.step; }
                             ap.kvt.push_back(kr);

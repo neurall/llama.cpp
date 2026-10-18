@@ -414,6 +414,7 @@ llama_kv_cache::llama_kv_cache(
             reg.bytes = r.row * (size_t) kv_size;
             reg.row   = r.row;
             reg.step  = kv_tail_step;
+            reg.bpv   = (float) ggml_row_size(type_k, 256) / 256.0f;   // equal K and V types here (tail_possible)
             reg.pad   = std::max(n_pad, 256u);   // the attention reads the cells rounded up as get_n_kv does (at least 256): those rows must be claimed and finite
             reg.rows  = [this]() -> size_t { return v_cells.empty() ? 0 : (size_t) v_cells[0].used_max_p1(); };
             reg.detach = [this]() {

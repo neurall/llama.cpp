@@ -153,6 +153,7 @@ struct llama_kv_tail_fork {
     size_t             row   = 0;
     size_t             pad   = 1;   // the attention reads the cells rounded up to this many (masked, but read): the claim covers them
     size_t             step  = 0;   // growth step in cells (0: 10240)
+    float              bpv   = 2.0f;   // bytes per KV value of this record's types (f16 2.0, q8_0 1.0625, q4_0 0.5625): the capacity of the other tiers is scaled from it
     std::function<size_t()>                  rows;
     std::function<void()>                    detach;
     std::function<void(ggml_backend_buffer_t, uint8_t *, size_t)> attach;   // (buffer, address of row 0 of this record, bytes from one cell to the next)
@@ -163,6 +164,11 @@ void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec);
 // reserving them at the growth horizon makes every pass beyond it reallocate (Qwen3.6, 7 reallocs x 80 ms = +0.55 s on a 13.7k prompt), so the reserve is made at the full size.
 void llama_moe_cache_kv_pool_expected_fork(bool on);
 bool llama_moe_cache_kv_pool_expected_fork();
+
+// qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): the tokens the pool can hold as KV with the expert cache at its floor, per tier, the smallest over the cards.
+// valid is false before the pool exists. row_f16: bytes of one token's KV over all cards as f16 (what the RAM tier needs per token).
+struct llama_kv_fit_caps { bool valid = false; size_t f16 = 0, k8v8 = 0, k4v4 = 0, row_f16 = 0; };
+llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork();
 void llama_moe_cache_kv_tail_remove_fork(void * owner);
 // before the cache writes cells up to `max_cell`: do the claimed blocks cover them? (the cache asserts it)
 bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell);
