@@ -12,6 +12,9 @@ WHILE the copy ran (the live check only sees the two ends), and it answers "who 
 
   pool_ledger.py LEDGER.csv                    summary, the server's OVERLAP lines, upload windows crossed by a lend or a zone
   pool_ledger.py LEDGER.csv --addr CUDA0:7884.5   every write that covered that MiB offset of CUDA0's pool, in order
+  pool_ledger.py LEDGER.csv --map              replay the region map (lend / zone / zero blocks, from the "map", lend and kv-zone lines) and list every
+                                               write that lands in a region it does not belong to, per writer kind, with bytes
+  pool_ledger.py LEDGER.csv --blame N          the Nth OVERLAP line with the writes before and after it on the same bytes (who touched them last)
   pool_ledger.py LEDGER.csv --at T_US          the lend, the zone and the uploads in flight at that time, per card
 """
 import argparse, collections, csv, sys
@@ -64,12 +67,56 @@ def main():
     ap.add_argument("ledger")
     ap.add_argument("--addr", help="CARD:MIB, e.g. CUDA0:7884.5")
     ap.add_argument("--at", type=int, help="a time stamp (t_us of the file)")
+    ap.add_argument("--map", action="store_true")
+    ap.add_argument("--blame", type=int)
     ap.add_argument("--max", type=int, default=40, help="lines per list")
     a = ap.parse_args()
     rows = load(a.ledger)
     if not rows:
         sys.exit("no rows")
     t_first = rows[0][0]
+    if a.blame is not None:
+        ov = [r for r in rows if r[2] == "OVERLAP"]
+        if not 0 < a.blame <= len(ov):
+            sys.exit(f"{len(ov)} overlaps")
+        t0, card, _, lo, hi, who = ov[a.blame - 1]
+        print(f"OVERLAP {a.blame}: {(t0 - t_first) / 1e6:.3f}s {card} [{lo / MIB:.3f}, {hi / MIB:.3f}) MiB  {who}\n")
+        hit = [r for r in rows if r[1] == card and r[2] not in ("OVERLAP", "map") and r[3] < hi and r[4] > lo]
+        i = max(range(len(hit)), key=lambda k: -abs(hit[k][0] - t0))
+        for t, c, kind, l, h, w in [r for r in hit if abs(r[0] - t0) < 2_000_000][-24:]:
+            print(f"{(t - t0) / 1e3:+10.2f}ms {kind:9s} [{l / MIB:10.3f}, {h / MIB:10.3f}) MiB {(h - l) / 1024:9.1f} KiB  {w}")
+        return
+    if a.map:
+        state = collections.defaultdict(dict)   # card -> {region name: (lo, hi)}
+        bad = collections.Counter()
+        first = {}
+        mapped = collections.defaultdict(int)
+        for t, card, kind, lo, hi, who in rows:
+            st = state[card]
+            if kind == "map":
+                st[who.split(" ", 1)[1]] = (lo, hi)
+                mapped[card] += 1
+                continue
+            if kind == "lend":
+                st["lend"] = (lo, hi)
+            if kind == "kv-zone":
+                st["zone class -1"] = (lo, hi)
+            if kind in ("OVERLAP", "lend", "release", "kv-move", "kv-pad", "kv-zone"):
+                continue
+            for name, (a_, b_) in st.items():
+                is_zone, is_zero = name.startswith("zone"), " zero " in " " + name + " " or name.startswith("zero")
+                if not (lo < b_ and hi > a_):
+                    continue
+                # expert uploads / keep-hot belong to blocks only; mirror and graph writes belong to the lend; zero restore to the zero block
+                if (kind in ("up-start", "up-done", "keep-hot") and (is_zone or is_zero)) or (kind == "zero" and is_zone):
+                    bad[(card, kind, name)] += 1
+                    first.setdefault((card, kind, name), (t, lo, hi, who))
+        print("map lines replayed:", dict(mapped) or "none (build without the live map?)")
+        print(f"writes into a region they do not belong to: {sum(bad.values())}")
+        for (card, kind, name), n in bad.most_common(a.max):
+            t, lo, hi, who = first[(card, kind, name)]
+            print(f"  {card} {kind:9s} into {name:16s} x{n}; first {(t - t_first) / 1e6:.3f}s [{lo / MIB:.3f}, {hi / MIB:.3f}) MiB {who}")
+        sys.exit(1 if bad else 0)
     if a.addr:
         card, mib = a.addr.split(":")
         x = int(float(mib) * MIB)
