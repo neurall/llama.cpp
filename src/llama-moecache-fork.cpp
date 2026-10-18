@@ -3435,6 +3435,7 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     if (led_on()) { LLAMA_LOG_WARN("kv-gap %s: h %zu h_min %zu h_pool %zu lend_min %.1f MiB want %.1f MiB fixed %.1f MiB row %zu tail_end %.1f MiB segs %zu\n", led_card(ap), h, h_min, h_pool, lend_min / 1048576.0, l / 1048576.0, ap.kv_fixed / 1048576.0, ap.kv_row, ap.tail_end / 1048576.0, ap.segs.size()); }
     if (!dry && h_pool < h_min) {   // no gap behind this lend holds the padded rows of the cells in use: the pass is refused here, not written and aborted in set_input_k_idxs (Qwen3.6 on PC1 with 8 GiB, 13720 cells, gap of 13780, padded read 13824, 2026-10-18)
         g_alias_err = "kv-tail: " + std::to_string(cells) + " cells of KV (read as " + std::to_string(h_min) + ") do not fit in any gap behind a lend of " + std::to_string(l / 1048576) + " MiB (the largest holds " + std::to_string(h_pool) + ")";
+        return false;   // the zone stays where it is: moving it into a gap smaller than the cells in use cut rows off the KV (W10 OLMoE, 19712 cells in use, zone 20258 -> 19608)
     }
     h = std::min(std::max(h, std::min(h_min, h_pool)), h_pool);   // never past what a gap holds: there the cache refuses the cells (llama_moe_cache_kv_tail_covers_fork checks the padded count)
     {
