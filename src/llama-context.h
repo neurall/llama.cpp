@@ -70,7 +70,7 @@ struct llama_context {
 
     // qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): the KV cache object is rebuilt with other types / on the host, the context, the weights and the expert pool stay
     bool    kv_refit(ggml_type type_k, ggml_type type_v, bool offload_kv, uint32_t n_ctx_new);
-    int32_t kv_fit_select(uint32_t n_tokens, char * note, size_t note_size);
+    int32_t kv_fit_select(uint32_t n_tokens, int32_t min_tier, char * note, size_t note_size);
     // fork: layers a and b trade GPUs in place (weights, memory tensors, expert caches); false: not possible, nothing changed
     bool swap_layers_fork(int a, int b);
     // fork: --moe alias=1: put the GPUs' compute graphs into the expert pool buffers of moe_alias_bufs (after every scheduler creation)

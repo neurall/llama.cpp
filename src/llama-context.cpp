@@ -1357,7 +1357,7 @@ bool llama_context::kv_refit(ggml_type type_k, ggml_type type_v, bool offload_kv
 // qkv-ram-fallback: the tier a request of n_tokens (prompt + answer) needs, and the rebuild when it differs from the cache's. Returns the tier (0 f16, 1 k8v8, 2 k4v4, 3 ram),
 // -1 when no enabled tier holds it (note says why), -2 when the pool does not exist yet (the first decode starts it: this request runs as the cache is). Bit 8 is set when the cache was
 // rebuilt (the caller drops what it knew of the old one).
-int32_t llama_context::kv_fit_select(uint32_t n_tokens, char * note, size_t note_size) {
+int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char * note, size_t note_size) {
     auto say = [&](const char * fmt, auto... args) { if (note && note_size) { snprintf(note, note_size, fmt, args...); } };
     const llama_kv_fit_caps cp = llama_moe_cache_kv_fit_caps_fork();
     if (!cp.valid) { return -2; }
@@ -1382,10 +1382,14 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, char * note, size_t note
         const size_t avail  = avail_kb * 1024 > margin ? avail_kb * 1024 - margin : 0;
         ram_cap = cp.row_f16 ? avail / cp.row_f16 : 0;
     }
+    // the lowest tier allowed: a request whose cache filled up mid-way (min_tier -1) goes above the tier it has, whatever the estimate said (the capacities are
+    // calculated before the request; its prompt passes, the answer's length and the lend can make the real limit lower)
+    const int lo = min_tier < 0 ? kv_tier + 1 : min_tier;
     int tier = -1;
-    if (n_tokens <= cp.f16) { tier = 0; }
+    if (lo <= 0 && n_tokens <= cp.f16) { tier = 0; }
     else {
         for (int t : allowed) {
+            if (t < lo) { continue; }
             const size_t cap = t == 1 ? cp.k8v8 : t == 2 ? cp.k4v4 : ram_cap;
             if (n_tokens <= cap) { tier = t; break; }
         }
@@ -6212,8 +6216,8 @@ void llama_perf_context_print(const llama_context * ctx) {
     llama_log_tuning(__func__, ctx);
 }
 
-int32_t llama_kv_fit_select(struct llama_context * ctx, uint32_t n_tokens, char * note, size_t note_size) {
-    return ctx->kv_fit_select(n_tokens, note, note_size);
+int32_t llama_kv_fit_select(struct llama_context * ctx, uint32_t n_tokens, int32_t min_tier, char * note, size_t note_size) {
+    return ctx->kv_fit_select(n_tokens, min_tier, note, note_size);
 }
 
 void llama_get_tuning_info(const llama_context * ctx, llama_tuning_info * info) {
