@@ -1507,17 +1507,21 @@ static void pool_move_end(const moe_cache::alias_pool & ap) {
 }
 static std::atomic<int64_t> g_gate_refused{0};
 static bool pool_gate(const moe_cache::alias_pool & ap, size_t lo, size_t hi, const char * who) {
-    std::vector<pool_region> m = pool_map(ap);
-    for (const auto & r : m) {
-        if ((strcmp(r.kind, "zone") == 0 || strcmp(r.kind, "zero") == 0) && lo < r.hi && hi > r.lo) {
-            if ((g_gate_refused++ & 63) == 0) {
-                LLAMA_LOG_WARN("pool-gate: refused %s [%.3f, %.3f) MiB on %s: it reaches the %s [%.3f, %.3f) MiB (%lld refused)\n", who, lo / 1048576.0, hi / 1048576.0,
-                        ggml_backend_dev_name(ap.dev), r.kind, r.lo / 1048576.0, r.hi / 1048576.0, (long long) g_gate_refused.load());
-            }
-            return false;
+    // no allocation, no string compares: the zone and the zero block of each class, straight from the layout fields (this runs for every upload)
+    const char * kind = nullptr; size_t rlo = 0, rhi = 0;
+    if (ap.kv_h > 0 && lo < led_kv_end(ap) && hi > ap.kv_start) { kind = "zone"; rlo = ap.kv_start; rhi = led_kv_end(ap); }
+    else {
+        for (const auto & sg : ap.segs) {
+            const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
+            if (lo < z1 && hi > z0) { kind = "zero"; rlo = z0; rhi = z1; break; }
         }
     }
-    return true;
+    if (!kind) { return true; }
+    if ((g_gate_refused++ & 63) == 0) {
+        LLAMA_LOG_WARN("pool-gate: refused %s [%.3f, %.3f) MiB on %s: it reaches the %s [%.3f, %.3f) MiB (%lld refused)\n", who, lo / 1048576.0, hi / 1048576.0,
+                ggml_backend_dev_name(ap.dev), kind, rlo / 1048576.0, rhi / 1048576.0, (long long) g_gate_refused.load());
+    }
+    return false;
 }
 // --moe poison=1: every region of the pool is filled with its own byte on allocation and on every resize, so wrong bytes name their origin when they show up
 // where they do not belong: graph (cb) 1, CUDA scratch (sc) 2, prefetch staging (ub) 3, KV zone rows 4, expert blocks 5; the zero blocks stay 0. The first NaN the
