@@ -3833,6 +3833,44 @@ const char * llama_moe_cache_kv_arena_unplaced_fork() {
     return nullptr;
 }
 
+// What stays in front of a growing KV zone when a PROMPT runs: the lend of its smallest pass (64 tokens; from the two largest graph sizes measured, at the current
+// cells, as pp_cap_to_pool fits them), else what a decode graph borrows, plus the fixed records and three blocks (two stay the experts', one for the rounding).
+// The KV limit for prompts (find_slot), the tier capacities (kv-fit) and the "fits" line of a request all use it, so they cannot disagree.
+static size_t kv_prompt_floor(const moe_cache::alias_pool & ap) {
+    const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
+    size_t cells = 0;
+    for (auto & q : ap.kvt) { if (!q.fixed) { cells = std::max(cells, q.rows ? q.rows() : 0); } }
+    std::vector<std::pair<int32_t, size_t>> pts;
+    for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, cells) }); } }
+    size_t lend = std::max(ap.dec_need, 2 * bmax);   // no prompt graph seen yet: a decode graph's
+    if (!pts.empty()) {
+        double a = 0.0, b = 0.0;
+        const auto & p1 = pts.back();
+        if (pts.size() >= 2 && pts[pts.size() - 2].first != p1.first && p1.second > pts[pts.size() - 2].second) {
+            const auto & p0 = pts[pts.size() - 2];
+            b = (double) (p1.second - p0.second) / (double) (p1.first - p0.first);
+            a = std::max(0.0, (double) p1.second - b * (double) p1.first);
+        } else {
+            b = (double) p1.second / (double) p1.first;
+        }
+        lend = std::max(lend, (size_t) (a + 64.0 * b));
+    }
+    lend = (kv_lend_round(ap, lend) + bmax - 1) / bmax * bmax;
+    return lend + ap.kv_fixed + 3 * bmax;
+}
+// the cells of KV a prompt can still grow to on this card: the pool less that floor (not capped by the model's context: the log shows what really fits)
+static size_t kv_prompt_room(const moe_cache::alias_pool & ap) {
+    const size_t fl = kv_prompt_floor(ap);
+    if (!ap.kv_row || ap.tail_end <= fl) { return 0; }
+    // the zone lies in ONE gap between the class zero blocks, in whole pads (bug-log #9 and #10): the pool's bytes over the row size over-reports. The gap behind the
+    // lend of this floor (the floor less the fixed part and the three blocks is the lend itself)
+    const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
+    size_t pad = 1;
+    for (const auto & q : ap.kvt) { if (!q.fixed) { pad = std::max<size_t>(pad, q.pad); } }
+    const size_t lend = fl > ap.kv_fixed + 3 * bmax ? fl - ap.kv_fixed - 3 * bmax : 0;
+    return std::min((ap.tail_end - fl) / ap.kv_row, kv_gap_fit(ap, bmax, lend, ap.kv_row)) / pad * pad;
+}
+
 llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork() {
     llama_kv_fit_caps out;
     moe_cache * mc = g_cache;
@@ -3842,8 +3880,7 @@ llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork() {
         if (ap.kvt.empty() || ap.kv_row == 0) { continue; }
         float bpv = 2.0f;
         for (auto & r : ap.kvt) { if (!r.fixed) { bpv = r.bpv; break; } }
-        const size_t bmax    = kv_bmax(ap);
-        const size_t floor_b = std::max(ap.dec_need, 2 * bmax) + 2 * bmax + ap.kv_fixed;   // as kv_tail_cap: the experts keep what a decode graph borrows and two blocks
+        const size_t floor_b = kv_prompt_floor(ap);   // a request starts with a prompt: what its smallest pass needs in front of the KV (as find_slot's prompt limit)
         const double room    = ap.tail_end > floor_b ? (double) (ap.tail_end - floor_b) : 0.0;
         const double row_f16 = (double) ap.kv_row * 2.0 / bpv;   // this card's combined row as f16
         c16 = std::min(c16, (size_t) (room / row_f16));
@@ -4056,7 +4093,7 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
         llama_kv_tail_stat_fork st;
         st.dev = ggml_backend_dev_name(ap.dev);
         size_t cap = (size_t) -1;
-        for (auto & r : ap.kvt) { st.kv_cells = std::max(st.kv_cells, r.cells); st.kv_bytes += std::min(r.bytes, r.cells * r.row); if (!r.fixed) { cap = std::min(cap, llama_moe_cache_kv_tail_cap_fork(r.owner)); } }   /* a fixed record (a sliding-window ring) does not limit how long a request can be: MiMo reported 16640 tokens, the ring size */   // cells: the longest cache (a model with a window cache and a global one holds the same tokens in both)
+        for (auto & r : ap.kvt) { st.kv_cells = std::max(st.kv_cells, r.cells); st.kv_bytes += std::min(r.bytes, r.cells * r.row); if (!r.fixed) { cap = std::min(cap, kv_prompt_room(ap)); } }   /* a fixed record (a sliding-window ring) does not limit how long a request can be: MiMo reported 16640 tokens, the ring size */   // cells: the longest cache (a model with a window cache and a global one holds the same tokens in both)
         st.cap_tokens = cap == (size_t) -1 ? 0 : cap;
         for (auto & sg : ap.segs) {
             const auto & ps = mc->pool[sg.pcls];

@@ -850,8 +850,8 @@ struct server_slot {
                 }
                 if (m.contains("kv_tail")) {
                     for (const auto & cd : m["kv_tail"]["cards"]) {
-                        SLT_INF(*this, "       kv-tail %s = KV %llu of %llu tokens (max context that fits %llu, model cap %llu) (%.1f MiB), expert cache %.2f GiB (%llu of %llu blocks free, %llu lent, %llu under the KV)\n", cd.value("dev", "?").c_str(),
-                                (unsigned long long) cd.value("kv_cells", (uint64_t) 0), (unsigned long long) cd.value("cap_tokens", (uint64_t) 0), (unsigned long long) m["kv_tail"].value("max_ctx", (uint64_t) 0), (unsigned long long) m["kv_tail"].value("n_ctx_train", (uint64_t) 0), cd.value("kv_mib", 0.0), cd.value("moe_gib", 0.0), (unsigned long long) cd.value("blocks_free", (uint64_t) 0),
+                        SLT_INF(*this, "       kv-tail %s = KV %llu tokens; this card's pool holds %llu tokens of KV in the current type, all cards %llu, the model allows %llu (%.1f MiB), expert cache %.2f GiB (%llu of %llu blocks free, %llu lent, %llu under the KV)\n", cd.value("dev", "?").c_str(),
+                                (unsigned long long) cd.value("kv_cells", (uint64_t) 0), (unsigned long long) cd.value("cap_tokens", (uint64_t) 0), (unsigned long long) m["kv_tail"].value("capacity_tokens", (uint64_t) 0), (unsigned long long) m["kv_tail"].value("n_ctx_train", (uint64_t) 0), cd.value("kv_mib", 0.0), cd.value("moe_gib", 0.0), (unsigned long long) cd.value("blocks_free", (uint64_t) 0),
                                 (unsigned long long) cd.value("blocks", (uint64_t) 0), (unsigned long long) cd.value("blocks_lent", (uint64_t) 0), (unsigned long long) cd.value("blocks_kv", (uint64_t) 0));
                     }
                 }
