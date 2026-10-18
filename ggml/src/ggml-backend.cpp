@@ -24,6 +24,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include <string>
 
 #ifdef __APPLE__
 #include <sys/types.h>
@@ -2519,8 +2520,24 @@ static void ggml_backend_sched_nan_check(ggml_backend_sched_t sched, int split_i
         const int64_t bad = count_bad(t, &first);
         if (bad <= 0) { continue; }
         reported = true;
-        if (g_nan_hook_fork) { g_nan_hook_fork(); }   // --moe poison: dump the pool while the bad bytes are still there
         const int64_t n = ggml_nelements(t);
+        {   // --moe poison=3 leaves the name of the filling code (4 letters) and the serial of its fill call in a few words: the ones inside the bad tensor say who filled its bytes
+            std::string who;
+            for (size_t i = 0; i + 8 <= buf.size(); i += 4) {
+                bool up = true; for (int k = 0; k < 4; ++k) { up = up && buf[i + k] >= 'A' && buf[i + k] <= 'Z'; }
+                if (!up) { continue; }
+                uint32_t sv; memcpy(&sv, &buf[i + 4], 4);
+                const std::string tg((const char *) &buf[i], 4);
+                if (who.find(tg) == std::string::npos) { who += " " + tg + "@" + std::to_string(sv); }
+            }
+            if (!who.empty()) { GGML_LOG_WARN("nan-check: poison writers inside %s (tag@fill serial):%s\n", t->name, who.c_str()); }
+            std::string addrs; int na = 0;   // poison=4: 8-byte call-site addresses of the filling code (high word 0x5000..0x7fff); resolve with the ledger's "fill" lines (ra, anchor)
+            for (size_t i = 0; i + 8 <= buf.size() && na < 6; i += 4) {
+                uint32_t a0, a1; memcpy(&a0, &buf[i], 4); memcpy(&a1, &buf[i + 4], 4);
+                if (a1 >= 0x5000 && a1 <= 0x7fff) { char b[40]; snprintf(b, sizeof b, " 0x%llx", (unsigned long long) (((uint64_t) a1 << 32) | a0)); if (addrs.find(b) == std::string::npos) { addrs += b; na++; } }
+            }
+            if (!addrs.empty()) { GGML_LOG_WARN("nan-check: poison call sites inside %s:%s\n", t->name, addrs.c_str()); }
+        }
         GGML_LOG_WARN("nan-check: graph %ld, split %d of %d on %s, node %d of %d: %s %s [%lld,%lld,%lld,%lld] %s holds %lld bad values of %lld, the first at element %lld (row %lld of dim 1, %lld of dim 2)\n",
                 graph_no, split_id, sched->n_splits, ggml_backend_name(be), j, split->graph.n_nodes, ggml_op_name(t->op), t->name,
                 (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3], ggml_type_name(t->type), (long long) bad, (long long) n,
@@ -2537,7 +2554,9 @@ static void ggml_backend_sched_nan_check(ggml_backend_sched_t sched, int split_i
                     (long long) src->ne[0], (long long) src->ne[1], (long long) src->ne[2], (long long) src->ne[3], ggml_type_name(src->type),
                     src->buffer ? ggml_backend_buffer_name(src->buffer) : "-",
                     b2 < 0 ? "not checked (not a contiguous float tensor)" : b2 == 0 ? "no bad values" : "holds bad values");
+            if (src->buffer) { GGML_LOG_WARN("nan-check:     input %d sits in a buffer of %zu bytes at offset %zu (data %p)\n", k, ggml_backend_buffer_get_size(src->buffer), (size_t) ((const char *) src->data - (const char *) ggml_backend_buffer_get_base(src->buffer)), (const void *) src->data); }
         }
+        if (g_nan_hook_fork) { g_nan_hook_fork(); }   // --moe poison: dump the pool while the bad bytes are still there (after the report above: the hook exits the process)
         return;
     }
 }

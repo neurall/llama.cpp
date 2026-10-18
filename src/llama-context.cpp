@@ -2575,10 +2575,23 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
             moe_mirror_offsets();   // fork: --moe mirror-pool: a pass that splits behind the dense split's copies, any other graph over them
 
+            static const bool dbg_rb = getenv("LLAMA_REBUILD_DEBUG") != nullptr;   // squeeze repro (Qwen3.6, 4.7 GiB): which build of the graph the inputs belong to
+            if (dbg_rb) { LLAMA_LOG_WARN("%s: graph build attempt %d: %d tokens, %d nodes, %d splits so far\n", __func__, attempt, (int) ubatch.n_tokens, ggml_graph_n_nodes(gf), ggml_backend_sched_get_n_splits(sched.get())); }
             if (ggml_backend_sched_alloc_graph(sched.get(), gf)) {
                 // fork: --moe alias=1 lends the pool blocks this graph's tensors reach to it; when the graph reached into the KV zone (kv-tail), the zone moved behind
                 // it and this graph's views of the KV point at the old place: it is built again (the next graph of this size gets its lend before it is built)
-                if (llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens) && attempt < 4) {
+                const bool moved = llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);
+                if (dbg_rb) {
+                    int n_use = 0, n_buf = 0;   // graph nodes reading a tensor named out_ids, and how many of those have a buffer
+                    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+                        for (int j = 0; j < GGML_MAX_SRC; ++j) {
+                            const ggml_tensor * sj = ggml_graph_node(gf, i)->src[j];
+                            if (sj && strncmp(sj->name, "out_ids", 7) == 0) { n_use++; n_buf += sj->buffer != nullptr; if (n_use <= 3) { LLAMA_LOG_WARN("   reader %s <- src %d '%s' %p buffer %p data %p flags 0x%x\n", ggml_graph_node(gf, i)->name, j, sj->name, (const void *) sj, (void *) sj->buffer, sj->data, (unsigned) sj->flags); } }
+                        }
+                    }
+                    LLAMA_LOG_WARN("%s: attempt %d allocated, alias_fork %s; nodes reading out_ids %d (with a buffer %d)\n", __func__, attempt, moved ? "moved the zone: build again" : "no move", n_use, n_buf);
+                }
+                if (moved && attempt < 4) {
                     res->reset();
                     continue;
                 }

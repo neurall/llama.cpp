@@ -626,6 +626,10 @@ void llm_graph_input_out_ids::set_input(const llama_ubatch * ubatch) {
 
     const int64_t n_tokens = ubatch->n_tokens;
 
+    if (!out_ids->buffer) {   // fork: say what this input is when the scheduler did not allocate it (qwen3.6 4.7 GiB squeeze repro, 2026-10-18)
+        LLAMA_LOG_ERROR("%s: out_ids has no buffer: name '%s' tensor %p ne0 %lld flags 0x%x data %p view_src %p ubatch n_tokens %u n_outputs %d (this=%p)\n", __func__, out_ids->name, (void *) out_ids,
+                (long long) out_ids->ne[0], (unsigned) out_ids->flags, out_ids->data, (void *) out_ids->view_src, ubatch->n_tokens, (int) n_outputs, (void *) this);
+    }
     GGML_ASSERT(ggml_backend_buffer_is_host(out_ids->buffer));
     int32_t * data = (int32_t *) out_ids->data;
 

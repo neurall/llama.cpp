@@ -1529,27 +1529,64 @@ static bool pool_gate(const moe_cache::alias_pool & ap, size_t lo, size_t hi, co
     }
     return false;
 }
-// --moe poison=1: every region of the pool is filled with its own byte on allocation and on every resize, so wrong bytes name their origin when they show up
-// where they do not belong: graph (cb) 1, CUDA scratch (sc) 2, prefetch staging (ub) 3, KV zone rows 4, expert blocks 5; the zero blocks stay 0. The first NaN the
-// scheduler finds (GGML_SCHED_NAN_CHECK=1) writes pool-dump-<card>.txt into the log directory: the region map and, per MiB, the byte that fills most of it and
-// how much of the MiB that is (an expert block of 4s is KV rows, a zero block of 3s is staging, ...).
+// Fill ids (the dump and the ledger): graph (cb) 1, CUDA scratch (sc) 2, prefetch staging (ub) 3, KV zone rows 4, expert blocks 5; the zero blocks stay 0. The first NaN the
+// scheduler finds (GGML_SCHED_NAN_CHECK=1) writes pool-dump-<card>.txt into the log directory: the region map and, per MiB, the byte that fills most of it, how much of the MiB
+// that is, and the writers named in it.
+// --moe poison=3|4 (debug; 1 and 2 are the same as 3: the older fills, finite ids and a plain 0xFF, either failed nothing or named nothing): every region of the pool is filled on
+// allocation and on every resize with NaN words, and a few words of it carry the name of the filling code, so a read of bytes nobody wrote fails at once (the NaN check names
+// the tensor) and the writers named inside it say where the bytes came from. Only the reads by design stay finite: the pad window, the weight read-past guards, the zero blocks.
 static bool poison_on() {
     static const bool on = [] { const char * e = moe_opt("poison"); return e && atoi(e) != 0; }();
     return on;
 }
-// poison=2: every region is filled with 0xFF instead of its id: NaN as a float, NaN as a half, a NaN scale in every quantized block. A read of bytes that nobody
-// wrote then breaks at once (the first NaN names the tensor). Only the reads by design stay finite: the pad window, the weight read-past guards, the zero blocks.
-static bool poison_nan() {
-    static const bool on = [] { const char * e = moe_opt("poison"); return e && atoi(e) >= 2; }();
+// poison=3: NaN words with the writer's name in a few of them. Pool word w (byte offset / 4) is 0xFFFFFFFF, except w % 22 == 20 and 21: the four letters of the filling code
+// (GRPH graph, SCRT scratch, STGE staging, KVRW KV rows, XBLK expert block never uploaded) and the serial of that fill call (logged in the ledger as "fill"). Uppercase ASCII
+// is a finite float and a finite half pair, the serial a denormal: a read of unwritten bytes is NaN at once and the letters left in the bad tensor name who filled those bytes and
+// in which call (the NaN report and the pool dump count them). The phase follows the absolute offset: the same pattern wherever a region starts.
+static bool poison_ids() { return poison_on(); }
+// poison=4: the same fill, but the two marked words hold the 8-byte return address of the code that called pool_fill (the call site itself, no table to keep in step). The ledger's
+// "fill" line logs that address next to pool_fill's own, so the library's load address cancels: call site = &pool_fill + (ra - anchor), resolved with nm / addr2line.
+static bool poison_addr() {
+    static const bool on = [] { const char * e = moe_opt("poison"); return e && atoi(e) >= 4; }();
     return on;
 }
+static const char * poison_tag(uint8_t v) {   // v: the fill ids (see the dump header)
+    static const char * t[] = { "ZERO", "GRPH", "SCRT", "STGE", "KVRW", "XBLK", "OTHR", "OTHR" };
+    return t[v & 7];
+}
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
 static void pool_fill(const moe_cache::alias_pool & ap, size_t lo, size_t hi, uint8_t v) {
     if (!poison_on() || !ap.buf || hi <= lo) { return; }
+#if defined(__GNUC__) || defined(__clang__)
+    const uint64_t ra = (uint64_t) (uintptr_t) __builtin_return_address(0);
+#else
+    const uint64_t ra = 0;
+#endif
     ggml_tensor z = {};
-    z.type = GGML_TYPE_I8; z.buffer = ap.buf; z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + lo;
-    z.ne[0] = (int64_t) (hi - lo); z.ne[1] = z.ne[2] = z.ne[3] = 1;
-    z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = hi - lo;
-    ggml_backend_tensor_memset(&z, poison_nan() ? 0xFF : v, 0, hi - lo);
+    z.type = GGML_TYPE_I8; z.buffer = ap.buf; z.ne[1] = z.ne[2] = z.ne[3] = 1; z.nb[0] = 1;
+    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+    static std::atomic<uint32_t> serial{0};
+    const uint32_t ser = ++serial;
+    uint32_t tag; memcpy(&tag, poison_tag(v), 4);
+    if (led_on()) { led_line(led_card(ap), "fill", lo, hi, tr_fmt("%s serial %u ra 0x%llx anchor 0x%llx", poison_tag(v), ser, (unsigned long long) ra, (unsigned long long) (uintptr_t) &pool_fill)); }
+    static thread_local std::vector<uint8_t> chunk;
+    chunk.resize((size_t) 4 << 20);
+    for (size_t o = lo; o < hi; ) {
+        const size_t n = std::min(chunk.size(), hi - o);
+        const bool addr = poison_addr();
+        auto word = [&](size_t w) -> uint32_t { const size_t k = w % 22; return k == 20 ? (addr ? (uint32_t) ra : tag) : k == 21 ? (addr ? (uint32_t) (ra >> 32) : ser) : 0xFFFFFFFFu; };
+        if (((o | n) & 3) == 0) {   // whole words (the usual case): 4 bytes per step
+            uint32_t * c = (uint32_t *) chunk.data();
+            for (size_t j = 0, w = o >> 2; j < n >> 2; ++j, ++w) { c[j] = word(w); }
+        } else {
+            for (size_t i = 0; i < n; ++i) { const size_t a = o + i; const uint32_t x = word(a >> 2); chunk[i] = (uint8_t) (x >> (8 * (a & 3))); }
+        }
+        z.data = base + o; z.ne[0] = (int64_t) n; z.nb[1] = z.nb[2] = z.nb[3] = n;
+        ggml_backend_tensor_set(&z, chunk.data(), 0, n);
+        o += n;
+    }
 }
 static void led_map(const moe_cache::alias_pool & ap, const char * why) {
     if (!led_on()) { return; }
@@ -1574,7 +1611,7 @@ static void led_check_range(const moe_cache::alias_pool & ap, const char * kind,
     }
 }
 
-// the NaN hook (ggml_sched_set_nan_hook_fork, set at pool allocation with --moe poison=1): the region map and the per-MiB fill of every pool, to the log directory
+// the NaN hook (ggml_sched_set_nan_hook_fork, set at pool allocation with --moe poison): the region map and the per-MiB fill of every pool, to the log directory
 extern "C" GGML_API void ggml_sched_set_nan_hook_fork(void (*fn)(void));
 static void pool_dump_all(void) {
     moe_cache * mc = g_cache;
@@ -1590,6 +1627,7 @@ static void pool_dump_all(void) {
         fprintf(f, "# %s pool, %zu bytes. regions (kind class lo hi bytes):\n", led_card(ap), size);
         const auto map = pool_map(ap);
         for (const auto & r : map) { fprintf(f, "region %s %d %zu %zu %zu\n", r.kind, (int) r.pcls, r.lo, r.hi, r.hi - r.lo); }
+        fprintf(f, "# anchor (pool_fill) 0x%llx; call site = pool_fill + (address - anchor) when the address is a poison=4 call-site address\n", (unsigned long long) (uintptr_t) &pool_fill);
         fprintf(f, "# per MiB: index, region at its start, dominant byte, share of the MiB with that byte (poison ids: 1 graph, 2 scratch, 3 staging, 4 KV rows, 5 expert block never uploaded, 0 zero)\n");
         std::vector<uint8_t> buf((size_t) 1 << 20);
         ggml_tensor z = {};
@@ -1603,7 +1641,23 @@ static void pool_dump_all(void) {
             int best = 0; for (int v = 1; v < 256; ++v) { if (cnt[v] > cnt[best]) { best = v; } }
             const char * reg = "-"; int rc = -1;
             for (const auto & r : map) { if (o >= r.lo && o < r.hi && strcmp(r.kind, "lend") != 0) { reg = r.kind; rc = r.pcls; } }
-            fprintf(f, "%zu %s%d %d %.3f\n", o >> 20, reg, rc, best, (double) cnt[best] / (double) n);
+            std::map<std::string, std::pair<size_t, uint32_t>> wr;   // poison=3: writer tag -> (words, first serial) of this MiB
+            if (poison_ids()) {
+                for (size_t i = 0; i + 8 <= n; i += 4) {
+                    bool up = true; for (int k = 0; k < 4; ++k) { up = up && buf[i + k] >= 'A' && buf[i + k] <= 'Z'; }
+                    if (!up) { continue; }
+                    uint32_t sv; memcpy(&sv, &buf[i + 4], 4);
+                    auto & e = wr[std::string((const char *) &buf[i], 4)]; if (e.first++ == 0) { e.second = sv; }
+                }
+            }
+            fprintf(f, "%zu %s%d %d %.3f", o >> 20, reg, rc, best, (double) cnt[best] / (double) n);
+            for (const auto & e : wr) { fprintf(f, " %s:%zu@%u", e.first.c_str(), e.second.first, e.second.second); }
+            if (poison_addr()) {   // poison=4: 8-byte call-site addresses (high word 0x5000..0x7fff = a user-space address)
+                std::map<uint64_t, size_t> ad;
+                for (size_t i = 0; i + 8 <= n; i += 4) { uint32_t a0, a1; memcpy(&a0, &buf[i], 4); memcpy(&a1, &buf[i + 4], 4); if (a1 >= 0x5000 && a1 <= 0x7fff) { ad[((uint64_t) a1 << 32) | a0]++; } }
+                for (const auto & e : ad) { fprintf(f, " 0x%llx:%zu", (unsigned long long) e.first, e.second); }
+            }
+            fprintf(f, "\n");
         }
         fclose(f);
         LLAMA_LOG_WARN("pool-dump: %s written\n", path.c_str());
@@ -1618,7 +1672,7 @@ static void pool_dump_all(void) {
     }
     if (traced) { LLAMA_LOG_WARN("pool-dump: debugger attached, SIGTRAP\n"); raise(SIGTRAP); return; }
 #endif
-    LLAMA_LOG_ERROR("pool-dump: first NaN, pool dumped, exiting (--moe poison=1)\n");
+    LLAMA_LOG_ERROR("pool-dump: first NaN, pool dumped, exiting (--moe poison)\n");
     fflush(nullptr);
     _exit(3);
 }
@@ -3021,7 +3075,7 @@ void llama_moe_cache_alias_offset_fork(ggml_backend_dev_t dev, size_t off) {
     }
 }
 
-static size_t kv_lend_potential(const moe_cache::alias_pool & ap);   // below (KV zone)
+static size_t kv_lend_potential(const moe_cache::alias_pool & ap, size_t min_cells = 0);   // below (KV zone)
 std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork() {
     std::vector<llama_moe_alias_buf_fork> out;
     moe_cache * mc = g_cache;
@@ -3060,7 +3114,7 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
             ggml_backend_t be = ggml_backend_sched_get_backend(sched, i);
             if (ggml_backend_get_device(be) == ap.dev) { peak = ggml_backend_sched_graph_peak(sched, be); }
         }
-        const size_t cap     = kv_lend_potential(ap);
+        const size_t cap     = kv_lend_potential(ap, (size_t) n_tokens);
         const size_t scratch = ap.cuda_dev >= 0 || strncmp(ggml_backend_dev_name(ap.dev), "CUDA", 4) == 0
                              ? GGML_PAD((size_t) n_tokens * alias_tok_bytes(mc, ap), (size_t) 2 << 20) : 0;
         const size_t base    = GGML_PAD(ap.base_off + GGML_PAD(peak, 256) + scratch, 256);   // behind the dense split's copies when the reserved graph splits
@@ -3410,12 +3464,26 @@ static size_t kv_lend_round(const moe_cache::alias_pool & ap, size_t bytes) {
     return end;
 }
 
-// what the compute alias could lend if the KV zone moved behind the graph: the buffer up to the end of the expert blocks, less the zone and two blocks the
-// experts keep (the scheduler may place a graph up to here; moe_alias moves the zone before such a graph runs)
-static size_t kv_lend_potential(const moe_cache::alias_pool & ap) {
+// what the compute alias could lend if the KV zone moved behind the graph: the zone lies in a gap between the class zero blocks (kv_gap_place), so the lend
+// can reach at most the start of the last place the zone fits (the end of the gap that holds it, less the zone). Not "the end of the pool less the zone": with a
+// graph of 10 GiB in a 11.6 GiB pool the zone's 1.6 GiB fixed part fitted no gap behind it and lay on two zero blocks (MiMo 12k, 2026-10-18); the shrink-to-fit
+// now sees that and takes a smaller graph. The zone is sized as it is (fixed part and the cells laid out).
+// min_cells: the cells the graph asked about writes into the zone as well (a 512-token graph needs 512 cells of KV beside it, whatever the zone holds now: OLMoE in a
+// 185 MiB pool, 2026-10-18: the graph "fitted" with a zone of 0 cells and the KV then had no room behind it: abort on one build, NaN on the one before)
+static size_t kv_lend_potential(const moe_cache::alias_pool & ap, size_t min_cells) {
     if (ap.kvt.empty()) { return ap.span; }
-    const size_t zone = ap.kv_fixed + ap.kv_h * ap.kv_row, keep = 2 * kv_bmax(ap);
-    return ap.tail_end > zone + keep ? ap.tail_end - zone - keep : 0;
+    const size_t bmax = std::max<size_t>(1, kv_bmax(ap)), zone = ap.kv_fixed + std::max(ap.kv_h, min_cells) * ap.kv_row;
+    size_t best = 0, a = 0;
+    auto gap = [&](size_t g0, size_t g1) {
+        if (g1 >= g0 + zone) { best = std::max(best, (g1 - zone) / bmax * bmax); }
+    };
+    for (const auto & sg : ap.segs) {
+        const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
+        if (z0 > a) { gap(a, z0); }
+        a = std::max(a, z1);
+    }
+    gap(a, ap.tail_end);
+    return best;
 }
 
 // n bytes from `from` to `to` inside the pool buffer, on the card (a device copy at ~800 GB/s: 1 GB of KV in ~2.5 ms on an RTX 3090), in chunks that never
@@ -3497,6 +3565,7 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     for (const auto & r : ap.kvt) { if (!r.fixed) { pad = std::max(pad, r.pad); cmax = std::min(cmax, r.cells_max); need = std::max(need, r.plan); } }
     const size_t h_min = std::min((need + pad - 1) / pad * pad, cmax);
     const size_t h_pool = ap.kv_row > 0 ? kv_gap_fit(ap, bmax, lend_min, ap.kv_row) : (size_t) -1;   // the largest zone any gap can hold
+    if (led_on()) { LLAMA_LOG_WARN("kv-gap %s: h %zu h_min %zu h_pool %zu lend_min %.1f MiB want %.1f MiB fixed %.1f MiB row %zu tail_end %.1f MiB segs %zu\n", led_card(ap), h, h_min, h_pool, lend_min / 1048576.0, l / 1048576.0, ap.kv_fixed / 1048576.0, ap.kv_row, ap.tail_end / 1048576.0, ap.segs.size()); }
     h = std::min(std::max(h, std::min(h_min, h_pool)), h_pool);   // never past what a gap holds: there the cache refuses the cells (llama_moe_cache_kv_tail_covers_fork checks the padded count)
     {
         const size_t ls = kv_gap_place(ap, bmax, lend_min, l, ap.kv_fixed + h * ap.kv_row);
@@ -3881,6 +3950,12 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
 
 bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     moe_cache * mc = g_cache;
+    if (mc && !mc->alias.empty() && !alias_on()) {
+        // the pool could not lend the graph (separate compute buffers) but the KV zones still live in it: the pad rows the attention reads past the cells in use must be
+        // zeroed all the same. Skipped, they held whatever the blocks held before (poison: NaN, so the first graph's attention was NaN; OLMoE at 0.786 GiB VRAM left,
+        // 2026-10-18; without poison stale expert bytes, the MiMo '!!!!' mechanism).
+        kv_tail_pad_zero(mc);
+    }
     if (!mc || !alias_on() || mc->alias.empty()) {
         return false;
     }
@@ -3949,7 +4024,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         // see ggml_backend_sched_prefetch_prepare): a big micro-batch runs with fewer slots, or none, instead of the micro-batch being cut for them.
         {
             const size_t slot_b = ggml_backend_sched_prefetch_slot_bytes_dev(sched, ap.dev);
-            const size_t cap_b  = kv_lend_potential(ap);   // the slots may reach past the KV zone: it moves behind them (above)
+            const size_t cap_b  = kv_lend_potential(ap, (size_t) n_tokens);   // the slots may reach past the KV zone: it moves behind them (above)
             const int    n_cfg  = std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
             int          fit    = slot_b > 0 && cap_b > stage_off ? (int) std::min<size_t>((size_t) n_cfg, (cap_b - stage_off) / slot_b) : 0;
             if (n_tokens >= 64 && g_pp_k.load() >= 0) { fit = std::min(fit, g_pp_k.load()); }   // the pass planner's choice: more slots evict more cached experts
