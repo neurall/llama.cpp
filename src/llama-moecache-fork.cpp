@@ -3666,6 +3666,46 @@ const char * llama_moe_cache_kv_tail_unplaced_fork(int32_t n_tokens) {
     return nullptr;
 }
 
+// bind the KV records of the cards' caches that no pool has taken yet (g_kvt, attached == false) to this card's pool: one zone of combined rows behind the compute lend, in front
+// of the experts (fork/docs/kv-grow.md). At pool creation, and again when a cache is rebuilt with other types (qkv-ram-fallback: llama_kv_refit). Backs no cells yet: the first graph
+// lays it out (llama_moe_cache_kv_tail_prepare_fork), the first graph that needs more lend moves it behind that.
+static void kv_tail_bind(moe_cache::alias_pool & ap) {
+    std::lock_guard<std::mutex> klk(g_kvt_mtx);
+    ap.kv_row = 0; ap.kv_fixed = 0;
+    for (auto & r : g_kvt) {
+        if (r.dev != ap.dev || r.attached) { continue; }
+        if (ap.span != ap.tail_end && ap.kv_start == 0 && ap.kv_h == 0 && ap.kvt.empty()) {
+            LLAMA_LOG_ERROR("%s: kv-tail needs --moe alias-all (the zone is laid out across every size class)\n", __func__);
+            GGML_ABORT("kv-tail without alias-all");
+        }
+        moe_cache::alias_pool::kvt_run kr;
+        kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.pad = std::max<size_t>(1, r.pad); kr.rows = r.rows; kr.attach = r.attach; kr.bpv = r.bpv;
+        kr.cells_max = r.row ? r.bytes / r.row : 0;
+        if (r.step > 0) { ap.kv_step = r.step; }
+        ap.kvt.push_back(kr);
+        r.attached = true;
+    }
+    if (ap.kvt.empty()) { return; }
+    // records with the most cells (the model's context) grow together in one combined row; smaller ones (a sliding-window cache: its cells are a ring
+    // of the window plus a batch) are fixed: laid out at full size in front of the growing part
+    size_t cmax = 0;
+    for (auto & kr : ap.kvt) { cmax = std::max(cmax, kr.cells_max); }
+    for (auto & kr : ap.kvt) {
+        kr.fixed = kr.cells_max < cmax;
+        if (kr.fixed) { kr.prefix = ap.kv_fixed; ap.kv_fixed += (kr.cells_max * kr.row + 255) / 256 * 256; }
+        else          { kr.prefix = ap.kv_row;   ap.kv_row   += kr.row; }
+    }
+    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+    for (auto & kr : ap.kvt) {   // row 0 at the start of the buffer until the first layout
+        if (kr.attach) { kr.attach(ap.buf, base + (kr.fixed ? kr.prefix : ap.kv_fixed + kr.prefix), kr.fixed ? kr.row : ap.kv_row); }
+    }
+    ap.kv_start = 0; ap.kv_h = 0;
+    size_t bmax = 0; for (auto & sg2 : ap.segs) { bmax = std::max(bmax, sg2.B); }
+    const size_t cap = ap.kv_row && ap.tail_end > 4 * bmax + ap.kv_fixed ? (ap.tail_end - 4 * bmax - ap.kv_fixed) / ap.kv_row : 0;
+    LLAMA_LOG_WARN("%s: kv-tail: %zu record(s) on %s: fixed part %.1f MiB, growing part %zu B per cell in steps of %zu cells: room for %zu tokens in the pool of %.1f MiB (model cap %zu)\n",
+            __func__, ap.kvt.size(), ggml_backend_dev_name(ap.dev), ap.kv_fixed / 1048576.0, ap.kv_row, ap.kv_step, cap, ap.tail_end / 1048576.0, cmax);
+}
+
 bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     moe_cache * mc = g_cache;
     if (!mc) { return false; }
@@ -4743,42 +4783,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                     ap.tail_end  = pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
                     ap.span_full = ap.span;
-                    {   // the records of the KV caches on this card (--moe kv-tail=1): one zone of combined rows behind the compute lend, in front of the experts (fork/docs/kv-grow.md).
-                        // It backs no cells yet: the first graph lays it out (llama_moe_cache_kv_tail_prepare_fork), the first graph that needs more lend moves it behind that.
-                        std::lock_guard<std::mutex> klk(g_kvt_mtx);
-                        for (auto & r : g_kvt) {
-                            if (r.dev != ap.dev) { continue; }
-                            if (ap.span != ap.tail_end) {
-                                LLAMA_LOG_ERROR("%s: kv-tail needs --moe alias-all (the zone is laid out across every size class)\n", __func__);
-                                GGML_ABORT("kv-tail without alias-all");
-                            }
-                            moe_cache::alias_pool::kvt_run kr;
-                            kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.pad = std::max<size_t>(1, r.pad); kr.rows = r.rows; kr.attach = r.attach; kr.bpv = r.bpv;
-                            kr.cells_max = r.row ? r.bytes / r.row : 0;
-                            if (r.step > 0) { ap.kv_step = r.step; }
-                            ap.kvt.push_back(kr);
-                            r.attached = true;
-                        }
-                        if (!ap.kvt.empty()) {
-                            // records with the most cells (the model's context) grow together in one combined row; smaller ones (a sliding-window cache: its cells are a ring
-                            // of the window plus a batch) are fixed: laid out at full size in front of the growing part
-                            size_t cmax = 0;
-                            for (auto & kr : ap.kvt) { cmax = std::max(cmax, kr.cells_max); }
-                            for (auto & kr : ap.kvt) {
-                                kr.fixed = kr.cells_max < cmax;
-                                if (kr.fixed) { kr.prefix = ap.kv_fixed; ap.kv_fixed += (kr.cells_max * kr.row + 255) / 256 * 256; }
-                                else          { kr.prefix = ap.kv_row;   ap.kv_row   += kr.row; }
-                            }
-                            for (auto & kr : ap.kvt) {   // row 0 at the start of the buffer until the first layout
-                                if (kr.attach) { kr.attach(pbuf, (uint8_t *) base + (kr.fixed ? kr.prefix : ap.kv_fixed + kr.prefix), kr.fixed ? kr.row : ap.kv_row); }
-                            }
-                            ap.kv_start = 0; ap.kv_h = 0;
-                            size_t bmax = 0; for (auto & sg2 : ap.segs) { bmax = std::max(bmax, sg2.B); }
-                            const size_t cap = ap.kv_row && ap.tail_end > 4 * bmax + ap.kv_fixed ? (ap.tail_end - 4 * bmax - ap.kv_fixed) / ap.kv_row : 0;
-                            LLAMA_LOG_WARN("%s: kv-tail: %zu record(s) on %s: fixed part %.1f MiB, growing part %zu B per cell in steps of %zu cells: room for %zu tokens in the pool of %.1f MiB (model cap %zu)\n",
-                                    __func__, ap.kvt.size(), ggml_backend_dev_name(ap.dev), ap.kv_fixed / 1048576.0, ap.kv_row, ap.kv_step, cap, ap.tail_end / 1048576.0, cmax);
-                        }
-                    }
+                    kv_tail_bind(ap);
                     mc->alias.push_back(ap);
                 }
                 mc->bufs.push_back(pbuf);
