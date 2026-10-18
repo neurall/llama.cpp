@@ -3323,12 +3323,15 @@ void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec) {
 static std::atomic<bool> g_kv_pool_expected { true };
 void llama_moe_cache_kv_pool_expected_fork(bool on) { g_kv_pool_expected = on; }
 bool llama_moe_cache_kv_pool_expected_fork() { return g_kv_pool_expected.load(); }
+static std::vector<moe_cache::alias_pool *> g_kv_zone_release;
 void llama_moe_cache_kv_tail_remove_fork(void * owner) {
     std::lock_guard<std::mutex> lk(g_kvt_mtx);
     g_kvt.erase(std::remove_if(g_kvt.begin(), g_kvt.end(), [&](const llama_kv_tail_fork & r) { return r.owner == owner; }), g_kvt.end());
     if (moe_cache * mc = g_cache) {
         for (auto & ap : mc->alias) {
+            const size_t before = ap.kvt.size();
             ap.kvt.erase(std::remove_if(ap.kvt.begin(), ap.kvt.end(), [&](const moe_cache::alias_pool::kvt_run & r) { return r.owner == owner; }), ap.kvt.end());
+            if (before > 0 && ap.kvt.empty()) { g_kv_zone_release.push_back(&ap); }   // its zone goes back to the experts when the new records are bound (llama_moe_cache_kv_tail_rebind_fork)
         }
     }
 }
@@ -3704,6 +3707,24 @@ static void kv_tail_bind(moe_cache::alias_pool & ap) {
     const size_t cap = ap.kv_row && ap.tail_end > 4 * bmax + ap.kv_fixed ? (ap.tail_end - 4 * bmax - ap.kv_fixed) / ap.kv_row : 0;
     LLAMA_LOG_WARN("%s: kv-tail: %zu record(s) on %s: fixed part %.1f MiB, growing part %zu B per cell in steps of %zu cells: room for %zu tokens in the pool of %.1f MiB (model cap %zu)\n",
             __func__, ap.kvt.size(), ggml_backend_dev_name(ap.dev), ap.kv_fixed / 1048576.0, ap.kv_row, ap.kv_step, cap, ap.tail_end / 1048576.0, cmax);
+}
+
+// a cache was rebuilt with other types (llama_kv_refit): the pool is already running. The zone of the old records goes back to the experts (blocks owner -3 given back),
+// the new records are bound behind the lend like at pool creation, and the graphs are built again (epoch). Called with the new cache in place and nothing running.
+void llama_moe_cache_kv_tail_rebind_fork() {
+    moe_cache * mc = g_cache;
+    if (!mc) { return; }
+    for (auto & ap : mc->alias) {
+        if (std::find(g_kv_zone_release.begin(), g_kv_zone_release.end(), &ap) != g_kv_zone_release.end() && ap.kv_h > 0) {
+            ap.kv_fixed = 0;
+            kv_layout(mc, ap, 0, ap.kv_start, 0, false);   // h = 0, no fixed part: every block under the zone is given back
+        }
+        ap.kv_row = 0; ap.kv_fixed = 0; ap.kv_h = 0; ap.kv_zhi = 0; ap.kv_last_cells = 0;
+        kv_tail_bind(ap);
+    }
+    g_kv_zone_release.clear();
+    flush_tables();
+    g_kv_epoch++;
 }
 
 bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_tokens) {

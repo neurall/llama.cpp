@@ -1194,6 +1194,11 @@ extern "C" {
     };
     LLAMA_API void llama_get_tuning_info(const struct llama_context * ctx, struct llama_tuning_info * info);
 
+    // qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): choose the KV tier for a request of n_tokens (prompt + answer): f16 on the GPU, q8_0/q8_0, q4_0/q4_0 (both on the GPU, in the expert
+    // pool), or host RAM; the cache object is rebuilt when the tier changes (the cache is cleared first). Returns the tier (0..3), with bit 8 set when the cache was rebuilt; -1 when no
+    // enabled tier (--moe kv-fallback=LIST) holds the request (note says why and what was tried); -2 when the expert pool does not exist yet (nothing is changed).
+    LLAMA_API int32_t llama_kv_fit_select(struct llama_context * ctx, uint32_t n_tokens, char * note, size_t note_size);
+
     // Set abort callback
     LLAMA_API void llama_set_abort_callback(struct llama_context * ctx, ggml_abort_callback abort_callback, void * abort_callback_data);
 
