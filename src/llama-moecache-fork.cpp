@@ -1518,6 +1518,22 @@ static bool pool_gate(const moe_cache::alias_pool & ap, size_t lo, size_t hi, co
     }
     return true;
 }
+// --moe poison=1: every region of the pool is filled with its own byte on allocation and on every resize, so wrong bytes name their origin when they show up
+// where they do not belong: graph (cb) 1, CUDA scratch (sc) 2, prefetch staging (ub) 3, KV zone rows 4, expert blocks 5; the zero blocks stay 0. The first NaN the
+// scheduler finds (GGML_SCHED_NAN_CHECK=1) writes pool-dump-<card>.txt into the log directory: the region map and, per MiB, the byte that fills most of it and
+// how much of the MiB that is (an expert block of 4s is KV rows, a zero block of 3s is staging, ...).
+static bool poison_on() {
+    static const bool on = [] { const char * e = moe_opt("poison"); return e && atoi(e) != 0; }();
+    return on;
+}
+static void pool_fill(const moe_cache::alias_pool & ap, size_t lo, size_t hi, uint8_t v) {
+    if (!poison_on() || !ap.buf || hi <= lo) { return; }
+    ggml_tensor z = {};
+    z.type = GGML_TYPE_I8; z.buffer = ap.buf; z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + lo;
+    z.ne[0] = (int64_t) (hi - lo); z.ne[1] = z.ne[2] = z.ne[3] = 1;
+    z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = hi - lo;
+    ggml_backend_tensor_memset(&z, v, 0, hi - lo);
+}
 static void led_map(const moe_cache::alias_pool & ap, const char * why) {
     if (!led_on()) { return; }
     for (const auto & r : pool_map(ap)) { led_line(led_card(ap), "map", r.lo, r.hi, tr_fmt("%s %s class %d", why, r.kind, (int) r.pcls)); }
@@ -1538,6 +1554,42 @@ static void led_check_range(const moe_cache::alias_pool & ap, const char * kind,
                 led_overlap(led_card(ap), lo, hi, tr_fmt("%s %s: covers the zero block of class %d [%.3f, %.3f) MiB", kind, who.c_str(), sg.pcls, z0 / 1048576.0, z1 / 1048576.0));
             }
         }
+    }
+}
+
+// the NaN hook (ggml_sched_set_nan_hook_fork, set at pool allocation with --moe poison=1): the region map and the per-MiB fill of every pool, to the log directory
+extern "C" GGML_API void ggml_sched_set_nan_hook_fork(void (*fn)(void));
+static void pool_dump_all(void) {
+    moe_cache * mc = g_cache;
+    if (!mc) { return; }
+    static std::atomic<int> once{0};
+    if (once++) { return; }   // the first NaN only
+    for (auto & ap : mc->alias) {
+        if (!ap.buf) { continue; }
+        const std::string path = moe_log_file(("pool-dump-" + std::string(led_card(ap)) + "-" + std::to_string((long long) time(nullptr)) + ".txt").c_str());
+        FILE * f = fopen(path.c_str(), "w");
+        if (!f) { continue; }
+        const size_t size = ggml_backend_buffer_get_size(ap.buf);
+        fprintf(f, "# %s pool, %zu bytes. regions (kind class lo hi bytes):\n", led_card(ap), size);
+        const auto map = pool_map(ap);
+        for (const auto & r : map) { fprintf(f, "region %s %d %zu %zu %zu\n", r.kind, (int) r.pcls, r.lo, r.hi, r.hi - r.lo); }
+        fprintf(f, "# per MiB: index, region at its start, dominant byte, share of the MiB with that byte (poison ids: 1 graph, 2 scratch, 3 staging, 4 KV rows, 5 expert block never uploaded, 0 zero)\n");
+        std::vector<uint8_t> buf((size_t) 1 << 20);
+        ggml_tensor z = {};
+        z.type = GGML_TYPE_I8; z.buffer = ap.buf; z.ne[1] = z.ne[2] = z.ne[3] = 1; z.nb[0] = 1;
+        for (size_t o = 0; o < size; o += buf.size()) {
+            const size_t n = std::min(buf.size(), size - o);
+            z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + o; z.ne[0] = (int64_t) n; z.nb[1] = z.nb[2] = z.nb[3] = n;
+            ggml_backend_tensor_get(&z, buf.data(), 0, n);
+            size_t cnt[256] = {};
+            for (size_t i = 0; i < n; ++i) { cnt[buf[i]]++; }
+            int best = 0; for (int v = 1; v < 256; ++v) { if (cnt[v] > cnt[best]) { best = v; } }
+            const char * reg = "-"; int rc = -1;
+            for (const auto & r : map) { if (o >= r.lo && o < r.hi && strcmp(r.kind, "lend") != 0) { reg = r.kind; rc = r.pcls; } }
+            fprintf(f, "%zu %s%d %d %.3f\n", o >> 20, reg, rc, best, (double) cnt[best] / (double) n);
+        }
+        fclose(f);
+        LLAMA_LOG_WARN("pool-dump: %s written\n", path.c_str());
     }
 }
 
@@ -3425,6 +3477,7 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     }
     ap.kv_h = h; ap.kv_start = lo; ap.span = lo;
     led_map(ap, "kv_layout");
+    pool_fill(ap, lo + std::max(n_used, ap.kv_fixed), hi, 4);   // --moe poison: rows nobody wrote yet are 4 (the fixed part is zeroed above)
     pool_move_end(ap);
     ap.kv_zhi = 0;   // the pad window (rows past the cells in use that the attention reads) is zeroed again
     ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
@@ -3778,6 +3831,8 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         }
     }
     mc->graph_tokens_last = n_tokens;
+    struct pfill { moe_cache::alias_pool * ap; size_t lo, hi; uint8_t v; };
+    std::vector<pfill> pfills;   // --moe poison: applied after the scheduler sync below
     bool changed = false;   // (the KV zones were laid out for this graph before it was built: llama_moe_cache_kv_tail_prepare_fork)
     kv_tail_pad_zero(mc);   // the KV rows this graph writes first: the lend below stops in front of them (ap.span); a decode graph ends the plan of the last prompt
     for (auto & ap : mc->alias) {
@@ -3986,6 +4041,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             led_line(led_card(ap), "lend", 0, need_b, who);
             led_check_range(ap, "lend", 0, kv_lend_round(ap, need_b), who, true, false, false);
         }
+        if (poison_on()) { pfills.push_back({ &ap, ap.base_off, peak_al, 1 }); pfills.push_back({ &ap, peak_al, stage_off, 2 }); pfills.push_back({ &ap, stage_off, need_b, 3 }); }
         if (ap.kv_h > 0 && kv_lend_round(ap, need_b) > ap.kv_start) {
             LLAMA_LOG_WARN("pool-gate: lend of %.1f MiB on %s reaches the KV zone at %.1f MiB\n", kv_lend_round(ap, need_b) / 1048576.0, ggml_backend_dev_name(ap.dev), ap.kv_start / 1048576.0);
         }
@@ -3994,6 +4050,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         const int64_t s0 = ggml_time_us();
         flush_tables();
         ggml_backend_sched_synchronize(sched);   // the previous graph may still read those blocks; this graph's inputs are written next
+        for (const auto & f : pfills) { pool_fill(*f.ap, f.lo, f.hi, f.v); }   // --moe poison
         g_ac.sync_us += ggml_time_us() - s0; g_ac.sync_n++;
     }
     return false;
@@ -4411,6 +4468,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     return false;
                 }
                 ggml_backend_buffer_clear(pbuf, 0);
+                if (poison_on()) {   // expert blocks are 5 until an upload lands; the zero blocks and the read-past tail stay 0
+                    moe_cache::alias_pool tmp; tmp.buf = pbuf;
+                    pool_fill(tmp, 0, total - 4096, 5);
+                    for (size_t c = 0; c < pl.cls.size(); ++c) { ggml_tensor z = {}; z.type = GGML_TYPE_I8; z.buffer = pbuf; z.data = (uint8_t *) ggml_backend_buffer_get_base(pbuf) + pl.cls[c].base + (size_t) nblk[c] * pl.cls[c].B; z.ne[0] = (int64_t) pl.cls[c].B; z.ne[1] = z.ne[2] = z.ne[3] = 1; z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = pl.cls[c].B; ggml_backend_tensor_memset(&z, 0, 0, pl.cls[c].B); }
+                }
+                if (poison_on()) { ggml_sched_set_nan_hook_fork(pool_dump_all); }
                 ggml_backend_buffer_set_usage(pbuf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
                 uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(pbuf);
                 const size_t pool0 = mc->pool.size();

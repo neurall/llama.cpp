@@ -863,6 +863,9 @@ const char * ggml_backend_dev_description(ggml_backend_dev_t device) {
     return device->iface.get_description(device);
 }
 
+static void (*g_nan_hook_fork)(void) = nullptr;
+extern "C" GGML_API void ggml_sched_set_nan_hook_fork(void (*fn)(void)) { g_nan_hook_fork = fn; }
+
 void ggml_backend_dev_memory(ggml_backend_dev_t device, size_t * free, size_t * total) {
     GGML_ASSERT(device);
     device->iface.get_memory(device, free, total);
@@ -2516,6 +2519,7 @@ static void ggml_backend_sched_nan_check(ggml_backend_sched_t sched, int split_i
         const int64_t bad = count_bad(t, &first);
         if (bad <= 0) { continue; }
         reported = true;
+        if (g_nan_hook_fork) { g_nan_hook_fork(); }   // --moe poison: dump the pool while the bad bytes are still there
         const int64_t n = ggml_nelements(t);
         GGML_LOG_WARN("nan-check: graph %ld, split %d of %d on %s, node %d of %d: %s %s [%lld,%lld,%lld,%lld] %s holds %lld bad values of %lld, the first at element %lld (row %lld of dim 1, %lld of dim 2)\n",
                 graph_no, split_id, sched->n_splits, ggml_backend_name(be), j, split->graph.n_nodes, ggml_op_name(t->op), t->name,
