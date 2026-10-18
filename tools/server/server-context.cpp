@@ -3840,11 +3840,13 @@ private:
                             return;
                         }
 
+                        bool kv_tier_fit_ok = false;
                         {   // qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): the KV tier this request needs (f16, q8_0/q8_0, q4_0/q4_0 in the pool); a change converts the
                             // cells the cache holds in place (nothing is lost). A KV that fills up later moves up a tier inside llama_decode (same batch again).
                             char note[512] = { 0 };
                             const int n_out = slot.task->params.n_predict > 0 ? slot.task->params.n_predict : (int) llama_moe_live_get("def_out_len");
                             const int32_t r = llama_kv_fit_select(ctx_tgt, (uint32_t) (input_tokens.size() + n_out), 0, note, sizeof(note));
+                            kv_tier_fit_ok = r >= 0;   // a tier holds this request: the capacity check below (current tier only) must not refuse what the ladder accepted
                             if (note[0]) { SLT_WRN(slot, "%s\n", note); }
                             if (r == -1) {
                                 send_error(slot, note, ERROR_TYPE_EXCEED_CONTEXT_SIZE);
@@ -3933,7 +3935,7 @@ private:
                                     if (slot.n_predict_max < 0 && cg && atoi(cg) != 0) { slot.n_predict_max = std::max(0, slot.n_ctx - n_in); }
                                     const uint64_t max_ctx = std::min<uint64_t>(ti.kvt_cap_min, ti.kvt_ctx_train);
                                     const uint64_t need    = (uint64_t) n_in + (slot.n_predict_max >= 0 ? (uint64_t) slot.n_predict_max : 0);
-                                    if (max_ctx > 0 && need > max_ctx) {
+                                    if (max_ctx > 0 && need > max_ctx && !kv_tier_fit_ok) {   // (the ladder said a tier holds it: if the cells really run out the decode climbs a tier or fails with its own message)
                                         send_error(slot,
                                                    string_format("request needs %llu tokens (prompt %d + answer %d) but this machine can hold %llu (KV capacity %llu tokens, model cap %llu)",
                                                                  (unsigned long long) need, n_in, (int) std::max(0, slot.n_predict_max), (unsigned long long) max_ctx,

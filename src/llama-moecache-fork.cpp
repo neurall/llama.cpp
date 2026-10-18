@@ -4136,13 +4136,22 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
 // needs one address range), layers can. The layers with the most bytes per cell go first, only as many as the request needs; the zone shrinks by their rows
 // and the experts take the space. Attention of those layers reads host memory (--moe kv-ram-attn=gpu: by the card over PCIe, default; cpu: on the CPU).
 static size_t kv_mem_available() {
+    size_t b = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX ms = {}; ms.dwLength = sizeof(ms);   // (W10: the RAM tier held 0 tokens, there is no /proc/meminfo)
+    if (GlobalMemoryStatusEx(&ms)) { b = (size_t) ms.ullAvailPhys; }
+#else
     size_t kb = 0;
     if (FILE * f = fopen("/proc/meminfo", "r")) {
         char line[256];
         while (fgets(line, sizeof line, f)) { if (sscanf(line, "MemAvailable: %zu kB", &kb) == 1) { break; } }
         fclose(f);
     }
-    const size_t margin = (size_t) 4 << 30, b = kb * 1024;
+    b = kb * 1024;
+#endif
+    static bool warned = false;
+    if (b == 0 && !warned) { warned = true; LLAMA_LOG_WARN("moe-cache: kv-ram: the free RAM could not be read: the RAM tier of the KV holds nothing\n"); }
+    const size_t margin = (size_t) 4 << 30;
     return b > margin ? b - margin : 0;
 }
 static size_t kv_row_all(const moe_cache::alias_pool & ap) {   // bytes per cell of every growing layer of this card in its current types (all of them in host memory)
