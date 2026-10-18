@@ -5450,6 +5450,10 @@ bool llm_graph_context::ds_plan(int64_t min_tokens) const {
     double share = share0 >= 0.0 ? share0 : llama_dsplit_plan_share_fork(n_tokens);
     if (share < 0.0) { share = 0.55; }
     const int64_t edge = ppx_ds_edge(n_tokens, min_tokens, share);
+    if (edge >= n_tokens) {   // one token: one range, on the card with the faster link
+        ds_r.push_back({ gpus.back().second, ggml_backend_get_device(gpus.back().second), 0, n_tokens });
+        return true;
+    }
     ds_r.push_back({ gpus.front().second, ggml_backend_get_device(gpus.front().second), 0, edge });
     ds_r.push_back({ gpus.back().second,  ggml_backend_get_device(gpus.back().second),  edge, n_tokens });
     static int logged = 0;

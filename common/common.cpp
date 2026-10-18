@@ -2481,6 +2481,9 @@ void common_fork_off_apply(common_params & params) {
         params.n_moe_cache_slots = 0;
         params.autotune          = false;
         params.auto_pin          = false;
+        params.prefetch_experts_slots = 0;   // no staging slots (the default -1 is "auto: 3")
+        params.n_moe_predict       = 0;     // no router prediction, no predictor training
+        params.n_moe_predict_train = 0;
     }
 }
 

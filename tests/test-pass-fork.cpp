@@ -96,6 +96,15 @@ static void test_hot_cache() {
     const poolx_pick p = poolx_pick_slot(h.ps, 4, [&](int32_t, int32_t b) { return h.busy[b] != 0; }, [&](int32_t, int32_t b) { return h.expert[b]; },
             [&](int32_t, int32_t e) { return e == 7 ? 9.0 : 1.0; }, best);
     report("lent, zone and busy blocks skipped: the only candidate is block 3", p.slot == 3 && p.owner == 1 && best == 9.0);
+    {   // regression: a free-list entry whose block was lent or taken by the zone since is never picked (the highest entry used to win without a look at the owner)
+        hot_state st; st.ps.owner = { -1, -3, -2, 0 }; st.ps.free = { 0, 1, 2 }; st.busy = { 0, 0, 0, 0 }; st.expert = { -1, -1, -1, 4 }; st.rank = { 0, 0, 0, 5 };
+        double b3 = 0;
+        const poolx_pick q = poolx_pick_slot(st.ps, 4, [&](int32_t, int32_t) { return false; }, [&](int32_t, int32_t b) { return st.expert[b]; }, [&](int32_t, int32_t) { return 5.0; }, b3);
+        report("stale free entries (blocks lent or under the zone) are skipped: the free block 0 is picked", q.slot == 0 && b3 == 0);
+        hot_state su; su.ps.owner = { -3, -2 }; su.ps.free = { 0, 1 }; su.busy = { 0, 0 }; su.expert = { -1, -1 }; su.rank = { 0, 0 };
+        const poolx_pick q2 = poolx_pick_slot(su.ps, 2, [&](int32_t, int32_t) { return false; }, [&](int32_t, int32_t b) { return su.expert[b]; }, [&](int32_t, int32_t) { return 5.0; }, b3);
+        report("only stale free entries: no pick", q2.slot < 0);
+    }
     report("no pick when every block is lent, zone or busy",
             [&]() { hot_state g; g.ps.owner = { -2, -3, 0 }; g.busy = { 0, 0, 1 }; g.expert = { 1, 1, 1 }; double b2 = 0;
                     return poolx_pick_slot(g.ps, 3, [&](int32_t, int32_t b) { return g.busy[b] != 0; }, [&](int32_t, int32_t) { return 1; }, [&](int32_t, int32_t) { return 1.0; }, b2).slot == -1; }());
@@ -163,6 +172,7 @@ static void test_dense_split() {
     }
     report("both ranges non-empty; each at least the minimum when the pass has room", bad == 0, first);
     report("a pass of exactly the minimum (512 tokens) still gives two ranges", ppx_ds_edge(512, 512, 0.55) >= 1 && ppx_ds_edge(512, 512, 0.55) <= 511);
+    report("one token is one range (edge = n), not an empty second range", ppx_ds_edge(1, 512, 0.55) == 1 && ppx_ds_edge(0, 512, 0.55) == 0);
     report("share 0.55 of 4000 tokens: first range 2200", ppx_ds_edge(4000, 512, 0.55) == 2200);
     report("share is monotone: more share, no smaller first range", [&]() { int64_t prev = 0; for (int i = 0; i <= 100; ++i) { const int64_t e = ppx_ds_edge(5000, 512, i / 100.0); if (e < prev) { return false; } prev = e; } return true; }());
 }

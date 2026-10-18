@@ -35,6 +35,17 @@ static void test_list() {
     report("none allows nothing past f16", kvx_allowed("none").empty());
     report("each alone: k8v8 -> 1, k4v4 -> 2, ram -> 3", eq(kvx_allowed("k8v8"), { 1 }) && eq(kvx_allowed("k4v4"), { 2 }) && eq(kvx_allowed("ram"), { 3 }));
     report("unknown words and an empty list allow nothing", kvx_allowed("q5_0,foo").empty() && kvx_allowed("").empty());
+    {   // a word that is no tier is reported, not silently read as "no fallback"; case and blanks do not matter
+        std::vector<std::string> u;
+        const auto a = kvx_allowed("RAM, k8v8,q8", &u);
+        report("unknown words are reported (q8), case and blanks ignored (RAM, k8v8 -> tiers 1 and 3)", eq(a, { 1, 3 }) && u.size() == 1 && u[0] == "q8");
+        std::vector<std::string> e;
+        kvx_allowed("", &e);
+        report("an empty list is reported", e.size() == 1);
+        std::vector<std::string> n;
+        kvx_allowed("none", &n);
+        report("none is a list, not an error", n.empty());
+    }
     report("the order of the list does not matter, a repeat counts once", eq(kvx_allowed("ram,k8v8,ram"), { 1, 3 }));
     report("a wrong word between right ones is skipped", eq(kvx_allowed("k8v8,xx,ram"), { 1, 3 }));
 }

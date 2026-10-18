@@ -417,6 +417,11 @@ static void test_threads() {
         for (int32_t b; (b = poolx_claim_free(ps, 5)) >= 0; ) { got.push_back(b); }
         report("claim skips free-list entries whose block is lent or under the zone", got.size() == 2 && ps.owner[1] == -3 && ps.owner[2] == -2);
     }
+    {   // the zone gives back only blocks that are under it: a lent or owned block is never put on the free list
+        tps ps; ps.owner = { -3, -2, 4, -3 };
+        const size_t n = poolx_zone_give(ps, { 0, 1, 2, 3 });
+        report("zone give frees only blocks under the zone (-3); lent and owned blocks stay", n == 2 && ps.owner[0] == -1 && ps.owner[1] == -2 && ps.owner[2] == 4 && ps.owner[3] == -1 && ps.free.size() == 2);
+    }
 }
 
 // ---- regression tests of fixed bugs ---------------------------------------------------------------------------------------------------------------

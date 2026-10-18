@@ -4,20 +4,26 @@
 //   --moe kv-fallback=k8v8,k4v4,ram  the tiers allowed after f16 (default all three; "none": f16 only)
 #pragma once
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
-// the tiers a kv-fallback list allows (after f16), ascending; unknown words are ignored
-static inline std::vector<int> kvx_allowed(const std::string & list) {
+// the tiers a kv-fallback list allows (after f16), ascending. Words are matched without case or blanks; a word that is none of them is left out of the tiers and, with `unknown`,
+// reported (a typo like "RAM" or "q8" otherwise reads as "no fallback" and the refusal later prints the list as typed, which looks consistent with it); an empty list too.
+static inline std::vector<int> kvx_allowed(const std::string & list, std::vector<std::string> * unknown = nullptr) {
     std::vector<int> allowed;
     if (list == "none") { return allowed; }
+    if (list.empty() && unknown) { unknown->push_back("(empty list)"); }
     size_t i = 0;
-    while (i <= list.size()) {
+    while (i <= list.size() && !list.empty()) {
         size_t j = list.find(',', i); if (j == std::string::npos) { j = list.size(); }
-        const std::string e = list.substr(i, j - i);
+        std::string e = list.substr(i, j - i);
+        e.erase(std::remove_if(e.begin(), e.end(), [](unsigned char c) { return c == ' ' || c == '\t'; }), e.end());
+        for (char & c : e) { c = (char) tolower((unsigned char) c); }
         if (e == "k8v8") { allowed.push_back(1); } else if (e == "k4v4") { allowed.push_back(2); } else if (e == "ram") { allowed.push_back(3); }
+        else if (unknown) { unknown->push_back(list.substr(i, j - i)); }
         i = j + 1;
     }
     std::sort(allowed.begin(), allowed.end());   // tried from the cheapest tier up whatever the order of the list

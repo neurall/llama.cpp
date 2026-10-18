@@ -27,6 +27,7 @@ static inline uint32_t ppx_equal_pass(uint32_t n, uint32_t ub_max, uint32_t mb) 
 // Dense split: the token where the first range (the card with the slower link) ends. share of the tokens, but each range keeps at least min_tokens (a range smaller than
 // that costs more in hand-offs than it saves). Both ranges are never empty: a pass of exactly min_tokens tokens gave the first range all of them and the second none.
 static inline int64_t ppx_ds_edge(int64_t n_tokens, int64_t min_tokens, double share) {
+    if (n_tokens < 2) { return n_tokens; }   // nothing to split: the caller treats edge >= n_tokens as one range
     const int64_t e = std::max<int64_t>(min_tokens, std::min<int64_t>(n_tokens - min_tokens, (int64_t) llround(share * (double) n_tokens)));
     return std::max<int64_t>(1, std::min<int64_t>(e, n_tokens - 1));
 }

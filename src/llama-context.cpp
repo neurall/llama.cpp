@@ -1331,7 +1331,14 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     if (!cp.valid) { return -2; }
     const char * lst = llama_moe_get_opt("kv-fallback");
     std::string list = lst ? lst : "k8v8,k4v4,ram";
-    const std::vector<int> allowed = kvx_allowed(list);   // tiers tried after f16, in place: q8_0, q4_0 in the pool, then whole layers' KV in host memory (llama-kvtier-fork.h)
+    std::vector<std::string> unknown;
+    const std::vector<int> allowed = kvx_allowed(list, &unknown);
+    static bool warned_list = false;
+    if (!unknown.empty() && !warned_list) {   // once: the words that are no tier (k8v8, k4v4, ram, or none) are left out
+        warned_list = true;
+        std::string w; for (auto & u : unknown) { w += (w.empty() ? "'" : ", '") + u + "'"; }
+        LLAMA_LOG_WARN("%s: --moe kv-fallback=%s: not a tier: %s (tiers are k8v8, k4v4, ram; none = f16 only)\n", __func__, list.c_str(), w.c_str());
+    }   // tiers tried after f16, in place: q8_0, q4_0 in the pool, then whole layers' KV in host memory (llama-kvtier-fork.h)
     const int tier = kvx_select(cp, allowed, kv_tier, min_tier, n_tokens);
     if (tier < 0) {
         say("kv-fit: %u tokens fit no enabled tier: f16 %zu, q8_0 %zu, q4_0 %zu, RAM %zu tokens (list %s; --moe kv-fallback=k8v8,k4v4,ram)", n_tokens, cp.f16, cp.k8v8, cp.k4v4, cp.ram, list.c_str());
@@ -2616,6 +2623,11 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         n_reused++;
         if (llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens)) { reuse = false; }   // fork: the KV zone moved behind this graph: build it again
+        if (const char * why = llama_moe_cache_alias_err_fork()) {   // fork: the graph and the KV do not fit the pool: this pass is refused (the request fails, the server lives)
+            LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
+            ret = GGML_STATUS_FAILED;
+            return nullptr;
+        }
     }
     if (!reuse) {
         gf_res_prev_active = nullptr;
@@ -2649,6 +2661,11 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 // fork: --moe alias=1 lends the pool blocks this graph's tensors reach to it; when the graph reached into the KV zone (kv-tail), the zone moved behind
                 // it and this graph's views of the KV point at the old place: it is built again (the next graph of this size gets its lend before it is built)
                 const bool moved = llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);
+                if (const char * why = llama_moe_cache_alias_err_fork()) {   // the graph and the KV do not fit the pool: refuse this pass instead of aborting
+                    LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
+                    ret = GGML_STATUS_FAILED;
+                    return nullptr;
+                }
                 if (dbg_rb) {
                     int n_use = 0, n_buf = 0;   // graph nodes reading a tensor named out_ids, and how many of those have a buffer
                     for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
@@ -3250,7 +3267,9 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                     if (cparams.moe_cache && !did_retier) {   // qkv-ram-fallback in place: the KV of this tier is full: the next tier, same batch again
                         did_retier = true;
                         char note[512] = { 0 };
-                        const uint32_t need = (uint32_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
+                        llama_pos hist = -1;   // the longest history of any sequence (-np > 1: the batch may belong to another one than sequence 0)
+                        for (uint32_t sq = 0; sq < cparams.n_seq_max; ++sq) { hist = std::max(hist, memory->seq_pos_max((llama_seq_id) sq)); }
+                        const uint32_t need = (uint32_t) (std::max<llama_pos>(hist, -1) + 1) + n_tokens_all;
                         const int32_t r = kv_fit_select(need, -1, note, sizeof(note));
                         if (note[0]) { LLAMA_LOG_WARN("%s: %s\n", __func__, note); }
                         if (r >= 0 && (r & 256)) { continue; }

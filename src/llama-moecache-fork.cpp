@@ -1436,7 +1436,9 @@ static bool pool_try_enter(const moe_cache::alias_pool & ap, size_t lo, size_t h
 static void pool_leave(const moe_cache::alias_pool & ap, size_t lo, size_t hi, bool w) { g_ranges.leave(&ap, lo, hi, w); }
 static void pool_move_begin(const moe_cache::alias_pool & ap, size_t lo, size_t hi) {
     if (!g_ranges.move_begin(&ap, lo, hi, 10)) {
-        LLAMA_LOG_WARN("pool-map: a move of [%.1f, %.1f) MiB on %s waited 10 s for users of the range\n", lo / 1048576.0, hi / 1048576.0, ggml_backend_dev_name(ap.dev));
+        // going on would copy under a DMA or a graph still reading the range: corrupt rows or a corrupt expert block, found many tokens later. Stop here with the numbers.
+        GGML_ABORT("pool-map: a move of [%.1f, %.1f) MiB on %s waited 10 s for users of the range (a stuck upload or graph): not moving under them",
+                   lo / 1048576.0, hi / 1048576.0, ggml_backend_dev_name(ap.dev));
     }
 }
 static void pool_move_end(const moe_cache::alias_pool & ap) {
@@ -3982,6 +3984,10 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
         bool same = le && ge;
         for (size_t i = 0; i < ap.kvt.size() && same; ++i) { same = cp.nk[i].tk == ap.kvt[i].tk && cp.nk[i].tv == ap.kvt[i].tv && cp.nk[i].out_next == ap.kvt[i].out; }
         if (same) { continue; }
+        for (size_t i = 0; i < ap.kvt.size(); ++i) {   // a record that cannot be retyped keeps its views: the metadata must not say otherwise
+            const auto & r = ap.kvt[i];
+            if (!r.retype && (cp.nk[i].tk != r.tk || cp.nk[i].tv != r.tv || cp.nk[i].out_next != r.out)) { say("kv-fit: %s: a record cannot change its types to tier %d's", dn, tier); return false; }
+        }
         if (!le && !ge) { say("kv-fit: %s: tier %d's layout is neither smaller nor larger everywhere (records keep their order)", dn, tier); return false; }
         cp.up = !le;
         for (auto & r : ap.kvt) { if (!r.fixed) { cp.cells = std::max(cp.cells, r.rows ? r.rows() : 0); } }
@@ -3989,6 +3995,14 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
         const size_t room = ap.tail_end > ap.kv_start + cp.F + 2 * bmax ? (ap.tail_end - ap.kv_start - cp.F - 2 * bmax) / std::max<size_t>(1, cp.R) : 0;
         if (cp.cells > room) { say("kv-fit: %s: %zu cells do not fit the zone as tier %d (room for %zu)", dn, cp.cells, tier, room); return false; }
         cp.h = std::min(std::max(ap.kv_h, cp.cells), std::max(room, cp.cells));
+        {   // the new extent must stay inside the one gap between class zero blocks that holds the zone (kvz_bad): bigger rows (converting up) reach past it, over a zero block, where
+            // uncached experts read zero rows and a zero restore would wipe KV. Refused here, before anything changes.
+            size_t gap_end = 0;
+            for (const auto & g : kvz_gaps(ap, 0, 1)) { if (ap.kv_start >= g.first && ap.kv_start < g.second) { gap_end = g.second; } }
+            const size_t gap_h = gap_end > ap.kv_start + cp.F && cp.R > 0 ? (gap_end - ap.kv_start - cp.F) / cp.R : 0;
+            if (cp.cells > gap_h) { say("kv-fit: %s: %zu cells do not fit the gap of the zone as tier %d (room for %zu)", dn, cp.cells, tier, gap_h); return false; }
+            cp.h = std::min(cp.h, std::max(gap_h, cp.cells));
+        }
         if (!kv_stage_range(ap, cp.s_lo, cp.s_hi)) { say("kv-fit: %s: no lend in front of the KV to stage the conversion", dn); return false; }
         cp.be = kv_conv_backend(ap.dev);
         if (!cp.be) { say("kv-fit: %s: no backend for the conversion", dn); return false; }
@@ -4148,11 +4162,13 @@ bool llama_moe_cache_kv_ram_fork(ggml_backend_sched_t sched, size_t n_cells, cha
     size_t avail = kv_mem_available();
     std::vector<std::pair<moe_cache::alias_pool *, size_t>> undo;
     std::string what;
+    // a failure on a later card leaves the earlier ones as they were: their host places are given back and their layers stay in the pool
+    auto rollback = [&]() { for (auto & [ap, hu] : undo) { ap->hused = hu; for (auto & r : ap->kvt) { r.out_next = r.out; } } };
     for (auto & ap : mc->alias) {
         if (ap.kvt.empty() || ap.kv_row == 0 || kv_prompt_room(ap) >= n_cells) { continue; }
         const char * dn = ggml_backend_dev_name(ap.dev);
         const size_t r_all = kv_row_all(ap);
-        if (r_all == 0) { say("kv-ram: %s: no layer can move", dn); return false; }
+        if (r_all == 0) { say("kv-ram: %s: no layer can move", dn); rollback(); return false; }
         if (!ap.hbuf) {   // once: the host buffer, a share of the free RAM
             size_t cmax = 0;
             for (auto & r : ap.kvt) { if (!r.fixed) { cmax = std::max(cmax, r.cells_max); } }
@@ -4160,17 +4176,17 @@ bool llama_moe_cache_kv_ram_fork(ggml_backend_sched_t sched, size_t n_cells, cha
             size_t n_seg = 0;
             for (auto & r : ap.kvt) { if (!r.fixed && r.convertible) { std::vector<llama_kv_tail_fork::seg> sg; r.layout(r.tk, r.tv, nullptr, &sg); n_seg += sg.size(); } }
             const size_t hc = kvx_host_cells(budget, n_seg, r_all, cmax);
-            if (hc < n_cells) { say("kv-ram: %s: free RAM holds %zu cells of all layers' KV, %zu needed", dn, hc, n_cells); return false; }
+            if (hc < n_cells) { say("kv-ram: %s: free RAM holds %zu cells of all layers' KV, %zu needed", dn, hc, n_cells); rollback(); return false; }
             const size_t sz = kvx_host_size(hc, r_all, n_seg);
             const int64_t ta = ggml_time_us();
             ap.hbuf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_host_buffer_type(ap.dev), sz);
-            if (!ap.hbuf) { say("kv-ram: %s: could not allocate %.1f MiB of host memory", dn, sz / 1048576.0); return false; }
+            if (!ap.hbuf) { say("kv-ram: %s: could not allocate %.1f MiB of host memory", dn, sz / 1048576.0); rollback(); return false; }
             ggml_backend_buffer_clear(ap.hbuf, 0);   // rows past the cells in use are read (masked) by the attention: finite
             ap.hsize = sz; ap.hused = 0; ap.host_cells = hc;
             avail = avail > sz ? avail - sz : 0;
             LLAMA_LOG_WARN("kv-ram: %s: host buffer %.1f MiB for %zu cells (allocated once, %.0f ms)\n", dn, sz / 1048576.0, hc, (ggml_time_us() - ta) / 1000.0);
         }
-        if (n_cells > ap.host_cells) { say("kv-ram: %s: the host buffer holds %zu cells, %zu needed", dn, ap.host_cells, n_cells); return false; }
+        if (n_cells > ap.host_cells) { say("kv-ram: %s: the host buffer holds %zu cells, %zu needed", dn, ap.host_cells, n_cells); rollback(); return false; }
         undo.push_back({ &ap, ap.hused });
         struct cand { size_t rec; int32_t lay; size_t bytes; };
         std::vector<cand> c;
@@ -4186,6 +4202,7 @@ bool llama_moe_cache_kv_ram_fork(ggml_backend_sched_t sched, size_t n_cells, cha
         std::sort(c.begin(), c.end(), [](const cand & a, const cand & b) { return a.bytes > b.bytes; });
         uint8_t * hb = (uint8_t *) ggml_backend_buffer_get_base(ap.hbuf);
         size_t n_mv = 0, b_mv = 0;
+        bool met = false;   // the layers chosen hold the request: without this the loop could move every layer and still return success
         for (auto & k : c) {
             auto & r = ap.kvt[k.rec];
             std::vector<llama_kv_tail_fork::seg> all;
@@ -4204,14 +4221,15 @@ bool llama_moe_cache_kv_ram_fork(ggml_backend_sched_t sched, size_t n_cells, cha
             GGML_ASSERT(ap.hused <= ap.hsize);
             n_mv++; b_mv += k.bytes;
             kvt_runs v; size_t F = 0, R = 0, pc = 0, pcd = 0;
-            if (kv_records_as(ap.kvt, 3, v, F, R)) { kv_lend_pc_of(v, pc, pcd); if (kv_prompt_cells(ap, F, R, pc) >= n_cells) { break; } }
+            if (kv_records_as(ap.kvt, 3, v, F, R)) { kv_lend_pc_of(v, pc, pcd); if (kv_prompt_cells(ap, F, R, pc) >= n_cells) { met = true; break; } }
         }
+        if (!met) { say("kv-ram: %s: with every layer's KV in host memory %zu cells still do not fit", dn, n_cells); rollback(); return false; }
         what += tr_fmt("%s%s: %zu layer(s), %zu B per cell", what.empty() ? "" : "; ", dn, n_mv, b_mv);
     }
     if (undo.empty()) { return true; }
     char why[384] = { 0 };
     if (!llama_moe_cache_kv_retype_fork(sched, 3, why, sizeof(why))) {
-        for (auto & [ap, hu] : undo) { ap->hused = hu; for (auto & r : ap->kvt) { r.out_next = r.out; } }
+        rollback();
         say("kv-ram: %s", why);
         return false;
     }
@@ -4454,7 +4472,12 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
     return out;
 }
 
+static std::string g_alias_err;   // why the last llama_moe_cache_alias_fork refused its graph (empty: it did not)
+
+const char * llama_moe_cache_alias_err_fork() { return g_alias_err.empty() ? nullptr : g_alias_err.c_str(); }
+
 bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
+    g_alias_err.clear();
     moe_cache * mc = g_cache;
     if (mc && !mc->alias.empty() && !alias_on()) {
         // the pool could not lend the graph (separate compute buffers) but the KV zones still live in it: the pad rows the attention reads past the cells in use must be
@@ -4563,7 +4586,10 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             if (lr + ap.kv_fixed + std::max(cells, (size_t) 1) * ap.kv_row + 2 * bmax > ap.tail_end) {
                 LLAMA_LOG_ERROR("moe-cache: kv-tail %s: a %d-token graph needs %.1f MiB lent from the start of the pool, and %zu cells of KV (%.1f MiB) do not fit behind it in the pool of %.1f MiB\n",
                         ggml_backend_dev_name(ap.dev), n_tokens, need_b / 1048576.0, cells, cells * ap.kv_row / 1048576.0, ap.tail_end / 1048576.0);
-                GGML_ABORT("kv-tail: the compute graph and the KV do not fit in the pool");
+                // a clean refusal of this pass (the caller fails the decode, the server answers the request with an error) instead of killing the process
+                g_alias_err = "kv-tail: the compute graph and the KV do not fit in the pool: a " + std::to_string(n_tokens) + "-token pass needs " + std::to_string((size_t) (need_b / 1048576)) +
+                              " MiB lent from the start of the pool and " + std::to_string(cells) + " cells of KV do not fit behind it";
+                return false;
             }
             ggml_backend_sched_synchronize(sched);   // the previous graph may still read the rows
             size_t h = ap.kv_h;
@@ -4665,6 +4691,8 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                     g_ac.evict_n++;
                 }) > 0) {
                 LLAMA_LOG_WARN("pool-gate: a lend of blocks %d-%d of class %d reached blocks under the KV zone on %s (not taken)\n", (int) blocked, (int) need, (int) sg.pcls, ggml_backend_dev_name(ap.dev));
+                // the graph is placed over those blocks all the same: it would overwrite live KV rows ('!!!!' / NaN many tokens later). Refuse this pass (the caller fails the decode).
+                if (g_alias_err.empty()) { g_alias_err = std::string("kv-tail: a lend of blocks ") + std::to_string(blocked) + "-" + std::to_string(need) + " of class " + std::to_string(sg.pcls) + " reaches blocks under the KV zone on " + ggml_backend_dev_name(ap.dev); }
             }
             sg.blocked = need;
             sg.hwm = std::max(sg.hwm, need);
@@ -4680,6 +4708,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         if (poison_on()) { pfills.push_back({ &ap, ap.base_off, peak_al, 1 }); pfills.push_back({ &ap, peak_al, stage_off, 2 }); pfills.push_back({ &ap, stage_off, need_b, 3 }); }
         if (ap.kv_h > 0 && kv_lend_round(ap, need_b) > ap.kv_start) {
             LLAMA_LOG_WARN("pool-gate: lend of %.1f MiB on %s reaches the KV zone at %.1f MiB\n", kv_lend_round(ap, need_b) / 1048576.0, ggml_backend_dev_name(ap.dev), ap.kv_start / 1048576.0);
+            if (g_alias_err.empty()) { g_alias_err = std::string("kv-tail: a lend of ") + std::to_string(kv_lend_round(ap, need_b) / 1048576) + " MiB on " + ggml_backend_dev_name(ap.dev) + " reaches the KV zone at " + std::to_string(ap.kv_start / 1048576) + " MiB"; }
         }
     }
     if (changed) {
@@ -5478,6 +5507,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
                 int64_t t_read = 0;
                 bool nosync_used = false;   // some tensor of this job was queued without a sync: wait for all of them once, after the loop
+                bool up_failed   = false;   // a tensor of this job could not be uploaded: the job is dropped (skipped), the slot must not be published as holding the expert
                 for (int k = 0; k < 3; ++k) {
                     const size_t sz = srcs[k]->nb[2];
                     const int64_t link_mbs = (int64_t) ((mc->gbs_link[ls.link] > 0 ? mc->gbs_link[ls.link] : 10.0) * 1e3);
@@ -5558,6 +5588,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         }
                     } else {
                         LLAMA_LOG_ERROR("moe-cache: can't upload repacked '%s' without its file location\n", srcs[k]->name);
+                        up_failed = true;
                     }
                     // what a matmul reads past this slice's last row (rows not a multiple of 512 values, see pool_layout): the block reserves it, and it gets
                     // the bytes that follow the slice in the model's tensor (the next expert), as the tensor itself would give; behind the last expert the
@@ -5574,6 +5605,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                 }
                 if (nosync_used) { cuda_thread_sync(); }
+                if (up_failed) { j.skipped = true; }
                 if (uap) { pool_leave(*uap, ulo, uhi, true); }
                 led_upload(mc, "up-done", j.layer_idx, j.expert, j.slot, j.bg);
                 j.t_done  = ggml_time_us();

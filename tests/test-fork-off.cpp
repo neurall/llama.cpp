@@ -39,8 +39,8 @@ int main() {
         { "--fork", "off", "--moe-expert-cache", "64", "-at", "on" },
         { "--moe-expert-cache", "64", "-at", "on", "--fork", "off" },
         { "-at", "on", "--fork", "off", "--moe-expert-cache", "-1" },
-        { "--moe", "slots=128", "--fork", "off" },
-        { "--fork", "off", "--moe", "slots=128" },
+        { "--moe", "slots=128,pf-slots=8,pred-top=8", "--fork", "off" },
+        { "--fork", "off", "--moe", "slots=128,pf-slots=8,pred-top=8" },
         { "--fork", "0", "--moe-expert-cache", "32" },
     };
     int i = 0;
@@ -49,7 +49,7 @@ int main() {
         const bool ok = parse(o, p);
         common_fork_off_apply(p);
         std::string name = "order " + std::to_string(i++) + ": cache slots 0, autotune off, auto-pin off";
-        report(name.c_str(), ok && p.fork_off && p.n_moe_cache_slots == 0 && !p.autotune && !p.auto_pin);
+        report(name.c_str(), ok && p.fork_off && p.n_moe_cache_slots == 0 && !p.autotune && !p.auto_pin && p.prefetch_experts_slots == 0 && p.n_moe_predict == 0 && p.n_moe_predict_train == 0);
     }
     {   // the engine-side switches the option sets at parse time
         report("--fork off sets the engine's fork-off and thread-tune options", llama_moe_get_opt("fork-off") && strcmp(llama_moe_get_opt("fork-off"), "1") == 0 &&

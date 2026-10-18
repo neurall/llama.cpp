@@ -131,6 +131,8 @@ void llama_moe_cache_alias_offset_fork(ggml_backend_dev_t dev, size_t off);
 // after a graph is allocated, before its inputs are set: lend the blocks it reaches to it (evict their experts). Returns true when the graph needed more than the
 // space in front of the KV records (kv-tail): the records were moved forward to make room, so the graph (its views of the KV) must be built again.
 bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens);
+// the reason the last call refused its graph (the compute graph and the KV do not fit the pool: the caller fails the decode), nullptr when it did not
+const char * llama_moe_cache_alias_err_fork();
 // kv-tail, before a graph is built (process_ubatch): grow the records' space when the cells in use pass half of it, and make room in front of them for the lend
 // a graph of this size needed before. Returns true when the records moved (the previous graph's views are stale: no reuse).
 bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_tokens);

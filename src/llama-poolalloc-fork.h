@@ -109,8 +109,9 @@ template <class PS, class F> static void poolx_zone_take(PS & ps, const std::vec
 }
 // Blocks the zone left go back to the free list.
 template <class PS> static size_t poolx_zone_give(PS & ps, const std::vector<int32_t> & give) {
-    for (int32_t b : give) { ps.owner[b] = -1; ps.free.push_back(b); }
-    return give.size();
+    size_t n = 0;
+    for (int32_t b : give) { if (ps.owner[b] != -3) { continue; } ps.owner[b] = -1; ps.free.push_back(b); n++; }   // only a block under the zone goes back: a lent or owned one is not free
+    return n;
 }
 // An expert takes a free block for layer li: the block popped off the free stack, or -1. A block that is not free (stale entry) is dropped, never handed out.
 template <class PS> static int32_t poolx_claim_free(PS & ps, int32_t li) {
@@ -222,7 +223,9 @@ template <class PS, class Busy, class Expert, class Rank>
 static poolx_pick poolx_pick_slot(const PS & ps, int32_t n_active, Busy busy, Expert expert, Rank rank, double & best) {
     best = 1e300;
     poolx_pick p;
-    if (!ps.free.empty()) { p.slot = *std::max_element(ps.free.begin(), ps.free.end()); best = 0; return p; }
+    int32_t top = -1;   // the highest block that is really free: an entry of the free stack can be stale (the block was lent or went under the zone since), never picked
+    for (int32_t b : ps.free) { if (b > top && b < (int32_t) ps.owner.size() && ps.owner[b] == -1) { top = b; } }
+    if (top >= 0) { p.slot = top; best = 0; return p; }
     for (int32_t b = 0; b < n_active; ++b) {
         const int32_t o = ps.owner[b];
         if (o == -2 || o == -3) { continue; }
