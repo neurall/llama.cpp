@@ -102,6 +102,17 @@ All times are 2026-10-18, PC1 (RTX 3090 x16 + x4), local time.
 | solved | the potential walks the same gaps as the placement (starts rounded up to `bmax`) |
 | verified | 4 seeds x 1,000,000 random pools, 0 failures; model cells pending (kvg77) |
 
+## 9. OLMoE long prompt: admission advertised room the pool's gaps could not hold , FIXED
+
+| | |
+|---|---|
+| found | 17:20, answer-equality cells at 3500-token prompt, squeezed 0.8/1.6 |
+| repro (CLI) | `eq.sh` cell c: OLMoE, `--clamp 3500 --tokens 40`, `sim-vram=819,sim-ram=1638`, poison=4: `set_input_k_idxs` assert |
+| where | `llama_moe_cache_kv_tail_cap_fork`, `pp_cap_to_pool`, `find_slot` |
+| cause | (a) capacity was pool bytes / row size, ignoring that zero blocks cut the pool into gaps, the zone must lie in one gap; (b) the pass cap ignored the padded read (rows rounded up to the pad); (c) `find_slot` placed cells outside the zone with no check |
+| solved | capacity = largest gap behind the least lend, whole pads; `kvz_pass_cap` counts padded rows (shared template, fuzzed); `find_slot` refuses when a cell is not covered |
+| verified | kvg80, cells 1.0/2.5, 0.9/2.0, 0.8/1.6: clean "request needs 3440 tokens ... can hold 2816 / 3072 / 2048", no assert; fuzz 3 seeds x 500k clean |
+
 ---
 
 ## Tooling bugs (they cost time, fixed)
