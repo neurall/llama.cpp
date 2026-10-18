@@ -2476,6 +2476,14 @@ static void common_batch_set_zero_state(common_batch & batch, const llama_model 
     }
 }
 
+void common_fork_off_apply(common_params & params) {
+    if (params.fork_off) { // --fork off wins over every other fork setting, whatever the order of the options
+        params.n_moe_cache_slots = 0;
+        params.autotune          = false;
+        params.auto_pin          = false;
+    }
+}
+
 common_init_result_ptr common_init_from_params(common_params & params, bool model_only) {
 #if defined(__linux__)
     // a user CPU mask (-C / -Cb): helper threads (loader, populate, probe, uploads) stay on those cores and their SMT siblings instead of the whole machine
@@ -2507,11 +2515,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
     if (params.fork_off || !params.autotune) { // nothing is counted or saved
         llama_moe_set_opt("observe", "0");
     }
-    if (params.fork_off) { // --fork off wins over every other fork setting, whatever the order of the options
-        params.n_moe_cache_slots = 0;
-        params.autotune          = false;
-        params.auto_pin          = false;
-    }
+    common_fork_off_apply(params);
     const common_params orig = params; // before the placement and tuning below change it
     common_init_result_ptr res(new common_init_result(params, model_only));
 

@@ -1025,6 +1025,9 @@ private:
 
 using common_init_result_ptr = std::unique_ptr<common_init_result>;
 
+// --fork off wins over every other fork setting (expert cache slots, autotune, auto-pin), whatever the order of the options on the command line
+void common_fork_off_apply(common_params & params);
+
 common_init_result_ptr common_init_from_params(common_params & params, bool model_only = false);
 
 struct llama_model_params   common_model_params_to_llama  (      common_params & params);
