@@ -3329,6 +3329,8 @@ def cmd_build(a):
     if tmp:
         _git(a.repo, "worktree", "remove", "--force", tmp, check=False)
     print(f"build {name}: OK in {time.time() - t0:.0f} s -> {dst} ({open(os.path.join(dst, 'BUILD_INFO')).read().split()[0]})", flush=True)
+    if os.path.dirname(os.path.abspath(dst)) == os.path.abspath(DEVBUILDS):   # devbuilds/latest -> this build (atomic): queued cells that name "latest" pick it up without a reschedule
+        lnk = os.path.join(DEVBUILDS, ".latest.tmp"); os.path.lexists(lnk) and os.remove(lnk); os.symlink(name, lnk); os.replace(lnk, os.path.join(DEVBUILDS, "latest"))
     if not a.no_regress:
         r = subprocess.run([sys.executable, os.path.abspath(__file__), "regress", dst, "--wait"])
         sys.exit(r.returncode)
@@ -3542,6 +3544,10 @@ def cmd_cell(a):
         r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True)
         if r.stdout.split() and max(int(x) for x in r.stdout.split()) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
         time.sleep(5)
+    # the build name "latest" is the symlink the newest dev build moves (cmd_build): resolved HERE, after the wait, so a queued cell runs the newest binary of the moment, and
+    # every row, log and tag carries the real build name
+    a.builds = ",".join(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, "latest"))) if b == "latest" else b for b in a.builds.split(","))
+    open(os.path.join(Q5, a.tag + ".build"), "w").write(a.builds + "\n")   # which build(s) this cell really ran ("latest" resolved)
     args = "-np 1 " + (a.args or "")
     hog = ",".join(k + "=" + str(int(float(v) * 1024)) for k, v in (("sim-vram", a.hog_gpu), ("sim-ram", a.hog_ram)) if v is not None)
     if hog:   # --moe sim-vram / sim-ram: the server takes the memory itself (common_hog), freed by the OS with the process, no helper process to leave behind
