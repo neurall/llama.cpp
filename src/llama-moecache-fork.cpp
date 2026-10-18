@@ -7449,6 +7449,16 @@ void llama_moe_cache_free_fork() {
     if (!mc) {
         return;
     }
+    for (const auto & ap : mc->alias) {   // end of run: the whole pool map of every card (what each byte range of the pool holds when the run ends), always logged, once
+        size_t total = 0;
+        for (const auto & r : pool_map(ap)) { total = std::max(total, r.hi); }
+        std::string line = tr_fmt("pool-map end %s: pool %.1f MiB:", led_card(ap), total / 1048576.0);
+        for (const auto & r : pool_map(ap)) {
+            line += tr_fmt(" [%s%s %.1f-%.1f MiB]", r.kind, r.pcls >= 0 ? tr_fmt(" c%d", (int) r.pcls).c_str() : "", r.lo / 1048576.0, r.hi / 1048576.0);
+        }
+        if (ap.kv_h > 0) { line += tr_fmt(" | KV zone %zu cells x %zu B per cell", (size_t) ap.kv_h, (size_t) ap.kv_row); }
+        LLAMA_LOG_WARN("%s\n", line.c_str());
+    }
     ggml_set_moe_obs_callback(nullptr, nullptr);
     ggml_set_moe_phase_callback(nullptr, nullptr);
     ggml_backend_set_moe_src_callback(nullptr, nullptr);

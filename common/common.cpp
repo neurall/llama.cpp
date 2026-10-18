@@ -1841,7 +1841,7 @@ static void common_hog(void) {
         MEMORYSTATUSEX ms; ms.dwLength = sizeof ms;
         if (GlobalMemoryStatusEx(&ms) && ms.ullAvailPhys > keep) {
             const size_t n = (size_t) ms.ullAvailPhys - keep;
-            SetProcessWorkingSetSize(GetCurrentProcess(), n + ((size_t) 256 << 20), n + ((size_t) 512 << 20));   // VirtualLock needs the room in the working set
+            SetProcessWorkingSetSize(GetCurrentProcess(), n + ((size_t) 256 << 20), (size_t) ms.ullTotalPhys);   // VirtualLock needs the room in the working set; the maximum must stay far above the hog (later pinned host buffers lock pages too)
             void * p = VirtualAlloc(nullptr, n, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
             if (p) {
                 for (size_t o = 0; o < n; o += 4096) { ((volatile char *) p)[o] = 1; }
