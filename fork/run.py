@@ -3451,7 +3451,7 @@ def cmd_cell(a):
         args += " --moe " + hog
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
-           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else [])
+           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, GGML_CUDA_HUGEFS="/mnt/huge1g", PERF_LOG="r")
     env.setdefault("PERF_LEDGER", "1")   # every cell records the pool write ledger (PERF_LEDGER=0: off); kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
     for kv in (a.env or []):
@@ -5117,6 +5117,7 @@ if __name__ == "__main__":
     ce.add_argument("tag"); ce.add_argument("model"); ce.add_argument("builds"); ce.add_argument("n", type=int); ce.add_argument("test")
     ce.add_argument("args", nargs="?", default="", help="server args after -np 1")
     ce.add_argument("--wrap", help="command prefix for the server (nsys / ncu)")
+    ce.add_argument("--keep-loops", action="store_true", help="do not discard and repeat a looping or garbled answer (bench --keep-loops): one server run per cell")
     ce.add_argument("--hog-gpu", help="GiB left free on every GPU (the server takes the rest at start: --moe sim-vram=MiB), simulates a smaller card")
     ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe sim-ram=MiB)")
     ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
