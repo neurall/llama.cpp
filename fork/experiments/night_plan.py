@@ -16,14 +16,14 @@ for n, m in models:
     for test, tok in (("edit4c", 300), ("tetrisc", 300), ("pf12k", 64)):
         add(f"night-{n}-{test}", f"{R} night-{n}-{test} {m} {cand},{rel} 2 {test} '' --tokens {tok}", f"{n} {test}: candidate vs last release")
 M = dict(models)["mimo"]
-for card, hold in (("24", ""), ("16", "0:8 1:8"), ("8", "0:16 1:16")):   # 4 GB cards cannot hold MiMo at all (7.4 GiB of non-expert weights): the 4 GB rows use Qwen3.6-35B below
+for card, hold in (("24", ""), ("16", "16"), ("8", "8")):   # 4 GB cards cannot hold MiMo at all (7.4 GiB of non-expert weights): the 4 GB rows use Qwen3.6-35B below
     for arm, args, ctx in (("tail", "--moe kv-token-major=2,kv-tail=1,log=wk", -1), ("c32k", "", 32768)):
-        h = f" --hold '{hold}'" if hold else ""
+        h = f" --hog-gpu {hold}" if hold else ""
         add(f"night-kv-mimo-{card}g-{arm}", f"{R} night-kv-mimo-{card}g-{arm} {M} {cand} 2 edit4c '-lv 3 {args}' --tokens 300 --ctx {ctx}{h}", f"MiMo on {card} GB cards: kv-tail vs a static 32k context")
 for arm, args, ctx in (("tail", "--moe kv-token-major=2,kv-tail=1,log=wk", -1), ("static", "", 32768)):
     add(f"night-kv-mimo-lead-{arm}", f"{R} night-kv-mimo-lead-{arm} {M} {cand} 1 edit4c '-lv 3 {args}' --tokens 300 --ctx {ctx} --lead 12000", "a 12k request, then the measured 1k one on the same server")
 Q36 = "/m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf"
-for card, hold in (("8", "0:16 1:16"), ("4", "0:20 1:20")):
+for card, hold in (("8", "8"), ("4", "4")):
     for arm, args, ctx in (("tail", "--moe kv-token-major=2,kv-tail=1,log=wk", -1), ("c32k", "", 32768)):
         add(f"night-kv-q36-{card}g-{arm}", f"{R} night-kv-q36-{card}g-{arm} {Q36} {cand} 2 edit4c '-lv 3 --load-mode mmap {args}' --tokens 300 --ctx {ctx} --hold '{hold}'", f"Qwen3.6-35B on {card} GB cards: kv-tail vs a static 32k context")
 print(json.dumps(t))

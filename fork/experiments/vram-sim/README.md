@@ -1,6 +1,6 @@
 # Simulated smaller cards (2026-10-02, PC1: 2 x RTX 3090)
 
-`vramhold.py GPU:GB ...` holds VRAM so fork and stock both see a smaller card; `run.sh NAME DEVS "HOLD" MODEL` runs fork (with `--moe statslog=32`) and stock twice each (llama-cli, temp 0).
+(2026-10-18) The external `vramhold.py` is gone: our server takes the memory itself, `--moe hog-gpu=N` / `hog-ram=N` leave N GiB free (`run.py cell --hog-gpu N --hog-ram N`); it is freed by the OS with the process, so a killed run cannot leave a holder behind. Stock builds have no such switch. Old text: `vramhold.py GPU:GB ...` held VRAM so fork and stock both saw a smaller card; `run.sh NAME DEVS "HOLD" MODEL` runs fork (with `--moe statslog=32`) and stock twice each (llama-cli, temp 0).
 Clocks (needs root, undo with `-rgc` / `-rmc`): `nvidia-smi -i 0,1 -lgc 900,900` and `-lmc 4700,4700` (about 0.6x compute, about half the memory bandwidth). GPU 0 is on a x4 chipset link (about 5 GB/s), GPU 1 on x16.
 `logs/`: stats files (`moe-stats` columns in the header), generation lines trimmed from the run logs, `summary.txt`.
 

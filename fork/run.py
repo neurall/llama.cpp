@@ -303,7 +303,6 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
     EXP_COLS = ["exp", "arm", "ready_s", "wall_s", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3", "miss_per_layer", "ddr_gbs", "pcie_gbs", "ddr_util", "pcie_util",
                 "cpu_util", "gpu_util", "placement", "decisions", "rungs", "held_gib", "mem_limit", "cache_state", "temp", "state", "sys"]
     TOOLS = {"cli": "llama-cli", "perplexity": "llama-perplexity", "completion": "llama-completion"}
-    HOLD = os.path.join(os.path.dirname(os.path.realpath(__file__)), "experiments", "vram-sim", "vramhold.py")
 
 
     def _read(path, default=""):
@@ -567,20 +566,8 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
         for a in arms:
             if a.get("state") and os.path.exists(a["state"]) and not dry and a.get("keep_state") != "1":   # keep_state = 1: a second phase continues the arm's learned state
                 os.remove(a["state"])
-        holder = None
-        if setup.get("hold_vram") and not dry:
-            holder = subprocess.Popen([sys.executable, HOLD] + [f"{g}:{gib}" for g, gib in setup["hold_vram"].items()], env=base_env,
-                                      stdout=subprocess.PIPE, text=True, start_new_session=True)
-            held_ok = False
-            for _ in range(120):
-                if "holding" in (holder.stdout.readline() or ""):
-                    held_ok = True
-                    break
-                if holder.poll() is not None:
-                    break
-            if not held_ok or holder.poll() is not None:
-                sys.exit(f"hold_vram failed: {HOLD} did not start holding (missing or crashed); rows would claim a constraint that never existed")
-            print(f"holding VRAM {setup['hold_vram']}", flush=True)
+        if setup.get("hold_vram"):
+            sys.exit("hold_vram is gone: the server holds memory itself; put --moe hog-gpu=N (GiB left free) in the arm args")
         n_run = 0
         try:
             for mname, mpath in models.items():
@@ -603,11 +590,7 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
                             if not dry:
                                 store_row(rs, spec, name, spec_sha, arm, mname, mpath, rnd, row, hw, setup, guard_lim)
         finally:
-            if holder:
-                try:
-                    os.killpg(os.getpgid(holder.pid), signal.SIGKILL)
-                except Exception:
-                    pass
+            pass
         print(f"{name}: {n_run} runs", flush=True)
 
 
@@ -1183,7 +1166,7 @@ def wait_vram_free():
         out = subprocess.run([NVSMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True).stdout.split()
         out = [x for x in out if x.isdigit()]   # no GPU, or an nvidia-smi that fails: nothing to wait for
-        if not out or max(int(x) for x in out) < 500 + int(os.environ.get("PERF_HOLD_MB", 0)):  # PERF_HOLD_MB: VRAM a holder process keeps on purpose (simulated smaller card)
+        if not out or max(int(x) for x in out) < 500:
             wait_host_free()
             return
         time.sleep(1)
@@ -3460,9 +3443,12 @@ def cmd_cell(a):
     Q5 = "/p/bw/data/q5h"; U = "/p/bw/p2p/userspace-595/usr/lib/x86_64-linux-gnu"; SMI = "/p/bw/p2p/bin595/nvidia-smi"
     while True:   # nothing may still hold GPU memory (a killed script leaves its children running)
         r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True)
-        if r.stdout.split() and max(int(x) for x in r.stdout.split()) < 600 + int(os.environ.get("PERF_HOLD_MB", "0")): break
+        if r.stdout.split() and max(int(x) for x in r.stdout.split()) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
         time.sleep(5)
     args = "-np 1 " + (a.args or "")
+    hog = ",".join(k + "=" + v for k, v in (("hog-gpu", a.hog_gpu), ("hog-ram", a.hog_ram)) if v)
+    if hog:   # the server takes the memory itself (llama.cpp common_hog): freed by the OS with the process, no helper process to leave behind
+        args += " --moe " + hog
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
            "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else [])
@@ -3471,25 +3457,11 @@ def cmd_cell(a):
     for kv in (a.env or []):
         k, _, v = kv.partition("="); env[k] = v
     t_cell0 = time.time()
-    holder = None
-    if a.hold:   # simulated smaller cards: "0:16 1:16" keeps 16 GiB of GPU 0 and of GPU 1 occupied for the whole cell (a 24 GB card then behaves as an 8 GB one)
-        hold = a.hold.split()
-        env["PERF_HOLD_MB"] = str(int(max(float(x.split(":")[1]) for x in hold) * 1024))
-        holder = subprocess.Popen([os.environ.get("FORK_TORCH_PYTHON", "/home/o/v/bin/python3" if os.path.exists("/home/o/v/bin/python3") else sys.executable), os.path.join(os.path.dirname(os.path.realpath(__file__)), "experiments", "vram-sim", "vramhold.py")] + hold, env=dict(os.environ, LD_LIBRARY_PATH=U + ":" + os.environ.get("LD_LIBRARY_PATH", "")),
-                                  stdout=subprocess.PIPE, text=True, start_new_session=True)
-        ok = False
-        for _ in range(120):
-            if "holding" in (holder.stdout.readline() or ""): ok = True; break
-            if holder.poll() is not None: break
-        if not ok:
-            sys.exit(f"cell: the VRAM holder did not start ({a.hold})")
     try:
         with open(out, "w") as f:
             rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).returncode
     finally:
-        if holder:
-            try: os.killpg(os.getpgid(holder.pid), signal.SIGKILL)
-            except OSError: pass
+        pass
     lines = [l.rstrip()[:200] for l in open(out, errors="replace") if re.search(r"n= *\d+ .* t/s", l)]
     with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
         f.write(f"== {a.test} {args}\n" + "".join(l + "\n" for l in lines))
@@ -5145,7 +5117,8 @@ if __name__ == "__main__":
     ce.add_argument("tag"); ce.add_argument("model"); ce.add_argument("builds"); ce.add_argument("n", type=int); ce.add_argument("test")
     ce.add_argument("args", nargs="?", default="", help="server args after -np 1")
     ce.add_argument("--wrap", help="command prefix for the server (nsys / ncu)")
-    ce.add_argument("--hold", help="GPU:GiB list kept occupied during the cell (simulates smaller cards), e.g. '0:16 1:16' = 8 GB cards on 24 GB ones")
+    ce.add_argument("--hog-gpu", help="GiB left free on every GPU (the server takes the rest at start: --moe hog-gpu=N), simulates a smaller card")
+    ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe hog-ram=N, never below 4)")
     ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
     ce.add_argument("--lead", type=int, help="a request of about N prompt tokens first, same server")
     ce.add_argument("--prompt", help="prompt text or @file instead of the test's own")
