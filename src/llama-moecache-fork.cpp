@@ -1447,14 +1447,20 @@ static std::vector<pool_region> pool_map(const moe_cache::alias_pool & ap) {
 static std::mutex g_map_mu;
 static std::condition_variable g_map_cv;
 struct pool_use_t { const void * ap; size_t lo, hi; bool w; };
-static std::vector<pool_use_t> g_use;
-static std::vector<pool_use_t> g_moving;
+// fixed tables, no heap at run time: at most one entry per upload worker plus the decode thread (use), one per mover (moving)
+static constexpr int POOL_USE_MAX = 256, POOL_MOVE_MAX = 8;
+struct pool_tab_t {
+    pool_use_t e[POOL_USE_MAX]; int n = 0;
+    void add(const pool_use_t & u, int cap) { GGML_ASSERT(n < cap && "pool range table full"); e[n++] = u; }
+    void drop(int i) { e[i] = e[--n]; }
+};
+static pool_tab_t g_use, g_moving;
 static bool pool_ovl(const pool_use_t & u, const void * ap, size_t lo, size_t hi) { return u.ap == ap && lo < u.hi && hi > u.lo; }
 // stall accounting: a stall is a wait that really blocked (the predicate was false at the first look); the totals are logged at every zone move
 static std::atomic<int64_t> g_st_enter_n{0}, g_st_enter_us{0}, g_st_enter_max{0}, g_st_move_n{0}, g_st_move_us{0}, g_st_calls{0};
 static void pool_enter(const moe_cache::alias_pool & ap, size_t lo, size_t hi, bool w) {
     std::unique_lock<std::mutex> lk(g_map_mu);
-    auto free_of_moves = [&]() { for (const auto & m : g_moving) { if (pool_ovl(m, &ap, lo, hi)) { return false; } } return true; };
+    auto free_of_moves = [&]() { for (int i = 0; i < g_moving.n; ++i) { if (pool_ovl(g_moving.e[i], &ap, lo, hi)) { return false; } } return true; };
     g_st_calls++;
     if (!free_of_moves()) {
         const int64_t t0 = ggml_time_us();
@@ -1463,29 +1469,29 @@ static void pool_enter(const moe_cache::alias_pool & ap, size_t lo, size_t hi, b
         g_st_enter_n++; g_st_enter_us += d;
         int64_t m = g_st_enter_max.load(); while (d > m && !g_st_enter_max.compare_exchange_weak(m, d)) {}
     }
-    g_use.push_back({ &ap, lo, hi, w });
+    g_use.add({ &ap, lo, hi, w }, POOL_USE_MAX);
 }
 // A worker never waits for a move: the mover waits for the cache's in-flight uploads (kv_blocks_apply), and a queued upload blocked here is one of them (deadlock,
 // 2026-10-18: "an upload into the blocks taken for the KV never finished"). Inside a move range the job is skipped instead, like a stale stream job.
 static bool pool_try_enter(const moe_cache::alias_pool & ap, size_t lo, size_t hi, bool w) {
     std::lock_guard<std::mutex> lk(g_map_mu);
     g_st_calls++;
-    for (const auto & m : g_moving) { if (pool_ovl(m, &ap, lo, hi)) { g_st_enter_n++; return false; } }
-    g_use.push_back({ &ap, lo, hi, w });
+    for (int i = 0; i < g_moving.n; ++i) { if (pool_ovl(g_moving.e[i], &ap, lo, hi)) { g_st_enter_n++; return false; } }
+    g_use.add({ &ap, lo, hi, w }, POOL_USE_MAX);
     return true;
 }
 static void pool_leave(const moe_cache::alias_pool & ap, size_t lo, size_t hi, bool w) {
     {
         std::lock_guard<std::mutex> lk(g_map_mu);
-        for (size_t i = 0; i < g_use.size(); ++i) { if (g_use[i].ap == &ap && g_use[i].lo == lo && g_use[i].hi == hi && g_use[i].w == w) { g_use.erase(g_use.begin() + i); break; } }
+        for (int i = 0; i < g_use.n; ++i) { if (g_use.e[i].ap == &ap && g_use.e[i].lo == lo && g_use.e[i].hi == hi && g_use.e[i].w == w) { g_use.drop(i); break; } }
     }
     g_map_cv.notify_all();
 }
 static void pool_move_begin(const moe_cache::alias_pool & ap, size_t lo, size_t hi) {
     std::unique_lock<std::mutex> lk(g_map_mu);
-    g_moving.push_back({ &ap, lo, hi, true });
+    g_moving.add({ &ap, lo, hi, true }, POOL_MOVE_MAX);
     const int64_t t0 = ggml_time_us();
-    auto idle = [&]() { for (const auto & u : g_use) { if (pool_ovl(u, &ap, lo, hi)) { return false; } } return true; };
+    auto idle = [&]() { for (int i = 0; i < g_use.n; ++i) { if (pool_ovl(g_use.e[i], &ap, lo, hi)) { return false; } } return true; };
     const bool ok = idle() || g_map_cv.wait_for(lk, std::chrono::seconds(10), idle);
     if (ggml_time_us() - t0 > 50) { g_st_move_n++; g_st_move_us += ggml_time_us() - t0; }
     if (!ok) {
@@ -1501,7 +1507,7 @@ static void pool_move_end(const moe_cache::alias_pool & ap) {
     }
     {
         std::lock_guard<std::mutex> lk(g_map_mu);
-        for (size_t i = 0; i < g_moving.size(); ++i) { if (g_moving[i].ap == &ap) { g_moving.erase(g_moving.begin() + i); break; } }
+        for (int i = 0; i < g_moving.n; ++i) { if (g_moving.e[i].ap == &ap) { g_moving.drop(i); break; } }
     }
     g_map_cv.notify_all();
 }
