@@ -1817,7 +1817,7 @@ static void common_hog(void) {
     }
 #ifdef __linux__
     if (hr && !ram_hog) {
-        const size_t keep = std::max((size_t) (atof(hr) * 1048576.0), (size_t) 4 << 30);   // never below 4 GiB: swapping would taint the run the other way
+        const size_t keep = (size_t) (atof(hr) * 1048576.0);   // stress test: exactly what was asked for, no floor (swapping is part of what is being tested)
         size_t avail = 0;
         if (FILE * f = fopen("/proc/meminfo", "r")) {
             char line[256]; unsigned long long kb = 0;
