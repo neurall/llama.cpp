@@ -16,6 +16,7 @@
 // Memory: the copies come out of the expert cache pool of the receiving card (the pool is sized from the memory that is free after the model is loaded).
 
 #include "llama-dsplit-fork.h"
+#include "llama-splitplan-fork.h"
 #include "llama-gpu-probe-fork.h"
 #include "llama-moecache-fork.h"
 #include "llama-moestate-fork.h"
@@ -602,58 +603,17 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     }
     // bytes per token that cross per layer, there and back (llama_dsplit_hop_mode_fork: f16 both ways, f16 there and f32 back, or f32 both ways)
     const int    hop_mode = llama_dsplit_hop_mode_fork();
-    double t_one = 0.0, best_split = -1.0, best_s = 0.55;
-    std::vector<double> best_f(L, 0.0), cur_f(L, 0.0);
-    for (int il = 0; il < L; ++il) {
-        const double cl = (c_base * w[il] / w_sum + att_tok * att_w[il]) * (double) T;               // us: the layer on one card
-        const double up = E[il] * (1.0 - llama_moe_cache_resident_frac_fork(il, dm)) / (Bm * 1e3);
-        t_one += std::max(cl, up);
-    }
-    std::vector<double> held_m(L), held_h(L);
-    for (int il = 0; il < L; ++il) { held_m[il] = llama_moe_cache_resident_frac_fork(il, dm); held_h[il] = llama_moe_cache_resident_frac_fork(il, dh); }
-    // One split layer, as the graph runs it (build_moe_ffn, range mode). Times in us from the start of the layer:
-    //   dense    both cards at once, each on its own tokens: the helper s x D / rel, the offload card (1 - s) x D
-    //   hand-in  an expert chain reads the hidden state of ALL tokens, so it starts when its own card's dense part is done AND the other card's tokens
-    //            have crossed the helper's link. This is what the first version of this model missed: it let the offload card compute experts while the
-    //            helper was still in its dense part, and so put 80-85% of the tokens on the helper. Measured, Qwen3.8-Flash-Next, 8.8k tokens, no experts
-    //            on the x4: 85% of the tokens there 135 ms per layer, 77% 127 ms (model then: 89 ms; this one: 150 and 142, the same slope).
-    //   chains   the offload card (1 - f) x X, the helper f x X / rel; a chain cannot end before its card's uploads of this layer have arrived
-    //   hand-out every range gets the other card's sum for its tokens back over the helper's link
-    //   link     the helper's link carries its expert uploads and all four hand-offs: the layer is never shorter than their sum
-    const double b_in = (double) model.hparams.n_embd * (hop_mode != 0 ? 2.0 : 4.0), b_out = (double) model.hparams.n_embd * (hop_mode == 1 ? 2.0 : 4.0);
-    const auto layer_us = [&](int il, double s, double f) {
-        const double cb = c_base * (double) T * w[il] / w_sum;
-        const double D = cb * (1.0 - xf[il]) + att_tok * att_w[il] * (double) T, X = cb * xf[il];
-        const double kv_in = kv_b[il] / (Bh * 1e3);   // the cache of this layer to the range on the other card
-        const double tok_h = s * (double) T, tok_m = (1.0 - s) * (double) T;
-        const double dense_h = s * D / rel + kv_in, dense_m = (1.0 - s) * D;
-        const double in_m  = f < 1.0 ? tok_h * b_in  / (Bh * 1e3) : 0.0;   // the helper's tokens, to the offload card's chain
-        const double in_h  = f > 0.0 ? tok_m * b_in  / (Bh * 1e3) : 0.0;   // the offload card's tokens, to the helper's chain
-        const double out_h = f < 1.0 ? tok_h * b_out / (Bh * 1e3) : 0.0;   // the offload card's sum for the helper's tokens
-        const double out_m = f > 0.0 ? tok_m * b_out / (Bh * 1e3) : 0.0;   // the helper's sum for the offload card's tokens
-        const double up_m  = E[il] * (1.0 - f) * (1.0 - held_m[il]) / (Bm * 1e3);
-        const double up_h  = E[il] * f         * (1.0 - held_h[il]) / (Bh * 1e3);
-        const double end_m = f < 1.0 ? std::max(std::max(dense_m, dense_h + in_m) + (1.0 - f) * X,   up_m) : dense_m;
-        const double end_h = f > 0.0 ? std::max(std::max(dense_h, dense_m + in_h) + f * X / rel,     up_h) : dense_h;
-        const double t = std::max(std::max(end_h, end_m + out_h), std::max(end_m, f > 0.0 ? end_h + out_m : 0.0));
-        return std::max(t, up_h + in_m + in_h + out_h + out_m + kv_in);
-    };
-    for (double s = 0.20; s <= 0.801; s += 0.02) {
-        double sum = 0.0;
-        for (int il = 0; il < L; ++il) {
-            double best_l = -1.0, bf = 0.0;
-            for (int k = 0; k <= 20; ++k) {
-                if (E[il] <= 0.0 && k > 0) { break; }   // a dense layer: no experts to share
-                const double t = layer_us(il, s, k / 20.0);
-                // experts move to the helper only for a clear win (10% of the layer): its hops and their stream synchronisations cost more than the model counts
-                // (Qwen3.8-Flash-Next, 3k tokens: 5% of the experts on the x4 cost about 3 ms per layer, measured)
-                if (best_l < 0.0 || (k == 0 ? t < best_l : t < 0.90 * best_l)) { best_l = t; bf = k / 20.0; }
-            }
-            cur_f[il] = bf;
-            sum += best_l;
-        }
-        if (best_split < 0.0 || sum < best_split) { best_split = sum; best_s = s; best_f = cur_f; }
-    }
+    dsx_in in;   // the model of a split layer and its search: llama-splitplan-fork.h
+    in.T = T; in.L = L; in.w = w; in.xf = xf; in.E = E; in.kv_b = kv_b; in.att_w = att_w; in.w_sum = w_sum;
+    in.c_base = c_base; in.att_tok = att_tok; in.rel = rel; in.Bm = Bm; in.Bh = Bh;
+    in.b_in = (double) model.hparams.n_embd * (hop_mode != 0 ? 2.0 : 4.0); in.b_out = (double) model.hparams.n_embd * (hop_mode == 1 ? 2.0 : 4.0);
+    in.held_m.resize(L); in.held_h.resize(L);
+    for (int il = 0; il < L; ++il) { in.held_m[il] = llama_moe_cache_resident_frac_fork(il, dm); in.held_h[il] = llama_moe_cache_resident_frac_fork(il, dh); }
+    const dsx_out so = dsx_plan(in);
+    const double t_one = so.t_one;
+    double best_split = so.best_split;
+    const double best_s = so.best_s;
+    const std::vector<double> best_f = so.best_f;
     // the split's estimate is scaled by what earlier split passes measured against their plan (llama_dsplit_report_fork); one card's estimate held to
     // within 4% (Qwen3.8-Flash-Next: 2603 / 2697 ms at 3k, 2038 / 2104 at 1.9k), the split's was 21-26% short (waits the model does not see)
     const double raw_split = best_split;

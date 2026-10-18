@@ -180,6 +180,12 @@ llama_build(${LLAMA_CONTEXT_TEST_SRC})
 
 if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # these tests are disabled on Windows because they use internal functions not exported with LLAMA_API (when building with shared libraries)
+    # the fork's expert pool rules (header-only, no GPU, no model): src/llama-poolalloc-fork.h, src/llama-kvzone-fork.h
+    llama_build_and_test(test-pool-fork.cpp)
+    llama_build_and_test(test-pass-fork.cpp)
+    llama_build_and_test(test-gpu-fork.cpp LINK llama)
+    llama_build_and_test(test-split-fork.cpp)
+    llama_build_and_test(test-kvtier-fork.cpp)
     llama_build_and_test(test-unicode.cpp LINK llama)
     llama_build_and_test(test-sampling.cpp LINK llama)
     llama_build_and_test(test-reasoning-budget.cpp)

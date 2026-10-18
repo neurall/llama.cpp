@@ -1,4 +1,5 @@
 #include "llama-context.h"
+#include "llama-kvtier-fork.h"
 void llama_moe_set_opt(const char * key, const char * value);
 #include <fstream>
 #include <filesystem>
@@ -1330,27 +1331,8 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     if (!cp.valid) { return -2; }
     const char * lst = llama_moe_get_opt("kv-fallback");
     std::string list = lst ? lst : "k8v8,k4v4,ram";
-    std::vector<int> allowed;   // tiers tried after f16, in place: q8_0, q4_0 in the pool, then whole layers' KV in host memory
-    if (list != "none") {
-        size_t i = 0;
-        while (i <= list.size()) {
-            size_t j = list.find(',', i); if (j == std::string::npos) { j = list.size(); }
-            const std::string e = list.substr(i, j - i);
-            if (e == "k8v8") { allowed.push_back(1); } else if (e == "k4v4") { allowed.push_back(2); } else if (e == "ram") { allowed.push_back(3); }
-            i = j + 1;
-        }
-    }
-    // the lowest tier allowed: a request whose KV filled up (min_tier -1) goes above the tier it has, whatever the estimate said
-    // (the RAM tier repeats: a request that outgrows the layers moved so far moves more of them)
-    const int lo = min_tier < 0 ? std::min(kv_tier + 1, 3) : min_tier;
-    int tier = -1;
-    if (lo <= 0 && n_tokens <= cp.f16) { tier = 0; }
-    else {
-        for (int t : allowed) {
-            if (t < lo) { continue; }
-            if (n_tokens <= (t == 1 ? cp.k8v8 : t == 2 ? cp.k4v4 : cp.ram)) { tier = t; break; }
-        }
-    }
+    const std::vector<int> allowed = kvx_allowed(list);   // tiers tried after f16, in place: q8_0, q4_0 in the pool, then whole layers' KV in host memory (llama-kvtier-fork.h)
+    const int tier = kvx_select(cp, allowed, kv_tier, min_tier, n_tokens);
     if (tier < 0) {
         say("kv-fit: %u tokens fit no enabled tier: f16 %zu, q8_0 %zu, q4_0 %zu, RAM %zu tokens (list %s; --moe kv-fallback=k8v8,k4v4,ram)", n_tokens, cp.f16, cp.k8v8, cp.k4v4, cp.ram, list.c_str());
         return -1;
@@ -1358,7 +1340,7 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     if (tier == 3) {   // q4_0 in the pool first (if the list has it), then whole layers to host memory until the request fits
         synchronize();
         char why[384] = { 0 };
-        if (kv_tier < 2 && std::find(allowed.begin(), allowed.end(), 2) != allowed.end()) {
+        if (kvx_ram_needs_q4(allowed, kv_tier)) {
             if (!llama_moe_cache_kv_retype_fork(sched.get(), 2, why, sizeof(why))) { say("%s", why); return -1; }
             kv_tier = 2;
         }

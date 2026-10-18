@@ -865,7 +865,7 @@ const char * ggml_backend_dev_description(ggml_backend_dev_t device) {
 }
 
 static void (*g_nan_hook_fork)(void) = nullptr;
-extern "C" GGML_API void ggml_sched_set_nan_hook_fork(void (*fn)(void)) { g_nan_hook_fork = fn; }
+extern "C" { GGML_API void ggml_sched_set_nan_hook_fork(void (*fn)(void)) { g_nan_hook_fork = fn; } }   // the block form: GGML_API may expand to "extern", invalid after extern "C" on the same declaration
 
 void ggml_backend_dev_memory(ggml_backend_dev_t device, size_t * free, size_t * total) {
     GGML_ASSERT(device);
