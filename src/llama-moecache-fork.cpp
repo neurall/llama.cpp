@@ -4143,7 +4143,9 @@ static size_t kv_mem_available() {
     size_t b = 0;
 #ifdef _WIN32
     MEMORYSTATUSEX ms = {}; ms.dwLength = sizeof(ms);   // (W10: the RAM tier held 0 tokens, there is no /proc/meminfo)
-    if (GlobalMemoryStatusEx(&ms)) { b = (size_t) ms.ullAvailPhys; }
+    // the commit limit counts too: W10 has no page file (32 GB virtual = 32 GB RAM) and the server's pinned weights are committed, so a free-physical reading of 20 GB left
+    // 17 GB of commit and the 9-11 GiB host buffer of the RAM tier failed to allocate (2026-10-19)
+    if (GlobalMemoryStatusEx(&ms)) { b = (size_t) std::min<unsigned long long>(ms.ullAvailPhys, ms.ullAvailPageFile); }
 #else
     size_t kb = 0;
     if (FILE * f = fopen("/proc/meminfo", "r")) {

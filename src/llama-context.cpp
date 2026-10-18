@@ -3364,7 +3364,9 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             switch (status) {
                 case GGML_STATUS_ABORTED:      return  2;
                 case GGML_STATUS_ALLOC_FAILED: return -2;
-                case GGML_STATUS_FAILED:       return -3;
+                // fork: a graph the pool could not lend next to the KV (llama_moe_cache_alias_err_fork) is 'no room for this many tokens': 1 makes the caller try a smaller batch, as it
+                // does when the KV has no slot; the ubatch's entries were removed above. Not a compute error (the server answered HTTP 500 "Compute error" for a 40k-token prompt on W10).
+                case GGML_STATUS_FAILED:       return llama_moe_cache_alias_err_fork() ? 1 : -3;
                 case GGML_STATUS_SUCCESS:      GGML_ABORT("should not happen");
             }
         }
