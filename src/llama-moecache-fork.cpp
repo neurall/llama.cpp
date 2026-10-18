@@ -3812,6 +3812,10 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens) {
             for (const auto & q : ap.kvt) { if (!q.fixed) { pad = std::max<size_t>(pad, q.pad); } }
             // the lend of a pass of n_tokens when the cache holds c cells (the graph's inputs grow with them), from the two largest sizes measured as pp_cap_to_pool fits them
             auto lend_at = [&](size_t c) -> size_t {
+                // a size measured as this very pass size: the layout (kv_tail_plan) lends exactly that, so the fit must too (OLMoE 1900-token prompt retried with 512: the line
+                // through the two largest sizes gave less than the 121.6 MiB the 512 graph borrows, the zone was cut to 1481 under a read of 1536 cells)
+                const auto ex = ap.need_tok.find((int32_t) n_tokens);
+                if (ex != ap.need_tok.end()) { return (kv_lend_round(ap, need_at_cells(ap, ex->first, ex->second, c)) + bmax - 1) / bmax * bmax; }
                 std::vector<std::pair<int32_t, size_t>> pts;
                 for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, c) }); } }
                 double a = 0.0, b = 0.0;
