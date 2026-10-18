@@ -115,6 +115,33 @@ All times are 2026-10-18, PC1 (RTX 3090 x16 + x4), local time.
 
 ---
 
+## 10. Prompt pass: capacity and claim check looked at the first card only, and used a fitted lend , FIXED
+
+| | |
+|---|---|
+| found | 19:00, OLMoE 1900-token prompt, squeezed 0.8/1.6 (kvg80-kvg83) |
+| repro (CLI) | `eq4.sh BUILD 1900:c:0.8:1.6`: `set_input_k_idxs` assert (cell 1343, zone 1481 under a read of 1536), later NaN in `ffn_inp-0` on CUDA1 |
+| where | `llama_moe_cache_kv_tail_cap_fork`, `llama_moe_cache_kv_tail_cap_n_fork`, `llama_moe_cache_kv_tail_covers_fork` |
+| cause | (a) the cap for a prompt pass used a line through the two largest measured lends, less than the 121.6 MiB the 512-token graph really borrows; (b) all three functions returned at the first card with a record of the cache: CUDA0 held 2079 cells, CUDA1 only 1752, cells 1792+ went through and card 1 read bad data |
+| solved | exact measured lend when the pass size was measured; bisection over pads of lend and gap; least over every card in the pool; `covers` needs every card |
+| verified | kvg84: 1900 c and 1900 d refuse cleanly ("request needs 1898 tokens ... can hold 1792 / 1024"), no assert, no NaN |
+
+## 11. Not a bug: 1200-token answers differ from the roomy reference
+
+The squeezed answers (cells a, c) equal the roomy run at micro-batch 256 (same md5); the roomy run at 512 differs from the one at 256. Different pass sizes change the numbers in the last bits and the greedy text diverges. Equality cells must compare at the same pass size.
+
+## 12. KV arena (cards without an expert pool): greed, no retry, no pad rounding , FIXED (hardware run pending)
+
+| | |
+|---|---|
+| found | W10 Qwen3.6, 8 GB card: pool alloc 4590 MiB failed, then the arena tried 4124 MiB and failed |
+| where | `llama_moe_cache_kv_arena_start_fork` |
+| cause | arena took all free VRAM, no retry smaller, capacity not in whole pads |
+| solved | sized to the need, retries 25% smaller down to fixed part plus one pad, cells in whole pads (commit 91ddb88b3) |
+| verified | not yet on hardware (needs a Windows build) |
+
+---
+
 ## Tooling bugs (they cost time, fixed)
 
 | tool | problem | fix |
