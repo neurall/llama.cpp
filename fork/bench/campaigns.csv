@@ -2588,3 +2588,4 @@ w10-map,2026-10-18 11:44:42,bench N:\m\OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf bui
 min1-mimo-1500-pf128k,2026-10-18 11:55:45,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg46 variants v test pf128k n=1,,
 min1-mimo-4000-pf128k,2026-10-18 11:56:17,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg46 variants v test pf128k n=1,,
 min1-mimo-12000-pf128k,2026-10-18 11:56:49,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg46 variants v test pf128k n=1,,
+min2-mimo-12000-pf128k,2026-10-18 12:00:25,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds kvg50 variants v test pf128k n=1,,

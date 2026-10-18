@@ -567,7 +567,7 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
             if a.get("state") and os.path.exists(a["state"]) and not dry and a.get("keep_state") != "1":   # keep_state = 1: a second phase continues the arm's learned state
                 os.remove(a["state"])
         if setup.get("hold_vram"):
-            sys.exit("hold_vram is gone: the server holds memory itself; put --moe hog-gpu=N (GiB left free) in the arm args")
+            sys.exit("hold_vram is gone: the server holds memory itself; put --moe sim-vram=MB (MiB left free) in the arm args")
         n_run = 0
         try:
             for mname, mpath in models.items():
@@ -3446,8 +3446,8 @@ def cmd_cell(a):
         if r.stdout.split() and max(int(x) for x in r.stdout.split()) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
         time.sleep(5)
     args = "-np 1 " + (a.args or "")
-    hog = ",".join(k + "=" + v for k, v in (("hog-gpu", a.hog_gpu), ("hog-ram", a.hog_ram)) if v)
-    if hog:   # the server takes the memory itself (llama.cpp common_hog): freed by the OS with the process, no helper process to leave behind
+    hog = ",".join(k + "=" + str(int(float(v) * 1024)) for k, v in (("sim-vram", a.hog_gpu), ("sim-ram", a.hog_ram)) if v)
+    if hog:   # --moe sim-vram / sim-ram: the server takes the memory itself (common_hog), freed by the OS with the process, no helper process to leave behind
         args += " --moe " + hog
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
@@ -5117,8 +5117,8 @@ if __name__ == "__main__":
     ce.add_argument("tag"); ce.add_argument("model"); ce.add_argument("builds"); ce.add_argument("n", type=int); ce.add_argument("test")
     ce.add_argument("args", nargs="?", default="", help="server args after -np 1")
     ce.add_argument("--wrap", help="command prefix for the server (nsys / ncu)")
-    ce.add_argument("--hog-gpu", help="GiB left free on every GPU (the server takes the rest at start: --moe hog-gpu=N), simulates a smaller card")
-    ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe hog-ram=N, never below 4)")
+    ce.add_argument("--hog-gpu", help="GiB left free on every GPU (the server takes the rest at start: --moe sim-vram=MiB), simulates a smaller card")
+    ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe sim-ram=MiB, never below 4)")
     ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
     ce.add_argument("--lead", type=int, help="a request of about N prompt tokens first, same server")
     ce.add_argument("--prompt", help="prompt text or @file instead of the test's own")
