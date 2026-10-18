@@ -273,6 +273,7 @@ struct moe_cache {
         size_t                small     = 0;    // the most scratch a small graph (< 64 tokens) asked for
         int32_t               last_n    = 0;    // the previous graph: its tokens and the scratch it was lent (the rate is corrected from it)
         size_t                last_scr  = 0;
+        size_t                refused_b = 0;    // the least graph lend (bytes) refused as not fitting the pool or reaching the KV zone: a same or bigger lend is refused again until the zone moves (the blocks are already lent, so the lend check alone would pass it)
         size_t                slot_b    = 0;    // staging slot size of this card (the largest staged expert range), 0 until a prompt graph was seen
         int                   n_stage   = 0;    // staging slots the last graph got (0: it ran without prefetch)
         int                   n_cfg     = 0;    // staging slots a graph may use at most (the scheduler's ring size, --moe pf-slots)
@@ -3419,6 +3420,7 @@ static int g_kv_epoch_built = 0;
 // on it, 2-6 ledger overlaps per run): the zone is placed in the gap nearest to `want`, or, when no gap holds it, made as large as the largest gap and the cache refuses
 // the cells past it. ap.segs lie in ascending order of address.
 static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size_t l, size_t cells, bool dry, size_t lend_min = 0) {
+    if (!dry) { ap.refused_b = 0; }   // the zone is laid out again: an earlier refusal no longer holds
     const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
     l = (l + bmax - 1) / bmax * bmax;
     lend_min = std::min(l, (lend_min + bmax - 1) / bmax * bmax);   // the zone may go back down to the end of the lend, never into it
@@ -4000,8 +4002,9 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
             size_t gap_end = 0;
             for (const auto & g : kvz_gaps(ap, 0, 1)) { if (ap.kv_start >= g.first && ap.kv_start < g.second) { gap_end = g.second; } }
             const size_t gap_h = gap_end > ap.kv_start + cp.F && cp.R > 0 ? (gap_end - ap.kv_start - cp.F) / cp.R : 0;
-            if (cp.cells > gap_h) { say("kv-fit: %s: %zu cells do not fit the gap of the zone as tier %d (room for %zu)", dn, cp.cells, tier, gap_h); return false; }
-            cp.h = std::min(cp.h, std::max(gap_h, cp.cells));
+            if (gap_end == 0 && !cp.up) { /* no gap found around the zone start: the check cannot say anything, and a smaller layout cannot overrun one */ }
+            else if (cp.cells > gap_h) { say("kv-fit: %s: %zu cells do not fit the gap of the zone as tier %d (room for %zu)", dn, cp.cells, tier, gap_h); return false; }
+            if (gap_end != 0) { cp.h = std::min(cp.h, std::max(gap_h, cp.cells)); }
         }
         if (!kv_stage_range(ap, cp.s_lo, cp.s_hi)) { say("kv-fit: %s: no lend in front of the KV to stage the conversion", dn); return false; }
         cp.be = kv_conv_backend(ap.dev);
@@ -4573,6 +4576,10 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         // the lend takes whole blocks: a graph of need_b bytes holds ceil(need_b / bmax) * bmax of the buffer (the largest size class), so it reaches the KV zone when THAT passes the
         // zone's start, not need_b (MiMo: a 10.8 MB lend took the 9.2 MB blocks 0 and 1, up to 18.3 MB, while the zone began at 12.6 MB inside block 1 and was never claimed)
         const size_t lend_end = ap.kvt.empty() ? need_b : kv_lend_round(ap, need_b);
+        if (ap.refused_b && need_b >= ap.refused_b) {   // refused before and the zone has not moved since: the same answer, though the blocks are lent already
+            if (g_alias_err.empty()) { g_alias_err = "kv-tail: a " + std::to_string(n_tokens) + "-token pass needs " + std::to_string(need_b / 1048576) + " MiB lent from the start of the pool: refused before (the compute graph and the KV do not fit)"; }
+            break;
+        }
         if (!ap.kvt.empty() && lend_end > ap.span) {
             // the graph reaches into the KV zone: the zone moves behind it (a device copy of the rows in use), and since this graph's views of the KV point at the old
             // place it is built again (the caller). Never silently over the KV, and no abort: only when the zone cannot fit behind the graph at all.
@@ -4589,7 +4596,8 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 // a clean refusal of this pass (the caller fails the decode, the server answers the request with an error) instead of killing the process
                 g_alias_err = "kv-tail: the compute graph and the KV do not fit in the pool: a " + std::to_string(n_tokens) + "-token pass needs " + std::to_string((size_t) (need_b / 1048576)) +
                               " MiB lent from the start of the pool and " + std::to_string(cells) + " cells of KV do not fit behind it";
-                return false;
+                ap.refused_b = ap.refused_b ? std::min(ap.refused_b, need_b) : need_b;
+                break;   // not return: cards before this one may have lent blocks in this call, and the flush and sync below must still cover them
             }
             ggml_backend_sched_synchronize(sched);   // the previous graph may still read the rows
             size_t h = ap.kv_h;
@@ -4692,6 +4700,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 }) > 0) {
                 LLAMA_LOG_WARN("pool-gate: a lend of blocks %d-%d of class %d reached blocks under the KV zone on %s (not taken)\n", (int) blocked, (int) need, (int) sg.pcls, ggml_backend_dev_name(ap.dev));
                 // the graph is placed over those blocks all the same: it would overwrite live KV rows ('!!!!' / NaN many tokens later). Refuse this pass (the caller fails the decode).
+                ap.refused_b = ap.refused_b ? std::min(ap.refused_b, need_b) : need_b;
                 if (g_alias_err.empty()) { g_alias_err = std::string("kv-tail: a lend of blocks ") + std::to_string(blocked) + "-" + std::to_string(need) + " of class " + std::to_string(sg.pcls) + " reaches blocks under the KV zone on " + ggml_backend_dev_name(ap.dev); }
             }
             sg.blocked = need;

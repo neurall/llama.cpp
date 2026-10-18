@@ -2584,10 +2584,10 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                     char * end = nullptr;
                     const long n = strtol(val.c_str(), &end, 10);
                     if (!val.empty() && *end == '\0') { v = (int) n; }
-                    else if (val == "on"  || val == "true")  { v = 1; }
-                    else if (val == "off" || val == "false") { v = 0; }
+                    else if (key == "autotune" && (val == "on"  || val == "true"))  { v = 1; }
+                    else if (key == "autotune" && (val == "off" || val == "false")) { v = 0; }
                     else if (key == "slots" || key == "pf-slots" || key == "up-max" || key == "recent" || key == "pred-top" || key == "sim-vram" || key == "sim-ram" || key == "autotune" || key == "train-every") {
-                        throw std::invalid_argument("--moe: " + key + " needs a number (or on/off), got '" + val + "'");
+                        throw std::invalid_argument("--moe: " + key + " needs a number (autotune also on/off), got '" + val + "'");
                     }
                 }
                 if      (key == "slots")   { params.n_moe_cache_slots       = v; } // = --moe-expert-cache
