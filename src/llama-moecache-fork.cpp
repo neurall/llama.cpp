@@ -3682,7 +3682,9 @@ bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_
 
 // ---- KV arena for the cards without an expert pool (dense models): one buffer per card, the records interleaved in one combined row per cell ----
 struct kv_arena_run { void * owner; std::function<size_t()> rows; size_t cells_max; bool fixed; };
-struct kv_arena_t { ggml_backend_dev_t dev = nullptr; ggml_backend_buffer_t buf = nullptr; size_t size = 0, row = 0, fixed = 0; std::vector<kv_arena_run> runs; };
+struct kv_arena_t { ggml_backend_dev_t dev = nullptr; ggml_backend_buffer_t buf = nullptr; size_t size = 0, row = 0, fixed = 0, pad = 1; std::vector<kv_arena_run> runs; };
+// the cells an arena can hold: whole pads (the attention reads the cells rounded up to the pad, those rows must lie inside the buffer: same rule as the pool zone)
+static size_t kv_arena_cells(const kv_arena_t & ar) { return ar.size / std::max<size_t>(1, ar.row) / ar.pad * ar.pad; }
 static std::vector<kv_arena_t> g_kv_arena;
 static std::string g_kv_arena_err;   // why a card got no arena (the records stay unattached: a graph built over them aborts in the allocator); asked for by decode()
 
@@ -3701,15 +3703,27 @@ void llama_moe_cache_kv_arena_start_fork() {
         size_t free_b = 0, total = 0;
         ggml_backend_dev_memory(dev, &free_b, &total);
         const size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 384) * 1024 * 1024;
-        if (free_b <= margin + (64u << 20)) {
+        size_t pad = 256;   // the attention reads the cells rounded up to the pad: the buffer holds at least one whole pad of rows behind the fixed part
+        for (auto & r : g_kvt) { if (!r.attached && r.dev == dev && r.row) { pad = std::max<size_t>(pad, r.pad); } }
+        const size_t least = fixed + pad * row;
+        if (free_b <= margin + (64u << 20) || free_b - margin < least) {
             LLAMA_LOG_ERROR("kv-arena: %s has %.1f MiB free: no room for the KV\n", ggml_backend_dev_name(dev), free_b / 1048576.0);
-            g_kv_arena_err = tr_fmt("kv-arena: %s has %.1f MiB of VRAM free, the KV cache needs more than the %.0f MiB safety margin and 64 MiB: leave more VRAM free, or use a smaller model or context",
-                    ggml_backend_dev_name(dev), free_b / 1048576.0, margin / 1048576.0);
+            g_kv_arena_err = tr_fmt("kv-arena: %s has %.1f MiB of VRAM free, the KV cache needs the %.0f MiB safety margin plus %.1f MiB (the fixed part and %zu cells): leave more VRAM free, or use a smaller model or context",
+                    ggml_backend_dev_name(dev), free_b / 1048576.0, margin / 1048576.0, least / 1048576.0, pad);
             continue;
         }
-        const size_t size = free_b - margin;
+        // never more than the model's context needs (taking all free VRAM left nothing for the compute buffers: Qwen3.6 on a 8 GB card, 4124 MiB arena, the graph reserve failed);
+        // when the allocation fails (the free figure over-reports, e.g. under WDDM) retry with less, down to the least
+        const size_t need = fixed + cmax * row;
+        size_t size = std::min(free_b - margin, need);
         const int64_t t_alloc0 = ggml_time_us();
-        ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), size);   // the one allocation of the KV, at start
+        ggml_backend_buffer_t buf = nullptr;
+        for (;;) {
+            buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), size);   // the one allocation of the KV, at start
+            if (buf || size <= least) { break; }
+            LLAMA_LOG_WARN("kv-arena: could not allocate %.1f MiB on %s, trying less\n", size / 1048576.0, ggml_backend_dev_name(dev));
+            size = std::max(least, size - size / 4);
+        }
         if (!buf) {
             LLAMA_LOG_ERROR("kv-arena: could not allocate %.1f MiB on %s\n", size / 1048576.0, ggml_backend_dev_name(dev));
             g_kv_arena_err = tr_fmt("kv-arena: could not allocate %.1f MiB of KV cache on %s: leave more VRAM free, or use a smaller context", size / 1048576.0, ggml_backend_dev_name(dev));
@@ -3722,7 +3736,7 @@ void llama_moe_cache_kv_arena_start_fork() {
             ggml_backend_buffer_free(buf);
             continue;
         }
-        g_kv_arena.push_back(kv_arena_t{ dev, buf, size - fixed, row, fixed, {} });
+        g_kv_arena.push_back(kv_arena_t{ dev, buf, size - fixed, row, fixed, pad, {} });
         kv_arena_t & ar = g_kv_arena.back();
         uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
         size_t prefix = 0, fpos = 0;
@@ -3736,7 +3750,7 @@ void llama_moe_cache_kv_arena_start_fork() {
         }
         LLAMA_LOG_WARN("kv-arena: %s: allocation + clear of %.1f MiB took %.1f ms\n", ggml_backend_dev_name(dev), size / 1048576.0, (ggml_time_us() - t_alloc0) / 1000.0);
         LLAMA_LOG_WARN("kv-arena: %s: %.1f MiB, %zu records (fixed part %.1f MiB, growing part %zu B per cell): room for %zu tokens\n", ggml_backend_dev_name(dev),
-                (size) / 1048576.0, ar.runs.size(), fixed / 1048576.0, row, ar.size / row);
+                (size) / 1048576.0, ar.runs.size(), fixed / 1048576.0, row, kv_arena_cells(ar));
     }
 }
 
@@ -3753,7 +3767,7 @@ const char * llama_moe_cache_kv_arena_unplaced_fork() {
 // streamed experts, still faster than a starved KV): a context that would take more is "full" for the cache, the server stops the answer or refuses the prompt.
 size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
     for (auto & ar : g_kv_arena) {
-        for (auto & q : ar.runs) { if (q.owner == owner) { return q.fixed ? q.cells_max : std::min(ar.size / std::max<size_t>(1, ar.row), q.cells_max); } }
+        for (auto & q : ar.runs) { if (q.owner == owner) { return q.fixed ? q.cells_max : std::min(kv_arena_cells(ar), q.cells_max); } }
     }
     moe_cache * mc = g_cache;
     if (!mc) { return (size_t) -1; }
@@ -3879,7 +3893,7 @@ bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell) {
         }
     }
     for (auto & ar : g_kv_arena) {
-        for (auto & q : ar.runs) { if (q.owner == owner) { return (max_cell + 1) <= (q.fixed ? q.cells_max : ar.size / std::max<size_t>(1, ar.row)); } }
+        for (auto & q : ar.runs) { if (q.owner == owner) { return q.fixed ? (max_cell + 1) <= q.cells_max : (max_cell + 1 + ar.pad - 1) / ar.pad * ar.pad <= kv_arena_cells(ar); } }
     }
     return true;
 }
@@ -3936,7 +3950,7 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
         llama_kv_tail_stat_fork st;
         st.dev = ggml_backend_dev_name(ar.dev);
         size_t cap = (size_t) -1;
-        for (auto & q : ar.runs) { const size_t c = q.rows ? q.rows() : 0; st.kv_cells = std::max(st.kv_cells, c); if (!q.fixed) { cap = std::min(cap, std::min(ar.size / std::max<size_t>(1, ar.row), q.cells_max)); } }
+        for (auto & q : ar.runs) { const size_t c = q.rows ? q.rows() : 0; st.kv_cells = std::max(st.kv_cells, c); if (!q.fixed) { cap = std::min(cap, std::min(kv_arena_cells(ar), q.cells_max)); } }
         st.kv_bytes = st.kv_cells * ar.row + ar.fixed;
         st.cap_tokens = cap == (size_t) -1 ? 0 : cap;
         out.push_back(std::move(st));
