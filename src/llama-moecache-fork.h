@@ -153,24 +153,44 @@ struct llama_kv_tail_fork {
     size_t             row   = 0;
     size_t             pad   = 1;   // the attention reads the cells rounded up to this many (masked, but read): the claim covers them
     size_t             step  = 0;   // growth step in cells (0: 10240)
-    float              bpv   = 2.0f;   // bytes per KV value of this record's types (f16 2.0, q8_0 1.0625, q4_0 0.5625): the capacity of the other tiers is scaled from it
+    float              bpv   = 2.0f;   // bytes per KV value of this record's types (f16 2.0, q8_0 1.0625, q4_0 0.5625)
     std::function<size_t()>                  rows;
     std::function<void()>                    detach;
     std::function<void(ggml_backend_buffer_t, uint8_t *, size_t)> attach;   // (buffer, address of row 0 of this record, bytes from one cell to the next)
     bool               attached = false;   // placed in a pool's tail or in an arena
+    // qkv-ram-fallback in place (fork/docs/qkv-ram-fallback.md): the record's K and V rows as typed segments of its cell row (layer order, K then V).
+    // layout(tk, tv, segs): the row bytes the record would have with K type tk and V type tv, and its segments (0: those types cannot hold it, e.g. a row that is
+    // not a whole number of quant blocks). retype(tk, tv): the record tensor and its views take those types and that layout (the next attach sets their data).
+    // Without them (or convertible false: an indexer's key cache, whose reads are the indexer's own) the record keeps its types when the KV changes tier.
+    struct seg { ggml_type type; int64_t ne0; size_t off; bool v; int64_t head; int32_t lay; };   // head: elements per head (the attention kernel choice depends on it); lay: layer of the record
+    // mask: layers whose K/V live in host memory (the RAM part of the ladder): they take no room in the row
+    std::function<size_t(ggml_type, ggml_type, const std::vector<char> *, std::vector<seg> *)> layout;
+    // retype(tk, tv, mask, host, hbuf): new types; layers in mask point at host[2*layer + is_v] = (cell 0, cell stride) in buffer hbuf (mask/host nullptr: unchanged)
+    std::function<void(ggml_type, ggml_type, const std::vector<char> *, const std::vector<std::pair<uint8_t *, size_t>> *, ggml_backend_buffer_t)> retype;
+    ggml_type          type_k = GGML_TYPE_F16, type_v = GGML_TYPE_F16;   // the types the record has now
+    bool               convertible = false;
 };
 void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec);
 // a cache rebuilt with other KV types (llama_kv_refit) takes the place of the old one in the running pool
 void llama_moe_cache_kv_tail_rebind_fork();
+// qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): the tokens the pool can hold as KV with the expert cache at its floor, per tier, the smallest over the cards,
+// from the exact row layouts of each tier. valid is false before the pool exists. row_f16: bytes of one token's KV over all cards as f16.
+struct llama_kv_fit_caps { bool valid = false; size_t f16 = 0, k8v8 = 0, k4v4 = 0, row_f16 = 0, ram = 0; };   // ram: tokens with every growing layer's KV (tier 2 types) in host memory, from free RAM less 4 GiB
+llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork();
+// qkv-ram-fallback in place: the convertible records of every card take K type tk and V type tv inside the pool. The rows in use are converted on the card
+// (through a staging range borrowed at the front of the pool), the zone takes the new rows' size and the blocks it leaves go back to the experts (converting up,
+// it takes the blocks it needs first). No cache object, graph buffer or allocation is made or freed; the next graphs are built with the new types. false: nothing
+// changed (note says why: no pool yet, the rows do not fit, a record that cannot take those types).
+bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, char * note, size_t note_size);   // tier 0: the types the cache was created with, 1: q8_0/q8_0, 2: q4_0/q4_0
+// qkv-ram-fallback, RAM part: the KV of whole layers moves to a host buffer (allocated once) until every card holds n_cells; the pool zone shrinks by their rows
+// (the experts take it). gpu_reads: attention stays on the GPU and reads them over PCIe; else the views sit in a host buffer and the scheduler runs their attention on
+// the CPU. false: nothing changed (note says why).
+bool llama_moe_cache_kv_ram_fork(ggml_backend_sched_t sched, size_t n_cells, char * note, size_t note_size);
 // does an expert pool (the compute alias lend) exist for this context? Without it (a model that fits in VRAM, KV in the dense arena) the graph buffers are real allocations:
 // reserving them at the growth horizon makes every pass beyond it reallocate (Qwen3.6, 7 reallocs x 80 ms = +0.55 s on a 13.7k prompt), so the reserve is made at the full size.
 void llama_moe_cache_kv_pool_expected_fork(bool on);
 bool llama_moe_cache_kv_pool_expected_fork();
 
-// qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): the tokens the pool can hold as KV with the expert cache at its floor, per tier, the smallest over the cards.
-// valid is false before the pool exists. row_f16: bytes of one token's KV over all cards as f16 (what the RAM tier needs per token).
-struct llama_kv_fit_caps { bool valid = false; size_t f16 = 0, k8v8 = 0, k4v4 = 0, row_f16 = 0; };
-llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork();
 void llama_moe_cache_kv_tail_remove_fork(void * owner);
 // before the cache writes cells up to `max_cell`: do the claimed blocks cover them? (the cache asserts it)
 bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell);

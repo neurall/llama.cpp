@@ -1194,10 +1194,10 @@ extern "C" {
     };
     LLAMA_API void llama_get_tuning_info(const struct llama_context * ctx, struct llama_tuning_info * info);
 
-    // qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): choose the KV tier for a request of n_tokens (prompt + answer): f16 on the GPU, q8_0/q8_0, q4_0/q4_0 (both on the GPU, in the expert
-    // pool), or host RAM; the cache object is rebuilt when the tier changes (the cache is cleared first). min_tier: the lowest tier allowed (0 = any; -1 = above the cache's tier now,
-    // for a request whose cache filled up mid-way). Returns the tier (0..3), with bit 8 set when the cache was rebuilt; -1 when no enabled tier (--moe kv-fallback=LIST) holds the
-    // request (note says why and what was tried); -2 when the expert pool does not exist yet (nothing is changed).
+    // qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): choose the KV tier for a request of n_tokens (prompt + answer): f16, q8_0/q8_0 or q4_0/q4_0, all in the expert
+    // pool. A change converts the cells the cache holds in place (no rebuild, nothing lost). min_tier: the lowest tier allowed (0 = any; -1 = above the tier now, which
+    // llama_decode does by itself when the KV of a tier is full). Returns the tier (0..2), with bit 8 set when the KV was converted; -1 when no enabled tier
+    // (--moe kv-fallback=LIST) holds the request (note says why); -2 when the expert pool does not exist yet (nothing is changed).
     LLAMA_API int32_t llama_kv_fit_select(struct llama_context * ctx, uint32_t n_tokens, int32_t min_tier, char * note, size_t note_size);
 
     // Set abort callback

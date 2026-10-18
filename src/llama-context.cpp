@@ -1321,39 +1321,6 @@ void llama_context::sched_new(size_t max_nodes, bool parallel) {
     ggml_backend_sched_set_realloc_callback(sched.get(), sched_graph_realloc, this);
 }
 
-bool llama_context::kv_refit(ggml_type type_k, ggml_type type_v, bool offload_kv, uint32_t n_ctx_new) {
-    if (!memory || hparams.vocab_only) { return false; }
-    synchronize();
-    if (memory->seq_pos_max(0) >= 0) { return false; }   // only an empty cache: a cached prefix would be lost (the server clears first)
-    const uint32_t n_ctx_old = cparams.n_ctx;
-    const bool     offload_old = cparams.offload_kqv;
-    cparams.n_ctx     = GGML_PAD(std::max<uint32_t>(n_ctx_new, 256), 256);
-    cparams.n_ctx_seq = cparams.n_ctx / cparams.n_seq_max;
-    cparams.offload_kqv = offload_kv;
-    kv_type_k = type_k; kv_type_v = type_v;
-    llama_memory_params params_mem = {
-        /*.type_k    =*/ kv_type_k,
-        /*.type_v    =*/ kv_type_v,
-        /*.swa_full  =*/ kv_swa_full,
-        /*.ctx_type  =*/ cparams.ctx_type,
-        /*.mem_other =*/ llama_get_memory(cparams.ctx_other),
-    };
-    LLAMA_LOG_WARN("%s: KV cache rebuilt: %s/%s, %s, %u cells (was %u cells, %s)\n", __func__, ggml_type_name(type_k), ggml_type_name(type_v),
-            offload_kv ? "on the GPU" : "in host RAM", cparams.n_ctx, n_ctx_old, offload_old ? "on the GPU" : "in host RAM");
-    memory.reset();   // the old cache first: its destructor takes its records out of the pool
-    try {
-        memory.reset(model.create_memory(params_mem, cparams));
-    } catch (const std::exception & e) {
-        LLAMA_LOG_ERROR("%s: could not build the KV cache (%s)\n", __func__, e.what());
-        return false;
-    }
-    llama_moe_cache_kv_tail_rebind_fork();
-    kv_on_host = !offload_kv;
-    sched_need_reserve = true;
-    sched_reserve();
-    return true;
-}
-
 // qkv-ram-fallback: the tier a request of n_tokens (prompt + answer) needs, and the rebuild when it differs from the cache's. Returns the tier (0 f16, 1 k8v8, 2 k4v4, 3 ram),
 // -1 when no enabled tier holds it (note says why), -2 when the pool does not exist yet (the first decode starts it: this request runs as the cache is). Bit 8 is set when the cache was
 // rebuilt (the caller drops what it knew of the old one).
@@ -1363,7 +1330,7 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     if (!cp.valid) { return -2; }
     const char * lst = llama_moe_get_opt("kv-fallback");
     std::string list = lst ? lst : "k8v8,k4v4,ram";
-    std::vector<int> allowed;   // tiers in the order tried after f16
+    std::vector<int> allowed;   // tiers tried after f16, in place: q8_0, q4_0 in the pool, then whole layers' KV in host memory
     if (list != "none") {
         size_t i = 0;
         while (i <= list.size()) {
@@ -1373,43 +1340,48 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
             i = j + 1;
         }
     }
-    size_t ram_cap = 0;   // host tokens: available RAM less a margin, over the f16 bytes of one token on all cards
-    if (FILE * f = fopen("/proc/meminfo", "r")) {
-        char line[256]; size_t avail_kb = 0;
-        while (fgets(line, sizeof line, f)) { if (sscanf(line, "MemAvailable: %zu kB", &avail_kb) == 1) { break; } }
-        fclose(f);
-        const size_t margin = (size_t) 8 << 30;
-        const size_t avail  = avail_kb * 1024 > margin ? avail_kb * 1024 - margin : 0;
-        ram_cap = cp.row_f16 ? avail / cp.row_f16 : 0;
-    }
-    // the lowest tier allowed: a request whose cache filled up mid-way (min_tier -1) goes above the tier it has, whatever the estimate said (the capacities are
-    // calculated before the request; its prompt passes, the answer's length and the lend can make the real limit lower)
-    const int lo = min_tier < 0 ? kv_tier + 1 : min_tier;
+    // the lowest tier allowed: a request whose KV filled up (min_tier -1) goes above the tier it has, whatever the estimate said
+    // (the RAM tier repeats: a request that outgrows the layers moved so far moves more of them)
+    const int lo = min_tier < 0 ? std::min(kv_tier + 1, 3) : min_tier;
     int tier = -1;
     if (lo <= 0 && n_tokens <= cp.f16) { tier = 0; }
     else {
         for (int t : allowed) {
             if (t < lo) { continue; }
-            const size_t cap = t == 1 ? cp.k8v8 : t == 2 ? cp.k4v4 : ram_cap;
-            if (n_tokens <= cap) { tier = t; break; }
+            if (n_tokens <= (t == 1 ? cp.k8v8 : t == 2 ? cp.k4v4 : cp.ram)) { tier = t; break; }
         }
     }
     if (tier < 0) {
-        say("kv-fit: %u tokens fit no enabled tier: f16 %zu, q8_0 %zu, q4_0 %zu, RAM %zu tokens (list %s; --moe kv-fallback=k8v8,k4v4,ram)", n_tokens, cp.f16, cp.k8v8, cp.k4v4, ram_cap, list.c_str());
+        say("kv-fit: %u tokens fit no enabled tier: f16 %zu, q8_0 %zu, q4_0 %zu, RAM %zu tokens (list %s; --moe kv-fallback=k8v8,k4v4,ram)", n_tokens, cp.f16, cp.k8v8, cp.k4v4, cp.ram, list.c_str());
         return -1;
     }
+    if (tier == 3) {   // q4_0 in the pool first (if the list has it), then whole layers to host memory until the request fits
+        synchronize();
+        char why[384] = { 0 };
+        if (kv_tier < 2 && std::find(allowed.begin(), allowed.end(), 2) != allowed.end()) {
+            if (!llama_moe_cache_kv_retype_fork(sched.get(), 2, why, sizeof(why))) { say("%s", why); return -1; }
+            kv_tier = 2;
+        }
+        if (!llama_moe_cache_kv_ram_fork(sched.get(), n_tokens, why, sizeof(why))) { say("%s", why); return -1; }
+        kv_tier = 3;
+        say("kv-fit: %u tokens: %s", n_tokens, why);
+        return 3 | 256;
+    }
     if (tier == kv_tier) { return tier; }
-    const ggml_type tk = tier == 1 ? GGML_TYPE_Q8_0 : tier == 2 ? GGML_TYPE_Q4_0 : kv_type_k0;
-    const ggml_type tv = tier == 1 ? GGML_TYPE_Q8_0 : tier == 2 ? GGML_TYPE_Q4_0 : kv_type_v0;
-    const uint32_t  want = std::min<uint32_t>(model.hparams.n_ctx_train, std::max<uint32_t>(cparams.n_ctx, n_tokens + 256));
-    memory->clear(true);
-    if (!kv_refit(tk, tv, tier != 3, tier == 3 ? n_tokens + 256 : want)) {
-        say("kv-fit: could not rebuild the KV cache for tier %d", tier);
+    if (kv_tier == 3) { return kv_tier; }   // layers in host memory stay there for now (moving them back: not written yet)
+    synchronize();
+    char why[256] = { 0 };
+    if (!llama_moe_cache_kv_retype_fork(sched.get(), tier, why, sizeof(why))) {
+        if (tier < kv_tier) {   // back down (a shorter request) while the cache still holds more than the lower tier fits: stay, nothing is lost
+            say("kv-fit: staying %s: %s", kv_tier == 1 ? "q8_0/q8_0" : "q4_0/q4_0", why);
+            return kv_tier;
+        }
+        say("%s", why[0] ? why : "kv-fit: the KV could not change tier");
         return -1;
     }
     kv_tier = tier;
-    static const char * names[] = { "f16 on the GPU", "q8_0/q8_0 on the GPU", "q4_0/q4_0 on the GPU", "host RAM (attention on the CPU)" };
-    say("kv-fit: %u tokens do not fit as f16 (%zu): using %s for this request%s", n_tokens, cp.f16, names[tier], tier == 3 ? ", expect slower speed" : tier ? " (small quality loss)" : "");
+    static const char * names[] = { "f16", "q8_0/q8_0", "q4_0/q4_0" };
+    say("kv-fit: %u tokens: KV now %s in place (f16 holds %zu, q8_0 %zu, q4_0 %zu)%s", n_tokens, names[tier], cp.f16, cp.k8v8, cp.k4v4, tier ? ", small quality loss" : "");
     return tier | 256;
 }
 
@@ -3191,6 +3163,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     sched_reserve();
 
     bool did_optimize = false;
+    bool did_retier   = false;
 
     // handle any pending shifts/copies
     memory_update(false);
@@ -3290,6 +3263,15 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 
                             continue;
                         }
+                    }
+
+                    if (cparams.moe_cache && !did_retier) {   // qkv-ram-fallback in place: the KV of this tier is full: the next tier, same batch again
+                        did_retier = true;
+                        char note[512] = { 0 };
+                        const uint32_t need = (uint32_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
+                        const int32_t r = kv_fit_select(need, -1, note, sizeof(note));
+                        if (note[0]) { LLAMA_LOG_WARN("%s: %s\n", __func__, note); }
+                        if (r >= 0 && (r & 256)) { continue; }
                     }
 
                     LLAMA_LOG_WARN("%s: failed to find a memory slot for batch of size %d\n", __func__, balloc->get_n_tokens());

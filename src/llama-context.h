@@ -68,8 +68,7 @@ struct llama_context {
     //   - etc.
     void sched_reserve();
 
-    // qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): the KV cache object is rebuilt with other types / on the host, the context, the weights and the expert pool stay
-    bool    kv_refit(ggml_type type_k, ggml_type type_v, bool offload_kv, uint32_t n_ctx_new);
+    // qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): the KV tier of a request; a change converts the KV in place inside the expert pool (no rebuild, no realloc)
     int32_t kv_fit_select(uint32_t n_tokens, int32_t min_tier, char * note, size_t note_size);
     // fork: layers a and b trade GPUs in place (weights, memory tensors, expert caches); false: not possible, nothing changed
     bool swap_layers_fork(int a, int b);
@@ -412,10 +411,9 @@ private:
     ggml_backend_sched_ptr sched;
 
     bool sched_need_reserve = true;
-    ggml_type kv_type_k = GGML_TYPE_F16, kv_type_v = GGML_TYPE_F16;   // the types the cache was last built with (kv_refit changes them)
-    ggml_type kv_type_k0 = GGML_TYPE_F16, kv_type_v0 = GGML_TYPE_F16; // the types the user asked for: the f16 tier
+    ggml_type kv_type_k = GGML_TYPE_F16, kv_type_v = GGML_TYPE_F16;   // the types the cache was built with
+    ggml_type kv_type_k0 = GGML_TYPE_F16, kv_type_v0 = GGML_TYPE_F16;
     bool      kv_swa_full = false;
-    bool      kv_on_host = false;   // the RAM tier is active
     int32_t   kv_tier = 0;          // 0 f16, 1 k8v8, 2 k4v4, 3 ram
 
     // whether the reserve graph has a logits tensor, set in sched_reserve()

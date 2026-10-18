@@ -9,11 +9,14 @@
 #include "llama-context.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <map>
+#include <memory>
+#include <numeric>
 #include <stdexcept>
 #include <atomic>
 #include <condition_variable>
@@ -23,6 +26,42 @@
 #include <unordered_map>
 
 size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens);   // fork: the KV limit for a prompt ubatch (llama-moecache-fork.cpp; declared here, no header edit)
+
+// fork: the token-major record's row (kv-token-major, fork/docs/kv-grow.md): K and V of each layer of the record, in layer order, each at a multiple of the
+// unit of its type. A float row starts on 256 bytes (the attention kernels load rows with wide vector reads). A quantized row starts on a multiple of 16
+// bytes and of its block bytes (q8_0: 272, q4_0: 144), and the record's row is a whole number of those units: the attention converts quantized K/V to f16
+// with strides counted in blocks (fattn-common.cuh: s02 = cell stride / block bytes), so every cell stride must be whole blocks (a 256-byte row was not:
+// 4352 B / 34 B truncates). The same layers are laid out again with other types when the KV changes tier in the pool (qkv-ram-fallback, in place).
+struct tm_desc_fork {
+    std::vector<std::array<int64_t, 4>> lay;   // per layer of the record: K elements, V elements (0: no V, MLA), elements per K head, per V head
+    ggml_type tk = GGML_TYPE_F16, tv = GGML_TYPE_F16;
+    size_t    row = 0;
+    // qkv-ram-fallback, RAM part: layers whose K/V left the record for host memory (out), and where (host[2*layer + is_v]: cell 0 and the cell stride)
+    std::vector<char> out;
+    std::vector<std::pair<uint8_t *, size_t>> host;
+    std::vector<std::tuple<ggml_tensor *, int32_t, bool>> views;   // every view of the record: (tensor, layer, is V)
+};
+static size_t tm_unit_fork(ggml_type t) { return ggml_is_quantized(t) ? std::lcm<size_t>(16, ggml_type_size(t)) : 256; }
+// layers marked in `mask` (in host memory) take no room in the row; 0: the types cannot hold a layer's rows. All layers out: one unit (the record keeps a row)
+static size_t tm_layout_fork(const std::vector<std::array<int64_t, 4>> & lay, ggml_type tk, ggml_type tv, const std::vector<char> * mask, std::vector<llama_kv_tail_fork::seg> * out) {
+    const size_t uk = tm_unit_fork(tk), uv = tm_unit_fork(tv);
+    size_t off = 0;
+    for (size_t i = 0; i < lay.size(); ++i) {
+        const auto & l = lay[i];
+        if (l[0] % ggml_blck_size(tk) != 0 || (l[1] > 0 && l[1] % ggml_blck_size(tv) != 0)) { return 0; }
+        if (mask && i < mask->size() && (*mask)[i]) { continue; }
+        off = (off + uk - 1) / uk * uk;
+        if (out) { out->push_back({ tk, l[0], off, false, l[2], (int32_t) i }); }
+        off += ggml_row_size(tk, l[0]);
+        if (l[1] > 0) {
+            off = (off + uv - 1) / uv * uv;
+            if (out) { out->push_back({ tv, l[1], off, true, l[3], (int32_t) i }); }
+            off += ggml_row_size(tv, l[1]);
+        }
+    }
+    const size_t u = std::lcm(uk, uv);
+    return std::max(u, (off + u - 1) / u * u);
+}
 
 static bool ggml_is_power_of_2(int n) {
     return (n & (n - 1)) == 0;
@@ -209,22 +248,22 @@ llama_kv_cache::llama_kv_cache(
     if (o_tm && atoi(o_tm) != 0 && !tm_on) {
         LLAMA_LOG_WARN("%s: kv-token-major needs K and V of the same float type, one stream, flash attention, no shared cells and no sparse-attention indexer: old layout\n", __func__);
     }
-    struct tm_rec { ggml_tensor * rec = nullptr; size_t row = 0; size_t used = 0; };
+    // the record's row: tm_layout_fork (K and V of each layer at a multiple of its type's unit; quantized rows whole blocks). The descriptor stays with the
+    // pool's callbacks below: a tier change lays the same layers out again with other types (qkv-ram-fallback, in place).
+    struct tm_rec { ggml_tensor * rec = nullptr; size_t row = 0; size_t nseg = 0; std::shared_ptr<tm_desc_fork> d = std::make_shared<tm_desc_fork>(); std::vector<llama_kv_tail_fork::seg> segs; };
     std::map<ggml_backend_buffer_type_t, tm_rec, ggml_backend_buft_comparator> tm_map;
-    constexpr size_t TM_ALIGN = 256;   // every K / V row starts on 256 bytes: the attention kernels load rows with wide vector reads
-    auto tm_align = [](size_t x) { return (x + TM_ALIGN - 1) / TM_ALIGN * TM_ALIGN; };
     if (tm_on) {
         for (uint32_t il = 0; il < n_layer; il++) {
             if (!hparams.has_kv(il) || (filter && !filter(il))) { continue; }
             ggml_backend_buffer_type_t buft = offload ? ggml_backend_dev_buffer_type(model.dev_layer(il)) : ggml_backend_cpu_buffer_type();
-            tm_rec & r = tm_map[buft];
-            r.row += tm_align(ggml_row_size(type_k, hparams.n_embd_k_gqa(il)));
-            if (!is_mla) { r.row += tm_align(ggml_row_size(type_v, hparams.n_embd_v_gqa(il))); }
+            tm_map[buft].d->lay.push_back({ (int64_t) hparams.n_embd_k_gqa(il), is_mla ? 0 : (int64_t) hparams.n_embd_v_gqa(il),
+                                            (int64_t) hparams.n_embd_head_k(il), is_mla ? 0 : (int64_t) hparams.n_embd_head_v(il) });
         }
         for (auto & [buft, r] : tm_map) {
-            // quantized types: the record tensor must be a whole number of blocks per row, so it gets one more alignment unit than the rows need (its own size is then
-            // never smaller than the K and V views inside it); the registered size of the record is still row x cells
-            if (ggml_is_quantized(type_k)) { r.row += TM_ALIGN; }
+            r.row = tm_layout_fork(r.d->lay, type_k, type_v, nullptr, &r.segs);
+            r.d->out.assign(r.d->lay.size(), 0); r.d->host.assign(2 * r.d->lay.size(), { nullptr, 0 });
+            if (r.row == 0) { throw std::runtime_error("kv-token-major: a K/V row is not a whole number of blocks of the cache type"); }
+            r.d->tk = type_k; r.d->tv = type_v; r.d->row = r.row;
             ggml_context * ctx = ctx_for_buft(buft);
             if (!ctx) { throw std::runtime_error("failed to create ggml context for kv cache"); }
             r.rec = ggml_new_tensor_2d(ctx, type_k, (int64_t) (r.row / ggml_type_size(type_k)) * ggml_blck_size(type_k), kv_size);
@@ -305,12 +344,10 @@ llama_kv_cache::llama_kv_cache(
         if (tm_on) {
             tm_rec & r = tm_map.at(buft);
             if (has_k) {
-                k = ggml_view_3d(ctx, r.rec, n_embd_k_gqa, kv_size, n_stream, r.row, r.row*kv_size, r.used);
-                r.used += tm_align(ggml_row_size(type_k, n_embd_k_gqa));
+                k = ggml_view_3d(ctx, r.rec, n_embd_k_gqa, kv_size, n_stream, r.row, r.row*kv_size, r.segs.at(r.nseg++).off);
             }
             if (has_v) {
-                v = ggml_view_3d(ctx, r.rec, n_embd_v_gqa, kv_size, n_stream, r.row, r.row*kv_size, r.used);
-                r.used += tm_align(ggml_row_size(type_v, n_embd_v_gqa));
+                v = ggml_view_3d(ctx, r.rec, n_embd_v_gqa, kv_size, n_stream, r.row, r.row*kv_size, r.segs.at(r.nseg++).off);
             }
         } else {
             k = has_k ? ggml_new_tensor_3d(ctx, type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
@@ -423,8 +460,51 @@ llama_kv_cache::llama_kv_cache(
             // the pool interleaves the records of a card into one combined row per cell (this record's bytes at `at`, the next cell `stride` bytes on): a horizon step
             // then only appends rows. The record and its views keep their shapes; their row strides (nb[1..3], all multiples of the record's own row, one stream)
             // are scaled to the combined row. Graphs built afterwards take the new strides from these tensors.
-            const size_t own_row = r.row;
-            reg.attach = [rec, cx, own_row](ggml_backend_buffer_t pb, uint8_t * at, size_t stride) {
+            std::shared_ptr<tm_desc_fork> d = r.d;
+            // qkv-ram-fallback in place: the pool may convert this record's rows to other K/V types (f16 -> q8_0 -> q4_0 and back) and lay the zone out again; the
+            // record tensor and its views then take the new types, offsets and row (retype), and the next attach their place. An indexer's key cache keeps its type
+            // (DSA lightning indexer: one head of indexer_head_size; k-pool indexers: the "idx_" cache): its reads are the indexer's own kernels, not the attention.
+            const bool idx_cache = hparams.indexer_head_size > 0 && (hparams.n_embd_head_k_full == hparams.indexer_head_size || (name_tag && strcmp(name_tag, "idx_") == 0));
+            reg.type_k      = type_k;
+            reg.type_v      = type_v;
+            reg.convertible = !idx_cache;
+            for (ggml_tensor * t = ggml_get_first_tensor(cx); t != nullptr; t = ggml_get_next_tensor(cx, t)) {   // every view of the record: its layer and K or V
+                if (t == rec || t->view_src != rec) { continue; }
+                for (const auto & sg : r.segs) { if (sg.off == t->view_offs) { d->views.emplace_back(t, sg.lay, sg.v); break; } }
+            }
+            reg.layout = [d](ggml_type tk, ggml_type tv, const std::vector<char> * mask, std::vector<llama_kv_tail_fork::seg> * out) { return tm_layout_fork(d->lay, tk, tv, mask, out); };
+            // retype(tk, tv, mask, host, hbuf): the views take types tk / tv; layers in the row get their new offsets (their data: the next attach); layers in `mask` point at
+            // host memory (host[2*layer + is_v]: cell 0 and the cell stride) in buffer hbuf, as plain tensors (no longer views of the record: their place is not the record's)
+            reg.retype = [rec, d](ggml_type tk, ggml_type tv, const std::vector<char> * mask, const std::vector<std::pair<uint8_t *, size_t>> * host, ggml_backend_buffer_t hbuf) {
+                if (mask) { d->out = *mask; }
+                if (host) { d->host = *host; }
+                std::vector<llama_kv_tail_fork::seg> sn;
+                const size_t row2 = tm_layout_fork(d->lay, tk, tv, &d->out, &sn);
+                GGML_ASSERT(row2 > 0 && "kv-tail: a record retyped to types that cannot hold its rows");
+                for (auto & [t, l, v] : d->views) {
+                    const ggml_type ty = v ? tv : tk;
+                    t->type = ty; t->nb[0] = ggml_type_size(ty);
+                    size_t st = row2;
+                    if (d->out[l]) {
+                        const auto & h = d->host[2 * l + (v ? 1 : 0)];
+                        GGML_ASSERT(h.first && "kv-tail: a layer out of the record without host memory");
+                        t->view_src = nullptr; t->view_offs = 0; t->data = h.first; t->buffer = hbuf; st = h.second;
+                    } else {
+                        const llama_kv_tail_fork::seg * s = nullptr;
+                        for (const auto & q : sn) { if (q.lay == l && q.v == v) { s = &q; break; } }
+                        GGML_ASSERT(s);
+                        t->view_src = rec; t->view_offs = s->off;
+                    }
+                    t->nb[1] = st; t->nb[2] = st * (size_t) t->ne[1]; t->nb[3] = t->nb[2] * (size_t) t->ne[2];
+                }
+                rec->type  = tk;
+                rec->ne[0] = (int64_t) (row2 / ggml_type_size(tk)) * ggml_blck_size(tk);
+                rec->nb[0] = ggml_type_size(tk);
+                rec->nb[1] = row2; rec->nb[2] = row2 * (size_t) rec->ne[1]; rec->nb[3] = rec->nb[2] * (size_t) rec->ne[2];
+                d->tk = tk; d->tv = tv; d->row = row2;
+            };
+            reg.attach = [rec, cx, d](ggml_backend_buffer_t pb, uint8_t * at, size_t stride) {
+                const size_t own_row = d->row;
                 if (stride == 0) { stride = own_row; }
                 auto restride = [&](ggml_tensor * t) {
                     const size_t cur = t->nb[1];   // the row stride this tensor has now (its own row, or the combined row of an earlier attach)

@@ -388,7 +388,6 @@ struct server_slot {
     std::vector<std::vector<llama_token_data>> spec_draft_q;
     llama_tokens spec_prompt;
     std::vector<int32_t> spec_i_batch;
-    int32_t kv_min_tier = 0;   // qkv-ram-fallback: the lowest KV tier this request may use (raised when its cache filled up mid-way; back to 0 at reset)
     common_prompt_checkpoint spec_ckpt;
     bool spec_is_replay = false;
     std::mt19937 spec_synth_rng;
@@ -509,7 +508,6 @@ struct server_slot {
         spec_tune.reset();
 
         last_nl_pos    = 0;
-        kv_min_tier    = 0;
         generated      = {};
         has_new_line   = false;
         truncated      = false;
@@ -3531,10 +3529,6 @@ private:
                 llama_synchronize(ctx_tgt);
 #endif
 
-                if (ok && kv_retier_pending) {   // the cache was rebuilt in another tier: the rest of this batch belongs to the old one
-                    kv_retier_pending = false;
-                    break;
-                }
                 if (ok) {
                     // move the head of the batch forward with the number of tokens we just processed
                     off_next = off + n_tokens;
@@ -3846,19 +3840,16 @@ private:
                             return;
                         }
 
-                        {   // qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): the KV tier this request needs (f16, q8_0/q8_0, q4_0/q4_0 in the pool, or host RAM); the cache is rebuilt when it changes
+                        {   // qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): the KV tier this request needs (f16, q8_0/q8_0, q4_0/q4_0 in the pool); a change converts the
+                            // cells the cache holds in place (nothing is lost). A KV that fills up later moves up a tier inside llama_decode (same batch again).
                             char note[512] = { 0 };
                             const int n_out = slot.task->params.n_predict > 0 ? slot.task->params.n_predict : (int) llama_moe_live_get("def_out_len");
-                            const int32_t r = llama_kv_fit_select(ctx_tgt, (uint32_t) (input_tokens.size() + n_out), slot.kv_min_tier, note, sizeof(note));
+                            const int32_t r = llama_kv_fit_select(ctx_tgt, (uint32_t) (input_tokens.size() + n_out), 0, note, sizeof(note));
                             if (note[0]) { SLT_WRN(slot, "%s\n", note); }
                             if (r == -1) {
                                 send_error(slot, note, ERROR_TYPE_EXCEED_CONTEXT_SIZE);
                                 slot.release();
                                 return;
-                            }
-                            if (r >= 0 && (r & 256)) {   // rebuilt: the cache is empty, what the slot knew of it is gone, the context follows the new size
-                                slot.prompt_clear();
-                                slot.n_ctx = n_ctx_slot();
                             }
                         }
 
@@ -4516,37 +4507,6 @@ private:
         return true;
     }
 
-    // qkv-ram-fallback, mid-request (user 2026-10-17: "when full continue k4q4 then ram"): the KV of this tier filled up while a request ran (its answer outgrew the
-    // estimate the tier was chosen with, or the real limit was lower than calculated). Instead of "context size has been exceeded" the cache is rebuilt in the next
-    // tier that holds what the request has plus what it may still need (q8_0, then q4_0, then host RAM), and the slot processes everything it had again: the prompt,
-    // the answer so far and the token that did not fit (they are all in slot.prompt.tokens). That history becomes the slot's prompt; its sampler, its answer and the
-    // count of generated tokens stay, so the answer continues with the next token. One sequence only (the tail layout's case: -np 1). Costs one prompt pass over the
-    // history in the new tier; the rest of the batch that failed is dropped (kv_retier_pending).
-    bool kv_retier_pending = false;
-    bool kv_retier_slots() {
-        server_slot * s = nullptr;
-        int n_proc = 0;
-        for (auto & slot : slots) { if (slot.is_processing()) { s = &slot; n_proc++; } }
-        if (n_proc != 1 || !s->task || s->task->is_parent() || s->task->is_child() || mctx) { return false; }
-        const int n_have = s->prompt.n_tokens();
-        const int n_left = s->task->params.n_predict > 0 ? std::max(0, s->task->params.n_predict - s->stats.n_gen) : (int) llama_moe_live_get("def_out_len");
-        char note[512] = { 0 };
-        const int32_t r = llama_kv_fit_select(ctx_tgt, (uint32_t) (n_have + n_left + 1), -1, note, sizeof(note));
-        if (note[0]) { SLT_WRN(*s, "%s\n", note); }
-        if (r < 0 || !(r & 256)) { return false; }   // no tier above this one holds it: the usual error path
-        s->kv_min_tier = r & 255;   // the rest of this request stays at least there (the STARTED path's own estimate would pick the full tier again)
-        if (s->state == SLOT_STATE_GENERATING || s->state == SLOT_STATE_DONE_PROMPT) {
-            // the slot owns its task (made non-const, stored as const): the history replaces its tokens
-            const_cast<server_task &>(*s->task).tokens = s->prompt.tokens.clone();
-        }
-        s->prompt_clear();   // the rebuilt cache is empty
-        s->i_batch = -1;
-        s->spec_i_batch.clear();
-        s->state = SLOT_STATE_STARTED;
-        SLT_WRN(*s, "kv-fit: the KV filled up at %d tokens; continuing in the next tier: the %d tokens so far are processed again\n", n_have, n_have);
-        return true;
-    }
-
     // returns true = success ; false = retry with smaller batch size
     // throw std::runtime_error on fatal error
     bool decode(int32_t & n_batch, int32_t off) {
@@ -4591,10 +4551,6 @@ private:
         });
 
         if (ret != 0) {
-            if (ret == 1 && kv_retier_slots()) {   // the KV of this tier is full: next tier, the slot starts over with its history (see kv_retier_slots)
-                kv_retier_pending = true;
-                return true;
-            }
             {
                 std::string err;
 
