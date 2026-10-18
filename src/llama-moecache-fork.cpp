@@ -3821,7 +3821,12 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens) {
             const size_t lend  = (kv_lend_round(ap, (size_t) (a + 64.0 * b)) + bmax - 1) / bmax * bmax;
             const size_t floor_b = lend + ap.kv_fixed + 3 * bmax;   // two blocks stay the experts', one for the rounding
             const size_t room  = ap.tail_end > floor_b ? (ap.tail_end - floor_b) / ap.kv_row : 0;
-            return std::min(cap, room);
+            // the zone must lie in ONE gap between the zero blocks behind THIS lend (a prompt graph borrows more than a decode graph, so fewer gaps hold the zone), in whole pads
+            // (OLMoE 1900-token prompt, 0.8 GiB free: advertised 2048 cells, the gap behind the 98 MiB lend held 1481, cell 1343 was written to a zone read to 1536, 2026-10-18)
+            size_t pad = 1;
+            for (const auto & q : ap.kvt) { if (!q.fixed) { pad = std::max<size_t>(pad, q.pad); } }
+            const size_t gap_cells = kv_gap_fit(ap, bmax, lend, ap.kv_row);
+            return std::min(cap, std::min(room, gap_cells) / pad * pad);
         }
     }
     return cap;
