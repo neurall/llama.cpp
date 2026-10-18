@@ -3840,6 +3840,22 @@ private:
                             return;
                         }
 
+                        {   // qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): the KV tier this request needs (f16, q8_0/q8_0, q4_0/q4_0 in the pool, or host RAM); the cache is rebuilt when it changes
+                            char note[512] = { 0 };
+                            const int n_out = slot.task->params.n_predict > 0 ? slot.task->params.n_predict : (int) llama_moe_live_get("def_out_len");
+                            const int32_t r = llama_kv_fit_select(ctx_tgt, (uint32_t) (input_tokens.size() + n_out), note, sizeof(note));
+                            if (note[0]) { SLT_WRN(slot, "%s\n", note); }
+                            if (r == -1) {
+                                send_error(slot, note, ERROR_TYPE_EXCEED_CONTEXT_SIZE);
+                                slot.release();
+                                return;
+                            }
+                            if (r >= 0 && (r & 256)) {   // rebuilt: the cache is empty, what the slot knew of it is gone, the context follows the new size
+                                slot.prompt_clear();
+                                slot.n_ctx = n_ctx_slot();
+                            }
+                        }
+
                         if (!slot.can_split()) {
                             if (slot.task->n_tokens() > n_ubatch) {
                                 send_error(slot,
