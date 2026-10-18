@@ -59,6 +59,14 @@ int main() {
         common_params p;
         report("--fork maybe is refused", !parse({ "--fork", "maybe" }, p));
     }
+    {   // --moe values: a word is not read as 0 (atoi did: "autotune=on" switched autotune off, "slots=auto" the cache)
+        common_params p;
+        report("--moe autotune=on switches autotune on", parse({ "--moe", "autotune=on" }, p) && p.autotune);
+        common_params q;
+        report("--moe slots=auto is refused", !parse({ "--moe", "slots=auto" }, q));
+        common_params r;
+        report("--moe slots=128 still parses", parse({ "--moe", "slots=128" }, r) && r.n_moe_cache_slots == 128);
+    }
     {   // applying twice changes nothing more
         common_params p;
         parse({ "--fork", "off" }, p);

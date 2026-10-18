@@ -2578,7 +2578,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 }
                 std::string key = kv.substr(0, eq);
                 for (char & c : key) { c = c == '_' ? '-' : (char) tolower((unsigned char) c); }
-                const int v = atoi(kv.c_str() + eq + 1);
+                const std::string val = kv.substr(eq + 1);
+                int v = 0;   // a number, or on/off/true/false for the switches: anything else is an error (atoi gave 0, so "autotune=on" switched it off and "slots=auto" the cache)
+                {
+                    char * end = nullptr;
+                    const long n = strtol(val.c_str(), &end, 10);
+                    if (!val.empty() && *end == '\0') { v = (int) n; }
+                    else if (val == "on"  || val == "true")  { v = 1; }
+                    else if (val == "off" || val == "false") { v = 0; }
+                    else if (key == "slots" || key == "pf-slots" || key == "up-max" || key == "recent" || key == "pred-top" || key == "sim-vram" || key == "sim-ram" || key == "autotune" || key == "train-every") {
+                        throw std::invalid_argument("--moe: " + key + " needs a number (or on/off), got '" + val + "'");
+                    }
+                }
                 if      (key == "slots")   { params.n_moe_cache_slots       = v; } // = --moe-expert-cache
                 else if (key == "pf-slots") { params.prefetch_experts_slots  = v; } // = --prefetch-experts-slots
                 else if (key == "up-max") { params.n_moe_cache_inserts = v; }
