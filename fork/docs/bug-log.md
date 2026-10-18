@@ -152,3 +152,37 @@ The squeezed answers (cells a, c) equal the roomy run at micro-batch 256 (same m
 | `run.py build` | ran the full regress (24+ min) | fix builds use `--no-regress` |
 | `run.py post` | a crashed run kept no answer text | with `PERF_WATCH=1` `/completion` is streamed, the text so far goes to `PARTIAL` and `q5h/<tag>-<test>.answer.txt`, a failed row stores it |
 | Windows builds | need a committed tree (`--commit`), not an uncommitted one | commit first |
+
+## 2026-10-18 silent-failure review (pr-review-toolkit silent-failure-hunter, read-only) of the pool / KV / tier code
+
+Findings read from the code, fixed on prerelease4 with a unit test each where the rule lives in a header (build pending).
+
+| where | what failed silently | fix |
+|---|---|---|
+| upload worker, repacked tensor with no file location or a failed read | only an error line; the slot was then published as holding the expert (the old occupant's bytes) | the job is dropped (`skipped`), never published |
+| `llama_moe_cache_alias_fork`, graph and KV do not fit | `GGML_ABORT` killed the server mid-request | returns the reason (`llama_moe_cache_alias_err_fork`), the decode fails, the request gets an error |
+| same function, a lend reaching blocks under the KV zone | a warning, then the graph was placed over live KV rows | the same refusal |
+| `llama_moe_cache_kv_retype_fork`, converting up | the new zone extent was never checked against the gap (could cover a class zero block) | refused in the planning step when it leaves the zone's gap; records that cannot be retyped refuse a type change |
+| `pool_move_begin` timeout | a WARN, then the zone move copied under a DMA or graph still using the range | aborts with the range (a stuck user is a bug, not a state to copy under) |
+| `poolx_pick_slot`, `poolx_zone_give` | a stale free-list entry could be picked; a lent or owned block could be put on the free list | picker takes the highest block that is really free; give frees only `-3` blocks |
+| `llama_moe_cache_kv_ram_fork` | a failure on card 1 left card 0's host places and layers moved; success was returned when every layer moved and the request still did not fit | rollback on every failure return, and a card must meet the request |
+| `--moe` values (`common/arg.cpp`) | `atoi`: `autotune=on` read as off, `slots=auto` as 0 (cache off) | numbers or on/off/true/false, anything else is an error |
+| `--fork off` | prefetch staging (default auto = 3) and the predictor stayed armed | `common_fork_off_apply` zeroes them too |
+| `kv-fallback` list | a typo (`RAM`, `q8`) read as "no fallback", the refusal then printed the list as typed | case and blanks ignored, unknown words and an empty list warn once |
+| `kv_fit_select` caller | tier sized from sequence 0 only (`-np > 1`) | longest sequence |
+| `ppx_ds_edge` | n = 1 gave an empty second dense-split range | returns n (one range) |
+
+Left as they are, on purpose: the 10 s upload waits in the zone take and the lend (`GGML_ASSERT(spin < 200000 ...)`) and `pool_take` stay aborts, since going on would overwrite a block mid-copy. The dense-split mirror `valid` flag set before the caller's fill is by design (the copy API returns nothing to check). A failed RAM step after the q4_0 retype keeps the cells (converted in place, nothing lost).
+
+## 2026-10-19 W10 / PC1 KV ladder runs
+
+| where | symptom | cause | fix |
+|---|---|---|---|
+| W10, OLMoE, default list, 40000 tokens; `k8v8` 20000 | server abort `kv-tail: the cache writes a cell the pool has not claimed` | the zone moved behind a bigger lend into a gap smaller than the cells in use (19712 in use, zone 19608), the attention reads the cells rounded up to the pad | the layout is refused and the zone stays (`kv_layout` returns before moving); the planner keeps one pad of margin |
+| PC1, Qwen3.6 with 8 GiB free, 13720 cells | the same abort (zone 13780, padded read 13824) | the lend of the real graph came 0.3% above the pass planner's fit | same fix, three repeats clean |
+| W10, 40000 tokens | HTTP 500 `Compute error` after 24 s | the refused graph failed the decode (-3) | the decode returns 1 (no room for this many tokens) and the server retries a smaller batch |
+| W10, RAM tier | `could not allocate 9-11 GiB of host memory` although the free RAM said it fits | free physical RAM only; W10 has no page file, the commit limit is the physical RAM and the pinned weights are committed | the estimate is the smaller of free physical RAM and free commit |
+| `--moe kv-fallback=k8v8,k4v4,ram` | `--moe: expected KEY=VAL, got 'k4v4'`, the server did not start | the option string is split on commas, a word without `=` was read as a key | a word without `=` continues the previous value; unit tests |
+| `--moe kv-fallback=RAM,q8` on W10 | the engine read `RAM` (the list cut at the comma) | open: the parser gives the whole list in the unit test, the W10 server log shows the first word only | `pre4o` logs the list the engine received (checking) |
+| staging | `--moe pf-slots=2` turned prefetch off (up to 40% slower prompt) | the scheduler needs at least 3 slots (it keeps n_slots - 1 uploads in flight) | not changed; 3 is the floor, measured with 1, 2, 3, 4 and 6 slots on GLM |
+| `prefill-own=K` (experiment, branch prefillv2) | slower with K (15.7 / 16.8 / 18.2 s for K 0 / 4 / 8) | the x4 card's link serialises at its layers' turn | experiment only, not in the release |

@@ -14,7 +14,7 @@ def add(id_, cli, note):
     t.append(dict(id=id_, order=-5000 + k, cli=cli, note=note)); k += 1
 for n, m in models:
     for test, tok in (("edit4c", 300), ("tetrisc", 300), ("pf12k", 64)):
-        add(f"night-{n}-{test}", f"{R} night-{n}-{test} {m} {cand},{rel} 2 {test} '' --tokens {tok}", f"{n} {test}: candidate vs last release")
+        add(f"night-{n}-{test}", f"{R} night-{n}-{test} {m} {cand},{rel} 2 {test} '' --tokens {tok} --warm", f"{n} {test}: candidate vs last release")
 M = dict(models)["mimo"]
 for card, hold in (("24", ""), ("16", "16"), ("8", "8")):   # 4 GB cards cannot hold MiMo at all (7.4 GiB of non-expert weights): the 4 GB rows use Qwen3.6-35B below
     for arm, args, ctx in (("tail", "--moe kv-token-major=2,kv-tail=1,log=wk", -1), ("c32k", "", 32768)):
@@ -25,5 +25,5 @@ for arm, args, ctx in (("tail", "--moe kv-token-major=2,kv-tail=1,log=wk", -1), 
 Q36 = "/m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf"
 for card, hold in (("8", "8"), ("4", "4")):
     for arm, args, ctx in (("tail", "--moe kv-token-major=2,kv-tail=1,log=wk", -1), ("c32k", "", 32768)):
-        add(f"night-kv-q36-{card}g-{arm}", f"{R} night-kv-q36-{card}g-{arm} {Q36} {cand} 2 edit4c '-lv 3 --load-mode mmap {args}' --tokens 300 --ctx {ctx} --hold '{hold}'", f"Qwen3.6-35B on {card} GB cards: kv-tail vs a static 32k context")
+        add(f"night-kv-q36-{card}g-{arm}", f"{R} night-kv-q36-{card}g-{arm} {Q36} {cand} 2 edit4c '-lv 3 --load-mode mmap {args}' --tokens 300 --ctx {ctx} --hog-gpu '{hold}'", f"Qwen3.6-35B on {card} GB cards: kv-tail vs a static 32k context")
 print(json.dumps(t))
