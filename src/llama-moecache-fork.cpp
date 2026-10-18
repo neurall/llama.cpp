@@ -3771,10 +3771,11 @@ size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
     }
     moe_cache * mc = g_cache;
     if (!mc) { return (size_t) -1; }
+    size_t res = (size_t) -1;   // the cache has records on every card of the pool: the least of the cards (a cell is written on all of them; 2026-10-18 OLMoE: card 1 held 1752, card 0 2079, the first card's limit let 1792 cells through, NaN)
     for (auto & ap : mc->alias) {
         for (auto & r : ap.kvt) {
             if (r.owner != owner) { continue; }
-            if (r.fixed || ap.kv_row == 0) { return r.cells_max; }   // laid out at full size
+            if (r.fixed || ap.kv_row == 0) { res = std::min<size_t>(res, r.cells_max); break; }   // laid out at full size
             const size_t bmax = kv_bmax(ap);
             const size_t floor_b = std::max(ap.dec_need, 2 * bmax) + 2 * bmax + ap.kv_fixed;
             const size_t room = ap.tail_end > floor_b ? ap.tail_end - floor_b : 0;
@@ -3785,10 +3786,11 @@ size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
             for (const auto & q : ap.kvt) { if (!q.fixed) { pad = std::max<size_t>(pad, q.pad); } }
             const size_t lend_floor = (kv_lend_round(ap, std::max(ap.dec_need, bmax)) + bmax - 1) / bmax * bmax;
             const size_t gap_cells  = kv_gap_fit(ap, bmax, lend_floor, ap.kv_row);
-            return std::min(std::min(room / ap.kv_row, gap_cells) / pad * pad, r.cells_max);   // never more than the record's cells (the model's context)
+            res = std::min(res, std::min(std::min(room / ap.kv_row, gap_cells) / pad * pad, r.cells_max));   // never more than the record's cells (the model's context)
+            break;
         }
     }
-    return (size_t) -1;   // the pool does not exist yet (before the first decode): no limit
+    return res;   // (-1 when the pool does not exist yet, before the first decode: no limit)
 }
 
 // The same limit for a prompt ubatch (find_slot, n_tokens >= 64): its pass needs a prompt graph's lend in front of the KV, not a decode graph's. Before
@@ -3799,14 +3801,15 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens) {
     const size_t cap = llama_moe_cache_kv_tail_cap_fork(owner);
     moe_cache * mc = g_cache;
     if (!mc || n_tokens < 64) { return cap; }
+    size_t res = cap;   // the least over the cards, as in cap_fork
     for (auto & ap : mc->alias) {
         for (auto & r : ap.kvt) {
             if (r.owner != owner) { continue; }
-            if (r.fixed || ap.kv_row == 0) { return cap; }
-            if (ap.need_tok.empty()) { return cap; }
+            if (r.fixed || ap.kv_row == 0) { break; }
+            if (ap.need_tok.empty()) { break; }
             bool any = false;
             for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { any = true; } }
-            if (!any) { return cap; }
+            if (!any) { break; }
             const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
             size_t pad = 1;
             for (const auto & q : ap.kvt) { if (!q.fixed) { pad = std::max<size_t>(pad, q.pad); } }
@@ -3842,10 +3845,11 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens) {
                 const size_t mid = (lo + hi + 1) / 2;
                 if (fits(mid * pad)) { lo = mid; } else { hi = mid - 1; }
             }
-            return lo * pad;
+            res = std::min(res, lo * pad);
+            break;
         }
     }
-    return cap;
+    return res;
 }
 
 // why kv_tail_covers_fork says no, for the message before its assert (declared locally in llama-kv-cache.cpp: no header change)
@@ -3909,7 +3913,7 @@ bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell) {
                         if (b1 > lo && b0 < hi && ps.owner[b] != -3) { return false; }
                     }
                 }
-                return true;
+                break;   // this card covers the cell: the cache has records on the other cards of the pool too (all must)
             }
         }
     }
