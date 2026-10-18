@@ -3434,10 +3434,17 @@ static void kv_blocks_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t l
     }
 }
 
-static size_t kv_bmax(const moe_cache::alias_pool & ap) {
-    size_t b = 0;
-    for (const auto & sg : ap.segs) { b = std::max(b, sg.B); }
-    return b;
+
+#include "llama-kvzone-fork.h"
+static size_t kv_bmax(const moe_cache::alias_pool & ap) { return kvz_bmax(ap); }
+static size_t kv_lend_potential(const moe_cache::alias_pool & ap, size_t min_cells) { return kvz_lend_potential(ap, min_cells); }
+static size_t kv_gap_fit(const moe_cache::alias_pool & ap, size_t bmax, size_t lo_min, size_t row) { return kvz_gap_fit(ap, bmax, lo_min, row); }
+static size_t kv_gap_place(const moe_cache::alias_pool & ap, size_t bmax, size_t lo_min, size_t want, size_t size) { return kvz_gap_place(ap, bmax, lo_min, want, size); }
+static void kv_zone_check(const moe_cache::alias_pool & ap, size_t lend_end, const char * who) {   // a violation used to show up as '!!!!' or a NaN many tokens later; now it stops here, with the numbers
+    if (const char * bad = kvz_bad(ap, lend_end)) {
+        GGML_ABORT("kv-zone invariant (%s) on %s: %s: zone [%zu, %zu) fixed %zu h %zu row %zu, lend end %zu, tail_end %zu",
+                   who, ggml_backend_dev_name(ap.dev), bad, ap.kv_start, ap.kv_start + ap.kv_fixed + ap.kv_h * ap.kv_row, ap.kv_fixed, (size_t) ap.kv_h, ap.kv_row, lend_end, ap.tail_end);
+    }
 }
 
 // A graph's lend grows with the cells too: its copies of the attention masks (pass tokens x cells x 2 bytes for an f16 mask) are inputs the scheduler copies into
@@ -3462,42 +3469,6 @@ static size_t kv_lend_round(const moe_cache::alias_pool & ap, size_t bytes) {
         end = std::max(end, (size_t) sg.base + (bytes - sg.base + sg.B - 1) / sg.B * sg.B);
     }
     return end;
-}
-
-// The gaps between the class zero blocks: the only places a KV zone may lie (a class's zero block is read as zeros by every uncached expert and zeroed again at
-// each release, so a zone over it is overwritten or overwrites). One walk for every question about where the zone fits (kv_lend_potential, kv_gap_fit,
-// kv_gap_place, kv_zone_check): they used to carry a copy of this loop each, and a rule fixed in one (MiMo 12k, OLMoE 185 MiB pool, 2026-10-18) was
-// missing in the next. [lo_min, tail_end) cut at each zero block, every start rounded up to `round` (ap.segs lie in ascending order of address).
-static std::vector<std::pair<size_t, size_t>> kv_gaps(const moe_cache::alias_pool & ap, size_t lo_min, size_t round) {
-    std::vector<std::pair<size_t, size_t>> out;
-    size_t a = lo_min;
-    auto gap = [&](size_t g0, size_t g1) {
-        g0 = (g0 + round - 1) / round * round;
-        if (g1 > g0) { out.push_back({ g0, g1 }); }
-    };
-    for (const auto & sg : ap.segs) {
-        const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
-        if (z0 > a) { gap(a, z0); }
-        a = std::max(a, z1);
-    }
-    gap(a, ap.tail_end);
-    return out;
-}
-
-// what the compute alias could lend if the KV zone moved behind the graph: the zone lies in a gap between the class zero blocks (kv_gap_place), so the lend
-// can reach at most the start of the last place the zone fits (the end of the gap that holds it, less the zone). Not "the end of the pool less the zone": with a
-// graph of 10 GiB in a 11.6 GiB pool the zone's 1.6 GiB fixed part fitted no gap behind it and lay on two zero blocks (MiMo 12k, 2026-10-18); the shrink-to-fit
-// now sees that and takes a smaller graph. The zone is sized as it is (fixed part and the cells laid out).
-// min_cells: the cells the graph asked about writes into the zone as well (a 512-token graph needs 512 cells of KV beside it, whatever the zone holds now: OLMoE in a
-// 185 MiB pool, 2026-10-18: the graph "fitted" with a zone of 0 cells and the KV then had no room behind it: abort on one build, NaN on the one before)
-static size_t kv_lend_potential(const moe_cache::alias_pool & ap, size_t min_cells) {
-    if (ap.kvt.empty()) { return ap.span; }
-    const size_t bmax = std::max<size_t>(1, kv_bmax(ap)), zone = ap.kv_fixed + std::max(ap.kv_h, min_cells) * ap.kv_row;
-    size_t best = 0;
-    for (const auto & g : kv_gaps(ap, 0, 1)) {
-        if (g.second >= g.first + zone) { best = std::max(best, (g.second - zone) / bmax * bmax); }
-    }
-    return best;
 }
 
 // n bytes from `from` to `to` inside the pool buffer, on the card (a device copy at ~800 GB/s: 1 GB of KV in ~2.5 ms on an RTX 3090), in chunks that never
@@ -3535,42 +3506,6 @@ static int g_kv_epoch_built = 0;
 // tail_end that no zero block cuts. Not a rule that shifts the zone and hopes for room (2026-10-18: MiMo's 1.7 GiB zone had no room behind class 5's zero block and sat
 // on it, 2-6 ledger overlaps per run): the zone is placed in the gap nearest to `want`, or, when no gap holds it, made as large as the largest gap and the cache refuses
 // the cells past it. ap.segs lie in ascending order of address.
-static size_t kv_gap_fit(const moe_cache::alias_pool & ap, size_t bmax, size_t lo_min, size_t row) {   // the most growing cells the largest gap can hold (behind the fixed part)
-    size_t best = 0;
-    for (const auto & g : kv_gaps(ap, lo_min, bmax)) {
-        if (row > 0 && g.second > g.first + ap.kv_fixed) { best = std::max(best, (g.second - g.first - ap.kv_fixed) / row); }
-    }
-    return best;
-}
-static size_t kv_gap_place(const moe_cache::alias_pool & ap, size_t bmax, size_t lo_min, size_t want, size_t size) {   // start of the zone, or (size_t) -1 when no gap holds it
-    size_t best = (size_t) -1, bestd = (size_t) -1;
-    for (const auto & g : kv_gaps(ap, lo_min, bmax)) {
-        if (g.second < g.first + size) { continue; }
-        const size_t s = std::min(std::max(want, g.first), (g.second - size) / bmax * bmax);
-        if (s < g.first) { continue; }
-        const size_t d = s > want ? s - want : want - s;
-        if (d < bestd) { bestd = d; best = s; }
-    }
-    return best;
-}
-// The layout's own invariants, checked after every move whatever the debug switches: the zone lies in one gap (so over no zero block), behind the lend, inside the
-// pool, and every record points into it. A violation used to show up as '!!!!' or a NaN many tokens later; now it stops here, with the numbers.
-static void kv_zone_check(const moe_cache::alias_pool & ap, size_t lend_end, const char * who) {
-    if (ap.kv_h == 0) { return; }
-    const size_t lo = ap.kv_start, hi = lo + ap.kv_fixed + ap.kv_h * ap.kv_row;
-    const char * bad = nullptr;
-    if (hi > ap.tail_end)        { bad = "zone ends past the pool"; }
-    else if (lo < lend_end)      { bad = "zone starts inside the lend"; }
-    else {
-        bool inside = false;
-        for (const auto & g : kv_gaps(ap, 0, 1)) { if (lo >= g.first && hi <= g.second) { inside = true; break; } }
-        if (!inside) { bad = "zone is not inside one gap between the class zero blocks"; }
-    }
-    if (bad) {
-        GGML_ABORT("kv-zone invariant (%s) on %s: %s: zone [%zu, %zu) fixed %zu h %zu row %zu, lend end %zu, tail_end %zu",
-                   who, ggml_backend_dev_name(ap.dev), bad, lo, hi, ap.kv_fixed, (size_t) ap.kv_h, ap.kv_row, lend_end, ap.tail_end);
-    }
-}
 static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size_t l, size_t cells, bool dry, size_t lend_min = 0) {
     const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
     l = (l + bmax - 1) / bmax * bmax;
