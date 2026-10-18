@@ -3408,6 +3408,7 @@ static void kv_move_bytes(moe_cache::alias_pool & ap, size_t from, size_t to, si
     }
 }
 
+static std::string g_alias_err;   // why the last llama_moe_cache_alias_fork refused its graph (empty: it did not)
 static std::atomic<int> g_kv_epoch{0};   // bumped when a KV zone moves: graphs built before point at the old place (no reuse)
 static int g_kv_epoch_built = 0;
 
@@ -3433,6 +3434,9 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     const size_t h_min = std::min((need + pad - 1) / pad * pad, cmax);
     const size_t h_pool = ap.kv_row > 0 ? kv_gap_fit(ap, bmax, lend_min, ap.kv_row) : (size_t) -1;   // the largest zone any gap can hold
     if (led_on()) { LLAMA_LOG_WARN("kv-gap %s: h %zu h_min %zu h_pool %zu lend_min %.1f MiB want %.1f MiB fixed %.1f MiB row %zu tail_end %.1f MiB segs %zu\n", led_card(ap), h, h_min, h_pool, lend_min / 1048576.0, l / 1048576.0, ap.kv_fixed / 1048576.0, ap.kv_row, ap.tail_end / 1048576.0, ap.segs.size()); }
+    if (!dry && h_pool < h_min) {   // no gap behind this lend holds the padded rows of the cells in use: the pass is refused here, not written and aborted in set_input_k_idxs (Qwen3.6 on PC1 with 8 GiB, 13720 cells, gap of 13780, padded read 13824, 2026-10-18)
+        g_alias_err = "kv-tail: " + std::to_string(cells) + " cells of KV (read as " + std::to_string(h_min) + ") do not fit in any gap behind a lend of " + std::to_string(l / 1048576) + " MiB (the largest holds " + std::to_string(h_pool) + ")";
+    }
     h = std::min(std::max(h, std::min(h_min, h_pool)), h_pool);   // never past what a gap holds: there the cache refuses the cells (llama_moe_cache_kv_tail_covers_fork checks the padded count)
     {
         const size_t ls = kv_gap_place(ap, bmax, lend_min, l, ap.kv_fixed + h * ap.kv_row);
@@ -4330,7 +4334,7 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens) {
             // zone read to 1536, 2026-10-18). The lend only grows with c and the gap only shrinks with the lend: bisection.
             auto fits = [&](size_t c) -> bool {
                 const size_t lend = lend_at(c);
-                return lend + ap.kv_fixed + 3 * bmax + c * ap.kv_row <= ap.tail_end && kv_gap_fit(ap, bmax, lend, ap.kv_row) >= c;
+                return lend + ap.kv_fixed + 3 * bmax + (c + pad) * ap.kv_row <= ap.tail_end && kv_gap_fit(ap, bmax, lend, ap.kv_row) >= c + pad;   // one pad of margin: the lend is a fit through measured sizes and the real graph came 0.3% bigger (Qwen3.6 PC1, gap 13780 for 13824 cells)
             };
             size_t lo = 0, hi = cap / pad;   // in pads: lo fits (0 cells), hi is the advertised limit
             while (lo < hi) {
@@ -4484,7 +4488,6 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
     return out;
 }
 
-static std::string g_alias_err;   // why the last llama_moe_cache_alias_fork refused its graph (empty: it did not)
 
 const char * llama_moe_cache_alias_err_fork() { return g_alias_err.empty() ? nullptr : g_alias_err.c_str(); }
 
