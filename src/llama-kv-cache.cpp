@@ -113,7 +113,11 @@ llama_kv_cache::llama_kv_cache(
         const char * kt = llama_moe_get_opt("kv-tail");
         const char * uc = llama_moe_get_opt("kv-user-ctx");
         const char * tm = llama_moe_get_opt("kv-token-major");
-        const bool can = tm && atoi(tm) != 0 && !other && n_stream == 1 && !v_trans && type_k == type_v && !share && offload;
+        bool gpu_kv = false;   // the tail record lives on a GPU: a model whose KV layers all sit on the CPU (-ngl 0) keeps a normal buffer, of the full size asked for
+        for (uint32_t il = 0; il < hparams.n_layer_all && offload; ++il) {
+            if (hparams.has_kv(il) && (!filter || filter(il)) && ggml_backend_dev_type(model.dev_layer(il)) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpu_kv = true; break; }
+        }
+        const bool can = tm && atoi(tm) != 0 && !other && n_stream == 1 && !v_trans && type_k == type_v && !share && offload && gpu_kv;
         if (kt && atoi(kt) != 0 && uc && !can) {
             const uint32_t user = GGML_PAD((uint32_t) atoi(uc), n_pad);
             if (user < kv_size) {

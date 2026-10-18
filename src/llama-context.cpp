@@ -254,7 +254,16 @@ llama_context::llama_context(
         const bool tail_possible = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && params.n_seq_max <= 1 && params.type_k == params.type_v && !model.devices.empty();
         const char * given = llama_moe_get_opt("kv-ctx-given");   // set by the common code: 1 when the user passed -c
         if ((!ac || atoi(ac) != 0) && tail_possible) {
-            llama_moe_set_opt("kv-user-ctx", std::to_string(cparams.n_ctx).c_str());   // what the user asked for (or the default): the cache goes back to it when it cannot use the tail layout
+            {   // what the cache goes back to when it cannot use the tail layout (llama_kv_cache): the user's -c, else the calculated context of the normal layout (as in the branch below).
+                // Not cparams.n_ctx: without -c that is the model's trained maximum, "going back" to it kept a static KV of a million cells (the structures that scale with it
+                // filled the host) whenever the cache declined the tail after this check (shared layers, transposed V, no offload)
+                uint32_t user = cparams.n_ctx;
+                if (params.n_ctx == 0 && !(given && atoi(given) != 0)) {
+                    const char * bc = llama_moe_get_opt("kv-budget-ctx");
+                    user = std::min<uint32_t>(hparams.n_ctx_train, bc && atoi(bc) > 0 ? (uint32_t) atoi(bc) : 17408);
+                }
+                llama_moe_set_opt("kv-user-ctx", std::to_string(user).c_str());
+            }
             if (!(given && atoi(given) != 0)) {   // no -c: the smaller of the model's maximum and what the machine can hold (a 1M-token model must not get a 1M-token context: the structures that scale with it, the masks, fill the host)
                 uint64_t row = 0, fixed_b = 0, free_b = 0;   // KV bytes per context token (the layers whose cache grows), the bytes of the sliding-window layers (a ring of the window plus a batch: they do not grow with the context), free VRAM over all GPUs
                 for (uint32_t il = 0; il < hparams.n_layer_all; ++il) {

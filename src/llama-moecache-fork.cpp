@@ -3766,12 +3766,13 @@ const char * llama_moe_cache_kv_arena_unplaced_fork() {
 // find_slot's limit: the tokens the zone may hold. The KV may take the whole expert cache except what a decode graph borrows and two blocks (starved experts are
 // streamed experts, still faster than a starved KV): a context that would take more is "full" for the cache, the server stops the answer or refuses the prompt.
 size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
+    size_t res = (size_t) -1;   // the least over every card the cache has records on: arenas (dense cards) and pools alike, a cell is written on all of them
     for (auto & ar : g_kv_arena) {
-        for (auto & q : ar.runs) { if (q.owner == owner) { return q.fixed ? q.cells_max : std::min(kv_arena_cells(ar), q.cells_max); } }
+        for (auto & q : ar.runs) { if (q.owner == owner) { res = std::min(res, q.fixed ? q.cells_max : std::min(kv_arena_cells(ar), q.cells_max)); break; } }
     }
     moe_cache * mc = g_cache;
-    if (!mc) { return (size_t) -1; }
-    size_t res = (size_t) -1;   // the cache has records on every card of the pool: the least of the cards (a cell is written on all of them; 2026-10-18 OLMoE: card 1 held 1752, card 0 2079, the first card's limit let 1792 cells through, NaN)
+    if (!mc) { return res; }
+    // pool cards, same rule (2026-10-18 OLMoE: card 1 held 1752 cells, card 0 2079, the first card's limit let 1792 through: NaN)
     for (auto & ap : mc->alias) {
         for (auto & r : ap.kvt) {
             if (r.owner != owner) { continue; }
@@ -3917,8 +3918,12 @@ bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell) {
             }
         }
     }
-    for (auto & ar : g_kv_arena) {
-        for (auto & q : ar.runs) { if (q.owner == owner) { return q.fixed ? (max_cell + 1) <= q.cells_max : (max_cell + 1 + ar.pad - 1) / ar.pad * ar.pad <= kv_arena_cells(ar); } }
+    for (auto & ar : g_kv_arena) {   // every arena the cache has records on must cover the cell, not the first
+        for (auto & q : ar.runs) {
+            if (q.owner != owner) { continue; }
+            if (q.fixed ? (max_cell + 1) > q.cells_max : (max_cell + 1 + ar.pad - 1) / ar.pad * ar.pad > kv_arena_cells(ar)) { return false; }
+            break;
+        }
     }
     return true;
 }
