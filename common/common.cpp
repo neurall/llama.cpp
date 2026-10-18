@@ -1828,7 +1828,6 @@ static void common_hog(void) {
             const size_t n = avail - keep;
             void * p = mmap(nullptr, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             if (p != MAP_FAILED) {
-                madvise(p, n, MADV_NOHUGEPAGE);   // plain pages: the huge page pool and THP are what the runs under test use
                 for (size_t o = 0; o < n; o += 4096) { ((volatile char *) p)[o] = 1; }
                 mlock(p, n);
                 ram_hog = p;
