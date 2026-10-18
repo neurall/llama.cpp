@@ -5118,7 +5118,7 @@ if __name__ == "__main__":
     ce.add_argument("args", nargs="?", default="", help="server args after -np 1")
     ce.add_argument("--wrap", help="command prefix for the server (nsys / ncu)")
     ce.add_argument("--hog-gpu", help="GiB left free on every GPU (the server takes the rest at start: --moe sim-vram=MiB), simulates a smaller card")
-    ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe sim-ram=MiB, never below 4)")
+    ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe sim-ram=MiB)")
     ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
     ce.add_argument("--lead", type=int, help="a request of about N prompt tokens first, same server")
     ce.add_argument("--prompt", help="prompt text or @file instead of the test's own")
