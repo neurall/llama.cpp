@@ -3264,6 +3264,22 @@ static int g_kv_epoch_built = 0;
 static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size_t l, size_t cells, bool dry) {
     const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
     l = (l + bmax - 1) / bmax * bmax;
+    // the zone never covers a size class's zero block: the decode tables point uncached experts there and read it as zeros, and the release zeroes it again
+    // (over KV rows). A zone that would reach over one starts behind it. Found by the pool ledger (2026-10-18, Qwen3.8 decode after a 40k prompt): the zone
+    // had crept over class 0's zero block on CUDA0. The shift is at most a block of that class plus the rounding; when the pool end leaves no room for it the
+    // zone keeps its place and the ledger reports the overlap.
+    {
+        size_t ls = l;
+        for (bool moved = true; moved; ) {
+            moved = false;
+            const size_t hi_try = ls + ap.kv_fixed + h * ap.kv_row;
+            for (const auto & sg : ap.segs) {
+                const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
+                if (ls < z1 && hi_try > z0) { ls = (z1 + bmax - 1) / bmax * bmax; moved = true; }
+            }
+        }
+        if (ls + ap.kv_fixed + h * ap.kv_row <= ap.tail_end) { l = ls; }
+    }
     if (h == ap.kv_h && l == ap.kv_start) { return false; }
     if (dry) { return true; }
     const size_t lo_old = ap.kv_start, h_old = ap.kv_h, lo = l, hi = l + ap.kv_fixed + h * ap.kv_row;
@@ -3352,13 +3368,15 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
         const size_t step = std::max<size_t>(256, ap.kv_step);
         size_t h = (allow_shrink || ap.kv_h == 0) ? step : ap.kv_h;
         while (eff + step / 2 > h) { h += step; }
-        size_t l = ap.kv_start;
+        const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
+        // the zone stays where it is unless the lend of this graph size reaches it. Rounding its own start again to the block grids of all classes (they do not
+        // line up) moved it one block up at every call: 584 MB of rows copied and the graph built again for every decoded token, until it crept over a zero
+        // block (2026-10-18, pool ledger). The lend's end is rounded as kv_layout lays it out (whole largest blocks).
+        size_t lr = ap.kv_start;
         if (n_tokens > 0) {
             const auto it = ap.need_tok.find(n_tokens);
-            if (it != ap.need_tok.end()) { l = std::max(l, need_at_cells(ap, n_tokens, it->second, eff)); }
+            if (it != ap.need_tok.end()) { lr = std::max(lr, (kv_lend_round(ap, need_at_cells(ap, n_tokens, it->second, eff)) + bmax - 1) / bmax * bmax); }
         }
-        const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
-        size_t lr = (kv_lend_round(ap, l) + bmax - 1) / bmax * bmax;   // as kv_layout lays it out (whole largest blocks)
         // the end of the pool is a hard limit (nothing past tail_end is the KV's: the claim check cannot even see it). When the cells this call needs do not fit
         // behind the lend, the lend shrinks (the call's passes get smaller: pp_cap_to_pool sees the zone), never below what a decode graph borrows.
         if (ap.tail_end <= lr + ap.kv_fixed + eff * ap.kv_row) {
