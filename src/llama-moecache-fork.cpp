@@ -1350,6 +1350,95 @@ int parse_layer_from_name(const char * name) {
     return atoi(name + 4);
 }
 
+// ---- pool write ledger (--moe ledger=1): who writes which bytes of a card's pool, when and how much ----------------------------------------------------
+// Every writer of the one pool buffer per card leaves a line in <logdir>/pool-ledger-<pid>.csv: t_us, card, kind, lo, hi (byte offsets in that card's pool),
+// bytes, who. Kinds: lend (a graph's tensors, CUDA scratch and staging slots, the dense split's copies in front), release (lent blocks back to the experts),
+// zero (a class's zero block restored), kv-zone (the zone laid out), kv-move (rows copied), kv-pad (pad rows zeroed), up-start / up-done (an expert upload,
+// "bg" for a background refill), keep-hot (an expert moved out of blocks a prompt borrows), mirror (the dense split's copies filled). The file is the
+// replay: fork/pool_ledger.py (main tree) rebuilds who owned which bytes at any time and lists every overlap.
+// The live check runs at each write against what belongs to someone else right now and logs "pool-ledger: OVERLAP" at once, with both owners:
+//   an upload whose block is lent to a graph (-2), under the KV zone (-3) or owned by another layer, at its start or at its end (a lend or a zone that
+//   took the block while the copy ran); a zone that reaches into the lend or covers a class's zero block (the decode tables point uncached experts there);
+//   a zero-block restore or a keep-hot destination inside the zone or the lend.
+// Off by default: a mutex and a formatted line per upload (~2 us against a ~0.1-1 ms copy).
+static bool led_on() {
+    static const bool on = [] { const char * e = moe_opt("ledger"); return e && atoi(e) != 0; }();
+    return on;
+}
+static std::mutex g_led_mu;
+static FILE *     g_led_f = nullptr;
+static int64_t    g_led_n_overlap = 0;
+static void led_line(const char * card, const char * kind, size_t lo, size_t hi, const std::string & who) {
+    if (!led_on()) { return; }
+    std::lock_guard<std::mutex> lk(g_led_mu);
+    if (!g_led_f) {
+        const std::string path = moe_log_file(("pool-ledger-" + std::to_string((long long) time(nullptr)) + ".csv").c_str());
+        g_led_f = fopen(path.c_str(), "w");
+        if (!g_led_f) { return; }
+        fprintf(g_led_f, "t_us,card,kind,lo,hi,bytes,who\n");
+        LLAMA_LOG_WARN("pool-ledger: writing %s\n", path.c_str());
+    }
+    fprintf(g_led_f, "%lld,%s,%s,%zu,%zu,%zu,%s\n", (long long) ggml_time_us(), card, kind, lo, hi, hi > lo ? hi - lo : 0, who.c_str());
+    if (strcmp(kind, "OVERLAP") == 0 || strcmp(kind, "lend") == 0) { fflush(g_led_f); }   // a killed server keeps everything up to its last graph
+}
+static void led_overlap(const char * card, size_t lo, size_t hi, const std::string & what) {
+    if (!led_on()) { return; }
+    {
+        std::lock_guard<std::mutex> lk(g_led_mu);
+        if (++g_led_n_overlap > 200) { return; }   // the first ones say it; the file keeps the rest of the story
+    }
+    LLAMA_LOG_WARN("pool-ledger: OVERLAP on %s [%.3f, %.3f) MiB: %s\n", card, lo / 1048576.0, hi / 1048576.0, what.c_str());
+    led_line(card, "OVERLAP", lo, hi, what);
+}
+static const char * led_card(const moe_cache::alias_pool & ap) { return ap.dev ? ggml_backend_dev_name(ap.dev) : "?"; }
+static size_t led_kv_end(const moe_cache::alias_pool & ap) { return ap.kv_h > 0 ? ap.kv_start + ap.kv_fixed + ap.kv_h * ap.kv_row : ap.kv_start; }
+// the pool and the byte range of block b of size class pcls
+static const moe_cache::alias_pool * led_block(const moe_cache * mc, int32_t pcls, int32_t b, size_t & lo, size_t & hi) {
+    for (const auto & ap : mc->alias) {
+        for (const auto & sg : ap.segs) {
+            if (sg.pcls == pcls) { lo = sg.base + (size_t) b * sg.B; hi = lo + sg.B; return &ap; }
+        }
+    }
+    return nullptr;
+}
+// an upload into block `slot` of layer li's class: at its start and at its end the block must still be that layer's (not lent, not the KV's, not another
+// layer's) and outside the zone's bytes
+static void led_upload(moe_cache * mc, const char * kind, size_t li, int32_t expert, int32_t slot, bool bg) {
+    if (!led_on() || li >= mc->layers.size()) { return; }
+    const int32_t pcls = mc->layers[li].pcls;
+    if (pcls < 0) { return; }
+    size_t lo = 0, hi = 0;
+    const moe_cache::alias_pool * ap = led_block(mc, pcls, slot, lo, hi);
+    if (!ap) { return; }
+    const std::string who = tr_fmt("L%zu e%d block %d class %d%s", li, expert, slot, pcls, bg ? " bg" : "");
+    led_line(led_card(*ap), kind, lo, hi, who);
+    const int32_t o = slot < (int32_t) mc->pool[pcls].owner.size() ? mc->pool[pcls].owner[slot] : -9;
+    if (o == -2) { led_overlap(led_card(*ap), lo, hi, kind + std::string(" ") + who + ": the block is lent to a graph"); }
+    else if (o == -3) { led_overlap(led_card(*ap), lo, hi, kind + std::string(" ") + who + ": the block is under the KV zone"); }
+    else if (o >= 0 && (size_t) o != li) { led_overlap(led_card(*ap), lo, hi, kind + std::string(" ") + who + tr_fmt(": the block belongs to layer %d", o)); }
+    if (ap->kv_h > 0 && lo < led_kv_end(*ap) && hi > ap->kv_start) {
+        led_overlap(led_card(*ap), lo, hi, kind + std::string(" ") + who + tr_fmt(": inside the KV zone [%.1f, %.1f) MiB", ap->kv_start / 1048576.0, led_kv_end(*ap) / 1048576.0));
+    }
+}
+// a range that must not touch the zone, the lend [0, want_b) or (zone_too) the zero blocks
+static void led_check_range(const moe_cache::alias_pool & ap, const char * kind, size_t lo, size_t hi, const std::string & who, bool vs_zone, bool vs_lend, bool vs_zero) {
+    if (!led_on() || hi <= lo) { return; }
+    if (vs_zone && ap.kv_h > 0 && lo < led_kv_end(ap) && hi > ap.kv_start) {
+        led_overlap(led_card(ap), lo, hi, tr_fmt("%s %s: inside the KV zone [%.1f, %.1f) MiB", kind, who.c_str(), ap.kv_start / 1048576.0, led_kv_end(ap) / 1048576.0));
+    }
+    if (vs_lend && ap.want_b > 0 && lo < ap.want_b) {
+        led_overlap(led_card(ap), lo, hi, tr_fmt("%s %s: inside the lend [0, %.1f) MiB", kind, who.c_str(), ap.want_b / 1048576.0));
+    }
+    if (vs_zero) {
+        for (const auto & sg : ap.segs) {
+            const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
+            if (lo < z1 && hi > z0) {
+                led_overlap(led_card(ap), lo, hi, tr_fmt("%s %s: covers the zero block of class %d [%.3f, %.3f) MiB", kind, who.c_str(), sg.pcls, z0 / 1048576.0, z1 / 1048576.0));
+            }
+        }
+    }
+}
+
 void ddr_trace(moe_cache * mc, int64_t t) {
     if (tr_on()) {
         tr(TR_DDR, "DDR demand", t, -2, tr_fmt("\"GB/s\":%.1f", mc->ddr_mbs / 1e3));
@@ -2562,6 +2651,33 @@ void flush_tables() {
 
 } // namespace
 
+// --moe ledger=1: a write into a card's pool by code outside this file (the dense split's copies, llama-context.cpp), logged with its byte range; every
+// block under it must be lent to the graph (-2) at that moment, and it must not touch the KV zone or a zero block. Declared where it is called (no header edit).
+void llama_moe_cache_ledger_fork(ggml_backend_dev_t dev, const char * kind, const void * ptr, size_t bytes, const char * who) {
+    moe_cache * mc = g_cache;
+    if (!led_on() || !mc || !ptr) { return; }
+    const std::string w = who ? who : "";
+    for (const auto & ap : mc->alias) {
+        if (ap.dev != dev || !ap.buf) { continue; }
+        const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+        const uint8_t * p    = (const uint8_t *) ptr;
+        if (p < base || p >= base + ggml_backend_buffer_get_size(ap.buf)) { continue; }
+        const size_t lo = (size_t) (p - base), hi = lo + bytes;
+        led_line(led_card(ap), kind, lo, hi, w);
+        led_check_range(ap, kind, lo, hi, w, true, false, true);
+        for (const auto & sg : ap.segs) {
+            const auto & ps = mc->pool[sg.pcls];
+            for (int32_t b = 0; b < sg.n; ++b) {
+                const size_t b0 = sg.base + (size_t) b * sg.B, b1 = b0 + sg.B;
+                if (b1 > lo && b0 < hi && ps.owner[b] != -2) {
+                    led_overlap(led_card(ap), b0, b1, tr_fmt("%s %s: block %d of class %d is not lent to the graph (owner %d)", kind, w.c_str(), b, sg.pcls, (int) ps.owner[b]));
+                    break;
+                }
+            }
+        }
+    }
+}
+
 // Big-batch prefill offloads expert matmuls and copies the used experts to the
 // GPU; experts published in this cache on that GPU are copied from their slot
 // (device-to-device) instead. Called from the scheduler on the decode thread;
@@ -2931,6 +3047,12 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
             evict_slot(mc, mc->layers[ps.owner[dst]], dst);
         }
         pool_take(mc, li, dst);
+        if (led_on()) {
+            const size_t d0 = sg.base + (size_t) dst * sg.B;
+            const std::string who = tr_fmt("L%zu e%d block %d -> %d class %d", li, e, src, dst, sg.pcls);
+            led_line(led_card(ap), "keep-hot", d0, d0 + sg.B, who);
+            led_check_range(ap, "keep-hot", d0, d0 + sg.B, who, true, false, true);
+        }
         ggml_tensor s = view(src), d = view(dst);
         ggml_backend_tensor_copy(&s, &d);
         ls.slot_expert[dst]   = e;
@@ -3149,6 +3271,12 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     const size_t n_used = first ? 0 : ap.kv_fixed + std::min(cells, std::min(h, h_old)) * ap.kv_row;   // the fixed part and the growing rows in use: one contiguous range
     size_t n_take = 0, n_give = 0, n_evict = 0;
     kv_blocks_apply(mc, ap, lo, hi, true, false, n_take, n_give, n_evict);
+    if (led_on()) {
+        const std::string who = tr_fmt("%zu -> %zu cells, %zu in use, row %zu B, fixed %zu B", h_old, h, cells, ap.kv_row, ap.kv_fixed);
+        led_line(led_card(ap), "kv-zone", lo, hi, who);
+        led_check_range(ap, "kv-zone", lo, hi, who, false, false, true);   // the zone must never cover a class's zero block
+        if (lo != lo_old && n_used > 0) { led_line(led_card(ap), "kv-move", lo, lo + n_used, tr_fmt("rows from [%zu, %zu)", lo_old, lo_old + n_used)); }
+    }
     if (lo != lo_old) { kv_move_bytes(ap, lo_old, lo, n_used); }
     kv_blocks_apply(mc, ap, lo, hi, false, true, n_take, n_give, n_evict);
     uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
@@ -3455,6 +3583,7 @@ static void kv_tail_pad_zero(moe_cache * mc) {
         ggml_tensor z = {};
         z.type = GGML_TYPE_I8; z.buffer = ap.buf;
         z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + ap.kv_start + ap.kv_fixed + lo * ap.kv_row;
+        led_line(led_card(ap), "kv-pad", ap.kv_start + ap.kv_fixed + lo * ap.kv_row, ap.kv_start + ap.kv_fixed + hi * ap.kv_row, tr_fmt("rows %zu-%zu zeroed", lo, hi));
         z.ne[0] = (int64_t) ((hi - lo) * ap.kv_row); z.ne[1] = z.ne[2] = z.ne[3] = 1;
         z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = (size_t) z.ne[0];
         ggml_backend_tensor_memset(&z, 0, 0, (size_t) z.ne[0]);
@@ -3716,6 +3845,12 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             changed = true;
         }
         ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
+        if (led_on()) {   // the bytes this graph uses from the start of the pool, and what is in them
+            const std::string who = tr_fmt("graph %d tokens: copies [0, %zu) graph [%zu, %zu) scratch [%zu, %zu) staging %d x %zu [%zu, %zu)", n_tokens, ap.base_off,
+                    ap.base_off, peak_al, peak_al, stage_off, ap.n_stage, ap.slot_b, stage_off, need_b);
+            led_line(led_card(ap), "lend", 0, need_b, who);
+            led_check_range(ap, "lend", 0, kv_lend_round(ap, need_b), who, true, false, false);
+        }
     }
     if (changed) {
         const int64_t s0 = ggml_time_us();
@@ -3743,10 +3878,14 @@ static size_t alias_release(moe_cache * mc) {
                         n_back++;
                     }
                 }
+                led_line(led_card(ap), "release", sg.base + (size_t) keep * sg.B, sg.base + (size_t) sg.blocked * sg.B, tr_fmt("class %d blocks %d-%d back to the experts", sg.pcls, keep, sg.blocked));
                 sg.blocked = keep;
             }
             if (sg.zero_dirty && cov <= (size_t) sg.n * sg.B) {
                 // the range has left this class's zero block: zeros again before a decode graph reads it (the tables point uncached experts there)
+                const size_t z0 = sg.base + (size_t) sg.n * sg.B;
+                led_line(led_card(ap), "zero", z0, z0 + sg.B, tr_fmt("class %d zero block restored", sg.pcls));
+                led_check_range(ap, "zero", z0, z0 + sg.B, tr_fmt("class %d zero block restore", sg.pcls), true, false, false);
                 ggml_tensor z = {};
                 z.type   = GGML_TYPE_I8;
                 z.buffer = ap.buf;
@@ -4512,6 +4651,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     continue;
                 }
                 const int64_t t0 = ggml_time_us();
+                led_upload(mc, "up-start", j.layer_idx, j.expert, j.slot, j.bg);
                 const bool busy_start = mc->cpu_busy;
                 ggml_tensor *       dsts[3] = { ls.pub.up_c,   ls.pub.gate_c,   ls.pub.down_c   };
                 const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
@@ -4600,6 +4740,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                 }
                 if (nosync_used) { cuda_thread_sync(); }
+                led_upload(mc, "up-done", j.layer_idx, j.expert, j.slot, j.bg);
                 j.t_done  = ggml_time_us();
                 if (j.stream) {
                     mc->st_up[ls.link]++;

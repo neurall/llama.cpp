@@ -1252,6 +1252,8 @@ void llama_context::moe_mirror_offsets() {
     }
 }
 
+void llama_moe_cache_ledger_fork(ggml_backend_dev_t dev, const char * kind, const void * ptr, size_t bytes, const char * who);   // llama-moecache-fork.cpp (no header edit)
+
 // --moe mirror-pool, after the pool lent this graph its blocks: copies that the region lost since they were last filled are copied in again from the cards
 // that hold the originals (card to card). The graph runs only after this on the receiving card's stream.
 void llama_context::moe_mirror_fill() {
@@ -1277,6 +1279,7 @@ void llama_context::moe_mirror_fill() {
             for (auto & be : backends) {
                 if (ggml_backend_get_device(be.get()) == ds) { bs = be.get(); }
             }
+            llama_moe_cache_ledger_fork(ab.dev, "mirror", pr.second->data, ggml_nbytes(pr.second), pr.second->name);   // --moe ledger=1
             if (bs != nullptr && bd != nullptr) {
                 ggml_backend_tensor_copy_async(bs, bd, pr.first, pr.second);
             } else {
