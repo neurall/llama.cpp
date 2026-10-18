@@ -3697,6 +3697,21 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
     return any;
 }
 
+// the reason, when a card that keeps its KV in the pool has no zone at all after the layout for this graph (kv_h == 0: the fixed part and one cell fit in no gap, or the pool is
+// smaller than the graph's lend plus the zone); nullptr when every zone is laid out. The text is for the person who started the server: what to change.
+const char * llama_moe_cache_kv_tail_unplaced_fork(int32_t n_tokens) {
+    static thread_local std::string msg;
+    moe_cache * mc = g_cache;
+    if (!mc) { return nullptr; }
+    for (auto & ap : mc->alias) {
+        if (ap.kvt.empty() || ap.kv_row == 0 || ap.kv_h > 0) { continue; }
+        msg = tr_fmt("kv-tail %s: the pool of %.1f MiB cannot hold the KV zone for a %d-token graph (fixed part %.1f MiB, %zu B per cell, the graph borrows %.1f MiB): leave more VRAM free, or use a smaller context or micro-batch",
+                ggml_backend_dev_name(ap.dev), ap.tail_end / 1048576.0, (int) n_tokens, ap.kv_fixed / 1048576.0, ap.kv_row, kv_lend_round(ap, std::max(ap.dec_need, (size_t) 1)) / 1048576.0);
+        return msg.c_str();
+    }
+    return nullptr;
+}
+
 bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     moe_cache * mc = g_cache;
     if (!mc) { return false; }
@@ -3715,6 +3730,7 @@ bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_
 struct kv_arena_run { void * owner; std::function<size_t()> rows; size_t cells_max; bool fixed; };
 struct kv_arena_t { ggml_backend_dev_t dev = nullptr; ggml_backend_buffer_t buf = nullptr; size_t size = 0, row = 0, fixed = 0; std::vector<kv_arena_run> runs; };
 static std::vector<kv_arena_t> g_kv_arena;
+static std::string g_kv_arena_err;   // why a card got no arena (the records stay unattached: a graph built over them aborts in the allocator); asked for by decode()
 
 void llama_moe_cache_kv_arena_start_fork() {
     std::lock_guard<std::mutex> lk(g_kvt_mtx);
@@ -3731,13 +3747,27 @@ void llama_moe_cache_kv_arena_start_fork() {
         size_t free_b = 0, total = 0;
         ggml_backend_dev_memory(dev, &free_b, &total);
         const size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 384) * 1024 * 1024;
-        if (free_b <= margin + (64u << 20)) { LLAMA_LOG_ERROR("kv-arena: %s has %.1f MiB free: no room for the KV\n", ggml_backend_dev_name(dev), free_b / 1048576.0); continue; }
+        if (free_b <= margin + (64u << 20)) {
+            LLAMA_LOG_ERROR("kv-arena: %s has %.1f MiB free: no room for the KV\n", ggml_backend_dev_name(dev), free_b / 1048576.0);
+            g_kv_arena_err = tr_fmt("kv-arena: %s has %.1f MiB of VRAM free, the KV cache needs more than the %.0f MiB safety margin and 64 MiB: leave more VRAM free, or use a smaller model or context",
+                    ggml_backend_dev_name(dev), free_b / 1048576.0, margin / 1048576.0);
+            continue;
+        }
         const size_t size = free_b - margin;
         const int64_t t_alloc0 = ggml_time_us();
         ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), size);   // the one allocation of the KV, at start
-        if (!buf) { LLAMA_LOG_ERROR("kv-arena: could not allocate %.1f MiB on %s\n", size / 1048576.0, ggml_backend_dev_name(dev)); continue; }
+        if (!buf) {
+            LLAMA_LOG_ERROR("kv-arena: could not allocate %.1f MiB on %s\n", size / 1048576.0, ggml_backend_dev_name(dev));
+            g_kv_arena_err = tr_fmt("kv-arena: could not allocate %.1f MiB of KV cache on %s: leave more VRAM free, or use a smaller context", size / 1048576.0, ggml_backend_dev_name(dev));
+            continue;
+        }
         ggml_backend_buffer_clear(buf, 0);   // the attention reads the cells rounded up to the pad: those rows must be finite
-        if (fixed + row > size) { LLAMA_LOG_ERROR("kv-arena: %s: the fixed records (%.1f MiB) do not fit in %.1f MiB\n", ggml_backend_dev_name(dev), fixed / 1048576.0, size / 1048576.0); continue; }
+        if (fixed + row > size) {
+            LLAMA_LOG_ERROR("kv-arena: %s: the fixed records (%.1f MiB) do not fit in %.1f MiB\n", ggml_backend_dev_name(dev), fixed / 1048576.0, size / 1048576.0);
+            g_kv_arena_err = tr_fmt("kv-arena: %s: the fixed part of the KV cache (%.1f MiB) does not fit in the %.1f MiB of VRAM left: leave more VRAM free", ggml_backend_dev_name(dev), fixed / 1048576.0, size / 1048576.0);
+            ggml_backend_buffer_free(buf);
+            continue;
+        }
         g_kv_arena.push_back(kv_arena_t{ dev, buf, size - fixed, row, fixed, {} });
         kv_arena_t & ar = g_kv_arena.back();
         uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
@@ -3754,6 +3784,15 @@ void llama_moe_cache_kv_arena_start_fork() {
         LLAMA_LOG_WARN("kv-arena: %s: %.1f MiB, %zu records (fixed part %.1f MiB, growing part %zu B per cell): room for %zu tokens\n", ggml_backend_dev_name(dev),
                 (size) / 1048576.0, ar.runs.size(), fixed / 1048576.0, row, ar.size / row);
     }
+}
+
+// the reason, when a card that keeps its KV outside an expert pool got no arena (a record still unattached after the start): decode() then fails with this text instead of building a
+// graph over records without memory (the allocator aborted: 'cache_kv_record already has a buffer', OLMoE with 0.47 GiB VRAM left, 2026-10-18)
+const char * llama_moe_cache_kv_arena_unplaced_fork() {
+    if (g_kv_arena_err.empty()) { return nullptr; }
+    std::lock_guard<std::mutex> lk(g_kvt_mtx);
+    for (auto & r : g_kvt) { if (!r.attached && r.row) { return g_kv_arena_err.c_str(); } }
+    return nullptr;
 }
 
 // find_slot's limit: the tokens the zone may hold. The KV may take the whole expert cache except what a decode graph borrows and two blocks (starved experts are

@@ -2519,7 +2519,17 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
     // fork: --moe kv-tail: the KV zone of each card grows (cells past half of it) and makes room for the lend a graph of this size needed before, BEFORE the graph
     // is built: a graph never points at rows that move (a move changes the reuse epoch below)
-    if (cparams.moe_cache) { llama_moe_cache_kv_tail_prepare_fork(sched.get(), (int32_t) ubatch.n_tokens); }
+    if (cparams.moe_cache) {
+        llama_moe_cache_kv_tail_prepare_fork(sched.get(), (int32_t) ubatch.n_tokens);
+        // a card whose pool cannot hold the KV zone at all (no gap between the zero blocks takes the fixed part and a cell): the graph would point at records that were never
+        // attached (the allocator then aborted: 'cache_kv_record already has a buffer', OLMoE with 0.47 GiB VRAM left). The request fails with the reason instead.
+        extern const char * llama_moe_cache_kv_tail_unplaced_fork(int32_t n_tokens);
+        if (const char * why = llama_moe_cache_kv_tail_unplaced_fork((int32_t) ubatch.n_tokens)) {
+            LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
+            ret = GGML_STATUS_ALLOC_FAILED;
+            return nullptr;
+        }
+    }
 
     auto * res = get_gf_res_prev();
     auto * gf  = res->get_gf();
@@ -2942,6 +2952,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         sched_reserve(); // the compute graph now includes the cache chain
     }
     llama_moe_cache_kv_arena_start_fork();   // --moe kv-tail=1: KV records no expert pool took (dense models) get their buffer, once, at the first real decode
+    {
+        extern const char * llama_moe_cache_kv_arena_unplaced_fork();
+        if (const char * why = llama_moe_cache_kv_arena_unplaced_fork()) {   // no memory for the KV: refuse, do not build a graph over records that have none
+            LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
+            return -2;
+        }
+    }
     if (!fork_resident && !cparams.moe_cache && !moe_mirrors_placed) {
         moe_mirrors_placed = true;
         llama_dsplit_mirror_place_fork(model, moe_alias_bufs);   // no pool: the copies get buffers of their own
