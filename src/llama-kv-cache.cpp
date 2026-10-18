@@ -1265,6 +1265,15 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
 
     assert(res.s1 >= res.s0);
 
+    if (kv_tail_on) {   // the zone the pool laid out for this call must hold every cell it writes AND the padded rows the attention reads after them: refuse the slot here (the server retries with a smaller ubatch or answers with the reason), never write and abort in set_input_k_idxs (OLMoE 3500-token prompt, 1.0 GiB free: cell 2949, zone of 2962 cells, padded read 3072, 2026-10-18)
+        size_t mx = 0;
+        for (uint32_t s = 0; s < res.n_stream(); ++s) { for (uint32_t i = 0; i < res.size(); ++i) { mx = std::max<size_t>(mx, res.idxs[s][i]); } }
+        if (!llama_moe_cache_kv_tail_covers_fork((void *) this, mx)) {
+            LLAMA_LOG_WARN("%s: kv-tail: the zone does not cover cell %zu of a %u-token ubatch (%s): no slot\n", __func__, mx, n_tokens, llama_moe_cache_kv_tail_why_fork((void *) this, mx).c_str());
+            return { };
+        }
+    }
+
     return res;
 }
 
