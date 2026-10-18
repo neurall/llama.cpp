@@ -66,6 +66,10 @@ int main() {
         report("--moe slots=auto is refused", !parse({ "--moe", "slots=auto" }, q));
         common_params r;
         report("--moe slots=128 still parses", parse({ "--moe", "slots=128" }, r) && r.n_moe_cache_slots == 128);
+        common_params l;
+        report("--moe kv-fallback=k8v8,k4v4,ram is one list, not a key 'k4v4'", parse({ "--moe", "kv-fallback=k8v8,k4v4,ram,slots=64" }, l) && l.n_moe_cache_slots == 64);
+        common_params w;
+        report("--moe with a bare first word is refused", !parse({ "--moe", "k8v8,slots=64" }, w));
     }
     {   // applying twice changes nothing more
         common_params p;
