@@ -1792,16 +1792,16 @@ static uint32_t common_auto_ubatch(common_params & params) {
 
 static void common_moe_cache_auto_impl(common_params & params);
 
-// --moe hog-gpu=N / hog-ram=N: leave exactly N GiB free on every GPU / in RAM for the rest of the run, by really taking the memory (test runs on a "smaller
-// machine"; sim-vram / sim-ram only change what is reported). Held for the life of the process and freed by the OS when it ends, however it ends: the external
+// --moe sim-vram=MB / sim-ram=MB: leave exactly MB MiB free on every GPU / in RAM for the rest of the run, by really taking the memory (test runs on a "smaller
+// machine"; sim-vram used to only change what the card reported, which let real allocations go past it). Held for the life of the process and freed by the OS when it ends, however it ends: the external
 // holder process this replaces left 8 GiB per card taken after its starter was killed and tainted later runs (2026-10-18). Runs before any size is read.
 static void common_hog(void) {
     static std::vector<ggml_backend_buffer_t> gpu_hog;
     static void * ram_hog = nullptr;
-    const char * hg = llama_moe_get_opt("hog-gpu");
-    const char * hr = llama_moe_get_opt("hog-ram");
+    const char * hg = llama_moe_get_opt("sim-vram");
+    const char * hr = llama_moe_get_opt("sim-ram");
     if (hg && gpu_hog.empty()) {
-        const size_t keep = (size_t) (atof(hg) * 1073741824.0);
+        const size_t keep = (size_t) (atof(hg) * 1048576.0);
         for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
             if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
@@ -1809,15 +1809,15 @@ static void common_hog(void) {
             ggml_backend_dev_memory(dev, &free, &tot);
             if (free <= keep) { continue; }
             ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), free - keep);
-            if (!buf) { LOG_WRN("hog-gpu: could not take %.2f GiB on %s\n", (free - keep) / 1073741824.0, ggml_backend_dev_name(dev)); continue; }
+            if (!buf) { LOG_WRN("sim-vram: could not take %.2f GiB on %s\n", (free - keep) / 1073741824.0, ggml_backend_dev_name(dev)); continue; }
             gpu_hog.push_back(buf);
             size_t f2 = 0; ggml_backend_dev_memory(dev, &f2, &tot);
-            LOG_WRN("hog-gpu: %s holds %.2f GiB, %.2f GiB left free\n", ggml_backend_dev_name(dev), ggml_backend_buffer_get_size(buf) / 1073741824.0, f2 / 1073741824.0);
+            LOG_WRN("sim-vram: %s holds %.2f GiB, %.2f GiB left free\n", ggml_backend_dev_name(dev), ggml_backend_buffer_get_size(buf) / 1073741824.0, f2 / 1073741824.0);
         }
     }
 #ifdef __linux__
     if (hr && !ram_hog) {
-        const size_t keep = std::max((size_t) (atof(hr) * 1073741824.0), (size_t) 4 << 30);   // never below 4 GiB: swapping would taint the run the other way
+        const size_t keep = std::max((size_t) (atof(hr) * 1048576.0), (size_t) 4 << 30);   // never below 4 GiB: swapping would taint the run the other way
         size_t avail = 0;
         if (FILE * f = fopen("/proc/meminfo", "r")) {
             char line[256]; unsigned long long kb = 0;
@@ -1832,7 +1832,7 @@ static void common_hog(void) {
                 for (size_t o = 0; o < n; o += 4096) { ((volatile char *) p)[o] = 1; }
                 mlock(p, n);
                 ram_hog = p;
-                LOG_WRN("hog-ram: holds %.2f GiB, about %.2f GiB left\n", n / 1073741824.0, keep / 1073741824.0);
+                LOG_WRN("sim-ram: holds %.2f GiB, about %.2f GiB left\n", n / 1073741824.0, keep / 1073741824.0);
             }
         }
     }

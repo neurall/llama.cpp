@@ -2584,7 +2584,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 else if (key == "up-max") { params.n_moe_cache_inserts = v; }
                 else if (key == "recent")  { params.n_moe_cache_window  = v; }
                 else if (key == "pred-top") { params.n_moe_predict       = v; }
-                else if (key == "sim-vram") { setenv("GGML_CUDA_SIM_MB", std::to_string(v).c_str(), 1); } // pretend every card has v MiB (test runs)
+                else if (key == "sim-vram") { } // leave v MiB free on every card: the memory is really taken at start (common_hog)
                 else if (key == "sim-ram")  { setenv("GGML_SIM_RAM_MB", std::to_string(v).c_str(), 1); }  // pretend v MiB of RAM can be pinned (test runs)
                 else if (key == "autotune") { params.autotune = v != 0; }
                 else if (key == "train-every")   { params.n_moe_predict_train = v; if (params.n_moe_predict <= 0) { params.n_moe_predict = 8; } }
