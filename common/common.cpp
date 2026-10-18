@@ -1835,6 +1835,22 @@ static void common_hog(void) {
             }
         }
     }
+#elif defined(_WIN32)
+    if (hr && !ram_hog) {
+        const size_t keep = (size_t) (atof(hr) * 1048576.0);   // same rule as above: exactly what was asked for, no floor
+        MEMORYSTATUSEX ms; ms.dwLength = sizeof ms;
+        if (GlobalMemoryStatusEx(&ms) && ms.ullAvailPhys > keep) {
+            const size_t n = (size_t) ms.ullAvailPhys - keep;
+            SetProcessWorkingSetSize(GetCurrentProcess(), n + ((size_t) 256 << 20), n + ((size_t) 512 << 20));   // VirtualLock needs the room in the working set
+            void * p = VirtualAlloc(nullptr, n, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            if (p) {
+                for (size_t o = 0; o < n; o += 4096) { ((volatile char *) p)[o] = 1; }
+                VirtualLock(p, n);
+                ram_hog = p;
+                LOG_WRN("sim-ram: holds %.2f GiB, about %.2f GiB left\n", n / 1073741824.0, keep / 1073741824.0);
+            }
+        }
+    }
 #endif
 }
 
