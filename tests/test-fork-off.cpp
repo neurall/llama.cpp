@@ -70,6 +70,12 @@ int main() {
         report("--moe kv-fallback=k8v8,k4v4,ram is one list, not a key 'k4v4'", parse({ "--moe", "kv-fallback=k8v8,k4v4,ram,slots=64" }, l) && l.n_moe_cache_slots == 64);
         common_params w;
         report("--moe with a bare first word is refused", !parse({ "--moe", "k8v8,slots=64" }, w));
+        {   // the whole list reaches the engine's setting, not its first word
+            common_params t;
+            parse({ "--moe", "state=0,kv-fallback=RAM,q8,mode=cache" }, t);
+            const char * v = llama_moe_get_opt("kv-fallback");
+            report("--moe kv-fallback=RAM,q8,mode=cache: the engine setting is 'RAM,q8'", v && std::string(v) == "RAM,q8");
+        }
     }
     {   // applying twice changes nothing more
         common_params p;

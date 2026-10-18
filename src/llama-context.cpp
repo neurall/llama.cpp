@@ -283,6 +283,7 @@ llama_context::llama_context(
                 // moves it to quantised KV, then RAM KV). A declared context computed here from guessed terms was wrong for sliding-window models (10x too low on MiMo) and
                 // is not needed: the reserve graph uses min(size, step) cells, so the model's own maximum costs nothing until a request needs it. `fit` is only logged.
                 cparams.n_ctx = hparams.n_ctx_train;
+                if (const char * fb0 = llama_moe_get_opt("kv-fallback")) { LLAMA_LOG_INFO("%s: --moe kv-fallback=%s (the KV tiers after f16 that may be used)\n", __func__, fb0); }
                 // --moe kv-fallback=none: no tier past f16 in the pool, so the context is what VRAM holds (llama_kv_fit_select refuses the rest)
                 if (const char * fb = llama_moe_get_opt("kv-fallback"); fb && strcmp(fb, "none") == 0) { cparams.n_ctx = (uint32_t) std::min<uint64_t>(hparams.n_ctx_train, fit); }
                 LLAMA_LOG_WARN("%s: kv-tail: no -c: context %u tokens (the model maximum; the pool refuses a request it cannot hold; free VRAM %.1f GiB would hold %llu tokens of KV beside nothing else)\n", __func__, cparams.n_ctx, free_b / 1073741824.0, (unsigned long long) (row ? free_b / row : 0));
