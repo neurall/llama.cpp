@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Replay a pool write ledger (llama-server --moe ledger=1 writes <logdir>/pool-ledger-<time>.csv).
+
+Every line is one write into a card's expert pool: t_us, card, kind, lo, hi (byte offsets in that card's pool buffer), bytes, who.
+Kinds: lend (a graph's bytes from the start of the pool), release (lent blocks back to the experts), zero (a class's zero block restored),
+kv-zone (the KV zone laid out), kv-move (KV rows copied to the new zone), kv-pad (pad rows zeroed), up-start / up-done (an expert upload
+into one block; "bg" = background refill), keep-hot (an expert moved out of blocks a prompt borrows), mirror (a dense-split copy filled),
+OVERLAP (the server's own live check fired).
+
+What this adds to the live check: it pairs every upload's start and end and reports a lend or a KV zone that took the block's bytes
+WHILE the copy ran (the live check only sees the two ends), and it answers "who wrote this byte, when" for any address.
+
+  pool_ledger.py LEDGER.csv                    summary, the server's OVERLAP lines, upload windows crossed by a lend or a zone
+  pool_ledger.py LEDGER.csv --addr CUDA0:7884.5   every write that covered that MiB offset of CUDA0's pool, in order
+  pool_ledger.py LEDGER.csv --at T_US          the lend, the zone and the uploads in flight at that time, per card
+"""
+import argparse, collections, csv, sys
+
+MIB = 1048576.0
+
+
+def load(path):
+    rows = []
+    import gzip
+    with (gzip.open(path, "rt", newline="") if path.endswith(".gz") else open(path, newline="")) as f:
+        for r in csv.DictReader(f):
+            try:
+                rows.append((int(r["t_us"]), r["card"], r["kind"], int(r["lo"]), int(r["hi"]), r["who"]))
+            except (KeyError, ValueError):
+                continue
+    rows.sort(key=lambda x: x[0])
+    return rows
+
+
+def windows(rows):
+    """upload windows: (card, lo, hi, who, t_start, t_done)"""
+    open_ = {}
+    out = []
+    for t, card, kind, lo, hi, who in rows:
+        key = (card, lo, who.replace(" bg", ""))
+        if kind == "up-start":
+            open_[key] = t
+        elif kind == "up-done" and key in open_:
+            out.append((card, lo, hi, who, open_.pop(key), t))
+    return out
+
+
+def crossed(rows, wins):
+    """a lend or a KV zone laid out over an upload's bytes while that upload ran"""
+    by_card = collections.defaultdict(list)
+    for t, card, kind, lo, hi, who in rows:
+        if kind in ("lend", "kv-zone", "kv-move", "kv-pad", "zero", "mirror"):
+            by_card[card].append((t, kind, lo, hi, who))
+    bad = []
+    for card, lo, hi, who, t0, t1 in wins:
+        for t, kind, a, b, w in by_card[card]:
+            if t0 < t < t1 and a < hi and b > lo:
+                bad.append((t, card, kind, a, b, w, who, t0, t1))
+    return bad
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("ledger")
+    ap.add_argument("--addr", help="CARD:MIB, e.g. CUDA0:7884.5")
+    ap.add_argument("--at", type=int, help="a time stamp (t_us of the file)")
+    ap.add_argument("--max", type=int, default=40, help="lines per list")
+    a = ap.parse_args()
+    rows = load(a.ledger)
+    if not rows:
+        sys.exit("no rows")
+    t_first = rows[0][0]
+    if a.addr:
+        card, mib = a.addr.split(":")
+        x = int(float(mib) * MIB)
+        for t, c, kind, lo, hi, who in rows:
+            if c == card and lo <= x < hi:
+                print(f"{(t - t_first) / 1e6:10.3f}s {kind:9s} [{lo / MIB:10.3f}, {hi / MIB:10.3f}) MiB  {who}")
+        return
+    if a.at is not None:
+        for card in sorted({r[1] for r in rows}):
+            lend = zone = None
+            for t, c, kind, lo, hi, who in rows:
+                if t > a.at:
+                    break
+                if c != card:
+                    continue
+                if kind == "lend":
+                    lend = (lo, hi, who)
+                if kind == "kv-zone":
+                    zone = (lo, hi, who)
+            fl = [w for w in windows(rows) if w[0] == card and w[4] <= a.at <= w[5]]
+            print(f"{card}: lend {'-' if not lend else f'[{lend[0] / MIB:.1f}, {lend[1] / MIB:.1f}) MiB {lend[2]}'}")
+            print(f"{card}: zone {'-' if not zone else f'[{zone[0] / MIB:.1f}, {zone[1] / MIB:.1f}) MiB {zone[2]}'}")
+            for w in fl[: a.max]:
+                print(f"{card}: upload in flight [{w[1] / MIB:.3f}, {w[2] / MIB:.3f}) MiB {w[3]}")
+        return
+    kinds = collections.Counter(r[2] for r in rows)
+    span = (rows[-1][0] - t_first) / 1e6
+    print(f"{len(rows)} writes over {span:.1f} s: " + ", ".join(f"{k} {n}" for k, n in kinds.most_common()))
+    ov = [r for r in rows if r[2] == "OVERLAP"]
+    print(f"\nOVERLAP lines from the server: {len(ov)}")
+    for t, card, kind, lo, hi, who in ov[: a.max]:
+        print(f"  {(t - t_first) / 1e6:10.3f}s {card} [{lo / MIB:.3f}, {hi / MIB:.3f}) MiB  {who}")
+    wins = windows(rows)
+    bad = crossed(rows, wins)
+    print(f"\nuploads: {len(wins)} complete windows; crossed by a lend / zone / move / pad / zero / mirror while running: {len(bad)}")
+    for t, card, kind, lo, hi, w, who, t0, t1 in bad[: a.max]:
+        print(f"  {(t - t_first) / 1e6:10.3f}s {card} {kind} [{lo / MIB:.1f}, {hi / MIB:.1f}) MiB ({w}) over upload {who} "
+              f"running {(t0 - t_first) / 1e6:.3f}-{(t1 - t_first) / 1e6:.3f}s")
+    sys.exit(1 if ov or bad else 0)
+
+
+if __name__ == "__main__":
+    main()

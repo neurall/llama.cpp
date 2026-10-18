@@ -1454,7 +1454,8 @@ def merge_moe(args):
 
 def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
-        args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")]
+        args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
+                             + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")]   # the pool write ledger (who writes which bytes of a card's pool): cells turn it on, see cmd_cell
     elif not build.startswith("stock") and STATE_FILE["v"]:
         env = {**env, "LLAMA_MOE_STATE": STATE_FILE["v"]}   # the first releases (no --moe flag) read the environment variable
     env, args = drop_moe_flag(build, env, args)
@@ -1899,7 +1900,10 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             t = res["timings"]
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
                    "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}" + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "")}
-            row["output"] = res.get("content") or ((res.get("choices") or [{}])[0].get("message") or {}).get("content")   # the answer text (runs.db outputs): sanity of long-context runs
+            # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
+            # a chat answer keeps its reasoning part too (a thinking model can put everything there and leave the content empty)
+            _m = ((res.get("choices") or [{}])[0].get("message") or {})
+            row["output"] = res.get("content") or ((_m.get("reasoning_content") + "\n---\n" if _m.get("reasoning_content") else "") + (_m.get("content") or ""))
             if test == "fix12k":
                 row["md5"] = hashlib.md5(res["content"].encode()).hexdigest()[:8]
             row.update(PROCSTAT)   # load time, rss, GPU log and power of the request window (--gpulog)
@@ -3463,8 +3467,10 @@ def cmd_cell(a):
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
            "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, GGML_CUDA_HUGEFS="/mnt/huge1g", PERF_LOG="r")
+    env.setdefault("PERF_LEDGER", "1")   # every cell records the pool write ledger (PERF_LEDGER=0: off); kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
     for kv in (a.env or []):
         k, _, v = kv.partition("="); env[k] = v
+    t_cell0 = time.time()
     holder = None
     if a.hold:   # simulated smaller cards: "0:16 1:16" keeps 16 GiB of GPU 0 and of GPU 1 occupied for the whole cell (a 24 GB card then behaves as an 8 GB one)
         hold = a.hold.split()
@@ -3490,6 +3496,18 @@ def cmd_cell(a):
     if a.builds.count(",") == 0:
         try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
         except OSError: pass
+    # the pool write ledgers this cell's servers wrote (one per server start): gzipped next to the server log, the replay's summary (overlaps, uploads a lend
+    # or the KV zone crossed while they ran) appended to TAG.out
+    import glob, gzip
+    led = sorted((p for p in glob.glob(os.path.join(DATA, "pool-ledger-*.csv")) if os.path.getmtime(p) >= t_cell0), key=os.path.getmtime)
+    for i, p in enumerate(led):
+        dst = os.path.join(Q5, f"{a.tag}.ledger{'' if i == 0 else '.' + str(i)}.csv.gz")
+        with open(p, "rb") as fi, gzip.open(dst, "wb") as fo:
+            shutil.copyfileobj(fi, fo)
+        os.remove(p)
+        rep = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.realpath(__file__)), "pool_ledger.py"), dst, "--max", "8"], capture_output=True, text=True)
+        with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
+            f.write(f"-- pool ledger {os.path.basename(dst)} (replay: fork/pool_ledger.py {dst})\n" + rep.stdout)
     if not lines:
         errs = [l.rstrip()[:240] for l in open(out, errors="replace") if re.search(r"FAIL|Traceback|Error|error:|PIN_FAIL|out of memory|Compute error|Segmentation|abort|Killed", l)][-4:]
         with open(os.path.join(Q5, "queue", "errors.log"), "a") as f:
