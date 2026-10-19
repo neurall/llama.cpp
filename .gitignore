@@ -167,3 +167,5 @@ fork/bench/gpulog/
 # local overrides of the run.py ini files (your models and prompts)
 fork/models.local.ini
 fork/prompts.local.ini
+fork/local.toml
+.fork/
