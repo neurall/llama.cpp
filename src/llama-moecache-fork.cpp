@@ -38,6 +38,7 @@
 #ifndef _WIN32
 #include <unistd.h>
 #include <sys/mman.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #else
