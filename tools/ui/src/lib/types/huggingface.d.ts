@@ -222,6 +222,8 @@ export interface HfCatalogEntry {
 	released: string;
 	license: string;
 	featured?: boolean;
+	/** Decision models answer with probabilities, not text; llama-ui cannot use them. */
+	decision?: boolean;
 	maxMemGb?: number;
 	sizes: HfCatalogSize[];
 }
