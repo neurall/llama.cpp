@@ -122,7 +122,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
         import configparser
         here = os.path.dirname(os.path.abspath(__file__))
         cp = configparser.ConfigParser(defaults={"dir": os.environ.get("FORK_MODELS_DIR", "/m")})
-        cp.read([os.path.join(here, "models.ini"), os.environ.get("FORK_MODELS_INI") or os.path.join(here, "models.local.ini")])   # ours, then the user's own paths and models
+        cp.read(os.path.join(here, "models.ini"))
         return {k: dict(cp[k]) for k in cp.sections()}
 
 
