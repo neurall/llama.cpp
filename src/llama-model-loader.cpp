@@ -1448,7 +1448,9 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
                 }
             }
 
-            const size_t prefetch_size = prefetch && use_mmap ? -1 : 0;
+            // (fork) no prefetch with a pin budget: MAP_POPULATE reads the whole file into the page cache and maps it before the pinned share is read by the
+            // parallel pread workers, i.e. every pinned byte is read twice and the mapped rest floods the page cache at load time (GLM 3.5-bit: mm 110 GiB first, pin after)
+            const size_t prefetch_size = prefetch && use_mmap && pin_budget == 0 ? -1 : 0;
 
             std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
                     lazy.for_file(idx));
