@@ -704,7 +704,7 @@ int llama_dsplit_experts_mode_fork() {
     return mode;
 }
 
-// --moe split-f16=1|in|0: the precision of what crosses between the cards in a split layer (expert split and dense split alike). Two tensors cross per
+// --moe split-f16=0|in|1 (default 0): the precision of what crosses between the cards in a split layer (expert split and dense split alike). Two tensors cross per
 // layer, both [n_embd, tokens]: the hidden state, to the card that computes experts on it, and the experts' weighted sum, back to the card that holds the
 // tokens. As f16 they are half the bytes on the helper's link, where they sit on the layer's critical path (GLM-5.3-Flash, 8k tokens: 131 MB each way,
 // 20 ms + 21 ms of a x4 link per layer as f32).
@@ -714,7 +714,7 @@ int llama_dsplit_experts_mode_fork() {
 int llama_dsplit_hop_mode_fork() {
     static const int mode = [] {
         const char * e = llama_moe_get_opt("split-f16");
-        if (!e) { return 1; }
+        if (!e) { return 0; }   // f32 by default: f16 hops cost up to +0.4% perplexity where the dense split ran (Next IQ3_S, 10 chunks paired, f16 vs f32 +0.33 +- 0.17%); split-f16=1 trades that for half the link bytes
         if (strcmp(e, "in") == 0) { return 2; }
         return atoi(e) != 0 ? 1 : 0;
     }();
