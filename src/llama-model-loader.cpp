@@ -1731,7 +1731,7 @@ bool llama_model_loader::load_all_data(
     std::vector<std::thread> pr_threads;
     size_t n_load_threads = std::max<size_t>(1, std::min<size_t>(16, std::thread::hardware_concurrency() / 2));
     if (const char * e = moe_opt("load-threads")) { n_load_threads = std::max(1, atoi(e)); }
-    const bool par_load = !use_mmap && !use_direct_io && !check_tensors && n_load_threads > 1;
+    const bool par_load = (!use_mmap || pin_budget > 0) && !use_direct_io && !check_tensors && n_load_threads > 1;   // (mmap with a pin budget: the pinned share is read like --load-mode pin)
     auto pr_worker = [&]() {
 #if defined(__linux__)
         if (const char * hc = getenv("LLAMA_HELPER_CPUS")) { // a user CPU mask (-C): the loader threads stay on those cores and their siblings, so the pages are first touched on their die
@@ -1792,7 +1792,10 @@ bool llama_model_loader::load_all_data(
 
         size_t n_size = ggml_nbytes(cur);
 
-        const bool from_mapping = use_mmap || lazy.has(cur);
+        // with mmap and a pin budget a tensor that already has an address sits in the pinned host buffer: read it from the file with the parallel pread path, not by faulting the
+        // mapping page by page (one thread, and every page is read into the page cache first: a second copy and a second pass over the disk); only the mapped rest comes from the mapping
+        const bool pinned_read = use_mmap && pin_budget > 0 && cur->data != nullptr && cur->buffer && ggml_backend_buffer_is_host(cur->buffer) && !lazy.has(cur);
+        const bool from_mapping = (use_mmap || lazy.has(cur)) && !pinned_read;
 
         if (from_mapping) {
             const auto & mapping = mappings.at(weight->idx);
