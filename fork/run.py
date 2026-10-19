@@ -39,7 +39,7 @@ decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat
 """
 import argparse, math, csv, glob, hashlib, io, json, os, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
 
-import types
+import types, collections
 
 
 def _register(name, ns):
@@ -995,7 +995,7 @@ if fcfg.get("gpu", "ld_extra"): os.environ.setdefault("PERF_LD_EXTRA", os.path.e
 if fcfg.get("gpu", "nvidia_smi") != "nvidia-smi": os.environ.setdefault("NVIDIA_SMI", os.path.expanduser(fcfg.get("gpu", "nvidia_smi")))
 
 PROMPTS = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bench")   # frozen prompts (src_12k.cpp, src_128k.cpp, longsrc.cpp) live in fork/bench/
-HERE = os.path.abspath(os.environ.get("PERF_BUILDS", os.getcwd()))  # one subdirectory per build (its bin/ contents)
+HERE = os.path.abspath(os.environ.get("PERF_BUILDS") or fcfg.path("devbuilds"))  # one subdirectory per build (its bin/ contents)
 DATA = os.environ.get("RUN_DATA") or PROMPTS   # directory of run-history.csv, campaigns.csv, machines.csv, tune.csv (default: fork/bench, committed)
 MODEL = os.environ.get("MODEL", "")
 MODELS_DIR = os.environ.get("PERF_MODELS_DIR", "")  # other models' pages are dropped from RAM before a run
@@ -2049,11 +2049,15 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         row = {"s_per_pass": float(s.group(1)) if s else None, "ppl": float(ppl[-1]) if ppl else None,
                "tps": 1024 / float(s.group(1)) if s else None}
         _ld = re.findall(r"load time =\s*([\d.]+) ms", log)
+        _modes = re.findall(r"prefill decision: .*?\bmode=(\S+)", log)   # which path every pass took: the planner may turn the split off after its first measurement
+        if _modes:
+            _cnt = collections.Counter(_modes)
+            row.update({k: v for k, v in decisions(log).items() if k.startswith("pf_")}, pf_mode=_cnt.most_common(1)[0][0], pf_all=";".join(f"{m}x{n}" for m, n in _cnt.most_common()))
         row.update(start_ts=_start, end_ts=time.strftime("%F %T", time.localtime(_t0 + _wall)), wall_s=_wall, **({"load_s": round(float(_ld[-1]) / 1000, 1)} if _ld else {}))
         if not ppl:
             row["note"] = "ppl failed, exit %s: %s" % (r.returncode, " | ".join(l.strip() for l in log.strip().splitlines()[-3:])[:300])
         else:
-            ppl_chunks_store(_start, build, MODEL, test, log)
+            ppl_chunks_store(_start, build + (" " + " ".join(extra_args) if extra_args else ""), MODEL, test, log)   # the variant's arguments are part of the key: default and forced-split runs of one build stay apart
     else:
         if BARE:
             COMMON = list(extra_args)
@@ -2405,6 +2409,12 @@ def store(row, build, test, rec, note, hw, vstr):
                build_no=(int(mb.group(1)) if mb else None) or build_number(mc.group(1) if mc else None), origin="stock" if build.startswith("stock") else "fork", hw=hw,
                model=model_name(), ts=time.strftime("%F %T"), build=build, test=test,
                env=json.dumps(rec, sort_keys=True), note=" | ".join(x for x in (note, row.get("note"), "sampler=" + SAMPLER if SAMPLER else None) if x) or None)
+    if not row.get("pf_mode") and CAMPAIGN and not build.startswith("stock"):   # which path the prompt passes took (one card, two cards, dense split): from the cell's server log; a run with no decision line says so
+        lg = f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log"
+        if os.path.exists(lg):
+            d = decisions(open(lg, errors="replace").read())
+            row.update({k: v for k, v in d.items() if k.startswith("pf_") or k in ("layout", "placement", "ubatch_max")})
+            if not d.get("pf_mode"): row["pf_mode"] = "no-decision"
     w = save_stats(build, row["ts"], test, hw, row["model"])
     row["uniq4"], row["out_chars"], row["code"] = text_class(row.get("output"))
     row["loop"] = int(bool(row.get("loop_abort")) or is_loop(row.get("output")))
@@ -2969,7 +2979,7 @@ def cmd_bench(a):
     stock_variants = dict(kv.partition("=")[::2] for kv in a.stock_variant)
     global REP
     n = a.n or (3 if a.test.startswith("fix") else 2)
-    for model in a.models.split(","):
+    for model in [fcfg.model(x) for x in a.models.split(",")]:   # an alias of models.ini (q36) or a path
         MODEL = model
         if not m:
             prep_model()
@@ -6155,6 +6165,8 @@ def _tool_ppl_table():
     import sqlite3
     ap = argparse.ArgumentParser(prog="run.py ppl-table", description=_tool_ppl_table.__doc__)
     ap.add_argument("model", nargs="?", default="", help="part of the model file name")
+    ap.add_argument("--readme", action="store_true", help="the README table: one row per model, columns default / one card / two cards (f16) / two cards (f32), newest run of each")
+    ap.add_argument("--ref", default="stock", help="the build the others are compared with (name starts with this; default the newest official stock)")
     a = ap.parse_args()
     c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
     runs = {}   # (model, test, start_ts, build) -> [cum ppl per chunk]
@@ -6162,15 +6174,31 @@ def _tool_ppl_table():
         for ts, b, m, t, k, v in c.execute("select start_ts, build, model, test, chunk, cum_ppl from ppl_chunks where model like ? order by start_ts, chunk", (f"%{a.model}%",)): runs.setdefault((m, t, ts, b), []).append(v)
     except sqlite3.Error: print("no ppl runs stored yet"); return 0
     nll = lambda cs: [(k + 1) * math.log(x) - (k * math.log(cs[k - 1]) if k else 0.0) for k, x in enumerate(cs)]   # per-chunk mean negative log likelihood from the cumulative perplexities
-    print("| model | test | build | stock | chunks | final ppl | stock ppl | difference per chunk, % (mean +- s.e.) | chunks worse |\n|---|---|---|---|---|---|---|---|---|")
+    path = lambda m, ts: next(iter(c.execute("select pf_all from runs where start_ts=? and model=? and pf_all is not null", (ts, m)).fetchone() or [""]), "")   # the passes of the run by path (from the log)
+    if a.readme:
+        kind = lambda b: ("one card" if "dense-split=0" in b else "two cards f32" if "split-f16=0" in b else "two cards" if "dense-split=1" in b else "default") if not b.startswith(a.ref) and "--moe" in b or not b.startswith(a.ref) else None
+        cells = {}   # model -> kind -> (ts, text)
+        for (m, t, ts, b), cs in sorted(runs.items()):
+            k = kind(b)
+            if k is None or b.startswith("stock") or b.split(" ")[0] != "b13586": continue
+            st = [(sts, sv) for (sm, stt, sts, sb), sv in runs.items() if sm == m and stt == t and sb.startswith(a.ref) and len(sv) >= len(cs)]
+            if not st: continue
+            sv = max(st)[1]; d = [100.0 * (x - y) for x, y in zip(nll(cs), nll(sv))]; n = len(d); mean = sum(d) / n
+            se = (sum((x - mean) ** 2 for x in d) / (n - 1) / n) ** 0.5 if n > 1 else 0.0
+            cells.setdefault((m, t), {"stock": f"{sv[n - 1]:.4f}", "n": n})[k] = f"{cs[-1]:.4f} ({mean:+.2f} ± {se:.2f}%)"
+        print("| model | stock ppl | ours default | ours, one card | ours, two cards f16 | ours, two cards f32 | chunks |\n|---|---|---|---|---|---|---|")
+        for (m, t), v in sorted(cells.items()):
+            print(f"| {m.replace('.gguf', '')} | {v['stock']} | " + " | ".join(v.get(k, "-") for k in ("default", "one card", "two cards", "two cards f32")) + f" | {v['n']} |")
+        return 0
+    print("| model | test | build | reference | chunks | final ppl | reference ppl | difference per chunk, % (mean +- s.e.) | chunks worse | passes by path |\n|---|---|---|---|---|---|---|---|---|---|")
     for (m, t, ts, b), cs in sorted(runs.items()):
-        if b.startswith("stock"): continue
-        st = [(sts, sb, v) for (sm, stt, sts, sb), v in runs.items() if sm == m and stt == t and sb.startswith("stock") and len(v) >= len(cs)]
+        if b.startswith(a.ref): continue
+        st = [(sts, sb, v) for (sm, stt, sts, sb), v in runs.items() if sm == m and stt == t and sb.startswith(a.ref) and len(v) >= len(cs)]
         if not st: continue
         sts, sb, sv = max(st)
         d = [100.0 * (x - y) for x, y in zip(nll(cs), nll(sv))]; n = len(d); mean = sum(d) / n
         se = (sum((x - mean) ** 2 for x in d) / (n - 1) / n) ** 0.5 if n > 1 else float("nan")
-        print(f"| {m[:34]} | {t} | {b} | {sb} | {n} | {cs[-1]:.4f} | {sv[n - 1]:.4f} | {mean:+.2f} +- {se:.2f} | {sum(x > 0 for x in d)}/{n} |")
+        print(f"| {m[:34]} | {t} | {b} | {sb} | {n} | {cs[-1]:.4f} | {sv[n - 1]:.4f} | {mean:+.2f} +- {se:.2f} | {sum(x > 0 for x in d)}/{n} | {path(m, ts)} |")
     return 0
 
 

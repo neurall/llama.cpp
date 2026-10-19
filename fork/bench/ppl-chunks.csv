@@ -43,3 +43,351 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4751
 2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4794
 2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4782
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,1,1.2431
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,2,1.2785
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,3,1.351
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,4,1.4241
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,5,1.4589
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,6,1.6221
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,7,1.6435
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,8,1.664
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,9,1.6348
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1717
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2029
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2993
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3397
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.405
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4952
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4736
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4769
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4756
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1717
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2029
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2993
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3397
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.405
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4952
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4736
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4769
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4756
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3643
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4177
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.4962
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5812
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.5907
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.7818
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.7961
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.8029
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.7626
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.378
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4305
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5069
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5869
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.5968
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.7782
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.7917
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.7973
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.758
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.932
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9396
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0147
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0277
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0657
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0778
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.0757
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1557
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1711
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1613
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.1126
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.0692
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9339
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9344
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0097
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0246
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0647
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0766
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.075
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1555
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1709
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1618
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.1128
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.0696
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.932
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9364
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0099
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0238
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0636
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0744
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.073
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.153
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1685
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.159
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.111
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.068
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1717
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2029
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2993
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3397
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.405
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4952
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4736
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4769
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4756
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1689
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2031
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.3013
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3409
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.4071
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4983
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4757
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.48
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4783
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3701
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4243
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.4999
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5837
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.5908
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.7784
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.7966
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.8026
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.7608
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3693
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4282
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5073
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5872
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.5963
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.7783
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.7893
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.7933
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.754
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6653
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5247
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5693
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7085
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7537
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7915
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.874
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8566
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8206
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7843
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6653
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5247
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5693
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7085
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7537
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7915
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.874
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8566
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8206
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7843
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6653
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5247
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5693
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7085
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7537
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7915
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.874
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8566
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8206
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7843
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6639
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5228
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5674
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7087
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7544
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7925
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.8744
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8566
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8203
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7837
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1248
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1046
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1363
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2188
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2604
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.325
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.41
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3873
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3955
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3927
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1248
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1046
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1363
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2188
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2604
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.325
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.41
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3873
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3955
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3927
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1248
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1046
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1363
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2188
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2604
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.325
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.41
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3873
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3955
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3927
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1261
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1116
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1424
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2215
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2632
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.3317
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.4161
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3927
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.4018
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3986
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1261
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.1233
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1437
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2238
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.263
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3292
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4154
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3948
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.4083
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4101
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1261
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.1233
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1437
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2238
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.263
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3292
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4154
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3948
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.4083
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4101
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1261
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.1233
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1437
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2238
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.263
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3292
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4154
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3948
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.4083
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4101
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1247
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.12
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1419
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2209
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.2591
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3245
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4135
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3928
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.4071
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4093
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,1,1.4581
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,2,1.5711
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,3,1.7079
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,4,1.7392
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,5,1.729
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,6,1.8997
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,7,1.9397
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,8,1.9166
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,9,1.8758
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,1,1.4499
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,2,1.5672
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,3,1.6999
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,4,1.7332
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,5,1.7221
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,6,1.895
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,7,1.9361
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,8,1.9123
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,9,1.8698
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,1,1.4581
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,2,1.5711
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,3,1.7079
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,4,1.7392
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,5,1.729
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,6,1.8997
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,7,1.9397
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,8,1.9166
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,9,1.8758
