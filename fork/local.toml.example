@@ -1,0 +1,13 @@
+# Copy to fork/local.toml (git-ignored) or ~/.config/llama-fork/config.toml, or set FORK_CONFIG=/path.
+# Every key is optional. Defaults: everything under <clone>/.fork (or $FORK_HOME), models under <clone>/.fork/models.
+# Any key can also be set per run: FORK_<SECTION>_<KEY>=..., e.g. FORK_PATHS_DEVBUILDS=/data/builds.
+[paths]
+# rels = "/data/rels"
+# devbuilds = "/data/rels/devbuilds"   # one directory per build, named bNNNNN (run -b b13586)
+# gh_rel = "/data/stock"               # official stock binaries (gh release download)
+# work = "/data/work"                  # server logs, queue, kept server
+[models]
+# dir = "/m"                           # base of the %(dir)s paths in models.ini; or FORK_MODELS_DIR
+[gpu]
+# nvidia_smi = "nvidia-smi"            # or the binary that matches a hand-loaded driver
+# ld_extra = ""                        # userspace libraries of such a driver, added to the library path of every cell
