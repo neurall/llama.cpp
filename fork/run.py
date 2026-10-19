@@ -6160,12 +6160,12 @@ def ppl_chunks_store(start_ts, build, model, test, log):
     except sqlite3.Error as e: print(f"ppl_chunks: {e}", flush=True)
 
 
-PPL_VARIANTS = {"default": "", "one": "moe:dense-split=0 moe:prefill-split=0", "dense": "moe:dense-split=1 moe:split-experts=0 moe:prefill-split=1", "split": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1"}
+PPL_VARIANTS = {"default": "", "one": "moe:dense-split=0 moe:prefill-split=0", "dense": "moe:dense-split=1 moe:split-experts=0 moe:prefill-split=1", "split": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1", "f16": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1 moe:split-f16=1"}
 
 
 def _tool_ppl():
     """ppl [-onl TEXT] [-b BUILD] [--variants default,one,dense,split] [--chunks N] [-nrt] [-n]: the perplexity tests. For every model of the gainers list (smallest first) the official stock binary and then BUILD (default latest) in each variant:
-    default (the planner decides), one (one card forced), dense (dense split only, no experts on the helper), split (dense split with experts forced). The per-chunk values go to runs.db (ppl_chunks); the table is `run.py ppl-table --readme`"""
+    default (the planner decides), one (one card forced), dense (dense split only, no experts on the helper), split (dense split with experts forced), f16 (split with f16 hand-offs between the cards, --moe split-f16=1; not in the default list). The per-chunk values go to runs.db (ppl_chunks); the table is `run.py ppl-table --readme`"""
     import sqlite3
     ap = argparse.ArgumentParser(prog="run.py ppl", description=_tool_ppl.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-onl", default="", help="models whose alias or file name contains TEXT (comma list)")
