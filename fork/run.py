@@ -117,8 +117,22 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
         return os.path.expanduser(get("paths", key))
 
 
+    def models_ini():
+        """fork/models.ini: [alias] path = full model file, url = where it came from; {alias: {path, url}}"""
+        import configparser
+        here = os.path.dirname(os.path.abspath(__file__))
+        cp = configparser.ConfigParser(defaults={"dir": os.environ.get("FORK_MODELS_DIR", "/m")})
+        cp.read([os.path.join(here, "models.ini"), os.environ.get("FORK_MODELS_INI") or os.path.join(here, "models.local.ini")])   # ours, then the user's own paths and models
+        return {k: dict(cp[k]) for k in cp.sections()}
+
+
     def model(key):
-        return os.path.expanduser(get("models", key))
+        """alias -> model path: environment FORK_MODELS_<ALIAS>, then models.ini, then config.toml / defaults; anything else (a path) comes back unchanged"""
+        env = os.environ.get(f"FORK_MODELS_{key}".upper())
+        if env: return os.path.expanduser(env)
+        ini = models_ini().get(key)
+        if ini and ini.get("path"): return os.path.expanduser(ini["path"])
+        return os.path.expanduser(get("models", key)) if key in _FILE.get("models", {}) or key in DEFAULTS["models"] else key
 
     return {k: v for k, v in dict(locals()).items() if not (k.startswith('__') and k != '__doc__')}
 
@@ -303,7 +317,6 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
     EXP_COLS = ["exp", "arm", "ready_s", "wall_s", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3", "miss_per_layer", "ddr_gbs", "pcie_gbs", "ddr_util", "pcie_util",
                 "cpu_util", "gpu_util", "placement", "decisions", "rungs", "held_gib", "mem_limit", "cache_state", "temp", "state", "sys"]
     TOOLS = {"cli": "llama-cli", "perplexity": "llama-perplexity", "completion": "llama-completion"}
-    HOLD = os.path.join(os.path.dirname(os.path.realpath(__file__)), "experiments", "vram-sim", "vramhold.py")
 
 
     def _read(path, default=""):
@@ -567,20 +580,8 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
         for a in arms:
             if a.get("state") and os.path.exists(a["state"]) and not dry and a.get("keep_state") != "1":   # keep_state = 1: a second phase continues the arm's learned state
                 os.remove(a["state"])
-        holder = None
-        if setup.get("hold_vram") and not dry:
-            holder = subprocess.Popen([sys.executable, HOLD] + [f"{g}:{gib}" for g, gib in setup["hold_vram"].items()], env=base_env,
-                                      stdout=subprocess.PIPE, text=True, start_new_session=True)
-            held_ok = False
-            for _ in range(120):
-                if "holding" in (holder.stdout.readline() or ""):
-                    held_ok = True
-                    break
-                if holder.poll() is not None:
-                    break
-            if not held_ok or holder.poll() is not None:
-                sys.exit(f"hold_vram failed: {HOLD} did not start holding (missing or crashed); rows would claim a constraint that never existed")
-            print(f"holding VRAM {setup['hold_vram']}", flush=True)
+        if setup.get("hold_vram"):
+            sys.exit("hold_vram is gone: the server holds memory itself; put --moe sim-vram=MB (MiB left free) in the arm args")
         n_run = 0
         try:
             for mname, mpath in models.items():
@@ -603,11 +604,7 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
                             if not dry:
                                 store_row(rs, spec, name, spec_sha, arm, mname, mpath, rnd, row, hw, setup, guard_lim)
         finally:
-            if holder:
-                try:
-                    os.killpg(os.getpgid(holder.pid), signal.SIGKILL)
-                except Exception:
-                    pass
+            pass
         print(f"{name}: {n_run} runs", flush=True)
 
 
@@ -882,7 +879,7 @@ consistent best = the highest value that at least two runs agree on within 5% (a
         for r in rows:
             if key(r.get("ts"), r.get("build"), r.get("test"), r.get("tps")) in have: continue
             con.execute(ins(cols), row_values(r, cols)); n += 1
-        con.commit(); print(f"{n} CSV rows added to {DB} ({len(rows)} in the CSV)")
+        con.commit(); n and print(f"{n} CSV rows added to {DB} ({len(rows)} in the CSV)")
     def show(cur):
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
@@ -963,7 +960,7 @@ HERE = os.path.abspath(os.environ.get("PERF_BUILDS", os.getcwd()))  # one subdir
 DATA = os.environ.get("RUN_DATA") or PROMPTS   # directory of run-history.csv, campaigns.csv, machines.csv, tune.csv (default: fork/bench, committed)
 MODEL = os.environ.get("MODEL", "")
 MODELS_DIR = os.environ.get("PERF_MODELS_DIR", "")  # other models' pages are dropped from RAM before a run
-PPL_TEXT = os.path.join(PROMPTS, "longsrc.cpp")  # frozen snapshot of llama.cpp common/json-schema-to-grammar.cpp (code, like agent prompts)
+PPL_TEXT = os.path.join(PROMPTS, os.environ.get("PERF_PPL_FILE") or "longsrc.cpp")  # frozen snapshot of llama.cpp common/json-schema-to-grammar.cpp (code, like agent prompts)
 BARE = False
 WRAP = []   # --wrap "CMD ARGS": the server is started as CMD ARGS llama-server ... (a profiler, e.g. nsys profile -o FILE --force-overwrite=true)
 THREADS = os.environ.get("PERF_THREADS", "")                   # decode threads: unset = no -t, so the thread autotune (decode and batch) runs; set only to measure a fixed count (fork/cloud/pod.sh sets it for rented boxes)
@@ -1009,7 +1006,50 @@ CHAT_LONG = ("write smallest html tetris game. Requirements: a single self-conta
              "resumes the game, and pressing R restarts it. When a new piece cannot spawn, show a game over overlay with the final score and a hint to press R. Keep the code "
              "readable: one function for collision tests, one for locking a piece, one for clearing lines, one for drawing, and a requestAnimationFrame loop with a fixed time "
              "step. Do not use any frameworks. Answer with the complete html file only, in a single code block, without any explanation before or after it.")
+KEEP_SERVER = False   # --keep-server (a run list does this unless -x): the server outlives the run and the next cell with the same model, build and args uses it (no reload); later runs find the cache the earlier ones filled
+KEPT = "/p/bw/data/q5h/kept-server.json"   # the kept server: key (model, build, args), pid, log file
+DETACH = [False]      # server_run sets it while it starts a server to keep: no die-with-parent, own session
+
+
+class PidProc:
+    """Handle on a server an earlier run.py process started (the kept server): the parts of Popen that stop() and the samplers use."""
+    def __init__(self, pid): self.pid = pid
+    def poll(self):
+        try: return None if open(f"/proc/{self.pid}/stat").read().rsplit(")", 1)[1].split()[0] != "Z" else 0
+        except OSError: return 0
+    def _sig(self, sig):
+        try: os.kill(self.pid, sig)
+        except OSError: pass
+    def terminate(self): self._sig(signal.SIGTERM)
+    def kill(self): self._sig(signal.SIGKILL)
+    def wait(self, timeout=None):
+        t0 = time.time()
+        while self.poll() is None:
+            if timeout is not None and time.time() - t0 > timeout: raise subprocess.TimeoutExpired("kept server", timeout)
+            time.sleep(0.5)
+
+
+def kept_get():
+    """The kept server's record while it lives, else None."""
+    try: d = json.load(open(KEPT))
+    except (OSError, ValueError): return None
+    return d if PidProc(d["pid"]).poll() is None else None
+
+
+def kept_kill():
+    """Stops the kept server (it holds the VRAM and the pool) and forgets it."""
+    d = kept_get()
+    if d: kill_tree(d["pid"])   # SIGTERM 8 s, then SIGKILL: the old stop() waited for a server stuck in a batch
+    try: os.remove(KEPT)
+    except OSError: pass
+
+
 TAGBOX = {"v": ""}   # the running test and prompt (game4-racing, edit4-2, long1k, ...): --moe tag= puts it into the routing file name
+def _ctx_args(default):
+    """-c for a test: --ctx N, else the test's own; --ctx -1 passes no -c at all (the engine decides: kv-tail makes it the model's maximum)"""
+    c = OVR.get("ctx")
+    return [] if c is not None and int(c) < 0 else ["-c", str(c or default)]
+
 IDX = 0    # run counter: test chatv answers prompt IDX mod len(CHAT_PROMPTS) (a repeated temp-0 answer would reuse exactly the cached experts)
 CHAT_PROMPTS = [
     "Write a Python function that parses a CSV file and returns the average of each column.",
@@ -1027,11 +1067,12 @@ CHAT_PROMPTS = [
 ]
 
 
+PROMPT_TWEAK = 0   # set by the loop retry below: the repeated run gets this many newlines appended to its prompt. A greedy run of the same prompt loops again; a changed prompt is cheaper than an anti-repetition sampler (which changes the speed and the cache hit rate being measured)
 def ovr_prompt(default):
     p = OVR.get("prompt")
     if p and p.startswith("@"):
-        return open(p[1:]).read()
-    return p or default
+        p = open(p[1:]).read()
+    return (p or default) + "\n" * PROMPT_TWEAK
 GREEDY = {"temperature": 0, "top_p": 1, "top_k": 1}
 SEED = 424242
 FIXED = {"seed": SEED, "ignore_eos": True}  # protocol v2 (tests fix, fix12k): same prompt, seed and exact token count for every build
@@ -1167,7 +1208,31 @@ def stop(p):
         p.wait()
 
 
+POWER_DAY, POWER_NIGHT = (220, 280), (200, 200)   # W per GPU (GPU0 = x4 card, GPU1 = x16): 07:00-23:50 and 23:50-07:00 (user 2026-10-18; the x4 card's small fan is loud at night)
+
+
+def power_schedule(now=None):
+    """the power limits for the time of day: day 07:00-23:50 (x4 220 W, x16 280 W), night 23:50-07:00 (200 W both)."""
+    t = time.localtime(now)
+    m = t.tm_hour * 60 + t.tm_min
+    return POWER_DAY if 7 * 60 <= m < 23 * 60 + 50 else POWER_NIGHT
+
+
+def apply_power_schedule():
+    """sets the live limits to the schedule's, where they differ (every run start and `run.py stop` call it, so a chain crossing 23:50 or 07:00 changes at its next cell)."""
+    want = power_schedule()
+    try:
+        cur = [int(float(x)) for x in subprocess.run([NVSMI, "--query-gpu=power.limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout.split()]
+    except Exception:
+        return
+    for i, w in enumerate(want[:len(cur)]):
+        if cur[i] != w:
+            r = subprocess.run(["sudo", "-n", NVSMI, "-i", str(i), "-pl", str(w)], capture_output=True, text=True)
+            print(f"power: GPU {i} {cur[i]} -> {w} W" + ("" if r.returncode == 0 else f"  (failed: {r.stderr.strip()[:80]})"), flush=True)
+
+
 def wait_vram_free():
+    apply_power_schedule()
     kill_leftovers()
     t0 = time.time()
     while True:
@@ -1177,7 +1242,7 @@ def wait_vram_free():
         out = subprocess.run([NVSMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True).stdout.split()
         out = [x for x in out if x.isdigit()]   # no GPU, or an nvidia-smi that fails: nothing to wait for
-        if not out or max(int(x) for x in out) < 500 + int(os.environ.get("PERF_HOLD_MB", 0)):  # PERF_HOLD_MB: VRAM a holder process keeps on purpose (simulated smaller card)
+        if not out or max(int(x) for x in out) < 500:
             wait_host_free()
             return
         time.sleep(1)
@@ -1186,9 +1251,9 @@ def wait_vram_free():
 def wait_host_free(limit_s=900):
     """the host side of 'the machine is free': a 100 GB model process needs a while to unmap its memory after it was told to stop, and the next load must not start into
     that (swap, a stalled cudaHostRegister: PIN_STALL, ssh crawling). Waits until no llama process is left (they are not killed here: wait_vram_free already did that
-    for the stale ones), no process holds more than PERF_BIG_RSS_GB (default 8) of resident memory, and MemAvailable is at least PERF_MIN_AVAIL_GB (default 8).
+    for the stale ones), no process holds more than PERF_BIG_RSS_GB (default 8) of resident memory, and MemAvailable is at least PERF_MIN_AVAIL_GB (default 4: with a 108 GiB pool resident only ~6 GiB is available, and 8 made every run wait the full 900 s).
     The hugepage pool is reserved separately and persists on purpose, it is not counted. Gives up (with a message, the run goes on) after limit_s."""
-    big, need = int(os.environ.get("PERF_BIG_RSS_GB", 8)), int(os.environ.get("PERF_MIN_AVAIL_GB", 8))
+    big, need = int(os.environ.get("PERF_BIG_RSS_GB", 8)), int(os.environ.get("PERF_MIN_AVAIL_GB", 4))
     t0, why = time.time(), ""
     while time.time() - t0 < limit_s:
         why = ""
@@ -1294,6 +1359,24 @@ def decisions(log):
 RUN_COLS += DECISION_COLS
 
 
+def cmd_cells(a):
+    """A markdown table of the cells of one campaign prefix (decode, prompt speed, hit rate) with what the server log says about the memory: the context the server
+    ran with (n_ctx_slot) and the pool of the first card, so a cell that did not get the setting it was queued for shows at once."""
+    import csv as _csv
+    rows = list(_csv.reader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "run-history.csv"), newline="")))
+    hd = rows[0]; ix = {k: i for i, k in enumerate(hd)}
+    print("| cell | decode t/s | prompt t/s | hit rate % | n_ctx_slot | pool card 0 (MiB) |\n|---|---|---|---|---|---|")
+    for x in rows[1:]:
+        c = x[ix["campaign"]]
+        if not c.startswith(a.prefix) or c.endswith("probe") or x[ix["ok"]] != "1":
+            continue
+        tag = c.rsplit("-", 1)[0]; lg = f"/p/bw/data/q5h/{tag}.server.log"; pool = ctx = ""
+        if os.path.exists(lg):
+            t = open(lg, errors="replace").read()
+            m = re.search(r"block pool on CUDA0: \d+ layers, ([\d.]+) MiB", t); pool = m.group(1) if m else ""
+            m = re.search(r"n_ctx_slot = (\d+)", t); ctx = m.group(1) if m else ""
+        print(f"| {tag} | {x[ix['tps']]} | {x[ix['pp']]} | {x[ix['hit']]} | {ctx} | {pool} |")
+    return 0
 def cmd_misfires(a):
     """runs whose prompt ran in the slower mode: per model, machine and pass size (sqrt(2) steps, as the engine's buckets), the prompt speed of each mode
     the engine chose in any run; a run is listed when another mode of the same key was faster by more than --tol. Also every stock re-measurement."""
@@ -1430,15 +1513,17 @@ def merge_moe(args):
 
 def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
-        args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")]
+        args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
+                             + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")]   # the pool write ledger (who writes which bytes of a card's pool): cells turn it on, see cmd_cell
     elif not build.startswith("stock") and STATE_FILE["v"]:
         env = {**env, "LLAMA_MOE_STATE": STATE_FILE["v"]}   # the first releases (no --moe flag) read the environment variable
     env, args = drop_moe_flag(build, env, args)
     args = merge_moe(args)
     logf = f"/tmp/perf-{build}{LOGTAG}.log"
+    global WATCH_LOG; WATCH_LOG = logf   # post() watches this file
     with open(logf, "w") as lf:
         p = subprocess.Popen(WRAP + [os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
-                             + args, stdout=lf, stderr=subprocess.STDOUT, env=env, preexec_fn=_die_with_parent)
+                             + args, stdout=lf, stderr=subprocess.STDOUT, env=env, preexec_fn=None if DETACH[0] else _die_with_parent, start_new_session=DETACH[0])
     t0 = last = time.time()
     size = 0
     while True:
@@ -1464,10 +1549,81 @@ def _server_start_once(build, env, args):
         time.sleep(1)
 
 
-def post(path, body, timeout=3600):
-    req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", json.dumps(body).encode(),
-                                 {"Content-Type": "application/json"})
-    return json.load(urllib.request.urlopen(req, timeout=timeout))
+PARTIAL = {"text": ""}   # the answer text received so far by the last post(): a failed run stores it (outputs table), so a crash keeps what was generated
+ANSWER_FILE = os.environ.get("PERF_ANSWER")   # a file: post() also writes the received text here, flushed per chunk (survives a stopped run.py); the cell subcommand sets it per cell
+WATCH_LOG = None   # server log of the running server: post() takes its growth as progress, the server is asked (/slots) only while the log is silent (decode writes nothing per token)
+
+
+def slots_progress():
+    """(prompt tokens in the slot's KV so far, tokens decoded, last generated bytes) from the server's /slots, None when it does not answer in 5 s (it answers between two batches)"""
+    try:
+        sl = json.load(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/slots", timeout=5))
+        return max((s.get("n_prompt_tokens", 0) for s in sl), default=0), max((s["next_token"][0]["n_decoded"] for s in sl if s.get("next_token")), default=0), "".join(s.get("generated_tail", "") for s in sl)
+    except Exception:
+        return None
+
+
+def gpu_busy():
+    """True when any GPU shows utilisation > 0 right now (nvidia-smi, nothing is sent to the server)"""
+    try:
+        o = subprocess.run([NVSMI, "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
+        return any(int(x) > 0 for x in o.split())
+    except Exception:
+        return True
+
+
+def post(path, body, timeout=3600, every=10, idle_polls=2):
+    """POST and wait for the answer. No time limit: every `every` s the server log's growth is printed; the run counts as stopped only when the log did not grow and every GPU was idle
+    for `idle_polls` polls in a row (a slow debug run is waited for, a dead one is not). The server is never asked, so bench numbers stay clean. With PERF_WATCH=1 (debug cells) /slots is
+    read as well while the log is silent (ctx length, tokens decoded) and a run whose last generated bytes end in '!!!' is stopped."""
+    stream = path == "/completion" and bool(os.environ.get("PERF_WATCH"))   # debug runs only (bench runs stay a plain request): as a stream, so the text written so far survives a server crash or a stopped run (PARTIAL, ANSWER_FILE); the result has the same fields as the plain answer
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", json.dumps({**body, "stream": True} if stream else body).encode(), {"Content-Type": "application/json"})
+    box = {}
+    PARTIAL["text"] = ""
+    def work():
+        try:
+            resp = urllib.request.urlopen(req, timeout=timeout)
+            if not stream:
+                box["r"] = json.load(resp); return
+            last = {}
+            af = open(ANSWER_FILE, "w") if ANSWER_FILE else None
+            try:
+                for raw in resp:
+                    line = raw.decode(errors="replace").strip()
+                    if not line.startswith("data:") or line == "data: [DONE]": continue
+                    last = json.loads(line[5:])
+                    PARTIAL["text"] += last.get("content", "")
+                    if af and last.get("content"): af.write(last["content"]); af.flush()
+            finally:
+                if af: af.close()
+            box["r"] = {**last, "content": PARTIAL["text"]}
+        except BaseException as e: box["e"] = e
+    th = threading.Thread(target=work, daemon=True); th.start()
+    t0 = time.time(); lsz = -1; idle = 0; last = None
+    while True:
+        th.join(every)
+        if not th.is_alive(): break
+        try: sz = os.path.getsize(WATCH_LOG)
+        except (OSError, TypeError): sz = -1
+        if sz != lsz:   # the log grew (prefill passes, tuner, uploads): alive
+            if lsz >= 0:
+                try:
+                    with open(WATCH_LOG, "rb") as f: f.seek(max(0, sz - 300)); ln = f.read().decode(errors="replace").rstrip().splitlines()[-1]
+                    print(f"progress {time.time() - t0:5.0f} s: log {ln[:110]}", flush=True)
+                except (OSError, IndexError): pass
+            lsz = sz; idle = 0
+            continue
+        if os.environ.get("PERF_WATCH"):   # debug cells: ask the server while its log is silent
+            pr = slots_progress()
+            if pr is not None and pr[2].rstrip().endswith("!!!"):   # the run turned into '!!!!': stop it now (the server is killed with the cell), the dump of a NaN hook is already written
+                raise RuntimeError(f"garbled output ('!!!' at the end after {pr[1]} tokens, ctx {pr[0]}): stopped")
+            if pr is not None and pr[:2] != (last or (None, None))[:2]:
+                print(f"progress {time.time() - t0:5.0f} s: ctx {pr[0]} tokens, decoded {pr[1]}, tail {pr[2][-12:]!r}", flush=True); last = pr
+        idle = 0 if gpu_busy() else idle + 1
+        if idle >= idle_polls:
+            raise RuntimeError(f"run stopped: server log silent and GPUs idle for {idle * every} s (after {time.time() - t0:.0f} s)")
+    if "e" in box: raise box["e"]
+    return box["r"]
 
 
 def post_loopguard(path, body, timeout=3600, every=128, min_tokens=400, window=150):
@@ -1654,8 +1810,22 @@ def server_run(build, env, args, path, body, render=None):
     PROCSTAT["cache_state"] = model_residency()
     _t0 = time.time(); PROCSTAT["start_ts"] = time.strftime("%F %T", time.localtime(_t0))
     PROCSTAT["endpoint"] = "completion" if path == "/completion" else "chat"
-    p, logf = server_start(build, env, args)
-    PROCSTAT["load_s"] = round(time.time() - _t0, 1)   # server_start returns when the server answers
+    key = repr((build, MODEL, tuple(args), sorted((k, v) for k, v in env.items() if os.environ.get(k) != v)))
+    d = kept_get() if KEEP_SERVER else None
+    if d and d["key"] == key:
+        p, logf = PidProc(d["pid"]), d["logf"]   # kept from an earlier run or cell: no start, no load wait
+        global WATCH_LOG; WATCH_LOG = logf
+    else:
+        had = kept_get()
+        kept_kill()   # another model, build or args (or no keeping): the old server goes first, it holds the VRAM
+        if had: wait_vram_free()
+        DETACH[0] = KEEP_SERVER
+        try: p, logf = server_start(build, env, args)
+        finally: DETACH[0] = False
+        if KEEP_SERVER: json.dump(dict(key=key, pid=p.pid, logf=logf), open(KEPT, "w"))
+    PROCSTAT["load_s"] = round(time.time() - _t0, 1)   # server_start returns when the server answers (about 0 for a kept server)
+    try: open(LOAD_FILE, "w").write(f"{PROCSTAT['load_s']}")   # the watching run.py shows it in the status (peek_line)
+    except OSError: pass
     gstop = gpu_sampler(build, p.pid) if GPULOG else (lambda *a: ({}, ""))
     t_req = [None, None]   # the request window: the power columns cover it only
     perf = None
@@ -1665,17 +1835,20 @@ def server_run(build, env, args, path, body, render=None):
         perf = (subprocess.Popen(["perf", "record", "-F", "499", "-o", pbase + ".data", "-p", str(p.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL), pbase)
     bwstop = pcie_sampler() if GPULOG else (lambda: None)   # the engine's own byte and time counters are the bandwidth record; the nvidia-smi view only with --gpulog
     try:
-        if render:   # the server renders the model's chat template into the prompt text
-            body = {**body, "prompt": post("/apply-template", {"messages": render})["prompt"]}
-        if OVR.get("clamp") and isinstance(body.get("prompt"), str):   # --clamp N: the prompt is cut to N tokens (the server counts them, so it is right for every tokenizer)
-            txt, n_cl = body["prompt"], int(OVR["clamp"])
+        def clamp_text(txt, n_cl):   # --clamp N: cut to N tokens (the server counts them, so it is right for every tokenizer)
             for _ in range(4):
                 n_tok = len(post("/tokenize", {"content": txt})["tokens"])
                 if n_tok <= n_cl:
                     break
                 txt = txt[:int(len(txt) * n_cl / n_tok * 0.995)]
-            body = {**body, "prompt": txt}
             print(f"clamp: prompt cut to {n_tok} tokens (limit {n_cl})", flush=True)
+            return txt
+        if render:   # the server renders the model's chat template into the prompt text; a clamp cuts the user text first (cutting the rendered text would drop the assistant header)
+            if OVR.get("clamp"):
+                render = [{**m, "content": clamp_text(m["content"], int(OVR["clamp"]))} if m.get("role") == "user" else m for m in render]
+            body = {**body, "prompt": post("/apply-template", {"messages": render})["prompt"]}
+        elif OVR.get("clamp") and isinstance(body.get("prompt"), str):
+            body = {**body, "prompt": clamp_text(body["prompt"], int(OVR["clamp"]))}
         if SYNC and not WARMING:   # start barrier: drop a ready file, wait until N instances have one
             d, n = SYNC.rsplit(":", 1); os.makedirs(d, exist_ok=True); BAR_N[0] += 1
             open(os.path.join(d, f"b{BAR_N[0]}-{PORT}"), "w").close()
@@ -1710,8 +1883,25 @@ def server_run(build, env, args, path, body, render=None):
                       "predicted_per_second": gen / max(wall - pms, 1e-3), "prompt_per_second": pn / max(pms, 1e-3), "prompt_ms": pms * 1000}
             return res, logf
         rep = max(1, int(OVR.get("repeat") or 1))   # --repeat N: N requests to this server, the last one is the result (warm)
+        if OVR.get("lead"):   # --lead N: a request with a prompt of about N tokens to the same server first (the KV grows for it, the measured request then shrinks it)
+            src = open(os.path.join(PROMPTS, "src_12k.cpp" if int(OVR["lead"]) > 3000 else "longsrc.cpp"), errors="replace").read()
+            src = (src * (1 + int(OVR["lead"]) * 4 // max(1, len(src))))[: int(OVR["lead"]) * 4]   # ~4 characters per token
+            lb = dict(body); lb["n_predict"] = 16
+            if "messages" in lb: lb["messages"] = [{"role": "user", "content": "Summarize this code in one sentence:\n" + src}]
+            else: lb["prompt"] = "// summary of the code below\n" + src
+            r0 = post(path, lb)
+            PROCSTAT["lead_pp"] = (r0.get("timings") or {}).get("prompt_per_second")
+            PROCSTAT["lead_n"] = (r0.get("timings") or {}).get("prompt_n")
         for i_rep in range(rep):
-            res = (post_loopguard(path, body) if path == "/completion" and not KEEP_LOOPS and int(body.get("n_predict", 0)) >= 800 else post(path, body))
+            try:
+                res = (post_loopguard(path, body) if path == "/completion" and not KEEP_LOOPS and int(body.get("n_predict", 0)) >= 800 else post(path, body))
+            except Exception as e:   # a server whose slot context is smaller than the prompt (stock splits -c over its slots): cut the prompt to fit instead of failing, and say so (prompt_n and clamped= in the note)
+                m = re.search(r"exceeds the available context size \((\d+) tokens\)", str(e))
+                if not m or not isinstance(body.get("prompt"), str): raise
+                lim = int(m.group(1)) - int(body.get("n_predict") or 0) - 16
+                body = {**body, "prompt": clamp_text(body["prompt"], lim)}
+                PROCSTAT["clamped"] = lim
+                res = (post_loopguard(path, body) if path == "/completion" and not KEEP_LOOPS and int(body.get("n_predict", 0)) >= 800 else post(path, body))
             if i_rep == 0 and rep > 1:
                 PROCSTAT["rep_first_pp"] = (res.get("timings") or {}).get("prompt_per_second")
         t_req[1] = time.time()
@@ -1757,16 +1947,19 @@ def server_run(build, env, args, path, body, render=None):
                 os.remove(perf[1] + ".data")
             except Exception as e:
                 print("perf-prof failed:", e)
-        stop(p)
-        try:   # the snapshot is written when the server exits
-            time.sleep(1)
-            PROCSTAT.update(snapshot_knobs(_t0))
-            PROCSTAT.update(load_mode_from_log(logf))
-            if "load_mode" not in PROCSTAT or ("knobs_end" not in PROCSTAT and not build.startswith("stock")):
-                print(f"note: load_mode/knobs_end not found (log {logf!r}, snapshot since {time.strftime('%T', time.localtime(_t0))}, model {MODEL!r})", flush=True)
-        except Exception as e:
-            print(f"note: load_mode/knobs_end not recorded: {e!r}", flush=True)
-
+        kept = KEEP_SERVER and p.poll() is None and sys.exc_info()[0] is None   # a failed run stops the kept server too
+        if not kept:
+            if KEEP_SERVER: kept_kill()
+            else: stop(p)
+            try:   # the snapshot is written when the server exits
+                time.sleep(1)
+                PROCSTAT.update(snapshot_knobs(_t0))
+                PROCSTAT.update(load_mode_from_log(logf))
+                if "load_mode" not in PROCSTAT or ("knobs_end" not in PROCSTAT and not build.startswith("stock")):
+                    print(f"note: load_mode/knobs_end not found (log {logf!r}, snapshot since {time.strftime('%T', time.localtime(_t0))}, model {MODEL!r})", flush=True)
+            except Exception as e:
+                print(f"note: load_mode/knobs_end not recorded: {e!r}", flush=True)
+    
 
 def agent_run(build, env, args):
     sys.path.insert(0, os.environ.get("PERF_AGENT_DIR") or fcfg.path("agent"))
@@ -1785,7 +1978,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
     COMMON = (COMMON_ALL if not (plain or build.startswith("stock")) else \
         [x for i, x in enumerate(COMMON_ALL) if x not in ("--cpu-moe", "--moe-expert-cache")
          and not (x == "-1" and COMMON_ALL[i - 1] == "--moe-expert-cache")]) + list(extra_args)  # stock/plain: autofit, no cache
-    wait_vram_free()
+    if not kept_get(): wait_vram_free()   # a kept server holds the VRAM itself
     env = {**os.environ, **extra_env, "LD_LIBRARY_PATH": ldpath(build), "LLAMA_MOE_CACHE_STATS": "1",
            "LLAMA_MOE_CACHE_STATSLOG": "32", "LLAMA_MOE_STATSLOG": f"/tmp/perf-{build}{LOGTAG}-stats.txt",  # builds with statslog write a text line per 32 steps (moe-stats.csv)
            "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
@@ -1832,13 +2025,19 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
     else:
         if BARE:
             COMMON = list(extra_args)
+            if OVR.get("ctx") and int(OVR["ctx"]) > 0 and "-c" not in COMMON:
+                COMMON += ["-c", str(OVR["ctx"])]   # --ctx N in bare mode: the pf tests built their own -c and dropped it (a 'static 20k' run had the calculated 203k)
         _pfn = re.fullmatch(r"pf(\d+)k", test)   # pf4k, pf6k, pf8k ...: the first N thousand tokens of the frozen 12k source (one pass when -ub >= N thousand)
         if test in ("pf12k", "pf12k-stock", "pf128k", "fix12k") or (_pfn and int(_pfn.group(1)) not in (12, 128)):
             pf_ctx = str(OVR.get("ctx") or (131072 if test == "pf128k" else (int(_pfn.group(1)) + 2) * 1024 if _pfn and int(_pfn.group(1)) > 14 else 16384))
             dev = (["-t", THREADS] if THREADS else []) + ["-dev", os.environ.get("PERF_PF_DEV") or ("CUDA1,CUDA0" if DEVS == "CUDA0,CUDA1" else DEVS), "-c", pf_ctx, "-ub", "2048", "-b", "2048"]
             args = list(extra_args) if BARE else dev + ((["--moe-expert-cache", "0"] if test == "pf12k-stock" and not build.startswith("stock") else []) if test == "pf12k-stock" or plain or build.startswith("stock") else ["--cpu-moe", "-nr", "--moe-expert-cache", "-1"]) + list(extra_args)
+            if BARE and OVR.get("ctx") and int(OVR["ctx"]) > 0 and "-c" not in args:
+                args += ["-c", str(OVR["ctx"])]   # --ctx N in bare mode (see above)
             if BARE and (plain or build.startswith("stock")) and "-c" not in args:
                 args += ["-c", pf_ctx]  # stock's default context (4096) rejects the 12k prompt (HTTP 400); the fork sets 32k itself
+            if BARE and (plain or build.startswith("stock")) and "-np" not in args and "--parallel" not in args:
+                args += ["-np", "1"]    # stock's auto slots (4) split -c: 16384 / 4 = 4096 per slot, the same HTTP 400 ("exceeds the available context size (4096 tokens)", 2026-10-19)
             _pf_big = test == "pf128k" or (_pfn and int(_pfn.group(1)) > 12)   # pf40k, pf64k ...: the first N thousand tokens of the 128k source
             _pf_text = open(os.path.join(PROMPTS, "src_128k.cpp" if _pf_big else "src_12k.cpp")).read()
             if _pfn and int(_pfn.group(1)) not in (12, 128):   # the 12k file is 12294 tokens (GLM tokenizer, 4.4 characters each): cut in proportion
@@ -1848,12 +2047,21 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 res, logf = server_run(build, env, args, "/v1/chat/completions",
                                        {"messages": [{"role": "user", "content": _pf_text}], "max_tokens": int(OVR.get("tokens") or 1024), **GREEDY, "cache_prompt": False})
             else:
-              res, logf = server_run(build, env, args, "/completion",
-                                   {"prompt": ovr_prompt(_pf_text), "n_predict": int(OVR.get("tokens") or os.environ.get("PERF_NPRED", 64 if test == "pf128k" else 256 if test == "fix12k" else 32)),
+              _np = int(OVR.get("tokens") or os.environ.get("PERF_NPRED", 64 if test == "pf128k" else 256 if test == "fix12k" else 32))
+              if OVR.get("chat"):   # --chat: an instruct model gets its chat template (raw cut text: Qwen3.8 stopped after 1 token at 40k, 2026-10-18); /completion keeps the clamp and the loop guard
+                  res, logf = server_run(build, env, args, "/completion", {"n_predict": _np, "cache_prompt": False, **GREEDY},
+                                         render=[{"role": "user", "content": OVR["chat"] + "\n\n" + ovr_prompt(_pf_text)}])
+              else:
+                  res, logf = server_run(build, env, args, "/completion",
+                                   {"prompt": ovr_prompt(_pf_text), "n_predict": _np,
                                     "cache_prompt": False, **GREEDY, **(FIXED if test == "fix12k" else {})})
             t = res["timings"]
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
-                   "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}" + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "")}
+                   "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}" + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
+            # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
+            # a chat answer keeps its reasoning part too (a thinking model can put everything there and leave the content empty)
+            _m = ((res.get("choices") or [{}])[0].get("message") or {})
+            row["output"] = res.get("content") or ((_m.get("reasoning_content") + "\n---\n" if _m.get("reasoning_content") else "") + (_m.get("content") or ""))
             if test == "fix12k":
                 row["md5"] = hashlib.md5(res["content"].encode()).hexdigest()[:8]
             row.update(PROCSTAT)   # load time, rss, GPU log and power of the request window (--gpulog)
@@ -1876,26 +2084,26 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         base = CHAT_TESTS.get(test, test)
         if base in ("tetris", "t100", "fix"):
             # t100: what most people run on a CLI: one short prompt, 100 tokens, -c 1024, temperature 0 (GREEDY)
-            args = COMMON + ["-c", str(OVR.get("ctx") or (2048 if base == "fix" else 1024))]
+            args = COMMON + _ctx_args((2048 if base == "fix" else 1024))
             res, logf, text = generate(build, env, args, ovr_prompt("generate smallest html tetris game." if base == "tetris" else "write smallest html tetris game"),
                                        int(OVR.get("tokens") or (-1 if base == "tetris" else 1024 if base == "fix" else 100)), chat, FIXED if base == "fix" else None)
         elif base == "game4":
-            word = GAME_WARM if WARMING else GAME_WORDS[(OVR.get('pidx', REP or 0)) % len(GAME_WORDS)]
+            word = GAME_WORDS[(OVR.get('pidx', REP or 0)) % len(GAME_WORDS)]
             TAGBOX["v"] = "game4-" + word.replace(" ", "_") + ("-chat" if chat else "")
-            args = COMMON + ["-c", str(OVR.get("ctx") or 1024)]
+            args = COMMON + _ctx_args(1024)
             res, logf, text = generate(build, env, args, ovr_prompt(f"write smallest html {word} game"), int(OVR.get("tokens") or 100), chat, {"cache_prompt": False})
         elif base == "long1k":   # a prompt of about 1024 tokens (src_1k.cpp = the first 4.4k characters of src_3k.cpp) asking for a bug fix, 1024 tokens out, -c 4096: a long prefill and a long decode
             snippet = open(os.path.join(PROMPTS, "src_1k.cpp")).read()
-            args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
+            args = COMMON + _ctx_args(4096)
             res, logf, text = generate(build, env, args, snippet + "\n\n" + LONG2K_INSTR, int(OVR.get("tokens") or 1024), chat, {"cache_prompt": False})
         elif base == "edit4":
             snippet = open(os.path.join(PROMPTS, OVR.get("snippet") or "src_3k.cpp")).read()
-            ins = EDIT_WARM if WARMING else EDIT_INSTR[(OVR.get('pidx', REP or 0)) % len(EDIT_INSTR)]
+            ins = EDIT_INSTR[(OVR.get('pidx', REP or 0)) % len(EDIT_INSTR)]
             TAGBOX["v"] = "edit4-%d" % ((REP or 0) % len(EDIT_INSTR)) + ("-chat" if chat else "")
-            args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
+            args = COMMON + _ctx_args(4096)
             res, logf, text = generate(build, env, args, snippet + "\n\n" + ins, int(OVR.get("tokens") or 128), chat, {"cache_prompt": False})
         else:
-            args = COMMON + ["-c", str(OVR.get("ctx") or 4096)]
+            args = COMMON + _ctx_args(4096)
             chatv = test == "chatv"  # varied prompts (index = run counter), thinking off: the topic switches the cache has to follow
             res, logf = server_run(build, env, args, "/v1/chat/completions",
                                    {"messages": [{"role": "user", "content": ovr_prompt(CHAT_PROMPTS[OVR.get("pidx", IDX) % len(CHAT_PROMPTS)] if chatv else CHAT_LONG if test == "chat2" else "write smallest html tetris game")}],
@@ -2104,7 +2312,10 @@ def text_class(text):
 
 def is_loop(text):
     """a repetition loop: the last 30% of the words have a unique word 4-gram share below 0.5 (measured: loops 0.01-0.26, real text 0.83-1.0); needs at least 100 words"""
-    w = (text or "").split()
+    t = (text or "").strip()
+    if len(t) >= 20 and len(set(t)) <= 3:   # '!!!!!!...': the logits are NaN or broken, argmax is token 0 (a GLM kv-tail run gave 33 t/s and a 99% hit rate with such an answer, 2026-10-17)
+        return True
+    w = t.split()
     if len(w) < 100:
         return False
     w = w[int(len(w) * 0.7):]
@@ -2176,7 +2387,7 @@ def store(row, build, test, rec, note, hw, vstr):
         csv_append("stats.csv", STATS_CSV_COLS, dict(ts=row["ts"], build=build, commit=row["commit_sha"], branch=bi.get("branch", ""), patch=bi.get("patch", ""), hw=hw, model=row["model"], test=test,
                    args=rec.get("args", ""), env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", tps=row.get("tps"), hit=row.get("hit_rate"), **stats_csv_row(w)))
     cell = CELLS.setdefault((row["model"], test, build, rec.get("args", ""), CAMPAIGN, hw), ([], []))
-    if row.get("ok", 1) and row.get("tps"):
+    if row.get("ok", 1) and row.get("tps") and not rec.get("temp"):   # temp=warmpass rows are stored but not part of the cell's statistics
         cell[0].append(float(row["tps"]))
         if row.get("pp_tps"):
             cell[1].append(float(row["pp_tps"]))
@@ -2349,16 +2560,20 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
     if warm:  # --no-warm: the first run as a user sees it
         global WARMING
         WARMING = True
-        try:
-            run_one(build, test, extra, plain, xargs)
+        try:   # same prompt as the measured run; stored with temp=warmpass (a cold first pass on a fresh server, the same prompt again on a kept one), left out of the cell statistics
+            wrow = run_one(build, test, extra, plain, xargs)
+            if wrow.get("ok", 1):
+                wrow.update(cache_csv_totals(build), temp="warmpass")   # also in the runs.db column temp
+                store(wrow, build, test, {**extra, **({"bare": "1"} if bare else {}), **({"plain": "1"} if plain else {}), **({"args": args} if args else {}), **{k: str(v) for k, v in OVR.items() if k != "prompt"}, "temp": "warmpass"}, "warm-up pass, same prompt", hw, version(build))
         except Exception as e:
-            print(f"throwaway run failed: {e}", flush=True)
+            print(f"warm-up run failed: {e}", flush=True)
         finally:
             WARMING = False
     try:
         row = run_one(build, test, extra, plain, xargs)
     except Exception as e:
         row = {"ok": 0, "note": (str(e)[:80] + " [" + fail_reason(build) + "]" if fail_reason(build) else str(e))[:400]}
+        if PARTIAL["text"]: row["output"] = PARTIAL["text"]   # what the server generated before it died or the run was stopped
         if build.startswith("stock") and not fitt_user and "-fitt" not in xargs and ("server exited" in str(e) or "server bailed" in str(e)):
             for v in FITT_LADDER:   # last resort: a larger fit target, upward, the first that starts is remembered for this model and machine
                 try:
@@ -2382,11 +2597,16 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
         h = hw or os.environ.get("PERF_HW") or os.uname().nodename
         why = "loop (stopped early)" if row.get("loop_abort") else "loop"
         store({**row, "ok": 0}, build, test, {**rec, "retry": str(k + 1)}, f"{why}, repeated", h, version(build))
-        print(f"{why}: repeating ({k + 1}/3)", flush=True)
+        print(f"{why}: repeating ({k + 1}/3) with {k + 1} newline(s) added to the prompt", flush=True)
+        global PROMPT_TWEAK
+        PROMPT_TWEAK = k + 1
+        rec["tweak"] = str(k + 1)
         try:
             row = run_one(build, test, extra, plain, xargs)
         except Exception as e:
             row = {"ok": 0, "note": str(e)[:300]}
+        finally:
+            PROMPT_TWEAK = 0
     hw = hw or os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
     time.sleep(0.3)   # the cache log of the last interval is flushed at the next step
     row.update(cache_csv_totals(build))
@@ -2462,7 +2682,7 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par", "lead", "chat"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
     if getattr(a, "test", None) in ALIAS_TOKENS and "tokens" not in OVR:
@@ -2544,7 +2764,7 @@ def remote_run(m, build, test, args, env=None):
         stf = f'{m["root"]}{sep}perf-stats.txt'
         envs = (f'set LLAMA_MOE_STATE=0&& set LLAMA_MOE_CACHE_TUNED=0&& set LLAMA_MOE_CACHE_STATS=1&& set LLAMA_MOE_CACHE_STATSLOG=32&& set LLAMA_MOE_STATSLOG={stf}&& ' if win else
                 f'LD_LIBRARY_PATH={os.path.dirname(exe)} LLAMA_MOE_STATE=0 LLAMA_MOE_CACHE_TUNED=0 LLAMA_MOE_CACHE_STATS=1 LLAMA_MOE_CACHE_STATSLOG=32 LLAMA_MOE_STATSLOG={stf} ')   # native Linux builds bake their build dir into RUNPATH
-        cmd = envp + envs + f'{exe.replace("llama-cli", "llama-perplexity")} -m {MODEL} -f {m["root"]}{sep}{build}{sep}longsrc.cpp -c 1024 --chunks 2 -b {nb} -ub {nub} {args} ' + ("< nul 2>&1" if win else "< /dev/null 2>&1")
+        cmd = envp + envs + f'{exe.replace("llama-cli", "llama-perplexity")} -m {MODEL} -f {m["root"]}{sep}{build}{sep}{os.environ.get('PERF_PPL_FILE', 'longsrc.cpp')} -c 1024 --chunks {os.environ.get('PERF_PPL_CHUNKS', '2')} -b {nb} -ub {nub} {args} ' + ("< nul 2>&1" if win else "< /dev/null 2>&1")
         out = remote_sh(m, cmd)
         sp_ = re.search(r"([\d.]+) seconds per pass", out)
         pp_ = re.findall(r"PPL = ([\d.]+)", out)
@@ -2653,48 +2873,6 @@ def pin_check(env, knobs):
     return miss
 
 
-def probe_cells(cells, a, model):
-    """Before the first measured run of a bench: every (build, variant) cell of this model is started once, one token through the server, with the cell's own env and args, and the
-    run.knobs line the build writes at exit is read back. REQUESTED and USED are printed side by side, written to cell-knobs.csv and put in knobs_end of every row of the cell;
-    a pin the build does not show is printed as MISMATCH. Builds that write no knob line (b11509 and older) are recorded as such: their settings are their source defaults."""
-    global CAMPAIGN, STATE_FILE, LOG_LETTERS
-    camp = CAMPAIGN
-    saved_letters = LOG_LETTERS
-    if "s" not in LOG_LETTERS:
-        LOG_LETTERS = LOG_LETTERS + "s"   # server_start passes --moe log=<letters>: without s the build writes no state snapshot and so no run.knobs line
-    for build, name, vargs in cells:
-        if build.startswith("stock"):
-            continue
-        args, env = split_variant(build, vargs)
-        sf = "/tmp/runstate/probe-" + re.sub("[^A-Za-z0-9._-]", "_", build + "-" + name) + ".ini"
-        os.makedirs("/tmp/runstate", exist_ok=True)
-        if os.path.exists(sf):
-            os.remove(sf)
-        STATE_FILE["v"] = sf
-        saved = dict(OVR)
-        OVR["tokens"] = "120"; OVR["ctx"] = "2048"   # the build saves its snapshot (run.knobs) only after enough decode steps: a 24-token run writes none
-        CAMPAIGN = camp + "-probe"
-        PROCSTAT.pop("knobs_end", None)
-        try:
-            run_cell(build, "tetrisc", env, False, args, True, "knob probe (one token)", warm=False)
-        except Exception as e:
-            print(f"knob probe failed: {e}", flush=True)
-        finally:
-            OVR.clear(); OVR.update(saved); CAMPAIGN = camp
-        used = PROCSTAT.get("knobs_end") or ""
-        CELL_KNOBS[(build, name)] = used or "(no knob line: source defaults of this build)"
-        pins = [w[4:] for w in vargs.split() if w.startswith("moe:")]
-        miss = pin_check({("LLAMA_MOE_CACHE_" + k.upper().replace("-", "_")): v for k, v in (p.split("=", 1) for p in pins) if k != "autotune"}, used) if used else []
-        miss += pin_check(env, used) if used else []
-        print(f"KNOBS {build} / {name}\n   requested: {' '.join(f'{k}={v}' for k, v in env.items())} | {args}\n   used:      {used or '(this build writes no knob line)'}"
-              + (f"\n   MISMATCH: the build does not show {', '.join(miss)}" if miss else ""), flush=True)
-        csv_append("cell-knobs.csv", ["ts", "campaign", "model", "build", "variant", "requested", "used", "mismatch"],
-                   dict(ts=time.strftime("%F %T"), campaign=camp, model=os.path.basename(model), build=build, variant=name,
-                        requested=json.dumps(env, sort_keys=True) + " | " + args, used=used, mismatch=" ".join(miss)))
-    LOG_LETTERS = saved_letters
-
-
-# ---- bench: models x builds x variants, every cell recorded, then the report ----
 VARIANTS = {"default": "", "cache0": "--moe-expert-cache 0", "atoff": "-at off"}  # --variant NAME=ARGS adds or overrides
 
 
@@ -2727,7 +2905,8 @@ def gains_write(camp):
 
 
 def cmd_bench(a):
-    global MODEL, PERFPROF, GPULOG, KEEP_LOOPS, CLI_EXE, TEMPLATED
+    global MODEL, PERFPROF, GPULOG, KEEP_LOOPS, CLI_EXE, TEMPLATED, KEEP_SERVER
+    KEEP_SERVER = getattr(a, "keep_server", False)
     TEMPLATED = a.templated
     CLI_EXE = a.cli_exe
     PERFPROF = a.perf_prof
@@ -2759,8 +2938,6 @@ def cmd_bench(a):
             prep_model()
         cells = [(build, name, (stock_variants.get(name, "") if build.startswith("stock") else variants[name]))
                  for build in a.builds.split(",") for name in (list(dict.fromkeys(["default"] + list(stock_variants))) if build.startswith("stock") else names)]
-        if not m and not a.no_probe:
-            probe_cells(cells, a, model)
         # a variant may set environment variables: "env:KEY=VALUE" words (e.g. lru='env:LLAMA_MOE_CACHE_POLICY=lru'), the rest are server args
         P = (4 if a.test in ("game4c", "edit4c", "game4", "edit4") else 1) if a.cold_hot else 1   # --cold-hot: every prompt runs twice, 0 = cold (empty state file), 1 = hot (the state that run wrote)
         for pp, i in ([(p, k) for p in range(P) for k in ((0, 1, 2) if (p == 0 and P > 1) else (0, 1))] if a.cold_hot else [(None, k) for k in range(a.rep_from, n)]):  # ABBA: odd repetitions run the cells backwards, so a drift (thermal, page cache) does not favour one cell
@@ -2933,6 +3110,8 @@ def add_overrides(sub):
     sub.add_argument("--ctx", type=int, help="context size instead of the test's own")
     sub.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), metavar="N[k]",
                      help="cut the prompt of the test to N tokens (8k = 8000, so it fits one -ub 8192 pass), measured with the server's own /tokenize, for any model; raw-prompt tests only")
+    sub.add_argument("--chat", metavar="INSTR", help="pf tests: send INSTR + the prompt through the model's chat template (instruct models stop or loop on raw cut text); --clamp cuts the text before the template")
+    sub.add_argument("--lead", type=int, help="first a request with a prompt of about N tokens to the same server, then the measured one (the KV grows, then shrinks)")
     sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
     sub.add_argument("--par", type=int, help="send N identical requests at once (start the server with -np N too, e.g. --variant 'v=-np 10'); the row is the aggregate: generated tokens of all requests over the wall time, prompt tokens of all over the longest prompt phase; a failed request fails the run")
     sub.add_argument("--pidx", type=int, help="game4 / edit4: use prompt N of the four for every repetition (default: repetition k uses prompt k mod 4)")
@@ -2950,7 +3129,9 @@ REGRESS_CELLS = [(REGRESS_MODEL, REGRESS_ARGS, "1", None, False),
                  (fcfg.model("qwen36"), "--cpu-moe --moe-expert-cache 90" + _T, "1", None, False),
                  (fcfg.model("qwen38"), "--cpu-moe" + _T, None, 2, True),
                  (fcfg.model("glm"), "--cpu-moe" + _T, None, 2, True),
-                 (fcfg.model("mimo"), "--cpu-moe" + _T, None, 2, True)]
+                 (fcfg.model("mimo"), "--cpu-moe" + _T, None, 2, True),   # the README MiMo (115 GB, fits RAM); the MXFP4 file in the config (169 GB) does not
+                 (fcfg.model("q27_iq4nl"), _T.strip(), "1", None, False),   # IQ4_NL: the dense README model (no experts: no cache flags), covers the IQ4 kernels
+                 (fcfg.model("qn_iq4xs"), "--cpu-moe" + _T, None, 2, True)]   # IQ4_XS gainer
 if os.environ.get("REGRESS_FAST") == "1":
     REGRESS_CELLS = [c for c in REGRESS_CELLS if not c[4]]
 
@@ -3130,6 +3311,8 @@ def cmd_build(a):
         sys.exit("build: NAME is needed (the directory under DEVBUILDS)")
     name = a.name
     log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "logs", f"build-{name}" + ("" if a.machine == "pc1" else f"-{a.machine}") + ".log")
+    if a.machine == "pc3" and not a.release:
+        sys.exit("build --machine pc3: only the release recipe (clang 20 for the CPU backend, as every published Windows release); the dev bat uses MSVC and fails on the GCC-style kernels. Add --release.")
     if a.machine == "pc3":
         rev = _git(a.repo, "rev-parse", a.commit or "HEAD") if not a.tree else _git(a.tree, "rev-parse", "HEAD")
         short = rev[:9]; ref = f"run-build-{name}"; bundle = f"/tmp/{ref}.bundle"
@@ -3144,19 +3327,19 @@ def cmd_build(a):
         ssh = ["ssh", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=120", host]
         with open(log, "w") as lf:
             subprocess.run(["scp", "-q", bundle, f"{host}:C:/Users/o/{ref}.bundle"], stdout=lf, stderr=subprocess.STDOUT, check=True)
-            cmd = (f"cd /d N:\\llama.cpp && git fetch -q C:\\Users\\o\\{ref}.bundle {ref} && git checkout -q FETCH_HEAD && call N:\\llama.cpp\\release-out\\winbuild.bat"
-                   f" && (if not exist N:\\build mkdir N:\\build) && (if not exist N:\\build\\{name} mkdir N:\\build\\{name}) && xcopy /q /y N:\\llama.cpp\\build-cuda-dl\\bin\\* N:\\build\\{name}\\"
+            cmd = (f"cd /d N:\\llama.cpp && git fetch -q C:\\Users\\o\\{ref}.bundle {ref} && git checkout -q FETCH_HEAD && call N:\\llama.cpp\\release-out\\winbuild-rel.bat"
+                   f" && (if not exist N:\\build mkdir N:\\build) && (if not exist N:\\build\\{name} mkdir N:\\build\\{name}) && xcopy /q /y /e N:\\build\\rel-cuda134-clang\\* N:\\build\\{name}\\"
                    f" & (copy /y N:\\build\\admit-pin-b12353-10d6c1e5c\\*140*.dll N:\\build\\{name}\\ >nul 2>&1) & echo PKG_OK {short}")   # the VC runtime DLLs of an old build, when it is still there: the release zip takes them from the b11214 zip anyway
             subprocess.run(ssh + [cmd], stdout=lf, stderr=subprocess.STDOUT)
         os.remove(bundle)
-        ok = f"PKG_OK {short}" in open(log).read()
+        ok = f"PKG_OK {short}" in open(log).read() and "BUILD_OK" in open(log).read()   # PKG_OK is echoed even when the bat failed
         if ok and a.release:   # the zip the way every published Windows release was made (build-cuda-dl\bin + the VC runtime DLLs + LICENSE)
             vout = subprocess.run(ssh + [f"N:\\build\\{name}\\llama-server.exe --version"], capture_output=True, text=True)
             v = re.search(r"build (\d+)", vout.stdout + vout.stderr); c = re.search(r"commit ([0-9a-f]+)", vout.stdout + vout.stderr)
             if not v or not c:
                 sys.exit(f"release zip: no version from llama-server.exe: {(vout.stdout + vout.stderr)[-300:]}")
             z = f"llama-release-b{v.group(1)}-{c.group(1)}-bin-win-cuda-13.4-x64.zip"
-            pkg = (f"set P=N:\\tmp\\pkg& (if exist N:\\tmp\\pkg rmdir /s /q N:\\tmp\\pkg) & mkdir N:\\tmp\\pkg && xcopy /q N:\\llama.cpp\\build-cuda-dl\\bin\\* N:\\tmp\\pkg\\ >nul"
+            pkg = (f"set P=N:\\tmp\\pkg& (if exist N:\\tmp\\pkg rmdir /s /q N:\\tmp\\pkg) & mkdir N:\\tmp\\pkg && xcopy /q /y /e N:\\build\\rel-cuda134-clang\\* N:\\tmp\\pkg\\ >nul"
                    f" && cd /d N:\\tmp\\pkg && tar -xf N:\\llama.cpp\\release-out\\llama-release-b11214-a3768a8-bin-win-cuda-13.4-x64.zip msvcp140.dll vcruntime140.dll vcruntime140_1.dll"
                    f" && copy /y N:\\llama.cpp\\LICENSE N:\\tmp\\pkg\\ >nul && (if exist N:\\llama.cpp\\release-out\\{z} del N:\\llama.cpp\\release-out\\{z})"
                    f" && tar -a -cf N:\\llama.cpp\\release-out\\{z} * && echo ZIP_OK")
@@ -3187,7 +3370,7 @@ def cmd_build(a):
              "-DCMAKE_CUDA_HOST_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/gcc -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DBUILD_SHARED_LIBS=ON "
              "-DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_CUDA=ON -DGGML_CUDA_NCCL=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=ON "
              f"-DOPENSSL_USE_STATIC_LIBS=ON -DOPENSSL_ROOT_DIR=/opt/openssl -DLLAMA_BUILD_TESTS={'ON' if a.release else 'OFF'} -DLLAMA_BUILD_UI=OFF "
-             "-DCMAKE_EXE_LINKER_FLAGS=\"$SLD\" -DCMAKE_SHARED_LINKER_FLAGS=\"$SLD\" -DCMAKE_MODULE_LINKER_FLAGS=\"$SLD\" && "
+             "-DCMAKE_EXE_LINKER_FLAGS=\"$SLD -pthread\" -DCMAKE_SHARED_LINKER_FLAGS=\"$SLD\" -DCMAKE_MODULE_LINKER_FLAGS=\"$SLD\" && "
              + (f"cmake --build {B} -j $(nproc)" if a.release else f"cmake --build {B} -j 8 --target llama-server llama-cli llama-perplexity"))
     lk = queue_lock(wait=True)   # no build while a benchmark runs (a build takes the CPU the measurements use)
     iid = _image("llama-rel-el8", keep=a.release)
@@ -3229,6 +3412,8 @@ def cmd_build(a):
     if tmp:
         _git(a.repo, "worktree", "remove", "--force", tmp, check=False)
     print(f"build {name}: OK in {time.time() - t0:.0f} s -> {dst} ({open(os.path.join(dst, 'BUILD_INFO')).read().split()[0]})", flush=True)
+    if os.path.dirname(os.path.abspath(dst)) == os.path.abspath(DEVBUILDS):   # devbuilds/latest -> this build (atomic): queued cells that name "latest" pick it up without a reschedule
+        lnk = os.path.join(DEVBUILDS, ".latest.tmp"); os.path.lexists(lnk) and os.remove(lnk); os.symlink(name, lnk); os.replace(lnk, os.path.join(DEVBUILDS, "latest"))
     if not a.no_regress:
         r = subprocess.run([sys.executable, os.path.abspath(__file__), "regress", dst, "--wait"])
         sys.exit(r.returncode)
@@ -3314,14 +3499,88 @@ def _sudo_write(path, val):
         sys.exit(f"hugepool: writing {path} needs root (sudo -n): {r.stderr.strip()}")
 
 
+def cmd_branches(a):
+    """Local branches not contained in TARGET (commits ahead, last commit date); --merge a,b merges them one by one, only inside a checkout of TARGET."""
+    def git(*args, cwd=None):
+        return subprocess.run(["git", *args], cwd=cwd or a.repo, capture_output=True, text=True)
+    cur = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if git("rev-parse", "--verify", a.target).returncode:
+        sys.exit(f"no branch {a.target}")
+    if a.merge:
+        if cur != a.target:
+            sys.exit(f"{a.repo} has {cur} checked out, not {a.target}: nothing merged (use --repo with the worktree of {a.target})")
+        if git("status", "--porcelain", "--untracked-files=no").stdout.strip():
+            sys.exit("uncommitted changes in the checkout: nothing merged")
+        for b in a.merge.split(","):
+            r = git("merge", "--no-ff", "-q", "-m", f"{a.target}: merge {b}", b)
+            if r.returncode:
+                print(f"CONFLICT {b}: {' '.join(git('diff', '--name-only', '--diff-filter=U').stdout.split())}  (merge left open, resolve then commit)")
+                return
+            print(f"merged {b}")
+        return
+    rows = []
+    for b in git("for-each-ref", "--format=%(refname:short)", "refs/heads", "--sort=-committerdate").stdout.split():
+        if b == a.target:
+            continue
+        n = int(git("rev-list", "--count", f"{a.target}..{b}").stdout.strip() or 0)
+        if n:
+            rows.append((n, b, git("log", "-1", "--format=%cs", b).stdout.strip()))
+    print(f"{len(rows)} local branches with commits not in {a.target} (checked out here: {cur})")
+    for n, b, d in rows[:a.limit]:
+        print(f"{n:5d}  {d}  {b}")
+
+def _cell_cli(tok, wi):
+    """an m111(log).sh command line as the equivalent run.py cell line (WRAP=... in front becomes --wrap)"""
+    wrap = next((x[5:] for x in tok[:wi] if x.startswith("WRAP=")), None)
+    rest = tok[wi + 1:wi + 7]
+    return shlex.join(["python3", "/p/bw/wt-main/fork/run.py", "cell"] + rest + (["--wrap", wrap] if wrap else []))
 def cmd_queue(a):
     """Adds tasks to the bench queue the safe way: under the queue's own file lock (queued.py read-modify-writes tasks.csv; an edit without that lock is lost to its next
     rewrite - a hand edit was, once), after a backup of tasks.csv with the last 3 versions kept in queue/backups. `backups` lists them."""
     import fcntl, shutil
     Q = "/p/bw/data/q5h/queue"; INI = os.path.join(Q, "tasks.csv"); BK = os.path.join(Q, "backups")
     COLS = ["id", "order", "status", "campaign", "created", "start", "stop", "exit", "pid", "env", "cli", "log", "note"]
+    if a.action in ("pause", "resume", "status"):
+        # the daemon starts nothing while queue/STOP exists (a running task finishes first); no restart, no REST call needed
+        stop = os.path.join(Q, "STOP")
+        if a.action == "pause": open(stop, "a").close()
+        if a.action == "resume" and os.path.exists(stop): os.remove(stop)
+        rows = list(csv.DictReader(open(INI, newline="")))
+        run_ = [r["id"] for r in rows if r["status"] == "running"]; nxt = sorted((r for r in rows if r["status"] == "next"), key=lambda r: float(r["order"] or 0))
+        el = ""
+        for r_ in rows:   # how long the running task has been going: a cell is normally 1-3 minutes, over 10 is flagged
+            if r_["status"] == "running" and r_.get("start"):
+                try:
+                    sec = time.time() - time.mktime(time.strptime(r_["start"], "%Y-%m-%d %H:%M:%S"))
+                    el += f" [{r_['id']} {int(sec // 60)}m{int(sec % 60):02d}s{' - UNUSUALLY LONG' if sec > 600 else ''}]"
+                except ValueError:
+                    pass
+        print(("PAUSED: nothing new starts" if os.path.exists(stop) else "running: the next waiting task starts when the current one ends") + f" | running: {', '.join(run_) or '-'}{el} | waiting: {len(nxt)}" +
+              (f" (next: {nxt[0]['id']})" if nxt else ""))
+        return 0
     if a.action == "backups":
         for f in sorted(os.listdir(BK)) if os.path.isdir(BK) else []: print(os.path.join(BK, f))
+        return 0
+    if a.action == "del":
+        # queue del TASK_ID | queue del all: remove tasks from tasks.csv (a running task is never removed: stop it first with `run.py stop`); same lock and backup as add
+        if not a.task_id: sys.exit("queue del TASK_ID | queue del all")
+        with open(INI + ".lock", "w") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            os.makedirs(BK, exist_ok=True)
+            if os.path.exists(INI): shutil.copy2(INI, os.path.join(BK, "tasks-" + time.strftime("%Y%m%d-%H%M%S") + ".csv"))
+            for f in sorted(os.listdir(BK))[:-3]: os.remove(os.path.join(BK, f))
+            rows = list(csv.DictReader(open(INI, newline="")))
+            if a.task_id != "all" and not any(r["id"] == a.task_id for r in rows): sys.exit("no such task: " + a.task_id)
+            keep, gone, busy = [], [], []
+            for r in rows:
+                if a.task_id in ("all", r["id"]):
+                    (busy if r["status"] == "running" else gone).append(r["id"])
+                    if r["status"] == "running": keep.append(r)
+                else: keep.append(r)
+            with open(INI + ".tmp", "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=COLS, lineterminator="\n"); w.writeheader(); [w.writerow({c: r.get(c, "") for c in COLS}) for r in keep]
+            os.replace(INI + ".tmp", INI)
+        print(f"deleted {len(gone)} task(s)" + (": " + ", ".join(gone) if len(gone) <= 8 else "") + (f"; kept running: {', '.join(busy)}" if busy else ""))
         return 0
     if a.action == "add":
         if not a.task_id or not a.cli: sys.exit("queue add TASK_ID --cli '...'")
@@ -3335,6 +3594,22 @@ def cmd_queue(a):
         for f in sorted(os.listdir(BK))[:-3]: os.remove(os.path.join(BK, f))
         rows = list(csv.DictReader(open(INI, newline="")))
         have = {r["id"] for r in rows}
+        # one task = one test: a queue task from m111.sh / m111log.sh with several tests is split into one task per test (a pause, a stop or a failure then
+        # costs one cell, not the bundle); the id gets the test as suffix, order stays in sequence
+        split = []
+        for t in new:
+            tok = shlex.split(t.get("cli", "")) if t.get("cli") else []
+            wi = next((i for i, x in enumerate(tok) if os.path.basename(x) in ("m111.sh", "m111log.sh")), None)
+            if wi is not None and len(tok) > wi + 5 and len(tok[wi + 5].split()) > 1:
+                for k, test in enumerate(tok[wi + 5].split()):
+                    u = dict(t); tk = list(tok); tk[wi + 5] = test; tk[wi + 1] = tok[wi + 1] + "-" + test
+                    u["id"] = t["id"] + "-" + test; u["cli"] = _cell_cli(tk, wi); u["order"] = float(t.get("order", -100)) + 0.01 * k
+                    split.append(u)
+            elif wi is not None and len(tok) > wi + 5:
+                u = dict(t); u["cli"] = _cell_cli(tok, wi); split.append(u)
+            else:
+                split.append(t)
+        new = split
         for t in new:
             if t["id"] in have: print("exists, skipped:", t["id"]); continue
             r = {c: "" for c in COLS}; r.update(status="next", created=time.strftime("%F %T"), campaign=t["id"], log=os.path.join(Q, "logs", t["id"] + ".log")); r.update({k: str(v) for k, v in t.items()})
@@ -3343,12 +3618,598 @@ def cmd_queue(a):
             w = csv.DictWriter(f, fieldnames=COLS, lineterminator="\n"); w.writeheader(); [w.writerow({c: r.get(c, "") for c in COLS}) for r in rows]
         os.replace(INI + ".tmp", INI)
     return 0
+def run_list_help():
+    """`run.py run --help`: the list mode (fork/runs/NAME.csv), the lists with their model names (the --only values) and the plain `run BUILD...` usage below it."""
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs")
+    print("run.py run -c NAME [-b B] [-onl TEXT[,TEXT]] [-s] [-dsc] [-nm] [-w] [-r N] [-n]   run the cells of fork/runs/NAME.csv (campaign list: gainers, reg, ctx)\n"
+          "  -skp TEXT rows to skip, same matching as -onl (comma list)\n"
+          "  -sc      each cell on the newest stock binary first, then on -b\n"
+          "  -nrt     skip cells already run today (runs.db)\n"
+          "  -b B     binary under devbuilds/ (default latest); the campaign of a row is B-<row name>\n"
+          "  -onl TEXT rows whose name contains TEXT, comma list ok; the trailing '-' keeps glm- apart from glm35-; add i|io|o for one test\n"
+          "  -s       newest official ggml-org release binary instead of -b: pulled once (gh, never built) into devbuilds/stock-bNNNNN-official, symlink stock-latest follows it\n"
+          "  -w       warm-up pass first (same prompt again, stored as temp=warmpass); default off\n          -r N     measured runs per cell (default 1; -r 0 = the list's n)\n"
+          "  -dsc     biggest model first, one model's rows together; the pool is rebuilt to ceil(model GiB) before each new model\n"
+          "  -nm      no mount: leave the pool alone. In a row's args column -nm means -lm mmap and no pool for that cell; `-nm 0.5` also pins that fraction of the model (rest mapped)\n"
+          "  -n       print the cells, run nothing\n")
+    for f in sorted(glob.glob(os.path.join(d, "*.csv"))):
+        rows = list(csv.DictReader(open(f, newline="")))
+        print(f"{os.path.basename(f)[:-4]}.csv: {len(rows)} cells; --only values, model file, pool GiB:")
+        seen = {}
+        for r in rows:
+            m = re.sub(r"-(i|io|o)$", "", r["name"]) + "-"
+            if m in seen: continue
+            sz = sum(os.path.getsize(p) for p in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
+            seen[m] = 1
+            print(f"  {m:<14} {os.path.basename(r['model']):<52} {-(-sz >> 30) if sz else '?'}")
+    print("\nrun.py run BUILD... [-t TEST] [-n N] ...   measured runs of one test (below)\n")
+
+
+def cell_expect(model, test, n, build, warm=True):
+    """Seconds a cell usually takes: the span of earlier cells of this model and test in runs.db (load wait before the first run + first start to last end), the median of those
+    with n runs (else scaled to n; the same build when it has rows, else any build). The discarded warm-up run (--warm) is not in runs.db: one median run is added for it. None without history."""
+    try:
+        import sqlite3
+        from datetime import datetime
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")); n = int(n or 1)
+        f = lambda t: datetime.strptime(t, "%Y-%m-%d %H:%M:%S").timestamp()
+        def spans(bq):
+            d = {}
+            for camp, st, en, rd, wl in c.execute("select campaign,start_ts,end_ts,coalesce(ready_s,0),coalesce(wall_s,0) from runs where model=? and test=? and start_ts is not null and end_ts is not null" + bq[0], (os.path.basename(model), test) + bq[1]):
+                try: d.setdefault(camp, []).append((f(st), f(en), rd, wl))
+                except ValueError: pass
+            out = []
+            for v in d.values():
+                if not v: continue   # every row of that campaign had an unreadable timestamp
+                span = max(x[1] for x in v) - min(x[0] for x in v)
+                if span > 3600 * 3: continue   # a cell split over hours (a rerun of the same tag) is no estimate
+                one = statistics.median(x[3] for x in v) if warm else 0   # the discarded warm-up run takes about one run
+                out.append((len(v), (span + min(v)[2]) + one if len(v) == n else (span + min(v)[2]) * n / len(v) + one))
+            return out
+        w = spans((" and build=?", (build,))) or spans(("", ()))
+        full = [x for k, x in w if k == n]
+        return statistics.median(full or [x for _, x in w]) if w else None
+    except Exception: return None
+
+
+def col(code, text):
+    """ANSI colour for the live display (terminal or detached log replay); plain text elsewhere. codes: 1 bold, 2 dim, 31 red, 32 green, 33 yellow, 36 cyan"""
+    return f"\033[{code}m{text}\033[0m" if os.environ.get("RUN_DAEMON") or sys.stdout.isatty() else str(text)
+
+
+def ratio_col(x, text):
+    """green at or above 1.00 (we are not slower), red below"""
+    return col(32 if x >= 1 else 31, text)
+
+
+def level(x, warn, bad, text):
+    """text green below warn, yellow below bad, red from bad"""
+    return col(32 if x < warn else 33 if x < bad else 31, text)
+
+
+def cell_status(t0, expect, label, total=None):
+    """One status line: label, elapsed, progress bar against the expected time, CPU %, RAM GiB, pin (anon) and mm (file-backed) GiB of the server, swap MiB, per GPU util % and memory GiB."""
+    def cpu():
+        a = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+        return a[3] + a[4], sum(a)
+    i0, t_0 = cpu(); time.sleep(1); i1, t_1 = cpu()
+    busy = 100 * (1 - (i1 - i0) / max(t_1 - t_0, 1))
+    m = {l.split(":")[0]: int(l.split()[1]) for l in open("/proc/meminfo")}
+    ram = (m["MemTotal"] - m["MemAvailable"]) / 2**20; swap = (m["SwapTotal"] - m["SwapFree"]) / 1024
+    g = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,power.draw,power.limit", "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout.split("\n")
+    gpu = " ".join(col(36, f"g{i}") + " " + col(35, f"{x.split(',')[0].strip()}%") + " " + col(34, f"{int(x.split(',')[1]) / 1024:.1f}G") + " " + level(float(x.split(',')[2]) / max(float(x.split(',')[3]), 1), 0.5, 0.9, f"{float(x.split(',')[2]):.0f}/{float(x.split(',')[3]):.0f}W") for i, x in enumerate(g) if x.count(",") == 3)
+    el = time.time() - t0
+    sf = server_frac()   # the server's own progress, once reliable, replaces the history's estimate for THIS cell; past the estimate with nothing better the estimate grows with the elapsed time
+    def bar(done, ex, own=False, c=32):   # done and ex in expected seconds: bar, percent, time left (never below 0:00; "+" once past the expectation)
+        if own and sf and done > 10: ex = done / sf
+        elif own and ex and done > ex: ex = done * 1.2
+        if not ex: return f"[no history] {int(done // 60)}m"
+        f = min(done / ex, 0.99); r = max(ex - done, 0)
+        return f"[{col(c, '█' * int(f * 20))}{col(2, '░' * (20 - int(f * 20)))}] " + col(1, f"{f * 100:3.0f}%") + "  " + col(36, f"left {int(r // 60):>3}:{int(r % 60):02d}") + (col(31, "+") if done > ex else " ") + col(2, f" est {int(ex // 60):>3}:{int(ex % 60):02d}")
+    pin = mm = 0   # the server's anonymous memory (the pinned weights buffer, KV tail, heap) and its file-backed memory (mmap'd weights), GiB; VmPin stays 0 for cudaHostRegister pages
+    for pid in subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True, text=True).stdout.split():
+        try:
+            v = {l.split(":")[0]: int(l.split()[1]) for l in open(f"/proc/{pid}/status") if l.startswith(("RssAnon", "RssFile"))}
+            pin += v["RssAnon"] / 2**20; mm += v["RssFile"] / 2**20
+        except (OSError, KeyError, ValueError): pass
+    st = col(2, "cpu ") + level(busy, 50, 90, f"{busy:.0f}%") + col(2, " ram ") + level(ram / (m["MemTotal"] / 2**20), 0.7, 0.9, f"{ram:.0f}G") + " " + col(33, f"pin {pin:.0f}G") + " " + col(36, f"mm {mm:.0f}G") + " " + (col(31, f"swap {swap:.0f}M") if swap > 100 else col(2, f"swap {swap:.0f}M")) + f" | {gpu}"   # stats first, the bars below
+    now = time.time(); pk = PEEK[0]   # phase of the cell: loading the model (yellow), prompt (green), generation (blue); each phase's time once it is known
+    try: ld_s = float(open(LOAD_FILE).read()); ld_end = os.path.getmtime(LOAD_FILE)
+    except (OSError, ValueError): ld_s = ld_end = None
+    if PHASE.get("t0") != t0: PHASE.clear(); PHASE["t0"] = t0
+    if pk and pk[1] and "gen" not in PHASE: PHASE["gen"] = now   # first tick that sees tokens decoded
+    ph = 34 if "gen" in PHASE else 32 if ld_end else 33
+    tf = lambda x: f"{x:.0f}s" if x < 60 else f"{int(x // 60)}m{int(x % 60):02d}s"
+    pt = ([col(33, "l " + tf(ld_s))] if ld_s is not None else []) + ([col(32, "p " + tf(PHASE.get("gen", now) - ld_end))] if ld_end else []) + ([col(34, "g " + tf(now - PHASE["gen"]))] if "gen" in PHASE else [])
+    l1 = f"{col(1, f'{label[:16]:<16}')} {int(el // 60):>3}:{int(el % 60):02d} {bar(el, expect, True, ph)}" + ("  " + " ".join(pt) if pt else "")
+    ex0 = expect or 0   # the whole-run bar follows the cell's re-estimate
+    if sf and el > 10: expect = el / sf
+    elif expect and el > expect: expect = el * 1.2
+    if not total: return st + "\n" + l1
+    done_s, total_s, run_t0, k, n = total   # expected seconds done / in all, start of the whole run, cell number k of n
+    total_s += (expect or 0) - ex0
+    tel = time.time() - run_t0; part = done_s + min(el, expect or 0)
+    return st + "\n" + l1 + "\n" + col(33, "whole run".ljust(16)) + f" {int(tel // 60):>3}:{int(tel % 60):02d} {bar(part, total_s)} " + col(33, f"cell {k}/{n}")
+
+
+def cell_results(path, since):
+    """(t/s, pp t/s) of every measured run the cell has written to its .run.out since `since` (epoch s): the lines `DATE BUILD TEST {args} 56.48 t/s hit 99.2% pp 132.6 t/s ...`."""
+    out = []
+    try:
+        for l in open(path, errors="replace"):
+            m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \S+ +\S+ +\{.*?\} +([\d.]+) t/s.*?pp ([\d.]+) t/s", l)
+            if m and time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) >= since - 2: out.append((float(m.group(2)), float(m.group(3))))
+    except OSError: pass
+    return out
+
+
+def kill_tree(pid, grace=8):
+    """SIGTERM to pid and every descendant (the cell, its bench, the server: `timeout` in between is a process group of its own, so the terminal's Ctrl-C never reaches them), SIGKILL for what is left after `grace` s."""
+    kids = {}
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            try: kids.setdefault(int(open(f"/proc/{d}/stat").read().rsplit(")", 1)[1].split()[1]), []).append(int(d))
+            except (OSError, IndexError, ValueError): pass
+    todo, tree = [pid], []
+    while todo:
+        q = todo.pop(); tree.append(q); todo += kids.get(q, [])
+    live = lambda: [q for q in tree if os.path.exists(f"/proc/{q}") and PidProc(q).poll() is None]
+    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 10), (signal.SIGKILL, 30)):   # a server stuck in page faults or a batch ignores SIGTERM: SIGKILL after `grace`, repeated until gone
+        for q in reversed(tree):   # the servers first
+            try: os.kill(q, sig)
+            except OSError: pass
+        t0 = time.time()
+        while time.time() - t0 < wait and live(): time.sleep(0.5)
+        if not live(): return
+    print(f"kill_tree: still alive after SIGKILL: {live()} (uninterruptible I/O: a reboot-free fix is not known)", flush=True)
+
+
+def gen_expect(model, test):
+    """(median generated tokens, median prompt tokens) of this model's and test's earlier runs in runs.db, None for what has no history."""
+    try:
+        import sqlite3
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        rows = c.execute("select n_gen, note from runs where model=? and test=? and ok=1 and n_gen>0 order by start_ts desc limit 20", (os.path.basename(model), test)).fetchall()
+        pn = [int(m.group(1)) for _, nt in rows if nt and (m := re.search(r"prompt_n=(\d+)", nt))]
+        return (statistics.median(r[0] for r in rows) if rows else None), (statistics.median(pn) if pn else None)
+    except Exception: return None, None
+
+
+PHASE = {}   # per cell: t0 and when the first decoded token was seen (cell_status colours and times the phases)
+PEEK = [None]   # (prompt tokens done, tokens decoded, expected decoded, expected prompt) of the last /slots answer: cell_status re-estimates the cell's end from it
+
+
+def server_frac():
+    """Share of the cell's work the server reports done (0..1), None until it is reliable (5 % of the prompt, or any decoding, with a history to compare to). Prefill is weighted 1:15 per token against
+    decoding (typical prompt 100-400 t/s against decode 10-40 t/s): a 12k prompt + 64 tokens is mostly prefill, a 64-token prompt + 1024 tokens mostly decode."""
+    if not PEEK[0]: return None
+    n_p, n_d, gen, pn = PEEK[0]
+    gen = gen or 0; pn = pn or 0
+    wp, wd = pn, 15 * gen
+    if wp + wd <= 0: return None
+    if n_d: return min((wp + wd * min(n_d / gen, 1)) / (wp + wd), 0.99) if gen else None
+    if pn and n_p / pn >= 0.05: return min(wp * min(n_p / pn, 1) / (wp + wd), 0.99)
+    return None
+
+
+LOAD_FILE = "/p/bw/data/q5h/load-s.txt"   # written by a cell when its server answers: seconds of load; peek_line shows it; run_watched removes it at each cell start
+
+
+def peek_line(exp):
+    """`now: ...` from the server's /slots (every status tick, about 3 s): prompt tokens done while it prefills, then tokens written, against the earlier runs' medians; '' when it does not answer."""
+    try: ld = col(32, f"loaded in {float(open(LOAD_FILE).read()):.0f} s") + "  "
+    except (OSError, ValueError): ld = ""
+    sp = slots_progress()
+    PEEK[0] = None
+    if not sp: return col(33, "    now: ") + ld.rstrip() if ld else ""
+    n_prompt, n_dec, _ = sp
+    gen, pn = exp
+    PEEK[0] = (n_prompt, n_dec, gen, pn)
+    if not n_dec and n_prompt: return col(33, "    now: ") + ld + f"prompt {n_prompt}" + (f"/~{int(pn)} tok" + (f" ~{min(100, 100 * n_prompt // int(pn))}%" if pn and n_prompt <= pn else " +") if pn else " tok")
+    if n_dec: return col(33, "    now: ") + ld + f"{n_dec}" + (f"/~{int(gen)} tok " + (f"~{100 * n_dec // int(gen)}%" if n_dec <= gen else "+") if gen else " tok")
+    return ""
+
+
+def result_lines(res):
+    return "\n".join(f"    run {i}: " + col(32, f"{t:7.2f} t/s") + f"   pp {p:8.1f} t/s" for i, (t, p) in enumerate(res, 1))
+
+
+LIVE_UP = [0]       # lines of the status block on screen: the next cell redraws over it, nothing scrolls
+CELL_LINES = []     # one summary line per finished cell, printed when the list ends
+
+
+def live_tty():
+    """The status block redraws in place on a terminal; the detached run (RUN_DAEMON) writes the same escape codes into its log for the viewer to replay."""
+    return bool(os.environ.get("RUN_DAEMON")) or sys.stdout.isatty()
+
+
+def live_clear():
+    """Erase the status block (before anything else prints)."""
+    if LIVE_UP[0] and live_tty(): print(f"\033[{LIVE_UP[0]}A\033[J", end="", flush=True)
+    LIVE_UP[0] = 0
+
+
+def own_build_no(build):
+    """build number from `llama-server --version` of devbuilds/BUILD ('?' when it cannot be read: the display never stops a run)"""
+    try:
+        d = os.path.join(DEVBUILDS, build)
+        o = subprocess.run([os.path.join(d, "llama-server"), "--version"], capture_output=True, text=True, timeout=30, env={**os.environ, "LD_LIBRARY_PATH": d})
+        return (re.search(r"build (\d+)", o.stdout + o.stderr) or [0, "?"])[1]
+    except Exception: return "?"
+
+
+def stock_gain(peek, res, build=None):
+    """"  | stock 38.20 t/s pp 1900.0  x1.20 t/s  x5.0 pp  (bNNNN 2026-10-18)": the median speeds of the cell over the newest stock row of the same model and test in runs.db (nothing when there is none)"""
+    import sqlite3
+    try:
+        r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
+            "select tps, pp, build, bno, start_ts from runs where model=? and test=? and build like 'stock%' and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%' order by start_ts desc limit 1",
+            (os.path.basename(peek[0]), peek[1])).fetchone()
+    except sqlite3.Error: return ""
+    if not r or not r[0]: return f"  | no successful stock run of {peek[1]} on this model (-sc runs it first)"
+    t = statistics.median(x[0] for x in res); p = statistics.median(x[1] for x in res)
+    return f"  | stock {float(r[0]):.2f} t/s" + (f" pp {float(r[1]):.1f}" if r[1] else "") + ratio_col(t / float(r[0]), f"  x{t / float(r[0]):.2f} t/s") + (ratio_col(p / float(r[1]), f"  x{p / float(r[1]):.2f} pp") if r[1] else "") + f"  (b{own_build_no(build)} vs stock b{int(r[3]) if r[3] else (re.search(r'b(\d+)', r[2]) or [0, '?'])[1]} {str(r[4])[:10]})"
+
+
+def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=None, peek=None):
+    """subprocess.run with a status every `every` seconds (cell_status: stats line, a bar for the cell, a bar for the whole run, the finished runs' speeds); returns the exit code.
+    The cell's own output goes to `log` (its text would break the in-place redraw). On a terminal the block is redrawn in place and the next cell redraws over the last one;
+    each finished cell adds a line to CELL_LINES (run_list prints them at the end); on a failure the log's last lines print."""
+    out = open(log, "w") if log else None
+    try: os.remove(LOAD_FILE)
+    except OSError: pass
+    p = subprocess.Popen(cmd, env=env, stdout=out, stderr=subprocess.STDOUT if out else None); t0 = time.time()
+    tty = live_tty(); pexp = gen_expect(*peek) if peek else None
+    first = True   # draw at once: the previous cell's finished block must not stay up as this cell's (bars at 0 %)
+    try:
+      while True:
+        try:
+            if not first: rc = p.wait(timeout=max(every - 1.5, 0.5)); break
+            first = False; raise subprocess.TimeoutExpired(cmd, 0)
+        except subprocess.TimeoutExpired:
+            pl = peek_line(pexp) if pexp else ""   # first: cell_status re-estimates from the same /slots answer
+            txt = cell_status(t0, expect, label, total)
+            if results and (rl := result_lines(cell_results(results, t0))): txt += "\n" + rl   # per-run speeds so far, below the bars
+            if pl: txt += "\n" + pl   # the run in progress: tokens so far against the earlier runs
+            live_clear(); print(txt, flush=True); LIVE_UP[0] = txt.count("\n") + 1 if tty else 0
+    except KeyboardInterrupt:   # Ctrl-C: the cell, its bench and its server are stopped for real (kill_tree: `timeout` is a process group of its own, the terminal's SIGINT never reaches them), then run_list ends (list line, kept server, pool)
+        live_clear(); print(f"{label}: Ctrl-C, stopping the cell ...", flush=True)
+        kill_tree(p.pid); kept_kill()
+        raise
+    res = cell_results(results, t0) if results else []
+    el = time.time() - t0
+    try: gain = stock_gain(peek, res, cmd[5]) if peek and res and not str(cmd[5]).startswith('stock') else ""
+    except Exception as e: gain = f"  | gain: {e}"   # a display problem never ends the list
+    CELL_LINES.append(f"{label[:16]:<16} {int(el // 60):>3}:{int(el % 60):02d} {'FAILED ' if rc else ''}" + "  ".join(f"{t:.2f} t/s pp {p:.1f}" for t, p in res) + gain)
+    live_clear(); print(CELL_LINES[-1] + ("\n" + result_lines(res) if len(res) > 1 else ""), flush=True)   # the finished cell keeps its line (speeds of every run); the next cell's live block is drawn below the growing list
+    if out:
+        out.close()
+        if rc: live_clear(); print("".join(open(log, errors="replace").readlines()[-8:]), end="", flush=True)   # the failure reason
+    return rc
+
+
+def stock_latest(dry=False):
+    """The newest official ggml-org release binary (Linux CUDA 13.4 x64 + its cudart libraries, pulled with gh, never built) as devbuilds/stock-bNNNNN-official, and the symlink
+    devbuilds/stock-latest to it. Returns the real build name, so rows and logs carry the build number. Downloaded once; a newer release adds a directory, older ones stay."""
+    tag = subprocess.run(["gh", "release", "list", "-R", "ggml-org/llama.cpp", "-L", "1", "--json", "tagName", "-q", ".[0].tagName"], capture_output=True, text=True).stdout.strip()
+    if not re.fullmatch(r"b\d+", tag): sys.exit(f"stock: cannot read the newest ggml-org release (gh said {tag!r})")
+    name = f"stock-{tag}-official"; d = os.path.join(DEVBUILDS, name)
+    if not os.path.isdir(d) and not dry:
+        import tempfile
+        print(f"stock: pulling {tag} ...", flush=True)
+        tmp = tempfile.mkdtemp(prefix="stock-dl-", dir=DEVBUILDS); ex = os.path.join(tmp, "x")   # downloads are untrusted data: an empty directory of their own
+        try:
+            r = subprocess.run(["gh", "release", "download", tag, "-R", "ggml-org/llama.cpp", "-D", tmp, "-p", f"llama-{tag}-bin-ubuntu-cuda-13.4-x64.tar.gz", "-p", f"cudart-llama-{tag}-bin-ubuntu-cuda-13.4-x64.tar.gz"])
+            if r.returncode: sys.exit("stock: download failed")
+            os.makedirs(ex)
+            for f in sorted(glob.glob(os.path.join(tmp, "*.tar.gz"))):
+                top = {x.split("/")[0] for x in subprocess.run(["tar", "-tzf", f], capture_output=True, text=True).stdout.split() if x}
+                if subprocess.run(["tar", "-xzf", f, "-C", ex] + (["--strip-components=1"] if len(top) == 1 and not top & {"llama-server"} else [])).returncode: sys.exit(f"stock: cannot unpack {f}")
+            if not os.path.exists(os.path.join(ex, "llama-server")): sys.exit("stock: no llama-server in the download")
+            os.rename(ex, d)
+        finally: shutil.rmtree(tmp, ignore_errors=True)
+    link = os.path.join(DEVBUILDS, "stock-latest")
+    if not dry:
+        tl = link + ".new"
+        try: os.remove(tl)
+        except OSError: pass
+        os.symlink(name, tl); os.replace(tl, link)   # the symlink moves to the newest pull
+    return name
+
+
+def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
+    """Size the huge-page pool for the next model: ceil(model GiB) pages (GLM 109.4 GiB -> 110, MiMo 107.7 -> 108), no more, so the rest of the RAM stays free and nothing swaps.
+    A pool that is not that size is unmounted (cached files deleted) and mounted again; the same size is kept, so a model's cells run back to back on one load."""
+    need = max(-(-model_bytes >> 30), 1)
+    have = int(open(HUGE_NR).read()) if os.path.exists(HUGE_NR) else 0
+    if have == need and os.path.ismount(mnt): return
+    while subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode == 0: time.sleep(5)   # nothing may map the pool while it is rebuilt
+    import contextlib, io
+    quiet = lambda a: contextlib.redirect_stdout(io.StringIO())   # the mount's own output is long: the list prints one line, "pool 101->108g"
+    try:
+        with quiet(0): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
+        # the old pool is gone: its RAM is back. Mounting more than the machine can spare is what froze PC1 (110g): check first, mount only what leaves headroom
+        avail = int([l for l in open("/proc/meminfo") if l.startswith("MemAvailable")][0].split()[1]) >> 20
+        if need + 8 <= avail:   # 8 GiB stay free beyond MemAvailable (~117 GiB here): MiMo 108 passes, GLM 110 does not (110g froze PC1 and core-dumped other programs, 2026-10-19)
+            with quiet(0): cmd_hugepool(argparse.Namespace(action="mount", what=[f"{need}g"]))
+    except SystemExit as e:
+        print(f"pool: remount failed: {e}", flush=True)
+    got = int(open(HUGE_NR).read()) if os.path.exists(HUGE_NR) else 0
+    if 0 < got < need:   # a smaller pool plus the rest pinned from fragmented RAM stalls (PIN_STALL): better no pool, the binary then pins from ordinary RAM, slower but it loads
+        try:
+            with quiet(0): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
+        except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
+        got = 0
+    print(col(33, f"pool {have}->{got}g") + (col(31, f" (wanted {need}g, running without a pool)") if got < need else ""), flush=True)
+
+
+RUN_LIVE = "/p/bw/data/q5h/run-list.json"   # {pid, log} of the detached list run
+
+
+def run_list_detached(name, argv):
+    """`run NAME ...` runs the list in a detached process (own session, output in a log) and shows that log: Ctrl-C only closes the view, the run goes on.
+    `run NAME ...` again while one runs attaches instead of starting a second: the log is replayed from its start (the status block's cursor codes redraw
+    the screen as it was) and followed. `run stop` stops it for real. A dry list (-n) and the detached process itself run inline."""
+    if os.environ.get("RUN_DAEMON"):
+        try: return run_list(name, argv)
+        finally:
+            try: os.remove(RUN_LIVE)
+            except OSError: pass
+    if "-n" in argv or "--dry" in argv: return run_list(name, argv)
+    def alive():
+        try:
+            rec = json.load(open(RUN_LIVE)); os.kill(rec["pid"], 0)
+            return rec
+        except (OSError, ValueError, KeyError): return None
+    rec = alive(); child = None
+    if name is None and not rec:   # plain `run run`: attach only
+        print("no detached run is going\n"); run_list_help(); return 1
+    if rec: print(f"a run is going (pid {rec['pid']}): attaching, Ctrl-C detaches, `run stop` stops it", flush=True)
+    else:
+        log = f"/p/bw/data/q5h/run-list-{time.strftime('%m%d-%H%M%S')}.log"
+        with open(log, "ab") as lf:
+            p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "run", name] + list(argv), stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
+                                 env=dict(os.environ, RUN_DAEMON="1", PYTHONUNBUFFERED="1"), start_new_session=True)
+            child = p
+        json.dump({"pid": p.pid, "log": log}, open(RUN_LIVE, "w")); rec = {"pid": p.pid, "log": log}
+        print(f"started (pid {p.pid}), Ctrl-C detaches, `run {name}` again re-attaches", flush=True)
+    import signal
+    def kill_run(*_):   # SIGINT to the detached run: its Ctrl-C path stops the cell, the server, then the list ends and gives the pool back
+        print("\nstopping the run ...", flush=True)
+        try: os.kill(rec["pid"], signal.SIGINT)
+        except OSError: pass
+    signal.signal(signal.SIGQUIT, kill_run)   # Ctrl-\ (a terminal's Shift+Ctrl+C is copy, no signal reaches us)
+    try:
+        with open(rec["log"], "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if chunk: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush(); continue
+                try:
+                    if child and child.poll() is not None: raise OSError   # our own child: a finished one is a zombie that kill(0) still finds
+                    os.kill(rec["pid"], 0)
+                except OSError:
+                    chunk = f.read()   # the last lines written before it ended
+                    if chunk: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush()
+                    return 0
+                time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\ndetached: the run goes on (Ctrl-C again within 2 s, or Ctrl-\\, stops it); `run NAME ...` re-attaches, `run stop` stops it", flush=True)
+        try: time.sleep(2)
+        except KeyboardInterrupt:
+            kill_run()
+            for _ in range(240):   # the stop takes a while (cell, server, pool): wait until the run is gone
+                try: os.kill(rec["pid"], 0)
+                except OSError: break
+                time.sleep(0.5)
+        return 0
+
+
+def run_list(name, argv):
+    """`run.py run NAME [-b B] [-o TEXT] [-s] [-dsc] [-nm] [-w] [-r N] [-n]`: run the cells listed in fork/runs/NAME.csv (columns name, model, n, test, tokens, args, extra), one after the other,
+    each through `cell` (waits for free GPUs, checks the pool, logs to q5h). The campaign of a row is B-name (B defaults to `latest`, the newest dev build), so a rerun
+    with another build never collides. A failed cell is reported and the list goes on. -o keeps the rows whose name contains TEXT; -d runs the biggest models first, a model's rows together. Before each new model the pool is
+    rebuilt to its size (run_list_pool; --no-pool skips that). Lists: gainers, reg, ctx."""
+    ap = argparse.ArgumentParser(prog=f"run.py run {name}")
+    ap.add_argument("-b", "--build", default="latest"); ap.add_argument("-onl", "-o", "--only", help="rows whose name contains TEXT; comma list: glm-,mimo-"); ap.add_argument("-n", "--dry", action="store_true")
+    ap.add_argument("-skp", "--skip", help="skip rows whose name contains TEXT; comma list: glm-,mimo-")
+    ap.add_argument("-sc", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
+    ap.add_argument("-nrt", "--not-today", action="store_true", help="skip cells (and so models) that already have their runs from today in runs.db")
+    ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
+    ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
+    ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
+    ap.add_argument("-nk", "-x", "--kill", action="store_true", help="kill the server after every run (default: it stays up and the next run, also of the next cell, uses it when model, build and args are the same; later runs then start with what the earlier ones cached)")
+    ap.add_argument("-r", "--runs", default="1", help="measured runs per cell (default 1; 0 = the list's n)")
+    ap.add_argument("-dsc", "-d", "--desc", action="store_true", help="biggest model files first (same-size rows keep the list order)")
+    o = ap.parse_args([x for x in argv if x != "desc"])   # `run gainers desc` works too
+    if o.stock: o.build = stock_latest(o.dry)
+    rows = list(csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", name + ".csv"), newline="")))
+    for r in rows: r["model"] = fcfg.model(r["model"])   # the model column is a models.ini alias or a path
+    rows = [r for r in rows if not o.only or any(x in r["name"] for x in o.only.split(","))]
+    rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]   # -skp: same matching as -onl, rows dropped
+    for r in rows:
+        if o.runs not in (None, "0"): r["n"] = o.runs
+    sb = stock_latest(o.dry) if o.stock_first and not o.stock else None
+    rows = [dict(r, _b=b) for r in rows for b in ((sb, o.build) if sb else (o.build,))]   # -sc: the stock cell, then ours
+    if o.not_today:   # -nrt: a cell with enough ok rows (warm-up passes and loop retries do not count) from today in runs.db is not run again; a model with no cell left is not loaded or mounted
+        import sqlite3
+        done = {}   # campaign -> [(t/s, pp t/s) of today's ok runs]
+        try:
+            for c, t, p in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
+                    "select campaign, tps, pp from runs where cast(ok as integer)=1 and tps is not null and date(start_ts)=date('now','localtime') and coalesce(env,'') not like '%warmpass%' order by ts"):
+                done.setdefault(c, []).append((float(t), float(p or 0)))
+        except sqlite3.Error as e: print(f"-nrt: runs.db: {e}", flush=True)
+        keep = [r for r in rows if len(done.get(f"{r['_b']}-{r['name']}-{r['test']}", ())) < int(r["n"] or 1)]
+        for r in rows:   # the skipped cells keep their line, with the results of today's runs and the gain over stock, as if they had just run
+            if r in keep: continue
+            if r['_b'].startswith('stock') and any(q['name'] == r['name'] and q['test'] == r['test'] and not q['_b'].startswith('stock') for q in rows): continue   # our line shows the stock numbers
+            res = done[f"{r['_b']}-{r['name']}-{r['test']}"][-int(r["n"] or 1):]   # the newest n
+            try: gain = stock_gain((r["model"], r["test"]), res, r["_b"]) if not r["_b"].startswith("stock") else ""
+            except Exception as e: gain = f"  | gain: {e}"
+            CELL_LINES.append(f"{('s' if r['_b'].startswith('stock') else '') + r['name']:<16} done  " + "  ".join(f"{t:.2f} t/s pp {p:.1f}" for t, p in res) + gain)
+            print(CELL_LINES[-1], flush=True)
+        if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run today skipped (lines above)", flush=True)
+        rows = keep
+    def size(r):   # bytes of the model; a split model counts all its parts (NAME-00001-of-0000N.gguf)
+        return sum(os.path.getsize(f) for f in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
+    if o.desc or "desc" in argv or "-dsc" in argv:
+        rows.sort(key=lambda r: (-size(r), r["model"]))   # the same model stays together: one pool, one load
+    if o.no_pool and o.no_pool != "0":   # -nm GB: every non-stock row pins at most GB GiB of the model, the rest is mapped (row-level -nm GB, see nomount_args)
+        for r in rows:
+            if not r["_b"].startswith("stock") and "-nm" not in shlex.split(r.get("args") or ""): r["args"] = ((r.get("args") or "") + f" -nm {o.no_pool}").strip()
+    ram_gib = int(open("/proc/meminfo").readline().split()[1]) >> 20
+    for r in rows:   # a model that cannot fit RAM beside 16 GiB for the system must not be pinned (128 GiB GLM on 125 GiB froze PC1): -lm mmap, no pool; stock mmaps already
+        if not r["_b"].startswith("stock") and (size(r) >> 30) + 16 > ram_gib and not nomount_args(r.get("args") or "")[1]:
+            pg = max(1, ram_gib - 24)   # default pin cap: RAM - 24 GiB (125 GiB -> 101); pinning 110 GiB froze PC1; the rest is mapped
+            r["args"] = ((r.get("args") or "") + f" -nm {pg}").strip(); print(f"{r['name']}: model {size(r) >> 30} GiB > RAM {ram_gib} GiB - 16, pin at most {pg} GiB, map the rest", flush=True)
+    bad = []; last_model = shown = None
+    for b in dict.fromkeys(r["_b"] for r in rows) or [o.build]:   # which binaries the list runs: name, real path, build date
+        d = os.path.realpath(os.path.join(DEVBUILDS, b)); bin_ = os.path.join(d, "llama-server")
+        print(f"{col(36, b)}: {bin_}  {col(33, time.strftime('%F %H:%M', time.localtime(os.path.getmtime(bin_))))}" if os.path.exists(bin_) else f"{b}: {d} (no llama-server)", flush=True)
+    total_s = sum(cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm) or 0 for r in rows); done_s = 0; run_t0 = time.time()   # expected seconds of the whole list, from runs.db
+    try:
+        for r in rows:
+            if r["model"] != last_model and not o.no_pool and not o.dry and not nomount_args((r.get("args") or "") + " " + (r.get("extra") or ""))[1]:
+                last_model = r["model"]; live_clear(); kept_kill(); run_list_pool(size(r))
+            if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;35", os.path.basename(shown)), flush=True)   # after the pool line: which model the next cells run
+            tag = f"{r['_b']}-{r['name']}"
+            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], r.get("args") or ""] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"])
+            cmd += (["--tokens", r["tokens"]] if r.get("tokens") else []) + shlex.split(r.get("extra") or "")
+            if o.dry: print(f"[{name}] {tag}: {shlex.join(cmd[3:])}", flush=True)
+            ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
+            if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, ("s" if r["_b"].startswith("stock") else "") + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"/p/bw/data/q5h/{tag}.list.log", results=f"/p/bw/data/q5h/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
+            done_s += ex or 0
+    finally:   # the cells' lines, then the pool: it holds its RAM whether a model uses it or not: give it back when the list ends, also on Ctrl-C or an error
+        if CELL_LINES and not o.dry: open(f"/p/bw/data/q5h/{o.build}-{name}.list.txt", "a").write("\n".join(CELL_LINES) + "\n")   # the screen shows only the current cell; the finished cells' lines go here
+        if not o.dry: kept_kill()   # the kept server holds the pool: it goes before the unmount
+        if not o.no_pool and not o.dry and os.path.ismount("/mnt/huge1g"):
+            try:
+                import contextlib, io
+                with contextlib.redirect_stdout(io.StringIO()): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
+                print("pool ->0g", flush=True)
+            except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
+    print(f"[{name}] {len(rows)} cells, failed: {', '.join(bad) or 'none'}")
+    return 1 if bad else 0
+
+
+def nomount_args(args, model=None):
+    """(args, nomount): `-nm` in a cell's args is a run.py switch for `-lm mmap` (weights memory-mapped, not pinned); a cell that does not pin has no use for the huge-page pool,
+    so no pool is mounted, resized or checked for it. An explicit `-lm`/`--load-mode` of mmap, auto or dio counts as -nm too."""
+    tok = shlex.split(args or "")
+    no = "-nm" in tok
+    out = []
+    gb = 0.0
+    for i, t in enumerate(tok):
+        if t == "-nm":
+            out += ["-lm", "mmap"]
+            try: gb = float(tok[i + 1])   # `-nm 101`: pin at most 101 GB of the model (tensor order), map the rest (--moe pin-budget, read by the loader with mmap on)
+            except (IndexError, ValueError): pass
+        elif gb and i and tok[i - 1] == "-nm": continue   # the GB value itself
+        else: out.append(t)
+    if gb:
+        nb = int(gb * 2**30)
+        j = out.index("--moe") + 1 if "--moe" in out else 0
+        if j: out[j] += f",pin-budget={nb}"
+        else: out += ["--moe", f"pin-budget={nb}"]
+    mode = next((out[i + 1] for i, t in enumerate(out[:-1]) if t in ("-lm", "--load-mode")), None)
+    return shlex.join(out), no or mode in ("mmap", "auto", "dio")
+
+
+def pool_sanity(mnt="/mnt/huge1g", model=None):
+    """Before a load (no server runs: the GPUs are free): delete what a crashed server left in the huge-page pool. An unfinished fill (.w.part) or an empty file whose
+    lock nobody holds is stale and would eat pool pages the next model needs. Then compare the pool's used pages with the files' pages: more used than the files
+    hold means pages leaked into an orphaned mapping (only a reboot or unmount gives them back): said loudly instead of a later PIN_STALL."""
+    import fcntl
+    if not os.path.ismount(mnt) or not os.path.exists(HUGE_NR): return
+    held = 0
+    for f in sorted(os.listdir(mnt)):
+        p = os.path.join(mnt, f)
+        try:
+            with open(p, "rb") as fh:
+                try: fcntl.lockf(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)   # a live server holds a lock on its file (ggml-cuda.cu)
+                except OSError: held += os.path.getsize(p); continue
+                if f.endswith(".w.part") or os.path.getsize(p) == 0:
+                    os.remove(p); print(f"pool_sanity: removed stale {f}", flush=True)
+                else: held += os.path.getsize(p)
+        except OSError as e:
+            print(f"pool_sanity: {f}: {e}", flush=True)
+    if model and os.path.exists(model):   # a pool smaller than the model: the rest would be pinned from fragmented RAM and stall (PIN_STALL), without a pool it loads, slower
+        need = -(-sum(os.path.getsize(p) for p in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", model))) >> 30)
+        have = int(open(HUGE_NR).read())
+        if have < need:
+            print(f"pool_sanity: pool {have} GiB < model {need} GiB, unmounting it (the model pins from ordinary RAM)", flush=True)
+            try: cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
+            except SystemExit as e: print(f"pool_sanity: unmount failed: {e}", flush=True)
+            return
+    used = int(open(HUGE_NR).read()) - int(open(HUGE_FREE).read())
+    if used > -(-held >> 30):
+        print(f"pool_sanity: WARNING pool has {used} GiB pages in use but the cache files hold {-(-held >> 30)}: leaked pages, `hugepool unmount` + mount (or reboot) frees them", flush=True)
+
+
+def cmd_cell(a):
+    """One queue cell (what m111.sh / m111log.sh did, for one test): wait until both GPUs are free, run `bench` for the builds side by side with the campaign TAG-TEST,
+    keep the run output in q5h/TAG-TEST.run.out, add the result lines to q5h/TAG.out, log a failed cell (no result line) to the shared error log and exit 1 (the queue marks
+    the task failed), keep the server log as TAG.server.log when one build ran."""
+    Q5 = "/p/bw/data/q5h"; U = "/p/bw/p2p/userspace-595/usr/lib/x86_64-linux-gnu"; SMI = "/p/bw/p2p/bin595/nvidia-smi"
+    while not kept_get():   # nothing may still hold GPU memory (a killed script leaves its children running); the kept server is meant to
+        r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True)
+        if r.stdout.split() and max(int(x) for x in r.stdout.split()) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
+        time.sleep(5)
+    if not nomount_args(a.args)[1] and not kept_get(): pool_sanity(model=a.model)
+    # the build name "latest" is the symlink the newest dev build moves (cmd_build): resolved HERE, after the wait, so a queued cell runs the newest binary of the moment, and
+    # every row, log and tag carries the real build name
+    a.builds = ",".join(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, "latest"))) if b == "latest" else b for b in a.builds.split(","))
+    open(os.path.join(Q5, a.tag + ".build"), "w").write(a.builds + "\n")   # which build(s) this cell really ran ("latest" resolved)
+    cell_args, nomount = nomount_args(a.args, a.model)
+    args = "-np 1 " + cell_args
+    hog = ",".join(k + "=" + str(int(float(v) * 1024)) for k, v in (("sim-vram", a.hog_gpu), ("sim-ram", a.hog_ram)) if v is not None)
+    if hog:   # --moe sim-vram / sim-ram: the server takes the memory itself (common_hog), freed by the OS with the process, no helper process to leave behind
+        args += " --moe " + hog
+    out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
+    cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
+           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else [])
+    env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG="r")
+    if os.path.ismount("/mnt/huge1g") and not nomount: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
+    if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
+    env.setdefault("PERF_LEDGER", "0")   # the pool write ledger is a debug tool and off in cells (it cost our side a few percent that stock never pays); --env PERF_LEDGER=1 records it: kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
+    for kv in (a.env or []):
+        k, _, v = kv.partition("="); env[k] = v
+    t_cell0 = time.time()
+    try:
+        with open(out, "w") as f:
+            rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).returncode
+    finally:
+        pass
+    lines = [l.rstrip()[:200] for l in open(out, errors="replace") if re.search(r"n= *\d+ .* t/s", l)]
+    with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
+        f.write(f"== {a.test} {args}\n" + "".join(l + "\n" for l in lines))
+    if a.builds.count(",") == 0:
+        try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
+        except OSError: pass
+    # the pool write ledgers this cell's servers wrote (one per server start): gzipped next to the server log, the replay's summary (overlaps, uploads a lend
+    # or the KV zone crossed while they ran) appended to TAG.out
+    import glob, gzip
+    led = sorted((p for p in glob.glob(os.path.join(DATA, "pool-ledger-*.csv")) if os.path.getmtime(p) >= t_cell0), key=os.path.getmtime)
+    for i, p in enumerate(led):
+        dst = os.path.join(Q5, f"{a.tag}.ledger{'' if i == 0 else '.' + str(i)}.csv.gz")
+        with open(p, "rb") as fi, gzip.open(dst, "wb") as fo:
+            shutil.copyfileobj(fi, fo)
+        os.remove(p)
+        rep = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.realpath(__file__)), "pool_ledger.py"), dst, "--max", "8"], capture_output=True, text=True)
+        with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
+            f.write(f"-- pool ledger {os.path.basename(dst)} (replay: fork/pool_ledger.py {dst})\n" + rep.stdout)
+    if not lines:
+        errs = [l.rstrip()[:240] for l in open(out, errors="replace") if re.search(r"FAIL|Traceback|Error|error:|PIN_FAIL|out of memory|Compute error|Segmentation|abort|Killed", l)][-4:]
+        with open(os.path.join(Q5, "queue", "errors.log"), "a") as f:
+            f.write(f"{time.strftime('%F %T')} ERROR {a.tag} {a.test} builds={a.builds} model={os.path.basename(a.model)} run.py exit={rc}\n" + "".join(e + "\n" for e in errs))
+        return 1
+    return 0
 def cmd_stop(a):
     """Stops a running measurement chain for real: the harness (bench, regress, exp, run, quick, ctl, prompt with their flock wrappers), the servers and tools of our builds and an nsys around them, every descendant of it (the
     servers and tools it started: a killed script does not take its children with it, and a lone kill of the harness lets the parent script start the next cell),
-    and the .sh scripts that started it. Never the shell that runs this command or its ancestors (a plain `bash -c` is left alone, only real script files count).
+    and the .sh scripts that started it. `stop 2 3` or `stop --last 1` stops only those tasks (a task = a chain script with everything it started, or a lone harness; numbered by --dry).
+    Never the shell that runs this command or its ancestors (a plain `bash -c` is left alone, only real script files count).
     SIGTERM first, SIGKILL for what is still there after --grace seconds, then it waits until the GPUs have (almost) no memory in use, and puts the power limits
-    back to the values of the [gpu] limits_env file (LIMIT0=, LIMIT1=) unless --no-power. --dry lists what it would stop and changes nothing.
+    to the schedule (power_schedule: day 220/280 W, night 200/200 W) unless --no-power. --dry lists what it would stop and changes nothing.
     A build (docker) is not a measurement and is not touched; stop it with docker."""
     import signal
     me = os.getpid()
@@ -3375,15 +4236,26 @@ def cmd_stop(a):
     while pid in procs and pid > 1:
         protected.add(pid)
         pid = procs[pid][1]
-    def is_script(argv):   # `bash ./something.sh ...`, not `bash -c ...`
-        return len(argv) >= 2 and os.path.basename(argv[0]) in ("bash", "sh") and argv[1].endswith(".sh")
+    def is_script(argv):   # `bash ./something.sh ...` or `python3 ./driver.py ...` (adaptive stress drivers), not `bash -c ...`
+        b = os.path.basename(argv[0])
+        return len(argv) >= 2 and ((b in ("bash", "sh") and argv[1].endswith(".sh")) or (b.startswith("python") and argv[1].endswith(".py") and not argv[1].endswith("run.py")))
     def is_harness(argv):
         py = os.path.basename(argv[0]).startswith("python")
-        return py and any(x.endswith("run.py") for x in argv[1:4]) and any(x in ("bench", "regress", "exp", "run", "quick", "ctl", "prompt", "baseline") for x in argv[1:6])
+        if not (py and any(x.endswith("run.py") for x in argv[1:4])):
+            return False
+        # every subcommand that runs a model is a harness (cell, queue, ... were missing: `stop` said "nothing running" while a cell loaded its model, 2026-10-18);
+        # only the ones that never start a server are left alone
+        i = next(k for k in range(1, min(len(argv), 4)) if argv[k].endswith("run.py"))
+        sub = next((x for x in argv[i + 1:] if not x.startswith("-")), "")
+        return sub not in ("build", "show", "report", "gains", "machine", "stop", "cells", "branches", "misfires", "hugepool", "")
     def is_tool(argv):   # a server or tool of one of our builds, or an nsys wrapped around one
         exe = argv[0]
-        return os.path.basename(exe) == "nsys" or any(exe.startswith(d) for d in (DEVBUILDS + "/", "/p/bw/rels/", "/p/bw/gh-rel/") if d)
-    roots = {p for p, (argv, _) in procs.items() if p not in protected and (is_harness(argv) or is_tool(argv) or (os.path.basename(argv[0]) == "flock" and any(x.endswith("run.py") for x in argv)))}
+        return os.path.basename(exe) == "nsys" or any(exe.startswith(d) for d in (DEVBUILDS + "/", "/p/bw/rels/", "/p/bw/gh-rel/") if d) or any(x.endswith("vramhold.py") for x in argv[1:3])
+    def is_driver(pid, argv):   # a test driver script (python/bash) started from a job directory (~/.claude/jobs/*/tmp): ascend.py, descend.py, w10down.py, stress.sh ...
+        try: cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError: return False
+        return "/.claude/jobs/" in cwd and len(argv) >= 2 and os.path.basename(argv[0]) in ("bash", "sh", "python3", "python") and argv[1].lstrip("./").endswith((".py", ".sh"))
+    roots = {p for p, (argv, _) in procs.items() if p not in protected and (is_driver(p, argv) or is_harness(argv) or is_tool(argv) or (os.path.basename(argv[0]) in ("flock", "timeout") and any(x.endswith("run.py") for x in argv)))}
     scripts = set()
     for r in roots:   # the scripts above the harness: they would start the next cell
         pid = procs[r][1]
@@ -3399,9 +4271,26 @@ def cmd_stop(a):
         stack.extend(children.get(p, []))
     if not targets:
         print("stop: nothing of the measurement harness is running")
-    for p in sorted(targets):
+    # a task = one tree of targets under its top process (a chain script with everything it started, or a lone harness), numbered 1.. in start order
+    tops = sorted(p for p in targets if procs[p][1] not in targets)
+    def top_of(p):
+        while procs[p][1] in targets:
+            p = procs[p][1]
+        return p
+    pick = set(a.tasks or [])
+    if a.last:
+        pick |= set(range(len(tops) - a.last + 1, len(tops) + 1))
+    if pick:
+        bad = sorted(n for n in pick if not 1 <= n <= len(tops))
+        if bad:
+            print(f"stop: no task {bad} (running: 1..{len(tops)}); nothing stopped")
+            return
+        keep = {tops[n - 1] for n in pick}
+        targets = {p for p in targets if top_of(p) in keep}
+        scripts &= targets
+    for p in sorted(targets, key=lambda q: (tops.index(top_of(q)), q)):
         kind = "script" if p in scripts else "harness" if p in roots else "child"
-        print(f"  {kind:8} {p:>8}  {' '.join(procs[p][0])[:110]}")
+        print(f"  task {tops.index(top_of(p)) + 1}  {kind:8} {p:>8}  {' '.join(procs[p][0])[:100]}")
     if a.dry:
         return
     def alive(p):
@@ -3433,13 +4322,8 @@ def cmd_stop(a):
             break
         time.sleep(2)
     print(f"stop: {len(targets)} processes ended; GPU memory in use {used} MiB" + ("" if used is None or used < 800 else "  <-- NOT free"))
-    lenv = fcfg.get("gpu", "limits_env")
-    if not a.no_power and lenv and os.path.isfile(lenv):
-        for line in open(lenv).read().splitlines():
-            m = re.match(r"LIMIT(\d+)=(\d+)", line.strip())
-            if m:
-                r = subprocess.run(["sudo", "-n", NVSMI, "-i", m.group(1), "-pl", m.group(2)], capture_output=True, text=True)
-                print(f"stop: GPU {m.group(1)} power limit {m.group(2)} W" + ("" if r.returncode == 0 else f"  (failed: {r.stderr.strip()[:80]})"))
+    if not a.no_power:
+        apply_power_schedule()
 
 
 def warm_wanted(flag, no_flag, model):
@@ -3574,7 +4458,7 @@ def cmd_regress(a):
                 time.sleep(10)
             else:
                 print(f"regress: {os.path.basename(model)} SKIPPED, memory not free (available {av} GiB, swap used {sw} GiB)"); continue
-        ccamp = camp + "-" + os.path.basename(model)[:6]
+        ccamp = camp + "-" + os.path.basename(model)[:24]   # 6 characters made Qwen3.6 and Qwen3.8 one campaign (the second cell printed the first one's rows)
         cmd = [sys.executable, os.path.realpath(__file__), "bench", "--models", model, "--builds", ",".join(builds), "--variants", "c", "--variant", "c=" + margs,
                "-t", "ppl", "-n", str(n_runs), "--clean-state", "--campaign", ccamp, "--note", "quick regression check against the best build (fixed-text comparator)"]
         subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL if not a.verbose else None, stderr=subprocess.STDOUT if a.verbose else subprocess.DEVNULL)
@@ -4427,8 +5311,8 @@ rates for the same engine), own state file per arm (an arm must never learn from
 
 
     M = {
-        "qn_iq1m": "/m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
-        "glm30":   "/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf",
+        "qn_iq1m": fcfg.model("qn_iq1m"),
+        "glm30":   fcfg.model("glm"),
     }
 
     # each regression: what it was, how it shows, the model, the arms' extra args/env, the metric and the tolerance (CURRENT must reach tol x the good build)
@@ -4869,10 +5753,11 @@ if __name__ == "__main__":
     b.add_argument("--last", type=int, help="report the last N runs per cell only (hot runs of a learning autotune)")
     b.add_argument("--tol", type=float, help="flag cells below TOL x stock as REGRESSION (e.g. 0.95)")
     b.add_argument("--note")
-    b.add_argument("--no-probe", action="store_true", help="skip the knob probe (one token per cell before the first measured run; prints requested against used settings)")
+    b.add_argument("--no-probe", action="store_true", help="no effect (the knob probe, a side server with an injected -c 2048 before the measured run, was removed)")
     b.add_argument("--warm", action="store_true", help="force a discarded run before each measured one (hot run); default off")
     b.add_argument("--no-warm", action="store_true", help="never a discarded run: the first run as a user sees it")
     b.add_argument("--sampler", help="extra sampling parameters for every request, comma separated, e.g. repeat_penalty=1.1,dry_multiplier=0.8 (anti-repetition tests); temperature 0 / top_k 1 stay unless overridden")
+    b.add_argument("--keep-server", action="store_true", help="keep the server after the run: the next run or cell with the same model, build and args uses it; the list (run run) stops it at a model change and at the end; default: a fresh server per run")
     b.add_argument("--keep-loops", action="store_true", help="keep repetition-loop outputs as normal runs (default: stored as ok=0, loop=1 and repeated up to 3 times)")
     b.add_argument("--templated", action="store_true", help="chat tests: render the model's chat template with the server's /apply-template and send the text to /completion (the loop guard then applies)")
     b.add_argument("--cli-exe", default="llama-cli", help="tool for --machine runs: llama-cli (conversation) or llama-completion (raw prompt, the same prompt as the server tests)")
@@ -4954,26 +5839,57 @@ if __name__ == "__main__":
     hp.add_argument("action", choices=["mount", "unmount", "status"])
     hp.add_argument("what", nargs="*", help="mount: a size like 100g or model file(s); nothing = the most the machine can spare")
     st = sp.add_parser("stop", help="stop the running measurement chain properly: parent scripts, harness, all children; then wait for free GPU memory and restore the power limits")
+    st.add_argument("tasks", nargs="*", type=int, help="only these tasks, by the numbers --dry lists (1 = started first); none = all")
+    st.add_argument("--last", type=int, default=0, metavar="N", help="only the N most recently started tasks")
     st.add_argument("--dry", action="store_true", help="list what would be stopped, change nothing")
     st.add_argument("--grace", type=float, default=10.0, help="seconds between SIGTERM and SIGKILL")
     st.add_argument("--wait-gpu", type=float, default=60.0, help="seconds to wait until the GPUs have no memory in use")
     st.add_argument("--no-power", action="store_true", help="leave the power limits alone")
-    qq = sp.add_parser("queue", help="the bench queue (queued.service): add TASK_ID --cli '...' [--order N] [--note ..]  |  add-json (a JSON list on stdin)  |  backups; edits take the queue's own file lock and keep the last 3 versions of tasks.csv")
-    qq.add_argument("action", choices=["add", "add-json", "backups"])
+    qq = sp.add_parser("queue", help="the bench queue (queued.service): add TASK_ID --cli '...' [--order N] [--note ..]  |  add-json (a JSON list on stdin)  |  backups  |  pause (no new task starts; the running one finishes) / resume / status; edits take the queue's own file lock and keep the last 3 versions of tasks.csv")
+    qq.add_argument("action", choices=["add", "add-json", "del", "backups", "pause", "resume", "status"])
     qq.add_argument("task_id", nargs="?")
     qq.add_argument("--cli", help="the command line the queue runs (bash m111log.sh ... or a run.py line)")
     qq.add_argument("--order", type=float, default=-100, help="run order, ascending (default -100 = ahead of the waiting tasks)")
     qq.add_argument("--note", default="")
+    ce = sp.add_parser("cell", help="one queue cell: wait for free GPUs, bench BUILDS (comma separated, side by side) on MODEL for one TEST, results to q5h/TAG.out (replaces m111.sh)")
+    ce.add_argument("tag"); ce.add_argument("model"); ce.add_argument("builds"); ce.add_argument("n", type=int); ce.add_argument("test")
+    ce.add_argument("args", nargs="?", default="", help="server args after -np 1")
+    ce.add_argument("--wrap", help="command prefix for the server (nsys / ncu)")
+    ce.add_argument("--keep-server", action="store_true", help="bench --keep-server")
+    ce.add_argument("--keep-loops", action="store_true", help="do not discard and repeat a looping or garbled answer (bench --keep-loops): one server run per cell")
+    ce.add_argument("--warm", action="store_true", help="a discarded run before each measured one: the first run after a server start is cold (nothing learned yet, the planner still guesses) and a gate does not compare it")
+    ce.add_argument("--hog-gpu", help="GiB left free on every GPU (the server takes the rest at start: --moe sim-vram=MiB), simulates a smaller card")
+    ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe sim-ram=MiB)")
+    ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
+    ce.add_argument("--lead", type=int, help="a request of about N prompt tokens first, same server")
+    ce.add_argument("--prompt", help="prompt text or @file instead of the test's own")
+    ce.add_argument("--tokens", type=int, help="generated tokens instead of the test's own")
+    ce.add_argument("--ctx", type=int, help="context size instead of the test's own (a -c in the args loses to the test's own -c)")
+    ce.add_argument("--chat", metavar="INSTR", help="pf tests through the chat template with this instruction in front (instruct models)")
+    ce.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), help="cut the prompt to N[k] tokens (pf128k clamped to 48k = a 48k prompt)")
+    br = sp.add_parser("branches", help="local branches with commits not in TARGET (counts, dates); --merge a,b,c merges them in the checkout of TARGET (refuses on another branch or a dirty tree)")
+    br.add_argument("target", nargs="?", default="prerelease2")
+    br.add_argument("--repo", default=os.getcwd(), help="the checkout to look at / merge in")
+    br.add_argument("--merge", help="comma-separated branch names")
+    br.add_argument("--limit", type=int, default=60)
     s_ = sp.add_parser("show")
     s_.add_argument("-t", "--test")
     s_.add_argument("-b", "--build")
     s_.add_argument("--runs", action="store_true")
+    cl = sp.add_parser("cells", help="markdown table of the cells of a campaign prefix, with the context and the pool the server really ran with")
+    cl.add_argument("prefix")
     mf = sp.add_parser("misfires", help="automatic choices that went against what was measured: a prompt run on one card where the split of the same model and pass "
                                          "size was faster in another run, and the reverse; stock re-measurements of the placement (from the pf_* / placement columns)")
     mf.add_argument("--days", type=float, default=7.0, help="look at runs of the last N days")
     mf.add_argument("--tol", type=float, default=0.05, help="a choice counts as wrong when the other mode was faster by more than this share")
     mf.add_argument("--model", help="part of the model name")
+    if len(sys.argv) > 1 and (sys.argv[1] in ("-h", "--help") or sys.argv[1] == "run" and len(sys.argv) > 2 and sys.argv[2] in ("-h", "--help")): run_list_help()
+    if len(sys.argv) == 2 and sys.argv[1] == "run": sys.exit(run_list_detached(None, []))   # `run run` alone: attach to the detached run, if any
+    if len(sys.argv) > 3 and sys.argv[1] == "run" and "-c" in sys.argv[2:-1]:   # `run -c gainers ...` = `run gainers ...`: -c names the campaign list
+        i = sys.argv.index("-c", 2); sys.argv[2:i + 2] = [sys.argv[i + 1]] + sys.argv[2:i]
+    if len(sys.argv) > 2 and sys.argv[1] == "run" and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", sys.argv[2] + ".csv")):
+        sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "misfires": cmd_misfires,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)

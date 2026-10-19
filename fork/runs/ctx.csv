@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+ctx-32768,qwen36,3,pf12k,64,,--ctx 32768 --hog-gpu 8 --env CUDA_VISIBLE_DEVICES=1
+ctx-131072,qwen36,3,pf12k,64,,--ctx 131072 --hog-gpu 8 --env CUDA_VISIBLE_DEVICES=1
+ctx-262144,qwen36,3,pf12k,64,,--ctx 262144 --hog-gpu 8 --env CUDA_VISIBLE_DEVICES=1
+ctx-auto,qwen36,3,pf12k,64,,--hog-gpu 8 --env CUDA_VISIBLE_DEVICES=1
