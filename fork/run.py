@@ -64,7 +64,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
 
   [paths]   rels  gh_rel  devbuilds  release_out  images  best  ccache  ccache_stock  build_repo  build_tmp  work  agent
   [models]  olmoe  qwen36  qwen38  glm  mimo        (the regress cells and run.py baseline skip a model whose file is missing)
-  [hosts]   w10_ssh  w10_root                         (the Windows laptop used by `run.py build --machine pc3`; the ssh target may be an alias from ~/.ssh/config)
+  [hosts]   w10_ssh  w10_root  history_sources                         (the Windows laptop used by `run.py build --machine pc3`; the ssh target may be an alias from ~/.ssh/config)
   [gpu]     nvidia_smi  ld_extra  limits_env  limits_service  env_sh   (power-limit tools run.py plcal / run.py baseline: nvidia-smi to call through sudo, the files that keep the limits at boot, an
                                                               optional shell file whose exports every queue task gets; empty = not used)
 """
@@ -86,7 +86,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
             "glm": _BASE + "/models/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf",
             "mimo": _BASE + "/models/MiMo-V2.6-Flash-MOPD-MXFP4.gguf",
         },
-        "hosts": {"w10_ssh": "", "w10_root": "N:"},
+        "hosts": {"w10_ssh": "", "w10_root": "N:", "history_sources": ""},
         "gpu": {"nvidia_smi": "nvidia-smi", "ld_extra": "", "limits_env": "", "limits_service": "", "env_sh": ""},
     }
 
@@ -337,7 +337,7 @@ guard = min_avail_gb=40 max_swap_mb=1500 swapout_pages_s=25000 psi=30
 sample = 1                       ; CPU/GPU/memory once a second, summarised in the row
 
 [arm N]                          ; one section per arm
-bin = /p/bw/wt-release-next/build-dev/bin
+bin = <build dir>/bin
 args = --moe-expert-cache 0
 env = K=V
 origin = fork                    ; fork | stock
@@ -993,6 +993,8 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import config as fcfg   # machine-specific paths and model files: the config section of run.py (defaults, ~/.config/llama-fork/config.toml, FORK_* variables)
 if fcfg.get("gpu", "ld_extra"): os.environ.setdefault("PERF_LD_EXTRA", os.path.expanduser(fcfg.get("gpu", "ld_extra")))   # userspace libraries of a hand-loaded driver (the system ones then fail: "unsupported display driver / cuda driver combination"); every tool and cell inherits it
 if fcfg.get("gpu", "nvidia_smi") != "nvidia-smi": os.environ.setdefault("NVIDIA_SMI", os.path.expanduser(fcfg.get("gpu", "nvidia_smi")))
+# the places everything lives (config.toml [paths], FORK_PATHS_<KEY>, default <clone>/.fork): defined once here, used by name below
+RELS = fcfg.path("rels"); WORK = fcfg.path("work"); BUILD_TMP = fcfg.path("build_tmp"); GH_REL = fcfg.path("gh_rel")
 
 PROMPTS = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bench")   # frozen prompts (src_12k.cpp, src_128k.cpp, longsrc.cpp) live in fork/bench/
 HERE = os.path.abspath(os.environ.get("PERF_BUILDS") or fcfg.path("devbuilds"))  # one subdirectory per build (its bin/ contents)
@@ -1035,7 +1037,7 @@ GAME_WARM = config.prompt("game_warm")
 GAME_TEMPLATE = config.prompt("game_template")   # "write smallest html {word} game"
 CHAT_LONG = config.prompt("chat_long")
 KEEP_SERVER = False   # --keep-server (a run list does this unless -x): the server outlives the run and the next cell with the same model, build and args uses it (no reload); later runs find the cache the earlier ones filled
-QDIR = os.environ.get("RUN_QDIR") or os.path.join(fcfg.path("work"), "q5h"); os.makedirs(QDIR, exist_ok=True)   # server logs, queue, kept-server and load files of the machine
+QDIR = os.environ.get("RUN_QDIR") or os.path.join(WORK, "q5h"); os.makedirs(QDIR, exist_ok=True)   # server logs, queue, kept-server and load files of the machine
 KEPT = QDIR + "/kept-server.json"   # the kept server: key (model, build, args), pid, log file
 DETACH = [False]      # server_run sets it while it starts a server to keep: no die-with-parent, own session
 
@@ -3269,7 +3271,7 @@ def _rel_prune(keep=int(os.environ.get("KEEP_BUILDS", "2"))):
 
 def _build_stock(a):
     """upstream llama.cpp built exactly like upstream's release workflow (job ubuntu-cuda, x64, CUDA 12.8: nvidia/cuda:12.8.2-devel-ubuntu24.04, GCC 13,
-    the workflow's cmake flags): stock numbers must be what upstream's binaries do, never the fork's recipe. Result: /p/bw/gh-rel/stock-b<build>-<hash9>
+    the workflow's cmake flags): stock numbers must be what upstream's binaries do, never the fork's recipe. Result: <gh_rel>/stock-b<build>-<hash9>
     (write-protected, with the CUDA 12.8 runtime libs) and a link to it in DEVBUILDS."""
     src = os.path.expanduser(a.src); img = "nvidia/cuda:12.8.2-devel-ubuntu24.04"
     _git(src, "fetch", "-q", "origin"); _git(src, "checkout", "-q", a.ref)
@@ -3294,7 +3296,7 @@ def _build_stock(a):
     m = re.search(r"build (\d+)", vout.stdout + vout.stderr)
     if rc != 0 or not m:
         sys.exit(f"stock build: FAILED (exit {rc}), log {log}")
-    D = os.path.join(fcfg.path("gh_rel"), f"stock-b{m.group(1)}-{h}")
+    D = os.path.join(GH_REL, f"stock-b{m.group(1)}-{h}")
     if os.path.exists(D):
         subprocess.run(["chmod", "-R", "u+w", D]); shutil.rmtree(D)
     shutil.copytree(os.path.join(B, "bin"), D, symlinks=True); shutil.copy2(os.path.join(src, "LICENSE"), D)
@@ -3401,7 +3403,7 @@ def cmd_build(a):
     tmp = None
     if a.commit:
         rev = _git(a.repo, "rev-parse", a.commit)
-        tmp = os.path.join(fcfg.path("build_tmp"), name)
+        tmp = os.path.join(BUILD_TMP, name)
         if os.path.exists(tmp):
             _git(a.repo, "worktree", "remove", "--force", tmp, check=False)
         _git(a.repo, "worktree", "add", "--detach", tmp, rev)
@@ -4628,7 +4630,7 @@ def cmd_stop(a):
         return sub not in ("build", "show", "report", "gains", "machine", "stop", "cells", "branches", "misfires", "hugepool", "")
     def is_tool(argv):   # a server or tool of one of our builds, or an nsys wrapped around one
         exe = argv[0]
-        return os.path.basename(exe) == "nsys" or any(exe.startswith(d) for d in (DEVBUILDS + "/", "/p/bw/rels/", "/p/bw/gh-rel/") if d) or any(x.endswith("vramhold.py") for x in argv[1:3])
+        return os.path.basename(exe) == "nsys" or any(exe.startswith(d) for d in (DEVBUILDS + "/", RELS + "/", GH_REL + "/") if d) or any(x.endswith("vramhold.py") for x in argv[1:3])
     def is_driver(pid, argv):   # a test driver script (python/bash) started from a job directory (~/.claude/jobs/*/tmp): ascend.py, descend.py, w10down.py, stress.sh ...
         try: cwd = os.readlink(f"/proc/{pid}/cwd")
         except OSError: return False
@@ -4912,7 +4914,7 @@ usage: run.py runlog-all [--db tools/runs.db] [--readme-source]   (rebuilds all_
 Sources, de-duplicated on (ts to the second, model, test, build, tps):
   csv     fork/bench/run-history.csv of this tree and of every worktree next to it (the same file at other branches)
   gitcsv  every committed version of fork/bench/run-history.csv (tools/bench/ before 2026-10-11) in git history (all branches), rows later dropped from the file included
-  db      the old SQLite files (tools/moe-bench/perf.db from git history, fork/bench/archive/perf-*.db, /p/bw/rels/runs.db, /p/bw/data/**/perf*.db, rc_perf*.db)
+  db      the old SQLite files (tools/moe-bench/perf.db from git history, fork/bench/archive/perf-*.db, <rels>/runs.db, <work>/**/perf*.db, rc_perf*.db)
   readme  --readme-source: the speed tables of old README versions in git (numbers from before the run log, only where no logged run of that model and test exists)
 Normalised columns: fam (model family label), tgroup (test without the cli- prefix and -lv3 suffix), bno (build number from the build name or bno column),
 bseq (rank of the build by the time of its first run: orders dev and release-candidate builds that have no number), side (stock / ours), tps, pp, hit, ok.
@@ -4969,7 +4971,7 @@ Views:
 
 
     # csv: every worktree
-    for f in sorted(set(glob.glob("/p/bw/*/tools/bench/run-history.csv") + glob.glob("/p/bw/*/fork/bench/run-history.csv") + glob.glob("/p/bw/llama.cpp/.claude/worktrees/*/tools/bench/run-history.csv") + [os.path.join(ROOT, "fork/bench/run-history.csv")])):
+    for f in sorted(set(glob.glob(os.path.join(os.path.dirname(ROOT), "*/tools/bench/run-history.csv")) + glob.glob(os.path.join(os.path.dirname(ROOT), "*/fork/bench/run-history.csv")) + glob.glob(os.path.join(ROOT, ".claude/worktrees/*/tools/bench/run-history.csv")) + [os.path.join(ROOT, "fork/bench/run-history.csv")])):
         read_csv_text(open(f, errors="replace").read(), "csv")
     for f in a.extra:
         if f.endswith(".csv"):
@@ -5006,7 +5008,7 @@ Views:
             pass
 
 
-    dbs = glob.glob(os.path.join(ROOT, "fork/bench/archive/*.db")) + glob.glob("/p/bw/rels/runs.db") + glob.glob("/p/bw/data/**/perf*.db", recursive=True) + glob.glob("/p/bw/data/**/rc_perf*.db", recursive=True)
+    dbs = glob.glob(os.path.join(ROOT, "fork/bench/archive/*.db")) + glob.glob(os.path.join(RELS, "runs.db")) + glob.glob(os.path.join(WORK, "**/perf*.db"), recursive=True) + glob.glob(os.path.join(WORK, "**/rc_perf*.db"), recursive=True)
     for f in ([] if a.fast else sorted(set(dbs))):
         read_db(f, "db")
     for f in a.extra:
@@ -5178,9 +5180,7 @@ Without --apply only counts. Rows keep their own columns (missing ones stay empt
     import csv, io, os, subprocess, sys
     HERE = os.path.dirname(os.path.abspath(__file__))
     CSV = os.path.join(HERE, "bench", "run-history.csv")
-    SRC = [("o@192.168.1.12", "/home/o/w/tools/bench/run-history.csv"), ("o@192.168.1.12", "/home/o/wt-merge/tools/bench/run-history.csv"),
-           ("o@192.168.1.12", "/home/o/wt-pin/tools/bench/run-history.csv"), ("o@192.168.1.2", "N:/llama.cpp/tools/bench/run-history.csv"),
-           ("o@192.168.1.2", "N:/llama-pred/tools/bench/run-history.csv"), ("o@192.168.1.2", "N:/wt-next/tools/bench/run-history.csv")]
+    SRC = [tuple(x.split("=", 1)) for x in fcfg.get("hosts", "history_sources").split(";") if "=" in x]   # [hosts] history_sources = "user@host=path/run-history.csv;..." (the run-history.csv of other machines)
     key = lambda r: (r.get("ts"), r.get("hw"), r.get("build"), r.get("test"), r.get("model"))
     with open(CSV, newline="") as f:
         rd = csv.DictReader(f); cols = rd.fieldnames; have = {key(r) for r in rd}
@@ -5208,15 +5208,15 @@ Without --apply only counts. Rows keep their own columns (missing ones stay empt
 
 def _tool_pick_features():
     # ---- run.py pick-features (merged into run.py; the code of the file, unchanged)
-    __doc__ = """run.py pick-features GROUPS.txt [--tree /p/bw/wt-base509]: put fork features on the fast base one group at a time, each group tested before the next.
+    __doc__ = """run.py pick-features GROUPS.txt [--tree <build_tmp>/base509]: put fork features on the fast base one group at a time, each group tested before the next.
 GROUPS.txt: lines 'name: sha sha sha ...' (commits in order). Per group: git cherry-pick them in the tree (a conflict: the group is skipped, tree reset), dev build,
-`run.py regress` (restricted OLMoE, 19 slots, 500 tokens, against the best binary kept in /p/bw/rels/best): REGRESSION (below 0.98 x best) drops the group (tree reset to the
-last good state), PASS or NEW BEST keeps it. Result per group in /p/bw/data/pick/<tree name>.log and a line in the final table."""
+`run.py regress` (restricted OLMoE, 19 slots, 500 tokens, against the best binary kept in <rels>/best): REGRESSION (below 0.98 x best) drops the group (tree reset to the
+last good state), PASS or NEW BEST keeps it. Result per group in <work>/pick/<tree name>.log and a line in the final table."""
     import os, re, subprocess, sys, time
-    HERE = os.path.dirname(os.path.realpath(__file__)); tree = "/p/bw/wt-base509"; args = sys.argv[1:]
+    HERE = os.path.dirname(os.path.realpath(__file__)); tree = os.path.join(BUILD_TMP, "base509"); args = sys.argv[1:]
     if "--tree" in args: i = args.index("--tree"); tree = args[i + 1]; del args[i:i + 2]
     groups = [(l.split(":", 1)[0].strip(), l.split(":", 1)[1].split()) for l in open(args[0]) if ":" in l and not l.startswith("#")]
-    os.makedirs("/p/bw/data/pick", exist_ok=True); LOG = f"/p/bw/data/pick/{os.path.basename(tree)}.log"
+    PICK = os.path.join(WORK, "pick"); os.makedirs(PICK, exist_ok=True); LOG = f"{PICK}/{os.path.basename(tree)}.log"
     def say(*x):
         s = time.strftime("%F %T ") + " ".join(map(str, x)); print(s, flush=True); open(LOG, "a").write(s + "\n")
     def git(*c): return subprocess.run(["git", *c], cwd=tree, capture_output=True, text=True)
@@ -5232,11 +5232,11 @@ last good state), PASS or NEW BEST keeps it. Result per group in /p/bw/data/pick
         import fcntl
         lk = open("/tmp/queue.lock", "a"); fcntl.flock(lk, fcntl.LOCK_EX)   # a build never overlaps a benchmark
         try:
-            b = subprocess.run(["bash", "/p/bw/data/hcf/lrel/dev-build.sh"], env={**os.environ, "W": tree, "REGRESS": "0"}, capture_output=True, text=True)
+            b = subprocess.run(["bash", os.path.join(WORK, "hcf/lrel/dev-build.sh")], env={**os.environ, "W": tree, "REGRESS": "0"}, capture_output=True, text=True)
         finally:
             fcntl.flock(lk, fcntl.LOCK_UN); lk.close()
         if "DEVBUILD_EXIT 0" not in b.stdout:
-            open(f"/p/bw/data/pick/build-{name}.log", "w").write(b.stdout[-4000:] + b.stderr[-2000:]); say(name, "BUILD FAILED (tail in /p/bw/data/pick/build-" + name + ".log)"); git("reset", "--hard", base); res.append((name, "build failed", "")); continue
+            open(f"{PICK}/build-{name}.log", "w").write(b.stdout[-4000:] + b.stderr[-2000:]); say(name, f"BUILD FAILED (tail in {PICK}/build-" + name + ".log)"); git("reset", "--hard", base); res.append((name, "build failed", "")); continue
         r = subprocess.run([sys.executable, os.path.join(HERE, "run.py"), "regress", os.path.join(tree, "build-dev", "bin"), "--wait"], capture_output=True, text=True)
         if r.returncode == 1:
             say(name, "first verdict", [l for l in r.stdout.splitlines() if l.startswith("regress:")][-1:], "-> again with 8 runs (fixed-text comparator)")
@@ -5269,8 +5269,8 @@ Each step holds /tmp/queue.lock around build AND run (a build never overlaps a b
     import config as fcfg
     devbuilds = fcfg.path("devbuilds")
     ap = argparse.ArgumentParser(); ap.add_argument("--good", required=True); ap.add_argument("--bad", required=True); ap.add_argument("--metric", default="off", choices=["off", "c19"])
-    ap.add_argument("--n", type=int, default=4); ap.add_argument("--name"); ap.add_argument("--tree", default=os.path.join(fcfg.path("build_tmp"), "bisect")); a = ap.parse_args()
-    name = a.name or f"{a.metric}-{a.good[:7]}-{a.bad[:7]}"; LOGDIR = os.path.join(fcfg.path("build_tmp"), "bisect-logs"); os.makedirs(LOGDIR, exist_ok=True); LOG = os.path.join(LOGDIR, f"{name}.log")
+    ap.add_argument("--n", type=int, default=4); ap.add_argument("--name"); ap.add_argument("--tree", default=os.path.join(BUILD_TMP, "bisect")); a = ap.parse_args()
+    name = a.name or f"{a.metric}-{a.good[:7]}-{a.bad[:7]}"; LOGDIR = os.path.join(BUILD_TMP, "bisect-logs"); os.makedirs(LOGDIR, exist_ok=True); LOG = os.path.join(LOGDIR, f"{name}.log")
     def say(*x):
         s = time.strftime("%F %T ") + " ".join(map(str, x)); print(s, flush=True); open(LOG, "a").write(s + "\n")
     def git(*c, cwd=None): return subprocess.run(["git", *c], cwd=cwd or REPO, capture_output=True, text=True).stdout.strip()
@@ -5333,7 +5333,7 @@ Run with the queue stopped; it takes /tmp/queue.lock for the whole search. Resul
     sys.path.insert(0, HERE)
     import config as fcfg
     GPULOG = os.path.join(HERE, "bench", "gpulog")
-    WORK = fcfg.path("work"); os.makedirs(WORK, exist_ok=True)
+    os.makedirs(WORK, exist_ok=True)
     LOG = os.path.join(WORK, "plcal.log")
     THERMAL = 0x8 | 0x20 | 0x40
 
@@ -5493,7 +5493,7 @@ Takes /tmp/queue.lock for the whole run: stop the queue daemon first."""
     sys.path.insert(0, HERE)
     import config as fcfg
     GPULOG = os.path.join(HERE, "bench", "gpulog")
-    WORK = fcfg.path("work"); os.makedirs(WORK, exist_ok=True)
+    os.makedirs(WORK, exist_ok=True)
     LOG = os.path.join(WORK, "baseline.log")
     THERMAL = 0x8 | 0x20 | 0x40
     NVSMI = fcfg.get("gpu", "nvidia_smi")
@@ -5627,7 +5627,7 @@ def _tool_reg_tests():
   run.py reg-tests N CURRENT --dry           only print the experiment that would run
   run.py reg-tests all CURRENT               every default check that can run on this machine now (a check that needs a pool says SKIP without one; opt-in checks, reg 2, run by number)
 
-CURRENT is a directory with llama-cli (and libs), e.g. /p/bw/wt-release-next/build-dev/bin. The last-good builds are stored under /p/bw/rels.
+CURRENT is a directory with llama-cli (and libs), e.g. <tree>/build-dev/bin. The last-good builds are stored under <rels>.
 A check compares CURRENT with the last-good build on the same machine, same tool (llama-cli on both: llama-cli and llama-completion print different
 rates for the same engine), own state file per arm (an arm must never learn from another arm's runs).
 """
@@ -5639,7 +5639,6 @@ rates for the same engine), own state file per arm (an arm must never learn from
     HIST = os.path.join(HERE, "bench", "run-history.csv")
     LOGS = os.path.join(HERE, "bench", "logs")
     PROMPT = config.prompt_path("src12k")   # the README pf12k prompt (12k tokens, 100 generated, -c 16384 -ub 2048 -b 2048): prompt processing and decode in one run, the same prompt as the README table
-    RELS = "/p/bw/rels"
     GOOD = RELS + "/rc-final-fd4c3d2d3"                      # rc-merge fd4c3d2d3: placement measured, pin decision with pool, no mid-split rule
 
     # the stored builds: directory name under RELS -> the commit it is built from. A build that is missing is rebuilt from its commit in a separate temporary worktree
@@ -5650,8 +5649,7 @@ rates for the same engine), own state file per arm (an arm must never learn from
         "stock-bed0a8566":     {"ref": "bed0a8566", "note": "upstream master, the stock floor"},
         "stock-def4d406a":     {"ref": "def4d406a", "note": "upstream master, the older stock"},
     }
-    BUILD_SCRIPT = "/p/bw/data/hcf/lrel/dev-build.sh"
-    BUILD_TMP = "/p/bw/build-tmp"
+    BUILD_SCRIPT = os.path.join(WORK, "hcf/lrel/dev-build.sh")
 
 
     def ensure_build(path, dry=False):
@@ -5861,7 +5859,7 @@ guard = min_avail_gb=10 max_swap_mb=8000 swapout_pages_s=400000 psi=60
 
 def _tool_series():
     # ---- run.py series (merged into run.py; the code of the file, unchanged)
-    __doc__ = """run.py series [--base 6753a033f] [--tip main] [--branch series] [--tree /p/bw/wt-series]
+    __doc__ = """run.py series [--base 6753a033f] [--tip main] [--branch series] [--tree <build_tmp>/series]
 
 Builds the branch `series` from the fork's tip: starting at the upstream commit the fork is based on, ONE COMMIT PER AREA (see fork/PATCHES.md) carrying the
 diff of the paths of that area. A path that belongs to no area goes into the last commit, so `git diff series main` is empty. The commits are a reading aid
@@ -5899,7 +5897,7 @@ The temporary worktree is removed afterwards; nothing is pushed."""
     def main():
         ap = argparse.ArgumentParser()
         ap.add_argument("--base", default="6753a033f"); ap.add_argument("--tip", default="main"); ap.add_argument("--branch", default="series")
-        ap.add_argument("--tree", default="/p/bw/wt-series")
+        ap.add_argument("--tree", default=os.path.join(BUILD_TMP, "series"))
         a = ap.parse_args()
         repo = os.getcwd()
         changes = {}
@@ -6389,7 +6387,7 @@ if __name__ == "__main__":
     ex.add_argument("--dry", action="store_true")
     ex.add_argument("--only")
     ex.add_argument("--rounds", type=int)
-    rg = sp.add_parser("regress", help="quick check after a commit: the build in DIR (default ./build-dev/bin) against the best build kept in /p/bw/rels/best")
+    rg = sp.add_parser("regress", help="quick check after a commit: the build in DIR (default ./build-dev/bin) against the best build kept in <rels>/best")
     rg.add_argument("dir", nargs="?")
     rg.add_argument("-n", type=int, default=4, help="measured runs per build (one discarded run before)")
     rg.add_argument("--tol", type=float, default=0.98, help="REGRESSION below this share of the best; NEW BEST above its inverse with ranges that do not overlap")
