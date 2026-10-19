@@ -71,19 +71,20 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
     import os
 
     HOME = os.path.expanduser("~")
-    _BASE = os.path.join(HOME, "llama-fork")
+    # everything lives under one directory: $FORK_HOME, default <repo>/.fork (git-ignored), so a clone needs no setup and no absolute path
+    _BASE = os.environ.get("FORK_HOME") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".fork")
     DEFAULTS = {
         "paths": {
             "rels": _BASE + "/rels", "gh_rel": _BASE + "/stock", "devbuilds": _BASE + "/rels/devbuilds", "release_out": _BASE + "/rels/release-out",
             "images": _BASE + "/rels/images", "best": _BASE + "/rels/best", "ccache": _BASE + "/ccache", "ccache_stock": _BASE + "/ccache-stock",
-            "build_repo": os.getcwd(), "build_tmp": _BASE + "/build-tmp", "work": _BASE + "/work", "agent": "",
+            "build_repo": os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build_tmp": _BASE + "/build-tmp", "work": _BASE + "/work", "agent": "",
         },
         "models": {
-            "olmoe": HOME + "/models/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf",
-            "qwen36": HOME + "/models/Qwen3.6-35B-A3B-GSQ-hybrid.gguf",
-            "qwen38": HOME + "/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
-            "glm": HOME + "/models/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf",
-            "mimo": HOME + "/models/MiMo-V2.6-Flash-MOPD-MXFP4.gguf",
+            "olmoe": _BASE + "/models/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf",
+            "qwen36": _BASE + "/models/Qwen3.6-35B-A3B-GSQ-hybrid.gguf",
+            "qwen38": _BASE + "/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+            "glm": _BASE + "/models/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf",
+            "mimo": _BASE + "/models/MiMo-V2.6-Flash-MOPD-MXFP4.gguf",
         },
         "hosts": {"w10_ssh": "", "w10_root": "N:"},
         "gpu": {"nvidia_smi": "nvidia-smi", "limits_env": "", "limits_service": "", "env_sh": ""},
@@ -121,7 +122,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
         """fork/models.ini: [alias] path = full model file, url = where it came from; {alias: {path, url}}"""
         import configparser
         here = os.path.dirname(os.path.abspath(__file__))
-        cp = configparser.ConfigParser(defaults={"dir": os.environ.get("FORK_MODELS_DIR", "/m")})
+        cp = configparser.ConfigParser(defaults={"dir": os.environ.get("FORK_MODELS_DIR") or _FILE.get("models", {}).get("dir") or _BASE + "/models"})
         cp.read(os.path.join(here, "models.ini"))
         return {k: dict(cp[k]) for k in cp.sections()}
 
@@ -1032,7 +1033,8 @@ GAME_WARM = config.prompt("game_warm")
 GAME_TEMPLATE = config.prompt("game_template")   # "write smallest html {word} game"
 CHAT_LONG = config.prompt("chat_long")
 KEEP_SERVER = False   # --keep-server (a run list does this unless -x): the server outlives the run and the next cell with the same model, build and args uses it (no reload); later runs find the cache the earlier ones filled
-KEPT = "/p/bw/data/q5h/kept-server.json"   # the kept server: key (model, build, args), pid, log file
+QDIR = os.environ.get("RUN_QDIR") or os.path.join(fcfg.path("work"), "q5h"); os.makedirs(QDIR, exist_ok=True)   # server logs, queue, kept-server and load files of the machine
+KEPT = QDIR + "/kept-server.json"   # the kept server: key (model, build, args), pid, log file
 DETACH = [False]      # server_run sets it while it starts a server to keep: no die-with-parent, own session
 
 
@@ -1382,7 +1384,7 @@ def cmd_cells(a):
         c = x[ix["campaign"]]
         if not c.startswith(a.prefix) or c.endswith("probe") or x[ix["ok"]] != "1":
             continue
-        tag = c.rsplit("-", 1)[0]; lg = f"/p/bw/data/q5h/{tag}.server.log"; pool = ctx = ""
+        tag = c.rsplit("-", 1)[0]; lg = f"{QDIR}/{tag}.server.log"; pool = ctx = ""
         if os.path.exists(lg):
             t = open(lg, errors="replace").read()
             m = re.search(r"block pool on CUDA0: \d+ layers, ([\d.]+) MiB", t); pool = m.group(1) if m else ""
@@ -2666,7 +2668,7 @@ def cmd_run(a):
     CAMPAIGN = a.campaign or ""
     prep_model()
     for i in range(a.n):
-        for build in a.builds:
+        for build in [resolve_build(x) for x in a.builds]:
             run_cell(build.rstrip("/"), a.test, extra, a.plain, a.args, a.bare, a.note, warm=warm_wanted(a.warm, a.no_warm, MODEL))
 
 
@@ -2968,7 +2970,7 @@ def cmd_bench(a):
         if not m:
             prep_model()
         cells = [(build, name, (stock_variants.get(name, "") if build.startswith("stock") else variants[name]))
-                 for build in a.builds.split(",") for name in (list(dict.fromkeys(["default"] + list(stock_variants))) if build.startswith("stock") else names)]
+                 for build in [resolve_build(x) for x in a.builds.split(",")] for name in (list(dict.fromkeys(["default"] + list(stock_variants))) if build.startswith("stock") else names)]
         # a variant may set environment variables: "env:KEY=VALUE" words (e.g. lru='env:LLAMA_MOE_CACHE_POLICY=lru'), the rest are server args
         P = (4 if a.test in ("game4c", "edit4c", "game4", "edit4") else 1) if a.cold_hot else 1   # --cold-hot: every prompt runs twice, 0 = cold (empty state file), 1 = hot (the state that run wrote)
         for pp, i in ([(p, k) for p in range(P) for k in ((0, 1, 2) if (p == 0 and P > 1) else (0, 1))] if a.cold_hot else [(None, k) for k in range(a.rep_from, n)]):  # ABBA: odd repetitions run the cells backwards, so a drift (thermal, page cache) does not favour one cell
@@ -3332,7 +3334,7 @@ def cmd_build(a):
       (--commit: a temporary worktree, removed after the build) into DEVBUILDS/NAME with BUILD_INFO (commit, branch, patch).
     --release: the release recipe (was hcf/lrel/build.sh): every target incl. tests, the archives in REL_OUT (Linux tar.gz + cudart), smoke starts in
       SMOKE_IMAGES, DEVBUILDS/NAME = the archives unpacked. Image llama-rel-el8 from fork/docker/Dockerfile.
-    --stock: upstream at --ref from --src with upstream's release recipe (was hcf/lrel/stock-build.sh) into /p/bw/gh-rel/stock-b<build>-<hash> (no NAME).
+    --stock: upstream at --ref from --src with upstream's release recipe (was hcf/lrel/stock-build.sh) into <gh_rel>/stock-b<build>-<hash> (no NAME).
     After a pc1 build the regress cell runs (restricted OLMoE, pinned knobs, against the best binary) unless --no-regress.
     --machine pc3: the same commit built on the W10 laptop (git bundle over ssh, its release-out\winbuild.bat) into N:\NAME (no regress there);
       with --release also the zip (binaries, VC runtime DLLs, LICENSE) in N:\llama.cpp\release-out and a copy in REL_OUT."""
@@ -3564,12 +3566,12 @@ def _cell_cli(tok, wi):
     """an m111(log).sh command line as the equivalent run.py cell line (WRAP=... in front becomes --wrap)"""
     wrap = next((x[5:] for x in tok[:wi] if x.startswith("WRAP=")), None)
     rest = tok[wi + 1:wi + 7]
-    return shlex.join(["python3", "/p/bw/wt-main/fork/run.py", "cell"] + rest + (["--wrap", wrap] if wrap else []))
+    return shlex.join(["python3", os.path.abspath(__file__), "cell"] + rest + (["--wrap", wrap] if wrap else []))
 def cmd_queue(a):
     """Adds tasks to the bench queue the safe way: under the queue's own file lock (queued.py read-modify-writes tasks.csv; an edit without that lock is lost to its next
     rewrite - a hand edit was, once), after a backup of tasks.csv with the last 3 versions kept in queue/backups. `backups` lists them."""
     import fcntl, shutil
-    Q = "/p/bw/data/q5h/queue"; INI = os.path.join(Q, "tasks.csv"); BK = os.path.join(Q, "backups")
+    Q = QDIR + "/queue"; INI = os.path.join(Q, "tasks.csv"); BK = os.path.join(Q, "backups")
     COLS = ["id", "order", "status", "campaign", "created", "start", "stop", "exit", "pid", "env", "cli", "log", "note"]
     if a.action in ("pause", "resume", "status"):
         # the daemon starts nothing while queue/STOP exists (a running task finishes first); no restart, no REST call needed
@@ -3887,7 +3889,7 @@ def hw_line():
         try: dm = subprocess.run(["sudo", "-n", "dmidecode", "-t", "memory"], capture_output=True, text=True, timeout=10).stdout   # needs root: without it the type and speed are left out, the measured bandwidth says enough
         except (OSError, subprocess.SubprocessError): dm = ""
         ty = re.search(r"^\s*Type: (DDR\d)", dm, re.M); sp = re.search(r"Configured Memory Speed: (\d+) MT/s", dm)
-        logs = sorted(glob.glob("/p/bw/data/q5h/*.server.log"), key=os.path.getmtime)
+        logs = sorted(glob.glob(QDIR + "/*.server.log"), key=os.path.getmtime)
         txt = next((t for t in (open(f, errors="replace").read(200000) for f in reversed(logs[-8:])) if "saturated at" in t and "prefill links" in t), "")   # the newest log that has the probe lines (a cell still loading has none yet)
         bw = re.search(r"saturated at ([\d.]+) GB/s", txt); lk = dict(re.findall(r"CUDA(\d) ([\d.]+)", (re.search(r"prefill links \(GB/s\): (.*?) ->", txt) or [0, ""])[1] if re.search(r"prefill links \(GB/s\): (.*?) ->", txt) else ""))
         out.append(" ".join(x for x in (ram, ",".join(([ty.group(1).lower()] if ty else []) + ([sp.group(1)] if sp else []) + ([f"{float(bw.group(1)):.0f}g"] if bw else []))) if x))
@@ -3906,7 +3908,7 @@ def hw_line():
 
 
 CELL_TEST = [""]   # the running cell's test and answer length, shown after its name in the status line (set by run_list)
-LOAD_FILE = "/p/bw/data/q5h/load-s.txt"   # written by a cell when its server answers: seconds of load; peek_line shows it; run_watched removes it at each cell start
+LOAD_FILE = QDIR + "/load-s.txt"   # written by a cell when its server answers: seconds of load; peek_line shows it; run_watched removes it at each cell start
 
 
 def peek_line(exp):
@@ -3934,6 +3936,7 @@ def result_lines(res):
 
 
 LIVE_UP = [0]       # lines of the status block on screen: the next cell redraws over it, nothing scrolls
+CELL_ASKED = [0]    # tokens asked for in the running cell
 CELL_PROMPT = [""]   # the running cell's prompt text (set per row)
 CELL_REC = []       # structured twin of CELL_LINES: the final table is built from it
 STOCK_REC = [None]  # set by stock_gain: the stock numbers behind its text
@@ -4001,6 +4004,29 @@ def known_gain(model, test):
     return math.prod(gs) ** (1 / len(gs))
 
 
+def run_times(rid):
+    """(seconds the run took, `l 44s` load text) of runs.db row rid, from its wall_s and load_s; (None, "") when not recorded"""
+    import sqlite3
+    try:
+        r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select wall_s, load_s from runs where rowid=?", (rid,)).fetchone()
+    except sqlite3.Error: r = None
+    if not r or not r[0]: return None, ""
+    lv = r[1]
+    return float(r[0]), ("" if lv is None or lv < 0 else "l " + (f"{int(lv)}s" if lv < 100 else f"{int(lv // 60)}m{int(lv % 60):02d}s"))
+
+
+def out_len(ours_id, stock_id):
+    """`843/345`: tokens of the answer of our run / of the stock run (runs.db n_gen); the asked length is in the prompt column"""
+    import sqlite3
+    c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+    def n(i):
+        try: r = c.execute("select n_gen from runs where rowid=?", (i,)).fetchone() if i else None
+        except sqlite3.Error: r = None
+        return str(int(r[0])) if r and r[0] else ""
+    o, s_ = n(ours_id), n(stock_id)
+    return f"{o}/{s_}" if (o or s_) else ""
+
+
 def run_id(campaign):
     """runs.db rowid of the newest ok run of a campaign (the id of `run out ID`), None when there is none"""
     import sqlite3
@@ -4028,36 +4054,36 @@ def final_table(recs, live=False, hdr_out=None):
         tiny = re.fullmatch(r"(\d+)/.*", r.get("prompt") or "") and int(re.match(r"\d+", r["prompt"]).group()) <= 128   # a prompt of 64 tokens: its prompt speed is mostly the first-token latency (SSD, cache), not a rate
         if tiny: p = None
         gt = t / st["t"] if st and t else None; gp = p / st["p"] if st and p and st["p"] else None
-        body.append(dict(name=r["name"], id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", time=f"{int(el // 60)}:{int(el % 60):02d}" if el is not None else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1),
+        body.append(dict(name=r["name"], id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" if el is not None else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1),
                          st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] and not tiny else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=(not st and not r["stock_row"])))
         body[-1]["bt"] = (f"b{st['ob']} {st['od'][5:]} vs b{st['sb']} {st['sd'][5:]}" if st["ob"] else f"stock b{st['sb']} {st['sd'][5:]}") if st else ""; body[-1]["bts"] = (f"b{st['ob']} vs b{st['sb']}" if st["ob"] else f"stock b{st['sb']}") if st else ""
         gs = [g for g in (gt, gp) if g]; body[-1]["gm"] = math.prod(gs) ** (1 / len(gs)) if gs else 0   # overall gain: geometric mean of decode and prompt gain
-        body[-1]["old"] = [dict(name=r["name"], is_old=True, id=str(orid), sid="", prompt=r.get("prompt") or "", time="", load="", fail=False, t=f(t, 2), p=f(p, 1), st="", sp="", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=False, gm=0, old=[],
+        body[-1]["old"] = [dict(name=r["name"], is_old=True, out="", id=str(orid), sid="", prompt=r.get("prompt") or "", time="", load="", fail=False, t=f(t, 2), p=f(p, 1), st="", sp="", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=False, gm=0, old=[],
                                 bt=f"b{n} {d[5:]} {b}", bts=f"b{n} {b}", st_=None) for b, n, d, t, p, gt, gp, orid in older_gainers(r.get("model"), r.get("test"), st["ob"], st, body[-1]["gm"])] if st and not live and not r.get("ref") else []
     if not live: body.sort(key=lambda x: -x["gm"])   # biggest overall gainers first (cells without stock last, list order kept)
     allrows = [y for x in body for y in [x] + x.get("old", [])]
     wd = lambda k, h: max([len(h)] + [len(x[k]) for x in allrows])
-    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
+    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
     if live:   # one finished cell as it happens: fixed minimum widths so the rows of successive cells line up
         W["name"] = NAMEW[0] - 1   # the longest name of the list, whatever this cell is called
-        for k, mw in (("prompt", 7), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
+        for k, mw in (("prompt", 7), ("out", 7), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
         for x in allrows: x["bt"] = x.get("bts", x["bt"])   # short builds, so every row decides the same columns
         W["bt"] = max([16, len("builds")] + [len(x["bt"]) for x in allrows])
     def width(keys): return sum(W[k] + 2 for k in keys)
-    ours = ["name", "prompt", "time", "load", "t", "p"]; stk = ["st", "sp", "gt", "gp", "bt", "id", "sid"]
+    ours = ["name", "prompt", "out", "time", "load", "t", "p"]; stk = ["st", "sp", "gt", "gp", "bt", "id", "sid"]
     while width(ours + stk) > cols and len(ours) > 3 and ("load" in ours or "time" in ours): ours.remove("load" if "load" in ours else "time")
     if width(ours + stk) > cols:   # next to go: the dates in the builds column
         for x in allrows: x["bt"] = x["bts"]
         W["bt"] = max([len("builds")] + [len(x["bt"]) for x in allrows] + ([16] if live else []))
     wrap = width(ours + stk) > cols
-    H = {"prompt": "prompt", "time": "time", "load": "load", "t": "t/s", "p": "pp", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "bt": "builds", "id": "id", "sid": "stock id"}
-    HC = {"prompt": 36, "t": 96, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
+    H = {"prompt": "prompt", "out": "out", "time": "time", "load": "load", "t": "t/s", "p": "pp", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "bt": "builds", "id": "id", "sid": "stock id"}
+    HC = {"prompt": 36, "out": 36, "t": 96, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
     hl = lambda keys: "".join("  " + col(HC[k], f"{H[k]:<{W[k]}}" if k == "bt" else f"{H[k]:>{W[k]}}") for k in keys)
     out = [" " * W["name"] + hl(ours[1:]) + ("" if wrap else hl(stk))]
     if wrap: out.append(" " * W["name"] + hl(stk))
     if hdr_out is not None: hdr_out.extend(out); out = []   # live rows: the header goes to the caller (printed once)
     for x in allrows:
-        c = {"prompt": ("36", x["prompt"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;94", x["t"]), "p": ("1;92", x["p"]), "st": ("94", x["st"]), "sp": ("92", x["sp"])}
+        c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;94", x["t"]), "p": ("1;92", x["p"]), "st": ("94", x["st"]), "sp": ("92", x["sp"])}
         cell = lambda k: "  " + col(c[k][0], f"{c[k][1]:>{W[k]}}")
         gcell = lambda k, v: "  " + (col("1;91" if v < 1 else "37" if v < 2 else "1;97" if v < 10 else "1;93" if v < 40 else "1;92", f"{x[k]:>{W[k]}}") if v is not None else " " * W[k])   # below 1 red, 1-2 plain, 2x bold white, 10x yellow, 40x green
         ln = col(37 if x.get("is_old") else 1, f"{x['name']:<{W['name']}}") + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "")
@@ -4142,13 +4168,24 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
     except Exception as e: gain = f"  | gain: {e}"   # a display problem never ends the list
     try: lv = float(open(LOAD_FILE).read()); lt = "" if lv < 0 else "l " + (f"{int(lv)}s" if lv < 100 else f"{int(lv // 60)}m{int(lv % 60):02d}s")
     except (OSError, ValueError): lt = ""
-    CELL_REC.append(dict(ref=ours_reference(peek[0], peek[1]) if peek and str(cmd[5]).startswith("stock") and res else None, sbno=own_build_no(cmd[5]), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, cmd[5], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, cmd[5], "llama-server")) else "", rid=run_id(f"{cmd[3]}-{peek[1]}") if peek else None, prompt=CELL_PROMPT[0], model=peek[0] if peek else None, test=peek[1] if peek else None, name=label, el=el, lt=lt, rc=rc or (0 if res else 1), res=res, st=STOCK_REC[0], stock_row=str(cmd[5]).startswith("stock")))
+    CELL_REC.append(dict(asked=CELL_ASKED[0], ref=ours_reference(peek[0], peek[1]) if peek and str(cmd[5]).startswith("stock") and res else None, sbno=own_build_no(cmd[5]), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, cmd[5], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, cmd[5], "llama-server")) else "", rid=run_id(f"{cmd[3]}-{peek[1]}") if peek else None, prompt=CELL_PROMPT[0], model=peek[0] if peek else None, test=peek[1] if peek else None, name=label, el=el, lt=lt, rc=rc or (0 if res else 1), res=res, st=STOCK_REC[0], stock_row=str(cmd[5]).startswith("stock")))
     CELL_LINES.append(col(1, f"{label[:NAMEW[0]]:<{NAMEW[0]}}") + f" {int(el // 60):>3}:{int(el % 60):02d} " + col(37, "cell") + (col(37, ",") + " " + col(33, lt) if lt else "") + "  " + (col(31, "FAILED ") if rc or not res else "") + "  ".join(speed_txt(t, p) for t, p in res) + gain )   # decode blue, prompt green, load yellow: the colors of the status bar
     live_clear(); print(live_rows(CELL_REC[-1]) + ("\n" + result_lines(res) if len(res) > 1 else ""), flush=True)   # the finished cell keeps its line (speeds of every run); the next cell's live block is drawn below the growing list
     if out:
         out.close()
         if rc: live_clear(); print("".join(open(log, errors="replace").readlines()[-8:]), end="", flush=True)   # the failure reason
     return rc
+
+
+def resolve_build(name):
+    """a build given by its number (b13563 or 13563) becomes the newest build directory in devbuilds measured under that number (stock-b11729-official for a stock number); a name that is a directory, or anything else, comes back unchanged; exits when the number matches no directory"""
+    if not re.fullmatch(r"b?\d{5}", name or "") or os.path.isdir(os.path.join(DEVBUILDS, name)): return name
+    import sqlite3
+    num = int(name.lstrip("b")); st_dir = os.path.join(DEVBUILDS, f"stock-b{num}-official")
+    if os.path.isdir(st_dir): return os.path.basename(st_dir)
+    for (bn,) in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select build from runs where bno=? and build not like 'stock%' order by ts desc", (num,)):
+        if os.path.isdir(os.path.join(DEVBUILDS, bn)): return bn
+    sys.exit(f"build {name}: no build directory in {DEVBUILDS} was measured under that number (a build name works, e.g. um3d)")
 
 
 def stock_latest(dry=False):
@@ -4216,7 +4253,7 @@ def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
     print(col(33, f"pool {have}->{got}g") + (col(31, f" (wanted {need}g, running without a pool" + (f": {why}" if why else "") + ")") if got < need else ""), flush=True)
 
 
-RUN_LIVE = "/p/bw/data/q5h/run-list.json"   # {pid, log} of the detached list run
+RUN_LIVE = QDIR + "/run-list.json"   # {pid, log} of the detached list run
 
 
 def run_list_detached(name, argv):
@@ -4239,7 +4276,7 @@ def run_list_detached(name, argv):
         print("no detached run is going\n"); run_list_help(); return 1
     if rec: print(f"a run is going (pid {rec['pid']}): attaching, Ctrl-C detaches, `run stop` stops it", flush=True)
     else:
-        log = f"/p/bw/data/q5h/run-list-{time.strftime('%m%d-%H%M%S')}.log"
+        log = f"{QDIR}/run-list-{time.strftime('%m%d-%H%M%S')}.log"
         with open(log, "ab") as lf:
             p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "run", name] + list(argv), stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
                                  env=dict(os.environ, RUN_DAEMON="1", PYTHONUNBUFFERED="1", COLUMNS=str(shutil.get_terminal_size((100, 24)).columns)), start_new_session=True)
@@ -4297,6 +4334,7 @@ def run_list(name, argv):
     ap.add_argument("-dsc", "-d", "--desc", action="store_true", help="biggest model files first (same-size rows keep the list order)")
     o = ap.parse_args([x for x in argv if x != "desc"])   # `run gainers desc` works too
     if o.stock: o.build = stock_latest(o.dry)
+    o.build = resolve_build(o.build)   # -b b13563: a build number
     rows = list(csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", name + ".csv"), newline="")))
     for r in rows: r["model"] = fcfg.model(r["model"])   # the model column is a models.ini alias or a path
     rows = [r for r in rows if not o.only or any(x in r["name"] for x in o.only.split(","))]
@@ -4326,10 +4364,12 @@ def run_list(name, argv):
     rows = [dict(r, _b=b) for r in rows for b in ((sb, o.build) if sb and (o.stock_first or stock_missing(r)) else (o.build,))]   # -sc: the stock cell, then ours; -nrt: the stock cell only where its comparison is missing
     if o.not_today:   # -nrt: a cell with enough ok rows (warm-up passes and loop retries do not count) from today in runs.db is not run again; a model with no cell left is not loaded or mounted
         import sqlite3
-        done = {}   # campaign -> [(t/s, pp t/s) of today's ok runs]
+        done = {}   # campaign -> [(t/s, pp t/s) of today's ok runs of the build under test (a campaign named `latest-...` holds the runs of every build `latest` ever pointed to: only this build's count)]
+        cur = own_build_no(o.build); cur = int(cur) if str(cur).isdigit() else None
         try:
-            for c, t, p in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
-                    "select campaign, tps, pp from runs where cast(ok as integer)=1 and tps is not null and date(start_ts)=date('now','localtime') and coalesce(env,'') not like '%warmpass%' order by ts"):
+            for c, t, p, bn in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
+                    "select campaign, tps, pp, bno from runs where cast(ok as integer)=1 and tps is not null and date(start_ts)=date('now','localtime') and coalesce(env,'') not like '%warmpass%' order by ts"):
+                if cur and not str(c).startswith("stock") and int(bn or 0) != cur: continue
                 done.setdefault(c, []).append((float(t), float(p or 0)))
         except sqlite3.Error as e: print(f"-nrt: runs.db: {e}", flush=True)
         keep = [r for r in rows if len(done.get(f"{r['_b']}-{r['name']}-{r['test']}", ())) < int(r["n"] or 1)]
@@ -4340,10 +4380,10 @@ def run_list(name, argv):
             STOCK_REC[0] = None
             try: gain = stock_gain((r["model"], r["test"]), res, r["_b"])
             except Exception as e: gain = f"  | gain: {e}"
-            CELL_REC.append(dict(ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=run_id(f"{r['_b']}-{r['name']}-{r['test']}"), prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=None, lt="", rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
+            _rid = run_id(f"{r['_b']}-{r['name']}-{r['test']}"); _el, _lt = run_times(_rid)
+            CELL_REC.append(dict(skipped=True, asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
             CELL_LINES.append(col(1, f"{('s' if r['_b'].startswith('stock') else '') + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
-            print(live_rows(CELL_REC[-1]), flush=True)
-        if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run today skipped (lines above)", flush=True)
+        if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run today skipped (they are in the table at the end)", flush=True)
         rows = keep
     def size(r):   # bytes of the model; a split model counts all its parts (NAME-00001-of-0000N.gguf)
         return sum(os.path.getsize(f) for f in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
@@ -4385,14 +4425,14 @@ def run_list(name, argv):
             if o.dry: print(f"[{name}] {tag}: {shlex.join(cmd[3:])}", flush=True)
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
-            CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens"))
+            CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")); CELL_ASKED[0] = int(r["tokens"]) if r.get("tokens") else 0
             CELL_TEST[0] = r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")   # "12k in 1k out", "64t in 1k out"
-            if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, ("s" if r["_b"].startswith("stock") else "") + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"/p/bw/data/q5h/{tag}.list.log", results=f"/p/bw/data/q5h/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
+            if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, ("s" if r["_b"].startswith("stock") else "") + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
             done_s += ex or 0
     finally:   # the cells' lines, then the pool: it holds its RAM whether a model uses it or not: give it back when the list ends, also on Ctrl-C or an error
         if CELL_LINES and not o.dry:   # the final block, complete for a screenshot: the machine, then every cell with what it measured
-            live_clear(); print("\n" + col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC) or CELL_LINES), flush=True)
-        if CELL_LINES and not o.dry: open(f"/p/bw/data/q5h/{o.build}-{name}.list.txt", "a").write("\n".join(CELL_LINES) + "\n")   # the screen shows only the current cell; the finished cells' lines go here
+            live_clear(); print("\n" + (col(1, hw_line()) + "\n" if any(not x.get("skipped") for x in CELL_REC) else "") + "\n".join(final_table(CELL_REC) or CELL_LINES), flush=True)   # the machine line is at the top already when no cell ran
+        if CELL_LINES and not o.dry: open(f"{QDIR}/{o.build}-{name}.list.txt", "a").write("\n".join(CELL_LINES) + "\n")   # the screen shows only the current cell; the finished cells' lines go here
         if not o.dry: kept_kill()   # the kept server holds the pool: it goes before the unmount
         if not o.no_pool and not o.dry and os.path.ismount("/mnt/huge1g"):
             try:
@@ -4462,7 +4502,7 @@ def cmd_cell(a):
     """One queue cell (what m111.sh / m111log.sh did, for one test): wait until both GPUs are free, run `bench` for the builds side by side with the campaign TAG-TEST,
     keep the run output in q5h/TAG-TEST.run.out, add the result lines to q5h/TAG.out, log a failed cell (no result line) to the shared error log and exit 1 (the queue marks
     the task failed), keep the server log as TAG.server.log when one build ran."""
-    Q5 = "/p/bw/data/q5h"; U = "/p/bw/p2p/userspace-595/usr/lib/x86_64-linux-gnu"; SMI = "/p/bw/p2p/bin595/nvidia-smi"
+    Q5 = QDIR; U = "/p/bw/p2p/userspace-595/usr/lib/x86_64-linux-gnu"; SMI = "/p/bw/p2p/bin595/nvidia-smi"
     while not kept_get():   # nothing may still hold GPU memory (a killed script leaves its children running); the kept server is meant to
         r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True)
         if r.stdout.split() and max(int(x) for x in r.stdout.split()) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
@@ -4470,7 +4510,7 @@ def cmd_cell(a):
     if not nomount_args(a.args)[1] and not kept_get(): pool_sanity(model=a.model)
     # the build name "latest" is the symlink the newest dev build moves (cmd_build): resolved HERE, after the wait, so a queued cell runs the newest binary of the moment, and
     # every row, log and tag carries the real build name
-    a.builds = ",".join(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, "latest"))) if b == "latest" else b for b in a.builds.split(","))
+    a.builds = ",".join(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, "latest"))) if b == "latest" else resolve_build(b) for b in a.builds.split(","))
     open(os.path.join(Q5, a.tag + ".build"), "w").write(a.builds + "\n")   # which build(s) this cell really ran ("latest" resolved)
     cell_args, nomount = nomount_args(a.args, a.model)
     args = "-np 1 " + cell_args
@@ -6223,7 +6263,7 @@ if __name__ == "__main__":
     bd = sp.add_parser("build", help="dev build (default), --release (archives in REL_OUT, DEVBUILDS/NAME = the archives unpacked) or --stock (upstream recipe) of a worktree (--tree) or a commit (--commit), then the regress cell; --machine pc3 builds on the W10 laptop")
     bd.add_argument("name", nargs="?", help="directory under DEVBUILDS (not for --stock)")
     bd.add_argument("--release", action="store_true", help="the release recipe and packaging (was hcf/lrel/build.sh RELEASE=1); with --machine pc3 the Windows zip")
-    bd.add_argument("--stock", action="store_true", help="upstream llama.cpp with upstream's release recipe (was hcf/lrel/stock-build.sh) into /p/bw/gh-rel/stock-b<build>-<hash>")
+    bd.add_argument("--stock", action="store_true", help="upstream llama.cpp with upstream's release recipe (was hcf/lrel/stock-build.sh) into <gh_rel>/stock-b<build>-<hash>")
     bd.add_argument("--src", default="~/lc", help="--stock: the upstream clone")
     bd.add_argument("--ref", default="origin/master", help="--stock: the upstream commit to build")
     bd.add_argument("--tree", help="worktree to build as it is (uncommitted changes included, BUILD_INFO patch= marks them)")
