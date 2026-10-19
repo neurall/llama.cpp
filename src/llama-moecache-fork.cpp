@@ -343,11 +343,14 @@ struct moe_cache {
     // --moe pinr=N (default 6): a model that does not fit RAM keeps its weights mmap'd, and pinned copies of the slices of the experts that get uploaded are kept for as
     // long as N/10 of the RAM lasts: the next upload of an expert reads its pinned copy (direct DMA, 2.2x the pageable speed on the x16 link), the cold ones stay in the page cache
     ggml_backend_buffer_type_t pin_buft = nullptr;
+    ggml_backend_buffer_type_t lazy_buft = nullptr;   // --moe pin-lazy: the GPU's pinned host buffer type
     size_t                     pin_budget = 0, pin_used = 0, pin_left = 0;
     char *                     pin_cur = nullptr;
     uint64_t                   pin_n = 0;
     std::vector<ggml_backend_buffer_t> pin_chunks;
     std::mutex                 pin_mtx;
+    std::thread                lazy_thr;          // --moe pin-lazy: reads expert tensors into pinned buffers in the background (pin_prefetch_run)
+    std::atomic<bool>          lazy_stop{false};
 
     // model bigger than RAM, weights mmap'd: an expert in VRAM doesn't need its RAM copy. Its pages
     // are dropped when it is cached and read back (async readahead) when it is evicted, so RAM holds
@@ -601,6 +604,67 @@ const char * pin_slice(moe_cache * mc, layer_state & ls, int k, int32_t e, size_
     memcpy(dst, (const char *) src->data + (size_t) e*sz, sz);
     ls.pin_ptr[k][e].store(dst, std::memory_order_release);
     return dst;
+}
+
+bool pread_full(int fd, void * dst, size_t n, size_t off);
+
+// --moe pin-lazy (default with a pin budget on a MoE model): the loader maps the weights and reads nothing, this thread then pins whole expert tensors while the
+// server already answers: one pinned buffer per tensor (cudaHostAlloc costs ~3.5 GiB/s whatever the size, measured 2026-10-19), filled by 16 threads of 4 MiB preads
+// (the SSD gives 6.5 GiB/s that way, the mapping's page faults 2.8), then the tensor's data pointer moves to the pinned copy: CPU compute and uploads read
+// it from there (direct DMA), and the mapping's pages and the page cache of that range are dropped. Layer order, until the budget or the RAM margin ends it.
+// The data pointer is swapped while the graph may read it: both copies hold the same bytes, and an op that started on the old address still finds it mapped.
+static void pin_prefetch_run(moe_cache * mc, size_t budget) {
+    size_t used = 0, total = 0;
+    for (auto & ls : mc->layers) { for (int k = 0; k < 3; ++k) { total += ggml_nbytes((k == 0 ? ls.pub.up_src : k == 1 ? ls.pub.gate_src : ls.pub.down_src)); } }
+    const int64_t t0 = ggml_time_us();
+    size_t next_log = (size_t) 10 << 30;
+    int n_pinned = 0;
+    for (auto & ls : mc->layers) {
+        for (int k = 0; k < 3; ++k) {
+            if (mc->lazy_stop.load()) { return; }
+            ggml_tensor * t = const_cast<ggml_tensor *>(k == 0 ? ls.pub.up_src : k == 1 ? ls.pub.gate_src : ls.pub.down_src);
+            if (ls.src_fd[k] < 0 || !t->buffer || !ggml_backend_buffer_is_host(t->buffer)) { continue; }
+            const size_t nb = ggml_nbytes(t);
+            if (used + nb > budget) { continue; }   // a smaller tensor further on may still fit
+            if (mem_available_bytes() < nb + ((size_t) 8 << 30)) {   // never push the system into swapping
+                LLAMA_LOG_WARN("moe-cache: pin-lazy: stopped at %.1f GiB pinned (RAM available is low)\n", used / 1073741824.0);
+                return;
+            }
+            ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->lazy_buft, nb);
+            if (!b) { LLAMA_LOG_WARN("moe-cache: pin-lazy: pinned allocation of %.0f MiB failed at %.1f GiB pinned\n", nb / 1048576.0, used / 1073741824.0); return; }
+            char * base = (char *) ggml_backend_buffer_get_base(b);
+            std::atomic<size_t> nxt{0};
+            std::atomic<bool>   fail{false};
+            const size_t req = (size_t) 4 << 20;
+            auto work = [&]() {
+                for (;;) {
+                    const size_t o = nxt.fetch_add(req);
+                    if (o >= nb || fail.load() || mc->lazy_stop.load()) { return; }
+                    if (!pread_full(ls.src_fd[k], base + o, std::min(req, nb - o), ls.src_offs[k] + o)) { fail.store(true); return; }
+                }
+            };
+            std::vector<std::thread> th;
+            for (int i = 0; i < 16; ++i) { th.emplace_back(work); }
+            for (auto & x : th) { x.join(); }
+            if (fail.load() || mc->lazy_stop.load()) { ggml_backend_buffer_free(b); if (fail.load()) { continue; } return; }
+            void * old = t->data;
+            __atomic_store_n(&t->data, (void *) base, __ATOMIC_RELEASE);
+            {   std::lock_guard<std::mutex> lk(mc->pin_mtx); mc->pin_chunks.push_back(b); }
+#ifndef _WIN32
+            const uintptr_t pg = 4096, a0 = ((uintptr_t) old + pg - 1) & ~(pg - 1), a1 = ((uintptr_t) old + nb) & ~(pg - 1);
+            if (a1 > a0) { madvise((void *) a0, a1 - a0, MADV_DONTNEED); }   // the mapping's pages of this tensor
+            posix_fadvise(ls.src_fd[k], (off_t) ls.src_offs[k], (off_t) nb, POSIX_FADV_DONTNEED);   // and the page cache behind them
+#endif
+            used += nb; ++n_pinned;
+            if (used >= next_log) {
+                LLAMA_LOG_WARN("moe-cache: pin-lazy: %.1f of %.1f GiB pinned (%d tensors, %.1f s, %.2f GiB/s)\n", used / 1073741824.0, std::min(budget, total) / 1073741824.0,
+                        n_pinned, (ggml_time_us() - t0) / 1e6, used / 1073741824.0 / std::max(1e-3, (ggml_time_us() - t0) / 1e6));
+                next_log += (size_t) 10 << 30;
+            }
+        }
+    }
+    LLAMA_LOG_WARN("moe-cache: pin-lazy: done, %.1f GiB of the %.1f GiB expert weights pinned (%d tensors) in %.1f s, the rest stays mapped\n",
+            used / 1073741824.0, total / 1073741824.0, n_pinned, (ggml_time_us() - t0) / 1e6);
 }
 
 bool pread_full(int fd, void * dst, size_t n, size_t off) {
@@ -5438,6 +5502,15 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     LLAMA_LOG_WARN("moe-cache: pinr=%.1f: up to %.1f GiB of expert slices pinned as they are uploaded, the rest stays mmap'd\n", pinr, mc->pin_budget / 1073741824.0);
                 }
             }
+            {   // --moe pin-lazy: the loader mapped the weights without reading them; pin the expert tensors in the background up to --moe pin-budget
+                const char * pl = moe_opt("pin-lazy"); const char * pb = moe_opt("pin-budget");
+                const size_t budget = pb ? (size_t) strtoull(pb, nullptr, 10) : 0;
+                if (gpu && !src_pinned && pl && atoi(pl) && budget > 0) {
+                    mc->lazy_buft = ggml_backend_dev_host_buffer_type(gpu);
+                    mc->lazy_thr  = std::thread(pin_prefetch_run, mc, budget);
+                    LLAMA_LOG_WARN("moe-cache: pin-lazy: pinning expert tensors in the background, up to %.1f GiB, the rest stays mapped\n", budget / 1073741824.0);
+                }
+            }
             LLAMA_LOG_WARN("moe-cache: %d upload workers%s, %s\n", n_workers, n_links > 1 ? " (per link)" : "",
                     mc->bounce_bytes ? "memcpy -> pinned staging (bounce) -> GPU" :
                     mc->staging[0] ? "pread -> pinned staging -> GPU" :
@@ -8129,6 +8202,8 @@ void llama_moe_cache_free_fork() {
         LLAMA_LOG_WARN("moe-cache: router prediction: %" PRIu64 " uploads, %" PRIu64 " published before their layer, %" PRIu64 " used, %" PRIu64 " too late to start, %" PRIu64 " dropped in the queue (layer started), %" PRIu64 " promoted into the cache, %" PRIu64 " token-boundary prefetches\n",
                 mc->n_pred_up, mc->n_pred_pub, mc->n_pred_used, mc->n_pred_late, mc->n_stream_stale, mc->n_promoted, mc->n_tbp);
     }
+    mc->lazy_stop.store(true);
+    if (mc->lazy_thr.joinable()) { mc->lazy_thr.join(); }
     for (auto * b : mc->staging) { if (b) { ggml_backend_buffer_free(b); } }
     for (auto * b : mc->pin_chunks) { ggml_backend_buffer_free(b); }
     for (auto * b : mc->pbufs) { ggml_backend_buffer_free(b); }

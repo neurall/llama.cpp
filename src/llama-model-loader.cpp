@@ -734,6 +734,18 @@ llama_model_loader::llama_model_loader(
     n_kv      = gguf_get_n_kv(metadata);
     n_tensors = weights_map.size();
 
+    // (fork) lazy pin: a MoE model with a pin budget loads nothing pinned. The weights stay mapped (no prefetch, nothing read at load) and the MoE cache's
+    // prefetch thread reads whole expert tensors with parallel preads into pinned buffers while the server already runs (--moe pin-lazy=0: pin in tensor order at load)
+    if (pin_budget > 0) {
+        const char * pl = llama_moe_get_opt("pin-lazy");
+        bool has_exps = false;
+        for (const auto & kv : weights_map) { if (kv.first.find("_exps.") != std::string::npos) { has_exps = true; break; } }
+        if (has_exps && !(pl && atoi(pl) == 0)) {
+            llama_moe_set_opt("pin-lazy", "1");
+            pin_budget = 0;
+        }
+    }
+
     fver = (enum llama_fver) gguf_get_version(metadata);
 
     LLAMA_LOG_INFO("%s: loaded meta data with %d key-value pairs and %d tensors from %s (version %s)\n",
@@ -1429,6 +1441,11 @@ void llama_model_loader::done_getting_tensors(bool partial) const {
     }
 }
 
+bool llama_model_loader::pin_lazy() {
+    const char * pl = llama_moe_get_opt("pin-lazy");
+    return pl && atoi(pl) != 0;
+}
+
 void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps) {
     // note: read_lazy also requires mmap; this condition make sure it's usable even when --load-mode is not set to mmap
     if (use_mmap || lazy.any()) {
@@ -1450,7 +1467,7 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
 
             // (fork) no prefetch with a pin budget: MAP_POPULATE reads the whole file into the page cache and maps it before the pinned share is read by the
             // parallel pread workers, i.e. every pinned byte is read twice and the mapped rest floods the page cache at load time (GLM 3.5-bit: mm 110 GiB first, pin after)
-            const size_t prefetch_size = prefetch && use_mmap && pin_budget == 0 ? -1 : 0;
+            const size_t prefetch_size = prefetch && use_mmap && pin_budget == 0 && !pin_lazy() ? -1 : 0;
 
             std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
                     lazy.for_file(idx));
