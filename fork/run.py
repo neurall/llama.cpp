@@ -6185,10 +6185,11 @@ def _tool_ppl_table():
             if not st: continue
             sv = max(st)[1]; d = [100.0 * (x - y) for x, y in zip(nll(cs), nll(sv))]; n = len(d); mean = sum(d) / n
             se = (sum((x - mean) ** 2 for x in d) / (n - 1) / n) ** 0.5 if n > 1 else 0.0
-            cells.setdefault((m, t), {"stock": f"{sv[n - 1]:.4f}", "n": n})[k] = f"{cs[-1]:.4f} ({mean:+.2f} ± {se:.2f}%)"
-        print("| model | stock ppl | ours default | ours, one card | ours, dense split only | ours, two cards f16 | ours, two cards f32 | chunks |\n|---|---|---|---|---|---|---|---|")
+            cells.setdefault((m, t), {"stock": f"{sv[n - 1]:.4f}", "n": n}).setdefault(k.replace(" f32", ""), "")   # the f32 hand-off run replaces the f16 one of the same column
+            if k.endswith("f32") or not cells[(m, t)][k]: cells[(m, t)][k.replace(" f32", "")] = f"{cs[-1]:.4f} ({mean:+.2f} ± {se:.2f}%)"
+        print("| model | stock ppl | ours default | ours, one card | ours, dense split only | ours, two cards | chunks |\n|---|---|---|---|---|---|---|")
         for (m, t), v in sorted(cells.items()):
-            print(f"| {m.replace('.gguf', '')} | {v['stock']} | " + " | ".join(v.get(k, "-") for k in ("default", "one card", "dense only", "two cards", "two cards f32")) + f" | {v['n']} |")
+            print(f"| {m.replace('.gguf', '')} | {v['stock']} | " + " | ".join(v.get(k, "-") for k in ("default", "one card", "dense only", "two cards")) + f" | {v['n']} |")
         return 0
     print("| model | test | build | reference | chunks | final ppl | reference ppl | difference per chunk, % (mean +- s.e.) | chunks worse | passes by path |\n|---|---|---|---|---|---|---|---|---|---|")
     for (m, t, ts, b), cs in sorted(runs.items()):

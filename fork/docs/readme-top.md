@@ -49,7 +49,7 @@ With two or more GPUs the prompt is split between the cards: each card computes 
 
 ## Perplexity against stock
 
-Same text, same chunks, official stock `llama-perplexity` against ours. The number in brackets is the per-chunk difference to stock in percent of perplexity (mean ± standard error); 0.00 means identical to four decimals. *default* is what you get without settings (the planner decides per prompt size whether to use one card or both), *one card* and *two cards* force the path (`dense-split=0` / `dense-split=1`), *two cards f16* is the old hand-off precision (half the bytes between the cards), *two cards f32* sends the hidden states between the cards as f32, which is the default now because f16 cost up to 0.4% perplexity where the dense split ran. The plain Qwen3.8 27B models have no dense split, so for them *two cards* splits the experts only. About 10 chunks of 1024 tokens per model: differences under 0.2% are inside the noise.
+Same text, same chunks, official stock `llama-perplexity` against ours. The number in brackets is the per-chunk difference to stock in percent of perplexity (mean ± standard error); 0.00 means identical to four decimals. *default* is what you get without settings (the planner decides per prompt size whether to use one card or both), *one card* and *two cards* force the path (`dense-split=0` / `dense-split=1`), *dense split only* is `split-experts=0` (see below). The plain Qwen3.8 27B models have no dense split, so for them *two cards* splits the experts only. About 10 chunks of 1024 tokens per model: differences under 0.2% are inside the noise.
 
 {{PPL}}
 
