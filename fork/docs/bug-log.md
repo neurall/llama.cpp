@@ -186,3 +186,9 @@ Left as they are, on purpose: the 10 s upload waits in the zone take and the len
 | `--moe kv-fallback=RAM,q8` on W10 | the engine read `RAM` (the list cut at the comma) | open: the parser gives the whole list in the unit test, the W10 server log shows the first word only | `pre4o` logs the list the engine received (checking) |
 | staging | `--moe pf-slots=2` turned prefetch off (up to 40% slower prompt) | the scheduler needs at least 3 slots (it keeps n_slots - 1 uploads in flight) | not changed; 3 is the floor, measured with 1, 2, 3, 4 and 6 slots on GLM |
 | `prefill-own=K` (experiment, branch prefillv2) | slower with K (15.7 / 16.8 / 18.2 s for K 0 / 4 / 8) | the x4 card's link serialises at its layers' turn | experiment only, not in the release |
+
+## 2026-10-20 f16 hand-offs between the cards cost perplexity
+
+| where | symptom | cause | fix |
+|---|---|---|---|
+| dense / expert split, `src/llama-dsplit-fork.cpp` `llama_dsplit_hop_mode_fork` | forced split on Qwen3.8-Flash-Next: perplexity +0.42 +- 0.23% (IQ3_S) and +0.18 +- 0.14% (IQ1_M) against stock, 10 chunks paired; one card equal to stock to four decimals | the hidden states that cross between the cards travelled as f16 since 2026-10-13 (`409c58942`); with f32 hand-offs the same runs read +0.09 +- 0.20% and +0.09 +- 0.14%, f16 minus f32 on IQ3_S +0.33 +- 0.17% (8 of 10 chunks worse) | default back to f32; `--moe split-f16=1` keeps f16 (half the link bytes, about 2% faster at 3k); open: pf12k speed of the new default on GLM and Next at 8k-12k (gate) |

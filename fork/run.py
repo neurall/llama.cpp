@@ -6160,6 +6160,56 @@ def ppl_chunks_store(start_ts, build, model, test, log):
     except sqlite3.Error as e: print(f"ppl_chunks: {e}", flush=True)
 
 
+PPL_VARIANTS = {"default": "", "one": "moe:dense-split=0 moe:prefill-split=0", "dense": "moe:dense-split=1 moe:split-experts=0 moe:prefill-split=1", "split": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1"}
+
+
+def _tool_ppl():
+    """ppl [-onl TEXT] [-b BUILD] [--variants default,one,dense,split] [--chunks N] [-nrt] [-n]: the perplexity tests. For every model of the gainers list (smallest first) the official stock binary and then BUILD (default latest) in each variant:
+    default (the planner decides), one (one card forced), dense (dense split only, no experts on the helper), split (dense split with experts forced). The per-chunk values go to runs.db (ppl_chunks); the table is `run.py ppl-table --readme`"""
+    import sqlite3
+    ap = argparse.ArgumentParser(prog="run.py ppl", description=_tool_ppl.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-onl", default="", help="models whose alias or file name contains TEXT (comma list)")
+    ap.add_argument("-b", "--build", default="latest")
+    ap.add_argument("--variants", default="default,one,dense,split")
+    ap.add_argument("--chunks", type=int, default=12)
+    ap.add_argument("-nrt", action="store_true", help="skip variants already stored today")
+    ap.add_argument("-n", "--dry", action="store_true")
+    ap.add_argument("--table", action="store_true", help="only print the README table")
+    a = ap.parse_args()
+    if a.table: return _tool_ppl_table_readme()
+    here = os.path.dirname(os.path.abspath(__file__))
+    models = []
+    for r in csv.DictReader(open(os.path.join(here, "runs", "gainers.csv"), newline="")):
+        if r["model"] not in models: models.append(r["model"])
+    want = [x for x in a.onl.split(",") if x]
+    models = [(fcfg.model(al), al) for al in models if not want or any(w.lower() in al.lower() or w.lower() in os.path.basename(fcfg.model(al)).lower() for w in want)]
+    models = [m for m, al in models if os.path.exists(m)]
+    models.sort(key=lambda m: sum(os.path.getsize(f) for f in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", m))))
+    ours = os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, resolve_build(a.build))))
+    stock = os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, "stock-latest")))
+    con = sqlite3.connect(os.path.join(here, "runs.db"))
+    def done(m, build, v):
+        if not a.nrt: return False
+        try: return bool(con.execute("select 1 from ppl_chunks where model=? and build=? and date(start_ts)=date('now','localtime') limit 1", (os.path.basename(m), build + (" --moe " + ",".join(PPL_VARIANTS[v].replace("moe:", "").split()) if PPL_VARIANTS[v] else ""))).fetchone())
+        except sqlite3.Error: return False
+    for m in models:
+        jobs = [(stock, "default", "")] + [(ours, v, PPL_VARIANTS[v]) for v in a.variants.split(",")]
+        for build, v, words in jobs:
+            if done(m, build, v): print(f"skip {os.path.basename(m)} {build} {v}: stored today"); continue
+            cmd = [sys.executable, os.path.abspath(__file__), "bench", "--models", m, "--builds", build, "-t", "pplb", "-n", "1", "--campaign", "ppl-pair", "--variants", v] + (["--variant", f"{v}={words}"] if words else [])
+            print(" ".join(shlex.quote(c) for c in cmd), flush=True)
+            if a.dry: continue
+            wait_vram_free()
+            subprocess.run(cmd, env=dict(os.environ, PERF_PPL_CHUNKS=str(a.chunks)), stdout=subprocess.DEVNULL)
+    if not a.dry: _tool_ppl_table_readme()
+    return 0
+
+
+def _tool_ppl_table_readme():
+    sys.argv = [sys.argv[0], "--readme"]
+    return _tool_ppl_table()
+
+
 def _tool_ppl_table():
     """ppl-table [MODEL]: perplexity of each build against the newest official stock on the same text and chunks: final perplexity, per-chunk difference in % (mean +- s.e.), chunks worse"""
     import sqlite3
@@ -6227,6 +6277,7 @@ def _tool_out():
 
 TOOLS = {
     'out': _tool_out,
+    'ppl': _tool_ppl,
     'ppl-table': _tool_ppl_table,
     'bad-runs': _tool_bad_runs,
     'standin': _tool_standin,
