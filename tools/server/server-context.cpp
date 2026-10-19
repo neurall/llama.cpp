@@ -39,8 +39,6 @@
 
 constexpr int HTTP_POLLING_SECONDS = 1;
 
-int llama_moe_stats_json_fork(char * buf, int cap);   // src/llama-moestate-fork.cpp
-uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n_tokens, uint32_t ub_max);   // src/llama-moecache-fork.cpp: the pass size of equal passes for a prompt
 
 static common_speculative_output_limits server_output_limits(const common_params & params) {
     if (params.embedding ||
