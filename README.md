@@ -102,21 +102,19 @@ printed at startup (`-lv 5` prints all of them).
 | expert cache | off | fills each GPU's free VRAM (`--moe-expert-cache -1`) | holds the experts tokens actually use, so most expert work runs on the GPUs |
 | CPU weight repacking | on | off (`-nr`) | repacked experts can't be copied to the GPU cache |
 | `-ub` (tokens per prompt step) | 512 | calculated per request and card: candidates up to 12288, each one's compute buffer is probed and weighed against the prompt time it saves (the buffer costs expert cache VRAM); a long prompt runs as equal passes | every expert upload serves more prompt tokens: ~2x faster long prompts at a small decode cost (about -3% per doubling on GLM-5.3-Flash) |
-| `-c` (context) | model maximum, fitted to VRAM | 32768 | a bigger KV cache would take VRAM from the expert cache; `-c 65536` if you need more |
+| `-c` (context) | model maximum, fitted to VRAM | sized automatically: the largest context whose KV and context-scaled buffers take at most 30% of the expert cache VRAM, never above the model maximum; the KV moves down f16, q8_0, q4_0, host RAM if a request needs more | a bigger KV cache takes VRAM from the expert cache; `-c N` sets it yourself |
 | `-t` (threads) | all physical cores | starts at physical cores minus one per GPU (6 of 8 here), then tuned on measured decode time; prompt batches tuned separately, up to the logical cores | a free core per GPU keeps kernel launches and cache uploads fast; the tuner moves the count when another one measures faster (`-at off` keeps the start value) |
 
 Settings you pass always win, e.g. `--moe-expert-cache 0` turns the cache off. With your
 own placement (`-ngl`, `-ot`, `--cpu-moe`) the cache stays off unless you also pass
 `--moe-expert-cache -1`.
-- **Prompt processing runs on one GPU, so its PCIe bandwidth sets the speed.** The
-  fork measures host->GPU upload speed per GPU at startup and sends prompt processing
-  to the fastest (here x16 13.2 GB/s vs chipset x4 6.1 GB/s); layers stay in bus order.
+- **Prompt processing is placed by upload speed.** The fork measures host->GPU upload speed per GPU at startup (here x16 13.2 GB/s vs chipset x4 6.1 GB/s). For each prompt a planner picks the fastest card alone or both cards (dense layers split between them, experts streamed to one or both); layers stay in bus order.
 - Output can differ between runs even at temperature 0: a cached expert runs on the
   GPU, a missed one on the CPU, and they round slightly differently. For benchmarks,
-  `LLAMA_MOE_CACHE_DETERMINISTIC=1` makes a build repeat its output.
-- Optional tuning (defaults are measured best): `LLAMA_MOE_CACHE_MARGIN_MB` (VRAM left
-  free, 384), `LLAMA_MOE_CACHE_STATS=1` (hit rate), `LLAMA_MOE_CACHE_WAIT=0`,
-  `LLAMA_MOE_CACHE_BUDGET` / `_MARGIN` / `_SWAP_FRAC` / `_POLICY`.
+  `--moe fixed=1` makes a build repeat its output.
+- Optional tuning (defaults are measured best): every setting is a `--moe` key, there are no
+  environment variables for them, e.g. `vram-reserve-mb` (VRAM left free, 384), `wait-swaps`,
+  `swaps-per-step`, `swap-lead`, `policy`. All keys: [fork/docs/fork-knobs.md](fork/docs/fork-knobs.md).
 
 **More GPUs**: each GPU gets its own cache from its free VRAM, so more GPUs mean more
 cached experts, fewer CPU misses and faster decode, up to the point where every
