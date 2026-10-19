@@ -4250,6 +4250,8 @@ def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
             with quiet(0): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
         except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
         got = 0
+    if have == got == 0 and getattr(run_list_pool, "told", 0): return   # still no pool: said once per list, not before every model
+    run_list_pool.told = 1
     print(col(33, f"pool {have}->{got}g") + (col(31, f" (wanted {need}g, running without a pool" + (f": {why}" if why else "") + ")") if got < need else ""), flush=True)
 
 
