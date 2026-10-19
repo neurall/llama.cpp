@@ -3673,12 +3673,13 @@ def run_list_help():
     print("run.py run -c NAME [-b B] [-onl TEXT[,TEXT]] [-s] [-dsc] [-nm] [-w] [-r N] [-n]   run the cells of fork/runs/NAME.csv (campaign list: gainers, reg, ctx)\n"
           "  -skp TEXT rows to skip, same matching as -onl (comma list)\n"
           "  -sc      each cell on the newest stock binary first, then on -b\n"
-          "  -nrt     skip cells already run today (runs.db)\n"
+          "  -nrt [DAYS]  skip cells already run in the last DAYS days (default 1 = today; runs.db); a stock pulled within those days is kept, no newer release is looked for\n"
           "  -b B     binary under devbuilds/ (default latest); the campaign of a row is B-<row name>\n"
           "  -onl TEXT rows whose name contains TEXT, comma list ok; the trailing '-' keeps glm- apart from glm35-; add i|io|o for one test\n"
           "  -s       newest official ggml-org release binary instead of -b: pulled once (gh, never built) into devbuilds/stock-bNNNNN-official, symlink stock-latest follows it\n"
           "  -w       warm-up pass first (same prompt again, stored as temp=warmpass); default off\n          -r N     measured runs per cell (default 1; -r 0 = the list's n)\n"
           "  -dsc, -from-biggest  biggest model first, one model's rows together; the pool is rebuilt to ceil(model GiB) before each new model\n"
+          "  -nodl   no look for a newer stock release and no download: the stock on disk (stock-latest) is used\n"
           "  -from-smallest  smallest model first, so the first results come quickly\n"
           "  -nm      no mount: leave the pool alone. In a row's args column -nm means -lm mmap and no pool for that cell; `-nm 0.5` also pins that fraction of the model (rest mapped)\n"
           "  -n       print the cells, run nothing\n")
@@ -4205,7 +4206,14 @@ def resolve_build(name):
 def stock_latest(dry=False):
     """The newest official ggml-org release binary (Linux CUDA 13.4 x64 + its cudart libraries, pulled with gh, never built) as devbuilds/stock-bNNNNN-official, and the symlink
     devbuilds/stock-latest to it. Returns the real build name, so rows and logs carry the build number. Downloaded once; a newer release adds a directory, older ones stay. A stock pulled today is reused all day (no gh call)."""
-    today = [p for p in glob.glob(os.path.join(DEVBUILDS, "stock-b*-official")) if os.path.exists(os.path.join(p, "llama-server")) and time.strftime("%F", time.localtime(os.path.getmtime(p))) == time.strftime("%F")]
+    if getattr(stock_latest, "skip", False):   # -nodl: no look at the newest release, no download: the stock-latest link as it is, else the newest stock directory on disk
+        have = [p for p in glob.glob(os.path.join(DEVBUILDS, "stock-b*-official")) if os.path.exists(os.path.join(p, "llama-server"))]
+        if not have: sys.exit("stock: -nodl, but no stock-bNNNNN-official directory under the builds folder")
+        link = os.path.join(DEVBUILDS, "stock-latest")
+        name = os.path.basename(os.path.realpath(link)) if os.path.exists(os.path.join(link, "llama-server")) else os.path.basename(max(have, key=lambda p: int(re.search(r"stock-b(\d+)", p).group(1))))
+        if not dry and not os.path.islink(link): os.symlink(name, link)
+        return name
+    today = [p for p in glob.glob(os.path.join(DEVBUILDS, "stock-b*-official")) if os.path.exists(os.path.join(p, "llama-server")) and time.strftime("%F", time.localtime(os.path.getmtime(p))) >= time.strftime("%F", time.localtime(time.time() - 86400 * (getattr(stock_latest, "days", 1) - 1)))]
     if today:   # a stock pulled today stays the day's stock: no new pull, no rerun of the cells that already have its numbers (a new release is taken tomorrow)
         name = os.path.basename(max(today, key=lambda p: int(re.search(r"stock-b(\d+)", p).group(1))))
         if not dry:
@@ -4340,7 +4348,7 @@ def run_list(name, argv):
     ap.add_argument("-b", "--build", default="latest"); ap.add_argument("-onl", "-o", "--only", help="rows whose name contains TEXT; comma list: glm-,mimo-"); ap.add_argument("-n", "--dry", action="store_true")
     ap.add_argument("-skp", "--skip", help="skip rows whose name contains TEXT; comma list: glm-,mimo-")
     ap.add_argument("-sc", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
-    ap.add_argument("-nrt", "--not-today", action="store_true", help="skip cells (and so models) that already have their runs from today in runs.db")
+    ap.add_argument("-nrt", "--not-today", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip cells (and so models) that already have their runs in runs.db from the last DAYS days (default 1 = today); a stock pulled within those days is not replaced by a newer release")
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
     ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
     ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
@@ -4348,8 +4356,10 @@ def run_list(name, argv):
     ap.add_argument("-r", "--runs", default="1", help="measured runs per cell (default 1; 0 = the list's n)")
     ap.add_argument("-fb", "-from-best", "--from-best", dest="from_best", action="store_true", help="cells with the biggest known gain over stock first (from runs.db: newest runs of ours against the newest official stock; cells with no gain known last), so the best gainers run and print first")
     ap.add_argument("-dsc", "-d", "--desc", "-from-biggest", "--from-biggest", dest="desc", action="store_true", help="biggest model files first (same-size rows keep the list order): the pool fragments with each unmount, so the big models go while it is still whole")
+    ap.add_argument("-nodl", "--skip-download", dest="nodl", action="store_true", help="no check for a newer official stock release and no download: the stock already on disk (stock-latest) is used")
     ap.add_argument("-from-smallest", "--from-smallest", dest="asc", action="store_true", help="smallest model files first: the first results come quickly")
     o = ap.parse_args([x for x in argv if x != "desc"])   # `run gainers desc` works too
+    stock_latest.skip = o.nodl; stock_latest.days = max(o.not_today, 1)
     if o.stock: o.build = stock_latest(o.dry)
     o.build = resolve_build(o.build)   # -b b13563: a build number
     rows = list(csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", name + ".csv"), newline="")))
@@ -4386,7 +4396,7 @@ def run_list(name, argv):
         if cur is None and re.fullmatch(r"b\d+", os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))): cur = int(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))[1:])   # --version failed: the directory is named by the build number
         try:
             for c, t, p, bn in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
-                    "select campaign, tps, pp, bno from runs where cast(ok as integer)=1 and tps is not null and date(start_ts)=date('now','localtime') and coalesce(env,'') not like '%warmpass%' order by ts"):
+                    "select campaign, tps, pp, bno from runs where cast(ok as integer)=1 and tps is not null and date(start_ts)>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%' order by ts" % (o.not_today - 1,)):
                 if cur and not str(c).startswith("stock") and int(bn or 0) != cur: continue
                 done.setdefault(c, []).append((float(t), float(p or 0)))
         except sqlite3.Error as e: print(f"-nrt: runs.db: {e}", flush=True)
@@ -4408,7 +4418,7 @@ def run_list(name, argv):
                 if _b and _b[0]: STOCK_REC[0]["ob"] = int(_b[0]); STOCK_REC[0]["od"] = str(_b[1])[:10]
             CELL_REC.append(dict(skipped=True, asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
             CELL_LINES.append(col(1, f"{('s' if r['_b'].startswith('stock') else '') + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
-        if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run today skipped (they are in the table at the end)", flush=True)
+        if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run in the last {o.not_today} day(s) skipped (they are in the table at the end)", flush=True)
         rows = keep
     def size(r):   # bytes of the model; a split model counts all its parts (NAME-00001-of-0000N.gguf)
         return sum(os.path.getsize(f) for f in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
@@ -6170,7 +6180,7 @@ def _tool_ppl():
     ap.add_argument("-b", "--build", default="latest")
     ap.add_argument("--variants", default="default,one,dense,split")
     ap.add_argument("--chunks", type=int, default=12)
-    ap.add_argument("-nrt", action="store_true", help="skip variants already stored today")
+    ap.add_argument("-nrt", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip variants already stored in the last DAYS days (default 1 = today)")
     ap.add_argument("-n", "--dry", action="store_true")
     ap.add_argument("--table", action="store_true", help="only print the README table")
     a = ap.parse_args()
@@ -6188,12 +6198,12 @@ def _tool_ppl():
     con = sqlite3.connect(os.path.join(here, "runs.db"))
     def done(m, build, v):
         if not a.nrt: return False
-        try: return bool(con.execute("select 1 from ppl_chunks where model=? and build=? and date(start_ts)=date('now','localtime') limit 1", (os.path.basename(m), build + (" --moe " + ",".join(PPL_VARIANTS[v].replace("moe:", "").split()) if PPL_VARIANTS[v] else ""))).fetchone())
+        try: return bool(con.execute("select 1 from ppl_chunks where model=? and build=? and date(start_ts)>=date('now','localtime','-%d days') limit 1" % (a.nrt - 1,), (os.path.basename(m), build + (" --moe " + ",".join(PPL_VARIANTS[v].replace("moe:", "").split()) if PPL_VARIANTS[v] else ""))).fetchone())
         except sqlite3.Error: return False
     for m in models:
         jobs = [(stock, "default", "")] + [(ours, v, PPL_VARIANTS[v]) for v in a.variants.split(",")]
         for build, v, words in jobs:
-            if done(m, build, v): print(f"skip {os.path.basename(m)} {build} {v}: stored today"); continue
+            if done(m, build, v): print(f"skip {os.path.basename(m)} {build} {v}: stored in the last {a.nrt} day(s)"); continue
             cmd = [sys.executable, os.path.abspath(__file__), "bench", "--models", m, "--builds", build, "-t", "pplb", "-n", "1", "--campaign", "ppl-pair", "--variants", v] + (["--variant", f"{v}={words}"] if words else [])
             print(" ".join(shlex.quote(c) for c in cmd), flush=True)
             if a.dry: continue
