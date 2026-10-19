@@ -65,7 +65,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
   [paths]   rels  gh_rel  devbuilds  release_out  images  best  ccache  ccache_stock  build_repo  build_tmp  work  agent
   [models]  olmoe  qwen36  qwen38  glm  mimo        (the regress cells and run.py baseline skip a model whose file is missing)
   [hosts]   w10_ssh  w10_root                         (the Windows laptop used by `run.py build --machine pc3`; the ssh target may be an alias from ~/.ssh/config)
-  [gpu]     nvidia_smi  limits_env  limits_service  env_sh   (power-limit tools run.py plcal / run.py baseline: nvidia-smi to call through sudo, the files that keep the limits at boot, an
+  [gpu]     nvidia_smi  ld_extra  limits_env  limits_service  env_sh   (power-limit tools run.py plcal / run.py baseline: nvidia-smi to call through sudo, the files that keep the limits at boot, an
                                                               optional shell file whose exports every queue task gets; empty = not used)
 """
     import os
@@ -87,7 +87,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
             "mimo": _BASE + "/models/MiMo-V2.6-Flash-MOPD-MXFP4.gguf",
         },
         "hosts": {"w10_ssh": "", "w10_root": "N:"},
-        "gpu": {"nvidia_smi": "nvidia-smi", "limits_env": "", "limits_service": "", "env_sh": ""},
+        "gpu": {"nvidia_smi": "nvidia-smi", "ld_extra": "", "limits_env": "", "limits_service": "", "env_sh": ""},
     }
 
 
@@ -991,6 +991,8 @@ runlog = _register('runlog', _lib_runlog())
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import config as fcfg   # machine-specific paths and model files: the config section of run.py (defaults, ~/.config/llama-fork/config.toml, FORK_* variables)
+if fcfg.get("gpu", "ld_extra"): os.environ.setdefault("PERF_LD_EXTRA", os.path.expanduser(fcfg.get("gpu", "ld_extra")))   # userspace libraries of a hand-loaded driver (the system ones then fail: "unsupported display driver / cuda driver combination"); every tool and cell inherits it
+if fcfg.get("gpu", "nvidia_smi") != "nvidia-smi": os.environ.setdefault("NVIDIA_SMI", os.path.expanduser(fcfg.get("gpu", "nvidia_smi")))
 
 PROMPTS = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bench")   # frozen prompts (src_12k.cpp, src_128k.cpp, longsrc.cpp) live in fork/bench/
 HERE = os.path.abspath(os.environ.get("PERF_BUILDS", os.getcwd()))  # one subdirectory per build (its bin/ contents)
@@ -2050,6 +2052,8 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         row.update(start_ts=_start, end_ts=time.strftime("%F %T", time.localtime(_t0 + _wall)), wall_s=_wall, **({"load_s": round(float(_ld[-1]) / 1000, 1)} if _ld else {}))
         if not ppl:
             row["note"] = "ppl failed, exit %s: %s" % (r.returncode, " | ".join(l.strip() for l in log.strip().splitlines()[-3:])[:300])
+        else:
+            ppl_chunks_store(_start, build, MODEL, test, log)
     else:
         if BARE:
             COMMON = list(extra_args)
@@ -3662,7 +3666,8 @@ def run_list_help():
           "  -onl TEXT rows whose name contains TEXT, comma list ok; the trailing '-' keeps glm- apart from glm35-; add i|io|o for one test\n"
           "  -s       newest official ggml-org release binary instead of -b: pulled once (gh, never built) into devbuilds/stock-bNNNNN-official, symlink stock-latest follows it\n"
           "  -w       warm-up pass first (same prompt again, stored as temp=warmpass); default off\n          -r N     measured runs per cell (default 1; -r 0 = the list's n)\n"
-          "  -dsc     biggest model first, one model's rows together; the pool is rebuilt to ceil(model GiB) before each new model\n"
+          "  -dsc, -from-biggest  biggest model first, one model's rows together; the pool is rebuilt to ceil(model GiB) before each new model\n"
+          "  -from-smallest  smallest model first, so the first results come quickly\n"
           "  -nm      no mount: leave the pool alone. In a row's args column -nm means -lm mmap and no pool for that cell; `-nm 0.5` also pins that fraction of the model (rest mapped)\n"
           "  -n       print the cells, run nothing\n")
     for f in sorted(glob.glob(os.path.join(d, "*.csv"))):
@@ -3999,8 +4004,7 @@ def known_gain(model, test):
     st = c.execute("select tps, pp from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " order by ts desc limit 1", (mo, t)).fetchone()
     if not v or not st or not st[0]: return 0
     ti = TEST_IN.get(test) or TEST_IN.get(t) or ""
-    tiny = ti.isdigit() and int(ti) <= 128   # a 64-token prompt: its prompt speed is first-token latency, not a rate
-    gs = [statistics.median(x[0] for x in v) / st[0]] + ([statistics.median(x[1] for x in v if x[1]) / st[1]] if st[1] and any(x[1] for x in v) and not tiny else [])
+    gs = [statistics.median(x[0] for x in v) / st[0]] + ([statistics.median(x[1] for x in v if x[1]) / st[1]] if st[1] and any(x[1] for x in v) else [])
     return math.prod(gs) ** (1 / len(gs))
 
 
@@ -4051,11 +4055,9 @@ def final_table(recs, live=False, hdr_out=None):
             ref = r["ref"]; st = dict(t=t, p=p, ob=ref["bno"], od=ref["date"], sb=r.get("sbno") or "?", sd=r.get("sdate") or "", sid=r.get("rid")); t, p, rid_show = ref["t"], ref["p"], ref["id"]
         elif r.get("stock_row") and res:   # a stock cell and none of ours yet: the stock numbers in the stock columns, ours empty
             st = dict(t=t, p=p, ob="", od="", sb=r.get("sbno") or "?", sd=r.get("sdate") or "", sid=r.get("rid")); t = p = None; rid_show = None
-        tiny = re.fullmatch(r"(\d+)/.*", r.get("prompt") or "") and int(re.match(r"\d+", r["prompt"]).group()) <= 128   # a prompt of 64 tokens: its prompt speed is mostly the first-token latency (SSD, cache), not a rate
-        if tiny: p = None
         gt = t / st["t"] if st and t else None; gp = p / st["p"] if st and p and st["p"] else None
         body.append(dict(name=r["name"], id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" if el is not None else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1),
-                         st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] and not tiny else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=(not st and not r["stock_row"])))
+                         st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=(not st and not r["stock_row"])))
         body[-1]["bt"] = (f"b{st['ob']} {st['od'][5:]} vs b{st['sb']} {st['sd'][5:]}" if st["ob"] else f"stock b{st['sb']} {st['sd'][5:]}") if st else ""; body[-1]["bts"] = (f"b{st['ob']} vs b{st['sb']}" if st["ob"] else f"stock b{st['sb']}") if st else ""
         gs = [g for g in (gt, gp) if g]; body[-1]["gm"] = math.prod(gs) ** (1 / len(gs)) if gs else 0   # overall gain: geometric mean of decode and prompt gain
         body[-1]["old"] = [dict(name=r["name"], is_old=True, out="", id=str(orid), sid="", prompt=r.get("prompt") or "", time="", load="", fail=False, t=f(t, 2), p=f(p, 1), st="", sp="", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=False, gm=0, old=[],
@@ -4228,11 +4230,11 @@ def stock_latest(dry=False):
 
 def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
     """Size the huge-page pool for the next model: ceil(model GiB) pages (GLM 109.4 GiB -> 110, MiMo 107.7 -> 108), no more, so the rest of the RAM stays free and nothing swaps.
-    A pool that is not that size is unmounted (cached files deleted) and mounted again; the same size is kept, so a model's cells run back to back on one load."""
+    A pool that is too small is unmounted (cached files deleted) and mounted again; one the model fits in is kept, so models run back to back on one pool and one load."""
     need = max(-(-model_bytes >> 30), 1)
     have = int(open(HUGE_NR).read()) if os.path.exists(HUGE_NR) else 0
     why = ""
-    if have == need and os.path.ismount(mnt): return
+    if have >= need and os.path.ismount(mnt): return   # a pool the model fits in stays as it is: every unmount fragments RAM further (the stock cells unmount in the caller, then the next model mounts its own size)
     while subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode == 0: time.sleep(5)   # nothing may map the pool while it is rebuilt
     import contextlib, io
     quiet = lambda a: contextlib.redirect_stdout(io.StringIO())   # the mount's own output is long: the list prints one line, "pool 101->108g"
@@ -4333,7 +4335,8 @@ def run_list(name, argv):
     ap.add_argument("-nk", "-x", "--kill", action="store_true", help="kill the server after every run (default: it stays up and the next run, also of the next cell, uses it when model, build and args are the same; later runs then start with what the earlier ones cached)")
     ap.add_argument("-r", "--runs", default="1", help="measured runs per cell (default 1; 0 = the list's n)")
     ap.add_argument("-fb", "-from-best", "--from-best", dest="from_best", action="store_true", help="cells with the biggest known gain over stock first (from runs.db: newest runs of ours against the newest official stock; cells with no gain known last), so the best gainers run and print first")
-    ap.add_argument("-dsc", "-d", "--desc", action="store_true", help="biggest model files first (same-size rows keep the list order)")
+    ap.add_argument("-dsc", "-d", "--desc", "-from-biggest", "--from-biggest", dest="desc", action="store_true", help="biggest model files first (same-size rows keep the list order): the pool fragments with each unmount, so the big models go while it is still whole")
+    ap.add_argument("-from-smallest", "--from-smallest", dest="asc", action="store_true", help="smallest model files first: the first results come quickly")
     o = ap.parse_args([x for x in argv if x != "desc"])   # `run gainers desc` works too
     if o.stock: o.build = stock_latest(o.dry)
     o.build = resolve_build(o.build)   # -b b13563: a build number
@@ -4368,21 +4371,29 @@ def run_list(name, argv):
         import sqlite3
         done = {}   # campaign -> [(t/s, pp t/s) of today's ok runs of the build under test (a campaign named `latest-...` holds the runs of every build `latest` ever pointed to: only this build's count)]
         cur = own_build_no(o.build); cur = int(cur) if str(cur).isdigit() else None
+        if cur is None and re.fullmatch(r"b\d+", os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))): cur = int(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))[1:])   # --version failed: the directory is named by the build number
         try:
             for c, t, p, bn in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
                     "select campaign, tps, pp, bno from runs where cast(ok as integer)=1 and tps is not null and date(start_ts)=date('now','localtime') and coalesce(env,'') not like '%warmpass%' order by ts"):
                 if cur and not str(c).startswith("stock") and int(bn or 0) != cur: continue
                 done.setdefault(c, []).append((float(t), float(p or 0)))
         except sqlite3.Error as e: print(f"-nrt: runs.db: {e}", flush=True)
-        keep = [r for r in rows if len(done.get(f"{r['_b']}-{r['name']}-{r['test']}", ())) < int(r["n"] or 1)]
+        def today(r):   # today's ok runs of this cell on this build; a campaign named after another label of the same build (um3d-..., latest-...) counts, the build number decides
+            k = f"{r['_b']}-{r['name']}-{r['test']}"
+            if k in done or r['_b'].startswith("stock"): return done.get(k, [])
+            return next((v for c, v in done.items() if c.endswith(f"-{r['name']}-{r['test']}") and not c.startswith("stock")), [])
+        keep = [r for r in rows if len(today(r)) < int(r["n"] or 1)]
         for r in rows:   # the skipped cells keep their line, with the results of today's runs and the gain over stock, as if they had just run
             if r in keep: continue
             if r['_b'].startswith('stock') and any(q['name'] == r['name'] and q['test'] == r['test'] and not q['_b'].startswith('stock') for q in rows): continue   # our line shows the stock numbers
-            res = done[f"{r['_b']}-{r['name']}-{r['test']}"][-int(r["n"] or 1):]   # the newest n
+            res = today(r)[-int(r["n"] or 1):]   # the newest n
             STOCK_REC[0] = None
             try: gain = stock_gain((r["model"], r["test"]), res, r["_b"])
             except Exception as e: gain = f"  | gain: {e}"
             _rid = run_id(f"{r['_b']}-{r['name']}-{r['test']}"); _el, _lt = run_times(_rid)
+            if STOCK_REC[0] and _rid:   # the label is the build that made the run, not the one `latest` points to now
+                _b = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select bno, start_ts from runs where rowid=?", (_rid,)).fetchone()
+                if _b and _b[0]: STOCK_REC[0]["ob"] = int(_b[0]); STOCK_REC[0]["od"] = str(_b[1])[:10]
             CELL_REC.append(dict(skipped=True, asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
             CELL_LINES.append(col(1, f"{('s' if r['_b'].startswith('stock') else '') + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
         if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run today skipped (they are in the table at the end)", flush=True)
@@ -4391,6 +4402,8 @@ def run_list(name, argv):
         return sum(os.path.getsize(f) for f in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
     if o.desc or "desc" in argv or "-dsc" in argv:
         rows.sort(key=lambda r: (-size(r), r["model"]))   # the same model stays together: one pool, one load
+    elif o.asc:
+        rows.sort(key=lambda r: (size(r), r["model"]))
     if o.no_pool and o.no_pool != "0":   # -nm GB: every non-stock row pins at most GB GiB of the model, the rest is mapped (row-level -nm GB, see nomount_args)
         for r in rows:
             if not r["_b"].startswith("stock") and "-nm" not in shlex.split(r.get("args") or ""): r["args"] = ((r.get("args") or "") + f" -nm {o.no_pool}").strip()
@@ -4504,7 +4517,7 @@ def cmd_cell(a):
     """One queue cell (what m111.sh / m111log.sh did, for one test): wait until both GPUs are free, run `bench` for the builds side by side with the campaign TAG-TEST,
     keep the run output in q5h/TAG-TEST.run.out, add the result lines to q5h/TAG.out, log a failed cell (no result line) to the shared error log and exit 1 (the queue marks
     the task failed), keep the server log as TAG.server.log when one build ran."""
-    Q5 = QDIR; U = "/p/bw/p2p/userspace-595/usr/lib/x86_64-linux-gnu"; SMI = "/p/bw/p2p/bin595/nvidia-smi"
+    Q5 = QDIR; U = os.environ.get("PERF_LD_EXTRA", ""); SMI = os.environ.get("NVIDIA_SMI", "nvidia-smi")
     while not kept_get():   # nothing may still hold GPU memory (a killed script leaves its children running); the kept server is meant to
         r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True)
         if r.stdout.split() and max(int(x) for x in r.stdout.split()) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
@@ -6120,6 +6133,47 @@ def _tool_bad_runs():
     print(f"moved; backups {os.path.basename(dbp)}.bak and {os.path.basename(csvp)}.bak next to the files")
 
 
+def ppl_chunks_store(start_ts, build, model, test, log):
+    """the cumulative perplexity after each chunk of a llama-perplexity run, kept in runs.db (table ppl_chunks) and in bench/ppl-chunks.csv: two builds on the same text are compared chunk by chunk (run.py ppl-table)"""
+    import sqlite3
+    ch = {int(k): float(v) for k, v in re.findall(r"\[(\d+)\]([0-9.]+)", log)}
+    if not ch: return
+    mo = os.path.basename(model)
+    with open(os.path.join(DATA, "ppl-chunks.csv"), "a", newline="") as f:
+        w = csv.writer(f)
+        if f.tell() == 0: w.writerow(["start_ts", "build", "model", "test", "chunk", "cum_ppl"])
+        for k, v in sorted(ch.items()): w.writerow([start_ts, build, mo, test, k, v])
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        c.execute("create table if not exists ppl_chunks(start_ts text, build text, model text, test text, chunk integer, cum_ppl real, primary key(start_ts, build, model, chunk))")
+        c.executemany("insert or replace into ppl_chunks values(?,?,?,?,?,?)", [(start_ts, build, mo, test, k, v) for k, v in sorted(ch.items())]); c.commit(); c.close()
+    except sqlite3.Error as e: print(f"ppl_chunks: {e}", flush=True)
+
+
+def _tool_ppl_table():
+    """ppl-table [MODEL]: perplexity of each build against the newest official stock on the same text and chunks: final perplexity, per-chunk difference in % (mean +- s.e.), chunks worse"""
+    import sqlite3
+    ap = argparse.ArgumentParser(prog="run.py ppl-table", description=_tool_ppl_table.__doc__)
+    ap.add_argument("model", nargs="?", default="", help="part of the model file name")
+    a = ap.parse_args()
+    c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+    runs = {}   # (model, test, start_ts, build) -> [cum ppl per chunk]
+    try:
+        for ts, b, m, t, k, v in c.execute("select start_ts, build, model, test, chunk, cum_ppl from ppl_chunks where model like ? order by start_ts, chunk", (f"%{a.model}%",)): runs.setdefault((m, t, ts, b), []).append(v)
+    except sqlite3.Error: print("no ppl runs stored yet"); return 0
+    nll = lambda cs: [(k + 1) * math.log(x) - (k * math.log(cs[k - 1]) if k else 0.0) for k, x in enumerate(cs)]   # per-chunk mean negative log likelihood from the cumulative perplexities
+    print("| model | test | build | stock | chunks | final ppl | stock ppl | difference per chunk, % (mean +- s.e.) | chunks worse |\n|---|---|---|---|---|---|---|---|---|")
+    for (m, t, ts, b), cs in sorted(runs.items()):
+        if b.startswith("stock"): continue
+        st = [(sts, sb, v) for (sm, stt, sts, sb), v in runs.items() if sm == m and stt == t and sb.startswith("stock") and len(v) >= len(cs)]
+        if not st: continue
+        sts, sb, sv = max(st)
+        d = [100.0 * (x - y) for x, y in zip(nll(cs), nll(sv))]; n = len(d); mean = sum(d) / n
+        se = (sum((x - mean) ** 2 for x in d) / (n - 1) / n) ** 0.5 if n > 1 else float("nan")
+        print(f"| {m[:34]} | {t} | {b} | {sb} | {n} | {cs[-1]:.4f} | {sv[n - 1]:.4f} | {mean:+.2f} +- {se:.2f} | {sum(x > 0 for x in d)}/{n} |")
+    return 0
+
+
 def _tool_out():
     """out ID [ID2]: the answer of run ID (the id column of the results, runs.db rowid); two ids: both answers and how far they agree (common prefix, similarity)"""
     import sqlite3, zlib, difflib
@@ -6144,6 +6198,7 @@ def _tool_out():
 
 TOOLS = {
     'out': _tool_out,
+    'ppl-table': _tool_ppl_table,
     'bad-runs': _tool_bad_runs,
     'standin': _tool_standin,
     'runlog-all': _tool_runlog_all,
