@@ -6176,7 +6176,7 @@ def _tool_ppl_table():
     nll = lambda cs: [(k + 1) * math.log(x) - (k * math.log(cs[k - 1]) if k else 0.0) for k, x in enumerate(cs)]   # per-chunk mean negative log likelihood from the cumulative perplexities
     path = lambda m, ts: next(iter(c.execute("select pf_all from runs where start_ts=? and model=? and pf_all is not null", (ts, m)).fetchone() or [""]), "")   # the passes of the run by path (from the log)
     if a.readme:
-        kind = lambda b: ("one card" if "dense-split=0" in b else "two cards f32" if "split-f16=0" in b else "two cards" if "dense-split=1" in b else "default") if not b.startswith(a.ref) and "--moe" in b or not b.startswith(a.ref) else None
+        kind = lambda b: ("one card" if "dense-split=0" in b else "two cards f32" if "split-f16=0" in b else "dense only" if "split-experts=0" in b else "two cards" if "dense-split=1" in b else "default") if not b.startswith(a.ref) and "--moe" in b or not b.startswith(a.ref) else None
         cells = {}   # model -> kind -> (ts, text)
         for (m, t, ts, b), cs in sorted(runs.items()):
             k = kind(b)
@@ -6186,9 +6186,9 @@ def _tool_ppl_table():
             sv = max(st)[1]; d = [100.0 * (x - y) for x, y in zip(nll(cs), nll(sv))]; n = len(d); mean = sum(d) / n
             se = (sum((x - mean) ** 2 for x in d) / (n - 1) / n) ** 0.5 if n > 1 else 0.0
             cells.setdefault((m, t), {"stock": f"{sv[n - 1]:.4f}", "n": n})[k] = f"{cs[-1]:.4f} ({mean:+.2f} ± {se:.2f}%)"
-        print("| model | stock ppl | ours default | ours, one card | ours, two cards f16 | ours, two cards f32 | chunks |\n|---|---|---|---|---|---|---|")
+        print("| model | stock ppl | ours default | ours, one card | ours, dense split only | ours, two cards f16 | ours, two cards f32 | chunks |\n|---|---|---|---|---|---|---|---|")
         for (m, t), v in sorted(cells.items()):
-            print(f"| {m.replace('.gguf', '')} | {v['stock']} | " + " | ".join(v.get(k, "-") for k in ("default", "one card", "two cards", "two cards f32")) + f" | {v['n']} |")
+            print(f"| {m.replace('.gguf', '')} | {v['stock']} | " + " | ".join(v.get(k, "-") for k in ("default", "one card", "dense only", "two cards", "two cards f32")) + f" | {v['n']} |")
         return 0
     print("| model | test | build | reference | chunks | final ppl | reference ppl | difference per chunk, % (mean +- s.e.) | chunks worse | passes by path |\n|---|---|---|---|---|---|---|---|---|---|")
     for (m, t, ts, b), cs in sorted(runs.items()):
