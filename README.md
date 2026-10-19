@@ -15,38 +15,38 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 ## Best gainers
 
-Newest run of each cell against the newest official stock binary, sorted by gain. Each build on its own defaults (`-np 1` only). Medians of the valid runs, looped answers excluded. in_heavy = long prompt, prompt tokens/s; in_out_heavy and out_heavy = decode tokens/s. 2x RTX 3090 (x16 and x4 link), both cards limited to 200 W, no huge page pool; stock and ours back to back.
+Newest run of each cell against the newest official stock binary, sorted by gain. Each build on its own defaults (`-np 1` only). Medians of the valid runs, looped answers excluded. **12k in, 1k out** = a 12k-token code prompt, prompt tokens/s; **1k in, 1k out** and **short in, 1k out** = decode tokens/s. 2x RTX 3090 (x16 and x4 link), both cards limited to 200 W, no huge page pool; stock and ours back to back.
 
 | model | test | stock | ours | gain | stock build | our build |
 |---|---|---|---|---|---|---|
-| MiMo-V2.6-Flash 3-bit | in_heavy | 49.2 prompt t/s | 986.9 prompt t/s | 20.05x | b11739 (2026-10-19) | b13586 (2026-10-19) |
-| GLM-5.3-Flash 3.0-bit | in_heavy | 42.4 prompt t/s | 627.2 prompt t/s | 14.78x | b11739 (2026-10-19) | b13586 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ4_XS | in_heavy | 208.7 prompt t/s | 1392.9 prompt t/s | 6.67x | b11739 (2026-10-19) | b13586 (2026-10-19) |
-| GLM-5.3-Flash 3.5-bit | in_heavy | 33.4 prompt t/s | 151.0 prompt t/s | 4.52x | b11734 (2026-10-19) | b13586 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ3_S | in_heavy | 373.2 prompt t/s | 1477.3 prompt t/s | 3.96x | b11739 (2026-10-19) | b13586 (2026-10-19) |
-| MiMo-V2.6-Flash 3-bit | out_heavy | 14.1 decode t/s | 32.8 decode t/s | 2.32x | b11729 (2026-10-19) | b13563 (2026-10-19) |
-| GLM-5.3-Flash 3.5-bit | out_heavy | 7.6 decode t/s | 15.4 decode t/s | 2.03x | b11739 (2026-10-19) | b13586 (2026-10-19) |
-| MiMo-V2.6-Flash 3-bit | in_out_heavy | 14.2 decode t/s | 26.1 decode t/s | 1.84x | b11729 (2026-10-19) | b13586 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ4_XS | out_heavy | 30.8 decode t/s | 55.1 decode t/s | 1.79x | b11729 (2026-10-19) | b13586 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ4_XS | in_out_heavy | 32.0 decode t/s | 51.4 decode t/s | 1.60x | b11729 (2026-10-19) | b13586 (2026-10-19) |
-| GLM-5.3-Flash 3.0-bit | in_out_heavy | 12.6 decode t/s | 20.1 decode t/s | 1.59x | b11729 (2026-10-19) | b13586 (2026-10-19) |
-| GLM-5.3-Flash 3.0-bit | out_heavy | 12.7 decode t/s | 20.1 decode t/s | 1.59x | b11729 (2026-10-19) | b13563 (2026-10-19) |
-| GLM-5.3-Flash 3.5-bit | in_out_heavy | 10.7 decode t/s | 13.7 decode t/s | 1.29x | b11739 (2026-10-19) | b13586 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ3_S | in_out_heavy | 44.9 decode t/s | 55.6 decode t/s | 1.24x | b11729 (2026-10-19) | b13586 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ3_S | out_heavy | 45.7 decode t/s | 56.4 decode t/s | 1.23x | b11729 (2026-10-19) | b13563 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ1_M | in_heavy | 1432.5 prompt t/s | 1476.0 prompt t/s | 1.03x | b11739 (2026-10-19) | b13586 (2026-10-19) |
-| OLMoE-1B-7B Q4_K_M | in_out_heavy | 350.8 decode t/s | 354.6 decode t/s | 1.01x | b11739 (2026-10-19) | b13563 (2026-10-19) |
-| Qwen3.8-27B IQ4_NL | out_heavy | 45.3 decode t/s | 45.5 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
-| Qwen3.6-35B-A3B | out_heavy | 158.4 decode t/s | 158.9 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
-| Qwen3.8-27B MTP Q5_K_M | out_heavy | 38.7 decode t/s | 38.8 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
-| Qwen3.8-27B IQ4_NL | in_out_heavy | 44.8 decode t/s | 44.9 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
-| Qwen3.8-27B MTP Q5_K_M | in_out_heavy | 38.3 decode t/s | 38.4 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ1_M | out_heavy | 69.5 decode t/s | 69.6 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
-| Qwen3.6-35B-A3B | in_out_heavy | 156.3 decode t/s | 156.0 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
-| Qwen3.6-35B-A3B | in_heavy | 5041.0 prompt t/s | 5022.3 prompt t/s | 1.00x | b11739 (2026-10-19) | b13586 (2026-10-19) |
-| Qwen3.8-27B IQ4_NL | in_heavy | 2053.0 prompt t/s | 2033.4 prompt t/s | 0.99x | b11739 (2026-10-19) | b13586 (2026-10-19) |
-| Qwen3.8-27B MTP Q5_K_M | in_heavy | 1860.9 prompt t/s | 1840.3 prompt t/s | 0.99x | b11739 (2026-10-19) | b13586 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ1_M | in_out_heavy | 68.7 decode t/s | 67.7 decode t/s | 0.99x | b11729 (2026-10-19) | b13563 (2026-10-19) |
+| MiMo-V2.6-Flash 3-bit | 12k in, 1k out | 49.2 prompt t/s | 986.9 prompt t/s | 20.05x | b11739 (2026-10-19) | b13586 (2026-10-19) |
+| GLM-5.3-Flash 3.0-bit | 12k in, 1k out | 42.4 prompt t/s | 627.2 prompt t/s | 14.78x | b11739 (2026-10-19) | b13586 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ4_XS | 12k in, 1k out | 208.7 prompt t/s | 1392.9 prompt t/s | 6.67x | b11739 (2026-10-19) | b13586 (2026-10-19) |
+| GLM-5.3-Flash 3.5-bit | 12k in, 1k out | 33.4 prompt t/s | 151.0 prompt t/s | 4.52x | b11734 (2026-10-19) | b13586 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ3_S | 12k in, 1k out | 373.2 prompt t/s | 1477.3 prompt t/s | 3.96x | b11739 (2026-10-19) | b13586 (2026-10-19) |
+| MiMo-V2.6-Flash 3-bit | short in, 1k out | 14.1 decode t/s | 32.8 decode t/s | 2.32x | b11729 (2026-10-19) | b13563 (2026-10-19) |
+| GLM-5.3-Flash 3.5-bit | short in, 1k out | 7.6 decode t/s | 15.4 decode t/s | 2.03x | b11739 (2026-10-19) | b13586 (2026-10-19) |
+| MiMo-V2.6-Flash 3-bit | 1k in, 1k out | 14.2 decode t/s | 26.1 decode t/s | 1.84x | b11729 (2026-10-19) | b13586 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ4_XS | short in, 1k out | 30.8 decode t/s | 55.1 decode t/s | 1.79x | b11729 (2026-10-19) | b13586 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ4_XS | 1k in, 1k out | 32.0 decode t/s | 51.4 decode t/s | 1.60x | b11729 (2026-10-19) | b13586 (2026-10-19) |
+| GLM-5.3-Flash 3.0-bit | 1k in, 1k out | 12.6 decode t/s | 20.1 decode t/s | 1.59x | b11729 (2026-10-19) | b13586 (2026-10-19) |
+| GLM-5.3-Flash 3.0-bit | short in, 1k out | 12.7 decode t/s | 20.1 decode t/s | 1.59x | b11729 (2026-10-19) | b13563 (2026-10-19) |
+| GLM-5.3-Flash 3.5-bit | 1k in, 1k out | 10.7 decode t/s | 13.7 decode t/s | 1.29x | b11739 (2026-10-19) | b13586 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ3_S | 1k in, 1k out | 44.9 decode t/s | 55.6 decode t/s | 1.24x | b11729 (2026-10-19) | b13586 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ3_S | short in, 1k out | 45.7 decode t/s | 56.4 decode t/s | 1.23x | b11729 (2026-10-19) | b13563 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ1_M | 12k in, 1k out | 1432.5 prompt t/s | 1476.0 prompt t/s | 1.03x | b11739 (2026-10-19) | b13586 (2026-10-19) |
+| OLMoE-1B-7B Q4_K_M | 1k in, 1k out | 350.8 decode t/s | 354.6 decode t/s | 1.01x | b11739 (2026-10-19) | b13563 (2026-10-19) |
+| Qwen3.8-27B IQ4_NL | short in, 1k out | 45.3 decode t/s | 45.5 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
+| Qwen3.6-35B-A3B | short in, 1k out | 158.4 decode t/s | 158.9 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
+| Qwen3.8-27B MTP Q5_K_M | short in, 1k out | 38.7 decode t/s | 38.8 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
+| Qwen3.8-27B IQ4_NL | 1k in, 1k out | 44.8 decode t/s | 44.9 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
+| Qwen3.8-27B MTP Q5_K_M | 1k in, 1k out | 38.3 decode t/s | 38.4 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ1_M | short in, 1k out | 69.5 decode t/s | 69.6 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
+| Qwen3.6-35B-A3B | 1k in, 1k out | 156.3 decode t/s | 156.0 decode t/s | 1.00x | b11729 (2026-10-19) | b13563 (2026-10-19) |
+| Qwen3.6-35B-A3B | 12k in, 1k out | 5041.0 prompt t/s | 5022.3 prompt t/s | 1.00x | b11739 (2026-10-19) | b13586 (2026-10-19) |
+| Qwen3.8-27B IQ4_NL | 12k in, 1k out | 2053.0 prompt t/s | 2033.4 prompt t/s | 0.99x | b11739 (2026-10-19) | b13586 (2026-10-19) |
+| Qwen3.8-27B MTP Q5_K_M | 12k in, 1k out | 1860.9 prompt t/s | 1840.3 prompt t/s | 0.99x | b11739 (2026-10-19) | b13586 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ1_M | 1k in, 1k out | 68.7 decode t/s | 67.7 decode t/s | 0.99x | b11729 (2026-10-19) | b13563 (2026-10-19) |
 
 Our builds here are b13563 and b13586 (earlier builds of this release line); b13600 has no runs yet. Older tables (earlier releases, laptop and CPU rows): [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
