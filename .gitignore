@@ -169,3 +169,4 @@ fork/models.local.ini
 fork/prompts.local.ini
 fork/local.toml
 .fork/
+fork/bench/machines.csv
