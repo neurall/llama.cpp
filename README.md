@@ -165,6 +165,16 @@ expert fits. Reports from 3+ GPU setups are welcome.
 Details moved to [fork/docs/features.md](fork/docs/features.md): pinned weights, persistent hot experts, prefill preheat, global expert pool, hot layers on the slower link, MTP, what's in it, known limits and next steps. Every `--moe` key: [fork/docs/fork-knobs.md](fork/docs/fork-knobs.md). Older measurements: [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
 
+## Known limits
+
+- **One machine measured:** 2x RTX 3090 (x16 + x4 slots), Ryzen 7 3700X, 128 GB DDR4. Other hardware, AMD/Intel GPUs and 3+ GPUs are untested; CUDA only for now (Vulkan and AMD binaries are next, see below). Windows binaries are smoke-tested only.
+- **The first runs of a model are slower.** The hot-expert state in `moe-state.ini` is learned from use (copy the pre-warmed [fork/moe-state.ini](fork/moe-state.ini) to start from it).
+- **Models larger than free RAM load lazily.** The server answers while the expert weights are still being pinned in the background (about 80 s for 100 GiB), so the first big prompt after start can be several times slower than the next ones (GLM 3.5-bit, 3k prompt: 26-147 prompt t/s on the first request, 225-267 on the second request on the same server). The table shows the steady-state speed.
+- **GLM 3.5-bit (128 GiB) is bigger than this machine's RAM**, so part of it is read from the SSD and the SSD speed limits its gains.
+- **Perplexity:** within noise of stock on every model tested except Qwen 3.8 Next IQ3_S on the two-card paths (+0.3%).
+- **Output can differ between runs** even at temperature 0 (a cached expert runs on the GPU, a missed one on the CPU, and they round slightly differently).
+- **The gainers table takes each row from the best of three builds of this release line** (b13563, b13586, b13600); the build column says which.
+
 ## What's next
 
 - **Merge the expert cache and the staging buffers** into one pool. I expect better VRAM efficiency than the current separate regions; this is the next version's main change.
