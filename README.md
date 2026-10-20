@@ -51,6 +51,18 @@ touch, so the CPU does most expert work and the GPUs wait. This fork fills the s
 VRAM with the ~100 most-used experts of every layer, so most expert work runs on the
 GPUs, at the same time as the CPU handles the misses.
 
+## How it works
+
+<img src="fork/docs/img/vram-layout.svg" alt="One VRAM buffer per GPU: compute graph, KV and expert cache share it" width="100%">
+
+- **Expert cache.** All experts stay in RAM; each GPU's free VRAM is one buffer of expert blocks. The GPUs compute the cached (hot) experts while the CPU computes the misses, in parallel. A missed expert that keeps being used is uploaded and replaces a colder one.
+- **Learned hot experts, kept between runs.** Per model, the lifetime use of every expert is saved in `moe-state.ini` (`~/.cache/llama.cpp/`, Windows `%LOCALAPPDATA%\llama.cpp\`) and updated by every run; the next start preloads the hottest experts. The first run or two of a new model are slower (it is a cache). A pre-warmed state for the models in the table is in the repo: copy [fork/moe-state.ini](fork/moe-state.ini) there if you have none.
+- **Prompts in few big passes.** Every prompt pass streams the experts the GPU does not hold, so the micro-batch (`-ub`) is sized per request (up to 12288 tokens) and the graph borrows expert blocks only for that pass; decode gets them back.
+- **KV inside the same buffer.** With `-np 1` no context is reserved: each request claims the KV it needs and gives it back at its end, so a big `-c` costs nothing. A request whose KV does not fit in f16 converts it in place to q8_0, then q4_0, then moves whole layers' KV to host RAM. On by default (`--moe kv-fallback=k8v8,k4v4,ram`); skip q4_0 with `--moe kv-fallback=k8v8,ram` (q8_0 KV measured within noise of f16: OLMoE perplexity 2.1926 vs 2.1946; q4_0 +0.58%), turn it off with `--moe kv-fallback=none`.
+- **Two GPUs.** A planner picks per prompt size one card or a split of the dense layers over both, from measured link speed and compute.
+
+Every setting and its default: [fork/docs/fork-knobs.md](fork/docs/fork-knobs.md). Internals and measurements per feature: [fork/docs/features.md](fork/docs/features.md).
+
 ## Perplexity against stock
 
 Same text, same chunks, official stock `llama-perplexity` against ours. The number in brackets is the per-chunk difference to stock in percent of perplexity (mean ± standard error); 0.00 means identical to four decimals. *default* is what you get without settings (the planner decides per prompt size whether to use one card or both), *one card* and *two cards* force the path (`dense-split=0` / `dense-split=1`), *dense split only* is `split-experts=0` (see below). The plain Qwen3.8 27B models are dense with no split path, so their split columns are empty. The GLM two-card cell is not measured yet. About 10 chunks of 1024 tokens per model: differences under 0.2% are inside the noise.
