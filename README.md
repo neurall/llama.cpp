@@ -94,8 +94,8 @@ The gain depends on how much of the model fits in VRAM. Measured on 2x RTX 3090 
 | GLM-5.3-Flash 3.5-bit | 127.7 GiB | 38% | 6.7x | +37% |
 
 - **MoE models whose experts don't fit in VRAM gain, for both prompt and decode speed.** Dense models and MoE models that fit fully in VRAM run at stock speed: the gains come from the expert cache and from sizing the prompt micro-batch so each expert upload serves more tokens, and a dense model has no experts to cache.
-- **The less of the model fits in VRAM, the more there is to gain, until it no longer fits in RAM.** The biggest gains here are at 44-45% nominal share (roughly a third of the experts cached after the other buffers). GLM 3.5-bit (127.7 GiB) is bigger than this machine's RAM, so part of it streams from SSD and the SSD speed caps the gain.
-- **On your hardware:** divide your total VRAM by the model file for the share, and expect the same shape: stock speed when it fits, the largest gains when the model fits in RAM but only a third to a half in VRAM. More GPUs add cache and raise the share. A slow slot lowers the gain of the card behind it. Only this one machine is measured so far; reports from others are welcome.
+- **The less of the model fits in VRAM, the more there is to gain, until it no longer fits in RAM.** The biggest gains here are at 44-45% nominal share. GLM 3.5-bit (127.7 GiB) is bigger than this machine's RAM, so part of it streams from SSD and the SSD speed caps the gain.
+- **On your hardware:** divide your total VRAM by the model file for the share, and expect the same shape: stock speed when it fits, the largest gains when the model fits in RAM but only a third to a half in VRAM. Only this one machine is measured so far; reports from others are welcome.
 
 ## How it works
 
