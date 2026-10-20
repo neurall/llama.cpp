@@ -1,0 +1,32 @@
+run 16577 | um3d | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.2 t/s | prompt 132.1 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-19 10:21:48
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. But I don't want to stop at the bare minimum — I want to make it feel like a real game: rich and responsive, with a distinctive visual identity, layered background, motion and micro-interactions, and strong type contrast, while keeping the code reasonably compact.
+
+Balance: "smallest" suggests compact code. I'll deliver a compact single-file Tetris that's still polished — playable, with score/level/lines, next piece preview, hold, ghost piece, keyboard controls, touch controls maybe, pause, game over, and a nice look. Keep it tight but complete.
+
+Design: Tetris is the subject, so I want to open with the playfield itself rather than a generic title block — the board is the most characteristic thing. A CRT/arcade cabinet feel is tempting, but the obvious near-black background with a single neon accent feels tired and one-note. Let me pick a distinct palette instead.
+
+Let me think of a palette: deep slate-blue-green background (#0d1b1e?), with warm piece colors. Or go for a "blueprint / grid paper" aesthetic? Or a retro arcade cabinet in warm amber and teal.
+
+Let me do: background deep ink #101418 with layered subtle grid + vignette + scanline hint, but with a multi-hue piece palette (classic Tetris colors: cyan, blue, orange, yellow, green, purple, red) — that's inherently multi-color, so it avoids the single-neon cliché. Accent UI color: warm amber/ochre. Type: display face — something chunky and geometric. Use Google Fonts? For a self-contained small file, maybe use system fonts... but I want a distinctive display face paired with a readable body face. I can link Google Fonts — that's fine, still one file. Display: "Chakra Petch" or "Bungee" or "Silkscreen" (pixel). For arcade: "Silkscreen" for display, "Space Grotesk" or "IBM Plex Mono" for body. Hmm, Silkscreen is very pixel-y and characteristic of Tetris. Let's do display: "Silkscreen" (700) for the wordmark and big numbers? Silkscreen numbers are hard to read at large sizes maybe. Alternative: display "Bungee" — chunky arcade. Body: "Space Grotesk" or "DM Mono".
+
+Let me pick: display = 'Bungee' (blocky, arcade, very Tetris-blocky), body/mono = 'Space Mono' or 'IBM Plex Mono'. Actually numbers in a mono face for score readouts is good. Let's do display 'Bungee' for the title "TETRIS" and section labels, and 'Space Grotesk' for body/numbers. Hmm, Space Grotesk isn't mono but has tabular-ish figures. Use 'JetBrains Mono' for stats. Three fonts is fine-ish. Let's do two: 'Bungee' + 'JetBrains Mono'.
+
+Layout: rather than a centered stack, I'll do a three-column arcade cabinet layout: left rail (title, stats, controls legend), center playfield, right rail (next queue, hold). Header bar across top with wordmark and a live "level" ticker.
+
+Implementation: Canvas for the board, plus canvas or DOM for next/hold. Simplest: one canvas for playfield, small canvases for next & hold. Or draw everything in one canvas. I'll use separate canvases for clarity.
+
+Compact but readable code. Let me write it.
+
+Features:
+- 10x20 board
+- 7 pieces with SRS-ish rotation (simple rotation matrices with basic wall kicks)
+- 7-bag randomizer
+- Ghost piece
+- Hold piece (once per drop)
+- Next queue (3 pieces)
+- Scoring: line clears 100/300/500/800 * level, soft drop 1/cell, hard drop 2/cell
+- Level up every 10 lines, speed curve
+- Lock delay? Keep simple: gravity + DAS handled by key repeat. Maybe implement simple DAS for left/right for good feel. Let's implement key repeat handling with our own DAS (150ms) and ARR (40ms) — feels much better.
+- Pause (P / Esc),
+---

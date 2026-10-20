@@ -1,0 +1,7 @@
+run 16675 | um3d | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 17.3 t/s | prompt 639.7 t/s | 64 tokens | args: -np 1 | power 220+280 W | 2026-10-19 14:14:06
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0

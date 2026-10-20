@@ -1,0 +1,40 @@
+run 16558 | um3d | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.67 t/s | prompt 22.2 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-19 08:24:38
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality: even in a tiny file, I want it to feel authored, playable, and visually decent. Let me think about what "smallest" means here.
+
+The user explicitly asks for "smallest html tetris game" — so this is a code-golf / minified-code request. The constraint is explicit: smallest. So I should honor that: a single HTML file, heavily minified, no external dependencies (or maybe none at all — canvas + vanilla JS). I should still make it genuinely playable: 7 tetrominoes, rotation, line clearing, score, game over, keyboard controls.
+
+But wait — my usual taste pushes against "plain generic" output. However, the user's explicit request is "smallest". When user request conflicts with my defaults, I follow the user. So the priority is: smallest possible while still being a real, working Tetris. I can still make it look decent with minimal bytes — a dark background, colored blocks via a palette array, simple border. Minimal bytes doesn't have to mean ugly; a few well-chosen bytes (a color palette, a subtle grid) cost almost nothing.
+
+Let me actually write the smallest Tetris I can. Strategy:
+
+- Single canvas, fixed size.
+- Board 10×20, cell size ~12px → canvas 120×240 plus maybe a bit.
+- Represent pieces as arrays of rotation states? The classic golf trick: encode each tetromino as a set of coordinates in a compact string, or use the "binary encoding" trick where each piece is 4 rotations encoded in a 16-bit number per rotation.
+
+A well-known ultra-compact Tetris approach: pieces defined as arrays of 4 numbers where each number's bits encode a 4×4 grid. E.g.:
+
+```js
+P=[[0x4444],[0x8E2,...]] 
+```
+
+Actually the classic minimal encoding: each tetromino rotation is a 16-bit mask of a 4×4 box. I can encode all rotations of all 7 pieces in one string and parse it.
+
+Alternative compact approach used in famous golfed Tetris (~few hundred bytes): 
+
+The famous "Tetris in 140 bytes of JavaScript" style uses clever math. But a full playable Tetris with colors, score, rotation, drop, line clear in a single HTML file — realistically ~600–900 bytes of JS is achievable with aggressive golfing. Let me try to write something genuinely small but readable-ish... Actually the user asked for smallest, so I'll golf it hard but keep it working. I'll present the minified single-file HTML, and maybe also explain briefly how it works.
+
+Let me design the game logic:
+
+Board: 10 wide, 20 tall. `b` = array of 20 strings/arrays, or a flat array of 200 cells. Use flat array `B=[]` of 200 zeros; values 0 = empty, 1..7 = piece color index.
+
+Pieces: 7 tetrominoes. Compact representation: for each piece, a list of 4 rotation states, each state a list of 4 [x,y] offsets? That's verbose. Better: encode each piece as a string of 16 chars per rotation? Too verbose.
+
+Classic trick: represent each tetromino as a 2×... hmm.
+
+A very compact known encoding: each piece = array of 4 rotations, each rotation = 4 numbers (the four cells as x + y*4 within a 4×4 box)? That's 16 numbers per piece = 112 numbers total. Verbose-ish.
+
+Better trick: each rotation state as a 16-bit integer bitmask of a 4×4 grid. 7 pieces × 4 rotations = 28 16-bit numbers. Encode as a single string of hex? Or compute rotations at runtime by rotating the bitmask! Rotating a 4×4 bitmask 90° can be done with bit math. So I only need one rotation per piece (4 bits... no, 4 cells as bitmask), then generate the other 3 rotations by rotating.
+
+Rotating a 4×4 bit grid: cell (x,y) → (3-y, x) or similar. With bitmask n where bit (x + y*4): rotated bit at (x', y') = ... Let me define: bit index i = x + y*4. Rotation 90° clockwise: new position (x,y) ← old (y, 3-x)? Let's compute: clockwise rotation maps cell (x,y) → (3-y, x). So new bit at index (3-y) + x*4 comes from old bit at x + y*4. To build new mask m' from
+---

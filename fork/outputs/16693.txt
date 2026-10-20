@@ -1,0 +1,56 @@
+run 16693 | dyn3 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.35 t/s | prompt 9.4 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 595 W | 2026-10-19 17:18:06
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — they want minimal code. But I also care about quality. There's tension here: "smallest" means minimal bytes, but my taste says no plain small squares as particles, no cheap stuff... but for a code-golf Tetris, the aesthetic is inherently minimal. The user explicitly asked for "smallest" — so I should honor that intent and produce a genuinely tiny, working Tetris in a single HTML file.
+
+Let me think about what "smallest" means. Probably fewest bytes while still being a playable Tetris: falling pieces, rotation, line clearing, score, game over. I should write it as compactly as possible while keeping it functional and even reasonably pleasant to look at (a tiny bit of styling costs few bytes).
+
+Let me design a minimal Tetris:
+
+- Canvas 120x240 (12 cols x 24 rows at 10px cells? Or standard 10x20). Let's do 10 cols × 20 rows, cell 12px → canvas 120×240. Actually to save bytes: `c.width=120;c.height=240`.
+- Board as array of 20 strings or array of arrays. Compact representation: board = Array(20).fill(0) rows as arrays of 10.
+- Pieces: use binary matrices. Classic compact trick: encode each rotation of each piece as numbers. Or use the well-known compact encoding: pieces as arrays of coordinates.
+
+A very compact known approach: define pieces via bit masks. E.g. each piece as 4x4 or use strings.
+
+Let me write compact piece definitions. Common golfed Tetris uses:
+
+```js
+P=[[1,1,1,1],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]]]
+```
+
+Rotation: rotate matrix function.
+
+Alternatively use string encoding: pieces as arrays of [x,y] offsets per rotation. That's more bytes.
+
+Compact rotation function:
+```js
+r=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse())
+```
+
+Collision check:
+```js
+function C(p,x,y,b){for(let j=0;j<p.length;j++)for(let i=0;i<p[j].length;i++)if(p[j][i]&&(y+j>19||x+i<0||x+i>9||b[y+j][x+i]))return 1;return 0}
+```
+
+Game loop with setInterval or requestAnimationFrame. Gravity: move down every N ms; increase speed with score.
+
+Controls: keydown — left/right arrows move, up rotates, down soft drop. Space hard drop maybe (extra bytes; could skip but nice). Keep minimal: arrows + up rotate.
+
+Line clear: after lock, filter full rows, add empty rows on top, score += cleared.
+
+Game over: if new piece collides immediately → game over, stop loop, show text.
+
+Rendering: draw board + current piece as filled rects. Colors: could use one color to save bytes, or per-piece colors via array. Per-piece colors cost ~70 bytes but make it look much better. For "smallest", maybe single color... but I'd like it to look decent. A compromise: single hue with slight variation? Let's include a small color array — it's worth ~60 bytes and makes it feel like real Tetris. Actually the user asked for smallest, so I should prioritize bytes. But a tiny color array is fine. Hmm. Let me aim for genuinely small (~1KB-ish) but still playable and not ugly. I'll include minimal colors.
+
+Let me draft the code carefully and count roughly.
+
+```html
+<!doctype html><html><body><canvas id=c></canvas><script>
+c.width=120;c.height=240;X=c.getContext('2d')
+B=Array.from({length:20},_=>Array(10).fill(0))
+P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,0],[1,1],[0,1]],[[0,1],[1,1],[1,0]]]
+K=[0,1,2,5,4,3,6] // maybe not needed
+```
+
+Actually piece order doesn't matter much. Colors: `F=['
+---

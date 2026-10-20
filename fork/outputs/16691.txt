@@ -1,0 +1,10 @@
+run 16691 | dyn3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 9.87 t/s | prompt 279.6 t/s | 64 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 595 W | 2026-10-19 17:13:20
+
+    return params.spec_type == COMMON_SPEC_TYPE_NONE || params.spec_type == COMMON_SPEC_TYPE_DRAFT;
+}
+
+static bool spec_types_is_mtp(const common_params & params) {
+    return params.spec_type == COMMON_SPEC_TYPE_MTP;
+}
+
+static bool spec_types_is_mtp_or_default(const common_params & params)

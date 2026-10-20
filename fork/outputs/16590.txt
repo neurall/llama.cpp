@@ -1,0 +1,11 @@
+run 16590 | um3d | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 22.8 t/s | prompt 994.7 t/s | 64 tokens | args: -np 1 | power 220+280 W | 2026-10-19 10:54:51
+
+    return params.spec_types.empty();
+}
+
+static bool spec_types_is_none(const common_params & params) {
+    return params.spec_types.size() == 1 && params.spec_types[0] == "none";
+}
+
+static bool spec_types_is_all(const common_params & params) {
+    return params.spec_types.size() ==

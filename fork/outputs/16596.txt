@@ -1,0 +1,6 @@
+run 16596 | um3d | edit4c | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 368.15 t/s | prompt 17485.2 t/s | 15 tokens | args: -np 1 | power 220+280 W | 2026-10-19 10:59:30
+
+
+---
+<|im_end|>
+<|im_start|>assistant

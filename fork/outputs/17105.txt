@@ -1,0 +1,45 @@
+run 17105 | b13600 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.72 t/s | prompt 40.1 t/s | 965 tokens | args: -np 1 --moe split-f16=0 | power 220+280 W | 2026-10-20 04:34:02
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. But I don't want to ship something bare and lifeless — even a tiny game should feel crafted and alive: nice typography, a layered background, micro-interactions.
+
+Balance: keep it small (they asked for smallest), but make it genuinely well-made. I'll write a compact single-file Tetris with canvas, keyboard controls, score/level/lines, next piece preview, hold, ghost piece, and a distinctive visual design.
+
+Design direction: Tetris is inherently grid-based and colorful, so I want a bold arcade-CRT feel rather than a generic layout. A dark background is natural for a game, but I don't want the tired near-black-plus-one-neon look — instead I'll lean on the classic Tetris tetromino palette (cyan, blue, orange, yellow, green, red, magenta) against a deep navy/graphite board with a subtle scanline/grid texture. That gives a rich, multi-color arcade vibe.
+
+Layout: asymmetric — game board on the left/center with a side rail of stats (score, level, lines, next, hold), plus a big display type header. Use a distinctive display face — something arcade/geometric. Google Fonts: "Chakra Petch" or "Bungee" or "Press Start 2P" (pixel). Press Start 2P is very characteristic of Tetris but hard to read at length. Maybe pair "Bungee" or "Archivo Black" display with a readable body face like "Space Grotesk" or "IBM Plex Mono". Let's do display: "Bungee" (blocky, arcade) — hmm, Bungee is quite distinctive. Or "Chakra Petch" for techy. I'll go: display = 'Bungee' for the wordmark "TETRIS", body/UI = 'Space Grotesk' or 'DM Mono'. Actually numbers look great in a mono. Let's use 'Bungee' + 'Space Grotesk' + numerals in 'Space Mono'? Keep to two families: Bungee (display) and Space Grotesk (body, has tabular-ish figures). Fine.
+
+But "smallest" — the user wants minimal code. I should keep the HTML compact but still polished. I'll aim for maybe ~150-250 lines total, minified-ish but readable. I'll mention the byte size.
+
+Let me write it.
+
+Core implementation:
+- Canvas 2D, board 10x20, cell size responsive-ish (fixed 24px, scaled by CSS).
+- Pieces as rotation-state arrays or matrix rotation. Compact approach: define pieces as strings/numbers, rotate matrices.
+- SRS-ish: simple wall kicks (try offsets).
+- 7-bag randomizer.
+- Ghost piece.
+- Hold, next queue (just next 1 or 3).
+- Scoring: 100/300/500/800 * level, soft drop 1/cell, hard drop 2/cell.
+- Levels: every 10 lines, speed up.
+- Lock delay? Keep simple but nice: small lock delay maybe skip for size.
+- Line clear animation: flash rows.
+- Game over overlay, pause.
+- Touch controls? Add small on-screen buttons for mobile maybe — adds size. I'll add minimal touch buttons since it's a game people will try on phone. Hmm, "smallest" — I'll add a compact touch pad row that only shows on coarse pointers. Keep it small.
+
+Visuals:
+- Layered background: subtle animated grid + soft radial glows in tetromino colors + faint scanlines. Ambient, not overpowering.
+- Board with inner grid lines, ghost outline, blocks with bevel highlight (light top-left, dark bottom-right) — classic Tetris block look.
+- Stat panels with big numerals, animated score counter (scale pop on change).
+- Level-up flash, line-clear flash.
+- Key hints styled as keycaps with hover/active micro-interaction.
+- Page entrance: subtle fade/slide reveal for panels.
+
+Let me write the code carefully.
+
+HTML structure:
+```
+<div class="wrap">
+  <header>... wordmark TETRIS + tagline + tiny meta ...</header>
+  <main>
+    <aside left
+---

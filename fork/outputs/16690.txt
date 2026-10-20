@@ -1,0 +1,67 @@
+run 16690 | um3d | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.03 t/s | prompt 7.0 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 595 W | 2026-10-19 16:41:05
+
+The user wants the smallest HTML Tetris game. This is a classic code-golf style challenge. "Smallest" means minimal bytes. Let me think about what makes a truly minimal Tetris in a single HTML file.
+
+The classic minimal Tetris implementations are famous — like the ~140-byte ones by Salflark, or the famous "Tetris in 140 bytes" etc. But those are often extremely cryptic. The user asked to "generate smallest html tetris game" — I should aim for a genuinely compact implementation while still being a playable Tetris.
+
+Let me think about what a minimal Tetris needs:
+1. A playfield (10×20 grid)
+2. Falling pieces (7 tetrominoes) with rotation
+3. Collision detection
+4. Line clearing
+5. Scoring (optional for minimal)
+6. Controls (keyboard)
+7. Rendering (canvas is usually smallest)
+
+Let me try to write a genuinely compact Tetris. I'll aim for something in the range of a few hundred bytes to maybe 1KB, while keeping it actually playable.
+
+Approach: Use canvas, a compact piece representation, and a tight game loop.
+
+Let me design:
+
+**Piece representation**: The classic trick is to encode each tetromino as a 4×4 or use rotation via bit manipulation. A very compact approach: store pieces as arrays of coordinates, or use the "binary digit" trick where each piece is a 16-bit number and rotation is done by bit shuffling.
+
+A famous compact approach: pieces encoded as numbers where each piece's rotations are precomputed, or use the trick of rotating coordinates: (x,y) -> (y, 3-x) or similar.
+
+Let me write a compact version:
+
+```html
+<canvas id=c></canvas>
+<script>
+...
+</script>
+```
+
+Actually, we can even skip the canvas tag and create it in JS: `c=document.body.appendChild(document.createElement('canvas'))` — but `<canvas id=c>` is shorter (13 chars vs ~50). Actually `<canvas id=c></canvas>` is 22 chars. Creating in JS: `C=c=document.createElement('canvas')` then need to append to body... document.body may not exist if script runs in head... Actually if script is at end of body, body exists. Hmm, `<canvas id=c>` without closing tag works in HTML! Browsers auto-close it. So `<canvas id=c>` is 13 chars. 
+
+Let me draft the logic:
+
+```js
+D=c.getContext('2d')
+// board 10x20
+B=[]
+for(i=200;i--;)B[i]=0
+```
+
+Compact board init: `B=new Uint8Array(200)` — hmm, or `B=[]` and use `B[y*10+x]||0` checks which handle undefined as falsy. That's compact.
+
+**Pieces**: The 7 tetrominoes. A compact encoding: each piece as a list of 4 [x,y] pairs in a flat array. Rotation: rotate around a pivot.
+
+Classic compact trick: represent each piece as 4 cells in a 4x4 grid encoded as a 16-bit number, rotations precomputed. Or use the "sum of powers of 2" trick.
+
+Another famous trick from the tiny tetris implementations: 
+
+```js
+// pieces as rotations encoded
+```
+
+Let me think about the well-known minimal approach used in "Tetris in 140 bytes of C" style... For JS, a common compact approach:
+
+```js
+P=[[1,3,5,7],[0,4,5,7],[2,4,5,7],[1,3,4,5],[1,3,5,6],[1,3,5,4],[0,1,3,5]]
+```
+
+Wait, there's a neat encoding: each tetromino occupies 4 cells in a 4×4 grid (or 2×4). If we index cells 0-15 row-major in a 4-wide grid, each piece is 4 indices. Rotation within the 4×4 grid: cell index i at (x=i%4, y=i/4|0) rotates to... For a 4×4 grid rotation by 90°: new index = 3 - y + 4*x? Let's check: (x,y) -> (3-y, x). New index = (3-y) + 4*x... wait row-major: index = ny*4 + nx where nx = 3-y, ny = x. So new index = x*4 + (3-y) = 4*x + 3 - y. Hmm, for index i: x=i%4, y=i>>2. New = 4*(i%4) + 3 - (i>>2).
+
+But tetromino
+---

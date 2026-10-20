@@ -1,0 +1,89 @@
+run 16559 | um3d | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.74 t/s | prompt 20.7 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-19 08:26:38
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, minified/obfuscated-ish but still working. The "smallest" constraint overrides my usual preference for elaborate visuals — but I can still make it look decent within the tiny code (colors, simple canvas rendering).
+
+Let me think about what a minimal Tetris needs:
+- 10×20 grid
+- 7 tetrominoes with rotation
+- gravity, movement (left/right/rotate/drop), line clear, score, game over
+- keyboard controls
+
+A classic minimal Tetris implementation in JS. Let me write it compactly.
+
+Approach: use canvas, a piece definition as arrays of rotations or use a compact encoding. A well-known trick: define pieces via a string of coordinates, or use the "binary encoding" of each rotation.
+
+Let me design a compact Tetris. Known minimal implementations exist around 200-500 bytes of JS. Let me write my own, aiming for something small but readable-ish, maybe ~600-800 bytes total including HTML. I'll try to golf it well.
+
+Plan:
+
+```html
+<body><canvas id=c width=100 height=200></canvas><script>...</script>
+```
+
+Core logic:
+
+- Board: array of 20 rows, each row a 10-length array or use numbers with bitmask. Using a flat array of 200 cells is simplest.
+- Pieces: 7 tetrominoes. Compact representation: each piece as a list of 4 cells [x,y] offsets for rotation 0, and rotate by (x,y)->(y, -x) or similar around a pivot. But different pieces have different rotation centers. A common trick: store each piece as 4 rotations × 4 cells encoded in a string.
+
+A very compact known approach (from "tetris in 140 bytes" style): 
+
+Let me think of a clean compact design myself.
+
+Representation idea: pieces as arrays of rotation states, each state as array of [dx,dy]. Encode compactly:
+
+I could use a string like:
+```
+"0100 0111..." 
+```
+
+Alternative compact trick: represent each tetromino rotation as a 4x4 (or 3x3) grid encoded in binary numbers. E.g., for each piece, 4 rotations, each rotation a 16-bit number (4x4 grid). That's 7*4 = 28 numbers. Encode as a string.
+
+Actually a neat trick: use a single string where each piece's rotations are substrings, and parse with bit extraction.
+
+Let me define pieces with their cells directly and rotation via matrix rotation around a center. For I piece, rotation center issues... Standard minimal implementations often use:
+
+```js
+// piece shapes as arrays of 4 rotations, each rotation as array of [x,y]
+```
+
+Compact encoding: For each piece, define base cells and rotate function: rot(x,y) => [y, 3-x] or [ -y, x ] etc. within a bounding box. For 3x3-box pieces (all except I and O), rotating within a 3x3 box works: (x,y) -> (y, 2-x)? Let's check: cells in 0..2 box. Rotation clockwise: (x,y) -> (2-y, x)? Hmm.
+
+For a 3x3 box, clockwise rotation maps (x,y) -> (y, 2-x)? Let's verify with S piece. S piece in 3x3 box:
+```
+. X X
+X X .
+. . .
+```
+cells: (1,0),(2,0),(0,1),(1,1). Rotate clockwise: new cell = (2-y, x)? For (1,0): (2,1). (2,0): (2,2). (0,1): (1,0). (1,1): (1,1). Result cells: (2,1),(2,2),(1,0),(1,1) → grid:
+```
+. . .
+. X X? 
+```
+Hmm let me draw: cells (1,0),(1,1),(2,1),(2,2):
+```
+. X .
+. X X
+. . X
+```
+That's S rotated clockwise? Original S:
+```
+. X X
+X X .
+```
+Rotating clockwise 90°: the S becomes vertical:
+```
+X .
+X X
+. X
+```
+Hmm, standard S rotation: 
+```
+.XX
+XX.
+```
+→ clockwise →
+```
+X.
+XX
+
+---

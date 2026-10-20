@@ -1,0 +1,6 @@
+run 16895 | b13600 | edit4c | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 359.67 t/s | prompt 16277.9 t/s | 15 tokens | args: -np 1 --moe split-f16=1 | power 350+378 W | 2026-10-20 02:07:37
+
+
+---
+<|im_end|>
+<|im_start|>assistant

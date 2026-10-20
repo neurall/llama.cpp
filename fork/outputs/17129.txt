@@ -1,0 +1,117 @@
+run 17129 | b13600 | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 32.73 t/s | prompt 18.6 t/s | 1010 tokens | args: -np 1 --moe split-f16=0 | power 220+280 W | 2026-10-20 05:16:34
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal but complete Tetris game:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+// Tetris game
+</script>
+</body>
+</html>
+```
+
+Let me write a complete, compact Tetris game. I'll try to keep it as small as possible while still being functional.
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>canvas{background:#000}</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d');
+let b=[],s=[],p=[],sc=0,px=0,py=0,rot=0,cur=0;
+const P=[[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+[[1,1],[1,1]],
+[[0,1,0],[1,1,1],[0,0,0]],
+[[1,0,0],[1,1,1],[0,0,0]],
+[[0,0,1],[1,1,1],[0,0,0]],
+[[1,1,0],[0,1,1],[0,0,0]],
+[[0,1,1],[1,1,0],[0,0,0]]];
+const C=['#0ff','#ff0','#f0f','#00f','#f80','#0f0','#f00'];
+for(let i=0;i<20;i++)b[i]=[];
+function newPiece(){
+cur=Math.random()*7|0;rot=0;px=3;py=0;
+if(collide())gameOver();
+}
+function collide(){
+let p=P[cur];
+for(let r=0;r<p.length;r++)for(let c=0;c<p[r].length;c++){
+if(p[r][c]){
+let nx=px+c,ny=py+r;
+if(nx<0||nx>=10||ny>=20)return true;
+if(ny>=0&&b[ny][nx])return true;
+}
+}
+return false;
+}
+function merge(){
+let p=P[cur];
+for(let r=0;r<p.length;r++)for(let c=0;c<p[r].length;c++){
+if(p[r][c]&&py+r>=0)b[py+r][px+c]=C[cur];
+}
+}
+function clear(){
+for(let i=19;i>=0;i--){
+if(b[i].every(v=>v)){
+b.splice(i,1);b.unshift([]);sc+=100;i++;
+}
+}
+}
+function rotate(){
+rot=(rot+1)%4;
+let p=P[cur];
+let n=[];
+for(let r=0;r<p.length;r++)for(let c=0;c<p[r].length;c++){
+if(p[r][c])n.push([c,p.length-1-r]);
+}
+// rebuild
+let np=[];
+for(let r=0;r<p.length;r++)np[r]=[];
+for(let r=0;r<p.length;r++)for(let c=0;c<p[r].length;c++){
+if(p[r][c])np[c][p.length-1-r]=1;
+}
+// Actually let me just rotate the matrix
+}
+```
+
+Hmm, let me think about this more carefully. I need a clean, compact implementation.
+
+Let me write it properly:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>canvas{background:#000}</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d');
+let b=[],sc=0,px=0,py=0,cur=0,rot=0;
+const P=[
+[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+[[1,1],[1,1]],
+[[0,1,0],[1,1,1],[0,0,0]],
+[[1,0,0],[1,1,1],[0,0,0]],
+[[0,0,1],[1,1,1],[0,0,0]],
+[[1,1,0],[0,1,1],[0,0,0]],
+[[0,1,1],[1,1,0],[0
+---

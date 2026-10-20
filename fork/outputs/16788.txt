@@ -1,0 +1,66 @@
+run 16788 | b13586 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.09 t/s | prompt 117.3 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-19 23:19:56
+
+The user wants the smallest HTML Tetris game. Let me think about this. "Smallest" — they want compact code. But I also want it to be genuinely good: playable, complete, well-crafted. There's tension: "smallest" is an explicit constraint, so I should honor it — a single self-contained HTML file, minified-ish but readable.
+
+Let me write a compact but complete Tetris. I'll aim for genuinely small code while keeping it fully playable with: rotation, wall kicks (simple), line clears, scoring, levels, next piece, hold maybe, game over, pause, keyboard controls.
+
+Let me write it reasonably small. I'll give the code in a code block. Should I also make it visually nice? The deliverable is code — a single HTML file. I can present it in a code block with a brief note. Maybe I should render it as an artifact... there's no artifact system mentioned here, just respond. I'll give the code block.
+
+Let me write compact Tetris.
+
+Approach: canvas, 10x20 grid, 7 pieces via string rotation or matrix math.
+
+Compact classic approach:
+
+```html
+<canvas id=c width=250 height=500></canvas>
+<script>
+// ...
+</script>
+```
+
+Let me write it carefully.
+
+```js
+let W=10,H=20,S=25,x=c.getContext`2d`,g=[...Array(H)].map(_=>Array(W).fill(0)),p,o,n,q,s=0,l=1,t=0,d=0;
+```
+
+Pieces: use a numeric encoding. A common trick: define pieces as arrays of 4 rotation states each encoded as 4 numbers (each number is 4 bits for column positions per row). Simpler: define shapes as strings.
+
+Compact approach with rotation math: define each piece as a set of 4 cells in a 4x4 (or 3x3) box, rotate by (x,y)->(y,-x).
+
+Let me use the classic: pieces defined as arrays of [x,y] offsets, rotate around origin.
+
+```
+P=[[[0,0],[1,0],[1,1],[2,1]],[[0,1],[1,1],[1,0],[2,0]],...]
+```
+
+Simpler: use the "tetromino as 4x4 bitmask per rotation" trick:
+
+```
+T="0x50 0x70 0x60 0x30 0x68 0x270 0x2C0 0x700 ..."
+```
+
+Hmm, let me just do the matrix-rotate approach with base shapes in a 3x3/4x4 grid.
+
+Define shapes as strings of 4 rows? That's bigger.
+
+Best compact: each piece = array of 4 [x,y] pairs in a bounding box; rotate with (x,y)=>[maxY-y, x] or just (x,y)=>[-y,x] then normalize.
+
+```js
+let S=[[0,0,1,1],[1,1,1,1],...]
+```
+
+Let me use the well-known compact representation: each piece is a number, 4 bits per row of a 4x4 grid = 16 bits. Rotation = bit manipulation.
+
+Actually the smallest known trick: pieces defined by a single number where the 4 cells are at positions given by... Let's just do:
+
+```js
+P="0f00 4460 0462 0446 4444 0660 0270 0e20".split(" ")
+```
+Hmm those are hex 16-bit rows: each hex digit = one row of 4 bits.
+
+- I: 0x0f00? I in 4x4: row1 = 1111 → 0x0F00. Rotations: vertical = 0x2222.
+- O: 0x6600 (rows 1100,1100) — but in 4x4 that's cols 1,2. Fine, O doesn't rotate.
+- T: 0x0E20? rows: 0111? Let's define rows top→bottom as hex digits from high to low: value = row0<<12 | row1
+---

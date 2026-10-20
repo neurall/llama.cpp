@@ -1,0 +1,11 @@
+run 16541 | um3d | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 1.45 t/s | prompt 834.8 t/s | 64 tokens | args: -np 1 | power 200+200 W | 2026-10-19 06:20:41
+
+    return params.speculative.types.all == (
+        COMMON_SPECULATIVE_TYPES_DEFAULT_EXC_OFF |
+        COMMON_SPECULATIVE_TYPES_DEFAULT_EXC_ON);
+}
+
+static bool is_default_model(const common_params_model & model) {
+    return model.path.empty() && model.url.empty();
+}
+

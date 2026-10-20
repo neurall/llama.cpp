@@ -15,27 +15,28 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 ## Best gainers
 
-Best run of ours against the median of the newest official stock (b11742, 2026-10-20), sorted by the bigger gain (gain t = decode, gain pp = prompt processing); rows where neither gain reaches 1.1x left out (models that fit in VRAM, dense 27B models: stock speed). In the t/s, pp and ppl columns the upper number is stock, the lower is ours. **12k/1k** = 12k-token prompt, 1k out; **1k/1k** = ~1k prompt, 1k out; **short/1k** = short prompt, 1k out (no prompt speed, too short to measure). ppl = perplexity on b13600, default settings (details below). Each build on its defaults (`-np 1` only), looped answers excluded. 2x RTX 3090 (x16 and x4), 200 W each, no huge page pool. out id = row id in `runs.db`: `run out ID` prints the stored answer (two ids: best decode run / best prompt run).
+Best valid run of ours against the median of the newest official stock (b11742, 2026-10-20), sorted by the bigger gain; rows where neither gain reaches +10% are left out (models that fit in VRAM and the dense 27B models run at stock speed). Upper number stock, lower ours. **12k/1k** = 12.4k-13.8k-token code-review prompt, 1024 tokens out; **3k/1k** = ~3k-token source file plus an edit instruction, answer up to 1024 tokens; **short/1k** = one-line prompt, 1024 tokens out (no prompt speed: too short to time). t/s = decode, pp = prompt processing, ppl = perplexity on b13600 (details below). Valid = same power limits as stock (x4 card 220 W, x16 card 280 W), answer not looped, decode only from answers of 256+ tokens. 2x RTX 3090 (x16 + x4), Ryzen 7 3700X, 128 GB DDR4-3200.
 
-| model | test | t/s | pp | gain t | gain pp | ppl | build | out id |
+| model | test | t/s | pp | gain t | gain pp | ppl | build | output |
 |---|---|---|---|---|---|---|---|---|
-| MiMo 2.6F 3-bit | 12k/1k | 14.2<br>25.8 | 49<br>1022 | +82% | +1971% | 1.8758<br>1.8758 | b13600 | 17120/17121 |
-| MiMo 2.6F 3-bit | 1k/1k | 14.3<br>26.7 | 48<br>738 | +86% | +1427% | 1.8758<br>1.8758 | b13563 | 16753/16591 |
-| GLM 5.3 3-bit | 12k/1k | 12.9<br>18.9 | 42<br>640 | +47% | +1408% | 1.7626<br>1.7578 | b13563 | 16754/16675 |
-| GLM 5.3 3-bit | 1k/1k | 12.7<br>20.3 | 40<br>585 | +60% | +1365% | 1.7626<br>1.7578 | b13600 | 17137 |
-| GLM 5.3 3.5-bit | 12k/1k | 10.8<br>12.8 | 34<br>280 | +19% | +727% | 1.6326<br>1.6265 | b13586 | 16701/16691 |
-| GLM 5.3 3.5-bit | 1k/1k | 10.7<br>13.7 | 31<br>249 | +28% | +695% | 1.6326<br>1.6265 | b13586 | 16692 |
-| Qwen 3.8 Next IQ4_XS | 12k/1k | 32.0<br>51.4 | 210<br>1483 | +61% | +606% | 1.4101<br>1.4101 | b13600 | 17108/17109 |
-| Qwen 3.8 Next IQ4_XS | 1k/1k | 30.9<br>53.6 | 207<br>1240 | +74% | +499% | 1.4101<br>1.4101 | b13600 | 17113 |
-| Qwen 3.8 Next IQ3_S | 12k/1k | 44.2<br>53.8 | 376<br>1576 | +22% | +319% | 1.3927<br>1.3927 | b13563 | 16761/16561 |
-| Qwen 3.8 Next IQ3_S | 1k/1k | 43.8<br>55.8 | 384<br>1254 | +27% | +227% | 1.3927<br>1.3927 | b13600 | 17101 |
-| MiMo 2.6F 3-bit | short/1k | 14.3<br>33.1 | -<br>- | +131% | - | 1.8758<br>1.8758 | b13600 | 17128 |
-| Qwen 3.8 Next IQ4_XS | short/1k | 31.4<br>55.1 | -<br>- | +75% | - | 1.4101<br>1.4101 | b13586 | 16788 |
-| GLM 5.3 3-bit | short/1k | 12.8<br>20.8 | -<br>- | +62% | - | 1.7626<br>1.7578 | b13600 | 17141 |
-| GLM 5.3 3.5-bit | short/1k | 9.8<br>15.4 | -<br>- | +57% | - | 1.6326<br>1.6265 | b13586 | 16693 |
-| Qwen 3.8 Next IQ3_S | short/1k | 44.2<br>56.9 | -<br>- | +29% | - | 1.3927<br>1.3927 | b13563 | 16766 |
-| OLMoE Q4_K_M | 1k/1k | 344.2<br>378.9 | 14326<br>17601 | +10% | +23% | 2.0696<br>2.0696 | b13600 | 17029 |
-| Qwen 3.8 Next IQ1_M | 1k/1k | 68.3<br>67.7 | 1446<br>1751 | -1% | +21% | 1.4756<br>1.4756 | b13600 | 17088/17089 |
+| MiMo 2.6F 3-bit | 12k/1k | 14.2<br>25.8 | 49<br>1022 | +82% | +1971% | 1.8758<br>1.8758 | b13600 | [17120](fork/outputs/17120.txt) [17121](fork/outputs/17121.txt) |
+| MiMo 2.6F 3-bit | 3k/1k | 14.3<br>26.7 | 48<br>738 | +86% | +1427% | 1.8758<br>1.8758 | b13563 | [16753](fork/outputs/16753.txt) [16591](fork/outputs/16591.txt) |
+| GLM 5.3 3-bit | 12k/1k | 12.9<br>19.0 | 42<br>627 | +47% | +1378% | 1.7626<br>1.7578 | b13586 | [16725](fork/outputs/16725.txt) |
+| GLM 5.3 3-bit | 3k/1k | 12.7<br>20.3 | 40<br>585 | +60% | +1365% | 1.7626<br>1.7578 | b13600 | [17137](fork/outputs/17137.txt) |
+| GLM 5.3 3.5-bit | 3k/1k | 10.7<br>12.9 | 31<br>224 | +21% | +617% | 1.6326<br>1.6265 | b13563 | [16756](fork/outputs/16756.txt) |
+| Qwen 3.8 Next IQ4_XS | 12k/1k | 32.0<br>51.4 | 210<br>1483 | +61% | +606% | 1.4101<br>1.4101 | b13600 | [17108](fork/outputs/17108.txt) [17109](fork/outputs/17109.txt) |
+| GLM 5.3 3.5-bit | 12k/1k | 10.8<br>11.0 | 34<br>230 | +2% | +579% | 1.6326<br>1.6265 | b13563 | [16759](fork/outputs/16759.txt) |
+| Qwen 3.8 Next IQ4_XS | 3k/1k | 30.9<br>53.6 | 207<br>1240 | +74% | +499% | 1.4101<br>1.4101 | b13600 | [17113](fork/outputs/17113.txt) |
+| Qwen 3.8 Next IQ3_S | 12k/1k | 44.2<br>54.1 | 376<br>1469 | +22% | +291% | 1.3927<br>1.3927 | b13600 | [17096](fork/outputs/17096.txt) [17097](fork/outputs/17097.txt) |
+| Qwen 3.8 Next IQ3_S | 3k/1k | 43.8<br>55.8 | 384<br>1254 | +27% | +227% | 1.3927<br>1.3927 | b13600 | [17101](fork/outputs/17101.txt) |
+| MiMo 2.6F 3-bit | short/1k | 14.3<br>33.1 | -<br>- | +131% | - | 1.8758<br>1.8758 | b13600 | [17128](fork/outputs/17128.txt) |
+| Qwen 3.8 Next IQ4_XS | short/1k | 31.4<br>55.1 | -<br>- | +75% | - | 1.4101<br>1.4101 | b13586 | [16788](fork/outputs/16788.txt) |
+| GLM 5.3 3-bit | short/1k | 12.8<br>20.8 | -<br>- | +62% | - | 1.7626<br>1.7578 | b13600 | [17141](fork/outputs/17141.txt) |
+| GLM 5.3 3.5-bit | short/1k | 9.8<br>14.9 | -<br>- | +52% | - | 1.6326<br>1.6265 | b13563 | [16687](fork/outputs/16687.txt) |
+| Qwen 3.8 Next IQ3_S | short/1k | 44.2<br>56.9 | -<br>- | +29% | - | 1.3927<br>1.3927 | b13563 | [16766](fork/outputs/16766.txt) |
+| Qwen 3.8 Next IQ1_M | 3k/1k | 68.3<br>67.7 | 1446<br>1751 | -1% | +21% | 1.4756<br>1.4756 | b13600 | [17088](fork/outputs/17088.txt) [17089](fork/outputs/17089.txt) |
+
+Every answer behind the table is in [fork/outputs](fork/outputs) as `<id>.txt` (header: build, test, speeds, arguments, power); stock's answers too. With the run database: `python3 fork/run.py out ID` (get it with `git fetch https://github.com/neurall/llama.cpp runs-db && git show FETCH_HEAD:runs.db > fork/runs.db`).
 
 Our builds in the table are b13600 and two earlier builds of this release line (b13563, b13586); each cell shows the build with the best run. Older tables (earlier releases, laptop and CPU rows): [fork/docs/perf-history.md](fork/docs/perf-history.md).
 

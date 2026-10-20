@@ -1,0 +1,28 @@
+run 16759 | um3d | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 11.04 t/s | prompt 229.7 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-19 22:44:45
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `min_items` is 0 and `max_items` is 1, the inner call gets min=0, max=0, which returns "" — then result = item_rule + " " + "" and then wrapped in `(...)?`. Hmm, actually let me check: `min_items == 0, max_items == 1`: result = item_rule + " " + build_repetition("(sep item)", 0, 0). The inner call: max_items == 0 → returns "". So result = item_rule + " " — that's wrong! It would produce `item_rule ` followed by nothing, then wrapped in parens with `?`. Actually wait: `result = "(" + result + ")?"` → `(item_rule )?` — hmm, that means the separator group is optional but the trailing space... Actually the inner build_repetition returns "" when max_items == 0, so result = item_rule + " " + "" = "item_rule ". Then since min_items == 0, result = "(item_rule )?" — this matches item_rule optionally, but with a trailing space in the rule text (cosmetic). Actually semantically it's `(item_rule)?` which is correct for min=0, max=1. The trailing space is just cosmetic whitespace in the grammar. Hmm, but wait — is it correct? For min_items=0, max_items=1 with separator: we want 0 or 1 items. `(item)?` — yes correct. OK.
+   
+   But wait, there's a deeper issue: when `max_items == 0` and `min_items > 0`? That would be an invalid schema (min > max). The function returns "" which would silently produce an empty rule. Edge case, probably fine.
+
+   Also `min_items == 0 && max_items == 1` check happens before the separator check — good.
+
+   Another subtle issue: in the separator branch, if `min_items == 1` and no max: `build_repetition("(sep item)", 0, max)` → inner returns `(sep item)*`, so result = `item (sep item)*` — correct.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead.
+   - `decimals_left` default 16, decrements. `less_decimals = std::max(decimals_left - 1, 1)`.
+   - Potential infinite recursion? Let's see: `build_min_max_int(min, max, out, decimals_left, top_level)`. In the `has_min` branch with `min_value > 9`: it calls `build_min_max_int(std::stoll(min_s.substr(1)), max, out, less_decimals, false)`. The new min is min_s without first digit. This recursion terminates because the number shrinks in length each time... Actually `min_s.substr(1)` could be e.g. "23" from "123". Each recursion reduces the number of digits by 1, so terminates.
+   - In the `has_min && has_max` branch: `uniform_range` recursion — `uniform_range(from_sub, sub_nines)` and `uniform_range(sub_zeros, to_sub)` — these reduce length, terminate.
+   - Negative handling: `build_min_max_int(-max_value, -min_value, ...)` — if min_value < 0 && max_value < 0, negate both. But wait: `-max_value` where max_value == INT64_MIN? If max_value is INT64_MIN, then has_max is true (since max_value != INT64_MAX), and negating INT64_MIN is UB! Let's check: `has_min = min_value != INT64_MIN`, `has_max = max_value != INT64_MAX`. If both min and max are negative: min_value < 0 && max_value < 0. If max_value == INT64_MIN, then `-max_value` overflows (UB). But can that happen? min
+---

@@ -1,0 +1,56 @@
+run 17116 | b13600 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 54.26 t/s | prompt 117.1 t/s | 965 tokens | args: -np 1 --moe split-f16=0 | power 220+280 W | 2026-10-20 04:46:15
+
+The user wants the smallest HTML Tetris game. Let me think about this. "Smallest" — they want minimal code. But I also want it to be genuinely good: crafted, polished. There's a tension: "smallest html tetris game" — the request is for compactness. I should honor the request: a tiny, dense Tetris in a single HTML file. But I can still make it feel alive — nice background, colors, subtle motion — while keeping the code compact.
+
+Hmm. The request is explicitly "smallest." I should deliver a genuinely small file. But I can also offer a slightly larger "polished" version? That might be over-delivering. Actually, the best response: give the smallest version (a real, playable, minified-ish Tetris), and then... hmm, the system says don't be minimal when the request asks for richness — here the request asks for minimal. So minimal is right.
+
+But I can make the tiny thing *beautiful* too — a small file that still has a nice dark canvas, glow, next piece, score. Let me aim for something like ~1.2KB that's actually playable and looks decent.
+
+Let me write compact Tetris.
+
+Classic tiny Tetris approach:
+
+```html
+<canvas id=c width=260 height=520></canvas>
+<script>
+// minimal tetris
+</script>
+```
+
+Let me write a well-known compact implementation but crafted.
+
+Approach: use a string-based piece definition with rotation via matrix rotation.
+
+```js
+const C=c.getContext('2d'),S=20,W=13,H=26;
+let g=Array(W*H).fill(0),p,n,x,y,s=0,sc=0,lv=1,ln=0,t=0,d=500;
+const P='0,1,2,11,12,21,22|1,11,12,21,22|... '
+```
+
+Hmm, let me use the standard trick: pieces defined as 4x4 bit patterns, rotation by index math.
+
+A very compact classic:
+
+```js
+P=[0x0f00,0x2222,0x0606,0xe200,0x2e00,0x4460,0x6440] // hmm
+```
+
+Actually a well-known tiny approach uses "Tetris in 10 lines" style with the O, I, T, S, Z, J, L defined as 4x4 grids encoded in hex, and rotation done by rotating a 4x4 bit matrix.
+
+Let me do: each piece is a 16-bit number representing 4x4. Rotate: newbit(r,c) = old(3-c, r) — for 4x4 rotation.
+
+Rotation of 4x4 bit matrix:
+```js
+r=m=>{let n=0;for(let y=0;y<4;y++)for(let x=0;x<4;x++)if(m>>(y*4+x)&1)n|=1<<((3-x)*4+y);return n}
+```
+Hmm that's rotating. Let's verify: mapping (x,y) -> (3-y, x)? For clockwise rotation of a matrix: new[x][H-1-y] = old[y][x]. Let's just do: new(r,c) = old(H-1-c, r) gives clockwise rotation. So for each target (r,c), source is (3-c, r).
+
+```js
+R=m=>{let n=0;for(let r=0;r<4;r++)for(let c=0;c<4;c++)if(m>>((3-c)*4+r)&1)n|=1<<(r*4+c);return n}
+```
+
+That works. But 4x4 rotation for I piece: I in 4x4 row 1 (0x00f0) rotates to column 1 — good, stays in bounds. O: 0x0660 rotates to itself. Good. T: 0x0e40? Let's define pieces in 4x4:
+
+- I: row1 filled = bits 4,5,6,7 → 0x00F0
+- O: (1,1),(1,2),(2,1),(2,2) → bits 5,6,9,10 → 0x
+---

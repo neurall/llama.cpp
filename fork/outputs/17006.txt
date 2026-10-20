@@ -1,0 +1,42 @@
+run 17006 | b13600 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 23.84 t/s | prompt 988.8 t/s | 1024 tokens | args: -np 1 --moe split-f16=1 | power 220+280 W | 2026-10-20 03:02:04
+
+The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This file converts JSON Schema to GBNF grammar rules
+- It's a complex file with pattern matching, rule building, and schema traversal
+
+### Issues I can spot:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is provided and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through: if `min_items == 0` and separator is provided, it calls `build_repetition("(" + sep + " " + item + ")", 0, max-1)`. If max is 1, then `max_items == 0` returns `""`. So result would be `item + " " + ""` = `item + " "`, then wrapped in `(...)?`. That seems correct.
+   - But wait, if `min_items == 0` and `max_items == 1` with separator, the early return `item_rule + "?"` happens before the separator check. So for arrays with separator and max 1, it returns `item_rule + "?"` without separator. That's correct since there's at most 1 item.
+   - Actually, looking more carefully: the `max_items == 0` check returns `""` which means no items. But if `min_items > 0` and `max_items == 0`, that's an invalid constraint (min > max). The function doesn't validate this.
+
+2. **`build_min_max_int` function:**
+   - Very complex recursive function. The `decimals_left` parameter limits recursion depth.
+   - The `top_level` parameter controls whether leading zeros are allowed.
+   - Potential issue: when `min_value == 0` and `top_level` is false, it outputs `more_digits(1, decimals_left)` which means at least 1 digit. But if `min_value == 0` and not top_level, the number could be 0... Actually wait, if we're in a non-top-level context, we're building the continuation after a digit, so the remaining part should have at least 1 digit. That seems correct.
+   - The `less_decimals` is `std::max(decimals_left - 1, 1)` - this ensures at least 1 decimal left.
+
+3. **`_add_rule` function:**
+   - The deduplication logic: if a rule with the same name exists but different content, it appends a number. The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the name doesn't exist or the content matches. This seems correct but could be O(n) in pathological cases.
+
+4. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for rollback.
+   - However, `_rules` is a `std::map` and copying it on every pattern visit could be expensive for large schemas.
+
+5. **`_pattern_to_rule` function:**
+   - Complex regex-to-grammar conversion.
+   - The `sub_rule_ids` map is used to deduplicate sub-rules within a pattern.
+   - Potential issue: `std::stoi` can throw `std::out_of_range` which is a `std::logic_error`... wait, `std::out_of_range` derives from `std::logic_error`. Actually no, `std::out_of_range` derives from `std::logic_error`. Let me check: `std::out_of_range` inherits from `std::logic_error`. Yes, so catching `std::logic_error` would catch both `std::invalid_argument` and `std::out_of_range`. That's correct.
+
+6. **`_not_strings` function:**
+   - Builds a trie-based rule to match strings that are NOT in a given set.
+   - The `rejects` string accumulates characters for the negation class. If a character is a regex metacharacter (like `]`, `-`, `^`), it could break the character class. The function doesn't escape these characters.
+   - Wait, looking at the output: `out << " | [^\"" << rejects << "] " << char_rule << "*";` - the `rejects` are placed inside `[^"...]`. If any character in
+---

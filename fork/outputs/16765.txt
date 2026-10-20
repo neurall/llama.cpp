@@ -1,0 +1,61 @@
+run 16765 | um3d | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.96 t/s | prompt 22.2 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-19 22:57:28
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count, not visual polish. I should honor that request: a genuinely tiny, single-file Tetris that actually works.
+
+Let me think about what "smallest Tetris" means. There are famous entries in this genre — like the classic ~140-byte Pico-8 Tetris, or the well-known minimal JS Tetris implementations. I should aim for something genuinely compact but fully playable: piece movement, rotation, gravity, line clears, game over, maybe score.
+
+Let me design a truly minimal Tetris in a single HTML file. I'll aim for something in the range of a few hundred bytes to maybe 1KB of actual code. Let me try to write it as compactly as possible while keeping it functional and readable enough to explain.
+
+Key components:
+1. Canvas for rendering (or even render into a `<pre>` with text — that can be smaller!). Actually, using a `<pre>` and text characters can be very compact. But canvas with fillRect is also compact.
+
+Let me think about the classic minimal approach:
+
+- Board: 10 wide, 20 tall (or smaller like 12x18 to save bytes? Standard is 10x20; I could use 10x20).
+- Pieces: 7 tetrominoes. Compact encoding: each piece as a set of coordinates, or use the classic trick of encoding pieces as binary matrices and rotating via transpose+reverse.
+
+A very compact trick: represent each piece as a 4x4 or 3x3 matrix encoded as a number, rotate by bit manipulation. Or use the "SRS-lite" approach: store pieces as arrays of [x,y] pairs and rotate with (x,y)->(y,-x) around a pivot.
+
+Even more compact classic trick: define pieces via strings like "010F" hex... Hmm.
+
+Let me recall a known ultra-compact Tetris. There's a famous one by @fsk141 or "Tetris in 140 bytes of JavaScript"... Actually there's a well-known minimal Tetris in C (the famous "a tetris clone in 1KB of C" or the IOCCC entry "tetromino.c" — the famous one by codegolf). There's also "Tetris in 512 bytes of JavaScript" etc.
+
+Let me just write my own compact version and golf it myself.
+
+Plan:
+
+```html
+<!doctype html><meta charset=utf8><title>T</title><body><canvas id=c width=120 height=240></canvas><script>...</script>
+```
+
+Actually to be smallest, I can skip doctype? Without doctype it's quirks mode but canvas still works. For "smallest" I can omit a lot. But I want it to still be decent. Let me write a genuinely small but complete game.
+
+Let me draft the logic:
+
+```js
+D=document, C=D.getElementById('c').getContext('2d')
+B=Array(200).fill(0) // board 10x20
+P=[[...]] // pieces
+```
+
+Piece representation: The classic compact trick is to store each tetromino as a 16-bit number representing a 4x4 grid, and rotate by extracting bits. Rotation of a 4x4 grid encoded row-major: rotating 90° clockwise maps cell (r,c) to (c, 3-r). With bit index i = r*4+c, new index = c*4 + (3-r). We can precompute a rotation table or compute per rotation.
+
+Alternative compact trick used in famous golfed Tetris (e.g., the one by "Salman"/"kland"?) — there's a famous JS Tetris in ~140 bytes by "aemkei" (Mathias Bynens? no — "Ulf"?). Actually the famous one: "Tetris in 140 bytes" by Roman? Hmm. There's the well-known codegolf SE "Tetris in JavaScript" golf. Let me just write my own.
+
+Simplest robust approach:
+
+Pieces as arrays of coordinate pairs relative to a pivot, rotate with a single formula. For I piece, pivot trick differs, but we can accept slightly non-standard rotation (many minimal tetris do).
+
+Let me encode pieces as strings of 16 chars each ("1" where block exists) in a 4x4 grid, then rotation via index mapping. That's compact-ish.
+
+Even better: encode each piece as a single number (16-bit). E.g., piece shapes:
+
+I: 
+```
+. . . .
+X X X X
+. . . .
+. . . .
+```
+bits: row1 = 1111 → in 4x
+---

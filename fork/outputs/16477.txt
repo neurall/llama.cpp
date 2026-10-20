@@ -1,0 +1,8 @@
+run 16477 | um3b | pf12k | Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf | decode 64.52 t/s | prompt 967.8 t/s | 64 tokens | args: -np 1 | power 200+200 W | 2026-10-19 04:44:00
+
+    return params.draft_model == nullptr && params.draft == 0 && params.draft_k == 0;
+}
+
+static bool is_default_local_path(const common_params & params, const std::string & url) {
+    auto expected_path = get_default_local_path(url);
+    auto actual_path
