@@ -1,12 +1,5 @@
 # llama.cpp: fork with multi gpu acceleration even for models bigger than total gpu mem
 
-> **Big thanks to [@csantiago78](https://github.com/csantiago78)**: the expert cache
-> here builds on their implementation in llama.cpp PR
-> [#27861](https://github.com/ggml-org/llama.cpp/pull/27861) ("GPU-resident LRU cache
-> for host-offloaded MoE expert weights"), the first working hot-expert cache in
-> llama.cpp. This fork takes it further: filling all free VRAM, adaptive eviction,
-> CPU/GPU overlap, small-batch support and fused kernels.
-
 For MoE models larger than VRAM: every expert stays in system RAM, and all VRAM left
 after the KV cache becomes a live cache of the experts actually being used. The GPUs
 compute cached experts while the CPU computes the rest, in parallel.
@@ -17,7 +10,7 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 <img src="fork/docs/img/vram-layout.svg" alt="One VRAM buffer per GPU: compute graph, KV and expert cache share it" width="100%">
 
-- **Expert cache.** All experts stay in RAM; each GPU's free VRAM is one buffer of expert blocks. The GPUs compute the cached (hot) experts while the CPU computes the misses, in parallel. A missed expert that keeps being used is uploaded and replaces a colder one.
+- **Expert cache.** All experts stay in RAM; each GPU's free VRAM is one buffer of expert blocks. The GPUs compute the cached (hot) experts while the CPU computes the misses, in parallel. A missed expert that keeps being used is uploaded and replaces a colder one. It started from the expert cache of llama.cpp PR #27861, then changed in two ways: LRU eviction was replaced by a window of recent use plus admission (a missed expert takes a slot only after repeated use within the last 64 tokens), and the fixed reserve per layer was replaced by one global pool of expert blocks shared by all layers.
 - **Learned hot experts, kept between runs.** Per model, the lifetime use of every expert is saved in `moe-state.ini` (`~/.cache/llama.cpp/`, Windows `%LOCALAPPDATA%\llama.cpp\`) and updated by every run; the next start preloads the hottest experts. The first run or two of a new model are slower (it is a cache). A pre-warmed state for the models in the table is in the repo: copy [fork/moe-state.ini](fork/moe-state.ini) there if you have none.
 - **Prompts in few big passes.** Every prompt pass streams the experts the GPU does not hold, so the micro-batch (`-ub`) is sized per request (up to 12288 tokens) and the graph borrows expert blocks only for that pass; decode gets them back.
 - **The biggest VRAM efficiency change: a big micro-batch is no longer dead weight.** With a static `-ub`, the compute buffer of the largest micro-batch stays reserved through the whole session. A small `-ub` left the VRAM to the expert cache: great decode, weak prompt processing. A big `-ub` (4k, 8k, 12k) gave massive prompt processing but low decode, because the buffer left no room for the expert cache in the decode phase. Here the big buffer is lent only to the prompt pass. When the pass ends, that space goes back to the expert cache, refilled with the globally hot experts of the model (from `moe-state.ini`) and with the coldest ones the prompt pass has just used (prefill preheat), so decode starts with a full cache.
@@ -294,4 +287,5 @@ The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-or
 - [nlohmann/json](https://github.com/nlohmann/json) - Single-header JSON library, used by various tools/examples - MIT License
 - [mackron/miniaudio](https://github.com/mackron/miniaudio) - Single-header audio format decoder, used by multimodal subsystem - Public domain
 - [sheredom/subprocess.h](https://github.com/sheredom/subprocess.h) - Single-header process launching solution for C and C++ - Public domain
+- [csantiago78](https://github.com/csantiago78) - GPU-resident LRU cache for host-offloaded MoE expert weights, [llama.cpp PR #27861](https://github.com/ggml-org/llama.cpp/pull/27861); the starting point of this fork's expert cache - MIT license
 - [homeofe](https://github.com/homeofe) - AVX2 dot products for IQ3_S and IQ3_XXS on x86 CPUs (`ggml-cpu`), merged into this fork (in this release) - MIT license
