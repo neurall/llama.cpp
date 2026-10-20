@@ -19,17 +19,17 @@ Best valid run of ours against the median of the newest official stock (b11742, 
 
 | model | test | t/s | pp | gain t | gain pp | ppl | build | output |
 |---|---|---|---|---|---|---|---|---|
-| MiMo 2.6F 3-bit | 12k/1k | 14.2<br>25.8 | 49<br>1022 | +82% | +1971% | 1.8758<br>1.8758 | b13600 | [17120](fork/outputs/17120.txt) [17121](fork/outputs/17121.txt) |
-| MiMo 2.6F 3-bit | 3k/1k | 14.3<br>26.7 | 48<br>738 | +86% | +1427% | 1.8758<br>1.8758 | b13563 | [16753](fork/outputs/16753.txt) [16591](fork/outputs/16591.txt) |
-| GLM 5.3 3-bit | 12k/1k | 12.9<br>19.0 | 42<br>627 | +47% | +1378% | 1.7626<br>1.7578 | b13586 | [16725](fork/outputs/16725.txt) |
-| GLM 5.3 3-bit | 3k/1k | 12.7<br>20.3 | 40<br>585 | +60% | +1365% | 1.7626<br>1.7578 | b13600 | [17137](fork/outputs/17137.txt) |
-| GLM 5.3 3.5-bit | 3k/1k | 10.7<br>12.9 | 31<br>224 | +21% | +617% | 1.6326<br>1.6265 | b13563 | [16756](fork/outputs/16756.txt) |
-| Qwen 3.8 Next IQ4_XS | 12k/1k | 32.0<br>51.4 | 210<br>1483 | +61% | +606% | 1.4101<br>1.4101 | b13600 | [17108](fork/outputs/17108.txt) [17109](fork/outputs/17109.txt) |
-| GLM 5.3 3.5-bit | 12k/1k | 10.8<br>11.0 | 34<br>230 | +2% | +579% | 1.6326<br>1.6265 | b13563 | [16759](fork/outputs/16759.txt) |
-| Qwen 3.8 Next IQ4_XS | 3k/1k | 30.9<br>53.6 | 207<br>1240 | +74% | +499% | 1.4101<br>1.4101 | b13600 | [17113](fork/outputs/17113.txt) |
-| Qwen 3.8 Next IQ3_S | 12k/1k | 44.2<br>54.1 | 376<br>1469 | +22% | +291% | 1.3927<br>1.3927 | b13600 | [17096](fork/outputs/17096.txt) [17097](fork/outputs/17097.txt) |
-| Qwen 3.8 Next IQ3_S | 3k/1k | 43.8<br>55.8 | 384<br>1254 | +27% | +227% | 1.3927<br>1.3927 | b13600 | [17101](fork/outputs/17101.txt) |
-| MiMo 2.6F 3-bit | short/1k | 14.3<br>33.1 | -<br>- | +131% | - | 1.8758<br>1.8758 | b13600 | [17128](fork/outputs/17128.txt) |
+| MiMo 2.6F 3-bit | 12k/1k | 14.2<br>25.8 | 49<br>1022 | +82% | +1971% (20.7x) | 1.8758<br>1.8758 | b13600 | [17120](fork/outputs/17120.txt) [17121](fork/outputs/17121.txt) |
+| MiMo 2.6F 3-bit | 3k/1k | 14.3<br>26.7 | 48<br>738 | +86% | +1427% (15.3x) | 1.8758<br>1.8758 | b13563 | [16753](fork/outputs/16753.txt) [16591](fork/outputs/16591.txt) |
+| GLM 5.3 3-bit | 12k/1k | 12.9<br>19.0 | 42<br>627 | +47% | +1378% (14.8x) | 1.7626<br>1.7578 | b13586 | [16725](fork/outputs/16725.txt) |
+| GLM 5.3 3-bit | 3k/1k | 12.7<br>20.3 | 40<br>585 | +60% | +1365% (14.7x) | 1.7626<br>1.7578 | b13600 | [17137](fork/outputs/17137.txt) |
+| GLM 5.3 3.5-bit | 3k/1k | 10.7<br>12.9 | 31<br>224 | +21% | +617% (7.2x) | 1.6326<br>1.6265 | b13563 | [16756](fork/outputs/16756.txt) |
+| Qwen 3.8 Next IQ4_XS | 12k/1k | 32.0<br>51.4 | 210<br>1483 | +61% | +606% (7.1x) | 1.4101<br>1.4101 | b13600 | [17108](fork/outputs/17108.txt) [17109](fork/outputs/17109.txt) |
+| GLM 5.3 3.5-bit | 12k/1k | 10.8<br>11.0 | 34<br>230 | +2% | +579% (6.8x) | 1.6326<br>1.6265 | b13563 | [16759](fork/outputs/16759.txt) |
+| Qwen 3.8 Next IQ4_XS | 3k/1k | 30.9<br>53.6 | 207<br>1240 | +74% | +499% (6.0x) | 1.4101<br>1.4101 | b13600 | [17113](fork/outputs/17113.txt) |
+| Qwen 3.8 Next IQ3_S | 12k/1k | 44.2<br>54.1 | 376<br>1469 | +22% | +291% (3.9x) | 1.3927<br>1.3927 | b13600 | [17096](fork/outputs/17096.txt) [17097](fork/outputs/17097.txt) |
+| Qwen 3.8 Next IQ3_S | 3k/1k | 43.8<br>55.8 | 384<br>1254 | +27% | +227% (3.3x) | 1.3927<br>1.3927 | b13600 | [17101](fork/outputs/17101.txt) |
+| MiMo 2.6F 3-bit | short/1k | 14.3<br>33.1 | -<br>- | +131% (2.3x) | - | 1.8758<br>1.8758 | b13600 | [17128](fork/outputs/17128.txt) |
 | Qwen 3.8 Next IQ4_XS | short/1k | 31.4<br>55.1 | -<br>- | +75% | - | 1.4101<br>1.4101 | b13586 | [16788](fork/outputs/16788.txt) |
 | GLM 5.3 3-bit | short/1k | 12.8<br>20.8 | -<br>- | +62% | - | 1.7626<br>1.7578 | b13600 | [17141](fork/outputs/17141.txt) |
 | GLM 5.3 3.5-bit | short/1k | 9.8<br>14.9 | -<br>- | +52% | - | 1.6326<br>1.6265 | b13563 | [16687](fork/outputs/16687.txt) |
