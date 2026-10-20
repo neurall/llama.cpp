@@ -4069,6 +4069,28 @@ def known_gain(model, test):
     return math.prod(gs) ** (1 / len(gs))
 
 
+_PPL_CACHE = {}
+def ppl_pair(model, bno):
+    """`ours/stock` perplexity of a model: the newest default-settings run of build bno (else the newest build with one) and the newest official stock run, both cut to the same chunk count (runs.db ppl_chunks); "" when either is missing"""
+    import sqlite3
+    key = (os.path.basename(model or ""), bno)
+    if key in _PPL_CACHE: return _PPL_CACHE[key]
+    res = ""
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        def newest(where, args):
+            r = c.execute(f"select start_ts, build from ppl_chunks where model=? and {where} order by start_ts desc limit 1", (key[0],) + args).fetchone()
+            return r and [v for _, v in c.execute("select chunk, cum_ppl from ppl_chunks where model=? and start_ts=? and build=? order by chunk", (key[0], r[0], r[1]))]
+        o = newest("build=?", (f"b{int(bno)}",)) if bno else None
+        o = o or newest("build glob 'b[0-9]*' and build not like '% %'", ())
+        s_ = newest("build like 'stock%'", ())
+        if o and s_:
+            n = min(len(o), len(s_)); res = f"{o[n - 1]:.4f}/{s_[n - 1]:.4f}"
+    except (sqlite3.Error, ValueError): pass
+    _PPL_CACHE[key] = res
+    return res
+
+
 def run_times(rid):
     """(seconds the run took, `l 44s` load text) of runs.db row rid, from its wall_s and load_s; (None, "") when not recorded"""
     import sqlite3
@@ -4132,7 +4154,7 @@ def final_table(recs, live=False, hdr_out=None):
             st = dict(t=t, p=p, ob="", od="", sb=r.get("sbno") or "?", sd=r.get("sdate") or "", sid=r.get("rid")); t = p = None; rid_show = None
         gt = t / st["t"] if st and t else None; gp = p / st["p"] if st and p and st["p"] else None
         body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" if el is not None else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1),
-                         st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=(not st and not r["stock_row"])))
+                         st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, ppl=(ppl_pair(r.get("model"), st.get("ob")) if st and st.get("ob") else ""), nost=(not st and not r["stock_row"])))
         body[-1]["bt"] = (f"b{st['ob']} {st['od'][5:]} vs b{st['sb']} {st['sd'][5:]}" if st["ob"] else f"stock b{st['sb']} {st['sd'][5:]}") if st else ""; body[-1]["bts"] = (f"b{st['ob']} vs b{st['sb']}" if st["ob"] else f"stock b{st['sb']}") if st else ""
         gs = [g for g in (gt, gp) if g]; body[-1]["gm"] = math.prod(gs) ** (1 / len(gs)) if gs else 0   # overall gain: geometric mean of decode and prompt gain
         body[-1]["old"] = [dict(name=r["name"], is_old=True, out="", id=str(orid), sid="", prompt=r.get("prompt") or "", time="", load="", fail=False, t=f(t, 2), p=f(p, 1), st="", sp="", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=False, gm=0, old=[],
@@ -4141,22 +4163,22 @@ def final_table(recs, live=False, hdr_out=None):
     allrows = [y for x in body for y in [x] + x.get("old", [])]
     for x in allrows: x.setdefault("xfer", "")
     show_x = any(x["xfer"] not in ("", "f32") for x in body)   # the hand-off column only when a cell of ours ran with other than the f32 default
-    wd = lambda k, h: max([len(h)] + [len(x[k]) for x in allrows])
-    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
+    wd = lambda k, h: max([len(h)] + [len(x.get(k, "")) for x in allrows])
+    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
     if live:   # one finished cell as it happens: fixed minimum widths so the rows of successive cells line up
         W["name"] = NAMEW[0] - 1   # the longest name of the list, whatever this cell is called
-        for k, mw in (("prompt", 7), ("out", 7), ("xfer", 4), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
+        for k, mw in (("prompt", 7), ("out", 7), ("xfer", 4), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("ppl", 13), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
         for x in allrows: x["bt"] = x.get("bts", x["bt"])   # short builds, so every row decides the same columns
         W["bt"] = max([16, len("builds")] + [len(x["bt"]) for x in allrows])
     def width(keys): return sum(W[k] + 2 for k in keys)
-    ours = ["name", "prompt", "out"] + (["xfer"] if show_x else []) + ["time", "load", "t", "p"]; stk = ["st", "sp", "gt", "gp", "bt", "id", "sid"]
+    ours = ["name", "prompt", "out"] + (["xfer"] if show_x else []) + ["time", "load", "t", "p"]; stk = ["st", "sp", "gt", "gp", "ppl", "bt", "id", "sid"]
     while width(ours + stk) > cols and len(ours) > 3 and ("load" in ours or "time" in ours): ours.remove("load" if "load" in ours else "time")
     if width(ours + stk) > cols:   # next to go: the dates in the builds column
         for x in allrows: x["bt"] = x["bts"]
         W["bt"] = max([len("builds")] + [len(x["bt"]) for x in allrows] + ([16] if live else []))
     wrap = width(ours + stk) > cols
-    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "bt": "builds", "id": "id", "sid": "stock id"}
-    HC = {"prompt": 36, "out": 36, "xfer": 35, "t": 96, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
+    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "stock id"}
+    HC = {"prompt": 36, "out": 36, "xfer": 35, "t": 96, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "ppl": 36, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
     hl = lambda keys: "".join("  " + col(HC[k], f"{H[k]:<{W[k]}}" if k == "bt" else f"{H[k]:>{W[k]}}") for k in keys)
     out = [" " * W["name"] + hl(ours[1:]) + ("" if wrap else hl(stk))]
     if wrap: out.append(" " * W["name"] + hl(stk))
@@ -4166,7 +4188,7 @@ def final_table(recs, live=False, hdr_out=None):
         cell = lambda k: "  " + col(c[k][0], f"{c[k][1]:>{W[k]}}")
         gcell = lambda k, v: "  " + (col("1;91" if v < 1 else "37" if v < 2 else "1;97" if v < 10 else "1;93" if v < 40 else "1;92", f"{x[k]:>{W[k]}}") if v is not None else " " * W[k])   # below 1 red, 1-2 plain, 2x bold white, 10x yellow, 40x green
         ln = col(37 if x.get("is_old") else 1, f"{x['name']:<{W['name']}}") + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "")
-        tail = cell("st") + cell("sp") + gcell("gt", x["gtv"]) + gcell("gp", x["gpv"]) + "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}") + "".join("  " + col(37 if k == "id" else 36, f"{x[k]:>{W[k]}}") for k in ("id", "sid"))
+        tail = cell("st") + cell("sp") + gcell("gt", x["gtv"]) + gcell("gp", x["gpv"]) + "  " + col(36, f"{x.get('ppl', ''):>{W['ppl']}}") + "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}") + "".join("  " + col(37 if k == "id" else 36, f"{x[k]:>{W[k]}}") for k in ("id", "sid"))
         if not x["st"] and not x.get("is_old"): tail = ""
         if wrap and tail.strip(): out += [ln, col(37, f"{x['name']:<{W['name']}}") + tail]
         else: out.append(ln + tail)
