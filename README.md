@@ -77,6 +77,26 @@ touch, so the CPU does most expert work and the GPUs wait. This fork fills the s
 VRAM with the ~100 most-used experts of every layer, so most expert work runs on the
 GPUs, at the same time as the CPU handles the misses.
 
+## What gain to expect from which model and hardware
+
+The gain depends on how much of the model fits in VRAM. Measured on 2x RTX 3090 (48 GiB of VRAM in total), 128 GB RAM; *VRAM share* is 48 GiB divided by the model file, before the KV cache, dense weights and compute buffers take their part. Gains are against the official stock b11742, from the rows of the table above (12k prompt for prompt speed, short prompt for decode speed).
+
+| model | file | VRAM share | prompt speed | decode speed |
+|---|---|---|---|---|
+| OLMoE-1B-7B Q4_K_M | 3.9 GiB | fits | - | +1% |
+| Qwen3.6-35B-A3B | 11.4 GiB | fits | 1.0x | +1% |
+| Qwen3.8 27B IQ4_NL (dense) | 15.2 GiB | fits | 1.0x | +0.3% |
+| Qwen3.8 Next IQ1_M | 54.4 GiB | 88% | 1.04x | -0.5% |
+| Qwen3.8 Next IQ3_S | 77.8 GiB | 62% | 3.9x | +31% |
+| Qwen3.8 Next IQ4_XS | 87.2 GiB | 55% | 7.1x | +78% |
+| MiMo-V2.6-Flash 3-bit | 107.7 GiB | 45% | 19.4x | +131% (2.3x) |
+| GLM-5.3-Flash 3.0-bit | 109.4 GiB | 44% | 14.8x | +62% |
+| GLM-5.3-Flash 3.5-bit | 127.7 GiB | 38% | 6.7x | +37% |
+
+- **MoE models whose experts don't fit in VRAM gain, for both prompt and decode speed.** Dense models and MoE models that fit fully in VRAM run at stock speed: the gains come from the expert cache and from sizing the prompt micro-batch so each expert upload serves more tokens, and a dense model has no experts to cache.
+- **The less of the model fits in VRAM, the more there is to gain, until it no longer fits in RAM.** The biggest gains here are at 44-45% nominal share (roughly a third of the experts cached after the other buffers). GLM 3.5-bit (127.7 GiB) is bigger than this machine's RAM, so part of it streams from SSD and the SSD speed caps the gain.
+- **On your hardware:** divide your total VRAM by the model file for the share, and expect the same shape: stock speed when it fits, the largest gains when the model fits in RAM but only a third to a half in VRAM. More GPUs add cache and raise the share. A slow slot lowers the gain of the card behind it. Only this one machine is measured so far; reports from others are welcome.
+
 ## How it works
 
 <img src="fork/docs/img/vram-layout.svg" alt="One VRAM buffer per GPU: compute graph, KV and expert cache share it" width="100%">
