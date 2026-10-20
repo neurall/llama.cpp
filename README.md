@@ -42,7 +42,7 @@ One run of ours (the best of the three builds, by geometric mean of its two gain
 | Qwen 3.8 Next IQ3_S | short/1k | 43.5<br>56.9 | -<br>- | +31% | - | 1.3927<br>1.3927 | b13563 | [16766](fork/outputs/16766.txt)<br>[17102s](fork/outputs/17102s.txt) |
 | Qwen 3.8 Next IQ1_M | 3k/1k | 68.3<br>67.6 | 1487<br>1751 | -1% | +18% | 1.4756<br>1.4756 | b13600 | [17089](fork/outputs/17089.txt)<br>[17087s](fork/outputs/17087s.txt) |
 
-\* GLM 3.5-bit (127.7 GiB) is larger than this machine's 128 GB RAM, so part of it runs from the SSD and the system swaps (about 2.6 GiB of swap in use seen during a run). Ours is faster than stock despite that.  
+\* GLM 3.5-bit (127.7 GiB) is larger than this machine's 128 GB RAM, so part of it runs from the SSD and the system swaps (up to about 4 GiB of swap in use during runs). Ours is faster than stock despite that.  
 
 Every answer behind the table is in [fork/outputs](fork/outputs) as `<id>.txt` (header: build, test, speeds, arguments, power); stock's answers as `<id>s.txt`. With the run database: `python3 fork/run.py out ID` (get it with `git fetch https://github.com/neurall/llama.cpp runs-db && git show FETCH_HEAD:runs.db > fork/runs.db`).
 
