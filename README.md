@@ -105,6 +105,24 @@ The gain depends on how much of the model fits in VRAM. Measured on 2x RTX 3090 
 - **The less of the model fits in VRAM, the more there is to gain.** The biggest gains here are at 44-45% nominal share. Models bigger than RAM run partly from SSD, where a few extra tokens per second decide between unusable and usable: GLM 3.5-bit (127.7 GiB, larger than this machine's 128 GB RAM) still gains +21% decode and 7x prompt speed over stock on the 3k prompt (b13563). I have not yet measured models that stock runs below 5 t/s; reports are welcome.
 - **On your hardware:** divide your total VRAM by the model file for the share, and expect the same shape: stock speed when it fits, the largest gains when the model fits in RAM but only a third to a half in VRAM. Only this one machine is measured so far; reports from others are welcome.
 
+## What each feature contributes
+
+Each row is one paired A/B on the same binary and settings, measured when the feature was added (2x RTX 3090 unless noted; older builds, one A/B each, so read them as the size of the effect, not as additive shares of the table above). Method and run notes per feature: [fork/docs/features.md](fork/docs/features.md).
+
+| feature | test | without | with | change |
+|---|---|---|---|---|
+| Expert cache in free VRAM | decode, models that do not fit | stock (no expert cache) | the gainers table above | +20% to +130% decode |
+| Pinned weights (server default) | GLM 12k prompt, prompt speed | 180 pp t/s | 262 pp t/s | +45% |
+| | Qwen 3.8 Next 12k prompt, prompt speed | 372 pp t/s | 538 pp t/s | +45% |
+| Big micro-batch (`-ub` 1024 to 4096) | GLM 12k prompt, prompt speed | 176.6 pp t/s | 370.1 pp t/s | 2.1x |
+| Micro-batch buffer lent to the prompt pass only | GLM 12k prompt then decode, `-ub` 4096 | 17.81 t/s (static buffer) | 18.99 t/s | +6.6% decode, same prompt speed (368.9 vs 367.6) |
+| Prefill preheat | GLM 12k prompt then 256 tokens, 1 GPU, decode | 13.5 t/s (cache hits 43%) | 15.3 t/s (55%) | +12.7% |
+| Learned hot experts kept between runs | GLM first request after restart, decode | 20.5-20.9 t/s | 21.8 t/s | +4-6% |
+| Global expert pool (vs fixed slots per layer) | decode with 20-35% of the experts in VRAM | 132.5-177.5 t/s | 137.3-181.7 t/s | +2.1% to +3.6% (no change when most of the model fits) |
+| Dense split over two cards (forced path) | Qwen 3.8 Next 4k prompt, prompt speed, 180+220 W | 1065 and 1113 pp t/s (run ids 12190, 12191) | 1274 and 1275 pp t/s (12193, 12194) | +17% |
+
+Which features drive which number: the **expert cache** is what lifts decode over stock; **pinned weights and the big micro-batch** (with its buffer lent only to the prompt pass, so decode keeps its cache) are what lift prompt speed. The rest are smaller, single-digit effects.
+
 ## Perplexity against stock
 
 Same text, same chunks, official stock `llama-perplexity` against ours. The number in brackets is the per-chunk difference to stock in percent of perplexity (mean ± standard error); 0.00 means identical to four decimals. *default* is what you get without settings (the planner decides per prompt size whether to use one card or both), *one card* and *two cards* force the path (`dense-split=0` / `dense-split=1`), *dense split only* is `split-experts=0` (see below). The plain Qwen3.8 27B models are dense with no split path, so their split columns are empty. The GLM two-card cell is not measured yet. About 10 chunks of 1024 tokens per model: differences under 0.2% are inside the noise.
@@ -178,10 +196,10 @@ Details moved to [fork/docs/features.md](fork/docs/features.md): pinned weights,
 
 ## What's next
 
-- **Merge the expert cache and the staging buffers** into one pool. I expect better VRAM efficiency than the current separate regions; this is the next version's main change.
-- **Vulkan version: the biggest priority.** Load is now allocated and scheduled dynamically on each card's compute speed and on the bandwidth of the PCIe slot it sits in, so there is no reason left to require cards of one vendor. In theory AMD, NVIDIA and Intel cards should work together; I have not been able to test it. A Vulkan build, and AMD binaries, come first.
-- **Per-topic expert-cache lookup and per-request init**, planned for the following versions.
-- **More testing on more hardware.** Everything here was measured on one machine: an X570 board with an x16 and an x4 slot, two thermally throttled RTX 3090s, plus a notebook with an RTX 4060. Multi-GPU setups with fast slots on every card are the most wanted; see the issue tracker or open a discussion with your numbers.
+1. **Vulkan version and AMD binaries.** The top priority. Work is now allocated and scheduled dynamically from each card's compute speed and the bandwidth of the PCIe slot it sits in, so cards of different vendors should be able to share a model. In theory this works; I have not been able to test it.
+2. **One pool for the expert cache and the staging buffers.** Merging the two is expected to improve VRAM efficiency further.
+3. **Expert-cache lookup per topic and initialisation per request**, planned for later versions.
+4. **Testing on more hardware.** Everything here was measured on one X570 board (x16 + x4 slots) with two RTX 3090s, plus a notebook with an RTX 4060. Multi-GPU setups with fast slots on every card are the most wanted: send your numbers and the startup log (`-lv 5`).
 
 ## Quick start
 
