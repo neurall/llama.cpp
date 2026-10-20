@@ -20,7 +20,8 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 Every setting and its default: [fork/docs/fork-knobs.md](fork/docs/fork-knobs.md). Internals and measurements per feature: [fork/docs/features.md](fork/docs/features.md).
 
 ## Best gainers
-<img width="1629" height="1031" alt="image" src="https://github.com/user-attachments/assets/40556ff3-6b7c-4088-8689-293d419b320e" />
+<img width="1591" height="1090" alt="image" src="https://github.com/user-attachments/assets/7968c9de-766b-4d23-9fa2-2d0673d19c16" />
+
 
 One run of ours (the run with the biggest single gain among the three builds, never below stock on either number) against the one official stock (b11742, 2026-10-20) run closest to stock's median; every number is from those two runs, whose answers are in the output column (ours on top, stock below, so you can open both). Sorted by the bigger gain; rows where neither gain reaches +10% are left out (models that fit in VRAM and the dense 27B models run at stock speed). Upper number stock, lower ours. **12k/1k** = 12.4k-13.8k-token code-review prompt, 1024 tokens out; **3k/1k** = ~3k-token source file plus an edit instruction, answer up to 1024 tokens; **short/1k** = one-line prompt, 1024 tokens out (no prompt speed: too short to time). t/s = decode, pp = prompt processing, ppl = perplexity on b13600 (details below). Valid = same power limits as stock (x4 card 220 W, x16 card 280 W), answer not looped, decode only from answers of 256+ tokens. 2x RTX 3090 (x16 + x4), Ryzen 7 3700X, 128 GB DDR4-3200.
 
