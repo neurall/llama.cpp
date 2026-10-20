@@ -100,7 +100,7 @@ The gain depends on how much of the model fits in VRAM. Measured on 2x RTX 3090 
 | GLM-5.3-Flash 3.5-bit | 127.7 GiB | 38% | 6.7x | +37% |
 
 - **MoE models whose experts don't fit in VRAM gain, for both prompt and decode speed.** Dense models and MoE models that fit fully in VRAM run at stock speed: the gains come from the expert cache and from sizing the prompt micro-batch so each expert upload serves more tokens, and a dense model has no experts to cache.
-- **The less of the model fits in VRAM, the more there is to gain, until it no longer fits in RAM.** The biggest gains here are at 44-45% nominal share. GLM 3.5-bit (127.7 GiB) is bigger than this machine's RAM, so part of it streams from SSD and the SSD speed caps the gain.
+- **The less of the model fits in VRAM, the more there is to gain.** The biggest gains here are at 44-45% nominal share. Models bigger than RAM run partly from SSD, where a few extra tokens per second decide between unusable and usable: GLM 3.5-bit (127.7 GiB, larger than this machine's 128 GB RAM) still gains +21% decode and 7x prompt speed over stock on the 3k prompt (b13563). I have not yet measured models that stock runs below 5 t/s; reports are welcome.
 - **On your hardware:** divide your total VRAM by the model file for the share, and expect the same shape: stock speed when it fits, the largest gains when the model fits in RAM but only a third to a half in VRAM. Only this one machine is measured so far; reports from others are welcome.
 
 ## Perplexity against stock
@@ -170,7 +170,6 @@ Details moved to [fork/docs/features.md](fork/docs/features.md): pinned weights,
 - **One machine measured:** 2x RTX 3090 (x16 + x4 slots), Ryzen 7 3700X, 128 GB DDR4. Other hardware, AMD/Intel GPUs and 3+ GPUs are untested; CUDA only for now (Vulkan and AMD binaries are next, see below). Windows binaries are smoke-tested only.
 - **The first runs of a model are slower.** The hot-expert state in `moe-state.ini` is learned from use (copy the pre-warmed [fork/moe-state.ini](fork/moe-state.ini) to start from it).
 - **Models larger than free RAM load lazily.** The server answers while the expert weights are still being pinned in the background (about 80 s for 100 GiB), so the first big prompt after start can be several times slower than the next ones (GLM 3.5-bit, 3k prompt: 26-147 prompt t/s on the first request, 225-267 on the second request on the same server). The table shows the steady-state speed.
-- **GLM 3.5-bit (128 GiB) is bigger than this machine's RAM**, so part of it is read from the SSD and the SSD speed limits its gains.
 - **Perplexity:** within noise of stock on every model tested except Qwen 3.8 Next IQ3_S on the two-card paths (+0.3%).
 - **Output can differ between runs** even at temperature 0 (a cached expert runs on the GPU, a missed one on the CPU, and they round slightly differently).
 - **The gainers table takes each row from the best of three builds of this release line** (b13563, b13586, b13600); the build column says which.
