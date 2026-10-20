@@ -6276,6 +6276,7 @@ def _tool_ppl():
     ap.add_argument("-b", "--build", default="latest")
     ap.add_argument("--variants", default="default,one,dense,f16,f32")
     ap.add_argument("--chunks", type=int, default=12)
+    ap.add_argument("--test", default="pplb", choices=["pplb", "pplc", "ppl"], help="pplb: 1024-token passes (the prompt path, default); ppl: one token per call (the decode path: cached experts on the GPU, misses on the CPU; slow, use --chunks 2 and --variants default); pplc: 1024 tokens in 256-token micro-batches")
     ap.add_argument("-nrt", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip variants already stored in the last DAYS days (default 1 = today)")
     ap.add_argument("-n", "--dry", action="store_true")
     ap.add_argument("--table", action="store_true", help="only print the README table")
@@ -6294,14 +6295,14 @@ def _tool_ppl():
     con = sqlite3.connect(os.path.join(here, "runs.db"))
     def done(m, build, v):
         if not a.nrt: return False
-        try: return bool(con.execute("select 1 from ppl_chunks where model=? and build=? and date(start_ts)>=date('now','localtime','-%d days') limit 1" % (a.nrt - 1,), (os.path.basename(m), build + (" --moe " + ",".join(PPL_VARIANTS[v].replace("moe:", "").split()) if PPL_VARIANTS[v] else ""))).fetchone())
+        try: return bool(con.execute("select 1 from ppl_chunks where model=? and build=? and test='%s' and date(start_ts)>=date('now','localtime','-%d days') limit 1" % (a.test, a.nrt - 1,), (os.path.basename(m), build + (" --moe " + ",".join(PPL_VARIANTS[v].replace("moe:", "").split()) if PPL_VARIANTS[v] else ""))).fetchone())
         except sqlite3.Error: return False
     for m in models:
         nosplit = os.path.basename(m).startswith(("Qwen3.8-27B",))   # plain dense models have no experts and no token-range graphs: no two-card path, the split variants would only repeat the one-card run
         jobs = [(stock, "default", "")] + [(ours, v, PPL_VARIANTS[v]) for v in a.variants.split(",") if not (nosplit and v not in ("default", "one"))]
         for build, v, words in jobs:
             if done(m, build, v): print(f"skip {os.path.basename(m)} {build} {v}: stored in the last {a.nrt} day(s)"); continue
-            cmd = [sys.executable, os.path.abspath(__file__), "bench", "--models", m, "--builds", build, "-t", "pplb", "-n", "1", "--campaign", "ppl-pair", "--variants", v] + (["--variant", f"{v}={words}"] if words else [])
+            cmd = [sys.executable, os.path.abspath(__file__), "bench", "--models", m, "--builds", build, "-t", a.test, "-n", "1", "--campaign", "ppl-pair", "--variants", v] + (["--variant", f"{v}={words}"] if words else [])
             print(" ".join(shlex.quote(c) for c in cmd), flush=True)
             if a.dry: continue
             wait_vram_free()
@@ -6322,12 +6323,13 @@ def _tool_ppl_table():
     ap.add_argument("model", nargs="?", default="", help="part of the model file name")
     ap.add_argument("--readme", action="store_true", help="the README table: one row per model, columns default / one card / dense only / two cards f16 / two cards f32, newest run of each")
     ap.add_argument("--build", default="", help="the build under test for --readme (default: the newest build number with perplexity runs)")
+    ap.add_argument("--test", default="pplb", help="which perplexity test to tabulate: pplb (1024-token passes, default), ppl (one token per call, the decode path), pplc")
     ap.add_argument("--ref", default="stock", help="the build the others are compared with (name starts with this; default the newest official stock)")
     a = ap.parse_args()
     c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
     runs = {}   # (model, test, start_ts, build) -> [cum ppl per chunk]
     try:
-        for ts, b, m, t, k, v in c.execute("select start_ts, build, model, test, chunk, cum_ppl from ppl_chunks where model like ? order by start_ts, chunk", (f"%{a.model}%",)): runs.setdefault((m, t, ts, b), []).append(v)
+        for ts, b, m, t, k, v in c.execute("select start_ts, build, model, test, chunk, cum_ppl from ppl_chunks where model like ? and test=? order by start_ts, chunk", (f"%{a.model}%", a.test)): runs.setdefault((m, t, ts, b), []).append(v)
     except sqlite3.Error: print("no ppl runs stored yet"); return 0
     nll = lambda cs: [(k + 1) * math.log(x) - (k * math.log(cs[k - 1]) if k else 0.0) for k, x in enumerate(cs)]   # per-chunk mean negative log likelihood from the cumulative perplexities
     path = lambda m, ts: next(iter(c.execute("select pf_all from runs where start_ts=? and model=? and pf_all is not null", (ts, m)).fetchone() or [""]), "")   # the passes of the run by path (from the log)
