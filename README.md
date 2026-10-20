@@ -29,18 +29,20 @@ One run of ours (the best of the three builds, by geometric mean of its two gain
 | MiMo 2.6F 3-bit | 3k/1k | 14.3<br>26.1 | 48<br>740 | +82% | +1432% 15.3x | 1.8758<br>1.8758 | b13586 | [16785](fork/outputs/16785.txt)<br>[17122s](fork/outputs/17122s.txt) |
 | GLM 5.3 3-bit | 12k/1k | 12.9<br>19.0 | 42<br>627 | +47% | +1378% 14.8x | 1.7626<br>1.7578 | b13586 | [16725](fork/outputs/16725.txt)<br>[17130s](fork/outputs/17130s.txt) |
 | GLM 5.3 3-bit | 3k/1k | 12.7<br>20.3 | 40<br>585 | +59% | +1363% 14.6x | 1.7626<br>1.7578 | b13600 | [17137](fork/outputs/17137.txt)<br>[17135s](fork/outputs/17135s.txt) |
-| GLM 5.3 3.5-bit | 3k/1k | 10.7<br>12.9 | 30<br>224 | +21% | +647% 7.5x | 1.6326<br>1.6265 | b13563 | [16756](fork/outputs/16756.txt)<br>[17146s](fork/outputs/17146s.txt) |
+| GLM 5.3 3.5-bit* | 3k/1k | 10.7<br>12.9 | 30<br>224 | +21% | +647% 7.5x | 1.6326<br>1.6265 | b13563 | [16756](fork/outputs/16756.txt)<br>[17146s](fork/outputs/17146s.txt) |
 | Qwen 3.8 Next IQ4_XS | 12k/1k | 32.0<br>50.4 | 208<br>1483 | +58% | +611% 7.1x | 1.4101<br>1.4101 | b13600 | [17109](fork/outputs/17109.txt)<br>[17106s](fork/outputs/17106s.txt) |
-| GLM 5.3 3.5-bit | 12k/1k | 10.8<br>11.0 | 34<br>230 | +2% | +572% 6.7x | 1.6326<br>1.6265 | b13563 | [16759](fork/outputs/16759.txt)<br>[17143s](fork/outputs/17143s.txt) |
+| GLM 5.3 3.5-bit* | 12k/1k | 10.8<br>11.0 | 34<br>230 | +2% | +572% 6.7x | 1.6326<br>1.6265 | b13563 | [16759](fork/outputs/16759.txt)<br>[17143s](fork/outputs/17143s.txt) |
 | Qwen 3.8 Next IQ4_XS | 3k/1k | 31.2<br>53.6 | 206<br>1240 | +72% | +503% 6.0x | 1.4101<br>1.4101 | b13600 | [17113](fork/outputs/17113.txt)<br>[17110s](fork/outputs/17110s.txt) |
 | Qwen 3.8 Next IQ3_S | 12k/1k | 43.8<br>54.1 | 372<br>1469 | +23% | +295% 3.9x | 1.3927<br>1.3927 | b13600 | [17097](fork/outputs/17097.txt)<br>[17094s](fork/outputs/17094s.txt) |
 | Qwen 3.8 Next IQ3_S | 3k/1k | 43.7<br>55.8 | 387<br>1254 | +27% | +224% 3.2x | 1.3927<br>1.3927 | b13600 | [17101](fork/outputs/17101.txt)<br>[17099s](fork/outputs/17099s.txt) |
 | MiMo 2.6F 3-bit | short/1k | 14.3<br>33.1 | -<br>- | +131% 2.3x | - | 1.8758<br>1.8758 | b13600 | [17128](fork/outputs/17128.txt)<br>[17126s](fork/outputs/17126s.txt) |
 | Qwen 3.8 Next IQ4_XS | short/1k | 30.9<br>55.1 | -<br>- | +78% | - | 1.4101<br>1.4101 | b13586 | [16788](fork/outputs/16788.txt)<br>[17114s](fork/outputs/17114s.txt) |
 | GLM 5.3 3-bit | short/1k | 12.8<br>20.8 | -<br>- | +62% | - | 1.7626<br>1.7578 | b13600 | [17141](fork/outputs/17141.txt)<br>[17139s](fork/outputs/17139s.txt) |
-| GLM 5.3 3.5-bit | short/1k | 10.8<br>14.9 | -<br>- | +37% | - | 1.6326<br>1.6265 | b13563 | [16687](fork/outputs/16687.txt)<br>[17151s](fork/outputs/17151s.txt) |
+| GLM 5.3 3.5-bit* | short/1k | 10.8<br>14.9 | -<br>- | +37% | - | 1.6326<br>1.6265 | b13563 | [16687](fork/outputs/16687.txt)<br>[17151s](fork/outputs/17151s.txt) |
 | Qwen 3.8 Next IQ3_S | short/1k | 43.5<br>56.9 | -<br>- | +31% | - | 1.3927<br>1.3927 | b13563 | [16766](fork/outputs/16766.txt)<br>[17102s](fork/outputs/17102s.txt) |
 | Qwen 3.8 Next IQ1_M | 3k/1k | 68.3<br>67.6 | 1487<br>1751 | -1% | +18% | 1.4756<br>1.4756 | b13600 | [17089](fork/outputs/17089.txt)<br>[17087s](fork/outputs/17087s.txt) |
+
+\* GLM 3.5-bit (127.7 GiB) is larger than this machine's 128 GB RAM, so part of it runs from the SSD. Ours is faster than stock despite that.  
 
 Every answer behind the table is in [fork/outputs](fork/outputs) as `<id>.txt` (header: build, test, speeds, arguments, power); stock's answers as `<id>s.txt`. With the run database: `python3 fork/run.py out ID` (get it with `git fetch https://github.com/neurall/llama.cpp runs-db && git show FETCH_HEAD:runs.db > fork/runs.db`).
 
@@ -97,7 +99,7 @@ The gain depends on how much of the model fits in VRAM. Measured on 2x RTX 3090 
 | Qwen3.8 Next IQ4_XS | 87.2 GiB | 55% | 7.1x | +78% |
 | MiMo-V2.6-Flash 3-bit | 107.7 GiB | 45% | 19.4x | +131% (2.3x) |
 | GLM-5.3-Flash 3.0-bit | 109.4 GiB | 44% | 14.8x | +62% |
-| GLM-5.3-Flash 3.5-bit | 127.7 GiB | 38% | 6.7x | +37% |
+| GLM-5.3-Flash 3.5-bit* | 127.7 GiB | 38% | 6.7x | +37% |
 
 - **MoE models whose experts don't fit in VRAM gain, for both prompt and decode speed.** Dense models and MoE models that fit fully in VRAM run at stock speed: the gains come from the expert cache and from sizing the prompt micro-batch so each expert upload serves more tokens, and a dense model has no experts to cache.
 - **The less of the model fits in VRAM, the more there is to gain.** The biggest gains here are at 44-45% nominal share. Models bigger than RAM run partly from SSD, where a few extra tokens per second decide between unusable and usable: GLM 3.5-bit (127.7 GiB, larger than this machine's 128 GB RAM) still gains +21% decode and 7x prompt speed over stock on the 3k prompt (b13563). I have not yet measured models that stock runs below 5 t/s; reports are welcome.
