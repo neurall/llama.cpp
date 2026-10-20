@@ -40,6 +40,32 @@ Every answer behind the table is in [fork/outputs](fork/outputs) as `<id>.txt` (
 
 Our builds in the table are b13600 and two earlier builds of this release line (b13563, b13586); each cell shows the build with the best run. Older tables (earlier releases, laptop and CPU rows): [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
+### Reproduce a row
+
+1. Binaries: ours [`llama-release-b13600-c1d4fe980-bin-ubuntu-cuda-13.4-x64.tar.gz`](https://github.com/neurall/llama.cpp/releases/download/release-b13600-c1d4fe980-dynamic-ctx/llama-release-b13600-c1d4fe980-bin-ubuntu-cuda-13.4-x64.tar.gz) (Windows zip on the [release page](https://github.com/neurall/llama.cpp/releases/tag/release-b13600-c1d4fe980-dynamic-ctx); add the `cudart-` archive if CUDA 13 is not installed); stock: `llama-b11742-bin-ubuntu-cuda-13.4-x64.tar.gz` from [ggml-org b11742](https://github.com/ggml-org/llama.cpp/releases/tag/b11742).
+2. Start the server (port 9931). The `-c` values are the ones the table's runs used:
+
+| test | ours | stock |
+|---|---|---|
+| 12k/1k | `llama-server -m MODEL -np 1` | `llama-server -m MODEL -np 1 -c 16384` |
+| 3k/1k | `llama-server -m MODEL -np 1 -c 4096` | `llama-server -m MODEL -c 4096` |
+| short/1k | `llama-server -m MODEL -np 1 -c 1024` | `llama-server -m MODEL -c 1024` |
+
+   GLM 5.3 3.5-bit (137 GB) is larger than the 128 GB RAM here; our rows ran with `-lm mmap --moe pin-budget=108447924224` added (pin 101 GiB, map the rest).
+3. Send the exact request the harness sends ([fork/bench/req-*.json](fork/bench): 12k-1k, 3k-1k-a / -b (the two edit instructions), short-1k), twice on the same server like the harness:
+```sh
+curl -sL https://raw.githubusercontent.com/neurall/llama.cpp/release/fork/bench/req-12k-1k.json | curl -s localhost:9931/v1/chat/completions -H 'Content-Type: application/json' -d @- | grep -o '"timings":{[^}]*}'
+```
+   `prompt_per_second` is pp, `predicted_per_second` is t/s.
+4. Perplexity (same text and chunks as the table below; ours forces the expert-cache path even where the model fits VRAM):
+```sh
+llama-perplexity -m MODEL -f fork/bench/longsrc.cpp -c 1024 --chunks 12 -b 1024 -ub 1024 -nr                             # stock
+llama-perplexity -m MODEL -f fork/bench/longsrc.cpp -c 1024 --chunks 12 -b 1024 -ub 1024 -nr --cpu-moe --moe-expert-cache -1   # ours
+```
+
+The whole table with the harness (stock and ours, 2 runs per cell, results into `fork/runs.db` and `fork/outputs/`): set the paths in [fork/local.toml.example](fork/local.toml.example) and the model files in [fork/models.ini](fork/models.ini), then `python3 fork/run.py run gainers -n` (lists the cells) and the same without `-n`; perplexity: `python3 fork/run.py ppl -b b13600`.
+
+
 
 Models: GLM original 3.0-bit GGUF [pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF](https://huggingface.co/pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF)
 works as-is (reference quality); the Q4_K attention variant above (same experts,
@@ -82,15 +108,7 @@ Same text, same chunks, official stock `llama-perplexity` against ours. The numb
 
 Measured on build b13600 (12 chunks asked, 9 to 12 used where a text ended earlier), stock is the official b11742 binary.
 
-Reproduce one row (stock and ours, 12 chunks, the perplexity of each is stored in `runs.db` and printed by `run ppl-table`):  
-```
-PERF_PPL_CHUNKS=12 run bench --models qwen36 --builds stock-latest,b13600 --variants default -t pplb -n 1
-```
-
-Whole table (every model and variant, stock reference included, `-nrt` skips cells that already have a run):  
-```
-run ppl -b b13600 -nrt
-```
+Reproduce: see [Reproduce a row](#reproduce-a-row), step 4.
 
 ## Run
 
