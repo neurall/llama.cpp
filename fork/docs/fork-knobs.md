@@ -413,6 +413,25 @@ beat by more than `tol` (a second card skipped where the split was faster, or th
 Limits: the split planner handles two GPUs (with more, the measured choice decides and the shares start from the link ratio); its split estimate was  
 21-26% short of the measured pass before calibration, one card within 4%.
 
+## Context and KV cache
+
+With a MoE model whose experts stream from RAM, `-np 1` and flash attention (the default `auto`), the KV lives in the expert pool (layout: [img/vram-layout.svg](img/vram-layout.svg)).
+Nothing is reserved at start: each request claims the cells it needs from the pool (taking the coldest experts' blocks) and gives them back at its end.
+
+| setting | default | meaning |
+|---|---|---|
+| `-c N` | none: the model's trained maximum | caps one request (prompt + answer); reserves nothing in this mode |
+| `-n N` / `max_tokens` | unlimited | bounds the answer; with `-n` given, `-c` is not applied |
+| `--moe kv-tail=0` | on (`1`) when the experts stream from RAM | the normal KV cache: a static context, sized when no `-c` is given as the largest one whose KV and context-scaled buffers take at most 30% of the expert-cache VRAM (capped at the model maximum). Also used automatically with several slots (`-np` > 1), without flash attention, or with different K and V types |
+| `--moe kv-token-major=1` | on with `kv-tail` | K and V of all layers of a card as one record per token (what lets the KV grow) |
+| `--moe kv-fallback=LIST` | `k8v8,k4v4,ram` | the tiers a request may use after f16 when its KV does not fit the pool: `k8v8` = q8_0 K and V in place, `k4v4` = q4_0 in place, `ram` = whole layers' KV to host RAM (attention for those layers on the CPU; their VRAM goes back to the experts). Tried cheapest first. `k8v8,ram` skips q4_0 (the RAM tier then keeps q8_0); `none` = f16 only, a request that does not fit is refused with the numbers |
+
+A request picks its tier at its start from its length (prompt + `max_tokens`); a KV that fills up during the answer moves up a tier inside the same request.
+A later, shorter request converts the rows it keeps back down to f16 (layers moved to RAM stay there for now). q8_0 holds about 1.9x the tokens of f16, q4_0 about 3.6x.
+
+Perplexity of quantized K and V, OLMoE-1B-7B IQ4_XS, CPU, 10 chunks (runs.db 15023, 15026, 15028, 15030, 15037): f16 2.1946, q8_0/q8_0 2.1926, q8_0 K + q4_0 V 2.1969,
+q4_0 K + q8_0 V 2.2016, q4_0/q4_0 2.2073 (+0.58%). K is the sensitive tensor; `k8v8,ram` keeps the KV at q8_0.
+
 ## Several GPUs and MTP
 
 - The cache is sized per GPU from its free VRAM and the experts spread over all GPUs; each GPU keeps its own slots and upload  
