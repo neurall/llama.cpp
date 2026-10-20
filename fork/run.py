@@ -4077,6 +4077,13 @@ def run_times(rid):
     except sqlite3.Error: r = None
     if not r or not r[0]: return None, ""
     lv = r[1]
+    if not lv:   # a repeat on a kept server loads nothing: show the load of the cell's first run (same build, model and test, started before it)
+        try:
+            q = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
+                "select b.load_s from runs a join runs b on b.build=a.build and b.model=a.model and b.test=a.test and b.rowid<a.rowid and b.load_s>0 "
+                "and b.rowid>=a.rowid-3 where a.rowid=? order by b.rowid desc limit 1", (rid,)).fetchone()
+            if q: lv = q[0]
+        except sqlite3.Error: pass
     return float(r[0]), ("" if lv is None or lv < 0 else "l " + (f"{int(lv)}s" if lv < 100 else f"{int(lv // 60)}m{int(lv % 60):02d}s"))
 
 
@@ -4133,7 +4140,7 @@ def final_table(recs, live=False, hdr_out=None):
     if not live: body.sort(key=lambda x: -x["gm"])   # biggest overall gainers first (cells without stock last, list order kept)
     allrows = [y for x in body for y in [x] + x.get("old", [])]
     for x in allrows: x.setdefault("xfer", "")
-    show_x = any(x["xfer"] for x in body)   # the hand-off column only when a cell of ours ran
+    show_x = any(x["xfer"] not in ("", "f32") for x in body)   # the hand-off column only when a cell of ours ran with other than the f32 default
     wd = lambda k, h: max([len(h)] + [len(x[k]) for x in allrows])
     W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
     if live:   # one finished cell as it happens: fixed minimum widths so the rows of successive cells line up
