@@ -63,25 +63,25 @@ GPUs, at the same time as the CPU handles the misses.
 
 ## Perplexity against stock
 
-Same text, same chunks, official stock `llama-perplexity` against ours. The number in brackets is the per-chunk difference to stock in percent of perplexity (mean ± standard error); 0.00 means identical to four decimals. *default* is what you get without settings (the planner decides per prompt size whether to use one card or both), *one card* and *two cards* force the path (`dense-split=0` / `dense-split=1`), *dense split only* is `split-experts=0` (see below). The plain Qwen3.8 27B models have no dense split, so for them *two cards* splits the experts only. About 10 chunks of 1024 tokens per model: differences under 0.2% are inside the noise.
+Same text, same chunks, official stock `llama-perplexity` against ours. The number in brackets is the per-chunk difference to stock in percent of perplexity (mean ± standard error); 0.00 means identical to four decimals. *default* is what you get without settings (the planner decides per prompt size whether to use one card or both), *one card* and *two cards* force the path (`dense-split=0` / `dense-split=1`), *dense split only* is `split-experts=0` (see below). The plain Qwen3.8 27B models are dense with no split path, so their split columns are empty. The GLM two-card cell is not measured yet. About 10 chunks of 1024 tokens per model: differences under 0.2% are inside the noise.
 
 | model | stock ppl | ours default | ours, one card | ours, dense split only | ours, two cards | chunks |
 |---|---|---|---|---|---|---|
-| GLM-5.3-Flash-GSQ-RCO-3.0bit | 1.7626 | 1.7580 (-0.26 ± 0.42%) | 1.7608 (-0.10 ± 0.25%) | - | 1.7540 (-0.49 ± 0.44%) | 9 |
-| MiMo-V2.6-Flash-RL-GSQ-RCO-3bit | 1.8758 | 1.8698 (-0.32 ± 0.18%) | 1.8758 (+0.00 ± 0.00%) | - | 1.8737 (-0.11 ± 0.22%) | 9 |
-| OLMoE-1B-7B-0924-Q4_K_M | 2.0696 | 2.0696 (+0.00 ± 0.00%) | 2.0696 (+0.00 ± 0.00%) | - | 2.0692 (-0.02 ± 0.08%) | 12 |
-| Qwen3.6-35B-A3B-GSQ-hybrid | 1.7843 | 1.7843 (+0.00 ± 0.00%) | 1.7843 (+0.00 ± 0.00%) | 1.7860 (+0.10 ± 0.05%) | 1.7837 (-0.03 ± 0.06%) | 10 |
-| Qwen3.8-27B-IQ4_NL | 1.6360 | 1.6360 (+0.00 ± 0.00%) | 1.6360 (+0.00 ± 0.00%) | - | 1.6360 (+0.00 ± 0.00%) | 10 |
-| Qwen3.8-27B-MTP-Q5_K_M | 1.6382 | 1.6382 (+0.00 ± 0.00%) | 1.6382 (+0.00 ± 0.00%) | - | 1.6382 (+0.00 ± 0.00%) | 10 |
-| Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002 | 1.4756 | 1.4782 (+0.18 ± 0.07%) | 1.4756 (+0.00 ± 0.00%) | 1.4732 (-0.16 ± 0.15%) | 1.4770 (+0.09 ± 0.14%) | 10 |
-| Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002 | 1.3927 | 1.3927 (+0.00 ± 0.00%) | 1.3927 (+0.00 ± 0.00%) | 1.3958 (+0.22 ± 0.17%) | 1.3940 (+0.09 ± 0.20%) | 10 |
-| Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003 | 1.4101 | 1.4101 (+0.00 ± 0.00%) | 1.4101 (+0.00 ± 0.00%) | - | 1.4093 (-0.06 ± 0.18%) | 10 |
+| GLM-5.3-Flash-GSQ-RCO-3.0bit | 1.7626 | 1.7578 (-0.27 ± 0.18%) | 1.7599 (-0.15 ± 0.27%) | 1.7584 (-0.24 ± 0.53%) | 1.7631 (+0.03 ± 0.39%) | 9 |
+| MiMo-V2.6-Flash-RL-GSQ-RCO-3bit | 1.8758 | 1.8758 (+0.00) | 1.8758 (+0.00 ± 0.03%) | 1.8736 (-0.12 ± 0.11%) | 1.8725 (-0.18 ± 0.25%) | 9 |
+| OLMoE-1B-7B-0924-Q4_K_M | 2.0696 | 2.0696 (+0.00) | 2.0696 (+0.00) | 2.0688 (-0.04 ± 0.07%) | 2.0694 (-0.01 ± 0.08%) | 12 |
+| Qwen3.6-35B-A3B-GSQ-hybrid | 1.7843 | 1.7843 (+0.00) | 1.7843 (+0.00) | 1.7842 (-0.01 ± 0.08%) | 1.7851 (+0.04 ± 0.07%) | 10 |
+| Qwen3.8-27B-IQ4_NL | 1.6360 | 1.6360 (+0.00) | 1.6360 (+0.00) | - | - | 10 |
+| Qwen3.8-27B-MTP-Q5_K_M | 1.6382 | 1.6382 (+0.00) | 1.6382 (+0.00) | - | - | 10 |
+| Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002 | 1.4756 | 1.4756 (+0.00) | 1.4756 (+0.00) | 1.4758 (+0.01 ± 0.17%) | 1.4745 (-0.07 ± 0.13%) | 10 |
+| Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002 | 1.3927 | 1.3927 (+0.00) | 1.3927 (+0.00) | 1.3969 (+0.30 ± 0.14%) | 1.3975 (+0.34 ± 0.16%) | 10 |
+| Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003 | 1.4101 | 1.4101 (+0.00) | 1.4101 (+0.00) | 1.4114 (+0.09 ± 0.18%) | 1.4111 (+0.07 ± 0.14%) | 10 |
 
-Measured on build b13586 (12 chunks asked, 9 to 12 used where a text ended earlier), stock is the official b11739 binary.
+Measured on build b13600 (12 chunks asked, 9 to 12 used where a text ended earlier), stock is the official b11742 binary.
 
 Reproduce one row (stock and ours, 12 chunks, the perplexity of each is stored in `runs.db` and printed by `run ppl-table`):  
 ```
-PERF_PPL_CHUNKS=12 run bench --models qwen36 --builds stock-latest,b13586 --variants default -t pplb -n 1
+PERF_PPL_CHUNKS=12 run bench --models qwen36 --builds stock-latest,b13600 --variants default -t pplb -n 1
 ```
 
 ## Run
