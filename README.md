@@ -15,27 +15,27 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 ## Best gainers
 
-Best run of ours against the median of the newest official stock (b11742, 2026-10-20), sorted by the bigger gain; rows where neither gain reaches 1.1x left out (models that fit in VRAM, dense 27B models: stock speed). Columns are stock/ours. **12k/1k** = 12k-token prompt, 1k out; **1k/1k** = ~1k prompt, 1k out; **short/1k** = short prompt, 1k out (no prompt speed, too short to measure). t/s = decode, pp = prompt processing. ppl = perplexity on b13600, default settings (details below). Each build on its defaults (`-np 1` only), looped answers excluded. 2x RTX 3090 (x16 and x4), 200 W each, no huge page pool.
+Best run of ours against the median of the newest official stock (b11742, 2026-10-20), sorted by the bigger gain (gain t = decode, gain pp = prompt processing); rows where neither gain reaches 1.1x left out (models that fit in VRAM, dense 27B models: stock speed). Columns are stock/ours. **12k/1k** = 12k-token prompt, 1k out; **1k/1k** = ~1k prompt, 1k out; **short/1k** = short prompt, 1k out (no prompt speed, too short to measure). ppl = perplexity on b13600, default settings (details below). Each build on its defaults (`-np 1` only), looped answers excluded. 2x RTX 3090 (x16 and x4), 200 W each, no huge page pool. out id = row id in `runs.db`: `run out ID` prints the stored answer (two ids: best decode run / best prompt run).
 
-| model | test | t/s stock/ours | pp stock/ours | gain | ppl stock/ours | build |
-|---|---|---|---|---|---|---|
-| MiMo 2.6F 3-bit | 12k/1k | 14.2/25.8 | 49/1022 | 1.82x t / 20.71x pp | 1.8758/1.8758 | b13600 |
-| MiMo 2.6F 3-bit | 1k/1k | 14.3/26.7 | 48/738 | 1.86x t / 15.27x pp | 1.8758/1.8758 | b13563 |
-| GLM 5.3 3-bit | 12k/1k | 12.9/18.9 | 42/640 | 1.47x t / 15.08x pp | 1.7626/1.7578 | b13563 |
-| GLM 5.3 3-bit | 1k/1k | 12.7/20.3 | 40/585 | 1.60x t / 14.65x pp | 1.7626/1.7578 | b13600 |
-| GLM 5.3 3.5-bit | 12k/1k | 10.8/12.8 | 34/280 | 1.19x t / 8.27x pp | 1.6326/1.6265 | b13586 |
-| GLM 5.3 3.5-bit | 1k/1k | 10.7/13.7 | 31/249 | 1.28x t / 7.95x pp | 1.6326/1.6265 | b13586 |
-| Qwen 3.8 Next IQ4_XS | 12k/1k | 32.0/51.4 | 210/1483 | 1.61x t / 7.06x pp | 1.4101/1.4101 | b13600 |
-| Qwen 3.8 Next IQ4_XS | 1k/1k | 30.9/53.6 | 207/1240 | 1.74x t / 5.99x pp | 1.4101/1.4101 | b13600 |
-| Qwen 3.8 Next IQ3_S | 12k/1k | 44.2/53.8 | 376/1576 | 1.22x t / 4.19x pp | 1.3927/1.3927 | b13563 |
-| Qwen 3.8 Next IQ3_S | 1k/1k | 43.8/55.8 | 384/1254 | 1.27x t / 3.27x pp | 1.3927/1.3927 | b13600 |
-| MiMo 2.6F 3-bit | short/1k | 14.3/33.1 | -/- | 2.31x t | 1.8758/1.8758 | b13600 |
-| Qwen 3.8 Next IQ4_XS | short/1k | 31.4/55.1 | -/- | 1.75x t | 1.4101/1.4101 | b13586 |
-| GLM 5.3 3-bit | short/1k | 12.8/20.8 | -/- | 1.62x t | 1.7626/1.7578 | b13600 |
-| GLM 5.3 3.5-bit | short/1k | 9.8/15.4 | -/- | 1.57x t | 1.6326/1.6265 | b13586 |
-| Qwen 3.8 Next IQ3_S | short/1k | 44.2/56.9 | -/- | 1.29x t | 1.3927/1.3927 | b13563 |
-| OLMoE Q4_K_M | 1k/1k | 344.2/378.9 | 14326/17601 | 1.10x t / 1.23x pp | 2.0696/2.0696 | b13600 |
-| Qwen 3.8 Next IQ1_M | 1k/1k | 68.3/67.7 | 1446/1751 | 0.99x t / 1.21x pp | 1.4756/1.4756 | b13600 |
+| model | test | t/s stock/ours | pp stock/ours | gain t | gain pp | ppl stock/ours | build | out id |
+|---|---|---|---|---|---|---|---|---|
+| MiMo 2.6F 3-bit | 12k/1k | 14.2/25.8 | 49/1022 | +82% | +1971% | 1.8758/1.8758 | b13600 | 17120/17121 |
+| MiMo 2.6F 3-bit | 1k/1k | 14.3/26.7 | 48/738 | +86% | +1427% | 1.8758/1.8758 | b13563 | 16753/16591 |
+| GLM 5.3 3-bit | 12k/1k | 12.9/18.9 | 42/640 | +47% | +1408% | 1.7626/1.7578 | b13563 | 16754/16675 |
+| GLM 5.3 3-bit | 1k/1k | 12.7/20.3 | 40/585 | +60% | +1365% | 1.7626/1.7578 | b13600 | 17137 |
+| GLM 5.3 3.5-bit | 12k/1k | 10.8/12.8 | 34/280 | +19% | +727% | 1.6326/1.6265 | b13586 | 16701/16691 |
+| GLM 5.3 3.5-bit | 1k/1k | 10.7/13.7 | 31/249 | +28% | +695% | 1.6326/1.6265 | b13586 | 16692 |
+| Qwen 3.8 Next IQ4_XS | 12k/1k | 32.0/51.4 | 210/1483 | +61% | +606% | 1.4101/1.4101 | b13600 | 17108/17109 |
+| Qwen 3.8 Next IQ4_XS | 1k/1k | 30.9/53.6 | 207/1240 | +74% | +499% | 1.4101/1.4101 | b13600 | 17113 |
+| Qwen 3.8 Next IQ3_S | 12k/1k | 44.2/53.8 | 376/1576 | +22% | +319% | 1.3927/1.3927 | b13563 | 16761/16561 |
+| Qwen 3.8 Next IQ3_S | 1k/1k | 43.8/55.8 | 384/1254 | +27% | +227% | 1.3927/1.3927 | b13600 | 17101 |
+| MiMo 2.6F 3-bit | short/1k | 14.3/33.1 | -/- | +131% | - | 1.8758/1.8758 | b13600 | 17128 |
+| Qwen 3.8 Next IQ4_XS | short/1k | 31.4/55.1 | -/- | +75% | - | 1.4101/1.4101 | b13586 | 16788 |
+| GLM 5.3 3-bit | short/1k | 12.8/20.8 | -/- | +62% | - | 1.7626/1.7578 | b13600 | 17141 |
+| GLM 5.3 3.5-bit | short/1k | 9.8/15.4 | -/- | +57% | - | 1.6326/1.6265 | b13586 | 16693 |
+| Qwen 3.8 Next IQ3_S | short/1k | 44.2/56.9 | -/- | +29% | - | 1.3927/1.3927 | b13563 | 16766 |
+| OLMoE Q4_K_M | 1k/1k | 344.2/378.9 | 14326/17601 | +10% | +23% | 2.0696/2.0696 | b13600 | 17029 |
+| Qwen 3.8 Next IQ1_M | 1k/1k | 68.3/67.7 | 1446/1751 | -1% | +21% | 1.4756/1.4756 | b13600 | 17088/17089 |
 
 Our builds in the table are b13600 and two earlier builds of this release line (b13563, b13586); each cell shows the build with the best run. Older tables (earlier releases, laptop and CPU rows): [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
