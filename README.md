@@ -124,7 +124,7 @@ Each row is one paired A/B on the same binary and settings, measured when the fe
 | Prefill preheat | GLM 12k prompt then 256 tokens, 1 GPU, decode | 13.5 t/s (cache hits 43%) | 15.3 t/s (55%) | +12.7% |
 | Learned hot experts kept between runs | GLM first request after restart, decode | 20.5-20.9 t/s | 21.8 t/s | +4-6% |
 | Global expert pool (vs fixed slots per layer) | decode with 20-35% of the experts in VRAM | 132.5-177.5 t/s | 137.3-181.7 t/s | +2.1% to +3.6% (no change when most of the model fits) |
-| Dense split over two cards (forced path) | Qwen 3.8 Next 4k prompt, prompt speed, 180+220 W | 1065 and 1113 pp t/s (run ids 12190, 12191) | 1274 and 1275 pp t/s (12193, 12194) | +17% |
+| Dense split over two cards (forced path) | Qwen 3.8 Next 4k prompt, prompt speed, 180+220 W | 1065 and 1113 pp t/s (run ids 12190, 12191) | 1274 and 1275 pp t/s (12193, 12194) | +17% (held back by the second card sitting in a slow x4 slot, 6 GB/s against 13 GB/s on the x16 card; cards on equal links gain more) |
 
 Which features drive which number: the **expert cache** is what lifts decode over stock; **pinned weights and the big micro-batch** (with its buffer lent only to the prompt pass, so decode keeps its cache) are what lift prompt speed. The rest are smaller, single-digit effects.
 
@@ -150,6 +150,30 @@ Same text, same chunks, official stock `llama-perplexity` against ours. The numb
 Measured on build b13600 (12 chunks asked, 9 to 12 used where a text ended earlier), stock is the official b11742 binary.
 
 Reproduce: see [Reproduce a row](#reproduce-a-row), step 4.
+
+### Perplexity moves with the micro-batch size, in stock too
+
+The few cells above that differ from stock (Qwen 3.8 Next IQ3_S on the two-card paths, +0.3%) are not a loss of quality of the split. A prompt cut into smaller passes gives a slightly different perplexity on **official stock** as well, in either direction: the same text, same model, same binary, only `-ub` changed (10 chunks of 1024 tokens, one RTX 3090 or CPU):
+
+| model | -ub 1024 | 512 | 256 | 128 | 64 |
+| --- | --- | --- | --- | --- | --- |
+| Qwen3.8-Flash-Next IQ3_S (stock) | 1.3927 | 1.3946 (+0.14%) | 1.3996 (+0.50%) | 1.3983 (+0.40%) | 1.4005 (+0.56%) |
+| Qwen3.6-35B-A3B hybrid (stock) | 1.7843 | - | 1.7842 | 1.7855 | - |
+| OLMoE-1B-7B Q4_K_M (stock) | 2.1618 | - | 2.1627 | - | - |
+
+The two-card dense split cuts every prompt pass into token ranges, one per card, so it behaves like a smaller `-ub`: Qwen Next IQ3_S lands at 1.3969 / 1.3975, between stock's own 512 and 256 rows. With the same pass shape (one card, any `-ub`) ours is identical to stock to four decimals.
+
+**Why it moves.** Floating-point sums depend on the order of the additions, and the order depends on how many tokens a pass has: the quant dot-product kernels themselves (IQ3_S and the others) are the same at every pass size above 8 tokens (below that the CUDA backend switches to a matrix-vector kernel, `MMVQ_MAX_BATCH_SIZE`), but the tile shape and the split of the reduction over thread blocks follow the number of tokens; flash attention picks its kernel and tile width from the number of query tokens; the dense BF16/Q4_K weights, the router and the recurrent layers sum in an order that depends on the pass; the CPU backend blocks its matrix products by the batch size. Which of these dominates for a given model has not been traced op by op. The last bits differ, and normally nobody sees them. A mixture-of-experts model amplifies them: Qwen Next picks 10 of 512 experts per token (GLM and the sparse-attention models also pick top-k tokens), and a near-tie that flips changes the token's output, and from there every later token that sees it. Models without such picks hardly move (Qwen3.6 above, +0.00 to +0.07%), and the quant mix matters (IQ3_S is the most sensitive file measured, IQ1_M moves by 0.01%).
+
+Consequences: compare perplexities only at the same `-ub` (and the same number of chunks); a single chunk moves by up to ±1.2% on its own, so use 10 or more chunks and a paired per-chunk difference (`python3 fork/run.py ppl-table`); repeating the same run does not average anything out, it returns the same number.
+
+**Check it on any model** with official stock, no fork code involved. Only `-ub` changes (`-b` stays 1024 so the passes can be cut):
+```sh
+for ub in 1024 512 256 128 64; do
+  echo "ub=$ub"; llama-perplexity -m MODEL -f fork/bench/longsrc.cpp -c 1024 --chunks 10 -b 1024 -ub $ub -nr 2>&1 | grep "Final estimate"
+done
+```
+Add `-ngl 0` (CPU only) for a run that needs no GPU: OLMoE-1B-7B IQ3_S with one 256-token chunk gave 2.2241 (`-ub 256`), 2.2292 (64), 2.2140 (16), 2.2284 (1), and `-nr` (no weight repacking) made no difference, so the repacked CPU kernels are not the cause. A model that does not move (Qwen3.6 on CPU: 1.7850 at every `-ub`) is the control.
 
 ## Run
 
@@ -197,7 +221,7 @@ Details moved to [fork/docs/features.md](fork/docs/features.md): pinned weights,
 - **One machine measured:** 2x RTX 3090 (x16 + x4 slots), Ryzen 7 3700X, 128 GB DDR4. Other hardware, AMD/Intel GPUs and 3+ GPUs are untested; CUDA only for now (Vulkan and AMD binaries are next, see below). Windows binaries are smoke-tested only.
 - **The first runs of a model are slower.** The hot-expert state in `moe-state.ini` is learned from use (copy the pre-warmed [fork/moe-state.ini](fork/moe-state.ini) to start from it).
 - **Models larger than free RAM load lazily.** The server answers while the expert weights are still being pinned in the background (about 80 s for 100 GiB), so the first big prompt after start can be several times slower than the next ones (GLM 3.5-bit, 3k prompt: 26-147 prompt t/s on the first request, 225-267 on the second request on the same server). The table shows the steady-state speed.
-- **Perplexity:** within noise of stock on every model tested except Qwen 3.8 Next IQ3_S on the two-card paths (+0.3%).
+- **Perplexity:** equal to stock where the pass shape is the same; on the two-card paths Qwen 3.8 Next IQ3_S reads +0.3%, which is the size of stock's own change between `-ub 512` and `-ub 256` (see [Perplexity moves with the micro-batch size](#perplexity-moves-with-the-micro-batch-size-in-stock-too)).
 - **Output can differ between runs** even at temperature 0 (a cached expert runs on the GPU, a missed one on the CPU, and they round slightly differently).
 - **The gainers table takes each row from the best of three builds of this release line** (b13563, b13586, b13600); the build column says which.
 
