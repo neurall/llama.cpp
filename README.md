@@ -104,6 +104,7 @@ The gain depends on how much of the model fits in VRAM. Measured on 2x RTX 3090 
 - **Expert cache.** All experts stay in RAM; each GPU's free VRAM is one buffer of expert blocks. The GPUs compute the cached (hot) experts while the CPU computes the misses, in parallel. A missed expert that keeps being used is uploaded and replaces a colder one.
 - **Learned hot experts, kept between runs.** Per model, the lifetime use of every expert is saved in `moe-state.ini` (`~/.cache/llama.cpp/`, Windows `%LOCALAPPDATA%\llama.cpp\`) and updated by every run; the next start preloads the hottest experts. The first run or two of a new model are slower (it is a cache). A pre-warmed state for the models in the table is in the repo: copy [fork/moe-state.ini](fork/moe-state.ini) there if you have none.
 - **Prompts in few big passes.** Every prompt pass streams the experts the GPU does not hold, so the micro-batch (`-ub`) is sized per request (up to 12288 tokens) and the graph borrows expert blocks only for that pass; decode gets them back.
+- **The biggest VRAM efficiency change: a big micro-batch is no longer dead weight.** With a static `-ub`, the compute buffer of the largest micro-batch stays reserved through the whole session. A small `-ub` left the VRAM to the expert cache: great decode, weak prompt processing. A big `-ub` (4k, 8k, 12k) gave massive prompt processing but low decode, because the buffer left no room for the expert cache in the decode phase. Here the big buffer is lent only to the prompt pass. When the pass ends, that space goes back to the expert cache, refilled with the globally hot experts of the model (from `moe-state.ini`) and with the coldest ones the prompt pass has just used (prefill preheat), so decode starts with a full cache.
 - **KV inside the same buffer.** With `-np 1` no context is reserved: each request claims the KV it needs and gives it back at its end, so a big `-c` costs nothing. A request whose KV does not fit in f16 converts it in place to q8_0, then q4_0, then moves whole layers' KV to host RAM. On by default (`--moe kv-fallback=k8v8,k4v4,ram`); skip q4_0 with `--moe kv-fallback=k8v8,ram` (q8_0 KV measured within noise of f16: OLMoE perplexity 2.1926 vs 2.1946; q4_0 +0.58%), turn it off with `--moe kv-fallback=none`.
 - **Two GPUs.** A planner picks per prompt size one card or a split of the dense layers over both, from measured link speed and compute.
 
@@ -170,6 +171,13 @@ expert fits. Reports from 3+ GPU setups are welcome.
 
 Details moved to [fork/docs/features.md](fork/docs/features.md): pinned weights, persistent hot experts, prefill preheat, global expert pool, hot layers on the slower link, MTP, what's in it, known limits and next steps. Every `--moe` key: [fork/docs/fork-knobs.md](fork/docs/fork-knobs.md). Older measurements: [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
+
+## What's next
+
+- **Merge the expert cache and the staging buffers** into one pool. I expect better VRAM efficiency than the current separate regions; this is the next version's main change.
+- **Vulkan version: the biggest priority.** Load is now allocated and scheduled dynamically on each card's compute speed and on the bandwidth of the PCIe slot it sits in, so there is no reason left to require cards of one vendor. In theory AMD, NVIDIA and Intel cards should work together; I have not been able to test it. A Vulkan build, and AMD binaries, come first.
+- **Per-topic expert-cache lookup and per-request init**, planned for the following versions.
+- **More testing on more hardware.** Everything here was measured on one machine: an X570 board with an x16 and an x4 slot, two thermally throttled RTX 3090s, plus a notebook with an RTX 4060. Multi-GPU setups with fast slots on every card are the most wanted; see the issue tracker or open a discussion with your numbers.
 
 ## Quick start
 
