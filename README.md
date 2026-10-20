@@ -15,26 +15,26 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 ## Best gainers
 
-Best valid run of ours (any of our builds) against the median of the newest official stock binary, sorted by gain; cells under 1.1x are left out as noise (the models that fit in VRAM, and the dense 27B models, run at stock speed). Each build on its own defaults (`-np 1` only), looped answers excluded. **12k in, 1k out** = a 12k-token code prompt, prompt tokens/s; **1k in, 1k out** and **short in, 1k out** = decode tokens/s. 2x RTX 3090 (x16 and x4 link), both cards limited to 200 W, no huge page pool; stock and ours back to back.
+Best valid run of ours (any of our builds) against the median of the newest official stock binary, sorted by gain, with the perplexity of the same model on b13600 (default settings, mean per-chunk difference to stock in brackets, details below); cells under 1.1x are left out as noise (the models that fit in VRAM, and the dense 27B models, run at stock speed). Each build on its own defaults (`-np 1` only), looped answers excluded. **12k in, 1k out** = a 12k-token code prompt, prompt tokens/s; **1k in, 1k out** and **short in, 1k out** = decode tokens/s. 2x RTX 3090 (x16 and x4 link), both cards limited to 200 W, no huge page pool; stock and ours back to back.
 
-| model | test | stock | ours | gain | stock build | our build |
-|---|---|---|---|---|---|---|
-| MiMo-V2.6-Flash 3-bit | 12k in, 1k out | 49.3 prompt t/s | 1021.8 prompt t/s | 20.71x | b11742 (2026-10-20) | b13600 (2026-10-20) |
-| GLM-5.3-Flash 3.0-bit | 12k in, 1k out | 42.4 prompt t/s | 639.7 prompt t/s | 15.08x | b11742 (2026-10-20) | b13563 (2026-10-19) |
-| GLM-5.3-Flash 3.5-bit | 12k in, 1k out | 33.8 prompt t/s | 279.6 prompt t/s | 8.27x | b11742 (2026-10-20) | b13586 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ4_XS | 12k in, 1k out | 209.9 prompt t/s | 1482.6 prompt t/s | 7.06x | b11742 (2026-10-20) | b13600 (2026-10-20) |
-| Qwen3.8-Flash-Next IQ3_S | 12k in, 1k out | 375.9 prompt t/s | 1576.3 prompt t/s | 4.19x | b11742 (2026-10-20) | b13563 (2026-10-19) |
-| MiMo-V2.6-Flash 3-bit | short in, 1k out | 14.3 decode t/s | 33.1 decode t/s | 2.31x | b11742 (2026-10-20) | b13600 (2026-10-20) |
-| MiMo-V2.6-Flash 3-bit | 1k in, 1k out | 14.3 decode t/s | 28.5 decode t/s | 1.99x | b11742 (2026-10-20) | b13600 (2026-10-20) |
-| Qwen3.8-Flash-Next IQ4_XS | short in, 1k out | 31.4 decode t/s | 55.1 decode t/s | 1.75x | b11742 (2026-10-20) | b13586 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ4_XS | 1k in, 1k out | 30.9 decode t/s | 53.6 decode t/s | 1.74x | b11742 (2026-10-20) | b13600 (2026-10-20) |
-| GLM-5.3-Flash 3.0-bit | short in, 1k out | 12.8 decode t/s | 20.8 decode t/s | 1.62x | b11742 (2026-10-20) | b13600 (2026-10-20) |
-| GLM-5.3-Flash 3.0-bit | 1k in, 1k out | 12.7 decode t/s | 20.3 decode t/s | 1.60x | b11742 (2026-10-20) | b13600 (2026-10-20) |
-| GLM-5.3-Flash 3.5-bit | short in, 1k out | 9.8 decode t/s | 15.4 decode t/s | 1.57x | b11742 (2026-10-20) | b13586 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ3_S | short in, 1k out | 44.2 decode t/s | 56.9 decode t/s | 1.29x | b11742 (2026-10-20) | b13563 (2026-10-19) |
-| GLM-5.3-Flash 3.5-bit | 1k in, 1k out | 10.7 decode t/s | 13.7 decode t/s | 1.28x | b11742 (2026-10-20) | b13586 (2026-10-19) |
-| Qwen3.8-Flash-Next IQ3_S | 1k in, 1k out | 43.8 decode t/s | 55.9 decode t/s | 1.28x | b11742 (2026-10-20) | b13563 (2026-10-19) |
-| OLMoE-1B-7B Q4_K_M | 1k in, 1k out | 344.2 decode t/s | 378.9 decode t/s | 1.10x | b11742 (2026-10-20) | b13600 (2026-10-20) |
+| model | test | stock | ours | gain | perplexity: stock / ours | stock build | our build |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| MiMo-V2.6-Flash 3-bit | 12k in, 1k out | 49.3 prompt t/s | 1021.8 prompt t/s | 20.71x | 1.8758 / 1.8758 (+0.00%) | b11742 (2026-10-20) | b13600 (2026-10-20) |
+| GLM-5.3-Flash 3.0-bit | 12k in, 1k out | 42.4 prompt t/s | 639.7 prompt t/s | 15.08x | 1.7626 / 1.7578 (-0.27%) | b11742 (2026-10-20) | b13563 (2026-10-19) |
+| GLM-5.3-Flash 3.5-bit | 12k in, 1k out | 33.8 prompt t/s | 279.6 prompt t/s | 8.27x | 1.6326 / 1.6265 (-0.37%) | b11742 (2026-10-20) | b13586 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ4_XS | 12k in, 1k out | 209.9 prompt t/s | 1482.6 prompt t/s | 7.06x | 1.4101 / 1.4101 (+0.00%) | b11742 (2026-10-20) | b13600 (2026-10-20) |
+| Qwen3.8-Flash-Next IQ3_S | 12k in, 1k out | 375.9 prompt t/s | 1576.3 prompt t/s | 4.19x | 1.3927 / 1.3927 (+0.00%) | b11742 (2026-10-20) | b13563 (2026-10-19) |
+| MiMo-V2.6-Flash 3-bit | short in, 1k out | 14.3 decode t/s | 33.1 decode t/s | 2.31x | 1.8758 / 1.8758 (+0.00%) | b11742 (2026-10-20) | b13600 (2026-10-20) |
+| MiMo-V2.6-Flash 3-bit | 1k in, 1k out | 14.3 decode t/s | 28.5 decode t/s | 1.99x | 1.8758 / 1.8758 (+0.00%) | b11742 (2026-10-20) | b13600 (2026-10-20) |
+| Qwen3.8-Flash-Next IQ4_XS | short in, 1k out | 31.4 decode t/s | 55.1 decode t/s | 1.75x | 1.4101 / 1.4101 (+0.00%) | b11742 (2026-10-20) | b13586 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ4_XS | 1k in, 1k out | 30.9 decode t/s | 53.6 decode t/s | 1.74x | 1.4101 / 1.4101 (+0.00%) | b11742 (2026-10-20) | b13600 (2026-10-20) |
+| GLM-5.3-Flash 3.0-bit | short in, 1k out | 12.8 decode t/s | 20.8 decode t/s | 1.62x | 1.7626 / 1.7578 (-0.27%) | b11742 (2026-10-20) | b13600 (2026-10-20) |
+| GLM-5.3-Flash 3.0-bit | 1k in, 1k out | 12.7 decode t/s | 20.3 decode t/s | 1.60x | 1.7626 / 1.7578 (-0.27%) | b11742 (2026-10-20) | b13600 (2026-10-20) |
+| GLM-5.3-Flash 3.5-bit | short in, 1k out | 9.8 decode t/s | 15.4 decode t/s | 1.57x | 1.6326 / 1.6265 (-0.37%) | b11742 (2026-10-20) | b13586 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ3_S | short in, 1k out | 44.2 decode t/s | 56.9 decode t/s | 1.29x | 1.3927 / 1.3927 (+0.00%) | b11742 (2026-10-20) | b13563 (2026-10-19) |
+| GLM-5.3-Flash 3.5-bit | 1k in, 1k out | 10.7 decode t/s | 13.7 decode t/s | 1.28x | 1.6326 / 1.6265 (-0.37%) | b11742 (2026-10-20) | b13586 (2026-10-19) |
+| Qwen3.8-Flash-Next IQ3_S | 1k in, 1k out | 43.8 decode t/s | 55.9 decode t/s | 1.28x | 1.3927 / 1.3927 (+0.00%) | b11742 (2026-10-20) | b13563 (2026-10-19) |
+| OLMoE-1B-7B Q4_K_M | 1k in, 1k out | 344.2 decode t/s | 378.9 decode t/s | 1.10x | 2.0696 / 2.0696 (+0.00%) | b11742 (2026-10-20) | b13600 (2026-10-20) |
 
 Our builds in the table are b13600 and two earlier builds of this release line (b13563, b13586); each cell shows the build with the best run. Older tables (earlier releases, laptop and CPU rows): [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
