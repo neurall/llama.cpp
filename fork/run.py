@@ -2467,7 +2467,7 @@ OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
 
 
 def save_output_file(ts, build, test, model, rid=None):
-    """the answer of a run as fork/outputs/<runs.db row id>.txt (header: build, test, model, speeds), so anyone can read it on GitHub next to the README table
+    """the answer of a run as fork/outputs/<runs.db row id>.txt, s<id>.txt for stock builds (header: build, test, model, speeds), so anyone can read it on GitHub next to the README table
     that cites the id; returns the path or None (no stored answer). rid given: that row, else the row of ts + build + test + model."""
     import sqlite3, zlib
     try:
@@ -2479,7 +2479,7 @@ def save_output_file(ts, build, test, model, rid=None):
                         (r[2], r[3], r[4], r[1], r[1])).fetchone()
         if not o: return None
         os.makedirs(OUT_DIR, exist_ok=True)
-        f = os.path.join(OUT_DIR, f"{r[0]}.txt")
+        f = os.path.join(OUT_DIR, f"{'s' if (r[2] or '').startswith('stock') else ''}{r[0]}.txt")   # stock runs: s<id>
         hdr = f"run {r[0]} | {r[2]} | {r[3]} | {os.path.basename(r[4] or '')} | decode {r[5] and round(r[5], 2)} t/s | prompt {r[6] and round(r[6], 1)} t/s | {r[7] and int(r[7])} tokens | args: {r[8] or ''} | power {r[9] or '?'} W | {r[10] or r[1]}\n\n"
         open(f, "w").write(hdr + zlib.decompress(o[0]).decode("utf8", "replace"))
         return f
@@ -6331,7 +6331,7 @@ def _tool_out():
     """out ID [ID2]: the answer of run ID (the id column of the results, runs.db rowid); two ids: both answers and how far they agree (common prefix, similarity)"""
     import sqlite3, zlib, difflib
     ap = argparse.ArgumentParser(prog="run.py out", description=_tool_out.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("ids", nargs="+", type=int)
+    ap.add_argument("ids", nargs="+", type=lambda v: int(v.lstrip("sS")), help="run id; the s prefix of a stock file name is accepted")
     ap.add_argument("-n", type=int, default=0, help="only the first N characters of each answer")
     a = ap.parse_args()
     con = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")); texts = []

@@ -36,7 +36,7 @@ Best valid run of ours against the median of the newest official stock (b11742, 
 | Qwen 3.8 Next IQ3_S | short/1k | 44.2<br>56.9 | -<br>- | +29% | - | 1.3927<br>1.3927 | b13563 | [16766](fork/outputs/16766.txt) |
 | Qwen 3.8 Next IQ1_M | 3k/1k | 68.3<br>67.7 | 1446<br>1751 | -1% | +21% | 1.4756<br>1.4756 | b13600 | [17088](fork/outputs/17088.txt) [17089](fork/outputs/17089.txt) |
 
-Every answer behind the table is in [fork/outputs](fork/outputs) as `<id>.txt` (header: build, test, speeds, arguments, power); stock's answers too. With the run database: `python3 fork/run.py out ID` (get it with `git fetch https://github.com/neurall/llama.cpp runs-db && git show FETCH_HEAD:runs.db > fork/runs.db`).
+Every answer behind the table is in [fork/outputs](fork/outputs) as `<id>.txt` (header: build, test, speeds, arguments, power); stock's answers as `s<id>.txt`. With the run database: `python3 fork/run.py out ID` (get it with `git fetch https://github.com/neurall/llama.cpp runs-db && git show FETCH_HEAD:runs.db > fork/runs.db`).
 
 Our builds in the table are b13600 and two earlier builds of this release line (b13563, b13586); each cell shows the build with the best run. Older tables (earlier releases, laptop and CPU rows): [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
