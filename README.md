@@ -208,6 +208,27 @@ Details moved to [fork/docs/features.md](fork/docs/features.md): pinned weights,
 3. **Expert-cache lookup per topic and initialisation per request**, planned for later versions.
 4. **Testing on more hardware.** Everything here was measured on one X570 board (x16 + x4 slots) with two RTX 3090s, plus a notebook with an RTX 4060. Multi-GPU setups with fast slots on every card are the most wanted: send your numbers and the startup log (`-lv 5`).
 
+## Credits and thanks
+
+- **Georgi Gerganov ([@ggerganov](https://github.com/ggerganov)) and every contributor to [llama.cpp](https://github.com/ggml-org/llama.cpp) and ggml**: this fork is a small layer on a fantastic project that has given so much to so many people for so many years. Thank you.
+- **[@csantiago78](https://github.com/csantiago78)** and their pull request [#27861](https://github.com/ggml-org/llama.cpp/pull/27861) ("GPU-resident LRU cache for host-offloaded MoE expert weights"), the starting point of this fork's expert cache. It has since diverged (window and admission instead of LRU, one global pool instead of fixed slots per layer), but the idea and the first working version are theirs.
+- **The people in that pull request's thread**, whose test reports, bug reports and questions shaped what changed:
+  - [@sdroege](https://github.com/sdroege): tests on an R9700, the finding that `--fit` ignores the cache, and the VRAM released by big prompts;
+  - [@sirfyyn](https://github.com/sirfyyn): Blackwell measurements and a routing trace;
+  - [@Syugakubusei](https://github.com/Syugakubusei) and [@ChangXiang-SCU](https://github.com/ChangXiang-SCU): Vulkan tests on AMD cards (also two GPUs over OCuLink), the Windows build fixes, and the small-batch case for speculative decoding;
+  - [@Inovello](https://github.com/Inovello): the duplicate slot id bug in the CUDA batched path, with a backend-ops test;
+  - [@TacoTakumi](https://github.com/TacoTakumi), [@pwasiewi](https://github.com/pwasiewi): multi-GPU measurements and admission data;
+  - [@MichaelDietzel](https://github.com/MichaelDietzel), [@Volunteer-1](https://github.com/Volunteer-1): the documentation questions (every flag is now documented in [fork/docs/fork-knobs.md](fork/docs/fork-knobs.md));
+  - [@homeofe](https://github.com/homeofe): the small-VRAM data point (the case where the cache was slower than stock) and the AVX2 dot products for IQ3_S and IQ3_XXS (`ggml-cpu`), merged into this fork (MIT license);
+  - [@yuffx](https://github.com/yuffx), [@nilo85](https://github.com/nilo85), [@Interpause](https://github.com/Interpause): the PCIe-bound explanation, the profile and auto-tune idea, and pointers to related discussions;
+  - and for testing and feedback [@XBold](https://github.com/XBold), [@nasone32](https://github.com/nasone32), [@mobilinkd](https://github.com/mobilinkd), [@arthw](https://github.com/arthw), [@mtrx93](https://github.com/mtrx93), [@feal87](https://github.com/feal87), [@dany-on-demand](https://github.com/dany-on-demand), [@momcilovicrobert-momc](https://github.com/momcilovicrobert-momc), [@pjsgsy](https://github.com/pjsgsy), [@jintakhan](https://github.com/jintakhan), [@GlassOnTin](https://github.com/GlassOnTin), [@logari81](https://github.com/logari81), [@voidpush](https://github.com/voidpush), [@simlu](https://github.com/simlu), [@SladeThe](https://github.com/SladeThe), [@TheTom](https://github.com/TheTom).
+
+---
+
+*The original llama.cpp README follows below.*
+
+---
+
 ## Quick start
 
 A few options to get `llama.cpp` installed on your machine:
@@ -323,5 +344,3 @@ The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-or
 - [nlohmann/json](https://github.com/nlohmann/json) - Single-header JSON library, used by various tools/examples - MIT License
 - [mackron/miniaudio](https://github.com/mackron/miniaudio) - Single-header audio format decoder, used by multimodal subsystem - Public domain
 - [sheredom/subprocess.h](https://github.com/sheredom/subprocess.h) - Single-header process launching solution for C and C++ - Public domain
-- [csantiago78](https://github.com/csantiago78) - GPU-resident LRU cache for host-offloaded MoE expert weights, [llama.cpp PR #27861](https://github.com/ggml-org/llama.cpp/pull/27861); the starting point of this fork's expert cache - MIT license
-- [homeofe](https://github.com/homeofe) - AVX2 dot products for IQ3_S and IQ3_XXS on x86 CPUs (`ggml-cpu`), merged into this fork (in this release) - MIT license
