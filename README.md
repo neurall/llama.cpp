@@ -84,6 +84,11 @@ Reproduce one row (stock and ours, 12 chunks, the perplexity of each is stored i
 PERF_PPL_CHUNKS=12 run bench --models qwen36 --builds stock-latest,b13600 --variants default -t pplb -n 1
 ```
 
+Whole table (every model and variant, stock reference included, `-nrt` skips cells that already have a run):  
+```
+run ppl -b b13600 -nrt
+```
+
 ## Run
 
 ```sh
