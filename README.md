@@ -15,26 +15,26 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 ## Best gainers
 
-Best run of ours against the median of the newest official stock, sorted by gain; rows under 1.1x left out (models that fit in VRAM, dense 27B models: stock speed). **12k/1k** = 12k-token prompt, 1k out, prompt t/s; **1k/1k**, **short/1k** = decode t/s. ppl = perplexity on b13600, default settings (details below). Each build on its defaults (`-np 1` only), looped answers excluded. 2x RTX 3090 (x16 and x4), 200 W each, no huge page pool.
+Best run of ours against the median of the newest official stock, sorted by gain (stock b11742, 2026-10-20); rows under 1.1x left out (models that fit in VRAM, dense 27B models: stock speed). **12k/1k** = 12k-token prompt, 1k out, prompt t/s; **1k/1k**, **short/1k** = decode t/s. ppl = perplexity on b13600, default settings, equal to stock within noise (details below). Each build on its defaults (`-np 1` only), looped answers excluded. 2x RTX 3090 (x16 and x4), 200 W each, no huge page pool.
 
-| model | test | stock t/s | ours t/s | gain | ppl stock / ours | stock | ours |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| MiMo-V2.6-Flash 3-bit | 12k/1k | 49.3 | 1021.8 | 20.71x | 1.8758 / 1.8758 (+0.00%) | b11742 | b13600 |
-| GLM-5.3-Flash 3.0-bit | 12k/1k | 42.4 | 639.7 | 15.08x | 1.7626 / 1.7578 (-0.27%) | b11742 | b13563 |
-| GLM-5.3-Flash 3.5-bit | 12k/1k | 33.8 | 279.6 | 8.27x | 1.6326 / 1.6265 (-0.37%) | b11742 | b13586 |
-| Qwen3.8-Flash-Next IQ4_XS | 12k/1k | 209.9 | 1482.6 | 7.06x | 1.4101 / 1.4101 (+0.00%) | b11742 | b13600 |
-| Qwen3.8-Flash-Next IQ3_S | 12k/1k | 375.9 | 1576.3 | 4.19x | 1.3927 / 1.3927 (+0.00%) | b11742 | b13563 |
-| MiMo-V2.6-Flash 3-bit | short/1k | 14.3 | 33.1 | 2.31x | 1.8758 / 1.8758 (+0.00%) | b11742 | b13600 |
-| MiMo-V2.6-Flash 3-bit | 1k/1k | 14.3 | 28.5 | 1.99x | 1.8758 / 1.8758 (+0.00%) | b11742 | b13600 |
-| Qwen3.8-Flash-Next IQ4_XS | short/1k | 31.4 | 55.1 | 1.75x | 1.4101 / 1.4101 (+0.00%) | b11742 | b13586 |
-| Qwen3.8-Flash-Next IQ4_XS | 1k/1k | 30.9 | 53.6 | 1.74x | 1.4101 / 1.4101 (+0.00%) | b11742 | b13600 |
-| GLM-5.3-Flash 3.0-bit | short/1k | 12.8 | 20.8 | 1.62x | 1.7626 / 1.7578 (-0.27%) | b11742 | b13600 |
-| GLM-5.3-Flash 3.0-bit | 1k/1k | 12.7 | 20.3 | 1.60x | 1.7626 / 1.7578 (-0.27%) | b11742 | b13600 |
-| GLM-5.3-Flash 3.5-bit | short/1k | 9.8 | 15.4 | 1.57x | 1.6326 / 1.6265 (-0.37%) | b11742 | b13586 |
-| Qwen3.8-Flash-Next IQ3_S | short/1k | 44.2 | 56.9 | 1.29x | 1.3927 / 1.3927 (+0.00%) | b11742 | b13563 |
-| GLM-5.3-Flash 3.5-bit | 1k/1k | 10.7 | 13.7 | 1.28x | 1.6326 / 1.6265 (-0.37%) | b11742 | b13586 |
-| Qwen3.8-Flash-Next IQ3_S | 1k/1k | 43.8 | 55.9 | 1.28x | 1.3927 / 1.3927 (+0.00%) | b11742 | b13563 |
-| OLMoE-1B-7B Q4_K_M | 1k/1k | 344.2 | 378.9 | 1.10x | 2.0696 / 2.0696 (+0.00%) | b11742 | b13600 |
+| model | test | stock | ours | gain | ppl stock/ours | build |
+|---|---|---|---|---|---|---|
+| MiMo 3-bit | 12k/1k | 49.3 | 1021.8 | 20.71x | 1.8758/1.8758 | b13600 |
+| GLM 3.0-bit | 12k/1k | 42.4 | 639.7 | 15.08x | 1.7626/1.7578 | b13563 |
+| GLM 3.5-bit | 12k/1k | 33.8 | 279.6 | 8.27x | 1.6326/1.6265 | b13586 |
+| Next IQ4_XS | 12k/1k | 209.9 | 1482.6 | 7.06x | 1.4101/1.4101 | b13600 |
+| Next IQ3_S | 12k/1k | 375.9 | 1576.3 | 4.19x | 1.3927/1.3927 | b13563 |
+| MiMo 3-bit | short/1k | 14.3 | 33.1 | 2.31x | 1.8758/1.8758 | b13600 |
+| MiMo 3-bit | 1k/1k | 14.3 | 28.5 | 1.99x | 1.8758/1.8758 | b13600 |
+| Next IQ4_XS | short/1k | 31.4 | 55.1 | 1.75x | 1.4101/1.4101 | b13586 |
+| Next IQ4_XS | 1k/1k | 30.9 | 53.6 | 1.74x | 1.4101/1.4101 | b13600 |
+| GLM 3.0-bit | short/1k | 12.8 | 20.8 | 1.62x | 1.7626/1.7578 | b13600 |
+| GLM 3.0-bit | 1k/1k | 12.7 | 20.3 | 1.60x | 1.7626/1.7578 | b13600 |
+| GLM 3.5-bit | short/1k | 9.8 | 15.4 | 1.57x | 1.6326/1.6265 | b13586 |
+| Next IQ3_S | short/1k | 44.2 | 56.9 | 1.29x | 1.3927/1.3927 | b13563 |
+| GLM 3.5-bit | 1k/1k | 10.7 | 13.7 | 1.28x | 1.6326/1.6265 | b13586 |
+| Next IQ3_S | 1k/1k | 43.8 | 55.9 | 1.28x | 1.3927/1.3927 | b13563 |
+| OLMoE Q4_K_M | 1k/1k | 344.2 | 378.9 | 1.10x | 2.0696/2.0696 | b13600 |
 
 Our builds in the table are b13600 and two earlier builds of this release line (b13563, b13586); each cell shows the build with the best run. Older tables (earlier releases, laptop and CPU rows): [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
