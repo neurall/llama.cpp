@@ -68,7 +68,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
   [gpu]     nvidia_smi  ld_extra  limits_env  limits_service  env_sh   (power-limit tools run.py plcal / run.py baseline: nvidia-smi to call through sudo, the files that keep the limits at boot, an
                                                               optional shell file whose exports every queue task gets; empty = not used)
 """
-    import os
+    import glob, os
 
     HOME = os.path.expanduser("~")
     # everything lives under one directory: $FORK_HOME, default <repo>/.fork (git-ignored), so a clone needs no setup and no absolute path
@@ -1593,6 +1593,20 @@ def slots_progress():
         return None
 
 
+_CPU_LAST = {}
+def server_cpu_busy(min_ticks=20):
+    """True when a llama-server process used >= min_ticks CPU ticks (1/100 s) since the last call: it is working even though the log is silent and the GPUs are idle"""
+    busy = False
+    for d in glob.glob("/proc/[0-9]*"):
+        try:
+            if open(d + "/comm").read().strip() != "llama-server": continue
+            f = open(d + "/stat").read().rsplit(")", 1)[1].split(); t = int(f[11]) + int(f[12])   # utime + stime
+        except (OSError, IndexError, ValueError): continue
+        if t - _CPU_LAST.get(d, t) >= min_ticks: busy = True
+        _CPU_LAST[d] = t
+    return busy
+
+
 def gpu_busy():
     """True when any GPU shows utilisation > 0 right now (nvidia-smi, nothing is sent to the server)"""
     try:
@@ -1649,7 +1663,7 @@ def post(path, body, timeout=3600, every=10, idle_polls=2):
                 raise RuntimeError(f"garbled output ('!!!' at the end after {pr[1]} tokens, ctx {pr[0]}): stopped")
             if pr is not None and pr[:2] != (last or (None, None))[:2]:
                 print(f"progress {time.time() - t0:5.0f} s: ctx {pr[0]} tokens, decoded {pr[1]}, tail {pr[2][-12:]!r}", flush=True); last = pr
-        idle = 0 if gpu_busy() else idle + 1
+        idle = 0 if (gpu_busy() or server_cpu_busy()) else idle + 1   # a silent log and idle GPUs are no stall while the server burns CPU (lazy pinning of a model bigger than free RAM: 3.5-bit GLM, 2026-10-20, two false stops)
         if idle >= idle_polls:
             raise RuntimeError(f"run stopped: server log silent and GPUs idle for {idle * every} s (after {time.time() - t0:.0f} s)")
     if "e" in box: raise box["e"]
