@@ -71,7 +71,11 @@ llama-perplexity -m MODEL -f fork/bench/longsrc.cpp -c 1024 --chunks 12 -b 1024 
 llama-perplexity -m MODEL -f fork/bench/longsrc.cpp -c 1024 --chunks 12 -b 1024 -ub 1024 -nr --cpu-moe --moe-expert-cache -1   # ours
 ```
 
-The whole table with the harness (stock and ours, 2 runs per cell, results into `fork/runs.db` and `fork/outputs/`): set the paths in [fork/local.toml.example](fork/local.toml.example) and the model files in [fork/models.ini](fork/models.ini), then `python3 fork/run.py run gainers -n` (lists the cells) and the same without `-n`; perplexity: `python3 fork/run.py ppl -b b13600`.
+The whole table with the harness (stock and ours, 2 runs per cell, results into `fork/runs.db` and `fork/outputs/`): set the paths in [fork/local.toml.example](fork/local.toml.example) and the model files in [fork/models.ini](fork/models.ini), then the table above, biggest gains first, skipping cells that already ran today:
+```sh
+python3 fork/run.py run -c gainers -nrt -from-best -r 2
+```
+`-n` lists the cells without running them; `-pl X4/X16` sets the card power limits in watts and `-nodl` skips the download of a newer stock binary. Perplexity: `python3 fork/run.py ppl -b b13600`. The table as a picture: `python3 fork/gainers_png.py`.
 
 
 
