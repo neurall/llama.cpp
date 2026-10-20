@@ -15,9 +15,9 @@ llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
 
 ## Best gainers
 
-Best run of ours against the median of the newest official stock (b11742, 2026-10-20), sorted by the bigger gain (gain t = decode, gain pp = prompt processing); rows where neither gain reaches 1.1x left out (models that fit in VRAM, dense 27B models: stock speed). Columns are stock/ours. **12k/1k** = 12k-token prompt, 1k out; **1k/1k** = ~1k prompt, 1k out; **short/1k** = short prompt, 1k out (no prompt speed, too short to measure). ppl = perplexity on b13600, default settings (details below). Each build on its defaults (`-np 1` only), looped answers excluded. 2x RTX 3090 (x16 and x4), 200 W each, no huge page pool. out id = row id in `runs.db`: `run out ID` prints the stored answer (two ids: best decode run / best prompt run).
+Best run of ours against the median of the newest official stock (b11742, 2026-10-20), sorted by the bigger gain (gain t = decode, gain pp = prompt processing); rows where neither gain reaches 1.1x left out (models that fit in VRAM, dense 27B models: stock speed). In the t/s, pp and ppl columns the upper number is stock, the lower is ours. **12k/1k** = 12k-token prompt, 1k out; **1k/1k** = ~1k prompt, 1k out; **short/1k** = short prompt, 1k out (no prompt speed, too short to measure). ppl = perplexity on b13600, default settings (details below). Each build on its defaults (`-np 1` only), looped answers excluded. 2x RTX 3090 (x16 and x4), 200 W each, no huge page pool. out id = row id in `runs.db`: `run out ID` prints the stored answer (two ids: best decode run / best prompt run).
 
-| model | test | t/s stock/ours | pp stock/ours | gain t | gain pp | ppl stock/ours | build | out id |
+| model | test | t/s | pp | gain t | gain pp | ppl | build | out id |
 |---|---|---|---|---|---|---|---|---|
 | MiMo 2.6F 3-bit | 12k/1k | 14.2<br>25.8 | 49<br>1022 | +82% | +1971% | 1.8758<br>1.8758 | b13600 | 17120/17121 |
 | MiMo 2.6F 3-bit | 1k/1k | 14.3<br>26.7 | 48<br>738 | +86% | +1427% | 1.8758<br>1.8758 | b13563 | 16753/16591 |
