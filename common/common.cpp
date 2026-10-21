@@ -1736,8 +1736,44 @@ static uint32_t common_auto_ubatch(common_params & params) {
 
 static void common_moe_cache_auto_impl(common_params & params);
 
+// pinned weights for every model, whether or not the expert cache is on (OLMoE fits the VRAM, the placement code returns early, and its weights were mapped: 2026-10-21)
+static void common_auto_pin(common_params & params) {
+    const size_t model_size = common_model_file_size(params.model.path);
+    // pinned weights (no mmap, llama-server only: startup takes longer, pays off over many requests):
+    // cache uploads and prompt processing read them by direct DMA,
+    // measured +46% prompt processing, +3-5% decode on GLM-5.3-Flash; used whenever the model fits
+    // in the RAM available now minus the margin below; a model that does not is pinned up to that limit and the rest is mapped
+    if (params.auto_pin && params.load_mode == LLAMA_LOAD_MODE_AUTO) {
+        const size_t avail = common_ram_available(true);
+        // RAM kept for the system, the KV cache in RAM and the page cache of the mapped rest: everything else is pinned (2026-10-21: 12 GiB, was 0 when the model fitted and 4 GiB when it did not)
+        const size_t margin = (size_t) 12 << 30;
+        if (avail && model_size + margin <= avail) {
+            params.load_mode        = LLAMA_LOAD_MODE_NONE;
+            params.load_pinned_auto = true;
+        } else if (avail) {
+            // the model does not fit pinned RAM: pin as much as the machine can spare, in tensor order, and map the rest. Never the whole model through mmap behind the
+            // user's back. The budget is the reserved huge-page pool (memory nothing else can use) plus the available RAM minus a safety margin for the system.
+            size_t pool         = avail - common_ram_available(false);
+            const size_t mem    = avail - pool;
+            // pages that cache files of earlier loads hold in the pool are not free now but are evicted when this load needs them (ggml_cuda_hugefs_evict):
+            // count the whole 1 GiB pool, else a warm cache file shrinks the budget, the next load gets another buffer size and key, and the two files evict each
+            // other (GLM 12k prompt cell 2026-10-14: 43.6 GiB pinned, cold fill, rest through the page cache, 24 instead of 700+ prompt t/s)
+            if (getenv("GGML_CUDA_HUGEFS")) {
+                if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages", "r")) {
+                    unsigned long long n = 0;
+                    if (fscanf(f, "%llu", &n) == 1) { pool = std::max(pool, (size_t) n << 30); }
+                    fclose(f);
+                }
+            }
+            params.load_pin_budget = pool + (mem > margin ? mem - margin : 0);
+            llama_moe_set_opt("pin-budget", std::to_string(params.load_pin_budget).c_str());
+        }
+    }
+}
+
 static void common_moe_cache_auto(common_params & params) {
     common_moe_cache_auto_impl(params);
+    common_auto_pin(params);
     // VRAM the cache leaves free for the growth of the CUDA pools after load, which scales with the batch: measured at -ub 2048 (cache
     // sized with a margin, 12k prompt, other margins aborting with CUDA out of memory): 54 MiB OLMoE, 74 IQ3_S, 170 GLM; ~15 at 512.
     // 0.1 MiB per ubatch token is 1.2x the worst of them, floor 200: GLM aborted with out of memory at ub 512 with 51 (-at off keeps the 384 MiB default; --moe margin_mb=N overrides)
@@ -1869,35 +1905,6 @@ static void common_moe_cache_auto_impl(common_params & params) {
         tbo.insert(std::find_if(tbo.begin(), tbo.end(), [](const auto & o) { return o.pattern == nullptr; }), llm_ffn_exps_cpu_override());
         params.no_extra_bufts    = true;
         params.n_moe_cache_slots = -1;
-    }
-    // pinned weights (no mmap, llama-server only: startup takes longer, pays off over many requests):
-    // cache uploads and prompt processing read them by direct DMA,
-    // measured +46% prompt processing, +3-5% decode on GLM-5.3-Flash; used whenever the model fits
-    // in RAM available now (no margin); common_init_result reloads with mmap if loading swaps
-    if (params.auto_pin && params.load_mode == LLAMA_LOAD_MODE_AUTO) {
-        const size_t avail = common_ram_available(true);
-        if (avail && model_size <= avail) {
-            params.load_mode        = LLAMA_LOAD_MODE_NONE;
-            params.load_pinned_auto = true;
-        } else if (avail) {
-            // the model does not fit pinned RAM: pin as much as the machine can spare, in tensor order, and map the rest. Never the whole model through mmap behind the
-            // user's back. The budget is the reserved huge-page pool (memory nothing else can use) plus the available RAM minus a safety margin for the system.
-            size_t pool         = avail - common_ram_available(false);
-            const size_t mem    = avail - pool;
-            // pages that cache files of earlier loads hold in the pool are not free now but are evicted when this load needs them (ggml_cuda_hugefs_evict):
-            // count the whole 1 GiB pool, else a warm cache file shrinks the budget, the next load gets another buffer size and key, and the two files evict each
-            // other (GLM 12k prompt cell 2026-10-14: 43.6 GiB pinned, cold fill, rest through the page cache, 24 instead of 700+ prompt t/s)
-            if (getenv("GGML_CUDA_HUGEFS")) {
-                if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages", "r")) {
-                    unsigned long long n = 0;
-                    if (fscanf(f, "%llu", &n) == 1) { pool = std::max(pool, (size_t) n << 30); }
-                    fclose(f);
-                }
-            }
-            const size_t margin = (size_t) 4 << 30;
-            params.load_pin_budget = pool + (mem > margin ? mem - margin : 0);
-            llama_moe_set_opt("pin-budget", std::to_string(params.load_pin_budget).c_str());
-        }
     }
     // the default context is set before the micro-batch below, which takes the context as its maximum. Set after it (as until 2026-10-14), a run without -c
     // got the batch size instead: passes of 2048 tokens, Qwen3.8-Flash-Next 8k prompt in 4 passes at 798 prompt t/s where one pass gives 1201
