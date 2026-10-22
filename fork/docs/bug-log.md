@@ -192,3 +192,13 @@ Left as they are, on purpose: the 10 s upload waits in the zone take and the len
 | where | symptom | cause | fix |
 |---|---|---|---|
 | dense / expert split, `src/llama-dsplit-fork.cpp` `llama_dsplit_hop_mode_fork` | forced split on Qwen3.8-Flash-Next: perplexity +0.42 +- 0.23% (IQ3_S) and +0.18 +- 0.14% (IQ1_M) against stock, 10 chunks paired; one card equal to stock to four decimals | the hidden states that cross between the cards travelled as f16 since 2026-10-13 (`409c58942`); with f32 hand-offs the same runs read +0.09 +- 0.20% and +0.09 +- 0.14%, f16 minus f32 on IQ3_S +0.33 +- 0.17% (8 of 10 chunks worse) | default back to f32; `--moe split-f16=1` keeps f16 (half the link bytes, about 2% faster at 3k); open: pf12k speed of the new default on GLM and Next at 8k-12k (gate) |
+
+## 2026-10-22 release build died on a stale build dir, then on a missing -pthread
+
+| where | symptom | cause | fix |
+|---|---|---|---|
+| `<worktree>/build-linux` of the release recipe | `No rule to make target '/usr/local/cuda-13.2/.../libcudart.so'` at 43% of the CUDA objects | the build dir is reused for incremental builds and CMake keeps absolute toolkit paths; it was configured when the image had CUDA 13.2 and the image is CUDA 13.4 now | `run.py build` writes `.image-id` into the build dir and configures afresh when the image differs |
+| old `hcf/lrel/build.sh` | `undefined reference to 'pthread_join'` linking `test-backend-ops` (el8, glibc 2.28) | the old script lacked `-pthread`; `run.py build --release` has it | the old script is retired (stub, text in `hcf/lrel/old/`); releases are built with `run.py build NAME --release` |
+| Windows DLL build | `undefined symbol` for `llama_moe_decision_fork`, `llama_moe_stats_json_fork`, `llama_moe_cache_prefill_ubatch_fork` | fork functions that common/ and the server call across the DLL were declared locally, not exported | declared `LLAMA_API` in `include/llama.h` (the pass planner through the C wrapper `llama_moe_prefill_pass_fork`) |
+
+Found while checking: the `b13600` release was configured against CUDA 13.2 (its build dir cache had 54 references to 13.2, none to 13.4; its `libcublasLt` is 505 MB against 545 MB in b13742) although its archive is named `cuda-13.4`. The archive name is fixed in the script. Not verified beyond the cache and the library sizes.
