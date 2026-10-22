@@ -1153,6 +1153,7 @@ extern "C" {
     // The --moe KEY=VALUE settings (keys lowercase with '-': state, mode, log, logdir, policy, ...): set while the command line is parsed, NULL from get when the key was not given
     LLAMA_API void         llama_moe_set_opt(const char * key, const char * value);
     LLAMA_API const char * llama_moe_get_opt(const char * key);
+    LLAMA_API void         llama_moe_decision_fork(const char * name, const char * value, const char * why);   // GET /moe/stats "decisions": what an automatic choice decided and why (common.cpp calls it; Windows needs the export)
 
     // fork: live parameters of the running process (read at every use, changed over HTTP: GET / POST /moe/params in the server). name -> double.
     // llama_moe_live_get returns NAN for an unknown name; set clamps to the parameter's range and returns false for an unknown name.

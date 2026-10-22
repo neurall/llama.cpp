@@ -204,7 +204,6 @@ static int cpu_count_math_cpus(int n_cpu) {
 
 #endif // __x86_64__ && __linux__
 
-void llama_moe_decision_fork(const char * name, const char * value, const char * why);   // src/llama-moestate-fork.cpp: GET /moe/stats "decisions"
 
 // CPUs the container may use: its cgroup CPU quota (v2 cpu.max "QUOTA PERIOD", v1 cpu.cfs_quota_us / cpu.cfs_period_us) as quota / period; 0 when there is none.
 // A rented container shows all cores of the host (256) but is throttled to its quota (27.3 CPUs on the 5090 box): 127 threads on it were paused for most of every
@@ -1877,7 +1876,6 @@ static uint32_t common_fits_ubatch(common_params & params) {
     return SAFE;
 }
 
-void llama_moe_decision_fork(const char * name, const char * value, const char * why);   // src/llama-moestate-fork.cpp: GET /moe/stats "decisions"
 static void decide_fork(const char * name, const std::string & value, const std::string & why) { llama_moe_decision_fork(name, value.c_str(), why.c_str()); }
 static void common_moe_cache_auto_impl(common_params & params);
 
