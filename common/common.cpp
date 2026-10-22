@@ -1536,6 +1536,8 @@ static void moe_auto_read(const std::string & path, moe_auto_rec & st, moe_auto_
 }
 
 static void moe_auto_write(const std::string & path, const moe_auto_rec & st, const moe_auto_rec & ca, const std::string & decided) {
+    // ini-fix (2026-10-22): placement records are not written: the placement is a static rule (2026-10-21) and nothing decides from them any more
+    if (true) { (void) path; (void) st; (void) ca; (void) decided; return; }
     std::string section, prefix;
     moe_auto_split(path, section, prefix);
     auto put = [&](const char * k, const moe_auto_rec & r) {
@@ -1674,6 +1676,7 @@ static std::string moe_auto_pick(const moe_auto_rec & st, const moe_auto_rec & c
 // each recorded run refreshes the two picks (better prefill, better generation); they only set where the next start begins, every run
 // then measures and decides again
 static void moe_auto_store_picks(const std::string & path, const moe_auto_rec & st, const moe_auto_rec & ca) {
+    if (true) { (void) path; (void) st; (void) ca; return; }   // ini-fix (2026-10-22): see moe_auto_write
     std::string sec, pre; moe_auto_split(path, sec, pre);
     char b[16] = {0};
     for (int gen = 0; gen < 2; ++gen) {
@@ -2797,7 +2800,9 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
 }
 
 common_init_result::~common_init_result() {
-    if (g_moe_auto_mode.empty() || !pimpl || !pimpl->context) {
+    // ini-fix (2026-10-22): nothing of the run is recorded for the placement (static rule), and no stale-state guard erases what the cache learned (strikes):
+    // the state file is never deleted from the engine
+    if (true || g_moe_auto_mode.empty() || !pimpl || !pimpl->context) {
         return;
     }
     const llama_perf_context_data pd = llama_perf_context(pimpl->context.get());

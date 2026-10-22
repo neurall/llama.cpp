@@ -911,7 +911,7 @@ void profile_save(const moe_cache * mc) {
         }
         kv.emplace_back("hot." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), v);   // real layer: dense layers are not cache layers
     }
-    if (!mc->tuned_text.empty()) {
+    if (false && !mc->tuned_text.empty()) {   // ini-fix (2026-10-22): the self-tuner's decisions are not stored (see the reader)
         // the self-tuner's decisions of this GPU count: tuned.l<links> = NAME=value NAME=value ...
         std::string v = mc->tuned_text;
         for (char & c : v) { if (c == '\n') { c = ' '; } }
@@ -1081,6 +1081,9 @@ void stock_obs_cb(const char * name, const struct ggml_tensor * ids, const struc
 // a file with no hot map of its own yet starts from the one of the same file name or the same family and shape (other quant, other build of the file): it is copied
 // once into this file's own section, which then learns on its own; only layers with the model's expert count are taken
 void moe_seed_hot(const std::string & section, size_t n_expert) {
+    // ini-fix (2026-10-22): no hot map is copied from another file's record (other quant, other build): a model starts from its own use counts or none
+    (void) section; (void) n_expert;
+    if (true) { return; }
     std::vector<std::pair<std::string, std::string>> own, donor, hot;
     if (section.empty() || n_expert == 0 || !moe_state_enabled()) {
         return;
@@ -5904,7 +5907,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             // LLAMA_MOE_CACHE_<NAME> wins) and check again after a while instead of exploring right away
             const char * te = moe_opt("tuned");
             std::string txt;
-            if ((!te || atoi(te) != 0) && !mc->profile.empty()) { moe_state_get(mc->profile, hw_key("tuned.l" + std::to_string(mc->n_links)), txt); }
+            // ini-fix (2026-10-22): the stored decisions are not read: a start whose tuner began from another build's values behaved unlike a cold one,
+            // and the knobs' defaults change between builds. Every start tunes from the defaults.
+            (void) te;
             for (char & c : txt) { if (c == ' ') { c = '\n'; } }
             int n = 0;
             size_t pos = 0;
@@ -7951,8 +7956,13 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     // prompt): the planner's bytes per pass token, which the startup reserve seeds (graph_tok + tok_bytes), still keeps that first pass and the zone for
     // the prompt's KV inside the pool. Without it the first prompt of a warm start was planned with no room for its KV (Qwen3.6-35B, 3 GiB free per card:
     // a 4579-token pass left no gap for the zone, the server retried with halved batches: 1860 prompt t/s against 3706 on the cold start, 2026-10-22).
+    // The graph bytes per token leave out what a pass lends besides its tensors: the staging slots (a fixed part) and the CUDA scratch (per token). Measured on
+    // that warm start: 1654 MiB lent for 4579 tokens = 0.38 MB per token against 0.28 estimated, so the cap let the pass past the room of the KV zone. The
+    // slots are added when known and the per-token bytes get 1.35x headroom (a pass one third smaller costs a pass more; a zone that does not fit costs a
+    // failed call and halved retries).
     auto seeded = [&]() -> uint32_t {
-        return ap.graph_tok > 0 ? kvz_pass_cap(ap, n_prompt, ub, 0.0, (double) (ap.graph_tok + ap.tok_bytes), pad, ap.mirror_b) : ub;
+        const double a_fix = (double) std::max(0, ap.n_cfg) * (double) ap.slot_b;
+        return ap.graph_tok > 0 ? kvz_pass_cap(ap, n_prompt, ub, a_fix, 1.35 * (double) (ap.graph_tok + ap.tok_bytes), pad, ap.mirror_b) : ub;
     };
     if (ap.need_tok.empty()) { return seeded(); }
     // every measured size at the cells this call ends at (need_at_cells): the fit below then includes the masks' growth with the context
@@ -7968,10 +7978,16 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
         b = (double) (p1.second - p0.second) / (double) (p1.first - p0.first);
         a = std::max(0.0, (double) p1.second - b * (double) p1.first);
     } else {
-        b = (double) p1.second / (double) p1.first;
+        // one size only: a line through the origin is below the real need for smaller passes when the need has a fixed part (staging slots), the same headroom
+        // as the seeded estimate above
+        b = 1.35 * (double) p1.second / (double) p1.first;
     }
     if (b <= 0.0) { return ub; }
-    return kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b);   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
+    // Past the largest measured size the line is an extrapolation from small graphs (a cold start measures 64-512-token calibration graphs): the same
+    // headroom there (Qwen3.6-35B, 3 GiB free per card, cold: a 4128-token pass lent 1222 of the x4 card's 1282 MiB and its KV did not fit, 2026-10-22)
+    const uint32_t cap = kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b);
+    if (cap <= (uint32_t) p1.first) { return cap; }
+    return std::max<uint32_t>(std::min<uint32_t>(cap, (uint32_t) p1.first), kvz_pass_cap(ap, n_prompt, ub, a, 1.35 * b, pad, ap.mirror_b));   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
 }
 
 static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub_old) {
@@ -7982,8 +7998,12 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     }
     if (ap) {   // bounded whatever the plan below does (also before the first prompt graph is known; see pp_cap_to_pool)
         const uint32_t ub_old0 = ub_old, ub_max0 = ub_max;
-        ub_old = pp_cap_to_pool(*ap, n, ub_old);
-        ub_max = pp_cap_to_pool(*ap, n, ub_max);
+        // EVERY card's pool lends its part of the pass and holds the KV of its layers: the smallest cap wins. With the offload card's pool alone the x4 card's
+        // KV zone was never checked (Qwen3.6-35B, 3 GiB free per card: 1222 of its 1282 MiB lent to a 4352-token pass, its KV did not fit, 2026-10-22)
+        for (const auto & a : mc->alias) {
+            ub_old = pp_cap_to_pool(a, n, ub_old);
+            ub_max = pp_cap_to_pool(a, n, ub_max);
+        }
         if (moe_log_has("w")) { LLAMA_LOG_WARN("moe-cache: pass plan input: n %u ub_max %u -> %u, ub_old %u -> %u, span %zu, graph_tok %zu, tok_bytes %zu, slot_b %zu, mirror_b %zu, need_tok %zu\n", n, ub_max0, ub_max, ub_old0, ub_old, (size_t) ap->span, (size_t) ap->graph_tok, (size_t) ap->tok_bytes, (size_t) ap->slot_b, (size_t) ap->mirror_b, ap->need_tok.size()); }
     }
     if (!on || mc->alias.empty() || mc->n_links <= 0 || !mc->link_dev[0]) {
@@ -8198,13 +8218,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         g_pp_c_us = g_pp_c_us > 0.0 ? 0.5 * (g_pp_c_us + c0_new) : c0_new;
         LLAMA_LOG_WARN("moe-cache: prompt compute measured: %.0f tokens in %.0f ms over %u passes (upload estimate %.0f ms) at %.0f cells: %.1f us per token -> c0 %.1f us + %.5f us per cell\n",
                 nt, us / 1e3, g_pp_P, Usum / 1e3, x, c_new, g_pp_c_us, g_pp_a_us);
-        // kept in the state file (model section, key per GPU set: the placement's prefix) when it moved by more than 5%, so the next start plans its first
-        // prompt from it (see pp_c_us_stored)
-        static double saved = 0.0;
-        if (!mc->profile.empty() && !moe_state_place().empty() && (saved <= 0.0 || std::fabs(g_pp_c_us / saved - 1.0) > 0.05)) {
-            saved = g_pp_c_us;
-            moe_state_set(mc->profile, { { moe_state_place() + ".pp_c0_us", tr_fmt("%.4f", g_pp_c_us) }, { moe_state_place() + ".pp_a1_us", tr_fmt("%.6f", g_pp_a_us) } });
-        }
+        // ini-fix (2026-10-22): not written to the state file any more (see pp_c_us_stored): a start plans from its own measurement only
     }
     g_pp_n = 0; g_pp_P = 0; g_pp_Usum = 0.0; g_pp_xc = 0.0;   // read once
 }
@@ -8215,6 +8229,9 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
 // Keys pp_c0_us / pp_a1_us (2026-10-17): until then pp_c_us held the whole compute per token of the last prompt it could read, attention included (MiMo: 1265 us
 // measured at about 250k cells); read as c0, the base of the fit, it would plan every short prompt as 20x heavier. Old entries stay in the file, unused.
 static void pp_c_us_stored() {
+    // ini-fix (2026-10-22): no stored value is read. The state held values from older builds (22591 us per token next to 1212 measured live) that the split
+    // planner read as truth; the session measures its own (llama_moe_cache_prefill_report_fork) and nothing is written for the next start.
+    return;
     static bool tried = false;
     if (tried || g_pp_c_us > 0.0 || !g_cache || g_cache->profile.empty() || moe_state_place().empty()) {
         return;
