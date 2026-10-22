@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+q36-def,qwen36,2,pf12k1k,128,,
+olmoe-def,olmoei,2,pf12k1k,128,,
+olmoe-512,olmoei,2,pf12k1k,128,-ub 512,

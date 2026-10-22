@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+q36-p1-d0,qwen36,2,pf12k1k,128,-ub 1024 moe:dense-split=0,
+q36-p0-d0,qwen36,2,pf12k1k,128,-ub 1024 moe:dense-split=0 moe:pipeline=0,
+q36-p1-d1,qwen36,2,pf12k1k,128,-ub 1024 moe:dense-split=1,
+q36-p0-d1,qwen36,2,pf12k1k,128,-ub 1024 moe:dense-split=1 moe:pipeline=0,

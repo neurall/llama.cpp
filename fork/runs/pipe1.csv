@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+q36-pipe,qwen36,1,pf12k1k,128,-ub 1024 moe:pipe-stock=1,

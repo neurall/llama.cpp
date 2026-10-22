@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+q35f,qwen36,2,pf12k1k,128,,
+q35r,qwen36,2,pf12k1k,128,--moe-expert-cache 90,
