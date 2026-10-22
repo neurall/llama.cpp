@@ -58,6 +58,7 @@ void llama_moe_prompt_progress_fork(uint32_t done);
 uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint32_t ceil);
 uint32_t llama_moe_ubadapt_next_fork(uint32_t n_tokens, uint32_t ceil);
 void llama_moe_decision_fork(const char * name, const char * value, const char * why);
+void llama_moe_cache_vram_watch_fork(bool prompt);   // src/llama-moecache-fork.cpp: the lowest free VRAM per pool card
 
 static void llama_verify_hadamard_graph(
         ggml_cgraph * gf,
@@ -6276,6 +6277,7 @@ int32_t llama_decode(
     if (ret == 0) {
         const double ms = (ggml_time_us() - t_us) / 1000.0;
         if (batch.n_tokens == 1) { llama_moe_token_time_fork(ms); } else { llama_moe_prompt_done_fork((uint32_t) batch.n_tokens, ms); }
+        llama_moe_cache_vram_watch_fork(batch.n_tokens > 1);
     }
     if (ret != 0 && ret != 1) {
         LLAMA_LOG_ERROR("%s: failed to decode, ret = %d\n", __func__, ret);
@@ -6396,6 +6398,7 @@ int32_t llama_process(llama_context * ctx, llama_process_type type, llama_batch_
                 const int32_t n = (int32_t) g_decode_n_tokens;
                 const double ms = (ggml_time_us() - t_us) / 1000.0;
                 if (n == 1) { llama_moe_token_time_fork(ms); } else { llama_moe_prompt_done_fork((uint32_t) n, ms); }
+                llama_moe_cache_vram_watch_fork(n > 1);
             }
             return ret;
         }
