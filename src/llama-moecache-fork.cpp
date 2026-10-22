@@ -5142,6 +5142,8 @@ struct vram_dev_t {
     size_t  pool         = 0;      // bytes the pool took
     size_t  low          = SIZE_MAX;
     int64_t stored_mb    = -1;     // the need stored for this card, driver and build (-1: none yet)
+    bool    from_cold    = false;  // a warm start sized with the cold figure: its own figure is written at its first decode sample
+    int64_t peak_mb      = 0;      // the largest need this session
     int     n_lows       = 0;
     std::string section, key;
 };
@@ -5175,23 +5177,28 @@ static const std::string & vram_driver() {
     return d;
 }
 
-static std::string vram_key(ggml_backend_dev_t dev) {
+// cold: this start runs the max-batch probe (no stored timings), whose calibration graphs take ~100 MiB more outside the pool than a warm start
+// (GLM 3.0 140 against 49 MiB, MiMo 111 against 36, Qwen3.8 166 against 52, 2026-10-22): the two are stored apart
+static std::string vram_key(ggml_backend_dev_t dev, bool cold) {
     std::string gpu = ggml_backend_dev_description(dev);
     for (char & c : gpu) { if (!isalnum((unsigned char) c)) { c = '_'; } }
     const char * b = moe_opt("build-id");
-    return hw_key("vram_need." + gpu + ".drv" + vram_driver() + ".b" + (b ? b : "0"));
+    return hw_key("vram_need." + gpu + ".drv" + vram_driver() + ".b" + (b ? b : "0") + (cold ? ".cold" : ".warm"));
 }
 
 // the margin a pool leaves on a card: --moe vram-reserve-mb / margin_mb if set, else the need an earlier session measured on this card, driver and build
 // plus a safety (64 MiB or an eighth of the need), else 384 MiB. Windows never goes below 384: the display and other programs take VRAM at any time (WDDM).
-static size_t vram_margin(ggml_backend_dev_t dev, const std::string & section, int64_t * stored_mb) {
+static size_t vram_margin(ggml_backend_dev_t dev, const std::string & section, bool cold, int64_t * stored_mb, bool * from_cold) {
     const size_t MiB = 1024 * 1024;
     if (user_knobs().count("VRAM_RESERVE_MB") || user_knobs().count("MARGIN_MB")) {
         return (size_t) std::max(0.0, knobs().margin_mb) * MiB;
     }
     size_t m = 384 * MiB;
     std::string v;
-    if (!section.empty() && moe_state_get(section, vram_key(dev), v) && atoll(v.c_str()) > 0) {
+    // a warm start with no warm figure yet takes the cold one (it is larger)
+    bool own = !section.empty() && moe_state_get(section, vram_key(dev, cold), v);
+    if (!own && !cold && !section.empty() && moe_state_get(section, vram_key(dev, true), v) && from_cold) { *from_cold = true; }
+    if ((own || (from_cold && *from_cold)) && atoll(v.c_str()) > 0) {
         const int64_t need = atoll(v.c_str());
         if (stored_mb) { *stored_mb = need; }
         m = (size_t) (need + std::max<int64_t>(64, need / 8)) * MiB;
@@ -5213,21 +5220,24 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
     for (auto & d : g_vram) {
         size_t f = 0, t = 0;
         ggml_backend_dev_memory(d.dev, &f, &t);
-        if (f >= d.low) {
-            continue;
+        if (f < d.low) {
+            d.low = f;
+            const int64_t outside = (int64_t) d.free_at_size - (int64_t) d.pool - (int64_t) f;
+            d.peak_mb = std::max<int64_t>(d.peak_mb, (outside + (1 << 20) - 1) >> 20);
+            if (d.n_lows++ < 24) {
+                LLAMA_LOG_WARN("moe-cache: VRAM watch %s: call %u (%s): free %.0f MiB, outside the pool since it was sized %lld MiB\n", ggml_backend_dev_name(d.dev), k,
+                        prompt ? "prompt" : "decode", f / 1048576.0, (long long) d.peak_mb);
+            }
         }
-        d.low = f;
-        const int64_t outside = (int64_t) d.free_at_size - (int64_t) d.pool - (int64_t) f;
-        const int64_t need_mb = std::max<int64_t>(0, (outside + (1 << 20) - 1) >> 20);
-        if (d.n_lows++ < 24) {
-            LLAMA_LOG_WARN("moe-cache: VRAM watch %s: call %u (%s): free %.0f MiB, outside the pool since it was sized %lld MiB\n", ggml_backend_dev_name(d.dev), k,
-                    prompt ? "prompt" : "decode", f / 1048576.0, (long long) need_mb);
-        }
-        if (!d.section.empty() && (d.stored_mb < 0 || need_mb > d.stored_mb + 16)) {
-            moe_state_set(d.section, { { d.key, std::to_string(need_mb) } });
+        // stored once a decode token was sampled (a whole request seen), then at every new peak 16 MiB over the stored figure. A warm start sized with the
+        // cold figure (no warm one yet) writes its own, smaller figure at its first decode sample.
+        const bool first = d.stored_mb < 0 || d.from_cold;
+        if (!d.section.empty() && ((first && !prompt) || (!first && d.peak_mb > d.stored_mb + 16))) {
+            moe_state_set(d.section, { { d.key, std::to_string(d.peak_mb) } });
             LLAMA_LOG_WARN("moe-cache: VRAM need outside the pool on %s: %lld MiB, stored for the next start (was %lld)\n", ggml_backend_dev_name(d.dev),
-                    (long long) need_mb, (long long) d.stored_mb);
-            d.stored_mb = need_mb;
+                    (long long) d.peak_mb, (long long) d.stored_mb);
+            d.stored_mb = d.peak_mb;
+            d.from_cold = false;
         }
     }
 }
@@ -5309,7 +5319,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         ggml_backend_dev_t sz_dev = nullptr;   // the last sizing (slots_for): the block pool fills the rest of its last round from it
         size_t sz_free = 0, sz_margin = 0;
         int64_t sz_stored = -1;
+        bool sz_from_cold = false;
         const std::string vram_section = profile_path(model);
+        std::string probe_v;
+        const bool vram_cold = vram_section.empty() || !moe_state_get(vram_section, hw_key("batch.cost2"), probe_v);   // the max-batch probe runs this start
         auto slots_for = [&](ggml_backend_buffer_type_t buft, const std::vector<cand> & cands) -> int32_t {
             if (n_slots > 0) {
                 return n_slots;
@@ -5322,7 +5335,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             ggml_backend_dev_memory(dev, &free, &total);
             // what CUDA takes after the pool (vram_margin: set by the user, else measured by an earlier session, else 384 MiB)
             int64_t stored_mb = -1;
-            size_t margin = vram_margin(dev, vram_section, &stored_mb);
+            bool from_cold = false;
+            size_t margin = vram_margin(dev, vram_section, vram_cold, &stored_mb, &from_cold);
             // --prefetch-experts-slots: the scheduler lazily allocates N full expert
             // tensors on the device big batches are offloaded to
             if (prefetch_slots >= 2 && !alias_on()) {   // with the compute alias the staging slots are lent blocks: no permanent reserve
@@ -5368,7 +5382,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     margin += (size_t) (n_src * n_embd * n_expert * ahead * (sizeof(ggml_fp16_t) + 34.0/32)) + 64u * 1024 * 1024;
                 }
             }
-            sz_dev = dev; sz_free = free; sz_margin = margin; sz_stored = stored_mb;
+            sz_dev = dev; sz_free = free; sz_margin = margin; sz_stored = stored_mb; sz_from_cold = from_cold;
             if (free <= margin + per_slot) {
                 return 0;
             }
@@ -5477,13 +5491,14 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 if (sz_dev == ggml_backend_buft_get_device(buft)) {   // the VRAM watch: free at sizing, the pool, and what the allocation itself took
                     size_t f_after = 0, t_after = 0;
                     ggml_backend_dev_memory(sz_dev, &f_after, &t_after);
-                    LLAMA_LOG_WARN("moe-cache: VRAM on %s: %.0f MiB free at sizing, margin %.0f MiB (%s), pool %.0f MiB (+%d blocks from the last round), "
+                    LLAMA_LOG_WARN("moe-cache: VRAM on %s: %.0f MiB free at sizing, margin %.0f MiB (%s, %s start), pool %.0f MiB (+%d blocks from the last round), "
                             "free after it %.0f MiB (the allocation took %.1f MiB beyond the pool)\n", ggml_backend_dev_name(sz_dev), sz_free / 1048576.0,
                             sz_margin / 1048576.0, sz_stored >= 0 ? tr_fmt("stored need %lld MiB + safety", (long long) sz_stored).c_str() : "no stored need",
+                            vram_cold ? "cold" : "warm",
                             total / 1048576.0, extra, f_after / 1048576.0, ((double) sz_free - (double) total - (double) f_after) / 1048576.0);
                     std::lock_guard<std::mutex> lk(g_vram_mtx);
                     vram_dev_t d;
-                    d.dev = sz_dev; d.free_at_size = sz_free; d.pool = total; d.stored_mb = sz_stored; d.section = vram_section; d.key = vram_key(sz_dev);
+                    d.dev = sz_dev; d.free_at_size = sz_free; d.pool = total; d.stored_mb = sz_stored; d.from_cold = sz_from_cold; d.section = vram_section; d.key = vram_key(sz_dev, vram_cold);
                     g_vram.push_back(d);
                 }
                 ggml_backend_buffer_clear(pbuf, 0);
