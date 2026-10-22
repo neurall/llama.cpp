@@ -437,8 +437,10 @@ void llama_moe_decision_fork(const char * name, const char * value, const char *
 // Start at min(2048, ceiling) (the ceiling is the pass size the compute buffer was reserved for); every call's tokens/s is kept per size;
 // the next call tries the untried neighbour (double first, then half, never below 512); a size is left for a neighbour only when that is
 // > 5% faster, so noise does not move it. Every 16 calls the neighbours are forgotten and tried again (the prompt mix may have changed).
+// The half (more passes) only with --moe ubadapt-more=1 (user rule 2026-10-22: no call runs more passes than fit; see the cache path below).
 uint32_t llama_moe_ubadapt_next_fork(uint32_t n_tokens, uint32_t ceil) {
     static const bool on = [] { const char * e = moe_opt("ubadapt"); return !e || atoi(e) != 0; }();
+    static const bool more = [] { const char * e = moe_opt("ubadapt-more"); return e && atoi(e) != 0; }();
     std::lock_guard<std::mutex> lk(g_tok_mu);
     g_ub_ceil = ceil;
     if (!on || ceil <= 512 || n_tokens < 1024) { g_ub_cur = 0; return ceil; }   // a short prompt is one pass anyway; fewer than 2 passes of the start size measure nothing
@@ -450,7 +452,7 @@ uint32_t llama_moe_ubadapt_next_fork(uint32_t n_tokens, uint32_t ceil) {
     uint32_t next = best;
     if (g_ub_tps.count(best)) {   // best measured: try an untried neighbour
         if (best * 2 <= ceil && !g_ub_tps.count(best * 2)) { next = best * 2; }
-        else if (best / 2 >= 512 && !g_ub_tps.count(best / 2)) { next = best / 2; }
+        else if (more && best / 2 >= 512 && !g_ub_tps.count(best / 2)) { next = best / 2; }
     }
     if (next != g_ub_cur) {
         char v[16], w[160];
@@ -468,12 +470,17 @@ uint32_t llama_moe_ubadapt_next_fork(uint32_t n_tokens, uint32_t ceil) {
 // so prompts of a similar size (same power of two) are one experiment: the planned pass count p0 first, then p0+1, p0+2 ... (smaller passes, never bigger
 // than the planner allowed: it knows the memory limits). Each call's tokens/s is kept per pass count; a count is left for the next one only when that is
 // > 5% faster. Every 16 calls of a bucket the neighbours are forgotten and tried again.
+// The trial of more passes runs only with --moe ubadapt-more=1; by default a call runs the planner's pass count. The trial ran the second call of a 12k
+// prompt (6080 tokens, the same power of two as the 7660-token first call) as 3 x 2048 instead of the planner's 2 x 3040: 3550 against 3990 prompt t/s
+// on that call (Qwen3.6-35B, 3 GiB free per card, warm start, 2026-10-22; b13600 had no trial). Every pass streams the experts again (user rule: no call
+// runs more passes than fit).
 struct ubc_t { std::map<uint32_t, double> tps; uint32_t p0 = 0, calls = 0; };
 static std::map<int, ubc_t> g_ubc;
 static std::string g_one_why;   // the reason of the one-pass rule; the finished call appends its speed to it
 static int g_ubc_bucket = -1; static uint32_t g_ubc_p = 0, g_ubc_size = 0;
 uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint32_t ceil) {
     static const bool on = [] { const char * e = moe_opt("ubadapt"); return !e || atoi(e) != 0; }();
+    static const bool more = [] { const char * e = moe_opt("ubadapt-more"); return e && atoi(e) != 0; }();
     std::lock_guard<std::mutex> lk(g_tok_mu);
     g_ubc_bucket = -1; g_ub_ceil = ceil;
     if (!on || planned < 512 || n_tokens < 1024) { return planned; }
@@ -500,7 +507,7 @@ uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint3
     uint32_t best = p0; double bt = b.tps.count(p0) ? b.tps[p0] : 0;
     for (auto & kv : b.tps) { if (kv.second > bt * 1.05) { best = kv.first; bt = kv.second; } }
     uint32_t p = best;
-    if (b.tps.count(best)) {   // the best is measured: the next pass count up, if its passes are not below 512
+    if (more && b.tps.count(best)) {   // the best is measured: the next pass count up, if its passes are not below 512
         const uint32_t q = best + 1;
         if (!b.tps.count(q) && (n_tokens + q - 1) / q >= 512) { p = q; }
     }

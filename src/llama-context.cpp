@@ -3321,7 +3321,11 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         if (budget > 0 && n_kv_end > 0 && g_host_ok) {
             const double per_tok = std::max(1.0, g_host_a * (double) n_kv_end + g_host_b);   // bytes of host buffer per pass token at that many cells (fitted at startup)
             const uint64_t cap = std::max<uint64_t>(256, (uint64_t) std::max(0.0, ((double) budget - g_host_c - g_host_d * (double) n_kv_end) / per_tok) / 32 * 32);
-            if (cap < n_ubatch_lim) { n_ubatch_lim = (uint32_t) cap; }
+            // user 2026-10-22: the pinned host buffer no longer caps the pass (GLM 3.0 with its weights pinned to the last GiB had a 1.0-1.9 GiB budget: its 12k
+            // prompt ran as 5 passes instead of b13600's 3, 520 against 641 prompt t/s). The loader keeps the RAM of a full pass's host buffer free instead
+            // (common_pass_buffer_reserve); --moe mask-cap=1 brings the cap back. The pinned-memory rewrite after this release replaces both.
+            static const bool mask_cap = [] { const char * e = llama_moe_get_opt("mask-cap"); return e && atoi(e) != 0; }();
+            if (mask_cap && cap < n_ubatch_lim) { n_ubatch_lim = (uint32_t) cap; }
         }
     }
     if (cparams.moe_cache && memory) { llama_moe_cache_pp_cells_fork((uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all); }
