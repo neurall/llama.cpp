@@ -7944,13 +7944,23 @@ static uint32_t pp_record(moe_cache * mc, uint32_t n, uint32_t ub) {
 // (a single size: b = need / tokens, a = 0, which is not below the real slope). The largest pass is the biggest u with that inequality, no margin; a graph that still
 // misses (the staging slots are variable) meets the same check in moe_alias.
 static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prompt, uint32_t ub) {
-    if (ap.kvt.empty() || ap.need_tok.empty()) { return ub; }
+    if (ap.kvt.empty()) { return ub; }
+    size_t pad = 1;
+    for (const auto & r : ap.kvt) { if (!r.fixed) { pad = std::max<size_t>(pad, r.pad); } }
+    // No prompt-sized graph of this run lent yet (a start that took the max-batch probe from the state file runs no calibration graphs before its first
+    // prompt): the planner's bytes per pass token, which the startup reserve seeds (graph_tok + tok_bytes), still keeps that first pass and the zone for
+    // the prompt's KV inside the pool. Without it the first prompt of a warm start was planned with no room for its KV (Qwen3.6-35B, 3 GiB free per card:
+    // a 4579-token pass left no gap for the zone, the server retried with halved batches: 1860 prompt t/s against 3706 on the cold start, 2026-10-22).
+    auto seeded = [&]() -> uint32_t {
+        return ap.graph_tok > 0 ? kvz_pass_cap(ap, n_prompt, ub, 0.0, (double) (ap.graph_tok + ap.tok_bytes), pad, ap.mirror_b) : ub;
+    };
+    if (ap.need_tok.empty()) { return seeded(); }
     // every measured size at the cells this call ends at (need_at_cells): the fit below then includes the masks' growth with the context
     size_t cells_end = (size_t) n_prompt;
     for (auto & r : ap.kvt) { if (!r.fixed) { cells_end = std::max(cells_end, (r.rows ? r.rows() : 0) + (size_t) n_prompt); } }
     std::vector<std::pair<int32_t, size_t>> pts;
     for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, cells_end) }); } }
-    if (pts.empty()) { return ub; }
+    if (pts.empty()) { return seeded(); }
     double a = 0.0, b = 0.0;
     const auto & p1 = pts.back();
     if (pts.size() >= 2 && pts[pts.size() - 2].first != p1.first && p1.second > pts[pts.size() - 2].second) {
@@ -7961,8 +7971,6 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
         b = (double) p1.second / (double) p1.first;
     }
     if (b <= 0.0) { return ub; }
-    size_t pad = 1;
-    for (const auto & r : ap.kvt) { if (!r.fixed) { pad = std::max<size_t>(pad, r.pad); } }
     return kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b);   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
 }
 
