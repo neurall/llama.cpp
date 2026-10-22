@@ -7983,7 +7983,11 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
         b = 1.35 * (double) p1.second / (double) p1.first;
     }
     if (b <= 0.0) { return ub; }
-    return kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b);   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
+    // Past the largest measured size the line is an extrapolation from small graphs (a cold start measures 64-512-token calibration graphs): the same
+    // headroom there (Qwen3.6-35B, 3 GiB free per card, cold: a 4128-token pass lent 1222 of the x4 card's 1282 MiB and its KV did not fit, 2026-10-22)
+    const uint32_t cap = kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b);
+    if (cap <= (uint32_t) p1.first) { return cap; }
+    return std::max<uint32_t>(std::min<uint32_t>(cap, (uint32_t) p1.first), kvz_pass_cap(ap, n_prompt, ub, a, 1.35 * b, pad, ap.mirror_b));   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
 }
 
 static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub_old) {
