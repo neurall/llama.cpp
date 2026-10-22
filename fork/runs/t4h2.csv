@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+glmd2-i,glm,3,pf12k1k,128,--moe pf-slots=2 --moe pf-min-slots=2,
+glmc2-i,glm,3,pf12k1k,128,--moe pf-chunks=2,
+glmdc-i,glm,3,pf12k1k,128,--moe pf-chunks=2 --moe pf-slots=2 --moe pf-min-slots=2,
