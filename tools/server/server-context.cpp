@@ -4593,6 +4593,10 @@ private:
 
                     const int32_t n_decision_first = slot.task->type == SERVER_TASK_TYPE_DECISION ? slot.task->decision.pos_first() : -1;
 
+                    // fork: the pass size the checkpoint cut below uses, asked ONCE per batch: it depends only on the prompt length and the micro-batch. Asked inside the
+                    // loop it ran the pass planner once per prompt token (13.7k calls for a 13.7k-token prompt, 13-18 ms per 2048-token batch, 2026-10-22)
+                    const int n_pass_ckpt = do_checkpoint ? (int) std::min<uint32_t>((uint32_t) n_ubatch, std::max<uint32_t>(32u, llama_moe_prefill_pass_fork((uint32_t) slot.task->n_tokens(), (uint32_t) n_ubatch))) : 0;
+
                     // add prompt tokens for processing in the current batch
                     while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch) {
                         // get next token to process
@@ -4650,8 +4654,7 @@ private:
                         if (do_checkpoint) {
                             // fork: the last slice is cut one PASS (not one maximum ubatch) before the end, so the calls of a long prompt are equal passes: with the ceiling as
                             // offset a 12471-token prompt became 83 + 12384 + 4 tokens, and the 83-token call streamed every expert for 83 tokens
-                            const int n_pass = (int) std::min<uint32_t>((uint32_t) n_ubatch, std::max<uint32_t>(32u, llama_moe_prefill_pass_fork((uint32_t) slot.task->n_tokens(), (uint32_t) n_ubatch)));
-                            const int checkpoint_offsets[] = {4 + n_pass, 4};
+                            const int checkpoint_offsets[] = {4 + n_pass_ckpt, 4};
 
                             bool should_break = false;
                             for (int offset : checkpoint_offsets) {
