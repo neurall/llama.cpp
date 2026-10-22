@@ -1619,6 +1619,7 @@ def _server_start_once(build, env, args):
     env, args = drop_moe_flag(build, env, args)
     args = merge_moe(args)
     logf = f"/tmp/perf-{build}{LOGTAG}.log"
+    if os.path.exists(logf): os.replace(logf, logf + ".prev")   # the previous start's log stays readable: in a clean-state cell the cold run is the start before the warm one
     global WATCH_LOG; WATCH_LOG = logf   # post() watches this file
     with open(logf, "w") as lf:
         p = subprocess.Popen(WRAP + [os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
@@ -5435,6 +5436,7 @@ def run_list(name, argv):
     ap.add_argument("-ssh", "--ssh", metavar="LINE", help="the ssh line of a rented box for this session, in quotes (\" -p 47086 root@93.91.156.104 -L 8080:localhost:8080\"): the machine named by -pc (cld when -pc is not given) is set to it first (~/.ssh/config and machines.csv), see `run.py machine add`")
     o = ap.parse_args([x for x in argv if x != "desc"])   # `run gainers desc` works too
     NOSTATS[0] = o.no_stats; NGPU[0] = o.n_gpus
+    if o.no_pool is not None: os.environ["RUN_KEEP_POOL"] = "1"   # -nm: the cells never unmount the pool either (pool_sanity); a model bigger than the pool loads without it, the pool stays for the next ones
     if o.no_stats: os.environ["RUN_NS"] = "1"
     if o.n_gpus is not None: os.environ["RUN_NG"] = str(o.n_gpus)
     if o.n_gpus is not None and o.machine == "pc1":   # this host: the children (cells, servers) see the chosen cards only, numbered in the listed order
@@ -5767,7 +5769,12 @@ def cmd_cell(a):
         r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True)
         if r.stdout.split() and max(int(x) for x in r.stdout.split()) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
         time.sleep(5)
-    if not nomount_args(a.args)[1] and not kept_get(): pool_sanity(model=a.model)
+    keep_pool = os.environ.get("RUN_KEEP_POOL") == "1"   # run -nm: the pool stays mounted for the whole list (a remount after fragmentation gets only part of it back: 49-58 of 108 pages, 2026-10-22)
+    too_big = False
+    if keep_pool and os.path.ismount("/mnt/huge1g") and os.path.exists(HUGE_NR):
+        need = -(-sum(os.path.getsize(p) for p in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", a.model))) >> 30)
+        too_big = int(open(HUGE_NR).read()) < need   # GLM 3.0 (109.4 GiB) in the 108 pool: this cell loads without the pool, the pool is kept
+    if not nomount_args(a.args)[1] and not kept_get(): pool_sanity(model=None if keep_pool else a.model)
     # the build name "latest" is the symlink the newest dev build moves (cmd_build): resolved HERE, after the wait, so a queued cell runs the newest binary of the moment, and
     # every row, log and tag carries the real build name
     a.builds = ",".join(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, "latest"))) if b == "latest" else resolve_build(b) for b in a.builds.split(","))
@@ -5781,7 +5788,7 @@ def cmd_cell(a):
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
            "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG="r")
-    if os.path.ismount("/mnt/huge1g") and not nomount: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
+    if os.path.ismount("/mnt/huge1g") and not nomount and not too_big: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
     env.setdefault("PERF_LEDGER", "0")   # the pool write ledger is a debug tool and off in cells (it cost our side a few percent that stock never pays); --env PERF_LEDGER=1 records it: kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
     for kv in (a.env or []):
@@ -5797,6 +5804,9 @@ def cmd_cell(a):
         f.write(f"== {a.test} {args}\n" + "".join(l + "\n" for l in lines))
     if a.builds.count(",") == 0:
         try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
+        except OSError: pass
+        try:   # the start before the last one (the cold run of a clean-state cell), when it belongs to this cell
+            if os.path.getmtime(f"/tmp/perf-{a.builds}.log.prev") >= t_cell0: shutil.copy(f"/tmp/perf-{a.builds}.log.prev", os.path.join(Q5, a.tag + ".server.prev.log"))
         except OSError: pass
     # the pool write ledgers this cell's servers wrote (one per server start): gzipped next to the server log, the replay's summary (overlaps, uploads a lend
     # or the KV zone crossed while they ran) appended to TAG.out
