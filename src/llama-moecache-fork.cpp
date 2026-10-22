@@ -279,6 +279,7 @@ struct moe_cache {
         int                   n_stage   = 0;    // staging slots the last graph got (0: it ran without prefetch)
         int                   n_cfg     = 0;    // staging slots a graph may use at most (the scheduler's ring size, --moe pf-slots)
         size_t                graph_tok = 0;    // graph bytes per batch token of the biggest prompt graphs seen (the prompt pass planner)
+        uint32_t              graph_tok_n = 0;  // tokens of the graph graph_tok was taken from: only a graph at least as big replaces it
         // Lending from every size class (--moe alias-all, default on): the classes lie one after the other in the buffer (the first one at 0), so the lent
         // range [0, bytes) can run past the first class into the next ones. Each class gives the blocks the range covers; the class's last block (its zero
         // block, the "uncached" target of the decode tables) is zeroed again when the range leaves it. One class only (the old rule) capped the micro-batch
@@ -3292,7 +3293,7 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
             static const bool seed = [] { const char * e = moe_opt("pp-seed"); return !e || atoi(e) != 0; }();
             if (seed && n_tokens >= 64) {
                 if (ap.slot_b == 0 && slot_b > 0) { ap.slot_b = slot_b; }
-                if (ap.graph_tok == 0 && peak > 0) { ap.graph_tok = (peak + (size_t) n_tokens - 1) / (size_t) n_tokens; }
+                if (ap.graph_tok == 0 && peak > 0) { ap.graph_tok = (peak + (size_t) n_tokens - 1) / (size_t) n_tokens; ap.graph_tok_n = (uint32_t) n_tokens; }
             }
             const size_t stage = slot_b * (size_t) std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
             if (stage > 0 && base + stage > cap) {
@@ -4785,7 +4786,11 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             ap.slot_b  = slot_b;
             ap.n_stage = fit;
             ap.n_cfg   = n_cfg;
-            if (n_tokens >= 64) { ap.graph_tok = std::max(ap.graph_tok, (peak + n_tokens - 1) / n_tokens); }   // graph bytes per token (the prompt pass planner)
+            // graph bytes per token (the prompt pass planner), from the biggest graph seen. Not the largest ratio of any graph: a 64-token graph costs 2.6x more per
+            // token than a 512-token one (its fixed part is spread over 8x fewer tokens), and the max-batch calibration of a first start runs 64..512-token graphs
+            // before the first prompt, so the max made every pass look 2.6x heavier: a 512-token pass "did not fit" the 1.0 GiB pool and the first prompts ran in
+            // passes of 320 (Qwen3.6-35B 12k, 934 prompt t/s against 1490 with a state file, which skips that calibration).
+            if (n_tokens >= 64 && (uint32_t) n_tokens >= ap.graph_tok_n) { ap.graph_tok = (peak + n_tokens - 1) / n_tokens; ap.graph_tok_n = (uint32_t) n_tokens; }
         }
         const size_t need_b = stage_off + stage;   // the bytes this graph borrows from the start of the buffer: its tensors, the CUDA scratch, the staging slots
         if (!ap.need_tok.empty() || !ap.kvt.empty()) {   // remembered per graph size: the next graph of this size gets its lend before it is built (prepare)
@@ -7968,8 +7973,10 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
         for (const auto & a : mc->alias) { if (a.dev == mc->link_dev[0]) { ap = &a; } }
     }
     if (ap) {   // bounded whatever the plan below does (also before the first prompt graph is known; see pp_cap_to_pool)
+        const uint32_t ub_old0 = ub_old, ub_max0 = ub_max;
         ub_old = pp_cap_to_pool(*ap, n, ub_old);
         ub_max = pp_cap_to_pool(*ap, n, ub_max);
+        if (moe_log_has("w")) { LLAMA_LOG_WARN("moe-cache: pass plan input: n %u ub_max %u -> %u, ub_old %u -> %u, span %zu, graph_tok %zu, tok_bytes %zu, slot_b %zu, mirror_b %zu, need_tok %zu\n", n, ub_max0, ub_max, ub_old0, ub_old, (size_t) ap->span, (size_t) ap->graph_tok, (size_t) ap->tok_bytes, (size_t) ap->slot_b, (size_t) ap->mirror_b, ap->need_tok.size()); }
     }
     if (!on || mc->alias.empty() || mc->n_links <= 0 || !mc->link_dev[0]) {
         return pp_record(mc, n, ub_old);
