@@ -1948,6 +1948,28 @@ static void common_hog(void) {
 }
 
 // pinned weights for every model, whether or not the expert cache is on (OLMoE fits the VRAM, the placement code returns early, and its weights were mapped: 2026-10-21)
+// The pinned host buffer of the largest prompt pass (graph inputs: the attention masks and the model's per-token inputs, GLM-5.3-Flash 598,200 bytes per token
+// + 2 per token per cell), measured with a no-alloc probe of that pass before any weight is pinned. Pinning big models to the last GiB left GLM 3.0 (109.4 GiB)
+// a 1.5 GiB pass budget: its 12k prompt ran as 5 passes instead of 3, 520 instead of 641 prompt t/s (2026-10-22). The pass is the micro-batch ceiling up to
+// 8192 (the pass a 24 GB card can lend for the big models) at the context the cells of a long prompt reach (32k at most).
+static size_t common_pass_buffer_reserve(const common_params & params) {
+    auto mp = common_model_params_to_llama(params);
+    auto cp = common_context_params_to_llama(params);
+    const uint32_t ub = std::min<uint32_t>(params.n_ubatch > 0 ? params.n_ubatch : 512, 8192);
+    cp.n_ubatch = ub;
+    cp.n_batch  = std::max(cp.n_batch, ub);
+    cp.n_ctx    = params.n_ctx > 0 ? std::min<uint32_t>(params.n_ctx, 32768) : 32768;
+    std::vector<ggml_backend_dev_t> devs;
+    uint32_t ngl = 0, nctx = 0, nexp = 0;
+    try {
+        const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+        if (!dmd.empty()) { return dmd.back().compute; }   // the last entry is the host
+    } catch (const std::exception & e) {
+        COM_DBG("pass buffer probe failed (%s)\n", e.what());
+    }
+    return 0;
+}
+
 static void common_auto_pin(common_params & params) {
     const size_t model_size = common_model_file_size(params.model.path);
     // pinned weights (no mmap, llama-server only: startup takes longer, pays off over many requests):
@@ -1956,8 +1978,11 @@ static void common_auto_pin(common_params & params) {
     // in the RAM available now minus the margin below; a model that does not is pinned up to that limit and the rest is mapped
     if (params.auto_pin && params.load_mode == LLAMA_LOAD_MODE_AUTO) {
         const size_t avail = common_ram_available(true);
-        // RAM kept for the system, the KV cache in RAM and the page cache of the mapped rest: everything else is pinned (2026-10-21: 12 GiB, was 0 when the model fitted and 4 GiB when it did not)
-        const size_t margin = (size_t) 12 << 30;
+        // RAM kept for the system, the KV cache in RAM and the page cache of the mapped rest: everything else is pinned (2026-10-21: 12 GiB, was 0 when the model fitted and 4 GiB when it did not),
+        // plus the largest prompt pass's pinned host buffer (user 2026-10-22: a full-size pass comes before how much of the model is pinned)
+        const size_t pass_buf = common_pass_buffer_reserve(params);
+        const size_t margin = ((size_t) 12 << 30) + pass_buf;
+        LOG_INF("%s: %.1f GiB of RAM kept free for the pinned host buffer of the largest prompt pass\n", __func__, pass_buf / 1073741824.0);
         if (avail && model_size + margin <= avail) {
             params.load_mode        = LLAMA_LOAD_MODE_NONE;
             params.load_pinned_auto = true;
