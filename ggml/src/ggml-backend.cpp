@@ -2413,7 +2413,9 @@ static bool ggml_backend_sched_prefetch_prepare(ggml_backend_sched_t sched, stru
     // of 4k without slots ran 544). At least 3: fewer cannot keep an upload in flight safely (fire_ahead keeps up to n_slots - 1 per card).
     if (R->region_buf != NULL && size > 0) {
         const int fit = (int) std::min<size_t>((size_t) sched->prefetch_n_slots, R->region_cap / size);
-        if (fit >= 3) {
+        // GGML_PF_MIN_SLOTS=2 (--moe pf-min-slots=2): double buffering, one slot computes while the next tensor uploads into the other
+        static const int pf_min = getenv("GGML_PF_MIN_SLOTS") ? std::max(2, atoi(getenv("GGML_PF_MIN_SLOTS"))) : 3;
+        if (fit >= pf_min) {
             if (R->n_slots != fit) {
                 R->n_slots = fit;
                 R->cur %= fit;

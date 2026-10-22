@@ -352,6 +352,7 @@ void llama_moe_set_opt(const char * key, const char * value) {
     // ratio of a big one in scheduler tests (OLMoE standing in for GLM). The backend reads GGML_CUDA_MMID_REPEAT / GGML_CUDA_DENSE_REPEAT at its first prompt graph.
     if (value && strcmp(key, "sim-moe-repeat") == 0)   { setenv("GGML_CUDA_MMID_REPEAT", value, 1); }
     if (value && strcmp(key, "sim-dense-repeat") == 0) { setenv("GGML_CUDA_DENSE_REPEAT", value, 1); }
+    if (value && strcmp(key, "pf-min-slots") == 0)     { setenv("GGML_PF_MIN_SLOTS", value, 1); }   // the staging ring's minimum (ggml-backend.cpp)
 }
 
 const char * llama_moe_get_opt(const char * key) {
