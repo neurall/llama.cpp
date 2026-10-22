@@ -4087,7 +4087,7 @@ def _build_stock(a):
 
 
 def _package_linux(a, W, binp, log):
-    """the release archives of a release build: llama-release-b<build>-<commit>-bin-ubuntu-cuda-13.4-x64.tar.gz (binaries, LICENSE, the libomp.so the clang
+    """the release archives of a release build: llama-release-b<build>-<commit>-bin-ubuntu-cuda-<toolkit>-x64.tar.gz (binaries, LICENSE, the libomp.so the clang
     build links dynamically) and the matching cudart archive, smoke-started in SMOKE_IMAGES; DEVBUILDS/NAME = both archives unpacked (what users get)"""
     uid = f"{os.getuid()}:{os.getgid()}"
     dk = lambda *args: subprocess.run(["docker", "run", "--rm", "--user", uid] + list(args), capture_output=True, text=True)
@@ -4095,7 +4095,11 @@ def _package_linux(a, W, binp, log):
     v = re.search(r"build (\d+)", vout.stdout + vout.stderr); c = re.search(r"commit ([0-9a-f]+)", vout.stdout + vout.stderr)
     if not v or not c:
         sys.exit(f"release: no version from llama-server --version: {(vout.stdout + vout.stderr)[-300:]}")
-    N = f"llama-release-b{v.group(1)}-{c.group(1)}-bin-ubuntu-cuda-13.4-x64"; C = "cudart-" + N
+    nv = dk("llama-rel-el8", "nvcc", "--version")   # the toolkit the image really has: the archive name used to say 13.4 whatever built it (b13600 shipped older libraries under that name)
+    cv = re.search(r"release (\d+\.\d+)", nv.stdout + nv.stderr)
+    if not cv:
+        sys.exit(f"release: no CUDA version from nvcc in the image: {(nv.stdout + nv.stderr)[-200:]}")
+    N = f"llama-release-b{v.group(1)}-{c.group(1)}-bin-ubuntu-cuda-{cv.group(1)}-x64"; C = "cudart-" + N
     os.makedirs(REL_OUT, exist_ok=True)
     for d in (N, C):
         shutil.rmtree(os.path.join(REL_OUT, d), ignore_errors=True); os.makedirs(os.path.join(REL_OUT, d))
@@ -4164,7 +4168,11 @@ def cmd_build(a):
             v = re.search(r"build (\d+)", vout.stdout + vout.stderr); c = re.search(r"commit ([0-9a-f]+)", vout.stdout + vout.stderr)
             if not v or not c:
                 sys.exit(f"release zip: no version from llama-server.exe: {(vout.stdout + vout.stderr)[-300:]}")
-            z = f"llama-release-b{v.group(1)}-{c.group(1)}-bin-win-cuda-13.4-x64.zip"
+            nv = subprocess.run(ssh + ["N:\\nv\\bin\\nvcc --version"], capture_output=True, text=True)   # the toolkit that built ggml-cuda.dll, not a fixed 13.4
+            cv = re.search(r"release (\d+\.\d+)", nv.stdout + nv.stderr)
+            if not cv:
+                sys.exit(f"release zip: no CUDA version from nvcc on the laptop: {(nv.stdout + nv.stderr)[-200:]}")
+            z = f"llama-release-b{v.group(1)}-{c.group(1)}-bin-win-cuda-{cv.group(1)}-x64.zip"
             pkg = (f"set P=N:\\tmp\\pkg& (if exist N:\\tmp\\pkg rmdir /s /q N:\\tmp\\pkg) & mkdir N:\\tmp\\pkg && xcopy /q /y /e N:\\build\\rel-cuda134-clang\\* N:\\tmp\\pkg\\ >nul"
                    f" && cd /d N:\\tmp\\pkg && tar -xf N:\\llama.cpp\\release-out\\llama-release-b11214-a3768a8-bin-win-cuda-13.4-x64.zip msvcp140.dll vcruntime140.dll vcruntime140_1.dll"
                    f" && copy /y N:\\llama.cpp\\LICENSE N:\\tmp\\pkg\\ >nul && (if exist N:\\llama.cpp\\release-out\\{z} del N:\\llama.cpp\\release-out\\{z})"
