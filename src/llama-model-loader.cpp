@@ -735,12 +735,12 @@ llama_model_loader::llama_model_loader(
     n_tensors = weights_map.size();
 
     // (fork) lazy pin: a MoE model with a pin budget loads nothing pinned. The weights stay mapped (no prefetch, nothing read at load) and the MoE cache's
-    // prefetch thread reads whole expert tensors with parallel preads into pinned buffers while the server already runs (--moe pin-lazy=0: pin in tensor order at load)
+    // prefetch thread reads whole expert tensors with parallel preads into pinned buffers while the server already runs (only with --moe pin-lazy=1; the default pins in tensor order at load)
     if (pin_budget > 0) {
         const char * pl = llama_moe_get_opt("pin-lazy");
         bool has_exps = false;
         for (const auto & kv : weights_map) { if (kv.first.find("_exps.") != std::string::npos) { has_exps = true; break; } }
-        if (has_exps && !(pl && atoi(pl) == 0)) {
+        if (has_exps && pl && atoi(pl) != 0) {   // opt-in (--moe pin-lazy=1): by default the pinned part is read from the SSD straight into pinned memory at load, no mapping first
             llama_moe_set_opt("pin-lazy", "1");
             pin_budget = 0;
         }
@@ -1465,9 +1465,7 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
                 }
             }
 
-            // (fork) no prefetch with a pin budget: MAP_POPULATE reads the whole file into the page cache and maps it before the pinned share is read by the
-            // parallel pread workers, i.e. every pinned byte is read twice and the mapped rest floods the page cache at load time (GLM 3.5-bit: mm 110 GiB first, pin after)
-            const size_t prefetch_size = prefetch && use_mmap && pin_budget == 0 && !pin_lazy() ? -1 : 0;
+            const size_t prefetch_size = prefetch && use_mmap && pin_budget == 0 ? -1 : 0;   // fork: a pin budget means the pinned part is pread into pinned memory; populating the whole mapping first read the file into the page cache before anything was pinned
 
             std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
                     lazy.for_file(idx));
@@ -1750,7 +1748,7 @@ bool llama_model_loader::load_all_data(
     std::vector<std::thread> pr_threads;
     size_t n_load_threads = std::max<size_t>(1, std::min<size_t>(16, std::thread::hardware_concurrency() / 2));
     if (const char * e = moe_opt("load-threads")) { n_load_threads = std::max(1, atoi(e)); }
-    const bool par_load = (!use_mmap || pin_budget > 0) && !use_direct_io && !check_tensors && n_load_threads > 1;   // (mmap with a pin budget: the pinned share is read like --load-mode pin)
+    const bool par_load = !use_direct_io && !check_tensors && n_load_threads > 1;
     auto pr_worker = [&]() {
 #if defined(__linux__)
         if (const char * hc = getenv("LLAMA_HELPER_CPUS")) { // a user CPU mask (-C): the loader threads stay on those cores and their siblings, so the pages are first touched on their die
@@ -1811,9 +1809,9 @@ bool llama_model_loader::load_all_data(
 
         size_t n_size = ggml_nbytes(cur);
 
-        // with mmap and a pin budget a tensor that already has an address sits in the pinned host buffer: read it from the file with the parallel pread path, not by faulting the
-        // mapping page by page (one thread, and every page is read into the page cache first: a second copy and a second pass over the disk); only the mapped rest comes from the mapping
-        const bool pinned_read = use_mmap && pin_budget > 0 && cur->data != nullptr && cur->buffer && ggml_backend_buffer_is_host(cur->buffer) && !lazy.has(cur);
+        // fork: with a pin budget, tensors that already own pinned host memory are read by the pread pool, not copied from the mapping (the copy grew the page cache first and doubled the footprint)
+        const bool pinned_read = use_mmap && !lazy.has(cur) && cur->data && cur->buffer && ggml_backend_buffer_is_host(cur->buffer) && !mappings.empty() && !(
+            (uint8_t *) cur->data >= (uint8_t *) mappings.at(weight->idx)->addr() && (uint8_t *) cur->data < (uint8_t *) mappings.at(weight->idx)->addr() + mappings.at(weight->idx)->size());
         const bool from_mapping = (use_mmap || lazy.has(cur)) && !pinned_read;
 
         if (from_mapping) {
