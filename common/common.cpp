@@ -1952,7 +1952,7 @@ static void common_hog(void) {
 // + 2 per token per cell), measured with a no-alloc probe of that pass before any weight is pinned. Pinning big models to the last GiB left GLM 3.0 (109.4 GiB)
 // a 1.5 GiB pass budget: its 12k prompt ran as 5 passes instead of 3, 520 instead of 641 prompt t/s (2026-10-22). The pass is the micro-batch ceiling up to
 // 8192 (the pass a 24 GB card can lend for the big models) at the context the cells of a long prompt reach (32k at most).
-static size_t common_pass_buffer_reserve(const common_params & params) {
+static size_t common_pass_buffer_reserve(common_params & params) {
     auto mp = common_model_params_to_llama(params);
     auto cp = common_context_params_to_llama(params);
     const uint32_t ub = std::min<uint32_t>(params.n_ubatch > 0 ? params.n_ubatch : 512, 8192);
