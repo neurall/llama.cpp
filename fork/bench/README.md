@@ -3,7 +3,7 @@
 `fork/run.py` is the one entry point: it runs the fork's tests against any number of builds, models and settings, on this host or
 on other machines over ssh, and appends every run to `run-history.csv`. This directory holds what it needs and the analysis tools.
 
-- `src_12k.cpp` (12,302 tokens of llama.cpp source), `src_128k.cpp` (125,257 tokens), `longsrc.cpp` (perplexity text): frozen inputs
+- `src_12k.cpp` (in `fork/prompts/`; 12,302 tokens of llama.cpp source), `src_128k.cpp` (125,257 tokens), `longsrc.cpp` (perplexity text): frozen inputs
   so anyone can reproduce the numbers in the main README. Token counts are for the GLM-5.3-Flash tokenizer.
 - `run-history.csv`, `campaigns.csv`, `machines.csv`, `tune.csv`: every dev and test run and what is needed to read it (plain csv, appended by
   `run.py`, committed).

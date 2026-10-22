@@ -945,3 +945,225 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-10-20 10:48:45,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,7,1.6384
 2026-10-20 10:48:45,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,8,1.6595
 2026-10-20 10:48:45,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,9,1.6288
+2026-10-20 16:30:36,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9409
+2026-10-20 16:30:36,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9422
+2026-10-20 16:30:53,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9383
+2026-10-20 16:30:53,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9407
+2026-10-20 16:31:18,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6634
+2026-10-20 16:31:18,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5233
+2026-10-20 16:31:46,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.667
+2026-10-20 16:31:46,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5236
+2026-10-20 16:32:27,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5649
+2026-10-20 16:32:27,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.4232
+2026-10-20 16:33:26,b13600,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5651
+2026-10-20 16:33:26,b13600,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.4237
+2026-10-20 16:34:27,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,ppl,1,1.5658
+2026-10-20 16:34:27,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,ppl,2,1.4226
+2026-10-20 16:35:35,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,ppl,1,1.565
+2026-10-20 16:35:35,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,ppl,2,1.4225
+2026-10-20 16:36:52,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,ppl,1,1.1975
+2026-10-20 16:36:52,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,ppl,2,1.1724
+2026-10-20 16:37:40,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,ppl,1,1.1926
+2026-10-20 16:37:40,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,ppl,2,1.1711
+2026-10-20 16:39:02,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1265
+2026-10-20 16:39:02,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1108
+2026-10-20 16:40:49,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1284
+2026-10-20 16:40:49,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1157
+2026-10-20 16:41:45,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1317
+2026-10-20 16:41:45,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1222
+2026-10-20 16:43:39,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1305
+2026-10-20 16:43:39,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1219
+2026-10-20 16:44:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4604
+2026-10-20 16:44:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5805
+2026-10-20 16:48:22,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4541
+2026-10-20 16:48:22,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.575
+2026-10-20 16:49:45,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3756
+2026-10-20 16:49:45,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4302
+2026-10-20 16:54:05,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3675
+2026-10-20 16:54:05,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4204
+2026-10-20 16:56:02,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,1,1.2455
+2026-10-20 16:56:02,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,2,1.2663
+2026-10-20 17:00:58,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,1,1.245
+2026-10-20 17:00:58,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,2,1.2808
+2026-10-20 17:05:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1265
+2026-10-20 17:05:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1108
+2026-10-20 17:06:58,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1263
+2026-10-20 17:06:58,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1145
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1277
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.1128
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1436
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2259
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2677
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.3321
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.4178
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.395
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.4027
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.3996
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1277
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.1128
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1436
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2259
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2677
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.3321
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.4178
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.395
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.4027
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.3996
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1265
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.117
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1466
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2229
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2633
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.3288
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.4125
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.39
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.3971
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.3946
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1268
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.112
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1414
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2218
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2629
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.3311
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.4163
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.3941
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.4008
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.3983
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1274
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.1156
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1458
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2282
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2685
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.3359
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.4209
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.3965
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.4037
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.4005
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,1,1.1962
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,2,1.1708
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,3,1.2037
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,4,1.3018
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,5,1.3405
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,6,1.4038
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,7,1.4946
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,8,1.4733
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,9,1.4779
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,10,1.4758
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,1,1.1326
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,2,1.1263
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,3,1.1471
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,4,1.2243
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,5,1.2646
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,6,1.3292
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,7,1.4156
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,8,1.3944
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,9,1.4089
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,10,1.4118
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,1,1.6653
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,2,1.5247
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,3,1.5693
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,4,1.7085
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,5,1.7537
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,6,1.7915
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,7,1.874
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,8,1.8566
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,9,1.8206
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,10,1.7843
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,1,1.6606
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,2,1.5213
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,3,1.5676
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,4,1.7081
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,5,1.7547
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,6,1.7927
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,7,1.8742
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,8,1.857
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,9,1.821
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,10,1.7842
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,1,1.6672
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,2,1.5245
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,3,1.5678
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,4,1.709
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,5,1.7554
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,6,1.7941
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,7,1.8764
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,8,1.859
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,9,1.8225
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,10,1.7855
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,1,1.9339
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,2,1.9344
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,3,2.0097
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,4,2.0246
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,5,2.0647
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,6,2.0766
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,7,2.075
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,8,2.1555
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,9,2.1709
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,10,2.1618
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,1,1.9356
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,2,1.94
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,3,2.0137
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,4,2.0287
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,5,2.0687
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,6,2.0794
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,7,2.0779
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,8,2.1583
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,9,2.1729
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,10,2.1627
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1248
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.1046
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1363
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2188
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2604
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.325
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.41
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.3873
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.3955
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.3927
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1277
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.1128
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1436
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2259
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2677
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.3321
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.4178
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.395
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.4027
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.3996
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1265
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1108
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1399
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.221
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2618
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3284
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4139
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3909
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3984
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3954
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1274
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1144
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1435
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2251
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2648
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3318
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4171
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3938
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.4008
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3975
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,1,1.2455
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,2,1.2663
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,3,1.3368
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,4,1.4121
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,5,1.4475
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,6,1.6114
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,7,1.6355
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,8,1.6573
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,9,1.627
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,1,1.2545
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,2,1.2837
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,3,1.3503
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,4,1.4271
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,5,1.4615
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,6,1.6253
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,7,1.6438
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,8,1.6633
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,9,1.6335
