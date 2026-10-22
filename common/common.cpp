@@ -2011,18 +2011,11 @@ static void common_moe_cache_auto(common_params & params) {
     common_hog();
     common_moe_cache_auto_impl(params);
     common_auto_pin(params);
-    // VRAM the cache leaves free for the growth of the CUDA pools after load, which scales with the batch: measured at -ub 2048 (cache
-    // sized with a margin, 12k prompt, other margins aborting with CUDA out of memory): 54 MiB OLMoE, 74 IQ3_S, 170 GLM; ~15 at 512.
-    // 0.1 MiB per ubatch token is 1.2x the worst of them, floor 200: GLM aborted with out of memory at ub 512 with 51 (-at off keeps the 384 MiB default; --moe margin_mb=N overrides)
-    if (params.n_moe_cache_slots != 0 && common_autotune_on(params) && params.moe_opts.find("margin_mb") == std::string::npos &&
-        !llama_moe_get_opt("vram-reserve-mb")) {
-        // small cards: the CUDA runtime loads kernels lazily and the display and other programs keep taking VRAM (WDDM), so 200 MiB of headroom is not enough on
-        // 8 GB (RTX 4060 Laptop, 6.9 GiB free: the pool took everything and the first kernel launch ran out of memory). 8% of the card up to 12 GiB, floor 512 MiB.
-        size_t vf = 0, vm = 0; int ng = 0;
-        common_gpu_free(vf, vm, ng);
-        const int small_floor = ng > 0 && vm > 0 && vm <= ((size_t) 12 << 30) ? std::max(512, (int) std::ceil(0.08 * (double) (vm >> 20))) : 0;
-        params.moe_opts += (params.moe_opts.empty() ? "" : ",") + std::string("margin_mb=") + std::to_string(std::max({ 200, small_floor, (int) std::ceil(0.1 * params.n_ubatch) }));
-    }
+    // The VRAM the expert pool leaves free for CUDA's own use after it is the need an earlier session measured on the same card, driver and build (the
+    // engine stores it, vram_margin), else 384 MiB; --moe margin_mb=N sets it by hand. The rule that stood here (0.1 MiB per micro-batch token, 8% on
+    // small cards) set margin_mb, which no engine setting read until 2026-10-22: every pool was sized with the 384 MiB default. The build is part of the
+    // stored need's key (a new build measures again).
+    params.moe_opts += (params.moe_opts.empty() ? "" : ",") + std::string("build-id=") + std::to_string(llama_build_number()) + "-" + llama_commit();
     COM_DBG("moe_cache_slots=%d ctx=%d batch=%d ubatch=%d threads=%d threads_batch=%d repack=%s ngl=%d tensor_overrides=%zu fit=%s\n",
         params.n_moe_cache_slots, params.n_ctx, params.n_batch, params.n_ubatch, params.cpuparams.n_threads,
         params.cpuparams_batch.n_threads, params.no_extra_bufts ? "off" : "on", params.n_gpu_layers,

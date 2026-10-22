@@ -756,7 +756,7 @@ static const std::vector<std::pair<const char *, double knobs_t::*>> & knob_fiel
         { "UPLOAD_SHARE", &knobs_t::swap_frac }, { "PIN_HOT", &knobs_t::hot_frac }, { "STAY_BONUS", &knobs_t::sticky }, { "SLOW_MIN_STAY", &knobs_t::slow_stay },
         { "SWAP_LEAD", &knobs_t::margin }, { "SWAPS_PER_STEP", &knobs_t::budget }, { "CPU_RAM_GBS", &knobs_t::cpu_gbs }, { "SWAP_LEAD_PER_LINK", &knobs_t::link },
         { "UPLOAD_WAIT", &knobs_t::gate }, { "UPLOAD_WAIT_MAX_US", &knobs_t::gate_max_us }, { "RAM_CEILING_GBS", &knobs_t::ddr_gbs },
-        { "VRAM_RESERVE_MB", &knobs_t::margin_mb }, { "WAIT_SWAPS", &knobs_t::wait }, { "PRED_AUTO", &knobs_t::auto_tune },
+        { "VRAM_RESERVE_MB", &knobs_t::margin_mb }, { "MARGIN_MB", &knobs_t::margin_mb }, { "WAIT_SWAPS", &knobs_t::wait }, { "PRED_AUTO", &knobs_t::auto_tune },
         { "EV_CLD", &knobs_t::big }, { "L3_PF", &knobs_t::l3pf }, { "L3_AUTO", &knobs_t::auto_l3 }, { "IDLE_UP", &knobs_t::tbp }, { "IDLE_UP_N", &knobs_t::tbp_layers }, { "UPLOAD_CHUNK_KB", &knobs_t::chunk_kb },
         { "PRED_ISO", &knobs_t::stream }, { "PRED_N", &knobs_t::stream_m }, { "PRED_KEEP", &knobs_t::slotkeep }, { "PRED_TUNE", &knobs_t::self_tune }, { "PRED", &knobs_t::predict },
         { "PRED_LEAD", &knobs_t::offset }, { "PRED_SLOW", &knobs_t::stream_slow },
@@ -5128,6 +5128,110 @@ static pool_layout_t pool_layout(const std::vector<const llama_layer *> & ls) {
     return out;
 }
 
+// ---- VRAM outside the expert pool -----------------------------------------------------------------------------------------------------------------------
+// The pool takes a card's free VRAM minus a margin for what CUDA allocates after it is laid out: kernels loaded on first use, cuBLAS handles, the decode
+// graphs' scratch, prompt scratch that does not fit the lent region (the device pool keeps its peak), the pool allocation's own page tables. Until
+// 2026-10-22 the margin was a fixed 384 MiB everywhere (the 0.1 MiB-per-micro-batch-token rule in common/ set margin_mb, which no engine setting read),
+// and the pool grew in whole rounds (one block per layer of the card, GLM 3.0: 182 MiB), so 495-661 MiB per 24 GB card stayed free at the peak.
+// Now every session measures what it really took outside the pool: free VRAM when the pool was sized - the pool - the lowest free VRAM seen. The
+// figure is stored per card, driver and build (an input: a new driver or build measures again) and the next start leaves that plus a safety.
+// The watch also logs its first lows with the call that made them: when CUDA's own use stops growing.
+struct vram_dev_t {
+    ggml_backend_dev_t dev = nullptr;
+    size_t  free_at_size = 0;      // free VRAM when the pool was sized
+    size_t  pool         = 0;      // bytes the pool took
+    size_t  low          = SIZE_MAX;
+    int64_t stored_mb    = -1;     // the need stored for this card, driver and build (-1: none yet)
+    int     n_lows       = 0;
+    std::string section, key;
+};
+static std::vector<vram_dev_t> g_vram;
+static std::mutex g_vram_mtx;
+
+// the NVIDIA driver: the kernel module's version on Linux, else the CUDA driver API version the backend reports
+static const std::string & vram_driver() {
+    static const std::string d = [] {
+        std::string v;
+#ifndef _WIN32
+        if (FILE * f = fopen("/proc/driver/nvidia/version", "r")) {   // "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  595.104.02  Release Build ..."
+            char line[512] = {};
+            if (fgets(line, sizeof line, f)) {   // the first word made of digits and dots
+                for (const char * p = line; *p && v.empty(); ) {
+                    while (*p == ' ') { ++p; }
+                    const char * w = p;
+                    bool num = isdigit((unsigned char) *p) != 0, dot = false;
+                    while (*p && *p != ' ' && *p != '\n') { num = num && (isdigit((unsigned char) *p) || *p == '.'); dot = dot || *p == '.'; ++p; }
+                    if (num && dot) { v.assign(w, p); }
+                }
+            }
+            fclose(f);
+        }
+#endif
+        if (v.empty()) {
+            if (auto fn = (int (*)(void)) cuda_obs_proc("ggml_backend_cuda_driver_version_fork")) { v = "api" + std::to_string(fn()); }
+        }
+        return v.empty() ? std::string("unknown") : v;
+    }();
+    return d;
+}
+
+static std::string vram_key(ggml_backend_dev_t dev) {
+    std::string gpu = ggml_backend_dev_description(dev);
+    for (char & c : gpu) { if (!isalnum((unsigned char) c)) { c = '_'; } }
+    const char * b = moe_opt("build-id");
+    return hw_key("vram_need." + gpu + ".drv" + vram_driver() + ".b" + (b ? b : "0"));
+}
+
+// the margin a pool leaves on a card: --moe vram-reserve-mb / margin_mb if set, else the need an earlier session measured on this card, driver and build
+// plus a safety (64 MiB or an eighth of the need), else 384 MiB. Windows never goes below 384: the display and other programs take VRAM at any time (WDDM).
+static size_t vram_margin(ggml_backend_dev_t dev, const std::string & section, int64_t * stored_mb) {
+    const size_t MiB = 1024 * 1024;
+    if (user_knobs().count("VRAM_RESERVE_MB") || user_knobs().count("MARGIN_MB")) {
+        return (size_t) std::max(0.0, knobs().margin_mb) * MiB;
+    }
+    size_t m = 384 * MiB;
+    std::string v;
+    if (!section.empty() && moe_state_get(section, vram_key(dev), v) && atoll(v.c_str()) > 0) {
+        const int64_t need = atoll(v.c_str());
+        if (stored_mb) { *stored_mb = need; }
+        m = (size_t) (need + std::max<int64_t>(64, need / 8)) * MiB;
+    }
+#ifdef _WIN32
+    m = std::max(m, 384 * MiB);
+#endif
+    return m;
+}
+
+// called by the decode path after every call (llama-context.cpp): prompt calls always, decode tokens every 32nd
+void llama_moe_cache_vram_watch_fork(bool prompt) {
+    static std::atomic<uint32_t> n_calls{0};
+    const uint32_t k = ++n_calls;
+    if (!prompt && (k & 31) != 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lk(g_vram_mtx);
+    for (auto & d : g_vram) {
+        size_t f = 0, t = 0;
+        ggml_backend_dev_memory(d.dev, &f, &t);
+        if (f >= d.low) {
+            continue;
+        }
+        d.low = f;
+        const int64_t outside = (int64_t) d.free_at_size - (int64_t) d.pool - (int64_t) f;
+        const int64_t need_mb = std::max<int64_t>(0, (outside + (1 << 20) - 1) >> 20);
+        if (d.n_lows++ < 24) {
+            LLAMA_LOG_WARN("moe-cache: VRAM watch %s: call %u (%s): free %.0f MiB, outside the pool since it was sized %lld MiB\n", ggml_backend_dev_name(d.dev), k,
+                    prompt ? "prompt" : "decode", f / 1048576.0, (long long) need_mb);
+        }
+        if (!d.section.empty() && (d.stored_mb < 0 || need_mb > d.stored_mb + 16)) {
+            moe_state_set(d.section, { { d.key, std::to_string(need_mb) } });
+            LLAMA_LOG_WARN("moe-cache: VRAM need outside the pool on %s: %lld MiB, stored for the next start (was %lld)\n", ggml_backend_dev_name(d.dev),
+                    (long long) need_mb, (long long) d.stored_mb);
+            d.stored_mb = need_mb;
+        }
+    }
+}
+
 void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots, int32_t window,
                           int32_t predict, int32_t predict_train) {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
@@ -5202,6 +5306,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         // n_slots < 0: fill each device's free VRAM (called after KV/compute buffers
         // exist), leaving a margin for the compute graph growing by the cache chain.
         // ponytail: one slot count per device, uniform over that device's layers.
+        ggml_backend_dev_t sz_dev = nullptr;   // the last sizing (slots_for): the block pool fills the rest of its last round from it
+        size_t sz_free = 0, sz_margin = 0;
+        int64_t sz_stored = -1;
+        const std::string vram_section = profile_path(model);
         auto slots_for = [&](ggml_backend_buffer_type_t buft, const std::vector<cand> & cands) -> int32_t {
             if (n_slots > 0) {
                 return n_slots;
@@ -5212,9 +5320,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             }
             size_t free = 0, total = 0;
             ggml_backend_dev_memory(dev, &free, &total);
-            // default 384 MiB (measured peak growth after load: 54 to 170 MiB per GPU); the engine measures the growth of this model
-            // per batch token once and sets margin_mb (LLAMA_MOE_CACHE_VRAM_RESERVE_MB / --moe vram-reserve-mb=N override)
-            size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 384) * 1024 * 1024;
+            // what CUDA takes after the pool (vram_margin: set by the user, else measured by an earlier session, else 384 MiB)
+            int64_t stored_mb = -1;
+            size_t margin = vram_margin(dev, vram_section, &stored_mb);
             // --prefetch-experts-slots: the scheduler lazily allocates N full expert
             // tensors on the device big batches are offloaded to
             if (prefetch_slots >= 2 && !alias_on()) {   // with the compute alias the staging slots are lent blocks: no permanent reserve
@@ -5260,6 +5368,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     margin += (size_t) (n_src * n_embd * n_expert * ahead * (sizeof(ggml_fp16_t) + 34.0/32)) + 64u * 1024 * 1024;
                 }
             }
+            sz_dev = dev; sz_free = free; sz_margin = margin; sz_stored = stored_mb;
             if (free <= margin + per_slot) {
                 return 0;
             }
@@ -5345,8 +5454,17 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 std::vector<size_t> order(pl.cls.size());
                 for (size_t c = 0; c < order.size(); ++c) { order[c] = c; }
                 std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) { return pl.cls[x].members.size() > pl.cls[y].members.size(); });
+                for (size_t c : order) { nblk[c] = slots * (int32_t) pl.cls[c].members.size(); }   // the class's share of the memory, owned by no layer
+                // the slot count is whole rounds (a block per layer of the card, GLM 3.0: 182 MiB): what the last round leaves under the margin becomes
+                // blocks of the class with the most layers instead of staying unused
+                int32_t extra = 0;
+                if (n_slots < 0 && !order.empty() && sz_dev == ggml_backend_buft_get_device(buft)) {
+                    size_t want = 4096;
+                    for (size_t c : order) { want += (size_t) (nblk[c] + 1) * pl.cls[c].B; }
+                    if (sz_free > sz_margin + want) { extra = (int32_t) ((sz_free - sz_margin - want) / pl.cls[order[0]].B); }
+                    nblk[order[0]] += extra;
+                }
                 for (size_t c : order) {
-                    nblk[c]        = slots * (int32_t) pl.cls[c].members.size();   // the class's share of the memory, owned by no layer
                     pl.cls[c].base = total;
                     total         += (size_t) (nblk[c] + 1) * pl.cls[c].B;
                 }
@@ -5355,6 +5473,18 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 if (!pbuf) {
                     LLAMA_LOG_WARN("%s: failed to allocate the MoE cache pool (%.1f MiB) on %s - cache disabled\n", __func__, total / 1048576.0, ggml_backend_buft_name(buft));
                     return false;
+                }
+                if (sz_dev == ggml_backend_buft_get_device(buft)) {   // the VRAM watch: free at sizing, the pool, and what the allocation itself took
+                    size_t f_after = 0, t_after = 0;
+                    ggml_backend_dev_memory(sz_dev, &f_after, &t_after);
+                    LLAMA_LOG_WARN("moe-cache: VRAM on %s: %.0f MiB free at sizing, margin %.0f MiB (%s), pool %.0f MiB (+%d blocks from the last round), "
+                            "free after it %.0f MiB (the allocation took %.1f MiB beyond the pool)\n", ggml_backend_dev_name(sz_dev), sz_free / 1048576.0,
+                            sz_margin / 1048576.0, sz_stored >= 0 ? tr_fmt("stored need %lld MiB + safety", (long long) sz_stored).c_str() : "no stored need",
+                            total / 1048576.0, extra, f_after / 1048576.0, ((double) sz_free - (double) total - (double) f_after) / 1048576.0);
+                    std::lock_guard<std::mutex> lk(g_vram_mtx);
+                    vram_dev_t d;
+                    d.dev = sz_dev; d.free_at_size = sz_free; d.pool = total; d.stored_mb = sz_stored; d.section = vram_section; d.key = vram_key(sz_dev);
+                    g_vram.push_back(d);
                 }
                 ggml_backend_buffer_clear(pbuf, 0);
                 if (poison_on()) {   // expert blocks are 5 until an upload lands; the zero blocks and the read-past tail stay 0

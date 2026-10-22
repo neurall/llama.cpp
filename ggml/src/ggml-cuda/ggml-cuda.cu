@@ -820,6 +820,13 @@ struct ggml_cuda_pool_scratch : public ggml_cuda_pool {
     }
 };
 
+// fork: the CUDA driver API version (e.g. 13040), for the key of the VRAM need the engine stores per driver
+static int ggml_backend_cuda_driver_version_fork(void) {
+    int v = 0;
+    if (cudaDriverGetVersion(&v) != cudaSuccess) { v = 0; }
+    return v;
+}
+
 // set (base != NULL) or clear the scratch region of a device; returns the high-water mark since the last call and resets it
 static size_t ggml_backend_cuda_scratch_fork(int device, void * base, size_t cap) {
     ggml_cuda_scratch_region & s = g_cuda_scratch[device];
@@ -7357,6 +7364,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_scratch_fork") == 0) {
         return (void *)ggml_backend_cuda_scratch_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_driver_version_fork") == 0) {   // fork: part of the key of the VRAM need the engine stores (where /proc has no driver)
+        return (void *)ggml_backend_cuda_driver_version_fork;
     }
     if (strcmp(name, "ggml_backend_unregister_host_buffer") == 0) {
         return (void *)ggml_backend_cuda_unregister_host_buffer;
