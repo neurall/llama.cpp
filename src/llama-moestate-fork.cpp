@@ -477,7 +477,9 @@ uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint3
     std::lock_guard<std::mutex> lk(g_tok_mu);
     g_ubc_bucket = -1; g_ub_ceil = ceil;
     if (!on || planned < 512 || n_tokens < 1024) { return planned; }
-    if (n_tokens <= ceil) {   // always ONE pass when the whole prompt fits under the ceiling: every expert uploads once (user rule; MiMo 12k prompt, one pass of 16384 = 3016 prompt t/s)
+    // ... unless the pass planner capped the call below its length: the pool cannot hold that one pass beside the KV (a 6080-token call run as one pass
+    // anyway did not fit on a 3 GiB card and the server retried it with halved batches 20 times, 2445 prompt t/s against 3950, 2026-10-22)
+    if (n_tokens <= ceil && planned + 31 >= n_tokens) {   // always ONE pass when the whole prompt fits under the ceiling: every expert uploads once (user rule; MiMo 12k prompt, one pass of 16384 = 3016 prompt t/s)
         const uint32_t one = std::min<uint32_t>(ceil, (n_tokens + 31) / 32 * 32);
         char v[16], w[120]; snprintf(v, sizeof v, "%u", one);
         snprintf(w, sizeof w, "1 pass for %u tokens (this call fits the ceiling %u; planner: %u)", n_tokens, ceil, (n_tokens + planned - 1) / planned);

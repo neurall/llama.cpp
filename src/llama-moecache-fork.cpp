@@ -8004,6 +8004,13 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
             ub_old = pp_cap_to_pool(a, n, ub_old);
             ub_max = pp_cap_to_pool(a, n, ub_max);
         }
+        // the cap cuts the equal passes of the call: split the call into equal passes again under it. Uncut, a 9580-token call capped at 4160 ran as
+        // 4160 + 4160 + 1260 (the last pass streamed every expert for 1260 tokens): 3700 prompt t/s against 4020 for b13600's equal passes on the same
+        // small card (Qwen3.6-35B, 3 GiB free per card, 2026-10-22); as 3 x 3200 the passes are equal and leave the staging slots their room
+        if (ub_old > 0 && ub_old < n) {
+            const uint32_t passes = (n + ub_old - 1) / ub_old;
+            ub_old = std::min<uint32_t>(ub_old, ((n + passes - 1) / passes + 31) / 32 * 32);
+        }
         if (moe_log_has("w")) { LLAMA_LOG_WARN("moe-cache: pass plan input: n %u ub_max %u -> %u, ub_old %u -> %u, span %zu, graph_tok %zu, tok_bytes %zu, slot_b %zu, mirror_b %zu, need_tok %zu\n", n, ub_max0, ub_max, ub_old0, ub_old, (size_t) ap->span, (size_t) ap->graph_tok, (size_t) ap->tok_bytes, (size_t) ap->slot_b, (size_t) ap->mirror_b, ap->need_tok.size()); }
     }
     if (!on || mc->alias.empty() || mc->n_links <= 0 || !mc->link_dev[0]) {

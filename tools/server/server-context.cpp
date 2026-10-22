@@ -4593,9 +4593,6 @@ private:
 
                     const int32_t n_decision_first = slot.task->type == SERVER_TASK_TYPE_DECISION ? slot.task->decision.pos_first() : -1;
 
-                    // fork: the pass size the checkpoint cut below uses, asked ONCE per batch: it depends only on the prompt length and the micro-batch. Asked inside the
-                    // loop it ran the pass planner once per prompt token (13.7k calls for a 13.7k-token prompt, 13-18 ms per 2048-token batch, 2026-10-22)
-                    const int n_pass_ckpt = do_checkpoint ? (int) std::min<uint32_t>((uint32_t) n_ubatch, std::max<uint32_t>(32u, llama_moe_prefill_pass_fork((uint32_t) slot.task->n_tokens(), (uint32_t) n_ubatch))) : 0;
 
                     // add prompt tokens for processing in the current batch
                     while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch) {
@@ -4652,9 +4649,11 @@ private:
                         //  - 4
                         // ref: https://github.com/ggml-org/llama.cpp/pull/20288
                         if (do_checkpoint) {
-                            // fork: the last slice is cut one PASS (not one maximum ubatch) before the end, so the calls of a long prompt are equal passes: with the ceiling as
-                            // offset a 12471-token prompt became 83 + 12384 + 4 tokens, and the 83-token call streamed every expert for 83 tokens
-                            const int checkpoint_offsets[] = {4 + n_pass_ckpt, 4};
+                            // the upstream offsets (4 + n_ubatch, 4). The fork cut the last slice one planned pass before the end (so a 12471-token prompt would not become
+                            // 83 + 12384 + 4 tokens), but the plan moves between the batches of one prompt (the KV grows, the pool cap shrinks): on a small card the cut
+                            // gave 10284 + 1472 + 1984 + 4 (5 passes, 3780 prompt t/s) where the upstream cut gives 7660 + 6080 + 4 (4 equal passes, 4020) (Qwen3.6-35B,
+                            // 3 GiB free per card, 2026-10-22). The calls are planned into equal passes each (llama_moe_cache_prefill_ubatch_fork).
+                            const int checkpoint_offsets[] = {4 + n_ubatch, 4};
 
                             bool should_break = false;
                             for (int offset : checkpoint_offsets) {
