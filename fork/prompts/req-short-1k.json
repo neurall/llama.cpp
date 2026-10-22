@@ -1,0 +1,1 @@
+{"messages": [{"role": "user", "content": "generate smallest html tetris game."}], "max_tokens": 1024, "temperature": 0, "top_p": 1, "top_k": 1}

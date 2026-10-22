@@ -370,6 +370,8 @@ int64_t g_pend_max = 0;    // their largest pass
 // the per-prompt decision line (llama_dsplit_report_fork): why the passes not reported yet run as they do, and the cards (names, once)
 const char * g_why      = "";
 std::string  g_dev_off, g_dev_rest, g_dev_all;
+int          g_ngpus = 0, g_pf_choice = -1;   // for GET /moe/stats: cards the split can use, and the last prompt pass's choice (g_cur is reset to -1 by every decode pass)
+std::string  g_pf_why;
 
 }  // namespace
 uint64_t llama_moe_cache_pp_cells_get_fork();   // llama-moecache-fork.cpp: the cells the planned call ends at
@@ -724,6 +726,17 @@ void llama_dsplit_veto_fork(int n_tokens) {
     g_veto_tokens = std::min(g_veto_tokens, n_tokens);
 }
 
+// GET /moe/stats: the dense split of the last prompt pass ("prefill": 1 split over all cards, 0 one card, -1 not managed), the cards, the reason
+std::string llama_dsplit_state_json_fork() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    std::string why = g_pf_why;
+    for (char & c : why) { if (c == '"' || c == '\\' || c < ' ') { c = ' '; } }
+    char b[400];
+    snprintf(b, sizeof b, "\"split\":{\"gpus\":%d,\"devs\":\"%s\",\"prefill\":%d,\"prefill_gpus\":%d,\"why\":\"%s\"}", g_ngpus, g_dev_all.c_str(), g_pf_choice,
+             g_pf_choice == 1 ? g_ngpus : g_pf_choice == 0 ? 1 : 0, why.c_str());
+    return b;
+}
+
 bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
@@ -794,6 +807,8 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
         why    = "one card: the split pass did not fit behind the copies";
     }
     g_cur = choice;
+    g_ngpus = dsplit_n_gpus(model);
+    if (choice >= 0) { g_pf_choice = choice; g_pf_why = why; }
     if (choice >= 0) {
         g_pending  = g_pending == -1 || g_pending == choice ? choice : -2;
         g_pend_max = std::max(g_pend_max, n_tokens);

@@ -50,6 +50,15 @@ extern "C" {
 
 // check that each folded weight in the graph gets its Hadamard transform, and each latent lookup gets the inverse
 // without this check, an arch that skips the transform helpers loads and computes wrong results
+static uint32_t g_decode_n_tokens = 0;   // tokens of the decode call in progress, for the stats of llama_process
+void llama_moe_token_time_fork(double ms);   // src/llama-moestate-fork.cpp
+void llama_moe_prompt_done_fork(uint32_t n_tokens, double ms);
+void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch);
+void llama_moe_prompt_progress_fork(uint32_t done);
+uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint32_t ceil);
+uint32_t llama_moe_ubadapt_next_fork(uint32_t n_tokens, uint32_t ceil);
+void llama_moe_decision_fork(const char * name, const char * value, const char * why);
+
 static void llama_verify_hadamard_graph(
         ggml_cgraph * gf,
         const llama_hadamard_rotations & rotations,
@@ -622,7 +631,9 @@ llama_context::llama_context(
             // --moe pipe-stock=1 (research): the stock micro-batch pipeline across the cards although the experts are host-resident (tensor overrides). A prompt of several
             // micro-batches (-b > -ub) then has card 1 work on micro-batch k+1 while card 2 works on k: the overlap the single-pass traces lack.
             (!model.has_tensor_overrides() || [] { const char * e = llama_moe_get_opt("pipe-stock"); return e && atoi(e) != 0; }()) &&
-            cparams.moe_cache_size == 0; // not supported by the upstream MoE cache
+            cparams.moe_cache_size == 0 && // not supported by the upstream MoE cache
+            // --moe pipeline=0: no micro-batch pipeline (research A/B against the dense split)
+            [] { const char * e = llama_moe_get_opt("pipeline"); return !(e && atoi(e) == 0); }();
 
         // pipeline parallelism requires support for async compute and events in all devices
         if (pipeline_parallel) {
@@ -644,6 +655,10 @@ llama_context::llama_context(
             }
         }
 
+        // why the micro-batch pipeline is on or off: the conditions above, one line (a layer layout of the fork may not meet the stock ones)
+        LLAMA_LOG_WARN("%s: pipeline parallelism %s (devices %d, gpu layers %d of %d, split mode %d, offload_kqv %d, tensor overrides %d, pipe-stock %d, moe cache slots %d)\n", __func__,
+                pipeline_parallel ? "on" : "off", (int) model.n_devices(), (int) model.n_gpu_layers(), (int) model.hparams.n_layer_all, (int) model.split_mode(),
+                (int) cparams.offload_kqv, (int) model.has_tensor_overrides(), llama_moe_get_opt("pipe-stock") ? atoi(llama_moe_get_opt("pipe-stock")) : 0, (int) cparams.moe_cache_size);
         cparams.pipeline_parallel = pipeline_parallel;
 
         if (cparams.pipeline_parallel) {
@@ -2142,7 +2157,7 @@ void llama_context::set_thread_autotune(bool on) {
     thr.on    = on;
     thr.base0 = (int) cparams.n_threads;
     thr.base  = thr.base0;
-    thr.hold  = 40;  // the first tokens run on the default (the counter runs across requests)
+    thr.hold  = 8;   // the first tokens run on the default (the counter runs across requests)
     // the thread pool is created for the default count after this call: a saved count above it cannot run, so only lower ones apply
     if (on) {
         if (const int s = threads_saved(model, threads_key(model, "threads").c_str(), thr.base0)) {
@@ -2267,6 +2282,66 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     if (!thr.on || cparams.n_threads < 2) {
         return;
     }
+    // First tokens: find the thread count by bracketing, not by +-2 steps. Too few threads costs far more than too many, so the search errs upward.
+    // 1. start at the default (already capped by the container quota / probe), halve every 5 tokens down the whole ladder (default, /2, /4, /8: one slow
+    //    slice must not end it); b = the fewest threads within 2% of the fastest, w = the next lower count tried
+    // 2. bisect [w, b] geometrically up to 3 times, re-measuring b next to each probe so slow drift is not read as a win; stop at a 10% bracket
+    // 3. keep b plus one step (10%) of margin, never above the default, and stay there: the +-2 tuner below is switched off
+    // File-local state: one decoding context per process, and thr's layout is in a header (full rebuild).
+    static struct { int st = 0, n = 0, tok = 0, b = 0, w = 0, mid = 0, iter = 0, drift = 0, wn = 0, lc = 0, ln[4] = {}; double lt[4] = {}, sum = 0, best = 0, mm = 0, wsum = 0; } d;
+    if (d.st < 3) {
+        auto set_n = [&](int n) {
+            d.n = n; d.tok = -1; d.sum = 0; cparams.n_threads = (uint32_t) n;
+            char v[32]; snprintf(v, sizeof v, "%d (testing)", n);   // visible in the decisions list while the search runs: every tried count
+            llama_moe_decision_fork("threads_decode", v, d.best > 0 ? "searching: best so far is faster than this count's neighbours" : "searching: first tokens, halving from the default");
+        };
+        auto refine = [&]() {   // next probe, or finish
+            const int mid = (int) std::sqrt((double) d.w*d.b);
+            if (d.w == 0 || d.iter >= 3 || d.b - d.w <= std::max(1, d.b/10) || mid <= d.w || mid >= d.b) {
+                const int pick = std::min(thr.base0, d.b + std::max(1, d.b/10));
+                LLAMA_LOG_INFO("%s: thread search: %d -> %d threads (best %d at %.2f ms/token, worse below %d)\n", __func__, thr.base, pick, d.b, d.best/1000.0, d.w);
+                llama_moe_decision_fork("threads_decode", std::to_string(pick).c_str(), "bracketed by halving every 5 tokens, bisected, +10% margin (too few costs more than too many)");
+                if (pick != thr.base) { thr.base = pick; threads_save(model, "threads", thr.base0, pick); }
+                cparams.n_threads = (uint32_t) thr.base;
+                d.st = 3; d.drift = 0; d.wn = 0; d.wsum = 0;   // settled: the count stays until the token time drifts (below)
+                return;
+            }
+            d.mid = mid; d.st = 1; set_n(mid);
+        };
+        if (d.st == 0) { d.st = 1; d.b = 0; set_n(thr.base); }   // stage 1 with b == 0: halving phase
+        if (d.tok++ < 0) { return; }           // the first token after a change is a warm-up
+        d.sum += (double) dt_us;
+        if (d.tok < 5) { return; }
+        const double m = d.sum/5.0;
+        if (d.st == 1 && d.mid == 0) {         // halving phase: always the whole ladder (default, /2, /4, /8): one slow slice must not end it, each slice is only 5 tokens
+            d.ln[d.lc] = d.n; d.lt[d.lc] = m; d.lc++;
+            if (d.lc < 4 && d.n/2 >= 2) { set_n(d.n/2); return; }
+            double mn = d.lt[0]; for (int k = 1; k < d.lc; ++k) { mn = std::min(mn, d.lt[k]); }
+            int bi = 0; for (int k = 0; k < d.lc; ++k) { if (d.lt[k] <= 1.02*mn) { bi = k; } }   // the fewest threads within 2% of the fastest
+            d.b = d.ln[bi]; d.best = d.lt[bi]; d.w = bi + 1 < d.lc ? d.ln[bi + 1] : 0;
+            refine();
+            return;
+        }
+        if (d.st == 1) { d.mm = m; d.st = 2; set_n(d.b); return; }   // probe measured, now re-measure b
+        d.best = m;                            // st == 2: b re-measured next to the probe
+        if (d.mm < 1.02*m) { d.b = d.mid; d.best = d.mm; } else { d.w = d.mid; }
+        d.iter++; d.mid = 0;
+        refine();
+        return;
+    }
+    if (d.st == 3) {   // settled: stay, and watch. Windows of 64 tokens; a mean 10% above the best seen, twice in a row, means the box changed (other load, a new prompt mix): search again from twice the settled count
+        d.wsum += (double) dt_us;
+        if (++d.wn < 64) { return; }
+        const double m = d.wsum/64.0; d.wsum = 0; d.wn = 0;
+        if (d.best <= 0 || m < d.best) { d.best = d.best <= 0 ? m : 0.7*d.best + 0.3*m; d.drift = 0; return; }
+        d.drift = m > 1.10*d.best ? d.drift + 1 : 0;
+        if (d.drift >= 2) {
+            LLAMA_LOG_INFO("%s: thread search again: %.2f ms/token against %.2f settled\n", __func__, m/1000.0, d.best/1000.0);
+            thr.base = std::min(thr.base0, 2*thr.base);
+            d.st = 0; d.b = d.w = d.mid = d.iter = d.lc = 0; d.best = 0;
+        }
+        return;
+    }
     auto set = [&](int n) { cparams.n_threads = (uint32_t) n; };
     if (thr.cand.empty()) {
         if (thr.hold > 0) {
@@ -2290,6 +2365,14 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
             for (int d : { 4, 8, 16 }) {
                 const int n = std::min(cap, base + d);
                 if (n > base && std::find(c.begin(), c.end(), n) == c.end()) { c.push_back(n); }
+            }
+        }
+        // the first cycle also tries base/2 and base/4: a start far above the useful count (container CPU quota, SMT siblings) costs every token until
+        // the +-2 steps could walk down, and the first tokens are the ones a short request is made of
+        if (thr.cycles == 0 && thr.pending < 0) {
+            for (int d : { 2, 4 }) {
+                const int n = std::max(2, base/d);
+                if (n < base && std::find(c.begin(), c.end(), n) == c.end()) { c.push_back(n); }
             }
         }
         if (c.size() < 2) { thr.hold = thr.hold_len; return; }
@@ -2350,8 +2433,9 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     }
     const int cand_best = best >= 0 ? thr.cand[(size_t) best] : -1;
     // two cycles in a row must win in the same direction (a win at +8 and then at +4 is still a gain): the more conservative of the two is adopted
-    const bool adopt = cand_best >= 0 && thr.pending >= 0 && ((cand_best > thr.cand[0]) == (thr.pending > thr.cand[0]));
-    const int adopted = !adopt ? thr.cand[0] : (cand_best > thr.cand[0] ? std::min(cand_best, thr.pending) : std::max(cand_best, thr.pending));
+    const bool coarse = cand_best >= 0 && std::abs(cand_best - thr.cand[0]) > 4 && mean((size_t) best) < 0.9*mean(0);   // a 10% win from a far count needs no confirmation
+    const bool adopt = coarse || cand_best >= 0 && thr.pending >= 0 && ((cand_best > thr.cand[0]) == (thr.pending > thr.cand[0]));
+    const int adopted = !adopt ? thr.cand[0] : coarse ? cand_best : (cand_best > thr.cand[0] ? std::min(cand_best, thr.pending) : std::max(cand_best, thr.pending));
     std::string msg;
     for (size_t i = 1; i < thr.cand.size(); ++i) { msg += " | " + std::to_string(thr.cand[i]) + ": " + std::to_string(mean(i)/1000.0).substr(0, 5); }
     LLAMA_LOG_INFO("%s: thread autotune: base %d %.2f ms/token%s%s -> %d%s\n", __func__, thr.cand[0], mean(0)/1000.0, msg.c_str(),
@@ -3221,7 +3305,9 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         }
     }
     if (cparams.moe_cache && memory) { llama_moe_cache_pp_cells_fork((uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all); }
-    const uint32_t n_ubatch_call = cparams.moe_cache ? llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim) : cparams.n_ubatch;
+    g_decode_n_tokens = n_tokens_all;
+    const uint32_t n_ubatch_call = cparams.moe_cache ? llama_moe_ubadapt_cache_fork(n_tokens_all, llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim), n_ubatch_lim) : llama_moe_ubadapt_next_fork(n_tokens_all, cparams.n_ubatch);
+    if (n_tokens_all > 1) { llama_moe_prompt_begin_fork((uint32_t) n_tokens_all, n_ubatch_call); }
     if (cparams.moe_cache && memory && n_tokens_all >= 64) {   // the mask math, checkable against the host pins in the same log (--moe log=m not needed: one line per call)
         const uint64_t kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
         const uint64_t mask_b = (uint64_t) GGML_PAD(n_ubatch_call, 64) * GGML_PAD(kv_end, 256) * 2;
@@ -3532,6 +3618,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 
         n_outputs_prev += n_outputs;
         n_tokens_prev  += ubatch.n_tokens;
+        if (n_tokens_all > 1) { llama_moe_prompt_progress_fork((uint32_t) n_tokens_prev); }
     } while (mctx->next());
 
     // set to total number of outputs in the batch, for use in llama_get_logits_ith
@@ -6160,7 +6247,12 @@ int32_t llama_encode(
 int32_t llama_decode(
         llama_context * ctx,
           llama_batch   batch) {
+    const int64_t t_us = ggml_time_us();
     const int ret = ctx->decode(batch);
+    if (ret == 0) {
+        const double ms = (ggml_time_us() - t_us) / 1000.0;
+        if (batch.n_tokens == 1) { llama_moe_token_time_fork(ms); } else { llama_moe_prompt_done_fork((uint32_t) batch.n_tokens, ms); }
+    }
     if (ret != 0 && ret != 1) {
         LLAMA_LOG_ERROR("%s: failed to decode, ret = %d\n", __func__, ret);
     }
@@ -6272,7 +6364,17 @@ void llama_opt_epoch(
 int32_t llama_process(llama_context * ctx, llama_process_type type, llama_batch_ext * batch) {
     switch (type) {
         case LLAMA_PROCESS_TYPE_ENCODE: return ctx->encode(*batch);
-        case LLAMA_PROCESS_TYPE_DECODE: return ctx->decode(*batch);
+        case LLAMA_PROCESS_TYPE_DECODE: {
+            // the server's decode path: per-token and per-prompt-call times for GET /moe/stats
+            const int64_t t_us = ggml_time_us();
+            const int ret = ctx->decode(*batch);
+            if (ret == 0) {
+                const int32_t n = (int32_t) g_decode_n_tokens;
+                const double ms = (ggml_time_us() - t_us) / 1000.0;
+                if (n == 1) { llama_moe_token_time_fork(ms); } else { llama_moe_prompt_done_fork((uint32_t) n, ms); }
+            }
+            return ret;
+        }
     }
     return -1;
 }

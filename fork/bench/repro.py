@@ -31,16 +31,23 @@ ROWS = {
 }
 # the 8 GB laptop rows are llama-cli on Windows (N:\\build\\smallcard8 = b12843, N:\\build\\stock-de7fa0a3c = b11514), prompts p10.txt / p12k.txt / p40k.txt / p125k.txt are the first N tokens of fork/bench/src_128k.cpp
 Q2 = {"q2-cpu": "PC2 (Ryzen 5 3600), llama-cli -dev none -ngl 0: stock 05af0d2b1 (b11302) against release b11648, qwen36.gguf = Qwen3.6-35B-A3B Q2_0, `cli-t100` (file no longer on disk)",
-      "q36-cpu": "PC2 (12 cores, clang, no GPU): `llama-cli -m /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -dev none -p 'write smallest html tetris game' -n 48` (short) or `-f src_1k.cpp -n 32 -c 4096` (edit); stock = upstream master 37d6d653e built with the same compiler, fork = the b12844 CPU archive (llama-release-b12844-...-bin-ubuntu-x64.tar.gz) and the merged tree",
+      "q36-cpu": "PC2 (12 cores, clang, no GPU): `llama-cli -m $FORK_MODELS_DIR/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -dev none -p 'write smallest html tetris game' -n 48` (short) or `-f src_1k.cpp -n 32 -c 4096` (edit); stock = upstream master 37d6d653e built with the same compiler, fork = the b12844 CPU archive (llama-release-b12844-...-bin-ubuntu-x64.tar.gz) and the merged tree",
       "q2-laptop": "W10 laptop (4060 8 GB), llama-cli: stock b5cf8ce02 (b11261) against release b11648, same file, `cli-t100` (file no longer on disk)"}
 LAPTOP = {"laptop-17": ("p10.txt", 2048), "laptop-12k": ("p12k.txt", 14336), "laptop-40k": ("p40k.txt", 46000), "laptop-125k": ("p125k.txt", 131072)}
+def alias(path):
+    """the models.ini alias of a model file (run.py --models takes it), else the path under $FORK_MODELS_DIR (default <clone>/.fork/models)"""
+    import configparser
+    cp = configparser.ConfigParser(defaults={"dir": ""}); cp.read(os.path.join(HERE, "..", "models.ini"))
+    for k in cp.sections():
+        if os.path.basename(cp[k].get("path", "")) == os.path.basename(path): return k
+    return "$FORK_MODELS_DIR/" + path.split("/m/", 1)[-1] if path.startswith("/m/") else path
 def command(i):
     if i in LAPTOP:
         f, c = LAPTOP[i]
         return [f'{b}\\llama-cli.exe -m N:\\m\\Qwen3.6-35B-A3B-GSQ-hybrid.gguf -st --temp 0 -lv 3 -n 32 -c {c} -f N:\\bench\\prompts\\{f}' for b in ("N:\\build\\stock-de7fa0a3c", "N:\\build\\smallcard8")]
     m, t, a, fk, st, note = ROWS[i]
     var = ("-np 1 " + a).strip()
-    return [f'python3 fork/run.py bench --models {m} --builds {fk},{st} --variant "v={var}" --variants v -t {t} -n 3']
+    return [f'python3 fork/run.py bench --models {alias(m)} --builds {fk},{st} --variant "v={var}" --variants v -t {t} -n 3']
 def md():
     out = ["# Reproducing the README rows", "", __doc__.strip().split("\n\n")[0], ""]
     for i in list(Q2):

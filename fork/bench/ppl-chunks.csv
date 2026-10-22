@@ -1,0 +1,1169 @@
+start_ts,build,model,test,chunk,cum_ppl
+2026-10-19 23:35:00,stock-b11739-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9339
+2026-10-19 23:35:00,stock-b11739-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9344
+2026-10-19 23:35:00,stock-b11739-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0097
+2026-10-19 23:35:00,stock-b11739-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0246
+2026-10-19 23:35:00,stock-b11739-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0647
+2026-10-19 23:35:00,stock-b11739-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0766
+2026-10-19 23:35:00,stock-b11739-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.075
+2026-10-19 23:35:00,stock-b11739-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1555
+2026-10-19 23:35:00,stock-b11739-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1709
+2026-10-19 23:35:00,stock-b11739-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1618
+2026-10-19 23:35:00,stock-b11739-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.1128
+2026-10-19 23:35:00,stock-b11739-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.0696
+2026-10-19 23:35:08,b13586,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9339
+2026-10-19 23:35:08,b13586,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9344
+2026-10-19 23:35:08,b13586,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0097
+2026-10-19 23:35:08,b13586,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0246
+2026-10-19 23:35:08,b13586,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0647
+2026-10-19 23:35:08,b13586,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0766
+2026-10-19 23:35:08,b13586,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.075
+2026-10-19 23:35:08,b13586,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1555
+2026-10-19 23:35:08,b13586,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1709
+2026-10-19 23:35:08,b13586,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1618
+2026-10-19 23:35:08,b13586,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.1128
+2026-10-19 23:35:08,b13586,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.0696
+2026-10-19 23:35:34,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-19 23:35:34,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1717
+2026-10-19 23:35:34,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2029
+2026-10-19 23:35:34,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2993
+2026-10-19 23:35:34,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3397
+2026-10-19 23:35:34,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.405
+2026-10-19 23:35:34,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4952
+2026-10-19 23:35:34,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4736
+2026-10-19 23:35:34,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4769
+2026-10-19 23:35:34,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4756
+2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1717
+2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2029
+2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.3
+2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3409
+2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.4061
+2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4962
+2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4751
+2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4794
+2026-10-19 23:35:53,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4782
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,1,1.2431
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,2,1.2785
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,3,1.351
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,4,1.4241
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,5,1.4589
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,6,1.6221
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,7,1.6435
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,8,1.664
+2026-10-19 23:36:37,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,9,1.6348
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1717
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2029
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2993
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3397
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.405
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4952
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4736
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4769
+2026-10-19 23:44:22,b13563,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4756
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1717
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2029
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2993
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3397
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.405
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4952
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4736
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4769
+2026-10-19 23:44:54,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4756
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3643
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4177
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.4962
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5812
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.5907
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.7818
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.7961
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.8029
+2026-10-19 23:45:26,stock-b11739-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.7626
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.378
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4305
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5069
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5869
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.5968
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.7782
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.7917
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.7973
+2026-10-19 23:48:59,b13586,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.758
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.932
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9396
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0147
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0277
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0657
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0778
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.0757
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1557
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1711
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1613
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.1126
+2026-10-19 23:52:58,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.0692
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9339
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9344
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0097
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0246
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0647
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0766
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.075
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1555
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1709
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1618
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.1128
+2026-10-19 23:53:16,"b13586 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.0696
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.932
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9364
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0099
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0238
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0636
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0744
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.073
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.153
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1685
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.159
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.111
+2026-10-19 23:53:28,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.068
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1717
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2029
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2993
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3397
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.405
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4952
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4736
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4769
+2026-10-19 23:53:52,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4756
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1689
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2031
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.3013
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3409
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.4071
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4983
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4757
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.48
+2026-10-19 23:54:24,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4783
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3701
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4243
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.4999
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5837
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.5908
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.7784
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.7966
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.8026
+2026-10-19 23:54:59,"b13586 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.7608
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3693
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4282
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5073
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5872
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.5963
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.7783
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.7893
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.7933
+2026-10-19 23:57:34,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.754
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6653
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5247
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5693
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7085
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7537
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7915
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.874
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8566
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8206
+2026-10-19 23:59:30,stock-b11739-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7843
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6653
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5247
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5693
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7085
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7537
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7915
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.874
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8566
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8206
+2026-10-19 23:59:48,b13586,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7843
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6653
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5247
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5693
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7085
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7537
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7915
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.874
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8566
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8206
+2026-10-20 00:00:11,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7843
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6639
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5228
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5674
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7087
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7544
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7925
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.8744
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8566
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8203
+2026-10-20 00:00:29,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7837
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 00:00:57,stock-b11739-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 00:01:16,b13586,Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 00:01:36,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 00:01:56,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 00:02:23,stock-b11739-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 00:02:43,b13586,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 00:03:04,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 00:03:25,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1248
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1046
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1363
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2188
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2604
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.325
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.41
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3873
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3955
+2026-10-20 00:04:17,stock-b11739-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3927
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1248
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1046
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1363
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2188
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2604
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.325
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.41
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3873
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3955
+2026-10-20 00:04:59,b13586,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3927
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1248
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1046
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1363
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2188
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2604
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.325
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.41
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3873
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3955
+2026-10-20 00:06:06,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3927
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1261
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1116
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1424
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2215
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2632
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.3317
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.4161
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3927
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.4018
+2026-10-20 00:06:53,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3986
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1261
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.1233
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1437
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2238
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.263
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3292
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4154
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3948
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.4083
+2026-10-20 00:07:46,stock-b11739-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4101
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1261
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.1233
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1437
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2238
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.263
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3292
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4154
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3948
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.4083
+2026-10-20 00:09:05,b13586,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4101
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1261
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.1233
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1437
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2238
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.263
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3292
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4154
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3948
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.4083
+2026-10-20 00:10:25,"b13586 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4101
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1247
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.12
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1419
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2209
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.2591
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3245
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4135
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3928
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.4071
+2026-10-20 00:11:19,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4093
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,1,1.4581
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,2,1.5711
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,3,1.7079
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,4,1.7392
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,5,1.729
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,6,1.8997
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,7,1.9397
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,8,1.9166
+2026-10-20 00:12:22,stock-b11739-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,9,1.8758
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,1,1.4499
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,2,1.5672
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,3,1.6999
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,4,1.7332
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,5,1.7221
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,6,1.895
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,7,1.9361
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,8,1.9123
+2026-10-20 00:15:16,b13586,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,9,1.8698
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,1,1.4581
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,2,1.5711
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,3,1.7079
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,4,1.7392
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,5,1.729
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,6,1.8997
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,7,1.9397
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,8,1.9166
+2026-10-20 00:19:03,"b13586 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,9,1.8758
+2026-10-20 00:20:31,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,1,1.4575
+2026-10-20 00:20:31,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,2,1.5707
+2026-10-20 00:20:31,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,3,1.7042
+2026-10-20 00:20:31,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,4,1.7386
+2026-10-20 00:20:31,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,5,1.7266
+2026-10-20 00:20:31,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,6,1.9007
+2026-10-20 00:20:31,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,7,1.9405
+2026-10-20 00:20:31,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,8,1.9171
+2026-10-20 00:20:31,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,9,1.8737
+2026-10-20 00:22:33,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1893
+2026-10-20 00:22:33,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1679
+2026-10-20 00:22:33,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2006
+2026-10-20 00:22:33,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2996
+2026-10-20 00:22:33,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3386
+2026-10-20 00:22:33,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.405
+2026-10-20 00:22:33,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4965
+2026-10-20 00:22:33,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4741
+2026-10-20 00:22:33,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4779
+2026-10-20 00:22:33,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.477
+2026-10-20 00:23:49,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1237
+2026-10-20 00:23:49,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1113
+2026-10-20 00:23:49,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1413
+2026-10-20 00:23:49,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2201
+2026-10-20 00:23:49,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2603
+2026-10-20 00:23:49,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.3266
+2026-10-20 00:23:49,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.4112
+2026-10-20 00:23:49,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3893
+2026-10-20 00:23:49,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3969
+2026-10-20 00:23:49,"b13586 --moe dense-split=1,split-experts=1,prefill-split=1,split-f16=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.394
+2026-10-20 00:24:55,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1928
+2026-10-20 00:24:55,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1689
+2026-10-20 00:24:55,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2014
+2026-10-20 00:24:55,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2986
+2026-10-20 00:24:55,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3389
+2026-10-20 00:24:55,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.402
+2026-10-20 00:24:55,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4907
+2026-10-20 00:24:55,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4699
+2026-10-20 00:24:55,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4742
+2026-10-20 00:24:55,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4732
+2026-10-20 00:25:32,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1239
+2026-10-20 00:25:32,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1118
+2026-10-20 00:25:32,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1426
+2026-10-20 00:25:32,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2229
+2026-10-20 00:25:32,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.263
+2026-10-20 00:25:32,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.3292
+2026-10-20 00:25:32,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.414
+2026-10-20 00:25:32,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3906
+2026-10-20 00:25:32,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3991
+2026-10-20 00:25:32,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3958
+2026-10-20 00:26:25,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.668
+2026-10-20 00:26:25,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5248
+2026-10-20 00:26:25,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5707
+2026-10-20 00:26:25,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7106
+2026-10-20 00:26:25,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7558
+2026-10-20 00:26:25,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7941
+2026-10-20 00:26:25,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.8763
+2026-10-20 00:26:25,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8586
+2026-10-20 00:26:25,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8228
+2026-10-20 00:26:25,"b13586 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.786
+2026-10-20 09:50:22,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9339
+2026-10-20 09:50:22,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9344
+2026-10-20 09:50:22,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0097
+2026-10-20 09:50:22,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0246
+2026-10-20 09:50:22,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0647
+2026-10-20 09:50:22,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0766
+2026-10-20 09:50:22,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.075
+2026-10-20 09:50:22,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1555
+2026-10-20 09:50:22,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1709
+2026-10-20 09:50:22,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1618
+2026-10-20 09:50:22,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.1128
+2026-10-20 09:50:22,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.0696
+2026-10-20 09:50:37,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9339
+2026-10-20 09:50:37,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9344
+2026-10-20 09:50:37,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0097
+2026-10-20 09:50:37,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0246
+2026-10-20 09:50:37,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0647
+2026-10-20 09:50:37,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0766
+2026-10-20 09:50:37,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.075
+2026-10-20 09:50:37,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1555
+2026-10-20 09:50:37,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1709
+2026-10-20 09:50:37,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1618
+2026-10-20 09:50:37,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.1128
+2026-10-20 09:50:37,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.0696
+2026-10-20 09:50:56,"b13600 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9339
+2026-10-20 09:50:56,"b13600 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9344
+2026-10-20 09:50:56,"b13600 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0097
+2026-10-20 09:50:56,"b13600 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0246
+2026-10-20 09:50:56,"b13600 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0647
+2026-10-20 09:50:56,"b13600 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0766
+2026-10-20 09:50:56,"b13600 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.075
+2026-10-20 09:50:56,"b13600 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1555
+2026-10-20 09:50:56,"b13600 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1709
+2026-10-20 09:50:56,"b13600 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1618
+2026-10-20 09:50:56,"b13600 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.1128
+2026-10-20 09:50:56,"b13600 --moe dense-split=0,prefill-split=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.0696
+2026-10-20 09:51:14,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9338
+2026-10-20 09:51:14,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9382
+2026-10-20 09:51:14,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0129
+2026-10-20 09:51:14,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0249
+2026-10-20 09:51:14,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0652
+2026-10-20 09:51:14,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0765
+2026-10-20 09:51:14,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.075
+2026-10-20 09:51:14,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1551
+2026-10-20 09:51:14,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1698
+2026-10-20 09:51:14,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.16
+2026-10-20 09:51:14,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.1117
+2026-10-20 09:51:14,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.0688
+2026-10-20 09:51:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9338
+2026-10-20 09:51:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9398
+2026-10-20 09:51:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0149
+2026-10-20 09:51:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0264
+2026-10-20 09:51:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0664
+2026-10-20 09:51:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0777
+2026-10-20 09:51:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.076
+2026-10-20 09:51:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1557
+2026-10-20 09:51:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1704
+2026-10-20 09:51:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1609
+2026-10-20 09:51:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,11,2.1125
+2026-10-20 09:51:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,12,2.0694
+2026-10-20 09:52:20,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6653
+2026-10-20 09:52:20,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5247
+2026-10-20 09:52:20,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5693
+2026-10-20 09:52:20,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7085
+2026-10-20 09:52:20,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7537
+2026-10-20 09:52:20,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7915
+2026-10-20 09:52:20,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.874
+2026-10-20 09:52:20,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8566
+2026-10-20 09:52:20,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8206
+2026-10-20 09:52:20,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7843
+2026-10-20 09:52:39,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6653
+2026-10-20 09:52:39,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5247
+2026-10-20 09:52:39,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5693
+2026-10-20 09:52:39,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7085
+2026-10-20 09:52:39,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7537
+2026-10-20 09:52:39,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7915
+2026-10-20 09:52:39,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.874
+2026-10-20 09:52:39,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8566
+2026-10-20 09:52:39,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8206
+2026-10-20 09:52:39,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7843
+2026-10-20 09:53:03,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6653
+2026-10-20 09:53:03,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5247
+2026-10-20 09:53:03,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5693
+2026-10-20 09:53:03,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7085
+2026-10-20 09:53:03,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7537
+2026-10-20 09:53:03,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7915
+2026-10-20 09:53:03,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.874
+2026-10-20 09:53:03,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8566
+2026-10-20 09:53:03,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8206
+2026-10-20 09:53:03,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7843
+2026-10-20 09:53:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6697
+2026-10-20 09:53:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5246
+2026-10-20 09:53:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5696
+2026-10-20 09:53:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.7101
+2026-10-20 09:53:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7551
+2026-10-20 09:53:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7928
+2026-10-20 09:53:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.8747
+2026-10-20 09:53:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8576
+2026-10-20 09:53:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8216
+2026-10-20 09:53:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7842
+2026-10-20 09:53:54,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6657
+2026-10-20 09:53:54,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5254
+2026-10-20 09:53:54,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,3,1.5705
+2026-10-20 09:53:54,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,4,1.711
+2026-10-20 09:53:54,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,5,1.7558
+2026-10-20 09:53:54,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,6,1.7939
+2026-10-20 09:53:54,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,7,1.8761
+2026-10-20 09:53:54,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,8,1.8588
+2026-10-20 09:53:54,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,9,1.8224
+2026-10-20 09:53:54,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,10,1.7851
+2026-10-20 09:54:28,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 09:54:28,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 09:54:28,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 09:54:28,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 09:54:28,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 09:54:28,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 09:54:28,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 09:54:28,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 09:54:28,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 09:54:28,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 09:54:53,b13600,Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 09:54:53,b13600,Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 09:54:53,b13600,Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 09:54:53,b13600,Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 09:54:53,b13600,Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 09:54:53,b13600,Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 09:54:53,b13600,Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 09:54:53,b13600,Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 09:54:53,b13600,Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 09:54:53,b13600,Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 09:56:24,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 09:56:24,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 09:56:24,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 09:56:24,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 09:56:24,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 09:56:24,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 09:56:24,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 09:56:24,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 09:56:24,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 09:56:24,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 09:56:49,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 09:56:49,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 09:56:49,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 09:56:49,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 09:56:49,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 09:56:49,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 09:56:49,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 09:56:49,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 09:56:49,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 09:56:49,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 09:57:14,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,1,1.5653
+2026-10-20 09:57:14,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,2,1.4225
+2026-10-20 09:57:14,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,3,1.4589
+2026-10-20 09:57:14,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,4,1.5535
+2026-10-20 09:57:14,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,5,1.58
+2026-10-20 09:57:14,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,6,1.6249
+2026-10-20 09:57:14,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,7,1.6877
+2026-10-20 09:57:14,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,8,1.6901
+2026-10-20 09:57:14,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,9,1.6661
+2026-10-20 09:57:14,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-IQ4_NL.gguf,pplb,10,1.636
+2026-10-20 09:57:45,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 09:57:45,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 09:57:45,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 09:57:45,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 09:57:45,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 09:57:45,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 09:57:45,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 09:57:45,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 09:57:45,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 09:57:45,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 09:58:11,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 09:58:11,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 09:58:11,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 09:58:11,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 09:58:11,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 09:58:11,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 09:58:11,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 09:58:11,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 09:58:11,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 09:58:11,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 09:58:38,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 09:58:38,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 09:58:38,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 09:58:38,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 09:58:38,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 09:58:38,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 09:58:38,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 09:58:38,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 09:58:38,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 09:58:38,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 09:59:05,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 09:59:05,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 09:59:05,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 09:59:05,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 09:59:05,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 09:59:05,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 09:59:05,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 09:59:05,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 09:59:05,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 09:59:05,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 09:59:32,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,1,1.5549
+2026-10-20 09:59:32,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,2,1.4196
+2026-10-20 09:59:32,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,3,1.4603
+2026-10-20 09:59:32,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,4,1.5568
+2026-10-20 09:59:32,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,5,1.5845
+2026-10-20 09:59:32,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,6,1.6304
+2026-10-20 09:59:32,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,7,1.6919
+2026-10-20 09:59:32,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,8,1.6928
+2026-10-20 09:59:32,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,9,1.6684
+2026-10-20 09:59:32,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-27B-MTP-Q5_K_M.gguf,pplb,10,1.6382
+2026-10-20 10:00:08,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-20 10:00:08,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1717
+2026-10-20 10:00:08,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2029
+2026-10-20 10:00:08,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2993
+2026-10-20 10:00:08,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3397
+2026-10-20 10:00:08,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.405
+2026-10-20 10:00:08,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4952
+2026-10-20 10:00:08,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4736
+2026-10-20 10:00:08,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4769
+2026-10-20 10:00:08,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4756
+2026-10-20 10:00:35,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-20 10:00:35,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1717
+2026-10-20 10:00:35,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2029
+2026-10-20 10:00:35,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2993
+2026-10-20 10:00:35,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3397
+2026-10-20 10:00:35,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.405
+2026-10-20 10:00:35,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4952
+2026-10-20 10:00:35,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4736
+2026-10-20 10:00:35,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4769
+2026-10-20 10:00:35,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4756
+2026-10-20 10:01:14,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1914
+2026-10-20 10:01:14,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1717
+2026-10-20 10:01:14,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2029
+2026-10-20 10:01:14,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2993
+2026-10-20 10:01:14,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3397
+2026-10-20 10:01:14,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.405
+2026-10-20 10:01:14,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4952
+2026-10-20 10:01:14,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4736
+2026-10-20 10:01:14,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4769
+2026-10-20 10:01:14,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4756
+2026-10-20 10:01:53,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.2025
+2026-10-20 10:01:53,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1771
+2026-10-20 10:01:53,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.2061
+2026-10-20 10:01:53,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.3017
+2026-10-20 10:01:53,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3396
+2026-10-20 10:01:53,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.4041
+2026-10-20 10:01:53,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4964
+2026-10-20 10:01:53,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4743
+2026-10-20 10:01:53,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4777
+2026-10-20 10:01:53,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4758
+2026-10-20 10:02:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,1,1.1917
+2026-10-20 10:02:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,2,1.1712
+2026-10-20 10:02:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,3,1.1997
+2026-10-20 10:02:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,4,1.2948
+2026-10-20 10:02:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,5,1.3362
+2026-10-20 10:02:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,6,1.4026
+2026-10-20 10:02:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,7,1.4939
+2026-10-20 10:02:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,8,1.4715
+2026-10-20 10:02:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,9,1.4754
+2026-10-20 10:02:33,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplb,10,1.4745
+2026-10-20 10:03:44,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1248
+2026-10-20 10:03:44,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1046
+2026-10-20 10:03:44,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1363
+2026-10-20 10:03:44,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2188
+2026-10-20 10:03:44,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2604
+2026-10-20 10:03:44,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.325
+2026-10-20 10:03:44,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.41
+2026-10-20 10:03:44,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3873
+2026-10-20 10:03:44,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3955
+2026-10-20 10:03:44,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3927
+2026-10-20 10:05:12,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1248
+2026-10-20 10:05:12,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1046
+2026-10-20 10:05:12,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1363
+2026-10-20 10:05:12,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2188
+2026-10-20 10:05:12,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2604
+2026-10-20 10:05:12,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.325
+2026-10-20 10:05:12,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.41
+2026-10-20 10:05:12,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3873
+2026-10-20 10:05:12,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3955
+2026-10-20 10:05:12,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3927
+2026-10-20 10:06:08,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1248
+2026-10-20 10:06:08,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1046
+2026-10-20 10:06:08,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1363
+2026-10-20 10:06:08,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2188
+2026-10-20 10:06:08,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2604
+2026-10-20 10:06:08,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.325
+2026-10-20 10:06:08,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.41
+2026-10-20 10:06:08,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3873
+2026-10-20 10:06:08,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3955
+2026-10-20 10:06:08,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3927
+2026-10-20 10:07:04,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1276
+2026-10-20 10:07:04,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.111
+2026-10-20 10:07:04,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1407
+2026-10-20 10:07:04,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2216
+2026-10-20 10:07:04,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2621
+2026-10-20 10:07:04,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.3271
+2026-10-20 10:07:04,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.4121
+2026-10-20 10:07:04,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3906
+2026-10-20 10:07:04,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3998
+2026-10-20 10:07:04,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3969
+2026-10-20 10:08:01,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1314
+2026-10-20 10:08:01,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1106
+2026-10-20 10:08:01,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.144
+2026-10-20 10:08:01,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2245
+2026-10-20 10:08:01,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2653
+2026-10-20 10:08:01,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.3286
+2026-10-20 10:08:01,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.4153
+2026-10-20 10:08:01,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3931
+2026-10-20 10:08:01,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.4015
+2026-10-20 10:08:01,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3975
+2026-10-20 10:09:00,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1261
+2026-10-20 10:09:00,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.1233
+2026-10-20 10:09:00,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1437
+2026-10-20 10:09:00,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2238
+2026-10-20 10:09:00,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.263
+2026-10-20 10:09:00,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3292
+2026-10-20 10:09:00,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4154
+2026-10-20 10:09:00,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3948
+2026-10-20 10:09:00,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.4083
+2026-10-20 10:09:00,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4101
+2026-10-20 10:10:29,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1261
+2026-10-20 10:10:29,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.1233
+2026-10-20 10:10:29,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1437
+2026-10-20 10:10:29,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2238
+2026-10-20 10:10:29,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.263
+2026-10-20 10:10:29,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3292
+2026-10-20 10:10:29,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4154
+2026-10-20 10:10:29,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3948
+2026-10-20 10:10:29,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.4083
+2026-10-20 10:10:29,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4101
+2026-10-20 10:11:28,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1261
+2026-10-20 10:11:28,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.1233
+2026-10-20 10:11:28,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1437
+2026-10-20 10:11:28,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2238
+2026-10-20 10:11:28,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.263
+2026-10-20 10:11:28,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3292
+2026-10-20 10:11:28,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4154
+2026-10-20 10:11:28,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3948
+2026-10-20 10:11:28,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.4083
+2026-10-20 10:11:28,"b13600 --moe dense-split=0,prefill-split=0",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4101
+2026-10-20 10:12:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1329
+2026-10-20 10:12:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.1255
+2026-10-20 10:12:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1431
+2026-10-20 10:12:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2243
+2026-10-20 10:12:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.2627
+2026-10-20 10:12:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3278
+2026-10-20 10:12:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4165
+2026-10-20 10:12:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3953
+2026-10-20 10:12:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.409
+2026-10-20 10:12:28,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4114
+2026-10-20 10:13:29,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,1,1.1347
+2026-10-20 10:13:29,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,2,1.1275
+2026-10-20 10:13:29,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,3,1.1471
+2026-10-20 10:13:29,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,4,1.2259
+2026-10-20 10:13:29,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,5,1.2647
+2026-10-20 10:13:29,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,6,1.3286
+2026-10-20 10:13:29,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,7,1.4153
+2026-10-20 10:13:29,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,8,1.3953
+2026-10-20 10:13:29,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,9,1.4089
+2026-10-20 10:13:29,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplb,10,1.4111
+2026-10-20 10:14:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,1,1.4581
+2026-10-20 10:14:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,2,1.5711
+2026-10-20 10:14:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,3,1.7079
+2026-10-20 10:14:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,4,1.7392
+2026-10-20 10:14:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,5,1.729
+2026-10-20 10:14:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,6,1.8997
+2026-10-20 10:14:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,7,1.9397
+2026-10-20 10:14:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,8,1.9166
+2026-10-20 10:14:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,9,1.8758
+2026-10-20 10:17:44,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,1,1.4581
+2026-10-20 10:17:44,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,2,1.5711
+2026-10-20 10:17:44,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,3,1.7079
+2026-10-20 10:17:44,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,4,1.7392
+2026-10-20 10:17:44,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,5,1.729
+2026-10-20 10:17:44,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,6,1.8997
+2026-10-20 10:17:44,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,7,1.9397
+2026-10-20 10:17:44,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,8,1.9166
+2026-10-20 10:17:44,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,9,1.8758
+2026-10-20 10:19:20,"b13600 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,1,1.4581
+2026-10-20 10:19:20,"b13600 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,2,1.5711
+2026-10-20 10:19:20,"b13600 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,3,1.7079
+2026-10-20 10:19:20,"b13600 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,4,1.7392
+2026-10-20 10:19:20,"b13600 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,5,1.7289
+2026-10-20 10:19:20,"b13600 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,6,1.8998
+2026-10-20 10:19:20,"b13600 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,7,1.9402
+2026-10-20 10:19:20,"b13600 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,8,1.917
+2026-10-20 10:19:20,"b13600 --moe dense-split=0,prefill-split=0",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,9,1.8758
+2026-10-20 10:20:54,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,1,1.4492
+2026-10-20 10:20:54,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,2,1.5646
+2026-10-20 10:20:54,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,3,1.7024
+2026-10-20 10:20:54,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,4,1.7358
+2026-10-20 10:20:54,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,5,1.7253
+2026-10-20 10:20:54,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,6,1.8978
+2026-10-20 10:20:54,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,7,1.9383
+2026-10-20 10:20:54,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,8,1.9145
+2026-10-20 10:20:54,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,9,1.8736
+2026-10-20 10:22:31,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,1,1.4435
+2026-10-20 10:22:31,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,2,1.567
+2026-10-20 10:22:31,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,3,1.7009
+2026-10-20 10:22:31,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,4,1.7348
+2026-10-20 10:22:31,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,5,1.7253
+2026-10-20 10:22:31,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,6,1.9003
+2026-10-20 10:22:31,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,7,1.9397
+2026-10-20 10:22:31,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,8,1.9149
+2026-10-20 10:22:31,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,pplb,9,1.8725
+2026-10-20 10:24:25,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3643
+2026-10-20 10:24:25,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4177
+2026-10-20 10:24:25,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.4962
+2026-10-20 10:24:25,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5812
+2026-10-20 10:24:25,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.5907
+2026-10-20 10:24:25,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.7818
+2026-10-20 10:24:25,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.7961
+2026-10-20 10:24:25,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.8029
+2026-10-20 10:24:25,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.7626
+2026-10-20 10:28:08,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3701
+2026-10-20 10:28:08,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4243
+2026-10-20 10:28:08,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.4999
+2026-10-20 10:28:08,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5837
+2026-10-20 10:28:08,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.5908
+2026-10-20 10:28:08,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.7784
+2026-10-20 10:28:08,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.7927
+2026-10-20 10:28:08,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.7991
+2026-10-20 10:28:08,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.7578
+2026-10-20 10:29:48,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3701
+2026-10-20 10:29:48,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4243
+2026-10-20 10:29:48,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5009
+2026-10-20 10:29:48,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5846
+2026-10-20 10:29:48,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.5915
+2026-10-20 10:29:48,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.779
+2026-10-20 10:29:48,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.797
+2026-10-20 10:29:48,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.8015
+2026-10-20 10:29:48,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.7599
+2026-10-20 10:31:26,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3723
+2026-10-20 10:31:26,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4247
+2026-10-20 10:31:26,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5043
+2026-10-20 10:31:26,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5894
+2026-10-20 10:31:26,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.5991
+2026-10-20 10:31:26,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.7783
+2026-10-20 10:31:26,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.7932
+2026-10-20 10:31:26,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.7958
+2026-10-20 10:31:26,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.7584
+2026-10-20 10:33:07,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3713
+2026-10-20 10:33:07,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4293
+2026-10-20 10:33:07,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5007
+2026-10-20 10:33:07,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.5861
+2026-10-20 10:33:07,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,5,1.6018
+2026-10-20 10:33:07,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,6,1.7885
+2026-10-20 10:33:07,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,7,1.7983
+2026-10-20 10:33:07,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,8,1.8033
+2026-10-20 10:33:07,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,9,1.7631
+2026-10-20 10:35:05,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,1,1.2431
+2026-10-20 10:35:05,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,2,1.2781
+2026-10-20 10:35:05,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,3,1.3507
+2026-10-20 10:35:05,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,4,1.4238
+2026-10-20 10:35:05,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,5,1.4587
+2026-10-20 10:35:05,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,6,1.6188
+2026-10-20 10:35:05,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,7,1.6406
+2026-10-20 10:35:05,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,8,1.6615
+2026-10-20 10:35:05,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,9,1.6326
+2026-10-20 10:38:53,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,1,1.2418
+2026-10-20 10:38:53,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,2,1.2696
+2026-10-20 10:38:53,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,3,1.3467
+2026-10-20 10:38:53,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,4,1.4209
+2026-10-20 10:38:53,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,5,1.4563
+2026-10-20 10:38:53,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,6,1.6167
+2026-10-20 10:38:53,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,7,1.6375
+2026-10-20 10:38:53,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,8,1.6562
+2026-10-20 10:38:53,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,9,1.6265
+2026-10-20 10:41:33,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,1,1.2418
+2026-10-20 10:41:33,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,2,1.2696
+2026-10-20 10:41:33,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,3,1.3449
+2026-10-20 10:41:33,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,4,1.4194
+2026-10-20 10:41:33,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,5,1.4557
+2026-10-20 10:41:33,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,6,1.6161
+2026-10-20 10:41:33,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,7,1.6369
+2026-10-20 10:41:33,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,8,1.6557
+2026-10-20 10:41:33,"b13600 --moe dense-split=0,prefill-split=0",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,9,1.626
+2026-10-20 10:44:18,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,1,1.2354
+2026-10-20 10:44:18,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,2,1.2831
+2026-10-20 10:44:18,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,3,1.346
+2026-10-20 10:44:18,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,4,1.4172
+2026-10-20 10:44:18,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,5,1.4539
+2026-10-20 10:44:18,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,6,1.6237
+2026-10-20 10:44:18,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,7,1.6452
+2026-10-20 10:44:18,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,8,1.6655
+2026-10-20 10:44:18,"b13600 --moe dense-split=1,split-experts=0,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,9,1.6349
+2026-10-20 10:48:45,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,1,1.2387
+2026-10-20 10:48:45,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,2,1.2763
+2026-10-20 10:48:45,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,3,1.343
+2026-10-20 10:48:45,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,4,1.4147
+2026-10-20 10:48:45,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,5,1.454
+2026-10-20 10:48:45,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,6,1.6169
+2026-10-20 10:48:45,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,7,1.6384
+2026-10-20 10:48:45,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,8,1.6595
+2026-10-20 10:48:45,"b13600 --moe dense-split=1,split-experts=1,prefill-split=1",GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,pplb,9,1.6288
+2026-10-20 16:30:36,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9409
+2026-10-20 16:30:36,stock-b11742-official,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9422
+2026-10-20 16:30:53,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9383
+2026-10-20 16:30:53,b13600,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9407
+2026-10-20 16:31:18,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6634
+2026-10-20 16:31:18,stock-b11742-official,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5233
+2026-10-20 16:31:46,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.667
+2026-10-20 16:31:46,b13600,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5236
+2026-10-20 16:32:27,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5649
+2026-10-20 16:32:27,stock-b11742-official,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.4232
+2026-10-20 16:33:26,b13600,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5651
+2026-10-20 16:33:26,b13600,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.4237
+2026-10-20 16:34:27,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,ppl,1,1.5658
+2026-10-20 16:34:27,stock-b11742-official,Qwen3.8-27B-MTP-Q5_K_M.gguf,ppl,2,1.4226
+2026-10-20 16:35:35,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,ppl,1,1.565
+2026-10-20 16:35:35,b13600,Qwen3.8-27B-MTP-Q5_K_M.gguf,ppl,2,1.4225
+2026-10-20 16:36:52,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,ppl,1,1.1975
+2026-10-20 16:36:52,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,ppl,2,1.1724
+2026-10-20 16:37:40,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,ppl,1,1.1926
+2026-10-20 16:37:40,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,ppl,2,1.1711
+2026-10-20 16:39:02,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1265
+2026-10-20 16:39:02,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1108
+2026-10-20 16:40:49,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1284
+2026-10-20 16:40:49,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1157
+2026-10-20 16:41:45,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1317
+2026-10-20 16:41:45,stock-b11742-official,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1222
+2026-10-20 16:43:39,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1305
+2026-10-20 16:43:39,b13600,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1219
+2026-10-20 16:44:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4604
+2026-10-20 16:44:38,stock-b11742-official,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5805
+2026-10-20 16:48:22,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4541
+2026-10-20 16:48:22,b13600,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.575
+2026-10-20 16:49:45,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3756
+2026-10-20 16:49:45,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4302
+2026-10-20 16:54:05,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3675
+2026-10-20 16:54:05,b13600,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4204
+2026-10-20 16:56:02,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,1,1.2455
+2026-10-20 16:56:02,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,2,1.2663
+2026-10-20 17:00:58,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,1,1.245
+2026-10-20 17:00:58,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,2,1.2808
+2026-10-20 17:05:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1265
+2026-10-20 17:05:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1108
+2026-10-20 17:06:58,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1263
+2026-10-20 17:06:58,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1145
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1277
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.1128
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1436
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2259
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2677
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.3321
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.4178
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.395
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.4027
+2026-10-20 17:43:07,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.3996
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1277
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.1128
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1436
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2259
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2677
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.3321
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.4178
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.395
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.4027
+2026-10-20 17:44:16,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.3996
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1265
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.117
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1466
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2229
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2633
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.3288
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.4125
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.39
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.3971
+2026-10-20 17:47:43,stock-b11742-official ub=512,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.3946
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1268
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.112
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1414
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2218
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2629
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.3311
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.4163
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.3941
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.4008
+2026-10-20 17:48:39,stock-b11742-official ub=128,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.3983
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1274
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.1156
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1458
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2282
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2685
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.3359
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.4209
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.3965
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.4037
+2026-10-20 17:50:07,stock-b11742-official ub=64,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.4005
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,1,1.1962
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,2,1.1708
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,3,1.2037
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,4,1.3018
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,5,1.3405
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,6,1.4038
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,7,1.4946
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,8,1.4733
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,9,1.4779
+2026-10-20 17:51:51,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf,pplc,10,1.4758
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,1,1.1326
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,2,1.1263
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,3,1.1471
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,4,1.2243
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,5,1.2646
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,6,1.3292
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,7,1.4156
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,8,1.3944
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,9,1.4089
+2026-10-20 17:52:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,pplc,10,1.4118
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,1,1.6653
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,2,1.5247
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,3,1.5693
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,4,1.7085
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,5,1.7537
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,6,1.7915
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,7,1.874
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,8,1.8566
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,9,1.8206
+2026-10-20 17:54:25,stock-b11742-official ub=1024,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,10,1.7843
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,1,1.6606
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,2,1.5213
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,3,1.5676
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,4,1.7081
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,5,1.7547
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,6,1.7927
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,7,1.8742
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,8,1.857
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,9,1.821
+2026-10-20 17:54:39,stock-b11742-official ub=256,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,10,1.7842
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,1,1.6672
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,2,1.5245
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,3,1.5678
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,4,1.709
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,5,1.7554
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,6,1.7941
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,7,1.8764
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,8,1.859
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,9,1.8225
+2026-10-20 17:54:54,stock-b11742-official ub=128,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplc,10,1.7855
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,1,1.9339
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,2,1.9344
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,3,2.0097
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,4,2.0246
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,5,2.0647
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,6,2.0766
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,7,2.075
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,8,2.1555
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,9,2.1709
+2026-10-20 17:55:10,stock-b11742-official ub=1024,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,10,2.1618
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,1,1.9356
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,2,1.94
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,3,2.0137
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,4,2.0287
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,5,2.0687
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,6,2.0794
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,7,2.0779
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,8,2.1583
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,9,2.1729
+2026-10-20 17:55:19,stock-b11742-official ub=256,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplc,10,2.1627
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1248
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.1046
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1363
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2188
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2604
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.325
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.41
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.3873
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.3955
+2026-10-20 18:07:25,stock-b11742-official ub=1024,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.3927
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,1,1.1277
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,2,1.1128
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,3,1.1436
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,4,1.2259
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,5,1.2677
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,6,1.3321
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,7,1.4178
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,8,1.395
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,9,1.4027
+2026-10-20 18:08:13,stock-b11742-official ub=256,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplc,10,1.3996
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1265
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1108
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1399
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.221
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2618
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3284
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4139
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3909
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.3984
+2026-10-20 18:38:51,stock-b11742-official,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3954
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1274
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1144
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,3,1.1435
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,4,1.2251
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,5,1.2648
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,6,1.3318
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,7,1.4171
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,8,1.3938
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,9,1.4008
+2026-10-20 18:42:53,b13600,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,10,1.3975
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,1,1.2455
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,2,1.2663
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,3,1.3368
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,4,1.4121
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,5,1.4475
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,6,1.6114
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,7,1.6355
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,8,1.6573
+2026-10-20 18:46:03,stock-b11742-official,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,9,1.627
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,1,1.2545
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,2,1.2837
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,3,1.3503
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,4,1.4271
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,5,1.4615
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,6,1.6253
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,7,1.6438
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,8,1.6633
+2026-10-20 19:01:34,b13600,GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf,ppl,9,1.6335

@@ -241,3 +241,26 @@ v25-def-pf4k,2026-10-14 15:59:44,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf4k,180+220,-d
 v25-def-pf4k,2026-10-14 15:59:44,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf4k,180+220,-dev ?,5,3129.9,-dev CUDA1,5,2494.9,1.255
 v25-def-game4c,2026-10-14 16:01:58,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,game4c,180+220,-dev CUDA1,5,87,-dev CUDA1,5,87,1
 v25-off-pf4k,2026-10-14 16:04:05,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf4k,180+220,-dev CUDA1,5,2562,-dev CUDA1,5,2562,1
+t12-o-400-pf12k,2026-10-17 19:08:07,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,1433.5,-dev CUDA1,1,1433.5,1
+t12-o-900-pf12k,2026-10-17 19:09:02,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,1896.8,-dev CUDA1,1,1896.8,1
+t12-o-1900-pf12k,2026-10-17 19:09:57,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2277.9,-dev CUDA1,1,2277.9,1
+t12-oa-pf12k,2026-10-17 19:13:01,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2435.1,-dev CUDA1,1,2435.1,1
+t12-v-autotune-pf12k,2026-10-17 19:15:04,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1 autotune=0,1,2474.5,-dev CUDA1 autotune=0,1,2474.5,1
+t12-v-alias-pf12k,2026-10-17 19:15:42,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1 alias=0,1,2544.4,-dev CUDA1 alias=0,1,2544.4,1
+t12-v-thread-tune-pf12k,2026-10-17 19:16:19,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1 thread-tune=0,1,2346,-dev CUDA1 thread-tune=0,1,2346,1
+t12-b-rel-pre3-pf12k,2026-10-17 19:17:10,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2414.8,-dev CUDA1,1,2414.8,1
+t12-b-kvt13-pf12k,2026-10-17 19:17:49,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2387.7,-dev CUDA1,1,2387.7,1
+t12-b-kvfix5-pf12k,2026-10-17 19:18:28,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2434,-dev CUDA1,1,2434,1
+t12-b-rel-pf12k,2026-10-17 19:19:07,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2165.2,-dev CUDA1,1,2165.2,1
+t12-fo-pf12k,2026-10-17 19:27:11,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2479.6,-dev CUDA1,1,2479.6,1
+t12-lm-auto-pf12k,2026-10-17 19:28:04,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2307.8,-dev CUDA1,1,2307.8,1
+t12-lm-none-pf12k,2026-10-17 19:28:42,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2467.9,-dev CUDA1,1,2467.9,1
+t12-g-o-pf12k,2026-10-17 19:29:35,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2603.5,-dev CUDA1,1,2603.5,1
+t12-g-fo-pf12k,2026-10-17 19:30:11,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2638.1,-dev CUDA1,1,2638.1,1
+t12-g-catchup-gcc-edc113050-pf12k,2026-10-17 19:31:54,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2518.3,-dev CUDA1,1,2518.3,1
+t12-g-fastup-clang-pf12k,2026-10-17 19:32:24,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2652.7,-dev CUDA1,1,2652.7,1
+t12-nk-o-pf12k,2026-10-17 19:33:30,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2590,-dev CUDA1,1,2590,1
+t12-ord-o1-pf12k,2026-10-17 19:37:42,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2655.5,-dev CUDA1,1,2655.5,1
+t12-ord-o2-pf12k,2026-10-17 19:38:28,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2650.3,-dev CUDA1,1,2650.3,1
+t12-cap-o-pf12k,2026-10-17 19:39:38,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2637.8,-dev CUDA1,1,2637.8,1
+u12-o-400-pf12k,2026-10-17 19:40:59,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,1428.7,-dev CUDA1,1,1428.7,1

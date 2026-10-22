@@ -6,3 +6,6 @@ chain26-relpf-glm12  contaminated: a build ran concurrently (2026-10-10 22:18-22
 gate-tunefix-glm-out_heavy	invalid: --cpu-moe forced every expert to the CPU (10 t/s); the published runs use the default placement; re-queued as gate2-*
 diag-glm-game4c-fix1@2026-10-11-09:15-09:30	tainted: x4 power limit changed during the task (280 -> hand change ~09:25 -> 300/350); rerun at 280+280 as obs280-game4c
 diag-glm-pf12k-fix1@2026-10-11-09:35-09:54	tainted: x4 limit 300 W (not 280), random throttling; rerun at 280+280
+ctxcost-mimo-c4k-tetrisc  # harness -c won over the argument: both arms ran at a tiny context
+ctxcost-mimo-c4k-edit4c  # same
+ctxcost-mimo-c128k-tetrisc  # same
