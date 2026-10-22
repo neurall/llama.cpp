@@ -4200,6 +4200,14 @@ def cmd_build(a):
              + (f"cmake --build {B} -j $(nproc)" if a.release else f"cmake --build {B} -j 8 --target llama-server llama-cli llama-perplexity"))
     lk = queue_lock(wait=True)   # no build while a benchmark runs (a build takes the CPU the measurements use)
     iid = _image("llama-rel-el8", keep=a.release)
+    idf = os.path.join(B, ".image-id")   # a build dir keeps the absolute toolkit paths of the image that configured it (CUDA 13.2 paths broke a 13.4 release build, 2026-10-22): another image, or a dir from before this check, is configured afresh; the objects come back from ccache
+    if (open(idf).read().strip() if os.path.exists(idf) else None) != str(iid):
+        for stale in ("CMakeCache.txt", "CMakeFiles"):
+            sp = os.path.join(B, stale)
+            if os.path.isdir(sp): shutil.rmtree(sp)
+            elif os.path.exists(sp): os.remove(sp)
+        print(f"build: {B} was configured with another image, configuring afresh (ccache serves the objects)", flush=True)
+    open(idf, "w").write(str(iid))
     docker = ([] if a.release else ["nice", "-n", "19"]) + ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-e", "CCACHE_DIR=/ccache",
               "-e", "CCACHE_MAXSIZE=100G", "-e", f"CCACHE_BASEDIR={W}", "-e", "CCACHE_NOHASHDIR=1", "-v", fcfg.path("ccache") + ":/ccache", "-v", f"{W}:{W}",
               "-v", f"{gitc}:{gitc}:ro", "llama-rel-el8", "bash", "-c", inner]
