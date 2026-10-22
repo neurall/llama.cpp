@@ -1154,7 +1154,7 @@ extern "C" {
     LLAMA_API void         llama_moe_set_opt(const char * key, const char * value);
     LLAMA_API const char * llama_moe_get_opt(const char * key);
     LLAMA_API void         llama_moe_decision_fork(const char * name, const char * value, const char * why);   // GET /moe/stats "decisions": what an automatic choice decided and why (common.cpp calls it; Windows needs the export)
-    LLAMA_API uint32_t     llama_moe_cache_prefill_ubatch_fork(uint32_t n_tokens, uint32_t ub_max);   // the pass size of equal passes for a prompt (the server cuts its checkpoints at it)
+    LLAMA_API uint32_t     llama_moe_prefill_pass_fork(uint32_t n_tokens, uint32_t ub_max);   // the pass size of equal passes for a prompt (the server cuts its checkpoints at it); wraps llama_moe_cache_prefill_ubatch_fork
     LLAMA_API int          llama_moe_stats_json_fork(char * buf, int cap);   // GET /moe/stats body
 
     // fork: live parameters of the running process (read at every use, changed over HTTP: GET / POST /moe/params in the server). name -> double.

@@ -4378,7 +4378,7 @@ private:
                         if (do_checkpoint) {
                             // fork: the last slice is cut one PASS (not one maximum ubatch) before the end, so the calls of a long prompt are equal passes: with the ceiling as
                             // offset a 12471-token prompt became 83 + 12384 + 4 tokens, and the 83-token call streamed every expert for 83 tokens
-                            const int n_pass = (int) std::min<uint32_t>((uint32_t) n_ubatch, std::max<uint32_t>(32u, llama_moe_cache_prefill_ubatch_fork((uint32_t) slot.task->n_tokens(), (uint32_t) n_ubatch)));
+                            const int n_pass = (int) std::min<uint32_t>((uint32_t) n_ubatch, std::max<uint32_t>(32u, llama_moe_prefill_pass_fork((uint32_t) slot.task->n_tokens(), (uint32_t) n_ubatch)));
                             const int checkpoint_offsets[] = {4 + n_pass, 4};
 
                             bool should_break = false;

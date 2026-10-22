@@ -8430,3 +8430,6 @@ bool pinned(const moe_cache * mc, const layer_state & ls, int32_t e) {
     return ls.sticky[e] || (ls.slow && ls.cached_since[e] && mc->n_steps + 1 - ls.cached_since[e] < stay);
 }
 } // namespace
+
+// C-linkage, exported entry for the server (llama.h): the planner above is a C++ function other engine files declare locally
+uint32_t llama_moe_prefill_pass_fork(uint32_t n_tokens, uint32_t ub_max) { return llama_moe_cache_prefill_ubatch_fork(n_tokens, ub_max); }
