@@ -5422,6 +5422,7 @@ def run_list(name, argv):
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
     ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
     ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
+    ap.add_argument("-cs", "--clean-state", action="store_true", help="every cell starts from an EMPTY learned state of its own (bench --clean-state): run 1 is the cold start of a new user, run 2 starts a new server on the state run 1 left (warm). The server is not kept between cells, so no cell inherits another's state (an A/B of two builds read in run order once gave a 37%% gap that was only the shared state file)")
     ap.add_argument("-nk", "-x", "--kill", action="store_true", help="kill the server after every run (default: it stays up and the next run, also of the next cell, uses it when model, build and args are the same; later runs then start with what the earlier ones cached)")
     ap.add_argument("-r", "--runs", default="2", help="measured runs per cell (default 2: one run can be an outlier; 0 = the list's n)")
     ap.add_argument("-fb", "-from-best", "--from-best", dest="from_best", action="store_true", help="cells with the biggest known gain over stock first (from runs.db: newest runs of ours against the newest official stock; cells with no gain known last), so the best gainers run and print first")
@@ -5551,7 +5552,7 @@ def run_list(name, argv):
                 else: run_list_pool(size(r))
             if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;94", os.path.basename(shown)), flush=True)   # after the pool line: which model the next cells run
             tag = f"{r['_b']}-{r['name']}"
-            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], (" " + r["args"]) if r.get("args") else ""] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"])
+            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], (" " + r["args"]) if r.get("args") else ""] + (["--warm"] if o.warm else []) + ([] if (o.kill or o.clean_state) else ["--keep-server"]) + (["--clean-state"] if o.clean_state else [])
             cmd += (["--tokens", r["tokens"]] if r.get("tokens") else []) + shlex.split(r.get("extra") or "")
             if o.dry: print(f"[{name}] {tag}: {shlex.join(cmd[3:])}", flush=True)
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
@@ -5778,7 +5779,7 @@ def cmd_cell(a):
         args += " --moe " + hog
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
-           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else [])
+           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG="r")
     if os.path.ismount("/mnt/huge1g") and not nomount: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
@@ -7709,6 +7710,7 @@ if __name__ == "__main__":
     ce.add_argument("args", nargs="?", default="", help="server args after -np 1")
     ce.add_argument("--wrap", help="command prefix for the server (nsys / ncu)")
     ce.add_argument("--keep-server", action="store_true", help="bench --keep-server")
+    ce.add_argument("--clean-state", action="store_true", help="bench --clean-state: an empty learned state for this build and cell; run 1 cold, run 2 warm")
     ce.add_argument("--keep-loops", action="store_true", help="do not discard and repeat a looping or garbled answer (bench --keep-loops): one server run per cell")
     ce.add_argument("--warm", action="store_true", help="a discarded run before each measured one: the first run after a server start is cold (nothing learned yet, the planner still guesses) and a gate does not compare it")
     ce.add_argument("--hog-gpu", help="GiB left free on every GPU (the server takes the rest at start: --moe sim-vram=MiB), simulates a smaller card")
