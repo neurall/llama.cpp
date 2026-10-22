@@ -1,0 +1,11 @@
+run 16561 | um3d | pf12k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 43.86 t/s | prompt 1576.3 t/s | 64 tokens | args: -np 1 | power 220+280 W | 2026-10-19 10:02:16
+
+    return params.speculative.types == common_speculative_types::from_str("");
+}
+
+static bool is_default_model(const common_params_model & model) {
+    return model.path.empty() && model.url.empty();
+}
+
+static bool is_default_mmproj(const common_params_model & mmproj) {
+    return

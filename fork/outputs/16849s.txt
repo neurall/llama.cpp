@@ -1,0 +1,7 @@
+run 16849 | stock-b11742-official | edit4c | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 357.82 t/s | prompt 16041.9 t/s | 19 tokens | args:  | power 200+200 W | 2026-10-20 01:50:55
+
+
+---
+<|im_end|>
+<|im_start|>assistant
+<|im

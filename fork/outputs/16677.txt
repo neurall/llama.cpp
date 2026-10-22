@@ -1,0 +1,86 @@
+run 16677 | um3d | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.13 t/s | prompt 568.8 t/s | 914 tokens | args: -np 1 | power 220+280 W | 2026-10-19 14:20:12
+
+The user wants me to add a function that counts the lines of this file and prints the count. This is a C++ file (json-schema-to-grammar.cpp). I need to add a function that counts lines of the file itself and prints the count.
+
+The file appears to be cut off at the end (the `gbnf_escape_length` function is incomplete), but I can still add a function that counts lines.
+
+To count lines of the file itself, I can:
+1. Use `__FILE__` macro to get the current file name
+2. Open the file and count lines
+3. Print the count
+
+Let me write a function that does this. The typical approach:
+
+```cpp
+static int count_file_lines(const std::string & filename) {
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        return -1;
+    }
+    int count = 0;
+    std::string line;
+    while (std::getline(file, line)) {
+        count++;
+    }
+    return count;
+}
+
+static void print_file_line_count() {
+    int lines = count_file_lines(__FILE__);
+    std::cout << "Number of lines in " << __FILE__ << ": " << lines << std::endl;
+}
+```
+
+I need to include `<fstream>` and `<iostream>` headers.
+
+Note: `__FILE__` gives the path as passed to the compiler, which may not resolve correctly if the working directory differs. But for a simple demonstration, it's fine. Alternatively, I could hardcode the filename "json-schema-to-grammar.cpp".
+
+Let me provide the complete addition. I should show where to add it in the file — probably near the top after includes, or at the end. Since the file is truncated in the user's message, I'll just provide the function code to add, with the necessary includes.
+
+Let me write it:
+
+```cpp
+#include <fstream>
+#include <iostream>
+
+// Counts the number of lines in the given file. Returns -1 if the file
+// cannot be opened.
+static int count_lines(const std::string & filename) {
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        return -1;
+    }
+    int line_count = 0;
+    std::string line;
+    while (std::getline(file, line)) {
+        ++line_count;
+    }
+    return line_count;
+}
+
+// Counts the lines of this source file and prints the count.
+static void print_line_count() {
+    const int lines = count_lines(__FILE__);
+    if (lines < 0) {
+        std::cerr << "Could not open file " << __FILE__ << " to count lines\n";
+        return;
+    }
+    std::cout << __FILE__ << " contains " << lines << " lines\n";
+}
+```
+
+One caveat: `__FILE__` expands to the path given to the compiler (e.g., relative path like "common/json-schema-to-grammar.cpp" or absolute path depending on build system). If the program's working directory differs from where the relative path resolves, opening may fail. A more robust approach could try a few candidate paths, or just use the filename. But for the purpose of this answer, using `__FILE__` is the standard approach.
+
+Alternatively, since the file is compiled, one could count lines at compile time using `__LINE__` at the end of the file — the last line number equals the total line count (if the file ends with a newline). That's a neat trick:
+
+```cpp
+static void print_line_count() {
+    // The line number of this line equals the total number of lines in the
+    // file (assuming the file ends with a trailing newline).
+    const int total_lines = __LINE__;
+    std::cout << "This file contains " << total_lines << " lines\n";
+}
+```
+
+Wait — `__LINE__` on the last line gives the line number of that line. If the file ends with a newline after the last code line, then the total number of lines equals `__LINE__` of the last line. Actually, if the file has N lines each terminated by newline, the last line of code is line N, and `__LINE__` there is N. So `__LINE__` gives the count directly. That's a compile-time trick that doesn't require file I/O and works regardless of working directory. But it only works if placed at
+---

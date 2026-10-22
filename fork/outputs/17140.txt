@@ -1,0 +1,45 @@
+run 17140 | b13600 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.7 t/s | prompt 21.4 t/s | 1005 tokens | args: -np 1 --moe split-f16=0 | power 220+280 W | 2026-10-20 05:50:34
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf/minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris" category — like the ~140-byte-ish ones that abuse browser quirks, or the classic "Tiny Tetris" in ~a few hundred bytes of JS. A well-known one is "Román Cortés style" or the famous 219-byte tetris... Actually there's a famous one: "Tetris in 140 bytes of JavaScript" doesn't quite exist fully; there's a known minimal tetris in about 400-500 bytes. There's also the famous one by @aemkei "Tetris in 219 bytes"? Let me recall: there's "tiny tetris" in C in ~600 bytes. In JS, there's a known minimal Tetris around 445 bytes by "B+ " (Björn?) — "Tetris in 445 bytes" by... Actually there's a famous codegolf: "Tetris in less than 4k" etc.
+
+I shouldn't try to replicate an exact known golfed solution from memory (risk of errors). Instead, I'll write my own compact implementation, aiming for genuinely small size (maybe ~600-900 bytes of code), while keeping it correct and playable. I'll write it carefully myself and count roughly.
+
+Key features needed for a real Tetris:
+- 10×20 board
+- 7 tetrominoes with rotation (can use a compact encoding)
+- Gravity at intervals
+- Movement: left/right/down, rotate
+- Line clear + scoring
+- Game over
+- Rendering (canvas is compact)
+
+Compact encoding of pieces: Each tetromino has 4 rotations. A classic trick: encode each piece as a 4×4 (or 2×2 / 3×3) matrix and rotate via transpose+reverse, or precompute bit patterns.
+
+A very compact approach: represent each piece as a list of 4 rotation states, each state as a small array of coordinate pairs or a bitmask. Or use the "SRS-lite" approach: store each piece as a 2D array and rotate with `p[0].map((_,i)=>p.map(r=>r[i]).reverse())`.
+
+Even more compact: use string encoding. E.g., pieces as arrays of [x,y] offsets per rotation.
+
+Let me design my own minimal Tetris:
+
+Approach: canvas 2D, 10×20 grid, cell size ~12px. Board stored as a single array of 200 cells (0 empty, else color index or just 1). Pieces: 7 shapes.
+
+Compact piece representation trick: Each tetromino can be defined by a set of cells within a bounding box, and rotation computed by rotating coordinates: for a box of size n, rotate (x,y) -> (n-1-y, x). If I store each piece as an array of [x,y] pairs in a 4×4 box (or per-piece box size), rotation is a map.
+
+Even simpler classic golf trick: define pieces as arrays of 4 rotation states each with 4 coordinate pairs. That's verbose. Alternative: define each piece once as a matrix and rotate programmatically.
+
+Let me define pieces as binary matrices:
+
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]] — 4x4
+O: [[1,1],[1,1]] — 2x2
+T: [[0,1,0],[1,1,1],[0,0,0]] — 3x3
+S: [[0,1,1],[1,1,0],[0,0,0]]
+Z: [[1,1,0],[0,1,1],[0,0,0]]
+J: [[1,0,0],[1,1,1],[0,0,0]]
+L: [[0,0,1],[1,1,1],[0,0,0]]
+
+Rotation for n×n matrix: rotated[i][j] = m[n-1-j][i] (clockwise). For 2×2 O it's invariant. For I in 4×4 it works with SRS-ish behavior (not exactly SRS but fine).
+
+Compact encoding: I can encode each piece matrix as a string of bits + dimensions. E.g., "I"
+---

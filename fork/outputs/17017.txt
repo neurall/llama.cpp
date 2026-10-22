@@ -1,0 +1,50 @@
+run 17017 | b13600 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.47 t/s | prompt 17.2 t/s | 1005 tokens | args: -np 1 --moe split-f16=1 | power 220+280 W | 2026-10-20 03:17:46
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count. Let me think about what "smallest" means: probably fewest characters in a single HTML file. I should aim for a genuinely playable Tetris in as few bytes as possible while still being functional and not totally ugly.
+
+Let me think about the classic minimal Tetris implementations. There are famous ones like the 140-byte-ish Tetris in tweets, but those are usually broken or barely playable. A realistic target: something around 500-800 bytes that's actually playable — piece movement, rotation, gravity, line clears, game over, restart.
+
+Let me design a compact Tetris:
+
+Core components:
+1. Canvas for rendering (or use a div grid? canvas is smaller).
+2. Board array, e.g., 10x20.
+3. Tetromino shapes — can encode compactly.
+4. Gravity via setInterval or requestAnimationFrame with timing.
+5. Keyboard controls: left/right/down movement, rotation, maybe hard drop.
+6. Line clear + score.
+7. Game over + restart.
+
+Compact encoding of pieces: The 7 tetrominoes. A common trick: encode each piece as a 4x4 or use coordinate lists. Or use the classic trick where shapes are rows of a binary matrix.
+
+One very compact approach: store shapes as arrays of arrays of [x,y] offsets, or as strings.
+
+A known compact trick: represent each rotation of each piece via a base shape and rotate mathematically. Rotation can be done by transforming coordinates: for a piece stored as list of cells in a NxN box, rotation = (x,y) -> (y, N-1-x) or similar. If I store each piece as a set of cells in a 4x4 (or variable size) box, I can rotate with a formula.
+
+Even more compact: the famous "piece = 16-bit number" trick. Each tetromino fits in a 4x4 grid = 16 bits. Rotation = rotate bits. But decoding is verbose.
+
+Alternative compact approach used in famous minimal tetris (e.g., "Tetris in 140 bytes of JavaScript" by rom1502 or the classic one by @aemkei "Uint8" tetris): Actually there's the famous one: https://gist.github.com/... "Tetris in 140 bytes" by Román? Let me recall: there's a well-known minimal Tetris in C (about 200 lines), and JS ones around 300-500 bytes.
+
+Let me just write my own compact version and count bytes.
+
+Design decisions for minimal size:
+- Use `document.body.appendChild(c=document.createElement('canvas'))` style.
+- Single letter variable names.
+- Use `setInterval` for gravity (simplest).
+- Keydown handler with a switch or object mapping.
+- Draw with fillRect.
+- Colors: single color (monochrome) is smallest — fill everything one color. But I'd like at least some visual distinction... For "smallest", monochrome is fine, but maybe I can afford per-piece colors cheaply with a color array indexed by piece id. That's like `C='#07f|#f00|...'` split — maybe ~60 bytes. Hmm, for smallest, maybe skip colors or use a compact trick: color = hue based on piece index: `c.fillStyle='hsl('+i*36+',50%,50%)'` — that's short! `hsl(${i*36}...)` gives 7 distinct colors cheaply. Actually pieces are 7 types, i*51 or i*36. That's very compact and gives color. 
+
+- Grid: draw board cells + current piece. Ghost piece? Skip for size.
+- Score: just lines count, display in title or draw text on canvas. `c.fillText` maybe. Or update document.title — `t.innerHTML=` ... Actually simplest: draw score text on canvas each frame.
+
+Let me think about the game logic in detail.
+
+Board: 10 wide, 20 tall. Store as array of rows, each row an array, or a single array of 200 cells. Single flat array B of length 200, index = y*10+x. Values: 0 empty, or piece id+1 for color.
+
+Pieces: 7 shapes. Compact representation: each piece as array of rotations? Or store base shape and rotate.
+
+Compact shape encoding idea: For each piece, store as a string of coordinates? Like "I:0,1,2,3" hmm.
+
+A very compact classic: define shapes as arrays of [x,y] pairs relative to a pivot, and rotate by swapping: rot(x,y)->(y,-x) with wall kicks ignored (
+---

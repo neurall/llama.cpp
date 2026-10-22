@@ -1,0 +1,68 @@
+run 17137 | b13600 | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.3 t/s | prompt 584.6 t/s | 918 tokens | args: -np 1 --moe split-f16=0 | power 220+280 W | 2026-10-20 05:44:57
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function, used by... let me check. It's used in the schema conversion code (which appears to be cut off in the provided snippet). Actually, the file is truncated at `gbnf_escape_length`. So I only see part of the file. Hmm, but the task says "Delete the code in this file that is never used." I need to work with what's shown.
+
+Wait, the file shown is incomplete - it ends mid-function at `gbnf_escape_length`. The actual file in llama.cpp continues with more functions like `gbnf_escape`, `parse_pattern`, `convert_pattern`, `format_grammar`, `get_rule`, `add_rule`, `add_schema`, etc.
+
+But I only have this partial file. Let me analyze what's visible and determine what's unused within the visible portion, considering typical usage patterns in the rest of the file (which I know from the llama.cpp codebase).
+
+Let me recall the actual llama.cpp `json-schema-to-grammar.cpp` file. The full file contains:
+
+- `build_repetition` - used in `add_rule` for arrays with minItems/maxItems, and in string patterns with `{n,m}` repetitions.
+- `build_min_max_int` - used in `add_rule` for integer/number with minimum/maximum.
+- `SPACE_RULE` - used in grammar output.
+- `BuiltinRule`, `PRIMITIVE_RULES`, `STRING_FORMAT_RULES` - used.
+- `is_reserved_name` - used in `add_rule`.
+- `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`, `GRAMMAR_LITERAL_ESCAPES` - used.
+- `MAX_PATTERN_DEPTH` - used in `parse_pattern` recursion limit.
+- `NON_LITERAL_SET`, `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - used in pattern conversion.
+- `replacePattern` - used by `format_literal` and `gbnf_escape`.
+- `format_literal` / `gbnf_format_literal` - used.
+- `gbnf_escape_length`, `gbnf_escape` - used in `convert_pattern` / `parse_pattern`.
+
+Hmm, but the question is about "code that is never used". Let me think about what's actually dead code in this file.
+
+Looking at the visible portion:
+
+1. `build_repetition` - is it used? In the full file, yes, it's used in `add_rule` when handling `minItems`/`maxItems` for arrays and in pattern repetition. So it's used.
+
+2. `build_min_max_int` - used in `add_rule` for `minimum`/`maximum` on integers/numbers. Used.
+
+3. `SPACE_RULE` - used in `format_grammar` when outputting the grammar (it's appended as a rule definition). Used.
+
+4. `PRIMITIVE_RULES` - used. `STRING_FORMAT_RULES` - used.
+
+5. `is_reserved_name` - used in `add_rule` to check if a name is reserved.
+
+6. `INVALID_RULE_CHARS_RE` - used in `add_rule` when sanitizing rule names.
+
+7. `GRAMMAR_LITERAL_ESCAPE_RE` - used in `format_literal`.
+
+8. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - used in... hmm. In the full file, it's used in `gbnf_escape` when escaping characters for character ranges? Let me recall.
+
+Actually, let me recall the full llama.cpp file. Here's the relevant portion (from llama.cpp master):
+
+```cpp
+static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
+    ...
+}
+
+static std::string gbnf_escape(const std::string & pattern) {
+    ...
+}
+```
+
+Hmm, actually let me recall more precisely. The file in llama.cpp (common/json-schema-to-grammar.cpp):
+
+```cpp
+static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
+    auto is_escape_char = [&](size_t pos) {
+        auto c = pattern[pos];
+        return c == '\\' || ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS.find
+---

@@ -1,0 +1,28 @@
+run 16589 | um3d | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 55.95 t/s | prompt 128.8 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-19 10:52:44
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained HTML file that plays Tetris.
+
+But I don't want to ship a bare terminal dump — a Tetris game is a visual, tactile thing, so the wrapper around it should feel alive and crafted: a real page with a layered background, motion and micro-interactions, strong typographic contrast, and a distinctive display face over a readable body face. The game itself should stay as small as possible in code, but the page around it can be rich.
+
+Balance: the user asked for "smallest" — so I should deliver a genuinely tiny code footprint for the game logic, and I can show the minified version. But the page presenting it should be a beautiful, alive presentation. I think the right move: build a page that presents the game — a playable Tetris in a compact code footprint, displayed in a crafted "cartridge / arcade cabinet" layout, with a code panel showing the minified source and a copy button, byte counter, controls legend, stats, etc.
+
+Key: the game must actually work. Let me write a compact but functional Tetris.
+
+Let me design the page:
+
+- Theme: arcade / CRT terminal, but not the tired near-black-with-single-neon look. Tetris pieces are 7 colors, so the palette should be polychrome — the pieces themselves bring the color. Background: deep slate-blue with a subtle scanline/grid layer, ambient glow that shifts. A single neon accent on near-black would feel generic and would fight the piece colors; polychrome Tetris colors on a warm-dark "graphite + paper" ground is better. Maybe a dark charcoal-blue base (#12151c-ish) with a layered grid, plus a bright off-white panel for the code.
+
+Actually let me consider a bolder direction: an "arcade cabinet blueprint" aesthetic — dark ink-blue background with cyan grid lines, a chunky bezel around the playfield, big display type. Display face: something distinctive — "Press Start 2P" is the obvious pixel choice but it's cliché and heavy; maybe use it sparingly for tiny bits only. Better pairing: display face like "Bungee" or "Archivo Black" or "Chakra Petch" or "Space Grotesk"... Let me pick something with character: **"Bungee"** is bold and arcade-ish but only for headings; body: **"IBM Plex Sans"** or **"Space Mono"** for numbers. Hmm.
+
+Alternative pairing: Display: **"Archivo Black"** / Body: **"IBM Plex Sans"** / Mono: **"JetBrains Mono"**. Or display **"Syne"** (distinctive, geometric-quirky). For an arcade feel, I like **"Chakra Petch"** (techy, angular) as display + **"IBM Plex Sans"** body + **"IBM Plex Mono"** for code/numbers. Chakra Petch has a nice angular arcade vibe. Let's go: Chakra Petch (700/800) display, IBM Plex Sans body, IBM Plex Mono for code/counters.
+
+Layout: asymmetric. Left: big title block with byte counter, meta stats. Center: the game cabinet. Right: side panel with next piece, hold, score, controls. Below: the source code panel with tabs (Readable / Minified) and copy button, plus a byte-size meter.
+
+Actually the user asked for "smallest" — so the star of the page is the byte count. Big number: "1,024 bytes" style. Let me actually compute the minified size of the game I ship. I can't compute exactly, but I can display a live count computed in JS from the code string! That's a nice living detail: `code.length` shown live, updating as you toggle between readable/minified. That's honest and dynamic. 
+
+So: store the minified game source as a string, render it in the code panel, and compute `bytes = new Blob([src]).size`. Show it live. Nice.
+
+Now the game itself. I need two things: (1) a working playable Tetris in the page, (2) a tiny standalone snippet shown in the code panel that also works (could be the same code, minified).
+
+Simplest approach: write the game compactly, and have the page's own game be that exact code executed via an iframe with srcdoc? That's elegant: the "smallest version" is a complete HTML doc string; the page embeds it in an `<iframe
+---

@@ -1,0 +1,61 @@
+run 16955 | b13600 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 51.63 t/s | prompt 40.8 t/s | 965 tokens | args: -np 1 --moe split-f16=1 | power 220+280 W | 2026-10-20 02:34:53
+
+The user wants the smallest HTML Tetris game. Let me think about this.
+
+The request is "generate smallest html tetris game." So they want a minimal, single-file HTML Tetris. But my instinct as a careful designer is: minimal doesn't have to mean ugly or dead. I can make a tiny but delightful Tetris in one file — compact code, but with real polish: ghost piece, next piece preview, score/lines/level, keyboard controls, pause, game over, subtle motion.
+
+"Smallest" — I should keep the code genuinely compact. But I can still make it feel crafted with a small amount of CSS. Let me balance: a compact single-file implementation that's readable but tight. Maybe ~120-180 lines total. That's reasonably "smallest" while playable and good-looking.
+
+Let me write it.
+
+Design: dark background with subtle grid, neon-ish tetromino colors, monospace display font for score, a distinctive header. I want the score readouts to feel like tabular numerals rather than proportional text. Let's use system fonts + a Google font? Single file — I can link Google Fonts. Let me use a distinctive display face. For a Tetris game, a pixel/arcade face is characteristic. "Press Start 2P" is very characteristic of retro games but it's huge in size and hard to read at length. Let me pair something like `Chakra Petch` (display, techy) with `IBM Plex Mono` for numbers. Or display: "Bungee"? Hmm.
+
+Actually for a tiny file, adding a Google Fonts link is one line. Let's do it: `Chakra Petch` for display headings + `IBM Plex Mono` for the numeric HUD. That's a distinctive pairing and readable.
+
+Palette: dark slate/near-black is the obvious move for arcade, but I don't want a flat black field with a single neon accent — that reads generic. I'll use a deep indigo-slate? No — indigo/violet gradients feel like the default everything. Let's do a deep charcoal-teal (#0d1117-ish but warmer, like #12100e? ) Hmm. Let's do a warm dark: background #14120f (warm near-black) with a subtle grid, and the classic Tetris piece colors (cyan, yellow, purple, green, red, blue, orange) providing the multi-color palette. That naturally sidesteps the single-accent look — the pieces ARE the palette. Plus a warm amber accent for UI. Good.
+
+Layout: I'll go asymmetric rather than a centered stack. Left: big vertical wordmark "TETRIS" rotated? Actually a characteristic opening: the board itself is the star. Layout: board on left, HUD column on right with score stacked big, next piece, controls legend. Title as a compact lockup at top of HUD column. Asymmetric and it puts the game front and center.
+
+Implementation details for compactness:
+
+Use canvas 2D. Board 10x20, cell size 24 (or scale by devicePixelRatio).
+
+Classic compact Tetris approach:
+
+```js
+const B=[...Array(19)].map((_,i)=>i<9?0:1) // walls
+```
+The classic "0x09817" style. But let me write something readable and compact.
+
+Let me write my own compact version:
+
+```js
+const W=10,H=20,S=26;
+let g=Array.from({length:H},()=>Array(W).fill(0));
+```
+
+Pieces as rotation via matrix rotation:
+
+```js
+const P='@@.###.##..#.#.###...#..###.##.##.##..#..##.###..#.#.###.###'.match(...)
+```
+Too clever. Simpler: define shapes as strings.
+
+Compact approach with rotation math:
+
+```js
+const S=[[J,1],[...]]
+```
+
+Let me define pieces by their 4x4 or per-shape matrices:
+
+```js
+const P=[
+ [0,1,1,1], // J? 
+]
+```
+
+Simplest robust: define each piece as list of [x,y] offsets in a 3x3/4x4 box and rotate with (x,y)->(y, -x) normalized. Or use the classic: for piece defined in NxN matrix, rotate transpose+reverse.
+
+I'll define shapes as strings of
+---

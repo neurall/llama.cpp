@@ -1,0 +1,9 @@
+run 16529 | um3d | pf12k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 137.64 t/s | prompt 4238.2 t/s | 64 tokens | args: -np 1 | power 200+200 W | 2026-10-19 05:58:45
+
+    return params.spec_type == common_params::SPEC_TYPE_DEFAULT;
+}
+
+static bool spec_types_is_default(const common_params & params, const common_params_model & model) {
+    return params.spec_type == common_params::SPEC_TYPE_DEFAULT && model.spec_type == common_params::SPEC_TYPE_DEFAULT;
+}
+

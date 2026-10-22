@@ -1,0 +1,203 @@
+run 16865 | b13600 | tetrisc | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 502.5 t/s | prompt 2090.8 t/s | 991 tokens | args: -np 1 | power 200+200 W | 2026-10-20 01:52:48
+
+
+---
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.
+
+
+<|im_end|>

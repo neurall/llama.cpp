@@ -1,0 +1,47 @@
+run 16948 | b13600 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 55.32 t/s | prompt 126.6 t/s | 965 tokens | args: -np 1 --moe split-f16=1 | power 200+200 W | 2026-10-20 02:28:59
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core is a compact, working Tetris in a single HTML file.
+
+But I don't want to just ship bare minimal code with no craft. The default most tools would reach for is a plain <pre> with console colors, or a raw canvas with a black background. Let me do something better: keep the code genuinely compact (that's the core ask — smallest), but style it well so it's a real, playable game that feels alive: a canvas board, next-piece preview, score/lines/level, keyboard controls, ghost piece, subtle background, good typography pairing (a distinctive display face + readable body face), and a start/overlay.
+
+Balance: "smallest" is the explicit ask, so I shouldn't bloat it with tons of sections. A single-screen game with a tight, well-composed layout is right. Keep the code dense but readable-ish. I'll aim for compact JS using terse helpers, but still correct.
+
+Let me write it.
+
+Design direction: Tetris is a Soviet-arcade / constructivist thing. A near-black background with one neon accent is the obvious reflex and honestly overdone; let me go a different way — a light-ish or mid-tone background with bold primary blocks. Constructivist palette: warm off-white paper (#f2ece1-ish) with red, blue, yellow, green, black blocks? Hmm, but a cream-and-beige palette with terracotta accents and a serif would feel wrong for Tetris — too soft and bookish. A bold constructivist red/black/cream with a geometric sans would be much more in the spirit.
+
+Let me do: dark slate-blue background (#12151c-ish) — hmm, near-black again. Let's do a mid-dark desaturated blue-gray with a layered background: subtle grid lines, a faint scanline, and a couple of slowly drifting block shapes. Palette: cream #f4f1e8, red #e8442e, blue #2f6fed, yellow #f5c518, green #2fb573, cyan #29c3d6, magenta #c9429a, black #16181d.
+
+Typography: display face — something distinctive. Google Fonts: "Archivo Black" or "Bungee" (very Tetris/arcade) or "Chakra Petch". Pair with a readable body: "IBM Plex Mono" or "Space Grotesk". Let's use display "Bungee" — hmm, Bungee is quite decorative. Maybe "Archivo Black" for headings + "IBM Plex Mono" for numbers/body. Actually for a Tetris game, monospace numerals are great for score. Let me pair "Archivo Black" (display) with "IBM Plex Mono" (body/UI). That's a distinctive pairing.
+
+Hmm, but "smallest" — loading Google Fonts adds a link. That's fine, one line.
+
+Layout: rather than a generic centered title block, open with the game itself as the characteristic element — the board front and center-left, with a bold vertical "TETRIS" wordmark rotated or a big blocky title at top-left, stats stacked at right. Let's do a two-column: left = board canvas with a chunky frame; right = sidebar with score/lines/level in big numerals, next piece preview, hold maybe, controls legend, and a start button.
+
+Keep it compact. Add micro-interactions: buttons with hover lift, stat numbers that pop on change, line-clear flash animation on canvas, level-up flash, particle-ish? Keep it small but alive.
+
+Let me write the game logic compactly.
+
+```js
+const W=10,H=20,S=24; // cell px
+```
+
+Pieces as strings or matrices. Compact approach: use the standard SRS-ish with rotation via matrix transpose+reverse.
+
+```js
+const P='022,0011,0111,1101,011,1111,110,111'.split(',') // hmm
+```
+
+Simpler: define shapes as arrays of strings.
+
+```js
+const S=[['....','....','....','....']]
+```
+
+Let me define:
+
+```js
+const SH=[ // I J L O S T Z
+ "0000,1111,0000,0000",
+ "
+---

@@ -1,0 +1,74 @@
+run 16754 | um3d | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.93 t/s | prompt 402.9 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-19 22:34:33
+
+Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends with `static bool spec_types_is_default(const common_params & params) {` which is incomplete. I should note this in my review.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully:
+
+### `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this is contradictory (schema requires at least min_items but at most 0). The function silently returns "" which would produce an unsatisfiable grammar... actually returning "" means the grammar matches empty string, which contradicts min_items > 0. This is a schema validation issue that's silently ignored. Actually wait - if min_items > 0 and max_items == 0, the schema itself is unsatisfiable. Returning "" makes the grammar accept empty, which is wrong (should accept nothing at all, but GBNF can't easily express "never match"). Hmm, actually returning "" means the rule matches empty string. The correct behavior would arguably be to error out. Minor issue.
+- `min_items == 0 && max_items == 1` returns `item_rule + "?"` - fine.
+- What if `min_items > max_items`? E.g., min=5, max=3. The generated `{5,3}` repetition would be invalid or interpreted differently. No validation. Minor issue.
+- Negative min_items? Not validated. `{ -1, ...}` would produce garbage. Callers pass `arr.min_items` directly - if schema has negative min_items, garbage output. Minor.
+
+### `build_min_max_int`:
+This is complex recursive logic. Let me check some details:
+
+```cpp
+auto more_digits = [&](int min_digits, int max_digits) {
+    out << "[0-9]";
+    if (min_digits == max_digits && min_digits == 1) {
+        return;
+    }
+    out << "{";
+    out << min_digits;
+    if (max_digits != min_digits) {
+        out << ",";
+        if (max_digits != std::numeric_limits<int>::max()) {
+            out << max_digits;
+        }
+    }
+    out << "}";
+};
+```
+
+Hmm, if `min_digits == max_digits` but not 1, it writes `{n}` (since max_digits == min_digits, no comma). OK.
+
+Wait, there's a subtle bug: if `min_digits == max_digits && min_digits == 1` returns early - writes just `[0-9]`. Good.
+
+But what if min_digits == 0 and max_digits == 1? Writes `{0,1}`. Fine.
+
+What about `more_digits(0, decimals_left - 1)` where decimals_left could be... In the `has_min` branch with `min_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+out << ") | [0] | [1-9] ";
+more_digits(0, decimals_left - 1);
+```
+
+Hmm wait, this is for the case where only min is set (has_min true, has_max false) and min_value < 0. So the grammar should match: negative numbers <= min_value, OR 0, OR positive numbers >= 1 (any positive since no max). Wait, but actually if min_value < 0 and no max, then valid values are: everything >= min_value, which includes all negatives >= min_value, zero, and all positives. The grammar: `"-" (negatives <= -min_value... wait no.
+
+Actually `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` - hmm, that's the range [INT64_MIN, -min_value]. But wait - for negative numbers x <= min_value (min_value < 0), we have -x >= -min_value, so -x ranges from -min_value to INT64_MAX. But here it's called with min=INT64_MIN, max=-min_value. That means -
+---

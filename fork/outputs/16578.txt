@@ -1,0 +1,51 @@
+run 16578 | um3d | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.48 t/s | prompt 130.6 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-19 10:22:40
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. But I don't want to stop at the bare minimum — I want to make it feel like a real game: rich and responsive, with a distinctive visual identity, layered background, motion and micro-interactions, and strong type contrast, while keeping the code reasonably compact.
+
+Balance: "smallest" suggests compact code. I'll deliver a compact single-file Tetris that's still polished — playable, with score/level/lines, next piece preview, hold, ghost piece, keyboard controls, touch controls maybe, pause, game over, and a nice look. Keep it tight but complete.
+
+Design: Tetris is THE subject, so open with the playfield itself — the board is the hero, not a title screen. A game board is inherently a grid, so a mono/technical aesthetic fits naturally; I'll lean into an arcade/CRT feel. Let me pick a palette that's distinctive: a warm dark slate/charcoal with a subtle scanline/grid texture, and Tetromino colors as the accents. Tetromino colors are canonical: cyan I, yellow O, purple T, green S, red Z, blue J, orange L. So the accents come from the pieces themselves — that's characteristic and honest.
+
+Palette: background deep ink #12131a-ish with a subtle noise/grid, panels in slightly lighter ink, borders in a warm gray. Accent for UI: I'll use a hot coral/amber for UI highlights so it doesn't blend with the tetromino colors.
+
+Typography: display face — something bold and geometric/arcade. Google Fonts: "Chakra Petch" (techy, distinctive) or "Bungee" (arcade blocky) or "Silkscreen"/"Press Start 2P" (pixel). Body/numeric face: a mono with character — "Space Grotesk" or "IBM Plex Mono". Let's do display: "Bungee" for the wordmark (blocky, arcade, matches Tetris blocks) and body: "Space Mono" or "IBM Plex Mono" for stats. Bungee is quite distinctive and reads as stacked blocks — very Tetris. Numbers in IBM Plex Mono with big weight contrast.
+
+Layout: rather than a centered stack, a three-column arcade cabinet layout: left rail (wordmark vertical, stats: score, level, lines, high score), center playfield with a bezel, right rail (next queue of 3, hold, controls legend). Below: a status ticker / key hints. Add a start overlay with big "PRESS ENTER".
+
+For the background I want something geometric rather than soft blobs: a subtle diagonal hatch + dot grid + a slow-moving faint tetromino silhouette drift, plus a CRT scanline overlay on the board only. Vignette.
+
+Motion & micro-interactions: 
+- Line clear flash + shake on hard drop.
+- Score numbers roll/count up.
+- Level-up pulse.
+- Piece lock micro-kick.
+- Buttons hover with translate + shadow.
+- Next/hold pieces drawn on canvas with slight bob.
+- Combo/level banner.
+- Game over overlay with fade.
+
+Implementation: canvas for board (grid of cells), separate small canvases for next/hold. Compact JS.
+
+Let me write the game logic compactly but correctly:
+
+- 10x20 board.
+- SRS-ish rotation with simple wall kicks (basic 3 kicks).
+- 7-bag randomizer.
+- Ghost piece.
+- Lock delay maybe simple: gravity + soft drop.
+- Scoring: 100/300/500/800 * level, soft drop 1/cell, hard drop 2/cell.
+- Levels: level up every 10 lines, gravity speeds.
+- Hold, next queue of 3.
+- Keys: ← → ↓ rotate up/x, rotate z = ctrl, space hard drop, C hold, P pause, Enter restart.
+- Touch: on-screen buttons for mobile.
+
+Keep code readable-ish but compact. "Smallest" — I'll aim for a tight single file, minified-ish variable names but still legible. I'll mention the byte size roughly.
+
+Let me write it.
+
+HTML structure:
+
+```html
+<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport ...>
+<title>TETRIS</title
+---

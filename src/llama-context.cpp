@@ -3061,7 +3061,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         for (const auto & kv : model.tensors_by_name) {
             const ggml_tensor * t = kv.second;
             if (!all_gpu) { break; }
-            if (!t || !t->buffer) { continue; }
+            if (!t || !t->buffer || kv.first == "token_embd.weight") { continue; }   // the input embedding stays in host memory in stock too
             ggml_backend_dev_t d = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer));
             all_gpu = d != nullptr && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU;
         }

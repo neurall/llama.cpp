@@ -1,0 +1,60 @@
+run 17016 | b13600 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.17 t/s | prompt 22.1 t/s | 1005 tokens | args: -np 1 --moe split-f16=1 | power 220+280 W | 2026-10-20 03:15:52
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count. Let me think about what "smallest" means here: a single self-contained HTML file with the fewest characters possible while still being a genuinely playable Tetris.
+
+Let me think about the constraints of a minimal Tetris:
+- 10×20 board
+- 7 tetrominoes with rotation
+- Line clearing
+- Score
+- Keyboard controls (left/right/down/rotate/drop)
+- Game over
+- Gravity/speed increase
+
+I want to write this as compactly as possible while keeping it playable and readable-ish. Since the user asked for "smallest", I should aim for a genuinely tiny file — maybe under 1000 bytes, or even under 500 bytes if I'm clever. There are famous tiny Tetris implementations. The classic "smallest tetris" is around 200-500 bytes in JS. Let me try to write my own compact version.
+
+Let me design it:
+
+Approach: Use a `<canvas>` or just render with text/characters. Actually for smallest code, rendering with a `<pre>` or table of characters might be smallest, but canvas with fillRect is quite compact too.
+
+Let me think about the classic minimal approach:
+
+```js
+d=[],p=... // board array, piece
+```
+
+A well-known ultra-compact Tetris (by @fsk141 or similar "tiny tetris in 140 bytes" challenges). There's a famous one: "Tetris in 140 bytes of JavaScript" — but that's just the JS, not full HTML with controls and rendering.
+
+Let me write my own. I'll aim for something like ~600-800 bytes total HTML, playable, with keyboard controls, canvas rendering, colors maybe monochrome to save bytes (but I could add color cheaply with a small palette string).
+
+Let me think about the core logic compactly:
+
+Board: array of 200 cells (10×20), values 0 or piece color index.
+
+Pieces: The standard trick is to encode each tetromino as a set of coordinates. A compact encoding: each piece as 4 rotations... that's verbose. Alternative trick: use the "SRS-ish" via a compact string.
+
+A very compact known trick: represent pieces as arrays of 4 rotations, each rotation as 4 [x,y] pairs. Or use a string like "0110 0110..." Hmm.
+
+Another famous compact trick: define pieces via a 16-bit mask per rotation, or via a function generating rotations by rotating coordinates: rotate (x,y) -> (y, -x) or (y, x) etc. If I store one orientation per piece as coordinate pairs and rotate mathematically, that saves a lot.
+
+Piece shapes (one orientation each, as [x,y] offsets):
+- I: [[0,0],[1,0],[2,0],[3,0]] — rotations around a pivot... I piece rotation is awkward with simple rotation but acceptable for a minimal game (many minimal tetris implementations rotate by coordinate transform around a fixed point, producing slightly non-standard but playable rotations).
+- O: [[0,0],[1,0],[0,1],[1,1]] — rotation invariant.
+- T: [[1,0],[0,1],[1,1],[2,1]]
+- S: [[1,0],[2,0],[0,1],[1,1]]
+- Z: [[0,0],[1,0],[1,1],[2,1]]
+- J: [[0,0],[0,1],[1,1],[2,1]]
+- L: [[1,0],[2,0],[0,1],[1,1]]... wait L: [[2,0],[0,1],[1,1],[2,1]]
+
+Rotation: for a piece with cells (x,y), rotating 90° clockwise around origin: (x,y) -> (y, -x)? Then normalize. But different pieces need different pivots for nice rotation. A common minimal approach: rotate around cell (1,1) i.e., transform (x,y) relative to pivot.
+
+Simplest compact rotation used in many golfed tetris: new cells = cells.map(([x,y]) => [y, 3-x])? Hmm, let me think.
+
+Actually a known trick from golfed tetris: represent each piece as a 2D binary matrix (4x4 or 3x3) and rotate the matrix. E.g., pieces as strings:
+
+```
+I: ["0111","1000"...]
+```
+
+Hmm, matrix rotation: transpose + reverse rows. For a square matrix M, rotate CW: M[r][c
+---

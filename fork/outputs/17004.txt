@@ -1,0 +1,48 @@
+run 17004 | b13600 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 53.3 t/s | prompt 127.1 t/s | 965 tokens | args: -np 1 --moe split-f16=1 | power 220+280 W | 2026-10-20 03:00:38
+
+The user wants the smallest HTML Tetris game. Let me think about this. "Smallest" — they want compact code. But I also want it to feel crafted rather than a bare-minimum blob. There's a tension: "smallest html tetris game" is a direct functional request. I should honor it — deliver genuinely compact code — but I can still make it feel crafted: a nice presentation shell, the code shown, a playable board.
+
+Hmm. The instruction is "generate smallest html tetris game." The most honest response: a tiny single-file HTML that plays Tetris. Let me actually write a genuinely small but working Tetris.
+
+Let me write it carefully.
+
+Approach: canvas-based, minimal.
+
+```html
+<canvas id=c width=160 height=320></canvas>
+<script>
+// tetris minimal
+</script>
+```
+
+Let me write compact Tetris. Classic minimal approach uses a matrix rotation trick.
+
+```js
+C=c.getContext`2d`,S=20,B=[],W=8,H=16,P=0
+T=[0,0x66,0x999,0xe0,0x72,0x39,0x6c,0x36].map(n=>n) // hmm
+```
+
+Better: use the well-known compact representation with 4x4 bitmasks per piece and rotation via bit ops. Let me use a simpler approach: define pieces as strings and rotate by index transform.
+
+Compact approach: pieces as arrays of 4 rotation states encoded as strings.
+
+Actually a neat trick: represent each tetromino as a 4-bit-per-row matrix in a number, rotate with a function.
+
+Let me do: pieces defined by a number (4x4 grid bits, 16 bits) and rotation done by bit rotation of a 4x4.
+
+rotate4x4 clockwise: for a 16-bit value where bit (r*4+c) is set... rotate: newbit(r,c) = old(3-c, r).
+
+```js
+R=m=>{for(var n=0,i=0;i<16;i++)if(m>>i&1)n|=1<<(i%4*4+3-(i/4|0));return n}
+```
+Check: i = r*4+c. new position: r'=c, c'=3-r. new index = c*4 + 3 - r. Yes: `i%4*4+3-(i/4|0)`. Correct clockwise rotation.
+
+Pieces (4x4 bitmaps, using rows top to bottom, bit r*4+c):
+- I: row1 filled → bits 4,5,6,7 → 0x0F0
+- O: bits 4,5,9,10 → 0x0660? Let's compute: bit4=16,bit5=32,bit9=512,bit10=1024 → 16+32+512+1024=1584=0x630. Hmm let me place O at cols 1,2 rows 1,2: bits 5,6,9,10 = 32+64+512+1024=1632=0x660. Yes 0x660.
+- T: row1: cols1,2,3 (bits5,6,7) + row2 col2 (bit10) → 32+64+128+1024=1248=0x4E0.
+- S: row1 cols2,3 (6,7) + row2 cols1,2 (9,10) → 64+128+512+1024=1728=0x6C0.
+- Z: row1 cols1,2 (5,6) + row2 cols2,3 (10,11) → 32+64+1024+2048=3168=0xC60.
+- J: row1 cols1,2,3 (5,6,7) + row2 col1 (9) → 32+64+128+512=736=0x2E0.
+- L
+---

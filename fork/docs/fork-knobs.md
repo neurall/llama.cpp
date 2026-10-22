@@ -376,7 +376,7 @@ The split is on by default (`dense-split=auto`, switch it off with `dense-split=
 | `split-tune=0` | on | the planner's shares stay, nothing is tuned from measured passes |
 | `split-experts=auto\|0\|1` | `auto` | whether the helper cards of a dense split also compute experts. `auto`: the split planner per layer and the tuner. `0`: dense only, the helpers take token ranges of the dense part and the card with the fastest link computes every expert (Qwen3.8-Flash-Next 3k on x16 + x4: 1390 prompt tokens/s against 1237 with 21% of the experts on the x4 card, whose link then carries 41 ms of uploads per 49 ms layer). `1`: experts by link ratio with the per-layer share controller, whatever the planner says |
 | `one-range=1` | off | research, with `dense-split=auto\|one`: a pass that runs on one card runs as one token range on the card with the fastest link, the dense part of every layer from that card's copies, so nothing is handed to the cards that own the other layers. Measured slower on x16 + x4 (Qwen3.8-Flash-Next 3k: 1091-1146 prompt tokens/s against 1132-1211), same perplexity |
-| `split-f16=0\|in` | on | the hidden states that cross between the cards travel as f16; `0`: f32; `in`: f16 to the card that computes the experts, f32 back. Perplexity of all three within noise of one card (Qwen3.8-Flash-Next, 10 chunks paired: -0.09..+0.06% +-0.13..0.19%); `in` ~3% slower at 3k, f32 ~2% |
+| `split-f16=0\|in\|1` | `0` (f32) | the precision of the hidden states that cross between the cards. `0` (default): f32; `1`: f16, half the bytes on the helper's link (f32 was ~2% slower at 3k); `in`: f16 to the card that computes the experts, f32 back (~3% slower). Perplexity, Qwen3.8-Flash-Next, 10 chunks paired against one card: f16 +0.18% (IQ1_M) and +0.42% (IQ3_S); f32 +0.09% and +0.09%, within noise; f16 minus f32 on IQ3_S +0.33 +- 0.17%. f32 is the default since 2026-10-20 |
 | `split-auto=0` | on | stops the per-layer expert share controller of the expert split: the shares stay at their start |
 | `alias=0` | on | the compute buffer of a graph is not lent from the expert pool but allocated beside it for the whole session (it then costs cache slots while decoding) |
 | `alias-all=0` | on | a prompt pass borrows blocks of the biggest size class only (as before 2026-10-13). On: of every size class, so the largest pass no longer depends on which class is the biggest |
@@ -412,6 +412,25 @@ beat by more than `tol` (a second card skipped where the split was faster, or th
 
 Limits: the split planner handles two GPUs (with more, the measured choice decides and the shares start from the link ratio); its split estimate was  
 21-26% short of the measured pass before calibration, one card within 4%.
+
+## Context and KV cache
+
+With a MoE model whose experts stream from RAM, `-np 1` and flash attention (the default `auto`), the KV lives in the expert pool (layout: [img/vram-layout.svg](img/vram-layout.svg)).
+Nothing is reserved at start: each request claims the cells it needs from the pool (taking the coldest experts' blocks) and gives them back at its end.
+
+| setting | default | meaning |
+|---|---|---|
+| `-c N` | none: the model's trained maximum | caps one request (prompt + answer); reserves nothing in this mode |
+| `-n N` / `max_tokens` | unlimited | bounds the answer; with `-n` given, `-c` is not applied |
+| `--moe kv-tail=0` | on (`1`) when the experts stream from RAM | the normal KV cache: a static context, sized when no `-c` is given as the largest one whose KV and context-scaled buffers take at most 30% of the expert-cache VRAM (capped at the model maximum). Also used automatically with several slots (`-np` > 1), without flash attention, or with different K and V types |
+| `--moe kv-token-major=1` | on with `kv-tail` | K and V of all layers of a card as one record per token (what lets the KV grow) |
+| `--moe kv-fallback=LIST` | `k8v8,k4v4,ram` | the tiers a request may use after f16 when its KV does not fit the pool: `k8v8` = q8_0 K and V in place, `k4v4` = q4_0 in place, `ram` = whole layers' KV to host RAM (attention for those layers on the CPU; their VRAM goes back to the experts). Tried cheapest first. `k8v8,ram` skips q4_0 (the RAM tier then keeps q8_0); `none` = f16 only, a request that does not fit is refused with the numbers |
+
+A request picks its tier at its start from its length (prompt + `max_tokens`); a KV that fills up during the answer moves up a tier inside the same request.
+A later, shorter request converts the rows it keeps back down to f16 (layers moved to RAM stay there for now). q8_0 holds about 1.9x the tokens of f16, q4_0 about 3.6x.
+
+Perplexity of quantized K and V, OLMoE-1B-7B IQ4_XS, CPU, 10 chunks (runs.db 15023, 15026, 15028, 15030, 15037): f16 2.1946, q8_0/q8_0 2.1926, q8_0 K + q4_0 V 2.1969,
+q4_0 K + q8_0 V 2.2016, q4_0/q4_0 2.2073 (+0.58%). K is the sensitive tensor; `k8v8,ram` keeps the KV at q8_0.
 
 ## Several GPUs and MTP
 

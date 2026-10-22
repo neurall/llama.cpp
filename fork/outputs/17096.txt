@@ -1,0 +1,25 @@
+run 17096 | b13600 | pf12k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 54.11 t/s | prompt 1332.3 t/s | 1024 tokens | args: -np 1 --moe split-f16=0 | power 220+280 W | 2026-10-20 04:26:10
+
+We need answer user's request: "Do a code review of the following source file." They provided a large C++ source file, likely llama.cpp common/json-schema-to-grammar.cpp plus beginning of common/arg.cpp? Actually file content includes json-schema-to-grammar.cpp then // file: common/arg.cpp and partial arg.cpp. Need review. Need produce thorough code review. Need analyze code for bugs, style, security, performance, maintainability. Need likely focus on json-schema-to-grammar.cpp mostly, maybe arg.cpp partial. Need mention issues. Need maybe not run code. Need be careful.
+
+Need inspect code deeply.
+
+File: common/json-schema-to-grammar.cpp. It converts JSON schema to GBNF grammar. Includes regex, etc.
+
+Potential issues:
+- Global mutable static regexes? std::regex not thread-safe? std::regex objects are immutable after construction? Search functions may be thread-safe? std::regex_search with const regex? It may be thread-safe if regex not modified? But static std::regex initialization thread-safe. However std::regex can be expensive.
+- Static unordered_map PRIMITIVE_RULES, STRING_FORMAT_RULES mutable? They are static non-const, could be modified? Should be const.
+- is_reserved_name uses static unordered_set initialized from PRIMITIVE_RULES and STRING_FORMAT_RULES. If those maps are mutable and modified before? Not likely. But static init order? is_reserved_name called after maps initialized? It's function-local static, okay.
+- build_repetition: if max_items == 0 returns empty string. But if min_items >0 and max_items==0 invalid? Should handle. If min_items > max_items? Could produce invalid grammar. Need validate.
+- build_repetition with separator: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); If max_items == 0 handled. If max_items == 1 and min_items == 0? returns item_rule? Actually if separator nonempty and max_items=1, has_max true, min_items=0: result = item_rule + " " + build_repetition(...,0,0). build_repetition max_items=0 returns "" -> result = item_rule + " " trailing space. Then if min_items==0 result = "(" + result + ")?" -> "(item_rule )?" trailing space maybe okay but ugly. If min_items=1 max_items=1: result = item_rule + " " + build_repetition(...,0,0) -> trailing space. Could be invalid? GBNF may tolerate spaces? But better handle max_items==1.
+- build_repetition: if min_items == 0 && max_items == 1 returns item_rule + "?" before separator. If separator nonempty and max_items=1, okay. But if min_items=0 max_items=0 returns empty. If min_items=1 max_items=0 invalid.
+- build_repetition with min_items=0 max_items=1 and separator nonempty returns item_rule? Actually early return item_rule + "?" ignoring separator, okay for one item.
+- build_repetition with min_items=0 max_items=2 separator: result = item + " " + build_repetition((sep item),0,1) -> item (sep item)? good.
+- build_repetition with min_items=2 max_items=2 separator: result = item + " " + build_repetition((sep item),1,1) -> item (sep item) good.
+- build_repetition with min_items=0 max_items=INT_MAX separator: has_max false, result = item + " " + build_repetition((sep item),0,INT_MAX) -> item (sep item)* good.
+- build_repetition with min_items=1 max_items=INT_MAX separator: item (sep item)+ good.
+- build_repetition with min_items=0 max_items=0 returns empty; if used in array with max_items=0? visit array: max_items = arr.max_items <0 ? INT_MAX : arr.max_items. If max_items=0, build_repetition returns empty, rule = "[\" space  space \"]\"? Actually "\"[\" space " + "" + " space \"]\"" -> "[\" space  space \"]\"" double space, okay maybe. But if min_items >0 max_items=0 invalid.
+- build_min_max_int: complex. Potential bugs:
+  - decimals_left default 16. more_digits uses max_digits != std::numeric_limits<int>::max() to omit max. But decimals_left int. less_decimals = max(decimals_left -1,1). Recursion may infinite? Need analyze.
+  - uniform_range uses string_repeat, string_view. It assumes from/to same length
+---

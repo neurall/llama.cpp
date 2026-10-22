@@ -1,0 +1,64 @@
+run 17023 | b13600 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 13.58 t/s | prompt 1.9 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 --moe split-f16=1 | power 220+280 W | 2026-10-20 03:50:54
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. This is one of the cases where the user's explicit request (smallest) overrides my usual preference for elaborate polished deliverables. The user asked for a single self-contained HTML file — that's my default anyway.
+
+Let me think about what "smallest Tetris" means. There are famous tiny Tetris implementations:
+- "Tiny Tetris" by Nick (tinytetris) — ~600 bytes C version
+- JavaScript Tetris in a tweet (~140 bytes is too minimal, more like 500-800 bytes for playable)
+
+I should write a genuinely playable Tetris in as few bytes as possible, while keeping it functional: 10×20 grid, 7 tetrominoes, rotation, movement, gravity, line clearing, score, game over.
+
+Let me design a minimal JS Tetris. Key components:
+
+1. Canvas for rendering (or use a `<pre>` with text? Canvas is usually smaller for drawing blocks). Actually, drawing with canvas fillRect is compact. Alternatively, use a table/divs — canvas is smaller.
+
+2. Board: 10 wide, 20 tall. Store as array of strings or array of numbers.
+
+3. Pieces: 7 tetrominoes. Compact representation: each piece as 4 rotations? Or use a compact encoding. A classic trick: store all rotations as bitmasks, or generate rotations by rotating a 4x4 matrix.
+
+A very compact approach: represent each piece as a 16-bit number (4x4 grid), rotate by bit manipulation. Or store pieces as arrays of [x,y] coordinates and rotate via (x,y)->(y, 3-x) or similar.
+
+Common minimal approach: pieces defined as arrays of coordinates relative to origin, rotation via swap/negate.
+
+Let me write it:
+
+```js
+c=document.getElementById('c').getContext('2d')
+D=10 // width
+B=Array(200).fill(0) // board? or use string
+```
+
+Let me think about the classic "smallest tetris" JS implementations. There's a well-known one by Alex Rausch? There's "Tetris in 140b"? Not really playable in 140 bytes. Realistic minimal playable: ~500-700 bytes of JS.
+
+Let me draft my own compact version:
+
+```html
+<canvas id=c width=120 height=240></canvas>
+<script>
+P=[[...]] // pieces
+...
+</script>
+```
+
+Design decisions for minimal bytes:
+
+- Board: `b=[]` with 200 entries, use `b[y*10+x]`.
+- Pieces: define as arrays of 4 [x,y] pairs. Rotation: [x,y] -> [y, -x] (or with offset). To keep pieces in positive coordinates, use rotation around a pivot and clamp.
+
+Alternative compact piece encoding: use strings. E.g., each piece as 4 rows of 4 chars? That's 16 chars per piece × 7 = 112 chars plus parsing. Or encode as numbers.
+
+A neat trick used in tiny tetris: define pieces via a single string where each piece is 4 numbers representing bitmasks of rows.
+
+E.g. piece shapes as 4x4 bit rows:
+- I: 0x0F00 (or rows: 0,0,15,0)... 
+
+Actually let me use the approach: each piece = array of 4 rotation states, each state = 4 numbers (bitmask of 4 bits per row). That's 16 numbers per piece. Or compute rotations at runtime.
+
+Compact runtime rotation: represent piece as list of [x,y]; rotate: [x,y] -> [y, x] with reflection? For proper rotation: (x,y) -> (y, -x) then normalize. Normalization costs bytes.
+
+Alternative: rotate within a 4x4 box: for a cell at (x,y) in a 4-wide box, rotated cell is (3-y, x). If pieces are defined with coordinates in 0..3 range, rotation is simple: `p.map(([x,y])=>[3-y,x])`. That's clean! Define all pieces with coordinates in a 4x4 box (using the "guideline" style where each piece fits in its box), then rotation is just that mapping. Wall kicks: just try shifting left/right if rotation collides — minimal kick: try offsets 0, -1, +1, maybe -2/+2 for I piece.
+
+Piece definitions in 4x4 box coordinates (x right, y down):
+
+- I: (0,1),(1,1),(2
+---

@@ -1,0 +1,62 @@
+run 16764 | um3d | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 54.43 t/s | prompt 117.9 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-19 22:56:32
+
+The user wants the smallest HTML Tetris game. There's a tension: "smallest" vs. the design instinct. But "smallest html tetris game" is a functional request — they want a compact, single-file Tetris. I should honor that: make it genuinely small and working. A single HTML file, playable Tetris.
+
+I'll keep it genuinely compact but make it feel crafted — a nice board, next piece, score, ghost piece, keyboard controls. "Smallest" primarily means single-file, no dependencies, minimal code. I'll aim for tight code but still polished visually. Let me not bloat it enormously — but a tiny bit of CSS polish is fine and makes it feel alive.
+
+Let me write compact Tetris.
+
+Approach: canvas-based, 10x20 grid. Use a single canvas plus small side panel.
+
+Compact code:
+
+```html
+<canvas id=c width=250 height=500></canvas>
+```
+
+Let me write it with reasonable minification but readable-ish.
+
+```js
+const B=c.getContext('2d'),W=10,H=20,S=25;
+let g=[],x=0,y=0,p=0,n=0,s=0,l=1,t=0,o=0;
+const R=()=>Math.random()*7|0;
+const P=i=>[...[0,0,0,0]].map((_,k)=>0); 
+```
+
+Better: define pieces as rotation arrays via matrices. Classic trick: use string definitions per rotation, or use the "rotate matrix" trick.
+
+Compact approach: pieces defined as 4x4 bit patterns per rotation using numbers.
+
+Simplest compact: define each piece as array of 4 rotation states, each state as array of [x,y] offsets. That's verbose. Alternative: define base shape as string, rotate mathematically.
+
+Let me use the classic: pieces as 4x4 grids encoded in hex per rotation... Let's do the SRS-ish approach with a matrix rotate:
+
+```js
+const S='IJOZTLVS'.split('')
+```
+
+Alternative compact trick: define each tetromino by a 4-bit mask per row of a 4x4 matrix, then rotate the matrix.
+
+```js
+const P=[0xF00,0x88C0,0xC88,0xEE0,0x2E20,0x2660,0x6220] // hmm 4x4 nibbles
+```
+
+Let me use 16-bit: each piece as 4 nibbles (rows) in a 4x4 grid.
+
+- I: rows 0000,1111,0000,0000 → 0x0F00
+- O: 0110,0110,0000,0000 → 0x6600 (fine, off-center but ok)
+- J: 1000,1110,0000 → 0x8E00
+- L: 0010,1110 → 0x2E00
+- S: 0110,1100 → 0x6C00
+- Z: 1100,0110 → 0xC600
+- T: 0100,1110 → 0x4E00
+
+Rotation: rotate a 4x4 matrix. For I and O in 4x4 that works. For others, using 4x4 rotation makes them orbit around center of 4x4 which is acceptable-ish but shifts pieces. Common compact implementations use 4x4 for I/O and 3x3 for others. To keep it simple, I'll store each piece in a 4x4 but rotate only the top-left 3x3 for the 5 non-I/O pieces... that's extra code.
+
+Simpler: store all pieces as arrays of 4 rotation states precomputed? Verbose but explicit. Actually a neat compact approach: define pieces as coordinate lists and rotate around a pivot:
+
+```js
+const P=[[[0,1],[1,1],[2,1],[3,1]], ...]
+```
+Rotation: for a piece with pivot (px,py), rotate each cell: (x,y)->(py? ) Standard: (x,y) ->
+---

@@ -24,6 +24,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "ArcticForCausalLM": "arctic",
     "AudioFlamingo3ForConditionalGeneration": "qwen",
     "BaiChuanForCausalLM": "baichuan",
+    "BeamForCausalLM": "beam",
     "BaichuanForCausalLM": "baichuan",
     "BailingMoeForCausalLM": "bailingmoe",
     "BailingMoeV2ForCausalLM": "bailingmoe",
@@ -145,6 +146,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "JinaBertModel": "bert",
     "JinaEmbeddingsV5Model": "bert",
     "K2HorizonForCausalLM": "k2_horizon",
+    "Kolibri1ForCausalLM": "kolibri1",
     "KORMoForCausalLM": "qwen",
     "KimiK25ForConditionalGeneration": "deepseek",
     "KimiK3ForConditionalGeneration": "kimi_k3",
@@ -199,6 +201,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "MiniMaxM3SparseForConditionalGeneration": "minimax",
     "Ministral3ForCausalLM": "mistral3",
     "Mistral3ForConditionalGeneration": "mistral3",
+    "VoxtralRealtimeForConditionalGeneration": "mistral3",
     "MistralForCausalLM": "llama",
     "MixtralForCausalLM": "llama",
     "ModernBertDecisionModel": "bert",
@@ -383,6 +386,7 @@ MMPROJ_MODEL_MAP: dict[str, str] = {
     "UltravoxModel": "ultravox",
     "UnlimitedOCRForCausalLM": "deepseek",
     "VoxtralForConditionalGeneration": "ultravox",
+    "VoxtralRealtimeForConditionalGeneration": "ultravox",
     "YoutuVLForConditionalGeneration": "youtuvl",
 }
 

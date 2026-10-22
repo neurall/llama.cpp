@@ -1,0 +1,59 @@
+run 16725 | dyn3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.96 t/s | prompt 627.2 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-19 18:45:53
+
+Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params) {` with no body. So I should note that the file appears incomplete.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Issues:
+- If `min_items > 0` and `max_items == 0`, returns "" — but that's contradictory (min > max). Actually if max_items == 0 and min_items > 0, that's an invalid schema (min > max), and returning "" silently accepts it. Hmm, actually returning "" means the grammar matches empty string, which would violate min_items. But this is probably an edge case that shouldn't happen with valid schemas. Still worth noting.
+- If `min_items > max_items` (invalid schema), behavior is undefined-ish. E.g., min_items=2, max_items=1: `item_rule{2,1}` which is invalid grammar. Not validated.
+- Negative min_items: `item_rule{-1,...}` would produce invalid grammar `{ -1, ...}`. Callers may pass negative min_items? In KIND_ARRAY, `arr.min_items` is used directly. If schema has negative min_items... probably validated upstream. Worth noting.
+- Recursion with separator: `build_repetition("(" + separator_rule + " " + item_rule + ")", ...)` — the recursion is on the combined rule; for large max_items this could produce deeply nested rules? Actually no — the recursion only happens once per call; the repetition `{n,m}` handles the rest. Wait, let me re-read. With separator, it builds `item_rule (sep item_rule){min-1, max-1}`. So recursion depth is 1 (the recursive call has separator_rule non-empty again... wait, the recursive call passes the same separator_rule? No — it passes `build_repetition("(" + separator_rule + " " + item_rule + ")", ...)` with default separator "" — wait no, look: the recursive call is `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — the fourth argument is omitted, so separator_rule = "" for the recursive call. Good, so no infinite recursion. Depth is 2 levels max. OK.
+
+Wait, actually there's a subtle bug: when min_items == 0 and separator is present, result = `item_rule (sep item){0, max-1}` wrapped in `(...)?`. That's correct semantics: zero or more, where each after first is preceded by separator. Good.
+
+When min_items == 1: `item (sep item){0, max-1}` — correct.
+When min_items == 2: `item (sep item){1, max-1}` — correct.
+
+But wait — there's an issue with `max_items == 1` and separator: `has_max = true`, result = `item (sep item){0, 0}`. `{0,0}` means zero repetitions of the group — so the grammar is `item (sep item){0,0}` which effectively is just `item`. Hmm, but `{0,0}` in
+---

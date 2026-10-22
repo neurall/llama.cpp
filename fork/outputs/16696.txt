@@ -1,0 +1,38 @@
+run 16696 | dyn3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 11.66 t/s | prompt 114.4 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 595 W | 2026-10-19 17:30:26
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`using json = common_json;`** - This is suspicious. The file uses `json(prop_name).dump()` in `_build_object_rule`, which suggests `json` should be `nlohmann::json`, not `common_json`. If `common_json` is a wrapper class, then `json(prop_name).dump()` might work, but this aliasing is confusing. Actually wait - looking at the code, `_generate_constant_rule(const json & value)` calls `value.dump()`. If `common_json` is a class with a `dump()` method, this could work. But typically in llama.cpp, `common_json` is a struct that wraps nlohmann json. Let me think... In llama.cpp, `common_json` has a `dump()` method. Actually the alias `using json = common_json;` shadows the typical nlohmann alias. This is potentially confusing but might be intentional in this codebase.
+
+2. **`build_repetition` bug**: 
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+Wait, there's a subtle issue: if `max_items == 0`, we return early `""`. But if `min_items > 0` and `max_items == 0`... that's contradictory (min > max), and returns "". OK.
+
+But wait: `has_max = max_items != std::numeric_limits<int>::max();` — if `max_items == 0`, `has_max` is true, but we return early. Fine.
+
+What if `min_items == 0 && max_items == 1`? Returns `item_rule + "?"`. Fine.
+
+Hmm, but there's a potential issue: when `separator_rule` is non-empty and `min_items == 1`, `max_items` unlimited: `build_repetition("(sep item)", 0, max)` → `(sep item)*`. So result is `item (sep item)*`. Good.
+
+3. **`build_min_max_int` uses `std::function` with recursion** - fine but could be a lambda with auto (C++14) or a static function. Minor.
+
+4. **In `build_min_max_int`, `decimals_left` handling**: `auto less_decimals = std::max(decimals_left - 1, 1);` — if `decimals_left` is 1, `less_decimals` = 1, so it never decreases below 1. That's intentional to avoid infinite recursion? Actually wait, could there be infinite recursion? In the `min_value > 9` branch: `build_min_max_int(std::stoll(min_s.substr(1)), ..., out, less_decimals, false)`. Each recursion strips one digit, so it terminates. OK.
+
+5. **`_visit_pattern` snapshot/rollback**: `auto rules_snapshot = _rules;` copies the map, then on failure `_rules = std::move(rules_snapshot);`. This is O(n) copy per pattern visit. Minor performance concern but correctness-wise fine. Note: `_refs_being_resolved` isn't rolled back, but patterns don't touch it.
+
+Wait, actually there's a subtle bug: `_pattern_to_rule` calls `_add_rule(name, ...)` at the end. If the pattern throws, rules added during parsing remain unless rolled back — they do roll back. OK.
+
+But note: `_warnings.push_back` and `_errors.push_back` happen after rollback. Fine.
+
+6. **`_pattern_to_rule` - `sub_rule_ids` naming**: `sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);` — the size is used as a unique suffix. If two different sub-patterns... each unique sub gets a new id since `sub_rule_ids[sub]` is keyed by sub content. OK.
+
+7. **Potential bug in `_pattern_to_rule` with `{` handling**: The `{n}` quantifier applied to a literal: `seq.back().first = build_repetition(sub_is_literal ? "\"" + sub + "\"" : sub, ...)`. But wait — if `sub_is_literal` is true, `sub` contains the raw literal characters (unescaped for grammar?). Actually literals accumulated in `literal` may contain escape sequences like `\u1234` (kept as-is via `gbnf_escape_length`) and `\"` for quotes. Wrapping in quotes: `"\"" + sub + "\""`.
+---

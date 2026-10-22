@@ -1,0 +1,90 @@
+run 16954 | b13600 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 54.5 t/s | prompt 120.7 t/s | 965 tokens | args: -np 1 --moe split-f16=1 | power 220+280 W | 2026-10-20 02:34:02
+
+The user wants the smallest HTML Tetris game. Let me think about this.
+
+The request is "generate smallest html tetris game." That's a direct, functional ask. The most honest way to serve a tetris request is to make the game itself the thing you land on — a playable board with a HUD showing score, level, lines, next piece. Since they asked for smallest, I should keep the code compact but I can still make it feel crafted: a nice background, some motion, interactive feedback.
+
+Balance: they asked for "smallest" — so I should deliver genuinely compact code. But I can still make it feel alive with minimal CSS. Let me write a tight but complete Tetris in one HTML file.
+
+Let me write compact Tetris:
+
+```html
+<!DOCTYPE html><meta charset=utf-8><title>TETRIS</title>
+<style>
+/* compact styles */
+</style>
+<canvas id=c></style>
+```
+
+Let me design a small but polished version.
+
+Approach: canvas-based, 10x20 grid, cell size 24. Use a single canvas for board plus a small next canvas. Keyboard controls. Score/lines/level display. Ghost piece. Rotation with simple wall kicks. Game over + restart.
+
+Compact code:
+
+```js
+const B=[...Array(21)].map(_=>Array(10).fill(0)),S=24,W=10,H=20;
+const P='⅟'; // use matrices
+```
+
+Classic compact tetris uses string-encoded shapes. Let me use a compact representation:
+
+```js
+const S=[[0,1,1,0],[0,0,1,1],[0,1,1,0]] // no
+```
+
+Better: define pieces as arrays of coordinates in 4x4 with rotation via matrix rotation.
+
+Compact approach: pieces as 4x4 bit patterns? A common trick:
+
+```js
+const O=[0x66,0,0], ...
+```
+
+Simplest readable-compact: define pieces as arrays of [x,y] offsets for spawn, and rotate around pivot using rotation formula on coordinates.
+
+Let me use the well-known compact method: each piece is a 4-length array of numbers whose binary digits give the columns... Hmm.
+
+Let me just do: pieces defined as strings of rows, rotate by transposing+reversing.
+
+```js
+const P=['','0770','06060','7777','04E0','0C60','06C0','03C0'] // hex per row?
+```
+
+Simpler: use arrays of strings, rotate function:
+
+```js
+const R=a=>a[0].split('').map((_,i)=>a.map(r=>r[i]).reverse().join(''))
+```
+
+Pieces as 4x4 or NxN string grids:
+
+I: ['0000','1111','0000','0000']
+O: ['11','11']
+T: ['010','111','000']
+S: ['011','110','000']
+Z: ['110','011','000']
+J: ['100','111','000']
+L: ['001','111','000']
+
+Rotation of non-square works if square. All are square (4x4, 2x2, 3x3). Good.
+
+Colors per piece index.
+
+Let me write it:
+
+```js
+const P=['0000 1111 0000 0000,11 11,010 111 000,011 110 000,110 011 000,100 111 000,001 111 000'.split(',').map(p=>p.split(' '))]
+```
+
+Hmm, keep it readable-ish but small.
+
+Now the game loop with requestAnimationFrame and drop timer.
+
+Rendering: draw board cells with slight bevel. Ghost piece outline. Grid lines. Background subtle.
+
+Features that make it feel alive without much code:
+- Line clear flash animation (row flashes white then collapses).
+- Piece lock shake? maybe skip.
+- Score count-up? skip
+---

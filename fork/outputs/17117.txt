@@ -1,0 +1,64 @@
+run 17117 | b13600 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 54.84 t/s | prompt 39.6 t/s | 965 tokens | args: -np 1 --moe split-f16=0 | power 220+280 W | 2026-10-20 04:47:04
+
+The user wants the smallest HTML Tetris game. Let me think about what "smallest" means — minimal file size, single HTML file. But I don't want to just dump the most minified, unreadable blob possible; a tiny playable game is really the whole point, so I'll keep the code compact but still legible, and make it genuinely feel like a real arcade product.
+
+The request is literally "smallest html tetris game" — so the deliverable is a tiny single-file game. But I can still make it feel crafted: nice canvas rendering, ghost piece, next piece, score, level, keyboard controls, subtle polish. The tension: "smallest" vs. "rich". I should honor the request — small — but make it feel alive rather than a bare 1998 canvas.
+
+Best approach: give a compact single-file HTML that's genuinely small (a few hundred lines minified-ish?) but well-crafted. Maybe I present the minified one-file version as the star, with a size callout. Let me aim for something like ~1.2KB minified but readable-ish formatted version.
+
+Let me write a compact Tetris.
+
+Core logic:
+- 10x20 grid
+- 7 pieces via rotation using string/complex approach
+- Classic approach: define pieces as numbers and rotate with math.
+
+A classic compact technique: use the "tetromino as index into string" method:
+
+```
+S='X....XXXX..X.XXX..X.XX..X.X..XXX.XX..X.X...X.XXX.X..X.XX..X.X....'
+```
+
+Hmm. Let me use a well-known compact method: pieces defined by their cell offsets, rotate via matrix rotation.
+
+Compact approach using "P" array of 4x4 bit patterns... Let me just do:
+
+```js
+const K='␀'; 
+```
+
+Alternative famous golf:
+```js
+for(i=1768;i--;)T[i]=... 
+```
+
+Let me write it clean-ish but compact:
+
+```js
+W=20,H=10 // wait, standard: 10 wide, 20 tall
+```
+
+Plan:
+
+```html
+<canvas id=c width=... ></canvas>
+<script>
+// pieces as 4 rotation states encoded
+```
+
+Simplest readable-compact: define pieces as arrays of 4 numbers (each number a 4-bit row bitmask) then rotate by transposing+reversing.
+
+Pieces (4x4 or 3x3 bounding boxes):
+- I: rows [0,15,0,0] in 4x4 → rotate works with 4x4.
+- O: [3,3,0,0] in 2x2... but mixing sizes complicates.
+
+Use 4x4 for all, rotate 4x4 bitmask:
+- I: 0,15,0,0
+- O: 0,3,3,0 → rotating 4x4 bitmask of O at that position: rotating a 4x4 will move it around. That's ugly but O rotating in place is fine if it stays. Let's check: 4x4 bitmask rows r0..r3, bits b0..b3 (bit0 = leftmost or rightmost?). Rotating 4x4 by 90° moves the 2x2 block from center-ish to another center-ish position — actually a 2x2 block at rows1-2, cols1-2 is symmetric under rotation. So use rows 1,2 and cols 1,2: value 6 (binary 0110) for rows 1 and 2 → [0,6,6,0]. Rotating that stays the same. 
+
+- T: rows: r1 = 0b0110? Let's define T in 4x4 at rows 1,2: row1 = 0100 (col2?), hmm let me define bit i = column i (bit0 = leftmost col 0). 
+
+Rotation of 4x4 clockwise: newBit(c, 3-r) = oldBit(r,c). i.e. newBit[r'][c'] where r'=c, c'=3-r.
+
+Let me just define pieces with 3x3 for L,J,S,T,Z and 4x4 for I, and 2x2 for O, and rotate within their own box size, then offset. That's more code.
+---

@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="640" viewBox="0 0 980 640" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="heat" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#e3f6ea"/>
+      <stop offset="1" stop-color="#2e9d5c"/>
+    </linearGradient>
+    <pattern id="quant" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="8" height="8" fill="#9ec5f8"/>
+      <rect width="3" height="8" fill="#7fb0f0"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="979" height="639" rx="12" fill="#ffffff" stroke="#d0d7de"/>
+
+  <text x="24" y="38" font-size="20" font-weight="600" fill="#1f2328">One VRAM buffer per GPU, shared by compute, KV and experts</text>
+  <text x="24" y="61" font-size="13" fill="#57606a">Schematic, not to scale. Allocated once, at the first request; the regions are offsets inside it that move with each request.</text>
+
+  <!-- row 1: decode -->
+  <text x="24" y="116" font-size="14" font-weight="600" fill="#1f2328">Decode</text>
+  <text x="24" y="134" font-size="12" fill="#57606a">short request</text>
+  <rect x="200" y="96" width="110" height="48" fill="#d8dee4" stroke="#8c959f"/>
+  <text x="255" y="116" font-size="12" text-anchor="middle" fill="#1f2328">dense weights</text>
+  <text x="255" y="132" font-size="12" text-anchor="middle" fill="#1f2328">(attention, router)</text>
+  <rect x="310" y="96" width="50" height="48" fill="#f6c453" stroke="#b7791f"/>
+  <text x="335" y="124" font-size="12" text-anchor="middle" fill="#1f2328">graph</text>
+  <rect x="360" y="96" width="80" height="48" fill="#9ec5f8" stroke="#3b74c4"/>
+  <text x="400" y="124" font-size="13" text-anchor="middle" fill="#1f2328">KV</text>
+  <rect x="440" y="96" width="516" height="48" fill="url(#heat)" stroke="#2e9d5c"/>
+  <text x="456" y="124" font-size="13" fill="#1f2328">expert cache: coldest experts</text>
+  <text x="940" y="124" font-size="13" text-anchor="end" fill="#ffffff" font-weight="600">hottest experts</text>
+
+  <!-- row 2: long prompt pass -->
+  <text x="24" y="206" font-size="14" font-weight="600" fill="#1f2328">Long prompt pass</text>
+  <text x="24" y="224" font-size="12" fill="#57606a">e.g. 12k tokens</text>
+  <rect x="200" y="186" width="110" height="48" fill="#d8dee4" stroke="#8c959f"/>
+  <text x="255" y="214" font-size="12" text-anchor="middle" fill="#1f2328">dense weights</text>
+  <rect x="310" y="186" width="300" height="48" fill="#f6c453" stroke="#b7791f"/>
+  <text x="460" y="206" font-size="12" text-anchor="middle" fill="#1f2328">prompt graph + CUDA scratch</text>
+  <text x="460" y="222" font-size="12" text-anchor="middle" fill="#1f2328">+ staging ring for streamed experts</text>
+  <rect x="610" y="186" width="90" height="48" fill="#9ec5f8" stroke="#3b74c4"/>
+  <text x="655" y="214" font-size="13" text-anchor="middle" fill="#1f2328">KV</text>
+  <rect x="700" y="186" width="256" height="48" fill="url(#heat)" stroke="#2e9d5c"/>
+  <text x="940" y="214" font-size="13" text-anchor="end" fill="#ffffff" font-weight="600">hottest experts stay</text>
+  <line x1="316" y1="250" x2="604" y2="250" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="316" y="268" font-size="12" fill="#57606a">grows with the micro-batch (auto, up to 12288 tokens), lent for this pass only;</text>
+  <text x="316" y="284" font-size="12" fill="#57606a">the KV moves behind it, the coldest experts give way, hot ones are copied out of the range</text>
+
+  <!-- row 3: long document -->
+  <text x="24" y="326" font-size="14" font-weight="600" fill="#1f2328">Long document</text>
+  <text x="24" y="344" font-size="12" fill="#57606a">KV larger than f16 fits</text>
+  <rect x="200" y="306" width="110" height="48" fill="#d8dee4" stroke="#8c959f"/>
+  <text x="255" y="334" font-size="12" text-anchor="middle" fill="#1f2328">dense weights</text>
+  <rect x="310" y="306" width="50" height="48" fill="#f6c453" stroke="#b7791f"/>
+  <text x="335" y="334" font-size="12" text-anchor="middle" fill="#1f2328">graph</text>
+  <rect x="360" y="306" width="330" height="48" fill="url(#quant)" stroke="#3b74c4"/>
+  <text x="525" y="326" font-size="13" text-anchor="middle" fill="#1f2328" font-weight="600">KV converted in place</text>
+  <text x="525" y="343" font-size="12" text-anchor="middle" fill="#1f2328">f16 → q8_0 → q4_0</text>
+  <rect x="690" y="306" width="266" height="48" fill="url(#heat)" stroke="#2e9d5c"/>
+  <text x="940" y="334" font-size="13" text-anchor="end" fill="#ffffff" font-weight="600">hottest experts stay</text>
+  <line x1="525" y1="358" x2="525" y2="414" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="535" y="384" font-size="12" fill="#57606a">last tier: whole layers' KV move to host RAM,</text>
+  <text x="535" y="400" font-size="12" fill="#57606a">their VRAM goes back to the expert cache</text>
+
+  <!-- host RAM -->
+  <rect x="200" y="418" width="756" height="52" rx="6" fill="#efeafc" stroke="#8a63d2"/>
+  <text x="216" y="440" font-size="13" font-weight="600" fill="#1f2328">Host RAM</text>
+  <text x="290" y="440" font-size="12" fill="#1f2328">every expert (pinned when the model fits, uploads by DMA); the CPU computes misses, the GPUs compute hits</text>
+  <text x="290" y="458" font-size="12" fill="#1f2328">+ the KV of layers moved by the last tier (attention for those layers runs on the CPU)</text>
+
+  <!-- KV tiers -->
+  <text x="24" y="512" font-size="14" font-weight="600" fill="#1f2328">KV tiers</text>
+  <text x="24" y="530" font-size="12" fill="#57606a">per request, on by default</text>
+  <rect x="200" y="494" width="120" height="40" rx="5" fill="#9ec5f8" stroke="#3b74c4"/>
+  <text x="260" y="512" font-size="13" text-anchor="middle" font-weight="600" fill="#1f2328">f16</text>
+  <text x="260" y="527" font-size="11" text-anchor="middle" fill="#1f2328">1x tokens</text>
+  <line x1="322" y1="514" x2="352" y2="514" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="356" y="494" width="120" height="40" rx="5" fill="url(#quant)" stroke="#3b74c4"/>
+  <text x="416" y="512" font-size="13" text-anchor="middle" font-weight="600" fill="#1f2328">q8_0</text>
+  <text x="416" y="527" font-size="11" text-anchor="middle" fill="#1f2328">≈1.9x tokens</text>
+  <line x1="478" y1="514" x2="508" y2="514" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="512" y="494" width="120" height="40" rx="5" fill="url(#quant)" stroke="#3b74c4"/>
+  <text x="572" y="512" font-size="13" text-anchor="middle" font-weight="600" fill="#1f2328">q4_0</text>
+  <text x="572" y="527" font-size="11" text-anchor="middle" fill="#1f2328">≈3.6x tokens</text>
+  <line x1="634" y1="514" x2="664" y2="514" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="668" y="494" width="120" height="40" rx="5" fill="#efeafc" stroke="#8a63d2"/>
+  <text x="728" y="512" font-size="13" text-anchor="middle" font-weight="600" fill="#1f2328">host RAM</text>
+  <text x="728" y="527" font-size="11" text-anchor="middle" fill="#1f2328">limited by free RAM</text>
+  <text x="200" y="560" font-size="12" fill="#1f2328">default <tspan font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">--moe kv-fallback=k8v8,k4v4,ram</tspan> · skip q4_0: <tspan font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">k8v8,ram</tspan> · f16 only: <tspan font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">none</tspan></text>
+  <text x="200" y="580" font-size="12" fill="#57606a">Chosen per request; a shorter one converts back up (layers moved to RAM stay there for now). Nothing is reserved up front.</text>
+
+  <text x="24" y="618" font-size="12" fill="#57606a">When a request ends, the graph and the KV shrink and the freed blocks are refilled with the hottest experts the cache is missing. Each GPU has its own buffer.</text>
+</svg>

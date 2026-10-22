@@ -1621,9 +1621,9 @@ static void moe_auto_abort_cb(const char * msg) {
 }
 
 // typical agentic coding turn when the command line says nothing (server, chat): the system prompt and tool definitions come from
-// the KV cache, so a turn adds ~2000 new prompt tokens (tool output, file contents) and generates ~600 (edits, tool calls)
+// the KV cache, so a turn adds ~6000 new prompt tokens (tool output, file contents) and generates ~600 (edits, tool calls)
 static double moe_auto_est_prompt(const common_params & params) {
-    return params.prompt.empty() ? 2000.0 : std::max(1.0, params.prompt.size() / 4.0);
+    return params.prompt.empty() ? 6000.0 : std::max(1.0, params.prompt.size() / 4.0);
 }
 
 static double moe_auto_est_gen(const common_params & params) {
@@ -1787,6 +1787,9 @@ static uint32_t common_auto_ubatch(common_params & params) {
     // a candidate whose extra compute buffer would take more than this share of the VRAM the cache has is never offered: it ends in CUDA out of memory
     // (full GLM at -ub 8192 and 12288 on the 24 GB x4 card) or in a cache too small to decode from
     const double MAX_CACHE_SHARE = 0.75;
+    // decode time lost per share of the cache VRAM the extra buffer takes: measured far below 1 (Qwen3-235B: ub 256 -> 2048 took 5.6 of 15 GiB and decode stayed 64.0 -> 64.0 t/s;
+    // GLM about -3% per doubling), the old 1.0 kept a 13k-token prompt at 53 passes (941 t/s against stock 1206, 1368 at ub 2048)
+    const double DEC_LOSS = 0.1;
     // candidates are computed, not a fixed ladder: from the largest batch the cache path takes (max-batch: below it a batch never streams) doubling up to 12288
     const char * mbo = llama_moe_get_opt("max-batch");
     const uint32_t mb = std::max<uint32_t>(8, mbo ? (uint32_t) atoi(mbo) : 31);
@@ -1835,7 +1838,7 @@ static uint32_t common_auto_ubatch(common_params & params) {
             COM_DBG("ubatch %u: extra buffer %.2f GiB exceeds %.0f%% of the %.1f GiB cache VRAM, not offered\n", ub, extra / 1073741824.0, 100 * MAX_CACHE_SHARE, cache_vram / 1073741824.0);
             continue;
         }
-        const double t = np / (PP_PER_TG * (ub / (PP_A + ub)) / (LO / (PP_A + LO))) + ng * (1.0 + extra / (double) cache_vram);
+        const double t = np / (PP_PER_TG * (ub / (PP_A + ub)) / (LO / (PP_A + LO))) + ng * (1.0 + DEC_LOSS * extra / (double) cache_vram);
         COM_DBG("ubatch %u: extra buffer %.2f GiB of %.1f GiB cache VRAM, est. %.0f decode-token units\n", ub, extra / 1073741824.0, cache_vram / 1073741824.0, t);
         if (t < t_best) { t_best = t; best = ub; }
     }
@@ -2287,6 +2290,7 @@ static const std::map<common_decision_type, std::string> COMMON_DECISION_TYPE_NA
     { COMMON_DECISION_TYPE_VLLM_D3,        "vllm-d3"        },
     { COMMON_DECISION_TYPE_LFM2_D1,        "lfm2-d1"       },
     { COMMON_DECISION_TYPE_LFM2_D1_OMNI,   "lfm2-d1-omni"  },
+    { COMMON_DECISION_TYPE_GRANITE_SWITCH, "granite-switch"},
     // for future models, ALWAYS add org name prefix to avoid name collisions, e.g. "orgname-modelname"
 };
 

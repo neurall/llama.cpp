@@ -1,0 +1,98 @@
+run 17149 | b13600 | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 4.51 t/s | prompt 266.9 t/s | 918 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 --moe split-f16=0 | power 220+280 W | 2026-10-20 06:41:52
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. It's cut off at the end (the last function `gbnf_escape_length` is incomplete). Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Used by... it's used in the rest of the file (which is cut off), typically in `build_array_rule` or similar for arrays with minItems/maxItems. Since the file is truncated, I need to infer what's used based on typical llama.cpp code. Actually, this is the llama.cpp `json-schema-to-grammar.cpp` file. Let me recall the full file content.
+
+The full llama.cpp file `common/json-schema-to-grammar.cpp` contains:
+
+- `build_repetition`
+- `build_min_max_int`
+- `SPACE_RULE`
+- `BuiltinRule` struct
+- `PRIMITIVE_RULES`
+- `STRING_FORMAT_RULES`
+- `is_reserved_name`
+- `INVALID_RULE_CHARS_RE`
+- `GRAMMAR_LITERAL_ESCAPE_RE`
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`
+- `GRAMMAR_LITERAL_ESCAPES`
+- `MAX_PATTERN_DEPTH`
+- `NON_LITERAL_SET`
+- `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`
+- `replacePattern`
+- `format_literal`
+- `gbnf_format_literal`
+- `gbnf_escape_length`
+- `gbnf_escape_regex_chars` (maybe)
+- `gbnf_literal_or_range`... 
+
+Actually let me recall the actual llama.cpp file. The file has:
+
+```cpp
+static std::string build_repetition(...)
+static void build_min_max_int(...)
+const std::string SPACE_RULE = ...
+struct BuiltinRule {...}
+static std::unordered_map<std::string, BuiltinRule> PRIMITIVE_RULES = {...};
+static std::unordered_map<std::string, BuiltinRule> STRING_FORMAT_RULES = {...};
+static bool is_reserved_name(...)
+static std::regex INVALID_RULE_CHARS_RE(...)
+static std::regex GRAMMAR_LITERAL_ESCAPE_RE(...)
+static std::regex GRAMMAR_RANGE_LITERAL_ESCAPE_RE(...)
+static std::unordered_map<char, std::string> GRAMMAR_LITERAL_ESCAPES = {...};
+static const int MAX_PATTERN_DEPTH = 100;
+static std::unordered_set<char> NON_LITERAL_SET = {...};
+static std::unordered_set<char> ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS = {...};
+static std::string replacePattern(...)
+static std::string format_literal(...)
+std::string gbnf_format_literal(...)
+static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
+    // Check if the character at pos is the start of an escape sequence (\ followed by a character)
+    if (pattern[pos] == '\\' && pos + 1 < pattern.length()) {
+        return 2; // Escape sequence, so length is 2
+    }
+    return 1; // Regular character
+}
+static std::string gbnf_escape_regex_chars(const std::string & pattern, const std::unordered_set<char> & chars_to_escape) {
+    std::string result;
+    size_t i = 0;
+    while (i < pattern.length()) {
+        size_t len = gbnf_escape_length(pattern, i);
+        char c = pattern[i];
+        if (chars_to_escape.find(c) != chars_to_escape.end()) {
+            result += '\\';
+        }
+        result += pattern.substr(i, len);
+        i += len;
+    }
+    return result;
+}
+static std::string gbnf_literal_or_range(...) // maybe not
+```
+
+Hmm, actually let me recall more precisely. The llama.cpp file (as of recent versions) contains these functions:
+
+```cpp
+static std::string build_repetition(
+    const std::string & item_rule,
+    int min_items,
+    int max_items,
+    const std::string & separator_rule = "") {
+...
+}
+
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+...
+}
+
+const std::string SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}";
+
+struct BuiltinRule {
+    std::string content;
+    std::vector<std::
+---

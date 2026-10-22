@@ -1,0 +1,88 @@
+run 16762 | um3d | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.33 t/s | prompt 7.8 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-19 22:51:48
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. This is one case where the user explicitly asks for minimalism, so the usual polish expectations don't apply — the goal is a tiny, working Tetris in a single HTML file.
+
+Let me think about what "smallest" means here. I should aim for a genuinely tiny file — a few hundred bytes to maybe 1KB — while still being a fully playable Tetris: falling pieces, rotation, movement, line clearing, scoring, game over.
+
+Let me design a minimal Tetris:
+
+Approach: Use a `<canvas>` or even simpler, use a `<pre>` with text? Canvas is probably smallest for rendering. Actually, let me think about the absolute minimal approach.
+
+Classic minimal Tetris implementations exist. Let me write my own compact one.
+
+Core components:
+1. Playfield: 10×20 grid, stored as array.
+2. Pieces: 7 tetrominoes. Can encode compactly.
+3. Rotation: can use a trick — store pieces as numbers and rotate via bit manipulation, or store coordinates.
+4. Game loop: setInterval or requestAnimationFrame.
+5. Input: keydown for left/right/down/rotate.
+6. Collision detection.
+7. Line clear.
+8. Game over when spawn collides.
+
+A very compact encoding trick: represent each tetromino as a 4x4 (or 2x2/3x3) matrix of bits, rotate by transposing. Or use the classic trick of encoding pieces as binary numbers and rotating with bit shifts.
+
+A well-known ultra-compact approach: represent the board and pieces as arrays of strings, rotate by mapping indices.
+
+Let me write a compact version:
+
+```html
+<body onload="setInterval(f,100)"><canvas id=c width=100 height=200><script>c=document.all.c,x=c.getContext('2d'),D=[...],...
+```
+
+Actually let me carefully craft it. Let me think about the piece encoding.
+
+Option: pieces as arrays of [x,y] offsets per rotation state. That's verbose.
+
+Better trick: define each piece as a 2D matrix (rows of strings), rotate with a function that transposes+reverses. E.g.:
+
+```js
+R=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse())
+```
+
+Pieces as string arrays:
+```js
+P=["1111","0101... "]
+```
+
+Hmm, let me define pieces as arrays of strings where '1' or 'X' means filled:
+
+- I: ["0111"]? No — better use square matrices so rotation works uniformly. Use 4x4 for I, 3x3 for others? Or just use minimal bounding boxes and rotate within them. Rotation of non-square matrices changes dimensions — the transpose trick handles that naturally if we use the map approach (result dimensions = columns × rows). Actually `m[0].map((_,i)=>m.map(r=>r[i]).reverse())` produces a matrix with m[0].length rows and m.length columns — so a 1×4 I piece becomes 4×1. That works fine.
+
+Pieces (using minimal bounding boxes):
+- I: ["1111"] (1 row, 4 cols)
+- O: ["11","11"]
+- T: ["111","010"]
+- S: ["011","110"]
+- Z: ["110","011"]
+- J: ["100","111"]? J is: .X. / XXX? Let me get shapes right:
+  - J: X.. / XXX
+  - L: ..X / XXX
+- L: ["001","111"]
+
+Rotation function R rotates clockwise.
+
+Collision check: for piece matrix m at position (x,y), check each cell.
+
+Board: 20 rows × 10 cols, store as array of arrays or as strings. Using arrays of 0/1 numbers is easier for clearing.
+
+Let me write compact code:
+
+```js
+B=Array(20).fill(0).map(_=>Array(10).fill(0)) // board
+```
+
+Compact: `B=[...Array(20)].map(_=>Array(10).fill(0))`
+
+Piece spawn: current piece p (matrix), position x=3,y=0 (or -1).
+
+Tick function:
+1. Try move down (y+1). If collision, lock: merge into board, clear lines, spawn new piece. If new piece collides at spawn → game over (stop).
+2. Render.
+
+Input: keydown handler: ArrowLeft → x-1 if no collision; ArrowRight → x+1; ArrowUp → rotate (p=R(p)) if no collision; ArrowDown → immediate tick (move down).
+
+Collision function:
+```js
+C=(
+---
