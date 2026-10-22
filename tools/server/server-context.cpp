@@ -39,6 +39,9 @@
 
 constexpr int HTTP_POLLING_SECONDS = 1;
 
+int llama_moe_stats_json_fork(char * buf, int cap);   // src/llama-moestate-fork.cpp
+uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n_tokens, uint32_t ub_max);   // src/llama-moecache-fork.cpp: the pass size of equal passes for a prompt
+
 static common_speculative_output_limits server_output_limits(const common_params & params) {
     if (params.embedding ||
             (params.pooling_type != LLAMA_POOLING_TYPE_UNSPECIFIED && params.pooling_type != LLAMA_POOLING_TYPE_NONE)) {
@@ -1097,6 +1100,7 @@ struct server_context_impl {
     friend struct server_context;
 
 public:
+    llama_context * moe_ctx() const { return ctx_tgt; }   // for GET /moe/stats: live values from the running context
     // only use these pointers outside of this class:
     //  - when not in sleeping state
     //  - and, with thread-safe APIs (e.g., tokenizer calls)
@@ -4309,7 +4313,10 @@ private:
                         //  - 4
                         // ref: https://github.com/ggml-org/llama.cpp/pull/20288
                         if (do_checkpoint) {
-                            static const int checkpoint_offsets[] = {4 + n_ubatch, 4};
+                            // fork: the last slice is cut one PASS (not one maximum ubatch) before the end, so the calls of a long prompt are equal passes: with the ceiling as
+                            // offset a 12471-token prompt became 83 + 12384 + 4 tokens, and the 83-token call streamed every expert for 83 tokens
+                            const int n_pass = (int) std::min<uint32_t>((uint32_t) n_ubatch, std::max<uint32_t>(32u, llama_moe_cache_prefill_ubatch_fork((uint32_t) slot.task->n_tokens(), (uint32_t) n_ubatch)));
+                            const int checkpoint_offsets[] = {4 + n_pass, 4};
 
                             bool should_break = false;
                             for (int offset : checkpoint_offsets) {
@@ -5648,6 +5655,24 @@ void server_routes::init_routes() {
         std::vector<char> buf(8192);
         llama_moe_live_json(buf.data(), (int) buf.size());
         res->ok(json::parse(buf.data()));
+        return res;
+    };
+
+    this->get_moe_stats = [this](const server_http_req &) {
+        auto res = create_response(true);
+        // the length first, with slack, and again when the answer filled the buffer: the decisions list changes between the two calls (the thread search
+        // rewrites its entry every few tokens), and a cut-off JSON would fail to parse and blank the status line during decode
+        std::vector<char> buf;
+        for (int tries = 0; tries < 4; ++tries) {
+            buf.assign(llama_moe_stats_json_fork(nullptr, 0) + 2048 * (tries + 1), 0);
+            if (llama_moe_stats_json_fork(buf.data(), (int) buf.size()) < (int) buf.size() - 1) { break; }
+        }
+        json j = json::parse(buf.data());
+        // what the server runs with (settings chosen at start, auto or given): the status line of run.py shows them next to the engine's numbers
+        llama_context * lc = ctx_server.moe_ctx();   // every value is read from the running context (the tuners change them), the start settings only before it exists
+        j["server"] = { {"n_ctx_slot", lc ? (int) llama_n_ctx_seq(lc) : meta->slot_n_ctx}, {"threads", lc ? llama_n_threads(lc) : params.cpuparams.n_threads}, {"threads_batch", lc ? llama_n_threads_batch(lc) : params.cpuparams_batch.n_threads},
+                        {"n_batch", lc ? (int) llama_n_batch(lc) : params.n_batch}, {"n_ubatch", lc ? (int) llama_n_ubatch(lc) : params.n_ubatch}, {"n_parallel", params.n_parallel} };
+        res->ok(j);
         return res;
     };
 

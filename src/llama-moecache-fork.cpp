@@ -369,6 +369,8 @@ struct moe_cache {
     double               cpu_gbs_meas = 0;   // EMA of the CPU phases' read rate
     std::atomic<int64_t> cpu_bytes_phase{0};
     std::atomic<int64_t> cpu_bytes{0}, up_bytes{0};
+    std::atomic<int64_t> pf_bytes{0}, pf_link[MAX_LINKS] = {};   // prompt passes: bytes of experts not found in the cache, which the pass streams from RAM over the link (live view in GET /moe/stats only, not in the decode churn columns)
+    std::atomic<int64_t> link_bytes[MAX_LINKS] = {};   // uploaded bytes per link, for GET /moe/stats
     int64_t              seg_cpu_bytes = 0, seg_up_bytes = 0;
     std::atomic<int64_t> busy_t0{0};
     std::atomic<int64_t> busy_us{0};      // total busy time
@@ -1834,6 +1836,112 @@ void unpin_helper() {
 
 std::vector<std::vector<int>> l3_domain_cores();
 
+// NUMA map and per-node read rates (log only, no decision yet): which node each GPU hangs on (sysfs numa_node of its PCI id), and the RAM read rate of
+// every reader node against every buffer node. Each node's buffer is first-touched by a thread pinned to that node (no mempolicy call: containers refuse
+// those), the readers are pinned to one physical core each. The local diagonal is what a GPU's node can feed it; the off-diagonal what a cross-node read costs
+void numa_probe(moe_cache * mc) {
+#if defined(__linux__)
+    const char * ne = moe_opt("numa-probe");
+    if (ne && ne[0] == '0') { return; }
+    auto read = [](const std::string & path) { std::ifstream f(path); std::string v; std::getline(f, v); return v; };
+    auto parse = [](const std::string & list) {
+        std::vector<int> r;
+        size_t i = 0;
+        while (i < list.size()) {
+            size_t j = list.find(',', i);
+            const std::string part = list.substr(i, j == std::string::npos ? std::string::npos : j - i);
+            const size_t dash = part.find('-');
+            if (!part.empty()) {
+                const int a = atoi(part.c_str()), b = dash == std::string::npos ? a : atoi(part.c_str() + dash + 1);
+                for (int k = a; k <= b; ++k) { r.push_back(k); }
+            }
+            if (j == std::string::npos) { break; }
+            i = j + 1;
+        }
+        return r;
+    };
+    std::vector<int> phys;   // first SMT thread of every physical core
+    for (const auto & d : l3_domain_cores()) { phys.insert(phys.end(), d.begin(), d.end()); }
+    std::vector<std::vector<int>> node_cores;   // physical cores of each node that has CPUs
+    std::vector<int> node_id;
+    for (int n = 0; n < 64; ++n) {
+        const std::string l = read("/sys/devices/system/node/node" + std::to_string(n) + "/cpulist");
+        if (l.empty()) { if (n > 0 && node_cores.empty()) { break; } continue; }
+        std::vector<int> c;
+        for (int cpu : parse(l)) { if (std::find(phys.begin(), phys.end(), cpu) != phys.end()) { c.push_back(cpu); } }
+        if (!c.empty()) { node_cores.push_back(c); node_id.push_back(n); }
+    }
+    const int N = (int) node_cores.size();
+    if (N < 2) { return; }
+    std::string gpus;
+    for (int k = 0; k < mc->n_links; ++k) {
+        ggml_backend_dev_props pr = {};
+        if (mc->link_dev[k]) { ggml_backend_dev_get_props(mc->link_dev[k], &pr); }
+        std::string id = pr.device_id ? pr.device_id : "";
+        for (auto & ch : id) { ch = (char) tolower((unsigned char) ch); }
+        const std::string nn = id.empty() ? "" : read("/sys/bus/pci/devices/" + id + "/numa_node");
+        gpus += tr_fmt(" link %d -> node %s", k, nn.empty() || nn[0] == '-' ? "?" : nn.c_str());
+    }
+    const size_t buf_n = (size_t) 256 << 20;
+    std::vector<uint8_t *> buf(N, nullptr);
+    auto pin = [](int cpu) {
+        cpu_set_t cs;
+        CPU_ZERO(&cs);
+        CPU_SET(cpu, &cs);
+        pthread_setaffinity_np(pthread_self(), sizeof(cs), &cs);
+    };
+    for (int n = 0; n < N; ++n) {   // first touch by a thread of the node
+        std::thread([&, n] {
+            pin(node_cores[n][0]);
+            buf[n] = (uint8_t *) malloc(buf_n);
+            if (buf[n]) { memset(buf[n], 1, buf_n); }
+        }).join();
+        if (!buf[n]) { for (auto * b : buf) { free(b); } return; }
+    }
+    auto cell = [&](int r, int b, double secs) {   // GB/s: the cores of node r read the buffer of node b
+        std::atomic<bool> stop{false};
+        const int nt = (int) node_cores[r].size();
+        std::vector<double> got(nt, 0.0);
+        std::vector<std::thread> th;
+        for (int t = 0; t < nt; ++t) {
+            th.emplace_back([&, t] {
+                pin(node_cores[r][t]);
+                uint64_t x = 0;
+                size_t o = buf_n / nt * t;
+                const size_t lim = buf_n / nt * (t + 1);
+                while (!stop) {   // 1 MiB per check, wrapping inside this thread's slice
+                    const size_t end = std::min(o + ((size_t) 1 << 20), lim);
+                    for (; o < end; o += 64) { x += *(const volatile uint64_t *) (buf[b] + o); }
+                    got[t] += (double) ((size_t) 1 << 20);
+                    if (o >= lim) { o = buf_n / nt * t; }
+                }
+                got[t] += (double) (x & 1);
+            });
+        }
+        const int64_t t0 = ggml_time_us();
+        std::this_thread::sleep_for(std::chrono::duration<double>(secs));
+        stop = true;
+        for (auto & x : th) { x.join(); }
+        const double dt = (double) (ggml_time_us() - t0);
+        double g = 0;
+        for (double v : got) { g += v / dt / 1e3; }
+        return g;
+    };
+    std::string rs;
+    for (int r = 0; r < N; ++r) {
+        rs += tr_fmt("%snode %d (%zu cores):", r ? "; " : "", node_id[r], node_cores[r].size());
+        for (int b = 0; b < N; ++b) {
+            if (N > 4 && b != r && b != (r + 1) % N) { continue; }   // many nodes: local and the next one only, to keep the start short
+            rs += tr_fmt(" %d:%.1f", node_id[b], cell(r, b, 0.12));
+        }
+    }
+    for (auto * b : buf) { free(b); }
+    LLAMA_LOG_WARN("moe-cache: numa: %d nodes;%s; read GB/s (reader node, buffer node:rate) %s\n", N, gpus.c_str(), rs.c_str());
+#else
+    (void) mc;
+#endif
+}
+
 void resource_probe(moe_cache * mc) {
     const char * pe = moe_opt("probe");
     if ((pe && pe[0] == '0') || mc->layers.empty()) {
@@ -1843,6 +1951,17 @@ void resource_probe(moe_cache * mc) {
     int n_phys = 0;
     for (const auto & d : l3_domain_cores()) {
         n_phys += (int) d.size();
+    }
+    // reader threads are spread over the L3 domains (one core per domain in turn): on a NUMA host with several memory controllers (a 4-node 64-core EPYC)
+    // unpinned readers share a few of them and the ramp flattens at a fraction of the RAM rate (blg: 27 GB/s probed, 52-72 GB/s streamed by all cores)
+    std::vector<int> spread;
+    {
+        const auto doms = l3_domain_cores();
+        for (size_t k = 0; ; ++k) {
+            bool any = false;
+            for (const auto & d : doms) { if (k < d.size()) { spread.push_back(d[k]); any = true; } }
+            if (!any) { break; }
+        }
     }
     // source chunks: whole experts across layers, far more than any L3
     struct chunk { const uint8_t * p; size_t n; };
@@ -1869,6 +1988,14 @@ void resource_probe(moe_cache * mc) {
             for (int t = 0; t < n_thr; ++t) {
                 th.emplace_back([&, t] {
                     unpin_helper();
+#if defined(__linux__)
+                    if (!spread.empty()) {
+                        cpu_set_t cs;
+                        CPU_ZERO(&cs);
+                        CPU_SET(spread[t % spread.size()], &cs);
+                        pthread_setaffinity_np(pthread_self(), sizeof(cs), &cs);
+                    }
+#endif
                     uint64_t x = 0;
                     while (!stop) {
                         const chunk & c = src[next.fetch_add(1) % src.size()];
@@ -1905,31 +2032,40 @@ void resource_probe(moe_cache * mc) {
         link_gbs.assign(mc->n_links, 0.0);
         for (int k = 0; k < mc->n_links; ++k) { link_gbs[k] = got[n_thr + k] / dt / 1e3; }
     };
-    // one ramp: step 0 runs the links alone, then each step adds a CPU reader thread and measures it alone and
-    // together with every link, until neither rises (< 3% twice in a row). Peak CPU alone = the CPU's RAM read rate,
-    // the thread count reaching 95% of it = cores that saturate RAM; peak CPU + links = the RAM budget
+    // step 0 runs the links alone; then the CPU readers are measured from the top down: all physical cores first, then half, a quarter, ... until the rate
+    // falls under 95% of the best, then a bisection between the last count below and the first at it. Measuring from the top cannot stop early on a
+    // plateau of a few threads (a ramp up from 1 did on a 4-node EPYC host); peak CPU alone = the CPU's RAM read rate, the smallest count within 95% of it =
+    // cores that saturate RAM; peak CPU + links = the RAM budget
     double cpu_alone = 0, total = 0;
-    std::vector<double> link_alone, link_mixed, tmp, ramp, ramp_all;
+    std::vector<double> link_alone, link_mixed, tmp;
+    std::map<int, std::pair<double, double>> meas;   // reader threads -> (CPU alone, CPU + links)
     const int n_max = std::max(1, n_phys > 0 ? n_phys : (int) std::thread::hardware_concurrency());
-    int flat = 0;
-    for (int nt = 0; nt <= n_max && flat < 2; ++nt) {
+    run(0, true, 0.15, cpu_alone, link_alone);
+    cpu_alone = 0;
+    auto measure = [&](int nt) {
+        if (meas.count(nt)) { return; }
         double g = 0, gm = 0;
-        if (nt == 0) {
-            run(0, true, 0.15, g, link_alone);
-            continue;
-        }
         run(nt, false, 0.08, g, tmp);
         run(nt, true, 0.08, gm, link_mixed);
         for (double l : link_mixed) { gm += l; }
-        flat = g < cpu_alone * 1.03 && gm < total * 1.03 ? flat + 1 : 0;
+        meas[nt] = { g, gm };
         cpu_alone = std::max(cpu_alone, g);
         total     = std::max(total, gm);
-        ramp.push_back(g);
-        ramp_all.push_back(gm);
+    };
+    int hi = n_max, lo = 0;   // hi: a count within 95% of the best so far, lo: the largest one measured below it
+    measure(n_max);
+    for (int nt = n_max / 2; nt >= 1; nt /= 2) {
+        measure(nt);
+        if (meas[nt].first >= 0.95 * cpu_alone) { hi = nt; } else { lo = nt; break; }
     }
-    int n_sat = (int) ramp.size();
-    for (int i = 0; i < (int) ramp.size(); ++i) {
-        if (ramp[i] >= 0.95 * cpu_alone) { n_sat = i + 1; break; }
+    while (hi - lo > 1) {
+        const int mid = (hi + lo) / 2;
+        measure(mid);
+        if (meas[mid].first >= 0.95 * cpu_alone) { hi = mid; } else { lo = mid; }
+    }
+    int n_sat = n_max;
+    for (const auto & m : meas) {
+        if (m.second.first >= 0.95 * cpu_alone) { n_sat = m.first; break; }
     }
     mc->cpu_sat_threads = n_sat;
     if (!moe_opt("cpu-ram-gbs")) { knobs().cpu_gbs = cpu_alone; }
@@ -1962,8 +2098,9 @@ void resource_probe(moe_cache * mc) {
             }
         }
     }
-    for (size_t i = 0; i < ramp.size(); ++i) {
-        rs += tr_fmt("%s%zu:%.1f/%.1f", i ? " " : "", i + 1, ramp[i], ramp_all[i]);
+    {
+        size_t i = 0;
+        for (const auto & m : meas) { rs += tr_fmt("%s%d:%.1f/%.1f", i++ ? " " : "", m.first, m.second.first, m.second.second); }
     }
     LLAMA_LOG_WARN("moe-cache: probe: links alone%s GB/s; CPU threads:GB/s alone/with links %s -> CPU %.1f GB/s "
         "(saturated by %d threads), RAM budget %.1f GB/s\n", links.c_str(), rs.c_str(), cpu_alone, n_sat, knobs().ddr_gbs);
@@ -2639,14 +2776,20 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
         ls.expert_count[expert]++;
         ls.glob_max = std::max(ls.glob_max, ++ls.glob_count[expert]);
     }
+    // an expert the pass takes from RAM: its bytes cross this card's link (live bandwidth of the prompt phase)
+    auto streamed = [&]() {
+        mc->pf_bytes += (int64_t) weight->nb[2];
+        for (int k = 0; k < mc->n_links; ++k) { if (mc->link_dev[k] == dev) { mc->pf_link[k] += (int64_t) weight->nb[2]; break; } }
+        return false;
+    };
     ggml_tensor * c = it->second.second == 0 ? ls.pub.up_c : it->second.second == 1 ? ls.pub.gate_c : ls.pub.down_c;
     if (!c || !c->buffer || c->nb[2] < weight->nb[2] || c->nb[1] != weight->nb[1] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
-        return false;
+        return streamed();
     }
     mc->n_src_query++;
     if (expert < 0 || expert >= (int32_t) ls.expert_slot.size() || ls.expert_slot[expert] < 0) {
-        return false;
+        return streamed();
     }
     mc->n_src_hit++;
     *data   = (const uint8_t *) c->data + (size_t) ls.expert_slot[expert]*c->nb[2];
@@ -3865,7 +4008,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         }
                     }
                     mc->ddr_mbs += link_mbs;
-                    mc->up_bytes += (int64_t) sz;
+                    mc->up_bytes += (int64_t) sz; mc->link_bytes[ls.link] += (int64_t) sz;
                     ddr_trace(mc, ggml_time_us());
                     struct ddr_release { moe_cache * mc; int64_t v; ~ddr_release() { mc->ddr_mbs -= v; ddr_trace(mc, ggml_time_us()); } } rel { mc, link_mbs };
                     if ((knobs().gate == 2 || (knobs().gate == 1 && j.stream)) && mc->cpu_busy) {
@@ -4032,6 +4175,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         }
 #endif
         resource_probe(mc);
+        numa_probe(mc);
         if (const size_t n = profile_preload(mc, model)) {
             LLAMA_LOG_INFO("moe-cache: preloading %zu experts (usage profile)\n", n);
         }
@@ -4359,7 +4503,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             ls.pool_slot[id]   = ps;
             ls.pool_dirty      = true;
             set_table_entry(ls.pub, id, ls.pub.n_slots + 1); // CPU skips it, the pool chain computes it
-            mc->up_bytes += (int64_t) S;
+            mc->up_bytes += (int64_t) S; mc->link_bytes[ls.link] += (int64_t) S;
             ++n_up;
         }
         mc->n_pool_up += n_up;
@@ -4409,7 +4553,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         ls.up_t[id]    = ggml_time_us();
         ls.up_cost[id] = (float) (S / rlb);
         ls.up_hits[id] = 0;
-        mc->up_bytes  += (int64_t) S;
+        mc->up_bytes  += (int64_t) S; mc->link_bytes[ls.link] += (int64_t) S;
         ++n_up;
     }
     mc->n_jit += n_up;
@@ -6171,6 +6315,47 @@ uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
     // otherwise equal passes: no nearly empty last pass
     const uint32_t passes = (n + ub_max - 1) / ub_max;
     return (n + passes - 1) / passes;
+}
+
+
+// GET /moe/stats, bandwidth part: RAM and each PCIe link in use (rate since the previous call, at least 0.5 s apart) against the probed maximum, bytes uploaded per link
+std::string llama_moe_bw_json_fork() {
+    moe_cache * mc = g_cache;
+    if (!mc) { return "\"bandwidth\":null,\"hit\":null"; }
+    static std::mutex mu; static int64_t t0 = 0, cpu0 = 0, up0 = 0, lk0[MAX_LINKS] = {};
+    static double ram = 0, cpu = 0, lk[MAX_LINKS] = {}, win = 0, hr_recent = -1;
+    static uint64_t h0 = 0, m0 = 0, sq0 = 0, sh0 = 0; static double pf_recent = -1;
+    static int64_t pfb0 = 0, pfl0[MAX_LINKS] = {};
+    std::lock_guard<std::mutex> g(mu);
+    uint64_t hh = 0, mm = 0;
+    for (const auto & l : mc->layers) { hh += l.n_hit; mm += l.n_miss; }
+    const int64_t now = ggml_time_us();
+    if (now - t0 >= 500000) {
+        if (t0) {
+            const double dt = (now - t0) / 1e6;
+            cpu = (mc->cpu_bytes - cpu0) / dt / 1e9;
+            ram = cpu + (mc->up_bytes - up0 + mc->pf_bytes - pfb0) / dt / 1e9;
+            for (int k = 0; k < mc->n_links; ++k) { lk[k] = (mc->link_bytes[k] - lk0[k] + mc->pf_link[k] - pfl0[k]) / dt / 1e9; }
+            if (mc->n_src_query > sq0) { pf_recent = 100.0 * (mc->n_src_hit - sh0) / (mc->n_src_query - sq0); }
+            win = dt;
+            hr_recent = (hh - h0) + (mm - m0) > 0 ? 100.0 * (hh - h0) / ((hh - h0) + (mm - m0)) : hr_recent;
+        }
+        h0 = hh; m0 = mm;
+        t0 = now; cpu0 = mc->cpu_bytes; up0 = mc->up_bytes; pfb0 = mc->pf_bytes; sq0 = mc->n_src_query; sh0 = mc->n_src_hit;
+        for (int k = 0; k < mc->n_links; ++k) { lk0[k] = mc->link_bytes[k]; pfl0[k] = mc->pf_link[k]; }
+    }
+    char b[256];
+    snprintf(b, sizeof b, "\"bandwidth\":{\"gpus\":%d,\"window_s\":%.2f,\"ram_gbs\":%.2f,\"ram_max_gbs\":%.2f,\"cpu_gbs\":%.2f,\"uploaded_mib\":%.0f,\"links\":[",
+             mc->n_links, win, ram, knobs().ddr_gbs, cpu, (double) mc->up_bytes / 1048576.0);
+    std::string o = b;
+    for (int k = 0; k < mc->n_links; ++k) {
+        snprintf(b, sizeof b, "%s{\"link\":%d,\"dev\":\"%s\",\"gbs\":%.2f,\"max_gbs\":%.2f,\"uploaded_mib\":%.0f}", k ? "," : "", k,
+                 mc->link_dev[k] ? ggml_backend_dev_name(mc->link_dev[k]) : "?", lk[k], mc->gbs_link[k], (double) mc->link_bytes[k] / 1048576.0);
+        o += b;
+    }
+    snprintf(b, sizeof b, "]},\"hit\":{\"all\":%.2f,\"recent\":%.2f,\"prompt_all\":%.2f,\"prompt_recent\":%.2f}", hh + mm ? 100.0 * hh / (hh + mm) : 0.0, hr_recent,
+             mc->n_src_query ? 100.0 * mc->n_src_hit / mc->n_src_query : 0.0, pf_recent);
+    return o + b;
 }
 
 void llama_moe_cache_free_fork() {

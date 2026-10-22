@@ -200,10 +200,52 @@ static int cpu_count_math_cpus(int n_cpu) {
 
 #endif // __x86_64__ && __linux__
 
+void llama_moe_decision_fork(const char * name, const char * value, const char * why);   // src/llama-moestate-fork.cpp: GET /moe/stats "decisions"
+
+// CPUs the container may use: its cgroup CPU quota (v2 cpu.max "QUOTA PERIOD", v1 cpu.cfs_quota_us / cpu.cfs_period_us) as quota / period; 0 when there is none.
+// A rented container shows all cores of the host (256) but is throttled to its quota (27.3 CPUs on the 5090 box): 127 threads on it were paused for most of every
+// 100 ms period, 96 ms per token at a 95% cache hit rate and 1% of the RAM and PCIe bandwidth in use.
+static double common_cpu_quota() {
+#if defined(__linux__)
+    if (FILE * f = fopen("/sys/fs/cgroup/cpu.max", "r")) {
+        char q[32] = {}; long period = 0;
+        const bool ok = fscanf(f, "%31s %ld", q, &period) == 2;
+        fclose(f);
+        if (ok && strcmp(q, "max") != 0 && period > 0) { return atof(q) / (double) period; }
+        return 0.0;
+    }
+    long quota = -1, period = 0;
+    for (const char * dir : { "/sys/fs/cgroup/cpu", "/sys/fs/cgroup/cpu,cpuacct" }) {
+        FILE * fq = fopen((std::string(dir) + "/cpu.cfs_quota_us").c_str(), "r");
+        FILE * fp = fopen((std::string(dir) + "/cpu.cfs_period_us").c_str(), "r");
+        const bool ok = fq && fp && fscanf(fq, "%ld", &quota) == 1 && fscanf(fp, "%ld", &period) == 1;
+        if (fq) { fclose(fq); }
+        if (fp) { fclose(fp); }
+        if (ok) { return quota > 0 && period > 0 ? (double) quota / (double) period : 0.0; }
+    }
+#endif
+    return 0.0;
+}
+
+static int32_t common_cpu_get_num_math_raw();
+
+int32_t common_cpu_get_num_math() {
+    const int32_t n = common_cpu_get_num_math_raw();
+    const double  q = common_cpu_quota();
+    if (q > 0.0 && (int32_t) q < n) {
+        char v[16], w[120];
+        snprintf(v, sizeof v, "%d", std::max(1, (int32_t) q));
+        snprintf(w, sizeof w, "container CPU quota %.1f cpus < %d cores seen: threads follow the quota", q, n);
+        llama_moe_decision_fork("threads", v, w);
+        return std::max(1, (int32_t) q);
+    }
+    return n;
+}
+
 /**
  * Returns number of CPUs on system that are useful for math.
  */
-int32_t common_cpu_get_num_math() {
+static int32_t common_cpu_get_num_math_raw() {
 #if defined(__x86_64__) && defined(__linux__) && !defined(__ANDROID__)
     int n_cpu = sysconf(_SC_NPROCESSORS_ONLN);
     if (n_cpu < 1) {
@@ -1334,7 +1376,20 @@ static size_t common_ram_available(bool with_pool = false) {
                     }
                 }
             }
-            return kb * 1024 + pool;
+            size_t mem = kb * 1024;
+            // container limit (cgroup v2): MemAvailable is the host's, the container is killed at memory.max (rented box: 85 GiB limit, 89.7 GiB pin budget, OOM kill
+            // during the load). Headroom = limit - (usage - page cache, which is reclaimable).
+            {
+                std::ifstream mx("/sys/fs/cgroup/memory.max"), cu("/sys/fs/cgroup/memory.current"), st("/sys/fs/cgroup/memory.stat");
+                size_t lim = 0, cur = 0, file = 0;
+                if ((mx >> lim) && (cu >> cur) && lim < ((size_t) 1 << 60)) {
+                    std::string k; size_t v = 0;
+                    while (st >> k >> v) { if (k == "file") { file = v; break; } }
+                    const size_t used = cur > file ? cur - file : 0;
+                    mem = std::min(mem, lim > used ? lim - used : (size_t) 0);
+                }
+            }
+            return mem + pool;
         }
         f.ignore(256, '\n');
     }
@@ -1734,6 +1789,40 @@ static uint32_t common_auto_ubatch(common_params & params) {
     return best;
 }
 
+// The micro-batch of a MoE model that fits the free VRAM: the expert placement code returns early for it, so no chooser ran and the stock 512 stayed (Qwen3.6-35B, 12k prompt,
+// 2x RTX 3090, 2026-10-21, -ub 512/1024/2048/4096/8192 = 5591/6830/7335/7302/7301 prompt tokens/s, decode unchanged; 128k prompt 512 -> 1024: +17%). There is no cache to compete
+// with for VRAM and a short prompt only fills as many tokens as it has, so a bigger maximum costs nothing but the compute buffer. Same rule as the cache path: the maximum is the
+// context capped at 16384 (the gains flatten from 8192, and a pass as long as a big context makes some attention masks grow with its square), halved while the compute buffer
+// of that size would take more than half of the VRAM the weights and the context leave free on the cards. Never below the stock 512.
+static uint32_t common_fits_ubatch(common_params & params) {
+    const uint32_t SAFE = 512;
+    uint32_t top = 16384;
+    if (params.n_ctx > 0) { top = std::min<uint32_t>(top, std::max<uint32_t>(SAFE, params.n_ctx)); }
+    for (uint32_t ub = top; ub > SAFE; ub /= 2) {
+        auto mp = common_model_params_to_llama(params);
+        auto cp = common_context_params_to_llama(params);
+        cp.n_ubatch = ub;
+        cp.n_batch  = std::max(cp.n_batch, ub);
+        std::vector<ggml_backend_dev_t> devs;
+        uint32_t ngl = 0, nctx = 0, nexp = 0;
+        try {
+            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            int64_t left = 0, compute = 0;
+            for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
+                left    += (int64_t) dmd[d].free - (int64_t) (dmd[d].model + dmd[d].context);
+                compute += (int64_t) dmd[d].compute;
+            }
+            if (left > 0 && compute * 2 <= left) { return ub; }
+        } catch (const std::exception & e) {
+            COM_DBG("ubatch probe failed (%s), keeping %u\n", e.what(), SAFE);
+            return SAFE;
+        }
+    }
+    return SAFE;
+}
+
+void llama_moe_decision_fork(const char * name, const char * value, const char * why);   // src/llama-moestate-fork.cpp: GET /moe/stats "decisions"
+static void decide_fork(const char * name, const std::string & value, const std::string & why) { llama_moe_decision_fork(name, value.c_str(), why.c_str()); }
 static void common_moe_cache_auto_impl(common_params & params);
 
 // pinned weights for every model, whether or not the expert cache is on (OLMoE fits the VRAM, the placement code returns early, and its weights were mapped: 2026-10-21)
@@ -1841,6 +1930,15 @@ static void common_moe_cache_auto_impl(common_params & params) {
     if (n_gpu == 0 || model_size + reserve <= vram_free) {
         COM_DBG("MoE model (%.1f GiB) fits free VRAM (%.1f GiB on %d GPUs), no expert cache\n",
             model_size / 1073741824.0, vram_free / 1073741824.0, n_gpu);
+        if (n_gpu > 0 && !params.ubatch_user && common_autotune_on(params)) {
+            const uint32_t ub = common_fits_ubatch(params);
+            params.n_batch  = std::max<uint32_t>(params.n_batch, 2 * ub);
+            if (params.n_ctx > 0) { params.n_batch = std::min<uint32_t>(params.n_batch, std::max<uint32_t>(params.n_ctx, ub)); }
+            params.n_ubatch = ub;
+            decide_fork("placement", "fits VRAM (stock)", string_format("model fits the free VRAM (%.1f GiB), no expert cache", vram_free / 1073741824.0));
+            decide_fork("ubatch", std::to_string(ub), "model fits the VRAM: largest pass up to min(context, 16384) whose compute buffer is at most half of the free VRAM");
+            LOG_INF("%s: ubatch %u: the model fits the VRAM, no cache to weigh (the largest pass up to min(context, 16384) whose compute buffer takes at most half of the free VRAM)\n", __func__, ub);
+        }
         return;
     }
 
@@ -1857,25 +1955,22 @@ static void common_moe_cache_auto_impl(common_params & params) {
         moe_auto_read(path, st, ca, decided);
         std::string mode;
         g_moe_auto_vram_free = vram_free;
-        // a placement that could not start counts as failed until a good deal more VRAM is free than when it failed
-        const bool st_failed = st.failed_mib > 0 && (double) vram_free < 1.25 * ((double) st.failed_mib * 1048576.0);
-        const bool ca_failed = ca.failed_mib > 0 && (double) vram_free < 1.25 * ((double) ca.failed_mib * 1048576.0);
         // can the cache fit at all? Its slots come after the non-expert weights, the KV cache and the compute buffers; when those alone do not fit in the free VRAM
         // there is no cache to measure (GLM 3.0-bit on one 3090 with 10.9 GiB free: out of memory)
         const size_t expert_bytes = common_model_expert_bytes(params.model.path);
         const size_t cache_need   = expert_bytes && model_size > expert_bytes ? model_size - expert_bytes + ((size_t) 3 << 29) + ((size_t) n_gpu << 28) : 0; // + 1.5 GiB + 0.25 GiB per GPU
         if (f == "stock" || f == "cache") {
             mode = f;
+            decide_fork("placement", mode, "set by hand: --moe mode=" + f);
         } else if (!common_autotune_on(params)) {
             // no measuring: the static rule, cache whenever the model does not fit (and the prompt is not long); nothing is recorded
             mode = moe_auto_est_prompt(params) < 3000 ? "cache" : "stock";
+            decide_fork("placement", mode, string_format("autotune off: static rule, model %.1f GiB, free VRAM %.1f GiB", model_size / 1073741824.0, vram_free / 1073741824.0));
             LOG_INF("%s: MoE placement: %s (autotune off: static rule, model %.1f GiB, free VRAM %.1f GiB)\n", __func__, mode.c_str(),
                 model_size / 1073741824.0, vram_free / 1073741824.0);
-        } else if (st_failed != ca_failed) {
-            mode = st_failed ? "cache" : "stock";
-            LOG_INF("%s: MoE placement: %s (the other placement could not start with this much free VRAM before; %s)\n", __func__, mode.c_str(), path.c_str());
         } else if (cache_need > vram_free) {
             mode = "stock";
+            decide_fork("placement", "stock", string_format("the cache cannot fit: %.1f GiB needed for non-expert weights, KV and compute buffers > free VRAM %.1f GiB", cache_need / 1073741824.0, vram_free / 1073741824.0));
             LOG_INF("%s: MoE placement: stock (the cache cannot fit: about %.1f GiB for the non-expert weights, KV cache and compute buffers > free VRAM %.1f GiB)\n", __func__,
                 cache_need / 1073741824.0, vram_free / 1073741824.0);
         } else {
@@ -1883,12 +1978,13 @@ static void common_moe_cache_auto_impl(common_params & params) {
             // times. Those times moved with the prompt length, the split and the pass plan, so the same build on the same model landed on stock (a third of
             // the speed) on some starts and on the cache on others, and the numbers a first benchmark sees depended on what the state file held.
             // Rule: the cache when the model is clearly bigger than the free VRAM (it won 1.2x to 2.4x on every such model measured, and stock may not even
-            // start there), stock when it fits or is near the fit line. A start that could not happen is still remembered (st_failed / ca_failed above).
+            // start there), stock when it fits or is near the fit line. 2026-10-21 (user: placement is measured, not read from the state file): a remembered failed start no longer decides either; it was an out of memory caused by another process on the GPU that locked a rented 5090 on stock (8 t/s instead of 40). The failure is still written (failed_mib), nothing reads it.
             // --moe mode=stock|cache decides by hand.
             const bool clearly_bigger = (double) model_size > 1.25 * (double) vram_free;
             mode = clearly_bigger ? "cache" : "stock";
             g_moe_auto_file = path;   // the run is still recorded (for the failed-start memory and for reading by hand), never read to decide
             g_moe_auto_mode = mode;
+            decide_fork("placement", mode, string_format("static rule: model %.1f GiB, free VRAM %.1f GiB (%s)", model_size / 1073741824.0, vram_free / 1073741824.0, f.empty() ? "automatic" : "set by hand"));
             LOG_INF("%s: MoE placement: %s (static rule: model %.1f GiB, free VRAM %.1f GiB; --moe mode=stock|cache decides by hand; %s)\n", __func__,
                 mode.c_str(), model_size / 1073741824.0, vram_free / 1073741824.0, path.c_str());
         }
@@ -1929,6 +2025,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
             // cap: a pass as long as a big context makes the attention masks of some models grow with its square (GLM-5.3-Flash at -c 140000: the memory fit asked for
             // 432 GB and the server died before loading). Gains flatten from 8192 to 12416 tokens anyway; the per-prompt rule makes equal passes under this maximum.
             ub = std::min<uint32_t>(ub, 16384);
+            decide_fork("ubatch", std::to_string(ub), "experts stream from RAM, the compute alias lends the graph (maximum = context, lowered to what the pool can lend)");
             LOG_INF("%s: ubatch %u: experts stream from RAM, the compute alias lends the graph (maximum = context, lowered to what the pool can lend; prompt passes are sized per request)\n", __func__, ub);
         } else {
             ub = common_auto_ubatch(params);
@@ -2040,8 +2137,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
         }
     }
     LOG_INF("%s: MoE model (%.1f GiB) exceeds free VRAM (%.1f GiB): experts in RAM + GPU expert cache, no repack, "
-        "ctx %d, ubatch %d, threads %d, weights %s (settings you pass win)\n", __func__, model_size / 1073741824.0, vram_free / 1073741824.0,
-        params.n_ctx, params.n_ubatch, params.cpuparams.n_threads, params.load_pinned_auto ? "pinned" : "mmap");
+        "ctx %d, ubatch %d, threads %d (settings you pass win; the weights are pinned as far as the RAM reaches, see common_init_result)\n", __func__, model_size / 1073741824.0, vram_free / 1073741824.0,
+        params.n_ctx, params.n_ubatch, params.cpuparams.n_threads);   // the pin rule (common_auto_pin) runs after this line: it cannot say pinned or mmap here, and "mmap" printed here was wrong (2026-10-22)
 }
 
 static const std::map<common_decision_type, std::string> COMMON_DECISION_TYPE_NAMES = {

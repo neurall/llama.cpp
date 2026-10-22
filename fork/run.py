@@ -39,7 +39,7 @@ decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat
 """
 import argparse, math, csv, glob, hashlib, io, json, os, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
 
-import types, collections
+import types, collections, tempfile
 
 
 def _register(name, ns):
@@ -139,9 +139,22 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
         """fork/prompts.ini: [name] sections; path = full path of the input file (default dir = fork/bench, FORK_PROMPTS_DIR moves it), strip / lines / in / alias / tokens / prefix / snippet / test, see the file"""
         import configparser
         here = os.path.dirname(os.path.abspath(__file__))
-        cp = configparser.ConfigParser(defaults={"here": os.environ.get("FORK_PROMPTS_DIR") or os.path.join(here, "bench")})
+        cp = configparser.ConfigParser(defaults={"here": os.environ.get("FORK_PROMPTS_DIR") or os.path.join(here, "prompts")})
         cp.read([os.path.join(here, "prompts.ini"), os.path.join(here, "prompts.local.ini")])   # prompts.local.ini: your own prompts and tests, not in git
-        return {k: dict(cp[k]) for k in cp.sections()}
+        out = {k: dict(cp[k]) for k in cp.sections()}
+        # a file you drop into the prompts directory is a test of its own, named after the file: prompt-NAME.txt (not claimed by a section above) -> test NAME, the whole file one chat message,
+        # 1024 tokens out (tokens = / ctx = need a section). No ini edit: copy the file, `run run ... ` with a cell whose test is NAME.
+        pdir = cp.defaults()["here"]
+        claimed = {os.path.realpath(v["path"]) for v in out.values() if v.get("path")}
+        try: names = sorted(os.listdir(pdir))
+        except OSError: names = []
+        for fn in names:
+            m = re.fullmatch(r"prompt-(.+)\.txt", fn)
+            fp = os.path.realpath(os.path.join(pdir, fn))
+            if m and fp not in claimed and m.group(1) not in out:
+                kb = max(1, os.path.getsize(fp) // 4096)
+                out[m.group(1)] = {"path": fp, "strip": "1", "test": "chat", "tokens": "1024", "in": f"~{kb}k"}
+        return out
 
 
     def prompt_path(name):
@@ -996,12 +1009,13 @@ if fcfg.get("gpu", "nvidia_smi") != "nvidia-smi": os.environ.setdefault("NVIDIA_
 # the places everything lives (config.toml [paths], FORK_PATHS_<KEY>, default <clone>/.fork): defined once here, used by name below
 RELS = fcfg.path("rels"); WORK = fcfg.path("work"); BUILD_TMP = fcfg.path("build_tmp"); GH_REL = fcfg.path("gh_rel")
 
-PROMPTS = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bench")   # frozen prompts (src_12k.cpp, src_128k.cpp, longsrc.cpp) live in fork/bench/
+PROMPT_DIR = os.environ.get("FORK_PROMPTS_DIR") or os.path.join(os.path.dirname(os.path.realpath(__file__)), "prompts")   # the frozen prompts and requests (src_12k.cpp, src_128k.cpp, longsrc.cpp, prompt-*.txt, req-*.json) live in fork/prompts/
+PROMPTS = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bench")   # (the data directory: run-history.csv, stock-fitt.csv ...; the name is older than the split)
 HERE = os.path.abspath(os.environ.get("PERF_BUILDS") or fcfg.path("devbuilds"))  # one subdirectory per build (its bin/ contents)
 DATA = os.environ.get("RUN_DATA") or PROMPTS   # directory of run-history.csv, campaigns.csv, machines.csv, tune.csv (default: fork/bench, committed)
 MODEL = os.environ.get("MODEL", "")
 MODELS_DIR = os.environ.get("PERF_MODELS_DIR", "")  # other models' pages are dropped from RAM before a run
-PPL_TEXT = os.path.join(PROMPTS, os.environ["PERF_PPL_FILE"]) if os.environ.get("PERF_PPL_FILE") else config.prompt_path("longsrc")  # frozen snapshot of llama.cpp common/json-schema-to-grammar.cpp (code, like agent prompts)
+PPL_TEXT = os.path.join(PROMPT_DIR, os.environ["PERF_PPL_FILE"]) if os.environ.get("PERF_PPL_FILE") else config.prompt_path("longsrc")  # frozen snapshot of llama.cpp common/json-schema-to-grammar.cpp (code, like agent prompts)
 BARE = False
 WRAP = []   # --wrap "CMD ARGS": the server is started as CMD ARGS llama-server ... (a profiler, e.g. nsys profile -o FILE --force-overwrite=true)
 THREADS = os.environ.get("PERF_THREADS", "")                   # decode threads: unset = no -t, so the thread autotune (decode and batch) runs; set only to measure a fixed count (fork/cloud/pod.sh sets it for rented boxes)
@@ -1092,6 +1106,10 @@ def ovr_prompt(default):
         p = open(p[1:]).read()
     return (p or default) + "\n" * PROMPT_TWEAK
 GREEDY = {"temperature": 0, "top_p": 1, "top_k": 1}
+ANTILOOP = {"repeat_penalty": 1.15, "repeat_last_n": 256}   # --antiloop: the same penalty for every build of a cell; it changes the text, so a loop-prone base model (OLMoE) produces a real answer. Speed and cache hit rate are not touched by it (a sampler step on the logits)
+if "--antiloop" in sys.argv:   # a global switch for every subcommand (run, cell, bench, remote, rcell); the env var carries it to the cells started as child processes
+    sys.argv.remove("--antiloop"); os.environ["RUN_ANTILOOP"] = "1"
+if os.environ.get("RUN_ANTILOOP"): GREEDY.update(ANTILOOP)
 SEED = 424242
 FIXED = {"seed": SEED, "ignore_eos": True}  # protocol v2 (tests fix, fix12k): same prompt, seed and exact token count for every build
 
@@ -1123,6 +1141,8 @@ RUN_COLS += ["knobs_end"]   # what the build actually ran with, from the run.kno
 RUN_COLS += ["load_mode"]   # how the weights were loaded, from the server log: pinned (+ upload path), mmap, mmap after a failed pin ("reloading with mmap"); load time (load_s) tells too: pinned GLM 3.0 about 85-120 s, mmap about 25 s
 RUN_COLS += ["start_ts", "end_ts", "load_s", "wall_s"]   # start_ts / end_ts: when the process started and ended (local time); load_s: seconds until the model was loaded and ready (server: ready to answer; llama-cli / perplexity: the "load time" it prints); wall_s: seconds the whole run took, start to end
 RUN_COLS += ["uniq4", "out_chars", "code", "loop"]   # text class of the generated output: share of unique word 4-grams (a repetition loop is ~0.1, real text ~0.9+), characters, 1 if it contains code; the text itself is in runs.db table outputs
+RUN_COLS += ["thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "gain_t", "gain_pp", "stock_id", "stock_bno"]   # the server's auto choices (threads for decode / batch, batch, ubatch, context) from its log; the machine line of the run; our decode / prompt speed over the newest stock row (best run of the cell against the stock row it was shown with, set when the cell ends) and that stock row's id and build number
+RUN_COLS += ["link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs"]   # measured maxima of the server's startup probes (per-card prefill link GB/s as the server printed them, CPU memory bandwidth it saturated at) and min/avg/max over the run of the CPU clock (MHz) and temperature (C), the GPU SM clock and temperature (one "min/avg/max" per card, joined by |), and the PCIe host->device rate per card (peak/mean GB/s): what to read to judge afterwards whether the automatic choices were right; local and remote runs fill the same fields
 RUN_COLS += ["gpu_pp", "gpu_tg"]   # the same GPU samples split at the end of the prompt (server timings prompt_ms): prefill phase and generation phase separately, per GPU "util / clock / power / share of samples at the software power cap"; the whole-run gpu_log below blends both and hides that a prefill is compute bound while the decode idles
 RUN_COLS += ["gpu_log"]   # per-GPU summary of the 5 Hz nvidia-smi samples of the run (share of busy samples, mean and 5th percentile SM clock and mean power over the busy samples (GPU utilization >= 20%), max temp, throttle reason bits, min PCIe width) and the sample file
 CAMP_COLS = ["name", "start", "note", "conclusion", "why"]
@@ -1232,7 +1252,7 @@ POWER_DAY, POWER_NIGHT = (220, 280), (200, 200)   # W per GPU (GPU0 = x4 card, G
 
 def power_schedule(now=None):
     """the power limits for the time of day: day 07:00-23:50 (x4 220 W, x16 280 W), night 23:50-07:00 (200 W both)."""
-    if os.environ.get("PERF_POWER"):   # run run -pl 220/280: a forced pair for the whole run, day or night
+    if "/" in os.environ.get("PERF_POWER", ""):   # run run -pl 220/280: a forced pair for the whole run, day or night
         x4, x16 = (int(v) for v in os.environ["PERF_POWER"].split("/"))
         return (x4, x16)
     t = time.localtime(now)
@@ -1240,14 +1260,28 @@ def power_schedule(now=None):
     return POWER_DAY if 7 * 60 <= m < 23 * 60 + 50 else POWER_NIGHT
 
 
+def power_targets(widths, spec=None, maxes=None):
+    """W per GPU for any number of cards. spec (-pl): `285` every card, `220,280,...` one per card (the last repeats), `220/280` the cards on a narrower link than the widest get the first value, the others the second
+    (PC1: the x4 card 220, the x16 card 280). No spec: the day/night schedule, mapped the same way."""
+    spec = spec or os.environ.get("PERF_POWER", "")
+    if spec == "max" and maxes: return list(maxes)   # `-pl` alone: every card at its own maximum
+    if "," in spec:
+        v = [int(x) for x in spec.split(",")]
+        return [v[min(i, len(v) - 1)] for i in range(len(widths))]
+    if spec and "/" not in spec: return [int(spec)] * len(widths)
+    narrow, wide = (int(x) for x in spec.split("/")) if spec else power_schedule()
+    return [narrow if w < max(widths) else wide for w in widths]
+
+
 def apply_power_schedule():
     """sets the live limits to the schedule's, where they differ (every run start and `run.py stop` call it, so a chain crossing 23:50 or 07:00 changes at its next cell)."""
-    want = power_schedule()
     try:
-        cur = [int(float(x)) for x in subprocess.run([NVSMI, "--query-gpu=power.limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout.split()]
+        q = [l.split(",") for l in subprocess.run([NVSMI, "--query-gpu=power.limit,pcie.link.width.max,power.max_limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout.splitlines() if l.count(",") == 2]
+        cur = [int(float(a)) for a, _, _ in q]
+        want = power_targets([int(b) for _, b, _ in q], maxes=[int(float(c)) for _, _, c in q])
     except Exception:
         return
-    for i, w in enumerate(want[:len(cur)]):
+    for i, w in enumerate(want):
         if cur[i] != w:
             r = subprocess.run(["sudo", "-n", NVSMI, "-i", str(i), "-pl", str(w)], capture_output=True, text=True)
             print(f"power: GPU {i} {cur[i]} -> {w} W" + ("" if r.returncode == 0 else f"  (failed: {r.stderr.strip()[:80]})"), flush=True)
@@ -1344,6 +1378,49 @@ def cache_stats(log):
 
 DECISION_COLS = ["layout", "placement", "ubatch_max", "pf_mode", "pf_gpus", "pf_skipped", "pf_tok_share", "pf_exp_share", "pf_passes", "pf_pass", "pf_slots",
                  "pf_one_tps", "pf_split_tps", "pf_by", "pf_all"]
+
+
+_HWL = {}
+
+
+def store_cell_time(build, model, test, hw, since, el):
+    """the cell's real time as the screen showed it (start of the cell to its end: server start, load, the requests, the teardown) into wall_s of its rows, so -nrt and later tables show the same time (the rows hold what the cell process knew: load + requests)"""
+    import sqlite3
+    c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+    c.execute("UPDATE runs SET wall_s=? WHERE hw=? AND build=? AND model=? AND test=? AND ts>=?", (round(el, 1), hw, build, os.path.basename(model), test, time.strftime("%F %T", time.localtime(since - 5))))
+    c.commit(); c.close()
+
+
+def store_gains(rec, build, model, test, hw, since):
+    """our decode / prompt speed over the stock row of the cell, into the rows of the cell in runs.db (UPDATE: the rows are written by the cell process before the stock row is known; run-history.csv is append-only and keeps no gains).
+    A stock cell stores the gain of our newest run over it, an ours cell its own over the stock reference it was shown with."""
+    import sqlite3
+    res = rec.get("res") or []
+    t = max((x[0] for x in res), default=None); p = max((x[1] for x in res if x[1] is not None), default=None)
+    if rec.get("ref"): st = dict(t=t, p=p, sb=rec.get("sbno"), sid=rec.get("rid")); t, p = rec["ref"]["t"], rec["ref"]["p"]
+    else: st = rec.get("st")
+    if not st or not t: return
+    gt = t / st["t"] if st.get("t") else None; gp = p / st["p"] if p and st.get("p") else None
+    c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+    c.execute("UPDATE runs SET gain_t=?, gain_pp=?, stock_id=?, stock_bno=? WHERE hw=? AND build=? AND model=? AND test=? AND ts>=?",
+              (gt, gp, str(st.get("sid") or ""), str(st.get("sb") or ""), hw, build, os.path.basename(model), test, time.strftime("%F %T", time.localtime(since - 5))))
+    c.commit(); c.close()
+
+
+def server_params(log):
+    """the auto choices of a server from its log: decode and batch threads, batch, ubatch (the last 'print_timing' line, the numbers of the request that ran), context (n_ctx_slot) and the weights line"""
+    out = {}
+    ms = list(re.finditer(r"threads = (\d+) decode / (\d+) batch, batch (\d+), ubatch (\d+)", log)); last = ms[-1] if ms else None
+    if last: out.update(thr_dec=int(last.group(1)), thr_batch=int(last.group(2)), batch=int(last.group(3)), ubatch=int(last.group(4)))
+    c = re.search(r"n_ctx_slot = (\d+)", log)
+    if c: out["ctx"] = int(c.group(1))
+    lk = re.search(r"prefill links \(GB/s\): ([^>\n]*?) ->", log)
+    if lk: out["link_probe"] = lk.group(1).strip()
+    mb = re.search(r"memory is saturated at ([\d.]+) GB/s", log) or re.search(r"-> CPU ([\d.]+) GB/s", log)
+    if mb: out["mem_probe_gbs"] = float(mb.group(1))
+    w = re.search(r"common_init_result: (weights [^\n]*)", log)
+    if w: out["load_mode"] = w.group(1)[:120]
+    return out
 
 
 def decisions(log):
@@ -1576,11 +1653,22 @@ ANSWER_FILE = os.environ.get("PERF_ANSWER")   # a file: post() also writes the r
 WATCH_LOG = None   # server log of the running server: post() takes its growth as progress, the server is asked (/slots) only while the log is silent (decode writes nothing per token)
 
 
+HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and reference rows of the machine that measured (pc2 numbers must not be divided by pc1 stock)
+REMOTE_SLOTS = [None]   # file the progress of a cell on another machine is mirrored to (slots_progress reads it instead of the local /slots)
 SLOT_EXACT = [None]   # (prompt total, prompt done, decoded, decode total) from /slots, None when the server does not report them
 
 
 def slots_progress():
     """(prompt tokens in the slot's KV so far, tokens decoded, last generated bytes) from the server's /slots, None when it does not answer in 5 s (it answers between two batches)"""
+    if NOSTATS[0]: return None   # -ns: the server is not asked anything while a cell runs; the bars follow the history estimate and the clock
+    if REMOTE_SLOTS[0]:   # a cell on another machine: its poller's last line (time, "n_prompt_tokens":N "n_prompt_tokens_processed":N "n_decoded":N)
+        try:
+            ln = open(REMOTE_SLOTS[0]).read().strip().split("\n")[-1]
+            if time.time() - float(ln.split()[0]) > 6: return None
+            g = lambda k: max([int(x) for x in re.findall(r'"%s":(\d+)' % k, ln)] or [0])
+            SLOT_EXACT[0] = None
+            return max(g("n_prompt_tokens_processed"), LIVE_DONE[0], 0) if g("n_decoded") == 0 else g("n_prompt_tokens"), g("n_decoded"), ""
+        except (OSError, ValueError, IndexError): return None
     try:
         sl = json.load(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/slots", timeout=5))
         busy = [s for s in sl if s.get("is_processing")] or sl
@@ -1826,6 +1914,44 @@ def gpu_sampler(build, pid=None):
     return stop
 
 
+# one sample a second of CPU clock/temperature and GPU SM clock/temperature; the same shell loop runs on this machine and on a remote one (sys.log), sys_summary() reads both
+SYS_SH = (r"""while :; do c=$(awk '/cpu MHz/{s+=$4;n++}END{if(n)printf "%.0f",s/n}' /proc/cpuinfo); t=0; for d in /sys/class/hwmon/hwmon*; do case $(cat $d/name 2>/dev/null) in coretemp|k10temp|zenpower) t=$(( $(cat $d/temp1_input 2>/dev/null || echo 0) / 1000 )); break;; esac; done; """
+          r"""g=$(nvidia-smi --query-gpu=clocks.sm,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | tr '\n' ';'); echo "$(date +%s) ${c:-0} $t $g"; sleep 1; done""")
+
+
+def sys_summary(text, t0=0.0):
+    """SYS_SH lines (epoch, cpu MHz, cpu C, 'clk,temp;clk,temp;') from t0 on -> the run columns, each 'min/avg/max' (per GPU joined by |)"""
+    cm, ct, gc, gt = [], [], {}, {}
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) < 3 or not f[0].isdigit() or int(f[0]) < t0: continue
+        try:
+            cm.append(float(f[1])); ct.append(float(f[2]))
+            for i, g in enumerate(x for x in (f[3].split(";") if len(f) > 3 else []) if "," in x):
+                a, b = g.split(","); gc.setdefault(i, []).append(float(a)); gt.setdefault(i, []).append(float(b))
+        except ValueError: pass
+    mm = lambda v: "%d/%d/%d" % (min(v), sum(v) / len(v), max(v)) if v else ""
+    out = {}
+    if cm: out["cpu_mhz"] = mm(cm)
+    if any(ct): out["cpu_c"] = mm(ct)
+    if gc: out["gpu_mhz"] = "|".join(mm(v) for _, v in sorted(gc.items())); out["gpu_c"] = "|".join(mm(v) for _, v in sorted(gt.items()))
+    return out
+
+
+def dmon_summary(text, t0=0.0):
+    """remote nvidia-smi dmon -s t lines -> 'peak/mean GB/s' host->device per card (mean of the seconds that moved data), joined by |"""
+    rx = {}
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) >= 3 and not line.startswith("#") and f[-3].isdigit():   # "gpu rx tx", with a leading HH:MM:SS when dmon was run with -o T
+            try: rx.setdefault(int(f[-3]), []).append(float(f[-2]))
+            except ValueError: pass
+    def one(v):
+        mv = [x for x in v if x > 100]
+        return "%.1f/%.1f" % (max(v) / 1024, sum(mv) / len(mv) / 1024 if mv else 0)
+    return "|".join(one(v) for _, v in sorted(rx.items()))
+
+
 def pcie_sampler():
     """host -> device and device -> host PCIe traffic of every GPU while the request runs (nvidia-smi dmon, 1 Hz, MB/s): stop() returns (total GB host->device, peak GB/s of any GPU, mean GB/s of the seconds that moved data, total GB device->host). Cheap enough to be on for every server run."""
     rows = []
@@ -1876,7 +2002,13 @@ def server_run(build, env, args, path, body, render=None):
             m = re.search(r"^(\d+)\.(\d\d)\.(\d{3})\.(\d{3}) \w+ srv\s+llama_server: model loaded", open(logf, errors="replace").read(), re.M)
             if m: PROCSTAT["load_s"] = round(int(m.group(1)) * 60 + int(m.group(2)) + int(m.group(3)) / 1000, 1)
         except (OSError, TypeError): pass
-    try: open(LOAD_FILE, "w").write(f"{PROCSTAT['load_s']}")   # the watching run.py shows it in the status (peek_line)
+    _ld = PROCSTAT['load_s']
+    if _ld < 1:   # a repeat on the kept server loads nothing: the cell's load stays the first run's (the file is rewritten so its mtime still marks the start of this run's prompt phase)
+        try:
+            _old = float(open(LOAD_FILE).read())
+            if _old > 1: _ld = _old
+        except (OSError, ValueError): pass
+    try: open(LOAD_FILE, "w").write(f"{_ld}")   # the watching run.py shows it in the status (peek_line)
     except OSError: pass
     gstop = gpu_sampler(build, p.pid) if GPULOG else (lambda *a: ({}, ""))
     t_req = [None, None]   # the request window: the power columns cover it only
@@ -1885,6 +2017,7 @@ def server_run(build, env, args, path, body, render=None):
         pdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "perf"); os.makedirs(pdir, exist_ok=True)
         pbase = os.path.join(pdir, time.strftime("%Y%m%d-%H%M%S") + "-" + build)
         perf = (subprocess.Popen(["perf", "record", "-F", "499", "-o", pbase + ".data", "-p", str(p.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL), pbase)
+    _sys = subprocess.Popen(["bash", "-c", SYS_SH], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True); _sys_t0 = time.time()
     bwstop = pcie_sampler() if GPULOG else (lambda: None)   # the engine's own byte and time counters are the bandwidth record; the nvidia-smi view only with --gpulog
     try:
         def clamp_text(txt, n_cl):   # --clamp N: cut to N tokens (the server counts them, so it is right for every tokenizer)
@@ -1984,6 +2117,10 @@ def server_run(build, env, args, path, body, render=None):
         except Exception:
             pass
         try:
+            _sys.terminate(); PROCSTAT.update(sys_summary(_sys.stdout.read(), _sys_t0 - 1))
+        except Exception:
+            pass
+        try:
             bw = bwstop()
             if bw:
                 PROCSTAT.update(pcie_h2d_gb=bw[0], pcie_h2d_peak_gbs=bw[1], pcie_h2d_avg_gbs=bw[2], pcie_d2h_gb=bw[3])
@@ -2038,7 +2175,9 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
     TAGBOX["v"] = test   # game4 and edit4 add their prompt below
     if test in ("ppl", "ppl3", "pplb", "pplc"):
         nb, nub = {"ppl": ("1", "1"), "ppl3": ("3", "3"), "pplb": ("1024", "1024"), "pplc": ("1024", "256")}[test]   # pplb: 1024-token batches = the big-batch (prefill) path; pplc: the same batch in 256-token ubatches (4 ubatches per decode call)
+        nub = os.environ.get("PERF_PPL_UB") or nub   # PERF_PPL_UB=N: the 1024 tokens of a chunk cut into N-token ubatches (how ppl moves with the number of cuts; stored in the note)
         args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", os.environ.get("PERF_PPL_CHUNKS", "2"), "-b", nb, "-ub", nub]   # PERF_PPL_CHUNKS=12: a paired comparison of two compute paths needs more than 2 chunks (a valid path differs by +-0.5% per chunk)
+        args += shlex.split(os.environ.get("PERF_PPL_EXTRA", ""))   # PERF_PPL_EXTRA="--kl-divergence-base F": extra llama-perplexity arguments for stock and ours alike (per-position log-probs, fork/ppl_pos.py)
         env, args = drop_moe_flag(build, env, args)   # the b11509 arm of the regress cell failed on --moe autotune=0,...
         if build.startswith("stock"):   # stock has no --moe-expert-cache
             i = args.index("--moe-expert-cache") if "--moe-expert-cache" in args else -1
@@ -2079,7 +2218,9 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
         if not ppl:
             row["note"] = "ppl failed, exit %s: %s" % (r.returncode, " | ".join(l.strip() for l in log.strip().splitlines()[-3:])[:300])
         else:
-            ppl_chunks_store(_start, build + (" " + " ".join(extra_args) if extra_args else ""), MODEL, test, log)   # the variant's arguments are part of the key: default and forced-split runs of one build stay apart
+            _ubk = f" ub={nub}" if os.environ.get("PERF_PPL_UB") else ""
+            if _ubk: row["note"] = _ubk.strip()
+            ppl_chunks_store(_start, build + _ubk + (" " + " ".join(extra_args) if extra_args else ""), MODEL, test, log)   # the variant's arguments are part of the key: default and forced-split runs of one build stay apart
     else:
         if BARE:
             COMMON = list(extra_args)
@@ -2437,6 +2578,13 @@ def store(row, build, test, rec, note, hw, vstr):
             d = decisions(open(lg, errors="replace").read())
             row.update({k: v for k, v in d.items() if k.startswith("pf_") or k in ("layout", "placement", "ubatch_max")})
             if not d.get("pf_mode"): row["pf_mode"] = "no-decision"
+    for lg in (f"{QDIR}/{CAMPAIGN}.remote.server.log", f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log") if CAMPAIGN else ():   # the log of the cell: copied from the remote machine, or the local one
+        if os.path.exists(lg):
+            for k, v in server_params(open(lg, errors="replace").read()).items(): row.setdefault(k, v)
+            break
+    if not row.get("hwline"):   # the machine line of this host (a remote cell sets its own), read once per process
+        if "hw" not in _HWL: _HWL["hw"] = hw_line()
+        row["hwline"] = _HWL["hw"]
     w = save_stats(build, row["ts"], test, hw, row["model"])
     row["uniq4"], row["out_chars"], row["code"] = text_class(row.get("output"))
     row["loop"] = int(bool(row.get("loop_abort")) or is_loop(row.get("output")))
@@ -2466,7 +2614,7 @@ def store(row, build, test, rec, note, hw, vstr):
         ok=row.get("ok", 1), model=row["model"], build=build, args=rec.get("args", ""), md5=row.get("md5"), campaign=CAMPAIGN,
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
-        pl=power_limits(hw), proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
+        pl=row.get("pl") or power_limits(hw), **{k: row.get(k) for k in ("thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs")}, proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
         branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
     save_output_file(row["ts"], build, test, row["model"])   # fork/outputs/<run id>.txt: the answer, readable on GitHub without runs.db
     global _EMB_OFF
@@ -2804,20 +2952,603 @@ def machine(mid):
     r = machines().get(mid)
     if not r or not r.get("ssh"):
         sys.exit(f"unknown machine {mid}: run.py machine add {mid} --ssh user@host --root DIR --os linux|windows")
-    return {"ssh": r["ssh"], "root": r["root"], "win": (r.get("kind") or "").lower().startswith("win")}
+    return {"id": r["id"], "ssh": r["ssh"], "root": r["root"], "win": (r.get("kind") or "").lower().startswith("win")}
+
+
+NUMA_C = r"""#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+#include <sched.h>
+#include <time.h>
+/* read rate of every reader node against every buffer node: each node's buffer is first-touched by a thread pinned to that node, readers are pinned one per
+   physical core; same stride and accounting as the server's numa_probe, plus a full-line-stream (stride 8) column. argv: reps secs */
+#define MAXN 16
+#define MAXC 256
+static int nn, ncpu[MAXN], cpus[MAXN][MAXC], nid[MAXN]; static size_t BUF = (size_t)256 << 20; static unsigned char *buf[MAXN];
+static void pin(int c){ cpu_set_t s; CPU_ZERO(&s); CPU_SET(c, &s); pthread_setaffinity_np(pthread_self(), sizeof s, &s); }
+static double now(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
+static void *touch(void *a){ int n = (int)(long)a; pin(cpus[n][0]); buf[n] = malloc(BUF); if (buf[n]) memset(buf[n], 1, BUF); return 0; }
+typedef struct { int r, b, t, nt, stride; volatile int *stop; double got; } job;
+static void *rd(void *a){ job *j = a; pin(cpus[j->r][j->t]); size_t slice = BUF / j->nt, lo = slice * j->t, o = lo; unsigned long x = 0; double g = 0;
+  while (!*j->stop) { size_t end = o + (1 << 20); if (end > lo + slice) end = lo + slice; for (; o < end; o += j->stride) x += *(volatile unsigned long *)(buf[j->b] + o); g += 1 << 20; if (o >= lo + slice) o = lo; }
+  j->got = g + (x & 1); return 0; }
+static double cell(int r, int b, double secs, int stride){ volatile int stop = 0; int nt = ncpu[r]; pthread_t th[MAXC]; job jb[MAXC];
+  for (int t = 0; t < nt; ++t) { jb[t] = (job){ r, b, t, nt, stride, &stop, 0 }; pthread_create(&th[t], 0, rd, &jb[t]); }
+  double t0 = now(); while (now() - t0 < secs) { struct timespec d = {0, 2000000}; nanosleep(&d, 0); } stop = 1; for (int t = 0; t < nt; ++t) pthread_join(th[t], 0);
+  double dt = now() - t0, g = 0; for (int t = 0; t < nt; ++t) g += jb[t].got / dt / 1e9; return g; }
+static int parse(const char *s, int *out){ int n = 0; while (*s) { int a = strtol(s, (char **)&s, 10), b = a; if (*s == '-') b = strtol(s + 1, (char **)&s, 10); for (int k = a; k <= b && n < MAXC; ++k) out[n++] = k; if (*s == ',') ++s; else break; } return n; }
+int main(int argc, char **argv){ int reps = argc > 1 ? atoi(argv[1]) : 2; double secs = argc > 2 ? atof(argv[2]) : 0.15;
+  for (int n = 0; n < 64 && nn < MAXN; ++n) { char p[96], l[2048]; snprintf(p, sizeof p, "/sys/devices/system/node/node%d/cpulist", n); FILE *f = fopen(p, "r"); if (!f) { if (nn) break; continue; }
+    if (!fgets(l, sizeof l, f)) { fclose(f); continue; } fclose(f); int all[MAXC], na = parse(l, all), k = 0;
+    for (int i = 0; i < na; ++i) { char q[128], sb[64]; snprintf(q, sizeof q, "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", all[i]); FILE *g = fopen(q, "r"); int first = 1;
+      if (g) { if (fgets(sb, sizeof sb, g)) first = atoi(sb) == all[i]; fclose(g); } if (first) cpus[nn][k++] = all[i]; }
+    ncpu[nn] = k; nid[nn] = n; if (k) ++nn; }
+  if (nn < 2) { printf("%d NUMA node: nothing to compare\n", nn); return 0; }
+  for (int n = 0; n < nn; ++n) { pthread_t t; pthread_create(&t, 0, touch, (void *)(long)n); pthread_join(t, 0); if (!buf[n]) { puts("alloc failed"); return 1; } }
+  for (int st = 64; st >= 8; st /= 8) for (int rep = 0; rep < reps; ++rep) { printf("stride %d, run %d: reader node (cores) -> buffer nodes", st, rep + 1);
+    for (int b = 0; b < nn; ++b) printf("%8d", nid[b]); puts("");
+    for (int r = 0; r < nn; ++r) { printf("  node %d (%2d cores)%*s", nid[r], ncpu[r], 20, ""); for (int b = 0; b < nn; ++b) printf("%8.1f", cell(r, b, secs, st)); puts(""); } }
+  return 0; }
+"""
+
+
+NUMA_CU = r"""#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <string>
+#include <thread>
+#include <vector>
+#include <chrono>
+#include <sched.h>
+#include <pthread.h>
+#include <cuda_runtime.h>
+// host -> device copy rate of every GPU against a pinned buffer on every NUMA node. The buffer is allocated and first-touched by a thread pinned to a core of the node.
+static void pin(int c){ cpu_set_t s; CPU_ZERO(&s); CPU_SET(c, &s); pthread_setaffinity_np(pthread_self(), sizeof s, &s); }
+int main(int argc, char ** argv){ int reps = argc > 1 ? atoi(argv[1]) : 2; const size_t N = (size_t)256 << 20;
+  std::vector<int> first, nid;   // first physical core of each node that has CPUs
+  for (int n = 0; n < 64; ++n) { std::ifstream f("/sys/devices/system/node/node" + std::to_string(n) + "/cpulist"); std::string l; if (!std::getline(f, l)) { if (!first.empty()) break; continue; } first.push_back(atoi(l.c_str())); nid.push_back(n); }
+  int ng = 0; cudaError_t ce = cudaGetDeviceCount(&ng); if (ce != cudaSuccess) printf("cudaGetDeviceCount: %s", cudaGetErrorString(ce)); puts(""); std::vector<void *> hb(first.size(), nullptr);
+  for (size_t b = 0; b < first.size(); ++b) std::thread([&, b] { pin(first[b]); if (cudaHostAlloc(&hb[b], N, cudaHostAllocDefault) == cudaSuccess) memset(hb[b], 1, N); }).join();
+  for (int r = 0; r < reps; ++r) { printf("run %d: GPU (pci, own node) -> pinned buffer on node", r + 1); for (int n : nid) printf("%8d", n); puts("");
+    for (int g = 0; g < ng; ++g) { cudaSetDevice(g); char pci[32] = {}; cudaDeviceGetPCIBusId(pci, sizeof pci, g); std::string pp = pci; for (auto & c : pp) c = tolower(c);
+      std::ifstream f("/sys/bus/pci/devices/" + pp + "/numa_node"); std::string own; std::getline(f, own); void * d = nullptr; cudaMalloc(&d, N); cudaStream_t st; cudaStreamCreate(&st);
+      printf("  GPU %d %s node %-3s%*s", g, pci, own.c_str(), 6, "");
+      for (size_t b = 0; b < first.size(); ++b) { if (!hb[b]) { printf("%8s", "-"); continue; } cudaMemcpyAsync(d, hb[b], N, cudaMemcpyHostToDevice, st); cudaStreamSynchronize(st);
+        auto t0 = std::chrono::steady_clock::now(); for (int i = 0; i < 8; ++i) cudaMemcpyAsync(d, hb[b], N, cudaMemcpyHostToDevice, st); cudaStreamSynchronize(st);
+        double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); printf("%8.1f", 8.0 * N / dt / 1e9); }
+      puts(""); cudaFree(d); cudaStreamDestroy(st); } }
+  return 0; }
+"""
+
+
+def cmd_numa(a):
+    """numa [-pc ID] [--reps N]: the NUMA map of a machine (GPU -> node from sysfs) and a node x node RAM read-rate table, from a small C program compiled on the machine (gcc): the same measurement as the server's numa_probe, without loading a model (a few seconds)"""
+    if a.machine != "pc1": HOST[0] = dict(machines()[a.machine], id=a.machine)
+    print(hsh("for d in /sys/bus/pci/devices/*; do [ \"$(cat $d/vendor)\" = 0x10de ] && [ \"$(cat $d/class)\" = 0x030200 -o \"$(cat $d/class)\" = 0x030000 ] && echo \"GPU $(basename $d) numa_node=$(cat $d/numa_node)\"; done; lscpu | grep -i 'numa node'"))
+    if a.gpu:   # host -> device rate of every GPU against pinned memory on every node
+        print(hsh("d=$(mktemp -d); cat > $d/g.cu <<'EOF'\n" + NUMA_CU + "\nEOF\n(nvcc -O2 -std=c++17 $d/g.cu -o $d/g && $d/g %d) 2>&1 | tail -30; rm -rf $d" % a.reps)); return
+    print(hsh("d=$(mktemp -d); cat > $d/n.c <<'EOF'\n" + NUMA_C + "\nEOF\ngcc -O2 -pthread $d/n.c -o $d/n && $d/n %d %s; rm -rf $d" % (a.reps, a.secs)))
 
 
 def cmd_machine(a):
     ms = machines()
     if a.action == "add":
-        ms.setdefault(a.id, {})
-        ms[a.id].update(id=a.id, ssh=a.ssh, root=a.root, kind=a.os)
+        mid = a.id or "cld"   # the rented box of a temporary session: `machine add --ssh "-p 47086 root@93.91.156.104 -L 8080:localhost:8080"` (the line the provider shows) updates cld
+        sshv, root = a.ssh, a.root
+        if sshv and (" " in sshv.strip() or sshv.startswith("-")):   # a pasted ssh command line: its alias goes into ~/.ssh/config, port forwards are dropped, the machine row is reset (a new box behind an old name)
+            tk = shlex.split(sshv); port = ""; ident = ""; dest = ""; i = 0
+            while i < len(tk):
+                if tk[i] == "-p" and i + 1 < len(tk): port = tk[i + 1]; i += 2
+                elif tk[i] == "-i" and i + 1 < len(tk): ident = tk[i + 1]; i += 2
+                elif tk[i] in ("-L", "-R", "-D", "-o", "-J") and i + 1 < len(tk): i += 2
+                elif tk[i].startswith("-"): i += 1
+                else: dest = tk[i]; i += 1
+            user, _, host = dest.rpartition("@")
+            blk = f"Host {mid}\n    HostName {host}\n" + (f"    Port {port}\n" if port else "") + f"    User {user or 'root'}\n" + (f"    IdentityFile {ident}\n" if ident else "") + "    StrictHostKeyChecking accept-new\n    ServerAliveInterval 30\n    LogLevel QUIET\n"
+            cfg = os.path.expanduser("~/.ssh/config")
+            try: old = open(cfg).read()
+            except OSError: old = ""
+            new, n = re.subn(rf"^Host {re.escape(mid)}\n(?:[ \t]+.*\n?)*", blk, old, flags=re.M)
+            open(cfg, "w").write(new if n else old.rstrip("\n") + ("\n\n" if old.strip() else "") + blk)
+            sshv = mid; root = root or ("/root/rel" if (user or "root") == "root" else "~/rel")
+            ms[mid] = dict(id=mid, ssh=mid, root=root, kind=a.os)
+            print(f"{mid}: ssh {user or 'root'}@{host}" + (f":{port}" if port else "") + f", root {root}")
+        else:
+            ms.setdefault(mid, {})
+            ms[mid].update(id=mid, ssh=sshv or mid, root=root or ms[mid].get("root") or "/root/rel", kind=a.os)
         with open(os.path.join(DATA, "machines.csv"), "w", newline="") as f:  # tiny file, rewritten whole
             w = csv.DictWriter(f, MACH_COLS, extrasaction="ignore", lineterminator="\n")
             w.writeheader()
             w.writerows(ms.values())
     for r in ms.values():
-        print(" | ".join(r.get(k, "") for k in ("id", "ssh", "root", "kind", "cpu", "gpus")))
+        if not getattr(a, "quiet", False): print(" | ".join(r.get(k, "") for k in ("id", "ssh", "root", "kind", "cpu", "gpus")))
+
+
+REMOTE_PORT = 8099
+
+
+def gguf_ctx_train(path, data=None):
+    """the model's trained context (<arch>.context_length) read from the GGUF header; 0 when it cannot be read. The header is read as far as that key, not the tensors."""
+    import struct
+    try:
+        with (io.BytesIO(data) if data else open(path, "rb")) as f:   # data: the first bytes of a file that is on another machine only
+            if f.read(4) != b"GGUF": return 0
+            f.read(4); f.read(8); nkv = struct.unpack("<Q", f.read(8))[0]
+            fmt = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
+            def rd(t):
+                if t == 8: return f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf8", "replace")
+                if t == 9:
+                    et = struct.unpack("<I", f.read(4))[0]; n = struct.unpack("<Q", f.read(8))[0]
+                    return [rd(et) for _ in range(n)]
+                return struct.unpack(fmt[t], f.read(struct.calcsize(fmt[t])))[0]
+            arch = None
+            for _ in range(nkv):
+                k = rd(8); t = struct.unpack("<I", f.read(4))[0]; v = rd(t)
+                if k == "general.architecture": arch = v
+                elif arch and k == f"{arch}.context_length": return int(v)
+    except (OSError, struct.error, KeyError, ValueError): pass
+    return 0
+
+
+CHARS_PER_TOKEN = 3.0   # a prompt cut for a small-context model: at most this many characters per token is assumed (the densest tokenizers: code and English give 3-4.5), so the cut prompt always fits
+
+
+def clamp_tokens(model, out_tokens, want, ctx=None):
+    """tokens the prompt may have for this model: its trained context minus the answer and a margin (stock caps the context to it); None when the model holds `want` anyway or the header cannot be read"""
+    ctx = ctx if ctx is not None else gguf_ctx_train(model)
+    mx = ctx - int(out_tokens or 0) - 128 if ctx else 0
+    return mx if ctx and mx < want else None
+
+
+def hsize(n):
+    return f"{n / 2**30:.2f} GB" if n >= 2**30 else f"{n / 2**20:.0f} MB"
+
+
+def htime(sec):
+    return "--:--" if sec is None or sec > 99 * 3600 else f"{int(sec // 3600)}:{int(sec % 3600 // 60):02d}:{int(sec % 60):02d}" if sec >= 3600 else f"{int(sec // 60)}:{int(sec % 60):02d}"
+
+
+def url_size(url):
+    """bytes of what a URL serves (the last, real answer after the redirects), 0 when unknown"""
+    try: out = subprocess.run(["curl", "-sIL", "--max-time", "60", url], capture_output=True, text=True).stdout
+    except (OSError, subprocess.SubprocessError): return 0
+    v = [int(x) for x in re.findall(r"(?im)^content-length:\s*(\d+)", out)]
+    return max(v) if v else 0
+
+
+def dev_asset(b):
+    """True when the fork has the dev release dev-BUILD with the asset BUILD.tar.gz (made by `run.py devpub BUILD`)"""
+    r = subprocess.run(["gh", "release", "view", f"dev-{b}", "-R", "neurall/llama.cpp", "--json", "assets", "-q", ".assets[].name"], capture_output=True, text=True)
+    return r.returncode == 0 and f"{b}.tar.gz" in r.stdout.split()
+
+
+def cmd_devpub(a):
+    """`run.py devpub BUILD`: publish a dev build as the prerelease dev-BUILD on the fork (not marked latest) for machines to download; the CUDA runtime is not in it (they fetch the one of the last release)"""
+    b = a.build; src = os.path.realpath(os.path.join(DEVBUILDS, resolve_build(b)))
+    tgz = os.path.join(tempfile.gettempdir(), f"{b}.tar.gz")
+    subprocess.run(["tar", "--exclude=libcudart*", "--exclude=libcublas*", "-czf", tgz, "-C", src, "."], check=True)
+    if dev_asset(b): rc = subprocess.run(["gh", "release", "upload", f"dev-{b}", tgz, "--clobber", "-R", "neurall/llama.cpp"]).returncode
+    else: rc = subprocess.run(["gh", "release", "create", f"dev-{b}", tgz, "-R", "neurall/llama.cpp", "--prerelease", "--latest=false", "--title", f"dev {b} (not a release)", "--notes", "Dev build for test machines. Not a release."]).returncode
+    os.unlink(tgz); return rc
+
+
+def build_plan(m, b):
+    """what a machine still needs for build b: ([download items], push or None). A download item {id, label, url, kind 'tar'|'file', dest, total}; a push {label, src, files, dst}. Official stock and released builds
+    are downloaded by the machine itself (two archives: binaries and the CUDA runtime libraries); an unreleased build sends only its own files and downloads the CUDA libraries."""
+    dst = f'{m["root"]}/{b}'
+    present = "ok" in remote_sh(m, f"test -x {dst}/llama-server && echo ok", 30)
+    items = []
+    def tars(base, names, label):
+        for n in names: items.append(dict(id=re.sub(r"\W", "_", f"{b}_{n}")[:60], label=f"{label} {n.split('-')[0]}", url=f"{base}/{n}", kind="tar", dest=dst, total=url_size(f"{base}/{n}")))
+    st = re.fullmatch(r"stock-(b\d+)-official", b)
+    if st and present: return [], None   # a release never changes: what is there is reused
+    if st:
+        t = st.group(1); tars(f"https://github.com/ggml-org/llama.cpp/releases/download/{t}", [f"llama-{t}-bin-ubuntu-cuda-13.4-x64.tar.gz", f"cudart-llama-{t}-bin-ubuntu-cuda-13.4-x64.tar.gz"], b)
+        return items, None
+    src = os.path.realpath(os.path.join(DEVBUILDS, resolve_build(b)))
+    info = dict(l.strip().split("=", 1) for l in open(os.path.join(src, "BUILD_INFO")) if "=" in l) if os.path.exists(os.path.join(src, "BUILD_INFO")) else {}
+    rel = info.get("release", "")
+    gh = lambda *a: subprocess.run(["gh", *a], capture_output=True, text=True).stdout.split()
+    if rel:
+        tag = next((t for t in gh("release", "list", "-R", "neurall/llama.cpp", "--limit", "200", "--json", "tagName", "-q", ".[].tagName") if t.startswith("release-" + rel.split("-")[2] + "-" + rel.split("-")[3])), "")
+        if tag:
+            if present: return [], None
+            tars(f"https://github.com/neurall/llama.cpp/releases/download/{tag}", [rel + ".tar.gz", "cudart-" + rel + ".tar.gz"], b)
+            return items, None
+    tag = (gh("release", "list", "-R", "neurall/llama.cpp", "-L", "1", "--exclude-pre-releases", "--json", "tagName", "-q", ".[0].tagName") or [""])[0]
+    cud = next((a for a in gh("release", "view", tag, "-R", "neurall/llama.cpp", "--json", "assets", "-q", ".assets[].name") if a.startswith("cudart-llama-release") and "ubuntu" in a), "") if tag else ""
+    # a dev build published with `run.py devpub BUILD` (prerelease dev-BUILD on the fork, the build without the CUDA runtime): the machine downloads it from there, the uplink here is not used
+    if tag and cud and dev_asset(b):
+        if not present: tars(f"https://github.com/neurall/llama.cpp/releases/download/dev-{b}", [b + ".tar.gz"], b); tars(f"https://github.com/neurall/llama.cpp/releases/download/{tag}", [cud], b)
+        return items, None
+    have = {}   # an unreleased build may have changed under the same name: only the files that are missing there or differ in size travel again, the CUDA libraries only when missing
+    for ln in remote_sh(m, f"cd {dst} 2>/dev/null && stat -L -c '%n %s' * 2>/dev/null", 30).splitlines():
+        if ln.count(" ") == 1 and ln.split()[1].isdigit(): have[ln.split()[0]] = int(ln.split()[1])
+    if cud and not any(f.startswith("libcudart") for f in have): tars(f"https://github.com/neurall/llama.cpp/releases/download/{tag}", [cud], b)
+    if not os.path.isdir(src): sys.exit(f"build {b}: no such build ({src}); builds here: {', '.join(sorted(os.listdir(os.path.dirname(src)))[-5:])}")
+    files = sorted(f for f in os.listdir(src) if not (cud and f.startswith(("libcudart", "libcublas"))) and have.get(f) != os.path.getsize(os.path.join(src, f)))
+    # a new build name starts with an empty folder, but most files are the same as in a build already there (the 159 MB CUDA library only changes with CUDA code): files that have the same name, size and
+    # sha256 in another build folder of the machine are copied there instead of sent (the uplink can be 1 MB/s)
+    if files:
+        cand = {}
+        for ln in remote_sh(m, f"stat -L -c '%n %s' {m['root']}/*/* 2>/dev/null", 60).splitlines():
+            if ln.count(" ") == 1 and ln.split()[1].isdigit() and not ln.startswith(dst + "/"): cand.setdefault((os.path.basename(ln.split()[0]), int(ln.split()[1])), ln.split()[0])
+        import hashlib
+        same = []
+        for f in files:
+            c = cand.get((f, os.path.getsize(os.path.join(src, f))))
+            if c and os.path.getsize(os.path.join(src, f)) > 1 << 20:
+                h = hashlib.sha256(open(os.path.join(src, f), "rb").read()).hexdigest()
+                if remote_sh(m, f"sha256sum {c} | cut -c1-64", 120).strip() == h: same.append((f, c))
+        if same:
+            remote_sh(m, f"mkdir -p {dst} && " + " && ".join(f"cp -p {c} {dst}/{f}" for f, c in same), 300)
+            files = [f for f in files if f not in {x[0] for x in same}]
+            print(f"{b}: {len(same)} files copied on {m['ssh']} from other builds, not sent"); PRELUDE[0] += 1
+    if not files: return items, None
+    return items, dict(label=f"{b} own files", src=src, files=files, dst=dst, total=sum(os.path.getsize(os.path.join(src, f)) for f in files) or 1)
+
+
+def model_plan(m, model):
+    """(items, path on the machine) for a model file the machine does not have: every shard downloaded there from the models.ini url; never uploaded"""
+    base = os.path.basename(model); d = f'{m["root"]}/models'
+    found = [l for l in remote_sh(m, f"find /m /home/o/m {d} /home/o /root -maxdepth 5 -name '{base}' 2>/dev/null | head -1", 120).strip().splitlines() if l.startswith("/")]
+    if found:   # every shard has to be there, not just the first (a download that was stopped leaves the small first shard complete and the others as NAME.part)
+        fd = os.path.dirname(found[0]); miss = [n for n in shard_names(base) if "ok" not in remote_sh(m, f"test -s {fd}/{n} && echo ok", 30)]
+        if not miss: return [], found[0]
+        d = fd
+    sh = re.fullmatch(r"(.*)-(\d{5})-of-(\d{5})\.gguf", base)
+    names = [f"{sh.group(1)}-{i:05d}-of-{sh.group(3)}.gguf" for i in range(1, int(sh.group(3)) + 1)] if sh else [base]
+    url = next((v.get("url") for v in (fcfg.models_ini() or {}).values() if os.path.basename(v.get("path", "")) == base and v.get("url")), "")
+    if not url:
+        print(f"{base}: not on {m['ssh']} and models.ini has no url for it: add the Hugging Face url. Models are never uploaded from here.", flush=True); return [], ""
+    pre = url.rsplit("/", 1)[0] + "/" if "/resolve/" in url else url.rstrip("/") + "/resolve/main/"
+    last = url.rsplit("/", 1)[1] if "/resolve/" in url else base   # a direct file link may name the file differently (case); it is saved under our name
+    sh2 = re.fullmatch(r"(.*)-(\d{5})-of-(\d{5})\.gguf", last)
+    srcs = [f"{sh2.group(1)}-{i:05d}-of-{sh2.group(3)}.gguf" for i in range(1, int(sh2.group(3)) + 1)] if sh2 else [last]
+    if len(srcs) != len(names): print(f"{base}: the url does not name the same number of shards", flush=True); return [], ""
+    have_all = set(names) - set(miss) if found else set()
+    return [dict(id=re.sub(r"\W", "_", n)[:60], label=n[:34], url=pre + sn, kind="file", dest=f"{d}/{n}", total=url_size(pre + sn)) for n, sn in zip(names, srcs) if n not in have_all], f"{d}/{base}"
+
+
+def shard_names(base):
+    sh = re.fullmatch(r"(.*)-(\d{5})-of-(\d{5})\.gguf", base)
+    return [f"{sh.group(1)}-{i:05d}-of-{sh.group(3)}.gguf" for i in range(1, int(sh.group(3)) + 1)] if sh else [base]
+
+
+def make_room(m, need, keep):
+    """disk free on the machine against what the transfers need (+ 5 GB). Only when it is not enough, the biggest model files in <root>/models that this list does not use are deleted, biggest first"""
+    gb = lambda n: f"{n / 2**30:.0f} GB"
+    free = int(remote_sh(m, f"mkdir -p {m['root']} && df -B1 --output=avail {m['root']} | tail -1", 30).split()[-1])
+    print(f"disk on {m['ssh']}: {gb(free)} free, the transfers need {gb(need)}", flush=True); PRELUDE[0] += 1
+    if free >= need + 5 * 2**30 or keep is None: return
+    for ln in sorted((l.split(" ", 1) for l in remote_sh(m, f"find {m['root']}/models -name '*.gguf' -printf '%s %p\\n' 2>/dev/null", 60).splitlines() if re.match(r"\d+ /", l)), key=lambda x: -int(x[0])):
+        if free >= need + 5 * 2**30: break
+        if os.path.basename(ln[1]) in keep: continue
+        remote_sh(m, f"rm -f {ln[1]}", 60); free += int(ln[0]); print(f"  deleted {ln[1]} (not used by this list, {gb(int(ln[0]))}) -> {gb(free)} free", flush=True); PRELUDE[0] += 1
+    if free < need: print(f"  still short of space: {gb(free)} free, {gb(need)} needed", flush=True)
+
+
+def run_transfers(m, items, pushes, keep=None):
+    """All downloads run on the machine at once (curl each, in the background there), the pushes run from here; one ssh streams the machine's file sizes once a second. A line per transfer (bar, done/total,
+    speed, time left), the total last. Ctrl-C stops the remote curls."""
+    if not items and not pushes: return True
+    make_room(m, sum(it["total"] for it in items) + sum(p["total"] for p in pushes), keep)
+    ssh = ["ssh", "-o", "ServerAliveInterval=30", m["ssh"]]
+    D = f'{m["root"]}/.dl'
+    jobs, polls = [], []
+    awk_w = "'{a=$1*$2; if (t>0 && a>=t) a=t-1; print a}'"   # bytes written so far: allocated blocks of the sparse file, one short of the total until the transfer is finished
+    for it in items:
+        i = it["id"]; part = f'{D}/{i}.part' if it["kind"] == "tar" else it["dest"] + ".part"
+        if it["kind"] == "tar":
+            post = (f'T=$(mktemp -d {D}/x.XXXXXX) && tar xzf {D}/{i}.part -C $T && if [ $(ls $T | wc -l) -eq 1 ] && [ -d $T/$(ls $T) ]; then cp -a $T/$(ls $T)/. {it["dest"]}/; else cp -a $T/. {it["dest"]}/; fi; R=$?; rm -rf $T {D}/{i}.part; [ $R -eq 0 ]')
+        else: post = f'mv {part} {it["dest"]}'
+        jobs.append(f'( mkdir -p {it["dest"] if it["kind"] == "tar" else os.path.dirname(it["dest"])}; dl {it["url"]} {part} && ' + ("touch " + f"{D}/{i}.dl && " if it["kind"] == "tar" else "") + post + f' && touch {D}/{i}.fin || touch {D}/{i}.err ) &')
+        polls.append(f'p={part}; [ -f {D}/{i}.err ] && echo "{i} -1" || {{ [ -f {D}/{i}.fin ] && echo "{i} {max(it["total"], 1)}" || {{ [ -f {D}/{i}.dl ] && echo "{i} {max(it["total"], 1)}" || echo "{i} $(stat -c "%b %B %s" $p 2>/dev/null | awk -v t={it["total"]} {awk_w} | grep . || echo 0)"; }}; }}')
+    # dl URL OUT: aria2c with 16 connections per file (a CDN limits each connection: one curl got 46 MB/s, 16 connections ~150+ MB/s per file), resumable through its .aria2 control file;
+    # installed on the machine when it is missing (root, or sudo without a password), plain resumable curl when that fails
+    dlfn = ('command -v aria2c >/dev/null || { S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; ($S apt-get install -y aria2 || ($S apt-get update -qq && $S apt-get install -y aria2)) >/dev/null 2>&1; }\n'
+            'dl(){ if command -v aria2c >/dev/null; then aria2c -x16 -s16 -k16M -q -c --file-allocation=none --allow-overwrite=true -d "$(dirname "$2")" -o "$(basename "$2")" "$1"; '
+            'else curl -fL -sS -C - -o "$2" "$1"; fi; }\n')
+    sched = dlfn + f'mkdir -p {D}; rm -f {D}/*.fin {D}/*.err {D}/*.dl; ' + "\n".join(jobs) + "\nwait"
+    if items: subprocess.run(ssh + [f"cat > {D}.sh"], input=f"mkdir -p {D}\n" + sched, text=True) if False else None
+    def start_dl():
+        subprocess.run(ssh + [f"mkdir -p {D} && cat > {D}/start.sh"], input=sched + "\n", text=True, check=True)
+        remote_sh(m, f"cd {D} && (setsid nohup bash start.sh > start.out 2>&1 < /dev/null &)", 30)
+    # downloads and a push into the same machine share its inbound link: a full link drops the push's packets (50 KB/s instead of 400 on a lossy path), so with a push the downloads start after it
+    if items and not pushes: start_dl()
+    poller = subprocess.Popen(ssh + ["while true; do " + "; ".join(polls) + '; echo "--"; sleep 1; done'], stdout=subprocess.PIPE, text=True) if items else None
+    size = {it["id"]: 0 for it in items}; failed = set()
+    import threading
+    def read():
+        cur = {}
+        for ln in poller.stdout:
+            ln = ln.strip()
+            if ln == "--": size.update(cur); cur = {}
+            elif ln.count(" ") == 1:
+                k, v = ln.split()
+                try: cur[k] = int(v)
+                except ValueError: pass
+    if poller: threading.Thread(target=read, daemon=True).start()
+    pstate = {id(p): dict(done=0, sent=0, fin=False, err=None) for p in pushes}
+    PUSH_STREAMS, PIECE = 16, 8 << 20
+    def do_push(p):
+        """files in PIECE-sized pieces over PUSH_STREAMS ssh connections at once (a lossy long path gives each TCP stream ~200 KB/s, the streams add up); every file is written as NAME.part and renamed when all its pieces
+        are there, so a push that dies leaves no full-size half file for the next run to take as complete; symlinked / identical names are sent once and linked"""
+        import zlib, queue
+        st = pstate[id(p)]; lock = threading.Lock()
+        try:
+            src, dst = p["src"], p["dst"]
+            uniq, links = {}, []
+            for f in p["files"]:
+                rp = os.path.realpath(os.path.join(src, f))
+                if rp in uniq: links.append((f, uniq[rp]))
+                else: uniq[rp] = f
+            prep = [f"mkdir -p {dst}"]
+            for rp, f in uniq.items(): prep.append(f"truncate -s {os.path.getsize(rp)} {dst}/{f}.part && chmod {os.stat(rp).st_mode & 0o777:o} {dst}/{f}.part")
+            remote_sh(m, " && ".join(prep), 120)
+            q = queue.Queue(); left = {}
+            for rp, f in uniq.items():
+                n = os.path.getsize(rp); left[f] = max(1, -(-n // PIECE))
+                for off in range(0, max(n, 1), PIECE): q.put((rp, f, off, min(PIECE, n - off)))
+            def worker():
+                while True:
+                    try: rp, f, off, ln = q.get_nowait()
+                    except queue.Empty: return
+                    for attempt in range(4):
+                        try:
+                            with open(rp, "rb") as fh: fh.seek(off); raw = fh.read(ln)
+                            z = zlib.compressobj(1, zlib.DEFLATED, 31); out = z.compress(raw) + z.flush()
+                            rx = subprocess.run(ssh + [f"gunzip | dd of={dst}/{f}.part bs=4M oflag=seek_bytes seek={off} conv=notrunc status=none"], input=out, capture_output=True)
+                            if rx.returncode == 0: break
+                        except Exception: pass
+                    else:
+                        st["err"] = f"piece {f}@{off} failed"; return
+                    with lock:
+                        st["done"] += ln; st["sent"] += len(out); left[f] -= 1
+            ws = [threading.Thread(target=worker, daemon=True) for _ in range(PUSH_STREAMS)]
+            for w in ws: w.start()
+            for w in ws: w.join()
+            if not st["err"]:
+                fin = [f"mv {dst}/{f}.part {dst}/{f}" for f in uniq.values()] + [f"ln -sf {t} {dst}/{f}" for f, t in links]
+                remote_sh(m, " && ".join(fin), 120)
+                st["done"] = p["total"]
+        except Exception as e: st["err"] = str(e)
+        st["fin"] = True
+    push_threads = [threading.Thread(target=do_push, args=(p,), daemon=True) for p in pushes]
+    for t in push_threads: t.start()
+    if items and pushes:
+        def after_push():
+            for t in push_threads: t.join()
+            start_dl()
+        threading.Thread(target=after_push, daemon=True).start()
+    rows = [dict(label=it["label"], total=it["total"], get=(lambda it=it: size[it["id"]]), dead=(lambda it=it: size[it["id"]] < 0), fin=(lambda it=it: it["total"] > 0 and size[it["id"]] >= it["total"] or size[it["id"]] >= max(it["total"], 1) and it["total"] == 0)) for it in items]
+    for p in pushes:
+        st = pstate[id(p)]; rows.append(dict(label=p["label"], total=p["total"], get=(lambda st=st: st["done"]), dead=(lambda st=st: bool(st["err"])), fin=(lambda st=st: st["fin"] and not st["err"]), wire=(lambda st=st: st["sent"])))
+    hist = {id(r): [] for r in rows}; t0 = time.time(); last_plain = 0
+    def line(r, now):
+        d = max(r["get"](), 0); tot = r["total"] or max(d, 1); f = min(d / tot, 1.0)
+        h = hist[id(r)]; h.append((now, d)); h[:] = [x for x in h if now - x[0] <= 6]
+        sp = (h[-1][1] - h[0][1]) / max(h[-1][0] - h[0][0], 1e-3) if len(h) > 1 else 0
+        eta = (tot - d) / sp if sp > 1 else None
+        return f, d, tot, sp, eta
+    try:
+        while True:
+            now = time.time(); out = []; sd = st_ = sp_ = 0; allfin = True; anyerr = False; etas = []
+            for r in rows:
+                f, d, tot, sp, eta = line(r, now); fin = r["fin"](); dead = r["dead"]()
+                allfin &= fin or dead; anyerr |= dead
+                if not fin and not dead: etas.append(eta)
+                sd += d if not fin else tot; st_ += tot; sp_ += sp if not fin else 0
+                bar = "█" * int(20 * f) + "░" * (20 - int(20 * f))
+                out.append(f"{col(36, r['label'][:34]):<44} [{col(32 if fin else 33, bar)}] {f * 100:3.0f}%  {hsize(d):>9}/{hsize(tot):<9}  " + (col(31, "FAILED") if dead else col(32, "done") if fin else f"{col(94, hsize(sp) + '/s'):<20} eta {htime(eta)}"))
+            f = sd / max(st_, 1); eta = None if (not etas or None in etas) else max(etas)   # the transfers run side by side: done when the slowest is, not when the summed rate would empty the summed bytes
+            out.append(col(1, f"{'total':<34}") + f"   [{col(32, '█' * int(20 * f) + '░' * (20 - int(20 * f)))}] {f * 100:3.0f}%  {hsize(sd):>9}/{hsize(st_):<9}  {col(94, hsize(sp_) + '/s'):<20} eta {htime(eta)}")
+            if live_tty(): live_clear(); print(fit_block("\n".join(out)), flush=True); LIVE_UP[0] = len(out)
+            elif now - last_plain > 10: last_plain = now; print(out[-1], flush=True)
+            if allfin: break
+            time.sleep(1)
+    except KeyboardInterrupt:
+        remote_sh(m, f'pkill -f "[c]url -fL -sS -C - -o {D}"; pkill -f "[c]url -fL -sS -C - -o {m["root"]}"', 30)
+        raise
+    finally:
+        if poller: poller.terminate()
+    PRELUDE[1] = LIVE_UP[0]; LIVE_UP[0] = 0
+    err = [r["label"] for r in rows if r["dead"]()] + [p["label"] for p in pushes if pstate[id(p)]["err"]]
+    if err: print(f"transfer failed: {', '.join(err)}", flush=True)
+    return not err
+
+
+def push_build(m, b):
+    items, push = build_plan(m, b)
+    if not run_transfers(m, items, [push] if push else []): sys.exit(f"{b}: the transfer to {m['ssh']} failed")
+
+
+def push_model(m, model):
+    items, path = model_plan(m, model)
+    return path if run_transfers(m, items, []) and path else ""
+
+
+def gpu_speed(token):
+    """relative speed of a card (1.0 = the reference), from the optional [gpu_speed] table of the fork config: keys are matched as text inside the card's name ('5090 = 2.0', '5070 = 1.0'); unknown cards count 1.0.
+    Used to rank cards for -ng and to scale the expected time of a cell measured on another GPU class."""
+    t = (token or "").lower()
+    try: tab = fcfg._FILE.get("gpu_speed", {})
+    except Exception: tab = {}
+    for k, v in sorted(tab.items(), key=lambda kv: -len(kv[0])):   # the longest key that fits wins ('5070 ti' before '5070')
+        if k.lower() in t:
+            try: return float(v)
+            except (TypeError, ValueError): pass
+    return 1.0
+
+
+NGPU = [int(os.environ["RUN_NG"]) if os.environ.get("RUN_NG", "").lstrip("-").isdigit() else None]   # (env RUN_NG / RUN_NS carry the switches to the rcell child processes)
+# -ng N: use only N cards (None = all), the best N by link then speed, the fastest last; 0 = CPU only
+
+
+def pick_gpus(n, smi_out):
+    """-ng N: the N best cards from `nvidia-smi --query-gpu=index,pcie.link.gen.max,pcie.link.width.max,clocks.max.sm,memory.total,name` (csv, no header): best = the fastest slot (link generation x
+    width), then the faster card (max clock, then memory); the chosen ones are ordered slowest first and the FASTEST LAST (it is the card the prompt passes are offloaded to). Returns the
+    CUDA_VISIBLE_DEVICES list (nvidia-smi / PCI bus order indices, with CUDA_DEVICE_ORDER=PCI_BUS_ID) - empty for n = 0 (CPU only)."""
+    g = []
+    for ln in smi_out.strip().splitlines():
+        f = [x.strip() for x in ln.split(",")]
+        try: g.append((int(f[0]), int(f[1]) * int(f[2]), int(f[3]), int(f[4]), gpu_speed(f[5]) if len(f) > 5 else 1.0))   # index, slot score, max sm clock, memory MiB, speed factor
+        except (ValueError, IndexError): continue
+    best = sorted(g, key=lambda x: (x[1], x[4], x[2], x[3]), reverse=True)[:max(0, n)]   # slot first, then the known speed of the card, then its clock
+    return ",".join(str(x[0]) for x in sorted(best, key=lambda x: (x[4], x[2], x[3], x[1])))
+
+
+GPU_Q_NG = "nvidia-smi --query-gpu=index,pcie.link.gen.max,pcie.link.width.max,clocks.max.sm,memory.total,name --format=csv,noheader,nounits"
+
+
+def cmd_remote(a):
+    """remote ID push BUILD...   |   remote ID test BUILD --model PATH_ON_THE_MACHINE [--req FILE] [--args '...'] [-n 2]
+    A server test on a machine reached over ssh (a rented box). push: the build directories go there (rsync, else tar over ssh). test: the server AND the request both run on
+    that machine (curl to its own localhost), so no ssh latency is in the numbers; ssh only starts a detached script and tails what it writes: server.log and run.log (the
+    requests) and stats.log (the server's /slots once a second: prompt tokens done, tokens decoded). The speeds come from the timings in the answers (as the harness does:
+    the same request twice on one server); the row goes into the run history with hw = the machine id."""
+    global MODEL, CAMPAIGN
+    m = machine(a.id)
+    if m["win"]:
+        sys.exit("remote: linux machines only")
+    if getattr(a, "campaign", None): CAMPAIGN = a.campaign
+    ssh = ["ssh", "-o", "ServerAliveInterval=30", m["ssh"]]
+    if a.what == "push":
+        for b in a.builds: push_build(m, b)
+        return
+    build, MODEL = a.builds[0], a.model
+    exe = f'{m["root"]}/{build}/llama-server'
+    if "ok" not in remote_sh(m, f"test -x {exe} && echo ok", 30):
+        sys.exit(f"remote: {exe} not found on {a.id} (run.py remote {a.id} push {build})")
+    req = os.path.abspath(a.req or os.path.join(PROMPT_DIR, "req-12k-1k.json"))
+    run = f'{m["root"]}/remote-runs/{time.strftime("%Y%m%d-%H%M%S")}-{build}'
+    remote_sh(m, f"mkdir -p {run}", 30)
+    rq = json.load(open(req))
+    if os.environ.get("RUN_ANTILOOP"): rq.update(ANTILOOP)
+    if getattr(a, "tweak", 0):   # the loop retry (as locally): newlines added to the prompt, a greedy rerun of the same prompt loops again
+        msg = rq["messages"][-1]
+        if isinstance(msg["content"], str): msg["content"] += "\n" * a.tweak
+        else: msg["content"][0]["text"] += "\n" * a.tweak
+    if getattr(a, "clamp", 0):   # a model with a small trained context: the user text is cut in memory before it is sent, no second request file
+        msg = rq["messages"][-1]; txt = msg["content"] if isinstance(msg["content"], str) else msg["content"][0]["text"]
+        cut = txt[:int(a.clamp * CHARS_PER_TOKEN)]
+        if isinstance(msg["content"], str): msg["content"] = cut
+        else: msg["content"][0]["text"] = cut
+    body = json.dumps(rq); sha = hashlib.sha1(body.encode()).hexdigest()[:16]   # the final request (clamped, tweaked, antiloop): kept on the machine by content, uploaded once, reused by every later cell
+    pf = f'{m["root"]}/prompts/{sha}.json'
+    if "ok" not in remote_sh(m, f"test -s {pf} && echo ok", 30):
+        remote_sh(m, f'mkdir -p {m["root"]}/prompts', 30)
+        subprocess.run(ssh + [f"cat > {pf}.part && mv {pf}.part {pf}"], input=body, text=True, check=True)
+        print(f"prompt {sha} uploaded to {a.id} ({len(body) // 1024} KB)", flush=True)
+    remote_sh(m, f"ln -sf {pf} {run}/req.json", 30)
+    ng_env = ""; ng_args = a.args
+    if NGPU[0] is not None:   # -ng N: which cards the server may see on this machine (read-only query), the fastest last; 0 = none and no offload
+        vis = pick_gpus(NGPU[0], remote_sh(m, GPU_Q_NG, 30)) if NGPU[0] > 0 else ""
+        ng_env = f"export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES='{vis}'"
+        if NGPU[0] == 0: ng_args = f"{a.args} -dev none -ngl 0"
+        print(f"-ng {NGPU[0]}: cards {vis or 'none (CPU only)'} on {a.id}" + (" (fastest last)" if vis else ""), flush=True)
+    script = rf"""cd {run}; echo $$ > run.pid; echo "start $(date +%s.%N)" >> run.log; export LD_LIBRARY_PATH={m["root"]}/{build}; {ng_env}
+command -v supervisorctl >/dev/null && supervisorctl stop llama >/dev/null 2>&1; pkill -x llama-server; for i in $(seq 1 30); do pgrep -x llama-server >/dev/null || break; sleep 1; done; pkill -9 -x llama-server   # every old server on the machine (a stopped or crashed run, or the rented image's own `llama` service, stopped through supervisorctl because supervisord restarts a killed one) goes before this one starts: it holds the GPU memory and the pinned pool; -x is the exact process name, no match on this script
+NS={1 if NOSTATS[0] else 0}
+[ $NS = 1 ] || ({SYS_SH}) > sys.log 2>/dev/null & SYSM=$!
+[ $NS = 1 ] || nvidia-smi dmon -s t -d 1 > dmon.log 2>/dev/null & DMON=$!; echo "dmon $(date +%s.%N)" >> run.log   # PCIe rx/tx MB/s per GPU, one line a second: the link use of the whole run
+P=$(( 20000 + RANDOM % 20000 )); while curl -sf localhost:$P/health >/dev/null 2>&1; do P=$(( 20000 + RANDOM % 20000 )); done; echo $P > port   # a free port: an old server (a stopped run) must not answer for this one
+trap 'kill $SRV $DMON $SYSM 2>/dev/null' EXIT
+nohup {exe} -m {a.model} --port $P {ng_args} > server.log 2>&1 &
+SRV=$!; echo $SRV > pid
+touch alive; ( while sleep 10 && kill -0 $$ 2>/dev/null; do [ $(( $(date +%s) - $(stat -c %Y alive) )) -gt 45 ] && {{ kill -9 $SRV; kill -9 $$; exit; }}; done ) &   # run.py touches `alive` every poll: if it was killed (no cleanup ran), the machine does not keep a server running
+for i in $(seq 1 3600); do curl -sf localhost:$P/health >/dev/null && break; kill -0 $SRV 2>/dev/null || {{ echo SERVER_DIED >> run.log; echo "script done" >> run.log; touch done; exit 1; }}; sleep 1; done
+echo "server ready $(date +%s.%N)" >> run.log
+[ $NS = 1 ] || ( while kill -0 $SRV 2>/dev/null; do echo "$(date +%s.%N) $(curl -s --max-time 4 localhost:$P/slots | grep -o '"n_prompt_tokens[a-z_]*":[0-9]*\|"n_decoded":[0-9]*' | tr '\n' ' ')" >> stats.log; sleep 1; done ) &
+for r in $(seq 1 {a.n}); do
+  curl -s --max-time 7200 localhost:$P{a.path} -H 'Content-Type: application/json' -d @req.json > resp-$r.json
+  echo "request $r done $(date +%s.%N): $(grep -o '"prompt_per_second":[0-9.]*\|"predicted_per_second":[0-9.]*' resp-$r.json | tr '\n' ' ')" >> run.log
+done
+curl -s --max-time 3 localhost:$P/moe/stats > final-stats.json 2>/dev/null   # the engine's state at the end of the last request: a short cell is over before a status tick sees it
+kill $SRV $DMON $SYSM; sleep 2; echo "script done" >> run.log; touch done
+"""
+    subprocess.run(ssh + [f"cat > {run}/run.sh"], input=script, text=True, check=True)
+    remote_sh(m, f"cd {run} && touch server.log run.log stats.log && (setsid nohup bash run.sh > run.out 2>&1 < /dev/null &)", 30)   # the subshell: ssh returns at once, nothing keeps its channel open
+    files = f"{run}/run.log" + ("" if getattr(a, "tail", "all") == "run" else f" {run}/server.log") + (f" {run}/stats.log" if a.stats else "")   # tail="run" (the list runner): the request lines only
+    quiet = getattr(a, "tail", "all") == "run"   # a list cell (rcell): run_watched draws it from the two files below, as for a local cell
+    if quiet:   # the second tailed file: the server's /slots progress, one line a second, read by slots_progress like the local server's answer
+        tail = subprocess.Popen(ssh + [f"tail -n 0 -F {run}/stats.log"], stdout=open(a.slots, "w"))
+        tail2 = subprocess.Popen(ssh + [f"tail -n +1 -F {run}/run.log"], stdout=open(a.results + ".log", "w"))   # the second persistent ssh: the requests' lines; no per-poll ssh for data
+    else: tail = tail2 = subprocess.Popen(ssh + [f"tail -n +1 -F {files}"])   # what the machine writes, live; the run goes on if this ssh dies
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))   # a stopped run.py stops the run on the machine too (below)
+    done_r = 0; t_start = time.time()
+    def feed():   # the finished requests of run.log as the lines a local cell writes to its .run.out (run_watched shows them), the load time to LOAD_FILE
+        nonlocal done_r
+        log = open(a.results + ".log", errors="replace").read()
+        ts = lambda k: (re.search(k + r" ([\d.]+)", log) or [0, None])[1]
+        if ts("server ready") and ts("start") and not os.path.exists(LOAD_FILE):   # once: its mtime is the end of the load (the prompt phase is timed from it); rewriting it every poll kept "now" as the load end, so the estimate blew up (1691 min) and the progress ran backwards
+            open(LOAD_FILE, "w").write(str(float(ts("server ready")) - float(ts("start"))))
+        for mm in list(re.finditer(r"request (\d+) done [\d.]+: .*?\"prompt_per_second\":([\d.]+).*?\"predicted_per_second\":([\d.]+)", log))[done_r:]:
+            open(a.results, "a").write(f"{time.strftime('%F %T')} {build} {a.test} {{}} {mm.group(3)} t/s hit 0.0% pp {mm.group(2)} t/s\n"); done_r += 1
+    try:
+        if quiet:
+            n = 0
+            while "script done" not in open(a.results + ".log", errors="replace").read():
+                feed(); time.sleep(2); n += 1
+                if n % 5 == 0: remote_sh(m, f"touch {run}/alive", 30)   # the only polling ssh: the keepalive the machine's watchdog looks for
+            feed()
+        else:
+            while "ok" not in remote_sh(m, f"touch {run}/alive; test -f {run}/done && echo ok", 60):
+                time.sleep(5)
+            time.sleep(2)
+    finally:
+        tail.terminate(); tail2.terminate()
+        remote_sh(m, f"test -f {run}/done || kill -9 $(cat {run}/run.pid) $(cat {run}/pid) 2>/dev/null", 60)   # the script first (its loop would restart nothing, but its stats poller dies with the server)
+    if quiet:   # the server's log next to the other cells' (hardware probe lines, load, errors)
+        subprocess.run(["scp", "-q", f'{m["ssh"]}:{run}/server.log', os.path.join(QDIR, f"{a.campaign}.remote.server.log")])
+        for _f in ("dmon", "sys"): subprocess.run(["scp", "-q", f'{m["ssh"]}:{run}/{_f}.log', os.path.join(QDIR, f"{a.campaign}.remote.{_f}.log")])
+        subprocess.run(["scp", "-q", f'{m["ssh"]}:{run}/final-stats.json', os.path.join(QDIR, "final-stats.json")])
+    rows = []
+    for r in range(1, a.n + 1):
+        try:
+            d = json.loads(remote_sh(m, f"cat {run}/resp-{r}.json", 60))
+        except ValueError:
+            print(f"request {r}: no valid answer, see {m['ssh']}:{run}/", flush=True)
+            continue
+        t = d.get("timings") or {}
+        err = (d.get("error") or {}).get("message") if isinstance(d.get("error"), dict) else None
+        _m = (d.get("choices") or [{}])[0].get("message") or {}   # a thinking model cut at the token limit has only reasoning_content: stored and loop-checked like a local run (before, such an answer was empty here and never stored)
+        txt = ((_m.get("reasoning_content") + "\n---\n" if _m.get("reasoning_content") else "") + (_m.get("content") or "")) or (d.get("choices") or [{}])[0].get("text") or d.get("content") or ""
+        w = txt.split()
+        g4 = {tuple(w[i:i + 4]) for i in range(len(w) - 3)}
+        loop = len(w) > 100 and len(g4) / max(1, len(w) - 3) < 0.5   # distinct word 4-grams: a looping answer repeats itself, its speed is fake
+        _el = (t.get("prompt_ms") or 0) / 1000 + (t.get("predicted_ms") or 0) / 1000; _now = time.time()   # remote rows carry start/end like local ones: -nrt and the stock lookups read start_ts
+        rows.append(dict(start_ts=time.strftime("%F %T", time.localtime(_now - _el)), end_ts=time.strftime("%F %T", time.localtime(_now)), wall_s=_el,
+                         tps=t.get("predicted_per_second"), pp_tps=t.get("prompt_per_second"), n_gen=t.get("predicted_n"), output=txt, ok=0 if loop or not t else 1, args=a.args,
+                         note=f"remote {m['ssh']}:{run}" + (" LOOP" if loop else "") + (f" {err}" if err else "")))
+        if err: print(f"request {r}: server error: {err}")
+        print(f"request {r}: prompt {t.get('prompt_n')} tokens {t.get('prompt_per_second', 0):.1f} t/s | decode {t.get('predicted_n')} tokens {t.get('predicted_per_second', 0):.2f} t/s"
+              f" | {len(w)} words, distinct 4-grams {len(g4)}{' LOOP' if loop else ''}")
+    try:   # the cell's load time from the server's own clock (as a local cell) and its total (load + the requests), stored so -nrt and later tables show them again
+        _lm = re.search(r"^(\d+)\.(\d\d)\.(\d{3})\.(\d{3}) \w+ srv\s+llama_server: model loaded", open(os.path.join(QDIR, f"{a.campaign}.remote.server.log"), errors="replace").read(), re.M)
+        if _lm and rows:
+            rows[0]["load_s"] = round(int(_lm.group(1)) * 60 + int(_lm.group(2)) + int(_lm.group(3)) / 1000, 1)
+            _tot = rows[0]["load_s"] + sum(y["wall_s"] for y in rows)
+            for _x in rows: _x["wall_s"] = _tot
+    except OSError: pass
+    if a.record:
+        vstr = remote_sh(m, f"LD_LIBRARY_PATH={m['root']}/{build} {exe} --version 2>&1", 60)
+        mv = re.search(r"version: (.*)", vstr)
+        loops = any("LOOP" in x["note"] for x in rows)
+        HOST[0] = m; hwl = hw_line()   # the machine line and the live power limits of the remote host (read once per cell, they drift on a rented host)
+        pls = "+".join(str(int(float(x))) for x in remote_sh(m, "nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits 2>/dev/null", 30).split() if re.fullmatch(r"[\d.]+", x))
+        _rd = lambda f: open(os.path.join(QDIR, f"{a.campaign}.remote.{f}.log"), errors="replace").read() if os.path.exists(os.path.join(QDIR, f"{a.campaign}.remote.{f}.log")) else ""
+        _rl = _rd("server"); _t0r = float((re.search(r"server ready ([\d.]+)", open(a.results + ".log", errors="replace").read()) or [0, 0])[1])   # the window after the load
+        _sysc = sys_summary(_rd("sys"), _t0r); _sysc["pcie_rx_gbs"] = dmon_summary(_rd("dmon"))
+        for row in rows:
+            row.update(_sysc); row["pl"] = pls; row["hwline"] = hwl
+            store(row, build, getattr(a, "test", None) or "srv-" + os.path.basename(req).replace("req-", "").replace(".json", ""), {"bare": "1", **({"args": a.args} if a.args else {})}, row.pop("note"),
+                  a.id.split("-")[0], mv.group(1).strip() if mv else "?")
+    if quiet: sys.exit(0 if rows and all(x["ok"] for x in rows) else 3 if loops else 1)   # the exit code run_watched reads, as for a local cell
+    print(f"files on the machine: {m['ssh']}:{run}")
 
 
 CLI_EXE = "llama-cli"   # --cli-exe llama-completion: the raw-prompt tool (llama-cli only has conversation mode)
@@ -3744,6 +4475,15 @@ def run_list_help():
     print("\nrun.py run BUILD... [-t TEST] [-n N] ...   measured runs of one test (below)\n")
 
 
+CUR_HWL = [None]   # the machine line of the running list (hw_line()): the GPU class and count of the cells it runs, for the expected time of a cell
+
+
+def gpu_class(hwl, hw=""):
+    """the cards of a machine line ('... 5070,5x16,58g,pl250 5070,5x16,...'): their names in order, so '2 x 5070' differs from '1 x 5070' and from a 5090. Rows without a line (older pc1 rows) fall back to the machine id."""
+    names = re.findall(r"(?<![\w.])(\w+),\d+x\d+", hwl or "")
+    return tuple(names) if names else (hw or "",)
+
+
 def cell_expect(model, test, n, build, warm=True):
     """Seconds a cell usually takes: the span of earlier cells of this model and test in runs.db (load wait before the first run + first start to last end), the median of those
     with n runs (else scaled to n; the same build when it has rows, else any build). The discarded warm-up run (--warm) is not in runs.db: one median run is added for it. None without history."""
@@ -3754,10 +4494,14 @@ def cell_expect(model, test, n, build, warm=True):
         gen = ALIAS_TOKENS.get(test); test = ALIASES.get(test, test)   # an alias (pf12k1k) is stored under its test (pf12k); only runs with about its answer length count
         gq = " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""
         f = lambda t: datetime.strptime(t, "%Y-%m-%d %H:%M:%S").timestamp()
+        cls = gpu_class(CUR_HWL[0], (HWF[0] or "").split("'")[1] if "'" in (HWF[0] or "") else "") if CUR_HWL[0] else None; cls_off = [False]
         def spans(bq):
             d = {}
-            for camp, st, en, rd, wl in c.execute("select campaign,start_ts,end_ts,coalesce(ready_s,0),coalesce(wall_s,0) from runs where model=? and test=? and start_ts is not null and end_ts is not null" + gq + bq[0], (os.path.basename(model), test) + bq[1]):
-                try: d.setdefault(camp, []).append((f(st), f(en), rd, wl))
+            for camp, st, en, rd, wl, hwid, hwl in c.execute("select campaign,start_ts,end_ts,coalesce(ready_s,0),coalesce(wall_s,0),hw,hwline from runs where model=? and test=? and start_ts is not null and end_ts is not null" + gq + bq[0], (os.path.basename(model), test) + bq[1]):
+                rc = gpu_class(hwl, hwid)
+                if cls and rc != cls and not cls_off[0]: continue   # a cell of another GPU class or count takes another time
+                sc = (sum(gpu_speed(x) for x in rc) / sum(gpu_speed(x) for x in cls)) if cls and rc != cls else 1.0   # another class: the time follows the total card speed (rough)
+                try: d.setdefault(camp, []).append((f(st), f(en), rd, wl, sc))
                 except ValueError: pass
             out = []
             for v in d.values():
@@ -3765,10 +4509,13 @@ def cell_expect(model, test, n, build, warm=True):
                 span = max(x[1] for x in v) - min(x[0] for x in v)
                 if span > 3600 * 3: continue   # a cell split over hours (a rerun of the same tag) is no estimate
                 one = statistics.median(x[3] for x in v) if warm else 0   # the discarded warm-up run takes about one run
-                out.append((len(v), (span + min(v)[2]) + one if len(v) == n else (span + min(v)[2]) * n / len(v) + one))
+                sc = v[0][4]
+                out.append((len(v), ((span + min(v)[2]) + one if len(v) == n else (span + min(v)[2]) * n / len(v) + one) * sc))
             return out
-        w = spans((" and build=?", (build,))) or spans(("", ()))
-        if not w and gq: gq = ""; w = spans((" and build=?", (build,))) or spans(("", ()))   # no run of that length yet: the shorter runs of the test are better than no bar (the bar passes 100% and re-estimates)
+        kind = (" and build like 'stock%'", ()) if str(build).startswith("stock") else (" and build not like 'stock%'", ())   # stock loads and runs quite differently from ours: a stock cell is estimated from stock cells (any stock build), ours from ours
+        w = spans((" and build=?", (build,))) or spans(kind)
+        if not w and cls: cls_off[0] = True; w = spans((" and build=?", (build,))) or spans(kind)   # no history on this class yet: any machine's is better than no bar
+        if not w and gq: gq = ""; w = spans((" and build=?", (build,))) or spans(kind)   # no run of that length yet: the shorter runs of the test are better than no bar (the bar passes 100% and re-estimates)
         full = [x for k, x in w if k == n]
         return statistics.median(full or [x for _, x in w]) if w else None
     except Exception: return None
@@ -3798,17 +4545,46 @@ def level(x, warn, bad, text):
     return col(32 if x < warn else 33 if x < bad else 31, text)
 
 
+HOST = [None]   # machine dict while a list runs on another machine: hsh() goes there over ssh, everything else (hw_line, cell_status) is the same code
+
+
+def hsh(cmd, timeout=20):
+    """stdout of a shell command on the machine the cell runs on: here, or over ssh (HOST) -- the status line and the hardware line read /proc and nvidia-smi through this"""
+    argv = ["ssh", "-o", "ConnectTimeout=5", HOST[0]["ssh"], cmd] if HOST[0] else ["bash", "-c", cmd]
+    try: return subprocess.run(argv, capture_output=True, text=True, timeout=timeout).stdout
+    except (OSError, subprocess.SubprocessError): return ""
+
+
+SYS_LAST = [None]   # the last good answer of the status probe
+DEC_SEEN = {}   # decision name -> (value, reason) of the previous status tick
+STATS_FINAL = [""]   # the engine JSON of the end of the cell (fetched by the cell itself), replaces the live fetch in the one status build after it
+SYS_CMD = ("D=$(mktemp); (nvidia-smi dmon -c 1 -s t > $D 2>/dev/null &); head -1 /proc/stat; sleep 1; head -1 /proc/stat; echo '#'; cat /proc/meminfo; echo '#'; "
+           "for i in 1 2 3; do o=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,power.draw,power.limit,temperature.gpu --format=csv,noheader,nounits 2>/dev/null); echo \"$o\" | grep -q 'N/A' || break; sleep 0.3; done; echo \"$o\"; echo '#'; "
+           "for p in $(pgrep -x llama-server); do grep -E 'RssAnon|RssFile' /proc/$p/status; done; echo '#'; "
+           "df -B1 --output=avail @ROOT 2>/dev/null | tail -1; echo '#'; "
+           "P=$(ss -ltnp 2>/dev/null | awk '/llama-server/{n=split($4,a,\":\"); print a[n]; exit}'); [ -n \"$P\" ] && curl -s --max-time 2 localhost:$P/moe/stats; echo; echo '#'; cat $D; rm -f $D")   # the engine's own numbers, from the port its server listens on (local or remote)
+
+
 def cell_status(t0, expect, label, total=None):
     """One status line: label, elapsed, progress bar against the expected time, CPU %, RAM GiB, pin (anon) and mm (file-backed) GiB of the server, swap MiB, per GPU util % and memory GiB."""
     def cpu():
         a = [int(x) for x in open("/proc/stat").readline().split()[1:]]
         return a[3] + a[4], sum(a)
-    i0, t_0 = cpu(); time.sleep(1); i1, t_1 = cpu()
-    busy = 100 * (1 - (i1 - i0) / max(t_1 - t_0, 1))
-    m = {l.split(":")[0]: int(l.split()[1]) for l in open("/proc/meminfo")}
-    ram = (m["MemTotal"] - m["MemAvailable"]) / 2**20; swap = (m["SwapTotal"] - m["SwapFree"]) / 1024
-    g = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total,power.draw,power.limit,temperature.gpu", "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout.split("\n")
-    gpu = " ".join(col(36, f"g{i}") + " " + col(97, f"{v[0]}%") + " " + col(34, f"{int(v[1]) / 1024:.0f}/{int(v[2]) / 1024:.0f}g") + " " + level(float(v[3]) / max(float(v[4]), 1), 0.5, 0.9, f"{float(v[3]):.0f}/{float(v[4]):.0f}W") + " " + level(float(v[5]), 70, 83, f"{float(v[5]):.0f}C") for i, v in enumerate([[y.strip() for y in x.split(",")] for x in g if x.count(",") == 5]))
+    st = eng = ""   # -ns: no probe of the machine or the server, no status lines: only the bars below (the same code, the history estimate and the clock)
+    if not NOSTATS[0]:
+        sysi = hsh(SYS_CMD.replace("@ROOT", shlex.quote((HOST[0] or {}).get("root") or MODELS_DIR or QDIR)), 30).split("\n#\n") + ["", "", "", ""]   # this machine, or the one a remote list runs on: two /proc/stat samples a second apart, meminfo, GPUs, the server's memory
+        if "MemTotal" not in sysi[1]:   # the probe did not answer (an ssh hiccup on a rented box, 30 s timeout): once more, then the last good answer; the cell must not die of a status tick
+            sysi = hsh(SYS_CMD.replace("@ROOT", shlex.quote((HOST[0] or {}).get("root") or MODELS_DIR or QDIR)), 30).split("\n#\n") + ["", "", "", ""]
+        if "MemTotal" in sysi[1]: SYS_LAST[0] = sysi
+        elif SYS_LAST[0]: sysi = SYS_LAST[0]
+        else: sysi = ["cpu 0 0 0 0 0\ncpu 0 0 0 0 0", "MemTotal: 1 kB\nMemAvailable: 1 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB", "", "", "", "", ""]
+        s0, s1 = [[int(x) for x in l.split()[1:]] for l in sysi[0].strip().split("\n")[:2]] if sysi[0].count("\n") else ([0] * 5, [0] * 5)
+        busy = 100 * (1 - ((s1[3] + s1[4]) - (s0[3] + s0[4])) / max(sum(s1) - sum(s0), 1))
+        m = {l.split(":")[0]: int(l.split()[1]) for l in sysi[1].split("\n") if ":" in l}
+        ram = (m["MemTotal"] - m["MemAvailable"]) / 2**20; swap = (m["SwapTotal"] - m["SwapFree"]) / 1024
+        g = sysi[2].split("\n")
+        fl = lambda x: float(x) if re.fullmatch(r"-?[\d.]+", x) else 0.0   # nvidia-smi answers [N/A] for a reading it cannot take (power or temperature while the card is busy resetting)
+        gpu = " ".join(col(36, f"g{i}") + " " + col(97, f"{v[0]}%" if fl(v[0]) or v[0].isdigit() else "-") + " " + col(34, f"{fl(v[1]) / 1024:.0f}/{fl(v[2]) / 1024:.0f}g") + " " + level(fl(v[3]) / max(fl(v[4]), 1), 0.5, 0.9, f"{fl(v[3]):.0f}/{fl(v[4]):.0f}W" if re.fullmatch(r"[\d.]+", v[3]) else "-") + " " + col(97, f"{fl(v[5]):.0f}C") for i, v in enumerate([[y.strip() for y in x.split(",")] for x in g if x.count(",") == 5]))
     el = time.time() - t0
     sf = server_frac()   # the server's own progress, once reliable, replaces the history's estimate for THIS cell; past the estimate with nothing better the estimate grows with the elapsed time
     def bar(done, ex, own=False, c=32, shown=None):   # done and ex in expected seconds: bar, percent, time left (never below 0:00; "+" once past the expectation)
@@ -3818,13 +4594,72 @@ def cell_status(t0, expect, label, total=None):
         f = min(done / ex, 0.99); r = max(ex - done, 0)
         mm = lambda x: f"{int(x // 60)}:{int(x % 60):02d}".rjust(5)   # fixed width: the bars of the cell and the whole run line up
         return f"[{col(f'{c};40', '█' * int(f * 20))}{col('2;37;40', '░' * (20 - int(f * 20)))}] " + col(1, f"{f * 100:3.0f}%") + "  " + col(34, mm(ex)) + col(90, " - ") + col(34, mm(done if shown is None else shown)) + col(90, " = ") + col(94, mm(r)) + (col(31, "+") if done > ex else "")   # estimated total - elapsed = left
-    pin = mm = 0   # the server's anonymous memory (the pinned weights buffer, KV tail, heap) and its file-backed memory (mmap'd weights), GiB; VmPin stays 0 for cudaHostRegister pages
-    for pid in subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True, text=True).stdout.split():
+    if not NOSTATS[0]:
+        pin = mm = 0   # the server's anonymous memory (the pinned weights buffer, KV tail, heap) and its file-backed memory (mmap'd weights), GiB; VmPin stays 0 for cudaHostRegister pages
+        for l in sysi[3].split("\n"):   # RssAnon / RssFile lines of every llama-server there
+            try: k, v = l.split(":")
+            except ValueError: continue
+            if k == "RssAnon": pin += int(v.split()[0]) / 2**20
+            elif k == "RssFile": mm += int(v.split()[0]) / 2**20
+        st = col(37, "cpu ") + level(busy, 50, 90, f"{busy:.0f}%") + col(37, " ram ") + level(ram / (m["MemTotal"] / 2**20), 0.7, 0.9, f"{ram:.0f}G") + " " + col(33, f"pin {pin:.0f}G") + " " + col(36, f"mm {mm:.0f}G") + " " + (col(31, f"swap {swap:.0f}M") if swap > 100 else col(37, f"swap {swap:.0f}M")) + (lambda fr: " " + level(1 - min(fr / 2**30 / 50, 1), 0.6, 0.9, f"disk {fr / 2**30:.0f}G free") if fr >= 0 else "")(int(sysi[4].strip() or -1) if sysi[4].strip().isdigit() else -1) + f" | {gpu}"   # stats first, the bars below
+        eng = ""   # engine state line (GET /moe/stats): pass size, threads, context, cache hit rate, time per token, uploads against the probed link and RAM maximum
         try:
-            v = {l.split(":")[0]: int(l.split()[1]) for l in open(f"/proc/{pid}/status") if l.startswith(("RssAnon", "RssFile"))}
-            pin += v["RssAnon"] / 2**20; mm += v["RssFile"] / 2**20
-        except (OSError, KeyError, ValueError): pass
-    st = col(37, "cpu ") + level(busy, 50, 90, f"{busy:.0f}%") + col(37, " ram ") + level(ram / (m["MemTotal"] / 2**20), 0.7, 0.9, f"{ram:.0f}G") + " " + col(33, f"pin {pin:.0f}G") + " " + col(36, f"mm {mm:.0f}G") + " " + (col(31, f"swap {swap:.0f}M") if swap > 100 else col(37, f"swap {swap:.0f}M")) + f" | {gpu}"   # stats first, the bars below
+            es = json.loads(STATS_FINAL[0] or sysi[5]); sv = es.get("server") or {}; pr = es.get("prompt") or {}; tk = es.get("token_ms") or {}; bw = es.get("bandwidth") or {}; ht = es.get("hit") or {}
+            if es.get("error") or not es.get("server"): raise ValueError   # loading (503) or a stock / older build (no route): no data, no engine lines
+            lv_ = es.get("live") or {}
+            if TRACE_T0[0] != t0: TRACE.clear(); TRACE_LAST.clear(); TRACE_H.clear(); TRACE_P.clear(); TRACE_T0[:] = [t0, 0]
+            TRACE_T0[1] = time.time() - t0
+            _h = ht.get("prompt_recent", -1) if lv_ and ht.get("prompt_recent", -1) >= 0 else ht.get("recent", -1)   # the hit rate of the moment: the prompt pass while one runs
+            if _h is not None and _h >= 0: TRACE_H.append((time.time() - t0, _h))
+            TRACE_P.append((time.time() - t0, "P" if lv_ else "D"))   # prompt call running, else decode
+            cur = {"threads": f"{sv.get('threads')}/{sv.get('threads_batch')}", "ubatch": (es.get("live") or {}).get("ubatch") or pr.get("ubatch") or sv.get("n_ubatch")}
+            for d in es.get("decisions") or []: cur["decided " + d["name"]] = d["value"]
+            for k_, v_ in cur.items():
+                if v_ is not None and TRACE_LAST.get(k_) != v_: TRACE.append((time.time() - t0, k_, TRACE_LAST.get(k_), v_)); TRACE_LAST[k_] = v_
+            rx = []   # nvidia-smi dmon, one second sample: host->device MB/s per card (the real link traffic, also while a prompt streams the experts, which the engine counters do not see)
+            for ln in sysi[6].splitlines():
+                f = ln.split()
+                if len(f) >= 3 and f[0].isdigit() and f[1].isdigit(): rx.append(int(f[1]) / 1000)
+            lv = es.get("live") or {}
+            LIVE_DONE[0] = lv.get("done") or 0   # a prompt call is running: its pass size, not the finished one before it
+            ub = lv.get("ubatch") or pr.get("ubatch") or sv.get("n_ubatch")
+            parts = [col(37, "engine")]
+            if ub: parts.append(col(36, f"ubatch {ub}") + (col(90, f" (max {pr['ceiling']})") if (lv.get("ubatch") or pr.get("ubatch")) and pr.get("ceiling") else ""))
+            if sv.get("threads") is not None: parts.append(col(36, f"thr {sv.get('threads')}/{sv.get('threads_batch')}"))
+            if sv.get("n_ctx_slot") is not None: parts.append(col(36, f"ctx {sv.get('n_ctx_slot')}"))
+            if ht and lv and ht.get("prompt_recent", -1) >= 0: parts.append(level(1 - ht["prompt_recent"] / 100, 0.15, 0.4, f"prompt hit {ht['prompt_recent']:.1f}%") + col(90, f" (call so far {ht.get('prompt_all', 0):.1f}%)"))   # the experts of the running prompt pass found in the cache
+            elif ht: parts.append(level(1 - ht.get("all", 0) / 100, 0.15, 0.4, f"hit {ht.get('all', 0):.1f}%") + col(90, f" (now {ht.get('recent', 0):.1f}%)"))
+            if tk.get("tokens"): parts.append(col(94, f"{tk['last64']:.1f} ms/tok") + col(90, f" (last {tk['last']:.1f}, all {tk['all']:.1f})"))
+            if lv.get("done") and lv.get("s"): parts.append(col(32, f"pp {lv['done'] / lv['s']:.0f} t/s") + col(90, f" running: {lv['done']}/{lv['tokens']} tok in {lv['s']:.0f} s"))   # the running prompt call, live
+            elif pr.get("last_tps"): parts.append(col(32, f"pp {pr['last_tps']:.0f} t/s") + (col(90, " by size " + " ".join(f"{k}:{v:.0f}" for k, v in (pr.get("tps_by_ubatch") or {}).items())) if pr.get("tps_by_ubatch") else ""))
+            if rx and lv: parts.append(col(37, "pcie rx ") + " ".join(f"g{i} {v:.1f} GB/s" for i, v in enumerate(rx)) + col(90, " (nvidia-smi, live)"))
+            if bw:   # RAM read rate (CPU experts + uploads) and each PCIe link, in GB/s against the probed maximum, and as a share of it
+                pc = lambda v, mx: 100 * v / mx if mx else 0
+                rp = pc(bw.get("ram_gbs", 0), bw.get("ram_max_gbs", 0))
+                parts.append(col(37, "mem bw ") + level(rp / 100, 0.7, 0.9, f"{bw.get('ram_gbs', 0):.1f}/{bw.get('ram_max_gbs', 0):.0f} GB/s {rp:.0f}%"))
+                parts.append(col(37, "pcie ") + " ".join(level(pc(l["gbs"], l["max_gbs"]) / 100, 0.7, 0.9, f"l{l['link']} {l['gbs']:.1f}/{l['max_gbs']:.0f} GB/s {pc(l['gbs'], l['max_gbs']):.0f}%") for l in bw.get("links", [])))
+            eng = " ".join(parts)
+            sp = es.get("split") or {}; links = bw.get("links", []) if bw else []
+            pgpus = (len(links) if links else 0) if sp.get("prefill") in (None, -1) else sp.get("prefill_gpus", 0)   # prompt: the split's cards, else one card (the cache path runs the pass on the cards that hold cache layers)
+            dgpus = bw.get("gpus") if bw else sp.get("gpus")
+            up = sum(1 for l in links if l.get("gbs", 0) > 0.05)
+            mode = [col(32, "moe cache") if bw else col(33, "stock placement")]
+            mode.append(col(32, f"dense split ON {sp.get('devs', '')}") if sp.get("prefill") == 1 else col(33, "dense split off (one card)") if sp.get("prefill") == 0 else col(90, "dense split n/a"))
+            mode.append(col(36, f"prompt gpus {pgpus or '?'}") + col(90, f" decode gpus {dgpus or '?'}") + (col(35, f" uploading on {up}/{len(links)} links") if links else ""))
+            if sp.get("why"): mode.append(col(90, sp["why"]))
+            eng = eng + "\n" + col(37, "engine") + " " + "  ".join(mode)
+            dec = es.get("decisions") or []
+            if dec:   # what the engine chose by itself and why, as it happens: a placement of "stock" for a model bigger than the VRAM stands out in yellow
+                # one line per decision with its whole reason (fit_block cuts at the terminal width); a decision that changed since the last tick is bold, so the tuners can be watched working
+                for d in dec:
+                    chg = DEC_SEEN.get(d["name"]) not in (None, (d["value"], d["why"]))
+                    DEC_SEEN[d["name"]] = (d["value"], d["why"])
+                    bad = d["name"] == "placement" and "stock" in d["value"] and "fits" not in d["value"]
+                    eng += "\n" + col(37, "decided") + " " + col("1;93" if chg else 33 if bad else 32, f"{d['name']} {d['value']}") + col("1;37" if chg else 90, f"  {d['why']}")
+        except (ValueError, KeyError, TypeError, AttributeError): pass
+        if eng: st = st + "\n" + eng
+        if eng or not LAST_ST[0]: LAST_ST[0] = st   # (the last tick WITH engine data: the tick after the server is gone shows an idle machine and would replace it)
+    # the machine / engine lines of the last tick: printed under the finished cell, they stay in the scrollback
     now = time.time(); pk = PEEK[0]   # phase of the cell: loading the model (yellow), prompt (green), generation (blue); each phase's time once it is known
     try: ld_s = float(open(LOAD_FILE).read()); ld_end = os.path.getmtime(LOAD_FILE)
     except (OSError, ValueError): ld_s = ld_end = None
@@ -3838,11 +4673,11 @@ def cell_status(t0, expect, label, total=None):
     ex0 = expect or 0   # the whole-run bar follows the cell's re-estimate
     if sf and el > 10: expect = el / sf
     elif expect and el > expect: expect = el * 1.2
-    if not total: return st + "\n" + l1
+    if not total: return (st + "\n" if st else "") + l1
     done_s, total_s, run_t0, k, n = total   # expected seconds done / in all, start of the whole run, cell number k of n
     total_s += (expect or 0) - ex0
     tel = time.time() - run_t0; part = done_s + min(el, expect or 0)
-    return st + "\n" + l1 + "\n" + col(33, "whole run".ljust(LW)) + f" {bar(part, total_s, shown=tel)}  " + col(33, f"cell {k}/{n}")
+    return (st + "\n" if st else "") + l1 + "\n" + col(33, "whole run".ljust(LW)) + f" {bar(part, total_s, shown=tel)}  " + col(33, f"cell {k}/{n}")
 
 
 def cell_results(path, since):
@@ -3891,6 +4726,10 @@ def gen_expect(model, test):
 
 
 PHASE = {}   # per cell: t0 and when the first decoded token was seen (cell_status colours and times the phases)
+LAST_ST = [""]
+NOSTATS = [os.environ.get("RUN_NS") == "1"]   # -ns: nothing that samples the machine or polls the server while a cell runs (no status probes, no nvidia-smi / sys / slots samplers on a remote box): the timings are the engine's alone
+TRACE, TRACE_LAST, TRACE_T0, TRACE_H, TRACE_P = [], {}, [None], [], []   # one cell's tuning timeline: (seconds into the cell, knob, old, new), from the status ticks
+LIVE_DONE = [0]   # tokens of the running prompt call the engine has finished (its own /moe/stats live block): the server counts only after a whole decode call
 PEEK = [None]   # (prompt tokens done, tokens decoded, expected decoded, expected prompt) of the last /slots answer: cell_status re-estimates the cell's end from it
 
 
@@ -3912,6 +4751,7 @@ def server_frac():
     """Share of the cell's time the server reports done (0..1), None until it is reliable (5 % of the prompt, or any decoding, with a history to compare to). While the prompt runs its speed is
     measured (tokens so far over the time since the load ended) and the decode time comes from the earlier runs' decode speed (DEC_RATE): a 12k prompt at 33 t/s plus 1k tokens at 10.7 t/s is
     59 % prompt, not the 45 % that a fixed weighting of 1:15 per token gave. Without a decode speed in the history nothing is guessed (see below)."""
+    if NOSTATS[0]: return None   # -ns: progress from the history estimate alone
     if not PEEK[0]: return None
     n_p, n_d, gen, pn = PEEK[0]
     gen = gen or 0; pn = pn or 0
@@ -3945,29 +4785,76 @@ def prompt_txt(test, tokens):
     return tin + "/" + (f"{tout // 1024}k" if tout and tout % 1024 == 0 else str(tout) if tout else "?")
 
 
+MEMBW_C = r"""#include <stdio.h>
+#include <stdlib.h>
+#include <omp.h>
+int main(){ size_t n=(size_t)1<<29; double *a=malloc(n*8); /* 4 GiB, first touched by the thread that reads it */
+ #pragma omp parallel for schedule(static)
+ for(size_t i=0;i<n;i++) a[i]=1.0;
+ double best=0; for(int r=0;r<4;r++){ double s=0, t=omp_get_wtime();
+  #pragma omp parallel for schedule(static) reduction(+:s)
+  for(size_t i=0;i<n;i++) s+=a[i];
+  t=omp_get_wtime()-t; double g=n*8/t/1e9; if(g>best&&s>0) best=g; }
+ printf("%.1f\n",best); return 0; }"""
+
+
+def membw():
+    """RAM read bandwidth of the machine in GB/s, all threads streaming a 4 GiB array (gcc + OpenMP, ~3 s); measured on every call (nothing cached: a rented box keeps its name while the hardware behind it changes)"""
+    try:   # threads: the CPUs the container may use (cgroup quota), not the ones it can see (384 threads on 46 CPUs are throttled and read a fraction); best of that and half
+        sh = ("q=$(awk '{ if ($1==\"max\") print 0; else print int(($1+$2-1)/$2) }' /sys/fs/cgroup/cpu.max 2>/dev/null); n=$(nproc); "
+              "[ \"${q:-0}\" -gt 0 ] && [ \"$q\" -lt \"$n\" ] && n=$q; "
+              "d=$(mktemp -d); cat > $d/m.c <<'EOF'\n" + MEMBW_C + "\nEOF\ngcc -O3 -fopenmp $d/m.c -o $d/m && for t in $n $((n/2)); do OMP_NUM_THREADS=$t $d/m; done; rm -rf $d")
+        v = max(float(x) for x in hsh(sh, 60).split())
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError): return None
+    return v
+
+
 def hw_line():
     """one line about the machine for the results (people post screenshots): [128g ddr4,3200,46g 3700x 3090,4x16,26g,pl280 3090,4x4,6g,pl220 ssd,3g], i.e. RAM size, type, speed (MT/s) and measured
     bandwidth (GB/s, the engine's own probe from the newest server log), the CPU, per GPU: model, PCIe generation x width, measured upload GB/s, power limit, and the SSD (fork/models.ini [hw] ssd=)."""
     out = []
     try:
-        mem = int([l for l in open("/proc/meminfo") if l.startswith("MemTotal")][0].split()[1]) / 2**20
+        mem = int([l for l in hsh("cat /proc/meminfo").splitlines() if l.startswith("MemTotal")][0].split()[1]) / 2**20
         ram = f"{-(-int(mem) // 8) * 8}g"
-        try: dm = subprocess.run(["sudo", "-n", "dmidecode", "-t", "memory"], capture_output=True, text=True, timeout=10).stdout   # needs root: without it the type and speed are left out, the measured bandwidth says enough
+        try: dm = hsh("sudo -n dmidecode -t memory")   # needs root: without it the type and speed are left out, the measured bandwidth says enough
         except (OSError, subprocess.SubprocessError): dm = ""
         ty = re.search(r"^\s*Type: (DDR\d)", dm, re.M); sp = re.search(r"Configured Memory Speed: (\d+) MT/s", dm)
-        logs = sorted(glob.glob(QDIR + "/*.server.log"), key=os.path.getmtime)
-        txt = next((t for t in (open(f, errors="replace").read(200000) for f in reversed(logs[-8:])) if "saturated at" in t and "prefill links" in t), "")   # the newest log that has the probe lines (a cell still loading has none yet)
-        bw = re.search(r"saturated at ([\d.]+) GB/s", txt); lk = dict(re.findall(r"CUDA(\d) ([\d.]+)", (re.search(r"prefill links \(GB/s\): (.*?) ->", txt) or [0, ""])[1] if re.search(r"prefill links \(GB/s\): (.*?) ->", txt) else ""))
-        out.append(" ".join(x for x in (ram, ",".join(([ty.group(1).lower()] if ty else []) + ([sp.group(1)] if sp else []) + ([f"{float(bw.group(1)):.0f}g"] if bw else []))) if x))
-        cpu = re.search(r"\b(\d{4,5}[A-Za-z0-9]*)\b", [l for l in open("/proc/cpuinfo") if l.startswith("model name")][0])
-        if cpu: out.append(cpu.group(1).lower())
-        g = subprocess.run([NVSMI, "--query-gpu=index,name,pcie.link.gen.max,pcie.link.width.current,power.limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout.strip().splitlines()
+        if not (ty and sp) and HOST[0]:   # a rented VM/container has no DMI table: type and speed come from the machine's row in machines.csv (ram_type text), where they were written down from its listing
+            rt = (machines().get(HOST[0].get("id")) or {}).get("ram_type", "")
+            ty = ty or re.search(r"(DDR\d)", rt); sp = sp or re.search(r"(?:DDR\d-|up to )(\d{4})", rt)
+        logs = sorted((f for f in glob.glob(QDIR + "/*.server.log") if ".remote." not in f), key=os.path.getmtime) if not HOST[0] else sorted(glob.glob(QDIR + "/*.remote.server.log"), key=os.path.getmtime)   # a remote list: the probe lines of its own servers only
+        txt = next((t for t in (open(f, errors="replace").read(200000) for f in reversed(logs[-8:])) if "saturated at" in t or "-> CPU" in t), "")   # the newest log that has the probe lines (a cell still loading has none yet)
+        bw = re.search(r"saturated at ([\d.]+) GB/s", txt) or re.search(r"-> CPU ([\d.]+) GB/s", txt); lk = dict(re.findall(r"CUDA(\d) ([\d.]+)", (re.search(r"prefill links \(GB/s\): (.*?) ->", txt) or [0, ""])[1] if re.search(r"prefill links \(GB/s\): (.*?) ->", txt) else ""))
+        rt = (machines().get((HOST[0] or {}).get("id") or "pc1") or {}).get("ram_type", "")
+        ch = re.search(r"(\d+)[ -]channels?", rt) or re.search(r"(\d+)ch\b", rt)   # channels as written in machines.csv; else the DIMMs dmidecode lists as populated (one per channel on most boards)
+        ed = hsh("for r in /sys/devices/system/edac/mc/mc*/rank*; do echo \"$(cat $r/dimm_label 2>/dev/null) $(cat $r/dimm_mem_type 2>/dev/null)\"; done 2>/dev/null")   # the memory controller's own view (works in a container): populated channels of every controller
+        ech = {(m_[0], m_[1]) for m_ in re.findall(r"mc#(\d+)csrow#\d+channel#(\d+) (?!Empty)\S+", ed)}
+        nch = str(len(ech)) if ech else ch.group(1) if ch else (str(len(re.findall(r"^\s*Size: \d+ [MG]B", dm, re.M))) if dm else "")
+        mbw = membw() or (float(bw.group(1)) if bw else 0)
+        if not re.search(r"^\s*Size: \d+ [MG]B", dm, re.M) and mbw and sp and nch:   # no DMI (container): EDAC lists 7 channels on blg, 192 GiB does not split over 7 DIMMs and the stream test reaches 70% of 4 channels; what the memory delivers decides, shown as ~Nch (0.7 x MT/s x 8 B per channel)
+            eff = round(mbw / (int(sp.group(1)) * 8 / 1000 * 0.7))
+            if eff and eff != int(nch): nch = f"~{eff}"
+        out.append(" ".join(x for x in (ram, ty.group(1).lower() if ty else "", f"{nch}ch" if nch and nch != "0" else "", sp.group(1) if sp else "", (lambda v: f"{v:.0f}g/s" if v else "")(mbw or None)) if x))   # the bandwidth is the machine's own stream test, else the server probe (two log wordings); 128g ddr4 4ch 3200 46g/s: size, type, channels, MT/s, measured GB/s
+        mn = [l for l in hsh("grep -m1 'model name' /proc/cpuinfo").splitlines() if l.startswith("model name")][0]
+        cpu = re.search(r"\b(\d{4,5}[A-Za-z0-9]*)\b", mn) or re.search(r"(?:EPYC|Xeon|Threadripper)\s+([A-Za-z0-9]+)", mn)   # 3700x, 7B12 (EPYC part numbers can hold letters first)
+        ls = dict(re.findall(r"^([^:\n]+):\s+(.*)$", hsh("lscpu 2>/dev/null"), re.M))
+        try:   # cores and threads over all sockets, the top clock, NUMA nodes when more than one: what decides a CPU-bound decode (a 64-core EPYC clocks lower than a desktop part)
+            cores = int(ls["Socket(s)"]) * int(ls["Core(s) per socket"]); thr = cores * int(ls["Thread(s) per core"])
+            cp = [f"{cores}c{thr}t" if thr != cores else f"{cores}c"] + ([f"{float(ls['CPU max MHz']) / 1000:.1f}ghz"] if ls.get("CPU max MHz") else []) + ([f"numa{ls['NUMA node(s)']}"] if int(ls.get("NUMA node(s)", 1)) > 1 else [])
+        except (KeyError, ValueError): cp = []
+        bn = hsh("cat /sys/class/dmi/id/board_name 2>/dev/null").strip()   # the board: its chipset (X570, TRX40, WRX80 ...) or, for an EPYC server board with no chipset, the board name itself (H12SSW-NT)
+        if bn:
+            cs = re.search(r"\b([XBAZH]\d{3}[A-Z]?|TRX40|WRX80)\b", bn)
+            if cs or not HOST[0]: out.append((cs.group(1) if cs else bn).lower().replace(" ", "-"))   # a rented VM's board name (T1DMGEP ...) says nothing: only a real chipset is shown there
+        if cpu: out.append(",".join([cpu.group(1).lower()] + cp))
+        g = hsh(f"{NVSMI if not HOST[0] else 'nvidia-smi'} --query-gpu=index,name,pcie.link.gen.max,pcie.link.width.current,power.limit --format=csv,noheader,nounits 2>/dev/null").strip().splitlines()
+        g = [l for l in g if l.count(",") == 4]
         gs = []
         for l in g:
             i, nm, gen, w, pl = [x.strip() for x in l.split(",")]
             gs.append((-int(w), int(i), ",".join([re.sub(r"\D*(\d{3,4}).*", r"\1", nm), f"{gen}x{w}"] + ([f"{float(lk[i]):.0f}g"] if i in lk else []) + [f"pl{float(pl):.0f}"])))
         out += [x[2] for x in sorted(gs)]
-        ssd = (fcfg.models_ini().get("hw") or {}).get("ssd", "")
+        ssd = "" if HOST[0] else (fcfg.models_ini().get("hw") or {}).get("ssd", "")
         if ssd: out.append(f"ssd,{ssd}")
     except Exception: pass
     return "[" + " ".join(out) + "]" if out else ""
@@ -3997,10 +4884,37 @@ def peek_line(exp):
     return ""
 
 
+def trace_lines(width=40):
+    """when each tuned value changed in the cell and when it settled: per knob the number of changes, a strip of change counts over the cell time (dense = busy), the last change (= settled) and the value"""
+    if not TRACE and not TRACE_H and not TRACE_P: return ""
+    end = max(TRACE_T0[1] if len(TRACE_T0) > 1 else 0, max([t for t, *_ in TRACE] or [0])) or 1
+    out = [col(37, "tuning timeline") + col(90, f"  (cell time 0 .. {int(end // 60)}:{int(end % 60):02d}; the strip shows how many changes fell into each slice)")]
+    for k in dict.fromkeys(x[1] for x in TRACE):
+        ev = [x for x in TRACE if x[1] == k and x[2] is not None]   # the first sight of a value is not a change
+        if not ev: continue
+        bins = [0] * 20
+        for t, *_ in ev: bins[min(19, int(20 * t / end))] += 1
+        mx = max(bins); strip = "".join(" " if b == 0 else "▁▂▃▄▅▆▇█"[min(7, (b * 8 - 1) // mx)] for b in bins)
+        last = ev[-1]
+        out.append(f"  {k:<14} {len(ev):>3} changes |{strip}| last at {int(last[0] // 60)}:{int(last[0] % 60):02d} -> {last[3]}" + col(90, f"  (unchanged for {int((end - last[0]) // 60)}:{int((end - last[0]) % 60):02d})"))
+    if TRACE_P:   # the phases of the whole run: L = loading (no engine data yet), P = a prompt call runs, D = decoding
+        sl = [""] * 20
+        for t, ph in TRACE_P:
+            i = min(19, int(20 * t / end)); sl[i] = ph if sl[i] in ("", ph) else "P" if "P" in (sl[i], ph) else ph
+        first = int(20 * TRACE_P[0][0] / end)
+        out.insert(1, f"  {'phase':<14} |" + "".join(("L" if i < first else ".") if not c else c for i, c in enumerate(sl)) + "| L load, P prompt, D decode")
+    if TRACE_H:   # hit rate over the cell: mean of the ticks in each slice as a digit 0-9 (tenths of 100 %), '.' = no tick
+        sl = [[] for _ in range(20)]
+        for t, h in TRACE_H: sl[min(19, int(20 * t / end))].append(h)
+        out.append(f"  {'hit rate':<14} |" + "".join("." if not v else str(min(9, int(sum(v) / len(v) / 10))) for v in sl) + "| digit = tenths of 100 %, per slice" + col(90, f"  (first {TRACE_H[0][1]:.0f}%, last {TRACE_H[-1][1]:.0f}%)"))
+    return "\n".join(out)
+
+
 def result_lines(res):
     return "\n".join(f"    run {i}: " + speed_txt(t, p, width=7) + col(92, " t/s") for i, (t, p) in enumerate(res, 1))
 
 
+PRELUDE = [0, 0]   # lines of a remote list's start (old servers stopped, disk check) and of its transfer bars still on screen: erased when the transfers are done
 LIVE_UP = [0]       # lines of the status block on screen: the next cell redraws over it, nothing scrolls
 CELL_ASKED = [0]    # tokens asked for in the running cell
 CELL_PROMPT = [""]   # the running cell's prompt text (set per row)
@@ -4012,6 +4926,21 @@ CELL_LINES = []     # one summary line per finished cell, printed when the list 
 def live_tty():
     """The status block redraws in place on a terminal; the detached run (RUN_DAEMON) writes the same escape codes into its log for the viewer to replay."""
     return bool(os.environ.get("RUN_DAEMON")) or sys.stdout.isatty()
+
+
+def fit_block(txt):
+    """Cut every line of the status block to the terminal width (colour codes do not count): the next redraw moves the cursor up by LINES, so a line that wraps
+    would leave a copy of itself behind on every tick. The detached run gets the viewer's width as COLUMNS."""
+    w = max(shutil.get_terminal_size((100, 24)).columns - 1, 20)
+    def cut(line):
+        out, vis = [], 0
+        for tok in re.findall(r"\x1b\[[0-9;?]*[A-Za-z]|.", line, re.S):
+            if tok[0] == "\x1b" and len(tok) > 1: out.append(tok); continue
+            if vis >= w: break
+            out.append(tok); vis += 1
+        if vis >= w: out.append("\033[0m")
+        return "".join(out)
+    return "\n".join(cut(l) for l in txt.split("\n"))
 
 
 def live_clear():
@@ -4029,7 +4958,7 @@ def older_gainers(model, test, cur_bno, st, gm, limit=2):
     if not model or not test or not st or not str(cur_bno).isdigit(): return []
     try:
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-        rows = c.execute("select coalesce(nullif(\"commit\",''), build), bno, tps, pp, start_ts, rowid from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null and bno<? and bno>=? and coalesce(env,'') not like '%warmpass%' and n_gen between ? and ?",
+        rows = c.execute("select coalesce(nullif(\"commit\",''), build), bno, tps, pp, start_ts, rowid from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and bno<? and bno>=? and coalesce(env,'') not like '%warmpass%' and n_gen between ? and ?",
                          (os.path.basename(model), ALIASES.get(test, test), int(cur_bno), OLDER_MIN_BNO, (ALIAS_TOKENS.get(test) or 0) // 2, (ALIAS_TOKENS.get(test) or 10**9) * 2)).fetchall()
     except sqlite3.Error: return []
     by = {}
@@ -4049,9 +4978,9 @@ def ours_reference(model, test):
     import sqlite3
     c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")); mo = os.path.basename(model); t = ALIASES.get(test, test); gen = ALIAS_TOKENS.get(test)
     w = " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""
-    o = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null" + w + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
+    o = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + "" + w + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
     if not o: return None
-    v = c.execute("select tps, pp, bno, start_ts, rowid from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null" + w + " order by ts", (mo, t, o[0])).fetchall()
+    v = c.execute("select tps, pp, bno, start_ts, rowid from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null and ts >= datetime(?, '-30 minutes')" + HWF[0] + "" + w + " order by ts", (mo, t, o[0], o[1])).fetchall()   # the newest session only: an older run of other settings (a longer prompt, a short answer) is not the reference
     return dict(t=max(x[0] for x in v), p=max(x[1] for x in v if x[1]) if any(x[1] for x in v) else None, id=v[-1][4], bno=int(v[-1][2]) if v[-1][2] else "?", date=str(v[-1][3] or o[1])[:10])
 
 
@@ -4059,10 +4988,10 @@ def known_gain(model, test):
     """overall gain (geometric mean of decode and prompt gain) of the newest build of ours over the newest official stock row, both from runs.db; 0 when either is missing"""
     import sqlite3
     c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")); mo = os.path.basename(model); t = ALIASES.get(test, test); gen = ALIAS_TOKENS.get(test)
-    ours = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
+    ours = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
     if not ours: return 0
-    v = c.execute("select tps, pp from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), (mo, t, ours[0])).fetchall() or c.execute("select tps, pp from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null", (mo, t, ours[0])).fetchall()
-    st = c.execute("select tps, pp from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " order by ts desc limit 1", (mo, t)).fetchone()
+    v = c.execute("select tps, pp from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + "" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), (mo, t, ours[0])).fetchall() or c.execute("select tps, pp from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + "", (mo, t, ours[0])).fetchall()
+    st = c.execute("select tps, pp from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + HWF[0] + "" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " order by ts desc limit 1", (mo, t)).fetchone()
     if not v or not st or not st[0]: return 0
     ti = TEST_IN.get(test) or TEST_IN.get(t) or ""
     gs = [statistics.median(x[0] for x in v) / st[0]] + ([statistics.median(x[1] for x in v if x[1]) / st[1]] if st[1] and any(x[1] for x in v) else [])
@@ -4162,7 +5091,7 @@ def final_table(recs, live=False, hdr_out=None):
     if not live: body.sort(key=lambda x: -x["gm"])   # biggest overall gainers first (cells without stock last, list order kept)
     allrows = [y for x in body for y in [x] + x.get("old", [])]
     for x in allrows: x.setdefault("xfer", "")
-    show_x = any(x["xfer"] not in ("", "f32") for x in body)   # the hand-off column only when a cell of ours ran with other than the f32 default
+    show_x = any(x["xfer"] not in ("", "f32", "f16") for x in body)   # the hand-off column only when a cell of ours ran with other than the f32 default
     wd = lambda k, h: max([len(h)] + [len(x.get(k, "")) for x in allrows])
     W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
     if live:   # one finished cell as it happens: fixed minimum widths so the rows of successive cells line up
@@ -4192,6 +5121,14 @@ def final_table(recs, live=False, hdr_out=None):
         if not x["st"] and not x.get("is_old"): tail = ""
         if wrap and tail.strip(): out += [ln, col(37, f"{x['name']:<{W['name']}}") + tail]
         else: out.append(ln + tail)
+    if not live:   # the models of the table stay on screen with their results (the model line of the run scrolled away)
+        def msz(path):   # size on disk in GiB, all shards of a split model; "" when the file is not here
+            try:
+                d = os.path.dirname(path); n = sum(os.path.getsize(os.path.join(d, x)) for x in shard_names(os.path.basename(path)))
+                return f" {n / 2**30:.0f}g" if n else ""
+            except OSError: return ""
+        ms_ = list(dict.fromkeys(os.path.basename(r["model"]) + msz(r["model"]) for r in recs if r.get("model")))
+        if ms_: out = [col("1;94", "  ".join(ms_))] + out
     return out
 
 
@@ -4208,6 +5145,8 @@ def live_rows(rec):
 
 def own_build_no(build):
     """build number from `llama-server --version` of devbuilds/BUILD ('?' when it cannot be read: the display never stops a run)"""
+    st = re.fullmatch(r"stock-b(\d+)-official", str(build))
+    if st and not os.path.exists(os.path.join(DEVBUILDS, build, "llama-server")): return st.group(1)   # a stock that only the remote machine has: the number is in its name
     try:
         d = os.path.join(DEVBUILDS, build)
         o = subprocess.run([os.path.join(d, "llama-server"), "--version"], capture_output=True, text=True, timeout=30, env={**os.environ, "LD_LIBRARY_PATH": d})
@@ -4221,7 +5160,7 @@ def stock_gain(peek, res, build=None):
     try:   # rows are stored under the test the alias resolves to (pf12k1k is pf12k with a 1024-token answer): the newest stock row with about that answer length; a stock run with a short answer (64 tokens) is not a comparison for a 1k answer, so there is none then
         gen = ALIAS_TOKENS.get(peek[1]); tst = ALIASES.get(peek[1], peek[1])
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-        q = "select tps, pp, build, bno, start_ts, rowid from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'{G} order by start_ts desc limit 12"
+        q = "select tps, pp, build, bno, start_ts, rowid from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'{G} order by start_ts desc limit 12"
         qa = (os.path.basename(peek[0]), tst)
         rs = c.execute(q.replace("{G}", " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), qa).fetchall()   # the same prompt only: pf12k1k (instruction + 12k source, 1k answer) is stored as pf12k with about 1024 tokens; an old 12k run with a 64-token answer was another prompt
         tm = max(x[0] for x in res) if res else 0
@@ -4256,10 +5195,11 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
             if not first: rc = p.wait(timeout=max(every - 1.5, 0.5)); break
             first = False; raise subprocess.TimeoutExpired(cmd, 0)
         except subprocess.TimeoutExpired:
-            pl = peek_line(pexp) if pexp else ""   # first: cell_status re-estimates from the same /slots answer
+            pl = peek_line(pexp) if pexp and not NOSTATS[0] else ""   # first: cell_status re-estimates from the same /slots answer
             txt = cell_status(t0, expect, label, total)
             if results and (rl := result_lines(cell_results(results, t0))): txt += "\n" + rl   # per-run speeds so far, below the bars
             if pl: txt += "\n" + pl   # the run in progress: tokens so far against the earlier runs
+            txt = fit_block(txt) if tty else txt
             live_clear(); print(txt, flush=True); LIVE_UP[0] = txt.count("\n") + 1 if tty else 0
     except KeyboardInterrupt:   # Ctrl-C: the cell, its bench and its server are stopped for real (kill_tree: `timeout` is a process group of its own, the terminal's SIGINT never reaches them), then run_list ends (list line, kept server, pool)
         live_clear(); print(f"{label}: Ctrl-C, stopping the cell ...", flush=True)
@@ -4273,8 +5213,23 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
     try: lv = float(open(LOAD_FILE).read()); lt = "" if lv < 0 else "l " + (f"{int(lv)}s" if lv < 100 else f"{int(lv // 60)}m{int(lv % 60):02d}s")
     except (OSError, ValueError): lt = ""
     CELL_REC.append(dict(asked=CELL_ASKED[0], ref=ours_reference(peek[0], peek[1]) if peek and str(cmd[5]).startswith("stock") and res else None, sbno=own_build_no(cmd[5]), xfer="" if str(cmd[5]).startswith("stock") else xfer_of(own_build_no(cmd[5]), " ".join(map(str, cmd))), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, cmd[5], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, cmd[5], "llama-server")) else "", rid=run_id(f"{cmd[3]}-{peek[1]}") if peek else None, prompt=CELL_PROMPT[0], model=peek[0] if peek else None, test=peek[1] if peek else None, name=label, el=el, lt=lt, rc=rc or (0 if res else 1), res=res, st=STOCK_REC[0], stock_row=str(cmd[5]).startswith("stock")))
+    try:
+        if peek: store_gains(CELL_REC[-1], str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1], t0)
+    except Exception as e: print(f"gains not stored: {e}", flush=True)   # a display problem or a locked db never ends the list
+    try:
+        if peek and not rc: store_cell_time(str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1], t0, el)
+    except Exception as e: print(f"time not stored: {e}", flush=True)
     CELL_LINES.append(col(1, f"{label[:NAMEW[0]]:<{NAMEW[0]}}") + f" {int(el // 60):>3}:{int(el % 60):02d} " + col(37, "cell") + (col(37, ",") + " " + col(33, lt) if lt else "") + "  " + (col(31, "FAILED ") if rc or not res else "") + "  ".join(speed_txt(t, p) for t, p in res) + gain )   # decode blue, prompt green, load yellow: the colors of the status bar
-    live_clear(); print(live_rows(CELL_REC[-1]) + ("\n" + result_lines(res) if len(res) > 1 else ""), flush=True)   # the finished cell keeps its line (speeds of every run); the next cell's live block is drawn below the growing list
+    try:   # the end-of-cell engine state, if the cell saved one: one more status build with it (the live ticks of a short cell miss the engine)
+        _ff = os.path.join(QDIR, "final-stats.json")
+        if os.path.exists(_ff) and os.path.getmtime(_ff) >= t0:
+            STATS_FINAL[0] = open(_ff).read().strip(); LAST_ST[0] = ""; cell_status(t0, expect, label, total)
+    except Exception: pass
+    finally:
+        STATS_FINAL[0] = ""
+        try: os.remove(os.path.join(QDIR, "final-stats.json"))
+        except OSError: pass
+    live_clear(); print(live_rows(CELL_REC[-1]) + ("\n" + result_lines(res) if len(res) > 1 else "") + ("\n" + trace_lines() if trace_lines() else "") + ("\n" + LAST_ST[0] if LAST_ST[0] else ""), flush=True); LAST_ST[0] = ""   # the finished cell keeps its line; the last machine and engine state stays under it (speeds of every run); the next cell's live block is drawn below the growing list
     if out:
         out.close()
         if rc: live_clear(); print("".join(open(log, errors="replace").readlines()[-8:]), end="", flush=True)   # the failure reason
@@ -4295,6 +5250,10 @@ def resolve_build(name):
 def stock_latest(dry=False):
     """The newest official ggml-org release binary (Linux CUDA 13.4 x64 + its cudart libraries, pulled with gh, never built) as devbuilds/stock-bNNNNN-official, and the symlink
     devbuilds/stock-latest to it. Returns the real build name, so rows and logs carry the build number. Downloaded once; a newer release adds a directory, older ones stay. A stock pulled today is reused all day (no gh call)."""
+    if getattr(stock_latest, "remote", False):   # a list on another machine (-pc): the newest official release is looked up here (gh, no download) and downloaded by that machine itself; -nodl does not hold it back
+        for tag in subprocess.run(["gh", "release", "list", "-R", "ggml-org/llama.cpp", "-L", "8", "--json", "tagName", "-q", ".[].tagName"], capture_output=True, text=True).stdout.split():
+            if f"llama-{tag}-bin-ubuntu-cuda-13.4-x64.tar.gz" in subprocess.run(["gh", "release", "view", tag, "-R", "ggml-org/llama.cpp", "--json", "assets", "-q", ".assets[].name"], capture_output=True, text=True).stdout.split():
+                return f"stock-{tag}-official"   # the newest release whose binaries are uploaded already (a fresh one may have only some of its files)
     if getattr(stock_latest, "skip", False):   # -nodl: no look at the newest release, no download: the stock-latest link as it is, else the newest stock directory on disk
         have = [p for p in glob.glob(os.path.join(DEVBUILDS, "stock-b*-official")) if os.path.exists(os.path.join(p, "llama-server"))]
         if not have: sys.exit("stock: -nodl, but no stock-bNNNNN-official directory under the builds folder")
@@ -4419,12 +5378,15 @@ def run_list_detached(name, argv):
         try: time.sleep(2)
         except KeyboardInterrupt:
             kill_run()
-            for _ in range(240):   # the stop takes a while (cell, server, pool): wait until the run is gone
-                try:
-                    if child and child.poll() is not None: break   # our own child: a finished one is a zombie that kill(0) still finds (the wait ran the full 2 min)
-                    os.kill(rec["pid"], 0)
-                except OSError: break
-                time.sleep(0.5)
+            try:
+                for _ in range(240):   # the stop takes a while (cell, server, pool): wait until the run is gone
+                    try:
+                        if child and child.poll() is not None: break   # our own child: a finished one is a zombie that kill(0) still finds (the wait ran the full 2 min)
+                        os.kill(rec["pid"], 0)
+                    except OSError: break
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                print("\nthe stop is going on in the background; `run stop` finishes it", flush=True)
         return 0
 
 
@@ -4436,8 +5398,11 @@ def run_list(name, argv):
     ap = argparse.ArgumentParser(prog=f"run.py run {name}")
     ap.add_argument("-b", "--build", default="latest"); ap.add_argument("-onl", "-o", "--only", help="rows whose name contains TEXT; comma list: glm-,mimo-"); ap.add_argument("-n", "--dry", action="store_true")
     ap.add_argument("-skp", "--skip", help="skip rows whose name contains TEXT; comma list: glm-,mimo-")
+    ap.add_argument("-ng", "--gpus", dest="n_gpus", type=int, metavar="N", help="use only N cards: the best N (fastest slot, then fastest card), the fastest one last; 0 = CPU only. Remote machines (-pc) and this host")
+    ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="no live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
     ap.add_argument("-sc", "-su", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
     ap.add_argument("-nrt", "--not-today", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip cells (and so models) that already have their runs in runs.db from the last DAYS days (default 1 = today); a stock pulled within those days is not replaced by a newer release")
+    ap.add_argument("-pin", dest="force_pin", action="store_true", help="force pinned RAM for every cell (-lm pin) instead of the default auto; `-nm` is the mmap counterpart. In a row's args column: -pin")
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
     ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
     ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
@@ -4447,18 +5412,31 @@ def run_list(name, argv):
     ap.add_argument("-dsc", "-d", "--desc", "-from-biggest", "--from-biggest", dest="desc", action="store_true", help="biggest model files first (same-size rows keep the list order): the pool fragments with each unmount, so the big models go while it is still whole")
     ap.add_argument("-nodl", "--skip-download", dest="nodl", action="store_true", help="no check for a newer official stock release and no download: the stock already on disk (stock-latest) is used")
     ap.add_argument("-a", "--cell-args", default="", metavar="ARGS", help="extra cell arguments for OUR cells (not stock), e.g. -a \"moe:split-f16=1\" (one moe: word per --moe key); stored in the args column of the runs, so the rows stay apart from the defaults. -nrt matches by cell, not by arguments: leave it off for an A/B")
-    ap.add_argument("-pl", "--power", metavar="X4/X16", help="force the power limits in W (x4 card / x16 card, e.g. -pl 220/280) for the whole run instead of the day/night schedule (day 07:00-23:50 220/280, night 200/200)")
+    ap.add_argument("-pl", "--power", metavar="W", nargs="?", const="max", help="power limits in W for the whole run instead of the day/night schedule: no value = every card at its maximum; 285 = all cards; 285,285,300,285 = per card; 220/280 = cards on a narrower link than the widest / the widest (PC1: x4 card, x16 card). The max of the x4 card throttled and crashed it once on PC1 (330-350 W): not for PC1's x4 card. A remote host may refuse (blg: Insufficient Permissions)")
     ap.add_argument("-from-smallest", "--from-smallest", dest="asc", action="store_true", help="smallest model files first: the first results come quickly")
+    ap.add_argument("-pc", "--machine", default="pc1", help="run the cells on another machine over ssh (`run.py machine`): the builds must be there (`run.py remote ID push BUILD...`), the model is found there by file name, the server and the request run on that machine (`run.py remote`), run.py stays here; -nrt does not apply")
+    ap.add_argument("-ssh", "--ssh", metavar="LINE", help="the ssh line of a rented box for this session, in quotes (\" -p 47086 root@93.91.156.104 -L 8080:localhost:8080\"): the machine named by -pc (cld when -pc is not given) is set to it first (~/.ssh/config and machines.csv), see `run.py machine add`")
     o = ap.parse_args([x for x in argv if x != "desc"])   # `run gainers desc` works too
+    NOSTATS[0] = o.no_stats; NGPU[0] = o.n_gpus
+    if o.no_stats: os.environ["RUN_NS"] = "1"
+    if o.n_gpus is not None: os.environ["RUN_NG"] = str(o.n_gpus)
+    if o.n_gpus is not None and o.machine == "pc1":   # this host: the children (cells, servers) see the chosen cards only, numbered in the listed order
+        _vis = pick_gpus(o.n_gpus, subprocess.run(GPU_Q_NG, shell=True, capture_output=True, text=True).stdout) if o.n_gpus > 0 else ""
+        os.environ.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", CUDA_VISIBLE_DEVICES=_vis, PERF_DEV=",".join(f"CUDA{i}" for i in range(len(_vis.split(",")))) if _vis else "none")
+        print(f"-ng {o.n_gpus}: cards {_vis or 'none (CPU only)'} (fastest last)", flush=True)
+    if o.ssh:   # a temporary session: update the machine's ssh entry before anything talks to it
+        if o.machine == "pc1": o.machine = "cld"
+        cmd_machine(argparse.Namespace(action="add", id=o.machine, ssh=o.ssh.strip(), root=None, os="linux", quiet=True))
     if o.power:
-        if not re.fullmatch(r"\d{2,3}/\d{2,3}", o.power): sys.exit("-pl: two limits in W, x4 card then x16 card, like 220/280")
-        os.environ["PERF_POWER"] = o.power   # the cell processes inherit it; wait_vram_free applies it before every cell
-    stock_latest.skip = o.nodl; stock_latest.days = max(o.not_today, 1)
+        if not re.fullmatch(r"max|\d{2,3}(/\d{2,3}|(,\d{2,3})*)", o.power): sys.exit("-pl: no value = every card at its maximum; W for every card (285), or per card (285,285,300,285), or narrow-link cards/widest-link cards (220/280)")
+        if o.machine.split("-")[0] == "pc1": os.environ["PERF_POWER"] = o.power   # the cell processes inherit it; wait_vram_free applies it before every cell   # the cell processes inherit it; wait_vram_free applies it before every cell
+    HW = o.machine.split("-")[0]; HWF[0] = f" and hw='{HW}'"   # rows of this machine only count for -nrt and for the stock check (pc1-cli is pc1)
+    stock_latest.remote = o.machine.split("-")[0] != "pc1"; stock_latest.skip = o.nodl; stock_latest.days = max(o.not_today, 1)
     if o.stock: o.build = stock_latest(o.dry)
     o.build = resolve_build(o.build)   # -b b13563: a build number
     rows = list(csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", name + ".csv"), newline="")))
     for r in rows: r["model"] = fcfg.model(r["model"])   # the model column is a models.ini alias or a path
-    rows = [r for r in rows if not o.only or any(x in r["name"] for x in o.only.split(","))]
+    rows = [r for r in rows if not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))]   # a trailing $ means the exact name: mimo-i$ is not mimo-io
     rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]   # -skp: same matching as -onl, rows dropped
     for r in rows:
         if o.runs not in (None, "0"): r["n"] = o.runs
@@ -4474,7 +5452,7 @@ def run_list(name, argv):
         import sqlite3
         gen = int(r["tokens"]) if r.get("tokens") else None
         try:
-            q = "select 1 from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " limit 1"
+            q = "select 1 from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%' and hw='" + HW + "'" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " limit 1"
             c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")); a = (os.path.basename(r["model"]), ALIASES.get(r["test"], r["test"]))
             for tb in ("runs", "bad_runs"):   # failed runs are moved to bad_runs (run.py bad-runs)
                 try:
@@ -4490,7 +5468,7 @@ def run_list(name, argv):
         if cur is None and re.fullmatch(r"b\d+", os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))): cur = int(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))[1:])   # --version failed: the directory is named by the build number
         try:
             for c, t, p, bn in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
-                    "select campaign, tps, pp, bno from runs where cast(ok as integer)=1 and tps is not null and date(start_ts)>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%' order by ts" % (o.not_today - 1,)):
+                    "select campaign, tps, pp, bno from runs where cast(ok as integer)=1 and tps is not null and date(coalesce(start_ts, ts))>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%' and hw='%s' order by ts" % (o.not_today - 1, HW)):
                 if cur and not str(c).startswith("stock") and int(bn or 0) != cur: continue
                 done.setdefault(c, []).append((float(t), float(p or 0)))
         except sqlite3.Error as e: print(f"-nrt: runs.db: {e}", flush=True)
@@ -4515,13 +5493,17 @@ def run_list(name, argv):
         if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run in the last {o.not_today} day(s) skipped (they are in the table at the end)", flush=True)
         rows = keep
     for r in rows:   # -a: the same cells with extra arguments on our build
-        if o.cell_args and not r["_b"].startswith("stock"): r["args"] = ((r.get("args") or "") + " " + o.cell_args).strip()
+        if o.cell_args and not r["_b"].startswith("stock"): r["args"] = ((r.get("args") or "") + " " + " ".join("moe:" + w if re.fullmatch(r"[\w-]+=\S*", w) else w for w in o.cell_args.split())).strip()   # a bare key=value is a --moe key (-a "split-experts=0")
+    if o.machine != "pc1": return run_list_remote(o, rows, name)
     def size(r):   # bytes of the model; a split model counts all its parts (NAME-00001-of-0000N.gguf)
         return sum(os.path.getsize(f) for f in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
     if o.desc or "desc" in argv or "-dsc" in argv:
         rows.sort(key=lambda r: (-size(r), r["model"]))   # the same model stays together: one pool, one load
     elif o.asc:
         rows.sort(key=lambda r: (size(r), r["model"]))
+    if o.force_pin:   # -pin: every non-stock row not already -pin / -nm
+        for r in rows:
+            if not r["_b"].startswith("stock") and not {"-pin", "-nm"} & set(shlex.split(r.get("args") or "")): r["args"] = ((r.get("args") or "") + " -pin").strip()
     if o.no_pool and o.no_pool != "0":   # -nm GB: every non-stock row pins at most GB GiB of the model, the rest is mapped (row-level -nm GB, see nomount_args)
         for r in rows:
             if not r["_b"].startswith("stock") and "-nm" not in shlex.split(r.get("args") or ""): r["args"] = ((r.get("args") or "") + f" -nm {o.no_pool}").strip()
@@ -4536,7 +5518,7 @@ def run_list(name, argv):
         print(f"{col(36, b)}: {bin_}  {col(33, time.strftime('%F %H:%M', time.localtime(os.path.getmtime(bin_))))}  {col(94, 'b' + own_build_no(b))}" if os.path.exists(bin_) else f"{b}: {d} (no llama-server)", flush=True)
     if any(not r["_b"].startswith("stock") for r in rows) and os.path.islink(os.path.join(DEVBUILDS, "stock-latest")):   # the stock the gains compare against
         sl = os.path.realpath(os.path.join(DEVBUILDS, "stock-latest")); print(f"{col(36, 'stock')}: {os.path.basename(sl)}  {col(33, time.strftime('%F %H:%M', time.localtime(os.path.getmtime(os.path.join(sl, 'llama-server')))))}  {col(94, 'b' + own_build_no(os.path.basename(sl)))}", flush=True)
-    if not o.dry: print(col(1, hw_line()), flush=True)
+    if not o.dry: CUR_HWL[0] = hw_line(); print(col(1, CUR_HWL[0]), flush=True)
     NAMEW[0] = max((len(("s" if r["_b"].startswith("stock") else "") + r["name"]) for r in rows), default=NAMEW[0] - 1) + 1
     total_s = sum(cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm) or 0 for r in rows); done_s = 0; run_t0 = time.time()   # expected seconds of the whole list, from runs.db
     try:
@@ -4553,7 +5535,7 @@ def run_list(name, argv):
                 else: run_list_pool(size(r))
             if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;94", os.path.basename(shown)), flush=True)   # after the pool line: which model the next cells run
             tag = f"{r['_b']}-{r['name']}"
-            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], r.get("args") or ""] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"])
+            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], (" " + r["args"]) if r.get("args") else ""] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"])
             cmd += (["--tokens", r["tokens"]] if r.get("tokens") else []) + shlex.split(r.get("extra") or "")
             if o.dry: print(f"[{name}] {tag}: {shlex.join(cmd[3:])}", flush=True)
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
@@ -4577,6 +5559,133 @@ def run_list(name, argv):
     return 1 if bad else 0
 
 
+CLAMPED_SHOWN = set()
+CLAMPED = {}   # cell tag -> prompt tokens it was cut to (model with a small trained context)
+REMOTE_TESTS = {   # list test -> (request file in fork/bench, server arguments of ours, of stock): the README's three tests, same -c values as its table
+    "pf12k1k": ("req-12k-1k.json", "-np 1", "-np 1 -c 16384"),
+    "edit4c": ("req-3k-1k-a.json", "-np 1 -c 4096", "-c 4096"),
+    "tetrisc": ("req-short-1k.json", "-np 1 -c 1024", "-c 1024")}
+
+
+def remote_test(name):
+    """(request file, server arguments of ours, of stock) of a list test on another machine: the README's three tests (REMOTE_TESTS), or a test of your own named after a file in the prompts directory:
+    prompt-NAME.txt (one chat message, 1024 tokens out) or req-NAME.json (the request as it is); the request of a prompt file is written next to the run files. None for an unknown test."""
+    if name in REMOTE_TESTS: return REMOTE_TESTS[name]
+    ut = config.user_tests().get(name)
+    if ut and ut.get("test") == "chat":
+        text = config.prompt(name); toks = int(ut.get("tokens") or 1024)
+        fp = os.path.join(QDIR, f"req-{name}.json")
+        json.dump({"messages": [{"role": "user", "content": text}], "max_tokens": toks, "temperature": 0, "top_p": 1, "top_k": 1, "cache_prompt": False}, open(fp, "w"))
+        ctx = int(ut.get("ctx") or (len(text) // 3 + toks + 512 + 1023) // 1024 * 1024)   # characters / 3 over-counts tokens a little: room, not a measurement
+        return fp, f"-np 1 -c {ctx}", f"-c {ctx}"
+    rq = os.path.join(PROMPT_DIR, f"req-{name}.json")
+    if os.path.exists(rq):
+        d = json.load(open(rq)); ctx = (sum(len(m.get("content", "")) for m in d.get("messages", [])) // 3 + int(d.get("max_tokens") or 1024) + 512 + 1023) // 1024 * 1024
+        return rq, f"-np 1 -c {ctx}", f"-c {ctx}"
+    return None
+
+
+def run_list_remote(o, rows, name):
+    """`run -c NAME -pc ID`: the list's cells (already filtered and ordered: -onl, -skp, -sc) on another machine over ssh, run.py stays on this host. Per row: the model is looked
+    up on that machine by file name, then `run.py remote ID test` runs the server and the request there (stock row first with -sc) and records the rows with hw = ID."""
+    m = machine(o.machine)
+    here = PROMPT_DIR   # the request files (REMOTE_TESTS)
+    bad = []
+    for b in dict.fromkeys(r["_b"] for r in rows):   # the same header as a local list: the binaries, the stock the gains compare against, the machine
+        bin_ = os.path.join(os.path.realpath(os.path.join(DEVBUILDS, b)), "llama-server")
+        if os.path.exists(bin_): print(f"{col(36, b)}: {bin_}  {col(33, time.strftime('%F %H:%M', time.localtime(os.path.getmtime(bin_))))}  {col(94, 'b' + own_build_no(b))}", flush=True)
+    HOST[0] = m
+    if o.power and not o.dry:   # -pl W,W,..: the limits of the remote GPUs for this run (the driver refuses a value outside the card's range, which is printed)
+        qq = [l.split(",") for l in hsh("nvidia-smi --query-gpu=pcie.link.width.max,power.max_limit --format=csv,noheader,nounits", 30).splitlines() if l.count(",") == 1]
+        wd = [int(a) for a, _ in qq]
+        for i, w in enumerate(power_targets(wd, o.power, [int(float(b)) for _, b in qq])):
+            r = hsh(f"nvidia-smi -i {i} -pl {w} 2>&1 | head -1", 60).strip()   # the first line is the result or the reason ("Insufficient Permissions"); the last line is always "Terminating early"
+            print(f"power: {o.machine} GPU {i} -> {w} W: {r[:110]}", flush=True)
+    if not o.dry: CUR_HWL[0] = hw_line(); print(col(1, CUR_HWL[0]), flush=True)
+    NAMEW[0] = max((len(("s" if r["_b"].startswith("stock") else "") + r["name"]) for r in rows), default=NAMEW[0] - 1) + 1
+    try: _run_list_remote(o, rows, name, m, here, bad)
+    finally:
+        pass   # the final block, complete for a screenshot, like a local list
+        if CELL_REC and not o.dry: print("\n" + col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC)), flush=True)
+    print(f"[{name}] {len(rows)} cells on {o.machine}, failed: {', '.join(bad) or 'none'}")
+    return 1 if bad else 0
+
+
+def _run_list_remote(o, rows, name, m, here, bad):
+    """the cells of the list: `run.py rcell` (server and requests on the machine, files mirrored here) under run_watched, so the screen, the table and the stored rows are the local ones"""
+    REMOTE_SLOTS[0] = f"{QDIR}/remote-slots.txt"
+    try:
+        if not o.dry:   # the machine must answer before anything else: a rented box that is down, restarting or at a new address ends the list here with the reason, not with a traceback
+            try: ok_ssh = subprocess.run(["ssh", "-o", "ConnectTimeout=12", "-o", "BatchMode=yes", m["ssh"], "true"], capture_output=True, timeout=40).returncode == 0
+            except subprocess.SubprocessError: ok_ssh = False
+            if not ok_ssh:
+                hn = subprocess.run(["ssh", "-G", m["ssh"]], capture_output=True, text=True).stdout
+                ad = " ".join(f"{k}={v}" for k, v in re.findall(r"^(hostname|port) (\S+)", hn, re.M))
+                sys.exit(f"{o.machine} does not answer over ssh ({ad}): the box is down or restarting, or its address changed. New line from the provider: add  -ssh \"-p PORT root@HOST\"  to this command (or `run.py machine add`).")
+        if not o.dry and not m["win"]:   # first action on a machine: anything holding the GPU goes (vast.ai's own `llama` service restarts itself, so supervisor first)
+            remote_sh(m, 'command -v supervisorctl >/dev/null && supervisorctl stop llama 2>&1; pkill -x llama-server; sleep 2; echo "gpu used: $(nvidia-smi --query-gpu=memory.used --format=csv,noheader 2>/dev/null | tr "\\n" " ")"', 60)
+        if not o.dry:   # every build and model of the list at once, before the first cell: downloads run on the machine in parallel, the push from here beside them
+            items, pushes, keep = [], [], set()
+            for b in dict.fromkeys(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, r["_b"]))) for r in rows):
+                it, pu = build_plan(m, b); items += it; pushes += [pu] if pu else []
+            for mod in dict.fromkeys(r["model"] for r in rows):
+                keep.update(shard_names(os.path.basename(mod)))
+                it, _ = model_plan(m, mod); items += it
+            tr_ok = run_transfers(m, items, pushes, keep)
+            if tr_ok and live_tty() and PRELUDE[0] + PRELUDE[1]: print(f"\033[{PRELUDE[0] + PRELUDE[1]}A\033[J", end="", flush=True)   # the downloads are done: the start lines and the bars go (free disk stays in the stats line)
+            PRELUDE[0] = PRELUDE[1] = 0
+        shown = None
+        for r in rows:
+            key = f"{r['_b']}-{r['name']}-{r['test']}"   # the campaign of the stored rows, what -nrt looks for (before the build name is resolved)
+            r["_b"] = os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, r["_b"])))   # `latest` / `stock-latest`: the directory that was pushed
+            tag = f"{r['_b']}-{r['name']}"
+            rt = remote_test(r["test"])
+            if not rt: print(f"[{name}] {tag}: test {r['test']} has no remote request (the README tests {', '.join(REMOTE_TESTS)}, or a file prompt-NAME.txt / req-NAME.json in fork/prompts)", flush=True); bad.append(tag); continue
+            req, ours, stock = rt
+            base = os.path.basename(r["model"])
+            found = remote_sh(m, f"find /m /home/o/m {m['root']}/models /home/o /root -maxdepth 5 -name '{base}' 2>/dev/null | head -1 2>/dev/null", 120).strip().splitlines()
+            found = next((l for l in found if l.startswith("/")), "")   # a login banner (stderr is merged into the result) is not a path
+            if not found and not o.dry: live_clear(); found = push_model(m, r["model"])   # not on the machine yet: download it there (models.ini url) or rsync it
+            if not found: print(f"[{name}] {tag}: {base} not found on {o.machine}", flush=True); bad.append(tag); continue
+            words, env = split_variant(r["_b"], r.get("args") or "") if not r["_b"].startswith("stock") else ("", {})
+            args = f"{stock if r['_b'].startswith('stock') else ours} {nomount_args(words)[0]}".strip()
+            ctx_train = gguf_ctx_train(r["model"]) if os.path.exists(r["model"]) else 0
+            if not ctx_train and not o.dry:   # the file is on the machine only: its header (metadata and vocabulary come before the tensors) is read over ssh
+                hd = subprocess.run(["ssh", m["ssh"], f"head -c 33554432 '{found}'"], capture_output=True).stdout
+                ctx_train = gguf_ctx_train(None, hd)
+            mx = clamp_tokens(r["model"], r.get("tokens") or 1024, 12000 if r["test"] == "pf12k1k" else 3000 if r["test"] == "edit4c" else 0, ctx_train)   # the README prompts are about 12k / 3k tokens
+            if mx:   # the model holds less than the prompt: both builds get the same shorter prompt, cut in memory by cmd_remote (the table shows its size)
+                args = re.sub(r"\s*-c \d+", "", args) + f" -c {ctx_train}"   # -c is a ceiling (ours sizes the context itself below it, stock takes it as is): both stop at the model's trained context
+                CLAMPED[tag] = mx
+                if (base, mx) not in CLAMPED_SHOWN:   # once per model and size, not per cell
+                    CLAMPED_SHOWN.add((base, mx)); print(f"[{name}] {base} holds {ctx_train} tokens of context: the prompt is cut to about {mx} tokens", flush=True)
+            cmd = [sys.executable, os.path.abspath(__file__), "rcell", tag, found, r["_b"], str(r["n"] or 2), r["test"], args, "--machine", o.machine, "--req", os.path.join(here, req), "--clamp", str(mx or 0),
+                   "--results", f"{QDIR}/{tag}-{r['test']}.run.out", "--slots", REMOTE_SLOTS[0], "--campaign", key]
+            if not o.dry: live_clear(); push_build(m, r["_b"])   # a build the machine does not have yet goes there first (once)
+            if o.dry: print(f"[{name}] {tag} on {o.machine}: {found} {r['test']} -n {r['n'] or 2} args: {args}", flush=True); continue
+            if r["model"] != shown: shown = r["model"]; live_clear(); print(col("1;94", os.path.basename(shown)), flush=True)
+            try: os.remove(f"{QDIR}/{tag}-{r['test']}.run.out")
+            except OSError: pass
+            tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
+            CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")) if tag not in CLAMPED else f"{CLAMPED[tag] / 1000:.1f}k/" + prompt_txt(r["test"], r.get("tokens")).split("/")[-1]; CELL_ASKED[0] = tout
+            CELL_TEST[0] = r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")
+            try:
+                if run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), cell_expect(r["model"], r["test"], r["n"], r["_b"], False), ("s" if r["_b"].startswith("stock") else "") + r["name"],
+                               log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
+            except KeyboardInterrupt: bad.append(tag); break
+    finally: REMOTE_SLOTS[0] = None
+
+
+def cmd_rcell(a):
+    """`rcell TAG MODEL BUILD N TEST ARGS --machine ID ...`: one list cell on another machine, the remote counterpart of `cell` (run_list_remote starts it under run_watched)"""
+    for k in range(4):   # a looping answer is stored as a failed run and repeated with k newlines added to the prompt (as for a local cell)
+        try: cmd_remote(argparse.Namespace(id=a.machine, what="test", builds=[a.build], model=a.model, req=a.req, clamp=int(a.clamp or 0), tweak=k, path="/v1/chat/completions", args=a.args, n=int(a.n), stats=False, record=True,
+                                  tail="run", campaign=a.campaign, test=ALIASES.get(a.test, a.test), results=a.results, slots=a.slots))
+        except SystemExit as e:
+            if e.code != 3 or k == 3: raise   # 3 = loop: repeat; any other code ends the cell
+            print(f"loop: repeating ({k + 1}/3) with {k + 1} newline(s) added to the prompt", flush=True)
+
+
 def nomount_args(args, model=None):
     """(args, nomount): `-nm` in a cell's args is a run.py switch for `-lm mmap` (weights memory-mapped, not pinned); a cell that does not pin has no use for the huge-page pool,
     so no pool is mounted, resized or checked for it. An explicit `-lm`/`--load-mode` of mmap, auto or dio counts as -nm too."""
@@ -4585,7 +5694,8 @@ def nomount_args(args, model=None):
     out = []
     gb = 0.0
     for i, t in enumerate(tok):
-        if t == "-nm":
+        if t == "-pin": out += ["-lm", "pin"]   # force the weights into pinned RAM (the default `auto` maps them, or pins when the model fits); the pool is wanted, so this is not a no-mount cell
+        elif t == "-nm":
             out += ["-lm", "mmap"]
             try: gb = float(tok[i + 1])   # `-nm 101`: pin at most 101 GB of the model (tensor order), map the rest (--moe pin-budget, read by the loader with mmap on)
             except (IndexError, ValueError): pass
@@ -4664,7 +5774,7 @@ def cmd_cell(a):
         with open(out, "w") as f:
             rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).returncode
     finally:
-        pass
+        HOST[0] = None
     lines = [l.rstrip()[:200] for l in open(out, errors="replace") if re.search(r"n= *\d+ .* t/s", l)]
     with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
         f.write(f"== {a.test} {args}\n" + "".join(l + "\n" for l in lines))
@@ -6480,12 +7590,36 @@ if __name__ == "__main__":
     rp.add_argument("--md", action="store_true", help="also print README table rows (median, range, run ids)")
     gp = sp.add_parser("gains", help="append the gain (ratio to the baseline arm of the same campaign) of the given campaigns to gains.csv, with the GPU power limits; bench does it for its own campaign")
     gp.add_argument("campaigns", nargs="+")
-    m = sp.add_parser("machine", help="list machines, or add one: machine add ID --ssh user@host --root DIR --os linux|windows")
+    m = sp.add_parser("machine", help="list machines, or add one: machine add [ID] --ssh \"-p PORT root@host\" [--root DIR] [--os linux|windows]")
     m.add_argument("action", nargs="?", default="list", choices=["list", "add"])
-    m.add_argument("id", nargs="?")
-    m.add_argument("--ssh")
+    m.add_argument("id", nargs="?", help="machine name (add: default cld)")
+    m.add_argument("--ssh", help="ssh alias or user@host, or a whole ssh command line in quotes (-p PORT user@host ...): then ~/.ssh/config is written for the name")
     m.add_argument("--root", help="directory holding the build dirs on that machine")
     m.add_argument("--os", default="linux")
+    dp = sp.add_parser("devpub", help="publish a dev build as the prerelease dev-BUILD on the fork (not latest) so remote machines download it instead of receiving a push"); dp.add_argument("build")
+    nm = sp.add_parser("numa", help="NUMA map and node x node RAM read-rate table of a machine (-pc ID for a remote one), no model needed")
+    nm.add_argument("-pc", "--machine", default="pc1")
+    nm.add_argument("--reps", type=int, default=2)
+    nm.add_argument("--secs", default="0.15")
+    nm.add_argument("--gpu", action="store_true", help="host->device rate of every GPU against pinned buffers on every node (needs nvcc on the machine)")
+    nm.set_defaults(fn=cmd_numa)
+    rc = sp.add_parser("rcell", help="(run -pc) one list cell on another machine")
+    for x in ("tag", "model", "build", "n", "test", "args"): rc.add_argument(x)
+    for x in ("--machine", "--req", "--results", "--slots", "--campaign"): rc.add_argument(x)
+    rc.add_argument("--clamp", type=int, default=0)
+    rm = sp.add_parser("remote", help="a server test on a machine reached over ssh: remote ID push BUILD... | remote ID test BUILD --model PATH (server and request run there, files tailed here)")
+    rm.add_argument("id", help="a machine from `run.py machine` (the ssh target may be an alias from ~/.ssh/config)")
+    rm.add_argument("what", choices=["push", "test"])
+    rm.add_argument("builds", nargs="+", help="build names (push: several; test: one)")
+    rm.add_argument("--model", help="test: the .gguf path ON THE MACHINE")
+    rm.add_argument("--req", help="test: the request json (default prompts/req-12k-1k.json)")
+    rm.add_argument("--path", default="/v1/chat/completions", help="test: the endpoint the request goes to")
+    rm.add_argument("--args", default="", help="test: server arguments, e.g. '-np 1 -c 4096'")
+    rm.add_argument("-n", type=int, default=2, help="test: the same request this many times on one server (default 2)")
+    rm.add_argument("--stats", action="store_true", help="test: also tail stats.log")
+    rm.add_argument("--record", action="store_true", help="test: add the rows to the run history (hw = the machine id)")
+    rm.add_argument("--campaign", help="test --record: the campaign column (the list runner sets the key -nrt looks for)")
+    rm.add_argument("--test", help="test --record: the test name stored (default srv-<request>)")
     pr = sp.add_parser("prompt", help="send a benchmark prompt to a running server and print speeds")
     pr.add_argument("kind", choices=["short", "chatv", "12k", "128k", "code"])
     pr.add_argument("--url", default="http://127.0.0.1:8080")
@@ -6593,6 +7727,6 @@ if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "run" and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", sys.argv[2] + ".csv")):
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
-    {"run": cmd_run, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "prompt": cmd_prompt, "ctl": cmd_ctl,
+    {"run": cmd_run, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
      "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
