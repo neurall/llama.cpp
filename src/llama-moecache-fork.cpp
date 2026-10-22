@@ -7956,8 +7956,13 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     // prompt): the planner's bytes per pass token, which the startup reserve seeds (graph_tok + tok_bytes), still keeps that first pass and the zone for
     // the prompt's KV inside the pool. Without it the first prompt of a warm start was planned with no room for its KV (Qwen3.6-35B, 3 GiB free per card:
     // a 4579-token pass left no gap for the zone, the server retried with halved batches: 1860 prompt t/s against 3706 on the cold start, 2026-10-22).
+    // The graph bytes per token leave out what a pass lends besides its tensors: the staging slots (a fixed part) and the CUDA scratch (per token). Measured on
+    // that warm start: 1654 MiB lent for 4579 tokens = 0.38 MB per token against 0.28 estimated, so the cap let the pass past the room of the KV zone. The
+    // slots are added when known and the per-token bytes get 1.35x headroom (a pass one third smaller costs a pass more; a zone that does not fit costs a
+    // failed call and halved retries).
     auto seeded = [&]() -> uint32_t {
-        return ap.graph_tok > 0 ? kvz_pass_cap(ap, n_prompt, ub, 0.0, (double) (ap.graph_tok + ap.tok_bytes), pad, ap.mirror_b) : ub;
+        const double a_fix = (double) std::max(0, ap.n_cfg) * (double) ap.slot_b;
+        return ap.graph_tok > 0 ? kvz_pass_cap(ap, n_prompt, ub, a_fix, 1.35 * (double) (ap.graph_tok + ap.tok_bytes), pad, ap.mirror_b) : ub;
     };
     if (ap.need_tok.empty()) { return seeded(); }
     // every measured size at the cells this call ends at (need_at_cells): the fit below then includes the masks' growth with the context
@@ -7973,7 +7978,9 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
         b = (double) (p1.second - p0.second) / (double) (p1.first - p0.first);
         a = std::max(0.0, (double) p1.second - b * (double) p1.first);
     } else {
-        b = (double) p1.second / (double) p1.first;
+        // one size only: a line through the origin is below the real need for smaller passes when the need has a fixed part (staging slots), the same headroom
+        // as the seeded estimate above
+        b = 1.35 * (double) p1.second / (double) p1.first;
     }
     if (b <= 0.0) { return ub; }
     return kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b);   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
@@ -7987,8 +7994,12 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     }
     if (ap) {   // bounded whatever the plan below does (also before the first prompt graph is known; see pp_cap_to_pool)
         const uint32_t ub_old0 = ub_old, ub_max0 = ub_max;
-        ub_old = pp_cap_to_pool(*ap, n, ub_old);
-        ub_max = pp_cap_to_pool(*ap, n, ub_max);
+        // EVERY card's pool lends its part of the pass and holds the KV of its layers: the smallest cap wins. With the offload card's pool alone the x4 card's
+        // KV zone was never checked (Qwen3.6-35B, 3 GiB free per card: 1222 of its 1282 MiB lent to a 4352-token pass, its KV did not fit, 2026-10-22)
+        for (const auto & a : mc->alias) {
+            ub_old = pp_cap_to_pool(a, n, ub_old);
+            ub_max = pp_cap_to_pool(a, n, ub_max);
+        }
         if (moe_log_has("w")) { LLAMA_LOG_WARN("moe-cache: pass plan input: n %u ub_max %u -> %u, ub_old %u -> %u, span %zu, graph_tok %zu, tok_bytes %zu, slot_b %zu, mirror_b %zu, need_tok %zu\n", n, ub_max0, ub_max, ub_old0, ub_old, (size_t) ap->span, (size_t) ap->graph_tok, (size_t) ap->tok_bytes, (size_t) ap->slot_b, (size_t) ap->mirror_b, ap->need_tok.size()); }
     }
     if (!on || mc->alias.empty() || mc->n_links <= 0 || !mc->link_dev[0]) {
