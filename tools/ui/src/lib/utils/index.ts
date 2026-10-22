@@ -271,6 +271,7 @@ export {
 	parseToolResultWithMedia,
 	splitSearchSummaryList,
 	hasAgenticContent,
+	isSectionExpandedByDefault,
 	classifyToolResult,
 	classifyContinueIntent
 } from './agentic';
