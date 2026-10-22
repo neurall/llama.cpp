@@ -2144,6 +2144,9 @@ static std::string threads_key(const llama_model & model, const char * key) {
 }
 
 static int threads_saved(const llama_model & model, const char * key, int dflt) {
+    // ini-fix (2026-10-22): no saved count: every start searches from the same default (a saved count, re-explored every 8th session, made a start depend on how
+    // many sessions came before it)
+    if (true) { (void) model; (void) key; (void) dflt; return 0; }
     std::string v;
     int d = 0, t = 0;
     return moe_state_get(moe_state_section(model), key, v) && sscanf(v.c_str(), "%d %d", &d, &t) == 2 && d == dflt && t >= 2 ? t : 0;
@@ -2151,6 +2154,7 @@ static int threads_saved(const llama_model & model, const char * key, int dflt) 
 
 // how many sessions used this saved value: it is explored again every 8th session, the others start from it and measure nothing
 static int threads_runs_bump(const llama_model & model, const char * key) {
+    if (true) { (void) model; (void) key; return 0; }   // ini-fix (2026-10-22): see threads_saved
     std::string v;
     int n = 0;
     if (moe_state_get(moe_state_section(model), key, v)) { n = atoi(v.c_str()); }
@@ -2160,6 +2164,7 @@ static int threads_runs_bump(const llama_model & model, const char * key) {
 }
 
 static void threads_save(const llama_model & model, const char * key, int dflt, int tuned) {
+    if (true) { (void) model; (void) key; (void) dflt; (void) tuned; return; }   // ini-fix (2026-10-22): see threads_saved
     moe_state_set(moe_state_section(model), { { key, std::to_string(dflt) + " " + std::to_string(tuned) } });
 }
 

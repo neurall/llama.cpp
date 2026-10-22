@@ -911,7 +911,7 @@ void profile_save(const moe_cache * mc) {
         }
         kv.emplace_back("hot." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), v);   // real layer: dense layers are not cache layers
     }
-    if (!mc->tuned_text.empty()) {
+    if (false && !mc->tuned_text.empty()) {   // ini-fix (2026-10-22): the self-tuner's decisions are not stored (see the reader)
         // the self-tuner's decisions of this GPU count: tuned.l<links> = NAME=value NAME=value ...
         std::string v = mc->tuned_text;
         for (char & c : v) { if (c == '\n') { c = ' '; } }
@@ -1081,6 +1081,9 @@ void stock_obs_cb(const char * name, const struct ggml_tensor * ids, const struc
 // a file with no hot map of its own yet starts from the one of the same file name or the same family and shape (other quant, other build of the file): it is copied
 // once into this file's own section, which then learns on its own; only layers with the model's expert count are taken
 void moe_seed_hot(const std::string & section, size_t n_expert) {
+    // ini-fix (2026-10-22): no hot map is copied from another file's record (other quant, other build): a model starts from its own use counts or none
+    (void) section; (void) n_expert;
+    if (true) { return; }
     std::vector<std::pair<std::string, std::string>> own, donor, hot;
     if (section.empty() || n_expert == 0 || !moe_state_enabled()) {
         return;
@@ -5904,7 +5907,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             // LLAMA_MOE_CACHE_<NAME> wins) and check again after a while instead of exploring right away
             const char * te = moe_opt("tuned");
             std::string txt;
-            if ((!te || atoi(te) != 0) && !mc->profile.empty()) { moe_state_get(mc->profile, hw_key("tuned.l" + std::to_string(mc->n_links)), txt); }
+            // ini-fix (2026-10-22): the stored decisions are not read: a start whose tuner began from another build's values behaved unlike a cold one,
+            // and the knobs' defaults change between builds. Every start tunes from the defaults.
+            (void) te;
             for (char & c : txt) { if (c == ' ') { c = '\n'; } }
             int n = 0;
             size_t pos = 0;
@@ -8198,13 +8203,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         g_pp_c_us = g_pp_c_us > 0.0 ? 0.5 * (g_pp_c_us + c0_new) : c0_new;
         LLAMA_LOG_WARN("moe-cache: prompt compute measured: %.0f tokens in %.0f ms over %u passes (upload estimate %.0f ms) at %.0f cells: %.1f us per token -> c0 %.1f us + %.5f us per cell\n",
                 nt, us / 1e3, g_pp_P, Usum / 1e3, x, c_new, g_pp_c_us, g_pp_a_us);
-        // kept in the state file (model section, key per GPU set: the placement's prefix) when it moved by more than 5%, so the next start plans its first
-        // prompt from it (see pp_c_us_stored)
-        static double saved = 0.0;
-        if (!mc->profile.empty() && !moe_state_place().empty() && (saved <= 0.0 || std::fabs(g_pp_c_us / saved - 1.0) > 0.05)) {
-            saved = g_pp_c_us;
-            moe_state_set(mc->profile, { { moe_state_place() + ".pp_c0_us", tr_fmt("%.4f", g_pp_c_us) }, { moe_state_place() + ".pp_a1_us", tr_fmt("%.6f", g_pp_a_us) } });
-        }
+        // ini-fix (2026-10-22): not written to the state file any more (see pp_c_us_stored): a start plans from its own measurement only
     }
     g_pp_n = 0; g_pp_P = 0; g_pp_Usum = 0.0; g_pp_xc = 0.0;   // read once
 }
@@ -8215,6 +8214,9 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
 // Keys pp_c0_us / pp_a1_us (2026-10-17): until then pp_c_us held the whole compute per token of the last prompt it could read, attention included (MiMo: 1265 us
 // measured at about 250k cells); read as c0, the base of the fit, it would plan every short prompt as 20x heavier. Old entries stay in the file, unused.
 static void pp_c_us_stored() {
+    // ini-fix (2026-10-22): no stored value is read. The state held values from older builds (22591 us per token next to 1212 measured live) that the split
+    // planner read as truth; the session measures its own (llama_moe_cache_prefill_report_fork) and nothing is written for the next start.
+    return;
     static bool tried = false;
     if (tried || g_pp_c_us > 0.0 || !g_cache || g_cache->profile.empty() || moe_state_place().empty()) {
         return;

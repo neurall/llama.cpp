@@ -521,7 +521,8 @@ static void dsplit_calib_load(const llama_model & model) {
     g_calib_section = moe_state_section(model);
     g_hw_key = dsplit_hw_key(model);
     std::string v;
-    if (!g_calib_section.empty() && moe_state_get(g_calib_section, "dsplit_calib3@" + g_hw_key, v)) {
+    // ini-fix (2026-10-22): the calibration is not read from the state file: it made a warm start choose its split differently from a cold one
+    if (false && !g_calib_section.empty() && moe_state_get(g_calib_section, "dsplit_calib3@" + g_hw_key, v)) {
         const double c = atof(v.c_str());
         if (c >= 0.5 && c <= 3.0) { g_split_calib.store(c); g_calib_n = 0; LLAMA_LOG_WARN("split planner: calibration %.2f from the state file (a prior: the first measured split pass replaces it)\n", c); }
     }
@@ -530,6 +531,7 @@ static void dsplit_calib_load(const llama_model & model) {
 static std::set<int> g_bucket_loaded;
 static void dsplit_bucket_load(int b) {
     if (g_calib_section.empty() || g_hw_key.empty() || !g_bucket_loaded.insert(b).second) { return; }
+    if (true) { return; }   // ini-fix (2026-10-22): the arms are measured in the session only; a stored arm made the first prompt of a warm start differ from a cold one
     std::string v;
     if (!moe_state_get(g_calib_section, "dsplit_arm2_b" + std::to_string(b) + "@" + g_hw_key, v)) { return; }
     double u0, u1; int n0, n1;
@@ -541,6 +543,7 @@ static void dsplit_bucket_load(int b) {
     }
 }
 static void dsplit_bucket_save(int b) {
+    if (true) { (void) b; return; }   // ini-fix (2026-10-22): not stored (see dsplit_bucket_load)
     if (g_calib_section.empty() || g_hw_key.empty()) { return; }
     const dsplit_bucket & B = g_buckets[b];
     char v[96]; snprintf(v, sizeof v, "%.3f %d %.3f %d", B.us_tok[0], std::min(B.n[0], 3), B.us_tok[1], std::min(B.n[1], 3));
@@ -918,7 +921,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
                 // the first measurement sets the factor, later ones average in half and half
                 const double nc = g_calib_n.fetch_add(1) == 0 ? r : 0.5 * g_split_calib.load() + 0.5 * r;
                 g_split_calib.store(nc);
-                if (!g_calib_section.empty()) { char b2[32]; snprintf(b2, sizeof b2, "%.3f", nc); moe_state_set(g_calib_section, { { "dsplit_calib3@" + g_hw_key, b2 } }); }
+                (void) nc;   // ini-fix (2026-10-22): the calibration is not stored (see dsplit_calib_load)
                 pit->second.c_us = -1.0;   // recompute the plan of this size with the new calibration
             }
         }
