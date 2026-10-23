@@ -5752,6 +5752,11 @@ def run_list(name, argv):
     o.build = resolve_build(o.build)   # -b b13563: a build number
     rows = list(csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", name + ".csv"), newline="")))
     for r in rows: r["model"] = fcfg.model(r["model"])   # the model column is a models.ini alias or a path
+    if not o.dry and not o.status and o.machine.split("-")[0] == "pc1":   # best1k of a model with no bestpp entry for this VRAM: the first run measures it and fills models.ini (run.py calib), then the list goes on
+        need = sorted({model_alias(r["model"]) for r in rows if re.fullmatch(r"(pf)?best\d*k", r["test"]) and model_alias(r["model"]) and not vram_map((fcfg.models_ini().get(model_alias(r["model"])) or {}).get("bestpp", "")).get(int(hw_key()[:-1]))})
+        if need:
+            print(col(33, f"no best prompt for {hw_key()} yet: {', '.join(need)}; measuring it first (run.py calib), the result goes to models.ini"), flush=True)
+            cmd_calib(argparse.Namespace(build=o.build, models=",".join(need), n_gpus=o.n_gpus, dry=False, nowrite=False))
     for r in rows: r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
     rows = [r for r in rows if not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))]   # a trailing $ means the exact name: mimo-i$ is not mimo-io
     rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]   # -skp: same matching as -onl, rows dropped
