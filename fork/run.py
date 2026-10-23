@@ -5243,15 +5243,11 @@ def final_table(recs, live=False, hdr_out=None):
     out = [" " * W["name"] + hl(ours[1:]) + ("" if wrap else hl(stk))]
     if wrap: out.append(" " * W["name"] + hl(stk))
     if hdr_out is not None: hdr_out.extend(out); out = []   # live rows: the header goes to the caller (printed once)
-    sec_now = None; est_q = sum(r.get("est") or 0 for r in recs if r.get("section") == "queued")
     for x in allrows:
-        if x.get("section") and x["section"] != sec_now:   # a section header: how many cells, in the colour of its state
-            sec_now = x["section"]; n_sec = sum(1 for y in body if y["section"] == sec_now)
-            out.append(col({"done": "1;92", "running": "1;93", "queued": "1;96"}.get(sec_now, "1"), f"{ {'done': 'done today', 'running': 'running now', 'queued': 'queued next'}.get(sec_now, sec_now)} ({n_sec}{f', ~{int(est_q // 60)}:{int(est_q % 60):02d} to go' if sec_now == 'queued' and est_q else ''})"))
         c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "xfer": ("35", x["xfer"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;94", x["t"]), "p": ("1;92", x["p"]), "g": ("35", x.get("g", "")), "st": ("94", x["st"]), "sp": ("92", x["sp"])}
         cell = lambda k: "  " + col(c[k][0], f"{c[k][1]:>{W[k]}}")
         gcell = lambda k, v: "  " + (col("1;91" if v < 1 else "37" if v < 2 else "1;97" if v < 10 else "1;93" if v < 40 else "1;92", f"{x[k]:>{W[k]}}") if v is not None else " " * W[k])   # below 1 red, 1-2 plain, 2x bold white, 10x yellow, 40x green
-        ln = col(37 if x.get("is_old") else 1, f"{x['name']:<{W['name']}}") + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "")
+        ln = col(37 if x.get("is_old") else {"done": "1;92", "running": "1;97", "queued": "90"}.get(x.get("section"), 1), f"{x['name']:<{W['name']}}")   # `run status`: the name's colour is the state: green done, white running, grey next + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "")
         tail = cell("st") + cell("sp") + gcell("gt", x["gtv"]) + gcell("gp", x["gpv"]) + "  " + col(36, f"{x.get('ppl', ''):>{W['ppl']}}") + "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}") + "".join("  " + col(37 if k == "id" else 36, f"{x[k]:>{W[k]}}") for k in ("id", "sid"))
         if not x["st"] and not x.get("is_old"): tail = ""
         if wrap and tail.strip(): out += [ln, col(37, f"{x['name']:<{W['name']}}") + tail]
