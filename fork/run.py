@@ -5584,6 +5584,70 @@ def cmd_calib(a):
         for model, (n, tok) in picks.items():
             sec = model_alias(next((v["path"] for k, v in fcfg.models_ini().items() if k == model), model)) or (model if model in fcfg.models_ini() else None)
             if not sec: print(col(31, f"{model}: no models.ini section, not written")); continue
+            for key, val in (("bestpp", n), ("bestpp_tokens", tok)):   # one line per model: total VRAM in GiB = size in k, and the real token count that passed
+                i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+                while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
+                j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
+                m_ = vram_map(lines[j].split("=", 1)[1]) if j is not None else {}; m_[int(hw_key()[:-1])] = val
+                new = f"{key} = [" + ",".join(f"{g}={v}" for g, v in sorted(m_.items(), reverse=True)) + "]"
+                if j is not None: lines[j] = new
+                else: lines.insert(i1, new)
+        open(ini, "w").write("\n".join(lines)); print(col(92, f"written to models.ini ({cards} card(s))"))
+
+
+def cmd_calib(a):
+    """`run.py calib [-b BUILD] [-ng N] [-m MODELS] [--dry] [--nowrite]`: find every model's biggest ONE-pass input prompt by bisection and store it in models.ini (best_prompt.<N>gpu, N = the cards seen).
+    Starts at the estimated maximum (12k), halves while the prompt needs more than one pass (12, 6, 3, 1), then bisects between the biggest one-pass size and the smallest multi-pass one. The pass
+    count never grows when the prompt shrinks, so 3-5 requests (64 answer tokens) per model find the biggest one-pass prompt, which is the pick: bigger prompts amortize the uploads of a pass best."""
+    import sqlite3
+    here = os.path.dirname(os.path.abspath(__file__)); b = resolve_build(a.build) if a.build != "latest" else a.build
+    src = [r for r in csv.DictReader(open(os.path.join(here, "runs", "onepass.csv"), newline="")) if r["test"] == "pf12k1k"]
+    want = [x for x in (a.models or "").split(",") if x]
+    rows = [r for r in src if not want or r["model"] in want]
+    if not rows: sys.exit(f"calib: no models match {want}")
+    sizes = [4, 5, 6, 7, 8, 9, 10, 11, 12]; c = sqlite3.connect(os.path.join(here, "runs.db")); picks = {}
+    def probe(r, n):
+        """one request of n k: (passes, pass tokens, prompt tokens, prompt t/s) of its row; None when it did not run"""
+        base = r["name"].rsplit("-", 1)[0]; name = f"{base}-p{n}"
+        with open(os.path.join(here, "runs", "calib.csv"), "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(r.keys())); w.writeheader(); w.writerow(dict(r, name=name, test=f"pf{n}k1k", n="1"))
+        cmd = [sys.executable, os.path.join(here, "run.py"), "run", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else [])
+        print(col(90, " ".join(cmd)), flush=True)
+        if a.dry: return None
+        subprocess.call(cmd)
+        x = c.execute("select pf_passes, pf_pass, note, pp, tps from runs where campaign like ? and cast(ok as integer)=1 and pp is not null order by ts desc limit 1", (f"{b}-{name}-pf{n}k1k",)).fetchone()
+        if not x: return None
+        tk = re.search(r"prompt_n=(\d+)", x[2] or "")
+        return int(x[0] or 0), int(x[1] or 0), int(tk.group(1)) if tk else 0, float(x[3]), float(x[4] or 0)
+    for r in rows:
+        seen = {}   # size -> (passes, pass tokens, prompt tokens, prompt t/s)
+        def ask(n):
+            if n not in seen: seen[n] = probe(r, n)
+            return seen[n]
+        n = 16; lo, hi = 0, 10**6   # lo: biggest known one-pass size, hi: smallest known multi-pass size (k); no estimate: the search finds the maximum
+        while hi - lo > 1:
+            x = ask(n)
+            if x is None: break
+            if x[0] <= 1: lo = n
+            else: hi = n
+            n = (lo + hi) // 2 if hi < 10**6 else lo * 2   # one pass: double (the longest source is 128k) until it breaks; then bisect to 1k
+            if n >= 128 or n in seen: break
+            if lo == 0 and hi == 1: break   # not even 1k fits in one pass
+        if lo == 0: print(col(33, f"{r['model']}: no size ran in one pass or a run failed: nothing stored")); continue
+        # the pick, inside the one-pass range: probe every size from the biggest one-pass size down to its half, scale the prompt speed and the decode speed each by the best of the range (best = 1),
+        # add the two: the highest sum wins (a bigger size wins a tie). A smaller prompt can win through its prompt speed (fewer passes) and through the decode after it (more experts survive in the cache)
+        for n in range(lo, max(1, (lo + 1) // 2) - 1, -1): ask(n)
+        ok_ = {n: v for n, v in seen.items() if v and v[4] and v[0] <= 1 and n <= lo}
+        if not ok_: print(col(33, f"{r['model']}: no one-pass size with a decode speed: nothing stored")); continue
+        mp, mt = max(v[3] for v in ok_.values()), max(v[4] for v in ok_.values())
+        eff = {n: v[3] / mp + v[4] / mt for n, v in ok_.items()}; k = max(eff, key=lambda n: (round(eff[n], 6), n))
+        picks[r["model"]] = (k, seen[k][2]); print(col("1;92", f"{r['model']}: best prompt {k}k ({seen[k][2]} tokens, {seen[k][0]} pass(es), prompt {seen[k][3]:.0f} t/s, decode {seen[k][4]:.1f} t/s); biggest one-pass {lo}k"))
+        for n in sorted(eff): print(f"   {n:>3}k  {ok_[n][2]:>6} tokens  {ok_[n][0]} pass(es)  prompt {ok_[n][3]:>6.0f} t/s  decode {ok_[n][4]:>5.1f} t/s  score {eff[n]:.3f}  total {ok_[n][2] / ok_[n][3] + 1024 / ok_[n][4]:>5.1f} s")
+    if picks and not a.dry and not a.nowrite:
+        cards = n_cards(); ini = os.path.join(here, "models.ini"); lines = open(ini).read().split("\n")
+        for model, (n, tok) in picks.items():
+            sec = model_alias(next((v["path"] for k, v in fcfg.models_ini().items() if k == model), model)) or (model if model in fcfg.models_ini() else None)
+            if not sec: print(col(31, f"{model}: no models.ini section, not written")); continue
             for key, val in ((f"{hw_key()}bestpp", f"{n}k"), (f"{hw_key()}bestpp_tokens", str(tok))):   # the size the tests use, and the real token count that passed in one pass
                 i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
                 while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
@@ -5898,8 +5962,8 @@ def n_cards():
 
 
 def hw_key():
-    """the VRAM of the cards the cells use, in GiB, as a models.ini key prefix: 24g for one 24 GiB card, 48g for two (the best prompt depends on the VRAM, so a model holds one per setup:
-    24gbestpp = 7k). -ng N takes the N biggest cards. No card: 0g"""
+    """the VRAM of the cards the cells use, in GiB, for models.ini: 24g for one 24 GiB card, 48g for two (the best prompt depends on the VRAM, so a model holds one per setup:
+    bestpp = [48=8,24=7]). -ng N takes the N biggest cards. No card: 0g"""
     try: mem = sorted((round(int(x) / 1024) for x in subprocess.run([os.environ.get("NVIDIA_SMI", "nvidia-smi"), "--query-gpu=memory.total", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=30).stdout.split()), reverse=True)
     except (OSError, ValueError, subprocess.SubprocessError): mem = []
     cv = os.environ.get("CUDA_VISIBLE_DEVICES")
@@ -5914,14 +5978,19 @@ def model_alias(model_path):
     return next((k for k, v in fcfg.models_ini().items() if v.get("path") and os.path.basename(v["path"]) == base), None)
 
 
+def vram_map(text):
+    """models.ini value '[48=8,24=7]' -> {48: 8, 24: 7}: total VRAM of the cards in GiB -> value"""
+    return {int(k): int(v) for k, v in re.findall(r"(\d+)\s*=\s*(\d+)", str(text))}
+
+
 def best_prompt_k(model_path):
-    """the model's best one-pass input prompt in nominal thousands of tokens: models.ini <VRAM of the cards>bestpp (24gbestpp) for the cards seen now, else best_prompt, else 12 (the biggest size of the
-    README tests). Measured by `run.py onepass`: the biggest prompt that runs in ONE pass at its best prompt speed."""
+    """the model's best input prompt in nominal thousands of tokens: models.ini `bestpp = [48=8,24=7]` (total VRAM of the cards in GiB = size in k) for the cards seen now, else best_prompt, else 12
+    (the biggest size of the README tests). Measured by `run.py calib`: the best prompt speed plus decode speed inside the one-pass range."""
     sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {})
-    for key in (f"{hw_key()}bestpp", "best_prompt"):
-        m = re.fullmatch(r"(\d+)k?", str(sec.get(key, "")).strip())
-        if m: return int(m.group(1))
-    return 12
+    v = vram_map(sec.get("bestpp", "")).get(int(hw_key()[:-1]))
+    if v: return v
+    m = re.fullmatch(r"(\d+)k?", str(sec.get("best_prompt", "")).strip())
+    return int(m.group(1)) if m else 12
 
 
 def best_test(model_path, test, remote=False):
