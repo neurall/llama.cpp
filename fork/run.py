@@ -4816,6 +4816,13 @@ def cell_status(t0, expect, label, total=None):
             mode.append(col(36, f"par gpus prompt {pgpus or '?'} decode 1") + (col(90, f"  cache on {ncache} cards") if ncache else "") + (col(35, f" uploading on {up}/{len(links)} links") if links else ""))
             if sp.get("why"): mode.append(col(90, sp["why"]))
             eng = eng + "\n" + col(37, "engine") + " " + "  ".join(mode)
+            if CELL_REF[0] and (best := best_ref(*CELL_REF[0])):   # live speeds against the best earlier run of this model, test and power limits (runs.db)
+                bpp, bpb, btg, btb = best
+                lpp = lv["done"] / lv["s"] if lv.get("done") and lv.get("s") else pr.get("last_tps")
+                ltg = 1000 / tk["last64"] if tk.get("tokens") and tk.get("last64") else None
+                gain = lambda v, b: (col(32 if v >= b else 91, f"{100 * (v / b - 1):+.0f}%") if v and b else col(90, "-"))
+                eng += ("\n" + col(37, "vs best ") + col(32, f"pp {lpp:.0f}" if lpp else "pp -") + col(90, f" / {bpp:.0f} ({bpb}) ") + gain(lpp, bpp)
+                        + "   " + col(94, f"tt {ltg:.1f}" if ltg else "tt -") + col(90, f" / {btg:.1f} ({btb}) ") + gain(ltg, btg) + col(90, "  (best earlier run, same model, test, power limits)"))
             bal = sp.get("bal")
             if bal:   # the live balance of the dense split (engine 2026-10-23): each card's dense and MoE time of the last split pass, its share of the tokens and experts
                 h, o = bal.get("helper") or {}, bal.get("owner") or {}
@@ -5096,6 +5103,26 @@ PRELUDE = [0, 0]   # lines of a remote list's start (old servers stopped, disk c
 LIVE_UP = [0]       # lines of the status block on screen: the next cell redraws over it, nothing scrolls
 CELL_ASKED = [0]    # tokens asked for in the running cell
 CELL_PROMPT = [""]   # the running cell's prompt text (set per row)
+CELL_REF = [None]   # (model file name, test) of the running cell: its live speeds are held against the best earlier run (best_ref)
+_BEST_REF = {}
+
+
+def best_ref(model, test):
+    """(pp t/s, build, tg t/s, build) of the best earlier ok, non-looping run of this model and test at the power limits now set (runs.db); None for what has no history.
+    Cached per cell: the live line asks every second."""
+    hw = os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
+    pl = power_limits(hw)
+    key = (model, test, pl)
+    if key not in _BEST_REF:
+        try:
+            import sqlite3
+            c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+            q = "select %s, build from runs where model=? and test=? and ok=1 and coalesce(loop,'0') in ('0','') and %s>0" + (" and pl=?" if pl else "") + " order by %s desc limit 1"
+            a = (model, ALIASES.get(test, test)) + ((pl,) if pl else "")
+            pp = c.execute(q % ("pp", "pp", "pp"), a).fetchone(); tg = c.execute(q % ("tps", "tps", "tps"), a).fetchone()
+            _BEST_REF[key] = (pp[0], pp[1], tg[0], tg[1]) if pp and tg else None
+        except Exception: _BEST_REF[key] = None
+    return _BEST_REF[key]
 CELL_REC = []       # structured twin of CELL_LINES: the final table is built from it
 STOCK_REC = [None]  # set by stock_gain: the stock numbers behind its text
 CELL_LINES = []     # one summary line per finished cell, printed when the list ends
@@ -6012,7 +6039,7 @@ def run_list(name, argv):
             if o.dry: print(f"[{name}] {tag}: {shlex.join(cmd[3:])}", flush=True)
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
-            CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")); CELL_ASKED[0] = int(r["tokens"]) if r.get("tokens") else 0
+            CELL_REF[0] = (os.path.basename(r["model"]), r["test"]); CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")); CELL_ASKED[0] = int(r["tokens"]) if r.get("tokens") else 0
             CELL_TEST[0] = CELL_PROMPT[0] if re.fullmatch(r"pf\d+k1k", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")   # "12k in 1k out", "64t in 1k out"
             CELL_TEST[0] += f"  {r['_b']}" + (f"  {r['args'].strip()}" if r.get("args") and r["args"].strip() else "")   # what runs: build, extra server args
             if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, ("s" if r["_b"].startswith("stock") else "") + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
@@ -6272,6 +6299,7 @@ def _run_list_remote(o, rows, name, m, here, bad):
             try: os.remove(f"{QDIR}/{tag}-{r['test']}.run.out")
             except OSError: pass
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
+            CELL_REF[0] = (os.path.basename(r["model"]), r["test"])
             CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")) if tag not in CLAMPED else f"{CLAMPED[tag] / 1000:.1f}k/" + prompt_txt(r["test"], r.get("tokens")).split("/")[-1]; CELL_ASKED[0] = tout
             CELL_TEST[0] = CELL_PROMPT[0] if re.fullmatch(r"pf\d+k1k", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")
             CELL_TEST[0] += f"  {r['_b']}" + (f"  {r['args'].strip()}" if r.get("args") and r["args"].strip() else "")   # what runs: build, extra server args
