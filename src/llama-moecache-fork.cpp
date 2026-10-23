@@ -6977,14 +6977,18 @@ void llama_moe_cache_prefill_decide_fork(const std::vector<ggml_backend_dev_t> &
         return;
     }
     const double speedup = best > 0 ? sum / best : 1.0;
-    // The planner decides (llama_prefill_split_verdict_fork: the compute a card takes over per layer against the activation hop over its link, both from the probe).
-    // Only when the planner did not run is the old rule used: links within 0.7 of each other and a transfer speedup of 1.25.
+    // Off by default since 2026-10-23: the expert-only split (every card uploads and computes its share of each layer's experts) is not started from the probe's
+    // verdict any more. It pays twice: the expert bytes go over both links, and every layer waits for the slower card, the same cost as extra passes (user,
+    // 2026-10-23). The verdict ("saved compute > hop", no margin) sat on the line for MiMo-V2.6-Flash on x16 + x4: one start said 1.24x and stayed on one card,
+    // the next said 1.25x and split, 17% slower at 3k (598/627 against 725/754 prompt t/s) and 24% slower on the cold 12k pass. Models with a dense split
+    // try that first (its copies are uploaded once and the second card computes for free, llama-dsplit-fork.cpp); --moe prefill-split=F still forces this one.
     const int verdict = llama_prefill_split_verdict_fork();
-    g_split_enabled = verdict >= 0 ? verdict == 1 : (speedup >= 1.25 && worst >= 0.7 * best);
-    g_split_share   = g_split_enabled ? 1.0f : 0.0f;
+    g_split_enabled = false;
+    g_split_share   = 0.0f;
     g_split_speedup = speedup;
-    LLAMA_LOG_WARN("moe-cache: prefill links (GB/s):%s -> split's transfer speedup %.2fx: %s\n", log.c_str(), speedup,
-        g_split_enabled ? "reserved, alpha measured on prompt batches" : "one GPU (the split's compute buffers would cost more cache)");
+    LLAMA_LOG_WARN("moe-cache: prefill links (GB/s):%s -> split's transfer speedup %.2fx, probe verdict %s: one GPU (the expert-only split is off by default; --moe prefill-split=F forces it)\n",
+        log.c_str(), speedup, verdict < 0 ? "none" : verdict == 1 ? "pays" : "does not pay");
+    (void) worst;
 }
 
 // PREDICT switched: every layer's predictor off (or on, until the per-layer miss rule runs again), graph rebuilt once
