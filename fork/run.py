@@ -4821,8 +4821,8 @@ def cell_status(t0, expect, label, total=None):
                 lpp = lv["done"] / lv["s"] if lv.get("done") and lv.get("s") else pr.get("last_tps")
                 ltg = 1000 / tk["last64"] if tk.get("tokens") and tk.get("last64") else None
                 gain = lambda v, b: (col(32 if v >= b else 91, f"{100 * (v / b - 1):+.0f}%") if v and b else col(90, "-"))
-                eng += ("\n" + col(37, "vs best ") + col(32, f"pp {lpp:.0f}" if lpp else "pp -") + col(90, f" / {bpp:.0f} ({bpb}) ") + gain(lpp, bpp)
-                        + "   " + col(94, f"tt {ltg:.1f}" if ltg else "tt -") + col(90, f" / {btg:.1f} ({btb}) ") + gain(ltg, btg) + col(90, "  (best earlier run, same model, test, power limits)"))
+                eng += ("\n" + col(37, "vs best ") + col(32, f"pp {lpp:.0f}" if lpp else "pp -") + col(90, f" / {bpp:.0f} ({bpb}) ") + col(90, f"{1000 / lpp:.2f} / {1000 / bpp:.2f} ms/tok " if lpp else "") + gain(lpp, bpp)
+                        + "   " + col(94, f"tt {ltg:.1f}" if ltg else "tt -") + col(90, f" / {btg:.1f} ({btb}) ") + col(90, f"{1000 / ltg:.1f} / {1000 / btg:.1f} ms/tok " if ltg else "") + gain(ltg, btg) + col(90, "  (best stored speed of an earlier run: same model, test, power limits)"))
             bal = sp.get("bal")
             if bal:   # the live balance of the dense split (engine 2026-10-23): each card's dense and MoE time of the last split pass, its share of the tokens and experts
                 h, o = bal.get("helper") or {}, bal.get("owner") or {}
@@ -5117,9 +5117,9 @@ def best_ref(model, test):
         try:
             import sqlite3
             c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-            q = "select %s, build from runs where model=? and test=? and ok=1 and coalesce(loop,'0') in ('0','') and %s>0" + (" and pl=?" if pl else "") + " order by %s desc limit 1"
+            q = "select coalesce(%s_max, %s), build from runs where model=? and test=? and ok=1 and coalesce(loop,'0') in ('0','') and coalesce(%s_max, %s)>0" + (" and pl=?" if pl else "") + " order by 1 desc limit 1"
             a = (model, ALIASES.get(test, test)) + ((pl,) if pl else "")
-            pp = c.execute(q % ("pp", "pp", "pp"), a).fetchone(); tg = c.execute(q % ("tps", "tps", "tps"), a).fetchone()
+            pp = c.execute(q % ("pp",) * 4, a).fetchone(); tg = c.execute(q % ("tps",) * 4, a).fetchone()
             _BEST_REF[key] = (pp[0], pp[1], tg[0], tg[1]) if pp and tg else None
         except Exception: _BEST_REF[key] = None
     return _BEST_REF[key]
