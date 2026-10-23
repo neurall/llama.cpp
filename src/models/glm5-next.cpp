@@ -807,13 +807,16 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
             ggml_tensor * k_lid   = inp_kpool->k_idxs;
             const int64_t n_kv_   = mctx_hyb->get_idx()->get_n_kv();
             const int64_t n_pool_ = inp_kpool->pool_cells->ne[0];
-            const int64_t n_sel_  = inp_kpool->sel_mask->ne[0];
+            // sel_mask exists only without the fused top-k mask op (upstream #30640): the fused op reads liveness from the scores instead,
+            // so with it the ranges get no slice (b13838 dereferenced the missing mask here: segfault on every dense-split GLM pass)
+            ggml_tensor * sel_m   = inp_kpool->sel_mask;
+            const int64_t n_sel_  = sel_m ? sel_m->ne[0] : 0;
             for (size_t r = 0; r < NR; ++r) {
                 const int64_t nr = R[r].t1 - R[r].t0, t0 = R[r].t0;
                 dsa_kqm[r]  = ggml_view_2d(ctx0, kq_mask, n_kv_, nr, kq_mask->nb[1], t0 * kq_mask->nb[1]);
                 dsa_pm[r]   = ggml_view_2d(ctx0, inp_kpool->pool_mask, n_pool_, nr, inp_kpool->pool_mask->nb[1], t0 * inp_kpool->pool_mask->nb[1]);
-                dsa_gm[r]   = ggml_reshape_2d(ctx0, ggml_view_4d(ctx0, inp_kpool->sel_mask, n_sel_, 1, 1, nr, inp_kpool->sel_mask->nb[1],
-                                    inp_kpool->sel_mask->nb[2], inp_kpool->sel_mask->nb[3], t0 * inp_kpool->sel_mask->nb[3]), n_sel_, nr);
+                dsa_gm[r]   = sel_m ? ggml_reshape_2d(ctx0, ggml_view_4d(ctx0, sel_m, n_sel_, 1, 1, nr, sel_m->nb[1],
+                                    sel_m->nb[2], sel_m->nb[3], t0 * sel_m->nb[3]), n_sel_, nr) : nullptr;
                 dsa_tail[r] = ggml_view_2d(ctx0, inp_kpool->tail_idxs, inp_kpool->tail_idxs->ne[0], nr, inp_kpool->tail_idxs->nb[1], t0 * inp_kpool->tail_idxs->nb[1]);
                 dsa_kim[r]  = ggml_view_1d(ctx0, k_mla, nr, t0 * ggml_element_size(k_mla));
                 dsa_kil[r]  = ggml_view_1d(ctx0, k_lid, nr, t0 * ggml_element_size(k_lid));
@@ -981,27 +984,34 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                         ggml_tensor * pmask = dsa_pm[r];
                         ggml_tensor * score = ggml_lightning_indexer(ctx0, iq[r], pooled, iw[r], pmask);
                         ggml_tensor * top_k = ggml_top_k(ctx0, score, n_top_pool);
-                        ggml_tensor * sel_score = ggml_get_rows(ctx0, ggml_reshape_3d(ctx0, score, 1, n_pool, nr), top_k);
-                        ggml_tensor * sel_order = ggml_argsort(ctx0, ggml_reshape_2d(ctx0, sel_score, n_top_pool, nr), GGML_SORT_ORDER_DESC);
-                        top_k = ggml_get_rows(ctx0, ggml_reshape_3d(ctx0, ggml_cast(ctx0, top_k, GGML_TYPE_F32), 1, n_top_pool, nr), sel_order);
-                        top_k = ggml_cast(ctx0, ggml_cont(ctx0, ggml_reshape_2d(ctx0, top_k, n_top_pool, nr)), GGML_TYPE_I32);
-                        ggml_tensor * sel_idx = ggml_reshape_2d(ctx0, ggml_get_rows(ctx0, inp_kpool->pool_idxs, ggml_reshape_1d(ctx0, top_k, n_top_pool*nr)), kpool*n_top_pool, nr);
-                        if (hparams.indexer_kpool_select_tail) {
-                            sel_idx = ggml_concat(ctx0, sel_idx, dsa_tail[r], 0);
+                        if (cparams.fused_top_k_mask) {
+                            // same as the one-card path (build_kpool_select): the fused op builds the range's mask from its slice of kq_mask
+                            ggml_tensor * tail = hparams.indexer_kpool_select_tail ? dsa_tail[r] : nullptr;
+                            GGML_ASSERT(kpool*n_top_pool + (tail ? tail->ne[0] : 0) == (int64_t) inp_kpool->n_sel);
+                            sel = build_fused_top_k_mask(kq_mask_r, top_k, score, inp_kpool->pool_idxs, tail, il);
+                        } else {
+                            ggml_tensor * sel_score = ggml_get_rows(ctx0, ggml_reshape_3d(ctx0, score, 1, n_pool, nr), top_k);
+                            ggml_tensor * sel_order = ggml_argsort(ctx0, ggml_reshape_2d(ctx0, sel_score, n_top_pool, nr), GGML_SORT_ORDER_DESC);
+                            top_k = ggml_get_rows(ctx0, ggml_reshape_3d(ctx0, ggml_cast(ctx0, top_k, GGML_TYPE_F32), 1, n_top_pool, nr), sel_order);
+                            top_k = ggml_cast(ctx0, ggml_cont(ctx0, ggml_reshape_2d(ctx0, top_k, n_top_pool, nr)), GGML_TYPE_I32);
+                            ggml_tensor * sel_idx = ggml_reshape_2d(ctx0, ggml_get_rows(ctx0, inp_kpool->pool_idxs, ggml_reshape_1d(ctx0, top_k, n_top_pool*nr)), kpool*n_top_pool, nr);
+                            if (hparams.indexer_kpool_select_tail) {
+                                sel_idx = ggml_concat(ctx0, sel_idx, dsa_tail[r], 0);
+                            }
+                            const int64_t n_sel = sel_idx->ne[0];
+                            GGML_ASSERT(inp_kpool->sel_mask->ne[0] == n_sel);
+                            ggml_tensor * mask_all = ggml_repeat_4d(ctx0, ggml_fill(ctx0, ggml_new_tensor_4d(ctx0, kq_mask->type, n_kv + n_sel, 1, 1, 1), -INFINITY), n_kv + n_sel, nr, 1, 1);
+                            mask_all = ggml_reshape_3d(ctx0, mask_all, 1, n_kv + n_sel, nr);
+                            ggml_tensor * zeros = ggml_repeat_4d(ctx0, ggml_fill(ctx0, ggml_new_tensor_4d(ctx0, kq_mask->type, n_sel, 1, 1, 1), 0.0f), n_sel, nr, 1, 1);
+                            zeros = ggml_reshape_3d(ctx0, zeros, 1, n_sel, nr);
+                            ggml_tensor * live  = ggml_exp(ctx0, dsa_gm[r]);
+                            ggml_tensor * dump  = ggml_arange(ctx0, (float) n_kv, (float) (n_kv + n_sel), 1.0f);
+                            ggml_tensor * idx_f = ggml_cast(ctx0, sel_idx, GGML_TYPE_F32);
+                            idx_f = ggml_add(ctx0, ggml_mul(ctx0, ggml_sub(ctx0, idx_f, dump), live), dump);
+                            sel = ggml_set_rows(ctx0, mask_all, zeros, ggml_reshape_3d(ctx0, ggml_cast(ctx0, idx_f, GGML_TYPE_I32), n_sel, nr, 1));
+                            sel = ggml_view_2d(ctx0, sel, n_kv, nr, sel->nb[2], 0);
+                            sel = ggml_add(ctx0, sel, kq_mask_r);
                         }
-                        const int64_t n_sel = sel_idx->ne[0];
-                        GGML_ASSERT(inp_kpool->sel_mask->ne[0] == n_sel);
-                        ggml_tensor * mask_all = ggml_repeat_4d(ctx0, ggml_fill(ctx0, ggml_new_tensor_4d(ctx0, kq_mask->type, n_kv + n_sel, 1, 1, 1), -INFINITY), n_kv + n_sel, nr, 1, 1);
-                        mask_all = ggml_reshape_3d(ctx0, mask_all, 1, n_kv + n_sel, nr);
-                        ggml_tensor * zeros = ggml_repeat_4d(ctx0, ggml_fill(ctx0, ggml_new_tensor_4d(ctx0, kq_mask->type, n_sel, 1, 1, 1), 0.0f), n_sel, nr, 1, 1);
-                        zeros = ggml_reshape_3d(ctx0, zeros, 1, n_sel, nr);
-                        ggml_tensor * live  = ggml_exp(ctx0, dsa_gm[r]);
-                        ggml_tensor * dump  = ggml_arange(ctx0, (float) n_kv, (float) (n_kv + n_sel), 1.0f);
-                        ggml_tensor * idx_f = ggml_cast(ctx0, sel_idx, GGML_TYPE_F32);
-                        idx_f = ggml_add(ctx0, ggml_mul(ctx0, ggml_sub(ctx0, idx_f, dump), live), dump);
-                        sel = ggml_set_rows(ctx0, mask_all, zeros, ggml_reshape_3d(ctx0, ggml_cast(ctx0, idx_f, GGML_TYPE_I32), n_sel, nr, 1));
-                        sel = ggml_view_2d(ctx0, sel, n_kv, nr, sel->nb[2], 0);
-                        sel = ggml_add(ctx0, sel, kq_mask_r);
                         prev_sel_r[r] = sel;
                     } else {
                         GGML_ASSERT(prev_sel_r[r] != nullptr && "shared indexer layer must follow a full indexer layer");
