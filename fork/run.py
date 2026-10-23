@@ -5946,6 +5946,12 @@ def ini_set_bestpp(sec, tok, out, pp, tps, pp_s, tg_s, score):
 BESTPP_MEM = {}   # (alias, VRAM GiB) -> request time per token (ms) of the best prompt so far: read from models.ini once, then only in memory
 
 
+def scores(seen):
+    """{prompt tokens: (answer tokens, prompt t/s, decode t/s)} -> {prompt tokens: score}: prompt speed over the best prompt speed plus decode speed over the best decode speed (best on both = 2)"""
+    mp, mt = max(v[1] for v in seen.values()), max(v[2] for v in seen.values())
+    return {k: v[1] / mp + v[2] / mt for k, v in seen.items()}
+
+
 def learn_bestpp(model, test, tag):
     """after a finished cell of a sized prompt (7k1k) that ran in ONE pass: its last (warm) run is compared with the model's best prompt for this VRAM (kept in memory, first read from models.ini
     bestpp). Both prompt speed and decode speed count: each is scaled by the better of the two, the two scaled numbers are added, the higher sum wins, a longer prompt wins a tie. The winner is
@@ -5961,12 +5967,14 @@ def learn_bestpp(model, test, tag):
         if not x or not pn or str(x[3] or "") != "1": return   # only a prompt that ran in ONE pass counts
         new = (int(pn.group(1)), int(x[4] or 1024), float(x[0]), float(x[1])); hw = int(hw_key()[:-1]); key = (sec, hw)   # prompt tokens, answer tokens of this run, prompt t/s, decode t/s
         pp_s, tg_s = new[0] / new[2], new[1] / new[3]; total = pp_s + tg_s   # seconds of the request: the prompt, then the answer the run gave at the decode speed that followed (the server's own timings: no load time)
-        if key not in BESTPP_MEM: BESTPP_MEM[key] = bestpp_entries((fcfg.models_ini().get(sec) or {}).get("bestpp", "")).get(hw)
-        old = BESTPP_MEM[key]
-        score = lambda e: (e[2] / max(e[2], new[2], old[2] if old else 0) + e[3] / max(e[3], new[3], old[3] if old else 0), e[0])
-        if old is None or score(new) > score(old):
-            BESTPP_MEM[key] = new; sc = score(new)[0]; ini_set_bestpp(sec, *new, pp_s, tg_s, sc)
-            print(col(92, f"best prompt of {sec} at {hw}g: {new[0]} tokens in, {new[1]} out, prompt {new[2]:.0f} t/s, decode {new[3]:.1f} t/s, total {total:.1f} s, score {sc:.2f}, written to models.ini"), flush=True)
+        if key not in BESTPP_MEM:   # every one-pass prompt seen so far for this model and VRAM: {prompt tokens: (answer tokens, prompt t/s, decode t/s)}, starting with the models.ini entry
+            e0 = bestpp_entries((fcfg.models_ini().get(sec) or {}).get("bestpp", "")).get(hw); BESTPP_MEM[key] = {e0[0]: e0[1:4]} if e0 else {}
+        seen = BESTPP_MEM[key]; was = max(seen, key=lambda k: scores(seen)[k]) if seen else None   # the stored best before this run
+        seen[new[0]] = new[1:]
+        sc_all = scores(seen); best = max(seen, key=lambda k: (round(sc_all[k], 6), k))   # all seen sizes against the same two best numbers: no order effects
+        if best != was or new[0] == best:
+            o_, p_, d_ = seen[best]; ini_set_bestpp(sec, best, o_, p_, d_, best / p_, o_ / d_, sc_all[best])
+            if best != was: print(col(92, f"best prompt of {sec} at {hw}g: {best} tokens, prompt {p_:.0f} t/s, decode {d_:.1f} t/s, total {best / p_ + o_ / d_:.1f} s, score {sc_all[best]:.2f}, written to models.ini"), flush=True)
     except Exception as e: print(col(90, f"best prompt not updated: {e}"), flush=True)
 
 
