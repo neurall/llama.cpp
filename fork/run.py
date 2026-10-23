@@ -1130,6 +1130,7 @@ STAT_COLS = ["prompt", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_
 RUN_COLS += STAT_COLS + PRESSURE_COLS
 RUN_COLS += ["pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end"]   # predictor outcomes of the run, from cache.csv (see cache_csv_totals)
 RUN_COLS += ["up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms"]   # per GPU: mean upload time of one expert on the fast / slow link (engine log) and the effective speed MiB per expert / that time; the startup link speed of each CUDA device; admit-pred builds also: uploads, MiB and copy time per link from cache.csv
+RUN_COLS += ["bestpp"]   # every run, better or worse (regressions show): the run as a models.ini bestpp tuple (total VRAM GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s)
 RUN_COLS += ["up_ms_expert", "up_gbs_eff"]   # from the engine log: mean upload time of one expert (all three tensors) over the second half of the run, and the effective speed of one upload = MiB per expert / that time
 RUN_COLS += ["pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb"]   # nvidia-smi dmon over the server run: GB host->device during the request (all GPUs; the server is already loaded), the peak of any GPU in a second, the mean of the seconds that moved data, GB device->host
 RUN_COLS += ["ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1"]   # from cache.csv (admit-pred builds): mean RAM traffic share of DDR_GBS, mean share of uploads that ran while the CPU read experts, mean slowdown of CPU expert phases with an upload in flight, the first predicted layer ahead per link at the end
@@ -2329,7 +2330,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                                    {"prompt": ovr_prompt(_pf_text), "n_predict": _np,
                                     "cache_prompt": False, **GREEDY, **(FIXED if test == "fix12k" else {})})
             t = res["timings"]
-            row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
+            row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
                    "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}" + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
             # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
             # a chat answer keeps its reasoning part too (a thinking model can put everything there and leave the content empty)
@@ -2390,7 +2391,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             text = (m.get("reasoning_content") or "") + "\n---\n" + (m.get("content") or "")
         t = res["timings"]
         log = open(logf).read()
-        row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
+        row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
                "output": text, "md5": hashlib.md5(text.encode()).hexdigest()[:8]}
         row.update(PROCSTAT)
         _rx = r"moe churn = (\d+) uploads, (\d+) evictions, ([\d.]+) MiB uploaded \(this request\)"
@@ -4010,7 +4011,7 @@ def cmd_ctl(a):
                 prompt = CHAT_PROMPTS[(((r - 1) // len(V)) * len(V) + (r - 1 + i) % len(V)) % len(CHAT_PROMPTS)]
                 ask(a.warm, "Say hi in one short sentence.")
                 t = ask(a.tokens, ovr_prompt(prompt))
-                row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "ok": 1, "args": kv}
+                row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t), "ok": 1, "args": kv}
                 store(row, a.build, "ctl", {"variant": name, "settings": kv, "round": str(r), "bare": "1"}, a.note, os.environ.get("PERF_HW") or "pc1", vstr)
                 sums[name].append(row["tps"])
             print(f"round {r}: " + " ".join(f"{n} {sums[n][-1]:.2f}" for n, _ in V), flush=True)
@@ -5918,6 +5919,15 @@ def bestpp_entries(text):
     decode t/s, prompt seconds, answer seconds, score); the request takes prompt + answer seconds"""
     num = r"\s*,\s*([\d.]+)"
     return {int(g[0]): (int(g[1]), int(g[2])) + tuple(float(x) for x in g[3:]) for g in re.findall(r"\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)" + num * 5 + r"\s*\)", str(text))}
+
+
+def bestpp_run(t):
+    """the bestpp tuple of one request from the server timings (no load time in them): (total VRAM GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s); stored with
+    every run in runs.db, whether the run is better or worse than the models.ini entry"""
+    try:
+        ans = (t.get("predicted_ms") or t["predicted_n"] / max(t["predicted_per_second"], 1e-9) * 1e3) / 1e3
+        return f"({hw_key()[:-1]},{t['prompt_n']},{t['predicted_n']},{t['prompt_per_second']:.0f},{t['predicted_per_second']:.1f},{t['prompt_ms'] / 1e3:.1f},{ans:.1f})"
+    except (KeyError, TypeError, ZeroDivisionError): return ""
 
 
 def ini_set_bestpp(sec, tok, out, pp, tps, pp_s, tg_s, score):
