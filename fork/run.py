@@ -5612,6 +5612,17 @@ def cmd_calib(a):
         if not x: return None
         tk = re.search(r"prompt_n=(\d+)", x[2] or "")
         return int(x[0] or 0), int(x[1] or 0), int(tk.group(1)) if tk else 0, float(x[3]), float(x[4] or 0)
+    def fits(r, n):
+        """dry allocation request: can the server hold a context of n nominal k? A 2k prompt with one answer token and --ctx for n k (about 1.1k tokens per nominal k plus the answer): the server allocates
+        the KV and the pool for that context at start and refuses when it is too big, nothing is prefilled. True when the request ran."""
+        base = r["name"].rsplit("-", 1)[0]; name = f"{base}-a{n}"; ctx = int(n * 1100 + 2048)
+        with open(os.path.join(here, "runs", "calib.csv"), "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(r.keys())); w.writeheader(); w.writerow(dict(r, name=name, test="pf2k1k", n="1", tokens="1", extra=f"--ctx {ctx}"))
+        cmd = [sys.executable, os.path.join(here, "run.py"), "run", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else [])
+        print(col(90, f"dry allocation of {ctx} tokens of context: " + " ".join(cmd)), flush=True)
+        if a.dry: return False
+        subprocess.call(cmd)
+        return c.execute("select count(*) from runs where campaign like ? and cast(ok as integer)=1", (f"{b}-{name}-pf2k1k",)).fetchone()[0] > 0
     for r in rows:
         seen = {}   # size (k) -> (passes, pass tokens, prompt tokens, prompt t/s, decode t/s); passes 0 = the model's rows carry no pass count
         def ask(n):
@@ -5631,6 +5642,8 @@ def cmd_calib(a):
         if pps: fit = min(fit, int(statistics.median(pps) * 600))   # time is a resource too: a probe may take 10 minutes of prefill at the speed the model last showed (feedback: no cell over 10-15 min)
         n = ceil_k or max(1, int((fit - 2048) * 0.9 / 1000))   # no static start: the biggest prompt the machine can hold, by arithmetic (feasible_ctx), minus the answer and a margin; ~1.1 tokens per nominal token on the big tokenizers
         print(col(90, f"{r['model']}: KV {bpt} bytes per token, {gib:.0f} GiB for it: {fit} tokens fit (memory, the trained context and 10 minutes of prefill cap it): start at {n}k"), flush=True)
+        while n > 1 and not ceil_k and not fits(r, n): n //= 2   # (no pass ceiling known) too big for this machine: half of it (n log n steps down), each a start-up without prefill
+        if ceil_k: ceil_k = min(ceil_k, n)
         while True:   # the maximum that fits: a prompt the server cannot allocate or run halves
             x = ask(n)
             if x is not None or n <= 1: break
