@@ -5521,7 +5521,7 @@ def cmd_onepass(a):
         for model, n in picks.items():
             sec = model_alias(model if os.path.isabs(model) else next((v["path"] for v in fcfg.models_ini().values() if os.path.basename(v.get("path", "")) == model), model))
             if not sec: print(col(31, f"{model}: no models.ini section, not written")); continue
-            key = f"best_prompt.{hw_key()}"
+            key = f"{hw_key()}bestpp"
             i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
             while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1   # before the blank lines that end the section
             j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
@@ -5584,7 +5584,7 @@ def cmd_calib(a):
         for model, (n, tok) in picks.items():
             sec = model_alias(next((v["path"] for k, v in fcfg.models_ini().items() if k == model), model)) or (model if model in fcfg.models_ini() else None)
             if not sec: print(col(31, f"{model}: no models.ini section, not written")); continue
-            for key, val in ((f"best_prompt.{hw_key()}", f"{n}k"), (f"best_prompt_tokens.{hw_key()}", str(tok))):   # the size the tests use, and the real token count that passed in one pass
+            for key, val in ((f"{hw_key()}bestpp", f"{n}k"), (f"{hw_key()}bestpp_tokens", str(tok))):   # the size the tests use, and the real token count that passed in one pass
                 i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
                 while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
                 j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
@@ -5898,14 +5898,14 @@ def n_cards():
 
 
 def hw_key():
-    """the cards the cells use as a models.ini key suffix: count x VRAM in GiB, e.g. 2x24g; unequal cards 24+12g (biggest first); a best prompt depends on the VRAM, so one model can hold one per setup. No card: cpu"""
+    """the VRAM of the cards the cells use, in GiB, as a models.ini key prefix: 24g for one 24 GiB card, 48g for two (the best prompt depends on the VRAM, so a model holds one per setup:
+    24gbestpp = 7k). -ng N takes the N biggest cards. No card: 0g"""
     try: mem = sorted((round(int(x) / 1024) for x in subprocess.run([os.environ.get("NVIDIA_SMI", "nvidia-smi"), "--query-gpu=memory.total", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=30).stdout.split()), reverse=True)
     except (OSError, ValueError, subprocess.SubprocessError): mem = []
     cv = os.environ.get("CUDA_VISIBLE_DEVICES")
     if cv is not None and not os.environ.get("RUN_NG"): mem = mem[:len([x for x in cv.split(",") if x.strip()])]
-    mem = mem[:n_cards()] if os.environ.get("RUN_NG", "") != "" else mem
-    if not mem: return "cpu"
-    return f"{len(mem)}x{mem[0]}g" if len(set(mem)) == 1 else "+".join(map(str, mem)) + "g"
+    if os.environ.get("RUN_NG", "") != "": mem = mem[:int(os.environ["RUN_NG"])]
+    return f"{sum(mem)}g"
 
 
 def model_alias(model_path):
@@ -5915,10 +5915,10 @@ def model_alias(model_path):
 
 
 def best_prompt_k(model_path):
-    """the model's best one-pass input prompt in nominal thousands of tokens: models.ini best_prompt.<cards x VRAM, e.g. 2x24g> for the cards seen now, else best_prompt, else 12 (the biggest size of the
+    """the model's best one-pass input prompt in nominal thousands of tokens: models.ini <VRAM of the cards>bestpp (24gbestpp) for the cards seen now, else best_prompt, else 12 (the biggest size of the
     README tests). Measured by `run.py onepass`: the biggest prompt that runs in ONE pass at its best prompt speed."""
     sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {})
-    for key in (f"best_prompt.{hw_key()}", "best_prompt"):
+    for key in (f"{hw_key()}bestpp", "best_prompt"):
         m = re.fullmatch(r"(\d+)k?", str(sec.get(key, "")).strip())
         if m: return int(m.group(1))
     return 12
