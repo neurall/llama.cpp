@@ -234,14 +234,17 @@ void llama_dsplit_mirror_free_fork(const llama_model & model) {
 }
 
 namespace {
-// Bytes of mirror copies that have to be written before the next split pass (max over the cards: both fill at once, each over its own link). The copies live
-// in lent cache blocks (mirror-pool), decode reuses those blocks for experts, so EVERY request that splits starts with this copy. Measured: GLM 3-bit 1k-token
-// prompt 419 prompt t/s split against 512 on one card, MiMo 538 against 691 (a difference of 0.44 s and 0.40 s, 2.3-2.7 GB at ~6.6 GB/s over the x4 link).
+// Bytes of mirror copies that have to be written before the next split pass. The copies live in lent cache blocks (mirror-pool), decode reuses those blocks for
+// experts, so EVERY request that splits starts with this copy. Measured: GLM 3-bit 1k-token prompt 419 prompt t/s split against 512 on one card, MiMo 538
+// against 691 (a difference of 0.44 s and 0.40 s, 2.3-2.7 GB at ~6.6 GB/s over the x4 link).
+// SUM over the cards, not the largest: llama_context::moe_mirror_fill fills one card after the other (a sync after each), and with two cards both fills cross the
+// slower card's link, one in each direction (its copies in, the other card's out). Qwen3.8-Flash-Next 13.7k: 2078 MiB on the x4 card in 365 ms, then 1878 MiB on
+// the x16 in 325 ms; the planner counted 330 ms where 690 were paid (2026-10-23).
 static std::atomic<double> g_mirror_fill_bytes { 0.0 };
 static void dsplit_update_fill(const dsplit_set & S) {
-    double mx = 0.0;
-    for (const auto & kv : S.copies) { if (kv.second.pooled && !kv.second.valid) { mx = std::max(mx, (double) kv.second.bytes); } }
-    g_mirror_fill_bytes.store(mx);
+    double sum = 0.0;
+    for (const auto & kv : S.copies) { if (kv.second.pooled && !kv.second.valid) { sum += (double) kv.second.bytes; } }
+    g_mirror_fill_bytes.store(sum);
 }
 
 // the copies can be used: made, and every card's placed (mirror-pool places them at the first decode)
