@@ -1260,7 +1260,7 @@ def power_schedule(now=None):
     return POWER_DAY if 7 * 60 <= m < 23 * 60 + 50 else POWER_NIGHT
 
 
-def power_targets(widths, spec=None, maxes=None):
+def _power_targets_raw(widths, spec=None, maxes=None):
     """W per GPU for any number of cards. spec (-pl): `285` every card, `220,280,...` one per card (the last repeats), `220/280` the cards on a narrower link than the widest get the first value, the others the second
     (PC1: the x4 card 220, the x16 card 280). No spec: the day/night schedule, mapped the same way."""
     spec = spec or os.environ.get("PERF_POWER", "")
@@ -1273,10 +1273,19 @@ def power_targets(widths, spec=None, maxes=None):
     return [narrow if w < max(widths) else wide for w in widths]
 
 
+X4_MAX_W = 220   # the x4 card throttles and faults above this (user 2026-10-23): no spec, schedule or `-pl max` may set a narrower-link card higher
+
+
+def power_targets(widths, spec=None, maxes=None):
+    """_power_targets_raw, with every card on a narrower link than the widest held to X4_MAX_W"""
+    t = _power_targets_raw(widths, spec, maxes)
+    return [min(w, X4_MAX_W) if wd < max(widths) else w for w, wd in zip(t, widths)]
+
+
 def apply_power_schedule():
     """sets the live limits to the schedule's, where they differ (every run start and `run.py stop` call it, so a chain crossing 23:50 or 07:00 changes at its next cell)."""
     try:
-        q = [l.split(",") for l in subprocess.run([NVSMI, "--query-gpu=power.limit,pcie.link.width.max,power.max_limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout.splitlines() if l.count(",") == 2]
+        q = [l.split(",") for l in subprocess.run([NVSMI, "--query-gpu=power.limit,pcie.link.width.current,power.max_limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout.splitlines() if l.count(",") == 2]
         cur = [int(float(a)) for a, _, _ in q]
         want = power_targets([int(b) for _, b, _ in q], maxes=[int(float(c)) for _, _, c in q])
     except Exception:
@@ -1381,6 +1390,7 @@ DECISION_COLS = ["layout", "placement", "ubatch_max", "pf_mode", "pf_gpus", "pf_
 
 
 _HWL = {}
+_PF_POS = {}   # server log -> how much of it the previous row already read (prompt decisions per run, see the row writer)
 
 
 def store_cell_time(build, model, test, hw, since, el):
@@ -2576,7 +2586,14 @@ def store(row, build, test, rec, note, hw, vstr):
     if not row.get("pf_mode") and CAMPAIGN and not build.startswith("stock"):   # which path the prompt passes took (one card, two cards, dense split): from the cell's server log; a run with no decision line says so
         lg = f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log"
         if os.path.exists(lg):
-            d = decisions(open(lg, errors="replace").read())
+            # a kept server logs every run of the cell into one file: the prompt decisions of THIS run are the lines after the previous row's read
+            # (reading the whole log gave run 2 the decision of run 1: same prompt size, the first line won). Load-time keys still come from the whole log.
+            txt = open(lg, errors="replace").read()
+            pos = _PF_POS.get(lg, 0)
+            if pos > len(txt): pos = 0   # a new log under the same name (the server restarted)
+            _PF_POS[lg] = len(txt)
+            d = {k: v for k, v in decisions(txt).items() if not k.startswith("pf_")}
+            d.update(decisions(txt[pos:]))
             row.update({k: v for k, v in d.items() if k.startswith("pf_") or k in ("layout", "placement", "ubatch_max")})
             if not d.get("pf_mode"): row["pf_mode"] = "no-decision"
     for lg in (f"{QDIR}/{CAMPAIGN}.remote.server.log", f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log") if CAMPAIGN else ():   # the log of the cell: copied from the remote machine, or the local one
@@ -5418,6 +5435,8 @@ def run_list(name, argv):
     ap.add_argument("-ng", "--gpus", dest="n_gpus", type=int, metavar="N", help="use only N cards: the best N (fastest slot, then fastest card), the fastest one last; 0 = CPU only. Remote machines (-pc) and this host")
     ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="no live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
     ap.add_argument("-sc", "-su", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
+    ap.add_argument("-day", "--day", action="store_true", help="the day power limits (x4 card 220 W, x16 card 280 W) for the whole run, also at night (the schedule drops to 200/200 W from 23:50): same as -pl 220/280")
+    ap.add_argument("--status", action="store_true", help="print the table of the cells run today (the -nrt table: t/s, pp, stock, gains) and the cells still to run; nothing is run, started or touched (the web view calls this)")
     ap.add_argument("-nrt", "--not-today", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip cells (and so models) that already have their runs in runs.db from the last DAYS days (default 1 = today); a stock pulled within those days is not replaced by a newer release")
     ap.add_argument("-pin", dest="force_pin", action="store_true", help="force pinned RAM for every cell (-lm pin) instead of the default auto; `-nm` is the mmap counterpart. In a row's args column: -pin")
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
@@ -5436,6 +5455,8 @@ def run_list(name, argv):
     ap.add_argument("-ssh", "--ssh", metavar="LINE", help="the ssh line of a rented box for this session, in quotes (\" -p 47086 root@93.91.156.104 -L 8080:localhost:8080\"): the machine named by -pc (cld when -pc is not given) is set to it first (~/.ssh/config and machines.csv), see `run.py machine add`")
     o = ap.parse_args([x for x in argv if x != "desc"])   # `run gainers desc` works too
     NOSTATS[0] = o.no_stats; NGPU[0] = o.n_gpus
+    if o.status: o.not_today = o.not_today or 1; o.nodl = True
+    if o.day and not o.power: o.power = "220/280"
     if o.no_pool is not None: os.environ["RUN_KEEP_POOL"] = "1"   # -nm: the cells never unmount the pool either (pool_sanity); a model bigger than the pool loads without it, the pool stays for the next ones
     if o.no_stats: os.environ["RUN_NS"] = "1"
     if o.n_gpus is not None: os.environ["RUN_NG"] = str(o.n_gpus)
@@ -5495,7 +5516,7 @@ def run_list(name, argv):
             k = f"{r['_b']}-{r['name']}-{r['test']}"
             if k in done or r['_b'].startswith("stock"): return done.get(k, [])
             return next((v for c, v in done.items() if c.endswith(f"-{r['name']}-{r['test']}") and not c.startswith("stock")), [])
-        keep = [r for r in rows if len(today(r)) < int(r["n"] or 1)]
+        keep = [r for r in rows if len(today(r)) < (1 if o.status else int(r["n"] or 1))]   # --status: a cell with any run today has its line
         for r in rows:   # the skipped cells keep their line, with the results of today's runs and the gain over stock, as if they had just run
             if r in keep: continue
             if r['_b'].startswith('stock') and any(q['name'] == r['name'] and q['test'] == r['test'] and not q['_b'].startswith('stock') for q in rows): continue   # our line shows the stock numbers
@@ -5511,6 +5532,10 @@ def run_list(name, argv):
             CELL_LINES.append(col(1, f"{('s' if r['_b'].startswith('stock') else '') + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
         if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run in the last {o.not_today} day(s) skipped (they are in the table at the end)", flush=True)
         rows = keep
+    if o.status:   # the -nrt table of what ran today, then what is still to run; nothing else happens
+        if CELL_REC: print(col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC)), flush=True)
+        print("\nto run: " + (", ".join(("s" if r["_b"].startswith("stock") else "") + r["name"] for r in rows) or "nothing"), flush=True)
+        return 0
     for r in rows:   # -a: the same cells with extra arguments on our build
         if o.cell_args and not r["_b"].startswith("stock"): r["args"] = ((r.get("args") or "") + " " + " ".join("moe:" + w if re.fullmatch(r"[\w-]+=\S*", w) else w for w in o.cell_args.split())).strip()   # a bare key=value is a --moe key (-a "split-experts=0")
     if o.machine != "pc1": return run_list_remote(o, rows, name)
@@ -5810,7 +5835,7 @@ def cmd_cell(a):
         except OSError: pass
     # the pool write ledgers this cell's servers wrote (one per server start): gzipped next to the server log, the replay's summary (overlaps, uploads a lend
     # or the KV zone crossed while they ran) appended to TAG.out
-    import glob, gzip
+    import gzip
     led = sorted((p for p in glob.glob(os.path.join(DATA, "pool-ledger-*.csv")) if os.path.getmtime(p) >= t_cell0), key=os.path.getmtime)
     for i, p in enumerate(led):
         dst = os.path.join(Q5, f"{a.tag}.ledger{'' if i == 0 else '.' + str(i)}.csv.gz")
