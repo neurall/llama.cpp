@@ -27,19 +27,19 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 
 | model | test | t/s | pp | gain t | gain pp | ppl | build | output |
 |---|---|---|---|---|---|---|---|---|
-| MiMo 2.6F 3-bit | 12k/1k | 14.2<br>23.5 | 49<br>1022 | +66% | +1975% 20.8x | 1.8758<br>1.8758 | b13600 | [17121](fork/outputs/17121.txt)<br>[17118s](fork/outputs/17118s.txt) |
-| MiMo 2.6F 3-bit | 3k/1k | 14.3<br>26.1 | 48<br>740 | +82% | +1432% 15.3x | 1.8758<br>1.8758 | b13586 | [16785](fork/outputs/16785.txt)<br>[17122s](fork/outputs/17122s.txt) |
-| GLM 5.3 3-bit | 12k/1k | 12.9<br>19.0 | 42<br>627 | +47% | +1378% 14.8x | 1.7626<br>1.7578 | b13586 | [16725](fork/outputs/16725.txt)<br>[17130s](fork/outputs/17130s.txt) |
-| GLM 5.3 3-bit | 3k/1k | 12.7<br>20.3 | 40<br>585 | +59% | +1363% 14.6x | 1.7626<br>1.7578 | b13600 | [17137](fork/outputs/17137.txt)<br>[17135s](fork/outputs/17135s.txt) |
+| MiMo 2.6F 3-bit | 12k/1k | 14.0<br>26.5 | 49<br>1008 | +90% | +1940% 20.4x | 1.8758<br>1.8758 | b13838 | [18197](fork/outputs/18197.txt)<br>[18221s](fork/outputs/18221s.txt) |
+| GLM 5.3 3-bit | 12k/1k | 12.8<br>19.8 | 43<br>689 | +55% | +1518% 16.2x | 1.7626<br>1.7578 | b13838 | [18209](fork/outputs/18209.txt)<br>[18232s](fork/outputs/18232s.txt) |
+| MiMo 2.6F 3-bit | 3k/1k | 14.1<br>31.6 | 48<br>754 | +124% 2.2x | +1460% 15.6x | 1.8758<br>1.8758 | b13838 | [18199](fork/outputs/18199.txt)<br>[18223s](fork/outputs/18223s.txt) |
+| GLM 5.3 3-bit | 3k/1k | 12.7<br>20.2 | 40<br>617 | +59% | +1443% 15.4x | 1.7626<br>1.7578 | b13838 | [18211](fork/outputs/18211.txt)<br>[18235s](fork/outputs/18235s.txt) |
 | GLM 5.3 3.5-bit* | 3k/1k | 10.7<br>12.9 | 30<br>224 | +21% | +647% 7.5x | 1.6326<br>1.6265 | b13563 | [16756](fork/outputs/16756.txt)<br>[17146s](fork/outputs/17146s.txt) |
-| Qwen 3.8 Next IQ4_XS | 12k/1k | 32.0<br>50.4 | 208<br>1483 | +58% | +611% 7.1x | 1.4101<br>1.4101 | b13600 | [17109](fork/outputs/17109.txt)<br>[17106s](fork/outputs/17106s.txt) |
+| Qwen 3.8 Next IQ4_XS | 12k/1k | 32.6<br>52.7 | 213<br>1489 | +62% | +599% 7.0x | 1.4101<br>1.4101 | b13838 | [18203](fork/outputs/18203.txt)<br>[18227s](fork/outputs/18227s.txt) |
 | GLM 5.3 3.5-bit* | 12k/1k | 10.8<br>11.0 | 34<br>230 | +2% | +572% 6.7x | 1.6326<br>1.6265 | b13563 | [16759](fork/outputs/16759.txt)<br>[17143s](fork/outputs/17143s.txt) |
 | Qwen 3.8 Next IQ4_XS | 3k/1k | 31.2<br>53.6 | 206<br>1240 | +72% | +503% 6.0x | 1.4101<br>1.4101 | b13600 | [17113](fork/outputs/17113.txt)<br>[17110s](fork/outputs/17110s.txt) |
 | Qwen 3.8 Next IQ3_S | 12k/1k | 43.8<br>53.6 | 372<br>1477 | +22% | +297% 4.0x | 1.3927<br>1.3927 | b13586 | [16719](fork/outputs/16719.txt)<br>[17094s](fork/outputs/17094s.txt) |
 | Qwen 3.8 Next IQ3_S | 3k/1k | 43.7<br>55.8 | 387<br>1254 | +27% | +224% 3.2x | 1.3927<br>1.3927 | b13600 | [17101](fork/outputs/17101.txt)<br>[17099s](fork/outputs/17099s.txt) |
-| MiMo 2.6F 3-bit | short/1k | 14.3<br>33.1 | -<br>- | +131% 2.3x | - | 1.8758<br>1.8758 | b13600 | [17128](fork/outputs/17128.txt)<br>[17126s](fork/outputs/17126s.txt) |
+| MiMo 2.6F 3-bit | short/1k | 14.1<br>34.8 | -<br>- | +147% 2.5x | - | 1.8758<br>1.8758 | b13838 | [18201](fork/outputs/18201.txt)<br>[18225s](fork/outputs/18225s.txt) |
 | Qwen 3.8 Next IQ4_XS | short/1k | 30.9<br>55.1 | -<br>- | +78% | - | 1.4101<br>1.4101 | b13586 | [16788](fork/outputs/16788.txt)<br>[17114s](fork/outputs/17114s.txt) |
-| GLM 5.3 3-bit | short/1k | 12.8<br>20.8 | -<br>- | +62% | - | 1.7626<br>1.7578 | b13600 | [17141](fork/outputs/17141.txt)<br>[17139s](fork/outputs/17139s.txt) |
+| GLM 5.3 3-bit | short/1k | 12.7<br>21.6 | -<br>- | +69% | - | 1.7626<br>1.7578 | b13838 | [18213](fork/outputs/18213.txt)<br>[18236s](fork/outputs/18236s.txt) |
 | GLM 5.3 3.5-bit* | short/1k | 10.8<br>14.9 | -<br>- | +37% | - | 1.6326<br>1.6265 | b13563 | [16687](fork/outputs/16687.txt)<br>[17151s](fork/outputs/17151s.txt) |
 | Qwen 3.8 Next IQ3_S | short/1k | 43.5<br>56.9 | -<br>- | +31% | - | 1.3927<br>1.3927 | b13563 | [16766](fork/outputs/16766.txt)<br>[17102s](fork/outputs/17102s.txt) |
 
@@ -47,7 +47,7 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 
 Every answer behind the table is in [fork/outputs](fork/outputs) as `<id>.txt` (header: build, test, speeds, arguments, power); stock's answers as `<id>s.txt`. With the run database: `python3 fork/run.py out ID` (get it with `git fetch https://github.com/neurall/llama.cpp runs-db && git show FETCH_HEAD:runs.db > fork/runs.db`).
 
-Our builds in the table are b13600 and two earlier builds of this release line (b13563, b13586); each cell shows the build with the best run. Older tables (earlier releases, laptop and CPU rows): [fork/docs/perf-history.md](fork/docs/perf-history.md).
+Our builds in the table are b13838 (this release; its rows measured 2026-10-23 against stock b11829, the newest official stock that day), b13600 and two earlier builds (b13563, b13586) against stock b11742; each cell shows the build with the best run. Older tables (earlier releases, laptop and CPU rows): [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
 ### Reproduce a row
 
