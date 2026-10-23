@@ -5195,7 +5195,7 @@ def xfer_of(bno, argtext):
     return "f32" if str(bno).isdigit() and int(bno) >= 13600 else "f16"
 
 
-def final_table(recs, live=False, hdr_out=None):
+def final_table(recs, live=False, hdr_out=None, headers=True):
     """the finished cells as an aligned table without grid lines, as wide as the data needs and no wider than the terminal. t/s and pp are named once in the header; ours, stock, the two gains; the builds below.
     Too wide: the load column goes, then the time column; still too wide: the stock part wraps onto a second line under its cell"""
     if not recs: return []
@@ -5242,6 +5242,7 @@ def final_table(recs, live=False, hdr_out=None):
     hl = lambda keys: "".join("  " + col(HC[k], f"{H[k]:<{W[k]}}" if k == "bt" else f"{H[k]:>{W[k]}}") for k in keys)
     out = [" " * W["name"] + hl(ours[1:]) + ("" if wrap else hl(stk))]
     if wrap: out.append(" " * W["name"] + hl(stk))
+    if not headers: out = []   # `run status`: rows only
     if hdr_out is not None: hdr_out.extend(out); out = []   # live rows: the header goes to the caller (printed once)
     for x in allrows:
         c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "xfer": ("35", x["xfer"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;94", x["t"]), "p": ("1;92", x["p"]), "g": ("35", x.get("g", "")), "st": ("94", x["st"]), "sp": ("92", x["sp"])}
@@ -5252,7 +5253,7 @@ def final_table(recs, live=False, hdr_out=None):
         if not x["st"] and not x.get("is_old"): tail = ""
         if wrap and tail.strip(): out += [ln, col(37, f"{x['name']:<{W['name']}}") + tail]
         else: out.append(ln + tail)
-    if not live:   # the models of the table stay on screen with their results (the model line of the run scrolled away)
+    if not live and headers:   # the models of the table stay on screen with their results (the model line of the run scrolled away)
         def msz(path):   # size on disk in GiB, all shards of a split model; "" when the file is not here
             try:
                 d = os.path.dirname(path); n = sum(os.path.getsize(os.path.join(d, x)) for x in shard_names(os.path.basename(path)))
@@ -5704,7 +5705,7 @@ def run_list(name, argv):
         qd_on = subprocess.run(["systemctl", "is-active", "--quiet", "queued.service"]).returncode == 0
         for t in (qd if qd_on else []):
             CELL_REC.append(dict(tag=t, section="queued", asked=0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt="", model="", test="", name=t, el=None, lt="", rc=0, res=[], st=None, stock_row=False))
-        print(col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC)), flush=True)
+        print(col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC, headers=False)), flush=True)
         if qd and not qd_on: print(col(90, f"queue daemon off: {len(qd)} old tasks wait in tasks.csv (none starts)"), flush=True)
         return 0
     for r in rows:   # -a: the same cells with extra arguments on our build
