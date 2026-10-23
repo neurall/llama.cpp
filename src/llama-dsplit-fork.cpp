@@ -1055,6 +1055,31 @@ dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) 
     B.c.assign(n, 0.0); B.hop.assign(n, 0.0); B.k.assign(n, 0.0); B.d.assign(n, 0.0); B.m.assign(n, 0.0); B.wd.assign(n, 0.0); B.wm.assign(n, 0.0); B.wx.assign(n, 0.0); B.tok.assign(n, 0);
     B.s_run = B.s; B.f_run = B.f;
     B.last = "equal shares (nothing measured yet)";
+    // The start shares are the cards' speed ratio from the per-card benchmark (llama-gpu-probe-fork.cpp: the sustained compute rate, stored per PCI id and
+    // model in moe-state.ini and measured only when missing), known before the first pass (user, 2026-10-23: "if a card reads 0.92 of the mean, its share is
+    // 0.92 x 100/cards = 46%"; most prompts take fewer than three passes, so a start that needs the live balance to find its ratio is wrong for them). Equal
+    // shares when a card has no benchmark.
+    if (n >= 2) {
+        std::vector<double> cmp(n, 0.0);
+        double sum = 0.0;
+        bool   ok  = true;
+        for (size_t i = 0; i < n; ++i) {
+            const auto * pr = llama_gpu_probe_find_fork(dev[i]);
+            cmp[i] = pr ? (pr->compute_sust > 0.0 ? pr->compute_sust : pr->compute) : 0.0;
+            ok = ok && cmp[i] > 0.0;
+            sum += cmp[i];
+        }
+        if (ok) {
+            std::string txt;
+            for (size_t i = 0; i < n; ++i) {
+                B.s[i] = cmp[i] / sum;
+                txt += format("%s%s %.0f%% (%.2f of the mean)", i ? ", " : "", ggml_backend_dev_name(dev[i]), 100.0 * B.s[i], cmp[i] * (double) n / sum);
+            }
+            B.s_run = B.s;
+            B.last = "start shares from the cards' benchmark";
+            LLAMA_LOG_WARN("split balance: start shares from the cards' benchmark: %s\n", txt.c_str());
+        }
+    }
     std::string v;
     std::vector<double> s, f;
     if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_bal2_b" + std::to_string(b)), v)) {
