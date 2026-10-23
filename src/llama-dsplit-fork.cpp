@@ -206,6 +206,19 @@ int dsplit_n_gpus(const llama_model & model) {
     return n;
 }
 
+// The probed upload rate of a card, read ONCE: cards are not hot-swapped, so the rate (and with it the card order, the expert card, the planner's and the
+// balance's hand-off costs) is fixed by the first valid probe and never re-derived per decision, plan or pass. Own mutex: callers hold g_mu or g_plan_mu.
+double dsplit_link_once(ggml_backend_dev_t d) {
+    static std::mutex                                 mu;
+    static std::map<ggml_backend_dev_t, double>       rate;
+    std::lock_guard<std::mutex> lk(mu);
+    auto it = rate.find(d);
+    if (it != rate.end()) { return it->second; }
+    const double g = llama_moe_cache_link_gbs_fork(d);
+    if (g > 0.0) { rate[d] = g; }   // before the probe the rate is 0: not stored, asked again
+    return g;
+}
+
 // The cards of a split pass (2026-10-23, any number of cards, any links and compute): every GPU whose copies have memory, in range order, the slowest link
 // first and the expert card last. The expert card computes the experts of every layer while the helpers hold none (the dense split alone); it is the card
 // with the fastest link, since every pass uploads the experts it does not hold (on a tie: the card the one-card passes run on). Nothing here is about two
@@ -220,7 +233,7 @@ void dsplit_cards_update(const llama_model & model, const dsplit_set & S) {
             if (ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
             bool seen = false;
             for (const auto & p : v) { seen = seen || p.second == d.dev; }
-            if (!seen) { v.push_back({ llama_moe_cache_link_gbs_fork(d.dev), d.dev }); }
+            if (!seen) { v.push_back({ dsplit_link_once(d.dev), d.dev }); }
         }
         if (v.size() < 2) { g_cards.clear(); return; }
         double top = 0.0;
@@ -294,7 +307,7 @@ static void dsplit_update_fill(const dsplit_set & S) {
     }
     double t = 0.0;
     auto busy = [&](ggml_backend_dev_t d, double b) {
-        const double g = llama_moe_cache_link_gbs_fork(d);
+        const double g = dsplit_link_once(d);
         if (g > 0.0) { t = std::max(t, b / (g * 1e3)); }
     };
     for (const auto & kv : in)  { busy(kv.first, std::max(kv.second, out.count(kv.first) ? out[kv.first] : 0.0)); }
@@ -747,7 +760,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     std::vector<double> B(n, 0.0), rel(n, 1.0);   // per card: upload rate, compute against the expert card's (probed at load)
     const auto * pm = llama_gpu_probe_find_fork(dm);
     for (int i = 0; i < n; ++i) {
-        B[i] = llama_moe_cache_link_gbs_fork(cards[i]);
+        B[i] = dsplit_link_once(cards[i]);
         if (B[i] <= 0.0) {
             return;
         }
@@ -798,7 +811,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     for (int il = 0; il < L; ++il) {
         const ggml_backend_dev_t ld = model.dev_layer(il);   // where the layer's KV cache or recurrent state is
         for (int i = 0; i < n; ++i) { if (cards[i] == ld) { lcard[il] = i; } }
-        if (ld && ggml_backend_dev_type(ld) == GGML_BACKEND_DEVICE_TYPE_GPU) { lB[il] = llama_moe_cache_link_gbs_fork(ld); }
+        if (ld && ggml_backend_dev_type(ld) == GGML_BACKEND_DEVICE_TYPE_GPU) { lB[il] = dsplit_link_once(ld); }
         if (lB[il] <= 0.0) { lB[il] = 1e9; }
         if (model.hparams.is_recr(il)) { continue; }
         att_w[il] = 1.0 / std::max(1, n_att);
@@ -1069,7 +1082,7 @@ dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) 
     return B;
 }
 double dsplit_link(ggml_backend_dev_t d) {
-    return d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU ? llama_moe_cache_link_gbs_fork(d) : 0.0;
+    return d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU ? dsplit_link_once(d) : 0.0;
 }
 // what a card's link adds, modelled from the planner's numbers (g_hop_bytes_tok, g_kv_layers) and the probed link rates: the stamps time compute, not copies
 void dsplit_bal_costs(dsplit_bal & B) {
