@@ -5633,7 +5633,7 @@ def cmd_calib(a):
         if y2 and y2[2]:
             try: tail = open(f"/tmp/perf-{b}.log", "rb").read()[-400000:].decode("utf8", "replace")
             except OSError: tail = ""
-            cm = re.findall(r"fits the ceiling (\d+)", tail) or re.findall(r"ubatch \d+ \(max (\d+)\)", tail)   # the pool-computed pass ceiling, from either log line
+            cm = re.findall(r"fits the ceiling (\d+)", tail) or re.findall(r"ubatch \d+ \(max (\d+)\)", tail) or re.findall(r"decided ubatch (\d+)\s+model fits", tail)   # the pool-computed pass ceiling, from either log line
             if cm: ceil_k = max(1, int(int(cm[-1]) / (y2[2] / 2)) )   # nominal k whose prompt has that many tokens (tokens per nominal k from the probe itself)
             if ceil_k: print(col(90, f"{r['model']}: the engine's pass ceiling is {cm[-1]} tokens = {ceil_k}k of this text"), flush=True)
         mp_ = config.model(r["model"]); mp_ = sorted(glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", mp_)) or [mp_])[0]
