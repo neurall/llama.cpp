@@ -5617,11 +5617,19 @@ def cmd_calib(a):
         def ask(n):
             if n not in seen: seen[n] = probe(r, n)
             return seen[n]
+        ceil_k = None   # the engine allocates the pass in its pool and knows the free space: its line "this call fits the ceiling N" (tokens of the biggest pass) in the log of a short probe is the one-pass maximum
+        y2 = ask(2)
+        if y2 and y2[2]:
+            try: tail = open(f"/tmp/perf-{b}.log", "rb").read()[-400000:].decode("utf8", "replace")
+            except OSError: tail = ""
+            cm = re.findall(r"fits the ceiling (\d+)", tail)
+            if cm: ceil_k = max(1, int(int(cm[-1]) / (y2[2] / 2)) )   # nominal k whose prompt has that many tokens (tokens per nominal k from the probe itself)
+            if ceil_k: print(col(90, f"{r['model']}: the engine's pass ceiling is {cm[-1]} tokens = {ceil_k}k of this text"), flush=True)
         mp_ = config.model(r["model"]); mp_ = sorted(glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", mp_)) or [mp_])[0]
         fit, bpt, gib = feasible_ctx(mp_, int(hw_key()[:-1]))
         pps = [x[0] for x in c.execute("select pp from runs where model=? and test like 'pf%' and cast(ok as integer)=1 and pp is not null order by ts desc limit 20", (os.path.basename(mp_),))]
         if pps: fit = min(fit, int(statistics.median(pps) * 600))   # time is a resource too: a probe may take 10 minutes of prefill at the speed the model last showed (feedback: no cell over 10-15 min)
-        n = max(1, int((fit - 2048) * 0.9 / 1000))   # no static start: the biggest prompt the machine can hold, by arithmetic (feasible_ctx), minus the answer and a margin; ~1.1 tokens per nominal token on the big tokenizers
+        n = ceil_k or max(1, int((fit - 2048) * 0.9 / 1000))   # no static start: the biggest prompt the machine can hold, by arithmetic (feasible_ctx), minus the answer and a margin; ~1.1 tokens per nominal token on the big tokenizers
         print(col(90, f"{r['model']}: KV {bpt} bytes per token, {gib:.0f} GiB for it: {fit} tokens fit (memory, the trained context and 10 minutes of prefill cap it): start at {n}k"), flush=True)
         while True:   # the maximum that fits: a prompt the server cannot allocate or run halves
             x = ask(n)
