@@ -912,13 +912,15 @@ double llama_dsplit_plan_share_fork(int64_t n_tokens) {
     return it == g_plans.end() || !it->second.plan.valid ? -1.0 : it->second.plan.share;
 }
 
-// --moe split-experts=auto|0|1: who decides whether the helpers in a split also take experts. auto (default): the split planner and the tuner, per layer and
-// pass size. 0: dense split only, the helpers take token ranges of the dense part and no experts (the card with the fastest link computes them all).
-// 1: dense split plus experts as before the planner (the link-ratio start and the per-layer controller), whatever the planner says.
+// --moe split-experts=auto|0|1: who decides whether the helpers in a split also take experts. 0 (default, user's order 2026-10-23: tune the dense split alone
+// first, so its timing problems are not mixed with the experts'; the experts on the prefill cards come after): dense split only, the helpers take token
+// ranges of the dense part and no experts (the card with the fastest link computes them all). auto: the split planner, the balance's trial and the tuner decide,
+// per layer and pass size. 1: dense split plus experts as before the planner (the link-ratio start and the per-layer controller), whatever the planner says.
 int llama_dsplit_experts_mode_fork() {
     static const int mode = [] {
         const char * e = llama_moe_get_opt("split-experts");
-        if (!e || strcmp(e, "auto") == 0) { return -1; }
+        if (!e) { return 0; }
+        if (strcmp(e, "auto") == 0) { return -1; }
         return atoi(e) != 0 ? 1 : 0;
     }();
     return mode;
