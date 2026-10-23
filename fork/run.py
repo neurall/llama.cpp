@@ -5119,7 +5119,7 @@ def best_ref(model, test):
             c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
             q = "select coalesce(%s_max, %s), build from runs where model=? and test=? and ok=1 and coalesce(loop,'0') in ('0','') and coalesce(%s_max, %s)>0" + (" and pl=?" if pl else "") + " order by 1 desc limit 1"
             a = (model, ALIASES.get(test, test)) + ((pl,) if pl else "")
-            pp = c.execute(q % ("pp",) * 4, a).fetchone(); tg = c.execute(q % ("tps",) * 4, a).fetchone()
+            pp = c.execute(q % (("pp",) * 4), a).fetchone(); tg = c.execute(q % (("tps",) * 4), a).fetchone()
             _BEST_REF[key] = (pp[0], pp[1], tg[0], tg[1]) if pp and tg else None
         except Exception: _BEST_REF[key] = None
     return _BEST_REF[key]
