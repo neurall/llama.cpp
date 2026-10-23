@@ -1,5 +1,12 @@
 # llama.cpp: fork with multi gpu acceleration even for models bigger than total gpu mem
 
+Status Update:23:10:2026. Right now multi gpu decode is supported all models multigpu dense split 
+prefill is implemented for glm and gives gains only from prompts 7k up on 2x3090 at least on my rig.
+
+In other words tha gains you see bellow are not from multigpu yet just from more efficient vram mmgmt
+ie the same 20x speedup in mimo is happening on single 5090 too. In a sense its good news so people with one gpu will have fun too ;)
+And that multigpu fun is just starting too. For glm 2nd gpu is adding +30%  on pp so far
+
 For MoE models larger than VRAM: every expert stays in system RAM, and all VRAM left
 after the KV cache becomes a live cache of the experts actually being used. The GPUs
 compute cached experts while the CPU computes the rest, in parallel.
