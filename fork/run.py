@@ -5531,9 +5531,8 @@ def cmd_onepass(a):
 
 def cmd_calib(a):
     """`run.py calib [-b BUILD] [-ng N] [-m MODELS] [--dry] [--nowrite]`: find every model's biggest ONE-pass input prompt by bisection and store it in models.ini (best_prompt.<N>gpu, N = the cards seen).
-    The pass count never grows when the prompt shrinks, so "runs in one pass" splits the sizes 4k..12k in two: probe 12k, then bisect, starting at the size the pass cap of the 12k run predicts
-    (cap tokens / tokens per nominal k). About 3-4 runs of one request (64 answer tokens) per model instead of the ladder's 18. The biggest one-pass size is the pick: bigger prompts amortize the
-    expert uploads better, so its prompt speed is the best of the one-pass sizes (`run onepass` still checks that on the full ladder)."""
+    Starts at the estimated maximum (12k), halves while the prompt needs more than one pass (12, 6, 4), then bisects between the biggest one-pass size and the smallest multi-pass one. The pass
+    count never grows when the prompt shrinks, so 3-5 requests (64 answer tokens) per model find the biggest one-pass prompt, which is the pick: bigger prompts amortize the uploads of a pass best."""
     import sqlite3
     here = os.path.dirname(os.path.abspath(__file__)); b = resolve_build(a.build) if a.build != "latest" else a.build
     src = [r for r in csv.DictReader(open(os.path.join(here, "runs", "onepass.csv"), newline="")) if r["test"] == "pf12k1k"]
@@ -5555,22 +5554,25 @@ def cmd_calib(a):
         tk = re.search(r"prompt_n=(\d+)", x[2] or "")
         return int(x[0] or 0), int(x[1] or 0), int(tk.group(1)) if tk else 0, float(x[3])
     for r in rows:
-        x = probe(r, 12)
-        if x is None: print(col(33, f"{r['model']}: 12k did not run")); continue
-        one, many = ({12}, set()) if x[0] == 1 else (set(), {12})
-        guess = int(x[1] / (x[2] / 12)) if x[0] > 1 and x[1] and x[2] else None
-        seen = {12: x}
+        seen = {}   # size -> (passes, pass tokens, prompt tokens, prompt t/s)
+        def ask(n):
+            if n not in seen: seen[n] = probe(r, n)
+            return seen[n]
+        n = 12; hi = 13   # the estimated maximum first, then half of it while it needs more than one pass
         while True:
-            lo = max(one, default=3); hi = min(many, default=13)   # biggest known one-pass size, smallest known multi-pass size
-            cand = [n for n in sizes if lo < n < hi]
-            if not cand: break
-            n = guess if guess in cand else cand[len(cand) // 2]; guess = None
-            y = probe(r, n)
+            x = ask(n)
+            if x is None or x[0] <= 1: break
+            hi = n
+            if n <= 4: break
+            n = max(4, n // 2)
+        if x is None or x[0] > 1: print(col(33, f"{r['model']}: no size from 4k ran in one pass or a run failed: nothing stored")); continue
+        lo = n   # biggest known one-pass size; hi = smallest known multi-pass size: bisect between them
+        while lo + 1 < hi:
+            m = (lo + hi) // 2; y = ask(m)
             if y is None: break
-            seen[n] = y; (one if y[0] == 1 else many).add(n)
-        if one:
-            picks[r["model"]] = max(one); print(col("1;92", f"{r['model']}: biggest one-pass prompt {max(one)}k ({seen[max(one)][2]} tokens, {seen[max(one)][3]:.0f} t/s)"))
-        else: print(col(33, f"{r['model']}: no size from 4k ran in one pass: nothing stored"))
+            if y[0] <= 1: lo = m
+            else: hi = m
+        picks[r["model"]] = lo; print(col("1;92", f"{r['model']}: biggest one-pass prompt {lo}k ({seen[lo][2]} tokens, {seen[lo][3]:.0f} t/s)"))
     if picks and not a.dry and not a.nowrite:
         cards = n_cards(); ini = os.path.join(here, "models.ini"); lines = open(ini).read().split("\n")
         for model, n in picks.items():
@@ -8086,7 +8088,7 @@ if __name__ == "__main__":
     sx.add_argument("rest", nargs=argparse.REMAINDER, help="run options of the list (-b BUILD ...)")
     op = sp.add_parser("onepass", help="the best one-pass input prompt of every model from the runs of `run onepass -b BUILD` (pass count and prompt speed per size); --write stores it in models.ini")
     op.add_argument("-b", "--build", default="latest"); op.add_argument("--write", action="store_true")
-    cb = sp.add_parser("calib", help="find every model's biggest one-pass input prompt by bisection (3-4 runs per model) and store best_prompt.<N>gpu in models.ini")
+    cb = sp.add_parser("calib", help="find every model's biggest one-pass input prompt by halving from 12k, then bisecting and store best_prompt.<N>gpu in models.ini")
     cb.add_argument("-b", "--build", default="latest"); cb.add_argument("-ng", "--gpus", dest="n_gpus", type=int); cb.add_argument("-m", "--models", help="comma list of model keys of runs/onepass.csv (default all)")
     cb.add_argument("--dry", action="store_true"); cb.add_argument("--nowrite", action="store_true")
     ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
