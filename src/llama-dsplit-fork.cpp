@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <set>
 #include <mutex>
@@ -60,7 +61,10 @@ struct dsplit_set {
     std::map<ggml_backend_dev_t, std::unordered_map<const ggml_tensor *, ggml_tensor *>> mirror;
     std::map<ggml_backend_dev_t, dsplit_copies> copies;
     bool resident = false;   // every weight is in VRAM: no dense split at all (no copies, no split graph reserved, no per-pass decision)
-    bool failed = false;   // a card's copies got no memory: the dense split stays off
+    bool failed = false;   // the copies could not be made at load: the dense split stays off
+    // cards whose copies got no memory (a small card, a long context): they take no token range, the other cards still split (2026-10-23: one such card
+    // used to turn the split off for all of them)
+    std::set<ggml_backend_dev_t> bad;
 };
 
 bool dsplit_pool_mode() {
@@ -201,7 +205,57 @@ int dsplit_n_gpus(const llama_model & model) {
     for (const auto & d : model.devices) { n += ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU; }
     return n;
 }
+
+// The cards of a split pass (2026-10-23, any number of cards, any links and compute): every GPU whose copies have memory, in range order, the slowest link
+// first and the expert card last. The expert card computes the experts of every layer while the helpers hold none (the dense split alone); it is the card
+// with the fastest link, since every pass uploads the experts it does not hold (on a tie: the card the one-card passes run on). Nothing here is about two
+// cards: three cards on x16, x8 and x4 links get three ranges, the x16 card computes the experts, and the live balance gives each card the tokens that make
+// them take equally long (llama-splitplan-fork.h, dsb_target). Under g_mu.
+std::vector<ggml_backend_dev_t> g_cards;
+std::vector<ggml_backend_dev_t> g_card_order;   // every GPU in range order, fixed at the first update: a measured rate that wobbles must not reorder the cards
+void dsplit_cards_update(const llama_model & model, const dsplit_set & S) {
+    if (g_card_order.empty()) {
+        std::vector<std::pair<double, ggml_backend_dev_t>> v;
+        for (const auto & d : model.devices) {
+            if (ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            bool seen = false;
+            for (const auto & p : v) { seen = seen || p.second == d.dev; }
+            if (!seen) { v.push_back({ llama_moe_cache_link_gbs_fork(d.dev), d.dev }); }
+        }
+        if (v.size() < 2) { g_cards.clear(); return; }
+        double top = 0.0;
+        for (const auto & p : v) { top = std::max(top, p.first); }
+        if (top <= 0.0) { g_cards.clear(); return; }   // no link rates yet (before the probe): no split
+        // rates within 10% of each other count as the same link (two x16 cards measure 25.8 and 26.0 GB/s): their order is the model's. Classes from the
+        // fastest down, a new class where a rate is under 90% of its class's first; then the slowest class first (a strict order for the sort).
+        std::vector<double> desc;
+        for (const auto & p : v) { desc.push_back(p.first); }
+        std::sort(desc.begin(), desc.end(), std::greater<double>());
+        auto cls = [&](double r) { int c = 0; double head = desc[0]; for (double d : desc) { if (d < 0.9 * head) { ++c; head = d; } if (d == r) { break; } } return c; };
+        std::stable_sort(v.begin(), v.end(), [&](const auto & a, const auto & b) { return cls(a.first) > cls(b.first); });
+        // the expert card: the fastest link; among the cards within 10% of it, the card the one-card passes run on
+        size_t xi = v.size() - 1;
+        if (model.dev_offload < model.devices.size()) {
+            const ggml_backend_dev_t off = model.devices[model.dev_offload].dev;
+            for (size_t i = 0; i < v.size(); ++i) { if (v[i].second == off && v[i].first >= 0.9 * top) { xi = i; } }
+        }
+        std::rotate(v.begin() + xi, v.begin() + xi + 1, v.end());   // the expert card to the end, the others keep their order
+        for (const auto & p : v) { g_card_order.push_back(p.second); }
+        std::string txt;
+        for (const auto & p : v) { txt += format(" %s %.1f GB/s", ggml_backend_dev_name(p.second), p.first); }
+        LLAMA_LOG_WARN("dense split: cards in range order:%s (the last computes the experts)\n", txt.c_str());
+    }
+    g_cards.clear();
+    for (ggml_backend_dev_t d : g_card_order) { if (!S.bad.count(d)) { g_cards.push_back(d); } }
+    if (g_cards.size() < 2 || S.bad.count(g_card_order.back())) { g_cards.clear(); }   // fewer than two cards with copies, or the expert card has none: no split
+}
 }  // namespace
+
+// the cards of a split pass, the expert card last (empty: no split; see g_cards). For the graph builders, which have no model at hand.
+void llama_dsplit_cards_fork(std::vector<ggml_backend_dev_t> & out) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    out = g_cards;
+}
 
 void llama_dsplit_mirror_free_fork(const llama_model & model) {
     std::lock_guard<std::mutex> lk(g_mu);
@@ -231,11 +285,11 @@ static void dsplit_update_fill(const dsplit_set & S) {
     g_mirror_fill_bytes.store(sum);
 }
 
-// the copies can be used: made, and every card's placed (mirror-pool places them at the first decode)
+// the copies can be used: made, and every card's placed or left out (mirror-pool places them at the first decode)
 bool dsplit_copies_ready(const dsplit_set & S) {
     if (S.mirror.empty() || S.failed) { return false; }
     for (const auto & kv : S.copies) {
-        if (!kv.second.placed) { return false; }
+        if (!kv.second.placed && !S.bad.count(kv.first)) { return false; }
     }
     return true;
 }
@@ -286,15 +340,16 @@ void llama_dsplit_mirror_place_fork(const llama_model & model, const std::vector
         size_t mem_free = 0, mem_total = 0;
         ggml_backend_dev_memory(kv.first, &mem_free, &mem_total);
         if (mem_free < 2 * c.bytes + ((size_t) 1 << 30)) {
-            LLAMA_LOG_WARN("%s: no room to spare for %.1f MiB of dense weights on %s (%.1f MiB free): dense split off\n", __func__, c.bytes / 1048576.0,
-                    ggml_backend_dev_name(kv.first), mem_free / 1048576.0);
-            S.failed = true;
+            LLAMA_LOG_WARN("%s: no room to spare for %.1f MiB of dense weights on %s (%.1f MiB free): %s takes no token range, the other cards split\n", __func__,
+                    c.bytes / 1048576.0, ggml_backend_dev_name(kv.first), mem_free / 1048576.0, ggml_backend_dev_name(kv.first));
+            S.bad.insert(kv.first);
             continue;
         }
         ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(c.ctx, ggml_backend_dev_buffer_type(kv.first));
         if (buf == nullptr) {
-            LLAMA_LOG_WARN("%s: no room for %.1f MiB of dense weights on %s: dense split off\n", __func__, c.bytes / 1048576.0, ggml_backend_dev_name(kv.first));
-            S.failed = true;
+            LLAMA_LOG_WARN("%s: no room for %.1f MiB of dense weights on %s: it takes no token range, the other cards split\n", __func__, c.bytes / 1048576.0,
+                    ggml_backend_dev_name(kv.first));
+            S.bad.insert(kv.first);
             continue;
         }
         ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
@@ -343,7 +398,7 @@ ggml_tensor * llama_dsplit_mirror_fork(const llama_model & model, ggml_tensor * 
     if (t == nullptr) { return nullptr; }
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
-    if (it == g_sets.end()) { return t; }
+    if (it == g_sets.end() || it->second.bad.count(dev)) { return t; }   // a card left out has copies without memory: never handed out
     auto mt = it->second.mirror.find(dev);
     if (mt == it->second.mirror.end()) { return t; }
     auto tt = mt->second.find(t);
@@ -441,6 +496,7 @@ struct dsplit_plan_cache {
     double  fill     = -1.0;   // the pending mirror fill the plan was made with: the first pass of a request pays it, the later ones do not
     llama_dsplit_plan_fork plan;
     std::vector<double> f_help;   // per layer
+    std::vector<double> s_cards;  // the plan's token share of every card of the split (g_cards order)
 };
 std::map<int, dsplit_plan_cache> g_plans;   // per pass-size bucket
 std::mutex g_plan_mu;
@@ -618,27 +674,30 @@ static void dsplit_bucket_save(int b) {
 
 double   llama_moe_cache_compute_att_us_fork();   // llama-moecache-fork.cpp: the attention part of the compute per token at the planned cells (declared here, no header edit)
 uint64_t llama_moe_cache_pp_cells_get_fork();     // the cells the planned call ends at
-static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_us, llama_dsplit_plan_fork & out, std::vector<double> & f_help) {
+// the planner's numbers for the live balance (llama-splitplan-fork.h, dsb_card), set with every plan (under g_plan_mu): the bytes per token that cross between
+// a range's card and the expert card, there and back, over all layers with experts; and per attention layer the card that holds its KV cache and the bytes
+// of it that a range on another card reads (each pass)
+static double g_hop_bytes_tok = 0.0;
+static std::vector<std::pair<ggml_backend_dev_t, double>> g_kv_layers;
+static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_us, llama_dsplit_plan_fork & out, std::vector<double> & f_help, std::vector<double> & s_cards) {
     out = llama_dsplit_plan_fork();
     f_help.clear();
-    std::vector<ggml_backend_dev_t> gpus;
-    for (const auto & d : model.devices) {
-        if (ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpus.push_back(d.dev); }
-    }
-    if (gpus.size() != 2 || model.dev_offload >= model.devices.size() || c_us <= 0.0 || T <= 0) {
-        return;   // two cards only for now (the token ranges are two, see ds_plan)
-    }
-    ggml_backend_dev_t dm = model.devices[model.dev_offload].dev;
-    ggml_backend_dev_t dh = gpus[0] == dm ? gpus[1] : gpus[0];
-    const double Bm = llama_moe_cache_link_gbs_fork(dm), Bh = llama_moe_cache_link_gbs_fork(dh);
-    if (Bm <= 0.0 || Bh <= 0.0) {
+    s_cards.clear();
+    const std::vector<ggml_backend_dev_t> cards = g_cards;   // the cards of a split pass, the expert card last (the caller holds g_mu)
+    const int n = (int) cards.size(), x = n - 1;
+    if (n < 2 || c_us <= 0.0 || T <= 0) {
         return;
     }
-    double rel = 1.0;   // the helper's compute against the offload card's
-    {
-        const auto * pm = llama_gpu_probe_find_fork(dm);
-        const auto * ph = llama_gpu_probe_find_fork(dh);
-        if (pm && ph && pm->compute > 0 && ph->compute > 0) { rel = ph->compute / pm->compute; }
+    const ggml_backend_dev_t dm = cards[x];
+    std::vector<double> B(n, 0.0), rel(n, 1.0);   // per card: upload rate, compute against the expert card's (probed at load)
+    const auto * pm = llama_gpu_probe_find_fork(dm);
+    for (int i = 0; i < n; ++i) {
+        B[i] = llama_moe_cache_link_gbs_fork(cards[i]);
+        if (B[i] <= 0.0) {
+            return;
+        }
+        const auto * pi = llama_gpu_probe_find_fork(cards[i]);
+        if (pm && pi && pm->compute > 0 && pi->compute > 0) { rel[i] = pi->compute / pm->compute; }
     }
     const int    L      = (int) model.hparams.n_layer();
     const double n_used = (double) std::max<uint32_t>(1, model.hparams.n_expert_used_max());
@@ -671,16 +730,21 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     // Attention over the context (2026-10-17): c_us is the compute per token at the planned cells, base + a x cells (llama-moecache-fork.cpp, pp_c_at). The
     // a x cells part is attention, which grows with the context and is spread over the layers evenly, not by weights; it is dense work, so a split shares it by
     // tokens. MiMo 3-bit at 230k cells: 4.6 ms of a token's compute, three quarters of it attention; the planner without this saw 8 us and an upload-bound pass.
-    // A split range attends to the whole cache of its layer, which sits on the layer's own card: the other card's range reads it over the helper's link, every
-    // layer, every pass (f16 K and V of every cell the layer sees; a sliding-window layer only its window).
+    // A split range attends to the whole cache of its layer, which sits on the layer's own card: a range on another card reads it over the slower of the two
+    // links, every layer, every pass (f16 K and V of every cell the layer sees; a sliding-window layer only its window).
     const double att_tok = std::min(c_us, std::max(0.0, llama_moe_cache_compute_att_us_fork()));
     const double c_base  = c_us - att_tok;
     const double cells   = (double) llama_moe_cache_pp_cells_get_fork();
     // recurrent layers (Qwen3.5/3.6, Qwen3-Next: linear attention) hold no KV and do no attention over the cells: the attention goes to the others
-    std::vector<double> kv_b(L, 0.0), att_w(L, 0.0);
+    std::vector<double> kv_b(L, 0.0), att_w(L, 0.0), lB(L, 1e9);
+    std::vector<int> lcard(L, -1);
     int n_att = 0;
     for (int il = 0; il < L; ++il) { if (!model.hparams.is_recr(il)) { n_att++; } }
     for (int il = 0; il < L; ++il) {
+        const ggml_backend_dev_t ld = model.dev_layer(il);   // where the layer's KV cache or recurrent state is
+        for (int i = 0; i < n; ++i) { if (cards[i] == ld) { lcard[il] = i; } }
+        if (ld && ggml_backend_dev_type(ld) == GGML_BACKEND_DEVICE_TYPE_GPU) { lB[il] = llama_moe_cache_link_gbs_fork(ld); }
+        if (lB[il] <= 0.0) { lB[il] = 1e9; }
         if (model.hparams.is_recr(il)) { continue; }
         att_w[il] = 1.0 / std::max(1, n_att);
         const double cl_seen = model.hparams.is_swa(il) ? std::min(cells, (double) model.hparams.n_swa + (double) T) : cells;
@@ -691,53 +755,57 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     }
     // bytes per token that cross per layer, there and back (llama_dsplit_hop_mode_fork: f16 both ways, f16 there and f32 back, or f32 both ways)
     const int    hop_mode = llama_dsplit_hop_mode_fork();
-    dsx_in in;   // the model of a split layer and its search: llama-splitplan-fork.h
-    in.T = T; in.L = L; in.w = w; in.xf = xf; in.E = E; in.kv_b = kv_b; in.att_w = att_w; in.w_sum = w_sum;
-    in.c_base = c_base; in.att_tok = att_tok; in.rel = rel; in.Bm = Bm; in.Bh = Bh;
+    dsxn_in in;   // the model of a split pass over the cards and its shares: llama-splitplan-fork.h
+    in.T = T; in.L = L; in.w = w; in.xf = xf; in.E = E; in.kv_b = kv_b; in.att_w = att_w; in.w_sum = w_sum; in.lcard = lcard; in.lB = lB;
+    in.c_base = c_base; in.att_tok = att_tok; in.rel = rel; in.B = B; in.x = x;
     in.b_in = (double) model.hparams.n_embd * (hop_mode != 0 ? 2.0 : 4.0); in.b_out = (double) model.hparams.n_embd * (hop_mode == 1 ? 2.0 : 4.0);
-    in.held_m.resize(L); in.held_h.resize(L);
-    for (int il = 0; il < L; ++il) { in.held_m[il] = llama_moe_cache_resident_frac_fork(il, dm); in.held_h[il] = llama_moe_cache_resident_frac_fork(il, dh); }
-    if (g_layer_order.empty()) {   // the layer tuner's order, fixed at the first plan (a K measured on one order means nothing on another): the helper's own layers first
+    in.held.assign(n, std::vector<double>(L, 0.0));
+    for (int i = 0; i < n; ++i) { for (int il = 0; il < L; ++il) { in.held[i][il] = llama_moe_cache_resident_frac_fork(il, cards[i]); } }
+    if (g_layer_order.empty()) {   // the layer tuner's order (split-balance=0), fixed at the first plan: the first helper's own layers first
         for (int il = 0; il < L; ++il) { if (E[il] > 0.0) { g_layer_order.push_back(il); } }
-        std::stable_sort(g_layer_order.begin(), g_layer_order.end(), [&](int a, int b) { return in.held_h[a] > in.held_h[b]; });
+        std::stable_sort(g_layer_order.begin(), g_layer_order.end(), [&](int a, int b) { return in.held[0][a] > in.held[0][b]; });
         g_layer_rank.assign(L, -1);
         for (size_t r = 0; r < g_layer_order.size(); ++r) { g_layer_rank[g_layer_order[r]] = (int) r; }
     }
-    const dsx_out so = dsx_plan(in);
+    const dsxn_out so = dsxn_plan(in);
     // both estimates scaled by what passes of this size (or the nearest measured size) measured against the model (g_calib_split_b, g_calib_one_b)
     const int    bk      = dsplit_bucket_of(T);
     g_one_raw_b[bk] = so.t_one / (double) T;
     const double c_one   = calib_near(g_calib_one_b, bk, 1.0);
     const double c_split = calib_near(g_calib_split_b, bk, g_split_calib.load());
     const double t_one   = so.t_one * c_one;
-    double best_split = so.best_split;
-    const double best_s = so.best_s;
-    const std::vector<double> best_f = so.best_f;
     // the split's estimate is scaled by what earlier split passes measured against their plan (llama_dsplit_report_fork); one card's estimate held to
     // within 4% (Qwen3.8-Flash-Next: 2603 / 2697 ms at 3k, 2038 / 2104 at 1.9k), the split's was 21-26% short (waits the model does not see)
-    const double raw_split = best_split;
-    best_split *= c_split;
+    const double raw_split  = so.t_split;
+    double       best_split = raw_split * c_split;
     // What the split costs after the prompt: its mirror copies of the dense weights sit in lent cache blocks, and the experts they displaced have to be
     // uploaded again before decode is back at full speed. How much of that a prompt really displaces grows with its length and saturates: the fraction of a
     // layer's experts that n tokens touch, 1 - (1 - k/E)^n (a 1-token prompt displaces nothing worth counting, a long one the whole lent area). The refill
-    // is one more upload of the lent bytes over the offload card's link, charged to the split's time (one-off seconds, same unit as the pass).
+    // is one more upload of the lent bytes over the expert card's link, charged to the split's time (one-off seconds, same unit as the pass).
     // Both are paid once per request, so they are spread over its passes (before 2026-10-17 every pass carried the whole refill: 63 times over in a 255k prompt).
     // The passes of the request so far are about cells / T (the call's cells include the earlier calls of the same prompt).
     const double n_pass = std::max(1.0, cells / std::max<double>(1.0, (double) T));
-    best_split += g_mirror_fill_bytes.load() / (std::min(Bm, Bh) * 1e3) / n_pass;   // the copy of the dense weights into the lent blocks, before the first layer (slower link)
+    const double b_min  = *std::min_element(B.begin(), B.end());
+    best_split += g_mirror_fill_bytes.load() / (b_min * 1e3) / n_pass;   // the copy of the dense weights into the lent blocks, before the first layer (slowest link)
     {
         const double touched = 1.0 - std::pow(1.0 - n_used / n_exp, (double) T);
-        best_split += touched * dense_bytes / (Bm * 1e3) * llama_moe_live_get("refill_weight") / n_pass;   // live: POST /moe/params
+        best_split += touched * dense_bytes / (B[x] * 1e3) * llama_moe_live_get("refill_weight") / n_pass;   // live: POST /moe/params
     }
     out.valid      = true;
     // clearly ahead after the calibration (20%), else one card: a split predicted 5-15% ahead measured slower on every Qwen3.8-Flash-Next size (2026-10-23)
     out.split      = best_split > 0.0 && best_split < 0.80 * t_one;
-    out.share      = best_s;
+    out.share      = 1.0 - so.s[x];   // the helpers' share of the tokens together
     out.t_one_ms   = t_one / 1e3;
     out.t_split_ms = best_split / 1e3;
     out.t_raw_ms   = raw_split / 1e3;
     out.t_add_ms   = (best_split - raw_split * c_split) / 1e3;
-    f_help = best_f;
+    f_help.assign(L, 0.0);   // the plan keeps the experts on the expert card: experts on the helpers are a measured trial (the live balance)
+    s_cards = so.s;
+    // what the live balance models per card from these numbers (dsplit_bal_step)
+    g_hop_bytes_tok = 0.0;
+    for (int il = 0; il < L; ++il) { if (E[il] > 0.0) { g_hop_bytes_tok += in.b_in + in.b_out; } }
+    g_kv_layers.clear();
+    for (int il = 0; il < L; ++il) { if (kv_b[il] > 0.0) { g_kv_layers.push_back({ model.dev_layer(il), kv_b[il] }); } }
 }
 
 static void dsplit_tune_load(int b);   // below: a size settled by an earlier start
@@ -756,13 +824,17 @@ llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int
         pc.fill     = fill_now;
         pc.n_tokens = n_tokens;
         pc.c_us     = c_us;
-        dsplit_plan_compute(model, n_tokens, c_us, pc.plan, pc.f_help);
+        dsplit_plan_compute(model, n_tokens, c_us, pc.plan, pc.f_help, pc.s_cards);
         dsplit_tune_load(b);   // a size settled by an earlier start (layer count, token share)
         static int logged = 0;
         if (pc.plan.valid && logged++ < 32) {
-            double fa = 0.0; for (double f : pc.f_help) { fa += f; } fa /= std::max<size_t>(1, pc.f_help.size());
-            LLAMA_LOG_WARN("split planner: %lld tokens: one card %.0f ms, split %.0f ms (helper: %.0f%% of the tokens, %.0f%% of the experts on average): %s\n",
-                    (long long) n_tokens, pc.plan.t_one_ms, pc.plan.t_split_ms, 100.0 * pc.plan.share, 100.0 * fa, pc.plan.split ? "split" : "one card");
+            std::string sh;   // every card's planned token share, in range order (the expert card last)
+            for (size_t i = 0; i < pc.s_cards.size() && i < g_cards.size(); ++i) {
+                sh += format("%s%s %.0f%%", i ? ", " : "", ggml_backend_dev_name(g_cards[i]), 100.0 * pc.s_cards[i]);
+            }
+            LLAMA_LOG_WARN("split planner: %lld tokens: one card %.0f ms, split %.0f ms (tokens: %s; experts on %s): %s\n",
+                    (long long) n_tokens, pc.plan.t_one_ms, pc.plan.t_split_ms, sh.c_str(), g_cards.empty() ? "-" : ggml_backend_dev_name(g_cards.back()),
+                    pc.plan.split ? "split" : "one card");
         }
     }
     return pc.plan;
@@ -806,187 +878,353 @@ int llama_dsplit_hop_mode_fork() {
     return mode;
 }
 
-// ---- the live balance of the dense split (2026-10-23, user's design) ------------------------------------------------------------------------------------
-// Two ratios, each balanced on its own part of the cards' busy time in the pass just run (ggml_sched_card_stat: device stamps in front of and behind every
-// split, the expert chains apart from the rest):
-//   s  the helper's share of the tokens (the slow-link card holds the first token range): the dense parts. The cards' dense times per token of their own
-//      range give the share where both take equally long, s* = c_owner / (c_helper + c_owner). The first pass of a size moves all the way there, later passes
-//      half way, a gap under 3% moves nothing: fast at the start, then small moves that follow the drift for as long as the server runs.
-//   f  the helper's share of each layer's experts: the MoE parts. 0 (the dense split alone) until the dense ratio has held for two passes; then the experts
-//      go on at the same ratio, f = s, and are kept only if the pass gets faster per token than the dense split alone. Slower: f halves, pass by pass, and
-//      below 2% the experts are abandoned: the dense split alone again. Faster: kept, and f is balanced on the cards' MoE times as s is on the dense ones.
-// Per pass-size bucket, stored per model, cards and build (dsplit_state_key): the next start begins where this one ended. --moe split-balance=0: the fixed
-// start share (0.3) and no experts on the helper, as before; --moe dense-split-share=X fixes s by hand (tests).
+// ---- the live balance of the dense split (2026-10-23, user's design; any number of cards) ---------------------------------------------------------------
+// Two kinds of share per card, each balanced on its own part of the cards' busy time in the pass just run (ggml_sched_card_stat: device stamps in front of
+// and behind every split, the expert chains apart from the rest):
+//   s_i  card i's share of the tokens (its range): the dense parts. A token of its range costs card i its measured dense time over its tokens, plus the
+//        hand-offs of that token over its link to the expert card and back (modelled from the probed link rates and the bytes per token: a copy has no
+//        stamp), plus once per pass the KV caches of the attention layers other cards hold, read over its link (llama-splitplan-fork.h, dsb_card). The
+//        shares that make every card take equally long are the target (dsb_target): the first measured pass of a size moves all the way there, later
+//        passes half way, and nothing moves while the cards end within 3% of each other: fast at the start, then small moves that follow the drift for
+//        as long as the server runs. A card too slow to help (even split-min-share of the tokens would make it the last) gets no range; it comes back
+//        when the others get slower. Without the hand-offs the first balance put 52-54% of GLM-5.3-Flash's tokens on the x4 card of 2x RTX 3090, where a
+//        fixed 45% was the fastest of 15/30/45/60% (15k prompt: 420 against 387-389 prompt t/s at 30% and 60%).
+//   f_i  card i's share of each layer's experts: the MoE parts. All on the expert card (the dense split alone) until the token shares have held for two
+//        passes; then the experts go on at the same ratio, f_i = s_i, and are kept only if the pass gets faster per token than the dense split alone.
+//        Slower: the helpers' f halve, pass by pass, and below 2% together the experts are abandoned: the dense split alone again. Kept: f is balanced
+//        on the cards' expert times as s is on the dense ones. A pass whose graph does not fit with the helpers' experts drops them at once.
+// Before anything is measured every card takes an equal share (user, 2026-10-23: from the card count, 50% each on two cards; the start from the link ratio,
+// 30% on the x4 card, was wrong: the dense weights are copied once, a token's dense work does not cross a link). A size not measured yet starts from the
+// nearest measured size, else from the last shares of an earlier run (state file). Per pass-size bucket, stored per model, cards and build
+// (dsplit_state_key). --moe split-balance=0: the planner's shares and no experts on the helpers; --moe dense-split-share=X fixes the first card's share
+// by hand (tests: the other cards split the rest equally).
 extern "C" {
     struct dsplit_card_stat { ggml_backend_t backend; int64_t dense_us, moe_us, first_us, last_us; int n_dense, n_moe; };   // must match ggml_sched_card_stat (ggml-backend.cpp)
     GGML_API int ggml_backend_sched_card_stats(struct dsplit_card_stat * out, int cap, long * gen);
 }
 namespace {
 struct dsplit_bal {
-    double s = -1.0, f = 0.0;
-    int    phase = 0;               // 0 balancing the dense ratio, 1 experts on trial, 2 the dense split alone (experts abandoned), 3 with experts
-    int    n = 0, still = 0;
-    double ref_v = 0.0;             // us per token of the dense split alone: the trial's reference
-    double v = 0.0;                 // us per token of the last pass
-    double c_h = 0.0, c_o = 0.0;    // dense us per token of each card's own range
-    double d_h = 0.0, d_o = 0.0;    // dense ms of each card
-    double m_h = 0.0, m_o = 0.0;    // MoE ms of each card
-    double s_run = 0.0, f_run = 0.0;          // the ratios the measured pass ran with (s and f are the next pass's)
-    int64_t tok_h = 0, tok_o = 0;             // its token ranges
-    std::string last;               // what the last step did (/moe/stats, the log)
+    std::vector<ggml_backend_dev_t> dev;   // the cards, in range order (the expert card last)
+    std::vector<double> s, f;              // the next pass's token and expert shares
+    std::vector<double> s_run, f_run;      // the shares the measured pass ran with
+    std::vector<double> c;                 // dense us per token of each card's own range (the last measured; kept while a card has no range)
+    std::vector<double> hop, k;            // modelled per card: hand-offs (us per token), KV reads (us per pass)
+    std::vector<double> d, m;              // dense and expert ms of each card in the measured pass
+    std::vector<int64_t> tok;              // tokens of each card in the measured pass
+    int    phase = 0, n = 0, still = 0;    // phase: 0 balancing the token shares, 1 experts on trial, 2 the dense split alone (experts abandoned), 3 with experts
+    double ref_v = 0.0;                    // us per token of the dense split alone: the trial's reference
+    double v = 0.0;                        // us per token of the last pass (its span on the cards)
+    std::string last;                      // what the last step did (/moe/stats, the log)
 };
-std::map<int, dsplit_bal> g_bal;                     // under g_plan_mu
-bool                      g_bal_used = false;        // a model builder takes its share from here (GLM-5.3-Flash)
-int                       g_bal_last = -1;           // the bucket of the last step
-ggml_backend_dev_t        g_rng_dev[2] = { nullptr, nullptr };   // the token ranges of the last split graph: helper, owner
-int64_t                   g_rng_tok[2] = { 0, 0 };
-long                      g_card_seen  = 0;
+std::map<int, dsplit_bal>       g_bal;                // under g_plan_mu
+bool                            g_bal_used = false;   // a graph builder takes its shares from here
+int                             g_bal_last = -1;      // the bucket of the last step
+std::vector<ggml_backend_dev_t> g_rng_dev;            // the cards of the last split graph, in range order (the cards with no range included)
+std::vector<int64_t>            g_rng_tok;            // and their tokens
+long                            g_card_seen = 0;
 bool dsplit_bal_on() {
     static const bool on = [] { const char * e = llama_moe_get_opt("split-balance"); return !e || atoi(e) != 0; }();
     return on;
 }
+// --moe split-min-share (default 0.05): the smallest token share a card takes; a card that would take longer than the others even with that gets no range
+// (a range that small costs more in hand-offs and per-split overhead than it takes off the others)
+double dsplit_min_share() {
+    static const double v = [] { const char * e = llama_moe_get_opt("split-min-share"); return e ? std::max(0.0, std::min(0.5, atof(e))) : 0.05; }();
+    return v;
+}
 const char * dsplit_bal_phase(int p) {
-    return p == 0 ? "balancing the dense ratio" : p == 1 ? "experts on trial" : p == 2 ? "dense split alone (experts abandoned)" : "dense split with experts";
+    return p == 0 ? "balancing the token shares" : p == 1 ? "experts on trial" : p == 2 ? "dense split alone (experts abandoned)" : "dense split with experts";
+}
+std::string dsplit_bal_enc(const dsplit_bal & B, bool with_f) {   // "CUDA0:0.4500:0.0000,CUDA1:0.5500:1.0000"
+    std::string v;
+    for (size_t i = 0; i < B.dev.size(); ++i) {
+        v += format("%s%s:%.4f", i ? "," : "", ggml_backend_dev_name(B.dev[i]), B.s[i]);
+        if (with_f) { v += format(":%.4f", B.f[i]); }
+    }
+    return v;
+}
+// the shares of a stored value, by card name; false unless it names exactly these cards
+bool dsplit_bal_dec(const std::string & v, const std::vector<ggml_backend_dev_t> & dev, std::vector<double> & s, std::vector<double> * f) {
+    std::map<std::string, std::pair<double, double>> m;
+    size_t p = 0;
+    while (p < v.size()) {
+        size_t e = v.find(',', p);
+        if (e == std::string::npos) { e = v.size(); }
+        const std::string item = v.substr(p, e - p);
+        const size_t c1 = item.find(':');
+        if (c1 == std::string::npos) { return false; }
+        const size_t c2 = item.find(':', c1 + 1);
+        m[item.substr(0, c1)] = { atof(item.c_str() + c1 + 1), c2 == std::string::npos ? 0.0 : atof(item.c_str() + c2 + 1) };
+        p = e + 1;
+    }
+    if (m.size() != dev.size()) { return false; }
+    s.assign(dev.size(), 0.0);
+    if (f) { f->assign(dev.size(), 0.0); }
+    double sum = 0.0;
+    for (size_t i = 0; i < dev.size(); ++i) {
+        auto it = m.find(ggml_backend_dev_name(dev[i]));
+        if (it == m.end() || it->second.first < 0.0 || it->second.first > 1.0) { return false; }
+        s[i] = it->second.first; sum += s[i];
+        if (f) { (*f)[i] = it->second.second; }
+    }
+    return sum > 0.99 && sum < 1.01;
 }
 void dsplit_bal_save(int b, const dsplit_bal & B) {
-    if (!dsplit_state_on() || B.s <= 0.0) { return; }
-    char v[64]; snprintf(v, sizeof v, "%.4f %.4f %d", B.s, B.f, B.phase == 1 ? 0 : B.phase);   // a trial cut short starts over
-    char a[32]; snprintf(a, sizeof a, "%.4f", B.s);   // and the last share of any size: the start of a size never seen on these cards (the ratio of the cards' dense speeds hardly depends on the size)
-    moe_state_set(g_calib_section, { { dsplit_state_key("dsplit_bal1_b" + std::to_string(b)), v }, { dsplit_state_key("dsplit_bal1_any"), a } });
+    if (!dsplit_state_on() || B.s.empty()) { return; }
+    moe_state_set(g_calib_section, { { dsplit_state_key("dsplit_bal2_b" + std::to_string(b)), std::to_string(B.phase == 1 ? 0 : B.phase) + ";" + dsplit_bal_enc(B, true) },
+                                     { dsplit_state_key("dsplit_bal2_any"), dsplit_bal_enc(B, false) } });   // a trial cut short starts over
 }
-dsplit_bal & dsplit_bal_get(int b, double start) {
+dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) {
     auto it = g_bal.find(b);
-    if (it != g_bal.end()) { return it->second; }
+    if (it != g_bal.end() && it->second.dev == dev) { return it->second; }
     dsplit_bal & B = g_bal[b];
-    std::string v; double s = -1.0, f = 0.0; int ph = 0;
-    if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_bal1_b" + std::to_string(b)), v) &&
-            sscanf(v.c_str(), "%lf %lf %d", &s, &f, &ph) == 3 && s > 0.0 && s < 1.0) {
-        B.s = s; B.phase = ph == 1 ? 0 : ph; B.f = B.phase == 3 ? f : 0.0;
-        B.last = "from the state file";
-        LLAMA_LOG_WARN("split balance: passes of size bucket %d from the state file: helper %.0f%% of the tokens, %.0f%% of the experts (%s)\n", b, 100.0 * B.s, 100.0 * B.f, dsplit_bal_phase(B.phase));
-        return B;
+    B = dsplit_bal();   // new, or the cards changed (a card left out for memory): start over
+    const size_t n = dev.size();
+    B.dev = dev;
+    B.s.assign(n, n ? 1.0 / (double) n : 0.0);
+    B.f.assign(n, 0.0);
+    if (n) { B.f[n - 1] = 1.0; }
+    B.c.assign(n, 0.0); B.hop.assign(n, 0.0); B.k.assign(n, 0.0); B.d.assign(n, 0.0); B.m.assign(n, 0.0); B.tok.assign(n, 0);
+    B.s_run = B.s; B.f_run = B.f;
+    B.last = "equal shares (nothing measured yet)";
+    std::string v;
+    std::vector<double> s, f;
+    if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_bal2_b" + std::to_string(b)), v)) {
+        const size_t semi = v.find(';');
+        if (semi != std::string::npos && dsplit_bal_dec(v.substr(semi + 1), dev, s, &f)) {
+            B.s = s;
+            B.phase = atoi(v.c_str());
+            if (B.phase == 1) { B.phase = 0; }
+            if (B.phase == 3) { B.f = f; }
+            B.last = "from the state file";
+            LLAMA_LOG_WARN("split balance: passes of size bucket %d from the state file: %s (%s)\n", b, dsplit_bal_enc(B, true).c_str(), dsplit_bal_phase(B.phase));
+            return B;
+        }
     }
-    // a size not measured yet: the token share of the nearest measured size (the dense parts scale alike), else the builder's start
+    // a size not measured yet: the token shares of the nearest measured size with the same cards (the cards' dense speeds hardly depend on the size)
     int best = -1, dist = 1 << 20;
     for (const auto & kv : g_bal) {
-        if (kv.first != b && kv.second.s > 0.0 && std::abs(kv.first - b) < dist) { dist = std::abs(kv.first - b); best = kv.first; }
+        if (kv.first != b && kv.second.dev == dev && kv.second.n > 0 && std::abs(kv.first - b) < dist) { dist = std::abs(kv.first - b); best = kv.first; }
     }
-    double any = -1.0;
-    if (best < 0 && dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_bal1_any"), v) && sscanf(v.c_str(), "%lf", &any) == 1 && any > 0.0 && any < 1.0) {
-        B.s = any;
-        B.last = "token share of an earlier run (state file)";
+    if (best >= 0) {
+        B.s = g_bal[best].s;
+        B.c = g_bal[best].c;
+        B.last = "token shares of the nearest measured size";
         return B;
     }
-    B.s = best >= 0 ? g_bal[best].s : start;
-    B.last = best >= 0 ? "token share of the nearest measured size" : "start";
+    if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_bal2_any"), v) && dsplit_bal_dec(v, dev, s, nullptr)) {
+        B.s = s;
+        B.last = "token shares of an earlier run (state file)";
+    }
     return B;
 }
-// one measured split pass of bucket b (v: us per token): the step of the balance (under g_plan_mu)
-void dsplit_bal_step(int b, double v) {
-    dsplit_card_stat st[16]; long gen = 0;
-    const int n = ggml_backend_sched_card_stats(st, 16, &gen);
-    if (n < 2 || gen == g_card_seen || !g_rng_dev[0] || !g_rng_dev[1] || g_rng_tok[0] <= 0 || g_rng_tok[1] <= 0) { return; }
-    g_card_seen = gen;
-    const dsplit_card_stat * h = nullptr, * o = nullptr;
-    for (int i = 0; i < n; ++i) {
-        const ggml_backend_dev_t d = ggml_backend_get_device(st[i].backend);
-        if (d == g_rng_dev[0]) { h = &st[i]; } else if (d == g_rng_dev[1]) { o = &st[i]; }
-    }
-    if (!h || !o || h->dense_us <= 0 || o->dense_us <= 0) { return; }
-    if (v < 0.0) {   // the pass's own span on the cards (first stamp to last stamp) over its tokens: one value per pass, whatever the call around it did
-        const double span = (double) (std::max(h->last_us, o->last_us) - std::min(h->first_us, o->first_us));
-        if (span <= 0.0) { return; }
-        v = span / (double) (g_rng_tok[0] + g_rng_tok[1]);
-    }
-    dsplit_bal & B = dsplit_bal_get(b, 0.5);
-    g_bal_last = b;
-    B.n++;
-    B.v   = v;
-    B.c_h = (double) h->dense_us / (double) g_rng_tok[0];
-    B.c_o = (double) o->dense_us / (double) g_rng_tok[1];
-    B.d_h = h->dense_us / 1e3; B.d_o = o->dense_us / 1e3;
-    B.m_h = h->moe_us / 1e3;   B.m_o = o->moe_us / 1e3;
-    const double s0 = B.s, f0 = B.f;
-    B.s_run = s0; B.f_run = f0; B.tok_h = g_rng_tok[0]; B.tok_o = g_rng_tok[1];
-    char msg[240] = "";
-    if (!g_bal_used || !dsplit_bal_on()) {
-        snprintf(msg, sizeof msg, "fixed share (no balance)");
-    } else if (B.phase == 0 || B.phase == 2 || B.phase == 3) {
-        // the dense ratio: toward equal dense times
-        const double D = std::max(B.d_h, B.d_o), gap = D > 0.0 ? std::fabs(B.d_h - B.d_o) / D : 0.0;
-        if (gap < 0.03) {
-            B.still++;
-            snprintf(msg, sizeof msg, "dense times within 3%% (%d passes)", B.still);
-        } else {
-            const double target = B.c_o / (B.c_h + B.c_o);
-            B.s = std::max(0.05, std::min(0.95, B.n <= 1 ? target : B.s + 0.5 * (target - B.s)));
-            B.still = 0;
-            snprintf(msg, sizeof msg, "tokens %.0f%% -> %.0f%% (%s late by %.0f%%)", 100.0 * s0, 100.0 * B.s, B.d_h > B.d_o ? "helper" : "owner", 100.0 * gap);
+double dsplit_link(ggml_backend_dev_t d) {
+    return d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU ? llama_moe_cache_link_gbs_fork(d) : 0.0;
+}
+// what a card's link adds, modelled from the planner's numbers (g_hop_bytes_tok, g_kv_layers) and the probed link rates: the stamps time compute, not copies
+void dsplit_bal_costs(dsplit_bal & B) {
+    const size_t n = B.dev.size();
+    if (n == 0) { return; }
+    const double bx = dsplit_link(B.dev[n - 1]);
+    for (size_t i = 0; i < n; ++i) {
+        const double bi = dsplit_link(B.dev[i]);
+        B.hop[i] = i + 1 < n && bi > 0.0 && bx > 0.0 ? g_hop_bytes_tok / (std::min(bi, bx) * 1e3) : 0.0;
+        B.k[i]   = 0.0;
+        for (const auto & kl : g_kv_layers) {
+            if (kl.first == B.dev[i] || bi <= 0.0) { continue; }
+            double bl = dsplit_link(kl.first);
+            if (bl <= 0.0) { bl = bi; }
+            B.k[i] += kl.second / (std::min(bi, bl) * 1e3);
         }
-        if (B.phase == 3 && B.f > 0.0 && B.m_h > 0.0 && B.m_o > 0.0) {   // the experts' ratio: toward equal MoE times
-            const double M = std::max(B.m_h, B.m_o), mgap = std::fabs(B.m_h - B.m_o) / M;
-            if (mgap >= 0.03) {
-                const double ph = B.m_h / B.f, po = B.m_o / std::max(0.05, 1.0 - B.f);   // ms per whole share of the experts
-                B.f = std::max(0.02, std::min(0.95, B.f + 0.5 * (po / (ph + po) - B.f)));
-                const size_t l = strlen(msg);
-                snprintf(msg + l, sizeof msg - l, ", experts %.0f%% -> %.0f%% (%s late by %.0f%%)", 100.0 * f0, 100.0 * B.f, B.m_h > B.m_o ? "helper" : "owner", 100.0 * mgap);
+    }
+}
+// one measured split pass of bucket b: the step of the balance (under g_plan_mu)
+void dsplit_bal_step(int b) {
+    dsplit_card_stat st[16]; long gen = 0;
+    const int nst = ggml_backend_sched_card_stats(st, 16, &gen);
+    if (nst < 1 || gen == g_card_seen || g_rng_dev.empty() || g_rng_dev.size() != g_rng_tok.size()) { return; }
+    g_card_seen = gen;
+    const size_t n = g_rng_dev.size();
+    std::vector<const dsplit_card_stat *> cs(n, nullptr);
+    for (int j = 0; j < nst; ++j) {
+        const ggml_backend_dev_t d = ggml_backend_get_device(st[j].backend);
+        for (size_t i = 0; i < n; ++i) { if (g_rng_dev[i] == d) { cs[i] = &st[j]; } }
+    }
+    int64_t T = 0;
+    int64_t t_first = 0, t_last = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (g_rng_tok[i] <= 0) { continue; }
+        if (!cs[i] || cs[i]->dense_us <= 0) { return; }   // a card with tokens and no dense time: not this pass's measurement
+        T += g_rng_tok[i];
+        t_first = t_first == 0 ? cs[i]->first_us : std::min(t_first, cs[i]->first_us);
+        t_last  = std::max(t_last, cs[i]->last_us);
+    }
+    if (T <= 0 || t_last <= t_first) { return; }
+    dsplit_bal & B = dsplit_bal_get(b, g_rng_dev);
+    g_bal_last = b;
+    dsplit_bal_costs(B);
+    B.n++;
+    B.v     = (double) (t_last - t_first) / (double) T;   // the pass's span on the cards over its tokens
+    B.s_run = B.s;
+    B.f_run = B.f;
+    B.tok   = g_rng_tok;
+    double c_max = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        B.d[i] = cs[i] ? cs[i]->dense_us / 1e3 : 0.0;
+        B.m[i] = cs[i] ? cs[i]->moe_us / 1e3 : 0.0;
+        if (g_rng_tok[i] > 0 && cs[i]) { B.c[i] = (double) cs[i]->dense_us / (double) g_rng_tok[i]; }
+        c_max = std::max(c_max, B.c[i]);
+    }
+    std::vector<dsb_card> cc(n);
+    std::vector<double>   t(n, 0.0);
+    for (size_t i = 0; i < n; ++i) {
+        const double ci = B.c[i] > 0.0 ? B.c[i] : c_max;   // a card never measured (it had no range yet): as slow as the slowest measured card
+        cc[i] = { ci + B.hop[i], B.k[i] };
+        t[i]  = g_rng_tok[i] > 0 ? B.k[i] + (double) g_rng_tok[i] * (B.c[i] + B.hop[i]) : 0.0;
+    }
+    int late = -1;
+    for (size_t i = 0; i < n; ++i) { if (t[i] > 0.0 && (late < 0 || t[i] > t[late])) { late = (int) i; } }
+    const std::vector<double> s0 = B.s, f0 = B.f;
+    std::string msg;
+    if (!g_bal_used || !dsplit_bal_on()) {
+        msg = "fixed shares (no balance)";
+    } else if (B.phase == 0 || B.phase == 2 || B.phase == 3) {
+        const std::vector<double> target = dsb_target(cc, (double) T, dsplit_min_share(), (int) n - 1);
+        const double gap = dsb_step(B.s, target, t, B.n <= 1, 0.03);
+        if (B.s == s0) {
+            B.still++;
+            msg = format("cards within 3%% of each other (%d passes)", B.still);
+        } else {
+            B.still = 0;
+            std::string a, z;
+            for (size_t i = 0; i < n; ++i) { a += format("%s%.0f", i ? "/" : "", 100.0 * s0[i]); z += format("%s%.0f", i ? "/" : "", 100.0 * B.s[i]); }
+            msg = format("tokens %s%% -> %s%% (%s last, %.0f%% apart)", a.c_str(), z.c_str(), late >= 0 ? ggml_backend_dev_name(B.dev[late]) : "?", 100.0 * gap);
+        }
+        double fh = 0.0;
+        for (size_t i = 0; i + 1 < n; ++i) { fh += B.f[i]; }
+        if (B.phase == 3 && fh > 0.0) {   // the experts' shares: toward equal expert times
+            double mmax = 0.0, mmin = -1.0;
+            for (size_t i = 0; i < n; ++i) { if (B.f[i] > 0.0 && B.m[i] > 0.0) { mmax = std::max(mmax, B.m[i]); mmin = mmin < 0.0 ? B.m[i] : std::min(mmin, B.m[i]); } }
+            if (mmax > 0.0 && (mmax - mmin) / mmax >= 0.03) {
+                const std::vector<double> ft = dsb_expert_target(B.f, B.m);
+                double sum = 0.0;
+                for (size_t i = 0; i < n; ++i) { B.f[i] = std::max(0.0, B.f[i] + 0.5 * (ft[i] - B.f[i])); sum += B.f[i]; }
+                if (sum > 0.0) { for (double & v : B.f) { v /= sum; } }
+                msg += format(", experts balanced (%.0f%% apart)", 100.0 * (mmax - mmin) / mmax);
             }
         }
         if (B.phase == 0) {
-            B.ref_v = B.still > 0 ? (B.ref_v > 0.0 ? 0.5 * (B.ref_v + v) : v) : 0.0;   // the dense split alone at a held ratio
+            B.ref_v = B.still > 0 ? (B.ref_v > 0.0 ? 0.5 * (B.ref_v + B.v) : B.v) : 0.0;   // the dense split alone at held shares
             if ((B.still >= 2 || B.n >= 6) && llama_dsplit_experts_mode_fork() < 0) {
-                if (B.ref_v <= 0.0) { B.ref_v = v; }
-                B.phase = 1; B.f = B.s;
-                snprintf(msg, sizeof msg, "dense ratio held at %.0f%%: experts on at the same ratio (the dense split alone: %.1f us/token)", 100.0 * B.s, B.ref_v);
+                if (B.ref_v <= 0.0) { B.ref_v = B.v; }
+                B.phase = 1;
+                B.f = B.s;
+                msg = format("token shares held: experts on at the same ratio (the dense split alone: %.1f us/token)", B.ref_v);
             } else if (B.still >= 2 || B.n >= 6) {
                 B.phase = 2;   // --moe split-experts=0|1 decides the experts
             }
         }
     } else {   // 1: the experts on trial, against the dense split alone
-        const double rel = B.ref_v > 0.0 ? v / B.ref_v - 1.0 : 0.0;
+        const double rel = B.ref_v > 0.0 ? B.v / B.ref_v - 1.0 : 0.0;
+        double fh = 0.0;
+        for (size_t i = 0; i + 1 < n; ++i) { fh += B.f[i]; }
         if (rel < -0.01) {
             B.phase = 3;
-            snprintf(msg, sizeof msg, "experts %.0f%%: %.1f us/token, %.0f%% faster than the dense split alone: kept", 100.0 * B.f, v, -100.0 * rel);
-        } else if (B.f * 0.5 < 0.02) {
-            B.f = 0.0; B.phase = 2;
-            snprintf(msg, sizeof msg, "experts %.0f%%: still %.0f%% slower than the dense split alone: abandoned, the dense split alone", 100.0 * f0, 100.0 * rel);
+            msg = format("experts on the helpers (%.0f%% together): %.1f us/token, %.0f%% faster than the dense split alone: kept", 100.0 * fh, B.v, -100.0 * rel);
+        } else if (fh * 0.5 < 0.02) {
+            std::fill(B.f.begin(), B.f.end(), 0.0);
+            B.f[n - 1] = 1.0;
+            B.phase = 2;
+            msg = format("experts on the helpers (%.0f%% together) still %.0f%% slower than the dense split alone: abandoned, the dense split alone", 100.0 * fh, 100.0 * rel);
         } else {
-            B.f *= 0.5;
-            snprintf(msg, sizeof msg, "experts %.0f%%: %.0f%% slower than the dense split alone: %.0f%% next", 100.0 * f0, 100.0 * rel, 100.0 * B.f);
+            for (size_t i = 0; i + 1 < n; ++i) { B.f[i] *= 0.5; }
+            B.f[n - 1] = 1.0 - 0.5 * fh;
+            msg = format("experts on the helpers (%.0f%% together) %.0f%% slower than the dense split alone: %.0f%% next", 100.0 * fh, 100.0 * rel, 50.0 * fh);
         }
     }
     B.last = msg;
-    LLAMA_LOG_WARN("split balance: %lld+%lld tokens: helper %s %.0f%% of the tokens %.0f%% of the experts, dense %.0f ms (%.1f us/token) moe %.0f ms | owner %s dense %.0f ms (%.1f us/token) moe %.0f ms | pass %.1f us/token | %s: %s\n",
-            (long long) g_rng_tok[0], (long long) g_rng_tok[1], ggml_backend_dev_name(g_rng_dev[0]), 100.0 * s0, 100.0 * f0, B.d_h, B.c_h, B.m_h,
-            ggml_backend_dev_name(g_rng_dev[1]), B.d_o, B.c_o, B.m_o, v, dsplit_bal_phase(B.phase), msg);
-    if (B.s != s0 || B.f != f0) { g_tune_changed = true; }   // the next pass of this size is built with the new ratios
+    std::string cards;
+    for (size_t i = 0; i < n; ++i) {
+        cards += format("%s%s %lld tokens (%.0f%%) %.0f%% of the experts, dense %.0f ms (%.1f us/token + hand-offs %.1f) moe %.0f ms", i ? " | " : "",
+                ggml_backend_dev_name(B.dev[i]), (long long) g_rng_tok[i], 100.0 * B.s_run[i], 100.0 * B.f_run[i], B.d[i], B.c[i], B.hop[i], B.m[i]);
+    }
+    LLAMA_LOG_WARN("split balance: %s | pass %.1f us/token | %s: %s\n", cards.c_str(), B.v, dsplit_bal_phase(B.phase), msg.c_str());
+    if (B.s != s0 || B.f != f0) { g_tune_changed = true; }   // the next pass of this size is built with the new shares
     dsplit_bal_save(b, B);
+}
+void dsplit_pass_step_locked() {   // under g_plan_mu: the balance step of the split pass just run
+    int64_t n = 0;
+    for (int64_t t : g_rng_tok) { n += t; }
+    if (n > 0) { dsplit_bal_step(dsplit_bucket_of(n)); }
 }
 }  // namespace
 
-// the token share of the helper (the slow-link card's range) for a split pass of n_tokens: the live balance's, `start` before anything is measured
-double llama_dsplit_bal_share_fork(int64_t n_tokens, double start) {
-    if (!dsplit_bal_on()) { return start; }
+// the token share of every card (in the order of `dev`, the cards of llama_dsplit_cards_fork) for a split pass of n_tokens: the live balance's
+std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::vector<ggml_backend_dev_t> & dev) {
     std::lock_guard<std::mutex> lk(g_plan_mu);
+    const int b = dsplit_bucket_of(n_tokens);
+    if (!dsplit_bal_on()) {   // the planner's shares, equal shares without a plan
+        auto it = g_plans.find(b);
+        if (it != g_plans.end() && it->second.plan.valid && it->second.s_cards.size() == dev.size()) { return it->second.s_cards; }
+        return std::vector<double>(dev.size(), dev.empty() ? 0.0 : 1.0 / (double) dev.size());
+    }
     g_bal_used = true;
-    (void) start;   // the start is an equal share per card (two token ranges: 50%), not a guess from the links; the balance moves it by the measured dense times
-    return dsplit_bal_get(dsplit_bucket_of(n_tokens), 0.5).s;
+    return dsplit_bal_get(b, dev).s;
 }
-// the token ranges of the split graph just built (0: the helper's, 1: the owner's): the balance relates each card's measured time to its tokens
-void llama_dsplit_note_range_fork(int i, ggml_backend_dev_t dev, int64_t n_tok) {
+// the cards of the split graph just built and the tokens of each (0: no range this pass), in range order: the balance relates each card's time to its tokens
+void llama_dsplit_note_ranges_fork(const std::vector<ggml_backend_dev_t> & dev, const std::vector<int64_t> & tok) {
     std::lock_guard<std::mutex> lk(g_plan_mu);
-    if (i >= 0 && i < 2) { g_rng_dev[i] = dev; g_rng_tok[i] = n_tok; }
+    g_rng_dev = dev;
+    g_rng_tok = tok;
 }
 
-// One balance step per pass (2026-10-23): the report above runs once per llama_decode call and saw only the last pass of it (a 30k prompt = 4 passes gave 2 steps).
+// One balance step per pass (2026-10-23): the report below runs once per llama_decode call and saw only the last pass of it (a 30k prompt = 4 passes gave 2 steps).
 // llama_context::process_ubatch asks before it builds the next pass: was the pass just run a split one, and if so take its card times now.
 bool llama_dsplit_prev_split_fork() {
     return g_cur == 1;
 }
 void llama_dsplit_pass_done_fork() {
     std::lock_guard<std::mutex> pk(g_plan_mu);
-    const int64_t n = g_rng_tok[0] + g_rng_tok[1];
-    if (n > 0) { dsplit_bal_step(dsplit_bucket_of(n), -1.0); }
+    dsplit_pass_step_locked();
+}
+
+// a split pass with experts on the helpers did not fit (llama_context::process_ubatch): the experts go back to the expert card for passes of this size (the
+// dense split alone) and the graph is built again, before the split itself is given up; true when there was something to drop
+bool llama_dsplit_drop_experts_fork(int64_t n_tokens) {
+    std::lock_guard<std::mutex> lk(g_plan_mu);
+    auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
+    if (bt == g_bal.end() || bt->second.f.empty()) { return false; }
+    dsplit_bal & B = bt->second;
+    double fh = 0.0;
+    for (size_t i = 0; i + 1 < B.f.size(); ++i) { fh += B.f[i]; }
+    if (fh <= 0.0) { return false; }
+    std::fill(B.f.begin(), B.f.end(), 0.0);
+    B.f.back() = 1.0;
+    B.phase = 2;
+    B.last = "the helpers' experts did not fit in memory: the dense split alone";
+    LLAMA_LOG_WARN("split balance: a pass of %lld tokens with %.0f%% of the experts on the helpers does not fit: the experts stay on %s\n", (long long) n_tokens,
+            100.0 * fh, ggml_backend_dev_name(B.dev.back()));
+    g_tune_changed = true;
+    dsplit_bal_save(bt->first, B);
+    return true;
+}
+
+// the share of layer il's experts that card dev computes in a split pass of n_tokens (llama-graph.cpp, the split controller's counts): the live balance's,
+// 0 for a card it gives none; -1 when nothing sets it (the controller decides)
+double llama_dsplit_card_f_fork(int il, int64_t n_tokens, ggml_backend_dev_t dev) {
+    const int mode = llama_dsplit_experts_mode_fork();
+    if (mode == 0) { return 0.0; }    // dense only
+    if (mode == 1) { return -1.0; }   // the old start and controller
+    {
+        std::lock_guard<std::mutex> lk(g_plan_mu);
+        if (g_bal_used) {
+            auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
+            if (bt == g_bal.end()) { return 0.0; }
+            for (size_t i = 0; i < bt->second.dev.size(); ++i) { if (bt->second.dev[i] == dev) { return bt->second.f[i]; } }
+            return 0.0;
+        }
+    }
+    return llama_dsplit_plan_helper_f_fork(il, n_tokens);   // --moe split-balance=0: the layer tuner's
 }
 
 double llama_dsplit_plan_helper_f_fork(int il, int64_t n_tokens) {
@@ -996,9 +1234,9 @@ double llama_dsplit_plan_helper_f_fork(int il, int64_t n_tokens) {
     // auto (2026-10-23): whole MoE layers, the first K of g_layer_order, give their experts to the helper (1: all of the layer's experts but the one the owner
     // keeps); every other layer none. K comes from the layer tuner (phase 0 of dsplit_tune_step) and starts at 0: the dense split alone.
     std::lock_guard<std::mutex> lk(g_plan_mu);
-    if (g_bal_used) {   // the live balance: the helper's share of every layer's experts (0 while the dense ratio is balanced, then the trial's)
+    if (g_bal_used) {   // the live balance: the first helper's share (llama_dsplit_card_f_fork gives every card's)
         auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
-        return bt != g_bal.end() ? bt->second.f : 0.0;
+        return bt != g_bal.end() && !bt->second.f.empty() ? bt->second.f[0] : 0.0;
     }
     if (il < 0 || il >= (int) g_layer_rank.size() || g_layer_rank[il] < 0) { return 0.0; }
     auto tt = g_tune.find(dsplit_bucket_of(n_tokens));
@@ -1017,26 +1255,25 @@ std::string llama_dsplit_state_json_fork() {
     std::lock_guard<std::mutex> lk(g_mu);
     std::string why = g_pf_why;
     for (char & c : why) { if (c == '"' || c == '\\' || c < ' ') { c = ' '; } }
-    char b[400];
-    snprintf(b, sizeof b, "\"split\":{\"gpus\":%d,\"devs\":\"%s\",\"prefill\":%d,\"prefill_gpus\":%d,\"why\":\"%s\"", g_ngpus, g_dev_all.c_str(), g_pf_choice,
-             g_pf_choice == 1 ? g_ngpus : g_pf_choice == 0 ? 1 : 0, why.c_str());
-    std::string out = b;
-    {   // the live balance of the last measured split pass: both cards' dense and MoE times and their shares, the phase, what the last step did
-        std::lock_guard<std::mutex> pk(g_plan_mu);
-        auto bt = g_bal_last >= 0 ? g_bal.find(g_bal_last) : g_bal.end();
-        if (bt != g_bal.end() && g_rng_dev[0] && g_rng_dev[1]) {
-            const dsplit_bal & B = bt->second;
-            std::string last = B.last;
-            for (char & c : last) { if (c == '"' || c == '\\' || c < ' ') { c = ' '; } }
-            char e[900];
-            snprintf(e, sizeof e, ",\"bal\":{\"phase\":\"%s\",\"s\":%.4f,\"f\":%.4f,\"s_next\":%.4f,\"f_next\":%.4f,\"n\":%d,\"us_tok\":%.2f,\"ref_us_tok\":%.2f,\"last\":\"%s\","
-                    "\"helper\":{\"dev\":\"%s\",\"tok\":%lld,\"dense_ms\":%.1f,\"dense_us_tok\":%.2f,\"moe_ms\":%.1f},"
-                    "\"owner\":{\"dev\":\"%s\",\"tok\":%lld,\"dense_ms\":%.1f,\"dense_us_tok\":%.2f,\"moe_ms\":%.1f}}",
-                    dsplit_bal_phase(B.phase), B.s_run, B.f_run, B.s, B.f, B.n, B.v, B.ref_v, last.c_str(),
-                    ggml_backend_dev_name(g_rng_dev[0]), (long long) B.tok_h, B.d_h, B.c_h, B.m_h,
-                    ggml_backend_dev_name(g_rng_dev[1]), (long long) B.tok_o, B.d_o, B.c_o, B.m_o);
-            out += e;
+    std::lock_guard<std::mutex> pk(g_plan_mu);
+    int n_rng = 0;   // the cards that computed a range of the last split pass
+    for (int64_t t : g_rng_tok) { n_rng += t > 0; }
+    std::string out = format("\"split\":{\"gpus\":%d,\"devs\":\"%s\",\"prefill\":%d,\"prefill_gpus\":%d,\"why\":\"%s\"", g_ngpus, g_dev_all.c_str(), g_pf_choice,
+             g_pf_choice == 1 ? (n_rng > 0 ? n_rng : g_ngpus) : g_pf_choice == 0 ? 1 : 0, why.c_str());
+    // the live balance of the last measured split pass: every card's shares, dense and MoE times, the phase, what the last step did
+    auto bt = g_bal_last >= 0 ? g_bal.find(g_bal_last) : g_bal.end();
+    if (bt != g_bal.end() && !bt->second.dev.empty()) {
+        const dsplit_bal & B = bt->second;
+        std::string last = B.last;
+        for (char & c : last) { if (c == '"' || c == '\\' || c < ' ') { c = ' '; } }
+        out += format(",\"bal\":{\"phase\":\"%s\",\"n\":%d,\"us_tok\":%.2f,\"ref_us_tok\":%.2f,\"last\":\"%s\",\"cards\":[", dsplit_bal_phase(B.phase), B.n, B.v, B.ref_v,
+                last.c_str());
+        for (size_t i = 0; i < B.dev.size(); ++i) {
+            out += format("%s{\"dev\":\"%s\",\"experts\":%s,\"tok\":%lld,\"s\":%.4f,\"s_next\":%.4f,\"f\":%.4f,\"f_next\":%.4f,\"dense_ms\":%.1f,\"dense_us_tok\":%.2f,"
+                    "\"hop_us_tok\":%.2f,\"kv_ms\":%.1f,\"moe_ms\":%.1f}", i ? "," : "", ggml_backend_dev_name(B.dev[i]), i + 1 == B.dev.size() ? "true" : "false",
+                    (long long) (i < B.tok.size() ? B.tok[i] : 0), B.s_run[i], B.s[i], B.f_run[i], B.f[i], B.d[i], B.c[i], B.hop[i], B.k[i] / 1e3, B.m[i]);
         }
+        out += "]}";
     }
     return out + "}";
 }
@@ -1059,8 +1296,11 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     }
     int choice = -1;
     const char * why = "";
-    const bool managed = it != g_sets.end() && dsplit_n_gpus(model) >= 2 && ((dsplit_opt_auto() && !it->second.resident) || !it->second.mirror.empty()) &&
-                         (it->second.mirror.empty() || dsplit_copies_ready(it->second));   // mirror-pool: not before the copies are placed
+    if (it != g_sets.end()) { dsplit_cards_update(model, it->second); }   // the cards that can take a range now (copies with memory)
+    // with copies: two or more cards that can take a range, every card's copies placed or left out (mirror-pool places them at the first decode); without
+    // copies (no token-range graph for the model): the choice between one card and the expert split over two or more GPUs
+    const bool managed = it != g_sets.end() && dsplit_n_gpus(model) >= 2 &&
+                         (it->second.mirror.empty() ? (dsplit_opt_auto() && !it->second.resident) : (dsplit_copies_ready(it->second) && g_cards.size() >= 2));
     if (managed && n_tokens >= 64) {
         if (dsplit_opt_one()) {
             choice = 0;   // forced to one card (tests)
@@ -1150,8 +1390,9 @@ int llama_dsplit_cur_fork() {
 void llama_dsplit_reserve_fork(const llama_model & model) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
-    g_cur = it != g_sets.end() && dsplit_n_gpus(model) >= 2 && ((dsplit_opt_auto() && !it->second.resident) || !it->second.mirror.empty()) &&
-            (it->second.mirror.empty() || dsplit_copies_ready(it->second)) ? 1 : -1;
+    if (it != g_sets.end()) { dsplit_cards_update(model, it->second); }
+    g_cur = it != g_sets.end() && dsplit_n_gpus(model) >= 2 &&
+            (it->second.mirror.empty() ? (dsplit_opt_auto() && !it->second.resident) : (dsplit_copies_ready(it->second) && g_cards.size() >= 2)) ? 1 : -1;
 }
 
 // one measured split pass of size bucket b, us per token: the tuner's step (see dsplit_tune)
@@ -1267,13 +1508,15 @@ static void dsplit_tune_step(int b, double v) {
 
 void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
     std::lock_guard<std::mutex> lk(g_mu);
-    static const bool tune_on = [] { const char * e = llama_moe_get_opt("split-tune"); return !e || atoi(e) != 0; }();   // --moe split-tune=0: the plan's shares stay
+    // --moe split-tune=0: the plan's shares stay. The layer tuner runs only without the live balance (--moe split-balance=0): it moves one helper's share by
+    // probes and would rebuild the graph for nothing while the balance sets the shares
+    static const bool tune_on = [] { const char * e = llama_moe_get_opt("split-tune"); return !e || atoi(e) != 0; }() && !dsplit_bal_on();
     if (g_pending == 1 && n_tokens > 0 && us > 0 && tune_on) {
         dsplit_tune_step(dsplit_bucket_of(g_pend_max), (double) us / (double) n_tokens);
     }
     if (g_pending == 1 && n_tokens > 0 && us > 0) {   // the live balance (and the cards' times for /moe/stats)
         std::lock_guard<std::mutex> pk(g_plan_mu);
-        dsplit_bal_step(dsplit_bucket_of(g_pend_max), -1.0);   // (the last pass of the call; the passes before it were taken by llama_dsplit_pass_done_fork)
+        dsplit_pass_step_locked();   // (the last pass of the call; the passes before it were taken by llama_dsplit_pass_done_fork)
     }
     if (g_pending >= 0 && n_tokens > 0 && us > 0 && dsplit_opt_auto()) {
         dsplit_bucket & B = g_buckets[dsplit_bucket_of(g_pend_max)];
@@ -1337,30 +1580,43 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
             pass   = (uint32_t) (g_pend_max > 0 ? g_pend_max : n_tokens);
             passes = (uint32_t) ((n_tokens + pass - 1) / std::max<uint32_t>(1, pass));
         }
-        std::string mode = "one-card", gpus = g_dev_off.empty() ? "?" : g_dev_off, skipped = g_dev_rest.empty() ? "-" : g_dev_rest, by = g_why;
+        std::string mode = "one-card", gpus = g_dev_off.empty() ? "?" : g_dev_off, skipped = g_dev_rest.empty() ? "-" : g_dev_rest, by = g_why, cards = "-";
         double tok_share = 0.0, exp_share = 0.0;
         if (g_pending == 1 || g_pending == -2) {
             const int b = dsplit_bucket_of(g_pend_max);
             std::lock_guard<std::mutex> pk(g_plan_mu);
             const auto pit = g_plans.find(b);
             const auto tt  = g_tune.find(b);
+            const auto bt  = g_bal_used && !g_rng_dev.empty() ? g_bal.find(dsplit_bucket_of([&] { int64_t s = 0; for (int64_t t : g_rng_tok) { s += t; } return s; }())) : g_bal.end();
             const bool have_plan = pit != g_plans.end() && pit->second.plan.valid;
             const double gx = tt != g_tune.end() ? tt->second.gx : 1.0;
-            tok_share = tt != g_tune.end() && tt->second.s > 0.0 ? tt->second.s : have_plan ? pit->second.plan.share : 0.55;
             const int em = llama_dsplit_experts_mode_fork();
-            if (em == 0) {
-                exp_share = 0.0;
-            } else if (em == 1 || !have_plan || pit->second.f_help.empty()) {
-                exp_share = -1.0;
+            if (bt != g_bal.end() && !bt->second.dev.empty()) {
+                // the live balance's shares of the last pass: the helpers' (every card but the expert card) together, and every card's own
+                const dsplit_bal & B = bt->second;
+                tok_share = 1.0 - B.s_run.back();
+                exp_share = em == 1 ? -1.0 : 1.0 - B.f_run.back();
+                cards.clear();
+                for (size_t i = 0; i < B.dev.size(); ++i) {
+                    cards += format("%s%s:%.2f:%.2f", i ? "," : "", ggml_backend_dev_name(B.dev[i]), B.s_run[i], B.f_run[i]);
+                }
             } else {
-                double s = 0.0;
-                for (double f : pit->second.f_help) { s += std::min(1.0, f * gx); }
-                exp_share = s / (double) pit->second.f_help.size();
+                tok_share = tt != g_tune.end() && tt->second.s > 0.0 ? tt->second.s : have_plan ? pit->second.plan.share : 0.55;
+                if (em == 0) {
+                    exp_share = 0.0;
+                } else if (em == 1 || !have_plan || pit->second.f_help.empty()) {
+                    exp_share = -1.0;
+                } else {
+                    double s = 0.0;
+                    for (double f : pit->second.f_help) { s += std::min(1.0, f * gx); }
+                    exp_share = s / (double) pit->second.f_help.size();
+                }
             }
             mode    = g_pending == -2 ? "mixed" : exp_share == 0.0 ? "dense-split" : "dense+expert-split";
             gpus    = g_dev_all.empty() ? "?" : g_dev_all;
             skipped = "-";
-            if (tt != g_tune.end() && tt->second.phase >= 2) { by += ", tuner settled"; } else if (tt != g_tune.end() && tt->second.n > 0) { by += ", tuner measuring"; }
+            if (bt != g_bal.end()) { by += format(", balance: %s", dsplit_bal_phase(bt->second.phase)); }
+            else if (tt != g_tune.end() && tt->second.phase >= 2) { by += ", tuner settled"; } else if (tt != g_tune.end() && tt->second.n > 0) { by += ", tuner measuring"; }
         } else if (g_pending == -1) {
             double sp = 0.0;
             const bool es = llama_moe_cache_expert_split_fork(&sp);
@@ -1375,9 +1631,10 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
                 if (bit->second.n[1]) { spl = std::to_string((int) (1e6 / bit->second.us_tok[1])); }
             }
         }
+        // cards=NAME:token share:expert share,... (every card of the last split pass, in range order, the expert card last)
         LLAMA_LOG_WARN("prefill decision: prompt_tokens=%lld passes=%u pass_tokens=%u staging_slots=%d mode=%s gpus=%s skipped=%s helper_token_share=%.2f "
-                "helper_expert_share=%.2f prompt_tps=%.1f one_card_tps=%s split_tps=%s chosen_by=\"%s\"\n", (long long) n_tokens, passes, pass, slots, mode.c_str(),
-                gpus.c_str(), skipped.c_str(), tok_share, exp_share, (double) n_tokens * 1e6 / (double) us, one.c_str(), spl.c_str(), by.c_str());
+                "helper_expert_share=%.2f cards=%s prompt_tps=%.1f one_card_tps=%s split_tps=%s chosen_by=\"%s\"\n", (long long) n_tokens, passes, pass, slots, mode.c_str(),
+                gpus.c_str(), skipped.c_str(), tok_share, exp_share, cards.c_str(), (double) n_tokens * 1e6 / (double) us, one.c_str(), spl.c_str(), by.c_str());
     }
     g_pending  = -1;
     g_pend_max = 0;

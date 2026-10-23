@@ -5,9 +5,6 @@
 #include <algorithm>
 #include "llama-memory-hybrid-idx.h"
 
-// fork (llama-dsplit-fork.cpp): the live balance of the dense split, declared here so that no shared header changes
-double llama_dsplit_bal_share_fork(int64_t n_tokens, double start);
-void   llama_dsplit_note_range_fork(int i, ggml_backend_dev_t dev, int64_t n_tok);
 
 // GLM5-Next (GLM-5.3-Flash): hybrid KDA (linear) + nope MLA with a k-pool DSA indexer,
 // mHC residual streams, DeepSeek-style MoE.
@@ -721,41 +718,20 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
     ggml_tensor * prev_sel = nullptr;
 
     // ---- fork: dense split (llama-dsplit-fork.cpp) ---------------------------------------------------------------------------------------------------------
-    // A prompt pass of one sequence is cut into token ranges, one per card: the first (the slower link) holds the share the live balance gives it (equal
-    // dense times on both cards, 0.3 to start; --moe dense-split-share fixes it), the last card the rest. Every card computes the dense part of its range of every layer with its own copy of the dense weights, and its range's
-    // residual stream stays on it for the whole pass. Only what depends on other tokens crosses:
+    // A prompt pass of one sequence is cut into token ranges, one per card (ds_plan, the dense split kit in llama-graph.cpp: any number of cards, each range
+    // sized by the live balance so that every card takes equally long; the expert card, the fastest link, holds the last range). Every card computes the
+    // dense part of its range of every layer with its own copy of the dense weights, and its range's residual stream stays on it for the whole pass. Only
+    // what depends on other tokens crosses:
     //   KDA layers   range after range: the conv window (the last d_conv-1 projected tokens) and the recurrent state (4.2 MB on GLM-5.3-Flash) of a range are
     //                the start of the next range's; the last range writes both to the memory. The scan itself is therefore sequential over the ranges.
-    //   DSA layers   (sparse attention) first version: all tokens on the layer's own card, the ranges' inputs gathered there and the outputs sent back.
-    //   MoE          experts stay shared by id range; build_moe_ffn runs in range mode (moe_ranges): every card's chain reads all ranges, every range gets the
-    //                sum of all cards' partial results.
+    //   DSA layers   (sparse attention) per range on its card (see dsa_split below), or all tokens on the layer's own card.
+    //   MoE          build_moe_ffn runs in range mode (moe_ranges): every card's chain reads all ranges, every range gets the sum of all cards' partial results.
     // Exact (the same operations on the same tokens; only the summation order of the partial results changes). Off for several sequences in one pass, for
-    // rollback snapshots (n_rs_seq > 0) and for passes shorter than --moe dense-split-min tokens (default 512).
+    // rollback snapshots (n_rs_seq > 0) and for passes shorter than --moe dense-split-min tokens (default 512); every range has at least 4 x d_conv tokens.
     struct drange { ggml_backend_t b; ggml_backend_dev_t dev; int64_t t0, t1; };
     std::vector<drange> R;
-    {
-        static const double  share0  = [] { const char * e = llama_moe_get_opt("dense-split-share"); return e ? atof(e) : -1.0; }();   // set: fixed by hand (tests)
-        static const int64_t min_tok = [] { const char * e = llama_moe_get_opt("dense-split-min");   return e ? (int64_t) atoll(e) : (int64_t) 512; }();
-        if (sched && llama_dsplit_cur_fork() == 1 && n_seqs == 1 && cparams.n_rs_seq == 0 && n_tokens >= std::max<int64_t>(min_tok, 4 * d_conv) &&
-                !cparams.embeddings_nextn) {
-            std::vector<std::pair<double, ggml_backend_t>> gpus;   // (upload rate, backend)
-            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
-                ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
-                if (ggml_backend_dev_type(ggml_backend_get_device(b)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
-                    gpus.push_back({ llama_moe_cache_link_gbs_fork(ggml_backend_get_device(b)), b });
-                }
-            }
-            if (gpus.size() >= 2) {
-                std::stable_sort(gpus.begin(), gpus.end(), [](const auto & x, const auto & y) { return x.first < y.first; });   // slowest link first
-                // the slow-link card's share: the live balance (llama-dsplit-fork.cpp: equal dense times of the two cards, measured every pass), 0.3 to start
-                const double  share = share0 >= 0.0 ? share0 : llama_dsplit_bal_share_fork(n_tokens, 0.3);
-                const int64_t n0 = std::max<int64_t>(d_conv, std::min<int64_t>(n_tokens - d_conv, (int64_t) llround(share * (double) n_tokens)));
-                R.push_back({ gpus.front().second, ggml_backend_get_device(gpus.front().second), 0, n0 });
-                R.push_back({ gpus.back().second,  ggml_backend_get_device(gpus.back().second),  n0, n_tokens });
-                llama_dsplit_note_range_fork(0, R[0].dev, n0);
-                llama_dsplit_note_range_fork(1, R[1].dev, n_tokens - n0);
-            }
-        }
+    if (!cparams.embeddings_nextn && n_seqs == 1 && ds_plan(4 * d_conv)) {
+        for (const auto & r : ds_r) { R.push_back({ r.b, r.dev, r.t0, r.t1 }); }
     }
     // Everything created for a range is pinned to the range's card: pin() walks the tensors of ctx0 created since the last mark. Views take the card of their
     // source; writes into the memory (cpy into a view of a KV / recurrent-state tensor) run where the memory is.

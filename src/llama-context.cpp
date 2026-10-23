@@ -2680,9 +2680,11 @@ bool llama_context::set_adapter_cvec(
 
 extern void llama_dsplit_veto_fork(int n_tokens);   // llama-dsplit-fork.cpp (declared here, no shared header)
 
-// fork (llama-dsplit-fork.cpp): the balance step of the pass just run, declared here so that no shared header changes
+// fork (llama-dsplit-fork.cpp): the balance step of the pass just run, and the helpers' experts dropped from a split pass that does not fit; declared here so
+// that no shared header changes
 bool llama_dsplit_prev_split_fork();
 void llama_dsplit_pass_done_fork();
+bool llama_dsplit_drop_experts_fork(int64_t n_tokens);
 
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
@@ -2797,7 +2799,14 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 }
                 break;
             }
-            if (attempt == 0 && !fork_resident && llama_dsplit_cur_fork() == 1) {
+            // fork: a split pass with experts on the helpers that does not fit: the experts go back to the expert card (the dense split alone) and the graph is
+            // built again; only a dense split alone that does not fit gives the split up for passes of this size
+            if (attempt == 0 && !fork_resident && llama_dsplit_cur_fork() == 1 && llama_dsplit_drop_experts_fork(ubatch.n_tokens)) {
+                (void) llama_dsplit_decide_fork(model, ubatch.n_tokens);
+                res->reset();
+                continue;
+            }
+            if (attempt <= 1 && !fork_resident && llama_dsplit_cur_fork() == 1) {
                 LLAMA_LOG_WARN("%s: a split pass of %d tokens does not fit behind the dense-split copies: one card for passes of this size\n", __func__, (int) ubatch.n_tokens);
                 llama_dsplit_veto_fork((int) ubatch.n_tokens);
                 (void) llama_dsplit_decide_fork(model, ubatch.n_tokens);
