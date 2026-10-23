@@ -5585,20 +5585,7 @@ def cmd_calib(a):
         eff = {n: v[3] / mp + v[4] / mt for n, v in ok_.items()}; k = max(eff, key=lambda n: (round(eff[n], 6), n))
         picks[r["model"]] = (k, seen[k][2]); print(col("1;92", f"{r['model']}: best prompt {k}k ({seen[k][2]} tokens, {seen[k][0]} pass(es), prompt {seen[k][3]:.0f} t/s, decode {seen[k][4]:.1f} t/s); biggest one-pass {lo}k"))
         for n in sorted(eff): print(f"   {n:>3}k  {ok_[n][2]:>6} tokens  {ok_[n][0]} pass(es)  prompt {ok_[n][3]:>6.0f} t/s  decode {ok_[n][4]:>5.1f} t/s  score {eff[n]:.3f}  total {ok_[n][2] / ok_[n][3] + 1024 / ok_[n][4]:>5.1f} s")
-    if picks and not a.dry and not a.nowrite:
-        cards = n_cards(); ini = os.path.join(here, "models.ini"); lines = open(ini).read().split("\n")
-        for model, (n, tok) in picks.items():
-            sec = model_alias(next((v["path"] for k, v in fcfg.models_ini().items() if k == model), model)) or (model if model in fcfg.models_ini() else None)
-            if not sec: print(col(31, f"{model}: no models.ini section, not written")); continue
-            for key, val in (("bestpp", n), ("bestpp_tokens", tok)):   # one line per model: total VRAM in GiB = size in k, and the real token count that passed
-                i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
-                while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
-                j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
-                m_ = vram_map(lines[j].split("=", 1)[1]) if j is not None else {}; m_[int(hw_key()[:-1])] = val
-                new = f"{key} = [" + ",".join(f"{g}={v}" for g, v in sorted(m_.items(), reverse=True)) + "]"
-                if j is not None: lines[j] = new
-                else: lines.insert(i1, new)
-        open(ini, "w").write("\n".join(lines)); print(col(92, f"written to models.ini ({cards} card(s))"))
+    # nothing is written here: every finished sized cell updates models.ini by itself when its request time per token beats the model's best so far (learn_bestpp)
 
 
 def running_cell():
@@ -5752,11 +5739,6 @@ def run_list(name, argv):
     o.build = resolve_build(o.build)   # -b b13563: a build number
     rows = list(csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", name + ".csv"), newline="")))
     for r in rows: r["model"] = fcfg.model(r["model"])   # the model column is a models.ini alias or a path
-    if not o.dry and not o.status and o.machine.split("-")[0] == "pc1":   # best1k of a model with no bestpp entry for this VRAM: the first run measures it and fills models.ini (run.py calib), then the list goes on
-        need = sorted({model_alias(r["model"]) for r in rows if re.fullmatch(r"(pf)?best\d*k", r["test"]) and model_alias(r["model"]) and not vram_map((fcfg.models_ini().get(model_alias(r["model"])) or {}).get("bestpp", "")).get(int(hw_key()[:-1]))})
-        if need:
-            print(col(33, f"no best prompt for {hw_key()} yet: {', '.join(need)}; measuring it first (run.py calib), the result goes to models.ini"), flush=True)
-            cmd_calib(argparse.Namespace(build=o.build, models=",".join(need), n_gpus=o.n_gpus, dry=False, nowrite=False))
     for r in rows: r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
     rows = [r for r in rows if not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))]   # a trailing $ means the exact name: mimo-i$ is not mimo-io
     rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]   # -skp: same matching as -onl, rows dropped
@@ -5885,6 +5867,7 @@ def run_list(name, argv):
             CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")); CELL_ASKED[0] = int(r["tokens"]) if r.get("tokens") else 0
             CELL_TEST[0] = re.sub(r"^pf(\d+k1k)$", r"\1", r["test"]) if re.fullmatch(r"pf\d+k1k", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")   # "12k in 1k out", "64t in 1k out"
             if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, ("s" if r["_b"].startswith("stock") else "") + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
+            if not o.dry and not r["_b"].startswith("stock"): learn_bestpp(r["model"], r["test"], tag)
             done_s += ex or 0
     finally:   # the cells' lines, then the pool: it holds its RAM whether a model uses it or not: give it back when the list ends, also on Ctrl-C or an error
         if CELL_LINES and not o.dry:   # the final block, complete for a screenshot: the machine, then every cell with what it measured
@@ -5928,6 +5911,45 @@ def model_alias(model_path):
     """the models.ini section of a model file (by file name), None when it has none"""
     base = os.path.basename(model_path or "")
     return next((k for k, v in fcfg.models_ini().items() if v.get("path") and os.path.basename(v["path"]) == base), None)
+
+
+def ini_set_bestpp(sec, n, tok, ms):
+    """models.ini [sec]: bestpp / bestpp_tokens / bestpp_ms lines, the entry of this VRAM (hw_key) set to the size n (k), its real token count and its request time per token in ms; other VRAM entries stay"""
+    ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); lines = open(ini).read().split("\n")
+    for key, val in (("bestpp", n), ("bestpp_tokens", tok), ("bestpp_ms", ms)):
+        i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+        while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
+        j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
+        m_ = {int(g): v for g, v in re.findall(r"(\d+)\s*=\s*([\d.]+)", lines[j].split("=", 1)[1])} if j is not None else {}; m_[int(hw_key()[:-1])] = val
+        new = f"{key} = [" + ",".join(f"{g}={v}" for g, v in sorted(m_.items(), reverse=True)) + "]"
+        if j is not None: lines[j] = new
+        else: lines.insert(i1, new)
+    open(ini, "w").write("\n".join(lines))
+
+
+BESTPP_MEM = {}   # (alias, VRAM GiB) -> request time per token (ms) of the best prompt so far: read from models.ini once, then only in memory
+
+
+def learn_bestpp(model, test, tag):
+    """after a finished cell of a sized prompt (7k1k): the time of its request (prompt + answer) per token, from the last run of the cell in runs.db. Better than the model's best so far for this VRAM
+    (kept in memory, first read from models.ini bestpp_ms) by more than 1%: that size becomes the entry, in memory and in models.ini. Nothing else is written; the best prompt is learned from the runs
+    that happen anyway, no extra run."""
+    m = re.fullmatch(r"pf(\d+)k1k", test or ""); sec = model_alias(model)
+    if not m or not sec: return
+    try:
+        import sqlite3
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        x = c.execute("select pp, tps, n_gen, note from runs where campaign like ? and cast(ok as integer)=1 and pp is not null and tps is not null order by ts desc limit 1", (f"{tag}-%",)).fetchone()
+        pn = re.search(r"prompt_n=(\d+)", (x[3] if x else "") or "")
+        if not x or not pn or not x[2]: return
+        tok, ms = int(pn.group(1)), 1000 * (int(pn.group(1)) / x[0] + int(x[2]) / x[1]) / (int(pn.group(1)) + int(x[2]))
+        hw = int(hw_key()[:-1]); key = (sec, hw)
+        if key not in BESTPP_MEM:
+            ini = (fcfg.models_ini().get(sec) or {}).get("bestpp_ms", ""); BESTPP_MEM[key] = {int(g): float(v) for g, v in re.findall(r"(\d+)\s*=\s*([\d.]+)", ini)}.get(hw, 1e9)
+        if ms < 0.99 * BESTPP_MEM[key]:
+            BESTPP_MEM[key] = ms; ini_set_bestpp(sec, int(m.group(1)), tok, round(ms, 3))
+            print(col(92, f"best prompt of {sec} at {hw}g: {m.group(1)}k ({ms:.2f} ms per token), written to models.ini"), flush=True)
+    except Exception as e: print(col(90, f"best prompt not updated: {e}"), flush=True)
 
 
 def vram_map(text):
