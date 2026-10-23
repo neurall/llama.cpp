@@ -5713,7 +5713,7 @@ def cmd_status(a):
     else:
         try: j = json.load(open(last)); name, argv = j["name"], j["argv"]
         except (OSError, ValueError, KeyError): sys.exit(f"status: no list has run since this command exists: run.py status LIST [-b BUILD]; lists: {' '.join(lists)}")
-        print(col(92, f"list {name}: running") if live else col(90, f"list {name}: not running (the last one)"), flush=True)
+        print(col(92, f"list {name}: running") if live else col("1;91", f"NOTHING IS RUNNING. The table is the last list that ran ({name}); rows with only a ~time are cells it planned and never ran"), flush=True)
     if name == "calib":   # a calib is one list per probe: the probes done, the one running, what comes next
         try: cs = json.load(open(os.path.join(QDIR, "calib-state.json")))
         except (OSError, ValueError): cs = None
