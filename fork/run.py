@@ -2562,6 +2562,33 @@ def windows_from_cache_csv(build):
     return w or None
 
 
+def split_sections(key, model, test, hw):
+    """The dense split's passes of the run (SPLIT_PASSES) -> stats.ini: one [key/global] section (pass speed, phase, tokens) and one [key/pcieN] section per card (CUDA<N>:
+    its tokens, share, dense, hand-off, KV and expert times and its measured waits), a value per pass. The name has no space before the suffix: backfill.py's
+    'ts build' sections skip them."""
+    rows = [b for _, b in SPLIT_PASSES["rows"]]
+    SPLIT_PASSES["rows"] = []
+    if not rows:
+        return
+    f = lambda xs, fmt: ",".join(fmt % x for x in xs)
+    head = lambda: [f"model={model}", f"test={test}", f"hw={hw}", "every=1  ; pass"]
+    out = [f"[{key}/global]"] + head()
+    out += ["us_tok=" + f([r.get("us_tok", 0) for r in rows], "%.2f"), "tokens=" + f([sum(c.get("tok", 0) for c in r["cards"]) for r in rows], "%d"),
+            "phase=" + ",".join(str(r.get("phase", "")).replace(" ", "_") for r in rows), "cards=" + f([len(r["cards"]) for r in rows], "%d"), ""]
+    devs = sorted({c.get("dev", "?") for r in rows for c in r["cards"]})
+    for dv in devs:
+        cs = [next((c for c in r["cards"] if c.get("dev") == dv), {}) for r in rows]
+        idx = re.sub(r"\D", "", dv) or dv
+        out += [f"[{key}/pcie{idx}]", f"dev={dv}", "every=1  ; pass"]
+        for name, k, fmt, mul in (("tokens", "tok", "%d", 1), ("share_pct", "s", "%.1f", 100), ("expert_pct", "f", "%.1f", 100), ("dense_ms", "dense_ms", "%.1f", 1),
+                                  ("dense_us_tok", "dense_us_tok", "%.2f", 1), ("hop_us_tok", "hop_us_tok", "%.2f", 1), ("kv_ms", "kv_ms", "%.1f", 1), ("moe_ms", "moe_ms", "%.1f", 1),
+                                  ("wait_dense_ms", "wait_dense_ms", "%.1f", 1), ("wait_moe_ms", "wait_moe_ms", "%.1f", 1), ("wait_max_ms", "wait_max_ms", "%.2f", 1)):
+            out.append(f"{name}=" + f([c.get(k, 0) * mul for c in cs], fmt))
+        out.append("")
+    with open(os.path.join(DATA, "stats.ini"), "a") as fh:
+        fh.write("\n".join(out) + "\n")
+
+
 def save_stats(build, ts, test, hw, model):
     """The server's statslog file of the measured run (a value per 32 steps: t/s, hit, uploads, evictions, MiB uploaded, DDR and PCIe GB/s) -> a section of stats.ini."""
     f = f"/tmp/perf-{build}{LOGTAG}-stats.txt"
@@ -2570,6 +2597,7 @@ def save_stats(build, ts, test, hw, model):
         os.remove(f)  # the next run of this build must not re-save it
     else:
         w = windows_from_cache_csv(build)   # release-line builds have no statslog file: the same windows from the engine's --moe log=p series (one row per N decode tokens)
+    split_sections(f"{ts} {build}", model, test, hw)
     if w:
         with open(os.path.join(DATA, "stats.ini"), "a") as out:
             sec = stats_section(f"{ts} {build}", model, test, hw, w)
@@ -4828,6 +4856,9 @@ def cell_status(t0, expect, label, total=None):
             bal = sp.get("bal")
             if bal and bal.get("cards"):   # the live balance, any number of cards (engine 2026-10-23 N-card): one line per card of the last split pass, the expert card last
                 cs = bal["cards"]
+                if SPLIT_PASSES["t0"] != t0: SPLIT_PASSES["t0"] = t0; SPLIT_PASSES["rows"] = []
+                sig = (bal.get("n"), bal.get("us_tok"), tuple(c.get("tok", 0) for c in cs))
+                if not SPLIT_PASSES["rows"] or SPLIT_PASSES["rows"][-1][0] != sig: SPLIT_PASSES["rows"].append((sig, bal))   # a new measured pass
                 t_of = lambda c: c.get("kv_ms", 0) + c.get("tok", 0) * (c.get("dense_us_tok", 0) + c.get("hop_us_tok", 0)) / 1e3   # the card's time as the balance sees it
                 tmax = max((t_of(c) for c in cs if c.get("tok")), default=0)
                 eng += ("\n" + col(37, "split ") + col(32, bal.get("phase", "")) + col(90, f"  pass {bal.get('us_tok', 0):.1f} us/token")
@@ -5123,6 +5154,7 @@ CELL_PROMPT = [""]   # the running cell's prompt text (set per row)
 CELL_REF = [None]   # (model file name, test) of the running cell: its live speeds are held against the best earlier run (best_ref)
 _BEST_REF = {}
 LAST_PP = {}   # the running cell's last live prompt speed (start of the cell, t/s)
+SPLIT_PASSES = {"t0": None, "rows": []}   # the running cell's split passes as the engine reported them live (/moe/stats split.bal); save_stats writes them to stats.ini
 
 
 def best_ref(model, test):
