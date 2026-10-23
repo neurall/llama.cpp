@@ -5570,18 +5570,15 @@ def cmd_calib(a):
             if n >= 128 or n in seen: break
             if lo == 0 and hi == 1: break   # not even 1k fits in one pass
         if lo == 0: print(col(33, f"{r['model']}: no size ran in one pass or a run failed: nothing stored")); continue
-        # the pick: the longest prompt at a local minimum of the whole request's time (prompt time + 1024 answer tokens at the decode speed that follows). From the biggest one-pass size go down 1k
-        # at a time while the time still falls: a smaller prompt can be faster as a whole (fewer passes, more experts survive in the cache and stay preheated for the decode)
-        T = lambda x: x[2] / x[3] + 1024 / x[4]
-        k = lo
-        while k > 1 and seen.get(k) and seen[k][4]:
-            y = ask(k - 1)
-            if y is None or not y[4] or T(y) >= T(seen[k]): break
-            k -= 1
-        ok_ = {n: v for n, v in seen.items() if v and v[4]}; eff = {n: (v[2] + 1024) / T(v) for n, v in ok_.items()}
-        if k not in ok_: print(col(33, f"{r['model']}: no decode speed for {k}k: nothing stored")); continue
+        # the pick, inside the one-pass range: probe every size from the biggest one-pass size down to its half, scale the prompt speed and the decode speed each by the best of the range (best = 1),
+        # add the two: the highest sum wins (a bigger size wins a tie). A smaller prompt can win through its prompt speed (fewer passes) and through the decode after it (more experts survive in the cache)
+        for n in range(lo, max(1, (lo + 1) // 2) - 1, -1): ask(n)
+        ok_ = {n: v for n, v in seen.items() if v and v[4] and v[0] <= 1 and n <= lo}
+        if not ok_: print(col(33, f"{r['model']}: no one-pass size with a decode speed: nothing stored")); continue
+        mp, mt = max(v[3] for v in ok_.values()), max(v[4] for v in ok_.values())
+        eff = {n: v[3] / mp + v[4] / mt for n, v in ok_.items()}; k = max(eff, key=lambda n: (round(eff[n], 6), n))
         picks[r["model"]] = (k, seen[k][2]); print(col("1;92", f"{r['model']}: best prompt {k}k ({seen[k][2]} tokens, {seen[k][0]} pass(es), prompt {seen[k][3]:.0f} t/s, decode {seen[k][4]:.1f} t/s); biggest one-pass {lo}k"))
-        for n in sorted(eff): print(f"   {n:>3}k  {ok_[n][2]:>6} tokens  {ok_[n][0]} pass(es)  prompt {ok_[n][3]:>6.0f} t/s  decode {ok_[n][4]:>5.1f} t/s  whole request {eff[n]:>6.0f} t/s  total {ok_[n][2] / ok_[n][3] + 1024 / ok_[n][4]:>5.1f} s")
+        for n in sorted(eff): print(f"   {n:>3}k  {ok_[n][2]:>6} tokens  {ok_[n][0]} pass(es)  prompt {ok_[n][3]:>6.0f} t/s  decode {ok_[n][4]:>5.1f} t/s  score {eff[n]:.3f}  total {ok_[n][2] / ok_[n][3] + 1024 / ok_[n][4]:>5.1f} s")
     if picks and not a.dry and not a.nowrite:
         cards = n_cards(); ini = os.path.join(here, "models.ini"); lines = open(ini).read().split("\n")
         for model, (n, tok) in picks.items():
