@@ -2562,9 +2562,26 @@ def windows_from_cache_csv(build):
     return w or None
 
 
+def gpu_details():
+    """{nvidia-smi index: the card's facts} for the gpuN sections of stats.ini: name, PCI bus id, PCIe link (width now and at most, generation at most: the current generation
+    drops when idle), power limit in W, memory in MiB, driver. {} when nvidia-smi is not on this machine (remote and cloud runs)."""
+    keys = ["name", "pci_bus", "link_width", "link_width_max", "link_gen_max", "power_limit_w", "mem_mib", "driver"]
+    try:
+        r = subprocess.run([NVSMI, "--query-gpu=index,name,pci.bus_id,pcie.link.width.current,pcie.link.width.max,pcie.link.gen.max,power.limit,memory.total,driver_version",
+                            "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    d = {}
+    for l in r.stdout.splitlines():
+        v = [x.strip() for x in l.split(",")]
+        if len(v) == 9:
+            d[v[0]] = dict(zip(keys, [v[1], v[2]] + v[3:6] + [str(round(float(v[6]))) if v[6].replace(".", "").isdigit() else v[6], v[7], v[8]]))
+    return d
+
+
 def split_sections(key, model, test, hw):
-    """The dense split's passes of the run (SPLIT_PASSES) -> stats.ini: one [key/global] section (pass speed, phase, tokens) and one [key/pcieN] section per card (CUDA<N>:
-    its tokens, share, dense, hand-off, KV and expert times and its measured waits), a value per pass. The name has no space before the suffix: backfill.py's
+    """The dense split's passes of the run (SPLIT_PASSES) -> stats.ini: one [key/global] section (pass speed, phase, tokens) and one [key/gpuN] section per card (CUDA<N>: the
+    card's facts from gpu_details, its place in the range order and whether it computes the experts, then per pass its tokens, share, dense, hand-off, KV and expert times and its measured waits), a value per pass. The name has no space before the suffix: backfill.py's
     'ts build' sections skip them."""
     rows = [b for _, b in SPLIT_PASSES["rows"]]
     SPLIT_PASSES["rows"] = []
@@ -2579,7 +2596,12 @@ def split_sections(key, model, test, hw):
     for dv in devs:
         cs = [next((c for c in r["cards"] if c.get("dev") == dv), {}) for r in rows]
         idx = re.sub(r"\D", "", dv) or dv
-        out += [f"[{key}/pcie{idx}]", f"dev={dv}", "every=1  ; pass"]
+        g = gpu_details().get(idx, {})   # the card itself (nvidia-smi index = CUDA index: run.py starts servers with CUDA_DEVICE_ORDER=PCI_BUS_ID)
+        last = rows[-1]["cards"]
+        out += [f"[{key}/gpu{idx}]", f"dev={dv}"] + [f"{k}={v}" for k, v in g.items()]
+        lk = [c.get("link_gbs") for c in last if c.get("dev") == dv and c.get("link_gbs")]
+        out += [f"pcie_h2d_probe_gbs={lk[0]:.2f}" if lk else "pcie_h2d_probe_gbs=", f"pcie_h2d_peak_gbs={SPLIT_PASSES.get('peak', {}).get(dv, 0):.2f}"]   # measured at this start / busiest second of the cell
+        out += [f"range_pos={next((i for i, c in enumerate(last) if c.get('dev') == dv), -1)}", f"experts_card={int(any(c.get('dev') == dv and c.get('experts') for c in last))}", "every=1  ; pass"]
         for name, k, fmt, mul in (("tokens", "tok", "%d", 1), ("share_pct", "s", "%.1f", 100), ("expert_pct", "f", "%.1f", 100), ("dense_ms", "dense_ms", "%.1f", 1),
                                   ("dense_us_tok", "dense_us_tok", "%.2f", 1), ("hop_us_tok", "hop_us_tok", "%.2f", 1), ("kv_ms", "kv_ms", "%.1f", 1), ("moe_ms", "moe_ms", "%.1f", 1),
                                   ("wait_dense_ms", "wait_dense_ms", "%.1f", 1), ("wait_moe_ms", "wait_moe_ms", "%.1f", 1), ("wait_max_ms", "wait_max_ms", "%.2f", 1)):
@@ -4856,7 +4878,8 @@ def cell_status(t0, expect, label, total=None):
             bal = sp.get("bal")
             if bal and bal.get("cards"):   # the live balance, any number of cards (engine 2026-10-23 N-card): one line per card of the last split pass, the expert card last
                 cs = bal["cards"]
-                if SPLIT_PASSES["t0"] != t0: SPLIT_PASSES["t0"] = t0; SPLIT_PASSES["rows"] = []
+                if SPLIT_PASSES["t0"] != t0: SPLIT_PASSES["t0"] = t0; SPLIT_PASSES["rows"] = []; SPLIT_PASSES["peak"] = {}
+                for l in bw.get("links") or []: SPLIT_PASSES.setdefault("peak", {})[l.get("dev")] = max(SPLIT_PASSES.get("peak", {}).get(l.get("dev"), 0), l.get("gbs", 0))   # the busiest second of each card's host link in this cell
                 sig = (bal.get("n"), bal.get("us_tok"), tuple(c.get("tok", 0) for c in cs))
                 if not SPLIT_PASSES["rows"] or SPLIT_PASSES["rows"][-1][0] != sig: SPLIT_PASSES["rows"].append((sig, bal))   # a new measured pass
                 t_of = lambda c: c.get("kv_ms", 0) + c.get("tok", 0) * (c.get("dense_us_tok", 0) + c.get("hop_us_tok", 0)) / 1e3   # the card's time as the balance sees it
@@ -5154,7 +5177,7 @@ CELL_PROMPT = [""]   # the running cell's prompt text (set per row)
 CELL_REF = [None]   # (model file name, test) of the running cell: its live speeds are held against the best earlier run (best_ref)
 _BEST_REF = {}
 LAST_PP = {}   # the running cell's last live prompt speed (start of the cell, t/s)
-SPLIT_PASSES = {"t0": None, "rows": []}   # the running cell's split passes as the engine reported them live (/moe/stats split.bal); save_stats writes them to stats.ini
+SPLIT_PASSES = {"t0": None, "rows": [], "peak": {}}   # the running cell's split passes as the engine reported them live (/moe/stats split.bal); save_stats writes them to stats.ini
 
 
 def best_ref(model, test):
