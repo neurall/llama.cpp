@@ -893,7 +893,7 @@ void dsplit_bal_step(int b, double v) {
         if (d == g_rng_dev[0]) { h = &st[i]; } else if (d == g_rng_dev[1]) { o = &st[i]; }
     }
     if (!h || !o || h->dense_us <= 0 || o->dense_us <= 0) { return; }
-    dsplit_bal & B = dsplit_bal_get(b, 0.3);
+    dsplit_bal & B = dsplit_bal_get(b, 0.5);
     g_bal_last = b;
     B.n++;
     B.v   = v;
@@ -964,7 +964,8 @@ double llama_dsplit_bal_share_fork(int64_t n_tokens, double start) {
     if (!dsplit_bal_on()) { return start; }
     std::lock_guard<std::mutex> lk(g_plan_mu);
     g_bal_used = true;
-    return dsplit_bal_get(dsplit_bucket_of(n_tokens), start).s;
+    (void) start;   // the start is an equal share per card (two token ranges: 50%), not a guess from the links; the balance moves it by the measured dense times
+    return dsplit_bal_get(dsplit_bucket_of(n_tokens), 0.5).s;
 }
 // the token ranges of the split graph just built (0: the helper's, 1: the owner's): the balance relates each card's measured time to its tokens
 void llama_dsplit_note_range_fork(int i, ggml_backend_dev_t dev, int64_t n_tok) {
