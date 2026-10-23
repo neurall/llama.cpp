@@ -8368,7 +8368,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     // totals over the calls since the last report (pp_add): with staging slots a pass takes max(U, C), without them U + C
     const double Usum = g_pp_Usum, nt = (double) g_pp_n, x = g_pp_xc / std::max(1.0, nt);
     double c_new = -1.0;
-    if (k >= pf_min_slots()) {   // staging overlapped the uploads (2 slots with --moe pf-min-slots=2: double buffering, else 3)
+    if (k >= 3) {
         if ((double) us > 1.3 * Usum) {
             c_new = (double) us / nt;
         } else if (g_pp_c_us > 0.0) {
