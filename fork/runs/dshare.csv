@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+glm35-15k-sh15,glm35,2,pf15k1k,64,"--moe dense-split=1,dense-split-share=0.15",
+glm35-15k-sh30,glm35,2,pf15k1k,64,"--moe dense-split=1,dense-split-share=0.30",
+glm35-15k-sh45,glm35,2,pf15k1k,64,"--moe dense-split=1,dense-split-share=0.45",
+glm35-15k-sh60,glm35,2,pf15k1k,64,"--moe dense-split=1,dense-split-share=0.60",
+glm35-15k-sh30x,glm35,2,pf15k1k,64,"--moe dense-split=1,dense-split-share=0.30,split-experts=1",
