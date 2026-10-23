@@ -5570,7 +5570,9 @@ def cmd_calib(a):
             if n >= 128 or n in seen: break
             if lo == 0 and hi == 1: break   # not even 1k fits in one pass
         if lo == 0: print(col(33, f"{r['model']}: no size ran in one pass or a run failed: nothing stored")); continue
-        picks[r["model"]] = (lo, seen[lo][2]); print(col("1;92", f"{r['model']}: biggest one-pass prompt {lo}k ({seen[lo][2]} tokens, {seen[lo][3]:.0f} t/s)"))
+        ok_ = {k: v for k, v in seen.items() if v}   # the pick: the biggest of the probed sizes within 3% of the fastest prompt speed, one pass or not (two smaller passes can beat one big one)
+        top = max(v[3] for v in ok_.values()); k = max(n for n, v in ok_.items() if v[3] >= 0.97 * top)
+        picks[r["model"]] = (k, seen[k][2]); print(col("1;92", f"{r['model']}: best prompt {k}k ({seen[k][2]} tokens, {seen[k][3]:.0f} t/s, {seen[k][0]} pass(es)); biggest one-pass {lo}k"))
     if picks and not a.dry and not a.nowrite:
         cards = n_cards(); ini = os.path.join(here, "models.ini"); lines = open(ini).read().split("\n")
         for model, (n, tok) in picks.items():
