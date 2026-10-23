@@ -4826,7 +4826,21 @@ def cell_status(t0, expect, label, total=None):
                 eng += ("\n" + col(37, "vs best ") + col(32, f"pp {lpp:.0f}" if lpp else "pp -") + col(90, f" / {bpp:.0f} ({bpb}) ") + col(90, f"{1000 / lpp:.2f} / {1000 / bpp:.2f} ms/tok " if lpp else "") + gain(lpp, bpp)
                         + "   " + col(94, f"tt {ltg:.1f}" if ltg else "tt -") + col(90, f" / {btg:.1f} ({btb}) ") + col(90, f"{1000 / ltg:.1f} / {1000 / btg:.1f} ms/tok " if ltg else "") + gain(ltg, btg) + col(90, "  (best stored speed of an earlier run: same model, test, power limits)"))
             bal = sp.get("bal")
-            if bal:   # the live balance of the dense split (engine 2026-10-23): each card's dense and MoE time of the last split pass, its share of the tokens and experts
+            if bal and bal.get("cards"):   # the live balance, any number of cards (engine 2026-10-23 N-card): one line per card of the last split pass, the expert card last
+                cs = bal["cards"]
+                t_of = lambda c: c.get("kv_ms", 0) + c.get("tok", 0) * (c.get("dense_us_tok", 0) + c.get("hop_us_tok", 0)) / 1e3   # the card's time as the balance sees it
+                tmax = max((t_of(c) for c in cs if c.get("tok")), default=0)
+                eng += ("\n" + col(37, "split ") + col(32, bal.get("phase", "")) + col(90, f"  pass {bal.get('us_tok', 0):.1f} us/token")
+                        + (col(90, f", dense alone {bal['ref_us_tok']:.1f}") if bal.get("ref_us_tok") else "") + col(90, f"  ({bal.get('last', '')})"))
+                for c in cs:
+                    t = t_of(c)
+                    eng += ("\n" + col(37, "      ") + col(1, f"{c.get('dev', '?'):<6}") + col(36, f" {100 * c.get('s', 0):3.0f}% tokens") + col(90, f" (next {100 * c.get('s_next', 0):.0f}%)")
+                            + col(36, f" {100 * c.get('f', 0):3.0f}% experts") + (col(90, f" (next {100 * c.get('f_next', 0):.0f}%)") if c.get("f_next") != c.get("f") else "")
+                            + f"  dense {c.get('dense_ms', 0):.0f} ms " + col(93, f"{c.get('dense_us_tok', 0):.1f} us/token") + col(90, f" + hand-offs {c.get('hop_us_tok', 0):.1f}")
+                            + (col(90, f" + KV {c.get('kv_ms', 0):.0f} ms") if c.get("kv_ms") else "") + f"  moe {c.get('moe_ms', 0):.0f} ms"
+                            + (col(91 if tmax and t < 0.97 * tmax else 90, f"  {100 * t / tmax:.0f}% of the slowest") if tmax and c.get("tok") else col(90, "  no range"))
+                            + (col(35, "  experts") if c.get("experts") else ""))
+            elif bal:   # the live balance of the dense split (engine 2026-10-23, two cards): each card's dense and MoE time of the last split pass, its share of the tokens and experts
                 h, o = bal.get("helper") or {}, bal.get("owner") or {}
                 card = lambda c, ts, fs: (col(1, f"{c.get('dev', '?')} ") + col(36, f"{100 * ts:.0f}% tokens {100 * fs:.0f}% experts") + f"  dense {c.get('dense_ms', 0):.0f} ms "
                                          + col(93, f"{c.get('dense_us_tok', 0):.1f} us/token") + f"  moe {c.get('moe_ms', 0):.0f} ms")
