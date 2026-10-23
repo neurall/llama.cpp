@@ -1386,7 +1386,7 @@ def cache_stats(log):
 
 
 DECISION_COLS = ["layout", "placement", "ubatch_max", "pf_mode", "pf_gpus", "pf_skipped", "pf_tok_share", "pf_exp_share", "pf_passes", "pf_pass", "pf_slots",
-                 "pf_one_tps", "pf_split_tps", "pf_by", "pf_all"]
+                 "pf_one_tps", "pf_split_tps", "pf_by", "pf_all", "par_gpus"]
 
 
 _HWL = {}
@@ -2584,18 +2584,29 @@ def store(row, build, test, rec, note, hw, vstr):
                model=model_name(), ts=time.strftime("%F %T"), build=build, test=test,
                env=json.dumps(rec, sort_keys=True), note=" | ".join(x for x in (note, row.get("note"), "sampler=" + SAMPLER if SAMPLER else None) if x) or None)
     if not row.get("pf_mode") and CAMPAIGN and not build.startswith("stock"):   # which path the prompt passes took (one card, two cards, dense split): from the cell's server log; a run with no decision line says so
-        lg = f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log"
-        if os.path.exists(lg):
+        # the LIVE server log (/tmp/perf-<build>.log): the cell's copy in QDIR is made only when the cell ends, so a run's row used to read the copy of the
+        # cell before (or of an earlier attempt of this cell)
+        lg = next((p for p in (f"/tmp/perf-{build}.log", f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log") if os.path.exists(p)), None)
+        if lg:
             # a kept server logs every run of the cell into one file: the prompt decisions of THIS run are the lines after the previous row's read
-            # (reading the whole log gave run 2 the decision of run 1: same prompt size, the first line won). Load-time keys still come from the whole log.
+            # (reading the whole log gave run 2 the decision of run 1: same prompt size, the first line won). Every run is its own process, so the
+            # read position lives in a file, keyed by the log's inode: a server start writes a new log (the old one becomes .prev) and starts again at 0.
+            # Load-time keys still come from the whole log.
             txt = open(lg, errors="replace").read()
-            pos = _PF_POS.get(lg, 0)
-            if pos > len(txt): pos = 0   # a new log under the same name (the server restarted)
-            _PF_POS[lg] = len(txt)
+            pf_pos = os.path.join(QDIR, "pf-pos.json")
+            try: P = json.load(open(pf_pos))
+            except (OSError, ValueError): P = {}
+            ino = os.stat(lg).st_ino
+            pos = P.get(lg, [None, 0])[1] if P.get(lg, [None])[0] == ino else 0
+            if pos > len(txt): pos = 0
+            P[lg] = [ino, len(txt)]
+            try: json.dump(P, open(pf_pos, "w"))
+            except OSError: pass
             d = {k: v for k, v in decisions(txt).items() if not k.startswith("pf_")}
             d.update(decisions(txt[pos:]))
             row.update({k: v for k, v in d.items() if k.startswith("pf_") or k in ("layout", "placement", "ubatch_max")})
             if not d.get("pf_mode"): row["pf_mode"] = "no-decision"
+            row["par_gpus"] = par_gpus(row.get("pf_all"), row.get("pf_gpus"), " ".join(str(x) for x in (rec.get("args"), row.get("args")) if x))
     for lg in (f"{QDIR}/{CAMPAIGN}.remote.server.log", f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log") if CAMPAIGN else ():   # the log of the cell: copied from the remote machine, or the local one
         if os.path.exists(lg):
             for k, v in server_params(open(lg, errors="replace").read()).items(): row.setdefault(k, v)
@@ -5084,6 +5095,28 @@ def out_len(ours_id, stock_id):
     return f"{o}/{s_}" if (o or s_) else ""
 
 
+def par_gpus(pf_all, pf_gpus, args=""):
+    """`2,1`: the cards that computed at the same time in the prompt and in decode. Prompt: the most cards any prompt pass used (pf_all,
+    tokens:mode/CUDA0+CUDA1 per pass); a run without a decision line ran on one card. Decode: 1, the layers of a token run on one card after another
+    (layer split: the other card waits, apart from its uploads); n only with -sm row/tensor, where every card computes each layer."""
+    passes = [p.rsplit("/", 1)[-1] for p in (pf_all or "").split(";") if "/" in p] or ([pf_gpus] if pf_gpus else [])
+    pf = max([len(g.split("+")) for g in passes if g and g != "None"] or [1])
+    return f"{pf},{max(pf, 2) if re.search(r'(?:-sm|--split-mode)\s+(row|tensor)', args or '') else 1}"
+
+
+def gpus_used(i):
+    """par_gpus of a runs.db row: the stored column, else worked out from its prefill fields (rows before 2026-10-23)"""
+    import sqlite3
+    if not i: return ""
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        have = {x[1] for x in c.execute("pragma table_info(runs)")}
+        r = c.execute(f"select pf_all, pf_gpus, cmd{', par_gpus' if 'par_gpus' in have else ''} from runs where rowid=?", (i,)).fetchone()
+    except sqlite3.Error: r = None
+    if not r: return ""
+    return r[3] if len(r) > 3 and r[3] else par_gpus(r[0], r[1], r[2])
+
+
 def run_id(campaign):
     """runs.db rowid of the newest ok run of a campaign (the id of `run out ID`), None when there is none"""
     import sqlite3
@@ -5116,38 +5149,38 @@ def final_table(recs, live=False, hdr_out=None):
         elif r.get("stock_row") and res:   # a stock cell and none of ours yet: the stock numbers in the stock columns, ours empty
             st = dict(t=t, p=p, ob="", od="", sb=r.get("sbno") or "?", sd=r.get("sdate") or "", sid=r.get("rid")); t = p = None; rid_show = None
         gt = t / st["t"] if st and t else None; gp = p / st["p"] if st and p and st["p"] else None
-        body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" if el is not None else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1),
+        body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" if el is not None else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
                          st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, ppl=(ppl_pair(r.get("model"), st.get("ob")) if st and st.get("ob") else ""), nost=(not st and not r["stock_row"])))
         body[-1]["bt"] = (f"b{st['ob']} {st['od'][5:]} vs b{st['sb']} {st['sd'][5:]}" if st["ob"] else f"stock b{st['sb']} {st['sd'][5:]}") if st else ""; body[-1]["bts"] = (f"b{st['ob']} vs b{st['sb']}" if st["ob"] else f"stock b{st['sb']}") if st else ""
         gs = [g for g in (gt, gp) if g]; body[-1]["gm"] = math.prod(gs) ** (1 / len(gs)) if gs else 0   # overall gain: geometric mean of decode and prompt gain
         body[-1]["old"] = [dict(name=r["name"], is_old=True, out="", id=str(orid), sid="", prompt=r.get("prompt") or "", time="", load="", fail=False, t=f(t, 2), p=f(p, 1), st="", sp="", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=False, gm=0, old=[],
-                                bt=f"b{n} {d[5:]} {b}", bts=f"b{n} {b}", st_=None) for b, n, d, t, p, gt, gp, orid in older_gainers(r.get("model"), r.get("test"), st["ob"], st, body[-1]["gm"])] if st and not live and not r.get("ref") else []
+                                bt=f"b{n} {d[5:]} {b}", bts=f"b{n} {b}", st_=None, g=gpus_used(orid)) for b, n, d, t, p, gt, gp, orid in older_gainers(r.get("model"), r.get("test"), st["ob"], st, body[-1]["gm"])] if st and not live and not r.get("ref") else []
     if not live: body.sort(key=lambda x: -x["gm"])   # biggest overall gainers first (cells without stock last, list order kept)
     allrows = [y for x in body for y in [x] + x.get("old", [])]
     for x in allrows: x.setdefault("xfer", "")
     show_x = any(x["xfer"] not in ("", "f32", "f16") for x in body)   # the hand-off column only when a cell of ours ran with other than the f32 default
     wd = lambda k, h: max([len(h)] + [len(x.get(k, "")) for x in allrows])
-    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
+    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("g", "par gpus"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
     if live:   # one finished cell as it happens: fixed minimum widths so the rows of successive cells line up
         W["name"] = NAMEW[0] - 1   # the longest name of the list, whatever this cell is called
-        for k, mw in (("prompt", 7), ("out", 7), ("xfer", 4), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("ppl", 13), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
+        for k, mw in (("prompt", 7), ("out", 7), ("xfer", 4), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("g", 4), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("ppl", 13), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
         for x in allrows: x["bt"] = x.get("bts", x["bt"])   # short builds, so every row decides the same columns
         W["bt"] = max([16, len("builds")] + [len(x["bt"]) for x in allrows])
     def width(keys): return sum(W[k] + 2 for k in keys)
-    ours = ["name", "prompt", "out"] + (["xfer"] if show_x else []) + ["time", "load", "t", "p"]; stk = ["st", "sp", "gt", "gp", "ppl", "bt", "id", "sid"]
+    ours = ["name", "prompt", "out"] + (["xfer"] if show_x else []) + ["time", "load", "t", "p", "g"]; stk = ["st", "sp", "gt", "gp", "ppl", "bt", "id", "sid"]
     while width(ours + stk) > cols and len(ours) > 3 and ("load" in ours or "time" in ours): ours.remove("load" if "load" in ours else "time")
     if width(ours + stk) > cols:   # next to go: the dates in the builds column
         for x in allrows: x["bt"] = x["bts"]
         W["bt"] = max([len("builds")] + [len(x["bt"]) for x in allrows] + ([16] if live else []))
     wrap = width(ours + stk) > cols
-    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "stock id"}
-    HC = {"prompt": 36, "out": 36, "xfer": 35, "t": 96, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "ppl": 36, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
+    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "g": "par gpus", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "stock id"}
+    HC = {"prompt": 36, "out": 36, "xfer": 35, "t": 96, "g": 35, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "ppl": 36, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
     hl = lambda keys: "".join("  " + col(HC[k], f"{H[k]:<{W[k]}}" if k == "bt" else f"{H[k]:>{W[k]}}") for k in keys)
     out = [" " * W["name"] + hl(ours[1:]) + ("" if wrap else hl(stk))]
     if wrap: out.append(" " * W["name"] + hl(stk))
     if hdr_out is not None: hdr_out.extend(out); out = []   # live rows: the header goes to the caller (printed once)
     for x in allrows:
-        c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "xfer": ("35", x["xfer"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;94", x["t"]), "p": ("1;92", x["p"]), "st": ("94", x["st"]), "sp": ("92", x["sp"])}
+        c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "xfer": ("35", x["xfer"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;94", x["t"]), "p": ("1;92", x["p"]), "g": ("35", x.get("g", "")), "st": ("94", x["st"]), "sp": ("92", x["sp"])}
         cell = lambda k: "  " + col(c[k][0], f"{c[k][1]:>{W[k]}}")
         gcell = lambda k, v: "  " + (col("1;91" if v < 1 else "37" if v < 2 else "1;97" if v < 10 else "1;93" if v < 40 else "1;92", f"{x[k]:>{W[k]}}") if v is not None else " " * W[k])   # below 1 red, 1-2 plain, 2x bold white, 10x yellow, 40x green
         ln = col(37 if x.get("is_old") else 1, f"{x['name']:<{W['name']}}") + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "")

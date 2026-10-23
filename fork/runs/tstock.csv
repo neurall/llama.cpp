@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+ts-mimo-ub4k,mimo,2,pf12k1k,1024,-ub 4096 -b 4096,
+ts-mimo-ub8k,mimo,2,pf12k1k,1024,-ub 8192 -b 8192,
+ts-glm-ub4k,glm,2,pf12k1k,1024,-ub 4096 -b 4096,
+ts-glm-ub8k,glm,2,pf12k1k,1024,-ub 8192 -b 8192,
+ts-qni4-ub4k,qn_iq4xs,2,pf12k1k,1024,-ub 4096 -b 4096,
+ts-qni4-ub8k,qn_iq4xs,2,pf12k1k,1024,-ub 8192 -b 8192,
+ts-mimo-o-ub4k,mimo,2,tetrisc,1024,-ub 4096 -b 4096,
+ts-mimo-o-ub8k,mimo,2,tetrisc,1024,-ub 8192 -b 8192,
+ts-glm-o-ub4k,glm,2,tetrisc,1024,-ub 4096 -b 4096,
+ts-glm-o-ub8k,glm,2,tetrisc,1024,-ub 8192 -b 8192,
+ts-qni4-o-ub4k,qn_iq4xs,2,tetrisc,1024,-ub 4096 -b 4096,
+ts-qni4-o-ub8k,qn_iq4xs,2,tetrisc,1024,-ub 8192 -b 8192,

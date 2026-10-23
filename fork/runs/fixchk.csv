@@ -1,0 +1,8 @@
+name,model,n,test,tokens,args,extra
+glm35-i,glm35,2,pf12k1k,1024,,
+glm35-io,glm35,2,edit4c,1024,,
+glm35-o,glm35,2,tetrisc,1024,,
+qni4-io,qn_iq4xs,2,edit4c,1024,,
+qni4-i,qn_iq4xs,2,pf12k1k,1024,,
+qni4-io2,qn_iq4xs,2,edit4c,1024,,
+qni4-i2,qn_iq4xs,2,pf12k1k,1024,,
