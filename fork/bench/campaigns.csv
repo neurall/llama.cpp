@@ -4131,3 +4131,4 @@ regress-release-0acaf3db4-1023-1426-OLMoE-1B-7B-0924-Q4_K_M.,2026-10-23 14:26:46
 regress-release-0acaf3db4-1023-1426-Qwen3.6-35B-A3B-GSQ-hybr,2026-10-23 14:29:31,quick regression check against the best build (fixed-text comparator),,
 regress-release-0acaf3db4-1023-1426-Qwen3.8-Flash-Next-GSQ-R,2026-10-23 14:33:43,quick regression check against the best build (fixed-text comparator),,
 regress-release-0acaf3db4-1023-1426-GLM-5.3-Flash-GSQ-RCO-3.,2026-10-23 14:38:11,quick regression check against the best build (fixed-text comparator),,
+regress-release-0acaf3db4-1023-1426-MiMo-V2.6-Flash-RL-GSQ-R,2026-10-23 14:48:33,quick regression check against the best build (fixed-text comparator),,

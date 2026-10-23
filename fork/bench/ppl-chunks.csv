@@ -1589,3 +1589,7 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-10-23 14:38:16,release-0acaf3db4 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.424
 2026-10-23 14:40:58,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3662
 2026-10-23 14:40:58,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4277
+2026-10-23 14:44:03,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3684
+2026-10-23 14:44:03,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4242
+2026-10-23 14:45:54,release-0acaf3db4 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3676
+2026-10-23 14:45:54,release-0acaf3db4 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4198

@@ -5219,7 +5219,7 @@ def final_table(recs, live=False, hdr_out=None):
         body[-1]["old"] = [dict(name=r["name"], is_old=True, out="", id=str(orid), sid="", prompt=r.get("prompt") or "", time="", load="", fail=False, t=f(t, 2), p=f(p, 1), st="", sp="", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=False, gm=0, old=[],
                                 bt=f"b{n} {d[5:]} {b}", bts=f"b{n} {b}", st_=None, g=gpus_used(orid)) for b, n, d, t, p, gt, gp, orid in older_gainers(r.get("model"), r.get("test"), st["ob"], st, body[-1]["gm"])] if st and not live and not r.get("ref") else []
     SEC = {"done": 0, "running": 1, "queued": 2}   # `run status`: the sections in this order, each sorted by gain / list order
-    if not live: body.sort(key=lambda x: (SEC.get(x["section"], 0), -x["gm"]))   # biggest overall gainers first (cells without stock last, list order kept)
+    if not live: body.sort(key=lambda x: (SEC.get(x["section"], 0), -x["gm"] if x["section"] in (None, "done") else 0))   # biggest overall gainers first (cells without stock last, list order kept)
     allrows = [y for x in body for y in [x] + x.get("old", [])]
     for x in allrows: x.setdefault("xfer", "")
     show_x = any(x["xfer"] not in ("", "f32", "f16") for x in body)   # the hand-off column only when a cell of ours ran with other than the f32 default
@@ -5463,6 +5463,26 @@ def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
 RUN_LIVE = QDIR + "/run-list.json"   # {pid, log} of the detached list run
 
 
+def last_run_rec(r, HW):
+    """the fields of a cell that has not run today (or is running): its newest earlier measurement of OURS on this machine (the runs of that run's campaign, ok ones), the gain over the newest
+    stock run of the same prompt, the build and date of that run. {} when the cell never ran (or is a stock cell)."""
+    import sqlite3
+    if r["_b"].startswith("stock"): return {}
+    gen = int(r["tokens"]) if r.get("tokens") else None
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        q = "select campaign, rowid, bno, start_ts from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null and hw=? and coalesce(env,'') not like '%warmpass%'" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " order by start_ts desc limit 1"
+        top = c.execute(q, (os.path.basename(r["model"]), ALIASES.get(r["test"], r["test"]), HW)).fetchone()
+        if not top: return {}
+        res = [(float(t), float(p or 0)) for t, p in c.execute("select tps, pp from runs where campaign=? and cast(ok as integer)=1 and tps is not null order by ts", (top[0],))]
+    except sqlite3.Error: return {}
+    STOCK_REC[0] = None
+    try: stock_gain((r["model"], r["test"]), res, r["_b"])
+    except Exception: STOCK_REC[0] = None
+    if STOCK_REC[0] and top[2]: STOCK_REC[0]["ob"] = int(top[2]); STOCK_REC[0]["od"] = str(top[3])[:10]   # the build that made the run, not the one this list will run
+    return dict(res=res, rid=top[1], st=STOCK_REC[0], lt=run_times(top[1])[1])
+
+
 def running_cell():
     """(tag, start time) of the cell a list runs now: the `run.py cell TAG ...` process (tag = BUILD-NAME, what the campaign of its rows starts with); (None, None) when no cell runs"""
     boot = next((int(l.split()[1]) for l in open("/proc/stat") if l.startswith("btime")), 0)
@@ -5676,8 +5696,10 @@ def run_list(name, argv):
         for r in rows:
             tag = f"{r['_b']}-{r['name']}"; run_ = tag == run_tag
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
-            CELL_REC.append(dict(tag=tag, section="running" if run_ else "queued", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"],
-                                 name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=time.time() - run_since if run_ and run_since else None, est=None if run_ else ex, lt="", rc=0, res=[], st=None, stock_row=r["_b"].startswith("stock")))
+            rec = dict(tag=tag, section="running" if run_ else "queued", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"],
+                       name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=time.time() - run_since if run_ and run_since else None, est=None if run_ else ex, lt="", rc=0, res=[], st=None, stock_row=r["_b"].startswith("stock"))
+            rec.update(last_run_rec(r, HW))   # the values of its last run, with the gain over stock: what it is expected to beat
+            CELL_REC.append(rec)
         qd = queue_waiting()   # tasks of the queue daemon (tasks.csv): only their name is known; a stopped daemon starts none of them, they are counted, not listed
         qd_on = subprocess.run(["systemctl", "is-active", "--quiet", "queued.service"]).returncode == 0
         for t in (qd if qd_on else []):
