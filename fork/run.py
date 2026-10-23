@@ -5782,7 +5782,7 @@ def run_list(name, argv):
     with another build never collides. A failed cell is reported and the list goes on. -o keeps the rows whose name contains TEXT; -d runs the biggest models first, a model's rows together. Before each new model the pool is
     rebuilt to its size (run_list_pool; --no-pool skips that). Lists: gainers, reg, ctx."""
     ap = argparse.ArgumentParser(prog=f"run.py run {name}")
-    ap.add_argument("-b", "--build", default="latest"); ap.add_argument("-onl", "-o", "--only", help="rows whose name contains TEXT; comma list: glm-,mimo-"); ap.add_argument("-n", "--dry", action="store_true")
+    ap.add_argument("-b", "--build", default="latest"); ap.add_argument("-onl", "-o", "--only", help="rows whose name contains TEXT; comma list: glm-,mimo-"); ap.add_argument("-t", "--test", help="rows whose test is TEXT (comma list): best1k = only the best-prompt input rows, edit4c, tetrisc"); ap.add_argument("-n", "--dry", action="store_true")
     ap.add_argument("-skp", "--skip", help="skip rows whose name contains TEXT; comma list: glm-,mimo-")
     ap.add_argument("-ng", "--gpus", dest="n_gpus", type=int, metavar="N", help="use only N cards: the best N (fastest slot, then fastest card), the fastest one last; 0 = CPU only. Remote machines (-pc) and this host")
     ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="no live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
@@ -5833,6 +5833,7 @@ def run_list(name, argv):
         was = r["test"]; r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")
         if r["test"] != was and was != r["test"] and (r["model"], r["test"]) not in _picked and not o.status:
             _picked.add((r["model"], r["test"])); print(col(90, f"{os.path.basename(r['model'])}: found and picked prompt size {re.sub(r'^pf', '', r['test'])} for {hw_key()}"), flush=True)   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
+    if o.test: rows = [r for r in rows if r["test"] in {x if x.startswith("pf") or x in {r2["test"] for r2 in rows} else "pf" + x for x in o.test.split(",")}]   # best1k = pfbest1k (plain names, no pf prefix)
     rows = [r for r in rows if not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))]   # a trailing $ means the exact name: mimo-i$ is not mimo-io
     rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]   # -skp: same matching as -onl, rows dropped
     for r in rows:
