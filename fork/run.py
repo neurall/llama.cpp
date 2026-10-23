@@ -4816,6 +4816,16 @@ def cell_status(t0, expect, label, total=None):
             mode.append(col(36, f"par gpus prompt {pgpus or '?'} decode 1") + (col(90, f"  cache on {ncache} cards") if ncache else "") + (col(35, f" uploading on {up}/{len(links)} links") if links else ""))
             if sp.get("why"): mode.append(col(90, sp["why"]))
             eng = eng + "\n" + col(37, "engine") + " " + "  ".join(mode)
+            bal = sp.get("bal")
+            if bal:   # the live balance of the dense split (engine 2026-10-23): each card's dense and MoE time of the last split pass, its share of the tokens and experts
+                h, o = bal.get("helper") or {}, bal.get("owner") or {}
+                card = lambda c, ts, fs: (col(1, f"{c.get('dev', '?')} ") + col(36, f"{100 * ts:.0f}% tokens {100 * fs:.0f}% experts") + f"  dense {c.get('dense_ms', 0):.0f} ms "
+                                         + col(93, f"{c.get('dense_us_tok', 0):.1f} us/token") + f"  moe {c.get('moe_ms', 0):.0f} ms")
+                late = h.get("dense_ms", 0) - o.get("dense_ms", 0)
+                eng += ("\n" + col(37, "split ") + col(32, bal.get("phase", "")) + "  " + card(h, bal.get("s", 0), bal.get("f", 0)) + col(90, " | ") + card(o, 1 - bal.get("s", 0), 1 - bal.get("f", 0))
+                        + col(90, f" | pass {bal.get('us_tok', 0):.1f} us/token") + (col(90, f", dense alone {bal['ref_us_tok']:.1f}") if bal.get("ref_us_tok") else "")
+                        + "\n" + col(37, "      ") + col(91 if abs(late) > 0.03 * max(h.get("dense_ms", 0), o.get("dense_ms", 0), 1) else 90, f"{'helper' if late > 0 else 'owner'} dense late by {abs(late):.0f} ms")
+                        + col(90, f"  next: {100 * bal.get('s_next', 0):.0f}% tokens {100 * bal.get('f_next', 0):.0f}% experts  ({bal.get('last', '')})"))
             dec = es.get("decisions") or []
             if dec:   # what the engine chose by itself and why, as it happens: a placement of "stock" for a model bigger than the VRAM stands out in yellow
                 # one line per decision with its whole reason (fit_block cuts at the terminal width); a decision that changed since the last tick is bold, so the tuners can be watched working
