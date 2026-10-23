@@ -58,14 +58,6 @@ static std::string hw_key(const std::string & key) {
     return pl.empty() ? key : pl + "." + key;
 }
 
-// --moe pf-min-slots=2: double buffering of the prompt pass's staging (one slot computes, the next expert tensor uploads into the other: up, gate, down in turn).
-// The minimum used to be 3 (fire_ahead keeps up to n_slots - 1 uploads in flight); the old "pf-slots=2 turned prefetch off" was that minimum switching the ring
-// off, not a measurement of two slots. GLM 3.0: one slot fewer = 1296 MiB more for the pass.
-static int pf_min_slots() {
-    static const int v = [] { const char * e = moe_opt("pf-min-slots"); return e ? std::max(2, atoi(e)) : 3; }();
-    return v;
-}
-
 static bool g_pred_train_now = false, g_pred_train_built = false;
 static uint64_t g_pred_epoch = 0, g_pred_epoch_built = 0;   // bumped when a layer's predictor is switched on or off
 // 2-GPU prefill: the second GPU's share of the experts in big batches (0: one GPU); set by the prefill tuner, baked into
@@ -4792,7 +4784,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             const size_t slot_b = ggml_backend_sched_prefetch_slot_bytes_dev(sched, ap.dev);
             const size_t cap_b  = kv_lend_potential(ap, (size_t) n_tokens);   // the slots may reach past the KV zone: it moves behind them (above)
             const int    n_cfg  = std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
-            const int    fit    = ppx_stage_slots(slot_b, cap_b, stage_off, n_cfg, n_tokens >= 64 ? g_pp_k.load() : -1, pf_min_slots());   // the pass planner's choice: more slots evict more cached experts
+            const int    fit    = ppx_stage_slots(slot_b, cap_b, stage_off, n_cfg, n_tokens >= 64 ? g_pp_k.load() : -1);   // the pass planner's choice: more slots evict more cached experts
             stage = slot_b * (size_t) fit;
             ap.slot_b  = slot_b;
             ap.n_stage = fit;
@@ -8191,8 +8183,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     }
     const double per_t = (double) (ap->graph_tok + ap->tok_bytes);
     const int    n_cfg = std::max(0, ap->n_cfg);
-    const int    pf_min = pf_min_slots();   // 2: double buffering
-    const int    k_full = std::max(pf_min, std::min(6, n_cfg));   // slots enough to keep the next layer's three uploads going
+    const int    k_full = std::max(3, std::min(6, n_cfg));   // slots enough to keep the next layer's three uploads going
     // one pass of u tokens with k staging slots: upload (what the pool does not hold after lending), compute, and how they overlap
     auto pass_us = [&](uint32_t u, int k, double * U_out) {
         // a pass that splits keeps the dense split's copies in front of its graph (mirror_b, 0 without mirror-pool): counted for every pass (the plan is made
@@ -8209,7 +8200,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
         // 3 times), so slots are worth their pool blocks. The first measured pass replaces the guess.
         const double C = c_us > 0.0 ? c_us * (double) u : 0.5 * U;
         if (k >= k_full) { return std::max(U, C); }
-        if (k >= pf_min) { return std::max(U, C) + 0.25 * std::min(U, C); }
+        if (k >= 3)      { return std::max(U, C) + 0.25 * std::min(U, C); }
         return U + C;
     };
     // The fewest passes that fit, never more (user rule 2026-10-23: no more passes than b13838): the slots are chosen within that count, and a further pass is
@@ -8223,7 +8214,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     for (uint32_t P = P0; P <= P0 + 4 && best_P == 0; ++P) {
         const uint32_t u = std::min<uint32_t>(ub_max, ((n + P - 1) / P + 31) / 32 * 32);
         for (int k = 0; k <= n_cfg; ++k) {
-            if (k > 0 && k < pf_min) { continue; }
+            if (k > 0 && k < 3) { continue; }
             double U = 0.0;
             const double tp = pass_us(u, k, &U);
             if (tp < 0.0) { continue; }
