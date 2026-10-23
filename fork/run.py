@@ -4948,6 +4948,8 @@ NAMEW = [16]   # name column width of the list lines: longest name + 1 (set when
 TEST_IN = config.test_in()   # what the status line says about a test's prompt (prompts.ini in =)
 def prompt_txt(test, tokens):
     """the prompt column of the results: tokens in/out, `12k/1k`; the test name when its prompt is not a size"""
+    m = re.fullmatch(r"pf(\d+k1k)", test)
+    if m: return m.group(1)   # a sized test shows its name (7k1k); the answer length is in the out column
     tin = TEST_IN.get(test); tout = int(tokens) if tokens else 0
     if not (tin and tin[0].isdigit()): return test
     return tin + "/" + (f"{tout // 1024}k" if tout and tout % 1024 == 0 else str(tout) if tout else "?")
