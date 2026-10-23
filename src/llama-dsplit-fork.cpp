@@ -474,6 +474,13 @@ struct dsplit_tune {
     // copies were uploaded once, the helper computes without uploading). K grows 1, 2, 4 ... while the pass gets faster, then bisects between the best K and
     // the first slower one: the helper's share grows until its time reaches the offload card's. The settled K and s are stored (dsplit_tune_save).
     int    K = 0, best_K = 0, k_hi = -1, k_step = 1;
+    // phase 2 never stops (2026-10-23, user's design): the two levers keep drifting. A probe moves one lever one small step (lever 0: the helper's share of the
+    // tokens, lever 1: the number of MoE layers whose experts the helper takes), runs two passes, and is taken when it is 1% faster per token than the base
+    // measured the same way; if not, that lever goes the other way next time and after two misses its step halves. The helper (x4) late means a share that is
+    // too big: the probes walk it down until it is not late any more, and back up when the other card is. A step that has shrunk to its floor probes rarely.
+    bool   dr_init = false, dr_probe = false;
+    int    dr_lever = 0, dr_nb = 0, dr_np = 0, dr_base_K = 0, dr_fail[2] = {0, 0}, dr_dir[2] = {-1, -1};
+    double dr_bt = 0.0, dr_pt = 0.0, dr_ds = 0.02, dr_base_s = 0.0;
 };
 std::map<int, dsplit_tune> g_tune;
 bool g_tune_changed = false;
@@ -967,6 +974,45 @@ static void dsplit_tune_load(int b) {
     }
 }
 
+static void dsplit_drift_step(int b, dsplit_tune & T, double v, int kmax) {
+    static const bool drift_on = [] { const char * e = llama_moe_get_opt("split-drift"); return !e || atoi(e) != 0; }();   // --moe split-drift=0: settled stays settled
+    if (!drift_on) { return; }
+    if (!T.dr_init) { T.dr_init = true; T.dr_base_s = T.s; T.dr_base_K = T.K; T.dr_probe = false; T.dr_nb = 0; }
+    if (!T.dr_probe) {   // a pass of the base setting
+        T.dr_bt = T.dr_nb == 0 ? v : 0.5 * (T.dr_bt + v); T.dr_nb++;
+        if (T.dr_nb < (T.dr_ds <= 0.005 ? 8 : 2)) { return; }   // a step at its floor probes rarely: it costs a (slightly) worse pass each time
+        for (int tries = 0; tries < 2; ++tries) {
+            if (T.dr_lever == 0) {
+                double ns = T.dr_base_s + T.dr_dir[0] * T.dr_ds;
+                if (ns < 0.10 || ns > 0.90) { T.dr_dir[0] = -T.dr_dir[0]; ns = T.dr_base_s + T.dr_dir[0] * T.dr_ds; }
+                T.s = std::max(0.10, std::min(0.90, ns)); T.K = T.dr_base_K;
+            } else {
+                int nk = T.dr_base_K + T.dr_dir[1];
+                if (nk < 0 || nk > kmax) { T.dr_dir[1] = -T.dr_dir[1]; nk = T.dr_base_K + T.dr_dir[1]; }
+                if (nk < 0 || nk > kmax) { T.dr_lever = 0; continue; }   // no layer lever (fixed experts or none)
+                T.K = nk; T.s = T.dr_base_s;
+            }
+            break;
+        }
+        T.dr_probe = true; T.dr_np = 0; g_tune_changed = true;
+        return;
+    }
+    T.dr_pt = T.dr_np == 0 ? v : 0.5 * (T.dr_pt + v); T.dr_np++;
+    if (T.dr_np < 2) { return; }
+    const int lv = T.dr_lever;
+    if (T.dr_pt < T.dr_bt * 0.99) {   // taken: the new base, same direction again
+        LLAMA_LOG_INFO("split drift: %s %.0f%% -> %.0f%% of the tokens, %d -> %d layers: %.1f -> %.1f prompt tokens/s\n", lv == 0 ? "share" : "layers", 100.0 * T.dr_base_s, 100.0 * T.s,
+                T.dr_base_K, T.K, 1e6 / T.dr_bt, 1e6 / T.dr_pt);
+        T.dr_base_s = T.s; T.dr_base_K = T.K; T.dr_bt = T.dr_pt; T.dr_nb = 2; T.dr_fail[lv] = 0;
+        dsplit_tune_save(b, T);
+    } else {   // not better: the other way next time on this lever; two misses in a row: a smaller step
+        T.dr_dir[lv] = -T.dr_dir[lv];
+        if (++T.dr_fail[lv] >= 2 && lv == 0) { T.dr_ds = std::max(0.005, T.dr_ds * 0.5); T.dr_fail[lv] = 0; }
+        T.s = T.dr_base_s; T.K = T.dr_base_K; T.dr_nb = 1;
+    }
+    T.dr_probe = false; T.dr_lever = 1 - T.dr_lever; g_tune_changed = true;
+}
+
 static void dsplit_tune_step(int b, double v) {
     std::lock_guard<std::mutex> pk(g_plan_mu);
     auto pit = g_plans.find(b);
@@ -975,6 +1021,7 @@ static void dsplit_tune_step(int b, double v) {
     }
     dsplit_tune & T = g_tune[b];
     if (T.phase >= 2) {
+        dsplit_drift_step(b, T, v, llama_dsplit_experts_mode_fork() >= 0 ? 0 : (int) g_layer_order.size());
         return;
     }
     if (T.s < 0.0) { T.s = pit->second.plan.share; T.best_s = T.s; }
