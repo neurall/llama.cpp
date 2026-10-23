@@ -851,7 +851,8 @@ const char * dsplit_bal_phase(int p) {
 void dsplit_bal_save(int b, const dsplit_bal & B) {
     if (!dsplit_state_on() || B.s <= 0.0) { return; }
     char v[64]; snprintf(v, sizeof v, "%.4f %.4f %d", B.s, B.f, B.phase == 1 ? 0 : B.phase);   // a trial cut short starts over
-    moe_state_set(g_calib_section, { { dsplit_state_key("dsplit_bal1_b" + std::to_string(b)), v } });
+    char a[32]; snprintf(a, sizeof a, "%.4f", B.s);   // and the last share of any size: the start of a size never seen on these cards (the ratio of the cards' dense speeds hardly depends on the size)
+    moe_state_set(g_calib_section, { { dsplit_state_key("dsplit_bal1_b" + std::to_string(b)), v }, { dsplit_state_key("dsplit_bal1_any"), a } });
 }
 dsplit_bal & dsplit_bal_get(int b, double start) {
     auto it = g_bal.find(b);
@@ -869,6 +870,12 @@ dsplit_bal & dsplit_bal_get(int b, double start) {
     int best = -1, dist = 1 << 20;
     for (const auto & kv : g_bal) {
         if (kv.first != b && kv.second.s > 0.0 && std::abs(kv.first - b) < dist) { dist = std::abs(kv.first - b); best = kv.first; }
+    }
+    double any = -1.0;
+    if (best < 0 && dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_bal1_any"), v) && sscanf(v.c_str(), "%lf", &any) == 1 && any > 0.0 && any < 1.0) {
+        B.s = any;
+        B.last = "token share of an earlier run (state file)";
+        return B;
     }
     B.s = best >= 0 ? g_bal[best].s : start;
     B.last = best >= 0 ? "token share of the nearest measured size" : "start";
