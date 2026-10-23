@@ -5935,13 +5935,24 @@ def run_list(name, argv):
             CELL_REC.append(dict(tag=t, section="queued", asked=0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt="", model="", test="", name=t, el=None, lt="", rc=0, res=[], st=None, stock_row=False))
         print(col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC)), flush=True)
         if qd and not qd_on: print(col(90, f"queue daemon off: {len(qd)} old tasks wait in tasks.csv (none starts)"), flush=True)
-        try:   # everything that finished lately, whatever list it came from (jumped lists, calib probes, A/B cells)
-            db = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-            hist = db.execute("select campaign, test, count(*), round(avg(pp)), round(avg(tps),1), max(par_gpus), strftime('%H:%M', max(ts)) from runs where cast(ok as integer)=1 and pp is not null and hw=? and ts>=datetime('now','localtime','-4 hours') and campaign not like 'stock%' and coalesce(env,'') not like '%warmpass%' group by campaign order by max(ts) desc limit 30", (HW,)).fetchall()
-        except Exception: hist = []
-        if hist:
-            print(col(1, "\ndone in the last 4 hours, all lists (newest first):"), flush=True)
-            for cp, ts_, n_, pp_, tp_, pg_, hh in hist: print(f"  {hh}  {cp:<42} {re.sub(r'^pf', '', ts_):<7} {n_} run(s)  prompt {pp_:6.0f} t/s  decode {tp_:5.1f} t/s  par {pg_ or '-'}")
+        waiting = []   # waiter shells (`while pgrep ...; do sleep; done; ... python3 run.py run LIST`): what starts when the current run ends, in start order
+        try:
+            ps_ = subprocess.run(["ps", "-eo", "pid,ppid,args"], capture_output=True, text=True).stdout.splitlines()
+            started = {int(l.split()[1]) for l in ps_[1:] if "run.py" in l}   # a waiter whose list already runs (its python child exists) is not queued any more
+            for ln in (l.split(None, 1)[1] if False else l for l in ps_[1:]):
+                if int(ln.split()[0]) in started: continue
+                ln = ln.split(None, 1)[0] + " " + ln.split(None, 2)[2]   # pid args
+                m = re.search(r"bash -c while .*?done;.*?(python3 run\.py (?:run|calib) [^'\"]*)$", ln)
+                if m and "sudo" not in ln.split("bash -c")[0]: waiting.append((int(ln.split()[0]), m.group(1).strip()))
+        except Exception: pass
+        if waiting:
+            print(col(1, "\nqueued next (start by themselves, in this order):"), flush=True)
+            for k, (pid_, cmd_) in enumerate(sorted(waiting), 1):
+                nm = re.search(r"run\.py run (\w+)", cmd_); cells = ""
+                if nm and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", nm.group(1) + ".csv")):
+                    names = [r["name"] for r in csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", nm.group(1) + ".csv"), newline=""))]
+                    cells = f"  ({len(names)} cells: {', '.join(names[:6])}{' ...' if len(names) > 6 else ''})"
+                print(f"  {k}. {cmd_}{cells}", flush=True)
         return 0
     for r in rows:   # -a: the same cells with extra arguments on our build
         if o.cell_args and not r["_b"].startswith("stock"): r["args"] = ((r.get("args") or "") + " " + " ".join("moe:" + w if re.fullmatch(r"[\w-]+=\S*", w) else w for w in o.cell_args.split())).strip()   # a bare key=value is a --moe key (-a "split-experts=0")

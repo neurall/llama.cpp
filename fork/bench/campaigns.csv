@@ -4296,3 +4296,4 @@ relmf1-q27nl-p2-pf2k1k,2026-10-23 20:14:51,bench /m/q/4/Qwen3.8-27B-IQ4_NL.gguf 
 relmf1-q27mtp-p2-pf2k1k,2026-10-23 20:15:37,bench /m/q/5/Qwen3.8-27B-MTP-Q5_K_M.gguf builds relmf1 variants v test pf2k n=2,,
 relmf1-olmoei-p2-pf2k1k,2026-10-23 20:16:23,bench /m/o/4/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf builds relmf1 variants v test pf2k n=2,,
 relmf1-glm35-30k-ds1-pf30k1k,2026-10-23 20:17:21,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds relmf1 variants v test pf30k n=2,,
+relmf1-glm35-30k-ds0-pf30k1k,2026-10-23 20:21:20,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds relmf1 variants v test pf30k n=2,,
