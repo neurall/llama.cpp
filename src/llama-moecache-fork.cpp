@@ -287,8 +287,6 @@ struct moe_cache {
         int                   n_stage   = 0;    // staging slots the last graph got (0: it ran without prefetch)
         int                   n_cfg     = 0;    // staging slots a graph may use at most (the scheduler's ring size, --moe pf-slots)
         size_t                graph_tok = 0;    // graph bytes per batch token of the biggest prompt graphs seen (the prompt pass planner)
-        std::map<int32_t, size_t> need_graph;   // per graph size: graph + scratch WITHOUT the staging slots (need_tok holds them too): the pass cap, so a bigger
-                                                // pass with fewer slots stays possible; the planner picks the slots per pass
         uint32_t              graph_tok_n = 0;  // tokens of the graph graph_tok was taken from: only a graph at least as big replaces it
         // Lending from every size class (--moe alias-all, default on): the classes lie one after the other in the buffer (the first one at 0), so the lent
         // range [0, bytes) can run past the first class into the next ones. Each class gives the blocks the range covers; the class's last block (its zero
@@ -4812,8 +4810,6 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             size_t & nt = ap.need_tok[n_tokens];
             if (need_b >= nt) { ap.need_cells[n_tokens] = cells_now; }
             nt = std::max(nt, need_b);
-            size_t & ng = ap.need_graph[n_tokens];
-            ng = std::max(ng, stage_off);
         }
         // the lend takes whole blocks: a graph of need_b bytes holds ceil(need_b / bmax) * bmax of the buffer (the largest size class), so it reaches the KV zone when THAT passes the
         // zone's start, not need_b (MiMo: a 10.8 MB lend took the 9.2 MB blocks 0 and 1, up to 18.3 MB, while the zone began at 12.6 MB inside block 1 and was never claimed)
@@ -8120,19 +8116,16 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     // The graph bytes per token leave out the staging slots (a fixed part), added when known. No headroom on top (user 2026-10-22: no cap may cost a pass
     // where fewer were possible; GLM 12k ran 5 passes instead of 3 with 1.35x): a pass the estimate lets past the KV zone's room fails its call and the
     // server retries it smaller, which only small cards (3 GiB free per card) met.
-    // No staging slots in the cap (until 2026-10-22 all configured slots were a fixed part here, and the measured sizes included the slots each graph had):
-    // a bigger pass with fewer slots never reached the planner, which compares pass size and slot count per prompt (GLM 3.0, 12k: the 8192-token call
-    // capped at 5856 with 3 slots of 1296 MiB, a single pass with 2 or none was never weighed). The pool lends the slots that still fit behind the graph.
     auto seeded = [&]() -> uint32_t {
-        return ap.graph_tok > 0 ? kvz_pass_cap(ap, n_prompt, ub, 0.0, (double) (ap.graph_tok + ap.tok_bytes), pad, ap.mirror_b) : ub;
+        const double a_fix = (double) std::max(0, ap.n_cfg) * (double) ap.slot_b;
+        return ap.graph_tok > 0 ? kvz_pass_cap(ap, n_prompt, ub, a_fix, (double) (ap.graph_tok + ap.tok_bytes), pad, ap.mirror_b) : ub;
     };
-    const auto & meas = ap.need_graph.empty() ? ap.need_tok : ap.need_graph;
-    if (meas.empty()) { return seeded(); }
+    if (ap.need_tok.empty()) { return seeded(); }
     // every measured size at the cells this call ends at (need_at_cells): the fit below then includes the masks' growth with the context
     size_t cells_end = (size_t) n_prompt;
     for (auto & r : ap.kvt) { if (!r.fixed) { cells_end = std::max(cells_end, (r.rows ? r.rows() : 0) + (size_t) n_prompt); } }
     std::vector<std::pair<int32_t, size_t>> pts;
-    for (const auto & kv : meas) { if (kv.first >= 64) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, cells_end) }); } }
+    for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, cells_end) }); } }
     if (pts.empty()) { return seeded(); }
     double a = 0.0, b = 0.0;
     const auto & p1 = pts.back();
