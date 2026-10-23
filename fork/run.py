@@ -5649,18 +5649,9 @@ def cmd_calib(a):
             n //= 2
         if x is None: print(col(33, f"{r['model']}: no size ran: nothing stored")); continue
         score = lambda d: {k: v[3] / max(w[3] for w in d.values()) + v[4] / max(w[4] for w in d.values()) for k, v in d.items() if v and v[4]}
-        if x[0] > 0:   # pass counts known: halve while the prompt needs more than one pass, then bisect between the biggest one-pass size and the smallest multi-pass one (the count never grows when the prompt shrinks)
-            lo, hi = (n, 10**6) if x[0] == 1 else (0, n)
-            while hi - lo > 1:
-                m = (lo + hi) // 2 if lo else max(1, hi // 2)
-                y = ask(m)
-                if y is None: break
-                if y[0] == 1: lo = m
-                else: hi = m
-            if lo == 0: print(col(33, f"{r['model']}: no size ran in one pass: nothing stored")); continue
-            for m in range(lo, max(1, (lo + 1) // 2) - 1, -1): ask(m)   # the range below the biggest one-pass size: a smaller prompt can win on speed
-            ok_ = {m: v for m, v in seen.items() if v and v[4]}   # every size probed, one pass or several: one pass is not always the best
-        else:   # no pass count in its rows (the model fits the VRAM, plain path): the speed curve decides; halve while the score gets better, then refine around the best
+        # from the biggest one-pass size (the pool's ubatch): the half of it; while the half scores better keep halving, when it scores worse look between (up) again: the score is prompt speed plus decode speed
+        # each over the best seen, a smaller prompt can win and so can more than one pass
+        if True:
             cur = n
             while cur > 1:
                 y = ask(cur // 2)
@@ -5674,7 +5665,7 @@ def cmd_calib(a):
                 new = [m for m in ((lo_ + best) // 2, (best + hi_) // 2) if m >= 1 and m not in seen and abs(m - best) >= 1]
                 if not new: break
                 for m in new: ask(m)
-            lo = max((k for k, v in seen.items() if v and v[0] == 0), default=0); ok_ = {m: v for m, v in seen.items() if v and v[4]}
+            ok_ = {m: v for m, v in seen.items() if v and v[4]}; lo = max(ok_, default=0)
         if not ok_: print(col(33, f"{r['model']}: no size with a decode speed: nothing stored")); continue
         mp, mt = max(v[3] for v in ok_.values()), max(v[4] for v in ok_.values())
         eff = {n: v[3] / mp + v[4] / mt for n, v in ok_.items()}; k = max(eff, key=lambda n: (round(eff[n], 6), n))
