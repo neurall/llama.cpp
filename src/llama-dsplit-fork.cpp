@@ -893,6 +893,11 @@ void dsplit_bal_step(int b, double v) {
         if (d == g_rng_dev[0]) { h = &st[i]; } else if (d == g_rng_dev[1]) { o = &st[i]; }
     }
     if (!h || !o || h->dense_us <= 0 || o->dense_us <= 0) { return; }
+    if (v < 0.0) {   // the pass's own span on the cards (first stamp to last stamp) over its tokens: one value per pass, whatever the call around it did
+        const double span = (double) (std::max(h->last_us, o->last_us) - std::min(h->first_us, o->first_us));
+        if (span <= 0.0) { return; }
+        v = span / (double) (g_rng_tok[0] + g_rng_tok[1]);
+    }
     dsplit_bal & B = dsplit_bal_get(b, 0.5);
     g_bal_last = b;
     B.n++;
@@ -971,6 +976,17 @@ double llama_dsplit_bal_share_fork(int64_t n_tokens, double start) {
 void llama_dsplit_note_range_fork(int i, ggml_backend_dev_t dev, int64_t n_tok) {
     std::lock_guard<std::mutex> lk(g_plan_mu);
     if (i >= 0 && i < 2) { g_rng_dev[i] = dev; g_rng_tok[i] = n_tok; }
+}
+
+// One balance step per pass (2026-10-23): the report above runs once per llama_decode call and saw only the last pass of it (a 30k prompt = 4 passes gave 2 steps).
+// llama_context::process_ubatch asks before it builds the next pass: was the pass just run a split one, and if so take its card times now.
+bool llama_dsplit_prev_split_fork() {
+    return g_cur == 1;
+}
+void llama_dsplit_pass_done_fork() {
+    std::lock_guard<std::mutex> pk(g_plan_mu);
+    const int64_t n = g_rng_tok[0] + g_rng_tok[1];
+    if (n > 0) { dsplit_bal_step(dsplit_bucket_of(n), -1.0); }
 }
 
 double llama_dsplit_plan_helper_f_fork(int il, int64_t n_tokens) {
@@ -1257,7 +1273,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
     }
     if (g_pending == 1 && n_tokens > 0 && us > 0) {   // the live balance (and the cards' times for /moe/stats)
         std::lock_guard<std::mutex> pk(g_plan_mu);
-        dsplit_bal_step(dsplit_bucket_of(g_pend_max), (double) us / (double) n_tokens);
+        dsplit_bal_step(dsplit_bucket_of(g_pend_max), -1.0);   // (the last pass of the call; the passes before it were taken by llama_dsplit_pass_done_fork)
     }
     if (g_pending >= 0 && n_tokens > 0 && us > 0 && dsplit_opt_auto()) {
         dsplit_bucket & B = g_buckets[dsplit_bucket_of(g_pend_max)];

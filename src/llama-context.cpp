@@ -2680,6 +2680,10 @@ bool llama_context::set_adapter_cvec(
 
 extern void llama_dsplit_veto_fork(int n_tokens);   // llama-dsplit-fork.cpp (declared here, no shared header)
 
+// fork (llama-dsplit-fork.cpp): the balance step of the pass just run, declared here so that no shared header changes
+bool llama_dsplit_prev_split_fork();
+void llama_dsplit_pass_done_fork();
+
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
     if (mctx && !mctx->apply()) {
@@ -2709,6 +2713,11 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
     const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
+    // fork: the pass before this one was a split pass: its card times are complete now (waited for), one balance step for it (llama-dsplit-fork.cpp)
+    if (!fork_resident && ubatch.n_tokens > 1 && llama_dsplit_prev_split_fork()) {
+        ggml_backend_sched_synchronize(sched.get());
+        llama_dsplit_pass_done_fork();
+    }
     // fork: --moe dense-split: the configuration of this pass (one card or split over the cards), chosen before the graph is built; a changed choice rebuilds
     const bool ds_changed = !fork_resident && llama_dsplit_decide_fork(model, ubatch.n_tokens);   // the per-pass split decision (and its log line) is part of what the exit skips
     // fork: the share controller of the expert split (llama-graph.cpp) moves the cards' expert counts from the measurement of an earlier pass; a changed count
