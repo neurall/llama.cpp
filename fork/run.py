@@ -5079,7 +5079,7 @@ def trace_lines(width=40):
 
 
 def result_lines(res):
-    return "\n".join(f"    run {i}: " + speed_txt(t, p, width=7) + col(92, " t/s") for i, (t, p) in enumerate(res, 1))
+    return "\n".join(f"    run {i}: " + speed_txt(t, p, width=7) + col(92, " t/s") + (col(36, "  " + CELL_PROMPT[0]) if CELL_PROMPT[0] else "") for i, (t, p) in enumerate(res, 1))   # prompt in/out of the cell after each run
 
 
 PRELUDE = [0, 0]   # lines of a remote list's start (old servers stopped, disk check) and of its transfer bars still on screen: erased when the transfers are done
