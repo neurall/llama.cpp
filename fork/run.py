@@ -5607,6 +5607,10 @@ def cmd_calib(a):
         cmd = [sys.executable, os.path.join(here, "run.py"), "run", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else [])
         print(col(90, " ".join(cmd)), flush=True)
         if a.dry: return None
+        st = os.path.join(QDIR, "calib-state.json")   # what `run status` shows for a calib: the model, its build, when it began and the probe now running
+        try: t0_ = json.load(open(st)).get("t0") if json.load(open(st)).get("model") == r["model"] else None
+        except (OSError, ValueError): t0_ = None
+        json.dump({"model": r["model"], "build": b, "base": base, "now": n, "t0": t0_ or time.time()}, open(st, "w"))
         subprocess.call(cmd)
         x = c.execute("select pf_passes, pf_pass, note, pp, tps from runs where campaign like ? and cast(ok as integer)=1 and pp is not null order by ts desc limit 1", (f"{b}-{name}-pf{n}k1k",)).fetchone()
         if not x: return None
@@ -5710,6 +5714,22 @@ def cmd_status(a):
         try: j = json.load(open(last)); name, argv = j["name"], j["argv"]
         except (OSError, ValueError, KeyError): sys.exit(f"status: no list has run since this command exists: run.py status LIST [-b BUILD]; lists: {' '.join(lists)}")
         print(col(92, f"list {name}: running") if live else col(90, f"list {name}: not running (the last one)"), flush=True)
+    if name == "calib":   # a calib is one list per probe: the probes done, the one running, what comes next
+        try: cs = json.load(open(os.path.join(QDIR, "calib-state.json")))
+        except (OSError, ValueError): cs = None
+        if cs:
+            import sqlite3
+            db = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+            rows = db.execute("select campaign, pf_passes, note, pp, tps, ts from runs where campaign like ? and cast(ok as integer)=1 and pp is not null order by ts", (f"{cs['build']}-{cs['base']}-p%-pf%k1k",)).fetchall()
+            print(col(1, f"calib {cs['model']} on {cs['build']}: probes done"), flush=True)
+            last = {}
+            for cp, ps, nt, pp, tps, ts in rows:
+                if ts is not None and ts >= cs["t0"] - 5: last[cp] = (ps, nt, pp, tps)
+            for cp, (ps, nt, pp, tps) in last.items():
+                tk = re.search(r"prompt_n=(\d+)", nt or ""); print(f"  {cp.split('-')[-2] if cp.count('-') > 1 else cp:<8} {tk.group(1) if tk else '?':>6} tokens  {ps or 0} pass(es)  prompt {pp:6.0f} t/s  decode {tps or 0:5.1f} t/s")
+            print(col(33, f"  now: probe {cs['base']}-p{cs['now']} ({cs['now']}k)") if live else col(90, f"  last probe: {cs['now']}k; the calib is not running"), flush=True)
+            if live: print(col(90, "  next: the search halves while the score rises, then refines around the best (decided from the result of the probe now running)"), flush=True)
+            return 0
     return run_list(name, [x for x in argv if x not in ("-n", "--dry", "--status")] + ["--dry", "--status"])
 
 
@@ -5729,6 +5749,11 @@ def run_list_detached(name, argv):
             return rec
         except (OSError, ValueError, KeyError): return None
     rec = alive(); child = None
+    if name is None and not rec and subprocess.call(["pgrep", "-f", "[r]un.py calib"], stdout=subprocess.DEVNULL) == 0:   # a calib is between two probes (each probe is a list of its own): wait for the next one
+        print("calib is between two probes: waiting for the next one ...", flush=True)
+        for _ in range(180):
+            time.sleep(1); rec = alive()
+            if rec or subprocess.call(["pgrep", "-f", "[r]un.py calib"], stdout=subprocess.DEVNULL) != 0: break
     if name is None and not rec:   # plain `run run`: attach only
         print("no detached run is going\n"); run_list_help(); return 1
     if rec: print(f"a run is going (pid {rec['pid']}): attaching, Ctrl-C detaches, `run stop` stops it", flush=True)
