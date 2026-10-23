@@ -142,7 +142,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
         cp = configparser.ConfigParser(defaults={"here": os.environ.get("FORK_PROMPTS_DIR") or os.path.join(here, "prompts")})
         cp.read([os.path.join(here, "prompts.ini"), os.path.join(here, "prompts.local.ini")])   # prompts.local.ini: your own prompts and tests, not in git
         out = {k: dict(cp[k]) for k in cp.sections()}
-        for n in range(1, 16):   # pf<N>k1k / pf<N>k: the first N thousand tokens of the 12k source (cut in run.py), answer 1024 tokens; any size, nothing stored per size
+        for n in range(1, 101):   # pf<N>k1k / pf<N>k: the first N thousand tokens of the 12k source (cut in run.py), answer 1024 tokens; any size, nothing stored per size
             out.setdefault(f"pf{n}k1k", dict(alias=f"pf{n}k", tokens="1024", prefix="code_review", **{"in": f"{n}k"})); out.setdefault(f"test-pf{n}k", {"in": f"{n}k"})
         # a file you drop into the prompts directory is a test of its own, named after the file: prompt-NAME.txt (not claimed by a section above) -> test NAME, the whole file one chat message,
         # 1024 tokens out (tokens = / ctx = need a section). No ini edit: copy the file, `run run ... ` with a cell whose test is NAME.
@@ -5560,20 +5560,16 @@ def cmd_calib(a):
         def ask(n):
             if n not in seen: seen[n] = probe(r, n)
             return seen[n]
-        n = 12; hi = 13   # the estimated maximum first, then half of it while it needs more than one pass
-        while True:
+        n = 16; lo, hi = 0, 10**6   # lo: biggest known one-pass size, hi: smallest known multi-pass size (k); no estimate: the search finds the maximum
+        while hi - lo > 1:
             x = ask(n)
-            if x is None or x[0] <= 1: break
-            hi = n
-            if n <= 1: break
-            n = max(1, n // 2)
-        if x is None or x[0] > 1: print(col(33, f"{r['model']}: no size from 1k ran in one pass or a run failed: nothing stored")); continue
-        lo = n   # biggest known one-pass size; hi = smallest known multi-pass size: bisect between them
-        while lo + 1 < hi:
-            m = (lo + hi) // 2; y = ask(m)
-            if y is None: break
-            if y[0] <= 1: lo = m
-            else: hi = m
+            if x is None: break
+            if x[0] <= 1: lo = n
+            else: hi = n
+            n = (lo + hi) // 2 if hi < 10**6 else lo * 2   # one pass: double (the longest source is 128k) until it breaks; then bisect to 1k
+            if n >= 128 or n in seen: break
+            if lo == 0 and hi == 1: break   # not even 1k fits in one pass
+        if lo == 0: print(col(33, f"{r['model']}: no size ran in one pass or a run failed: nothing stored")); continue
         picks[r["model"]] = lo; print(col("1;92", f"{r['model']}: biggest one-pass prompt {lo}k ({seen[lo][2]} tokens, {seen[lo][3]:.0f} t/s)"))
     if picks and not a.dry and not a.nowrite:
         cards = n_cards(); ini = os.path.join(here, "models.ini"); lines = open(ini).read().split("\n")
