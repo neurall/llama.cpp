@@ -5530,36 +5530,59 @@ def cmd_onepass(a):
 
 
 def cmd_calib(a):
-    """`run.py calib [-b BUILD] [-ng N] [-m MODELS] [--dry]`: collect the key info for models.ini and exit. Stage 1: every model once at 12k (two runs of 64 answer tokens, list calib). A model whose 12k runs
-    in ONE pass is done (best_prompt = 12k). For the others the pass size of that run (pf_pass) is the cap: stage 2 runs the two biggest sizes whose tokens fit the cap (list calib2), then the
-    onepass picker chooses and stores best_prompt.<N>gpu (N = the cards seen). A fraction of the ladder `run onepass` runs (9 sizes x 2 runs per model)."""
+    """`run.py calib [-b BUILD] [-ng N] [-m MODELS] [--dry] [--nowrite]`: find every model's biggest ONE-pass input prompt by bisection and store it in models.ini (best_prompt.<N>gpu, N = the cards seen).
+    The pass count never grows when the prompt shrinks, so "runs in one pass" splits the sizes 4k..12k in two: probe 12k, then bisect, starting at the size the pass cap of the 12k run predicts
+    (cap tokens / tokens per nominal k). About 3-4 runs of one request (64 answer tokens) per model instead of the ladder's 18. The biggest one-pass size is the pick: bigger prompts amortize the
+    expert uploads better, so its prompt speed is the best of the one-pass sizes (`run onepass` still checks that on the full ladder)."""
     import sqlite3
     here = os.path.dirname(os.path.abspath(__file__)); b = resolve_build(a.build) if a.build != "latest" else a.build
-    src = list(csv.DictReader(open(os.path.join(here, "runs", "onepass.csv"), newline="")))
+    src = [r for r in csv.DictReader(open(os.path.join(here, "runs", "onepass.csv"), newline="")) if r["test"] == "pf12k1k"]
     want = [x for x in (a.models or "").split(",") if x]
-    def write_list(name, rows):
-        with open(os.path.join(here, "runs", name + ".csv"), "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(src[0].keys())); w.writeheader(); w.writerows(rows)
-    def run(name):
-        cmd = [sys.executable, os.path.join(here, "run.py"), "run", name, "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else [])
+    rows = [r for r in src if not want or r["model"] in want]
+    if not rows: sys.exit(f"calib: no models match {want}")
+    sizes = [4, 5, 6, 7, 8, 9, 10, 11, 12]; c = sqlite3.connect(os.path.join(here, "runs.db")); picks = {}
+    def probe(r, n):
+        """one request of n k: (passes, pass tokens, prompt tokens, prompt t/s) of its row; None when it did not run"""
+        base = r["name"].rsplit("-", 1)[0]; name = f"{base}-p{n}"
+        with open(os.path.join(here, "runs", "calib.csv"), "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(r.keys())); w.writeheader(); w.writerow(dict(r, name=name, test=f"pf{n}k1k", n="1"))
+        cmd = [sys.executable, os.path.join(here, "run.py"), "run", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else [])
         print(col(90, " ".join(cmd)), flush=True)
-        if not a.dry and subprocess.call(cmd): sys.exit("calib: the list failed")
-    rows12 = [r for r in src if r["test"] == "pf12k1k" and (not want or r["model"] in want)]
-    if not rows12: sys.exit(f"calib: no models match {want}")
-    write_list("calib", rows12); run("calib")
-    c = sqlite3.connect(os.path.join(here, "runs.db"))
-    more = []
-    for r in rows12:
-        base = r["name"].rsplit("-", 1)[0]
-        x = c.execute("select pf_passes, pf_pass, note from runs where campaign like ? and cast(ok as integer)=1 and pp is not null order by ts desc limit 1", (f"{b}-{base}-p12-pf12k1k",)).fetchone()
-        if not x: print(col(33, f"{r['model']}: no 12k row")); continue
-        passes, cap, tk = int(x[0] or 0), int(x[1] or 0), re.search(r"prompt_n=(\d+)", x[2] or "")
-        if passes == 1 or not cap or not tk: print(f"{r['model']}: 12k passes={passes} pass tokens={cap}"); continue
-        top = int(cap / (int(tk.group(1)) / 12))   # the biggest nominal size under the cap; one below it too (prefix and answer count)
-        for n in (top, top - 1):
-            if n in PF_FILES: more.append(dict(r, name=f"{base}-p{n}", test=f"pf{n}k1k"))
-    if more: write_list("calib2", more); run("calib2")
-    if not a.dry: a.write = not a.nowrite; cmd_onepass(a)
+        if a.dry: return None
+        subprocess.call(cmd)
+        x = c.execute("select pf_passes, pf_pass, note, pp from runs where campaign like ? and cast(ok as integer)=1 and pp is not null order by ts desc limit 1", (f"{b}-{name}-pf{n}k1k",)).fetchone()
+        if not x: return None
+        tk = re.search(r"prompt_n=(\d+)", x[2] or "")
+        return int(x[0] or 0), int(x[1] or 0), int(tk.group(1)) if tk else 0, float(x[3])
+    for r in rows:
+        x = probe(r, 12)
+        if x is None: print(col(33, f"{r['model']}: 12k did not run")); continue
+        one, many = ({12}, set()) if x[0] == 1 else (set(), {12})
+        guess = int(x[1] / (x[2] / 12)) if x[0] > 1 and x[1] and x[2] else None
+        seen = {12: x}
+        while True:
+            lo = max(one, default=3); hi = min(many, default=13)   # biggest known one-pass size, smallest known multi-pass size
+            cand = [n for n in sizes if lo < n < hi]
+            if not cand: break
+            n = guess if guess in cand else cand[len(cand) // 2]; guess = None
+            y = probe(r, n)
+            if y is None: break
+            seen[n] = y; (one if y[0] == 1 else many).add(n)
+        if one:
+            picks[r["model"]] = max(one); print(col("1;92", f"{r['model']}: biggest one-pass prompt {max(one)}k ({seen[max(one)][2]} tokens, {seen[max(one)][3]:.0f} t/s)"))
+        else: print(col(33, f"{r['model']}: no size from 4k ran in one pass: nothing stored"))
+    if picks and not a.dry and not a.nowrite:
+        cards = n_cards(); ini = os.path.join(here, "models.ini"); lines = open(ini).read().split("\n")
+        for model, n in picks.items():
+            sec = model_alias(next((v["path"] for k, v in fcfg.models_ini().items() if k == model), model)) or (model if model in fcfg.models_ini() else None)
+            if not sec: print(col(31, f"{model}: no models.ini section, not written")); continue
+            key = f"best_prompt.{cards}gpu"
+            i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+            while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
+            j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
+            if j is not None: lines[j] = f"{key} = {n}k"
+            else: lines.insert(i1, f"{key} = {n}k")
+        open(ini, "w").write("\n".join(lines)); print(col(92, f"written to models.ini ({cards} card(s))"))
 
 
 def running_cell():
@@ -8063,7 +8086,7 @@ if __name__ == "__main__":
     sx.add_argument("rest", nargs=argparse.REMAINDER, help="run options of the list (-b BUILD ...)")
     op = sp.add_parser("onepass", help="the best one-pass input prompt of every model from the runs of `run onepass -b BUILD` (pass count and prompt speed per size); --write stores it in models.ini")
     op.add_argument("-b", "--build", default="latest"); op.add_argument("--write", action="store_true")
-    cb = sp.add_parser("calib", help="collect the key info for models.ini (best one-pass prompt per model) with the fewest runs: 12k once, then only the sizes under the pass cap; stores best_prompt.<N>gpu")
+    cb = sp.add_parser("calib", help="find every model's biggest one-pass input prompt by bisection (3-4 runs per model) and store best_prompt.<N>gpu in models.ini")
     cb.add_argument("-b", "--build", default="latest"); cb.add_argument("-ng", "--gpus", dest="n_gpus", type=int); cb.add_argument("-m", "--models", help="comma list of model keys of runs/onepass.csv (default all)")
     cb.add_argument("--dry", action="store_true"); cb.add_argument("--nowrite", action="store_true")
     ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
