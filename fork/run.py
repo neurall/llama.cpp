@@ -2309,7 +2309,9 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 args += ["-np", "1"]    # stock's auto slots (4) split -c: 16384 / 4 = 4096 per slot, the same HTTP 400 ("exceeds the available context size (4096 tokens)", 2026-10-19)
             _pf_big = test == "pf128k" or (_pfn and int(_pfn.group(1)) > 12)   # pf40k, pf64k ...: the first N thousand tokens of the 128k source
             _pf_text = open(config.prompt_path("src128k" if _pf_big else "src12k")).read()
-            if _pfn and int(_pfn.group(1)) not in (12, 128):   # the 12k file is 12294 tokens (GLM tokenizer, 4.4 characters each): cut in proportion
+            if _pfn and int(_pfn.group(1)) in PF_FILES:   # a frozen file (prompts/src_Nk.cpp, the cut below written out): the one-pass prompts of `run.py onepass`
+                _pf_text = open(config.prompt_path(f"src{_pfn.group(1)}k")).read()
+            elif _pfn and int(_pfn.group(1)) not in (12, 128):   # the 12k file is 12294 tokens (GLM tokenizer, 4.4 characters each): cut in proportion
                 _pf_text = _pf_text[:int(54092 * int(_pfn.group(1)) * 1000 / 12294)]
             _pf_text = OVR.get("prefix", "") + _pf_text
             if OVR.get("prefix"):   # an instruction (12kin_1kout_code_review): an instruct model needs its chat template or a long answer loops, so it goes through the chat endpoint
@@ -5484,6 +5486,49 @@ def last_run_rec(r, HW):
     return dict(res=res, rid=top[1], st=STOCK_REC[0], lt=run_times(top[1])[1])
 
 
+def cmd_onepass(a):
+    """`run.py onepass [-b BUILD] [--write]`: the best one-pass input prompt of every model, from the runs of the list `run onepass -b BUILD` (fork/runs/onepass.csv: every model at 12k down to 4k, two
+    runs of 64 answer tokens each; the first run is cold, the last warm and decides). Per model: the sizes that ran in ONE pass (pf_passes = 1 in the last run), the biggest of them whose prompt
+    speed is within 3% of the best one-pass size is the pick. --write puts it in models.ini as best_prompt.<N>gpu (N = the cards seen now; run.py reads it for the test pfbest1k)."""
+    import sqlite3
+    c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+    b = resolve_build(a.build) if a.build != "latest" else a.build
+    rows = c.execute("select campaign, model, test, pf_passes, pf_pass, pp, note, ts from runs where campaign like ? and cast(ok as integer)=1 and pp is not null order by ts", (f"{b}-%-p%-pf%k1k",)).fetchall()
+    cells = {}
+    for camp, model, test, ps, pt, pp, note, ts in rows:
+        m = re.search(r"-p(\d+)-pf\d+k1k$", camp)
+        if not m: continue
+        nt = re.search(r"prompt_n=(\d+)", note or "")
+        cells[(model, int(m.group(1)))] = dict(passes=int(ps) if str(ps or "").isdigit() else 0, pass_tok=pt, pp=float(pp), tokens=int(nt.group(1)) if nt else 0)   # the last run of the cell wins (warm)
+    if not cells: sys.exit(f"onepass: no rows for build {b}; run `run.py run onepass -b {b} -day -nodl` first")
+    cards = n_cards(); ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); picks = {}
+    for model in sorted({k[0] for k in cells}):
+        sizes = sorted((n for (m_, n) in cells if m_ == model), reverse=True)
+        one = [n for n in sizes if cells[(model, n)]["passes"] == 1]
+        best_pp = max((cells[(model, n)]["pp"] for n in one), default=0)
+        pick = next((n for n in one if cells[(model, n)]["pp"] >= 0.97 * best_pp), None)
+        print(col("1;94", model))
+        print(col(37, "   size   prompt tokens   passes   pass tokens   prompt t/s"))
+        for n in sizes:
+            x = cells[(model, n)]
+            print(f"  {col('1;92' if n == pick else '1', f'{n:>3}k')}   {x['tokens']:>13}   {x['passes']:>6}   {str(x['pass_tok'] or ''):>11}   {x['pp']:>10.1f}" + (col("1;92", "   <- best one-pass prompt") if n == pick else ""))
+        if pick is None: print(col(33, "  no size ran in one pass: nothing to pick (the biggest tested size stays the default)"))
+        else: picks[model] = pick
+    if a.write and picks:
+        lines = open(ini).read().split("\n")
+        for model, n in picks.items():
+            sec = model_alias(model if os.path.isabs(model) else next((v["path"] for v in fcfg.models_ini().values() if os.path.basename(v.get("path", "")) == model), model))
+            if not sec: print(col(31, f"{model}: no models.ini section, not written")); continue
+            key = f"best_prompt.{cards}gpu"
+            i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+            while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1   # before the blank lines that end the section
+            j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
+            new = f"{key} = {n}k"
+            if j is not None: lines[j] = new
+            else: lines.insert(i1, new)
+        open(ini, "w").write("\n".join(lines)); print(col(92, f"written to models.ini ({cards} card(s))"))
+
+
 def running_cell():
     """(tag, start time) of the cell a list runs now: the `run.py cell TAG ...` process (tag = BUILD-NAME, what the campaign of its rows starts with); (None, None) when no cell runs"""
     boot = next((int(l.split()[1]) for l in open("/proc/stat") if l.startswith("btime")), 0)
@@ -5635,6 +5680,7 @@ def run_list(name, argv):
     o.build = resolve_build(o.build)   # -b b13563: a build number
     rows = list(csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", name + ".csv"), newline="")))
     for r in rows: r["model"] = fcfg.model(r["model"])   # the model column is a models.ini alias or a path
+    for r in rows: r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
     rows = [r for r in rows if not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))]   # a trailing $ means the exact name: mimo-i$ is not mimo-io
     rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]   # -skp: same matching as -onl, rows dropped
     for r in rows:
@@ -5773,6 +5819,40 @@ def run_list(name, argv):
             except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
     print(f"[{name}] {len(rows)} cells, failed: {', '.join(bad) or 'none'}")
     return 1 if bad else 0
+
+
+PF_FILES = (2, 4, 5, 6, 7, 8, 9, 10, 11)   # sizes (k) with a frozen prompt file prompts/src_Nk.cpp and a test alias pfNk1k in prompts.ini
+
+
+def n_cards():
+    """how many cards the cells see: -ng N (RUN_NG), else CUDA_VISIBLE_DEVICES, else the cards nvidia-smi lists"""
+    if os.environ.get("RUN_NG", "") != "": return int(os.environ["RUN_NG"])
+    cv = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cv is not None: return len([x for x in cv.split(",") if x.strip()])
+    try: return len([l for l in subprocess.run([os.environ.get("NVIDIA_SMI", "nvidia-smi"), "-L"], capture_output=True, text=True, timeout=30).stdout.splitlines() if l.startswith("GPU ")])
+    except (OSError, subprocess.SubprocessError): return 0
+
+
+def model_alias(model_path):
+    """the models.ini section of a model file (by file name), None when it has none"""
+    base = os.path.basename(model_path or "")
+    return next((k for k, v in fcfg.models_ini().items() if v.get("path") and os.path.basename(v["path"]) == base), None)
+
+
+def best_prompt_k(model_path):
+    """the model's best one-pass input prompt in nominal thousands of tokens: models.ini best_prompt.<N>gpu for the cards seen now, else best_prompt, else 12 (the biggest size of the
+    README tests). Measured by `run.py onepass`: the biggest prompt that runs in ONE pass at its best prompt speed."""
+    sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {})
+    for key in (f"best_prompt.{n_cards()}gpu", "best_prompt"):
+        m = re.fullmatch(r"(\d+)k?", str(sec.get(key, "")).strip())
+        if m: return int(m.group(1))
+    return 12
+
+
+def best_test(model_path, test, remote=False):
+    """pfbest1k -> pf<N>k1k with N = the model's best one-pass prompt (pfbest -> pf<N>k); any other test comes back unchanged. A remote machine runs the 12k prompt (its requests are frozen files)."""
+    m = re.fullmatch(r"pfbest(.*)", test)
+    return f"pf{12 if remote else best_prompt_k(model_path)}k{m.group(1)}" if m else test
 
 
 CLAMPED_SHOWN = set()
@@ -7761,7 +7841,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog="tools (each has its own --help): " + ", ".join(sorted(TOOLS)))
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "pplb", "pplc", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf6k", "pf8k", "pf10k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
+    TESTS = ["ppl", "ppl3", "pplb", "pplc", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf5k", "pf6k", "pf7k", "pf8k", "pf9k", "pf10k", "pf11k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
     r = sp.add_parser("run", help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", choices=TESTS + list(ALIASES))
@@ -7948,6 +8028,8 @@ if __name__ == "__main__":
     sx = sp.add_parser("status", help="the running list in the -nrt table: done today, running now, queued next (with the expected time), the queue daemon's waiting tasks; nothing is started")
     sx.add_argument("list", nargs="?", help="a list name (fork/runs/NAME.csv); none = the list that runs now, else the last one")
     sx.add_argument("rest", nargs=argparse.REMAINDER, help="run options of the list (-b BUILD ...)")
+    op = sp.add_parser("onepass", help="the best one-pass input prompt of every model from the runs of `run onepass -b BUILD` (pass count and prompt speed per size); --write stores it in models.ini")
+    op.add_argument("-b", "--build", default="latest"); op.add_argument("--write", action="store_true")
     ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
     ns.add_argument("rep", help="the .nsys-rep file")
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
@@ -7960,5 +8042,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "nsys": cmd_nsys, "status": cmd_status,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
