@@ -5529,6 +5529,39 @@ def cmd_onepass(a):
         open(ini, "w").write("\n".join(lines)); print(col(92, f"written to models.ini ({cards} card(s))"))
 
 
+def cmd_calib(a):
+    """`run.py calib [-b BUILD] [-ng N] [-m MODELS] [--dry]`: collect the key info for models.ini and exit. Stage 1: every model once at 12k (two runs of 64 answer tokens, list calib). A model whose 12k runs
+    in ONE pass is done (best_prompt = 12k). For the others the pass size of that run (pf_pass) is the cap: stage 2 runs the two biggest sizes whose tokens fit the cap (list calib2), then the
+    onepass picker chooses and stores best_prompt.<N>gpu (N = the cards seen). A fraction of the ladder `run onepass` runs (9 sizes x 2 runs per model)."""
+    import sqlite3
+    here = os.path.dirname(os.path.abspath(__file__)); b = resolve_build(a.build) if a.build != "latest" else a.build
+    src = list(csv.DictReader(open(os.path.join(here, "runs", "onepass.csv"), newline="")))
+    want = [x for x in (a.models or "").split(",") if x]
+    def write_list(name, rows):
+        with open(os.path.join(here, "runs", name + ".csv"), "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(src[0].keys())); w.writeheader(); w.writerows(rows)
+    def run(name):
+        cmd = [sys.executable, os.path.join(here, "run.py"), "run", name, "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else [])
+        print(col(90, " ".join(cmd)), flush=True)
+        if not a.dry and subprocess.call(cmd): sys.exit("calib: the list failed")
+    rows12 = [r for r in src if r["test"] == "pf12k1k" and (not want or r["model"] in want)]
+    if not rows12: sys.exit(f"calib: no models match {want}")
+    write_list("calib", rows12); run("calib")
+    c = sqlite3.connect(os.path.join(here, "runs.db"))
+    more = []
+    for r in rows12:
+        base = r["name"].rsplit("-", 1)[0]
+        x = c.execute("select pf_passes, pf_pass, note from runs where campaign like ? and cast(ok as integer)=1 and pp is not null order by ts desc limit 1", (f"{b}-{base}-p12-pf12k1k",)).fetchone()
+        if not x: print(col(33, f"{r['model']}: no 12k row")); continue
+        passes, cap, tk = int(x[0] or 0), int(x[1] or 0), re.search(r"prompt_n=(\d+)", x[2] or "")
+        if passes == 1 or not cap or not tk: print(f"{r['model']}: 12k passes={passes} pass tokens={cap}"); continue
+        top = int(cap / (int(tk.group(1)) / 12))   # the biggest nominal size under the cap; one below it too (prefix and answer count)
+        for n in (top, top - 1):
+            if n in PF_FILES: more.append(dict(r, name=f"{base}-p{n}", test=f"pf{n}k1k"))
+    if more: write_list("calib2", more); run("calib2")
+    if not a.dry: a.write = not a.nowrite; cmd_onepass(a)
+
+
 def running_cell():
     """(tag, start time) of the cell a list runs now: the `run.py cell TAG ...` process (tag = BUILD-NAME, what the campaign of its rows starts with); (None, None) when no cell runs"""
     boot = next((int(l.split()[1]) for l in open("/proc/stat") if l.startswith("btime")), 0)
@@ -8030,6 +8063,9 @@ if __name__ == "__main__":
     sx.add_argument("rest", nargs=argparse.REMAINDER, help="run options of the list (-b BUILD ...)")
     op = sp.add_parser("onepass", help="the best one-pass input prompt of every model from the runs of `run onepass -b BUILD` (pass count and prompt speed per size); --write stores it in models.ini")
     op.add_argument("-b", "--build", default="latest"); op.add_argument("--write", action="store_true")
+    cb = sp.add_parser("calib", help="collect the key info for models.ini (best one-pass prompt per model) with the fewest runs: 12k once, then only the sizes under the pass cap; stores best_prompt.<N>gpu")
+    cb.add_argument("-b", "--build", default="latest"); cb.add_argument("-ng", "--gpus", dest="n_gpus", type=int); cb.add_argument("-m", "--models", help="comma list of model keys of runs/onepass.csv (default all)")
+    cb.add_argument("--dry", action="store_true"); cb.add_argument("--nowrite", action="store_true")
     ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
     ns.add_argument("rep", help="the .nsys-rep file")
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
@@ -8042,5 +8078,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
