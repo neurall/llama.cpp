@@ -1060,7 +1060,8 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
             // configuration once per size bucket, the slower one again every 16th pass).
             static const bool explore = [] { const char * e = llama_moe_get_opt("split-explore"); return e && atoi(e) != 0; }();
             if (B.n[0] > 0 && B.n[1] > 0) {
-                const int best = B.us_tok[1] < B.us_tok[0] ? 1 : 0;
+                // the split must win by split_min_gain on the passes measured, a tie or a close call stays on one card (never on while slower)
+                const int best = B.us_tok[1] <= (1.0 - llama_moe_live_get("split_min_gain")) * B.us_tok[0] ? 1 : 0;
                 choice = (explore && B.passes % 16 == 15) ? 1 - best : best;
                 why = choice == best ? "measured: faster at this size" : "measured: the slower one again (every 16th pass of a size)";
             } else if (plan_sure) {
@@ -1084,6 +1085,15 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
                 why = found >= 0 ? "measured: the nearest size" : "no plan or measurement yet: one card first";
             }
             B.passes++;
+        }
+    }
+    {
+        // Never split on a prediction alone: this size needs a measured one-card pass to compare with (2026-10-23: the model was 2.2 s per pass off on Qwen Next).
+        // The first pass of a size runs on one card; the split is tried once the planner, now scaled by that measurement, still puts it clearly ahead.
+        const auto bk = g_buckets.find(dsplit_bucket_of(n_tokens));
+        if (choice == 1 && dsplit_opt_auto() && managed && (bk == g_buckets.end() || bk->second.n[0] == 0)) {
+            choice = 0;
+            why    = "one card first: no measured one-card pass at this size to compare the split with";
         }
     }
     if (choice == 1 && n_tokens >= g_veto_tokens) {
