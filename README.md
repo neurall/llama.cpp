@@ -27,31 +27,31 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 
 | model | test | t/s | pp | gain t | gain pp | ppl | build | output |
 |---|---|---|---|---|---|---|---|---|
-| MiMo 2.6F 3-bit | 12k/1k | 14.0<br>26.5 | 49<br>1008 | +90% | +1940% 20.4x | 1.8758<br>1.8758 | b13838 | [18197](fork/outputs/18197.txt)<br>[18221s](fork/outputs/18221s.txt) |
+| MiMo 2.6F 3-bit | 12k/1k | 14.0<br>26.6 | 49<br>1025 | +90% | +1975% 20.8x | 1.8758<br>1.8758 | b13842 | [18373](fork/outputs/18373.txt)<br>[18221s](fork/outputs/18221s.txt) |
 | GLM 5.3 3-bit | 12k/1k | 12.8<br>19.8 | 43<br>689 | +55% | +1518% 16.2x | 1.7626<br>1.7578 | b13838 | [18209](fork/outputs/18209.txt)<br>[18232s](fork/outputs/18232s.txt) |
 | MiMo 2.6F 3-bit | 3k/1k | 14.1<br>31.6 | 48<br>754 | +124% 2.2x | +1460% 15.6x | 1.8758<br>1.8758 | b13838 | [18199](fork/outputs/18199.txt)<br>[18223s](fork/outputs/18223s.txt) |
 | GLM 5.3 3-bit | 3k/1k | 12.7<br>20.2 | 40<br>617 | +59% | +1443% 15.4x | 1.7626<br>1.7578 | b13838 | [18211](fork/outputs/18211.txt)<br>[18235s](fork/outputs/18235s.txt) |
-| GLM 5.3 3.5-bit* | 3k/1k | 10.7<br>12.9 | 30<br>224 | +21% | +647% 7.5x | 1.6326<br>1.6265 | b13563 | [16756](fork/outputs/16756.txt)<br>[17146s](fork/outputs/17146s.txt) |
+| GLM 5.3 3.5-bit* | 3k/1k | 10.7<br>16.1 | 33<br>241 | +50% | +640% 7.4x | 1.6326<br>1.6265 | b13842 | [18429](fork/outputs/18429.txt)<br>[18277s](fork/outputs/18277s.txt) |
 | Qwen 3.8 Next IQ4_XS | 12k/1k | 32.6<br>52.7 | 213<br>1489 | +62% | +599% 7.0x | 1.4101<br>1.4101 | b13838 | [18203](fork/outputs/18203.txt)<br>[18227s](fork/outputs/18227s.txt) |
 | GLM 5.3 3.5-bit* | 12k/1k | 10.8<br>11.0 | 34<br>230 | +2% | +572% 6.7x | 1.6326<br>1.6265 | b13563 | [16759](fork/outputs/16759.txt)<br>[17143s](fork/outputs/17143s.txt) |
-| Qwen 3.8 Next IQ4_XS | 3k/1k | 31.2<br>53.6 | 206<br>1240 | +72% | +503% 6.0x | 1.4101<br>1.4101 | b13600 | [17113](fork/outputs/17113.txt)<br>[17110s](fork/outputs/17110s.txt) |
+| Qwen 3.8 Next IQ4_XS | 3k/1k | 32.1<br>54.9 | 209<br>1339 | +71% | +542% 6.4x | 1.4101<br>1.4101 | b13842 | [18381](fork/outputs/18381.txt)<br>[18228s](fork/outputs/18228s.txt) |
 | Qwen 3.8 Next IQ3_S | 12k/1k | 43.8<br>53.6 | 372<br>1477 | +22% | +297% 4.0x | 1.3927<br>1.3927 | b13586 | [16719](fork/outputs/16719.txt)<br>[17094s](fork/outputs/17094s.txt) |
-| Qwen 3.8 Next IQ3_S | 3k/1k | 43.7<br>55.8 | 387<br>1254 | +27% | +224% 3.2x | 1.3927<br>1.3927 | b13600 | [17101](fork/outputs/17101.txt)<br>[17099s](fork/outputs/17099s.txt) |
+| Qwen 3.8 Next IQ3_S | 3k/1k | 44.6<br>57.3 | 387<br>1339 | +28% | +246% 3.5x | 1.3927<br>1.3927 | b13842 | [18423](fork/outputs/18423.txt)<br>[18270s](fork/outputs/18270s.txt) |
 | MiMo 2.6F 3-bit | short/1k | 14.1<br>34.8 | -<br>- | +147% 2.5x | - | 1.8758<br>1.8758 | b13838 | [18201](fork/outputs/18201.txt)<br>[18225s](fork/outputs/18225s.txt) |
 | Qwen 3.8 Next IQ4_XS | short/1k | 30.9<br>55.1 | -<br>- | +78% | - | 1.4101<br>1.4101 | b13586 | [16788](fork/outputs/16788.txt)<br>[17114s](fork/outputs/17114s.txt) |
 | GLM 5.3 3-bit | short/1k | 12.7<br>21.6 | -<br>- | +69% | - | 1.7626<br>1.7578 | b13838 | [18213](fork/outputs/18213.txt)<br>[18236s](fork/outputs/18236s.txt) |
-| GLM 5.3 3.5-bit* | short/1k | 10.8<br>14.9 | -<br>- | +37% | - | 1.6326<br>1.6265 | b13563 | [16687](fork/outputs/16687.txt)<br>[17151s](fork/outputs/17151s.txt) |
+| GLM 5.3 3.5-bit* | short/1k | 10.7<br>17.1 | -<br>- | +59% | - | 1.6326<br>1.6265 | b13842 | [18431](fork/outputs/18431.txt)<br>[18279s](fork/outputs/18279s.txt) |
 | Qwen 3.8 Next IQ3_S | short/1k | 43.5<br>56.9 | -<br>- | +31% | - | 1.3927<br>1.3927 | b13563 | [16766](fork/outputs/16766.txt)<br>[17102s](fork/outputs/17102s.txt) |
 
 \* GLM 3.5-bit (127.7 GiB) is larger than this machine's 128 GB RAM, so part of it runs from the SSD and the system swaps (up to about 4 GiB of swap in use during runs). Ours is faster than stock despite that.  
 
 Every answer behind the table is in [fork/outputs](fork/outputs) as `<id>.txt` (header: build, test, speeds, arguments, power); stock's answers as `<id>s.txt`. With the run database: `python3 fork/run.py out ID` (get it with `git fetch https://github.com/neurall/llama.cpp runs-db && git show FETCH_HEAD:runs.db > fork/runs.db`).
 
-Our builds in the table are b13838 (this release; its rows measured 2026-10-23 against stock b11829, the newest official stock that day), b13600 and two earlier builds (b13563, b13586) against stock b11742; each cell shows the build with the best run. Older tables (earlier releases, laptop and CPU rows): [fork/docs/perf-history.md](fork/docs/perf-history.md).
+Our builds in the table are b13842 (this release) and b13838 (rows measured 2026-10-23 against stock b11829, the newest official stock that day), b13600 and two earlier builds (b13563, b13586) against stock b11742; each cell shows the build with the best run. Older tables (earlier releases, laptop and CPU rows): [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
 ### Reproduce a row
 
-1. Binaries: ours [`llama-release-b13600-c1d4fe980-bin-ubuntu-cuda-13.4-x64.tar.gz`](https://github.com/neurall/llama.cpp/releases/download/release-b13600-c1d4fe980-dynamic-ctx/llama-release-b13600-c1d4fe980-bin-ubuntu-cuda-13.4-x64.tar.gz) (Windows zip on the [release page](https://github.com/neurall/llama.cpp/releases/tag/release-b13600-c1d4fe980-dynamic-ctx); add the `cudart-` archive if CUDA 13 is not installed); stock: `llama-b11742-bin-ubuntu-cuda-13.4-x64.tar.gz` from [ggml-org b11742](https://github.com/ggml-org/llama.cpp/releases/tag/b11742).
+1. Binaries: ours [`llama-release-b13842-6d9b2b3f4-bin-ubuntu-cuda-13.4-x64.tar.gz`](https://github.com/neurall/llama.cpp/releases/download/release-b13842-6d9b2b3f4-split-fix/llama-release-b13842-6d9b2b3f4-bin-ubuntu-cuda-13.4-x64.tar.gz) (Windows zip on the [release page](https://github.com/neurall/llama.cpp/releases/tag/release-b13842-6d9b2b3f4-split-fix); add the `cudart-` archive if CUDA 13 is not installed); stock: `llama-b11829-bin-ubuntu-cuda-13.4-x64.tar.gz` from [ggml-org b11829](https://github.com/ggml-org/llama.cpp/releases/tag/b11829) for the b13838/b13842 rows, `llama-b11742-bin-ubuntu-cuda-13.4-x64.tar.gz` from [ggml-org b11742](https://github.com/ggml-org/llama.cpp/releases/tag/b11742) for the older rows.
 2. Start the server (port 9931). The `-c` values are the ones the table's runs used:
 
 | test | ours | stock |

@@ -1,0 +1,48 @@
+run 18431 | relfx1 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 17.06 t/s | prompt 10.5 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 13:03:00
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — they want minimal code. But I also care about quality. There's tension here: "smallest" means minimal bytes, but my taste says no plain squares as particles (not relevant here), no emoji, etc. For a code-golf Tetris, the aesthetic will be raw canvas blocks — that's fine, it's what the user asked for. The user explicitly asked for "smallest", so I should honor that intent: a genuinely tiny, single-file Tetris.
+
+Let me think about what "smallest" means. I should write a genuinely compact Tetris in a single HTML file. I'll aim for something like under 1KB or close to it, while still being a playable, complete Tetris: movement, rotation, line clearing, scoring, game over, next piece maybe.
+
+Let me design a minimal Tetris:
+
+Core components:
+1. Canvas for rendering (or render with divs? Canvas is smaller).
+2. Board: 10x20 array.
+3. Pieces: 7 tetrominoes. Compact encoding: use a string of coordinates or a bit encoding.
+4. Game loop with gravity.
+5. Keyboard input: left/right/down/rotate.
+6. Collision detection.
+7. Line clear.
+8. Game over.
+
+Compact piece encoding trick: A classic minimal approach is to encode each rotation of each piece as a 4x4 (or 3x3) matrix, or use the "sum of powers of 2" trick. A very compact known trick: represent each piece rotation as a 16-bit number (4x4 grid), and store all rotations.
+
+Even more compact: use the trick where each tetromino is defined by 4 (x,y) pairs derived from a number. There's a famous minimal Tetris in ~140 bytes of JS (the "tiny tetris" by Solomon / "Tetris in 140 bytes"?). Actually there's a well-known 140-byte Tetris in C. For JS there are minimal ones too.
+
+Let me write my own compact version, aiming for readable-ish but very small. I'll target maybe ~700-900 bytes total HTML. Let me actually try to golf it properly.
+
+Approach:
+
+Pieces as arrays of rotations. A compact encoding: for each piece, store a string like "0123" indices into a 4x4? Hmm.
+
+Classic compact encoding: each rotation state as a 4-bit-per-row... Let me use the approach: define pieces via a base shape and rotations computed by rotating coordinates: (x,y) -> (y, 3-x) or similar. That saves storing all rotations.
+
+Define each piece as 4 cells in a 4x4 grid. Rotation: (x,y) -> (3-y, x) rotates within 4x4. But some pieces (O, I) look better with different pivots; for minimalism, rotating in a 4x4 box works acceptably for all pieces if we define them appropriately. Actually rotating in a 4x4 box: I piece defined as row of 4 at y=0: cells (0,0),(1,0),(2,0),(3,0). Rotate (x,y)->(3-y,x): becomes (3,0),(3,1),(3,2),(3,3) — vertical at x=3. That's fine (offset to right edge, but playable). S piece etc. work okay-ish. O piece: (1,0),(2,0),(1,1),(2,1) rotates to (3,1),(3,2),(2,1),(2,2) — that shifts the O piece, which is ugly but functional. Hmm, O shifting on rotate is a bit janky but for "smallest" it's acceptable. Alternatively handle O specially... adds bytes.
+
+Alternative compact encoding used in many golfed Tetris: store all rotations as numbers. E.g., each piece's rotations as 16-bit masks packed in a string. Like the famous one:
+
+Actually there's a known compact JS Tetris core. Let me just write my own and golf it.
+
+Plan:
+
+```html
+<body onload="setInterval(f,100)">
+<canvas id=c width=100 height=200>
+<script>
+...
+</script>
+```
+
+Wait, canvas needs closing tag? `<canvas>` — in HTML5, `<canvas id=c width=100 height=200>` without closing tag: the parser will treat subsequent content as canvas fallback content, but since script follows... Actually unclosed canvas: the parser expects `</canvas>`; following elements become fallback content (not rendered? fallback content of canvas is rendered only when canvas unsupported... actually fallback content is parsed as children of canvas and not rendered when canvas is supported). A `<script>` inside canvas fallback
+---
