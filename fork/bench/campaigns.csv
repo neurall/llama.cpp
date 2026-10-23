@@ -4265,3 +4265,4 @@ relmf1-q36-p1-pf1k1k,2026-10-23 19:11:38,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybri
 relmf1-glm35-7k-ds0-pf7k1k,2026-10-23 19:12:15,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds relmf1 variants v test pf7k n=2,,
 relmf1-glm35-7k-ds1-pf7k1k,2026-10-23 19:14:22,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds relmf1 variants v test pf7k n=2,,
 relmf1-glm35-15k-ds0-pf15k1k,2026-10-23 19:17:14,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds relmf1 variants v test pf15k n=2,,
+relmf1-glm35-15k-ds1-pf15k1k,2026-10-23 19:20:30,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds relmf1 variants v test pf15k n=2,,

@@ -5829,7 +5829,7 @@ def run_list(name, argv):
     for r in rows:
         was = r["test"]; r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")
         if r["test"] != was and was != r["test"] and (r["model"], r["test"]) not in _picked and not o.status:
-            _picked.add((r["model"], r["test"])); print(col(90, f"{os.path.basename(r['model'])}: found and picked prompt size {re.sub(r'^pf', '', r['test'])} for {hw_key()}" + ("" if re.fullmatch(r'pf\d+k1k', r['test']) and vram_known(r['model']) else " (no stored best for this VRAM yet: 12k)")), flush=True)   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
+            _picked.add((r["model"], r["test"])); print(col(90, f"{os.path.basename(r['model'])}: found and picked prompt size {re.sub(r'^pf', '', r['test'])} for {hw_key()}" + ("" if re.fullmatch(r'pf\d+k1k', r['test']) and vram_known(r['model']) else " (no stored best for this VRAM yet: 16k, the biggest pass that fits)")), flush=True)   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
     rows = [r for r in rows if not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))]   # a trailing $ means the exact name: mimo-i$ is not mimo-io
     rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]   # -skp: same matching as -onl, rows dropped
     for r in rows:
@@ -6089,10 +6089,10 @@ def vram_known(model_path):
 
 def best_prompt_k(model_path):
     """the model's best input prompt in nominal thousands of tokens: models.ini `bestpp = [(48,8018,1024,733,18.9,10.9,54.2,1.89),(24,7248,1024,737,21.7,9.6,47.2,2.00)]` (total VRAM in GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s, score) for the cards seen now,
-    tokens rounded to thousands (7248 -> 7k); no entry for this VRAM: 12. Filled by learn_bestpp from the runs that happen anyway."""
+    tokens rounded to thousands (7248 -> 7k); no entry for this VRAM: 16, the biggest prompt that fits one pass (the engine caps a pass at 16384 tokens; 16k of the text is ~16000 tokens; a pool too small for it shrinks the pass by itself). Filled by learn_bestpp from the runs that happen anyway."""
     sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {})
     t = bestpp_entries(sec.get("bestpp", "")).get(int(hw_key()[:-1]))
-    return max(1, round(t[0] / 1000)) if t else 12
+    return max(1, round(t[0] / 1000)) if t else 16
 
 
 def best_test(model_path, test, remote=False):
