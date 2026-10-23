@@ -1528,8 +1528,13 @@ void llama_dsplit_reserve_fork(const llama_model & model) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
     if (it != g_sets.end()) { dsplit_cards_update(model, it->second); }
-    g_cur = it != g_sets.end() && dsplit_n_gpus(model) >= 2 &&
-            (it->second.mirror.empty() ? (dsplit_opt_auto() && !it->second.resident) : (dsplit_copies_ready(it->second) && g_cards.size() >= 2)) ? 1 : -1;
+    // --moe split-reserve=1 (research): reserve the compute buffers for the SPLIT graph at load although the copies are not placed yet (they are placed after the
+    // context exists). Both cards get compute buffers; a split pass gives each card only its range's dense part, so the graph that fits at a micro-batch may
+    // be bigger than the one-card graph (GLM-5.3-Flash on 2x RTX 3090: the one-card reserve at 16384 asks 29.4 GiB of the expert card and fails, 8192 is kept).
+    static const bool early = [] { const char * e = llama_moe_get_opt("split-reserve"); return e && atoi(e) != 0; }();
+    const bool ready = it != g_sets.end() && (it->second.mirror.empty() ? (dsplit_opt_auto() && !it->second.resident)
+                                                                          : ((dsplit_copies_ready(it->second) || early) && g_cards.size() >= 2));
+    g_cur = ready && dsplit_n_gpus(model) >= 2 ? 1 : -1;
 }
 
 // one measured split pass of size bucket b, us per token: the tuner's step (see dsplit_tune)
