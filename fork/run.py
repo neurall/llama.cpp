@@ -5211,13 +5211,15 @@ def final_table(recs, live=False, hdr_out=None):
         elif r.get("stock_row") and res:   # a stock cell and none of ours yet: the stock numbers in the stock columns, ours empty
             st = dict(t=t, p=p, ob="", od="", sb=r.get("sbno") or "?", sd=r.get("sdate") or "", sid=r.get("rid")); t = p = None; rid_show = None
         gt = t / st["t"] if st and t else None; gp = p / st["p"] if st and p and st["p"] else None
-        body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" if el is not None else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
+        body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" if el is not None else f"~{int(r['est'] // 60)}:{int(r['est'] % 60):02d}" if r.get("est") else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
                          st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, ppl=(ppl_pair(r.get("model"), st.get("ob")) if st and st.get("ob") else ""), nost=(not st and not r["stock_row"])))
+        body[-1]["section"] = r.get("section")   # `run status`: done / running / queued
         body[-1]["bt"] = (f"b{st['ob']} {st['od'][5:]} vs b{st['sb']} {st['sd'][5:]}" if st["ob"] else f"stock b{st['sb']} {st['sd'][5:]}") if st else ""; body[-1]["bts"] = (f"b{st['ob']} vs b{st['sb']}" if st["ob"] else f"stock b{st['sb']}") if st else ""
         gs = [g for g in (gt, gp) if g]; body[-1]["gm"] = math.prod(gs) ** (1 / len(gs)) if gs else 0   # overall gain: geometric mean of decode and prompt gain
         body[-1]["old"] = [dict(name=r["name"], is_old=True, out="", id=str(orid), sid="", prompt=r.get("prompt") or "", time="", load="", fail=False, t=f(t, 2), p=f(p, 1), st="", sp="", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=False, gm=0, old=[],
                                 bt=f"b{n} {d[5:]} {b}", bts=f"b{n} {b}", st_=None, g=gpus_used(orid)) for b, n, d, t, p, gt, gp, orid in older_gainers(r.get("model"), r.get("test"), st["ob"], st, body[-1]["gm"])] if st and not live and not r.get("ref") else []
-    if not live: body.sort(key=lambda x: -x["gm"])   # biggest overall gainers first (cells without stock last, list order kept)
+    SEC = {"done": 0, "running": 1, "queued": 2}   # `run status`: the sections in this order, each sorted by gain / list order
+    if not live: body.sort(key=lambda x: (SEC.get(x["section"], 0), -x["gm"]))   # biggest overall gainers first (cells without stock last, list order kept)
     allrows = [y for x in body for y in [x] + x.get("old", [])]
     for x in allrows: x.setdefault("xfer", "")
     show_x = any(x["xfer"] not in ("", "f32", "f16") for x in body)   # the hand-off column only when a cell of ours ran with other than the f32 default
@@ -5241,7 +5243,11 @@ def final_table(recs, live=False, hdr_out=None):
     out = [" " * W["name"] + hl(ours[1:]) + ("" if wrap else hl(stk))]
     if wrap: out.append(" " * W["name"] + hl(stk))
     if hdr_out is not None: hdr_out.extend(out); out = []   # live rows: the header goes to the caller (printed once)
+    sec_now = None; est_q = sum(r.get("est") or 0 for r in recs if r.get("section") == "queued")
     for x in allrows:
+        if x.get("section") and x["section"] != sec_now:   # a section header: how many cells, in the colour of its state
+            sec_now = x["section"]; n_sec = sum(1 for y in body if y["section"] == sec_now)
+            out.append(col({"done": "1;92", "running": "1;93", "queued": "1;96"}.get(sec_now, "1"), f"{ {'done': 'done today', 'running': 'running now', 'queued': 'queued next'}.get(sec_now, sec_now)} ({n_sec}{f', ~{int(est_q // 60)}:{int(est_q % 60):02d} to go' if sec_now == 'queued' and est_q else ''})"))
         c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "xfer": ("35", x["xfer"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;94", x["t"]), "p": ("1;92", x["p"]), "g": ("35", x.get("g", "")), "st": ("94", x["st"]), "sp": ("92", x["sp"])}
         cell = lambda k: "  " + col(c[k][0], f"{c[k][1]:>{W[k]}}")
         gcell = lambda k, v: "  " + (col("1;91" if v < 1 else "37" if v < 2 else "1;97" if v < 10 else "1;93" if v < 40 else "1;92", f"{x[k]:>{W[k]}}") if v is not None else " " * W[k])   # below 1 red, 1-2 plain, 2x bold white, 10x yellow, 40x green
@@ -5457,6 +5463,40 @@ def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
 RUN_LIVE = QDIR + "/run-list.json"   # {pid, log} of the detached list run
 
 
+def running_cell():
+    """(tag, start time) of the cell a list runs now: the `run.py cell TAG ...` process (tag = BUILD-NAME, what the campaign of its rows starts with); (None, None) when no cell runs"""
+    boot = next((int(l.split()[1]) for l in open("/proc/stat") if l.startswith("btime")), 0)
+    for p in os.listdir("/proc"):
+        if not p.isdigit(): continue
+        try:
+            a = open(f"/proc/{p}/cmdline", "rb").read().decode().split("\0")
+            if len(a) > 3 and a[1].endswith("run.py") and a[2] == "cell":
+                return a[3], boot + int(open(f"/proc/{p}/stat").read().rsplit(")", 1)[1].split()[19]) / os.sysconf("SC_CLK_TCK")
+        except (OSError, ValueError, IndexError): continue
+    return None, None
+
+
+def queue_waiting():
+    """names of the tasks the queue daemon has waiting (tasks.csv status next, in its order); none when the daemon never ran"""
+    try: rows = list(csv.DictReader(open(os.path.join(QDIR, "queue", "tasks.csv"), newline="")))
+    except OSError: return []
+    return [r["campaign"] or r["id"] for r in sorted((r for r in rows if r["status"] == "next"), key=lambda r: float(r["order"] or 0))]
+
+
+def cmd_status(a):
+    """`run.py status [LIST [run options]]`: what the running list is doing, in the table `run LIST -nrt` prints: the cells done today (t/s, pp, stock, gains), the one running now, the
+    cells queued next (with the time each is expected to take) and the queue daemon's waiting tasks. With no LIST: the list that runs now, else the last one that ran. Starts and touches nothing."""
+    last = os.path.join(QDIR, "run-list-last.json")
+    try: j = json.load(open(RUN_LIVE)); os.kill(j["pid"], 0); live = True
+    except (OSError, ValueError, KeyError): live = False
+    if a.list: name, argv = a.list, list(a.rest)
+    else:
+        try: j = json.load(open(last)); name, argv = j["name"], j["argv"]
+        except (OSError, ValueError, KeyError): sys.exit("status: no list has run here yet: run.py status LIST [-b BUILD]")
+        print(col(92, f"list {name}: running") if live else col(90, f"list {name}: not running (the last one)"), flush=True)
+    return run_list(name, [x for x in argv if x not in ("-n", "--dry", "--status")] + ["--dry", "--status"])
+
+
 def run_list_detached(name, argv):
     """`run NAME ...` runs the list in a detached process (own session, output in a log) and shows that log: Ctrl-C only closes the view, the run goes on.
     `run NAME ...` again while one runs attaches instead of starting a second: the log is replayed from its start (the status block's cursor codes redraw
@@ -5483,6 +5523,7 @@ def run_list_detached(name, argv):
                                  env=dict(os.environ, RUN_DAEMON="1", PYTHONUNBUFFERED="1", COLUMNS=str(shutil.get_terminal_size((100, 24)).columns)), start_new_session=True)
             child = p
         json.dump({"pid": p.pid, "log": log}, open(RUN_LIVE, "w")); rec = {"pid": p.pid, "log": log}
+        json.dump({"name": name, "argv": list(argv)}, open(QDIR + "/run-list-last.json", "w"))   # `run status` without a list shows this one when none runs
     import signal
     def kill_run(*_):   # SIGINT to the detached run: its Ctrl-C path stops the cell, the server, then the list ends and gives the pool back
         print("\nstopping the run ...", flush=True)
@@ -5623,13 +5664,24 @@ def run_list(name, argv):
             if STOCK_REC[0] and _rid:   # the label is the build that made the run, not the one `latest` points to now
                 _b = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select bno, start_ts from runs where rowid=?", (_rid,)).fetchone()
                 if _b and _b[0]: STOCK_REC[0]["ob"] = int(_b[0]); STOCK_REC[0]["od"] = str(_b[1])[:10]
-            CELL_REC.append(dict(skipped=True, asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), xfer="" if r["_b"].startswith("stock") else xfer_of(own_build_no(r["_b"]), r.get("args") or ""), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
+            CELL_REC.append(dict(skipped=True, tag=f"{r['_b']}-{r['name']}", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), xfer="" if r["_b"].startswith("stock") else xfer_of(own_build_no(r["_b"]), r.get("args") or ""), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
             CELL_LINES.append(col(1, f"{('s' if r['_b'].startswith('stock') else '') + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
         if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run in the last {o.not_today} day(s) skipped (they are in the table at the end)", flush=True)
         rows = keep
-    if o.status:   # the -nrt table of what ran today, then what is still to run; nothing else happens
-        if CELL_REC: print(col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC)), flush=True)
-        print("\nto run: " + (", ".join(("s" if r["_b"].startswith("stock") else "") + r["name"] for r in rows) or "nothing"), flush=True)
+    if o.status:   # one table in the -nrt columns: the cells done today, the one running now, the cells queued next (the rest of the list, then the queue daemon's waiting tasks); nothing else happens
+        run_tag, run_since = running_cell()
+        for rec in CELL_REC: rec["section"] = "running" if rec.get("tag") == run_tag else "done"
+        for r in rows:
+            tag = f"{r['_b']}-{r['name']}"; run_ = tag == run_tag
+            ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
+            CELL_REC.append(dict(tag=tag, section="running" if run_ else "queued", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"],
+                                 name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=time.time() - run_since if run_ and run_since else None, est=None if run_ else ex, lt="", rc=0, res=[], st=None, stock_row=r["_b"].startswith("stock")))
+        qd = queue_waiting()   # tasks of the queue daemon (tasks.csv): only their name is known; a stopped daemon starts none of them, they are counted, not listed
+        qd_on = subprocess.run(["systemctl", "is-active", "--quiet", "queued.service"]).returncode == 0
+        for t in (qd if qd_on else []):
+            CELL_REC.append(dict(tag=t, section="queued", asked=0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt="", model="", test="", name=t, el=None, lt="", rc=0, res=[], st=None, stock_row=False))
+        print(col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC)), flush=True)
+        if qd and not qd_on: print(col(90, f"queue daemon off: {len(qd)} old tasks wait in tasks.csv (none starts)"), flush=True)
         return 0
     for r in rows:   # -a: the same cells with extra arguments on our build
         if o.cell_args and not r["_b"].startswith("stock"): r["args"] = ((r.get("args") or "") + " " + " ".join("moe:" + w if re.fullmatch(r"[\w-]+=\S*", w) else w for w in o.cell_args.split())).strip()   # a bare key=value is a --moe key (-a "split-experts=0")
@@ -7868,6 +7920,9 @@ if __name__ == "__main__":
     mf.add_argument("--days", type=float, default=7.0, help="look at runs of the last N days")
     mf.add_argument("--tol", type=float, default=0.05, help="a choice counts as wrong when the other mode was faster by more than this share")
     mf.add_argument("--model", help="part of the model name")
+    sx = sp.add_parser("status", help="the running list in the -nrt table: done today, running now, queued next (with the expected time), the queue daemon's waiting tasks; nothing is started")
+    sx.add_argument("list", nargs="?", help="a list name (fork/runs/NAME.csv); none = the list that runs now, else the last one")
+    sx.add_argument("rest", nargs=argparse.REMAINDER, help="run options of the list (-b BUILD ...)")
     ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
     ns.add_argument("rep", help="the .nsys-rep file")
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
@@ -7880,5 +7935,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "nsys": cmd_nsys,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "nsys": cmd_nsys, "status": cmd_status,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)

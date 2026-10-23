@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """livelist.py [PORT]: web view of the ACTIVE run.py run list (default port 7001, all interfaces).
 Four tabs, all with the terminal's own colours: the run-list screen (what run.py prints: per-cell lines with t/s, pp, gains over stock, plans),
-the output of the current cell (<cell>.run.out) and the server log of the current cell. The status tab is the table `run.py run LIST -b BUILD --dry --status` prints (-nrt format: every cell run today with t/s, pp, stock and gains, then the cells still to run). The screen is rebuilt like a terminal would show it
+the output of the current cell (<cell>.run.out) and the server log of the current cell. The status tab is `run.py status`, the table `run LIST -nrt` prints (-nrt format: every cell run today with t/s, pp, stock and gains, then the cells still to run). The screen is rebuilt like a terminal would show it
 (carriage returns and cursor-up redraws of the progress bars are applied), so a finished cell keeps its result lines and the running one shows its live bar.
 Reads $RUN_QDIR/run-list.json (written by run.py run) and the logs next to it; read-only, stdlib only."""
 import html, json, os, re, subprocess, sys, time
@@ -93,17 +93,14 @@ _st = [0, ""]
 
 
 def status():
-    """the -nrt table of the active list (cached 15 s: the call reads runs.db and the stock rows)"""
-    log, pid = active()
+    """`run.py status`: the active list in the -nrt table (done today, running now, queued next); cached 15 s: the call reads runs.db and the stock rows"""
     if time.time() - _st[0] < 15 and _st[1]: return _st[1]
     try:
-        a = open(f"/proc/{pid}/cmdline", "rb").read().decode().split("\0")
-        i = a.index("run"); name = a[i + 1]; b = a[a.index("-b") + 1] if "-b" in a else a[a.index("--build") + 1]
-        r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py"), "run", name, "-b", b, "--dry", "--status"],
+        r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py"), "status"],
                            capture_output=True, text=True, timeout=60, env=dict(os.environ, COLUMNS="230"))
-        _st[:] = [time.time(), to_html(r.stdout.split("\n"))]
+        _st[:] = [time.time(), to_html((r.stdout or r.stderr).split("\n"))]
     except Exception as e:
-        _st[:] = [time.time(), "no active run list (" + html.escape(str(e)) + ")"]
+        _st[:] = [time.time(), "no status (" + html.escape(str(e)) + ")"]
     return _st[1]
 
 
