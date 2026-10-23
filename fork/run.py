@@ -5460,18 +5460,22 @@ RUN_LIVE = QDIR + "/run-list.json"   # {pid, log} of the detached list run
 
 
 def last_run_rec(r, HW):
-    """the fields of a cell that has not run today (or is running): its newest earlier measurement of OURS on this machine (the runs of that run's campaign, ok ones), the gain over the newest
-    stock run of the same prompt, the build and date of that run. {} when the cell never ran (or is a stock cell)."""
+    """the fields of a cell that is running or queued: its newest earlier measurement in runs.db (the runs of that run's campaign, ok ones), for ours the gain over the newest stock run of the
+    same prompt and the build and date that made it; for a stock cell the newest stock run. Looser each time nothing matches: any answer length, then any machine, then any build of ours."""
     import sqlite3
-    if r["_b"].startswith("stock"): return {}
+    stock = r["_b"].startswith("stock")
     gen = int(r["tokens"]) if r.get("tokens") else None
     try:
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-        q = "select campaign, rowid, bno, start_ts from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null and hw=? and coalesce(env,'') not like '%warmpass%'" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " order by start_ts desc limit 1"
-        top = c.execute(q, (os.path.basename(r["model"]), ALIASES.get(r["test"], r["test"]), HW)).fetchone()
+        top = None
+        for use_gen, use_hw in ((True, True), (False, True), (False, False)):
+            q = "select campaign, rowid, bno, start_ts from runs where model=? and test=? and build " + ("like 'stock-b%-official'" if stock else "not like 'stock%'") + " and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'" + (" and hw=?" if use_hw else "") + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen and use_gen else "") + " order by start_ts desc limit 1"
+            top = c.execute(q, (os.path.basename(r["model"]), ALIASES.get(r["test"], r["test"])) + ((HW,) if use_hw else ())).fetchone()
+            if top: break
         if not top: return {}
         res = [(float(t), float(p or 0)) for t, p in c.execute("select tps, pp from runs where campaign=? and cast(ok as integer)=1 and tps is not null order by ts", (top[0],))]
     except sqlite3.Error: return {}
+    if stock: return dict(res=res, rid=top[1], st=None, lt=run_times(top[1])[1], sbno=str(top[2] or ""), sdate=str(top[3])[:10])   # the stock numbers in the stock columns, ours empty
     STOCK_REC[0] = None
     try: stock_gain((r["model"], r["test"]), res, r["_b"])
     except Exception: STOCK_REC[0] = None
