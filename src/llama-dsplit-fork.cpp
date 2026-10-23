@@ -467,9 +467,15 @@ struct dsplit_tune {
     int    phase = 0, dir = -1, n = 0;
     double gx = 1.0, s = -1.0, step = 0.5;
     double best_gx = 1.0, best_s = -1.0, best_t = 0.0;
+    // phase 0 (2026-10-23, user's design): K whole MoE layers give their experts to the helper, in g_layer_order; K starts at 0 (the dense split alone: its
+    // copies were uploaded once, the helper computes without uploading). K grows 1, 2, 4 ... while the pass gets faster, then bisects between the best K and
+    // the first slower one: the helper's share grows until its time reaches the offload card's. The settled K and s are stored (dsplit_tune_save).
+    int    K = 0, best_K = 0, k_hi = -1, k_step = 1;
 };
 std::map<int, dsplit_tune> g_tune;
 bool g_tune_changed = false;
+std::vector<int> g_layer_order;   // MoE layers in the order the helper takes them: the layers whose experts its pool holds most first (they cost it the fewest uploads)
+std::vector<int> g_layer_rank;    // per layer: its place in g_layer_order, -1 for a layer without experts
 }
 
 // measured over modelled split time (EMA over measured split passes). Starts at 1.25, not 1.0: the model leaves out waits it cannot see, and every split
@@ -661,6 +667,12 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     in.b_in = (double) model.hparams.n_embd * (hop_mode != 0 ? 2.0 : 4.0); in.b_out = (double) model.hparams.n_embd * (hop_mode == 1 ? 2.0 : 4.0);
     in.held_m.resize(L); in.held_h.resize(L);
     for (int il = 0; il < L; ++il) { in.held_m[il] = llama_moe_cache_resident_frac_fork(il, dm); in.held_h[il] = llama_moe_cache_resident_frac_fork(il, dh); }
+    if (g_layer_order.empty()) {   // the layer tuner's order, fixed at the first plan (a K measured on one order means nothing on another): the helper's own layers first
+        for (int il = 0; il < L; ++il) { if (E[il] > 0.0) { g_layer_order.push_back(il); } }
+        std::stable_sort(g_layer_order.begin(), g_layer_order.end(), [&](int a, int b) { return in.held_h[a] > in.held_h[b]; });
+        g_layer_rank.assign(L, -1);
+        for (size_t r = 0; r < g_layer_order.size(); ++r) { g_layer_rank[g_layer_order[r]] = (int) r; }
+    }
     const dsx_out so = dsx_plan(in);
     const double t_one = so.t_one;
     double best_split = so.best_split;
@@ -692,6 +704,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     f_help = best_f;
 }
 
+static void dsplit_tune_load(int b);   // below: a size settled by an earlier start
 llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int64_t n_tokens) {
     static const bool plan_on = [] { const char * e = llama_moe_get_opt("split-plan"); return !e || atoi(e) != 0; }();   // --moe split-plan=0: no model, the measured choice and the old start shares
     if (!plan_on) {
@@ -708,6 +721,7 @@ llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int
         pc.n_tokens = n_tokens;
         pc.c_us     = c_us;
         dsplit_plan_compute(model, n_tokens, c_us, pc.plan, pc.f_help);
+        dsplit_tune_load(b);   // a size settled by an earlier start (layer count, token share)
         static int logged = 0;
         if (pc.plan.valid && logged++ < 32) {
             double fa = 0.0; for (double f : pc.f_help) { fa += f; } fa /= std::max<size_t>(1, pc.f_help.size());
@@ -760,14 +774,13 @@ double llama_dsplit_plan_helper_f_fork(int il, int64_t n_tokens) {
     const int mode = llama_dsplit_experts_mode_fork();
     if (mode == 0) { return 0.0; }    // dense only
     if (mode == 1) { return -1.0; }   // the old start and controller
+    // auto (2026-10-23): whole MoE layers, the first K of g_layer_order, give their experts to the helper (1: all of the layer's experts but the one the owner
+    // keeps); every other layer none. K comes from the layer tuner (phase 0 of dsplit_tune_step) and starts at 0: the dense split alone.
     std::lock_guard<std::mutex> lk(g_plan_mu);
-    auto it = g_plans.find(dsplit_bucket_of(n_tokens));
-    if (it == g_plans.end() || !it->second.plan.valid || il < 0 || il >= (int) it->second.f_help.size()) {
-        return -1.0;
-    }
+    if (il < 0 || il >= (int) g_layer_rank.size() || g_layer_rank[il] < 0) { return 0.0; }
     auto tt = g_tune.find(dsplit_bucket_of(n_tokens));
-    const double gx = tt != g_tune.end() ? tt->second.gx : 1.0;
-    return std::min(1.0, it->second.f_help[il] * gx);
+    const int K = tt != g_tune.end() ? tt->second.K : 0;
+    return g_layer_rank[il] < K ? 1.0 : 0.0;
 }
 
 // a split pass whose graph did not fit behind the copies (llama_context::process_ubatch): passes of this many tokens or more run on one card from now on
@@ -891,6 +904,24 @@ void llama_dsplit_reserve_fork(const llama_model & model) {
 }
 
 // one measured split pass of size bucket b, us per token: the tuner's step (see dsplit_tune)
+// a settled size (layer count and token share) per model, cards and build (dsplit_state_key): the next start uses it at once instead of measuring again
+static void dsplit_tune_save(int b, const dsplit_tune & T) {
+    if (!dsplit_state_on()) { return; }
+    char v[64]; snprintf(v, sizeof v, "%d %.4f", T.K, T.s);
+    moe_state_set(g_calib_section, { { dsplit_state_key("dsplit_tune2_b" + std::to_string(b)), v } });
+}
+static void dsplit_tune_load(int b) {
+    if (!dsplit_state_on() || g_tune.count(b)) { return; }
+    std::string v;
+    if (!moe_state_get(g_calib_section, dsplit_state_key("dsplit_tune2_b" + std::to_string(b)), v)) { return; }
+    int K = 0; double sh = -1.0;
+    if (sscanf(v.c_str(), "%d %lf", &K, &sh) == 2 && K >= 0 && sh > 0.0 && sh < 1.0) {
+        dsplit_tune & T = g_tune[b];
+        T.K = T.best_K = K; T.s = T.best_s = sh; T.phase = 2;
+        LLAMA_LOG_WARN("split tuner: passes of size bucket %d from the state file: the experts of %d MoE layers on the helper, %.0f%% of the tokens\n", b, K, 100.0 * sh);
+    }
+}
+
 static void dsplit_tune_step(int b, double v) {
     std::lock_guard<std::mutex> pk(g_plan_mu);
     auto pit = g_plans.find(b);
@@ -904,32 +935,43 @@ static void dsplit_tune_step(int b, double v) {
     if (T.s < 0.0) { T.s = pit->second.plan.share; T.best_s = T.s; }
     T.n++;
     const bool better = T.best_t == 0.0 || v < T.best_t;
-    if (better) { T.best_t = v; T.best_gx = T.gx; T.best_s = T.s; }
-    bool any_f = false;
-    for (double f : pit->second.f_help) { any_f = any_f || f > 0.0; }
+    if (better) { T.best_t = v; T.best_gx = T.gx; T.best_s = T.s; T.best_K = T.K; }
     const double gx0 = T.gx, s0 = T.s;
+    const int    K0  = T.K;
     auto next_phase = [&]() {
-        T.gx = T.best_gx; T.s = T.best_s;
+        T.gx = T.best_gx; T.s = T.best_s; T.K = T.best_K;
         T.phase++; T.dir = -1; T.step = T.phase == 1 ? 0.08 : 0.0;
         if (T.phase == 1) { T.s = std::max(0.10, std::min(0.90, T.best_s - T.step)); }
     };
-    if (T.phase == 0 && (!any_f || llama_dsplit_experts_mode_fork() >= 0)) {
-        next_phase();   // the plan puts no experts on the helper, or split-experts fixes them: nothing to scale
+    if (T.phase == 0 && (llama_dsplit_experts_mode_fork() >= 0 || g_layer_order.empty())) {
+        next_phase();   // split-experts fixes the helper's experts, or the model has no MoE layers: nothing to count
     } else if (T.phase == 0) {
-        if (T.n > 1 && !better) { T.dir = -T.dir; T.step *= 0.5; }
-        if (T.step < 0.125) { next_phase(); }
-        else { T.gx = std::max(0.0, std::min(4.0, T.best_gx + T.dir * T.step)); }
+        // the layer count: K just measured. Growing (no slower count yet): 1, 2, 4 ... more layers while the pass gets faster. Then bisect between the best
+        // count and the first slower one, until they are neighbours.
+        const int kmax = (int) g_layer_order.size();
+        int next = -1;
+        if (T.k_hi < 0) {
+            if (better && T.K < kmax) { next = std::min(kmax, T.K + T.k_step); T.k_step *= 2; }
+            else if (!better)         { T.k_hi = T.K; }
+        }
+        if (T.k_hi >= 0) {
+            if (!better && T.K < T.k_hi) { T.k_hi = T.K; }
+            const int mid = (T.best_K + T.k_hi) / 2;
+            next = (mid > T.best_K && mid < T.k_hi) ? mid : -1;
+        }
+        if (next < 0) { next_phase(); } else { T.K = next; }
     } else if (T.phase == 1) {
         if (!better) { T.dir = -T.dir; T.step *= 0.5; }
         if (T.step < 0.02) { next_phase(); }
         else { T.s = std::max(0.10, std::min(0.90, T.best_s + T.dir * T.step)); }
     }
-    if (T.n >= 12 && T.phase < 2) { T.gx = T.best_gx; T.s = T.best_s; T.phase = 2; }
+    if (T.n >= 16 && T.phase < 2) { T.gx = T.best_gx; T.s = T.best_s; T.K = T.best_K; T.phase = 2; }
     if (T.phase >= 2) {
-        LLAMA_LOG_WARN("split tuner: passes of up to %lld tokens settled after %d measurements: helper %.0f%% of the tokens, its experts x%.2f of the plan, %.1f prompt tokens/s\n",
-                (long long) pit->second.n_tokens, T.n, 100.0 * T.s, T.gx, 1e6 / T.best_t);
+        LLAMA_LOG_WARN("split tuner: passes of up to %lld tokens settled after %d measurements: helper %.0f%% of the tokens, the experts of %d of %zu MoE layers on it, %.1f prompt tokens/s\n",
+                (long long) pit->second.n_tokens, T.n, 100.0 * T.s, T.K, g_layer_order.size(), 1e6 / T.best_t);
+        dsplit_tune_save(b, T);
     }
-    if (T.gx != gx0 || T.s != s0) { g_tune_changed = true; }
+    if (T.gx != gx0 || T.s != s0 || T.K != K0) { g_tune_changed = true; }
 }
 
 void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
