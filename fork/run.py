@@ -2315,7 +2315,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             if _pfn and int(_pfn.group(1)) in PF_FILES:   # a frozen file (prompts/src_Nk.cpp, the cut below written out): the one-pass prompts of `run.py onepass`
                 _pf_text = open(config.prompt_path(f"src{_pfn.group(1)}k")).read()
             elif _pfn and int(_pfn.group(1)) not in (12, 128):   # the 12k file is 12294 tokens (GLM tokenizer, 4.4 characters each): cut in proportion
-                _pf_text = _pf_text[:int(54092 * int(_pfn.group(1)) * 1000 / 12294)]
+                _need = int(54092 * int(_pfn.group(1)) * 1000 / 12294); _pf_text = (_pf_text * (_need // max(len(_pf_text), 1) + 1))[:_need]   # beyond the source (256k contexts): the source again, the speeds do not depend on the text
             _pf_text = OVR.get("prefix", "") + _pf_text
             if OVR.get("prefix"):   # an instruction (12kin_1kout_code_review): an instruct model needs its chat template or a long answer loops, so it goes through the chat endpoint
                 res, logf = server_run(build, env, args, "/v1/chat/completions",
@@ -5563,25 +5563,45 @@ def cmd_calib(a):
         tk = re.search(r"prompt_n=(\d+)", x[2] or "")
         return int(x[0] or 0), int(x[1] or 0), int(tk.group(1)) if tk else 0, float(x[3]), float(x[4] or 0)
     for r in rows:
-        seen = {}   # size -> (passes, pass tokens, prompt tokens, prompt t/s)
+        seen = {}   # size (k) -> (passes, pass tokens, prompt tokens, prompt t/s, decode t/s); passes 0 = the model's rows carry no pass count
         def ask(n):
             if n not in seen: seen[n] = probe(r, n)
             return seen[n]
-        n = 16; lo, hi = 0, 10**6   # lo: biggest known one-pass size, hi: smallest known multi-pass size (k); no estimate: the search finds the maximum
-        while hi - lo > 1:
+        train = gguf_ctx_train(config.model(r["model"])) or 32768
+        n = max(1, int((train - 2048) * 0.9 / 1000))   # no static start: the biggest prompt the model's trained context takes (minus the answer and a margin; ~1.1 tokens per nominal token on the big tokenizers)
+        while True:   # the maximum that fits: a prompt the server cannot allocate or run halves
             x = ask(n)
-            if x is None: break
-            if x[0] <= 1: lo = n
-            else: hi = n
-            n = (lo + hi) // 2 if hi < 10**6 else lo * 2   # one pass: double (the longest source is 128k) until it breaks; then bisect to 1k
-            if n >= 128 or n in seen: break
-            if lo == 0 and hi == 1: break   # not even 1k fits in one pass
-        if lo == 0: print(col(33, f"{r['model']}: no size ran in one pass or a run failed: nothing stored")); continue
-        # the pick, inside the one-pass range: probe every size from the biggest one-pass size down to its half, scale the prompt speed and the decode speed each by the best of the range (best = 1),
-        # add the two: the highest sum wins (a bigger size wins a tie). A smaller prompt can win through its prompt speed (fewer passes) and through the decode after it (more experts survive in the cache)
-        for n in range(lo, max(1, (lo + 1) // 2) - 1, -1): ask(n)
-        ok_ = {n: v for n, v in seen.items() if v and v[4] and v[0] <= 1 and n <= lo}
-        if not ok_: print(col(33, f"{r['model']}: no one-pass size with a decode speed: nothing stored")); continue
+            if x is not None or n <= 1: break
+            n //= 2
+        if x is None: print(col(33, f"{r['model']}: no size ran: nothing stored")); continue
+        score = lambda d: {k: v[3] / max(w[3] for w in d.values()) + v[4] / max(w[4] for w in d.values()) for k, v in d.items() if v and v[4]}
+        if x[0] > 0:   # pass counts known: halve while the prompt needs more than one pass, then bisect between the biggest one-pass size and the smallest multi-pass one (the count never grows when the prompt shrinks)
+            lo, hi = (n, 10**6) if x[0] == 1 else (0, n)
+            while hi - lo > 1:
+                m = (lo + hi) // 2 if lo else max(1, hi // 2)
+                y = ask(m)
+                if y is None: break
+                if y[0] == 1: lo = m
+                else: hi = m
+            if lo == 0: print(col(33, f"{r['model']}: no size ran in one pass: nothing stored")); continue
+            for m in range(lo, max(1, (lo + 1) // 2) - 1, -1): ask(m)   # the range below the biggest one-pass size: a smaller prompt can win on speed
+            ok_ = {m: v for m, v in seen.items() if v and v[4] and v[0] == 1 and m <= lo}
+        else:   # no pass count in its rows (the model fits the VRAM, plain path): the speed curve decides; halve while the score gets better, then refine around the best
+            cur = n
+            while cur > 1:
+                y = ask(cur // 2)
+                if y is None or not y[4]: break
+                sc = score({k: v for k, v in seen.items() if v})
+                if sc.get(cur // 2, 0) > sc.get(cur, 0): cur //= 2
+                else: break
+            for _ in range(3):
+                sc = score({k: v for k, v in seen.items() if v}); best = max(sc, key=lambda k: (sc[k], k)); ks = sorted(sc)
+                lo_ = max((k for k in ks if k < best), default=best // 2); hi_ = min((k for k in ks if k > best), default=best * 2)
+                new = [m for m in ((lo_ + best) // 2, (best + hi_) // 2) if m >= 1 and m not in seen and abs(m - best) >= 1]
+                if not new: break
+                for m in new: ask(m)
+            lo = max((k for k, v in seen.items() if v and v[0] == 0), default=0); ok_ = {m: v for m, v in seen.items() if v and v[4]}
+        if not ok_: print(col(33, f"{r['model']}: no size with a decode speed: nothing stored")); continue
         mp, mt = max(v[3] for v in ok_.values()), max(v[4] for v in ok_.values())
         eff = {n: v[3] / mp + v[4] / mt for n, v in ok_.items()}; k = max(eff, key=lambda n: (round(eff[n], 6), n))
         picks[r["model"]] = (k, seen[k][2]); print(col("1;92", f"{r['model']}: best prompt {k}k ({seen[k][2]} tokens, {seen[k][0]} pass(es), prompt {seen[k][3]:.0f} t/s, decode {seen[k][4]:.1f} t/s); biggest one-pass {lo}k"))
@@ -5964,7 +5984,7 @@ def learn_bestpp(model, test, tag):
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
         x = c.execute("select pp, tps, note, pf_passes, n_gen from runs where campaign like ? and cast(ok as integer)=1 and pp is not null and tps is not null order by ts desc limit 1", (f"{tag}-%",)).fetchone()
         pn = re.search(r"prompt_n=(\d+)", (x[2] if x else "") or "")
-        if not x or not pn or str(x[3] or "") != "1": return   # only a prompt that ran in ONE pass counts
+        if not x or not pn or str(x[3] or "") not in ("1", "", "None"): return   # only a prompt that ran in ONE pass counts (no pass count in the row: the model has none to count)
         new = (int(pn.group(1)), int(x[4] or 1024), float(x[0]), float(x[1])); hw = int(hw_key()[:-1]); key = (sec, hw)   # prompt tokens, answer tokens of this run, prompt t/s, decode t/s
         pp_s, tg_s = new[0] / new[2], new[1] / new[3]; total = pp_s + tg_s   # seconds of the request: the prompt, then the answer the run gave at the decode speed that followed (the server's own timings: no load time)
         if key not in BESTPP_MEM:   # every one-pass prompt seen so far for this model and VRAM: {prompt tokens: (answer tokens, prompt t/s, decode t/s)}, starting with the models.ini entry
