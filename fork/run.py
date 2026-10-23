@@ -3187,6 +3187,56 @@ def gguf_ctx_train(path, data=None):
     return 0
 
 
+def gguf_meta(path):
+    """the scalar metadata of a GGUF header as {key: value} (arrays longer than 64 left out); {} when it cannot be read. For a split model give the first part."""
+    import struct
+    meta = {}
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF": return {}
+            f.read(4); f.read(8); nkv = struct.unpack("<Q", f.read(8))[0]
+            fmt = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
+            def rd(t):
+                if t == 8: return f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf8", "replace")
+                if t == 9:
+                    et = struct.unpack("<I", f.read(4))[0]; n = struct.unpack("<Q", f.read(8))[0]
+                    if et != 8 and et in fmt and n > 64: f.seek(n * struct.calcsize(fmt[et]), 1); return None
+                    return [rd(et) for _ in range(n)]
+                return struct.unpack(fmt[t], f.read(struct.calcsize(fmt[t])))[0]
+            for _ in range(nkv):
+                k = rd(8); t = struct.unpack("<I", f.read(4))[0]; v = rd(t)
+                if k.startswith("tokenizer.") and isinstance(v, list): continue
+                if v is not None and not (isinstance(v, list) and len(v) > 64): meta[k] = v
+    except (OSError, struct.error, KeyError, ValueError): pass
+    return meta
+
+
+def kv_bytes_per_token(meta, kv_bytes=2):
+    """bytes of KV cache one token takes in this model (f16 = 2 bytes per element), from its GGUF metadata. MLA (kv_lora_rank): one latent plus the rope part per layer. Standard attention: K and V of
+    n_head_kv heads of the key/value length per layer. Hybrid models (full_attention_interval) have attention in every Nth layer only. A sliding-window layer is counted as a full one: the estimate
+    errs high, the start prompt errs low and the search corrects it."""
+    arch = meta.get("general.architecture", ""); g = lambda k, d=0: meta.get(f"{arch}.{k}", d)
+    L = int(g("block_count")); emb = int(g("embedding_length")); heads = g("attention.head_count", 1)
+    attn_layers = L // int(g("full_attention_interval", 1) or 1)
+    if g("attention.kv_lora_rank"): return attn_layers * (int(g("attention.kv_lora_rank")) + int(g("rope.dimension_count", 64))) * kv_bytes
+    hkv = g("attention.head_count_kv", heads); hkv = max(hkv) if isinstance(hkv, list) else hkv
+    heads = max(heads) if isinstance(heads, list) else heads
+    kl = int(g("attention.key_length", emb // max(heads, 1))); vl = int(g("attention.value_length", kl))
+    return int(attn_layers * hkv * (kl + vl) * kv_bytes)
+
+
+def feasible_ctx(path, hw_gb):
+    """tokens of context this machine can hold for the model, by arithmetic: the KV cache of one token (kv_bytes_per_token) against the memory it may take: half of the cards' VRAM (the rest
+    holds the weights, the expert cache and the compute buffers) plus a quarter of the available RAM (the KV ladder spills to RAM); never more than the trained context. (tokens, bytes per token, budget GiB)"""
+    meta = gguf_meta(path); bpt = kv_bytes_per_token(meta) if meta else 0
+    try: ram = next(int(l.split()[1]) * 1024 for l in open("/proc/meminfo") if l.startswith("MemAvailable"))
+    except (OSError, ValueError, StopIteration): ram = 0
+    budget = 0.5 * hw_gb * 2**30 + 0.25 * ram
+    train = int(meta.get(f"{meta.get('general.architecture', '')}.context_length", 0) or 0)
+    tok = int(budget / bpt) if bpt else train
+    return (min(tok, train) if train else tok), bpt, budget / 2**30
+
+
 CHARS_PER_TOKEN = 3.0   # a prompt cut for a small-context model: at most this many characters per token is assumed (the densest tokenizers: code and English give 3-4.5), so the cut prompt always fits
 
 
@@ -5567,8 +5617,12 @@ def cmd_calib(a):
         def ask(n):
             if n not in seen: seen[n] = probe(r, n)
             return seen[n]
-        train = gguf_ctx_train(config.model(r["model"])) or 32768
-        n = max(1, int((train - 2048) * 0.9 / 1000))   # no static start: the biggest prompt the model's trained context takes (minus the answer and a margin; ~1.1 tokens per nominal token on the big tokenizers)
+        mp_ = config.model(r["model"]); mp_ = sorted(glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", mp_)) or [mp_])[0]
+        fit, bpt, gib = feasible_ctx(mp_, int(hw_key()[:-1]))
+        pps = [x[0] for x in c.execute("select pp from runs where model=? and test like 'pf%' and cast(ok as integer)=1 and pp is not null order by ts desc limit 20", (os.path.basename(mp_),))]
+        if pps: fit = min(fit, int(statistics.median(pps) * 600))   # time is a resource too: a probe may take 10 minutes of prefill at the speed the model last showed (feedback: no cell over 10-15 min)
+        n = max(1, int((fit - 2048) * 0.9 / 1000))   # no static start: the biggest prompt the machine can hold, by arithmetic (feasible_ctx), minus the answer and a margin; ~1.1 tokens per nominal token on the big tokenizers
+        print(col(90, f"{r['model']}: KV {bpt} bytes per token, {gib:.0f} GiB for it: {fit} tokens fit (memory, the trained context and 10 minutes of prefill cap it): start at {n}k"), flush=True)
         while True:   # the maximum that fits: a prompt the server cannot allocate or run halves
             x = ask(n)
             if x is not None or n <= 1: break
