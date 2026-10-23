@@ -5984,13 +5984,10 @@ def vram_map(text):
 
 
 def best_prompt_k(model_path):
-    """the model's best input prompt in nominal thousands of tokens: models.ini `bestpp = [48=8,24=7]` (total VRAM of the cards in GiB = size in k) for the cards seen now, else best_prompt, else 12
+    """the model's best input prompt in nominal thousands of tokens: models.ini `bestpp = [48=8,24=7]` (total VRAM of the cards in GiB = size in k) for the cards seen now (no entry for this VRAM: 12)
     (the biggest size of the README tests). Measured by `run.py calib`: the best prompt speed plus decode speed inside the one-pass range."""
     sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {})
-    v = vram_map(sec.get("bestpp", "")).get(int(hw_key()[:-1]))
-    if v: return v
-    m = re.fullmatch(r"(\d+)k?", str(sec.get("best_prompt", "")).strip())
-    return int(m.group(1)) if m else 12
+    return vram_map(sec.get("bestpp", "")).get(int(hw_key()[:-1])) or 12   # no entry for this VRAM: not calibrated here, the 12k test
 
 
 def best_test(model_path, test, remote=False):
