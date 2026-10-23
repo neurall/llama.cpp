@@ -5661,7 +5661,7 @@ def cmd_calib(a):
                 else: break
             for _ in range(3):
                 sc = score({k: v for k, v in seen.items() if v}); best = max(sc, key=lambda k: (sc[k], k)); ks = sorted(sc)
-                lo_ = max((k for k in ks if k < best), default=best // 2); hi_ = min((k for k in ks if k > best), default=best)   # nothing above the biggest probed size (the pool's ubatch)
+                lo_ = max((k for k in ks if k < best), default=best // 2); hi_ = min((k for k in ks if k > best), default=best * 2)   # above the biggest probed size too (the pool's ubatch): more than one pass can win
                 new = [m for m in ((lo_ + best) // 2, (best + hi_) // 2) if m >= 1 and m not in seen and abs(m - best) >= 1]
                 if not new: break
                 for m in new: ask(m)
