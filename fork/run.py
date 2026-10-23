@@ -4818,7 +4818,9 @@ def cell_status(t0, expect, label, total=None):
             eng = eng + "\n" + col(37, "engine") + " " + "  ".join(mode)
             if CELL_REF[0] and (best := best_ref(*CELL_REF[0])):   # live speeds against the best earlier run of this model, test and power limits (runs.db)
                 bpp, bpb, btg, btb = best
-                lpp = lv["done"] / lv["s"] if lv.get("done") and lv.get("s") else pr.get("last_tps")
+                if LAST_PP.get("t0") != t0: LAST_PP.clear(); LAST_PP["t0"] = t0
+                if lv.get("done") and lv.get("s") and lv["done"] >= 64: LAST_PP["v"] = lv["done"] / lv["s"]   # a prompt call is running; the 4-token calls of decode say nothing about the prompt speed
+                lpp = LAST_PP.get("v")   # (the last prompt speed of this cell stays on the line while it decodes)
                 ltg = 1000 / tk["last64"] if tk.get("tokens") and tk.get("last64") else None
                 gain = lambda v, b: (col(32 if v >= b else 91, f"{100 * (v / b - 1):+.0f}%") if v and b else col(90, "-"))
                 eng += ("\n" + col(37, "vs best ") + col(32, f"pp {lpp:.0f}" if lpp else "pp -") + col(90, f" / {bpp:.0f} ({bpb}) ") + col(90, f"{1000 / lpp:.2f} / {1000 / bpp:.2f} ms/tok " if lpp else "") + gain(lpp, bpp)
@@ -5105,6 +5107,7 @@ CELL_ASKED = [0]    # tokens asked for in the running cell
 CELL_PROMPT = [""]   # the running cell's prompt text (set per row)
 CELL_REF = [None]   # (model file name, test) of the running cell: its live speeds are held against the best earlier run (best_ref)
 _BEST_REF = {}
+LAST_PP = {}   # the running cell's last live prompt speed (start of the cell, t/s)
 
 
 def best_ref(model, test):

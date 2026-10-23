@@ -4298,3 +4298,7 @@ relmf1-olmoei-p2-pf2k1k,2026-10-23 20:16:23,bench /m/o/4/OLMoE-1B-7B-0125-Instru
 relmf1-glm35-30k-ds1-pf30k1k,2026-10-23 20:17:21,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds relmf1 variants v test pf30k n=2,,
 relmf1-glm35-30k-ds0-pf30k1k,2026-10-23 20:21:20,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds relmf1 variants v test pf30k n=2,,
 bal1-glm35-30k-bal-pf30k1k,2026-10-23 21:00:14,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds bal1 variants v test pf30k n=2,,
+bal1-glm35-15k-bal-pf15k1k,2026-10-23 21:05:08,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds bal1 variants v test pf15k n=2,,
+bal1-glm35-7k-bal-pf7k1k,2026-10-23 21:08:00,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds bal1 variants v test pf7k n=2,,
+relmf1-glm35-15k-sh15-pf15k1k,2026-10-23 21:09:14,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds relmf1 variants v test pf15k n=2,,
+relmf1-glm35-15k-sh30-pf15k1k,2026-10-23 21:12:53,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds relmf1 variants v test pf15k n=2,,
