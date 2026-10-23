@@ -4594,6 +4594,12 @@ def gpu_class(hwl, hw=""):
 
 
 def cell_expect(model, test, n, build, warm=True):
+    """the time of a cell from its own history; a sized prompt (16k1k, 7k1k) without history of its size takes the time of the 12k one of the model (a calib probe has none)"""
+    r = cell_expect_1(model, test, n, build, warm)
+    return r if r is not None or not re.fullmatch(r"pf\d+k1k", test or "") or test == "pf12k1k" else cell_expect_1(model, "pf12k1k", n, build, warm)
+
+
+def cell_expect_1(model, test, n, build, warm=True):
     """Seconds a cell usually takes: the span of earlier cells of this model and test in runs.db (load wait before the first run + first start to last end), the median of those
     with n runs (else scaled to n; the same build when it has rows, else any build). The discarded warm-up run (--warm) is not in runs.db: one median run is added for it. None without history."""
     try:
@@ -5215,7 +5221,7 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         elif r.get("stock_row") and res:   # a stock cell and none of ours yet: the stock numbers in the stock columns, ours empty
             st = dict(t=t, p=p, ob="", od="", sb=r.get("sbno") or "?", sd=r.get("sdate") or "", sid=r.get("rid")); t = p = None; rid_show = None
         gt = t / st["t"] if st and t else None; gp = p / st["p"] if st and p and st["p"] else None
-        body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" if el is not None else f"~{int(r['est'] // 60)}:{int(r['est'] % 60):02d}" if r.get("est") else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
+        body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" + (f" {min(99, int(100 * el / r['exp']))}%" if el is not None and r.get("exp") else "") if el is not None else f"~{int(r['est'] // 60)}:{int(r['est'] % 60):02d}" if r.get("est") else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
                          st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, ppl=(ppl_pair(r.get("model"), st.get("ob")) if st and st.get("ob") else ""), nost=(not st and not r["stock_row"])))
         body[-1]["section"] = r.get("section")   # `run status`: done / running / queued
         body[-1]["bt"] = (f"b{st['ob']} {st['od'][5:]} vs b{st['sb']} {st['sd'][5:]}" if st["ob"] else f"stock b{st['sb']} {st['sd'][5:]}") if st else ""; body[-1]["bts"] = (f"b{st['ob']} vs b{st['sb']}" if st["ob"] else f"stock b{st['sb']}") if st else ""
@@ -5810,9 +5816,12 @@ def run_list(name, argv):
             tag = f"{r['_b']}-{r['name']}"; run_ = tag == run_tag
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
             rec = dict(tag=tag, section="running" if run_ else "queued", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"],
-                       name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=time.time() - run_since if run_ and run_since else None, est=None if run_ else ex, lt="", rc=0, res=[], st=None, stock_row=r["_b"].startswith("stock"))
+                       name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=time.time() - run_since if run_ and run_since else None, est=None if run_ else ex, exp=ex if run_ else None, lt="", rc=0, res=[], st=None, stock_row=r["_b"].startswith("stock"))
             rec.update(last_run_rec(r, HW))   # the values of its last run, with the gain over stock: what it is expected to beat
             CELL_REC.append(rec)
+        for rec in CELL_REC:   # the running cell: its earlier rows (done today) and its expected time give the progress in percent
+            if rec.get("section") == "running" and run_since: rec["el"] = time.time() - run_since   # elapsed since the cell process started, not the time of an earlier run of it
+            if rec.get("section") == "running" and not rec.get("exp"): rec["exp"] = next((cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm) for r in rows if f"{r['_b']}-{r['name']}" == rec.get("tag")), None)
         qd = queue_waiting()   # tasks of the queue daemon (tasks.csv): only their name is known; a stopped daemon starts none of them, they are counted, not listed
         qd_on = subprocess.run(["systemctl", "is-active", "--quiet", "queued.service"]).returncode == 0
         for t in (qd if qd_on else []):
