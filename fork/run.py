@@ -5575,7 +5575,7 @@ def cmd_calib(a):
         eff = {n: (v[2] + 1024) / (v[2] / v[3] + 1024 / v[4]) for n, v in ok_.items()}
         k = max(n for n, e in eff.items() if e >= 0.99 * max(eff.values()))   # 1%: the same prompt speed with a better decode wins (7k 737 t/s at 21.7 decode against 8k 733 at 18.9)
         picks[r["model"]] = (k, seen[k][2]); print(col("1;92", f"{r['model']}: best prompt {k}k ({seen[k][2]} tokens, {seen[k][0]} pass(es), prompt {seen[k][3]:.0f} t/s, decode {seen[k][4]:.1f} t/s); biggest one-pass {lo}k"))
-        for n in sorted(eff): print(f"   {n:>3}k  {ok_[n][2]:>6} tokens  {ok_[n][0]} pass(es)  prompt {ok_[n][3]:>6.0f} t/s  decode {ok_[n][4]:>5.1f} t/s  whole request {eff[n]:>6.0f} t/s")
+        for n in sorted(eff): print(f"   {n:>3}k  {ok_[n][2]:>6} tokens  {ok_[n][0]} pass(es)  prompt {ok_[n][3]:>6.0f} t/s  decode {ok_[n][4]:>5.1f} t/s  whole request {eff[n]:>6.0f} t/s  total {ok_[n][2] / ok_[n][3] + 1024 / ok_[n][4]:>5.1f} s")
     if picks and not a.dry and not a.nowrite:
         cards = n_cards(); ini = os.path.join(here, "models.ini"); lines = open(ini).read().split("\n")
         for model, (n, tok) in picks.items():
