@@ -1,2 +1,2 @@
 name,model,n,test,tokens,args,extra
-glm35-p15,glm35,1,pf15k1k,64,,
+glm35-p7,glm35,1,pf7k1k,64,,
