@@ -5570,18 +5570,18 @@ def cmd_calib(a):
             if n >= 128 or n in seen: break
             if lo == 0 and hi == 1: break   # not even 1k fits in one pass
         if lo == 0: print(col(33, f"{r['model']}: no size ran in one pass or a run failed: nothing stored")); continue
-        picks[r["model"]] = lo; print(col("1;92", f"{r['model']}: biggest one-pass prompt {lo}k ({seen[lo][2]} tokens, {seen[lo][3]:.0f} t/s)"))
+        picks[r["model"]] = (lo, seen[lo][2]); print(col("1;92", f"{r['model']}: biggest one-pass prompt {lo}k ({seen[lo][2]} tokens, {seen[lo][3]:.0f} t/s)"))
     if picks and not a.dry and not a.nowrite:
         cards = n_cards(); ini = os.path.join(here, "models.ini"); lines = open(ini).read().split("\n")
-        for model, n in picks.items():
+        for model, (n, tok) in picks.items():
             sec = model_alias(next((v["path"] for k, v in fcfg.models_ini().items() if k == model), model)) or (model if model in fcfg.models_ini() else None)
             if not sec: print(col(31, f"{model}: no models.ini section, not written")); continue
-            key = f"best_prompt.{cards}gpu"
-            i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
-            while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
-            j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
-            if j is not None: lines[j] = f"{key} = {n}k"
-            else: lines.insert(i1, f"{key} = {n}k")
+            for key, val in ((f"best_prompt.{cards}gpu", f"{n}k"), (f"best_prompt_tokens.{cards}gpu", str(tok))):   # the size the tests use, and the real token count that passed in one pass
+                i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+                while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
+                j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
+                if j is not None: lines[j] = f"{key} = {val}"
+                else: lines.insert(i1, f"{key} = {val}")
         open(ini, "w").write("\n".join(lines)); print(col(92, f"written to models.ini ({cards} card(s))"))
 
 
