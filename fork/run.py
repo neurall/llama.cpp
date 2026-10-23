@@ -5659,7 +5659,7 @@ def cmd_calib(a):
                 else: hi = m
             if lo == 0: print(col(33, f"{r['model']}: no size ran in one pass: nothing stored")); continue
             for m in range(lo, max(1, (lo + 1) // 2) - 1, -1): ask(m)   # the range below the biggest one-pass size: a smaller prompt can win on speed
-            ok_ = {m: v for m, v in seen.items() if v and v[4] and v[0] == 1 and m <= lo}
+            ok_ = {m: v for m, v in seen.items() if v and v[4]}   # every size probed, one pass or several: one pass is not always the best
         else:   # no pass count in its rows (the model fits the VRAM, plain path): the speed curve decides; halve while the score gets better, then refine around the best
             cur = n
             while cur > 1:
@@ -6064,7 +6064,7 @@ def scores(seen):
 
 
 def learn_bestpp(model, test, tag):
-    """after a finished cell of a sized prompt (7k1k) that ran in ONE pass: its last (warm) run is compared with the model's best prompt for this VRAM (kept in memory, first read from models.ini
+    """after a finished cell of a sized prompt (7k1k), at any number of passes (one pass is not always the best): its last (warm) run is compared with the model's best prompt for this VRAM (kept in memory, first read from models.ini
     bestpp). Both prompt speed and decode speed count: each is scaled by the better of the two, the two scaled numbers are added, the higher sum wins, a longer prompt wins a tie. The winner is
     the entry, in memory and in models.ini; nothing is written when the stored one wins. The best prompt is learned from the runs that happen anyway, no extra run. (Time per token was tried and
     dropped: a longer prompt spreads the answer over more tokens and always wins, whatever its speed.)"""
@@ -6075,7 +6075,7 @@ def learn_bestpp(model, test, tag):
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
         x = c.execute("select pp, tps, note, pf_passes, n_gen from runs where campaign like ? and cast(ok as integer)=1 and pp is not null and tps is not null order by ts desc limit 1", (f"{tag}-%",)).fetchone()
         pn = re.search(r"prompt_n=(\d+)", (x[2] if x else "") or "")
-        if not x or not pn or str(x[3] or "") not in ("1", "", "None"): return   # only a prompt that ran in ONE pass counts (no pass count in the row: the model has none to count)
+        if not x or not pn: return   # any pass count counts: one pass is not always the best
         new = (int(pn.group(1)), int(x[4] or 1024), float(x[0]), float(x[1])); hw = int(hw_key()[:-1]); key = (sec, hw)   # prompt tokens, answer tokens of this run, prompt t/s, decode t/s
         pp_s, tg_s = new[0] / new[2], new[1] / new[3]; total = pp_s + tg_s   # seconds of the request: the prompt, then the answer the run gave at the decode speed that followed (the server's own timings: no load time)
         if key not in BESTPP_MEM:   # every one-pass prompt seen so far for this model and VRAM: {prompt tokens: (answer tokens, prompt t/s, decode t/s)}, starting with the models.ini entry
