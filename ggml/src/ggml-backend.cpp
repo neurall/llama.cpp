@@ -767,6 +767,58 @@ int ggml_backend_sched_chain_stats(struct ggml_sched_chain_stat * out, int cap, 
     return n;
 }
 
+// fork: the busy time of every card in a measured prompt pass, from the same stream-order stamps (g_stamp_fn), one in front of and one behind every split:
+// the expert chains (a MUL_MAT_ID split with an expert range: the MoE part) and everything else (the dense part) apart. The front stamp is queued after the
+// copies that bring the split's inputs from other cards, so a card's busy time leaves out the time it waits for another card; it keeps the waits for its
+// own expert uploads (queued behind the stamp). The dense split balances its two ratios on these (llama-dsplit-fork.cpp): the share of the tokens on the
+// cards' dense times, the share of the experts on their MoE times. Measured together with the expert chains (the same passes); GGML_SCHED_CARD_STATS=0
+// turns it off (two host functions per split: GLM-5.3-Flash has about 2000 splits in a split pass).
+struct ggml_sched_card_stamp { int backend_id; int moe; int64_t t0, t1; };
+struct ggml_sched_card_stat  { ggml_backend_t backend; int64_t dense_us, moe_us, first_us, last_us; int n_dense, n_moe; };
+#define GGML_SCHED_MAX_CARD_STAMPS 16384
+#define GGML_SCHED_CARD_MAX_BE     16
+static struct ggml_sched_card_stamp g_card_buf[2][GGML_SCHED_MAX_CARD_STAMPS];
+static ggml_backend_t g_card_be[2][GGML_SCHED_CARD_MAX_BE];
+static int  g_card_n[2]  = { 0, 0 };
+static int  g_card_live  = -1;
+static int  g_card_done  = -1;
+static long g_card_gen   = 0;
+extern "C" {
+    GGML_API int ggml_backend_sched_card_stats(struct ggml_sched_card_stat * out, int cap, long * gen);
+}
+static void ggml_backend_sched_card_roll(void) {   // under g_chain_mu
+    if (g_card_live < 0) { return; }
+    for (int i = 0; i < g_card_n[g_card_live]; i++) {
+        if (g_card_buf[g_card_live][i].t1 == 0) { return; }
+    }
+    g_card_done = g_card_live;
+    g_card_live = -1;
+    g_card_gen++;
+}
+// The last complete measurement summed per card (returns the number of cards, 0 when there is none) and its generation.
+int ggml_backend_sched_card_stats(struct ggml_sched_card_stat * out, int cap, long * gen) {
+    std::lock_guard<std::mutex> lk(g_chain_mu);
+    ggml_backend_sched_card_roll();
+    if (gen) { *gen = g_card_gen; }
+    if (g_card_done < 0 || out == NULL) { return 0; }
+    struct ggml_sched_card_stat acc[GGML_SCHED_CARD_MAX_BE] = {};
+    for (int i = 0; i < g_card_n[g_card_done]; i++) {
+        const struct ggml_sched_card_stamp & c = g_card_buf[g_card_done][i];
+        if (c.backend_id < 0 || c.backend_id >= GGML_SCHED_CARD_MAX_BE || c.t0 == 0 || c.t1 < c.t0) { continue; }
+        struct ggml_sched_card_stat & a = acc[c.backend_id];
+        if (c.moe) { a.moe_us += c.t1 - c.t0; a.n_moe++; } else { a.dense_us += c.t1 - c.t0; a.n_dense++; }
+        a.first_us = a.first_us == 0 ? c.t0 : std::min(a.first_us, c.t0);
+        a.last_us  = std::max(a.last_us, c.t1);
+    }
+    int n = 0;
+    for (int b = 0; b < GGML_SCHED_CARD_MAX_BE && n < cap; b++) {
+        if (acc[b].n_dense + acc[b].n_moe == 0) { continue; }
+        acc[b].backend = g_card_be[g_card_done][b];
+        out[n++] = acc[b];
+    }
+    return n;
+}
+
 void ggml_backend_set_split_callback(ggml_backend_split_cb_t cb, void * user_data) {
     g_split_cb = cb;
     g_split_ud = user_data;
@@ -2995,6 +3047,33 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
         if (ch_set < 0) { std::fill(ch_first.begin(), ch_first.end(), -1); }
     }
+    // card stamps (see ggml_sched_card_stat): the passes whose expert chains are measured, every split on a GPU
+    int cs_set = -1;
+    std::vector<int> cs_idx(sched->n_splits, -1);
+    static const bool card_stats = !(getenv("GGML_SCHED_CARD_STATS") && atoi(getenv("GGML_SCHED_CARD_STATS")) == 0);
+    if (card_stats && ch_set >= 0 && sched->n_splits <= GGML_SCHED_MAX_CARD_STAMPS && sched->n_backends <= GGML_SCHED_CARD_MAX_BE) {
+        std::lock_guard<std::mutex> lk(g_chain_mu);
+        ggml_backend_sched_card_roll();
+        if (g_card_live < 0) {
+            cs_set = g_card_done == 0 ? 1 : 0;
+            int n = 0;
+            for (int j = 0; j < sched->n_splits; j++) {
+                const struct ggml_backend_sched_split * sj = &splits[j];
+                if (sj->graph.n_nodes == 0) { continue; }
+                if (ggml_backend_dev_type(ggml_backend_get_device(sched->backends[sj->backend_id])) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }   // the stamp is a GPU stream function
+                const struct ggml_tensor * n0 = sj->graph.nodes[0];
+                struct ggml_sched_card_stamp & c = g_card_buf[cs_set][n];
+                c.backend_id = sj->backend_id;
+                c.moe = n0->op == GGML_OP_MUL_MAT_ID && n0->op_params[9] > n0->op_params[8] ? 1 : 0;
+                c.t0 = 0; c.t1 = 0;
+                cs_idx[j] = n++;
+            }
+            for (int b = 0; b < sched->n_backends; b++) { g_card_be[cs_set][b] = sched->backends[b]; }
+            g_card_n[cs_set] = n;
+            g_card_live = n > 0 ? cs_set : -1;
+            if (n == 0) { cs_set = -1; }
+        }
+    }
 
     // GGML_SCHED_COPY_AHEAD=0 turns off. Inputs (not weights) of split i+1 that come from other cards are copied BEFORE split i is launched, when split i+1 is on
     // another GPU and does not consume anything split i computes. A cross-card copy waits for an event recorded on the SOURCE card at the moment of the copy, i.e.
@@ -3194,6 +3273,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         if (ch_set >= 0 && ch_first[split_id] >= 0) {
             g_stamp_fn(split_backend, &g_chain_buf[ch_set][ch_first[split_id]].t_start);
         }
+        if (cs_set >= 0 && cs_idx[split_id] >= 0) {
+            g_stamp_fn(split_backend, &g_card_buf[cs_set][cs_idx[split_id]].t0);
+        }
         if (pf) {
             // the staged tensor is uploaded when the second stream's event has fired; the compute stream waits for it on the device, not the host
             ggml_backend_event_wait(split_backend, sched->prefetch_ring[pf->ring].ready[pf->slot]);
@@ -3239,6 +3321,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 }
             } else {
                 NVTX_PUSH("LAUNCH graph_compute_async"); ec = ggml_backend_graph_compute_async(split_backend, &split->graph); NVTX_POP();
+            }
+            if (cs_set >= 0 && cs_idx[split_id] >= 0) {
+                if (ec == GGML_STATUS_SUCCESS) {
+                    g_stamp_fn(split_backend, &g_card_buf[cs_set][cs_idx[split_id]].t1);
+                } else {
+                    std::lock_guard<std::mutex> lk(g_chain_mu);
+                    if (g_card_live == cs_set) { g_card_live = -1; }   // a failed pass is never complete: drop it, or no later pass would be measured
+                    cs_set = -1;
+                }
             }
             if (ch_set >= 0 && ch_last[split_id] >= 0 && ec == GGML_STATUS_SUCCESS) {
                 g_stamp_fn(split_backend, &g_chain_buf[ch_set][ch_last[split_id]].t_end);

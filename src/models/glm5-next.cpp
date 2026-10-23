@@ -5,6 +5,10 @@
 #include <algorithm>
 #include "llama-memory-hybrid-idx.h"
 
+// fork (llama-dsplit-fork.cpp): the live balance of the dense split, declared here so that no shared header changes
+double llama_dsplit_bal_share_fork(int64_t n_tokens, double start);
+void   llama_dsplit_note_range_fork(int i, ggml_backend_dev_t dev, int64_t n_tok);
+
 // GLM5-Next (GLM-5.3-Flash): hybrid KDA (linear) + nope MLA with a k-pool DSA indexer,
 // mHC residual streams, DeepSeek-style MoE.
 
@@ -717,8 +721,8 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
     ggml_tensor * prev_sel = nullptr;
 
     // ---- fork: dense split (llama-dsplit-fork.cpp) ---------------------------------------------------------------------------------------------------------
-    // A prompt pass of one sequence is cut into token ranges, one per card: the first (the slower link) holds --moe dense-split-share of the tokens (default
-    // 0.3), the last card the rest. Every card computes the dense part of its range of every layer with its own copy of the dense weights, and its range's
+    // A prompt pass of one sequence is cut into token ranges, one per card: the first (the slower link) holds the share the live balance gives it (equal
+    // dense times on both cards, 0.3 to start; --moe dense-split-share fixes it), the last card the rest. Every card computes the dense part of its range of every layer with its own copy of the dense weights, and its range's
     // residual stream stays on it for the whole pass. Only what depends on other tokens crosses:
     //   KDA layers   range after range: the conv window (the last d_conv-1 projected tokens) and the recurrent state (4.2 MB on GLM-5.3-Flash) of a range are
     //                the start of the next range's; the last range writes both to the memory. The scan itself is therefore sequential over the ranges.
@@ -730,7 +734,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
     struct drange { ggml_backend_t b; ggml_backend_dev_t dev; int64_t t0, t1; };
     std::vector<drange> R;
     {
-        static const double  share0  = [] { const char * e = llama_moe_get_opt("dense-split-share"); return e ? atof(e) : 0.3; }();
+        static const double  share0  = [] { const char * e = llama_moe_get_opt("dense-split-share"); return e ? atof(e) : -1.0; }();   // set: fixed by hand (tests)
         static const int64_t min_tok = [] { const char * e = llama_moe_get_opt("dense-split-min");   return e ? (int64_t) atoll(e) : (int64_t) 512; }();
         if (sched && llama_dsplit_cur_fork() == 1 && n_seqs == 1 && cparams.n_rs_seq == 0 && n_tokens >= std::max<int64_t>(min_tok, 4 * d_conv) &&
                 !cparams.embeddings_nextn) {
@@ -743,9 +747,13 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
             }
             if (gpus.size() >= 2) {
                 std::stable_sort(gpus.begin(), gpus.end(), [](const auto & x, const auto & y) { return x.first < y.first; });   // slowest link first
-                const int64_t n0 = std::max<int64_t>(d_conv, std::min<int64_t>(n_tokens - d_conv, (int64_t) llround(share0 * (double) n_tokens)));
+                // the slow-link card's share: the live balance (llama-dsplit-fork.cpp: equal dense times of the two cards, measured every pass), 0.3 to start
+                const double  share = share0 >= 0.0 ? share0 : llama_dsplit_bal_share_fork(n_tokens, 0.3);
+                const int64_t n0 = std::max<int64_t>(d_conv, std::min<int64_t>(n_tokens - d_conv, (int64_t) llround(share * (double) n_tokens)));
                 R.push_back({ gpus.front().second, ggml_backend_get_device(gpus.front().second), 0, n0 });
                 R.push_back({ gpus.back().second,  ggml_backend_get_device(gpus.back().second),  n0, n_tokens });
+                llama_dsplit_note_range_fork(0, R[0].dev, n0);
+                llama_dsplit_note_range_fork(1, R[1].dev, n_tokens - n0);
             }
         }
     }
