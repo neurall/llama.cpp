@@ -5821,7 +5821,7 @@ def run_list(name, argv):
             CELL_REC.append(rec)
         for rec in CELL_REC:   # the running cell: its earlier rows (done today) and its expected time give the progress in percent
             if rec.get("section") == "running" and run_since: rec["el"] = time.time() - run_since   # elapsed since the cell process started, not the time of an earlier run of it
-            if rec.get("section") == "running" and not rec.get("exp"): rec["exp"] = next((cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm) for r in rows if f"{r['_b']}-{r['name']}" == rec.get("tag")), None)
+            if rec.get("section") == "running" and not rec.get("exp"): rec["exp"] = cell_expect(rec["model"], rec["test"], 2, rec["tag"].split("-")[0], o.warm)   # the cell may be one the -nrt skip dropped from rows: its model and test come from its record
         qd = queue_waiting()   # tasks of the queue daemon (tasks.csv): only their name is known; a stopped daemon starts none of them, they are counted, not listed
         qd_on = subprocess.run(["systemctl", "is-active", "--quiet", "queued.service"]).returncode == 0
         for t in (qd if qd_on else []):
