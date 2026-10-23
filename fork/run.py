@@ -5636,6 +5636,9 @@ def cmd_calib(a):
             cm = re.findall(r"fits the ceiling (\d+)", tail) or re.findall(r"ubatch \d+ \(max (\d+)\)", tail) or re.findall(r"common_moe_cache_auto_impl: ubatch (\d+):", tail) or re.findall(r"n_ubatch (\d+)", tail)   # the pool-computed pass ceiling, from either log line
             if cm: ceil_k = max(1, int(int(cm[-1]) / (y2[2] / 2)) )   # nominal k whose prompt has that many tokens (tokens per nominal k from the probe itself)
             if ceil_k: print(col(90, f"{r['model']}: the engine's pass ceiling is {cm[-1]} tokens = {ceil_k}k of this text"), flush=True)
+            if ceil_k and not a.nowrite and not a.dry: ini_set_maxpp(r["model"], int(cm[-1]))   # kept per VRAM next to bestpp
+            if a.ceil: continue   # --ceil: only the engine's ceiling, no search
+        elif a.ceil: print(col(31, f"{r['model']}: the probe did not run, no ceiling read")); continue
         mp_ = config.model(r["model"]); mp_ = sorted(glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", mp_)) or [mp_])[0]
         fit, bpt, gib = feasible_ctx(mp_, int(hw_key()[:-1]))
         pps = [x[0] for x in c.execute("select pp from runs where model=? and test like 'pf%' and cast(ok as integer)=1 and pp is not null order by ts desc limit 20", (os.path.basename(mp_),))]
@@ -5829,7 +5832,7 @@ def run_list(name, argv):
     for r in rows:
         was = r["test"]; r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")
         if r["test"] != was and was != r["test"] and (r["model"], r["test"]) not in _picked and not o.status:
-            _picked.add((r["model"], r["test"])); print(col(90, f"{os.path.basename(r['model'])}: found and picked prompt size {re.sub(r'^pf', '', r['test'])} for {hw_key()}" + ("" if re.fullmatch(r'pf\d+k1k', r['test']) and vram_known(r['model']) else " (no stored best for this VRAM yet: 16k, the biggest pass that fits)")), flush=True)   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
+            _picked.add((r["model"], r["test"])); print(col(90, f"{os.path.basename(r['model'])}: found and picked prompt size {re.sub(r'^pf', '', r['test'])} for {hw_key()}"), flush=True)   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
     rows = [r for r in rows if not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))]   # a trailing $ means the exact name: mimo-i$ is not mimo-io
     rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]   # -skp: same matching as -onl, rows dropped
     for r in rows:
@@ -6034,7 +6037,7 @@ def ini_set_bestpp(sec, tok, out, pp, tps, pp_s, tg_s, score):
 
 
 def ini_set_maxpp(sec, tokens):
-    """models.ini [sec]: the line maxpp = [(VRAM GiB, longest prompt in tokens), ...] with the entry of this VRAM (hw_key) set: the biggest context a dry allocation request got through, at any number of passes"""
+    """models.ini [sec]: the line maxpp = [(VRAM GiB, tokens), ...] with the entry of this VRAM (hw_key) set: the biggest pass the engine says fits ("this call fits the ceiling N" in the log of a probe), the start of the search for the best prompt"""
     ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); lines = open(ini).read().split("\n")
     i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
     while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
@@ -6089,10 +6092,14 @@ def vram_known(model_path):
 
 def best_prompt_k(model_path):
     """the model's best input prompt in nominal thousands of tokens: models.ini `bestpp = [(48,8018,1024,733,18.9,10.9,54.2,1.89),(24,7248,1024,737,21.7,9.6,47.2,2.00)]` (total VRAM in GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s, score) for the cards seen now,
-    tokens rounded to thousands (7248 -> 7k); no entry for this VRAM: 16, the biggest prompt that fits one pass (the engine caps a pass at 16384 tokens; 16k of the text is ~16000 tokens; a pool too small for it shrinks the pass by itself). Filled by learn_bestpp from the runs that happen anyway."""
+    tokens rounded to thousands (7248 -> 7k); no entry for this VRAM: the maxpp of this VRAM (the biggest pass the engine says fits); neither stored: run.py stops and says to ask the engine (calib --ceil). Filled by learn_bestpp from the runs that happen anyway."""
     sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {})
     t = bestpp_entries(sec.get("bestpp", "")).get(int(hw_key()[:-1]))
-    return max(1, round(t[0] / 1000)) if t else 16
+    if t: return max(1, round(t[0] / 1000))
+    mx = re.findall(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)", sec.get("maxpp", ""))
+    mx = {int(g): int(x) for g, x in mx}.get(int(hw_key()[:-1]))
+    if mx: return max(1, mx // 1000)   # no best yet: the biggest pass that fits (maxpp)
+    sys.exit(f"{model_alias(model_path)}: no best prompt and no pass ceiling stored for {hw_key()} of VRAM; ask the engine once: python3 fork/run.py calib --ceil -m {model_alias(model_path)}")   # no guessed size
 
 
 def best_test(model_path, test, remote=False):
@@ -8280,7 +8287,7 @@ if __name__ == "__main__":
     op.add_argument("-b", "--build", default="latest"); op.add_argument("--write", action="store_true")
     cb = sp.add_parser("calib", help="find every model's biggest one-pass input prompt by halving from 12k, then bisecting and store best_prompt.<N>gpu in models.ini")
     cb.add_argument("-b", "--build", default="latest"); cb.add_argument("-ng", "--gpus", dest="n_gpus", type=int); cb.add_argument("-m", "--models", help="comma list of model keys of runs/onepass.csv (default all)")
-    cb.add_argument("--dry", action="store_true"); cb.add_argument("--nowrite", action="store_true")
+    cb.add_argument("--dry", action="store_true"); cb.add_argument("--nowrite", action="store_true"); cb.add_argument("--ceil", action="store_true", help="only read the engine's one-pass ceiling (one 2k probe) and store it as maxpp")
     ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
     ns.add_argument("rep", help="the .nsys-rep file")
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
