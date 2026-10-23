@@ -1300,8 +1300,13 @@ void llama_context::moe_mirror_offsets() {
 void llama_moe_cache_ledger_fork(ggml_backend_dev_t dev, const char * kind, const void * ptr, size_t bytes, const char * who);   // llama-moecache-fork.cpp (no header edit)
 
 // --moe mirror-pool, after the pool lent this graph its blocks: copies that the region lost since they were last filled are copied in again from the cards
-// that hold the originals (card to card). The graph runs only after this on the receiving card's stream.
+// that hold the originals (card to card). The graph runs only after this on the receiving card's stream. Every card's copies are issued before anything waits
+// (2026-10-23): a copy runs on its source card's stream, so the cards fill each other at once, both directions of a link in use (one card after the other
+// with a wait after each, GLM-5.3-Flash took 848 + 750 ms per request on x16 + x4).
 void llama_context::moe_mirror_fill() {
+    const int64_t t0 = ggml_time_us();
+    std::string txt;
+    size_t total = 0;
     for (size_t i = 0; i < moe_alias_bufs.size(); ++i) {
         const auto & ab = moe_alias_bufs[i];
         // a pass that does not split has its graph at the start of the pool, where the copies are: filling them now would overwrite that graph's tensors
@@ -1316,7 +1321,6 @@ void llama_context::moe_mirror_fill() {
         for (auto & be : backends) {
             if (ggml_backend_get_device(be.get()) == ab.dev) { bd = be.get(); }
         }
-        const int64_t t0 = ggml_time_us();
         size_t bytes = 0;
         for (const auto & pr : todo) {
             ggml_backend_dev_t ds = pr.first->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(pr.first->buffer)) : nullptr;
@@ -1337,13 +1341,17 @@ void llama_context::moe_mirror_fill() {
             }
             bytes += ggml_nbytes(pr.first);
         }
-        ggml_backend_sched_synchronize(sched.get());
-        for (auto & be : backends) {
-            ggml_backend_synchronize(be.get());
-        }
-        LLAMA_LOG_WARN("%s: dense split: %.1f MiB of copies filled on %s in %.0f ms (pool blocks lent to this prompt)\n", __func__, bytes / 1048576.0,
-                ggml_backend_dev_name(ab.dev), (ggml_time_us() - t0) / 1e3);
+        txt += format("%s%.1f MiB on %s", txt.empty() ? "" : ", ", bytes / 1048576.0, ggml_backend_dev_name(ab.dev));
+        total += bytes;
     }
+    if (total == 0) {
+        return;
+    }
+    ggml_backend_sched_synchronize(sched.get());
+    for (auto & be : backends) {
+        ggml_backend_synchronize(be.get());
+    }
+    LLAMA_LOG_WARN("%s: dense split: copies filled at once: %s in %.0f ms (pool blocks lent to this prompt)\n", __func__, txt.c_str(), (ggml_time_us() - t0) / 1e3);
 }
 
 void llama_context::sched_new(size_t max_nodes, bool parallel) {

@@ -272,17 +272,34 @@ void llama_dsplit_mirror_free_fork(const llama_model & model) {
 }
 
 namespace {
-// Bytes of mirror copies that have to be written before the next split pass. The copies live in lent cache blocks (mirror-pool), decode reuses those blocks for
+// What filling the mirror copies costs before the next split pass (us). The copies live in lent cache blocks (mirror-pool), decode reuses those blocks for
 // experts, so EVERY request that splits starts with this copy. Measured: GLM 3-bit 1k-token prompt 419 prompt t/s split against 512 on one card, MiMo 538
 // against 691 (a difference of 0.44 s and 0.40 s, 2.3-2.7 GB at ~6.6 GB/s over the x4 link).
-// SUM over the cards, not the largest: llama_context::moe_mirror_fill fills one card after the other (a sync after each), and with two cards both fills cross the
-// slower card's link, one in each direction (its copies in, the other card's out). Qwen3.8-Flash-Next 13.7k: 2078 MiB on the x4 card in 365 ms, then 1878 MiB on
-// the x16 in 325 ms; the planner counted 330 ms where 690 were paid (2026-10-23).
-static std::atomic<double> g_mirror_fill_bytes { 0.0 };
+// llama_context::moe_mirror_fill issues the copies of every card before it waits (2026-10-23; before, one card after the other with a wait after each:
+// Qwen3.8-Flash-Next 13.7k, 2078 MiB on the x4 card in 365 ms, then 1878 MiB on the x16 in 325 ms; GLM-5.3-Flash 4523 MiB in 848 ms, then 4000 MiB in 750 ms).
+// A copy crosses the source card's link out and the receiving card's link in, and a link carries both directions at once, so the fill takes as long as the
+// busiest link in its busier direction: max over the cards of max(bytes in, bytes out) / its upload rate (with two cards on x16 + x4: the x4 card's larger
+// direction alone, not both cards' sum).
+static std::atomic<double> g_mirror_fill_us { 0.0 };
 static void dsplit_update_fill(const dsplit_set & S) {
-    double sum = 0.0;
-    for (const auto & kv : S.copies) { if (kv.second.pooled && !kv.second.valid) { sum += (double) kv.second.bytes; } }
-    g_mirror_fill_bytes.store(sum);
+    std::map<ggml_backend_dev_t, double> in, out;
+    for (const auto & kv : S.copies) {
+        if (!kv.second.pooled || kv.second.valid) { continue; }
+        for (const auto & pr : kv.second.pairs) {
+            const double nb = (double) ggml_nbytes(pr.first);
+            in[kv.first] += nb;
+            ggml_backend_dev_t ds = pr.first->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(pr.first->buffer)) : nullptr;
+            if (ds) { out[ds] += nb; }
+        }
+    }
+    double t = 0.0;
+    auto busy = [&](ggml_backend_dev_t d, double b) {
+        const double g = llama_moe_cache_link_gbs_fork(d);
+        if (g > 0.0) { t = std::max(t, b / (g * 1e3)); }
+    };
+    for (const auto & kv : in)  { busy(kv.first, std::max(kv.second, out.count(kv.first) ? out[kv.first] : 0.0)); }
+    for (const auto & kv : out) { if (!in.count(kv.first)) { busy(kv.first, kv.second); } }
+    g_mirror_fill_us.store(t);
 }
 
 // the copies can be used: made, and every card's placed or left out (mirror-pool places them at the first decode)
@@ -785,8 +802,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     // Both are paid once per request, so they are spread over its passes (before 2026-10-17 every pass carried the whole refill: 63 times over in a 255k prompt).
     // The passes of the request so far are about cells / T (the call's cells include the earlier calls of the same prompt).
     const double n_pass = std::max(1.0, cells / std::max<double>(1.0, (double) T));
-    const double b_min  = *std::min_element(B.begin(), B.end());
-    best_split += g_mirror_fill_bytes.load() / (b_min * 1e3) / n_pass;   // the copy of the dense weights into the lent blocks, before the first layer (slowest link)
+    best_split += g_mirror_fill_us.load() / n_pass;   // the copy of the dense weights into the lent blocks, before the first layer (see dsplit_update_fill)
     {
         const double touched = 1.0 - std::pow(1.0 - n_used / n_exp, (double) T);
         best_split += touched * dense_bytes / (B[x] * 1e3) * llama_moe_live_get("refill_weight") / n_pass;   // live: POST /moe/params
@@ -819,7 +835,7 @@ llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int
     dsplit_calib_load(model);
     const int b = dsplit_bucket_of(n_tokens);
     auto & pc = g_plans[b];
-    const double fill_now = g_mirror_fill_bytes.load();
+    const double fill_now = g_mirror_fill_us.load();
     if (pc.n_tokens != n_tokens || pc.c_us != c_us || pc.fill != fill_now) {
         pc.fill     = fill_now;
         pc.n_tokens = n_tokens;
