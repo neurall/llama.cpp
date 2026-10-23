@@ -5943,10 +5943,10 @@ def learn_bestpp(model, test, tag):
     try:
         import sqlite3
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-        x = c.execute("select pp, tps, n_gen, note from runs where campaign like ? and cast(ok as integer)=1 and pp is not null and tps is not null order by ts desc limit 1", (f"{tag}-%",)).fetchone()
+        x = c.execute("select pp, tps, n_gen, note, pf_passes from runs where campaign like ? and cast(ok as integer)=1 and pp is not null and tps is not null order by ts desc limit 1", (f"{tag}-%",)).fetchone()   # the last run (warm)
         pn = re.search(r"prompt_n=(\d+)", (x[3] if x else "") or "")
-        if not x or not pn or not x[2]: return
-        tok, ms = int(pn.group(1)), 1000 * (int(pn.group(1)) / x[0] + int(x[2]) / x[1]) / (int(pn.group(1)) + int(x[2]))
+        if not x or not pn or str(x[4] or "") != "1": return   # only a prompt that ran in ONE pass counts
+        tok = int(pn.group(1)); ms = 1000 * (tok / x[0] + 1024 / x[1]) / (tok + 1024)   # a 1k answer after it whatever this run asked: the decode speed after this prompt counts the same for every size
         hw = int(hw_key()[:-1]); key = (sec, hw)
         if key not in BESTPP_MEM:
             BESTPP_MEM[key] = bestpp_entries((fcfg.models_ini().get(sec) or {}).get("bestpp", "")).get(hw, (0, 1e9))[1]
