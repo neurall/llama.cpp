@@ -5570,10 +5570,10 @@ def cmd_calib(a):
             if n >= 128 or n in seen: break
             if lo == 0 and hi == 1: break   # not even 1k fits in one pass
         if lo == 0: print(col(33, f"{r['model']}: no size ran in one pass or a run failed: nothing stored")); continue
-        ok_ = {k: v for k, v in seen.items() if v and v[4]}   # the pick: the biggest probed size within 3% of the best whole-request speed (prompt + 1024 answer tokens per second, one pass or not): a smaller prompt
+        ok_ = {k: v for k, v in seen.items() if v and v[4]}   # the pick: the biggest probed size within 1% of the best whole-request speed (prompt + 1024 answer tokens per second, one pass or not): a smaller prompt
         # can win through its prompt speed (two smaller passes) and through the decode that follows (more experts survive in the cache and stay preheated)
         eff = {n: (v[2] + 1024) / (v[2] / v[3] + 1024 / v[4]) for n, v in ok_.items()}
-        k = max(n for n, e in eff.items() if e >= 0.97 * max(eff.values()))
+        k = max(n for n, e in eff.items() if e >= 0.99 * max(eff.values()))   # 1%: the same prompt speed with a better decode wins (7k 737 t/s at 21.7 decode against 8k 733 at 18.9)
         picks[r["model"]] = (k, seen[k][2]); print(col("1;92", f"{r['model']}: best prompt {k}k ({seen[k][2]} tokens, {seen[k][0]} pass(es), prompt {seen[k][3]:.0f} t/s, decode {seen[k][4]:.1f} t/s); biggest one-pass {lo}k"))
         for n in sorted(eff): print(f"   {n:>3}k  {ok_[n][2]:>6} tokens  {ok_[n][0]} pass(es)  prompt {ok_[n][3]:>6.0f} t/s  decode {ok_[n][4]:>5.1f} t/s  whole request {eff[n]:>6.0f} t/s")
     if picks and not a.dry and not a.nowrite:
