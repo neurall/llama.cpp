@@ -208,9 +208,11 @@ int dsplit_n_gpus(const llama_model & model) {
 
 // The probed upload rate of a card, read ONCE: cards are not hot-swapped, so the rate (and with it the card order, the expert card, the planner's and the
 // balance's hand-off costs) is fixed by the first valid probe and never re-derived per decision, plan or pass. Own mutex: callers hold g_mu or g_plan_mu.
+std::mutex                                  g_link_mu;
+std::map<ggml_backend_dev_t, double>        g_link_rate;
+void dsplit_link_forget() { std::lock_guard<std::mutex> lk(g_link_mu); g_link_rate.clear(); }   // a changed card or link: the next ask reads the rates again
 double dsplit_link_once(ggml_backend_dev_t d) {
-    static std::mutex                                 mu;
-    static std::map<ggml_backend_dev_t, double>       rate;
+    auto & mu = g_link_mu; auto & rate = g_link_rate;
     std::lock_guard<std::mutex> lk(mu);
     auto it = rate.find(d);
     if (it != rate.end()) { return it->second; }
@@ -594,7 +596,7 @@ static std::string dsplit_pci_file(const std::string & busid, const char * file)
     while (!line.empty() && (line.back() == '\n' || line.back() == ' ')) { line.pop_back(); }
     return line;
 }
-static std::string dsplit_hw_key(const llama_model & model) {
+static std::string dsplit_hw_key(const llama_model & model, bool log = true, bool with_gen = true) {
     std::string desc;
     for (const auto & d : model.devices) {
         if (ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
@@ -608,12 +610,12 @@ static std::string dsplit_hw_key(const llama_model & model) {
         const int gen = gt >= 31.0 ? 5 : gt >= 15.0 ? 4 : gt >= 7.0 ? 3 : gt >= 4.0 ? 2 : gt > 0.0 ? 1 : 0;
         std::string one = ven.empty() ? std::string(p.name ? p.name : "?") : ven + dev;   // no sysfs (Windows): the name stands in
         one += "@" + (bus.size() > 5 ? bus.substr(5) : bus);   // 0000:0b:00.0 -> 0b:00.0
-        one += "/" + (gen ? std::to_string(gen) : std::string("?")) + "x" + (wid.empty() ? std::string("?") : wid);
+        one += "/" + (!with_gen ? std::string("") : gen ? std::to_string(gen) : std::string("?")) + "x" + (wid.empty() ? std::string("?") : wid);   // with_gen=false (the run-time check): a link drops its generation when idle
         desc += one + ";";
     }
     uint64_t h = 1469598103934665603ull; for (char ch : desc) { h = (h ^ (uint8_t) ch) * 1099511628211ull; }
     char k[24]; snprintf(k, sizeof k, "%08x", (unsigned) (h ^ (h >> 32)));
-    LLAMA_LOG_WARN("split planner: hardware key %s = %s\n", k, desc.c_str());
+    if (log) { LLAMA_LOG_WARN("split planner: hardware key %s = %s\n", k, desc.c_str()); }
     return k;
 }
 // State keys carry a format number (2026-10-17: calib3, arm2): the calibration was learned against the planner's old model (no attention, a stale compute per token),
@@ -1339,16 +1341,36 @@ std::string llama_dsplit_state_json_fork() {
                 last.c_str());
         for (size_t i = 0; i < B.dev.size(); ++i) {
             out += format("%s{\"dev\":\"%s\",\"experts\":%s,\"tok\":%lld,\"s\":%.4f,\"s_next\":%.4f,\"f\":%.4f,\"f_next\":%.4f,\"dense_ms\":%.1f,\"dense_us_tok\":%.2f,"
-                    "\"hop_us_tok\":%.2f,\"kv_ms\":%.1f,\"moe_ms\":%.1f,\"wait_dense_ms\":%.1f,\"wait_moe_ms\":%.1f,\"wait_max_ms\":%.2f}", i ? "," : "", ggml_backend_dev_name(B.dev[i]), i + 1 == B.dev.size() ? "true" : "false",
-                    (long long) (i < B.tok.size() ? B.tok[i] : 0), B.s_run[i], B.s[i], B.f_run[i], B.f[i], B.d[i], B.c[i], B.hop[i], B.k[i] / 1e3, B.m[i], B.wd[i], B.wm[i], B.wx[i]);
+                    "\"hop_us_tok\":%.2f,\"kv_ms\":%.1f,\"moe_ms\":%.1f,\"wait_dense_ms\":%.1f,\"wait_moe_ms\":%.1f,\"wait_max_ms\":%.2f,\"link_gbs\":%.2f}", i ? "," : "", ggml_backend_dev_name(B.dev[i]), i + 1 == B.dev.size() ? "true" : "false",
+                    (long long) (i < B.tok.size() ? B.tok[i] : 0), B.s_run[i], B.s[i], B.f_run[i], B.f[i], B.d[i], B.c[i], B.hop[i], B.k[i] / 1e3, B.m[i], B.wd[i], B.wm[i], B.wx[i], dsplit_link_once(B.dev[i]));   // link_gbs: this start's probe (a swapped or upgraded card is measured again)
         }
         out += "]}";
     }
     return out + "}";
 }
 
+// Every split decision looks at the cards' identity and links again (vendor, device, slot, PCIe generation x width: sysfs reads, nothing touches the cards). A
+// card swapped or upgraded between runs is a new key at load, so the stored shares of the old hardware are never used (dsplit_state_key); this catches a change
+// while the server runs (a link retrained to another width, a card gone): the link rates, the card order, the plans, the balance and the tuner are recalculated
+// from the cards as they are now.
+static void dsplit_hw_check(const llama_model & model) {
+    if (g_hw_key.empty()) { return; }
+    static std::string base;   // the key without the generation, as of the first decision
+    const std::string k = dsplit_hw_key(model, false, false);
+    if (base.empty()) { base = k; }
+    if (k == base) { return; }
+    LLAMA_LOG_WARN("split planner: the cards or their links changed (%s -> %s): link rates, card order, plans and balance are recalculated\n", base.c_str(), k.c_str());
+    base = k;
+    g_hw_key = dsplit_hw_key(model);
+    dsplit_link_forget();
+    g_card_order.clear();
+    std::lock_guard<std::mutex> pk(g_plan_mu);
+    g_plans.clear(); g_bal.clear(); g_tune.clear();
+}
+
 bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     std::lock_guard<std::mutex> lk(g_mu);
+    dsplit_hw_check(model);
     auto it = g_sets.find(&model);
     {
         static bool verified = false;
