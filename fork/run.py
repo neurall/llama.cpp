@@ -5863,7 +5863,7 @@ def run_list(name, argv):
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
             CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")); CELL_ASKED[0] = int(r["tokens"]) if r.get("tokens") else 0
-            CELL_TEST[0] = ("" if re.fullmatch(r"pf\d+k1k", r["test"]) else r["test"] + "  ") + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")   # "12k in 1k out", "64t in 1k out"
+            CELL_TEST[0] = re.sub(r"^pf(\d+k1k)$", r"\1", r["test"]) if re.fullmatch(r"pf\d+k1k", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")   # "12k in 1k out", "64t in 1k out"
             if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, ("s" if r["_b"].startswith("stock") else "") + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
             done_s += ex or 0
     finally:   # the cells' lines, then the pool: it holds its RAM whether a model uses it or not: give it back when the list ends, also on Ctrl-C or an error
@@ -6025,7 +6025,7 @@ def _run_list_remote(o, rows, name, m, here, bad):
             except OSError: pass
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
             CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")) if tag not in CLAMPED else f"{CLAMPED[tag] / 1000:.1f}k/" + prompt_txt(r["test"], r.get("tokens")).split("/")[-1]; CELL_ASKED[0] = tout
-            CELL_TEST[0] = ("" if re.fullmatch(r"pf\d+k1k", r["test"]) else r["test"] + "  ") + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")
+            CELL_TEST[0] = re.sub(r"^pf(\d+k1k)$", r"\1", r["test"]) if re.fullmatch(r"pf\d+k1k", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")
             try:
                 if run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), cell_expect(r["model"], r["test"], r["n"], r["_b"], False), ("s" if r["_b"].startswith("stock") else "") + r["name"],
                                log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
