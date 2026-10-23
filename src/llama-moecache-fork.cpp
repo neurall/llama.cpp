@@ -8219,11 +8219,15 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
         if (k >= pf_min) { return std::max(U, C) + 0.25 * std::min(U, C); }
         return U + C;
     };
+    // The fewest passes that fit, never more (user rule 2026-10-23: no more passes than b13838): the slots are chosen within that count, and a further pass is
+    // planned only when no pass of the fewest-pass size fits the pool at all. Before, the search took up to four more passes when the model said staging slots
+    // win: GLM-5.3-Flash 3.0-bit's 8192-token call ran as 2 x 4096 with 3 slots after a colder first call (measured 605 t/s) and a pool lending 267 MiB less,
+    // where b13838 ran 1 x 8192 without slots (that call: 656 against 532 t/s, the whole 12k prompt 636 against 627). Every pass streams the experts again.
     const uint32_t P0 = std::max<uint32_t>(1, (n + ub_max - 1) / ub_max);
     uint32_t best_ub = ub_old, best_P = 0;
     int      best_k  = 0;
     double   best_t  = 0.0, best_U = 0.0;
-    for (uint32_t P = P0; P <= P0 + 4; ++P) {
+    for (uint32_t P = P0; P <= P0 + 4 && best_P == 0; ++P) {
         const uint32_t u = std::min<uint32_t>(ub_max, ((n + P - 1) / P + 31) / 32 * 32);
         for (int k = 0; k <= n_cfg; ++k) {
             if (k > 0 && k < pf_min) { continue; }
