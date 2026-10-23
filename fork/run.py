@@ -5633,18 +5633,15 @@ def cmd_calib(a):
         if y2 and y2[2]:
             try: tail = open(f"/tmp/perf-{b}.log", "rb").read()[-400000:].decode("utf8", "replace")
             except OSError: tail = ""
-            cm = re.findall(r"fits the ceiling (\d+)", tail)
+            cm = re.findall(r"fits the ceiling (\d+)", tail) or re.findall(r"ubatch \d+ \(max (\d+)\)", tail)   # the pool-computed pass ceiling, from either log line
             if cm: ceil_k = max(1, int(int(cm[-1]) / (y2[2] / 2)) )   # nominal k whose prompt has that many tokens (tokens per nominal k from the probe itself)
             if ceil_k: print(col(90, f"{r['model']}: the engine's pass ceiling is {cm[-1]} tokens = {ceil_k}k of this text"), flush=True)
         mp_ = config.model(r["model"]); mp_ = sorted(glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", mp_)) or [mp_])[0]
         fit, bpt, gib = feasible_ctx(mp_, int(hw_key()[:-1]))
         pps = [x[0] for x in c.execute("select pp from runs where model=? and test like 'pf%' and cast(ok as integer)=1 and pp is not null order by ts desc limit 20", (os.path.basename(mp_),))]
         if pps: fit = min(fit, int(statistics.median(pps) * 600))   # time is a resource too: a probe may take 10 minutes of prefill at the speed the model last showed (feedback: no cell over 10-15 min)
-        n = max(1, int((fit - 2048) * 0.9 / 1000))   # no static start: the biggest prompt the machine can hold, by arithmetic (feasible_ctx), minus the answer and a margin; ~1.1 tokens per nominal token on the big tokenizers
+        n = ceil_k or max(1, int((fit - 2048) * 0.9 / 1000))   # no static start: the biggest prompt the machine can hold, by arithmetic (feasible_ctx), minus the answer and a margin; ~1.1 tokens per nominal token on the big tokenizers
         print(col(90, f"{r['model']}: KV {bpt} bytes per token, {gib:.0f} GiB for it: {fit} tokens fit (memory, the trained context and 10 minutes of prefill cap it): start at {n}k"), flush=True)
-        while n > 1 and not fits(r, n): n //= 2   # too big for this machine: half of it (n log n steps down), each a start-up without prefill
-        sec_ = model_alias(mp_)
-        if sec_ and not a.dry: ini_set_maxpp(sec_, int(n * 1100)); print(col(92, f"{r['model']}: longest prompt that allocates at {hw_key()}: about {int(n * 1100)} tokens ({n}k), written to models.ini (maxpp)"), flush=True)
         if ceil_k: n = min(ceil_k, n)   # the engine's pass ceiling is where one pass ends: the search starts there
         while True:   # the maximum that fits: a prompt the server cannot allocate or run halves
             x = ask(n)
@@ -5837,7 +5834,11 @@ def run_list(name, argv):
     o.build = resolve_build(o.build)   # -b b13563: a build number
     rows = list(csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", name + ".csv"), newline="")))
     for r in rows: r["model"] = fcfg.model(r["model"])   # the model column is a models.ini alias or a path
-    for r in rows: r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
+    _picked = set()
+    for r in rows:
+        was = r["test"]; r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")
+        if r["test"] != was and was != r["test"] and (r["model"], r["test"]) not in _picked and not o.status:
+            _picked.add((r["model"], r["test"])); print(col(90, f"{os.path.basename(r['model'])}: found and picked prompt size {re.sub(r'^pf', '', r['test'])} for {hw_key()}" + ("" if re.fullmatch(r'pf\d+k1k', r['test']) and vram_known(r['model']) else " (no stored best for this VRAM yet: 12k)")), flush=True)   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
     rows = [r for r in rows if not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))]   # a trailing $ means the exact name: mimo-i$ is not mimo-io
     rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]   # -skp: same matching as -onl, rows dropped
     for r in rows:
@@ -6086,6 +6087,12 @@ def learn_bestpp(model, test, tag):
             o_, p_, d_ = seen[best]; ini_set_bestpp(sec, best, o_, p_, d_, best / p_, o_ / d_, sc_all[best])
             if best != was: print(col(92, f"best prompt of {sec} at {hw}g: {best} tokens, prompt {p_:.0f} t/s, decode {d_:.1f} t/s, total {best / p_ + o_ / d_:.1f} s, score {sc_all[best]:.2f}, written to models.ini"), flush=True)
     except Exception as e: print(col(90, f"best prompt not updated: {e}"), flush=True)
+
+
+def vram_known(model_path):
+    """True when the model's bestpp has an entry for the VRAM of the cards in use"""
+    sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {})
+    return int(hw_key()[:-1]) in bestpp_entries(sec.get("bestpp", ""))
 
 
 def best_prompt_k(model_path):
