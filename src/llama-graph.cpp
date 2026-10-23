@@ -44,6 +44,8 @@ void   llama_dsplit_cards_fork(std::vector<ggml_backend_dev_t> & out);   // the 
 std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::vector<ggml_backend_dev_t> & dev);   // their token shares (the live balance)
 void   llama_dsplit_note_ranges_fork(const std::vector<ggml_backend_dev_t> & dev, const std::vector<int64_t> & tok);   // the ranges a graph was built with
 double llama_dsplit_card_f_fork(int il, int64_t n_tokens, ggml_backend_dev_t dev);   // a card's share of a layer's experts (-1: the controller decides)
+int    llama_dsplit_hop_mode_range_fork();   // the dense split's hand-off precision (llama-dsplit-fork.cpp)
+int    llama_dsplit_hop_mode_fork();
 
 // ---- fork: share controller of the multi-GPU prompt split ---------------------------------------------------------------------------------------------------
 // The routed experts of a layer are split over the cards in contiguous id ranges (see build_moe_ffn). How many experts each card holds decides who waits for
@@ -3438,8 +3440,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // casts back in its mask split (so the hidden state arrives with the id helpers, at the very start of its chain), and returns its sum as f16.
         // The expert matmuls quantise their input to 8 bits anyway; the partial sum loses bits 12 and below. --moe split-f16=0 keeps f32, split-f16=in
         // sends the hidden state as f16 and takes the sum back as f32 (llama_dsplit_hop_mode_fork: what each choice costs in perplexity and speed).
-        static const bool hop_f16     = llama_dsplit_hop_mode_fork() != 0;   // the hidden state, to the card that computes experts on it
-        static const bool hop_f16_out = llama_dsplit_hop_mode_fork() == 1;   // the experts' sum, back to the card that holds the tokens
+        // the dense split (token ranges) has its own default, f16 both ways (llama_dsplit_hop_mode_range_fork); the expert-only split keeps f32 unless asked
+        const int  hop_mode    = moe_ranges.empty() ? llama_dsplit_hop_mode_fork() : llama_dsplit_hop_mode_range_fork();
+        const bool hop_f16     = hop_mode != 0;   // the hidden state, to the card that computes experts on it
+        const bool hop_f16_out = hop_mode == 1;   // the experts' sum, back to the card that holds the tokens
         ggml_tensor * cur16 = nullptr;
         std::vector<ggml_tensor *> cur_part(parts.size(), nullptr);
         if (owner_b && hop_f16 && cur->type == GGML_TYPE_F32 && moe_ranges.empty()) {

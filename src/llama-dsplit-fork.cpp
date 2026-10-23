@@ -585,6 +585,7 @@ static std::string g_calib_section;
 // Everything learned here is stored under a key of the HARDWARE it was learned on: the cards in model order, each as name, PCI bus id (the physical slot), memory and
 // the measured link class (rounded to 5 GB/s). Move a card to another slot, add or remove one, or reorder the devices and the key changes: the old entries stay in the
 // file, are not used, and the planner starts again from its model. Same cards in the same slots find their entries again.
+int llama_dsplit_hop_mode_range_fork();   // below: the dense split's hand-off precision (f16 both ways by default)
 static std::string g_hw_key;
 static std::string dsplit_pci_file(const std::string & busid, const char * file) {   // one line of /sys/bus/pci/devices/<id>/<file> (Linux), "" elsewhere or when missing
     std::string path = "/sys/bus/pci/devices/" + busid + "/" + file, line;
@@ -738,7 +739,7 @@ static void dsplit_link_model(const llama_model & model, int64_t T) {
             }
         }
     }
-    const int    hop_mode = llama_dsplit_hop_mode_fork();
+    const int    hop_mode = llama_dsplit_hop_mode_range_fork();
     const double b_in  = (double) model.hparams.n_embd * (hop_mode != 0 ? 2.0 : 4.0);
     const double b_out = (double) model.hparams.n_embd * (hop_mode == 1 ? 2.0 : 4.0);
     g_hop_bytes_tok = (double) n_moe * (b_in + b_out);
@@ -824,7 +825,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
         kv_b[il] = cl_seen * row * 2.0;
     }
     // bytes per token that cross per layer, there and back (llama_dsplit_hop_mode_fork: f16 both ways, f16 there and f32 back, or f32 both ways)
-    const int    hop_mode = llama_dsplit_hop_mode_fork();
+    const int    hop_mode = llama_dsplit_hop_mode_range_fork();
     dsxn_in in;   // the model of a split pass over the cards and its shares: llama-splitplan-fork.h
     in.T = T; in.L = L; in.w = w; in.xf = xf; in.E = E; in.kv_b = kv_b; in.att_w = att_w; in.w_sum = w_sum; in.lcard = lcard; in.lB = lB;
     in.c_base = c_base; in.att_tok = att_tok; in.rel = rel; in.B = B; in.x = x;
@@ -945,6 +946,18 @@ int llama_dsplit_hop_mode_fork() {
     return mode;
 }
 
+// The hand-offs of the DENSE split (token ranges; the expert-only split keeps llama_dsplit_hop_mode_fork): f16 both ways unless --moe split-f16 says otherwise
+// (user, 2026-10-23: enable it only in the dense split and see what the balance comes to). The helper's tokens cross to the expert card and their experts' sum
+// comes back every MoE layer, 2 x n_embd x 4 bytes per token as f32: MiMo's x4 card spent 238 us per token on that, more than its dense compute (182 us).
+// Perplexity: f16 hops measured +0.33 +- 0.17% (Next IQ3_S, 10 chunks paired) before; the paired check on the models that split is still to be repeated.
+int llama_dsplit_hop_mode_range_fork() {
+    static const int mode = [] {
+        const char * e = llama_moe_get_opt("split-f16");
+        return e ? llama_dsplit_hop_mode_fork() : 1;
+    }();
+    return mode;
+}
+
 // ---- the live balance of the dense split (2026-10-23, user's design; any number of cards) ---------------------------------------------------------------
 // Two kinds of share per card, each balanced on its own part of the cards' busy time in the pass just run (ggml_sched_card_stat: device stamps in front of
 // and behind every split, the expert chains apart from the rest):
@@ -1037,10 +1050,14 @@ bool dsplit_bal_dec(const std::string & v, const std::vector<ggml_backend_dev_t>
     }
     return sum > 0.99 && sum < 1.01;
 }
+// the stored shares are per hand-off precision too (f16 hops move the balance toward the x4 card: another mode's shares are another record)
+std::string dsplit_bal_key(int b) {
+    return "dsplit_bal3_h" + std::to_string(llama_dsplit_hop_mode_range_fork()) + (b < 0 ? std::string("_any") : "_b" + std::to_string(b));
+}
 void dsplit_bal_save(int b, const dsplit_bal & B) {
     if (!dsplit_state_on() || B.s.empty()) { return; }
-    moe_state_set(g_calib_section, { { dsplit_state_key("dsplit_bal2_b" + std::to_string(b)), std::to_string(B.phase == 1 ? 0 : B.phase) + ";" + dsplit_bal_enc(B, true) },
-                                     { dsplit_state_key("dsplit_bal2_any"), dsplit_bal_enc(B, false) } });   // a trial cut short starts over
+    moe_state_set(g_calib_section, { { dsplit_state_key(dsplit_bal_key(b)), std::to_string(B.phase == 1 ? 0 : B.phase) + ";" + dsplit_bal_enc(B, true) },
+                                     { dsplit_state_key(dsplit_bal_key(-1)), dsplit_bal_enc(B, false) } });   // a trial cut short starts over
 }
 dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) {
     auto it = g_bal.find(b);
@@ -1082,7 +1099,7 @@ dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) 
     }
     std::string v;
     std::vector<double> s, f;
-    if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_bal2_b" + std::to_string(b)), v)) {
+    if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key(dsplit_bal_key(b)), v)) {
         const size_t semi = v.find(';');
         if (semi != std::string::npos && dsplit_bal_dec(v.substr(semi + 1), dev, s, &f)) {
             B.s = s;
@@ -1105,7 +1122,7 @@ dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) 
         B.last = "token shares of the nearest measured size";
         return B;
     }
-    if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_bal2_any"), v) && dsplit_bal_dec(v, dev, s, nullptr)) {
+    if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key(dsplit_bal_key(-1)), v) && dsplit_bal_dec(v, dev, s, nullptr)) {
         B.s = s;
         B.last = "token shares of an earlier run (state file)";
     }
