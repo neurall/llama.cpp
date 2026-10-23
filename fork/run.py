@@ -5640,7 +5640,7 @@ def cmd_calib(a):
             cm = re.findall(r"fits the ceiling (\d+)", tail) or re.findall(r"ubatch \d+ \(max (\d+)\)", tail) or re.findall(r"common_moe_cache_auto_impl: ubatch (\d+):", tail) or re.findall(r"n_ubatch (\d+)", tail)   # the pool-computed pass ceiling, from either log line
             if cm: ceil_k = max(1, int(int(cm[-1]) / (y2[2] / 2)) )   # nominal k whose prompt has that many tokens (tokens per nominal k from the probe itself)
             if ceil_k: print(col(90, f"{r['model']}: the engine's pass ceiling is {cm[-1]} tokens = {ceil_k}k of this text"), flush=True)
-            if ceil_k and not a.nowrite and not a.dry: ini_set_maxpp(r["model"], int(cm[-1]))   # kept per VRAM next to bestpp
+            if ceil_k and not a.nowrite and not a.dry and re.findall(r"fits the ceiling (\d+)", tail): ini_set_maxpp(r["model"], int(cm[-1]))   # only the engine's own ceiling line; ubatch / n_ubatch lines of a model that fits the VRAM are the default micro-batch, not a limit   # kept per VRAM next to bestpp
             if a.ceil: continue   # --ceil: only the engine's ceiling, no search
         elif a.ceil: print(col(31, f"{r['model']}: the probe did not run, no ceiling read")); continue
         mp_ = config.model(r["model"]); mp_ = sorted(glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", mp_)) or [mp_])[0]
