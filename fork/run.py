@@ -5924,6 +5924,7 @@ def run_list(name, argv):
             rec = dict(tag=tag, section="running" if run_ else "queued", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"],
                        name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=time.time() - run_since if run_ and run_since else None, est=None if run_ else ex, exp=ex if run_ else None, lt="", rc=0, res=[], st=None, stock_row=r["_b"].startswith("stock"))
             rec.update(last_run_rec(r, HW))   # the values of its last run, with the gain over stock: what it is expected to beat
+            if not run_: rec["res"] = []   # a cell that has not run shows no speed: the last run of the same model and test is another cell's number
             CELL_REC.append(rec)
         for rec in CELL_REC:   # the running cell: its earlier rows (done today) and its expected time give the progress in percent
             if rec.get("section") == "running" and run_since: rec["el"] = time.time() - run_since   # elapsed since the cell process started, not the time of an earlier run of it
@@ -5934,6 +5935,13 @@ def run_list(name, argv):
             CELL_REC.append(dict(tag=t, section="queued", asked=0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt="", model="", test="", name=t, el=None, lt="", rc=0, res=[], st=None, stock_row=False))
         print(col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC)), flush=True)
         if qd and not qd_on: print(col(90, f"queue daemon off: {len(qd)} old tasks wait in tasks.csv (none starts)"), flush=True)
+        try:   # everything that finished lately, whatever list it came from (jumped lists, calib probes, A/B cells)
+            db = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+            hist = db.execute("select campaign, test, count(*), round(avg(pp)), round(avg(tps),1), max(par_gpus), strftime('%H:%M', max(ts)) from runs where cast(ok as integer)=1 and pp is not null and hw=? and ts>=datetime('now','localtime','-4 hours') and campaign not like 'stock%' and coalesce(env,'') not like '%warmpass%' group by campaign order by max(ts) desc limit 30", (HW,)).fetchall()
+        except Exception: hist = []
+        if hist:
+            print(col(1, "\ndone in the last 4 hours, all lists (newest first):"), flush=True)
+            for cp, ts_, n_, pp_, tp_, pg_, hh in hist: print(f"  {hh}  {cp:<42} {re.sub(r'^pf', '', ts_):<7} {n_} run(s)  prompt {pp_:6.0f} t/s  decode {tp_:5.1f} t/s  par {pg_ or '-'}")
         return 0
     for r in rows:   # -a: the same cells with extra arguments on our build
         if o.cell_args and not r["_b"].startswith("stock"): r["args"] = ((r.get("args") or "") + " " + " ".join("moe:" + w if re.fullmatch(r"[\w-]+=\S*", w) else w for w in o.cell_args.split())).strip()   # a bare key=value is a --moe key (-a "split-experts=0")
