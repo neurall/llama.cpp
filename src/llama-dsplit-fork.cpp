@@ -964,7 +964,7 @@ int llama_dsplit_hop_mode_fork() {
 // (dsplit_state_key). --moe split-balance=0: the planner's shares and no experts on the helpers; --moe dense-split-share=X fixes the first card's share
 // by hand (tests: the other cards split the rest equally).
 extern "C" {
-    struct dsplit_card_stat { ggml_backend_t backend; int64_t dense_us, moe_us, first_us, last_us; int n_dense, n_moe; };   // must match ggml_sched_card_stat (ggml-backend.cpp)
+    struct dsplit_card_stat { ggml_backend_t backend; int64_t dense_us, moe_us, first_us, last_us; int n_dense, n_moe; int64_t wait_dense_us, wait_moe_us, max_wait_us; };   // must match ggml_sched_card_stat (ggml-backend.cpp)
     GGML_API int ggml_backend_sched_card_stats(struct dsplit_card_stat * out, int cap, long * gen);
 }
 namespace {
@@ -975,6 +975,7 @@ struct dsplit_bal {
     std::vector<double> c;                 // dense us per token of each card's own range (the last measured; kept while a card has no range)
     std::vector<double> hop, k;            // modelled per card: hand-offs (us per token), KV reads (us per pass)
     std::vector<double> d, m;              // dense and expert ms of each card in the measured pass
+    std::vector<double> wd, wm, wx;        // measured idle ms of each card before its dense / expert splits, and its longest single wait (ggml_sched_card_stat)
     std::vector<int64_t> tok;              // tokens of each card in the measured pass
     int    phase = 0, n = 0, still = 0;    // phase: 0 balancing the token shares, 1 experts on trial, 2 the dense split alone (experts abandoned), 3 with experts
     double ref_v = 0.0;                    // us per token of the dense split alone: the trial's reference
@@ -1049,7 +1050,7 @@ dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) 
     B.s.assign(n, n ? 1.0 / (double) n : 0.0);
     B.f.assign(n, 0.0);
     if (n) { B.f[n - 1] = 1.0; }
-    B.c.assign(n, 0.0); B.hop.assign(n, 0.0); B.k.assign(n, 0.0); B.d.assign(n, 0.0); B.m.assign(n, 0.0); B.tok.assign(n, 0);
+    B.c.assign(n, 0.0); B.hop.assign(n, 0.0); B.k.assign(n, 0.0); B.d.assign(n, 0.0); B.m.assign(n, 0.0); B.wd.assign(n, 0.0); B.wm.assign(n, 0.0); B.wx.assign(n, 0.0); B.tok.assign(n, 0);
     B.s_run = B.s; B.f_run = B.f;
     B.last = "equal shares (nothing measured yet)";
     std::string v;
@@ -1137,6 +1138,9 @@ void dsplit_bal_step(int b) {
     for (size_t i = 0; i < n; ++i) {
         B.d[i] = cs[i] ? cs[i]->dense_us / 1e3 : 0.0;
         B.m[i] = cs[i] ? cs[i]->moe_us / 1e3 : 0.0;
+        B.wd[i] = cs[i] ? cs[i]->wait_dense_us / 1e3 : 0.0;
+        B.wm[i] = cs[i] ? cs[i]->wait_moe_us / 1e3 : 0.0;
+        B.wx[i] = cs[i] ? cs[i]->max_wait_us / 1e3 : 0.0;
         if (g_rng_tok[i] > 0 && cs[i]) { B.c[i] = (double) cs[i]->dense_us / (double) g_rng_tok[i]; }
         c_max = std::max(c_max, B.c[i]);
     }
@@ -1210,8 +1214,8 @@ void dsplit_bal_step(int b) {
     B.last = msg;
     std::string cards;
     for (size_t i = 0; i < n; ++i) {
-        cards += format("%s%s %lld tokens (%.0f%%) %.0f%% of the experts, dense %.0f ms (%.1f us/token + hand-offs %.1f) moe %.0f ms", i ? " | " : "",
-                ggml_backend_dev_name(B.dev[i]), (long long) g_rng_tok[i], 100.0 * B.s_run[i], 100.0 * B.f_run[i], B.d[i], B.c[i], B.hop[i], B.m[i]);
+        cards += format("%s%s %lld tokens (%.0f%%) %.0f%% of the experts, dense %.0f ms (%.1f us/token + hand-offs %.1f) moe %.0f ms, waits %.0f ms before dense + %.0f ms before experts (longest %.1f ms)", i ? " | " : "",
+                ggml_backend_dev_name(B.dev[i]), (long long) g_rng_tok[i], 100.0 * B.s_run[i], 100.0 * B.f_run[i], B.d[i], B.c[i], B.hop[i], B.m[i], B.wd[i], B.wm[i], B.wx[i]);
     }
     LLAMA_LOG_WARN("split balance: %s | pass %.1f us/token | %s: %s\n", cards.c_str(), B.v, dsplit_bal_phase(B.phase), msg.c_str());
     if (B.s != s0 || B.f != f0) { g_tune_changed = true; }   // the next pass of this size is built with the new shares
@@ -1335,8 +1339,8 @@ std::string llama_dsplit_state_json_fork() {
                 last.c_str());
         for (size_t i = 0; i < B.dev.size(); ++i) {
             out += format("%s{\"dev\":\"%s\",\"experts\":%s,\"tok\":%lld,\"s\":%.4f,\"s_next\":%.4f,\"f\":%.4f,\"f_next\":%.4f,\"dense_ms\":%.1f,\"dense_us_tok\":%.2f,"
-                    "\"hop_us_tok\":%.2f,\"kv_ms\":%.1f,\"moe_ms\":%.1f}", i ? "," : "", ggml_backend_dev_name(B.dev[i]), i + 1 == B.dev.size() ? "true" : "false",
-                    (long long) (i < B.tok.size() ? B.tok[i] : 0), B.s_run[i], B.s[i], B.f_run[i], B.f[i], B.d[i], B.c[i], B.hop[i], B.k[i] / 1e3, B.m[i]);
+                    "\"hop_us_tok\":%.2f,\"kv_ms\":%.1f,\"moe_ms\":%.1f,\"wait_dense_ms\":%.1f,\"wait_moe_ms\":%.1f,\"wait_max_ms\":%.2f}", i ? "," : "", ggml_backend_dev_name(B.dev[i]), i + 1 == B.dev.size() ? "true" : "false",
+                    (long long) (i < B.tok.size() ? B.tok[i] : 0), B.s_run[i], B.s[i], B.f_run[i], B.f[i], B.d[i], B.c[i], B.hop[i], B.k[i] / 1e3, B.m[i], B.wd[i], B.wm[i], B.wx[i]);
         }
         out += "]}";
     }

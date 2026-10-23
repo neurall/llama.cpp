@@ -774,7 +774,11 @@ int ggml_backend_sched_chain_stats(struct ggml_sched_chain_stat * out, int cap, 
 // cards' dense times, the share of the experts on their MoE times. Measured together with the expert chains (the same passes); GGML_SCHED_CARD_STATS=0
 // turns it off (two host functions per split: GLM-5.3-Flash has about 2000 splits in a split pass).
 struct ggml_sched_card_stamp { int backend_id; int moe; int64_t t0, t1; };
-struct ggml_sched_card_stat  { ggml_backend_t backend; int64_t dense_us, moe_us, first_us, last_us; int n_dense, n_moe; };
+// wait_dense_us / wait_moe_us: the card's idle time (2026-10-23, user: "collect each card's actual wait directly"): the gap between the end of its previous
+// split and the front stamp of a dense / an expert split, summed. The front stamp is queued behind the copies that bring the split's inputs from the other
+// cards, so the gap is the time the card sat idle for another card's result (plus that copy itself, plus any lag of the host issuing work); max_wait_us is
+// the longest single gap. Balanced cards wait only for the hand-off copies; a card that waits much more than the others is the one with too few tokens.
+struct ggml_sched_card_stat  { ggml_backend_t backend; int64_t dense_us, moe_us, first_us, last_us; int n_dense, n_moe; int64_t wait_dense_us, wait_moe_us, max_wait_us; };
 #define GGML_SCHED_MAX_CARD_STAMPS 16384
 #define GGML_SCHED_CARD_MAX_BE     16
 static struct ggml_sched_card_stamp g_card_buf[2][GGML_SCHED_MAX_CARD_STAMPS];
@@ -802,10 +806,17 @@ int ggml_backend_sched_card_stats(struct ggml_sched_card_stat * out, int cap, lo
     if (gen) { *gen = g_card_gen; }
     if (g_card_done < 0 || out == NULL) { return 0; }
     struct ggml_sched_card_stat acc[GGML_SCHED_CARD_MAX_BE] = {};
+    int64_t prev_t1[GGML_SCHED_CARD_MAX_BE] = {};   // the end of the card's previous split (stamps are in issue order, which is each stream's execution order)
     for (int i = 0; i < g_card_n[g_card_done]; i++) {
         const struct ggml_sched_card_stamp & c = g_card_buf[g_card_done][i];
         if (c.backend_id < 0 || c.backend_id >= GGML_SCHED_CARD_MAX_BE || c.t0 == 0 || c.t1 < c.t0) { continue; }
         struct ggml_sched_card_stat & a = acc[c.backend_id];
+        if (prev_t1[c.backend_id] > 0 && c.t0 > prev_t1[c.backend_id]) {
+            const int64_t gap = c.t0 - prev_t1[c.backend_id];
+            (c.moe ? a.wait_moe_us : a.wait_dense_us) += gap;
+            a.max_wait_us = std::max(a.max_wait_us, gap);
+        }
+        prev_t1[c.backend_id] = c.t1;
         if (c.moe) { a.moe_us += c.t1 - c.t0; a.n_moe++; } else { a.dense_us += c.t1 - c.t0; a.n_dense++; }
         a.first_us = a.first_us == 0 ? c.t0 : std::min(a.first_us, c.t0);
         a.last_us  = std::max(a.last_us, c.t1);
