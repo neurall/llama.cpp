@@ -116,22 +116,6 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
     if (!dsplit_opt_on() || (model.arch != LLM_ARCH_GLM5_NEXT && model.arch != LLM_ARCH_QWEN3NEXT && model.arch != LLM_ARCH_QWEN4EXP && model.arch != LLM_ARCH_MIMO2 && model.arch != LLM_ARCH_DEEPSEEK4 && model.arch != LLM_ARCH_QWEN35MOE)) {
         return;   // a token-range graph exists for these architectures only: no copies for other models (they get the expert split alone)
     }
-    if (dsplit_opt_auto()) {
-        // every weight in VRAM: the layer-split pipeline (stock's path, the micro-batches overlap over the cards) is the fast prompt path and the split graph's worst-case
-        // reserve (Qwen3.6-35B: 27.7 GiB on a 24 GiB card) fails and drops the pipeline for good: 2750 against 4474 prompt t/s. The copies pay off where experts stream.
-        bool all_gpu = !model.tensors_by_name.empty();
-        for (const auto & nt : model.tensors_by_name) {
-            const ggml_tensor * t = nt.second;
-            if (!t || !t->buffer || nt.first == "token_embd.weight") { continue; }   // the input embedding stays in host memory in stock too: a row lookup, no matmul
-            ggml_backend_dev_t d = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer));
-            if (d == nullptr || ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_GPU) { all_gpu = false; break; }
-        }
-        if (all_gpu) {
-            { std::lock_guard<std::mutex> lk(g_mu); g_sets[&model].resident = true; }
-            LLAMA_LOG_INFO("%s: all weights are in VRAM: no dense split (the layer-split pipeline is faster); --moe dense-split=1 forces it\n", __func__);
-            return;
-        }
-    }
     std::vector<ggml_backend_dev_t> gpus;
     for (const auto & d : model.devices) {
         if (ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpus.push_back(d.dev); }
