@@ -4838,6 +4838,7 @@ def cell_status(t0, expect, label, total=None):
                             + col(36, f" {100 * c.get('f', 0):3.0f}% experts") + (col(90, f" (next {100 * c.get('f_next', 0):.0f}%)") if c.get("f_next") != c.get("f") else "")
                             + f"  dense {c.get('dense_ms', 0):.0f} ms " + col(93, f"{c.get('dense_us_tok', 0):.1f} us/token") + col(90, f" + hand-offs {c.get('hop_us_tok', 0):.1f}")
                             + (col(90, f" + KV {c.get('kv_ms', 0):.0f} ms") if c.get("kv_ms") else "") + f"  moe {c.get('moe_ms', 0):.0f} ms"
+                            + (col(33, f"  waits {c.get('wait_dense_ms', 0):.0f}+{c.get('wait_moe_ms', 0):.0f} ms (longest {c.get('wait_max_ms', 0):.1f})") if "wait_max_ms" in c else "")
                             + (col(91 if tmax and t < 0.97 * tmax else 90, f"  {100 * t / tmax:.0f}% of the slowest") if tmax and c.get("tok") else col(90, "  no range"))
                             + (col(35, "  experts") if c.get("experts") else ""))
             elif bal:   # the live balance of the dense split (engine 2026-10-23, two cards): each card's dense and MoE time of the last split pass, its share of the tokens and experts
