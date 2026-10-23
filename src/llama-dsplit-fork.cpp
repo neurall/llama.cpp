@@ -696,6 +696,44 @@ uint64_t llama_moe_cache_pp_cells_get_fork();     // the cells the planned call 
 // of it that a range on another card reads (each pass)
 static double g_hop_bytes_tok = 0.0;
 static std::vector<std::pair<ggml_backend_dev_t, double>> g_kv_layers;
+// Both from the model, for every split pass whatever chose it (llama_dsplit_decide_fork; the first version set them in the planner only, so a forced split
+// balanced on the dense compute alone and put 56% of GLM-5.3-Flash's tokens on the x4 card): the layers with experts and the attention layers' KV rows
+// are read once, the cells the KV holds come with every call (under g_plan_mu).
+static void dsplit_link_model(const llama_model & model, int64_t T) {
+    struct att_layer { ggml_backend_dev_t dev; double row; bool swa; };
+    static const llama_model *    cached = nullptr;
+    static int                    n_moe  = 0;
+    static std::vector<att_layer> att;
+    if (cached != &model) {
+        cached = &model;
+        n_moe  = 0;
+        att.clear();
+        const int L = (int) model.hparams.n_layer();
+        for (int il = 0; il < L && il < (int) model.layers.size(); ++il) {
+            const llama_layer & ly = model.layers[il];
+            const ggml_tensor * const * p = reinterpret_cast<const ggml_tensor * const *>(&ly);
+            bool moe = false;
+            for (size_t i = 0; i < sizeof(llama_layer) / sizeof(ggml_tensor *) && !moe; ++i) { moe = p[i] && strstr(p[i]->name, "_exps"); }
+            n_moe += moe;
+            if (!model.hparams.is_recr(il)) {
+                // MLA (DeepSeek, GLM-DSA, Kimi): the cache holds the compressed latent and its rope part, one K row per cell and no V
+                const double row = model.hparams.is_mla() ? (double) (model.hparams.n_lora_kv + model.hparams.n_rot())
+                                                          : (double) (model.hparams.n_embd_k_gqa(il) + model.hparams.n_embd_v_gqa(il));
+                att.push_back({ model.dev_layer(il), row, model.hparams.is_swa(il) });
+            }
+        }
+    }
+    const int    hop_mode = llama_dsplit_hop_mode_fork();
+    const double b_in  = (double) model.hparams.n_embd * (hop_mode != 0 ? 2.0 : 4.0);
+    const double b_out = (double) model.hparams.n_embd * (hop_mode == 1 ? 2.0 : 4.0);
+    g_hop_bytes_tok = (double) n_moe * (b_in + b_out);
+    const double cells = (double) llama_moe_cache_pp_cells_get_fork();
+    g_kv_layers.clear();
+    for (const auto & a : att) {
+        const double seen = a.swa ? std::min(cells, (double) model.hparams.n_swa + (double) T) : cells;   // a sliding-window layer: only its window
+        if (seen > 0.0) { g_kv_layers.push_back({ a.dev, seen * a.row * 2.0 }); }
+    }
+}
 static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_us, llama_dsplit_plan_fork & out, std::vector<double> & f_help, std::vector<double> & s_cards) {
     out = llama_dsplit_plan_fork();
     f_help.clear();
@@ -817,11 +855,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     out.t_add_ms   = (best_split - raw_split * c_split) / 1e3;
     f_help.assign(L, 0.0);   // the plan keeps the experts on the expert card: experts on the helpers are a measured trial (the live balance)
     s_cards = so.s;
-    // what the live balance models per card from these numbers (dsplit_bal_step)
-    g_hop_bytes_tok = 0.0;
-    for (int il = 0; il < L; ++il) { if (E[il] > 0.0) { g_hop_bytes_tok += in.b_in + in.b_out; } }
-    g_kv_layers.clear();
-    for (int il = 0; il < L; ++il) { if (kv_b[il] > 0.0) { g_kv_layers.push_back({ model.dev_layer(il), kv_b[il] }); } }
+    dsplit_link_model(model, T);   // what the live balance models per card (dsplit_bal_step)
 }
 
 static void dsplit_tune_load(int b);   // below: a size settled by an earlier start
@@ -1317,6 +1351,10 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     // copies (no token-range graph for the model): the choice between one card and the expert split over two or more GPUs
     const bool managed = it != g_sets.end() && dsplit_n_gpus(model) >= 2 &&
                          (it->second.mirror.empty() ? (dsplit_opt_auto() && !it->second.resident) : (dsplit_copies_ready(it->second) && g_cards.size() >= 2));
+    if (managed && n_tokens >= 64 && !it->second.mirror.empty()) {
+        std::lock_guard<std::mutex> pk(g_plan_mu);
+        dsplit_link_model(model, n_tokens);   // the balance's hand-off and KV numbers, in auto and forced mode alike
+    }
     if (managed && n_tokens >= 64) {
         if (dsplit_opt_one()) {
             choice = 0;   // forced to one card (tests)
