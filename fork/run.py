@@ -2606,7 +2606,8 @@ def store(row, build, test, rec, note, hw, vstr):
             d.update(decisions(txt[pos:]))
             row.update({k: v for k, v in d.items() if k.startswith("pf_") or k in ("layout", "placement", "ubatch_max")})
             if not d.get("pf_mode"): row["pf_mode"] = "no-decision"
-            row["par_gpus"] = par_gpus(row.get("pf_all"), row.get("pf_gpus"), " ".join(str(x) for x in (rec.get("args"), row.get("args")) if x))
+    if not row.get("par_gpus"):   # every row, also when another path filled the prefill fields first (the bench's own log reading): 1,1 without a decision line
+        row["par_gpus"] = par_gpus(row.get("pf_all"), row.get("pf_gpus"), " ".join(str(x) for x in (rec.get("args"), row.get("args")) if x))
     for lg in (f"{QDIR}/{CAMPAIGN}.remote.server.log", f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log") if CAMPAIGN else ():   # the log of the cell: copied from the remote machine, or the local one
         if os.path.exists(lg):
             for k, v in server_params(open(lg, errors="replace").read()).items(): row.setdefault(k, v)
