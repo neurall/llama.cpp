@@ -5705,7 +5705,7 @@ def run_list(name, argv):
         qd_on = subprocess.run(["systemctl", "is-active", "--quiet", "queued.service"]).returncode == 0
         for t in (qd if qd_on else []):
             CELL_REC.append(dict(tag=t, section="queued", asked=0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt="", model="", test="", name=t, el=None, lt="", rc=0, res=[], st=None, stock_row=False))
-        print(col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC, headers=False)), flush=True)
+        print(col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC)), flush=True)
         if qd and not qd_on: print(col(90, f"queue daemon off: {len(qd)} old tasks wait in tasks.csv (none starts)"), flush=True)
         return 0
     for r in rows:   # -a: the same cells with extra arguments on our build
