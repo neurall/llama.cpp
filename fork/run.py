@@ -5489,10 +5489,12 @@ def cmd_status(a):
     last = os.path.join(QDIR, "run-list-last.json")
     try: j = json.load(open(RUN_LIVE)); os.kill(j["pid"], 0); live = True
     except (OSError, ValueError, KeyError): live = False
+    lists = sorted(os.path.basename(f)[:-4] for f in glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", "*.csv")))
+    if a.list and a.list not in lists: sys.exit(f"status: no list {a.list!r}; lists: {' '.join(lists)}")
     if a.list: name, argv = a.list, list(a.rest)
     else:
         try: j = json.load(open(last)); name, argv = j["name"], j["argv"]
-        except (OSError, ValueError, KeyError): sys.exit("status: no list has run here yet: run.py status LIST [-b BUILD]")
+        except (OSError, ValueError, KeyError): sys.exit(f"status: no list has run since this command exists: run.py status LIST [-b BUILD]; lists: {' '.join(lists)}")
         print(col(92, f"list {name}: running") if live else col(90, f"list {name}: not running (the last one)"), flush=True)
     return run_list(name, [x for x in argv if x not in ("-n", "--dry", "--status")] + ["--dry", "--status"])
 
