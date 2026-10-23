@@ -5536,14 +5536,7 @@ def cmd_calib(a):
     Starts at the estimated maximum (12k), halves while the prompt needs more than one pass (12, 6, 3, 1), then bisects between the biggest one-pass size and the smallest multi-pass one. The pass
     count never grows when the prompt shrinks, so 3-5 requests (64 answer tokens) per model find the biggest one-pass prompt, which is the pick: bigger prompts amortize the uploads of a pass best."""
     import sqlite3
-    here = os.path.dirname(os.path.abspath(__file__))
-    if a.table:   # per model, per input length: the latest probe of each (cards, size), from bench/calib.csv
-        last = {}
-        for x in csv.DictReader(open(os.path.join(here, "bench", "calib.csv"), newline="")): last[(x["model"], x["cards"], int(x["size_k"]))] = x
-        print("model             cards  input   tokens  passes  prompt t/s  decode t/s  request t/s")
-        for (m, cd, n), x in sorted(last.items()): print(f"{m:<16}  {cd:>5}  {n:>4}k  {x['prompt_tokens']:>7}  {x['passes']:>6}  {x['prompt_tps']:>10}  {x['decode_tps']:>10}  {x['request_tps']:>11}" + ("  <- stored" if x["picked"] == "1" else ""))
-        return
-    b = resolve_build(a.build) if a.build != "latest" else a.build
+    here = os.path.dirname(os.path.abspath(__file__)); b = resolve_build(a.build) if a.build != "latest" else a.build
     src = [r for r in csv.DictReader(open(os.path.join(here, "runs", "onepass.csv"), newline="")) if r["test"] == "pf12k1k"]
     want = [x for x in (a.models or "").split(",") if x]
     rows = [r for r in src if not want or r["model"] in want]
@@ -5583,11 +5576,6 @@ def cmd_calib(a):
         k = max(n for n, e in eff.items() if e >= 0.97 * max(eff.values()))
         picks[r["model"]] = (k, seen[k][2]); print(col("1;92", f"{r['model']}: best prompt {k}k ({seen[k][2]} tokens, {seen[k][0]} pass(es), prompt {seen[k][3]:.0f} t/s, decode {seen[k][4]:.1f} t/s); biggest one-pass {lo}k"))
         for n in sorted(eff): print(f"   {n:>3}k  {ok_[n][2]:>6} tokens  {ok_[n][0]} pass(es)  prompt {ok_[n][3]:>6.0f} t/s  decode {ok_[n][4]:>5.1f} t/s  whole request {eff[n]:>6.0f} t/s")
-        CALIB_CSV = os.path.join(here, "bench", "calib.csv"); new_ = not os.path.exists(CALIB_CSV)   # every probe of every calib run, kept: per model per input length perf tables (`run.py calib --table`)
-        with open(CALIB_CSV, "a", newline="") as f:
-            w = csv.writer(f)
-            if new_: w.writerow(["ts", "build", "cards", "model", "size_k", "prompt_tokens", "passes", "pass_tokens", "prompt_tps", "decode_tps", "request_tps", "picked"])
-            for n in sorted(eff): w.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), b, n_cards(), r["model"], n, ok_[n][2], ok_[n][0], ok_[n][1], f"{ok_[n][3]:.1f}", f"{ok_[n][4]:.2f}", f"{eff[n]:.1f}", int(n == k)])
     if picks and not a.dry and not a.nowrite:
         cards = n_cards(); ini = os.path.join(here, "models.ini"); lines = open(ini).read().split("\n")
         for model, (n, tok) in picks.items():
@@ -8106,7 +8094,7 @@ if __name__ == "__main__":
     op.add_argument("-b", "--build", default="latest"); op.add_argument("--write", action="store_true")
     cb = sp.add_parser("calib", help="find every model's biggest one-pass input prompt by halving from 12k, then bisecting and store best_prompt.<N>gpu in models.ini")
     cb.add_argument("-b", "--build", default="latest"); cb.add_argument("-ng", "--gpus", dest="n_gpus", type=int); cb.add_argument("-m", "--models", help="comma list of model keys of runs/onepass.csv (default all)")
-    cb.add_argument("--dry", action="store_true"); cb.add_argument("--nowrite", action="store_true"); cb.add_argument("--table", action="store_true", help="print the stored probes: per model per input length")
+    cb.add_argument("--dry", action="store_true"); cb.add_argument("--nowrite", action="store_true")
     ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
     ns.add_argument("rep", help="the .nsys-rep file")
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
