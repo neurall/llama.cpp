@@ -142,6 +142,8 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
         cp = configparser.ConfigParser(defaults={"here": os.environ.get("FORK_PROMPTS_DIR") or os.path.join(here, "prompts")})
         cp.read([os.path.join(here, "prompts.ini"), os.path.join(here, "prompts.local.ini")])   # prompts.local.ini: your own prompts and tests, not in git
         out = {k: dict(cp[k]) for k in cp.sections()}
+        for n in range(1, 16):   # pf<N>k1k / pf<N>k: the first N thousand tokens of the 12k source (cut in run.py), answer 1024 tokens; any size, nothing stored per size
+            out.setdefault(f"pf{n}k1k", dict(alias=f"pf{n}k", tokens="1024", prefix="code_review", **{"in": f"{n}k"})); out.setdefault(f"test-pf{n}k", {"in": f"{n}k"})
         # a file you drop into the prompts directory is a test of its own, named after the file: prompt-NAME.txt (not claimed by a section above) -> test NAME, the whole file one chat message,
         # 1024 tokens out (tokens = / ctx = need a section). No ini edit: copy the file, `run run ... ` with a cell whose test is NAME.
         pdir = cp.defaults()["here"]
@@ -5531,7 +5533,7 @@ def cmd_onepass(a):
 
 def cmd_calib(a):
     """`run.py calib [-b BUILD] [-ng N] [-m MODELS] [--dry] [--nowrite]`: find every model's biggest ONE-pass input prompt by bisection and store it in models.ini (best_prompt.<N>gpu, N = the cards seen).
-    Starts at the estimated maximum (12k), halves while the prompt needs more than one pass (12, 6, 4), then bisects between the biggest one-pass size and the smallest multi-pass one. The pass
+    Starts at the estimated maximum (12k), halves while the prompt needs more than one pass (12, 6, 3, 1), then bisects between the biggest one-pass size and the smallest multi-pass one. The pass
     count never grows when the prompt shrinks, so 3-5 requests (64 answer tokens) per model find the biggest one-pass prompt, which is the pick: bigger prompts amortize the uploads of a pass best."""
     import sqlite3
     here = os.path.dirname(os.path.abspath(__file__)); b = resolve_build(a.build) if a.build != "latest" else a.build
@@ -5563,9 +5565,9 @@ def cmd_calib(a):
             x = ask(n)
             if x is None or x[0] <= 1: break
             hi = n
-            if n <= 4: break
-            n = max(4, n // 2)
-        if x is None or x[0] > 1: print(col(33, f"{r['model']}: no size from 4k ran in one pass or a run failed: nothing stored")); continue
+            if n <= 1: break
+            n = max(1, n // 2)
+        if x is None or x[0] > 1: print(col(33, f"{r['model']}: no size from 1k ran in one pass or a run failed: nothing stored")); continue
         lo = n   # biggest known one-pass size; hi = smallest known multi-pass size: bisect between them
         while lo + 1 < hi:
             m = (lo + hi) // 2; y = ask(m)
@@ -5879,7 +5881,7 @@ def run_list(name, argv):
     return 1 if bad else 0
 
 
-PF_FILES = (2, 4, 5, 6, 7, 8, 9, 10, 11)   # sizes (k) with a frozen prompt file prompts/src_Nk.cpp and a test alias pfNk1k in prompts.ini
+PF_FILES = ()   # sizes (k) with a frozen prompt file prompts/src_Nk.cpp and a test alias pfNk1k in prompts.ini
 
 
 def n_cards():
