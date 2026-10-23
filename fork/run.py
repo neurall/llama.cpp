@@ -5640,10 +5640,12 @@ def cmd_calib(a):
         fit, bpt, gib = feasible_ctx(mp_, int(hw_key()[:-1]))
         pps = [x[0] for x in c.execute("select pp from runs where model=? and test like 'pf%' and cast(ok as integer)=1 and pp is not null order by ts desc limit 20", (os.path.basename(mp_),))]
         if pps: fit = min(fit, int(statistics.median(pps) * 600))   # time is a resource too: a probe may take 10 minutes of prefill at the speed the model last showed (feedback: no cell over 10-15 min)
-        n = ceil_k or max(1, int((fit - 2048) * 0.9 / 1000))   # no static start: the biggest prompt the machine can hold, by arithmetic (feasible_ctx), minus the answer and a margin; ~1.1 tokens per nominal token on the big tokenizers
+        n = max(1, int((fit - 2048) * 0.9 / 1000))   # no static start: the biggest prompt the machine can hold, by arithmetic (feasible_ctx), minus the answer and a margin; ~1.1 tokens per nominal token on the big tokenizers
         print(col(90, f"{r['model']}: KV {bpt} bytes per token, {gib:.0f} GiB for it: {fit} tokens fit (memory, the trained context and 10 minutes of prefill cap it): start at {n}k"), flush=True)
-        while n > 1 and not ceil_k and not fits(r, n): n //= 2   # (no pass ceiling known) too big for this machine: half of it (n log n steps down), each a start-up without prefill
-        if ceil_k: ceil_k = min(ceil_k, n)
+        while n > 1 and not fits(r, n): n //= 2   # too big for this machine: half of it (n log n steps down), each a start-up without prefill
+        sec_ = model_alias(mp_)
+        if sec_ and not a.dry: ini_set_maxpp(sec_, int(n * 1100)); print(col(92, f"{r['model']}: longest prompt that allocates at {hw_key()}: about {int(n * 1100)} tokens ({n}k), written to models.ini (maxpp)"), flush=True)
+        if ceil_k: n = min(ceil_k, n)   # the engine's pass ceiling is where one pass ends: the search starts there
         while True:   # the maximum that fits: a prompt the server cannot allocate or run halves
             x = ask(n)
             if x is not None or n <= 1: break
@@ -6033,6 +6035,19 @@ def ini_set_bestpp(sec, tok, out, pp, tps, pp_s, tg_s, score):
     j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == "bestpp"), None)
     e = bestpp_entries(lines[j].split("=", 1)[1]) if j is not None else {}; e[int(hw_key()[:-1])] = (tok, out, pp, tps, pp_s, tg_s, score)
     new = "bestpp = [" + ",".join(f"({g},{t},{o},{p:.0f},{d:.1f},{ps:.1f},{ts:.1f},{sc:.2f})" for g, (t, o, p, d, ps, ts, sc) in sorted(e.items(), reverse=True)) + "]"
+    if j is not None: lines[j] = new
+    else: lines.insert(i1, new)
+    open(ini, "w").write("\n".join(lines))
+
+
+def ini_set_maxpp(sec, tokens):
+    """models.ini [sec]: the line maxpp = [(VRAM GiB, longest prompt in tokens), ...] with the entry of this VRAM (hw_key) set: the biggest context a dry allocation request got through, at any number of passes"""
+    ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); lines = open(ini).read().split("\n")
+    i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+    while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
+    j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == "maxpp"), None)
+    e = {int(g): int(t) for g, t in re.findall(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)", lines[j].split("=", 1)[1])} if j is not None else {}; e[int(hw_key()[:-1])] = int(tokens)
+    new = "maxpp = [" + ",".join(f"({g},{t})" for g, t in sorted(e.items(), reverse=True)) + "]"
     if j is not None: lines[j] = new
     else: lines.insert(i1, new)
     open(ini, "w").write("\n".join(lines))
