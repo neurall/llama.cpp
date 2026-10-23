@@ -485,6 +485,20 @@ static std::atomic<double> g_split_calib { 1.25 };
 // The calibration is learned from the first measured split pass (it was a 30% step per pass from 1.0: GLM 3-bit at 3.2k tokens ran 1.68x its plan, so the first
 // requests kept choosing a split that lost to one card by 18%) and kept per model in the state file, so a restart starts from what was measured.
 static std::atomic<int> g_calib_n { 0 };
+// Per pass size (2026-10-23): the measured over the modelled time of each size, for the split and for one card, from that size's passes (first sets it, later ones
+// average in half). The model misses different things at different sizes (the split at 4096 tokens of GLM-5.3-Flash 3.5-bit ran 1.94x its plan, at 4233
+// 0.98x; one card at 3.5k tokens on Qwen3.8-Flash-Next 0.73x, at 13.7k 1.00x), so one global factor fit no size. A size not measured takes the nearest
+// measured one, else the prior (split 1.25, one card 1.0). Kept per model, cards and build in the state file. Under g_plan_mu.
+static std::map<int, double> g_calib_split_b, g_calib_one_b;
+static std::map<int, double> g_one_raw_b;   // the model's one-card time per token of the last plan of each size (us), raw: what a measured one-card pass is set against
+static double calib_near(const std::map<int, double> & m, int b, double dflt) {
+    if (m.empty()) { return dflt; }
+    auto it = m.find(b);
+    if (it != m.end()) { return it->second; }
+    int best = -1, dist = 1 << 30;
+    for (const auto & kv : m) { if (std::abs(kv.first - b) < dist) { dist = std::abs(kv.first - b); best = kv.first; } }
+    return best >= 0 ? m.at(best) : dflt;
+}
 static std::string g_calib_section;
 // Everything learned here is stored under a key of the HARDWARE it was learned on: the cards in model order, each as name, PCI bus id (the physical slot), memory and
 // the measured link class (rounded to 5 GB/s). Move a card to another slot, add or remove one, or reorder the devices and the key changes: the old entries stay in the
@@ -539,10 +553,32 @@ static void dsplit_calib_load(const llama_model & model) {
     g_calib_section = moe_state_section(model);
     g_hw_key = dsplit_hw_key(model);
     std::string v;
+    if (dsplit_state_on()) {   // every size's stored factors (this model, cards and build)
+        std::vector<std::pair<std::string, std::string>> kv;
+        const std::string suf = dsplit_state_key("");
+        if (moe_state_section_kv(g_calib_section, kv)) {
+            for (const auto & p : kv) {
+                const std::string & k = p.first;
+                if (k.size() <= suf.size() || k.compare(k.size() - suf.size(), suf.size(), suf) != 0) { continue; }
+                const double c = atof(p.second.c_str());
+                if (c < 0.3 || c > 3.0) { continue; }
+                if (k.rfind("dsplit_calib5_b", 0) == 0) { g_calib_split_b[atoi(k.c_str() + 15)] = c; }
+                if (k.rfind("dsplit_calib1_b", 0) == 0) { g_calib_one_b[atoi(k.c_str() + 15)] = c; }
+            }
+            if (!g_calib_split_b.empty() || !g_calib_one_b.empty()) {
+                LLAMA_LOG_WARN("split planner: %zu split and %zu one-card size factors from the state file\n", g_calib_split_b.size(), g_calib_one_b.size());
+            }
+        }
+    }
     if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_calib4"), v)) {
         const double c = atof(v.c_str());
         if (c >= 0.5 && c <= 3.0) { g_split_calib.store(c); g_calib_n = 0; LLAMA_LOG_WARN("split planner: calibration %.2f from the state file (a prior: the first measured split pass replaces it)\n", c); }
     }
+}
+static void dsplit_calib_b_save(const char * what, int b, double c) {   // a size's factor (dsplit_calib5_b: split, dsplit_calib1_b: one card)
+    if (!dsplit_state_on()) { return; }
+    char v[32]; snprintf(v, sizeof v, "%.4f", c);
+    moe_state_set(g_calib_section, { { dsplit_state_key(std::string(what) + std::to_string(b)), v } });
 }
 static void dsplit_calib_save(double c) {
     if (!dsplit_state_on()) { return; }
@@ -674,14 +710,19 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
         for (size_t r = 0; r < g_layer_order.size(); ++r) { g_layer_rank[g_layer_order[r]] = (int) r; }
     }
     const dsx_out so = dsx_plan(in);
-    const double t_one = so.t_one;
+    // both estimates scaled by what passes of this size (or the nearest measured size) measured against the model (g_calib_split_b, g_calib_one_b)
+    const int    bk      = dsplit_bucket_of(T);
+    g_one_raw_b[bk] = so.t_one / (double) T;
+    const double c_one   = calib_near(g_calib_one_b, bk, 1.0);
+    const double c_split = calib_near(g_calib_split_b, bk, g_split_calib.load());
+    const double t_one   = so.t_one * c_one;
     double best_split = so.best_split;
     const double best_s = so.best_s;
     const std::vector<double> best_f = so.best_f;
     // the split's estimate is scaled by what earlier split passes measured against their plan (llama_dsplit_report_fork); one card's estimate held to
     // within 4% (Qwen3.8-Flash-Next: 2603 / 2697 ms at 3k, 2038 / 2104 at 1.9k), the split's was 21-26% short (waits the model does not see)
     const double raw_split = best_split;
-    best_split *= g_split_calib.load();
+    best_split *= c_split;
     // What the split costs after the prompt: its mirror copies of the dense weights sit in lent cache blocks, and the experts they displaced have to be
     // uploaded again before decode is back at full speed. How much of that a prompt really displaces grows with its length and saturates: the fraction of a
     // layer's experts that n tokens touch, 1 - (1 - k/E)^n (a 1-token prompt displaces nothing worth counting, a long one the whole lent area). The refill
@@ -695,12 +736,13 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
         best_split += touched * dense_bytes / (Bm * 1e3) * llama_moe_live_get("refill_weight") / n_pass;   // live: POST /moe/params
     }
     out.valid      = true;
-    out.split      = best_split > 0.0 && best_split < 0.95 * t_one;
+    // clearly ahead after the calibration (20%), else one card: a split predicted 5-15% ahead measured slower on every Qwen3.8-Flash-Next size (2026-10-23)
+    out.split      = best_split > 0.0 && best_split < 0.80 * t_one;
     out.share      = best_s;
     out.t_one_ms   = t_one / 1e3;
     out.t_split_ms = best_split / 1e3;
     out.t_raw_ms   = raw_split / 1e3;
-    out.t_add_ms   = (best_split - raw_split * g_split_calib.load()) / 1e3;
+    out.t_add_ms   = (best_split - raw_split * c_split) / 1e3;
     f_help = best_f;
 }
 
@@ -998,7 +1040,24 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
                 const double nc = g_calib_n.fetch_add(1) == 0 ? r : 0.5 * g_split_calib.load() + 0.5 * r;
                 g_split_calib.store(nc);
                 dsplit_calib_save(nc);
+                const int bk = dsplit_bucket_of(g_pend_max);   // and this size's own factor
+                auto ct = g_calib_split_b.find(bk);
+                g_calib_split_b[bk] = ct == g_calib_split_b.end() ? r : 0.5 * ct->second + 0.5 * r;
+                dsplit_calib_b_save("dsplit_calib5_b", bk, g_calib_split_b[bk]);
                 pit->second.c_us = -1.0;   // recompute the plan of this size with the new calibration
+            }
+        } else {
+            // one card: this size's measured over the model's one-card time
+            std::lock_guard<std::mutex> pk(g_plan_mu);
+            const int bk = dsplit_bucket_of(g_pend_max);
+            auto rt = g_one_raw_b.find(bk);
+            if (rt != g_one_raw_b.end() && rt->second > 0.0) {
+                const double r1 = std::max(0.3, std::min(3.0, v / rt->second));
+                auto ct = g_calib_one_b.find(bk);
+                g_calib_one_b[bk] = ct == g_calib_one_b.end() ? r1 : 0.5 * ct->second + 0.5 * r1;
+                dsplit_calib_b_save("dsplit_calib1_b", bk, g_calib_one_b[bk]);
+                auto pit = g_plans.find(bk);
+                if (pit != g_plans.end()) { pit->second.c_us = -1.0; }   // recompute the plan of this size with it
             }
         }
         B.us_tok[c] = (B.n[c] == 0 || B.prior[c]) ? v : 0.5 * (B.us_tok[c] + v);   // the newer measurement weighs half; a stored value is only a prior and is replaced
