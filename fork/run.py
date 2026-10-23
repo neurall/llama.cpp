@@ -1468,6 +1468,65 @@ def decisions(log):
 RUN_COLS += DECISION_COLS
 
 
+def cmd_nsys(a):
+    """Where the time of a profiled prompt pass went, per card: an nsys report of a cell run with --wrap "nsys profile ..." (exported to sqlite next to it once).
+    The pass is the longest stretch of kernels without a gap over 50 ms (the prompt, its fill copies before it and the few decode tokens after it). Per card: kernel
+    time, the gaps of its compute stream (the card waiting: for a hand-off from the other card, an upload, the host), copies by kind, the staged hand-off reads
+    (k_xstage_read*, the zero-copy write half of a card-to-card copy) and the kernels that took the most time. --gaps N lists the N longest waits with the kernels
+    around them."""
+    import sqlite3
+    rep = a.rep
+    db = re.sub(r"\.nsys-rep$", "", rep) + ".sqlite"
+    if not os.path.exists(db) or os.path.getmtime(db) < os.path.getmtime(rep):
+        subprocess.run(["nsys", "export", "--type", "sqlite", "--force-overwrite", "true", "-o", db, rep], check=True, stdout=subprocess.DEVNULL)
+    c = sqlite3.connect(db)
+    names = dict(c.execute("select id, value from StringIds"))
+    K = c.execute("select start, end, deviceId, streamId, shortName from CUPTI_ACTIVITY_KIND_KERNEL order by start").fetchall()
+    M = c.execute("select start, end, deviceId, streamId, copyKind, bytes from CUPTI_ACTIVITY_KIND_MEMCPY order by start").fetchall()
+    if not K:
+        print("no kernels in", db); return
+    cl, (cs, ce) = [], K[0][:2]
+    for s, e, *_ in K[1:]:
+        if s - ce > 50e6: cl.append((cs, ce)); cs, ce = s, e
+        else: ce = max(ce, e)
+    cl.append((cs, ce))
+    w0, w1 = max(cl, key=lambda x: x[1] - x[0])
+    W = (w1 - w0) / 1e9
+    def union(iv):   # seconds covered by a list of (start, end)
+        t, end = 0, None
+        for s, e in sorted(iv):
+            if end is None or s > end: t += e - s; end = e
+            elif e > end: t += e - end; end = e
+        return t / 1e9
+    kind = {1: "HtoD", 2: "DtoH", 8: "DtoD", 10: "PtoP"}
+    print(f"pass window {W:.3f} s (of {len(cl)} kernel stretches; {(K[-1][1] - K[0][0]) / 1e9:.1f} s profiled)")
+    print("| card | kernels s | compute-stream gaps s | waits over 1 ms | hand-off reads s | HtoD GB in s | DtoH GB in s | PtoP/DtoD GB |")
+    print("|---|---|---|---|---|---|---|---|")
+    top = {}
+    for d in sorted({k[2] for k in K}):
+        kd = [k for k in K if k[2] == d and k[0] >= w0 and k[1] <= w1]
+        if not kd: continue
+        st = max({k[3] for k in kd}, key=lambda s: sum(1 for k in kd if k[3] == s))   # the compute stream: the one with the most kernels
+        ks = [k for k in kd if k[3] == st]
+        gaps = [(ks[i + 1][0] - ks[i][1], i) for i in range(len(ks) - 1) if ks[i + 1][0] > ks[i][1]]
+        g_all = sum(g for g, _ in gaps) / 1e9
+        g_big = [(g, i) for g, i in gaps if g > 1e6]
+        xs = union([(k[0], k[1]) for k in kd if names.get(k[4], "").startswith("k_xstage_read")])
+        md = [m for m in M if m[2] == d and m[0] >= w0 and m[1] <= w1]
+        def cp(ks_):
+            sel = [m for m in md if m[4] in ks_]
+            return sum(m[5] for m in sel) / 1e9, union([(m[0], m[1]) for m in sel])
+        h2d, d2h, p2p = cp((1,)), cp((2,)), cp((8, 10))
+        print(f"| {d} | {union([(k[0], k[1]) for k in kd]):.3f} | {g_all:.3f} | {len(g_big)} ({sum(g for g, _ in g_big) / 1e9:.3f} s) | {xs:.3f} | {h2d[0]:.2f} in {h2d[1]:.3f} | {d2h[0]:.2f} in {d2h[1]:.3f} | {p2p[0]:.2f} |")
+        tk = {}
+        for k in kd: tk[names.get(k[4], "?")] = tk.get(names.get(k[4], "?"), 0) + k[1] - k[0]
+        top[d] = (sorted(tk.items(), key=lambda x: -x[1])[:a.top], sorted(g_big, reverse=True)[:a.gaps], ks)
+    for d, (tk, gb, ks) in top.items():
+        print(f"\ncard {d}: kernels by time: " + ", ".join(f"{n[:40]} {t / 1e9:.3f} s" for n, t in tk))
+        for g, i in gb:
+            print(f"  wait {g / 1e6:7.1f} ms at {(ks[i][1] - w0) / 1e9:7.3f} s after {names.get(ks[i][4], '?')[:40]} before {names.get(ks[i + 1][4], '?')[:40]}")
+
+
 def cmd_cells(a):
     """A markdown table of the cells of one campaign prefix (decode, prompt speed, hit rate) with what the server log says about the memory: the context the server
     ran with (n_ctx_slot) and the pool of the first card, so a cell that did not get the setting it was queued for shows at once."""
@@ -7809,6 +7868,10 @@ if __name__ == "__main__":
     mf.add_argument("--days", type=float, default=7.0, help="look at runs of the last N days")
     mf.add_argument("--tol", type=float, default=0.05, help="a choice counts as wrong when the other mode was faster by more than this share")
     mf.add_argument("--model", help="part of the model name")
+    ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
+    ns.add_argument("rep", help="the .nsys-rep file")
+    ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
+    ns.add_argument("--gaps", type=int, default=0, help="list the N longest compute-stream waits per card with the kernels around them")
     if len(sys.argv) > 1 and (sys.argv[1] in ("-h", "--help") or sys.argv[1] == "run" and len(sys.argv) > 2 and sys.argv[2] in ("-h", "--help")): run_list_help()
     if len(sys.argv) == 2 and sys.argv[1] == "run": sys.exit(run_list_detached(None, []))   # `run run` alone: attach to the detached run, if any
     if len(sys.argv) > 3 and sys.argv[1] == "run" and "-c" in sys.argv[2:-1]:   # `run -c gainers ...` = `run gainers ...`: -c names the campaign list
@@ -7817,5 +7880,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "nsys": cmd_nsys,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
