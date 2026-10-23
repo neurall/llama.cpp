@@ -4685,12 +4685,14 @@ def cell_status(t0, expect, label, total=None):
                 parts.append(col(37, "pcie ") + " ".join(level(pc(l["gbs"], l["max_gbs"]) / 100, 0.7, 0.9, f"l{l['link']} {l['gbs']:.1f}/{l['max_gbs']:.0f} GB/s {pc(l['gbs'], l['max_gbs']):.0f}%") for l in bw.get("links", [])))
             eng = " ".join(parts)
             sp = es.get("split") or {}; links = bw.get("links", []) if bw else []
-            pgpus = (len(links) if links else 0) if sp.get("prefill") in (None, -1) else sp.get("prefill_gpus", 0)   # prompt: the split's cards, else one card (the cache path runs the pass on the cards that hold cache layers)
-            dgpus = bw.get("gpus") if bw else sp.get("gpus")
+            # cards that COMPUTE at the same time (user 2026-10-23): only a split prompt pass runs on several cards at once; every other pass and every decode token
+            # runs its layers on one card after another (layer split), however many cards hold cache layers (shown apart as "cache on N cards")
+            pgpus = sp.get("prefill_gpus", 0) if sp.get("prefill") == 1 else 1
+            ncache = bw.get("gpus") if bw else sp.get("gpus")
             up = sum(1 for l in links if l.get("gbs", 0) > 0.05)
             mode = [col(32, "moe cache") if bw else col(33, "stock placement")]
             mode.append(col(32, f"dense split ON {sp.get('devs', '')}") if sp.get("prefill") == 1 else col(33, "dense split off (one card)") if sp.get("prefill") == 0 else col(90, "dense split n/a"))
-            mode.append(col(36, f"prompt gpus {pgpus or '?'}") + col(90, f" decode gpus {dgpus or '?'}") + (col(35, f" uploading on {up}/{len(links)} links") if links else ""))
+            mode.append(col(36, f"par gpus prompt {pgpus or '?'} decode 1") + (col(90, f"  cache on {ncache} cards") if ncache else "") + (col(35, f" uploading on {up}/{len(links)} links") if links else ""))
             if sp.get("why"): mode.append(col(90, sp["why"]))
             eng = eng + "\n" + col(37, "engine") + " " + "  ".join(mode)
             dec = es.get("decisions") or []
