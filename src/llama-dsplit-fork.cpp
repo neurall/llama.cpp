@@ -472,7 +472,10 @@ std::map<int, dsplit_tune> g_tune;
 bool g_tune_changed = false;
 }
 
-static std::atomic<double> g_split_calib { 1.0 };   // measured over modelled split time (EMA over measured split passes)
+// measured over modelled split time (EMA over measured split passes). Starts at 1.25, not 1.0: the model leaves out waits it cannot see, and every split
+// measured on 2x RTX 3090 (x16 + x4) ran longer than planned: Qwen3.8-Flash-Next 2026-10-23 +7% (3k), +9% (3k), +20% (12k), +27% (12k); earlier 21-26%
+// (comment at dsplit_plan_compute). A split the model puts more than 25% ahead is still tried; the first measured split pass replaces the prior.
+static std::atomic<double> g_split_calib { 1.25 };
 // The calibration is learned from the first measured split pass (it was a 30% step per pass from 1.0: GLM 3-bit at 3.2k tokens ran 1.68x its plan, so the first
 // requests kept choosing a split that lost to one card by 18%) and kept per model in the state file, so a restart starts from what was measured.
 static std::atomic<int> g_calib_n { 0 };
@@ -516,24 +519,36 @@ static std::string dsplit_hw_key(const llama_model & model) {
 // State keys carry a format number (2026-10-17: calib3, arm2): the calibration was learned against the planner's old model (no attention, a stale compute per token),
 // and the arms were bucketed by pass size only. Read under the new model, MiMo's stored 1.714 made every split look 1.7x slower, the planner never chose one, and
 // only a measured split pass can change the calibration: stuck. The old entries stay in the file, unused.
+// Stored again since 2026-10-23 (the ini-fix of 2026-10-22 kept the calibration and the measured arms per session only). Without them every server start
+// paid one split pass the planner predicted ahead and the cards then measured slower: Qwen3.8-Flash-Next on 2x RTX 3090 (x16 + x4), second prompt of each
+// start, one card -> split 1421 -> 1091 (3k, -23%), 1358 -> 1177 (3k, -13%), 1535 -> 1459 (12k, -5%) prompt t/s. Both are measurements on these cards, inputs.
+// Key: the model's section + cards/slots/links + build: a new build, card or slot measures again; older keys stay in the file, unused.
+static std::string dsplit_state_key(const std::string & what) {
+    const char * bid = llama_moe_get_opt("build-id");
+    return what + "@" + g_hw_key + "#" + (bid ? bid : "");
+}
+static bool dsplit_state_on() { return !g_calib_section.empty() && !g_hw_key.empty() && llama_moe_get_opt("build-id"); }   // no build id (a tool without common's setup): session only
 static void dsplit_calib_load(const llama_model & model) {
     if (!g_calib_section.empty()) { return; }
     g_calib_section = moe_state_section(model);
     g_hw_key = dsplit_hw_key(model);
     std::string v;
-    // ini-fix (2026-10-22): the calibration is not read from the state file: it made a warm start choose its split differently from a cold one
-    if (false && !g_calib_section.empty() && moe_state_get(g_calib_section, "dsplit_calib3@" + g_hw_key, v)) {
+    if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_calib4"), v)) {
         const double c = atof(v.c_str());
         if (c >= 0.5 && c <= 3.0) { g_split_calib.store(c); g_calib_n = 0; LLAMA_LOG_WARN("split planner: calibration %.2f from the state file (a prior: the first measured split pass replaces it)\n", c); }
     }
 }
-// the measured per-token time of each arm in a size bucket, kept per hardware: "us_one n_one us_split n_split" (counts capped at 3 so new measurements still move it)
+static void dsplit_calib_save(double c) {
+    if (!dsplit_state_on()) { return; }
+    char v[32]; snprintf(v, sizeof v, "%.3f", c);
+    moe_state_set(g_calib_section, { { dsplit_state_key("dsplit_calib4"), v } });
+}
+// the measured per-token time of each arm in a size bucket, kept per hardware and build: "us_one n_one us_split n_split" (counts capped at 3 so new measurements still move it)
 static std::set<int> g_bucket_loaded;
 static void dsplit_bucket_load(int b) {
-    if (g_calib_section.empty() || g_hw_key.empty() || !g_bucket_loaded.insert(b).second) { return; }
-    if (true) { return; }   // ini-fix (2026-10-22): the arms are measured in the session only; a stored arm made the first prompt of a warm start differ from a cold one
+    if (!dsplit_state_on() || !g_bucket_loaded.insert(b).second) { return; }
     std::string v;
-    if (!moe_state_get(g_calib_section, "dsplit_arm2_b" + std::to_string(b) + "@" + g_hw_key, v)) { return; }
+    if (!moe_state_get(g_calib_section, dsplit_state_key("dsplit_arm3_b" + std::to_string(b)), v)) { return; }
     double u0, u1; int n0, n1;
     if (sscanf(v.c_str(), "%lf %d %lf %d", &u0, &n0, &u1, &n1) == 4 && u0 >= 0 && u1 >= 0) {
         dsplit_bucket & B = g_buckets[b];
@@ -542,12 +557,27 @@ static void dsplit_bucket_load(int b) {
         LLAMA_LOG_WARN("split planner: size bucket %d from the state file: one card %s, split %s\n", b, n0 > 0 ? (std::to_string((int) (1e6 / u0)) + " tokens/s").c_str() : "-", n1 > 0 ? (std::to_string((int) (1e6 / u1)) + " tokens/s").c_str() : "-");
     }
 }
+// every stored bucket of this model, cards and build, once per process: the first pass of a size never measured takes the nearest measured size's arm
+// ("measured: the nearest size") instead of one card. Before (2026-10-23), only the pass's own bucket was read, so GLM-5.3-Flash 3.5-bit ran the first
+// 4233-token chunk of a 12k prompt on one card at 240 t/s while the stored 4096-token bucket said split, 312 t/s.
+static void dsplit_bucket_load_all() {
+    static bool done = false;
+    if (done || !dsplit_state_on()) { return; }
+    done = true;
+    std::vector<std::pair<std::string, std::string>> kv;
+    if (!moe_state_section_kv(g_calib_section, kv)) { return; }
+    const std::string pre = "dsplit_arm3_b", suf = dsplit_state_key("");   // keys are pre + bucket + "@<hw>#<build>"
+    for (const auto & p : kv) {
+        const std::string & k = p.first;
+        if (k.compare(0, pre.size(), pre) != 0 || k.size() <= suf.size() || k.compare(k.size() - suf.size(), suf.size(), suf) != 0) { continue; }
+        dsplit_bucket_load(atoi(k.c_str() + pre.size()));
+    }
+}
 static void dsplit_bucket_save(int b) {
-    if (true) { (void) b; return; }   // ini-fix (2026-10-22): not stored (see dsplit_bucket_load)
-    if (g_calib_section.empty() || g_hw_key.empty()) { return; }
+    if (!dsplit_state_on()) { return; }
     const dsplit_bucket & B = g_buckets[b];
     char v[96]; snprintf(v, sizeof v, "%.3f %d %.3f %d", B.us_tok[0], std::min(B.n[0], 3), B.us_tok[1], std::min(B.n[1], 3));
-    moe_state_set(g_calib_section, { { "dsplit_arm2_b" + std::to_string(b) + "@" + g_hw_key, v } });
+    moe_state_set(g_calib_section, { { dsplit_state_key("dsplit_arm3_b" + std::to_string(b)), v } });
 }
 
 double   llama_moe_cache_compute_att_us_fork();   // llama-moecache-fork.cpp: the attention part of the compute per token at the planned cells (declared here, no header edit)
@@ -788,8 +818,12 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
             const int b = dsplit_bucket_of(n_tokens);
             dsplit_bucket & B = g_buckets[b];
             // the split planner first (see above): sure when it puts the two more than 15% apart; then nothing is tried against it
-            const llama_dsplit_plan_fork plan = llama_dsplit_plan_get_fork(model, n_tokens);
+            llama_dsplit_plan_fork plan = llama_dsplit_plan_get_fork(model, n_tokens);
             dsplit_bucket_load(b);   // what an earlier run measured on these cards in this size bucket
+            dsplit_bucket_load_all();   // and in every other size, for the nearest-size fallback below
+            // one card measured at this size: the split is weighed against that, not against the model's one-card time (2026-10-23, Qwen3.8-Flash-Next 3k:
+            // the model said 3346 / 3369 ms, the pass just measured took 2457 / 2573 ms; the inflated one-card time made a slower split look 11-19% ahead)
+            if (plan.valid && B.n[0] > 0) { plan.t_one_ms = B.us_tok[0] * (double) n_tokens / 1e3; }
             const bool plan_sure = plan.valid && std::fabs(plan.t_split_ms - plan.t_one_ms) >= 0.15 * plan.t_one_ms;
             // No trials by default: a pass is never run in the configuration the model expects to be slower just to find out. The planner decides; the split must be
             // predicted clearly ahead (8%) to be used, a close call stays on one card. --moe split-explore=1 brings the old trial-and-error back (the other
@@ -921,7 +955,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
                 // the first measurement sets the factor, later ones average in half and half
                 const double nc = g_calib_n.fetch_add(1) == 0 ? r : 0.5 * g_split_calib.load() + 0.5 * r;
                 g_split_calib.store(nc);
-                (void) nc;   // ini-fix (2026-10-22): the calibration is not stored (see dsplit_calib_load)
+                dsplit_calib_save(nc);
                 pit->second.c_us = -1.0;   // recompute the plan of this size with the new calibration
             }
         }
