@@ -4869,6 +4869,7 @@ def cell_status(t0, expect, label, total=None):
             LIVE_DONE[0] = lv.get("done") or 0   # a prompt call is running: its pass size, not the finished one before it
             ub = lv.get("ubatch") or pr.get("ubatch") or sv.get("n_ubatch")
             parts = [col(37, "engine")]
+            io = [col(37, "engine")]   # the transfer rates on a line of their own: on the engine line it wrapped once "pp by size" listed two sizes (user 2026-10-25: stale cpu/engine rows, 1-row jumps)
             if ub: parts.append(col(36, f"ubatch {ub}") + (col(90, f" (max {pr['ceiling']})") if (lv.get("ubatch") or pr.get("ubatch")) and pr.get("ceiling") else ""))
             if sv.get("threads") is not None: parts.append(col(36, f"thr {sv.get('threads')}/{sv.get('threads_batch')}"))
             if sv.get("n_ctx_slot") is not None: parts.append(col(36, f"ctx {sv.get('n_ctx_slot')}"))
@@ -4877,14 +4878,13 @@ def cell_status(t0, expect, label, total=None):
             if tk.get("tokens"): parts.append(col(94, f"{tk['last64']:.1f} ms/tok") + col(90, f" (last {tk['last']:.1f}, all {tk['all']:.1f})"))
             if lv.get("done") and lv.get("s"): parts.append(col(32, f"pp {lv['done'] / lv['s']:.0f} t/s") + col(90, f" running: {lv['done']}/{lv['tokens']} tok in {lv['s']:.0f} s"))   # the running prompt call, live
             elif pr.get("last_tps"): parts.append(col(32, f"pp {pr['last_tps']:.0f} t/s") + (col(90, " by size " + " ".join(f"{k}:{v:.0f}" for k, v in (pr.get("tps_by_ubatch") or {}).items())) if pr.get("tps_by_ubatch") else ""))
-            if rx and lv: parts.append(col(37, "pcie rx ") + " ".join(f"g{i} {v:.1f} GB/s" for i, v in enumerate(rx)) + col(90, " (nvidia-smi, live)"))
+            if rx and lv: io.append(col(37, "pcie rx ") + " ".join(f"g{i} {v:.1f} GB/s" for i, v in enumerate(rx)) + col(90, " (nvidia-smi, live)"))
             if bw:   # RAM read rate (CPU experts + uploads) and each PCIe link, in GB/s against the probed maximum, and as a share of it
                 pc = lambda v, mx: 100 * v / mx if mx else 0
                 rp = pc(bw.get("ram_gbs", 0), bw.get("ram_max_gbs", 0))
-                io = [col(37, "engine")]   # the transfer rates on a line of their own: on the engine line it wrapped once "pp by size" listed two sizes (user 2026-10-25: stale cpu/engine rows, 1-row jumps)
                 io.append(col(37, "mem bw ") + level(rp / 100, 0.7, 0.9, f"{bw.get('ram_gbs', 0):.1f}/{bw.get('ram_max_gbs', 0):.0f} GB/s {rp:.0f}%"))
                 io.append(col(37, "pcie ") + " ".join(level(pc(l["gbs"], l["max_gbs"]) / 100, 0.7, 0.9, f"l{l['link']} {l['gbs']:.1f}/{l['max_gbs']:.0f} GB/s {pc(l['gbs'], l['max_gbs']):.0f}%") for l in bw.get("links", [])))
-            eng = " ".join(parts) + ("\n" + " ".join(io) if bw else "")
+            eng = " ".join(parts) + ("\n" + " ".join(io) if len(io) > 1 else "")
             sp = es.get("split") or {}; links = bw.get("links", []) if bw else []
             # cards that COMPUTE at the same time (user 2026-10-23): only a split prompt pass runs on several cards at once; every other pass and every decode token
             # runs its layers on one card after another (layer split), however many cards hold cache layers (shown apart as "cache on N cards")
