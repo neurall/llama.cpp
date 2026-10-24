@@ -3456,6 +3456,7 @@ static bool ggml_cuda_xstage_zc_on() {
     return on;
 }
 static void ggml_cuda_xstage_read(void * dst, const void * src_dev, size_t n, cudaStream_t stream) {
+    if (n == 0) return;   // a card with no tokens in this pass (--moe dense-split=1 on a prompt the first card takes whole): zero bytes, and a grid of 0 blocks is "invalid argument"
     const int threads = 256;
     if ((((uintptr_t) dst | (uintptr_t) src_dev) & 15) == 0 && n >= 16) {
         const size_t n16 = n / 16;

@@ -1370,8 +1370,13 @@ std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::ve
 // from limit x cards). A sliding-window KV cache (MiMo: 39 of 48 layers) holds the window plus the cells of one pass, which it writes before it attends: made for
 // one card's micro-batch (16384) it refused the split pass of 27623 tokens ("failed to find a memory slot for batch of size 27623", MiMo 60k prompt, 2026-10-24).
 // Its extra cells (1.5 GiB per card on MiMo) come out of the expert cache: the KV zone lies over expert blocks of any class (no zero blocks between the classes).
+// Only a FORCED dense split (--moe dense-split=1) runs passes beyond one card's micro-batch (llama_context::decode, split-pass); the automatic choice cuts the
+// ubatch into token ranges inside it, so the window cache needs n_swa + n_ubatch cells there. Sized for the split pass always (spass29..32) it cost every MiMo
+// start 1.5 GiB of expert cache per card for nothing: decode 29.4 -> 26.6 t/s on mimo-i (2026-10-24).
 // Cards with copies only; a model without a split gets n_ubatch.
 uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch) {
+    const char * e = llama_moe_get_opt("dense-split");
+    if (!e || strcmp(e, "1") != 0) { return n_ubatch; }
     std::lock_guard<std::mutex> lk(g_mu);
     const auto it = g_sets.find(model);
     if (it == g_sets.end() || it->second.failed || it->second.resident || it->second.mirror.size() < 2) { return n_ubatch; }
