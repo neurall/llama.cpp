@@ -3272,6 +3272,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
 
         // upstream (#30656): src1 of the down projection can exceed the F16 range on these architectures, so it is rescaled by a power of two and the product scaled back
+        // (the amax op cannot be split across devices, so these architectures are denied -sm tensor [TAG_MOE_AMAX_SCALE])
         llm_graph_amax_src1 amax_src1 = { nullptr, nullptr };
         if (arch == LLM_ARCH_MISTRAL4 || arch == LLM_ARCH_MELLUM || arch == LLM_ARCH_FLINT) {
             amax_src1 = build_amax_src1_f16(cur);
