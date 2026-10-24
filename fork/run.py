@@ -1019,6 +1019,7 @@ MODEL = os.environ.get("MODEL", "")
 MODELS_DIR = os.environ.get("PERF_MODELS_DIR", "")  # other models' pages are dropped from RAM before a run
 PPL_TEXT = os.path.join(PROMPT_DIR, os.environ["PERF_PPL_FILE"]) if os.environ.get("PERF_PPL_FILE") else config.prompt_path("longsrc")  # frozen snapshot of llama.cpp common/json-schema-to-grammar.cpp (code, like agent prompts)
 BARE = False
+CARD_LIM = [0]   # the card limit the engine reported last (the %limit column)
 WRAP = []   # --wrap "CMD ARGS": the server is started as CMD ARGS llama-server ... (a profiler, e.g. nsys profile -o FILE --force-overwrite=true)
 THREADS = os.environ.get("PERF_THREADS", "")                   # decode threads: unset = no -t, so the thread autotune (decode and batch) runs; set only to measure a fixed count (fork/cloud/pod.sh sets it for rented boxes)
 DEVS = os.environ.get("PERF_DEV", "CUDA0,CUDA1")                # -dev list (the GPU order is pinned)
@@ -4880,9 +4881,10 @@ def cell_status(t0, expect, label, total=None):
             if bw:   # RAM read rate (CPU experts + uploads) and each PCIe link, in GB/s against the probed maximum, and as a share of it
                 pc = lambda v, mx: 100 * v / mx if mx else 0
                 rp = pc(bw.get("ram_gbs", 0), bw.get("ram_max_gbs", 0))
-                parts.append(col(37, "mem bw ") + level(rp / 100, 0.7, 0.9, f"{bw.get('ram_gbs', 0):.1f}/{bw.get('ram_max_gbs', 0):.0f} GB/s {rp:.0f}%"))
-                parts.append(col(37, "pcie ") + " ".join(level(pc(l["gbs"], l["max_gbs"]) / 100, 0.7, 0.9, f"l{l['link']} {l['gbs']:.1f}/{l['max_gbs']:.0f} GB/s {pc(l['gbs'], l['max_gbs']):.0f}%") for l in bw.get("links", [])))
-            eng = " ".join(parts)
+                io = [col(37, "engine")]   # the transfer rates on a line of their own: on the engine line it wrapped once "pp by size" listed two sizes (user 2026-10-25: stale cpu/engine rows, 1-row jumps)
+                io.append(col(37, "mem bw ") + level(rp / 100, 0.7, 0.9, f"{bw.get('ram_gbs', 0):.1f}/{bw.get('ram_max_gbs', 0):.0f} GB/s {rp:.0f}%"))
+                io.append(col(37, "pcie ") + " ".join(level(pc(l["gbs"], l["max_gbs"]) / 100, 0.7, 0.9, f"l{l['link']} {l['gbs']:.1f}/{l['max_gbs']:.0f} GB/s {pc(l['gbs'], l['max_gbs']):.0f}%") for l in bw.get("links", [])))
+            eng = " ".join(parts) + ("\n" + " ".join(io) if bw else "")
             sp = es.get("split") or {}; links = bw.get("links", []) if bw else []
             # cards that COMPUTE at the same time (user 2026-10-23): only a split prompt pass runs on several cards at once; every other pass and every decode token
             # runs its layers on one card after another (layer split), however many cards hold cache layers (shown apart as "cache on N cards")
@@ -4951,7 +4953,8 @@ def cell_status(t0, expect, label, total=None):
                             up, wt = 0.0, (c.get("wait_dense_ms", 0) + c.get("wait_moe_ms", 0)) / 1e3
                             st = max(0.0, span - comp - wt)
                         ln = c.get("link_ms", 0) / 1e3
-                        vals = [str(c.get("tok", 0)), f"{c.get('lim_pct', 0):.0f}%", f"{comp:.1f}s", pcf(comp),
+                        limp = c.get("lim_pct") or (100 * c.get("tok", 0) / CARD_LIM[0] if CARD_LIM[0] else 0)   # the engine fills lim_pct only in the forced pass loop: else of the card limit it reports
+                        vals = [str(c.get("tok", 0)), f"{limp:.0f}%", f"{comp:.1f}s", pcf(comp),
                                 f"{up:.1f}s" if det else "-", pcf(up) if det else "-", f"{wt:.1f}s", pcf(wt), f"{st:.1f}s", pcf(st), f"{comp + up + wt + st:.1f}s",
                                 f"{ln:.1f}s" if det else "-", pcf(ln) if det else "-",
                                 f"{c.get('gb_up', 0) + c.get('gb_host', 0):.2f}" if det else "-", f"{c.get('gb_in', 0):.2f}" if det else "-",
@@ -4975,15 +4978,16 @@ def cell_status(t0, expect, label, total=None):
                     eng += ("\n" + col(37, "  next pass: ") + col(90, " | ").join(
                                 col(1, card_label(c)) + col(93, f" {c.get('zw_k', 0) * c.get('zw_f', 0):.2f} x {prim}'s tokens") + col(90, f" (k {c.get('zw_k', 0):.2f} x factor {c.get('zw_f', 0):.2f})")
                                 for c in cs if not c.get("experts")) + col(90, f"  k from {bal.get('zw_src', '?')}"))
+                cl, pl, cm = (sp.get("cur") or {}).get("cap") or 0, (sp.get("cur") or {}).get("pass_lim") or 0, (sp.get("cur") or {}).get("cap_max") or 0
+                CARD_LIM[0] = cm or cl or CARD_LIM[0]
                 if rows:
-                    cl, pl, cm = (sp.get("cur") or {}).get("cap") or 0, (sp.get("cur") or {}).get("pass_lim") or 0, (sp.get("cur") or {}).get("cap_max") or 0
                     prim = next((card_label(c) for c in rows[-1][1].get("cards") or [] if c.get("experts")), "the primary card")
                     if cl:   # the two limits once (user 2026-10-24): what one card holds (its range, its buffers) and what a pass of all cards takes
                         eng += ("\n" + col(37, "  limits: ") + (col(36, f"card max {cm} tokens") + col(90, " (the context's micro-batch: %limit is of this one number)") + col(37, " | ") if cm else "")
                                 + col(36, f"card now {cl} tokens") + col(90, " (what the pools hold beside the KV now)" if cm else " (one card's micro-batch; %limit of each pass is of the limit that pass ran under)")
                                 + col(37, " | ") + col(36, f"pass {pl} tokens" if pl else "pass -") + col(90, f" (all cards; {prim} takes its card limit)"))
                     eng += "\n" + col(37, "  pass tokens   time  " + "card".ljust(lw) + " " + " ".join(n.rjust(w) for n, w in PW))
-                for k, (_, b) in list(enumerate(rows, 1))[-12:]:
+                for k, (_, b) in list(enumerate(rows, 1))[-6:]:   # the last 6 passes (12 rows): a taller block than the terminal scrolls it and the whole screen repaints (user 2026-10-25); the log has every pass
                     eng += "".join("\n" + l for l in pass_rows(k, b, lw))
                 cur = sp.get("cur") or {}
                 if cur.get("cards"):   # the pass running now (the ranges of the split graph built last); after the last pass it equals that pass and ages out
