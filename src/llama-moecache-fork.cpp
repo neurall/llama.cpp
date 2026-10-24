@@ -8177,9 +8177,22 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
         for (const auto & p : pts) { b = std::max(b, (double) p.second / (double) p.first); }
         a = 0.0;
     }
+    // A graph's fixed part is never negative (a >= 0), so the slope can never exceed any measured graph's bytes per token: clamp it there and refit a.
+    // Two passes of nearly the same size (GLM 3.0, 40k prompt: the 6552- and 6554-token passes, 2 tokens apart) gave a slope of noise, 124.8 MB per
+    // token where the graphs measured 1.4 MB per token: the next call's passes were capped to 96 tokens (60k prompt: 239 passes, the cell ran 20+ min).
+    if (b > 0.0) {
+        double bmax = 0.0, mx = 0.0, my = 0.0;
+        for (const auto & p : pts) { const double r = (double) p.second / (double) p.first; bmax = bmax > 0.0 ? std::min(bmax, r) : r; mx += p.first; my += (double) p.second; }
+        if (b > bmax) { b = bmax; a = std::max(0.0, my / (double) pts.size() - b * mx / (double) pts.size()); }
+    }
     if (b <= 0.0) { return ub; }
     // Past the largest measured size the line is an extrapolation from small graphs (a cold start measures 64-512-token calibration graphs): the same
     // headroom there (Qwen3.6-35B, 3 GiB free per card, cold: a 4128-token pass lent 1222 of the x4 card's 1282 MiB and its KV did not fit, 2026-10-22)
+    if (moe_log_has("w")) {   // the cap's inputs: a 22381-token call of GLM (split-pass=0, 55k cells) was capped to 96 tokens (239 passes)
+        LLAMA_LOG_WARN("moe-cache: pass cap: n %u cells_end %zu pts %zu a %.0f b %.0f mirror %zu lend_potential %zu -> %u\n", n_prompt, cells_end, pts.size(), a, b, ap.mirror_b,
+                (size_t) kvz_lend_potential(ap, (std::max<size_t>(n_prompt, ap.kv_h) + pad - 1) / pad * pad), kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b));
+        for (const auto & p : pts) { LLAMA_LOG_WARN("moe-cache: pass cap point: %d tokens -> %zu B\n", p.first, p.second); }
+    }
     return kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b);   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
 }
 

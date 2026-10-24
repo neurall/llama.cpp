@@ -64,6 +64,7 @@ bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // t
 extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
 extern "C" void ggml_backend_sched_link_add_fork(ggml_backend_dev_t dst, ggml_backend_dev_t src, uint64_t n);   // the same for any input: src NULL = host memory
 static thread_local bool g_split_sub = false;          // decode() runs one pass of a call sized pass by pass (--moe split-pass=1)
+bool llama_dsplit_in_pass_loop_fork() { return g_split_sub; }   // llama-graph.cpp ds_plan: the pass was sized for all cards by the loop below (graph built on this thread)
 void llama_moe_prompt_progress_fork(uint32_t done);
 uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint32_t ceil);
 uint32_t llama_moe_ubadapt_next_fork(uint32_t n_tokens, uint32_t ceil);
@@ -3261,7 +3262,9 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         static const bool forced     = [] { const char * e = llama_moe_get_opt("dense-split"); return e && strcmp(e, "1") == 0; }();
         const auto & tk = batch_inp.tokens;
         const int32_t n = (int32_t) tk.size();
-        bool ok = split_pass > 0 && forced && llama_dsplit_ready_fork(model) && tk[0].seq_ids.size() == 1;
+        // llama_dsplit_max_pass_fork says whether passes beyond the micro-batch are allowed at all: it is also what the sliding-window ring was sized for
+        // (no bigger pass for models with sliding-window layers: their ring holds n_swa + the micro-batch, a bigger pass finds no slot)
+        bool ok = split_pass > 0 && forced && llama_dsplit_ready_fork(model) && tk[0].seq_ids.size() == 1 && llama_dsplit_max_pass_fork(&model, cparams.n_ubatch) > cparams.n_ubatch;
         for (int32_t i = 0; ok && i < n; ++i) {
             ok = tk[i].seq_ids == tk[0].seq_ids && (!tk[i].output || i == n - 1);
         }

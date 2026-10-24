@@ -5538,6 +5538,8 @@ int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buck
 // layer, llama_dsplit_layer_fork), the KV-cache attention with ds_attn_kv(), the experts with build_moe_ffn in range mode (moe_ranges), and joins the ranges
 // for the output head with ds_join(). Recurrent blocks hand their state from range to range in the builder (the state of a range is the start of the next).
 
+bool llama_dsplit_in_pass_loop_fork();   // llama-context.cpp
+
 bool llm_graph_context::ds_plan(int64_t min_tokens) const {
     ds_r.clear();
     ds_cut.clear();
@@ -5594,7 +5596,11 @@ bool llm_graph_context::ds_plan(int64_t min_tokens) const {
     const int64_t minr = std::max<int64_t>(1, min_tokens);
     const int64_t lim  = (int64_t) llama_dsplit_card_lim_fork();
     std::vector<int64_t> cnt(devs.size(), 0);
-    if (share0 < 0.0) {
+    // Only a pass the pass loop sized for all cards (forced split, llama_context::decode) is bigger than the card limit: there the expert card takes its whole
+    // limit. Every other pass (auto mode, --moe split-pass=0, a pass at most one card's micro-batch) is cut by the shares: with the expert-card-first rule there,
+    // the expert card took the whole pass and the other cards got 0 tokens (GLM 3.0, 60k prompt: cuda0x4 0 tokens at a 36% share, waiting 53% of every pass).
+    const bool pass_loop = llama_dsplit_in_pass_loop_fork();
+    if (share0 < 0.0 && pass_loop) {
         cnt[xi] = lim > 0 ? std::min<int64_t>(lim, n_tokens) : n_tokens;
         const int64_t rest = n_tokens - cnt[xi];
         double hs = 0.0;
