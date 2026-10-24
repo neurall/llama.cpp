@@ -6118,6 +6118,7 @@ def run_list(name, argv):
     ap.add_argument("-a", "--cell-args", default="", metavar="ARGS", help="extra cell arguments for OUR cells (not stock), e.g. -a \"moe:split-f16=1\" (one moe: word per --moe key); stored in the args column of the runs, so the rows stay apart from the defaults. -nrt matches by cell, not by arguments: leave it off for an A/B")
     ap.add_argument("-pt", "--prompt-type", dest="pt", metavar="LIST", help="only the cells of these prompt types (comma list): i = input-heavy (mimo-i), io = input+output-heavy (mimo-io), o = output-heavy (mimo-o); the last word of the row name")
     ap.add_argument("-ps", "--prompt-size", dest="ps", action="append", metavar="TEST", help="run THESE sizes instead of the list's own, for the models the other filters leave (repeatable): 100k4k = the source cut at 100k tokens behind an instruction, 4000 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test with 4000 answer tokens; any other name is a test as it is")
+    ap.add_argument("-ub", "--ubatch", dest="ub", metavar="LIST", help="micro-batch clamps, a comma list (4k,8k,16k; k = 1024): every selected cell once per size with the server argument -ub N, which clamps the largest micro-batch per card (the automatic one is never raised); rows are named <name>-ub<size>")
     ap.add_argument("-ds", "--dense-split", dest="dense_split", choices=["on", "off", "one", "auto"], help="force the dense split for OUR cells: on = --moe dense-split=1, off = 0 (expert split alone), one = copies made but every prompt pass on one card, auto = the engine's own choice (the default); stored in the args column like -a")
     ap.add_argument("-pl", "--power", metavar="W", nargs="?", const="max", help="power limits in W for the whole run instead of the day/night schedule: no value = every card at its maximum; 285 = all cards; 285,285,300,285 = per card; 220/280 = cards on a narrower link than the widest / the widest (PC1: x4 card, x16 card). The max of the x4 card throttled and crashed it once on PC1 (330-350 W): not for PC1's x4 card. A remote host may refuse (blg: Insufficient Permissions)")
     ap.add_argument("-from-smallest", "--from-smallest", dest="asc", action="store_true", help="smallest model files first: the first results come quickly")
@@ -6166,7 +6167,10 @@ def run_list(name, argv):
             if (m := re.fullmatch(r"([a-z]\w*?)(\d+)k", p)) and m[1] in _known: return dict(r, test=m[1], tokens=str(int(m[2]) * 1000))
             return dict(r, test=p if p.startswith("pf") or p in _known else "pf" + p)
         rows = [dict(_ps(p, r), name=r["name"].split("-")[0] + "-" + p) for r in _first.values() for p in o.ps]
-    rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]   # -skp: same matching as -onl, rows dropped
+    rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]
+    if o.ub:   # the micro-batch sweep: each row once per size
+        _sz = [(x, int(x[:-1]) * 1024 if x.lower().endswith("k") else int(x)) for x in o.ub.split(",") if x]
+        rows = [dict(r, name=f"{r['name']}-ub{x.lower()}", args=((r.get("args") or "") + f" -ub {n}").strip()) for r in rows for x, n in _sz]   # -skp: same matching as -onl, rows dropped
     for r in rows:
         if o.runs not in (None, "0"): r["n"] = o.runs
     if o.from_best:   # the rows (a stock cell stays with its row) by the gain known from runs.db
