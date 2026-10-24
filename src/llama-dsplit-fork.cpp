@@ -1043,6 +1043,41 @@ struct dsplit_bal {
     std::string last;                      // what the last step did (/moe/stats, the log)
 };
 std::map<int, dsplit_bal>       g_bal;                // under g_plan_mu
+
+// ---- share climb (user 2026-10-25: "raise the work given to the second card while the total time per token keeps dropping, otherwise take work away") ----------
+// On top of the equal-dense-time shares (llama_dsplit_bal_shares_fork) a learned offset of the other cards' share: after every pass cut by the shares the
+// offset moves one step; the direction flips and the step halves whenever the pass got slower per token. The objective is the pass's time per token on
+// the cards (span / tokens) over the expert card's dense time per token: a long prompt's passes get slower as the context grows (GLM 3.0 60k: 8.3 -> 14.0 s for
+// the same 8192 tokens), and the dense time per token grows with it, so the ratio leaves what the shares did. --moe share-climb=0 turns it off.
+// ponytail: one offset for all pass sizes and helpers, not stored between runs; a per-model stored offset when it proves out.
+struct dsplit_climb { double adj = 0.0, step = 0.04, prev_adj = 0.0; int dir = +1; double last = 0.0; bool cut = false, settled = false; };
+dsplit_climb g_climb;   // under g_plan_mu
+static bool dsplit_climb_on() {
+    static const bool on = [] { const char * e = llama_moe_get_opt("share-climb"); return !e || atoi(e) != 0; }();
+    return on;
+}
+static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
+    if (!dsplit_climb_on() || g_climb.settled || !g_climb.cut || n < 2 || B.v <= 0.0 || B.c.size() != n || B.c[n - 1] <= 0.0) { return; }
+    const double m = B.v / B.c[n - 1];
+    const double adj0 = g_climb.adj;
+    // Settling (user 2026-10-25: "settle after a few noisy ups and downs"): every reversal halves the step; once it would drop below 0.01 (three reversals
+    // from 0.04) the offset stays at the middle of the last two tried and the climb stops for the run, so noise between passes cannot keep it moving.
+    if (g_climb.last > 0.0 && m > g_climb.last) {
+        g_climb.dir = -g_climb.dir;
+        g_climb.step /= 2.0;
+        if (g_climb.step < 0.01) {
+            g_climb.adj = 0.5 * (g_climb.adj + g_climb.prev_adj);
+            g_climb.settled = true;
+            LLAMA_LOG_WARN("split climb: settled at the other cards' share offset %+.3f (pass %.1f us/token, %.3f x the expert card's dense us/token)\n", g_climb.adj, B.v, m);
+            return;
+        }
+    }
+    g_climb.prev_adj = g_climb.adj;
+    g_climb.adj  = std::min(0.45, std::max(-0.45, g_climb.adj + g_climb.dir * g_climb.step));
+    LLAMA_LOG_WARN("split climb: pass %.1f us/token = %.3f x the expert card's dense us/token (before %.3f): the other cards' share offset %+.3f -> %+.3f (step %.3f)\n",
+            B.v, m, g_climb.last, adj0, g_climb.adj, g_climb.step);
+    g_climb.last = m;
+}
 bool                            g_bal_used = false;   // a graph builder takes its shares from here
 int                             g_bal_last = -1;      // the bucket of the last step
 long long                       g_bal_t_ms = 0;       // wall time (ms since the epoch) of the last step: run.py tells this cell's passes from an earlier cell's
@@ -1327,6 +1362,7 @@ void dsplit_bal_step(int b) {
         c_max = std::max(c_max, B.c[i]);
     }
     (void) c_max;
+    dsplit_climb_step(B, n);
     // the next pass's shares: the zero-wait rule from this pass's measured times (dsplit_zw); every expert stays on the expert card (the dense split alone)
     dsplit_zw_step(B, T);
     const std::string msg = format("zero-wait shares (%s)", g_zw.src.c_str());
@@ -1353,10 +1389,35 @@ void dsplit_pass_step_locked() {   // under g_plan_mu: the balance step of the s
 }  // namespace
 
 // the token share of every card (in the order of `dev`, the cards of llama_dsplit_cards_fork) for a split pass of n_tokens: the zero-wait rule (dsplit_zw)
+bool llama_dsplit_in_pass_loop_fork();   // llama-context.cpp: the pass was sized for all cards by the forced pass loop
 std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::vector<ggml_backend_dev_t> & dev) {
     std::lock_guard<std::mutex> lk(g_plan_mu);
     g_bal_used = true;
     std::vector<double> s = dsplit_zw_shares(dev);
+    // A pass cut by the shares (not one the forced pass loop sized for all cards): equal DENSE time per card. Each card's tokens are proportional to 1 / (its
+    // measured dense us per token + its hand-offs per token); the experts run on the expert card after the dense ranges anyway. The zero-wait rule above
+    // starved the other cards here: it shrinks their factor while the expert card waits, but that wait (1.4-1.6 s a pass on GLM 3.0) did not come from
+    // their tokens (GLM 3.0 60k: factor 0.75 -> 0.33, cuda0x4 24% of the tokens, 2.9 s dense of a 16 s pass, idle 80%; both cards ~1.1 ms per token dense).
+    // Before every card has a measured range (the first pass), the zero-wait shares stand.
+    if (!llama_dsplit_in_pass_loop_fork() && dev.size() >= 2) {
+        const dsplit_bal & B = dsplit_bal_get(dsplit_bucket_of(n_tokens), dev);
+        std::vector<double> r(dev.size(), 0.0);
+        double sum = 0.0;
+        bool ok = B.c.size() == dev.size();
+        for (size_t i = 0; ok && i < dev.size(); ++i) {
+            const double per = B.c[i] + (i < B.hop.size() ? B.hop[i] : 0.0);
+            ok = per > 0.0;
+            if (ok) { r[i] = 1.0 / per; sum += r[i]; }
+        }
+        if (ok && sum > 0.0) {
+            for (size_t i = 0; i < dev.size(); ++i) { s[i] = r[i] / sum; }
+            // the climb's offset on the other cards' share (the expert card, last, takes the rest)
+            const double h = 1.0 - s.back(), h2 = dsplit_climb_on() ? std::min(0.95, std::max(0.02, h + g_climb.adj)) : h;
+            for (size_t i = 0; i + 1 < dev.size(); ++i) { s[i] *= h > 0.0 ? h2 / h : 0.0; }
+            s.back() = 1.0 - h2;
+        }
+    }
+    g_climb.cut = !llama_dsplit_in_pass_loop_fork();
     if (s.size() != dev.size()) { s.assign(dev.size(), dev.empty() ? 0.0 : 1.0 / (double) dev.size()); }   // fewer than two cards: nothing to share
     dsplit_bal_get(dsplit_bucket_of(n_tokens), dev).s = s;   // the shares the pass report shows
     return s;
