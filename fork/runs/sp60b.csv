@@ -1,0 +1,10 @@
+name,model,n,test,tokens,args,extra
+qn4-60k-p2,qn_iq4xs,2,pf60k1k,64,"--moe dense-split=1,split-pass=2",
+qn4-60k-p1,qn_iq4xs,2,pf60k1k,64,"--moe dense-split=1,split-pass=1",
+qn4-60k-p0,qn_iq4xs,2,pf60k1k,64,"--moe dense-split=1",
+qn4-60k-one,qn_iq4xs,2,pf60k1k,64,"--moe dense-split=0",
+glm-60k-p2,glm,2,pf60k1k,64,"--moe dense-split=1,split-pass=2",
+glm-60k-p1,glm,2,pf60k1k,64,"--moe dense-split=1,split-pass=1",
+glm-60k-p2xa,glm,2,pf60k1k,64,"--moe dense-split=1,split-pass=2,split-experts=auto",
+glm-60k-p0,glm,2,pf60k1k,64,"--moe dense-split=1",
+glm-60k-one,glm,2,pf60k1k,64,"--moe dense-split=0",

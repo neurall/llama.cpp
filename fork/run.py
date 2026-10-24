@@ -1685,7 +1685,8 @@ def merge_moe(args):
 def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
-                             + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")]   # the pool write ledger (who writes which bytes of a card's pool): cells turn it on, see cmd_cell
+                             + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")   # the pool write ledger (who writes which bytes of a card's pool): cells turn it on, see cmd_cell
+                             + ("" if NOSTATS[0] else ",pass-stats=1")]   # the split pass report per card (extra stream stamps, off in the engine by default): -ns leaves it off
     elif not build.startswith("stock") and STATE_FILE["v"]:
         env = {**env, "LLAMA_MOE_STATE": STATE_FILE["v"]}   # the first releases (no --moe flag) read the environment variable
     env, args = drop_moe_flag(build, env, args)
@@ -2577,6 +2578,23 @@ def gpu_details():
         if len(v) == 9:
             d[v[0]] = dict(zip(keys, [v[1], v[2]] + v[3:6] + [str(round(float(v[6]))) if v[6].replace(".", "").isdigit() else v[6], v[7], v[8]]))
     return d
+
+
+GPU_DET = []   # gpu_details() of this machine, read once: the live display redraws every tick
+
+
+def card_label(c):
+    """The name a card is shown and called by (user 2026-10-24: "cuda0 cuda1 is confusing"): [p]cuda<n>x<slot width>, p for the primary card (it computes the
+    experts of the dense split and takes its full card limit every pass), e.g. pcuda1x16 and cuda0x4 on PC1. The width is the link's CURRENT width from nvidia-smi
+    (the max field is the card's own: 16 for the card in the x4 slot too). CUDA<n> is nvidia-smi's index n (run.py starts servers with CUDA_DEVICE_ORDER=PCI_BUS_ID),
+    through CUDA_VISIBLE_DEVICES when -ng hides cards. A run on another machine shows no width (this machine's nvidia-smi would describe the wrong cards)."""
+    dev = str(c.get("dev", "?"))
+    if not GPU_DET: GPU_DET.append({} if HOST[0] else gpu_details())
+    k = re.sub(r"\D", "", dev)
+    vis = [x.strip() for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
+    idx = vis[int(k)] if k and vis and int(k) < len(vis) else k
+    w = GPU_DET[0].get(idx, {}).get("link_width", "")
+    return ("p" if c.get("experts") else "") + dev.lower() + (f"x{w}" if str(w).isdigit() else "")
 
 
 def split_sections(key, model, test, hw):
@@ -3540,7 +3558,7 @@ def run_transfers(m, items, pushes, keep=None):
                 out.append(f"{col(36, r['label'][:34]):<44} [{col(32 if fin else 33, bar)}] {f * 100:3.0f}%  {hsize(d):>9}/{hsize(tot):<9}  " + (col(31, "FAILED") if dead else col(32, "done") if fin else f"{col(94, hsize(sp) + '/s'):<20} eta {htime(eta)}"))
             f = sd / max(st_, 1); eta = None if (not etas or None in etas) else max(etas)   # the transfers run side by side: done when the slowest is, not when the summed rate would empty the summed bytes
             out.append(col(1, f"{'total':<34}") + f"   [{col(32, '█' * int(20 * f) + '░' * (20 - int(20 * f)))}] {f * 100:3.0f}%  {hsize(sd):>9}/{hsize(st_):<9}  {col(94, hsize(sp_) + '/s'):<20} eta {htime(eta)}")
-            if live_tty(): live_clear(); print(fit_block("\n".join(out)), flush=True); LIVE_UP[0] = len(out)
+            if live_tty(): live_clear(); print(fit_block("\n".join(out)), flush=True); LIVE_UP[0] = block_rows("\n".join(out))
             elif now - last_plain > 10: last_plain = now; print(out[-1], flush=True)
             if allfin: break
             time.sleep(1)
@@ -4876,25 +4894,98 @@ def cell_status(t0, expect, label, total=None):
                 eng += ("\n" + col(37, "vs best ") + col(32, f"pp {lpp:.0f}" if lpp else "pp -") + col(90, f" / {bpp:.0f} ({bpb}) ") + col(90, f"{1000 / lpp:.2f} / {1000 / bpp:.2f} ms/tok " if lpp else "") + gain(lpp, bpp)
                         + "   " + col(94, f"tt {ltg:.1f}" if ltg else "tt -") + col(90, f" / {btg:.1f} ({btb}) ") + col(90, f"{1000 / ltg:.1f} / {1000 / btg:.1f} ms/tok " if ltg else "") + gain(ltg, btg) + col(90, "  (best stored speed of an earlier run: same model, test, power limits)"))
             bal = sp.get("bal")
+            cur0 = sp.get("cur") or {}
+            if not (bal and bal.get("cards")) and cur0.get("cards"):   # the first split pass of a run, before any pass is measured
+                cap0 = cur0.get("cap_max") or cur0.get("cap") or 0   # of the context's card limit (one maximum per card), not the pass's cut one
+                eng += "\n" + col(37, "split   pass  1 ") + col(93, f"running {cur0.get('age_ms', 0) / 1e3:.0f} s:") + "".join(
+                    f"  {card_label(dict(c, experts=i == len(cur0['cards']) - 1))} {c.get('tok', 0)} tok" + (f" ({100 * c.get('tok', 0) / cap0:.0f}% of limit)" if cap0 else "")
+                    for i, c in enumerate(cur0["cards"]))
             if bal and bal.get("cards"):   # the live balance, any number of cards (engine 2026-10-23 N-card): one line per card of the last split pass, the expert card last
                 cs = bal["cards"]
-                if SPLIT_PASSES["t0"] != t0: SPLIT_PASSES["t0"] = t0; SPLIT_PASSES["rows"] = []; SPLIT_PASSES["peak"] = {}
-                for l in bw.get("links") or []: SPLIT_PASSES.setdefault("peak", {})[l.get("dev")] = max(SPLIT_PASSES.get("peak", {}).get(l.get("dev"), 0), l.get("gbs", 0))   # the busiest second of each card's host link in this cell
                 sig = (bal.get("n"), bal.get("us_tok"), tuple(c.get("tok", 0) for c in cs))
-                if not SPLIT_PASSES["rows"] or SPLIT_PASSES["rows"][-1][0] != sig: SPLIT_PASSES["rows"].append((sig, bal))   # a new measured pass
-                t_of = lambda c: c.get("kv_ms", 0) + c.get("tok", 0) * (c.get("dense_us_tok", 0) + c.get("hop_us_tok", 0)) / 1e3   # the card's time as the balance sees it
-                tmax = max((t_of(c) for c in cs if c.get("tok")), default=0)
+                # A new cell: the server is kept between cells, so the pass it reports at the cell's start is the LAST CELL's last pass (user 2026-10-24: the 12k
+                # cell's 13786-token pass showed as pass 1 of the 60k prompt). That one is remembered and never listed; the rows are this prompt's passes only.
+                # The engine stamps each pass with its wall time (bal.t_ms, 2026-10-24): the report is the last cell's only when measured before this cell began.
+                # Without the stamp (older builds) the first report of the cell is taken as old, which dropped the first pass of a fresh server (GLM 60k on
+                # spass30: 6 of its 7 passes stored).
+                if SPLIT_PASSES["t0"] != t0: SPLIT_PASSES["t0"] = t0; SPLIT_PASSES["rows"] = []; SPLIT_PASSES["peak"] = {}; SPLIT_PASSES["old"] = sig if not bal.get("t_ms") or bal["t_ms"] / 1e3 < t0 else None
+                for l in bw.get("links") or []: SPLIT_PASSES.setdefault("peak", {})[l.get("dev")] = max(SPLIT_PASSES.get("peak", {}).get(l.get("dev"), 0), l.get("gbs", 0))   # the busiest second of each card's host link in this cell
+                if sig != SPLIT_PASSES.get("old") and (not SPLIT_PASSES["rows"] or SPLIT_PASSES["rows"][-1][0] != sig): SPLIT_PASSES["rows"].append((sig, bal))   # a new measured pass
                 eng += ("\n" + col(37, "split ") + col(32, bal.get("phase", "")) + col(90, f"  pass {bal.get('us_tok', 0):.1f} us/token")
                         + (col(90, f", dense alone {bal['ref_us_tok']:.1f}") if bal.get("ref_us_tok") else "") + col(90, f"  ({bal.get('last', '')})"))
-                for c in cs:
-                    t = t_of(c)
-                    eng += ("\n" + col(37, "      ") + col(1, f"{c.get('dev', '?'):<6}") + col(36, f" {100 * c.get('s', 0):3.0f}% tokens") + col(90, f" (next {100 * c.get('s_next', 0):.0f}%)")
-                            + col(36, f" {100 * c.get('f', 0):3.0f}% experts") + (col(90, f" (next {100 * c.get('f_next', 0):.0f}%)") if c.get("f_next") != c.get("f") else "")
-                            + f"  dense {c.get('dense_ms', 0):.0f} ms " + col(93, f"{c.get('dense_us_tok', 0):.1f} us/token") + col(90, f" + hand-offs {c.get('hop_us_tok', 0):.1f}")
-                            + (col(90, f" + KV {c.get('kv_ms', 0):.0f} ms") if c.get("kv_ms") else "") + f"  moe {c.get('moe_ms', 0):.0f} ms"
-                            + (col(33, f"  waits {c.get('wait_dense_ms', 0):.0f}+{c.get('wait_moe_ms', 0):.0f} ms (longest {c.get('wait_max_ms', 0):.1f})") if "wait_max_ms" in c else "")
-                            + (col(91 if tmax and t < 0.97 * tmax else 90, f"  {100 * t / tmax:.0f}% of the slowest") if tmax and c.get("tok") else col(90, "  no range"))
-                            + (col(35, "  experts") if c.get("experts") else ""))
+                # One row per card per pass of this run as each is measured, then the pass running now (user 2026-10-24: every pass, errors must show while the run
+                # goes). Cards by card_label: pcuda1x16 (p: the primary card, the experts and its full card limit every pass), cuda0x4. Every card's pass by cause,
+                # measured with stream stamps by the engine (--moe pass-stats, run.py turns it on unless -ns): compute (kernels) + upload (waiting for its uploads
+                # from host memory, whatever they carry) + wait (for another card's result) + stall (nothing queued: the host, or before its first / after its last
+                # split) = total, the pass. link: its upload stream busy (overlaps compute); GB host / GB card: what crossed its link into it. Without pass-stats
+                # (-ns, older builds) the upload waits sit in compute, every gap counts as wait, and upload / link / GB show "-".
+                PW = [("tokens", 6), ("%limit", 6), ("compute", 7), ("%", 4), ("upload", 6), ("%", 4), ("wait", 6), ("%", 4), ("stall", 6), ("%", 4),
+                      ("total", 6), ("link", 6), ("%", 4), ("GB host", 7), ("GB card", 7), ("vs best", 7)]
+                # "vs best" (user 2026-10-24): the pass's time per token against the best earlier run of ours of this model and test (any other build; run.py has per-run
+                # speeds, not per-pass ones, so the reference is that run's average time per token): above 1 is faster than the best so far, below 1 slower.
+                bk = (CELL_REF[0][0], CELL_REF[0][1], CELL_BUILD[0], CELL_ASKED[0]) if CELL_REF[0] else None
+                if bk and bk not in BEST_MEMO: BEST_MEMO[bk] = best_prev(*bk)
+                bestus = 1e6 / BEST_MEMO[bk][1] if bk and BEST_MEMO.get(bk) and BEST_MEMO[bk][1] else None
+                def pass_rows(k, b, lw):
+                    pc = sorted(b.get("cards") or [], key=lambda c: not c.get("experts"))
+                    T = sum(c.get("tok", 0) for c in pc)
+                    span = (b.get("span_ms") or b.get("us_tok", 0) * T / 1e3) / 1e3
+                    det = bool(b.get("detail"))
+                    pcf = lambda v: f"{100 * v / span:.0f}%" if span else "-"
+                    out = []
+                    for i, c in enumerate(pc):
+                        comp = (c.get("dense_ms", 0) + c.get("moe_ms", 0)) / 1e3
+                        if det:
+                            up, wt, st = c.get("upw_ms", 0) / 1e3, c.get("xw_ms", 0) / 1e3, c.get("stall_ms", 0) / 1e3
+                        else:
+                            up, wt = 0.0, (c.get("wait_dense_ms", 0) + c.get("wait_moe_ms", 0)) / 1e3
+                            st = max(0.0, span - comp - wt)
+                        ln = c.get("link_ms", 0) / 1e3
+                        vals = [str(c.get("tok", 0)), f"{c.get('lim_pct', 0):.0f}%", f"{comp:.1f}s", pcf(comp),
+                                f"{up:.1f}s" if det else "-", pcf(up) if det else "-", f"{wt:.1f}s", pcf(wt), f"{st:.1f}s", pcf(st), f"{comp + up + wt + st:.1f}s",
+                                f"{ln:.1f}s" if det else "-", pcf(ln) if det else "-",
+                                f"{c.get('gb_up', 0) + c.get('gb_host', 0):.2f}" if det else "-", f"{c.get('gb_in', 0):.2f}" if det else "-",
+                                (f"{(pass_best_us(bk[0], bk[1], bk[2], T) or bestus or 0) * T / (span * 1e6):.2f}" if bk and (bestus or pass_best_us(bk[0], bk[1], bk[2], T)) and span and T else "first" if bk else "") if i == 0 else ""]   # best time per token / this pass's; "first" without an earlier run
+                        cells = [v.rjust(w) for v, (_, w) in zip(vals, PW)]   # header labels are right-aligned to the same widths: the two cannot drift
+                        hot = lambda v: span and v / span > 0.05
+                        colour = {1: 36, 4: 94, 5: 94, 6: (91 if hot(wt) else 92) if c.get("experts") else 33, 7: (91 if hot(wt) else 92) if c.get("experts") else 33,
+                                  8: 91 if hot(st) else 92, 9: 91 if hot(st) else 92, 11: 90, 12: 90, 13: 90, 14: 90, 15: (90 if vals[15] in ("", "first") else 91 if float(vals[15]) < 0.99 else 92 if float(vals[15]) > 1.01 else 37)}
+                        cells = [col(colour[j], v) if j in colour else v for j, v in enumerate(cells)]
+                        head = f"  {k:>4} {T:>6} {f'{span:.1f}s':>6}" if i == 0 else " " * 20
+                        out.append(head + "  " + col(1, card_label(c).ljust(lw)) + " " + " ".join(cells))
+                    return out
+                rows = [r for r in SPLIT_PASSES["rows"] if sum(c.get("tok", 0) for c in (r[1].get("cards") or [])) not in (0, 512)]   # the startup calibration's calls are exactly 512 tokens: not the prompt. Every other pass is listed, however small (user 2026-10-24: 506-token passes were hidden by a "> 512" test)
+                lw = max([4] + [len(card_label(c)) for _, b in rows for c in (b.get("cards") or [])])
+                if any("sc_compute" in c for c in cs):   # the cards' speeds measured once at server start (probe: a sustained matmul burst, a pinned upload), best card = 1.00
+                    eng += ("\n" + col(37, "  card speeds (measured at start, best card = 1.00): ")
+                            + col(90, " | ").join(col(1, card_label(c)) + col(36, f" compute {c.get('sc_compute', 0):.2f}") + col(94, f" upload {c.get('sc_upload', 0):.2f}")
+                                                  for c in sorted(cs, key=lambda c: not c.get("experts"))))
+                if any("zw_k" in c for c in cs):   # the zero-wait rule (engine 2026-10-24): each other card's tokens = k x factor x the primary card's
+                    prim = next((card_label(c) for c in cs if c.get("experts")), "the primary card")
+                    eng += ("\n" + col(37, "  next pass: ") + col(90, " | ").join(
+                                col(1, card_label(c)) + col(93, f" {c.get('zw_k', 0) * c.get('zw_f', 0):.2f} x {prim}'s tokens") + col(90, f" (k {c.get('zw_k', 0):.2f} x factor {c.get('zw_f', 0):.2f})")
+                                for c in cs if not c.get("experts")) + col(90, f"  k from {bal.get('zw_src', '?')}"))
+                if rows:
+                    cl, pl, cm = (sp.get("cur") or {}).get("cap") or 0, (sp.get("cur") or {}).get("pass_lim") or 0, (sp.get("cur") or {}).get("cap_max") or 0
+                    prim = next((card_label(c) for c in rows[-1][1].get("cards") or [] if c.get("experts")), "the primary card")
+                    if cl:   # the two limits once (user 2026-10-24): what one card holds (its range, its buffers) and what a pass of all cards takes
+                        eng += ("\n" + col(37, "  limits: ") + (col(36, f"card max {cm} tokens") + col(90, " (the context's micro-batch: %limit is of this one number)") + col(37, " | ") if cm else "")
+                                + col(36, f"card now {cl} tokens") + col(90, " (what the pools hold beside the KV now)" if cm else " (one card's micro-batch; %limit of each pass is of the limit that pass ran under)")
+                                + col(37, " | ") + col(36, f"pass {pl} tokens" if pl else "pass -") + col(90, f" (all cards; {prim} takes its card limit)"))
+                    eng += "\n" + col(37, "  pass tokens   time  " + "card".ljust(lw) + " " + " ".join(n.rjust(w) for n, w in PW))
+                for k, (_, b) in list(enumerate(rows, 1))[-12:]:
+                    eng += "".join("\n" + l for l in pass_rows(k, b, lw))
+                cur = sp.get("cur") or {}
+                if cur.get("cards"):   # the pass running now (the ranges of the split graph built last); after the last pass it equals that pass and ages out
+                    cap = cur.get("cap_max") or cur.get("cap") or 0   # % of the context's card limit
+                    ctok = tuple(c.get("tok", 0) for c in cur["cards"])
+                    lb = rows[-1][1] if rows else {}
+                    ltok = tuple(c.get("tok", 0) for c in (lb.get("cards") or []))
+                    lspan = lb.get("us_tok", 0) * sum(ltok) / 1e3 if lb else 0
+                    if not rows or set(ctok) != set(ltok) or cur.get("age_ms", 0) < lspan:
+                        last = len(cur["cards"]) - 1   # the expert card is the last range
+                        eng += "\n" + f"  {len(rows) + 1:>4} " + col(93, f"running {cur.get('age_ms', 0) / 1e3:.0f}s") + "".join(
+                            f" | {card_label(dict(c, experts=i == last))} {c.get('tok', 0)}" + (f" {100 * c.get('tok', 0) / cap:.0f}%" if cap else "") for i, c in enumerate(cur["cards"]))
             elif bal:   # the live balance of the dense split (engine 2026-10-23, two cards): each card's dense and MoE time of the last split pass, its share of the tokens and experts
                 h, o = bal.get("helper") or {}, bal.get("owner") or {}
                 card = lambda c, ts, fs: (col(1, f"{c.get('dev', '?')} ") + col(36, f"{100 * ts:.0f}% tokens {100 * fs:.0f}% experts") + f"  dense {c.get('dense_ms', 0):.0f} ms "
@@ -5174,6 +5265,8 @@ PRELUDE = [0, 0]   # lines of a remote list's start (old servers stopped, disk c
 LIVE_UP = [0]       # lines of the status block on screen: the next cell redraws over it, nothing scrolls
 CELL_ASKED = [0]    # tokens asked for in the running cell
 CELL_PROMPT = [""]   # the running cell's prompt text (set per row)
+CELL_BUILD = [""]   # the running cell's build: the "vs best" columns leave its own earlier runs out
+BEST_MEMO = {}   # (model, test, build, asked) -> best_prev(...): the live view asks every second
 CELL_REF = [None]   # (model file name, test) of the running cell: its live speeds are held against the best earlier run (best_ref)
 _BEST_REF = {}
 LAST_PP = {}   # the running cell's last live prompt speed (start of the cell, t/s)
@@ -5207,18 +5300,15 @@ def live_tty():
 
 
 def fit_block(txt):
-    """Cut every line of the status block to the terminal width (colour codes do not count): the next redraw moves the cursor up by LINES, so a line that wraps
-    would leave a copy of itself behind on every tick. The detached run gets the viewer's width as COLUMNS."""
-    w = max(shutil.get_terminal_size((100, 24)).columns - 1, 20)
-    def cut(line):
-        out, vis = [], 0
-        for tok in re.findall(r"\x1b\[[0-9;?]*[A-Za-z]|.", line, re.S):
-            if tok[0] == "\x1b" and len(tok) > 1: out.append(tok); continue
-            if vis >= w: break
-            out.append(tok); vis += 1
-        if vis >= w: out.append("\033[0m")
-        return "".join(out)
-    return "\n".join(cut(l) for l in txt.split("\n"))
+    """The status block is printed whole: no cutting, no wrapping by us (user 2026-10-24: what is long stays long; zoom the terminal out to see it)."""
+    return txt
+
+
+def block_rows(txt):
+    """Terminal rows the block takes. Lines are no longer cut (user 2026-10-24), so one wider than the terminal wraps onto several rows; the redraw must move up over
+    all of them or the upper rows stay behind as stale copies (the stacked cpu / engine lines). COLUMNS (the viewer's width, set for the detached run) wins over the tty."""
+    w = max(shutil.get_terminal_size((100, 24)).columns, 20)
+    return sum(max(1, -(-len(re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", l)) // w)) for l in txt.split("\n"))
 
 
 def live_clear():
@@ -5249,6 +5339,63 @@ def older_gainers(model, test, cur_bno, st, gm, limit=2):
         if g > gm: out.append((g, b, int(n), max(x[2] for x in v), t, p, gt, gp, max(x[3] for x in v)))
     out.sort(reverse=True)
     return [(b, n, d, t, p, gt, gp, rid) for g, b, n, d, t, p, gt, gp, rid in out[:limit]]
+
+
+def passes_save(model, test, build):
+    """the finished dense-split passes of the cell into runs.db (table passes), one row per pass: the live "vs best" of a pass compares with the best earlier pass of the same
+    model at a similar size, because dense and expert cost per token differ per model and per pass size (user 2026-10-24). Called once at the end of a cell."""
+    import sqlite3
+    rows = [r[1] for r in SPLIT_PASSES.get("rows", []) if r[1].get("cards")]
+    if not rows or not model or str(build).startswith("stock"): return
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        c.execute("create table if not exists passes (ts text, hw text, model text, test text, build text, k int, tokens int, expert_tokens int, us_tok real, wait_pct real)")
+        hw = (HWF[0].split("'")[1] if "'" in HWF[0] else "")
+        for k, b in enumerate(rows, 1):
+            cs = b["cards"]; T = sum(x.get("tok", 0) for x in cs)
+            span = b.get("span_ms") or b.get("us_tok", 0) * T / 1e3
+            ex = next((x for x in cs if x.get("experts")), cs[-1])
+            if T <= 512 or not span: continue
+            wt = (ex.get("xw_ms") if b.get("detail") else ex.get("wait_dense_ms", 0) + ex.get("wait_moe_ms", 0)) or 0
+            c.execute("insert into passes values (?,?,?,?,?,?,?,?,?,?)", (time.strftime("%F %T"), hw, os.path.basename(model), ALIASES.get(test, test), str(build), k, T, ex.get("tok", 0), span * 1e3 / T, 100.0 * wt / span if span else 0.0))
+        c.commit()
+    except sqlite3.Error as e: print("passes:", e, file=sys.stderr)
+
+
+def pass_best_us(model, test, build, tokens):
+    """best (smallest) time per token among the 5 earlier passes of this model and test on this machine, other builds of ours, closest to `tokens` in pass size (no size window to guess); None without history"""
+    import sqlite3
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        r = c.execute("select min(us_tok) from (select us_tok from passes where model=? and test=? and build!=?" + HWF[0] + " order by abs(tokens - ?) limit 5)", (os.path.basename(model), ALIASES.get(test, test), str(build), int(tokens))).fetchone()
+        return r[0] if r and r[0] else None
+    except sqlite3.Error: return None
+
+
+def best_prev(model, test, build, asked=0):
+    """the best earlier run of ours of this model and test (about the same answer length, this machine, any build of ours except `build`): (best t/s, best pp, build of the best pp) or None.
+    Shown as the "vs best" columns of the results, so a run reads as better or worse than the best so far without looking anything up (user 2026-10-24)"""
+    import sqlite3
+    if not model or not test or not build: return None
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        gen = asked or ALIAS_TOKENS.get(test) or 0   # the answer length the cell asked for (pf60k1k cells ask 64), else the alias's
+        # every earlier run of the prompt: its prompt speed does not depend on the answer length (MiMo's only 60k rows asked 1024 tokens: "vs best pp" stayed empty
+        # for a 64-token cell); the decode speed is compared only within about the same answer length (a longer answer decodes at a longer context)
+        rows = c.execute("select tps, pp, build, n_gen from runs where model=? and test=? and build not like 'stock%' and build!=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'",
+                         (os.path.basename(model), ALIASES.get(test, test), str(build))).fetchall()
+    except sqlite3.Error: return None
+    if not rows: return None
+    # the median of each build's runs, then the best build: one lucky run (decode after a 60k prompt swings +-15% inside one build) is not the bar to beat
+    by_t, by_p = {}, {}
+    for t_, p_, b_, g_ in rows:
+        if p_: by_p.setdefault(b_, []).append(float(p_))
+        if not gen or (g_ and gen // 2 <= g_ <= gen * 2): by_t.setdefault(b_, []).append(float(t_))
+    med_p = {b_: statistics.median(v) for b_, v in by_p.items()}
+    bb = max(med_p, key=med_p.get, default=None)
+    bt = max((statistics.median(v) for v in by_t.values()), default=None)
+    if bt is None and bb is None: return None
+    return (bt, med_p[bb] if bb else None, bb or next(iter(by_t), None))
 
 
 def ours_reference(model, test):
@@ -5368,9 +5515,11 @@ def xfer_of(bno, argtext):
 
 def final_table(recs, live=False, hdr_out=None, headers=True):
     """the finished cells as an aligned table without grid lines, as wide as the data needs and no wider than the terminal. t/s and pp are named once in the header; ours, stock, the two gains; the builds below.
-    Too wide: the load column goes, then the time column; still too wide: the stock part wraps onto a second line under its cell"""
+    Too wide: the load column goes, then the time column, then the dates of the builds; a row is never split in two lines"""
     if not recs: return []
-    try: cols = int(os.environ.get("COLUMNS") or shutil.get_terminal_size((100, 24)).columns)
+    # a detached run (no terminal, e.g. started with nohup and watched with `run run`) does not know the viewer's width: no wrapping there, the viewer's terminal
+    # decides (user 2026-10-24: the 100-column fallback split every row in two, unreadable)
+    try: cols = int(os.environ.get("COLUMNS") or (shutil.get_terminal_size((100, 24)).columns if sys.stdout.isatty() else 1000))
     except (ValueError, OSError): cols = 100
     f = lambda v, d: "" if v is None else f"{v:.{d}f}"
     body = []
@@ -5384,6 +5533,12 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         gt = t / st["t"] if st and t else None; gp = p / st["p"] if st and p and st["p"] else None
         body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" + (f" {min(99, int(100 * el / r['exp']))}%" if el is not None and r.get("exp") else "") if el is not None else f"~{int(r['est'] // 60)}:{int(r['est'] % 60):02d}" if r.get("est") else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
                          st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, ppl=(ppl_pair(r.get("model"), st.get("ob")) if st and st.get("ob") else ""), nost=(not st and not r["stock_row"])))
+        bb = best_prev(r.get("model"), r.get("test"), r.get("build"), r.get("asked") or 0) if not r.get("ref") and not r.get("stock_row") and res else None   # this run over the best earlier run of ours
+        vt = t / bb[0] if bb and t and bb[0] else None; vp = p / bb[1] if bb and p and bb[1] else None
+        body[-1].update(vt=f(vt, 2), vp=f(vp, 2), vtv=vt, vpv=vp)
+        if not r.get("ref") and not r.get("stock_row") and res and not str(r.get("build") or "").startswith("stock"):   # no earlier run of ours: "first", not an empty cell that looks broken
+            if vt is None and t: body[-1].update(vt="first")
+            if vp is None and p: body[-1].update(vp="first")
         body[-1]["section"] = r.get("section")   # `run status`: done / running / queued
         body[-1]["bt"] = (f"b{st['ob']} {st['od'][5:]} vs b{st['sb']} {st['sd'][5:]}" if st["ob"] else f"stock b{st['sb']} {st['sd'][5:]}") if st else ""; body[-1]["bts"] = (f"b{st['ob']} vs b{st['sb']}" if st["ob"] else f"stock b{st['sb']}") if st else ""
         gs = [g for g in (gt, gp) if g]; body[-1]["gm"] = math.prod(gs) ** (1 / len(gs)) if gs else 0   # overall gain: geometric mean of decode and prompt gain
@@ -5392,24 +5547,24 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
     SEC = {"done": 0, "running": 1, "queued": 2}   # `run status`: the sections in this order, each sorted by gain / list order
     if not live: body.sort(key=lambda x: (SEC.get(x["section"], 0), -x["gm"] if x["section"] in (None, "done") else 0))   # biggest overall gainers first (cells without stock last, list order kept)
     allrows = [y for x in body for y in [x] + x.get("old", [])]
-    for x in allrows: x.setdefault("xfer", "")
+    for x in allrows: x.setdefault("xfer", ""); x.setdefault("vt", ""); x.setdefault("vp", ""); x.setdefault("vtv", None); x.setdefault("vpv", None)
     show_x = any(x["xfer"] not in ("", "f32", "f16") for x in body)   # the hand-off column only when a cell of ours ran with other than the f32 default
     wd = lambda k, h: max([len(h)] + [len(x.get(k, "")) for x in allrows])
-    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("g", "par gpus"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
+    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("g", "par gpus"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("vt", "vs best t/s"), ("vp", "vs best pp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
     if live:   # one finished cell as it happens: fixed minimum widths so the rows of successive cells line up
         W["name"] = NAMEW[0] - 1   # the longest name of the list, whatever this cell is called
-        for k, mw in (("prompt", 7), ("out", 7), ("xfer", 4), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("g", 4), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("ppl", 13), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
+        for k, mw in (("prompt", 7), ("out", 7), ("xfer", 4), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("g", 4), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("vt", 11), ("vp", 10), ("ppl", 13), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
         for x in allrows: x["bt"] = x.get("bts", x["bt"])   # short builds, so every row decides the same columns
         W["bt"] = max([16, len("builds")] + [len(x["bt"]) for x in allrows])
     def width(keys): return sum(W[k] + 2 for k in keys)
-    ours = ["name", "prompt", "out"] + (["xfer"] if show_x else []) + ["time", "load", "t", "p", "g"]; stk = ["st", "sp", "gt", "gp", "ppl", "bt", "id", "sid"]
+    ours = ["name", "prompt", "out"] + (["xfer"] if show_x else []) + ["time", "load", "t", "p", "g"]; stk = ["st", "sp", "gt", "gp", "vt", "vp", "ppl", "bt", "id", "sid"]
     while width(ours + stk) > cols and len(ours) > 3 and ("load" in ours or "time" in ours): ours.remove("load" if "load" in ours else "time")
     if width(ours + stk) > cols:   # next to go: the dates in the builds column
         for x in allrows: x["bt"] = x["bts"]
         W["bt"] = max([len("builds")] + [len(x["bt"]) for x in allrows] + ([16] if live else []))
-    wrap = width(ours + stk) > cols
-    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "g": "par gpus", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "stock id"}
-    HC = {"prompt": 36, "out": 36, "xfer": 35, "t": 96, "g": 35, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "ppl": 36, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
+    wrap = False   # never a row in two lines (user 2026-10-24: the stock part on a second line under the name was unreadable); columns are dropped above instead
+    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "g": "par gpus", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "vt": "vs best t/s", "vp": "vs best pp", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "stock id"}
+    HC = {"prompt": 36, "out": 36, "xfer": 35, "t": 96, "g": 35, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "vt": 96, "vp": 93, "ppl": 36, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
     hl = lambda keys: "".join("  " + col(HC[k], f"{H[k]:<{W[k]}}" if k == "bt" else f"{H[k]:>{W[k]}}") for k in keys)
     out = [" " * W["name"] + hl(ours[1:]) + ("" if wrap else hl(stk))]
     if wrap: out.append(" " * W["name"] + hl(stk))
@@ -5419,9 +5574,12 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "xfer": ("35", x["xfer"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;94", x["t"]), "p": ("1;92", x["p"]), "g": ("35", x.get("g", "")), "st": ("94", x["st"]), "sp": ("92", x["sp"])}
         cell = lambda k: "  " + col(c[k][0], f"{c[k][1]:>{W[k]}}")
         gcell = lambda k, v: "  " + (col("1;91" if v < 1 else "37" if v < 2 else "1;97" if v < 10 else "1;93" if v < 40 else "1;92", f"{x[k]:>{W[k]}}") if v is not None else " " * W[k])   # below 1 red, 1-2 plain, 2x bold white, 10x yellow, 40x green
+        vcell = lambda k: "  " + (col("1;91" if x[k + "v"] < 0.99 else "1;92" if x[k + "v"] > 1.01 else "37", f"{x[k]:>{W[k]}}") if x.get(k + "v") else col(90, f"{x[k]:>{W[k]}}") if x.get(k) == "first" else " " * W[k])   # against the best earlier run of ours: below 0.99 red (worse), above 1.01 green (better), "first" without one
         ln = col(37 if x.get("is_old") else {"done": "1;92", "running": "1;97", "queued": "90"}.get(x.get("section"), 1), f"{x['name']:<{W['name']}}") + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "")   # name colour = state (`run status`): green done, white running, grey next
-        tail = cell("st") + cell("sp") + gcell("gt", x["gtv"]) + gcell("gp", x["gpv"]) + "  " + col(36, f"{x.get('ppl', ''):>{W['ppl']}}") + "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}") + "".join("  " + col(37 if k == "id" else 36, f"{x[k]:>{W[k]}}") for k in ("id", "sid"))
-        if not x["st"] and not x.get("is_old"): tail = ""
+        tail = cell("st") + cell("sp") + gcell("gt", x["gtv"]) + gcell("gp", x["gpv"]) + vcell("vt") + vcell("vp") + "  " + col(36, f"{x.get('ppl', ''):>{W['ppl']}}") + "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}") + "".join("  " + col(37 if k == "id" else 36, f"{x[k]:>{W[k]}}") for k in ("id", "sid"))
+        if not x["st"] and not x.get("is_old"):   # no stock row to compare with: the stock cells stay empty, "vs best" (against our own earlier builds) is still shown
+            tail = " " * sum(W[k] + 2 for k in ("st", "sp", "gt", "gp")) + vcell("vt") + vcell("vp")
+            if not (x.get("vtv") or x.get("vpv") or "first" in (x.get("vt"), x.get("vp"))): tail = ""
         if wrap and tail.strip(): out += [ln, col(37, f"{x['name']:<{W['name']}}") + tail]
         else: out.append(ln + tail)
     if not live and headers:   # the models of the table stay on screen with their results (the model line of the run scrolled away)
@@ -5503,7 +5661,7 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
             if results and (rl := result_lines(cell_results(results, t0))): txt += "\n" + rl   # per-run speeds so far, below the bars
             if pl: txt += "\n" + pl   # the run in progress: tokens so far against the earlier runs
             txt = fit_block(txt) if tty else txt
-            live_clear(); print(txt, flush=True); LIVE_UP[0] = txt.count("\n") + 1 if tty else 0
+            live_clear(); print(txt, flush=True); LIVE_UP[0] = block_rows(txt) if tty else 0
     except KeyboardInterrupt:   # Ctrl-C: the cell, its bench and its server are stopped for real (kill_tree: `timeout` is a process group of its own, the terminal's SIGINT never reaches them), then run_list ends (list line, kept server, pool)
         live_clear(); print(f"{label}: Ctrl-C, stopping the cell ...", flush=True)
         kill_tree(p.pid); kept_kill()
@@ -5515,7 +5673,8 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
     except Exception as e: gain = f"  | gain: {e}"   # a display problem never ends the list
     try: lv = float(open(LOAD_FILE).read()); lt = "" if lv < 0 else "l " + (f"{int(lv)}s" if lv < 100 else f"{int(lv // 60)}m{int(lv % 60):02d}s")
     except (OSError, ValueError): lt = ""
-    CELL_REC.append(dict(asked=CELL_ASKED[0], ref=ours_reference(peek[0], peek[1]) if peek and str(cmd[5]).startswith("stock") and res else None, sbno=own_build_no(cmd[5]), xfer="" if str(cmd[5]).startswith("stock") else xfer_of(own_build_no(cmd[5]), " ".join(map(str, cmd))), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, cmd[5], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, cmd[5], "llama-server")) else "", rid=run_id(f"{cmd[3]}-{peek[1]}") if peek else None, prompt=CELL_PROMPT[0], model=peek[0] if peek else None, test=peek[1] if peek else None, name=label, el=el, lt=lt, rc=rc or (0 if res else 1), res=res, st=STOCK_REC[0], stock_row=str(cmd[5]).startswith("stock")))
+    if peek: passes_save(peek[0], peek[1], cmd[5])
+    CELL_REC.append(dict(asked=CELL_ASKED[0], ref=ours_reference(peek[0], peek[1]) if peek and str(cmd[5]).startswith("stock") and res else None, sbno=own_build_no(cmd[5]), xfer="" if str(cmd[5]).startswith("stock") else xfer_of(own_build_no(cmd[5]), " ".join(map(str, cmd))), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, cmd[5], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, cmd[5], "llama-server")) else "", rid=run_id(f"{cmd[3]}-{peek[1]}") if peek else None, build=str(cmd[5]), prompt=CELL_PROMPT[0], model=peek[0] if peek else None, test=peek[1] if peek else None, name=label, el=el, lt=lt, rc=rc or (0 if res else 1), res=res, st=STOCK_REC[0], stock_row=str(cmd[5]).startswith("stock")))
     try:
         if peek: store_gains(CELL_REC[-1], str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1], t0)
     except Exception as e: print(f"gains not stored: {e}", flush=True)   # a display problem or a locked db never ends the list
@@ -5864,8 +6023,13 @@ def run_list_detached(name, argv):
         for _ in range(180):
             time.sleep(1); rec = alive()
             if rec or subprocess.call(["pgrep", "-f", "[r]un.py calib"], stdout=subprocess.DEVNULL) != 0: break
-    if name is None and not rec:   # plain `run run`: attach only
-        print("no detached run is going\n"); run_list_help(); return 1
+    if name is None and not rec:   # plain `run run`: attach only; with none going, wait for the next one (user 2026-10-24: wait instead of exiting)
+        print("no detached run is going: waiting for one to start (Ctrl-C quits) ...", flush=True)
+        try:
+            while not rec:
+                time.sleep(1); rec = alive()
+        except KeyboardInterrupt:
+            print(); return 1
     if rec: print(f"a run is going (pid {rec['pid']}): attaching, Ctrl-C detaches, `run stop` stops it", flush=True)
     else:
         log = f"{QDIR}/run-list-{time.strftime('%m%d-%H%M%S')}.log"
@@ -5882,6 +6046,7 @@ def run_list_detached(name, argv):
         except OSError: pass
     signal.signal(signal.SIGQUIT, kill_run)   # Ctrl-\ (a terminal's Shift+Ctrl+C is copy, no signal reaches us)
     try:
+        again = False
         with open(rec["log"], "rb") as f:
             while True:
                 chunk = f.read(65536)
@@ -5892,8 +6057,14 @@ def run_list_detached(name, argv):
                 except OSError:
                     chunk = f.read()   # the last lines written before it ended
                     if chunk: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush()
+                    if name is None and not child:   # plain `run run` is a viewer: the run ended, wait for the next one instead of exiting (user 2026-10-24)
+                        print("\nthe run ended.\n", flush=True)
+                        again = True
+                        break
                     return 0
                 time.sleep(0.5)
+        # the next run, with the old log closed first (2026-10-24: a viewer that re-attached from inside the open log kept every old log open, one level deeper per run)
+        if again: return run_list_detached(None, [])
     except KeyboardInterrupt:
         print("\ndetached: the run goes on (Ctrl-C again within 2 s, or Ctrl-\\, stops it); `run NAME ...` re-attaches, `run stop` stops it", flush=True)
         try: time.sleep(2)
@@ -5967,7 +6138,7 @@ def run_list(name, argv):
     for r in rows:
         was = r["test"]; r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")
         if r["test"] != was and was != r["test"] and (r["model"], r["test"]) not in _picked and not o.status:
-            _picked.add((r["model"], r["test"])); print(col(90, f"{os.path.basename(r['model'])}: found and picked prompt size {re.sub(r'^pf', '', r['test'])} for {hw_key()}"), flush=True)   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
+            _picked.add((r["model"], r["test"]))   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
     if o.test: rows = [r for r in rows if r["test"] in {x if x.startswith("pf") or x in {r2["test"] for r2 in rows} else "pf" + x for x in o.test.split(",")}]   # best1k = pfbest1k (plain names, no pf prefix)
     rows = [r for r in rows if not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))]   # a trailing $ means the exact name: mimo-i$ is not mimo-io
     rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]   # -skp: same matching as -onl, rows dropped
@@ -6021,7 +6192,7 @@ def run_list(name, argv):
             if STOCK_REC[0] and _rid:   # the label is the build that made the run, not the one `latest` points to now
                 _b = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select bno, start_ts from runs where rowid=?", (_rid,)).fetchone()
                 if _b and _b[0]: STOCK_REC[0]["ob"] = int(_b[0]); STOCK_REC[0]["od"] = str(_b[1])[:10]
-            CELL_REC.append(dict(skipped=True, tag=f"{r['_b']}-{r['name']}", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), xfer="" if r["_b"].startswith("stock") else xfer_of(own_build_no(r["_b"]), r.get("args") or ""), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
+            CELL_REC.append(dict(skipped=True, tag=f"{r['_b']}-{r['name']}", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), xfer="" if r["_b"].startswith("stock") else xfer_of(own_build_no(r["_b"]), r.get("args") or ""), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, build=r["_b"], prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
             CELL_LINES.append(col(1, f"{('s' if r['_b'].startswith('stock') else '') + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
         if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run in the last {o.not_today} day(s) skipped (they are in the table at the end)", flush=True)
         rows = keep
@@ -6112,7 +6283,7 @@ def run_list(name, argv):
             if o.dry: print(f"[{name}] {tag}: {shlex.join(cmd[3:])}", flush=True)
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
-            CELL_REF[0] = (os.path.basename(r["model"]), r["test"]); CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")); CELL_ASKED[0] = int(r["tokens"]) if r.get("tokens") else 0
+            CELL_BUILD[0] = str(r.get("_b") or ""); CELL_REF[0] = (os.path.basename(r["model"]), r["test"]); CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")); CELL_ASKED[0] = int(r["tokens"]) if r.get("tokens") else 0
             CELL_TEST[0] = CELL_PROMPT[0] if re.fullmatch(r"pf\d+k1k", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")   # "12k in 1k out", "64t in 1k out"
             CELL_TEST[0] += f"  {r['_b']}" + (f"  {r['args'].strip()}" if r.get("args") and r["args"].strip() else "")   # what runs: build, extra server args
             if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, ("s" if r["_b"].startswith("stock") else "") + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
@@ -6372,7 +6543,7 @@ def _run_list_remote(o, rows, name, m, here, bad):
             try: os.remove(f"{QDIR}/{tag}-{r['test']}.run.out")
             except OSError: pass
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
-            CELL_REF[0] = (os.path.basename(r["model"]), r["test"])
+            CELL_BUILD[0] = str(r.get("_b") or ""); CELL_REF[0] = (os.path.basename(r["model"]), r["test"])
             CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")) if tag not in CLAMPED else f"{CLAMPED[tag] / 1000:.1f}k/" + prompt_txt(r["test"], r.get("tokens")).split("/")[-1]; CELL_ASKED[0] = tout
             CELL_TEST[0] = CELL_PROMPT[0] if re.fullmatch(r"pf\d+k1k", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")
             CELL_TEST[0] += f"  {r['_b']}" + (f"  {r['args'].strip()}" if r.get("args") and r["args"].strip() else "")   # what runs: build, extra server args

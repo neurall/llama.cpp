@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+p60,qn_iq4xs,1,pf60k1k,64,"--moe dense-split=1 -b 131072 -ctxcp 0",--keep-loops
