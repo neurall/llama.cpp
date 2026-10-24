@@ -2540,12 +2540,30 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
 
     llama_moe_set_options((params.moe_opts + (common_autotune_on(params) ? "" : (params.moe_opts.empty() ? "autotune=0" : ",autotune=0"))).c_str());
     llama_context * lctx = llama_init_from_model(model, cparams);
-    // the compute buffers did not fit (a card near its limit): a smaller ubatch needs a smaller buffer, retry halving it; only an
-    // ubatch of ours, the user's -ub is respected. (A GPU fault at run time, Xid 31, kills the CUDA context and cannot be retried.)
-    while (lctx == NULL && !params.ubatch_user && cparams.n_ubatch > 128) {
-        cparams.n_ubatch /= 2;
-        LOG_WRN("%s: context creation failed, retrying with ubatch %u\n", __func__, cparams.n_ubatch);
-        lctx = llama_init_from_model(model, cparams);
+    // the compute buffers did not fit (a card near its limit): the largest ubatch that does, by bisection between the largest that fit and the smallest that
+    // did not, in 32-token steps (user 2026-10-24: halving left GLM 3.0 at 8192 for good after one refused 16384, where the size between them fits). Every
+    // try below one that fit is a new context: the one that fit is freed first, its buffers would crowd the next. Only an ubatch of ours, the user's -ub is
+    // respected. (A GPU fault at run time, Xid 31, kills the CUDA context and cannot be retried.)
+    if (lctx == NULL && !params.ubatch_user && cparams.n_ubatch > 128) {
+        uint32_t lo = 0, bad = cparams.n_ubatch;   // the largest size that fit (0: none yet), the smallest that did not
+        while (bad - lo > 32) {
+            const uint32_t m = lo ? (lo + bad) / 2 / 32 * 32 : bad / 2 / 32 * 32;
+            if (m < 128 || m <= lo) {
+                break;
+            }
+            if (lctx) {
+                llama_free(lctx);
+                lctx = NULL;
+            }
+            cparams.n_ubatch = m;
+            LOG_WRN("%s: context creation failed at ubatch %u, trying %u\n", __func__, bad, m);
+            lctx = llama_init_from_model(model, cparams);
+            if (lctx) { lo = m; } else { bad = m; }
+        }
+        if (!lctx && lo > 0) {   // the last try was too big: back to the largest that fit
+            cparams.n_ubatch = lo;
+            lctx = llama_init_from_model(model, cparams);
+        }
     }
     // still no room: offloading host-weight ops to the GPU needs a staging buffer the size of a weight tensor on top of the compute buffers, which
     // a card near its limit does not have; without it the same graph needs less (and ran faster at low VRAM share in our tests)

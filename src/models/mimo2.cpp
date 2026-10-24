@@ -3,6 +3,10 @@
 
 #include <algorithm>
 
+// fork (llama-graph.cpp), declared here so that no shared header changes: the index in ds_r of the expert card's range (where it sits in token order
+// is ds_plan's choice: the first)
+size_t llama_ds_xr_fork(const std::vector<llm_graph_context::ds_range_fork> & r);
+
 void llama_model_mimo2::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
 
@@ -168,22 +172,22 @@ llama_model_mimo2::graph::graph(const llama_model & model, const llm_graph_param
                         ds_pin(ds_r[r].b);
                     }
                 } else {
-                    // router logits per range on its card; the selection runs on the last range's card for all tokens (the logits cross, not the hidden state)
+                    // router logits per range on its card; the selection runs on the expert card's range for all tokens (the logits cross, not the hidden state)
                     std::vector<ggml_tensor *> lg(NR);
                     for (size_t r = 0; r < NR; ++r) { ds_skip(); lg[r] = build_lora_mm(L[r].ffn_gate_inp, pn[r]); ds_pin(ds_r[r].b); }
                     ds_skip();
                     ggml_tensor * logits = lg[0], * call = pn[0];
                     for (size_t r = 1; r < NR; ++r) { logits = ggml_concat(ctx0, logits, lg[r], 1); call = ggml_concat(ctx0, call, pn[r], 1); }
-                    ds_pin(ds_r.back().b);
+                    ds_pin(ds_r[llama_ds_xr_fork(ds_r)].b);
                     moe_ranges.clear();
                     for (size_t r = 0; r < NR; ++r) { moe_ranges.push_back({ ds_r[r].b, ds_r[r].t0, ds_r[r].t1, pn[r], nullptr }); }
-                    build_moe_ffn(call, llama_dsplit_mirror_fork(model, model.layers[il].ffn_gate_inp, ds_r.back().dev),
+                    build_moe_ffn(call, llama_dsplit_mirror_fork(model, model.layers[il].ffn_gate_inp, ds_r[llama_ds_xr_fork(ds_r)].dev),
                             model.layers[il].ffn_up_exps, model.layers[il].ffn_gate_exps, model.layers[il].ffn_down_exps,
-                            llama_dsplit_mirror_fork(model, model.layers[il].ffn_exp_probs_b, ds_r.back().dev),
+                            llama_dsplit_mirror_fork(model, model.layers[il].ffn_exp_probs_b, ds_r[llama_ds_xr_fork(ds_r)].dev),
                             n_expert, n_expert_used, LLM_FFN_SILU, true, hparams.expert_weights_scale, LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID, il, logits);
                     for (size_t r = 0; r < NR; ++r) { f[r] = moe_ranges[r].out; }
                     moe_ranges.clear();
-                    ds_skip();   // the router's selection follows its input (the logits, on the last range's card); the expert chains are pinned inside
+                    ds_skip();   // the router's selection follows its input (the logits, on the expert card's range); the expert chains are pinned inside
                 }
                 for (size_t r = 0; r < NR; ++r) {
                     ds_skip();

@@ -50,6 +50,9 @@
 #include <string>
 #include <vector>
 
+// the largest pass a dense split can run (llama-dsplit-fork.cpp): the sliding-window caches need room for it
+uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch);
+
 static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params & params) {
     switch (arch) {
         case LLM_ARCH_CLIP:
@@ -3284,7 +3287,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             cparams.kv_unified,
                             cparams.n_ctx_seq,
                             cparams.n_seq_max,
-                            cparams.n_ubatch,
+                            llama_dsplit_max_pass_fork(this, cparams.n_ubatch),   // sliding-window cells: the largest dense-split pass, not one card's micro-batch
                             1,
                             nullptr,
                             filter_mtp,
@@ -3324,7 +3327,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             cparams.kv_unified,
                             cparams.n_ctx_seq,
                             cparams.n_seq_max,
-                            cparams.n_ubatch,
+                            llama_dsplit_max_pass_fork(this, cparams.n_ubatch),   // sliding-window cells: the largest dense-split pass, not one card's micro-batch
                             1,
                             nullptr,
                             nullptr,
@@ -3519,7 +3522,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                     cparams.kv_unified,
                                     cparams.n_ctx_seq,
                                     cparams.n_seq_max,
-                                    cparams.n_ubatch,
+                                    llama_dsplit_max_pass_fork(this, cparams.n_ubatch),   // sliding-window cells: the largest dense-split pass, not one card's micro-batch
                                     1,
                                     mem_other,
                                     filter,
@@ -3536,7 +3539,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                     cparams.kv_unified,
                                     cparams.n_ctx_seq,
                                     cparams.n_seq_max,
-                                    cparams.n_ubatch,
+                                    llama_dsplit_max_pass_fork(this, cparams.n_ubatch),   // sliding-window cells: the largest dense-split pass, not one card's micro-batch
                                     1,
                                     nullptr,
                                     filter,

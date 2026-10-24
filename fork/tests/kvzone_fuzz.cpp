@@ -1,6 +1,6 @@
-// KV zone placement fuzz: random pool shapes (size classes with their zero blocks, a fixed KV part, a row size, a lend) driven through the
+// KV zone placement fuzz: random pool shapes (size classes back to back, a fixed KV part, a row size, a lend) driven through the
 // templates of src/llama-kvzone-fork.h; no GPU, no model. Checks the relations kv_layout and the compute-alias lend rely on:
-//   1. every gap lies between zero blocks (overlaps none)
+//   1. the gaps lie inside [0, tail_end)
 //   2. gap_fit(h cells) >= h  <=>  gap_place(zone of h cells) finds a place
 //   3. a zone the lend potential promised (lend_potential(min_cells)) can be placed behind a lend of that size
 //   4. a placed zone passes the layout's own invariant check (kvz_bad)
@@ -30,23 +30,22 @@ int main(int argc, char ** argv) {
         const size_t unit = 4096 * R(1, 8);
         size_t at = 0;
         const int ncls = (int) R(1, 6);
-        for (int c = 0; c < ncls; ++c) {   // a class: n blocks of B, then its zero block (B)
+        for (int c = 0; c < ncls; ++c) {   // a class: n blocks of B, the next class right behind
             seg_t sg; sg.base = at; sg.B = unit * R(1, 64); sg.n = (int) R(0, 40);
             ap.segs.push_back(sg);
-            at += (size_t) (sg.n + 1) * sg.B;
+            at += (size_t) sg.n * sg.B;
         }
-        ap.tail_end = at + (rng() % 4 == 0 ? unit * R(0, 20) : 0);   // some pools have a tail past the last zero block
+        ap.tail_end = at;
         ap.kvt.push_back(1);
         ap.kv_row   = R(1, 4096) * 16;
         ap.kv_fixed = rng() % 3 == 0 ? unit * R(0, 100) : 0;
         ap.kv_h     = R(0, 3000);
         const size_t bmax = std::max<size_t>(1, kvz_bmax(ap));
 
-        // 1. gaps overlap no zero block
+        // 1. gaps lie inside the pool
         const auto gaps = kvz_gaps(ap, R(0, ap.tail_end / 2 + 1), bmax);
-        for (const auto & g : gaps) for (const auto & sg : ap.segs) {
-            const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
-            CHECK(g.second <= z0 || g.first >= z1, "gap [%zu,%zu) over zero block [%zu,%zu)", g.first, g.second, z0, z1);
+        for (const auto & g : gaps) {
+            CHECK(g.first < g.second && g.second <= ap.tail_end, "gap [%zu,%zu) outside [0,%zu)", g.first, g.second, ap.tail_end);
         }
         // 5. lend potential never grows with the cells
         size_t prev = (size_t) -1;
@@ -67,7 +66,7 @@ int main(int argc, char ** argv) {
             const double a = (double) (unit * R(0, 200)), b = (double) R(1, 4000) * 16;
             const unsigned cap = kvz_pass_cap(ap, n_prompt, 1u << 30, a, b, pad, mirror);
             if (cap > 64) {
-                const size_t lend = ((size_t) (a + b * cap) + bmax - 1) / bmax * bmax;
+                const size_t lend = kvz_block_ceil(ap, mirror + (size_t) (a + b * cap));   // the lend ends on the block edge at or after its bytes
                 const size_t rows = (std::max<size_t>(n_prompt, ap.kv_h) + pad - 1) / pad * pad, zone = ap.kv_fixed + rows * ap.kv_row;
                 CHECK(kvz_gap_place(ap, bmax, lend, lend, zone) != (size_t) -1, "pass cap %u (lend %zu, a %.0f b %.0f) leaves no gap for %zu padded rows (%zu B)", cap, lend, a, b, rows, zone);
             }

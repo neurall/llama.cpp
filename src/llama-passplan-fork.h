@@ -7,12 +7,13 @@
 #include <cstdint>
 
 // Prefetch staging: the slots (full expert tensors uploaded ahead on a second stream) are lent blocks behind the graph and its scratch. As many as the pool still holds behind
-// them (cap_b: what the pool can lend at most, stage_off: where the slots start), up to the configured number, at least 3 (the scheduler's ring adapts to the region it gets);
-// fewer than 3 means none, never a cut micro-batch. plan_k >= 0 (prompt graphs): the pass planner's choice, more slots evict more cached experts.
+// them (cap_b: what the pool can lend at most, stage_off: where the slots start), up to the configured number; never a cut micro-batch. The scheduler keeps slots - 1 uploads
+// in flight (ggml_backend_sched_prefetch_prepare), so one slot overlaps nothing: 2 is the least that hides an upload behind a matmul (double buffering), fewer means none.
+// plan_k >= 0 (prompt graphs): the pass planner's limit.
 static inline int ppx_stage_slots(size_t slot_b, size_t cap_b, size_t stage_off, int n_cfg, int plan_k) {
     int fit = slot_b > 0 && cap_b > stage_off ? (int) std::min<size_t>((size_t) std::max(0, n_cfg), (cap_b - stage_off) / slot_b) : 0;
     if (plan_k >= 0) { fit = std::min(fit, plan_k); }
-    return fit >= 3 ? fit : 0;
+    return fit >= 2 ? fit : 0;
 }
 
 // The fallback pass size of a prompt of n tokens with micro-batch ub_max when the cache path (max batch mb) takes the tail: full passes of ub_max when the tail fits the cache

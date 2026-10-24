@@ -4,7 +4,7 @@
 // Every fixed bug gets a check that fails if it comes back (fork/docs/bug-log.md entry in brackets):
 //   [#3, #6]  pad rows: the zone and the pass cap count the cells rounded up to the attention pad       -> test_regress_padded_rows
 //   [#4]      lend potential counts the cells of the graph asked about                                   -> test_regress_lend_potential_cells
-//   [#5]      a zone never lies over a class zero block (the fixed part picks another gap or is refused) -> test_regress_zone_not_over_zero
+//   [#5]      a zone lies behind the lend inside the expert blocks, across class boundaries (no zero blocks since 2026-10-24) -> test_regress_zone_across_classes
 //   [#7]      (ggml level, not covered here)  [#1, #2] (model level)
 //   [#8]      the lend potential walks the same gaps (block-aligned starts) as the placement              -> test_regress_potential_matches_place
 //   [#9]      capacity is the largest gap, not pool bytes / row                                           -> test_regress_capacity_is_gap
@@ -42,7 +42,7 @@ static std::string fmt(const char * f, ...) {
 }
 
 // ---- a pool shape like the engine's alias_pool / moe_cache::pool_state, with a few fields only -----------------------------------------------------
-struct tseg { int32_t pcls = -1; size_t base = 0, B = 0; int32_t n = 0, blocked = 0; bool zero_dirty = false; };
+struct tseg { int32_t pcls = -1; size_t base = 0, B = 0; int32_t n = 0, blocked = 0; };
 struct tps  { std::vector<int32_t> owner, free; };
 struct tpool {
     std::vector<tseg> segs; std::vector<tps> ps; std::vector<int> kvt;
@@ -60,7 +60,7 @@ static tpool make_pool(std::mt19937_64 & rng, bool with_zone_rows) {
         tps ps; ps.owner.assign((size_t) sg.n, -1);
         for (int b = sg.n - 1; b >= 0; --b) { ps.free.push_back(b); }
         p.ps.push_back(ps);
-        at += (size_t) (sg.n + 1) * sg.B;
+        at += (size_t) sg.n * sg.B;   // the classes back to back (no zero block between them)
     }
     p.tail_end = at;
     p.span = p.segs.back().base + (size_t) p.segs.back().n * p.segs.back().B;
@@ -68,7 +68,7 @@ static tpool make_pool(std::mt19937_64 & rng, bool with_zone_rows) {
     return p;
 }
 
-// every byte of the pool, who claims it: the lend (graph bytes in lent blocks), the KV zone, an expert (the block's owner), a zero block. One claimant per byte or the buffers
+// every byte of the pool, who claims it: the lend (graph bytes in lent blocks), the KV zone, an expert (the block's owner). One claimant per byte or the buffers
 // overwrite each other. Returns "" when it holds, else what is wrong.
 static std::string check_pool(const tpool & p) {
     std::vector<int> claim(p.tail_end + 1, 0);
@@ -86,9 +86,6 @@ static std::string check_pool(const tpool & p) {
             const size_t lo = sg.base + (size_t) b * sg.B;
             if (o >= 0 || o == -3 || o == -2) { for (size_t x = lo; x < lo + sg.B; ++x) { claim[x]++; } }
         }
-        // zero block: nobody else's bytes, except a lend that covers it (zero_dirty: zeroed again when the lend leaves)
-        const size_t z0 = sg.base + (size_t) sg.n * sg.B;
-        if (!sg.zero_dirty) { for (size_t x = z0; x < z0 + sg.B; ++x) { claim[x]++; } }
     }
     // the zone claims its bytes itself; blocks under it are -3 (counted above through the owner), so count the zone only where no -3 block is: zone bytes must lie in -3 blocks
     if (p.kv_h > 0) {
@@ -101,20 +98,17 @@ static std::string check_pool(const tpool & p) {
                 const bool over = lo < b1 && hi > b0;
                 if (over != (p.ps[i].owner[b] == -3)) { return fmt("class %zu block %d: over zone %d but owner %d", i, b, (int) over, p.ps[i].owner[b]); }
             }
-            const size_t z0 = sg.base + (size_t) sg.n * sg.B;
-            if (lo < z0 + sg.B && hi > z0) { return fmt("zone [%zu,%zu) over the zero block of class %zu", lo, hi, i); }
         }
     } else {
         for (const auto & ps : p.ps) { for (int32_t o : ps.owner) { if (o == -3) { return "a block under a zone that is not there"; } } }
     }
-    // the graph's own bytes [0, want_b): must be lent blocks or a dirty zero block; never expert or zone bytes
+    // the graph's own bytes [0, want_b): must be lent blocks; never expert or zone bytes
     for (size_t x = 0; x < p.want_b && x < p.tail_end; ++x) {
         bool ok = false;
         for (size_t i = 0; i < p.segs.size() && !ok; ++i) {
             const auto & sg = p.segs[i];
-            if (x < sg.base || x >= sg.base + (size_t) (sg.n + 1) * sg.B) { continue; }
-            const size_t b = (x - sg.base) / sg.B;
-            ok = b >= (size_t) sg.n ? sg.zero_dirty : p.ps[i].owner[b] == -2;
+            if (x < sg.base || x >= sg.base + (size_t) sg.n * sg.B) { continue; }
+            ok = p.ps[i].owner[(x - sg.base) / sg.B] == -2;
         }
         if (!ok) { return fmt("the graph's byte %zu (lend %zu) is not in a lent block", x, p.want_b); }
     }
@@ -169,27 +163,24 @@ static void test_lend_granularity() {
         const size_t end = poolx_lend_round(p, bytes);
         if (end < bytes) { fail(fmt("lend %zu ended at %zu, short of it", bytes, end)); }
         for (const auto & sg : p.segs) {
-            bool z = false;
-            const int32_t need = poolx_lend_blocks(sg, bytes, &z);
+            const int32_t need = poolx_lend_blocks(sg, bytes);
             if (need > sg.n) { fail(fmt("asked for %d blocks of a class of %d", (int) need, (int) sg.n)); }
             const size_t cov = bytes > sg.base ? bytes - sg.base : 0;
             if (cov <= (size_t) sg.n * sg.B && (size_t) need * sg.B < cov) { fail(fmt("%d blocks of %zu do not cover %zu bytes", (int) need, sg.B, cov)); }
-            if (z != (cov > (size_t) sg.n * sg.B)) { fail("zero block reach flag wrong"); }
             if (cov > 0 && cov <= (size_t) sg.n * sg.B && (size_t) (need - 1) * sg.B >= cov) { fail("took a block no byte of the lend is in"); }
         }
-        // the end is on a block edge of at least one class the lend overlaps (or the lend already ended on one)
+        // the end is the block edge of the class the lend ends in (the next edge at or after its last byte), or the lend itself on an edge or past the blocks
         bool edge = end == bytes;
-        for (const auto & sg : p.segs) { if (sg.base < bytes && sg.B > 0 && end >= sg.base && (end - sg.base) % sg.B == 0) { edge = true; } }
-        if (!edge) { fail(fmt("lend %zu ends at %zu, on no block edge", bytes, end)); }
+        for (const auto & sg : p.segs) { if (bytes > sg.base && bytes < sg.base + (size_t) sg.n * sg.B && sg.B > 0 && (end - sg.base) % sg.B == 0 && end - bytes < sg.B) { edge = true; } }
+        if (!edge) { fail(fmt("lend %zu ends at %zu, not at the next block edge of its class", bytes, end)); }
     }
     report("random pools: 8 blocks asked of a class of 7 returns 7; ends on block edges", bad == 0, first);
     // [MiMo] class 0 has smaller blocks than the largest class at the end: the round must follow each class, not the largest block size
-    tpool m; m.segs = { { 0, 0, 9200, 4, 0, false }, { 1, 5 * 9200, 12600, 3, 0, false } };
+    tpool m; m.segs = { { 0, 0, 9200, 4, 0 }, { 1, 4 * 9200, 12600, 3, 0 } };
     report("MiMo shape: a 10800-byte lend ends at 2 blocks of class 0 (18400)", poolx_lend_round(m, 10800) == 18400);
-    bool z = false;
-    report("7 blocks in the class, lend of 8: needs 7, reaches the zero block", poolx_lend_blocks(tseg{ 0, 0, 100, 7, 0, false }, 800, &z) == 7 && z);
-    z = false;
-    report("exactly 7 blocks: needs 7, zero block not reached", poolx_lend_blocks(tseg{ 0, 0, 100, 7, 0, false }, 700, &z) == 7 && !z);
+    report("7 blocks in the class, lend of 8: needs 7 (the rest lies in the next class)", poolx_lend_blocks(tseg{ 0, 0, 100, 7, 0 }, 800) == 7);
+    report("exactly 7 blocks: needs 7", poolx_lend_blocks(tseg{ 0, 0, 100, 7, 0 }, 700) == 7);
+    report("a lend ending inside the second class rounds to that class's block (not the first's)", poolx_lend_round(m, 4 * 9200 + 100) == 4 * 9200 + 12600);
 }
 
 // ---- owner ledger under random operations -------------------------------------------------------------------------------------------------------
@@ -205,11 +196,11 @@ static void ledger_run(std::mt19937_64 & rng, long steps, std::string & first, l
         auto evict = [&](int32_t, int32_t) {};
         if (op == 0 || op == 1) {   // a graph lends `bytes` (as the engine, only below the zone)
             const size_t bytes = R(0, p.span);
-            const size_t end = (poolx_lend_round(p, bytes) + bmax - 1) / bmax * bmax;
+            const size_t end = poolx_lend_round(p, bytes);
             if (p.kv_h > 0 && end > p.kv_start) { continue; }   // the engine moves the zone behind the lend first; here the op is skipped
             for (size_t i = 0; i < p.segs.size(); ++i) {
                 auto & sg = p.segs[i];
-                const int32_t need = poolx_lend_blocks(sg, bytes, &sg.zero_dirty);
+                const int32_t need = poolx_lend_blocks(sg, bytes);
                 if (need > sg.blocked) {
                     if (poolx_lend(p.ps[i], sg.blocked, need, evict) != 0) { if (bad++ == 0) { first = "a lend went over the zone"; } }
                     sg.blocked = need;
@@ -223,7 +214,6 @@ static void ledger_run(std::mt19937_64 & rng, long steps, std::string & first, l
                 const size_t cov = p.want_b > sg.base ? p.want_b - sg.base : 0;
                 const int32_t keep = (int32_t) std::min<size_t>((size_t) sg.n, (cov + sg.B - 1) / sg.B);
                 if (keep < sg.blocked) { poolx_release(p.ps[i], keep, sg.blocked); sg.blocked = keep; }
-                if (sg.zero_dirty && cov <= (size_t) sg.n * sg.B) { sg.zero_dirty = false; }
             }
         } else if (op == 3 || op == 4) {   // the zone is laid out for h cells behind the lend, in a gap
             const size_t h = R(0, 80), zone = p.kv_fixed + h * p.kv_row;
@@ -281,26 +271,25 @@ static void test_ledger_random() {
 static void test_detectors() {
     printf("Testing that the checks catch a broken pool (negative controls):\n");
     std::mt19937_64 rng(g_seed + 3);
-    int caught_zero = 0, caught_lend = 0, caught_gate = 0, n = 0;
+    int caught_zone = 0, caught_lend = 0, caught_gate = 0, n = 0;
     for (int it = 0; it < 200; ++it) {
         tpool p = make_pool(rng, true);
         if (p.segs.size() < 2) { continue; }
         n++;
         const auto & sg = p.segs[0];
-        const size_t z0 = sg.base + (size_t) sg.n * sg.B;
-        // a zone laid over the first class's zero block
-        tpool q = p; q.kv_start = z0 > 8 ? z0 - 8 : 0; q.kv_h = 1; q.kv_fixed = sg.B; q.kv_row = 4;
-        if (kvz_bad(q, 0) != nullptr && !check_pool(q).empty()) { caught_zero++; }
+        // a zone that starts inside the lend: kvz_bad and the gate see it
+        tpool q = p; q.want_b = sg.B; q.kv_start = 0; q.kv_h = 1; q.kv_fixed = 0; q.kv_row = 4;
+        if (kvz_bad(q, sg.B) != nullptr) { caught_zone++; }
         size_t rlo = 0, rhi = 0;
-        if (poolx_gate_kind(q, z0, z0 + 1, &rlo, &rhi) != nullptr) { caught_gate++; }
+        if (poolx_gate_kind(q, 0, 1, &rlo, &rhi) != nullptr) { caught_gate++; }
         // a lend (graph bytes) that covers an expert-owned block
         tpool r = p; r.ps[0].owner[0] = 1; r.ps[0].free.erase(std::find(r.ps[0].free.begin(), r.ps[0].free.end(), 0)); r.want_b = sg.B;
         if (!check_pool(r).empty()) { caught_lend++; }
     }
-    report("zone over a zero block: kvz_bad, the claim check and the gate all see it", caught_zero == n && caught_gate == n, fmt("%d of %d", caught_zero, n));
+    report("zone inside the lend: kvz_bad and the gate see it", caught_zone == n && caught_gate == n, fmt("%d of %d", caught_zone, n));
     report("graph bytes over an expert's block: the claim check sees it", caught_lend == n, fmt("%d of %d", caught_lend, n));
     // poolx_lend never takes a block under the zone
-    tpool p; p.segs = { { 0, 0, 16, 4, 0, false } }; p.ps = { tps{ { -1, -3, -3, -1 }, { 3, 0 } } };
+    tpool p; p.segs = { { 0, 0, 16, 4, 0 } }; p.ps = { tps{ { -1, -3, -3, -1 }, { 3, 0 } } };
     int32_t evicted = 0;
     const int bad = poolx_lend(p.ps[0], 0, 4, [&](int32_t, int32_t) { evicted++; });
     report("a lend reaching blocks under the zone leaves them under the zone", bad == 2 && p.ps[0].owner[1] == -3 && p.ps[0].owner[2] == -3 && p.ps[0].owner[0] == -2);
@@ -308,7 +297,7 @@ static void test_detectors() {
 
 // ---- the gate ------------------------------------------------------------------------------------------------------------------------------------
 static void test_gate() {
-    printf("Testing the write gate (zone and zero blocks are never written by an expert upload):\n");
+    printf("Testing the write gate (the zone is never written by an expert upload):\n");
     std::mt19937_64 rng(g_seed + 4);
     long bad = 0; std::string first;
     for (long it = 0; it < g_iters && !bad; ++it) {
@@ -321,12 +310,11 @@ static void test_gate() {
         bool hit = false;
         for (size_t x = lo; x < hi && !hit; ++x) {
             if (p.kv_h > 0 && x >= p.kv_start && x < poolx_kv_end(p)) { hit = true; }
-            for (const auto & sg : p.segs) { const size_t z0 = sg.base + (size_t) sg.n * sg.B; if (x >= z0 && x < z0 + sg.B) { hit = true; } }
         }
         if (hit != (k != nullptr)) { bad++; first = fmt("[%zu,%zu): oracle %d gate %s", lo, hi, (int) hit, k ? k : "clear"); }
         else if (k && !(lo < rhi && hi > rlo)) { bad++; first = "gate names a region the range does not touch"; }
     }
-    report("gate refuses exactly the ranges that touch the zone or a zero block", bad == 0, first);
+    report("gate refuses exactly the ranges that touch the zone", bad == 0, first);
 }
 
 // ---- range map: collision rule ------------------------------------------------------------------------------------------------------------------
@@ -425,10 +413,10 @@ static void test_threads() {
 }
 
 // ---- regression tests of fixed bugs ---------------------------------------------------------------------------------------------------------------
-// a pool of classes (n blocks of B, then the zero block of B) as the kvzone fuzz builds them
+// a pool of classes (n blocks of B each, back to back) as the kvzone fuzz builds them
 static tpool shaped(std::initializer_list<std::pair<size_t, int>> cls, size_t row, size_t fixed = 0) {
     tpool p; size_t at = 0; int c = 0;
-    for (auto & x : cls) { tseg sg; sg.pcls = c++; sg.base = at; sg.B = x.first; sg.n = x.second; p.segs.push_back(sg); at += (size_t) (x.second + 1) * x.first; }
+    for (auto & x : cls) { tseg sg; sg.pcls = c++; sg.base = at; sg.B = x.first; sg.n = x.second; p.segs.push_back(sg); at += (size_t) x.second * x.first; }
     p.tail_end = at; p.span = p.segs.back().base + (size_t) p.segs.back().n * p.segs.back().B;
     p.kvt.push_back(1); p.kv_row = row; p.kv_fixed = fixed;
     return p;
@@ -469,30 +457,30 @@ static void test_regress_lend_potential_cells() {
     report("the potential never exceeds pool less the zone", pot512 + 512 * 5 <= p.span);
     report("a graph that takes the whole pool leaves no room (potential 0 when the zone does not fit)", kvz_lend_potential(p, 100000) == 0);
 }
-static void test_regress_zone_not_over_zero() {
-    printf("Testing [bug 5] a zone never lies over a class zero block:\n");
-    // MiMo shape: fixed part 1600 behind class 0; the gap behind class 0's zero block is smaller than the fixed part
+static void test_regress_zone_across_classes() {
+    printf("Testing [bug 5] a zone lies behind the lend, inside the expert blocks, across class boundaries:\n");
+    // MiMo shape (9 classes on the x4 card, 2026-10-24): a fixed part bigger than any one class, behind a lend: it fits across the classes
     tpool p = shaped({ { 100, 10 }, { 100, 10 }, { 100, 30 } }, 1, 1600);
-    const size_t bmax = kvz_bmax(p), s = kvz_gap_place(p, bmax, 0, 0, 1600 + 50);
-    bool over = false;
-    if (s != (size_t) -1) { tpool q = p; q.kv_start = s; q.kv_h = 50; over = kvz_bad(q, 0) != nullptr; }
-    report("the fixed part picks a gap that holds it, or is refused: never over a zero block", !over, s == (size_t) -1 ? "refused" : fmt("placed at %zu", s));
-    // random: every placement the template returns passes kvz_bad and the byte-exact claim check
+    const size_t bmax = kvz_bmax(p), s = kvz_gap_place(p, bmax, 1000, 1000, 1600 + 50);
+    bool bad0 = s == (size_t) -1;
+    if (!bad0) { tpool q = p; q.kv_start = s; q.kv_h = 50; bad0 = kvz_bad(q, 1000) != nullptr; }
+    report("a 1650-byte zone behind a 1000-byte lend fits across the classes (largest class 3000, the others 1000)", !bad0, s == (size_t) -1 ? "refused" : fmt("placed at %zu", s));
+    // random: every placement the template returns passes kvz_bad
     std::mt19937_64 rng(g_seed + 6);
     long bad = 0, placed = 0; std::string first;
     for (long it = 0; it < g_iters && !bad; ++it) {
         tpool q = make_pool(rng, true);
         q.kv_fixed = rng() % 2 ? 0 : 16 * (rng() % 200);
         const size_t cells = 1 + rng() % 100, zone = q.kv_fixed + cells * q.kv_row, b = std::max<size_t>(1, kvz_bmax(q));
-        const size_t lo = (rng() % (q.tail_end / 2 + 1) + b - 1) / b * b;
+        const size_t lo = kvz_block_ceil(q, rng() % (q.tail_end / 2 + 1));
         const size_t s2 = kvz_gap_place(q, b, lo, lo, zone);
-        if (s2 == (size_t) -1) { continue; }
+        if (s2 == (size_t) -1) { if (lo + zone <= kvz_block_floor(q, q.tail_end)) { bad++; first = fmt("a zone of %zu bytes behind %zu was refused in a pool of %zu", zone, lo, q.tail_end); } continue; }
         placed++;
         q.kv_start = s2; q.kv_h = cells;
         if (const char * why = kvz_bad(q, lo)) { bad++; first = why; }
-        for (const auto & sg : q.segs) { const size_t z0 = sg.base + (size_t) sg.n * sg.B; if (s2 < z0 + sg.B && s2 + zone > z0) { bad++; first = "zone bytes over a zero block"; } }
+        if (kvz_block_ceil(q, s2) != s2) { bad++; first = "zone start off a block edge"; }
     }
-    report("random pools: every placed zone is behind the lend, in one gap, off every zero block", bad == 0 && placed > 100, first.empty() ? fmt("%ld placed", placed) : first);
+    report("random pools: every zone that fits behind the lend is placed, on a block edge, and passes kvz_bad", bad == 0 && placed > 100, first.empty() ? fmt("%ld placed", placed) : first);
 }
 static void test_regress_potential_matches_place() {
     printf("Testing [bug 8] the lend potential walks the placement's gaps:\n");
@@ -512,16 +500,16 @@ static void test_regress_potential_matches_place() {
 }
 static void test_regress_capacity_is_gap() {
     printf("Testing [bug 9] capacity is the largest gap behind the lend, not pool bytes / row:\n");
-    tpool p = shaped({ { 100, 4 }, { 100, 4 } }, 10);   // two classes: zero blocks cut the pool in gaps of 400 and 400 bytes
+    tpool p = shaped({ { 100, 4 }, { 100, 4 } }, 10);   // two classes back to back: one range of 800 bytes
     const size_t b = kvz_bmax(p), fit = kvz_gap_fit(p, b, 0, p.kv_row);
-    report("two gaps of 400 bytes hold 40 cells, not (pool 1000 bytes) / 10 = 100", fit == 40, fmt("%zu cells", fit));
+    report("two classes of 400 bytes back to back hold 80 cells (the zone crosses the class edge)", fit == 80, fmt("%zu cells", fit));
     p.kv_fixed = 150;
-    report("the fixed part comes off the gap first: (400 - 150) / 10 = 25 cells", kvz_gap_fit(p, b, 0, p.kv_row) == 25);
+    report("the fixed part comes off first: (800 - 150) / 10 = 65 cells", kvz_gap_fit(p, b, 0, p.kv_row) == 65);
     std::mt19937_64 rng(g_seed + 8);
     long bad = 0; std::string first;
     for (long it = 0; it < g_iters && !bad; ++it) {
         tpool q = make_pool(rng, true);
-        const size_t bm = std::max<size_t>(1, kvz_bmax(q)), lo = (rng() % (q.tail_end + 1) + bm - 1) / bm * bm;
+        const size_t bm = std::max<size_t>(1, kvz_bmax(q)), lo = kvz_block_ceil(q, rng() % (q.tail_end + 1));
         const size_t fit2 = kvz_gap_fit(q, bm, lo, q.kv_row);
         if (fit2 > 0) {   // a zone of exactly `fit` cells is placeable (so the capacity is real) and one cell more is not in the same gap
             const size_t zone = q.kv_fixed + fit2 * q.kv_row;
@@ -552,7 +540,7 @@ int main(int argc, char ** argv) {
     test_threads();
     test_regress_padded_rows();
     test_regress_lend_potential_cells();
-    test_regress_zone_not_over_zero();
+    test_regress_zone_across_classes();
     test_regress_potential_matches_place();
     test_regress_capacity_is_gap();
     test_regress_least_over_cards();

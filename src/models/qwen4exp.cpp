@@ -7,6 +7,13 @@
 #include <algorithm>
 #include <cinttypes>
 
+// fork (llama-graph.cpp), declared here so that no shared header changes: the index in ds_r of the expert card's range (where it sits in token order
+// is ds_plan's choice: the first)
+size_t llama_ds_xr_fork(const std::vector<llm_graph_context::ds_range_fork> & r);
+
+// fork (llama-dsplit-fork.cpp), declared here so that no shared header changes: the order of the ranges' attention over a layer's cache, the cache's card last
+std::vector<size_t> llama_dsplit_attn_order_fork(const std::vector<ggml_backend_dev_t> & range_devs, const ggml_tensor * cache);
+
 // bad metadata must be catchable: GGML_ASSERT aborts the whole process
 static void qwen4exp_require_nonzero(const llama_model_loader & ml, llm_kv kid, uint32_t value) {
     if (value == 0) {
@@ -525,6 +532,10 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
             const auto n_of = [&](size_t r) { return ds_r[r].t1 - ds_r[r].t0; };
 
             std::vector<ggml_tensor *> x(NR), cr(NR), inj(NR), ple_r(NR, nullptr);
+            // block-sparse attention (QSA): each range's rows of the attention mask as 2-D, ONE tensor for all layers. A reshape made per layer is a new input
+            // tensor every layer, and the scheduler sent each card its rows again for every QSA layer: 12.5 copies per pass, 24 GB into the x4 card in one pass
+            // of Qwen3.8-Flash-Next at 63k cells (2026-10-24). One tensor goes to each card once per graph (ggml_backend_sched_copy_input).
+            std::vector<ggml_tensor *> kq_mask2d(NR, nullptr);
             const auto pos_r = ds_pos(inp_pos);
             for (size_t r = 0; r < NR; ++r) {
                 ds_skip();
@@ -565,8 +576,15 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                 }
             };
 
+            // --moe split-pieces=1 (research, off): the experts as one piece per range (see the experts below); off: one expert op over all ranges
+            static const bool pieces = [] { const char * e = llama_moe_get_opt("split-pieces"); return e && atoi(e) != 0; }();
+            // --moe state-late=1 (research, off): without pieces too, the helper's final conv history and state are written to the memory card at the end of the layer, behind
+            // the experts, instead of where they are computed. Measured slower (Qwen3.8 60k: 1645 against 1694 t/s); kept to compare pass traces.
+            static const int state_late = [] { const char * e = llama_moe_get_opt("state-late"); return e ? atoi(e) : 0; }();   // 2: behind the attention residual, not behind the experts
+            const auto put = [&](std::vector<ggml_tensor *> & late, ggml_tensor * w) { if (pieces || state_late > 0) { late.push_back(w); } else { ggml_build_forward_expand(gf, w); } };
             for (int il = 0; il < n_layer; ++il) {
                 std::vector<llama_layer> L;
+                std::vector<ggml_tensor *> late;   // with pieces: memory writes of the last range, put in the graph at the end of the layer (see the experts below)
                 static const bool no_mirror = getenv("LLAMA_DS_NOMIRROR") != nullptr;   // debug: every range reads the layer's own weights (copied over per pass)
                 for (size_t r = 0; r < NR; ++r) { L.push_back(no_mirror ? model.layers[il] : llama_dsplit_layer_fork(model, model.layers[il], ds_r[r].dev)); }
 
@@ -655,7 +673,27 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                         gate[r] = ggml_reshape_4d(ctx0, ggml_mul(ctx0, ggml_softplus(ctx0, ggml_add(ctx0, alpha, L[r].ssm_dt)), L[r].ssm_a), 1, num_v_heads, nr, 1);
                         ds_pin(ds_r[r].b);
                     }
-                    const auto conv_in = ds_conv_chain(hist_rows(conv_all), conv_all, row_off(conv_all), qkv, k_conv - 1, channels);
+                    // the conv window chain (ds_conv_chain), with the last range's write to the memory issued at the end of the layer: issued here it pulls
+                    // the last range's projections into the graph in front of the earlier ranges' experts
+                    std::vector<ggml_tensor *> conv_in(NR);
+                    {
+                        ggml_tensor * rows = hist_rows(conv_all);
+                        ds_skip();
+                        ggml_tensor * tail = ggml_reshape_3d(ctx0, rows, k_conv - 1, channels, 1);   // the stored history, where the memory is
+                        for (size_t r = 0; r < NR; ++r) {
+                            ds_skip();
+                            ggml_tensor * in  = ggml_concat(ctx0, tail, ggml_transpose(ctx0, qkv[r]), 0);
+                            ggml_tensor * win = ggml_cont(ctx0, ggml_view_3d(ctx0, in, k_conv - 1, channels, 1, in->nb[1], in->nb[2], (size_t) n_of(r) * in->nb[0]));
+                            conv_in[r] = in;
+                            ds_pin(ds_r[r].b);
+                            if (r + 1 == NR) {
+                                put(late, ggml_cpy(ctx0, win, ggml_view_2d(ctx0, conv_all, (k_conv - 1) * channels, 1, conv_all->nb[1], row_off(conv_all))));
+                                ds_skip();   // the write runs where the memory is
+                            } else {
+                                tail = win;
+                            }
+                        }
+                    }
                     ds_skip();
                     ggml_tensor * state = ggml_reshape_4d(ctx0, build_rs(inp_rs, ssm_all, hparams.n_embd_s(), 1), head_v_dim, head_v_dim, num_v_heads, 1);
                     ds_skip();   // the memory read runs where the memory is
@@ -676,8 +714,8 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                             kc = ggml_repeat_4d(ctx0, kc, head_k_dim, num_v_heads, nr, 1);
                         }
                         auto os = build_delta_net(qc, kc, vc, gate[r], beta[r], state, il);
-                        if (r + 1 == NR) {
-                            ggml_build_forward_expand(gf, ggml_cpy(ctx0, os.second, ggml_view_2d(ctx0, ssm_all, hparams.n_embd_s(), 1, ssm_all->nb[1],
+                        if (r + 1 == NR) {   // with pieces issued at the end of the layer, like the conv write
+                            put(late, ggml_cpy(ctx0, os.second, ggml_view_2d(ctx0, ssm_all, hparams.n_embd_s(), 1, ssm_all->nb[1],
                                     (size_t) kv_head * hparams.n_embd_s() * ggml_element_size(ssm_all))));
                         } else {
                             state = ggml_cont(ctx0, os.second);   // the next range continues from here
@@ -759,7 +797,9 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                         ds_skip();
                         // 3. per range on its card: block scores, top blocks, selection mask, attention over the cache
                         const int64_t n_top_pool = std::min<int64_t>(n_pool, hparams.indexer_top_k / kpool);
-                        for (size_t r = 0; r < NR; ++r) {
+                        std::vector<ggml_backend_dev_t> rdev;
+                        for (const auto & rr : ds_r) { rdev.push_back(rr.dev); }
+                        for (size_t r : llama_dsplit_attn_order_fork(rdev, mctx_attn->get_k(ctx0, il))) {   // the range on the cache's own card last (see there)
                             const int64_t nr = n_of(r);
                             ds_skip();
                             ggml_tensor * tail_r  = ds_rows(inp_kpool->tail_idxs, r);
@@ -785,7 +825,8 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                             ggml_tensor * idx_f = ggml_cast(ctx0, sel_idx, GGML_TYPE_F32);
                             idx_f = ggml_add(ctx0, ggml_mul(ctx0, ggml_sub(ctx0, idx_f, dump), live), dump);
                             ggml_tensor * sel = ggml_set_rows(ctx0, mask_all, zeros, ggml_reshape_3d(ctx0, ggml_cast(ctx0, idx_f, GGML_TYPE_I32), n_sel, nr, 1));
-                            sel = ggml_add(ctx0, ggml_view_2d(ctx0, sel, n_kv, nr, sel->nb[2], 0), ggml_reshape_2d(ctx0, ds_rows(kq_mask, r), n_kv, nr));
+                            if (kq_mask2d[r] == nullptr) { kq_mask2d[r] = ggml_reshape_2d(ctx0, ds_rows(kq_mask, r), n_kv, nr); }
+                            sel = ggml_add(ctx0, ggml_view_2d(ctx0, sel, n_kv, nr, sel->nb[2], 0), kq_mask2d[r]);
                             ggml_tensor * mask = ggml_reshape_4d(ctx0, sel, n_kv, nr, 1, 1);   // the selection mask carries the causal mask
                             att[r] = build_attn_mha(q[r], mctx_attn->get_k(ctx0, il), mctx_attn->get_v(ctx0, il), nullptr, mask, nullptr, nullptr, n_sel, kq_scale, il);
                             ds_pin(ds_r[r].b);
@@ -805,6 +846,10 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                     cr[r] = build_hc_mix(x[r], L[r].hc_ffn_norm, L[r].hc_ffn_down, L[r].hc_ffn_up, L[r].hc_ffn_inject, &inj[r], il);
                     ds_pin(ds_r[r].b);
                 }
+                if (state_late == 2 && !pieces) {   // the memory card's own attention residual and mixer are in the graph before the write that waits for the helper's scan
+                    for (ggml_tensor * t : late) { ggml_build_forward_expand(gf, t); }
+                    late.clear();
+                }
                 if (join_bits & 8) {
                     ggml_tensor * all = gather(cr, 1, bl);
                     ds_skip();
@@ -818,27 +863,63 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                         ds_pin(ds_r[r].b);
                         ggml_build_forward_expand(gf, x[r]);
                     }
+                    for (ggml_tensor * t : late) { ggml_build_forward_expand(gf, t); }
                     continue;
                 }
-                // router logits per range on its card; the selection runs on the last range's card for all tokens (the logits cross, not the hidden state)
-                std::vector<ggml_tensor *> lg(NR), mo(NR);
-                for (size_t r = 0; r < NR; ++r) { ds_skip(); lg[r] = build_lora_mm(L[r].ffn_gate_inp, cr[r]); ds_pin(ds_r[r].b); }
-                ds_skip();
-                ggml_tensor * logits = lg[0], * call = cr[0];
-                for (size_t r = 1; r < NR; ++r) { logits = ggml_concat(ctx0, logits, lg[r], 1); call = ggml_concat(ctx0, call, cr[r], 1); }
-                ds_pin(ds_r.back().b);
-                moe_ranges.clear();
-                for (size_t r = 0; r < NR; ++r) { moe_ranges.push_back({ ds_r[r].b, ds_r[r].t0, ds_r[r].t1, cr[r], nullptr }); }
-                build_moe_ffn(call, llama_dsplit_mirror_fork(model, model.layers[il].ffn_gate_inp, ds_r.back().dev),
-                        model.layers[il].ffn_up_exps, model.layers[il].ffn_gate_exps, model.layers[il].ffn_down_exps, nullptr,
-                        n_expert, n_expert_used, LLM_FFN_SILU, true, hparams.expert_weights_scale, LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
-                        logits, model.layers[il].ffn_gate_up_exps, model.layers[il].ffn_up_exps_s, model.layers[il].ffn_gate_exps_s, model.layers[il].ffn_down_exps_s);
-                for (size_t r = 0; r < NR; ++r) { mo[r] = moe_ranges[r].out; }
-                moe_ranges.clear();
-                ds_skip();   // the router's selection follows its input (the logits, on the last range's card); the expert chains are pinned inside
+                if (!pieces) {
+                    // router logits per range on its card; the selection runs on the expert card's range for all tokens (the logits cross, not the hidden state)
+                    std::vector<ggml_tensor *> lg(NR), mo(NR);
+                    for (size_t r = 0; r < NR; ++r) { ds_skip(); lg[r] = build_lora_mm(L[r].ffn_gate_inp, cr[r]); ds_pin(ds_r[r].b); }
+                    ds_skip();
+                    ggml_tensor * logits = lg[0], * call = cr[0];
+                    for (size_t r = 1; r < NR; ++r) { logits = ggml_concat(ctx0, logits, lg[r], 1); call = ggml_concat(ctx0, call, cr[r], 1); }
+                    ds_pin(ds_r[llama_ds_xr_fork(ds_r)].b);
+                    moe_ranges.clear();
+                    for (size_t r = 0; r < NR; ++r) { moe_ranges.push_back({ ds_r[r].b, ds_r[r].t0, ds_r[r].t1, cr[r], nullptr }); }
+                    build_moe_ffn(call, llama_dsplit_mirror_fork(model, model.layers[il].ffn_gate_inp, ds_r[llama_ds_xr_fork(ds_r)].dev),
+                            model.layers[il].ffn_up_exps, model.layers[il].ffn_gate_exps, model.layers[il].ffn_down_exps, nullptr,
+                            n_expert, n_expert_used, LLM_FFN_SILU, true, hparams.expert_weights_scale, LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
+                            logits, model.layers[il].ffn_gate_up_exps, model.layers[il].ffn_up_exps_s, model.layers[il].ffn_gate_exps_s, model.layers[il].ffn_down_exps_s);
+                    for (size_t r = 0; r < NR; ++r) { mo[r] = moe_ranges[r].out; }
+                    moe_ranges.clear();
+                    ds_skip();   // the router's selection follows its input (the logits, on the expert card's range); the expert chains are pinned inside
+                    for (size_t r = 0; r < NR; ++r) {
+                        ds_skip();
+                        ggml_tensor * f = mo[r];
+                        if (L[r].ffn_up_shexp != nullptr) {
+                            ggml_tensor * sh = build_ffn(cr[r], L[r].ffn_up_shexp, NULL, L[r].ffn_up_shexp_s, L[r].ffn_gate_shexp, NULL, L[r].ffn_gate_shexp_s,
+                                    L[r].ffn_down_shexp, NULL, L[r].ffn_down_shexp_s, NULL, LLM_FFN_SILU, LLM_FFN_PAR, il);
+                            sh = ggml_mul(ctx0, sh, ggml_sigmoid(ctx0, build_lora_mm(L[r].ffn_gate_inp_shexp, cr[r])));
+                            f  = ggml_add(ctx0, f, sh);
+                        }
+                        x[r] = build_hc_combine(x[r], f, inj[r], il);
+                        ds_pin(ds_r[r].b);
+                        ggml_build_forward_expand(gf, x[r]);
+                    }
+                    for (ggml_tensor * t : late) { ggml_build_forward_expand(gf, t); }   // state-late: the memory writes, behind the experts
+                    continue;
+                }
+                // The router and the experts PER RANGE, the ranges in token order (user 2026-10-24; dense only: every expert stays on the expert card). One expert
+                // op over all ranges made every card wait, each layer, for every range's dense part and then the whole op, so the cards ran in turn: Qwen3.8-Flash-Next
+                // 60k prompt on x4 + x16, the x4 card idle 73-84% of every pass and the expert card waiting 28-45% (it waits for the x4 card's dense part, the x4
+                // card for the op). Per range, the expert card computes a range's experts as soon as that range arrives, and that range's card goes on to its next
+                // layer while the expert card computes its own dense part and the later ranges' experts. N cards: N pieces, in token order. The graph order below
+                // is what the cards' streams run: range r whole (router on its card, experts on the expert card, shared expert, combine), then range r+1, then the
+                // last range's memory writes (late). The linear-attention state still passes from range to range. Cost: in the cache path every piece stages the
+                // layer's expert tensors, once per range instead of once per layer.
                 for (size_t r = 0; r < NR; ++r) {
                     ds_skip();
-                    ggml_tensor * f = mo[r];
+                    ggml_tensor * lg = build_lora_mm(L[r].ffn_gate_inp, cr[r]);
+                    ds_pin(ds_r[r].b);
+                    moe_ranges.clear();
+                    moe_ranges.push_back({ ds_r[r].b, 0, n_of(r), cr[r], nullptr });
+                    build_moe_ffn(cr[r], llama_dsplit_mirror_fork(model, model.layers[il].ffn_gate_inp, ds_r[llama_ds_xr_fork(ds_r)].dev),
+                            model.layers[il].ffn_up_exps, model.layers[il].ffn_gate_exps, model.layers[il].ffn_down_exps, nullptr,
+                            n_expert, n_expert_used, LLM_FFN_SILU, true, hparams.expert_weights_scale, LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
+                            lg, model.layers[il].ffn_gate_up_exps, model.layers[il].ffn_up_exps_s, model.layers[il].ffn_gate_exps_s, model.layers[il].ffn_down_exps_s);
+                    ggml_tensor * f = moe_ranges[0].out;
+                    moe_ranges.clear();
+                    ds_skip();   // the router's selection follows its input (the logits, on the range's card); the expert chain is pinned inside
                     if (L[r].ffn_up_shexp != nullptr) {
                         ggml_tensor * sh = build_ffn(cr[r], L[r].ffn_up_shexp, NULL, L[r].ffn_up_shexp_s, L[r].ffn_gate_shexp, NULL, L[r].ffn_gate_shexp_s,
                                 L[r].ffn_down_shexp, NULL, L[r].ffn_down_shexp_s, NULL, LLM_FFN_SILU, LLM_FFN_PAR, il);
@@ -849,6 +930,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                     ds_pin(ds_r[r].b);
                     ggml_build_forward_expand(gf, x[r]);
                 }
+                for (ggml_tensor * t : late) { ggml_build_forward_expand(gf, t); }
             }
             // the ranges back together for the output head, on the output card; the output rows are taken here
             res_hc = ds_join(x, 2, ds_backend(model.dev_output()));

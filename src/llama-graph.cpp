@@ -41,7 +41,20 @@
 
 // fork (llama-dsplit-fork.cpp): the cards of a dense split pass and their shares, declared here so that no shared header changes
 void   llama_dsplit_cards_fork(std::vector<ggml_backend_dev_t> & out);   // the cards that take a range, the expert card last (empty: no split)
+std::vector<size_t> llama_dsplit_attn_order_fork(const std::vector<ggml_backend_dev_t> & range_devs, const ggml_tensor * cache);   // ranges' attention order: the cache's card last
+
+// fork: the index in ds_r of the expert card's range (the card that computes the experts: the last of llama_dsplit_cards_fork). Where it sits in token order
+// is ds_plan's choice (first), so the builders ask here instead of assuming a position. The expert card always has a range.
+size_t llama_ds_xr_fork(const std::vector<llm_graph_context::ds_range_fork> & r) {
+    std::vector<ggml_backend_dev_t> cards;
+    llama_dsplit_cards_fork(cards);
+    for (size_t i = 0; i < r.size() && !cards.empty(); ++i) {
+        if (r[i].dev == cards.back()) { return i; }
+    }
+    return r.empty() ? 0 : r.size() - 1;
+}
 std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::vector<ggml_backend_dev_t> & dev);   // their token shares (the live balance)
+uint32_t llama_dsplit_card_lim_fork();   // the card limit of the decode call in progress: the most tokens one card's range takes (0: not known)
 void   llama_dsplit_note_ranges_fork(const std::vector<ggml_backend_dev_t> & dev, const std::vector<int64_t> & tok);   // the ranges a graph was built with
 double llama_dsplit_card_f_fork(int il, int64_t n_tokens, ggml_backend_dev_t dev);   // a card's share of a layer's experts (-1: the controller decides)
 int    llama_dsplit_hop_mode_range_fork();   // the dense split's hand-off precision (llama-dsplit-fork.cpp)
@@ -3288,7 +3301,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 ggml_backend_dev_t d = ggml_backend_get_device(b);
                 if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) {
                     bool in_ranges = !range_mode;   // range mode: only the cards that hold a range of this pass
-                    for (const auto & rg : moe_ranges) { in_ranges = in_ranges || rg.b == b; }
+                    // (all ranges of the pass, ds_r, not only this call's: a builder may call once per range, see llama_model_qwen4exp::graph)
+                    for (const auto & rg : ds_r) { in_ranges = in_ranges || rg.b == b; }
                     const double g = llama_moe_cache_link_gbs_fork(d);
                     if (g > 0 && in_ranges) { parts.push_back({ b, g, 0, 0 }); }
                 }
@@ -3314,8 +3328,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 static const bool ctl_on = split_opt("split-chunks", 1) <= 1;   // --moe split-auto=0 stops the tuning (llama_split_ctl_poll_fork), not the table
                 std::vector<int64_t> n_of;
                 if (ctl_on && slow_share < 0.0 && gate_inp && gate_inp->buffer) {
-                    // range mode (dense split): every card hands its partial results on, the router runs on the last range's card: that card is the reference
-                    const ggml_backend_dev_t od = !moe_ranges.empty() ? ggml_backend_get_device(moe_ranges.back().b)
+                    // range mode (dense split): every card hands its partial results on, the router runs on the expert card's range: that card is the reference
+                    const ggml_backend_dev_t od = !moe_ranges.empty() ? ggml_backend_get_device(ds_r[llama_ds_xr_fork(ds_r)].b)
                                                                       : ggml_backend_buft_get_device(ggml_backend_buffer_get_type(gate_inp->buffer));
                     std::vector<std::pair<ggml_backend_dev_t, double>> cards;
                     size_t owner_i = parts.size();
@@ -3396,10 +3410,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
         }
     }
-    // fork: dense split (moe_ranges, set by the model builder): the split path is taken in any case; without an expert split, the card of the last range (the
-    // fastest link, see llama_model_glm5_next::graph) holds all experts.
+    // fork: dense split (moe_ranges, set by the model builder): the split path is taken in any case; without an expert split, the expert card (the fastest
+    // link, see llama_model_glm5_next::graph; its range by llama_ds_xr_fork) holds all experts, also when this call carries only another card's range
     if (!moe_ranges.empty() && parts.empty() && sched) {
-        parts.push_back({ moe_ranges.back().b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(moe_ranges.back().b)), 0, n_expert });
+        parts.push_back({ ds_r[llama_ds_xr_fork(ds_r)].b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(ds_r[llama_ds_xr_fork(ds_r)].b)), 0, n_expert });
     }
     ggml_tensor * experts = nullptr;
     if (!parts.empty()) {
@@ -3418,9 +3432,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             for (const auto & pt : parts) { if (owner_dev && ggml_backend_get_device(pt.b) == owner_dev) { owner_b = pt.b; } }
         }
         if (!moe_ranges.empty()) {
-            // range mode: the router runs on the card of the last range (the caller puts the logits there); that card plays the owner for the id helpers
+            // range mode: the expert card (llama_ds_xr_fork) plays the owner for the id helpers
             owner_b = nullptr;
-            for (const auto & pt : parts) { if (pt.b == moe_ranges.back().b) { owner_b = pt.b; } }
+            for (const auto & pt : parts) { if (pt.b == ds_r[llama_ds_xr_fork(ds_r)].b) { owner_b = pt.b; } }
         }
         if (owner_b) {
             std::stable_partition(parts.begin(), parts.end(), [&](const split_part & pt) { return pt.b != owner_b; });   // helpers first, the owner's chain(s) last
@@ -5572,10 +5586,63 @@ bool llm_graph_context::ds_plan(int64_t min_tokens) const {
     if (share.size() != devs.size()) {
         share.assign(devs.size(), 1.0 / (double) devs.size());
     }
-    // tokens per card, each range at least min_tokens (a card that would get fewer takes no range this pass), the expert card always one
-    const std::vector<int64_t> cnt = dsb_counts(n_tokens, share, std::max<int64_t>(1, min_tokens), (int) devs.size() - 1);
+    // Tokens per card (user 2026-10-24): the expert card takes 100% of what fits it in EVERY pass, min(its card limit, the pass), and only the other cards vary.
+    // They share the rest of the pass by the zero-wait shares, each at most what it finishes in the expert card's time (llama_dsplit_pass_size_fork sizes a
+    // full pass so that the rest is exactly that). A pass no bigger than the expert card's limit -- a short prompt, the last pass of a call -- runs on the
+    // expert card alone (one range). --moe dense-split-share (tests): the old cut by fixed shares.
+    const size_t  xi   = devs.size() - 1;
+    const int64_t minr = std::max<int64_t>(1, min_tokens);
+    const int64_t lim  = (int64_t) llama_dsplit_card_lim_fork();
+    std::vector<int64_t> cnt(devs.size(), 0);
+    if (share0 < 0.0) {
+        cnt[xi] = lim > 0 ? std::min<int64_t>(lim, n_tokens) : n_tokens;
+        const int64_t rest = n_tokens - cnt[xi];
+        double hs = 0.0;
+        for (size_t i = 0; i < xi; ++i) { hs += share[i]; }
+        int64_t given = 0;
+        int     last  = -1;
+        for (size_t i = 0; i < xi && rest > 0; ++i) {
+            cnt[i] = hs > 0.0 ? (int64_t) ((double) rest * share[i] / hs) : 0;
+            given += cnt[i];
+            last   = (int) i;
+        }
+        if (rest > 0) { if (last >= 0) { cnt[last] += rest - given; } else { cnt[xi] += rest; } }
+        // a range shorter than the builder's minimum (the conv window) takes it from the expert card's range: only a call's last few tokens come out that short
+        for (size_t i = 0; i < xi; ++i) {
+            if (cnt[i] > 0 && cnt[i] < minr && cnt[xi] - (minr - cnt[i]) >= minr) { cnt[xi] -= minr - cnt[i]; cnt[i] = minr; }
+        }
+    } else {
+        cnt = dsb_counts(n_tokens, share, minr, (int) xi);
+    }
+    // No card's range is bigger than the one-card pass limit (what one card's buffers hold, llama_dsplit_card_lim_fork): the tokens over a card's limit go to
+    // the cards under theirs, by their shares (a helper whose share of the rest is over the limit, more than two cards).
+    if (const int64_t cap = lim; cap > 0 && n_tokens > cap) {
+        for (int round = 0; round < (int) cnt.size(); ++round) {   // the excess of one card can push another over its limit (more than two cards)
+            int64_t extra = 0;
+            for (auto & c : cnt) { if (c > cap) { extra += c - cap; c = cap; } }
+            if (extra == 0) { break; }
+            double room = 0.0;
+            for (size_t i = 0; i < cnt.size(); ++i) { if (cnt[i] < cap) { room += share[i]; } }
+            if (room <= 0.0) { cnt.back() += extra; break; }   // every card at its limit: cannot happen, a pass is at most limit / largest share
+            int64_t given = 0;
+            int last = -1;
+            for (size_t i = 0; i < cnt.size(); ++i) {
+                if (cnt[i] < cap && share[i] > 0.0) { const int64_t g = (int64_t) ((double) extra * share[i] / room); cnt[i] += g; given += g; last = (int) i; }
+            }
+            if (last >= 0) { cnt[last] += extra - given; } else { cnt.back() += extra; break; }
+        }
+    }
+    // The ranges in token order, the expert card's range FIRST (2026-10-24; the other cards first before). A range continues the recurrent state, the conv
+    // window and the KV of every range before it, layer by layer: the card with the later tokens waits, in every layer, for the cards with the earlier ones.
+    // With the helpers first, that card was the expert card: Qwen3.8-Flash-Next 60k prompt on x16 + x4, the x16 card waited 19-37% of every pass for the x4
+    // card's scan (13 + 30 ms a layer), while the x4 card waited for the x16's experts anyway (12k prompt, measured: 1832 -> 1925 prompt t/s, the x16's
+    // wait 20% -> 14%). With the expert card first, its tokens depend on nothing the other cards compute in this pass; the other cards wait for it instead.
+    // The expert card is found by llama_ds_xr_fork, not by position.
+    std::vector<size_t> ord;
+    ord.push_back(devs.size() - 1);
+    for (size_t i = 0; i + 1 < devs.size(); ++i) { ord.push_back(i); }
     int64_t t0 = 0;
-    for (size_t i = 0; i < devs.size(); ++i) {
+    for (size_t i : ord) {
         if (cnt[i] <= 0) { continue; }
         ds_r.push_back({ be[i], devs[i], t0, t0 + cnt[i] });
         t0 += cnt[i];
@@ -5713,7 +5780,9 @@ std::vector<ggml_tensor *> llm_graph_context::ds_attn_cache(const llama_kv_cache
     ds_skip();
     // 2. every range's queries over the whole cache, with its rows of the mask (the cache view is read after both writes: they were issued first)
     std::vector<ggml_tensor *> out(ds_r.size());
-    for (size_t r = 0; r < ds_r.size(); ++r) {
+    std::vector<ggml_backend_dev_t> rdev;
+    for (const auto & rr : ds_r) { rdev.push_back(rr.dev); }
+    for (size_t r : llama_dsplit_attn_order_fork(rdev, mctx_cur->get_k(ctx0, il))) {   // the range on the cache's own card last (see there)
         const int64_t nr = ds_r[r].t1 - ds_r[r].t0;
         ds_skip();
         ggml_tensor * kc = mctx_cur->get_k(ctx0, il);

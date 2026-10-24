@@ -5,6 +5,10 @@
 #include <algorithm>
 #include "llama-memory-hybrid-idx.h"
 
+// fork (llama-graph.cpp), declared here so that no shared header changes: the index in ds_r of the expert card's range (where it sits in token order
+// is ds_plan's choice: the first)
+size_t llama_ds_xr_fork(const std::vector<llm_graph_context::ds_range_fork> & r);
+
 
 // GLM5-Next (GLM-5.3-Flash): hybrid KDA (linear) + nope MLA with a k-pool DSA indexer,
 // mHC residual streams, DeepSeek-style MoE.
@@ -1040,7 +1044,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                     pin(R[r].b);
                 }
             } else {
-                // router logits per range on its card; the selection runs on the last range's card for all tokens (288 x tokens floats cross, not the hidden state)
+                // router logits per range on its card; the selection runs on the expert card's range for all tokens (288 x tokens floats cross, not the hidden state)
                 std::vector<ggml_tensor *> lg(NR);
                 for (size_t r = 0; r < NR; ++r) {
                     skip();
@@ -1057,15 +1061,15 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                     logits = ggml_concat(ctx0, logits, lg[r], 1);
                     call   = ggml_concat(ctx0, call, cr[r], 1);   // the shape of the whole pass; computed only if a path of build_moe_ffn reads it
                 }
-                pin(R.back().b);
+                pin(R[llama_ds_xr_fork(ds_r)].b);
                 moe_ranges.clear();
                 for (size_t r = 0; r < NR; ++r) { moe_ranges.push_back({ R[r].b, R[r].t0, R[r].t1, cr[r], nullptr }); }
                 build_moe_ffn(call,
-                        llama_dsplit_mirror_fork(model, layer.ffn_gate_inp, R.back().dev),
+                        llama_dsplit_mirror_fork(model, layer.ffn_gate_inp, R[llama_ds_xr_fork(ds_r)].dev),
                         layer.ffn_up_exps,
                         layer.ffn_gate_exps,
                         layer.ffn_down_exps,
-                        llama_dsplit_mirror_fork(model, layer.ffn_exp_probs_b, R.back().dev),
+                        llama_dsplit_mirror_fork(model, layer.ffn_exp_probs_b, R[llama_ds_xr_fork(ds_r)].dev),
                         n_expert, n_expert_used,
                         LLM_FFN_SILU, hparams.expert_weights_norm,
                         hparams.expert_weights_scale,
@@ -1074,7 +1078,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                 std::vector<ggml_tensor *> mo(NR);
                 for (size_t r = 0; r < NR; ++r) { mo[r] = moe_ranges[r].out; }
                 moe_ranges.clear();
-                skip();   // the router's selection follows its input (the logits, on the last range's card); the expert chains are pinned inside
+                skip();   // the router's selection follows its input (the logits, on the expert card's range); the expert chains are pinned inside
                 for (size_t r = 0; r < NR; ++r) {
                     skip();
                     ggml_tensor * sh = build_ffn(cr[r], L[r].ffn_up_shexp, nullptr, nullptr, L[r].ffn_gate_shexp, nullptr, nullptr, L[r].ffn_down_shexp, nullptr, nullptr,

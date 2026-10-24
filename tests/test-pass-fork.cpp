@@ -1,7 +1,7 @@
 // Unit tests of the decisions around the expert cache that can break and have no GPU in them (header-only, the engine's own code: src/llama-poolalloc-fork.h and
 // src/llama-passplan-fork.h):
 //   hot cache      poolx_pick_slot  : which block an expert takes (free first, else the coldest evictable; never a lent, zone, busy or streaming block)
-//   prefetch       ppx_stage_slots  : staging slots behind the graph (at least 3 or none, inside the lendable bytes, at most the configured number)
+//   prefetch       ppx_stage_slots  : staging slots behind the graph (at least 2 or none, inside the lendable bytes, at most the configured number)
 //   prompt passes  ppx_equal_pass   : equal passes, never a nearly empty last pass
 //   dense split    ppx_ds_edge      : the token ranges of the cards (both non-empty, each at least the minimum when the pass allows)
 //
@@ -120,16 +120,16 @@ static void test_prefetch() {
         const size_t slot_b = rng() % 5 == 0 ? 0 : 1 + rng() % (64 << 20), stage_off = rng() % (1 << 30), cap_b = rng() % (3u << 30);
         const int n_cfg = (int) (rng() % 12) - 1, plan_k = rng() % 3 ? -1 : (int) (rng() % 12);
         const int n = ppx_stage_slots(slot_b, cap_b, stage_off, n_cfg, plan_k);
-        if (n != 0 && n < 3) { fail(fmt("%d slots: fewer than 3 must be none", n)); }
+        if (n != 0 && n < 2) { fail(fmt("%d slots: fewer than 2 must be none", n)); }
         if (n > std::max(0, n_cfg)) { fail(fmt("%d slots, only %d configured", n, n_cfg)); }
         if (plan_k >= 0 && n > plan_k) { fail(fmt("%d slots, the planner chose %d", n, plan_k)); }
         if (n > 0 && stage_off + (size_t) n * slot_b > cap_b) { fail(fmt("%d slots of %zu from %zu leave the %zu lendable bytes", n, slot_b, stage_off, cap_b)); }
         if (n > 0 && slot_b == 0) { fail("slots of 0 bytes"); }
         // not too few: one more slot would still have been allowed
-        if (n >= 3 && n < n_cfg && (plan_k < 0 || n < plan_k) && stage_off + (size_t) (n + 1) * slot_b <= cap_b) { fail(fmt("%d slots, room and permission for one more", n)); }
+        if (n >= 2 && n < n_cfg && (plan_k < 0 || n < plan_k) && stage_off + (size_t) (n + 1) * slot_b <= cap_b) { fail(fmt("%d slots, room and permission for one more", n)); }
     }
-    report("3 or none; at most configured / planned; inside the lendable bytes; no room wasted", bad == 0, first);
-    report("room for exactly 2 slots gives none, for 3 gives 3", ppx_stage_slots(100, 250, 0, 8, -1) == 0 && ppx_stage_slots(100, 300, 0, 8, -1) == 3);
+    report("2 or none; at most configured / planned; inside the lendable bytes; no room wasted", bad == 0, first);
+    report("room for exactly 1 slot gives none, for 2 gives 2", ppx_stage_slots(100, 150, 0, 8, -1) == 0 && ppx_stage_slots(100, 200, 0, 8, -1) == 2);
 }
 
 // ---- prompt passes ------------------------------------------------------------------------------------------------------------------------------
