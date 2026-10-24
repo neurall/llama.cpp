@@ -6123,7 +6123,7 @@ def run_list(name, argv):
     ap.add_argument("-pt", "--prompt-type", dest="pt", metavar="LIST", help="only the cells of these prompt types (comma list): i = input-heavy (mimo-i), io = input+output-heavy (mimo-io), o = output-heavy (mimo-o); the last word of the row name")
     ap.add_argument("-ps", "--prompt-size", dest="ps", action="append", metavar="TEST", help="run THESE sizes instead of the list's own, for the models the other filters leave (repeatable): 100k4k = the source cut at 100k tokens behind an instruction, 4000 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test with 4000 answer tokens; any other name is a test as it is")
     ap.add_argument("-ub", "--ubatch", dest="ub", metavar="LIST", help="micro-batch clamps, a comma list (4k,8k,16k; k = 1024): every selected cell once per size with the server argument -ub N, which clamps the largest micro-batch per card (the automatic one is never raised); rows are named <name>-ub<size>")
-    ap.add_argument("-hg", "--hog-gpu", help="GiB left free on every GPU for OUR cells (the server takes the rest at start: --moe sim-vram), e.g. -hg 16 = every card behaves like a 16 GiB card")
+    ap.add_argument("-hg", "-sim", "--hog-gpu", dest="hog_gpu", help="VRAM left free on every GPU for OUR cells (the server takes the rest at start: --moe sim-vram): -sim 16g = every card behaves like a 16 GiB card; a bare number is GiB, m = MiB")
     ap.add_argument("-hr", "--hog-ram", help="GiB of RAM left free for OUR cells (--moe sim-ram)")
     ap.add_argument("-ds", "--dense-split", dest="dense_split", choices=["on", "off", "one", "auto"], help="force the dense split for OUR cells: on = --moe dense-split=1, off = 0 (expert split alone), one = copies made but every prompt pass on one card, auto = the engine's own choice (the default); stored in the args column like -a")
     ap.add_argument("-pl", "--power", metavar="W", nargs="?", const="max", help="power limits in W for the whole run instead of the day/night schedule: no value = every card at its maximum; 285 = all cards; 285,285,300,285 = per card; 220/280 = cards on a narrower link than the widest / the widest (PC1: x4 card, x16 card). The max of the x4 card throttled and crashed it once on PC1 (330-350 W): not for PC1's x4 card. A remote host may refuse (blg: Insufficient Permissions)")
@@ -6133,7 +6133,10 @@ def run_list(name, argv):
     o = ap.parse_args([x for x in argv if x != "desc"])   # `run gainers desc` works too
     NOSTATS[0] = o.no_stats; NGPU[0] = o.n_gpus
     for opt, key in ((o.hog_gpu, "sim-vram"), (o.hog_ram, "sim-ram")):   # GiB -> the server's MiB
-        if opt: o.cell_args = (o.cell_args + f" {key}={int(float(opt) * 1024)}").strip()
+        if opt:
+            v = str(opt).lower().rstrip("ib").rstrip("b")   # 16g, 16gb, 16gib, 16384m, 16
+            mib = float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * 1024
+            o.cell_args = (o.cell_args + f" {key}={int(mib)}").strip()
     if o.dense_split: o.cell_args = (o.cell_args + " dense-split=" + {"on": "1", "off": "0"}.get(o.dense_split, o.dense_split)).strip()
     if o.status: o.not_today = o.not_today or 1; o.nodl = True
     if o.day and not o.power: o.power = "220/280"
