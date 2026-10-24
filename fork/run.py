@@ -3568,7 +3568,7 @@ def run_transfers(m, items, pushes, keep=None):
                 out.append(f"{col(36, r['label'][:34]):<44} [{col(32 if fin else 33, bar)}] {f * 100:3.0f}%  {hsize(d):>9}/{hsize(tot):<9}  " + (col(31, "FAILED") if dead else col(32, "done") if fin else f"{col(94, hsize(sp) + '/s'):<20} eta {htime(eta)}"))
             f = sd / max(st_, 1); eta = None if (not etas or None in etas) else max(etas)   # the transfers run side by side: done when the slowest is, not when the summed rate would empty the summed bytes
             out.append(col(1, f"{'total':<34}") + f"   [{col(32, '█' * int(20 * f) + '░' * (20 - int(20 * f)))}] {f * 100:3.0f}%  {hsize(sd):>9}/{hsize(st_):<9}  {col(94, hsize(sp_) + '/s'):<20} eta {htime(eta)}")
-            if live_tty(): live_clear(); print(fit_block("\n".join(out)), flush=True); LIVE_UP[0] = block_rows("\n".join(out))
+            if live_tty(): live_clear(); print(fit_block("\n".join(out)), flush=True); LIVE_UP[0] = len(out)
             elif now - last_plain > 10: last_plain = now; print(out[-1], flush=True)
             if allfin: break
             time.sleep(1)
@@ -5320,22 +5320,10 @@ def fit_block(txt):
     return txt
 
 
-def block_rows(txt):
-    """Terminal rows the block takes. Lines are no longer cut (user 2026-10-24), so one wider than the terminal wraps onto several rows; the redraw must move up over
-    all of them or the upper rows stay behind as stale copies (the stacked cpu / engine lines). COLUMNS (the viewer's width, set for the detached run) wins over the tty."""
-    w = max(shutil.get_terminal_size((100, 24)).columns, 20)
-    return sum(max(1, -(-len(re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", l)) // w)) for l in txt.split("\n"))
-
-
-LIVE_MARK = [False]   # the block on screen was printed between viewer markers (detached run): its erase is a marker too
-
-
 def live_clear():
     """Erase the status block (before anything else prints)."""
-    if LIVE_UP[0] and live_tty():
-        if LIVE_MARK[0]: print("\x1b]777;C\x07", end="", flush=True)   # the detached run: the viewer counts the rows of the block it printed, at ITS width
-        else: print(f"\033[{LIVE_UP[0]}A\033[J", end="", flush=True)
-    LIVE_UP[0] = 0; LIVE_MARK[0] = False
+    if LIVE_UP[0] and live_tty(): print(f"\033[{LIVE_UP[0]}A\033[J", end="", flush=True)
+    LIVE_UP[0] = 0
 
 
 OLDER_MIN_BNO = 13509   # builds before this are not shown as older gainers (user 2026-10-19)
@@ -5682,10 +5670,7 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
             if results and (rl := result_lines(cell_results(results, t0))): txt += "\n" + rl   # per-run speeds so far, below the bars
             if pl: txt += "\n" + pl   # the run in progress: tokens so far against the earlier runs
             txt = fit_block(txt) if tty else txt
-            live_clear()
-            if tty and os.environ.get("RUN_DAEMON"): print("\x1b]777;B\x07" + txt + "\x1b]777;E\x07", flush=True); LIVE_MARK[0] = True   # markers: the viewer redraws it at its own width (a width fixed at launch left stale rows)
-            else: print(txt, flush=True)
-            LIVE_UP[0] = block_rows(txt) if tty else 0
+            live_clear(); print(txt, flush=True); LIVE_UP[0] = txt.count("\n") + 1 if tty else 0
     except KeyboardInterrupt:   # Ctrl-C: the cell, its bench and its server are stopped for real (kill_tree: `timeout` is a process group of its own, the terminal's SIGINT never reaches them), then run_list ends (list line, kept server, pool)
         live_clear(); print(f"{label}: Ctrl-C, stopping the cell ...", flush=True)
         kill_tree(p.pid); kept_kill()
@@ -6026,42 +6011,6 @@ def cmd_status(a):
     return run_list(name, [x for x in argv if x not in ("-n", "--dry", "--status")] + ["--dry", "--status"])
 
 
-VIEW_MARK = re.compile(rb"\x1b\]777;([BEC])\x07")
-
-
-class ViewState:
-    def __init__(self): self.block = bytearray(); self.inblock = False; self.carry = b""
-
-
-def block_rows_at(txt, w):
-    """terminal rows of a text at width w (colour codes do not count)"""
-    return sum(max(1, -(-len(re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", l)) // w)) for l in txt.split("\n"))
-
-
-def view_write(data, st):
-    """The viewer of a detached run: the log's bytes to the screen. The run marks its status block (\x1b]777;B ... E) and asks for its erase (C); the erase becomes a
-    cursor-up over the rows the block takes at THIS terminal's width, so a long line that wraps here leaves no stale rows (the run's own width was fixed when it started)."""
-    data = st.carry + data; st.carry = b""
-    for n in range(7, 0, -1):   # a marker (ESC ] 7 7 7 ; X BEL) cut by the end of the read waits for the next one
-        tail = data[-n:]
-        if len(data) >= n and any(m.startswith(tail) for m in (b"\x1b]777;B\x07", b"\x1b]777;E\x07", b"\x1b]777;C\x07")):
-            st.carry = tail; data = data[:-n]; break
-    try: w = max(os.get_terminal_size(sys.stdout.fileno()).columns, 20)
-    except OSError: w = max(shutil.get_terminal_size((100, 24)).columns, 20)
-    out = bytearray(); pos = 0
-    for m in VIEW_MARK.finditer(data):
-        seg = data[pos:m.start()]; out += seg
-        if st.inblock: st.block += seg
-        if m[1] == b"B": st.inblock = True; st.block = bytearray()
-        elif m[1] == b"E": st.inblock = False
-        else:
-            out += f"\033[{block_rows_at(st.block.decode(errors='replace'), w)}A\033[J".encode(); st.block = bytearray()
-        pos = m.end()
-    seg = data[pos:]; out += seg
-    if st.inblock: st.block += seg
-    sys.stdout.buffer.write(bytes(out)); sys.stdout.buffer.flush()
-
-
 def run_list_detached(name, argv):
     """`run NAME ...` runs the list in a detached process (own session, output in a log) and shows that log: Ctrl-C only closes the view, the run goes on.
     `run NAME ...` again while one runs attaches instead of starting a second: the log is replayed from its start (the status block's cursor codes redraw
@@ -6105,19 +6054,18 @@ def run_list_detached(name, argv):
         try: os.kill(rec["pid"], signal.SIGINT)
         except OSError: pass
     signal.signal(signal.SIGQUIT, kill_run)   # Ctrl-\ (a terminal's Shift+Ctrl+C is copy, no signal reaches us)
-    vst = ViewState()
     try:
         again = False
         with open(rec["log"], "rb") as f:
             while True:
                 chunk = f.read(65536)
-                if chunk: view_write(chunk, vst); continue
+                if chunk: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush(); continue
                 try:
                     if child and child.poll() is not None: raise OSError   # our own child: a finished one is a zombie that kill(0) still finds
                     os.kill(rec["pid"], 0)
                 except OSError:
                     chunk = f.read()   # the last lines written before it ended
-                    if chunk: view_write(chunk, vst)
+                    if chunk: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush()
                     if name is None and not child:   # plain `run run` is a viewer: the run ended, wait for the next one instead of exiting (user 2026-10-24)
                         print("\nthe run ended.\n", flush=True)
                         again = True
