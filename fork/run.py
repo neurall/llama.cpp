@@ -3071,6 +3071,16 @@ SAMPLER = ""   # --sampler: extra sampling parameters merged into every request 
 
 # readable test names <in>_<out>_<what>; they resolve to the tests the history already holds (rows keep the old names, so runs stay comparable)
 _PI = config.prompts_ini()   # test aliases from prompts.ini: [name] alias = real test, tokens = answer length, prefix = prompt section prepended, snippet = prompt section sent instead of the default source
+def test_name(t):
+    """a size is written without the pf (8k, 60k1k, user 2026-10-24: no prefixes); the code's own key still has it"""
+    return "pf" + t if re.fullmatch(r"\d+k(\d+k)?", str(t)) else t
+
+
+class TestChoices(list):
+    """The tests a bench / run argument accepts: the listed ones and any pf<N>k (the first N thousand tokens of the source, run -ps)."""
+    def __contains__(self, v): return list.__contains__(self, v) or bool(re.fullmatch(r"pf\d+k", str(v)))
+
+
 ALIASES = {k: v["alias"] for k, v in _PI.items() if v.get("alias")}
 ALIAS_TOKENS = {k: int(v["tokens"]) for k, v in _PI.items() if v.get("alias") and v.get("tokens")}
 ALIAS_PREFIX = {k: config.prompt(v["prefix"]) for k, v in _PI.items() if v.get("alias") and v.get("prefix")}   # prepended to the 12k prompt (pf12k alone sends the bare file)
@@ -5125,9 +5135,15 @@ def server_frac():
 
 NAMEW = [16]   # name column width of the list lines: longest name + 1 (set when a list starts)
 TEST_IN = config.test_in()   # what the status line says about a test's prompt (prompts.ini in =)
+def out_k(tout):
+    """answer length as written in a size: 1000 and 1024 are 1k, 4000 is 4k, anything else the number"""
+    return "?" if not tout else f"{round(tout / 1000)}k" if tout % 1000 == 0 or tout % 1024 == 0 and tout < 4096 else str(tout)
+
+
 def prompt_txt(test, tokens):
     """the prompt column of the results: tokens in/out, `12k/1k`; the test name when its prompt is not a size"""
     tin = TEST_IN.get(test); tout = int(tokens) if tokens else 0
+    if (m := re.fullmatch(r"pf(\d+)k", test)): return f"{m[1]}k/" + out_k(tout)   # a sized prompt (run -ps 60k1k): never shown with the pf of its test name
     if not (tin and tin[0].isdigit()): return test
     return tin + "/" + (f"{tout // 1024}k" if tout and tout % 1024 == 0 else str(tout) if tout else "?")
 
@@ -6138,6 +6154,7 @@ def run_list(name, argv):
     o.build = resolve_build(o.build)   # -b b13563: a build number
     rows = list(csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", name + ".csv"), newline="")))
     for r in rows: r["model"] = fcfg.model(r["model"])   # the model column is a models.ini alias or a path
+    for r in rows: r["test"] = test_name(r["test"])   # the test column may say 8k / 60k1k
     _picked = set()
     for r in rows:
         was = r["test"]; r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")
@@ -6295,11 +6312,11 @@ def run_list(name, argv):
             tag = f"{r['_b']}-{r['name']}"
             cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], (" " + r["args"]) if r.get("args") else ""] + (["--warm"] if o.warm else []) + ([] if (o.kill or o.clean_state) else ["--keep-server"]) + (["--clean-state"] if o.clean_state else [])
             cmd += (["--tokens", r["tokens"]] if r.get("tokens") else []) + shlex.split(r.get("extra") or "")
-            if o.dry: print(f"[{name}] {tag}: {shlex.join(cmd[3:])}", flush=True)
+            if o.dry: print(f"[{name}] {tag}: {re.sub(r' pf(?=\d+k)', ' ', shlex.join(cmd[3:]))}", flush=True)
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
             CELL_BUILD[0] = str(r.get("_b") or ""); CELL_REF[0] = (os.path.basename(r["model"]), r["test"]); CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")); CELL_ASKED[0] = int(r["tokens"]) if r.get("tokens") else 0
-            CELL_TEST[0] = CELL_PROMPT[0] if re.fullmatch(r"pf\d+k1k", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")   # "12k in 1k out", "64t in 1k out"
+            CELL_TEST[0] = (re.sub(r"^(\d+k)/(\w+)$", r"\1\2", CELL_PROMPT[0]) if re.fullmatch(r"pf\d+k", r["test"]) else CELL_PROMPT[0]) if re.fullmatch(r"pf\d+k(1k)?", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")   # "12k in 1k out", "64t in 1k out"
             CELL_TEST[0] += f"  {r['_b']}" + (f"  {r['args'].strip()}" if r.get("args") and r["args"].strip() else "")   # what runs: build, extra server args
             if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, ("s" if r["_b"].startswith("stock") else "") + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
             if not o.dry and not r["_b"].startswith("stock") and not (r.get("args") or "").strip(): learn_bestpp(r["model"], r["test"], tag)
@@ -6561,7 +6578,7 @@ def _run_list_remote(o, rows, name, m, here, bad):
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
             CELL_BUILD[0] = str(r.get("_b") or ""); CELL_REF[0] = (os.path.basename(r["model"]), r["test"])
             CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")) if tag not in CLAMPED else f"{CLAMPED[tag] / 1000:.1f}k/" + prompt_txt(r["test"], r.get("tokens")).split("/")[-1]; CELL_ASKED[0] = tout
-            CELL_TEST[0] = CELL_PROMPT[0] if re.fullmatch(r"pf\d+k1k", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")
+            CELL_TEST[0] = (re.sub(r"^(\d+k)/(\w+)$", r"\1\2", CELL_PROMPT[0]) if re.fullmatch(r"pf\d+k", r["test"]) else CELL_PROMPT[0]) if re.fullmatch(r"pf\d+k(1k)?", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")
             CELL_TEST[0] += f"  {r['_b']}" + (f"  {r['args'].strip()}" if r.get("args") and r["args"].strip() else "")   # what runs: build, extra server args
             try:
                 if run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), cell_expect(r["model"], r["test"], r["n"], r["_b"], False), ("s" if r["_b"].startswith("stock") else "") + r["name"],
@@ -6676,7 +6693,7 @@ def cmd_cell(a):
         HOST[0] = None
     lines = [l.rstrip()[:200] for l in open(out, errors="replace") if re.search(r"n= *\d+ .* t/s", l)]
     with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
-        f.write(f"== {a.test} {args}\n" + "".join(l + "\n" for l in lines))
+        f.write(f"== {re.sub(r'^pf(?=\d+k)', '', a.test)} {args}\n" + "".join(l + "\n" for l in lines))
     if a.builds.count(",") == 0:
         try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
         except OSError: pass
@@ -8442,7 +8459,7 @@ if __name__ == "__main__":
     TESTS = ["ppl", "ppl3", "pplb", "pplc", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf5k", "pf6k", "pf7k", "pf8k", "pf9k", "pf10k", "pf11k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
     r = sp.add_parser("run", help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
-    r.add_argument("-t", "--test", default="ppl", choices=TESTS + list(ALIASES))
+    r.add_argument("-t", "--test", default="ppl", type=test_name, choices=TestChoices(TESTS + list(ALIASES)))
     r.add_argument("-n", type=int, default=1)
     r.add_argument("-e", "--env", action="append", default=[])
     r.add_argument("--note")
@@ -8458,7 +8475,7 @@ if __name__ == "__main__":
     b.add_argument("--builds", required=True, help="comma separated build dirs; names starting with stock run the default variant only")
     b.add_argument("--variants", help="comma separated variant names (default: all of default,cache0,atoff and any --variant)")
     b.add_argument("--variant", action="append", default=[], help="NAME=ARGS: add or override a variant, e.g. gate3='--moe upload-wait=3'")
-    b.add_argument("-t", "--test", default="t100", choices=["ppl", "ppl3", "pplb", "pplc", "t100", "tetris"] + TESTS[6:] + list(ALIASES) + list(config.user_tests()))
+    b.add_argument("-t", "--test", default="t100", type=test_name, choices=TestChoices(["ppl", "ppl3", "pplb", "pplc", "t100", "tetris"] + TESTS[6:] + list(ALIASES) + list(config.user_tests())))
     b.add_argument("--stock-variant", action="append", default=[], help="NAME=ARGS: stock builds also run this placement (e.g. tuned='--n-cpu-moe 30'): the hand-tuned baseline")
     b.add_argument("--rep-from", type=int, default=0, help="first repetition to run (0-based): -n 2 --rep-from 1 repeats only the second repetition, e.g. one that failed")
     b.add_argument("-n", type=int, help="measured runs per cell, interleaved ABBA (default 3 for fix/fix12k, else 2); the first run of a cell is preceded by a discarded one")
