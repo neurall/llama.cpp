@@ -2071,8 +2071,9 @@ static void common_moe_cache_auto_impl(common_params & params) {
     if (n_gpu == 0 || model_size + reserve <= vram_free) {
         COM_DBG("MoE model (%.1f GiB) fits free VRAM (%.1f GiB on %d GPUs), no expert cache\n",
             model_size / 1073741824.0, vram_free / 1073741824.0, n_gpu);
-        if (n_gpu > 0 && !params.ubatch_user && common_autotune_on(params)) {
-            const uint32_t ub = common_fits_ubatch(params);
+        if (n_gpu > 0 && common_autotune_on(params)) {
+            uint32_t ub = common_fits_ubatch(params);
+            if (params.ubatch_user) { ub = std::min<uint32_t>(ub, params.n_ubatch); }   // -ub is a clamp on the largest micro-batch, not a fixed size (user 2026-10-25: dense ubatch sweep)
             params.n_batch  = std::max<uint32_t>(params.n_batch, 2 * ub);
             if (params.n_ctx > 0) { params.n_batch = std::min<uint32_t>(params.n_batch, std::max<uint32_t>(params.n_ctx, ub)); }
             params.n_ubatch = ub;
@@ -2158,7 +2159,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
         llama_moe_set_opt("kv-budget-ctx", std::to_string(fit_ctx).c_str());   // the context the cache gets when the tail layout is declined (llama_context)
         params.n_ctx = fit_ctx ? fit_ctx : 17408; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more (17408 = the 16294-token "12k" benchmark prompt + 1k answer; with --moe kv-tail=1 there is no default at all)
     }
-    if (!params.ubatch_user && common_autotune_on(params)) {
+    if (common_autotune_on(params)) {
         uint32_t ub;
         // Experts in RAM: every prompt pass uploads all of them (4.1 s on full GLM 3.0-bit, about 2400 tokens' worth of compute), so a bigger pass amortizes the
         // upload until the per-token compute starts to rise (full models, 12k prompt: GLM 4096 -> 476 prompt tokens/s, 8192 -> 572, 12416 -> 573; MiMo 469 -> 599; compute-only
@@ -2180,6 +2181,11 @@ static void common_moe_cache_auto_impl(common_params & params) {
             LOG_INF("%s: ubatch %u: experts stream from RAM, the compute alias lends the graph (maximum = context, lowered to what the pool can lend; prompt passes are sized per request)\n", __func__, ub);
         } else {
             ub = common_auto_ubatch(params);
+        }
+        if (params.ubatch_user && params.n_ubatch < ub) {   // -ub clamps the micro-batch the auto rules chose (it never raises it): a sweep of the largest pass per card (4k, 8k, 16k)
+            decide_fork("ubatch", std::to_string(params.n_ubatch), string_format("clamped by -ub from %u", ub));
+            LOG_INF("%s: ubatch %u: clamped by -ub (the automatic maximum was %u)\n", __func__, params.n_ubatch, ub);
+            ub = params.n_ubatch;
         }
         params.n_batch  = std::max<uint32_t>(params.n_batch, 2 * ub);   // a decode call carries several passes: equal passes are computed from the call's token count
         if (params.n_ctx > 0) {
@@ -2544,7 +2550,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     // did not, in 32-token steps (user 2026-10-24: halving left GLM 3.0 at 8192 for good after one refused 16384, where the size between them fits). Every
     // try below one that fit is a new context: the one that fit is freed first, its buffers would crowd the next. Only an ubatch of ours, the user's -ub is
     // respected. (A GPU fault at run time, Xid 31, kills the CUDA context and cannot be retried.)
-    if (lctx == NULL && !params.ubatch_user && cparams.n_ubatch > 128) {
+    if (lctx == NULL && (!params.ubatch_user || common_autotune_on(params)) && cparams.n_ubatch > 128) {   // a clamp by -ub may still need to go lower
         uint32_t lo = 0, bad = cparams.n_ubatch;   // the largest size that fit (0: none yet), the smallest that did not
         while (bad - lo > 32) {
             const uint32_t m = lo ? (lo + bad) / 2 / 32 * 32 : bad / 2 / 32 * 32;
