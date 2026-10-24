@@ -971,7 +971,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                             // same as the one-card path (build_kpool_select): the fused op builds the range's mask from its slice of kq_mask
                             ggml_tensor * tail = hparams.indexer_kpool_select_tail ? dsa_tail[r] : nullptr;
                             GGML_ASSERT(kpool*n_top_pool + (tail ? tail->ne[0] : 0) == (int64_t) inp_kpool->n_sel);
-                            sel = build_fused_top_k_mask(kq_mask_r, top_k, score, inp_kpool->pool_idxs, tail, il);
+                            sel = build_fused_top_k_mask(kq_mask_r, top_k, score, inp_kpool->pool_idxs, tail, nullptr, il);
                         } else {
                             ggml_tensor * sel_score = ggml_get_rows(ctx0, ggml_reshape_3d(ctx0, score, 1, n_pool, nr), top_k);
                             ggml_tensor * sel_order = ggml_argsort(ctx0, ggml_reshape_2d(ctx0, sel_score, n_top_pool, nr), GGML_SORT_ORDER_DESC);
