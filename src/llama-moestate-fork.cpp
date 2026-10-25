@@ -435,9 +435,14 @@ void llama_moe_token_time_fork(double ms) {
 void llama_moe_decision_fork(const char * name, const char * value, const char * why) {
     std::lock_guard<std::mutex> lk(g_tok_mu);
     const int64_t t = (int64_t) time(nullptr);
+    // the decision goes to the log when it changes (run.py calib reads the engine's pass ceiling from "this call fits the ceiling N" there; the live endpoint shows it only while the server runs)
     for (auto & d : g_decisions) {
-        if (d.name == name) { d.value = value; d.why = why; d.t = t; return; }   // the reason follows the live numbers too (a tuner updates it as it measures)
+        if (d.name == name) {
+            if (d.value != value || d.why != why) { LLAMA_LOG_WARN("%s: decision %s = %s (%s)\n", __func__, name, value, why); }
+            d.value = value; d.why = why; d.t = t; return;   // the reason follows the live numbers too (a tuner updates it as it measures)
+        }
     }
+    LLAMA_LOG_WARN("%s: decision %s = %s (%s)\n", __func__, name, value, why);
     g_decisions.push_back({ name, value, why, t });
 }
 // Adaptive prompt pass size, one trial per decode call (the passes of a call are split up front, so a call is the finest measurable step).
