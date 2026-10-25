@@ -2073,7 +2073,10 @@ static void common_moe_cache_auto_impl(common_params & params) {
     common_gpu_free(vram_free, vram_max, n_gpu);
     // ponytail: weights vs free VRAM minus 1 GiB per GPU for context/compute; fit handles the borderline rest
     const size_t reserve = (size_t) n_gpu << 30;
-    if (n_gpu == 0 || model_size + reserve <= vram_free) {
+    // --moe mode=cache is honored even when the model fits: the fit path returns before the placement is decided
+    const char * forced_mode = llama_moe_get_opt("mode");
+    const bool forced_cache = forced_mode && std::string(forced_mode) == "cache";
+    if (n_gpu == 0 || (model_size + reserve <= vram_free && !forced_cache)) {
         COM_DBG("MoE model (%.1f GiB) fits free VRAM (%.1f GiB on %d GPUs), no expert cache\n",
             model_size / 1073741824.0, vram_free / 1073741824.0, n_gpu);
         if (n_gpu > 0 && common_autotune_on(params)) {
