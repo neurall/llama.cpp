@@ -1669,7 +1669,14 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
             dsplit_bucket_load_all();   // and in every other size, for the nearest-size fallback below
             // one card measured at this size: the split is weighed against that, not against the model's one-card time (2026-10-23, Qwen3.8-Flash-Next 3k:
             // the model said 3346 / 3369 ms, the pass just measured took 2457 / 2573 ms; the inflated one-card time made a slower split look 11-19% ahead)
-            if (plan.valid && B.n[0] > 0) { plan.t_one_ms = B.us_tok[0] * (double) n_tokens / 1e3; }
+            // The split's estimate is scaled by the same correction (measured over modelled one-card time): the model is trusted for the ratio of the two, not
+            // their size. Replacing the one-card time alone compared a measured time against a modelled one that is off the same way (GLM 3.0 60k, 10368 tokens:
+            // model one card 24022 / split 19790 ms, one card measured 18100 ms: split "slower", one card chosen; the split measured 677 against 570 prompt t/s).
+            if (plan.valid && B.n[0] > 0) {
+                const double t_one = B.us_tok[0] * (double) n_tokens / 1e3;
+                if (plan.t_one_ms > 0.0) { plan.t_split_ms *= t_one / plan.t_one_ms; }
+                plan.t_one_ms = t_one;
+            }
             const bool plan_sure = plan.valid && std::fabs(plan.t_split_ms - plan.t_one_ms) >= 0.15 * plan.t_one_ms;
             // No trials by default: a pass is never run in the configuration the model expects to be slower just to find out. The planner decides; the split must be
             // predicted clearly ahead (8%) to be used, a close call stays on one card. --moe split-explore=1 brings the old trial-and-error back (the other
