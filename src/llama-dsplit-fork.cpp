@@ -667,6 +667,7 @@ static bool dsplit_state_on() { return !g_calib_section.empty() && !g_hw_key.emp
 static constexpr size_t DSF_KEEP = 5;
 struct dsf_pt {
     std::vector<double> s;
+    std::vector<double> tk;   // the pass size of each sample (tokens; 0: not known): a pass costs a fixed part plus its tokens, the fit separates them
     int n = 0;
     double us = 0.0;   // the median of s
 };
@@ -690,15 +691,22 @@ static void dsf_med(dsf_pt & p) {
     std::sort(t.begin(), t.end());
     p.us = t.empty() ? 0.0 : (t.size() % 2 ? t[t.size() / 2] : 0.5 * (t[t.size() / 2 - 1] + t[t.size() / 2]));
 }
-static void dsf_upd(dsf_pt & p, double v) {
+static void dsf_upd(dsf_pt & p, double v, double tk = 0.0) {
     p.s.push_back(v);
-    if (p.s.size() > DSF_KEEP) { p.s.erase(p.s.begin()); }
+    p.tk.resize(p.s.size() - 1, 0.0);
+    p.tk.push_back(tk);
+    if (p.s.size() > DSF_KEEP) { p.s.erase(p.s.begin()); p.tk.erase(p.tk.begin()); }
     p.n = std::min(p.n + 1, 1000000);
     dsf_med(p);
 }
-static std::string dsf_val(const dsf_pt & p) {   // "n v1 v2 ...": samples seen, then the kept samples (oldest first)
+static std::string dsf_val(const dsf_pt & p) {   // "n v1@t1 v2@t2 ...": samples seen, then the kept samples (oldest first) with their pass sizes
     std::string o = std::to_string(p.n);
-    for (double v : p.s) { char b[32]; snprintf(b, sizeof b, " %.3f", v); o += b; }
+    for (size_t i = 0; i < p.s.size(); ++i) {
+        char b[48];
+        const double t = i < p.tk.size() ? p.tk[i] : 0.0;
+        if (t > 0.0) { snprintf(b, sizeof b, " %.3f@%.0f", p.s[i], t); } else { snprintf(b, sizeof b, " %.3f", p.s[i]); }
+        o += b;
+    }
     return o;
 }
 static bool dsf_parse(const std::string & v, dsf_pt & p) {
@@ -706,8 +714,14 @@ static bool dsf_parse(const std::string & v, dsf_pt & p) {
     char * e = nullptr;
     p.n = (int) strtol(c, &e, 10);
     if (e == c) { return false; }
-    for (c = e; ; c = e) { const double x = strtod(c, &e); if (e == c) { break; } p.s.push_back(x); }
-    if (p.s.size() > DSF_KEEP) { p.s.erase(p.s.begin(), p.s.end() - DSF_KEEP); }
+    for (c = e; ; c = e) {
+        const double x = strtod(c, &e);
+        if (e == c) { break; }
+        double t = 0.0;
+        if (*e == '@') { c = e + 1; t = strtod(c, &e); }
+        p.s.push_back(x); p.tk.push_back(t);
+    }
+    if (p.s.size() > DSF_KEEP) { p.s.erase(p.s.begin(), p.s.end() - DSF_KEEP); p.tk.erase(p.tk.begin(), p.tk.end() - DSF_KEEP); }
     dsf_med(p);
     return !p.s.empty();
 }
@@ -2045,7 +2059,9 @@ static void dsplit_hw_check(const llama_model & model) {
 struct dsf_fit {
     bool   ok = false;
     double a = 0.0, b = 0.0, c0 = -1.0, a2 = 0.0, b2 = 0.0;
-    double at(double c) const { return c0 >= 0.0 && c >= c0 ? a2 + b2 * c : a + b * c; }
+    double A = 0.0;   // the fixed part of a pass (us): its first-token time (user 2026-10-25); 0 for the cards' dense curves
+    double at(double c) const { return c0 >= 0.0 && c >= c0 ? a2 + b2 * c : a + b * c; }   // us per token at context c, the fixed part not included
+    double pass(double T, double c) const { return T * at(c) + A; }
 };
 static void dsf_line(const std::vector<std::pair<double, double>> & p, size_t i0, size_t i1, double & a, double & b, double & sse) {
     const double n = (double) (i1 - i0);
@@ -2078,17 +2094,64 @@ static dsf_fit dsf_fit_curve(const std::map<int, dsf_pt> & m) {
     }
     return f;
 }
+// One configuration's passes: time = A + T x c(context) - a fixed part per pass (its first-token time: graph, launches, hand-off latencies, the range
+// set-up) and a part per token that grows with the context (user 2026-10-25: "the first token time, the linear token time, the nonlinear factor"). Fitted
+// to every kept sample (its context, its pass size, its us per token y = c(ctx) + A / T): least squares in (1, ctx, 1/T), then the break search of
+// dsf_fit_curve on y - A / T. Without the fixed part a 4496-token GLM split pass was predicted from 8192-token passes at 4.5 s and took ~7 s (pre12).
+// A is fitted only when the pass sizes differ by 1.5x or more, and never below 0.
+static dsf_fit dsf_fit_pass(const std::map<int, dsf_pt> & m) {
+    struct smp { double c, t, y; };
+    std::vector<smp> v;
+    for (const auto & e : m) {
+        const double c = ((double) e.first + 0.5) * (double) DSF_CELLS;
+        for (size_t i = 0; i < e.second.s.size(); ++i) { const double t = i < e.second.tk.size() ? e.second.tk[i] : 0.0; v.push_back({ c, t, e.second.s[i] }); }
+    }
+    double A = 0.0;
+    {
+        double tmin = 1e30, tmax = 0.0;
+        int nt = 0;
+        for (const auto & x : v) { if (x.t > 0.0) { tmin = std::min(tmin, x.t); tmax = std::max(tmax, x.t); nt++; } }
+        if (nt >= 3 && tmax >= 1.5 * tmin) {
+            // normal equations of y = p0 + p1 ctx + A / t over the samples with a pass size
+            double M[3][3] = {}, r[3] = {};
+            for (const auto & x : v) {
+                if (x.t <= 0.0) { continue; }
+                const double f[3] = { 1.0, x.c, 1.0 / x.t };
+                for (int i = 0; i < 3; ++i) { r[i] += f[i] * x.y; for (int j = 0; j < 3; ++j) { M[i][j] += f[i] * f[j]; } }
+            }
+            // Cramer's rule
+            auto det3 = [](const double a[3][3]) { return a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]); };
+            const double d = det3(M);
+            if (std::fabs(d) > 1e-12) {
+                double Mz[3][3];
+                for (int i = 0; i < 3; ++i) { for (int j = 0; j < 3; ++j) { Mz[i][j] = M[i][j]; } Mz[i][2] = r[i]; }
+                A = std::max(0.0, det3(Mz) / d);
+            }
+        }
+    }
+    // the per-token part: the samples less A / t, as medians per bucket, through the context curve
+    std::map<int, dsf_pt> mm;
+    for (const auto & e : m) {
+        dsf_pt q;
+        for (size_t i = 0; i < e.second.s.size(); ++i) { const double t = i < e.second.tk.size() ? e.second.tk[i] : 0.0; dsf_upd(q, e.second.s[i] - (t > 0.0 ? A / t : 0.0)); }
+        if (!q.s.empty()) { mm[e.first] = q; }
+    }
+    dsf_fit f = dsf_fit_curve(mm);
+    f.A = A;
+    return f;
+}
 static std::string dsf_fit_str(const dsf_fit & f) {
     if (!f.ok) { return "-"; }
-    if (f.c0 < 0.0) { return format("%.1f + %.5f c", f.a, f.b); }
-    return format("%.1f + %.5f c below %.0fk cells, %.1f + %.5f c above", f.a, f.b, f.c0 / 1024.0, f.a2, f.b2);
+    const std::string fixed = f.A > 0.0 ? format("%.0f ms per pass + ", f.A / 1e3) : "";
+    if (f.c0 < 0.0) { return fixed + format("%.1f + %.5f c", f.a, f.b); }
+    return fixed + format("%.1f + %.5f c below %.0fk cells, %.1f + %.5f c above", f.a, f.b, f.c0 / 1024.0, f.a2, f.b2);
 }
 // the choice for a pass from the learned factors (-1: not enough measured); under g_mu
 static int dsf_decide(const llama_model & model, int64_t n_tokens) {
     std::lock_guard<std::mutex> dl(g_dsf_mu);
     dsf_load();
     if (g_cards.size() < 2 || g_dsf_next_pos0 < 0) { return -1; }
-    const dsf_fit f1 = dsf_fit_curve(g_dsf_one), f2 = dsf_fit_curve(g_dsf_split);
+    const dsf_fit f1 = dsf_fit_pass(g_dsf_one), f2 = dsf_fit_pass(g_dsf_split);
     std::map<std::string, dsf_fit> fd;   // every card's dense curve (split passes)
     for (const auto & e : g_dsf_dense) { fd[e.first] = dsf_fit_curve(e.second); }
     const std::string xdev = ggml_backend_dev_name(g_cards.back());
@@ -2120,8 +2183,8 @@ static int dsf_decide(const llama_model & model, int64_t n_tokens) {
         for (const auto & e : g_dsf_one) {
             auto it = g_dsf_split.find(e.first);
             if (e.second.n == 0 || it == g_dsf_split.end() || it->second.n == 0) { continue; }
-            const double sg = sigma(((double) e.first + 0.5) * (double) DSF_CELLS);
-            if (sg > 0.0) { r.push_back((e.second.us - it->second.us) / sg); }
+            const double cb = ((double) e.first + 0.5) * (double) DSF_CELLS, sg = sigma(cb);
+            if (sg > 0.0) { r.push_back((f1.at(cb) - f2.at(cb)) / sg); }   // per-token parts (the fixed parts are kept apart)
         }
         if (!r.empty()) { std::sort(r.begin(), r.end()); k_sig = std::min(3.0, std::max(0.5, r[r.size() / 2])); }
     }
@@ -2139,17 +2202,19 @@ static int dsf_decide(const llama_model & model, int64_t n_tokens) {
     span(g_dsf_one, lo1, hi1);
     span(g_dsf_split, lo2, hi2);
     auto covered = [](double c, double lo, double hi) { return hi >= 0.0 && c >= lo - (double) DSF_CELLS && c <= hi + (double) DSF_CELLS; };
-    auto one_at = [&](double c) {
-        if (f1.ok && (covered(c, lo1, hi1) || !f2.ok)) { return f1.at(c); }
+    // a pass of T tokens at context c on each configuration (compute side: the expert upload is added below as max(upload, compute)); a side derived
+    // from the other one takes the other's fixed part
+    auto one_pass = [&](double T, double c) {
+        if (f1.ok && (covered(c, lo1, hi1) || !f2.ok)) { return f1.pass(T, c); }
         const double sg = sigma_k(c);
-        if (f2.ok && sg >= 0.0 && (covered(c, lo2, hi2) || !f1.ok)) { return f2.at(c) + sg; }
-        return f1.ok ? f1.at(c) : f2.at(c) + std::max(0.0, sg);
+        if (f2.ok && sg >= 0.0 && (covered(c, lo2, hi2) || !f1.ok)) { return f2.pass(T, c) + T * sg; }
+        return f1.ok ? f1.pass(T, c) : f2.pass(T, c) + T * std::max(0.0, sg);
     };
-    auto split_at = [&](double c) {
-        if (f2.ok && (covered(c, lo2, hi2) || !f1.ok)) { return f2.at(c); }
+    auto split_pass = [&](double T, double c) {
+        if (f2.ok && (covered(c, lo2, hi2) || !f1.ok)) { return f2.pass(T, c); }
         const double sg = sigma_k(c);
-        if (f1.ok && sg >= 0.0 && (covered(c, lo1, hi1) || !f2.ok)) { return f1.at(c) - sg; }
-        return f2.ok ? f2.at(c) : f1.at(c) - std::max(0.0, sg);
+        if (f1.ok && sg >= 0.0 && (covered(c, lo1, hi1) || !f2.ok)) { return f1.pass(T, c) - T * sg; }
+        return f2.ok ? f2.pass(T, c) : f1.pass(T, c) - T * std::max(0.0, sg);
     };
     // the passes left in this call (passes of n_tokens, the last one what remains), each max(its expert upload, its compute): the dense split shortens the
     // compute only, so it gains nothing on a pass whose upload is longer (user 2026-10-25: upload against compute decides; Qwen3.8 2k: split -40%, 60k: +28%)
@@ -2162,8 +2227,8 @@ static int dsf_decide(const llama_model & model, int64_t n_tokens) {
         const double cm = (double) c + 0.5 * (double) T;
         const double U = std::max(0.0, llama_moe_cache_pass_upload_ms_fork((uint32_t) T, k_used, n_exp)) * 1e3 * g_dsf_urat;   // us, corrected (g_dsf_urat)
         if (u_first < 0.0) { u_first = U; }
-        t_one   += std::max(U, (double) T * one_at(cm));
-        t_split += std::max(U, (double) T * split_at(cm));
+        t_one   += std::max(U, one_pass((double) T, cm));
+        t_split += std::max(U, split_pass((double) T, cm));
     }
     const double fill_us = g_mirror_fill_us.load() > 0.0 ? (g_dsf_fill.n ? g_dsf_fill.us * 1e3 : g_mirror_fill_us.load()) : 0.0;   // copies to fill first (0: valid)
     const double gain = t_one - t_split;
@@ -2222,7 +2287,7 @@ void llama_dsplit_pass_end_fork() {
     if (us <= 0.0) { return; }
     const int k = (int) ((p.pos0 + p.T / 2) / DSF_CELLS);
     dsf_pt & d = (p.choice == 1 ? g_dsf_split : g_dsf_one)[k];
-    dsf_upd(d, us / (double) p.T);
+    dsf_upd(d, us / (double) p.T, (double) p.T);
     dsf_mark(std::string(p.choice == 1 ? "dsf.split.k" : "dsf.one.k") + std::to_string(k), d);
 }
 void llama_dsplit_note_fill_fork(double ms) {   // llama_context::moe_mirror_fill: the copies of this prompt were filled (part of the split pass decided last)
