@@ -2158,7 +2158,10 @@ void llama_kv_cache_dsv4_raw_context::set_input_k_rot(ggml_tensor * dst) const {
 // llama_kv_cache_dsv4_comp_context
 //
 
-llama_kv_cache_dsv4_comp_context::llama_kv_cache_dsv4_comp_context(llama_kv_cache * kv) : kv(kv), n_kv(kv->get_size()) {
+// the reserve context: the cells the reserve graph sees. kv->get_size_reserve() is what every other cache reserves at: the full size, or under --moe kv-tail the
+// pool's growth step (the KV grows with the processed tokens; a call's own plan sees only the visible blocks, (pos+1)/ratio padded to 256). The full size made the
+// reserved compute buffer, and with it the pass ceiling, scale with the declared context: 1056-token passes at DeepSeek-V4.1's 1M, 3552 at 247k.
+llama_kv_cache_dsv4_comp_context::llama_kv_cache_dsv4_comp_context(llama_kv_cache * kv) : kv(kv), n_kv(kv->get_size_reserve()) {
     const uint32_t n_stream = kv->get_n_stream();
 
     sinfos.resize(1);
