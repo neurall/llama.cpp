@@ -1514,9 +1514,10 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     // share; below it by more than the threshold, they gain one; in between nothing moves. The step is 0.02 of the share, the offset stays in [-0.45, 0]: never above
     // the equal-time share (a slower card never gets more than it keeps up with). It tracks for the whole request, no settling.
     // Threshold (user 2026-10-25: "above a certain threshold or it will oscillate"): a miss counts only beyond twice the trajectory's own noise (the
-    // spread of the fitted passes around their line), and never under 1%; inside it nothing moves.
+    // spread of the fitted passes around their line), and never under 3%: one step of the share moves a pass by a jump of about that size (user
+    // 2026-10-25: "assume 3%"), so a smaller miss cannot tell a step that paid from one that did not; inside it nothing moves.
     const double r  = pred > 0.0 ? m / pred - 1.0 : 0.0;
-    const double th = std::max(0.01, 2.0 * noise);
+    const double th = std::max(0.03, 2.0 * noise);
     if (r > th)       { g_climb.adj -= g_climb.step; }
     else if (r < -th) { g_climb.adj += g_climb.step; }
     g_climb.adj = std::min(0.0, std::max(-0.45, g_climb.adj));
