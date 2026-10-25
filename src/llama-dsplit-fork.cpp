@@ -783,6 +783,7 @@ static void dsplit_link_model(const llama_model & model, int64_t T) {
         if (seen > 0.0) { g_kv_layers.push_back({ a.dev, seen * a.row * 2.0 }); }
     }
 }
+static double g_att_calc_us = 0.0;   // the attention of one token at the planned cells from the fitted latency curve (expert card), until passes are timed; under g_plan_mu
 static double dsplit_mm_rate(ggml_backend_dev_t d);   // below: the measured matmul rate of a card (weight bytes x tokens per second)
 static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_us, llama_dsplit_plan_fork & out, std::vector<double> & f_help, std::vector<double> & s_cards) {
     out = llama_dsplit_plan_fork();
@@ -837,7 +838,8 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     // tokens. MiMo 3-bit at 230k cells: 4.6 ms of a token's compute, three quarters of it attention; the planner without this saw 8 us and an upload-bound pass.
     // A split range attends to the whole cache of its layer, which sits on the layer's own card: a range on another card reads it over the slower of the two
     // links, every layer, every pass (f16 K and V of every cell the layer sees; a sliding-window layer only its window).
-    const double att_tok = std::min(c_us, std::max(0.0, llama_moe_cache_compute_att_us_fork()));
+    const double att_meas = llama_moe_cache_compute_att_us_fork();   // measured from timed prompt passes (base + a x cells), 0 before the first
+    const double att_tok = std::min(c_us, std::max(0.0, att_meas > 0.0 ? att_meas : g_att_calc_us));
     const double c_base  = c_us - att_tok;
     const double cells   = (double) llama_moe_cache_pp_cells_get_fork();
     // recurrent layers (Qwen3.5/3.6, Qwen3-Next: linear attention) hold no KV and do no attention over the cells: the attention goes to the others
@@ -916,6 +918,13 @@ static void dsplit_tune_load(int b);   // below: a size settled by an earlier st
 // launch and weight-read cost, which dominates at few tokens). Result: weight bytes x tokens per second per card, in g_mm_rate; about 100 MB of VRAM for a
 // few milliseconds. A card whose buffers cannot be allocated keeps the probe's rate.
 static std::map<ggml_backend_dev_t, double> g_mm_rate;   // under g_plan_mu
+// attention per card (user 2026-10-25: "time just attn, the only nonlinear term"; "fit a curve by 3 points, extract the nonlinear coefs"): one flash-attention
+// op of the model's first full-attention layer (its heads and head sizes; MLA: the compressed cache, one KV head) for ATT_T query tokens over 2k, 8k and 32k cells,
+// fitted exactly by t(c) = a + b c + g c^2 (us for ATT_T tokens, one layer). b is the cost per cell, g what grows faster than the cells (cache effects; ~0 when
+// attention is linear per token). The per-token cost of a layer at c cells is t(c) / ATT_T.
+struct dsplit_att_fit { double a = 0.0, b = 0.0, g = 0.0; bool ok = false; };
+static std::map<ggml_backend_dev_t, dsplit_att_fit> g_att_fit;   // under g_plan_mu
+static constexpr int64_t ATT_T = 512;
 static bool g_mm_done = false;
 static double dsplit_mm_rate(ggml_backend_dev_t d) {
     auto it = g_mm_rate.find(d);
@@ -923,6 +932,76 @@ static double dsplit_mm_rate(ggml_backend_dev_t d) {
     const auto * p = llama_gpu_probe_find_fork(d);
     return p ? (p->compute_sust > 0.0 ? p->compute_sust : p->compute) : 0.0;
 }
+static void dsplit_att_bench(const llama_model & model, ggml_backend_dev_t d, ggml_backend_t be) {
+    const auto & hp = model.hparams;
+    int il = -1;
+    for (uint32_t i = 0; i < hp.n_layer(); ++i) { if (!hp.is_recr(i) && !hp.is_swa(i)) { il = (int) i; break; } }
+    if (il < 0) { for (uint32_t i = 0; i < hp.n_layer(); ++i) { if (!hp.is_recr(i)) { il = (int) i; break; } } }
+    if (il < 0) { return; }   // no attention layer (all recurrent): nothing grows with the context
+    const bool mla = hp.is_mla();
+    const int64_t hsk = mla ? (int64_t) (hp.n_lora_kv + hp.n_rot()) : (int64_t) hp.n_embd_head_k(il);
+    const int64_t hsv = mla ? (int64_t) hp.n_lora_kv : (int64_t) hp.n_embd_head_v(il);
+    const int64_t nh = hp.n_head(il), nkv = mla ? 1 : std::max<int64_t>(1, hp.n_head_kv(il));
+    if (hsk <= 0 || hsv <= 0 || nh <= 0) { return; }
+    const int64_t C[3] = { 2048, 8192, 32768 };
+    ggml_init_params ip = { 24 * ggml_tensor_overhead() + 4 * ggml_graph_overhead(), nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, hsk, ATT_T, nh, 1);
+    ggml_cgraph * g[3];
+    for (int k = 0; k < 3; ++k) {
+        ggml_tensor * kt = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, hsk, C[k], nkv, 1);
+        ggml_tensor * vt = mla ? ggml_view_4d(ctx, kt, hsv, C[k], nkv, 1, kt->nb[1], kt->nb[2], kt->nb[3], 0)
+                               : ggml_new_tensor_4d(ctx, GGML_TYPE_F16, hsv, C[k], nkv, 1);
+        ggml_tensor * m  = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, C[k], ATT_T, 1, 1);   // all zero: every cell visible
+        g[k] = ggml_new_graph(ctx);
+        ggml_build_forward_expand(g[k], ggml_flash_attn_ext(ctx, q, kt, vt, m, 1.0f / sqrtf((float) hsk), 0.0f, 0.0f));
+    }
+    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be);
+    double t[3] = { 1e30, 1e30, 1e30 };
+    if (buf) {
+        ggml_backend_buffer_clear(buf, 0);
+        for (int k = 0; k < 3; ++k) {
+            for (int r = 0; r < 2; ++r) { ggml_backend_graph_compute(be, g[k]); }   // warm (the card is at its sustained clocks from the matmul loop)
+            ggml_backend_synchronize(be);
+            for (int r = 0; r < 5; ++r) {
+                const int64_t t0 = ggml_time_us();
+                ggml_backend_graph_compute(be, g[k]);
+                ggml_backend_synchronize(be);
+                t[k] = std::min(t[k], (double) (ggml_time_us() - t0));
+            }
+        }
+        ggml_backend_buffer_free(buf);
+    }
+    ggml_free(ctx);
+    if (!buf) { LLAMA_LOG_WARN("split planner: attention latency on %s not measured (no buffer)\n", ggml_backend_dev_name(d)); return; }
+    // exact quadratic through the three points (divided differences)
+    const double d1 = (t[1] - t[0]) / (double) (C[1] - C[0]), d2 = (t[2] - t[1]) / (double) (C[2] - C[1]);
+    dsplit_att_fit f;
+    f.g = (d2 - d1) / (double) (C[2] - C[0]);
+    f.b = d1 - f.g * (double) (C[0] + C[1]);
+    f.a = t[0] - f.b * (double) C[0] - f.g * (double) C[0] * (double) C[0];
+    f.ok = f.b > 0.0 || f.g > 0.0;
+    g_att_fit[d] = f;
+    LLAMA_LOG_WARN("split planner: attention latency on %s (layer %d, %lld heads / %lld KV heads, K %lld V %lld%s, %lld tokens): %.0f / %.0f / %.0f us at 2k / 8k / 32k cells: "
+                   "t(c) = %.1f + %.5f c + %.3g c^2 us, %.4f us per token per cell (at 32k cells %.0f%% of it from the c^2 term)\n",
+            ggml_backend_dev_name(d), il, (long long) nh, (long long) nkv, (long long) hsk, (long long) hsv, mla ? ", MLA" : "", (long long) ATT_T, t[0], t[1], t[2],
+            f.a, f.b, f.g, f.b / (double) ATT_T, t[2] > 0.0 ? 100.0 * f.g * 32768.0 * 32768.0 / t[2] : 0.0);
+}
+// the attention of ONE token over the whole model at c cells on card d (us): every full-attention layer at c, a sliding-window layer at its window (0 = no fit)
+static double dsplit_att_us_tok(const llama_model & model, ggml_backend_dev_t d, double c, double T) {
+    auto it = g_att_fit.find(d);
+    if (it == g_att_fit.end() || !it->second.ok) { return 0.0; }
+    const auto & f = it->second;
+    const auto & hp = model.hparams;
+    double us = 0.0;
+    for (uint32_t i = 0; i < hp.n_layer(); ++i) {
+        if (hp.is_recr(i)) { continue; }
+        const double ci = hp.is_swa(i) ? std::min(c, (double) hp.n_swa + T) : c;
+        us += std::max(0.0, f.a + f.b * ci + f.g * ci * ci) / (double) ATT_T;
+    }
+    return us;
+}
+
 static void dsplit_mm_bench(const llama_model & model) {
     if (g_mm_done || g_cards.size() < 2) { return; }
     g_mm_done = true;
@@ -976,6 +1055,7 @@ static void dsplit_mm_bench(const llama_model & model) {
             LLAMA_LOG_WARN("split planner: matmul latency on %s not measured (no buffer): the probe's rate stands\n", ggml_backend_dev_name(d));
         }
         ggml_free(ctx);
+        dsplit_att_bench(model, d, be);
         ggml_backend_free(be);
     }
 }
@@ -996,10 +1076,13 @@ llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int
         {
             const double rate = dsplit_mm_rate(g_cards.back());
             if (rate > 0.0) {
-                c_us = g_w_bytes_tok / rate * 1e6;
+                // the attention at the cells this call ends at, less half the call (its tokens see from the start to the end of the call: the average)
+                const double cells = std::max(0.0, (double) llama_moe_cache_pp_cells_get_fork() - 0.5 * (double) n_tokens);
+                g_att_calc_us = dsplit_att_us_tok(model, g_cards.back(), cells, (double) n_tokens);
+                c_us = g_w_bytes_tok / rate * 1e6 + g_att_calc_us;
                 static bool said = false;
-                if (!said) { said = true; LLAMA_LOG_WARN("split planner: compute per token calculated (no prompt pass timed yet): %.0f MB of weights per token / %.1f GB*token/s (matmul latency) on %s = %.1f us per token\n",
-                        g_w_bytes_tok / 1e6, rate / 1e9, ggml_backend_dev_name(g_cards.back()), c_us); }
+                if (!said) { said = true; LLAMA_LOG_WARN("split planner: compute per token calculated (no prompt pass timed yet): %.0f MB of weights per token / %.1f GB*token/s (matmul latency) + attention %.1f us at %.0f cells (fitted curve) on %s = %.1f us per token\n",
+                        g_w_bytes_tok / 1e6, rate / 1e9, g_att_calc_us, cells, ggml_backend_dev_name(g_cards.back()), c_us); }
             }
         }
     }
