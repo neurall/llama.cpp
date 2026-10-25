@@ -59,6 +59,10 @@ void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fo
 size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
 uint32_t llama_dsplit_pass_size_fork(uint32_t cap);   // the full pass of the split: the fastest card takes the limit
 uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub);
+void     llama_dsplit_note_pass_fork(int64_t pos0);   // llama-dsplit-fork.cpp (dsf): every prompt pass is timed for the split factors
+bool     llama_dsplit_pass_open_fork();
+void     llama_dsplit_pass_end_fork();
+void     llama_dsplit_note_fill_fork(double ms);
 uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch);   // llama-dsplit-fork.cpp: the largest dense-split pass (sliding-window cells)        // src/llama-moecache-fork.cpp: the largest pass every pool can lend for
 bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // the last refused lend: need and room (bytes)
 extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
@@ -1367,6 +1371,7 @@ void llama_context::moe_mirror_fill() {
         ggml_backend_synchronize(be.get());
     }
     LLAMA_LOG_WARN("%s: dense split: copies filled at once: %s in %.0f ms (pool blocks lent to this prompt)\n", __func__, txt.c_str(), (ggml_time_us() - t0) / 1e3);
+    llama_dsplit_note_fill_fork((ggml_time_us() - t0) / 1e3);   // the split's per-prompt cost, kept apart from the pass's time per token (dsf)
 }
 
 void llama_context::sched_new(size_t max_nodes, bool parallel) {
@@ -2876,6 +2881,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         ggml_backend_sched_synchronize(sched.get());
         llama_dsplit_pass_done_fork();
     }
+    // fork: every prompt pass is timed for the split factors (llama-dsplit-fork.cpp, dsf): the pass decided last ends at this synchronize, one card or split
+    if (!fork_resident && ubatch.n_tokens > 1 && llama_dsplit_pass_open_fork()) {
+        ggml_backend_sched_synchronize(sched.get());
+        llama_dsplit_pass_end_fork();
+    }
+    if (!fork_resident) { llama_dsplit_note_pass_fork(ubatch.n_tokens > 1 && ubatch.pos ? (int64_t) ubatch.pos[0] : -1); }
     // fork: --moe dense-split: the configuration of this pass (one card or split over the cards), chosen before the graph is built; a changed choice rebuilds
     const bool ds_changed = !fork_resident && llama_dsplit_decide_fork(model, ubatch.n_tokens);   // the per-pass split decision (and its log line) is part of what the exit skips
     // fork: the share controller of the expert split (llama-graph.cpp) moves the cards' expert counts from the measurement of an earlier pass; a changed count
