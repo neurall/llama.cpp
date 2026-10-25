@@ -1800,7 +1800,10 @@ std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::ve
     // starved the other cards here: it shrinks their factor while the expert card waits, but that wait (1.4-1.6 s a pass on GLM 3.0) did not come from
     // their tokens (GLM 3.0 60k: factor 0.75 -> 0.33, cuda0x4 24% of the tokens, 2.9 s dense of a 16 s pass, idle 80%; both cards ~1.1 ms per token dense).
     // Before every card has a measured range (the first pass), the zero-wait shares stand.
-    if (!llama_dsplit_in_pass_loop_fork() && dev.size() >= 2) {
+    // In the forced pass loop too (2026-10-25): the expert card keeps its whole card limit and every other card gets the tokens it finishes in the same dense
+    // time, so the pass is limit / the expert card's share. The zero-wait shares starved the other cards there as well (Qwen3.8 60k forced loop 1330-1358
+    // prompt t/s against 1910 for the share-cut split with these shares).
+    if (dev.size() >= 2) {
         const dsplit_bal & B = dsplit_bal_get(dsplit_bucket_of(n_tokens), dev);
         std::vector<double> r(dev.size(), 0.0);
         double sum = 0.0;
