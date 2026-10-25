@@ -198,7 +198,8 @@ def _lib_runnorm():
 
     FAMS = [("GLM-5.3-Flash-GSQ-RCO-3.5bit", "GLM 3.5-bit"), ("GLM-5.3-Flash-GSQ-RCO-3.0bit", "GLM 3.0-bit"), ("MiMo", "MiMo IQ3_XXS"), ("Qwen3.8-Flash-Next-UD-IQ4_XS", "Next IQ4_XS"),
             ("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S", "Next IQ3_S"), ("Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M", "Next IQ1_M"), ("Qwen3.6-35B-A3B-GSQ", "Qwen3.6 Q2_0"), ("qwen36", "Qwen3.6 Q2_0"),
-            ("Qwen3.8-27B-IQ4_NL", "27B IQ4_NL"), ("Qwen3.8-27B-GSQ-RCO-IQ3_S", "27B IQ3_S"), ("Qwen3.8-27B-MTP", "27B Q5_K_M MTP"), ("Qwen3.8-27B", "27B"), ("OLMoE", "OLMoE")]
+            ("Qwen3.8-27B-IQ4_NL", "27B IQ4_NL"), ("Qwen3.8-27B-GSQ-RCO-IQ3_S", "27B IQ3_S"), ("Qwen3.8-27B-MTP", "27B Q5_K_M MTP"), ("Qwen3.8-27B", "27B"), ("OLMoE", "OLMoE"),
+            ("DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS", "DS4.1 IQ2_XXS")]
 
 
     def fam(model, args=""):
@@ -6331,7 +6332,16 @@ def run_list(name, argv):
     for r in rows: r["model"] = fcfg.model(r["model"])   # the model column is a models.ini alias or a path
     for r in rows: r["test"] = test_name(r["test"])   # the test column may say 8k / 60k1k
     _picked = set()
+    _sel = lambda r: (not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))) and (not o.skip or not any(x in r["name"] for x in o.skip.split(",")))   # the -onl and -skp filters below, applied early: a model nobody asked for (or one skipped) is not looked at
+    if o.machine.split("-")[0] == "pc1" and not o.status:   # a model whose rows ask for its best prompt (pfbest) and that has none stored: ask the engine once, here, in this window (calib --ceil), not "go and run calib"
+        for _m in sorted({r["model"] for r in rows if _sel(r) and r["test"].startswith("pfbest")}):
+            if prompt_known(_m): continue
+            if o.dry: print(col(33, f"{model_alias(_m)}: no best prompt or pass ceiling stored for {hw_key()} of VRAM: a real run asks the engine first (calib --ceil); its rows are left out of this listing"), flush=True); rows = [r for r in rows if r["model"] != _m]; continue
+            print(col("1;94", f"{model_alias(_m)}: no best prompt or pass ceiling stored for {hw_key()} of VRAM: asking the engine once (calib --ceil)"), flush=True)
+            cmd_calib(argparse.Namespace(build=o.build, n_gpus=o.n_gpus, models=model_alias(_m), dry=False, nowrite=False, ceil=True))
+            if not prompt_known(_m): sys.exit(f"{model_alias(_m)}: calib --ceil stored no pass ceiling (the engine gave none): fix that first, nothing is guessed")
     for r in rows:
+        if not _sel(r): continue
         was = r["test"]; r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")
         if r["test"] != was and was != r["test"] and (r["model"], r["test"]) not in _picked and not o.status:
             _picked.add((r["model"], r["test"]))   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
@@ -6654,6 +6664,12 @@ def vram_known(model_path):
     """True when the model's bestpp has an entry for the VRAM of the cards in use"""
     sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {})
     return int(hw_key()[:-1]) in bestpp_entries(sec.get("bestpp", ""))
+
+
+def prompt_known(model_path):
+    """True when models.ini holds a best prompt or a pass ceiling (maxpp) for the VRAM of the cards in use: best_prompt_k can answer without asking the engine"""
+    sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {}); g = int(hw_key()[:-1])
+    return g in bestpp_entries(sec.get("bestpp", "")) or g in {int(x) for x, _ in re.findall(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)", sec.get("maxpp", ""))}
 
 
 def best_prompt_k(model_path):
