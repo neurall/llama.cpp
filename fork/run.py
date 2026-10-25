@@ -6046,6 +6046,8 @@ def cmd_calib(a):
     Starts at the estimated maximum (12k), halves while the prompt needs more than one pass (12, 6, 3, 1), then bisects between the biggest one-pass size and the smallest multi-pass one. The pass
     count never grows when the prompt shrinks, so 3-5 requests (64 answer tokens) per model find the biggest one-pass prompt, which is the pick: bigger prompts amortize the uploads of a pass best."""
     import sqlite3
+    if getattr(a, "pass_args", None) is None:   # standalone calib: its own -nm / -a go to every probe (run run passes its own through pass_args)
+        a.pass_args = (["-nm", a.no_pool] if getattr(a, "no_pool", None) is not None else []) + (["-a", a.cell_args] if getattr(a, "cell_args", "") else [])
     here = os.path.dirname(os.path.abspath(__file__)); b = resolve_build(a.build) if a.build != "latest" else a.build
     src = [r for r in csv.DictReader(open(os.path.join(here, "runs", "onepass.csv"), newline="")) if r["test"] == "pf12k1k"]
     want = [x for x in (a.models or "").split(",") if x]
@@ -6057,7 +6059,7 @@ def cmd_calib(a):
         base = r["name"].rsplit("-", 1)[0]; name = f"{base}-p{n}"
         with open(os.path.join(here, "runs", "calib.csv"), "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(r.keys())); w.writeheader(); w.writerow(dict(r, name=name, test=f"pf{n}k1k", n="1"))
-        cmd = [sys.executable, os.path.join(here, "run.py"), "run", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else [])
+        cmd = [sys.executable, os.path.join(here, "run.py"), "run", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else []) + list(getattr(a, "pass_args", None) or [])
         print(col(90, " ".join(cmd)), flush=True)
         if a.dry: return None
         st = os.path.join(QDIR, "calib-state.json")   # what `run status` shows for a calib: the model, its build, when it began and the probe now running
@@ -6075,7 +6077,7 @@ def cmd_calib(a):
         base = r["name"].rsplit("-", 1)[0]; name = f"{base}-a{n}"; ctx = int(n * 1100 + 2048)
         with open(os.path.join(here, "runs", "calib.csv"), "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(r.keys())); w.writeheader(); w.writerow(dict(r, name=name, test="pf2k1k", n="1", tokens="1", extra=f"--ctx {ctx}"))
-        cmd = [sys.executable, os.path.join(here, "run.py"), "run", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else [])
+        cmd = [sys.executable, os.path.join(here, "run.py"), "run", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else []) + list(getattr(a, "pass_args", None) or [])
         print(col(90, f"dry allocation of {ctx} tokens of context: " + " ".join(cmd)), flush=True)
         if a.dry: return False
         subprocess.call(cmd)
@@ -6338,7 +6340,9 @@ def run_list(name, argv):
             if prompt_known(_m): continue
             if o.dry: print(col(33, f"{model_alias(_m)}: no best prompt or pass ceiling stored for {hw_key()} of VRAM: a real run asks the engine first (calib --ceil); its rows are left out of this listing"), flush=True); rows = [r for r in rows if r["model"] != _m]; continue
             print(col("1;94", f"{model_alias(_m)}: no best prompt or pass ceiling stored for {hw_key()} of VRAM: asking the engine once (calib --ceil)"), flush=True)
-            cmd_calib(argparse.Namespace(build=o.build, n_gpus=o.n_gpus, models=model_alias(_m), dry=False, nowrite=False, ceil=True))
+            # the probe runs with this run's pinning and cell arguments: the ceiling depends on the RAM left beside the pinned weights
+            _pa = (["-nm", o.no_pool] if o.no_pool is not None else []) + (["-a", o.cell_args] if o.cell_args else [])
+            cmd_calib(argparse.Namespace(build=o.build, n_gpus=o.n_gpus, models=model_alias(_m), dry=False, nowrite=False, ceil=True, pass_args=_pa))
             if not prompt_known(_m): sys.exit(f"{model_alias(_m)}: calib --ceil stored no pass ceiling (the engine gave none): fix that first, nothing is guessed")
     for r in rows:
         if not _sel(r): continue
@@ -8879,6 +8883,8 @@ if __name__ == "__main__":
     cb = sp.add_parser("calib", help="find every model's biggest one-pass input prompt by halving from 12k, then bisecting and store best_prompt.<N>gpu in models.ini")
     cb.add_argument("-b", "--build", default="latest"); cb.add_argument("-ng", "--gpus", dest="n_gpus", type=int); cb.add_argument("-m", "--models", help="comma list of model keys of runs/onepass.csv (default all)")
     cb.add_argument("--dry", action="store_true"); cb.add_argument("--nowrite", action="store_true"); cb.add_argument("--ceil", action="store_true", help="only read the engine's one-pass ceiling (one 2k probe) and store it as maxpp")
+    cb.add_argument("-nm", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="the probes pin at most GB of the model (as run -nm): the ceiling depends on the RAM beside the pinned weights")
+    cb.add_argument("-a", dest="cell_args", default="", metavar="ARGS", help="extra cell arguments for the probes (as run -a)")
     ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
     ns.add_argument("rep", help="the .nsys-rep file")
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
