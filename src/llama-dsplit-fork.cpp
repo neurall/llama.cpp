@@ -681,6 +681,10 @@ struct dsf_pass { int choice = -1; int64_t T = 0, pos0 = -1, t0 = 0; double fill
 double llama_moe_cache_pass_upload_ms_fork(uint32_t n_tokens, uint32_t n_used, uint32_t n_expert);   // llama-moecache-fork.cpp: a pass's expert upload (ms)
 static dsf_pass g_dsf_ps;                // the prompt pass decided last (open until the synchronize after it)
 static int64_t  g_dsf_next_pos0 = -1;    // the first position of the pass about to be decided (llama_context)
+// The upload estimate (expert bytes not held / the probed link rate) came out ~25% above what passes take (Qwen3.8: 2441 tokens in 2.2 s, estimate 2.8 s).
+// A pass is never shorter than its real upload, so the smallest observed (pass time / estimate) is a correction that cannot go below the truth; in memory
+// only (the link and the cache are measured again at every start).
+static double   g_dsf_urat = 1.0;
 static void dsf_med(dsf_pt & p) {
     std::vector<double> t = p.s;
     std::sort(t.begin(), t.end());
@@ -2120,7 +2124,7 @@ static int dsf_decide(const llama_model & model, int64_t n_tokens) {
     for (int64_t c = g_dsf_next_pos0; c < end; c += n_tokens) {
         const int64_t T = std::min<int64_t>(n_tokens, end - c);
         const double cm = (double) c + 0.5 * (double) T;
-        const double U = std::max(0.0, llama_moe_cache_pass_upload_ms_fork((uint32_t) T, k_used, n_exp)) * 1e3;   // us
+        const double U = std::max(0.0, llama_moe_cache_pass_upload_ms_fork((uint32_t) T, k_used, n_exp)) * 1e3 * g_dsf_urat;   // us, corrected (g_dsf_urat)
         if (u_first < 0.0) { u_first = U; }
         t_one   += std::max(U, (double) T * one_at(cm));
         t_split += std::max(U, (double) T * split_at(cm));
@@ -2150,7 +2154,10 @@ void llama_dsplit_pass_end_fork() {
     // Only a compute-bound pass tells its compute: one that took no longer than its expert upload is upload-bound, its time per token is the upload's, not
     // the compute's (Qwen3.8 2k: 2441 tokens in 2.2 s against a 2.8 s upload estimate; recorded as compute it made one card look 988 us per token at the
     // start of the context, where big passes measure 450-650, and the split won the 4k request it lost by 20%). The decision adds the upload as max(U, T c).
-    if (p.U_us > 0.0 && us <= p.U_us) { return; }
+    if (p.U_us > 0.0) {
+        g_dsf_urat = std::min(g_dsf_urat, std::max(0.2, us / p.U_us));
+        if (us <= p.U_us * g_dsf_urat) { return; }
+    }
     // the compute side of the pass: less the time the expert card's stream waited for expert uploads (stream stamps of this pass, when it was measured).
     // An upload-bound pass then still tells its compute; the decision adds the upload back as max(upload, compute) for the pass size it plans.
     {
