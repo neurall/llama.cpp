@@ -1460,8 +1460,17 @@ static bool dsplit_climb_on() {
     static const bool on = [] { const char * e = llama_moe_get_opt("share-climb"); return !e || atoi(e) != 0; }();
     return on;
 }
+// --moe share-adj=F (research, user 2026-10-25: tune the balance on Qwen3.6's many passes): the other cards' share offset fixed at F for the whole run, the climb off. Unlike
+// the climb it may be above 0 (the other cards then get more than the equal dense time), to map the pass time against the share on one cell.
+static bool dsplit_adj_forced(double & v) {
+    static const bool on = [] { return llama_moe_get_opt("share-adj") != nullptr; }();
+    static const double val = on ? atof(llama_moe_get_opt("share-adj")) : 0.0;
+    v = val;
+    return on;
+}
 static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
-    if (!dsplit_climb_on() || g_climb.settled || !g_climb.cut || n < 2 || B.v <= 0.0 || B.c.size() != n || B.c[n - 1] <= 0.0) { return; }
+    double fv;
+    if (dsplit_adj_forced(fv) || !dsplit_climb_on() || g_climb.settled || !g_climb.cut || n < 2 || B.v <= 0.0 || B.c.size() != n || B.c[n - 1] <= 0.0) { return; }
     const double m = B.v / B.c[n - 1];
     const double adj0 = g_climb.adj;
     // Settling (user 2026-10-25: "settle after a few noisy ups and downs"): every reversal halves the step; once it would drop below 0.01 (three reversals
@@ -1864,7 +1873,8 @@ std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::ve
         if (ok && sum > 0.0) {
             for (size_t i = 0; i < dev.size(); ++i) { s[i] = r[i] / sum; }
             // the climb's offset on the other cards' share (the expert card, last, takes the rest)
-            const double h = 1.0 - s.back(), h2 = dsplit_climb_on() ? std::min(h, std::max(0.02, h + g_climb.adj)) : h;   // never above the equal-time share h
+            double fv = 0.0;
+            const double h = 1.0 - s.back(), h2 = dsplit_adj_forced(fv) ? std::min(0.98, std::max(0.02, h + fv)) : dsplit_climb_on() ? std::min(h, std::max(0.02, h + g_climb.adj)) : h;   // never above the equal-time share h (the forced research offset may)
             for (size_t i = 0; i + 1 < dev.size(); ++i) { s[i] *= h > 0.0 ? h2 / h : 0.0; }
             s.back() = 1.0 - h2;
         }
