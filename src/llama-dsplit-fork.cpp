@@ -2264,6 +2264,11 @@ void llama_dsplit_pass_end_fork() {
     const dsf_pass p = g_dsf_ps;
     g_dsf_ps = dsf_pass();
     if (p.choice < 0 || p.T < 64 || p.pos0 < 0 || p.t0 <= 0) { return; }
+    // A pass under a quarter of the card limit (the micro-batch the pools allow now) is no sample: the server's short tail calls (1024-2144 tokens at the
+    // end of a long prompt) are mostly the pass's fixed part and its upload, and their pass sizes are too close together to separate the two - recorded,
+    // GLM's one-card curve became 4395 us per token from them and the 4k request picked the split it lost (pre13). Small requests are predicted from the
+    // full passes' fit (fixed part + per token) instead.
+    if (const uint32_t lim = g_card_lim.load(); lim > 0 && (uint64_t) p.T * 4 < (uint64_t) lim) { return; }
     dsf_load();
     double us = (double) (ggml_time_us() - p.t0) - p.fill_ms * 1e3;   // the copy fill is the split's per-prompt cost, kept apart (dsf.fill)
     // Only a compute-bound pass tells its compute: one that took no longer than its expert upload is upload-bound, its time per token is the upload's, not
