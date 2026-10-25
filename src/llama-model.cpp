@@ -50,6 +50,9 @@
 #include <string>
 #include <vector>
 
+// the largest pass a dense split can run (llama-dsplit-fork.cpp): the sliding-window caches need room for it
+uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch);
+
 static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params & params) {
     switch (arch) {
         case LLM_ARCH_CLIP:
@@ -861,6 +864,13 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             const int64_t blck_size_perf = std::lcm(blck_size, 128);
             GGML_ASSERT(segments.size() == 1);
             return {blck_size_perf};
+        }
+
+        if (ud->model->arch == LLM_ARCH_STEP35 || ud->model->arch == LLM_ARCH_LAGUNA) {
+            GGML_ASSERT(segments.size() == 1);
+            if (std::regex_match(tensor_name, pattern_attn_gate_weight)) {
+                return {hparams.n_head(il) / hparams.n_head_kv(il)};
+            }
         }
 
         // everything else
@@ -2191,12 +2201,20 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             if (buf == nullptr) {
                 throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
             }
-            // a multi_buffer has no base to lock, its parts are usually pinned memory (host buffer types with a max size)
-            if (use_mlock && ggml_backend_buffer_is_host(buf) && ggml_backend_buffer_get_base(buf) != nullptr) {
-                pimpl->mlock_bufs.emplace_back(new llama_mlock);
-                auto & mlock_buf = pimpl->mlock_bufs.back();
-                mlock_buf->init   (ggml_backend_buffer_get_base(buf));
-                mlock_buf->grow_to(ggml_backend_buffer_get_size(buf));
+            // lock the buffers that hold the tensors: a multi_buffer has no base, and its parts are pageable memory when pinning fails
+            if (use_mlock && !ml.no_alloc && ggml_backend_buffer_is_host(buf)) {
+                std::vector<ggml_backend_buffer_t> lock_bufs;
+                for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+                    if (t->buffer != nullptr && std::find(lock_bufs.begin(), lock_bufs.end(), t->buffer) == lock_bufs.end()) {
+                        lock_bufs.push_back(t->buffer);
+                    }
+                }
+                for (ggml_backend_buffer_t lock_buf : lock_bufs) {
+                    pimpl->mlock_bufs.emplace_back(new llama_mlock);
+                    auto & mlock_buf = pimpl->mlock_bufs.back();
+                    mlock_buf->init   (ggml_backend_buffer_get_base(lock_buf));
+                    mlock_buf->grow_to(ggml_backend_buffer_get_size(lock_buf));
+                }
             }
             bufs.emplace_back(buf);
         }
@@ -3284,7 +3302,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             cparams.kv_unified,
                             cparams.n_ctx_seq,
                             cparams.n_seq_max,
-                            cparams.n_ubatch,
+                            llama_dsplit_max_pass_fork(this, cparams.n_ubatch),   // sliding-window cells: the largest dense-split pass, not one card's micro-batch
                             1,
                             nullptr,
                             filter_mtp,
@@ -3324,7 +3342,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             cparams.kv_unified,
                             cparams.n_ctx_seq,
                             cparams.n_seq_max,
-                            cparams.n_ubatch,
+                            llama_dsplit_max_pass_fork(this, cparams.n_ubatch),   // sliding-window cells: the largest dense-split pass, not one card's micro-batch
                             1,
                             nullptr,
                             nullptr,
@@ -3519,7 +3537,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                     cparams.kv_unified,
                                     cparams.n_ctx_seq,
                                     cparams.n_seq_max,
-                                    cparams.n_ubatch,
+                                    llama_dsplit_max_pass_fork(this, cparams.n_ubatch),   // sliding-window cells: the largest dense-split pass, not one card's micro-batch
                                     1,
                                     mem_other,
                                     filter,
@@ -3536,7 +3554,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                     cparams.kv_unified,
                                     cparams.n_ctx_seq,
                                     cparams.n_seq_max,
-                                    cparams.n_ubatch,
+                                    llama_dsplit_max_pass_fork(this, cparams.n_ubatch),   // sliding-window cells: the largest dense-split pass, not one card's micro-batch
                                     1,
                                     nullptr,
                                     filter,

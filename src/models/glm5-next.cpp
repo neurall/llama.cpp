@@ -5,6 +5,11 @@
 #include <algorithm>
 #include "llama-memory-hybrid-idx.h"
 
+// fork (llama-graph.cpp), declared here so that no shared header changes: the index in ds_r of the expert card's range (where it sits in token order
+// is ds_plan's choice: the first)
+size_t llama_ds_xr_fork(const std::vector<llm_graph_context::ds_range_fork> & r);
+
+
 // GLM5-Next (GLM-5.3-Flash): hybrid KDA (linear) + nope MLA with a k-pool DSA indexer,
 // mHC residual streams, DeepSeek-style MoE.
 
@@ -275,10 +280,8 @@ public:
     ggml_tensor * pool_mask     = nullptr; // F32/F16 [n_pool, n_tokens]
     ggml_tensor * tail_idxs     = nullptr; // I32     [kpool - 1, n_tokens]
     ggml_tensor * sel_mask      = nullptr; // F32     [n_sel, 1, 1, n_tokens] 0 for live selection slots, -inf for dead ones
-    ggml_tensor * sel_mask_2d   = nullptr; // F32     [n_sel, n_tokens] view of sel_mask, shared by the layers
     // n_new is never below 1, see build_inp_kpool
-    ggml_tensor * new_pool_idxs = nullptr; // I32     [kpool, n_new]   members of the pools completed this ubatch
-    ggml_tensor * new_pool_flat = nullptr; // I32     [kpool*n_new]    view of new_pool_idxs, shared by the layers
+    ggml_tensor * new_pool_idxs = nullptr; // I32     [kpool*n_new]    members of the pools completed this ubatch
     ggml_tensor * new_pool_rep  = nullptr; // I64     [n_new]          cell to write each new pooled key into
 
     const llama_memory_hybrid_idx_context * mctx;
@@ -333,16 +336,13 @@ llama_model_glm5_next::llm_graph_input_kpool * llama_model_glm5_next::graph::bui
             ggml_set_input(inp->sel_mask);
             // set_input_kpool always fills the mask, so it stays allocated in every graph
             ggml_build_forward_expand(gf, inp->sel_mask);
-            // one view for all layers: each view of a host input is a separate upload
-            inp->sel_mask_2d = ggml_reshape_2d(ctx0, inp->sel_mask, n_sel, n_tokens);
         }
     }
 
     inp->n_new = n_new;
 
-    inp->new_pool_idxs = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, kpool, n_new);
+    inp->new_pool_idxs = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, kpool*n_new);
     ggml_set_input(inp->new_pool_idxs);
-    inp->new_pool_flat = ggml_reshape_1d(ctx0, inp->new_pool_idxs, kpool*n_new);
     // one scatter row per new pool, each a distinct rep row (see kpool_build_state)
     inp->new_pool_rep = ggml_new_tensor_1d(ctx0, GGML_TYPE_I64, n_new);
     ggml_set_input(inp->new_pool_rep);
@@ -717,37 +717,20 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
     ggml_tensor * prev_sel = nullptr;
 
     // ---- fork: dense split (llama-dsplit-fork.cpp) ---------------------------------------------------------------------------------------------------------
-    // A prompt pass of one sequence is cut into token ranges, one per card: the first (the slower link) holds --moe dense-split-share of the tokens (default
-    // 0.3), the last card the rest. Every card computes the dense part of its range of every layer with its own copy of the dense weights, and its range's
-    // residual stream stays on it for the whole pass. Only what depends on other tokens crosses:
+    // A prompt pass of one sequence is cut into token ranges, one per card (ds_plan, the dense split kit in llama-graph.cpp: any number of cards, each range
+    // sized by the live balance so that every card takes equally long; the expert card, the fastest link, holds the last range). Every card computes the
+    // dense part of its range of every layer with its own copy of the dense weights, and its range's residual stream stays on it for the whole pass. Only
+    // what depends on other tokens crosses:
     //   KDA layers   range after range: the conv window (the last d_conv-1 projected tokens) and the recurrent state (4.2 MB on GLM-5.3-Flash) of a range are
     //                the start of the next range's; the last range writes both to the memory. The scan itself is therefore sequential over the ranges.
-    //   DSA layers   (sparse attention) first version: all tokens on the layer's own card, the ranges' inputs gathered there and the outputs sent back.
-    //   MoE          experts stay shared by id range; build_moe_ffn runs in range mode (moe_ranges): every card's chain reads all ranges, every range gets the
-    //                sum of all cards' partial results.
+    //   DSA layers   (sparse attention) per range on its card (see dsa_split below), or all tokens on the layer's own card.
+    //   MoE          build_moe_ffn runs in range mode (moe_ranges): every card's chain reads all ranges, every range gets the sum of all cards' partial results.
     // Exact (the same operations on the same tokens; only the summation order of the partial results changes). Off for several sequences in one pass, for
-    // rollback snapshots (n_rs_seq > 0) and for passes shorter than --moe dense-split-min tokens (default 512).
+    // rollback snapshots (n_rs_seq > 0) and for passes shorter than --moe dense-split-min tokens (default 512); every range has at least 4 x d_conv tokens.
     struct drange { ggml_backend_t b; ggml_backend_dev_t dev; int64_t t0, t1; };
     std::vector<drange> R;
-    {
-        static const double  share0  = [] { const char * e = llama_moe_get_opt("dense-split-share"); return e ? atof(e) : 0.3; }();
-        static const int64_t min_tok = [] { const char * e = llama_moe_get_opt("dense-split-min");   return e ? (int64_t) atoll(e) : (int64_t) 512; }();
-        if (sched && llama_dsplit_cur_fork() == 1 && n_seqs == 1 && cparams.n_rs_seq == 0 && n_tokens >= std::max<int64_t>(min_tok, 4 * d_conv) &&
-                !cparams.embeddings_nextn) {
-            std::vector<std::pair<double, ggml_backend_t>> gpus;   // (upload rate, backend)
-            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
-                ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
-                if (ggml_backend_dev_type(ggml_backend_get_device(b)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
-                    gpus.push_back({ llama_moe_cache_link_gbs_fork(ggml_backend_get_device(b)), b });
-                }
-            }
-            if (gpus.size() >= 2) {
-                std::stable_sort(gpus.begin(), gpus.end(), [](const auto & x, const auto & y) { return x.first < y.first; });   // slowest link first
-                const int64_t n0 = std::max<int64_t>(d_conv, std::min<int64_t>(n_tokens - d_conv, (int64_t) llround(share0 * (double) n_tokens)));
-                R.push_back({ gpus.front().second, ggml_backend_get_device(gpus.front().second), 0, n0 });
-                R.push_back({ gpus.back().second,  ggml_backend_get_device(gpus.back().second),  n0, n_tokens });
-            }
-        }
+    if (!cparams.embeddings_nextn && n_seqs == 1 && ds_plan(4 * d_conv)) {
+        for (const auto & r : ds_r) { R.push_back({ r.b, r.dev, r.t0, r.t1 }); }
     }
     // Everything created for a range is pinned to the range's card: pin() walks the tensors of ctx0 created since the last mark. Views take the card of their
     // source; writes into the memory (cpy into a view of a KV / recurrent-state tensor) run where the memory is.
@@ -988,7 +971,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                             // same as the one-card path (build_kpool_select): the fused op builds the range's mask from its slice of kq_mask
                             ggml_tensor * tail = hparams.indexer_kpool_select_tail ? dsa_tail[r] : nullptr;
                             GGML_ASSERT(kpool*n_top_pool + (tail ? tail->ne[0] : 0) == (int64_t) inp_kpool->n_sel);
-                            sel = build_fused_top_k_mask(kq_mask_r, top_k, score, inp_kpool->pool_idxs, tail, il);
+                            sel = build_fused_top_k_mask(kq_mask_r, top_k, score, inp_kpool->pool_idxs, tail, nullptr, il);
                         } else {
                             ggml_tensor * sel_score = ggml_get_rows(ctx0, ggml_reshape_3d(ctx0, score, 1, n_pool, nr), top_k);
                             ggml_tensor * sel_order = ggml_argsort(ctx0, ggml_reshape_2d(ctx0, sel_score, n_top_pool, nr), GGML_SORT_ORDER_DESC);
@@ -1056,7 +1039,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                     pin(R[r].b);
                 }
             } else {
-                // router logits per range on its card; the selection runs on the last range's card for all tokens (288 x tokens floats cross, not the hidden state)
+                // router logits per range on its card; the selection runs on the expert card's range for all tokens (288 x tokens floats cross, not the hidden state)
                 std::vector<ggml_tensor *> lg(NR);
                 for (size_t r = 0; r < NR; ++r) {
                     skip();
@@ -1073,15 +1056,15 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                     logits = ggml_concat(ctx0, logits, lg[r], 1);
                     call   = ggml_concat(ctx0, call, cr[r], 1);   // the shape of the whole pass; computed only if a path of build_moe_ffn reads it
                 }
-                pin(R.back().b);
+                pin(R[llama_ds_xr_fork(ds_r)].b);
                 moe_ranges.clear();
                 for (size_t r = 0; r < NR; ++r) { moe_ranges.push_back({ R[r].b, R[r].t0, R[r].t1, cr[r], nullptr }); }
                 build_moe_ffn(call,
-                        llama_dsplit_mirror_fork(model, layer.ffn_gate_inp, R.back().dev),
+                        llama_dsplit_mirror_fork(model, layer.ffn_gate_inp, R[llama_ds_xr_fork(ds_r)].dev),
                         layer.ffn_up_exps,
                         layer.ffn_gate_exps,
                         layer.ffn_down_exps,
-                        llama_dsplit_mirror_fork(model, layer.ffn_exp_probs_b, R.back().dev),
+                        llama_dsplit_mirror_fork(model, layer.ffn_exp_probs_b, R[llama_ds_xr_fork(ds_r)].dev),
                         n_expert, n_expert_used,
                         LLM_FFN_SILU, hparams.expert_weights_norm,
                         hparams.expert_weights_scale,
@@ -1090,7 +1073,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                 std::vector<ggml_tensor *> mo(NR);
                 for (size_t r = 0; r < NR; ++r) { mo[r] = moe_ranges[r].out; }
                 moe_ranges.clear();
-                skip();   // the router's selection follows its input (the logits, on the last range's card); the expert chains are pinned inside
+                skip();   // the router's selection follows its input (the logits, on the expert card's range); the expert chains are pinned inside
                 for (size_t r = 0; r < NR; ++r) {
                     skip();
                     ggml_tensor * sh = build_ffn(cr[r], L[r].ffn_up_shexp, nullptr, nullptr, L[r].ffn_gate_shexp, nullptr, nullptr, L[r].ffn_down_shexp, nullptr, nullptr,
@@ -1327,7 +1310,7 @@ ggml_tensor * llama_model_glm5_next::graph::build_kpool_select(
     const int64_t n_kv = mctx_lid->get_n_kv();
 
     // Pool the entries completed by this ubatch. The last one is a dummy when the ubatch completes none.
-    ggml_tensor * rows = kpool_cache.gather_key_gate(inp_kpool->new_pool_flat);
+    ggml_tensor * rows = kpool_cache.gather_key_gate(inp_kpool->new_pool_idxs);
     rows = ggml_reshape_3d(ctx0, rows, 2*n_embd_indexer, kpool, n_new);
 
     ggml_tensor * pk = ggml_view_3d(ctx0, rows, n_embd_indexer, kpool, n_new, rows->nb[1], rows->nb[2], 0);
@@ -1383,7 +1366,7 @@ ggml_tensor * llama_model_glm5_next::graph::build_kpool_select(
             ggml_tensor * tail = hparams.indexer_kpool_select_tail ? inp_kpool->tail_idxs : nullptr;
             GGML_ASSERT(kpool*n_top_pool + (tail ? tail->ne[0] : 0) == (int64_t) inp_kpool->n_sel);
 
-            ggml_tensor * sel = build_fused_top_k_mask(kq_mask, top_k, score, inp_kpool->pool_idxs, tail, il);
+            ggml_tensor * sel = build_fused_top_k_mask(kq_mask, top_k, score, inp_kpool->pool_idxs, tail, nullptr, il);
             cb(sel, "indexer_sel", il);
 
             return sel;
@@ -1426,7 +1409,7 @@ ggml_tensor * llama_model_glm5_next::graph::build_kpool_select(
     // Live slots (visible pools, real tail cells) address disjoint cells. Each dead slot writes its own dump row
     // n_kv + slot, so the scatter indices of a token are unique: idx = dump + live*(idx - dump), live = exp(mask).
     GGML_ASSERT(inp_kpool->sel_mask->ne[0] == n_sel && inp_kpool->sel_mask->ne[3] == n_tokens);
-    ggml_tensor * live  = ggml_exp(ctx0, inp_kpool->sel_mask_2d);
+    ggml_tensor * live  = ggml_reshape_2d(ctx0, ggml_exp(ctx0, inp_kpool->sel_mask), n_sel, n_tokens);
     ggml_tensor * dump  = ggml_arange(ctx0, (float) n_kv, (float) (n_kv + n_sel), 1.0f);
     ggml_tensor * idx_f = ggml_cast(ctx0, sel_idx, GGML_TYPE_F32);
     idx_f   = ggml_add(ctx0, ggml_mul(ctx0, ggml_sub(ctx0, idx_f, dump), live), dump);

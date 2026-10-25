@@ -35,6 +35,7 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
@@ -54,6 +55,23 @@ static uint32_t g_decode_n_tokens = 0;   // tokens of the decode call in progres
 void llama_moe_token_time_fork(double ms);   // src/llama-moestate-fork.cpp
 void llama_moe_prompt_done_fork(uint32_t n_tokens, double ms);
 void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch);
+void     llama_dsplit_note_limit_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the one-card pass limit of this call
+void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the context's card limit (what %limit is of)
+size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
+uint32_t llama_dsplit_pass_size_fork(uint32_t cap);   // the full pass of the split: the fastest card takes the limit
+uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub);
+void     llama_dsplit_bench_fork(const llama_model & model);   // llama-dsplit-fork.cpp: matmul + attention latency per GPU, before this context takes VRAM
+void     llama_dsplit_note_pass_fork(int64_t pos0);   // llama-dsplit-fork.cpp (dsf): every prompt pass is timed for the split factors
+bool     llama_dsplit_pass_open_fork();
+void     llama_dsplit_pass_end_fork();
+void     llama_dsplit_pass_abandon_fork();   // a pass that ran out of CUDA memory: no sample
+void     llama_dsplit_note_fill_fork(double ms);
+uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch);   // llama-dsplit-fork.cpp: the largest dense-split pass (sliding-window cells)        // src/llama-moecache-fork.cpp: the largest pass every pool can lend for
+bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // the last refused lend: need and room (bytes)
+extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
+extern "C" void ggml_backend_sched_link_add_fork(ggml_backend_dev_t dst, ggml_backend_dev_t src, uint64_t n);   // the same for any input: src NULL = host memory
+static thread_local bool g_split_sub = false;          // decode() runs one pass of a call sized pass by pass (--moe split-pass=1)
+bool llama_dsplit_in_pass_loop_fork() { return g_split_sub; }   // llama-graph.cpp ds_plan: the pass was sized for all cards by the loop below (graph built on this thread)
 void llama_moe_prompt_progress_fork(uint32_t done);
 uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint32_t ceil);
 uint32_t llama_moe_ubadapt_next_fork(uint32_t n_tokens, uint32_t ceil);
@@ -224,6 +242,7 @@ llama_context::llama_context(
     // TODO warning when creating llama_context with awkward ctx size that is not a power of 2,
     //     may need to be backend-dependent
     LLAMA_LOG_INFO("%s: constructing llama_context\n", __func__);
+    llama_dsplit_bench_fork(model);   // fork: once per process, while the VRAM is still free (the KV cache and the expert pool come below)
 
     t_start_us = model.t_start_us;
     t_load_us  = model.t_load_us;
@@ -285,7 +304,7 @@ llama_context::llama_context(
                 for (uint32_t il = 0; il < hparams.n_layer_all; ++il) {
                     if (!hparams.has_kv(il)) { continue; }
                     const uint64_t r = ggml_row_size(params.type_k, hparams.n_embd_k_gqa(il)) + ggml_row_size(params.type_v, hparams.n_embd_v_gqa(il));
-                    if (hparams.is_swa(il)) { fixed_b += r * ((uint64_t) hparams.n_swa + params.n_ubatch); }   // MiMo: 39 of 48 layers are sliding-window; counting them per token made the cap 10x too low (196k instead of 1M)
+                    if (hparams.is_swa(il)) { fixed_b += r * ((uint64_t) hparams.n_swa + llama_dsplit_max_pass_fork(&model, params.n_ubatch)); }   // MiMo: 39 of 48 layers are sliding-window; counting them per token made the cap 10x too low (196k instead of 1M)
                     else                    { row += r; }
                 }
                 for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
@@ -1226,14 +1245,12 @@ bool llama_context::moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size
         }
         return false;
     }
-    if (cparams.n_ubatch > 512) {
-        // need grows about linearly with the tokens: scale by what the pool lends (halving overshot: MiMo fit 12416 but landed on 8192), and step down
-        // by at least one 32-token granule so the loop ends
-        const double fit = need > 0 && cap > 0 ? (double) cap / (double) need : 0.78;   // a failed allocation reports no sizes: step down by a quarter, not by half (MiMo fit 12416 but halving landed on 3840)
-        const uint32_t cut = (uint32_t) (cparams.n_ubatch * std::min(0.97, fit * 0.97)) / 32 * 32;
-        const uint32_t nu  = std::max<uint32_t>(512, std::min<uint32_t>(cut, cparams.n_ubatch - 32));
-        LLAMA_LOG_WARN("%s: the pool lends %.0f MiB, graph + scratch%s need %.0f MiB at micro-batch %u: micro-batch %u\n", __func__, cap / 1048576.0,
-                graph_fits ? " + prefetch staging" : "", need / 1048576.0, cparams.n_ubatch, nu);
+    // a graph that does not fit is sized in sched_reserve (fit_ub: measured graphs against each pool's room, no guessed cut); here only what is left: the alias
+    // off when not even 512 tokens fit, or the staging slots with stage-shrink=1 (the old rule), which steps down by one 32-token granule
+    if (graph_fits && cparams.n_ubatch > 512) {
+        const uint32_t nu = cparams.n_ubatch - 32;
+        LLAMA_LOG_WARN("%s: the pool lends %.0f MiB, graph + scratch + prefetch staging need %.0f MiB at micro-batch %u: micro-batch %u (stage-shrink=1)\n", __func__,
+                cap / 1048576.0, need / 1048576.0, cparams.n_ubatch, nu);
         cparams.n_ubatch = nu;
         sched_need_reserve = true;
         return true;
@@ -1251,12 +1268,16 @@ bool llama_context::moe_alias_shrink_fork(bool graph_fits, bool stage_fits, size
 
 // fork: --moe alias=1: the GPUs' compute graphs go into the expert pool buffers (llama_moe_cache_alias_fork lends the blocks they reach)
 void llama_context::apply_moe_alias() {
-    // prefetch overlap: --prefetch-experts-slots / --moe pf-slots; unset (-1) = 3 staging slots (they are only filled when expert weights are
-    // host-resident and a prompt batch computes them on a GPU, so there is nothing to allocate otherwise); 0 = off
+    // prefetch overlap: --prefetch-experts-slots / --moe pf-slots; unset (-1) = the expert tensors of one layer (up, gate and down; 2 when gate and up are
+    // one tensor): the next layer's uploads run while this one computes. They are only filled when expert weights are host-resident and a prompt batch computes
+    // them on a GPU, so there is nothing to allocate otherwise; how many a graph gets is what its pool holds behind it (ppx_stage_slots). 0 = off
     {
         int n = cparams.prefetch_experts_slots;
         if (n < 0) {
-            n = 3;
+            n = 0;
+            for (const auto & l : model.layers) {
+                n = std::max(n, (l.ffn_up_exps != nullptr) + (l.ffn_gate_exps != nullptr) + (l.ffn_down_exps != nullptr) + (l.ffn_gate_up_exps != nullptr));
+            }
         }
         ggml_backend_sched_set_prefetch_experts_slots(sched.get(), n);
     }
@@ -1300,8 +1321,13 @@ void llama_context::moe_mirror_offsets() {
 void llama_moe_cache_ledger_fork(ggml_backend_dev_t dev, const char * kind, const void * ptr, size_t bytes, const char * who);   // llama-moecache-fork.cpp (no header edit)
 
 // --moe mirror-pool, after the pool lent this graph its blocks: copies that the region lost since they were last filled are copied in again from the cards
-// that hold the originals (card to card). The graph runs only after this on the receiving card's stream.
+// that hold the originals (card to card). The graph runs only after this on the receiving card's stream. Every card's copies are issued before anything waits
+// (2026-10-23): a copy runs on its source card's stream, so the cards fill each other at once, both directions of a link in use (one card after the other
+// with a wait after each, GLM-5.3-Flash took 848 + 750 ms per request on x16 + x4).
 void llama_context::moe_mirror_fill() {
+    const int64_t t0 = ggml_time_us();
+    std::string txt;
+    size_t total = 0;
     for (size_t i = 0; i < moe_alias_bufs.size(); ++i) {
         const auto & ab = moe_alias_bufs[i];
         // a pass that does not split has its graph at the start of the pool, where the copies are: filling them now would overwrite that graph's tensors
@@ -1316,7 +1342,6 @@ void llama_context::moe_mirror_fill() {
         for (auto & be : backends) {
             if (ggml_backend_get_device(be.get()) == ab.dev) { bd = be.get(); }
         }
-        const int64_t t0 = ggml_time_us();
         size_t bytes = 0;
         for (const auto & pr : todo) {
             ggml_backend_dev_t ds = pr.first->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(pr.first->buffer)) : nullptr;
@@ -1335,15 +1360,22 @@ void llama_context::moe_mirror_fill() {
             if (bd != nullptr && ggml_is_quantized(pr.second->type)) {
                 ggml_backend_tensor_zero_tail_fork(bd, pr.second);
             }
+            // the card's link traffic of this prompt's first pass (the split pass report: from host memory, or from the card that holds the weight)
+            ggml_backend_sched_link_add_fork(ab.dev, ds && ggml_backend_dev_type(ds) == GGML_BACKEND_DEVICE_TYPE_GPU ? ds : nullptr, ggml_nbytes(pr.first));
             bytes += ggml_nbytes(pr.first);
         }
-        ggml_backend_sched_synchronize(sched.get());
-        for (auto & be : backends) {
-            ggml_backend_synchronize(be.get());
-        }
-        LLAMA_LOG_WARN("%s: dense split: %.1f MiB of copies filled on %s in %.0f ms (pool blocks lent to this prompt)\n", __func__, bytes / 1048576.0,
-                ggml_backend_dev_name(ab.dev), (ggml_time_us() - t0) / 1e3);
+        txt += format("%s%.1f MiB on %s", txt.empty() ? "" : ", ", bytes / 1048576.0, ggml_backend_dev_name(ab.dev));
+        total += bytes;
     }
+    if (total == 0) {
+        return;
+    }
+    ggml_backend_sched_synchronize(sched.get());
+    for (auto & be : backends) {
+        ggml_backend_synchronize(be.get());
+    }
+    LLAMA_LOG_WARN("%s: dense split: copies filled at once: %s in %.0f ms (pool blocks lent to this prompt)\n", __func__, txt.c_str(), (ggml_time_us() - t0) / 1e3);
+    llama_dsplit_note_fill_fork((ggml_time_us() - t0) / 1e3);   // the split's per-prompt cost, kept apart from the pass's time per token (dsf)
 }
 
 void llama_context::sched_new(size_t max_nodes, bool parallel) {
@@ -1386,6 +1418,7 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
         if (!llama_moe_cache_kv_ram_fork(sched.get(), n_tokens, why, sizeof(why))) { say("%s", why); return -1; }
         kv_tier = 3;
         say("kv-fit: %u tokens: %s", n_tokens, why);
+        llama_moe_decision_fork("kv", "part in RAM", why);   // shown live by run.py (decided kv ...)
         return 3 | 256;
     }
     if (tier == kv_tier) { return tier; }
@@ -1403,6 +1436,8 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     kv_tier = tier;
     static const char * names[] = { "f16", "q8_0/q8_0", "q4_0/q4_0" };
     say("kv-fit: %u tokens: KV now %s in place (f16 holds %zu, q8_0 %zu, q4_0 %zu)%s", n_tokens, names[tier], cp.f16, cp.k8v8, cp.k4v4, tier ? ", small quality loss" : "");
+    { char why[160]; snprintf(why, sizeof why, "%u tokens: f16 holds %zu, q8_0 %zu, q4_0 %zu tokens%s", n_tokens, cp.f16, cp.k8v8, cp.k4v4, tier ? " (small quality loss)" : "");
+      llama_moe_decision_fork("kv", names[tier], why); }
     return tier | 256;
 }
 
@@ -1462,7 +1497,124 @@ void llama_context::sched_reserve() {
     int n_inputs_tg        = -1;
     int n_input_tensors_tg = -1;
 
-    const uint32_t n_outputs_pp = std::min(n_tokens, cparams.n_outputs_max);
+    // fork: a prompt pass outputs one token per sequence (the last token's logits; embeddings pool per sequence). With the expert cache the compute buffers
+    // are sized for that: before the pool exists they are given back to the cards when it is sized, and after it each graph gets its lend when it runs (a
+    // graph with more outputs too). The default n_outputs_max (n_batch, 131072 in the server cells) sized GLM 3.0's 16384-token reserve with 16384 x 151552
+    // logits: a 30 GiB buffer, refused, and the retry halved the micro-batch for good (2026-10-24).
+    const uint32_t n_outputs_pp = cparams.moe_cache ? n_seqs : std::min(n_tokens, cparams.n_outputs_max);
+
+    // fork: with the pool lending the graphs, the micro-batch is the largest prompt pass whose graph every card's pool holds, computed (user 2026-10-24:
+    // "simply calculate max ubatch properly"; before, a reserve that did not fit was cut by a fixed 0.78 and 0.97: GLM 3.0 8192 -> 6176 where 8192 and 16384
+    // had run). Each size is checked with a measure-only reserve (nothing allocated) of the real graph against llama_moe_cache_alias_room_fork: the pool up to
+    // the KV zone of those cells, behind the dense split's copies, less the CUDA scratch. The first probe below the configured size is the line through two
+    // measured sizes (graph bytes = a + b x tokens per card) against each card's room; then bisection in 32-token steps between the largest size that fit and
+    // the smallest that did not. 0: not even 512 tokens fit.
+    // once per process: what the prompt graph of each card is made of (its largest tensors), so a size that does not fit names its cause (GLM 3.0: 1.84 MiB per
+    // token at the start, 0.5 in the real passes, 2026-10-24)
+    std::vector<size_t> lt(backend_ptrs.size(), 0);
+    auto list_top = [&](ggml_cgraph * mg, uint32_t u) {
+        static bool listed = false;
+        if (listed || !mg) { return; }
+        listed = true;
+        for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
+            ggml_backend_dev_t dv = ggml_backend_get_device(backend_ptrs[bi]);
+            if (ggml_backend_dev_type(dv) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            std::vector<const ggml_tensor *> ts;
+            for (int k = 0; k < ggml_graph_n_nodes(mg); ++k) {
+                ggml_tensor * t = ggml_graph_node(mg, k);
+                if (ggml_backend_sched_get_tensor_backend(sched.get(), t) == backend_ptrs[bi]) { ts.push_back(t); }
+            }
+            std::sort(ts.begin(), ts.end(), [](const ggml_tensor * x, const ggml_tensor * y) { return ggml_nbytes(x) > ggml_nbytes(y); });
+            std::string top;
+            for (size_t k = 0; k < ts.size() && k < 8; ++k) {
+                top += format("%s %s [%lld,%lld,%lld,%lld] %.0f MiB; ", ts[k]->name, ggml_op_desc(ts[k]), (long long) ts[k]->ne[0], (long long) ts[k]->ne[1],
+                        (long long) ts[k]->ne[2], (long long) ts[k]->ne[3], ggml_nbytes(ts[k]) / 1048576.0);
+            }
+            LLAMA_LOG_WARN("%s: prompt graph of %u tokens on %s: largest tensors: %s\n", __func__, u, ggml_backend_dev_name(dv), top.c_str());
+        }
+    };
+    if (cparams.moe_cache && !model.hparams.no_alloc && n_tokens > 512) {   // before the first real reserve (which allocates): the list, measure-only
+        list_top(graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(), true, lt.data()), n_tokens);
+    }
+    auto fit_ub = [&](uint32_t hi) -> uint32_t {
+        std::vector<std::pair<size_t, ggml_backend_dev_t>> gi;   // backends whose card has a pool
+        for (size_t i = 0; i < backend_ptrs.size(); ++i) {
+            ggml_backend_dev_t d = ggml_backend_get_device(backend_ptrs[i]);
+            if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU && llama_moe_cache_alias_room_fork(d, 1) > 0) { gi.push_back({ i, d }); }
+        }
+        if (gi.empty()) {
+            return hi;
+        }
+        std::vector<size_t> s(backend_ptrs.size(), 0);
+        int probes = 0;
+        auto fits = [&](uint32_t u) {
+            std::fill(s.begin(), s.end(), 0);
+            ggml_cgraph * mg = graph_reserve(u, n_seqs, n_seqs, mctx.get(), true, s.data());
+            probes++;
+            list_top(mg, u);
+            for (const auto & [i, d] : gi) { if (s[i] > llama_moe_cache_alias_room_fork(d, u)) { return false; } }
+            return true;
+        };
+        std::string line;
+        auto say = [&](uint32_t u, const char * how) {
+            for (const auto & [i, d] : gi) {
+                line += format(" | %s: graph %.0f MiB, room %.0f MiB", ggml_backend_dev_name(d), s[i] / 1048576.0, llama_moe_cache_alias_room_fork(d, u) / 1048576.0);
+            }
+            LLAMA_LOG_WARN("%s: micro-batch from the pools: %u tokens (%s, %d measure-only reserves)%s\n", __func__, u, how, probes, line.c_str());
+        };
+        if (fits(hi)) {
+            say(hi, "the configured size fits");
+            return hi;
+        }
+        const std::vector<size_t> s_hi = s;
+        uint32_t lo = 0, bad = hi;
+        const uint32_t u1 = std::max<uint32_t>(512, hi / 2 / 32 * 32);
+        if (u1 < hi) {
+            if (fits(u1)) { lo = u1; } else { bad = u1; }
+        }
+        if (lo == 0 && bad <= 512) {
+            say(0, "not even 512 tokens fit");
+            return 0;
+        }
+        if (lo > 0) {   // the line through the two sizes, per card, against the card's room at each size: the first probe
+            uint32_t a0 = lo, b0 = bad;
+            while (b0 - a0 > 32) {
+                const uint32_t m = (a0 + b0) / 2 / 32 * 32;
+                bool ok = true;
+                for (const auto & [i, d] : gi) {
+                    const double b = s_hi[i] > s[i] ? (double) (s_hi[i] - s[i]) / (double) (hi - u1) : (double) s_hi[i] / (double) hi;
+                    const double a = (double) s_hi[i] - b * (double) hi;
+                    if (a + b * (double) m > (double) llama_moe_cache_alias_room_fork(d, m)) { ok = false; }
+                }
+                if (ok) { a0 = m; } else { b0 = m; }
+            }
+            if (a0 > lo && a0 < bad) {
+                if (fits(a0)) { lo = a0; } else { bad = a0; }
+                if (lo == a0 && a0 + 32 < bad) {   // the line was right if the next step does not fit
+                    if (fits(a0 + 32)) { lo = a0 + 32; } else { bad = a0 + 32; }
+                }
+            }
+        }
+        while (bad - lo > 32) {
+            const uint32_t m = std::max<uint32_t>(512, (lo + bad) / 2 / 32 * 32);
+            if (m <= lo || m >= bad) { break; }
+            if (fits(m)) { lo = m; } else { bad = m; }
+        }
+        if (lo > 0) { fits(lo); }   // the sizes of the answer for the log line
+        say(lo, lo > 0 ? "the largest that fits" : "not even 512 tokens fit");
+        return lo;
+    };
+    static const llama_context * ub_fitted = nullptr;   // computed once per context, when its pools first lend the graphs
+    if (!moe_alias_bufs.empty() && !model.hparams.no_alloc && ub_fitted != this && n_tokens > 512) {
+        ub_fitted = this;
+        const uint32_t u = fit_ub(n_tokens);
+        if (u >= 512 && u < n_tokens) {
+            cparams.n_ubatch = u;
+            sched_need_reserve = true;
+            sched_reserve();
+            return;
+        }
+    }
 
     // reserve pp (prompt processing) graph first so that buffers are only allocated once
     {
@@ -1476,7 +1628,14 @@ void llama_context::sched_reserve() {
                 apply_moe_alias();
                 gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get());
             }
-            if (!gf && !moe_alias_bufs.empty()) {   // the graph does not fit in the lent blocks: smaller micro-batch, or the alias off
+            if (!gf && !moe_alias_bufs.empty()) {   // the graph does not fit in the lent blocks: the largest that does (computed), or the alias off
+                const uint32_t u = n_tokens > 512 ? fit_ub(n_tokens - 32) : 0;
+                if (u >= 512) {
+                    cparams.n_ubatch = u;
+                    sched_need_reserve = true;
+                    sched_reserve();
+                    return;
+                }
                 if (moe_alias_shrink_fork(false, true, 0, 0)) {
                     sched_reserve();
                     return;
@@ -1577,6 +1736,15 @@ void llama_context::sched_reserve() {
 
     if (!moe_alias_bufs.empty() && !model.hparams.no_alloc) {
         const llama_moe_alias_fit_fork fit = llama_moe_cache_alias_fit_fork(sched.get(), (int32_t) n_tokens);
+        if (!fit.graph && n_tokens > 512) {   // the graph does not fit (the pool changed since the micro-batch was computed): the largest that does
+            const uint32_t u = fit_ub(n_tokens - 32);
+            if (u >= 512) {
+                cparams.n_ubatch = u;
+                sched_need_reserve = true;
+                sched_reserve();
+                return;
+            }
+        }
         if (moe_alias_shrink_fork(fit.graph, fit.stage, fit.need, fit.cap)) {
             sched_reserve();
             return;
@@ -2680,6 +2848,12 @@ bool llama_context::set_adapter_cvec(
 
 extern void llama_dsplit_veto_fork(int n_tokens);   // llama-dsplit-fork.cpp (declared here, no shared header)
 
+// fork (llama-dsplit-fork.cpp): the balance step of the pass just run, and the helpers' experts dropped from a split pass that does not fit; declared here so
+// that no shared header changes
+bool llama_dsplit_prev_split_fork();
+void llama_dsplit_pass_done_fork();
+bool llama_dsplit_drop_experts_fork(int64_t n_tokens);
+
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
     if (mctx && !mctx->apply()) {
@@ -2709,6 +2883,17 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
     const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
+    // fork: the pass before this one was a split pass: its card times are complete now (waited for), one balance step for it (llama-dsplit-fork.cpp)
+    if (!fork_resident && ubatch.n_tokens > 1 && llama_dsplit_prev_split_fork()) {
+        ggml_backend_sched_synchronize(sched.get());
+        llama_dsplit_pass_done_fork();
+    }
+    // fork: every prompt pass is timed for the split factors (llama-dsplit-fork.cpp, dsf): the pass decided last ends at this synchronize, one card or split
+    if (!fork_resident && ubatch.n_tokens > 1 && llama_dsplit_pass_open_fork()) {
+        ggml_backend_sched_synchronize(sched.get());
+        llama_dsplit_pass_end_fork();
+    }
+    if (!fork_resident) { llama_dsplit_note_pass_fork(ubatch.n_tokens > 1 && ubatch.pos ? (int64_t) ubatch.pos[0] : -1); }
     // fork: --moe dense-split: the configuration of this pass (one card or split over the cards), chosen before the graph is built; a changed choice rebuilds
     const bool ds_changed = !fork_resident && llama_dsplit_decide_fork(model, ubatch.n_tokens);   // the per-pass split decision (and its log line) is part of what the exit skips
     // fork: the share controller of the expert split (llama-graph.cpp) moves the cards' expert counts from the measurement of an earlier pass; a changed count
@@ -2788,7 +2973,14 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 }
                 break;
             }
-            if (attempt == 0 && !fork_resident && llama_dsplit_cur_fork() == 1) {
+            // fork: a split pass with experts on the helpers that does not fit: the experts go back to the expert card (the dense split alone) and the graph is
+            // built again; only a dense split alone that does not fit gives the split up for passes of this size
+            if (attempt == 0 && !fork_resident && llama_dsplit_cur_fork() == 1 && llama_dsplit_drop_experts_fork(ubatch.n_tokens)) {
+                (void) llama_dsplit_decide_fork(model, ubatch.n_tokens);
+                res->reset();
+                continue;
+            }
+            if (attempt <= 1 && !fork_resident && llama_dsplit_cur_fork() == 1) {
                 LLAMA_LOG_WARN("%s: a split pass of %d tokens does not fit behind the dense-split copies: one card for passes of this size\n", __func__, (int) ubatch.n_tokens);
                 llama_dsplit_veto_fork((int) ubatch.n_tokens);
                 (void) llama_dsplit_decide_fork(model, ubatch.n_tokens);
@@ -3074,8 +3266,132 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
     return false; // all sequences use backend sampling
 }
 
+// fork (user 2026-10-25: "we don't want an out-of-memory crash, we want try/catch recovery where it happens, ideally prevented"): a CUDA out-of-memory
+// inside a pass comes back from the backend as GGML_STATUS_ALLOC_FAILED (ggml_cuda_oom, ggml-cuda.cu) instead of killing the process. decode then takes
+// the whole call back (every position the call added: its later passes cannot be redone on top of the earlier ones' outputs), lowers the pass ceiling
+// below and returns 1, and llama_decode / llama_process run the same batch again at once (g_oom_retry): the caller never sees it. The ceiling is in
+// tokens x cells, since the pass's attention, mask and their temporaries grow with both: after a failure at T tokens and C cells a pass may have
+// T x C x s, s the share that fits (the pool's bytes and the card's free ones, ggml_cuda_oom_fit; 0.9 of it at most, 0.25 at least, 0.5 where it is not known): fewer
+// tokens at that context and more at a shorter one (a later short prompt keeps its full passes). It stays for the life of the process and is lowered again
+// at every failure; a pass of 256 tokens that still does not fit is an error, not a loop.
+static std::atomic<uint64_t> g_oom_tc    { 0 };   // the ceiling, tokens x cells, 0 = none
+static std::atomic<int>      g_oom_retry { 0 };   // set by decode: the call was taken back, run it again
+void llama_moe_cache_vram_oom_fork(int cuda_device, size_t bytes);   // llama-moecache-fork.cpp: the failed request counts as VRAM need outside the pool (declared here, no header edit)
+static int fork_cuda_last_oom(int * device, size_t * bytes, double * fit) {   // ggml-cuda.cu: the number of out-of-memory errors it caught, the last one's device, size and the share of the pass that fits
+    static int (*fn)(int *, size_t *, double *) = [] {
+        ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+        return reg ? (int (*)(int *, size_t *, double *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_last_oom_fork") : nullptr;
+    }();
+    return fn ? fn(device, bytes, fit) : 0;
+}
+
 int llama_context::decode(const llama_batch_ext & batch_inp) {
     moe_decoded = true;
+    // fork (--moe split-pass, default 1; 2 = equal passes, 0 = the old pass, A/B; dense split forced; user 2026-10-24): a prompt pass of the dense split was cut by the ONE-card limit, so
+    // with two cards each computed about half of what its buffers hold, for every upload of the experts. Here a call is run pass by pass, each pass sized
+    // just before it runs: the expert card (fastest link) takes the whole one-card limit, every other card what it finishes in the expert card's time
+    // (the zero-wait rule, llama-dsplit-fork.cpp dsplit_zw; llama_dsplit_pass_size_fork), the last pass what is left. The step of the pass before runs
+    // first, so the other cards' tokens follow the measured times pass by pass.
+    // (The KV cache cuts every pass of a call when the call starts, so per-pass sizes need one call per pass.) Only for one sequence whose only output
+    // is its last token (a prompt): the earlier passes' outputs would be lost, and a failed later pass cannot take back the earlier ones (KDA state).
+    if (!g_split_sub && cparams.moe_cache && memory && !cparams.embeddings && batch_inp.tokens.size() > cparams.n_ubatch) {
+        // default OFF since 2026-10-25: with the equal dense-time shares the share-cut split beat the loop (Qwen3.8 60k 1991 vs 1843, GLM 3.0 708-755 vs 696
+        // prompt t/s), and the loop's big lends left GLM's pools short: a 10336-token call at 62.5k cells found no KV slot and failed (bug log). --moe split-pass=1: on
+        static const int  split_pass = [] { const char * e = llama_moe_get_opt("split-pass"); return e ? atoi(e) : 0; }();
+        static const bool forced     = [] { const char * e = llama_moe_get_opt("dense-split"); return e && strcmp(e, "1") == 0; }();
+        const auto & tk = batch_inp.tokens;
+        const int32_t n = (int32_t) tk.size();
+        // llama_dsplit_max_pass_fork says whether passes beyond the micro-batch are allowed at all: it is also what the sliding-window ring was sized for
+        // (no bigger pass for models with sliding-window layers: their ring holds n_swa + the micro-batch, a bigger pass finds no slot)
+        bool ok = split_pass > 0 && forced && llama_dsplit_ready_fork(model) && tk[0].seq_ids.size() == 1 && llama_dsplit_max_pass_fork(&model, cparams.n_ubatch) > cparams.n_ubatch;
+        for (int32_t i = 0; ok && i < n; ++i) {
+            ok = tk[i].seq_ids == tk[0].seq_ids && (!tk[i].output || i == n - 1);
+        }
+        if (ok) {
+            const uint32_t cap = cparams.n_ubatch;
+            llama_dsplit_note_limit_fork(cap);
+            llama_dsplit_note_card_max_fork(cap);
+            int32_t off = 0, last_off = 0, k = 0;
+            int32_t cnt_fit = 0;   // set when the pool refused a pass: the largest pass that fit since (0: none refused in this call)
+            int oom_k = 0;         // passes a CUDA out-of-memory took back in this call (each runs again under the ceiling, g_oom_tc)
+            bool ran = false;      // a pass ran since the last balance step (a refused pass is no measurement)
+            g_split_sub = true;
+            while (off < n) {
+                if (ran && llama_dsplit_prev_split_fork()) {   // the pass just run: its balance step now, before the next pass is sized
+                    ggml_backend_sched_synchronize(sched.get());
+                    llama_dsplit_pass_done_fork();
+                }
+                ran = false;
+                // the biggest pass now: the expert card (fastest link) takes the whole one-card limit, every other card what it keeps up with (its balanced
+                // tokens, at most the limit). split-pass=1: every pass that big, the rest of the call in a last pass. split-pass=2: the fewest passes that
+                // size allows, all of the same size (the measured 60k GLM 3.0 run: a short last pass costs the experts' whole upload, 3.2 s for 1974
+                // tokens, where 15k-token passes take 6.5 s; equal passes leave no pass that short and need no more passes).
+                const int32_t R = n - off;
+                // The card limit of THIS pass: the most tokens the expert card's range can take now. The pool holds the cached experts, the pass's graph (lent)
+                // and the request's KV, which grows with every pass (15 KiB per token per card on Qwen3.8-Flash-Next): the pass of the context's card limit can
+                // stop fitting as the prompt goes on (a 31k pass at 68k cells needed 20.5 GiB lent + the KV, refused, 2026-10-24). Every pool's fit
+                // (llama_moe_cache_pass_fit_fork, the planner's per-pool cap: measured graph bytes per token against what the pool lends beside the KV of the
+                // pass's cells) bounds the pass; when it binds, the card limit is scaled down until the pass it gives fits, so the expert card still takes its
+                // whole (smaller) limit and the others their balanced share. Each step shrinks the limit, so the walk ends.
+                uint32_t cap_p = cap;
+                uint32_t W = llama_dsplit_pass_size_fork(cap_p);
+                for (uint32_t fit = llama_moe_cache_pass_fit_fork(W, W); fit < W && cap_p > 1; fit = llama_moe_cache_pass_fit_fork(W, W)) {
+                    cap_p = std::max<uint32_t>(1, (uint32_t) ((uint64_t) cap_p * fit / W));
+                    W = llama_dsplit_pass_size_fork(cap_p);
+                }
+                if (cnt_fit > 0 && (int32_t) W > cnt_fit) {   // a pool refused a bigger pass in this call
+                    cap_p = std::max<uint32_t>(1, (uint32_t) ((uint64_t) cap_p * (uint64_t) cnt_fit / W));
+                    W = llama_dsplit_pass_size_fork(cap_p);
+                }
+                llama_dsplit_note_limit_fork(cap_p);
+                int32_t cnt = std::min<int32_t>((int32_t) W, R);
+                if (split_pass == 2) {
+                    const int32_t k_r = (R + (int32_t) W - 1) / (int32_t) W;
+                    cnt = (R + k_r - 1) / k_r;
+                }
+                LLAMA_LOG_WARN("%s: dense split pass %d: %d tokens (pass limit %u = the expert card's card limit %u + what the others keep up with%s%s%s), %d of %d left\n",
+                        __func__, ++k, cnt, W, cap_p, split_pass == 2 ? "; equal passes" : "", "",
+                        cap_p < cap ? format("; the card limit %u of the context does not fit the pools now", cap).c_str() : "", R - cnt, n);
+                llama_batch_ext sub(batch_inp);
+                sub.tokens.assign(tk.begin() + off, tk.begin() + off + cnt);
+                const int r = decode(sub);
+                size_t need = 0, room = 0;
+                if (r != 0 && llama_moe_cache_refusal_fork(&need, &room) && room > 0 && room < need) {
+                    // A pool refused the pass (its graph and the KV of its cells do not fit). Not the call: the same pass again, smaller by room / need (the graph
+                    // grows about linearly with the tokens; a second refusal shrinks again), so the server never halves the whole call (2026-10-24: a refused
+                    // 31k pass sent the server into calls of 3-19k tokens, every pass of them small). The failed sub-call took its cells back (decode's rollback).
+                    const int32_t c2 = (int32_t) ((double) cnt * (double) room / (double) need);
+                    if (c2 > 0 && c2 < cnt) {
+                        LLAMA_LOG_WARN("%s: dense split pass %d refused by a pool (needs %.0f MiB, room %.0f MiB): again with %d tokens\n", __func__, k, need / 1048576.0, room / 1048576.0, c2);
+                        cnt_fit = c2;
+                        --k;
+                        continue;
+                    }
+                }
+                if (r == 1 && g_oom_retry.exchange(0) && ++oom_k <= 8) {   // a CUDA out-of-memory took this pass back (decode): the same pass again, under the ceiling
+                    --k;
+                    continue;
+                }
+                if (r != 0) {
+                    g_split_sub = false;
+                    if (off == 0) { return r; }
+                    LLAMA_LOG_ERROR("%s: dense split pass %d failed (%d) after %d tokens of this call ran: the call fails\n", __func__, k, r, off);
+                    return -2;
+                }
+                last_off = off;
+                off += cnt;
+                ran = true;
+            }
+            g_split_sub = false;
+            if (last_off > 0 && tk[n - 1].output) {   // the output of the last pass: its index in the call, not in the pass
+                const int32_t cnt = n - last_off;
+                std::vector<int32_t> head(output_ids.begin(), output_ids.begin() + cnt);
+                std::fill(output_ids.begin(), output_ids.end(), -1);
+                std::copy(head.begin(), head.end(), output_ids.begin() + last_off);
+            }
+            return 0;
+        }
+    }
     if (!fork_resident_checked) {
         fork_resident_checked = true;
         bool all_gpu = !cparams.moe_cache && !model.tensors_by_name.empty();
@@ -3281,6 +3597,22 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     // not this buffer, so the pass size is capped here: mask budget / (2 x cells at the end of this call). --moe mask-mb=N overrides the calculated budget (0 = no cap).
     { static bool said = false; if (!said && n_tokens_all >= 64) { said = true; LLAMA_LOG_WARN("%s: pass cap inputs: moe_cache %d, memory %d, n_tokens_all %u, n_ubatch %u\n", __func__, (int) cparams.moe_cache, (int) (memory != nullptr), n_tokens_all, cparams.n_ubatch); } }
     uint32_t n_ubatch_lim = cparams.n_ubatch;
+    if (const uint64_t tc = g_oom_tc.load(); tc > 0 && memory && n_tokens_all > 1) {   // after a CUDA out-of-memory (g_oom_tc): at most tc / cells tokens a pass
+        const uint64_t n_kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
+        const uint32_t lim = (uint32_t) std::min<uint64_t>(n_ubatch_lim, std::max<uint64_t>(256, tc / std::max<uint64_t>(1, n_kv_end) / 32 * 32));
+        if (lim < n_ubatch_lim) {
+            static uint32_t said = 0;
+            if (said != lim) {
+                said = lim;
+                char v[64], why[200];
+                snprintf(v, sizeof v, "%u tokens (CUDA out-of-memory ceiling)", lim);
+                snprintf(why, sizeof why, "a pass at %llu cells may have %llu tokens x cells: half of the pass that ran out of VRAM", (unsigned long long) n_kv_end, (unsigned long long) tc);
+                llama_moe_decision_fork("prompt pass", v, why);
+                LLAMA_LOG_WARN("%s: prompt pass %s: %s\n", __func__, v, why);
+            }
+            n_ubatch_lim = lim;
+        }
+    }
     double   mask_budget_mib = 0.0;
     if (cparams.moe_cache && memory) {
         const char * mm = llama_moe_get_opt("mask-mb");
@@ -3288,19 +3620,19 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         // every page beyond that depends on the kernel finding pinnable memory (the 6.5 GiB request stalled for 180 s). So the budget is the free pool pages right now (at least 1 GiB),
         // or, with no pool, the available RAM less the 4 GiB margin the weight loader keeps. --moe mask-mb=N overrides.
         uint64_t budget = 0;
+        uint64_t pool_free = 0, pool_total = 0, avail = 0;
+        if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", "r")) { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_free = v; } fclose(f); }
+        if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages", "r"))   { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_total = v; } fclose(f); }
+        if (FILE * f = fopen("/proc/meminfo", "r")) {
+            char line[256];
+            while (fgets(line, sizeof line, f)) { unsigned long long kb = 0; if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { avail = kb << 10; break; } }
+            fclose(f);
+        }
         if (mm) {
             budget = (uint64_t) atoll(mm) << 20;
         } else if (const char * sr = getenv("GGML_SIM_RAM_MB")) {   // --moe sim-ram=MB: this much can be pinned (test runs)
             budget = (uint64_t) atoll(sr) << 20;
         } else {
-            uint64_t pool_free = 0, pool_total = 0, avail = 0;
-            if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", "r")) { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_free = v; } fclose(f); }
-            if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages", "r"))   { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_total = v; } fclose(f); }
-            if (FILE * f = fopen("/proc/meminfo", "r")) {
-                char line[256];
-                while (fgets(line, sizeof line, f)) { unsigned long long kb = 0; if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { avail = kb << 10; break; } }
-                fclose(f);
-            }
             const uint64_t margin = (uint64_t) 4 << 30;
             // ONE pinned host buffer holds a pass's graph inputs (the startup fit measures it: 2 bytes per pass token per cell, one f16 mask; MiMo's 2.5 GiB pin of a
             // 16k pass at 32k cells is that buffer). It is pinned from free pool pages rounded up to whole pages, keeping one page spare
@@ -3327,11 +3659,47 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             // (common_pass_buffer_reserve); --moe mask-cap=1 brings the cap back. The pinned-memory rewrite after this release replaces both.
             static const bool mask_cap = [] { const char * e = llama_moe_get_opt("mask-cap"); return e && atoi(e) != 0; }();
             if (mask_cap && cap < n_ubatch_lim) { n_ubatch_lim = (uint32_t) cap; }
+            // A slower prompt rather than none (user 2026-10-25): the pass's host buffer grows with the context (the f16 mask is 2 bytes per pass token per cell: 6.3 GiB
+            // for a 16384-token pass at 203k cells) and was pinned beside 108 GiB of pinned weights: RAM ran out, the box thrashed (PSI 97%) and the MiMo 200k prompt
+            // failed. Pinning does not fail, the kernel swaps and stalls, so there is nothing to catch: the pass is cut BEFORE it is pinned, to the largest that fits, while its buffer (the
+            // startup fit, the same numbers as the check below) would leave less than the 8 GiB margin of RAM. RAM = available + free pool pages + the
+            // buffer the scheduler holds now (freed before the new one is pinned). Each halving re-uploads the experts once more per pass: slower, never stuck.
+            {
+                uint64_t ram = avail + (pool_free << 30) + (backend_cpu ? (uint64_t) ggml_backend_sched_get_buffer_size(sched.get(), backend_cpu) : 0);
+                if (const char * sr = getenv("GGML_SIM_RAM_MB")) { ram = (uint64_t) atoll(sr) << 20; }
+                // 8 GiB (user 2026-10-25; the 4 GiB margin froze the box at 164k cells with 3.2 GiB left: the kernel needs headroom for page cache, other buffers and the OS)
+                // --moe ram-margin-mb=N overrides (e.g. 12288 for a 12 GiB margin)
+                const char * rm = llama_moe_get_opt("ram-margin-mb");
+                const uint64_t ram_margin = rm ? (uint64_t) atoll(rm) << 20 : (uint64_t) 8 << 30;
+                const double room = ram > ram_margin ? (double) (ram - ram_margin) : 0.0;
+                auto need = [&](uint32_t u) { return (double) u * per_tok + g_host_d * (double) n_kv_end + g_host_c; };
+                uint32_t lim = n_ubatch_lim;
+                if (need(lim) > room) {
+                    // the largest pass that fits, not the next power of two down (user 2026-10-25): the buffer is linear in the pass tokens (the startup fit above), so the pass
+                    // that leaves exactly the margin is room less the fixed parts over the bytes per token. The caller cuts a call into equal passes of at most this many tokens
+                    // (32768 tokens: 3 passes of 10944 for a limit of 12000, not 4 of 8192 as halving gave).
+                    const double u_fit = (room - g_host_c - g_host_d * (double) n_kv_end) / per_tok;
+                    lim = std::max<uint32_t>(256, (uint32_t) std::max(0.0, std::min((double) lim, u_fit)) / 32 * 32);
+                }
+                if (lim < n_ubatch_lim) {
+                    char v[64], why[256];
+                    snprintf(v, sizeof v, "%u tokens (cut from %u to fit)", lim, n_ubatch_lim);
+                    snprintf(why, sizeof why, "RAM: a %u-token pass needs %.0f MiB of host buffer at %llu cells, %.0f MiB of RAM is left beside the 8 GiB margin",
+                             n_ubatch_lim, need(n_ubatch_lim) / 1048576.0, (unsigned long long) n_kv_end, room / 1048576.0);
+                    llama_moe_decision_fork("prompt pass", v, why);
+                    LLAMA_LOG_WARN("%s: prompt pass %s: %s\n", __func__, v, why);
+                    n_ubatch_lim = lim;
+                }
+            }
         }
     }
     if (cparams.moe_cache && memory) { llama_moe_cache_pp_cells_fork((uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all); }
     g_decode_n_tokens = n_tokens_all;
-    const uint32_t n_ubatch_call = cparams.moe_cache ? llama_moe_ubadapt_cache_fork(n_tokens_all, llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim), n_ubatch_lim) : llama_moe_ubadapt_next_fork(n_tokens_all, cparams.n_ubatch);
+    // fork: the dense split sizes its ranges against the one-card limit (no card gets more than it, ds_plan); a pass of a call sized pass by pass
+    // (--moe split-pass=1, the loop at the top of decode) runs as ONE pass: the pass planner still runs for its claim of the prompt's KV (kv-tail)
+    if (n_tokens_all >= 64 && cparams.moe_cache && memory && !g_split_sub) { llama_dsplit_note_limit_fork(n_ubatch_lim); }
+    const uint32_t n_ubatch_split = g_split_sub && cparams.moe_cache ? (llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_tokens_all), n_tokens_all) : 0;
+    const uint32_t n_ubatch_call = n_ubatch_split > 0 ? n_ubatch_split : cparams.moe_cache ? llama_moe_ubadapt_cache_fork(n_tokens_all, llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim), n_ubatch_lim) : llama_moe_ubadapt_next_fork(n_tokens_all, n_ubatch_lim);
     if (n_tokens_all > 1) { llama_moe_prompt_begin_fork((uint32_t) n_tokens_all, n_ubatch_call); }
     if (cparams.moe_cache && memory && n_tokens_all >= 64) {   // the mask math, checkable against the host pins in the same log (--moe log=m not needed: one line per call)
         const uint64_t kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
@@ -3416,6 +3784,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     int64_t n_outputs_prev = 0;
     int64_t n_tokens_prev  = 0;
 
+    // the first position of every sequence in this call: a CUDA out-of-memory takes the whole call back (g_oom_tc)
+    std::vector<std::pair<llama_seq_id, llama_pos>> call_pos_min;
+    for (uint32_t sq = 0; sq < cparams.n_seq_max && sq < (uint32_t) LLAMA_MAX_SEQ; ++sq) {
+        const llama_pos p0 = balloc->seq_pos_min((llama_seq_id) sq);
+        if (p0 >= 0) { call_pos_min.emplace_back((llama_seq_id) sq, p0); }
+    }
+
     do {
         const auto & ubatch = mctx->get_ubatch();
 
@@ -3450,6 +3825,50 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 
         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
 
+        // CUDA out-of-memory errors the backend caught (ggml_cuda_oom), also one it got past by itself (a CUDA graph that did not fit is run without
+        // one): the next start leaves room for them
+        static int oom_seen = 0;
+        int oom_dev = -1; size_t oom_bytes = 0; double oom_fit = 0.0;
+        const int  oom_n   = fork_cuda_last_oom(&oom_dev, &oom_bytes, &oom_fit);
+        const bool oom_new = oom_n > oom_seen;
+        if (oom_new) {
+            oom_seen = oom_n;
+            if (oom_dev >= 0) { llama_moe_cache_vram_oom_fork(oom_dev, oom_bytes); }
+        }
+        if (!res && status == GGML_STATUS_ALLOC_FAILED && memory && oom_new) {   // a CUDA out-of-memory (not a graph the scheduler could not place)
+            // the pool could not grow (oom_bytes > 0): the same call in passes of the share of the tokens x cells that fits (the pool's bytes and the card's free ones, at most
+            // 0.9 of it as later temporaries may be bigger, at least a quarter; half where the share is not known); a CUDA graph could not be instantiated after part
+            // of the graph ran: the same call as it was, the graph now runs without a CUDA graph
+            const bool inst = oom_bytes == 0;
+            llama_pos cells = 0;
+            for (uint32_t i = 0; i < ubatch.n_tokens; ++i) { cells = std::max(cells, ubatch.pos[i] + 1); }
+            bool back = inst || ubatch.n_tokens > 256;   // 256 tokens that do not fit: an error (see g_oom_tc)
+            for (size_t k = 0; back && k < call_pos_min.size(); ++k) { back = memory->seq_rm(call_pos_min[k].first, call_pos_min[k].second, -1); }
+            if (back) {
+                if (!inst) {
+                    const double share = oom_fit > 0.0 ? std::min(0.9, std::max(0.25, oom_fit * 0.9)) : 0.5;
+                    const uint64_t tc = (uint64_t) ((double) ubatch.n_tokens * (double) std::max<llama_pos>(cells, 1) * share), prev = g_oom_tc.load();
+                    g_oom_tc = prev ? std::min(prev, tc) : tc;
+                }
+                g_oom_retry = 1;
+                // the failed call is no measurement: the split factors and the balance would time the failure and the retry as one pass, the pass planner
+                // and the prompt counters would count its tokens twice. What the other cards still run of the failed graph ends first; the retry is timed
+                // from its own start (an earlier call not synchronized yet loses its sample: it cannot be told apart from the failure).
+                llama_dsplit_pass_abandon_fork();
+                ggml_backend_sched_synchronize(sched.get());
+                n_queued_tokens    = 0;
+                t_compute_start_us = 0;
+                thrb.last_tokens   = 0;
+                if (inst) {
+                    LLAMA_LOG_WARN("%s: CUDA graph out of VRAM on CUDA%d in a %u-token pass at %d cells: the call is taken back and runs again without that CUDA graph\n",
+                            __func__, oom_dev, ubatch.n_tokens, (int) cells);
+                } else {
+                    LLAMA_LOG_WARN("%s: CUDA out of memory on CUDA%d in a %u-token pass at %d cells: the call is taken back and runs again with at most %llu tokens x cells a pass\n",
+                            __func__, oom_dev, ubatch.n_tokens, (int) cells, (unsigned long long) g_oom_tc.load());
+                }
+                return 1;
+            }
+        }
         if (!res) {
             // the last ubatch failed or was aborted -> remove all positions of that ubatch from the memory module
             llama_pos pos_min[LLAMA_MAX_SEQ];
@@ -4341,6 +4760,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
             }
             if (next < e) {
                 ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + next*expert_size, next*expert_size, (e - next)*expert_size);
+                ggml_backend_sched_upload_add_fork(ggml_backend_get_device(backend), (uint64_t) (e - next)*expert_size);
             }
             e   += n;
             next = e;
@@ -4350,6 +4770,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         const size_t offset  = next*expert_size;
         const size_t padding = last < n_expert - 1 ? std::min<size_t>(expert_size, 512) : 0;
         ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + offset, offset, (last - first + 1)*expert_size + padding);
+        ggml_backend_sched_upload_add_fork(ggml_backend_get_device(backend), (uint64_t) (last - first + 1)*expert_size);
         if (last == n_expert - 1) {
             ggml_backend_tensor_zero_tail_fork(backend, dst);   // fork: the last expert has no neighbour: zeros in the tensor's own row padding (see ggml-backend.cpp)
         }
@@ -6273,7 +6694,8 @@ int32_t llama_decode(
         llama_context * ctx,
           llama_batch   batch) {
     const int64_t t_us = ggml_time_us();
-    const int ret = ctx->decode(batch);
+    int ret = ctx->decode(batch);
+    for (int t = 0; ret == 1 && t < 8 && g_oom_retry.exchange(0); ++t) { ret = ctx->decode(batch); }   // fork: taken back after a CUDA out-of-memory (g_oom_tc)
     if (ret == 0) {
         const double ms = (ggml_time_us() - t_us) / 1000.0;
         if (batch.n_tokens == 1) { llama_moe_token_time_fork(ms); } else { llama_moe_prompt_done_fork((uint32_t) batch.n_tokens, ms); }
@@ -6393,7 +6815,8 @@ int32_t llama_process(llama_context * ctx, llama_process_type type, llama_batch_
         case LLAMA_PROCESS_TYPE_DECODE: {
             // the server's decode path: per-token and per-prompt-call times for GET /moe/stats
             const int64_t t_us = ggml_time_us();
-            const int ret = ctx->decode(*batch);
+            int ret = ctx->decode(*batch);
+            for (int t = 0; ret == 1 && t < 8 && g_oom_retry.exchange(0); ++t) { ret = ctx->decode(*batch); }   // fork: taken back after a CUDA out-of-memory (g_oom_tc)
             if (ret == 0) {
                 const int32_t n = (int32_t) g_decode_n_tokens;
                 const double ms = (ggml_time_us() - t_us) / 1000.0;

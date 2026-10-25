@@ -3,6 +3,10 @@
 #include "../llama-moecache-fork.h"
 #include "llama-memory-recurrent.h"
 
+// fork (llama-graph.cpp), declared here so that no shared header changes: the index in ds_r of the expert card's range (where it sits in token order
+// is ds_plan's choice: the first)
+size_t llama_ds_xr_fork(const std::vector<llm_graph_context::ds_range_fork> & r);
+
 void llama_model_qwen3next::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all, false);
     ml.get_key(LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, hparams.n_ff_shexp, false);
@@ -278,10 +282,10 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
                 ds_skip();
                 ggml_tensor * logits = lg[0], * call = pn[0];
                 for (size_t r = 1; r < NR; ++r) { logits = ggml_concat(ctx0, logits, lg[r], 1); call = ggml_concat(ctx0, call, pn[r], 1); }
-                ds_pin(ds_r.back().b);
+                ds_pin(ds_r[llama_ds_xr_fork(ds_r)].b);
                 moe_ranges.clear();
                 for (size_t r = 0; r < NR; ++r) { moe_ranges.push_back({ ds_r[r].b, ds_r[r].t0, ds_r[r].t1, pn[r], nullptr }); }
-                build_moe_ffn(call, llama_dsplit_mirror_fork(model, model.layers[il].ffn_gate_inp, ds_r.back().dev),
+                build_moe_ffn(call, llama_dsplit_mirror_fork(model, model.layers[il].ffn_gate_inp, ds_r[llama_ds_xr_fork(ds_r)].dev),
                         model.layers[il].ffn_up_exps, model.layers[il].ffn_gate_exps, model.layers[il].ffn_down_exps, nullptr,
                         n_expert, n_expert_used, LLM_FFN_SILU, true, hparams.expert_weights_scale, LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
                         logits, model.layers[il].ffn_gate_up_exps, model.layers[il].ffn_up_exps_s, model.layers[il].ffn_gate_exps_s, model.layers[il].ffn_down_exps_s);

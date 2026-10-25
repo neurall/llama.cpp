@@ -639,9 +639,15 @@ llama_memory_hybrid_idx_context::kpool_state llama_memory_hybrid_idx_context::kp
 
     kpool_state st;
     st.n_pool_real = lay.n_pool_real;
+    const uint32_t kp = std::max<uint32_t>(1, mem->get_kpool());
     if (const uint32_t o = llama_kv_reserve_override_get_fork()) {
-        const uint32_t kp = std::max<uint32_t>(1, mem->get_kpool());
         st.n_pool_real = (o + kp - 1) / kp;
+    } else if (const llama_kv_cache * idx = mem->get_mem_idx()) {
+        // the reserve: the pools of the cells the reserve's KV view holds (get_size_reserve: with the KV in the expert pool one growth step of it), as every other
+        // tensor of the reserved graph. The layout's pool count is the whole context's: GLM 3.0's 1M cells gave 262208 pools, and the lightning indexer's score of a
+        // 16384-token reserve [262208, 16384] f32 was 16 GiB on its own (the reserve failed at 30 GiB, the micro-batch fell to 7520, 2026-10-24). A real pass
+        // scores the pools of the cells in use, and the pass planner sizes each pass from the graphs it measured.
+        st.n_pool_real = std::min(st.n_pool_real, (idx->get_size_reserve() + kp - 1) / kp);
     }
 
     return st;
@@ -797,7 +803,7 @@ void llama_memory_hybrid_idx_context::set_input_kpool(ggml_tensor * pool_cells, 
     GGML_ASSERT(tail_idxs->ne[0] == (int64_t) kpool - 1 && tail_idxs->ne[1] == (int64_t) n_tokens);
     GGML_ASSERT(pool_idxs->ne[0] == (int64_t) kpool && pool_idxs->ne[1] == (int64_t) n_pool);
     GGML_ASSERT(ggml_backend_buffer_is_host(new_pool_idxs->buffer));
-    GGML_ASSERT(new_pool_idxs->ne[0] == (int64_t) kpool && new_pool_idxs->ne[1] == (int64_t) n_new_g);
+    GGML_ASSERT(ggml_nelements(new_pool_idxs) == (int64_t) kpool*n_new_g);
     // the graph always scatters the fresh pooled keys back into the cache, see build_qsa_sel
     GGML_ASSERT(new_pool_rep != nullptr && ggml_backend_buffer_is_host(new_pool_rep->buffer));
     GGML_ASSERT(new_pool_rep->ne[0] == (int64_t) n_new_g);

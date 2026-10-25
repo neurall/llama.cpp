@@ -11,6 +11,10 @@
 #include <stdexcept>
 #include <string>
 
+// fork (llama-graph.cpp), declared here so that no shared header changes: the index in ds_r of the expert card's range (where it sits in token order
+// is ds_plan's choice: the first)
+size_t llama_ds_xr_fork(const std::vector<llm_graph_context::ds_range_fork> & r);
+
 static float dsv4_rope_attn_factor(float freq_scale, float ext_factor) {
     if (ext_factor == 0.0f) {
         return 1.0f;
@@ -687,7 +691,7 @@ ggml_tensor * llama_model_deepseek4::graph::build_top_k_mask(
     GGML_ASSERT(top_k);
 
     if (cparams.fused_top_k_mask) {
-        ggml_tensor * kq_mask_top_k = build_fused_top_k_mask(kq_mask, top_k, nullptr, nullptr, nullptr, il);
+        ggml_tensor * kq_mask_top_k = build_fused_top_k_mask(kq_mask, top_k, nullptr, nullptr, nullptr, nullptr, il);
         cb(kq_mask_top_k, name, il);
 
         return kq_mask_top_k;
@@ -1290,8 +1294,8 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
                     ds_pin(ds_r[r].b);
                 }
                 const auto & layer = model.layers[il];
-                ggml_backend_dev_t dlast = ds_r.back().dev;
-                // router logits per range on its card; the selection runs on the last range's card for all tokens
+                ggml_backend_dev_t dlast = ds_r[llama_ds_xr_fork(ds_r)].dev;
+                // router logits per range on its card; the selection runs on the expert card's range for all tokens
                 ds_skip();
                 ggml_tensor * logits = lg[0], * call = ffn_in[0];
                 for (size_t r = 1; r < NR; ++r) { logits = ggml_concat(ctx0, logits, lg[r], 1); call = ggml_concat(ctx0, call, ffn_in[r], 1); }
@@ -1301,7 +1305,7 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
                     selected_experts = ggml_get_rows(ctx0, llama_dsplit_mirror_fork(model, layer.ffn_gate_tid2eid, dlast), res->t_inp_tokens);
                     exp_probs_b = nullptr;
                 }
-                ds_pin(ds_r.back().b);
+                ds_pin(ds_r[llama_ds_xr_fork(ds_r)].b);
                 moe_ranges.clear();
                 for (size_t r = 0; r < NR; ++r) { moe_ranges.push_back({ ds_r[r].b, ds_r[r].t0, ds_r[r].t1, ffn_in[r], nullptr }); }
                 build_moe_ffn(call, llama_dsplit_mirror_fork(model, layer.ffn_gate_inp, dlast),

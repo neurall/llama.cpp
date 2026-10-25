@@ -33,6 +33,7 @@
 // Test knob: GGML_CUDA_H2D_CAP=<device>:<GB/s> (ggml-cuda.cu) caps one card's upload rate, the probe sees the cap like a real narrow link.
 
 #include "llama-gpu-probe-fork.h"
+#include "llama-moestate-fork.h"
 
 #include "ggml.h"
 #include "ggml-alloc.h"
@@ -129,7 +130,7 @@ double latency_us(ggml_tensor * t, const void * src) {
 // quantised kernels of the backend) against 512 fake tokens, run a few times; the fastest batch of four runs is taken. Result in weight bytes x tokens per second.
 // res_us (optional): the result latency of the card, see llama_gpu_probe_fork_result::res_us: the same weights against ONE token, the activations set
 // from the host and the result read back, every time (64 samples after 4 warm-ups, the median).
-double graph_compute(ggml_backend_dev_t dev, double * res_us = nullptr) {
+double graph_compute(ggml_backend_dev_t dev, double * res_us = nullptr, double * sust = nullptr) {
     ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
     if (!be) { return 0.0; }
     double result = 0.0;
@@ -159,6 +160,25 @@ double graph_compute(ggml_backend_dev_t dev, double * res_us = nullptr) {
                 best_us = std::min(best_us, (double) (ggml_time_us() - t0) / 4.0);
             }
             result = (double) ggml_nbytes(w) * tokens / (best_us / 1e6);
+            if (sust) {   // a 3 s burst: the rate over its last 1.5 s, where a power-capped card has settled on its clocks
+                std::vector<std::pair<int64_t, int>> done;   // (end time us, runs) of every batch of four
+                const int64_t t_start = ggml_time_us();
+                for (;;) {
+                    for (int i = 0; i < 4; ++i) { ggml_backend_graph_compute(be, gf); }
+                    ggml_backend_synchronize(be);
+                    done.push_back({ ggml_time_us(), 4 });
+                    if (done.back().first - t_start >= 3000000) { break; }
+                }
+                const int64_t t_end = done.back().first, t_from = t_end - 1500000;
+                int64_t t_prev = t_start;
+                int runs = 0;
+                int64_t span = 0;
+                for (const auto & d : done) {
+                    if (d.first > t_from) { runs += d.second; span += d.first - std::max(t_prev, t_from); }
+                    t_prev = d.first;
+                }
+                if (runs > 0 && span > 0) { *sust = (double) ggml_nbytes(w) * tokens / ((double) span / 1e6 / (double) runs); }
+            }
             if (res_us) {
                 std::vector<float> in1((size_t) K, 1.0f), out1((size_t) ggml_nelements(y1));
                 std::vector<double> v;
@@ -179,6 +199,14 @@ double graph_compute(ggml_backend_dev_t dev, double * res_us = nullptr) {
 
 }  // namespace
 
+// the state-file section of a card: its PCI id and model name make it unique ("gpu 0000:07:00.0 NVIDIA GeForce RTX 3090"); another card in the slot, or the card
+// in another slot, is another section
+static std::string probe_section(ggml_backend_dev_t dev) {
+    ggml_backend_dev_props p;
+    ggml_backend_dev_get_props(dev, &p);
+    return std::string("gpu ") + (p.device_id ? p.device_id : "?") + " " + (p.name ? p.name : "?");
+}
+
 std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<ggml_backend_dev_t> & gpus, std::vector<std::vector<double>> * conc) {
     std::vector<llama_gpu_probe_fork_result> out(gpus.size());
     // per card, alone: upload, latency, compute
@@ -195,8 +223,25 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
             out[i].lat_us  = latency_us(small, h.ptr);
         }
     }
-    // compute: the portable graph on every card, through the backend's own matmul kernels (see graph_compute); same unit for all cards
-    for (size_t i = 0; i < gpus.size(); ++i) { out[i].compute = graph_compute(gpus[i], &out[i].res_us); }
+    // compute: the portable graph on every card, through the backend's own matmul kernels (see graph_compute); same unit for all cards. Kept per card in the
+    // state file under the card's PCI id and model name (user, 2026-10-23: the dense split's start shares are the cards' speed ratio, known before the first
+    // pass; benchmark only when the card's section is missing or the id changed, so a swapped or upgraded card is measured, an unchanged one never again)
+    for (size_t i = 0; i < gpus.size(); ++i) {
+        const std::string sec = probe_section(gpus[i]);
+        std::string v;
+        double cp = 0.0, cs = 0.0, rs = 0.0;
+        if (moe_state_enabled() && moe_state_get(sec, "probe", v) && atoi(v.c_str()) == 2 && moe_state_get(sec, "compute", v) && (cp = atof(v.c_str())) > 0.0 &&
+            moe_state_get(sec, "compute_sust", v) && (cs = atof(v.c_str())) > 0.0 && moe_state_get(sec, "res_us", v) && (rs = atof(v.c_str())) > 0.0) {
+            out[i].compute = cp; out[i].compute_sust = cs; out[i].res_us = rs;
+            continue;
+        }
+        out[i].compute = graph_compute(gpus[i], &out[i].res_us, &out[i].compute_sust);
+        if (moe_state_enabled() && out[i].compute > 0.0 && out[i].compute_sust > 0.0) {
+            char b1[40], b2[40], b3[40];
+            snprintf(b1, sizeof b1, "%.6g", out[i].compute); snprintf(b2, sizeof b2, "%.6g", out[i].compute_sust); snprintf(b3, sizeof b3, "%.1f", out[i].res_us);
+            moe_state_set(sec, { { "probe", "2" }, { "compute", b1 }, { "compute_sust", b2 }, { "res_us", b3 } });
+        }
+    }
     // every subset of cards uploading at once (and the singles alone): each member's rate = its bytes over its own time after a common start. Cards behind one
     // root complex or the chipset uplink slow each other down; the subset table is what the plan reads to see what a card steals from the others.
     const size_t n = gpus.size();

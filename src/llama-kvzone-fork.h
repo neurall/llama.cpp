@@ -12,34 +12,43 @@ template <class P> static size_t kvz_bmax(const P & ap) {
     return b;
 }
 
-// The gaps between the class zero blocks: the only places a KV zone may lie (a class's zero block is read as zeros by every uncached expert and zeroed again at
-// each release, so a zone over it is overwritten or overwrites). One walk for every question about where the zone fits: they used to carry a copy of this loop
-// each, and a rule fixed in one (MiMo 12k, OLMoE 185 MiB pool, 2026-10-18) was missing in the next. [lo_min, tail_end) cut at each zero block, every start
-// rounded up to `round` (ap.segs lie in ascending order of address).
-template <class P> static std::vector<std::pair<size_t, size_t>> kvz_gaps(const P & ap, size_t lo_min, size_t round) {
-    std::vector<std::pair<size_t, size_t>> out;
-    size_t a = lo_min;
-    auto gap = [&](size_t g0, size_t g1) {
-        g0 = (g0 + round - 1) / round * round;
-        if (g1 > g0) { out.push_back({ g0, g1 }); }
-    };
+// The block edges of the pool: every class is a run of blocks of its own size, the classes back to back. A lend ends on the edge at or after its last byte and
+// the KV zone starts on one (the blocks under each are whole); these two give the edge at or after x and at or before x (x itself past the blocks).
+template <class P> static size_t kvz_block_ceil(const P & ap, size_t x) {
     for (const auto & sg : ap.segs) {
-        const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
-        if (z0 > a) { gap(a, z0); }
-        a = std::max(a, z1);
+        const size_t end = sg.base + (size_t) sg.n * sg.B;
+        if (sg.B > 0 && x > sg.base && x < end) { return sg.base + (x - sg.base + sg.B - 1) / sg.B * sg.B; }
     }
-    gap(a, ap.tail_end);
+    return x;
+}
+template <class P> static size_t kvz_block_floor(const P & ap, size_t x) {
+    for (const auto & sg : ap.segs) {
+        const size_t end = sg.base + (size_t) sg.n * sg.B;
+        if (sg.B > 0 && x > sg.base && x < end) { return sg.base + (x - sg.base) / sg.B * sg.B; }
+    }
+    return x;
+}
+
+// Where a KV zone may lie: [lo_min, tail_end), its start rounded up to `round`, over blocks of any size class (the classes lie back to back, nothing between them:
+// the device tables mark uncached experts -1 and the kernels skip them, so no class keeps a zero block). Until 2026-10-24 each class ended in a zero block the zone
+// had to avoid, which cut the pool into one gap per class: MiMo-V2.6-Flash's 3 GiB sliding-window part fitted none of its 9 classes on the x4 card behind an 11 GiB
+// lend, with 9.5 GiB of the pool behind it. One walk for every question about where the zone fits (a rule fixed in one copy was once missing in the next, MiMo
+// 12k, OLMoE 185 MiB pool, 2026-10-18).
+template <class P> static std::vector<std::pair<size_t, size_t>> kvz_gaps(const P & ap, size_t lo_min, size_t round) {   // round > 1: the start on a block edge
+    std::vector<std::pair<size_t, size_t>> out;
+    const size_t g0 = round > 1 ? kvz_block_ceil(ap, lo_min) : lo_min;
+    if (ap.tail_end > g0) { out.push_back({ g0, ap.tail_end }); }
     return out;
 }
 
-// what the compute alias could lend if the KV zone moved behind the graph: the end of the gap that holds the zone, less the zone (fixed part and max(cells laid
-// out, min_cells) rows), rounded down to whole largest blocks. Not "the end of the pool less the zone" (MiMo 12k, 2026-10-18: the fixed part fitted no gap behind it).
+// what the compute alias could lend if the KV zone moved behind the graph: the end of the pool less the zone (fixed part and max(cells laid out, min_cells) rows),
+// down to the block edge the zone then starts on: the largest lend end (a lend ends on a block edge, poolx_lend_round).
 template <class P> static size_t kvz_lend_potential(const P & ap, size_t min_cells) {
     if (ap.kvt.empty()) { return ap.span; }
     const size_t bmax = std::max<size_t>(1, kvz_bmax(ap)), zone = ap.kv_fixed + std::max<size_t>(ap.kv_h, min_cells) * ap.kv_row;
     size_t best = 0;
-    for (const auto & g : kvz_gaps(ap, 0, bmax)) {   // gap starts rounded up to whole blocks, as the placement rounds them: a gap that holds the zone only unaligned promised a lend the layout could not give (fuzz, 2026-10-18)
-        if (g.second >= g.first + zone) { best = std::max(best, (g.second - zone) / bmax * bmax); }
+    for (const auto & g : kvz_gaps(ap, 0, bmax)) {
+        if (g.second >= g.first + zone) { best = std::max(best, kvz_block_floor(ap, g.second - zone)); }
     }
     return best;
 }
@@ -58,7 +67,7 @@ template <class P> static size_t kvz_gap_place(const P & ap, size_t bmax, size_t
     size_t best = (size_t) -1, bestd = (size_t) -1;
     for (const auto & g : kvz_gaps(ap, lo_min, bmax)) {
         if (g.second < g.first + size) { continue; }
-        const size_t s = std::min(std::max(want, g.first), (g.second - size) / bmax * bmax);
+        const size_t s = std::min(std::max(kvz_block_ceil(ap, want), g.first), kvz_block_floor(ap, g.second - size));
         if (s < g.first) { continue; }
         const size_t d = s > want ? s - want : want - s;
         if (d < bestd) { bestd = d; best = s; }
@@ -73,18 +82,18 @@ template <class P> static const char * kvz_bad(const P & ap, size_t lend_end) {
     if (hi > ap.tail_end)   { return "zone ends past the pool"; }
     if (lo < lend_end)      { return "zone starts inside the lend"; }
     for (const auto & g : kvz_gaps(ap, 0, 1)) { if (lo >= g.first && hi <= g.second) { return nullptr; } }
-    return "zone is not inside one gap between the class zero blocks";
+    return "zone is not inside the expert blocks";
 }
 
-// The largest prompt pass (tokens) whose graph still leaves the zone for the whole prompt: the lend is a + b * tokens (graph and scratch, rounded up to whole blocks,
-// one block kept for the rounding), the zone is the prompt's rows rounded up to the attention's pad, in a gap; 64 is the least pass. See pp_cap_to_pool.
+// The largest prompt pass (tokens) whose graph still leaves the zone for the whole prompt: the lend is mirror_b (the dense split's copies) + a + b * tokens (graph and
+// scratch), and it ends on the block edge at or after that (poolx_lend_round); the zone is the prompt's rows rounded up to the attention's pad. The potential is a block
+// edge, so a lend ends at or before it exactly when its bytes do: no extra blocks. 64 is the least pass. See pp_cap_to_pool.
 template <class P> static unsigned kvz_pass_cap(const P & ap, size_t n_prompt, unsigned ub, double a, double b, size_t pad, size_t mirror_b) {
     if (b <= 0.0) { return ub; }
-    const size_t bmax = std::max<size_t>(1, kvz_bmax(ap));
     const size_t rows = (std::max<size_t>(n_prompt, ap.kv_h) + pad - 1) / pad * pad;
-    const double room = (double) kvz_lend_potential(ap, rows) - (double) (2 * bmax + mirror_b);
-    if (room <= (double) bmax + a) { return std::min<unsigned>(ub, 64); }
-    const double u = (room - (double) bmax - a) / b;
+    const double room = (double) kvz_lend_potential(ap, rows) - (double) mirror_b;
+    if (room <= a) { return std::min<unsigned>(ub, 64); }
+    const double u = (room - a) / b;
     const unsigned cap = std::max<unsigned>(64, (unsigned) std::min(u, 4294967000.0) / 32 * 32);
     return std::min(ub, cap);
 }

@@ -352,6 +352,13 @@ void llama_moe_set_opt(const char * key, const char * value) {
     // ratio of a big one in scheduler tests (OLMoE standing in for GLM). The backend reads GGML_CUDA_MMID_REPEAT / GGML_CUDA_DENSE_REPEAT at its first prompt graph.
     if (value && strcmp(key, "sim-moe-repeat") == 0)   { setenv("GGML_CUDA_MMID_REPEAT", value, 1); }
     if (value && strcmp(key, "sim-dense-repeat") == 0) { setenv("GGML_CUDA_DENSE_REPEAT", value, 1); }
+    // pass-stats=1 (off by default; debugging and measurement runs): every split pass's time per card by cause and its link bytes, measured with extra stream
+    // stamps and counters in the scheduler (GGML_SCHED_PASS_STATS, read at the first prompt graph); run.py turns it on unless -ns
+    if (value && strcmp(key, "pass-stats") == 0)       { setenv("GGML_SCHED_PASS_STATS", value, 1); }
+    // pass-trace=N (debugging, with pass-stats=1): the split-by-split timeline of the first N big passes (GGML_SCHED_PASS_TRACE): are the cards side by side or in turn
+    if (value && strcmp(key, "pass-trace") == 0)       { setenv("GGML_SCHED_PASS_TRACE", value, 1); }
+    if (value && strcmp(key, "xsplit-dense") == 0)     { setenv("GGML_SCHED_XSPLIT_DENSE", value, 1); }   // research: a node reading another card's result starts a new split in dense splits too
+    if (value && strcmp(key, "pass-trace-ops") == 0)   { setenv("GGML_SCHED_PASS_TRACE_OPS", value, 1); }   // with pass-trace: every split's ops under its line
 }
 
 const char * llama_moe_get_opt(const char * key) {

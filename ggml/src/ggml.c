@@ -590,9 +590,6 @@ static BOOL CALLBACK ggml_time_init_once(PINIT_ONCE once, PVOID param, PVOID *ct
     QueryPerformanceFrequency(&t);
     timer_freq = t.QuadPart;
 
-    // The multiplication by 1000 or 1000000 below can cause an overflow if timer_freq
-    // and the uptime is high enough.
-    // We subtract the program start time to reduce the likelihood of that happening.
     QueryPerformanceCounter(&t);
     timer_start = t.QuadPart;
 
@@ -605,12 +602,12 @@ void ggml_time_init(void) {
 int64_t ggml_time_ms(void) {
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
-    return ((t.QuadPart-timer_start) * 1000) / timer_freq;
+    return (int64_t) (((double) (t.QuadPart - timer_start) / timer_freq) * 1000);
 }
 int64_t ggml_time_us(void) {
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
-    return ((t.QuadPart-timer_start) * 1000000) / timer_freq;
+    return (int64_t) (((double) (t.QuadPart - timer_start) / timer_freq) * 1000000);
 }
 #else
 void ggml_time_init(void) {}
@@ -3395,6 +3392,36 @@ bool ggml_prec_set_src(
     return true;
 }
 
+enum ggml_prec ggml_prec_get_acc(
+        const struct ggml_tensor * a) {
+    switch (a->op) {
+        case GGML_OP_MUL_MAT:
+        case GGML_OP_MUL_MAT_ID:
+            return (enum ggml_prec) ggml_get_op_params_i32(a, 0);
+        case GGML_OP_FLASH_ATTN_EXT:
+            return (enum ggml_prec) ggml_get_op_params_i32(a, 3);
+        default:
+            return GGML_PREC_UNDEFINED;
+    };
+}
+
+enum ggml_prec ggml_prec_get_src(
+        const struct ggml_tensor * a,
+        int                        idx) {
+    GGML_ASSERT(idx >= 0 && idx < GGML_MAX_SRC);
+
+    switch (a->op) {
+        case GGML_OP_MUL_MAT:
+        case GGML_OP_MUL_MAT_ID:
+            if (idx != 1) {
+                return GGML_PREC_UNDEFINED;
+            }
+            return (enum ggml_prec) ggml_get_op_params_i32(a, 2 + idx);
+        default:
+            return GGML_PREC_UNDEFINED;
+    };
+}
+
 // ggml_mul_mat
 
 static inline bool ggml_can_mul_mat(const struct ggml_tensor * t0, const struct ggml_tensor * t1) {
@@ -3455,6 +3482,8 @@ void ggml_mul_mat_set_hint(
     in b, n_expert_used can be broadcasted to match the n_expert_used of ids
 
     c ~= as[:,:,i] @ b[:,i%r,t], i = ids[e,t] for all e,t in ids
+
+    an id of -1 skips the slot: no matrix is selected, c[:,e,t] is set to zero
 */
 struct ggml_tensor * ggml_mul_mat_id(
         struct ggml_context * ctx,
@@ -5624,6 +5653,15 @@ enum ggml_prec ggml_flash_attn_ext_get_prec(
     const int32_t prec_i32 = ggml_get_op_params_i32(a, 3);
 
     return (enum ggml_prec) prec_i32;
+}
+
+void ggml_flash_attn_ext_set_sparse_min(
+        struct ggml_tensor * a,
+        int32_t              n_kv_min) {
+    GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
+    GGML_ASSERT(n_kv_min >= 0);
+
+    ggml_set_op_params_i32(a, 5, n_kv_min);
 }
 
 void ggml_flash_attn_ext_set_n_kv_max(

@@ -84,6 +84,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <unordered_set>
 #include <chrono>
 #include <charconv>
 #include <cinttypes>
@@ -486,6 +487,32 @@ const ggml_cuda_device_info & ggml_cuda_info() {
 
 // #define DEBUG_CUDA_MALLOC
 
+// fork (user 2026-10-25: "we don't want an out-of-memory crash, we want try/catch recovery where it happens, ideally prevented"): a CUDA out-of-memory
+// while a graph is evaluated -- the memory pool growing for an op's temporaries, a CUDA graph being instantiated -- is thrown here, not aborted.
+// ggml_backend_cuda_graph_compute catches it and abandons that graph (open capture ended and dropped, streams synchronized, cached CUDA graph executables
+// freed). A CUDA graph that did not fit before any of the graph ran: the graph runs at once without one. Otherwise it returns GGML_STATUS_ALLOC_FAILED
+// and llama_context::decode takes the failed call back and runs it again (with the share of the pass that fits after a pool out-of-memory). Before, CUDA_CHECK
+// aborted the process: the server restarted and the request was lost (MiMo 200k prompt at 186k cells: cuMemCreate of the pool on CUDA1, 82 MiB free beside
+// the expert pool; MiMo with mmap weights: cudaGraphInstantiate on its third 128-token call).
+struct ggml_cuda_oom {
+    int          device;
+    size_t       bytes;   // what was asked for, 0 = not known (a CUDA graph's instantiation)
+    const char * where;
+    double       fit = 0; // the share of the pass's pool temporaries that fits (ggml_cuda_oom_fit), 0 = not known
+};
+// The pool holds `have` bytes, the allocation that failed asked for `ask` more, and `free` bytes of the card are left: the pass needs at least have + ask and can have
+// have + free, so about that share of its tokens x cells fits (llama_context::decode cuts the retried pass to it, less a safety, instead of halving it).
+static double ggml_cuda_oom_fit(size_t have, size_t ask) {
+    size_t free_b = 0, total_b = 0;
+    (void) cudaMemGetInfo(&free_b, &total_b);
+    (void) cudaGetLastError();
+    return (double) (have + free_b) / (double) std::max<size_t>(1, have + ask);
+}
+static ggml_cuda_oom    g_cuda_last_oom  = { -1, 0, "", 0.0 };   // the last one caught, for libllama (ggml_backend_cuda_last_oom_fork)
+static std::atomic<int> g_cuda_oom_count { 0 };
+static thread_local int g_cuda_chunks_run = 0;   // CUDA graph chunks of the graph being computed that were launched (they ran, or run now)
+static thread_local const ggml_tensor * g_cuda_oom_node = nullptr;   // the node being computed (or captured) now
+
 // buffer pool for cuda (legacy)
 struct ggml_cuda_pool_leg : public ggml_cuda_pool {
     static const int MAX_BUFFERS = 256;
@@ -528,7 +555,7 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
 #ifdef USE_CUDA_GRAPH
         int n_captured = 0;
         for (const auto & [key, graph] : ctx.cuda_graphs) {
-            n_captured += graph->instance != nullptr;
+            n_captured += graph->instances.size();
         }
         if (n_captured > 0) {
             GGML_LOG_DEBUG(GGML_CUDA_NAME " pool[%d]: memory freed, %d captured CUDA graphs must be captured again\n", device, n_captured);
@@ -592,6 +619,10 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
             if (err == cudaSuccess) {
                 GGML_LOG_DEBUG(GGML_CUDA_NAME " pool[%d]: retry succeeded\n", device);
             }
+        }
+        if (err == cudaErrorMemoryAllocation) {   // fork: still no room after the flush: caught by ggml_backend_cuda_graph_compute (ggml_cuda_oom)
+            (void) cudaGetLastError();
+            throw ggml_cuda_oom{device, look_ahead_size, "memory pool", ggml_cuda_oom_fit(pool_size, look_ahead_size)};
         }
         CUDA_CHECK(err);
         *actual_size = look_ahead_size;
@@ -675,7 +706,13 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
             prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
             prop.location.id = physical_device;
             CUmemGenericAllocationHandle handle;
-            CU_CHECK(cuMemCreate(&handle, reserve_size, &prop, 0));
+            {
+                const CUresult cr = cuMemCreate(&handle, reserve_size, &prop, 0);
+                if (cr == CUDA_ERROR_OUT_OF_MEMORY) {   // fork: caught by ggml_backend_cuda_graph_compute (ggml_cuda_oom); the pool is unchanged
+                    throw ggml_cuda_oom{device, reserve_size, "memory pool", ggml_cuda_oom_fit(pool_size, reserve_size)};
+                }
+                CU_CHECK(cr);
+            }
 
             // reserve virtual address space (if not already reserved)
             if (pool_addr == 0) {
@@ -3456,6 +3493,7 @@ static bool ggml_cuda_xstage_zc_on() {
     return on;
 }
 static void ggml_cuda_xstage_read(void * dst, const void * src_dev, size_t n, cudaStream_t stream) {
+    if (n == 0) return;   // a card with no tokens in this pass (--moe dense-split=1 on a prompt the first card takes whole): zero bytes, and a grid of 0 blocks is "invalid argument"
     const int threads = 256;
     if ((((uintptr_t) dst | (uintptr_t) src_dev) & 15) == 0 && n >= 16) {
         const size_t n16 = n / 16;
@@ -3783,16 +3821,14 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
     return res;
 }
 
-static void ggml_cuda_graph_update_executable(ggml_backend_cuda_context * cuda_ctx, const void * graph_key) {
-    ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
-
+static void ggml_cuda_graph_update_executable(cudaGraphExec_t & instance, cudaGraph_t cuda_graph) {
 #if CUDART_VERSION >= 12000
     cudaGraphExecUpdateResultInfo result_info;
-    cudaError_t stat = cudaGraphExecUpdate(graph->instance, graph->graph, &result_info);
+    cudaError_t stat = cudaGraphExecUpdate(instance, cuda_graph, &result_info);
 #else
     cudaGraphNode_t errorNode;
     cudaGraphExecUpdateResult result_info;
-    cudaError_t stat = cudaGraphExecUpdate(graph->instance, graph->graph, &errorNode, &result_info);
+    cudaError_t stat = cudaGraphExecUpdate(instance, cuda_graph, &errorNode, &result_info);
 #endif // CUDART_VERSION >= 12000
 
     if (stat == cudaErrorGraphExecUpdateFailure) {
@@ -3803,12 +3839,57 @@ static void ggml_cuda_graph_update_executable(ggml_backend_cuda_context * cuda_c
         // The pre-existing graph exec cannot be updated due to violated constraints
         // so instead clear error and re-instantiate
         (void)cudaGetLastError();
-        CUDA_CHECK(cudaGraphExecDestroy(graph->instance));
-        graph->instance = nullptr;
-        CUDA_CHECK(cudaGraphInstantiate(&graph->instance, graph->graph, NULL, NULL, 0));
+        CUDA_CHECK(cudaGraphExecDestroy(instance));
+        instance = nullptr;
+        const cudaError_t ie = cudaGraphInstantiate(&instance, cuda_graph, nullptr, nullptr, 0);
+        if (ie == cudaErrorMemoryAllocation) {   // fork: see ggml_cuda_oom
+            (void) cudaGetLastError();
+            instance = nullptr;
+            int dev = 0; (void) cudaGetDevice(&dev);
+            throw ggml_cuda_oom{dev, 0, "CUDA graph instantiation"};
+        }
+        CUDA_CHECK(ie);
     } else {
         GGML_ASSERT(stat == cudaSuccess);
     }
+}
+
+// number of ggml nodes per CUDA graph chunk, 0 captures the whole ggml graph as one CUDA graph
+static int ggml_cuda_graph_chunk_size() {
+    static const int chunk_size = [] {
+        const char * env = getenv("GGML_CUDA_GRAPH_CHUNK_SIZE");
+        return env != nullptr ? atoi(env) : 512;
+    }();
+    return chunk_size;
+}
+
+// end the capture of chunk `idx`, update or create its executable and launch it
+static void ggml_cuda_graph_launch_chunk(ggml_backend_cuda_context * cuda_ctx, ggml_cuda_graph * graph, size_t idx) {
+    cudaGraph_t cuda_graph = nullptr;
+    CUDA_CHECK(cudaStreamEndCapture(cuda_ctx->stream(), &cuda_graph));
+
+    try {
+        if (idx < graph->instances.size()) {
+            ggml_cuda_graph_update_executable(graph->instances[idx], cuda_graph);
+        } else {
+            GGML_ASSERT(idx == graph->instances.size());
+            graph->instances.emplace_back(nullptr);
+            const cudaError_t ie = cudaGraphInstantiate(&graph->instances[idx], cuda_graph, nullptr, nullptr, 0);
+            if (ie == cudaErrorMemoryAllocation) {   // fork: see ggml_cuda_oom
+                (void) cudaGetLastError();
+                graph->instances.pop_back();
+                throw ggml_cuda_oom{cuda_ctx->device, 0, "CUDA graph instantiation"};
+            }
+            CUDA_CHECK(ie);
+        }
+    } catch (const ggml_cuda_oom &) {
+        (void) cudaGraphDestroy(cuda_graph);   // the captured graph is not run: dropped, then the error goes on to ggml_backend_cuda_graph_compute
+        throw;
+    }
+    CUDA_CHECK(cudaGraphDestroy(cuda_graph));
+
+    CUDA_CHECK(cudaGraphLaunch(graph->instances[idx], cuda_ctx->stream()));
+    g_cuda_chunks_run++;   // fork: part of this graph has run (ggml_backend_cuda_graph_compute: a later out-of-memory cannot just run it again here)
 }
 #endif // USE_CUDA_GRAPH
 
@@ -5664,6 +5745,13 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
     ggml_cuda_concurrent_event * concurrent_event           = nullptr;
     bool                         should_launch_concurrent_events = false;
 
+#ifdef USE_CUDA_GRAPH
+    ggml_cuda_graph * graph      = use_cuda_graph ? cuda_ctx->cuda_graph(graph_key) : nullptr;
+    const int         chunk_size = ggml_cuda_graph_chunk_size();
+    int               chunk_end  = chunk_size;
+    size_t            n_chunks   = 0;
+#endif // USE_CUDA_GRAPH
+
     const auto try_launch_concurrent_event = [&](const ggml_tensor * node) {
         if (stream_ctx.concurrent_events.find(node) != stream_ctx.concurrent_events.end()) {
             concurrent_event = &stream_ctx.concurrent_events[node];
@@ -5753,6 +5841,16 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
 
             for (int i = 0; i < cgraph->n_nodes; i++) {
                 ggml_tensor * node = cgraph->nodes[i];
+                g_cuda_oom_node = node;   // fork: the op an out-of-memory came from (ggml_cuda_oom_report)
+#ifdef USE_CUDA_GRAPH
+                // fused nodes are skipped together, so a cut never splits a fusion
+                // a concurrent region must join before its capture can end
+                if (use_cuda_graph && chunk_size > 0 && i >= chunk_end && !is_concurrent_event_active) {
+                    ggml_cuda_graph_launch_chunk(cuda_ctx, graph, n_chunks++);
+                    CUDA_CHECK(cudaStreamBeginCapture(cuda_ctx->stream(), cudaStreamCaptureModeRelaxed));
+                    chunk_end = i + chunk_size;
+                }
+#endif // USE_CUDA_GRAPH
                 if (is_concurrent_event_active) {
                     GGML_ASSERT(concurrent_event);
 
@@ -5839,14 +5937,14 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
         }
 
 #ifdef USE_CUDA_GRAPH
-        ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
         if (use_cuda_graph && cuda_graph_update_required) { // End CUDA graph capture
-            if (graph->graph != nullptr) {
-                CUDA_CHECK(cudaGraphDestroy(graph->graph));
-                graph->graph = nullptr;
-            }
+            ggml_cuda_graph_launch_chunk(cuda_ctx, graph, n_chunks++);
 
-            CUDA_CHECK(cudaStreamEndCapture(cuda_ctx->stream(), &graph->graph));
+            // drop the chunks left over from a longer graph
+            for (size_t i = n_chunks; i < graph->instances.size(); ++i) {
+                CUDA_CHECK(cudaGraphExecDestroy(graph->instances[i]));
+            }
+            graph->instances.resize(n_chunks);
             graph_evaluated_or_captured = true; // CUDA graph has been captured
 
             std::lock_guard<std::mutex> lock(ggml_cuda_lock);
@@ -5858,16 +5956,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
         }
     }
 
-    if (use_cuda_graph) {
-        ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
-        if (graph->instance == nullptr) { // Create executable graph from captured graph.
-            CUDA_CHECK(cudaGraphInstantiate(&graph->instance, graph->graph, NULL, NULL, 0));
+    if (use_cuda_graph && !cuda_graph_update_required) {
+        // the chunks were launched during capture, otherwise launch them here
+        for (cudaGraphExec_t instance : graph->instances) {
+            CUDA_CHECK(cudaGraphLaunch(instance, cuda_ctx->stream()));
         }
-        if (cuda_graph_update_required) { // Update graph executable
-            ggml_cuda_graph_update_executable(cuda_ctx, graph_key);
-        }
-        // Launch graph
-        CUDA_CHECK(cudaGraphLaunch(graph->instance, cuda_ctx->stream()));
 #else
         GGML_UNUSED(graph_key);
         graph_evaluated_or_captured = true;
@@ -5879,7 +5972,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
 static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, const void * graph_key) {
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
 
-    if (graph->graph == nullptr) {
+    if (graph->instances.empty()) {
         if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_VOLTA) {
             if (!graph->disable_due_to_gpu_arch && ggml_cuda_graph_debug_enabled()) {
                 GGML_LOG_DEBUG("%s: disabling CUDA graphs due to GPU architecture\n", __func__);
@@ -5891,6 +5984,86 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
     return graph->is_enabled();
 }
 #endif // USE_CUDA_GRAPH
+
+// graphs whose CUDA graph could not be instantiated for lack of VRAM: run without one from then on (keyed like the CUDA graphs, by the graph's first node)
+static std::mutex                      g_cuda_graph_oom_mtx;
+static std::unordered_set<const void *> g_cuda_graph_oom_keys;
+static bool ggml_cuda_graph_oom_disabled(const void * key) {
+    std::lock_guard<std::mutex> lk(g_cuda_graph_oom_mtx);
+    return g_cuda_graph_oom_keys.count(key) != 0;
+}
+
+// fork: the catch of a CUDA out-of-memory (ggml_cuda_oom): leaves the context as if the graph had not been run
+static void ggml_cuda_oom_reset(ggml_backend_cuda_context * cuda_ctx, const ggml_cuda_oom & e, bool capture_counted, const void * graph_key) {
+    const int dev = cuda_ctx->device;
+    ggml_cuda_set_device(dev);
+    // an op threw in the middle of a capture: end every open capture on this context's streams and drop what was captured
+    for (int i = 0; i < GGML_CUDA_MAX_STREAMS; ++i) {
+        cudaStream_t st = cuda_ctx->streams[dev][i];
+        if (st == nullptr) { continue; }
+        cudaStreamCaptureStatus cs = cudaStreamCaptureStatusNone;
+        if (cudaStreamIsCapturing(st, &cs) == cudaSuccess && cs != cudaStreamCaptureStatusNone) {
+            cudaGraph_t g = nullptr;
+            (void) cudaStreamEndCapture(st, &g);
+            if (g != nullptr) { (void) cudaGraphDestroy(g); }
+        }
+    }
+    (void) cudaGetLastError();
+    cuda_ctx->curr_stream_no = 0;
+    // what was launched before the failure finishes first (its pool memory is given back as the exception unwinds, the next call may reuse it)
+    for (int i = 0; i < GGML_CUDA_MAX_STREAMS; ++i) {
+        if (cuda_ctx->streams[dev][i] != nullptr) { (void) cudaStreamSynchronize(cuda_ctx->streams[dev][i]); }
+    }
+    (void) cudaGetLastError();
+#ifdef USE_CUDA_GRAPH
+    if (capture_counted) {   // the capture's hold on the lock other contexts wait on (taken in ggml_backend_cuda_graph_compute, given back after the last chunk)
+        std::lock_guard<std::mutex> lock(ggml_cuda_lock);
+        if (ggml_cuda_lock_counter.fetch_sub(1, std::memory_order_relaxed) == 1) {
+            ggml_cuda_lock_cv.notify_all();
+        }
+    }
+    // the executables of every cached CUDA graph hold device memory: dropped, each graph warms up and is captured again when it is next used
+    for (auto & kv : cuda_ctx->cuda_graphs) {
+        for (cudaGraphExec_t inst : kv.second->instances) {
+            if (inst != nullptr) { (void) cudaGraphExecDestroy(inst); }
+        }
+        kv.second->instances.clear();
+        kv.second->warmup_complete = false;
+    }
+    if (e.bytes == 0) {   // the CUDA graph of this graph could not be instantiated: this graph runs without one
+        std::lock_guard<std::mutex> lk(g_cuda_graph_oom_mtx);
+        g_cuda_graph_oom_keys.insert(graph_key);
+    }
+#else
+    GGML_UNUSED(e);
+    GGML_UNUSED(capture_counted);
+    GGML_UNUSED(graph_key);
+#endif
+    (void) cudaGetLastError();
+}
+
+// the error goes to the caller: llama_context::decode takes the call back and runs it again (smaller after a pool out-of-memory)
+static enum ggml_status ggml_cuda_oom_report(ggml_backend_cuda_context * cuda_ctx, const ggml_cuda_oom & e) {
+    g_cuda_last_oom = e;
+    g_cuda_oom_count.fetch_add(1);
+    // the op that asked (its result's shape and its first two inputs'): what a prediction of the pass's temporaries has to cover
+    char at[256] = "";
+    if (const ggml_tensor * t = g_cuda_oom_node) {
+        auto sh = [](const ggml_tensor * x) { return x ? std::to_string(x->ne[0]) + "x" + std::to_string(x->ne[1]) + "x" + std::to_string(x->ne[2]) + "x" + std::to_string(x->ne[3]) + " " + ggml_type_name(x->type) : std::string("-"); };
+        snprintf(at, sizeof at, " at %s '%s' %s <- %s, %s", ggml_op_desc(t), t->name, sh(t).c_str(), sh(t->src[0]).c_str(), sh(t->src[1]).c_str());
+    }
+    GGML_LOG_WARN("%s: CUDA out of memory on device %d (%s%s)%s: the graph was not run, the caller runs it again\n", __func__, cuda_ctx->device, e.where,
+                  e.bytes ? (", " + std::to_string(e.bytes >> 20) + " MiB more asked for").c_str() : "", at);
+    return GGML_STATUS_ALLOC_FAILED;
+}
+
+// for libllama: the number of out-of-memory errors caught so far and the last one's device and size (ggml_backend_reg_get_proc_address)
+static int ggml_backend_cuda_last_oom_fork(int * device, size_t * bytes, double * fit) {
+    if (device) { *device = g_cuda_last_oom.device; }
+    if (bytes)  { *bytes  = g_cuda_last_oom.bytes; }
+    if (fit)    { *fit    = g_cuda_last_oom.fit; }
+    return g_cuda_oom_count.load();
+}
 
 static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
@@ -5907,7 +6080,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     ggml_cuda_graph_set_enabled(cuda_ctx, graph_key);
 
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
-    if (graph->is_enabled()) {
+    if (graph->is_enabled() && !ggml_cuda_graph_oom_disabled(graph_key)) {   // fork: not one whose instantiation ran out of VRAM (ggml_cuda_oom_recover)
         const bool graph_compatible = ggml_cuda_graph_check_compability(cgraph);
         if (graph_compatible) {
             const bool properties_changed = ggml_cuda_graph_update_required(cuda_ctx, cgraph);
@@ -5933,7 +6106,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
                     }
                 } else {
                     use_cuda_graph = true;
-                    cuda_graph_update_required = graph->instance == nullptr;
+                    cuda_graph_update_required = graph->instances.empty();
                 }
             }
         }
@@ -5950,7 +6123,28 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
         CUDA_CHECK(cudaStreamBeginCapture(cuda_ctx->stream(), cudaStreamCaptureModeRelaxed));
     }
 
-    ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
+    g_cuda_chunks_run = 0;
+    g_cuda_oom_node   = nullptr;
+    try {
+        ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
+    } catch (const ggml_cuda_oom & e) {
+        ggml_cuda_oom_reset(cuda_ctx, e, use_cuda_graph && cuda_graph_update_required, graph_key);
+        if (e.bytes != 0 || g_cuda_chunks_run > 0) {
+            return ggml_cuda_oom_report(cuda_ctx, e);
+        }
+        // Only the CUDA graph did not fit and nothing of this graph has run yet (its kernels were captured, not launched): it runs here and now without
+        // one, since a direct evaluation needs no executable, and the caller never sees the error (the MiMo case above: a 128-token startup call). A
+        // chunk that already ran cannot be run twice (models with a recurrent state update it in place): then the caller takes its call back instead.
+        GGML_LOG_WARN("%s: CUDA graph instantiation ran out of VRAM on device %d: this graph runs without a CUDA graph from now on\n", __func__, cuda_ctx->device);
+        g_cuda_last_oom = e;   // counted all the same: libllama stores the VRAM need for the next start (llama_moe_cache_vram_oom_fork)
+        g_cuda_oom_count.fetch_add(1);
+        try {
+            ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, false, false, graph_key);
+        } catch (const ggml_cuda_oom & e2) {
+            ggml_cuda_oom_reset(cuda_ctx, e2, false, graph_key);
+            return ggml_cuda_oom_report(cuda_ctx, e2);
+        }
+    }
 
     return GGML_STATUS_SUCCESS;
 }
@@ -7320,6 +7514,9 @@ static void ggml_backend_cuda_thread_sync_fork() {
 
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
+    if (strcmp(name, "ggml_backend_cuda_last_oom_fork") == 0) {
+        return (void *)ggml_backend_cuda_last_oom_fork;
+    }
     if (strcmp(name, "ggml_backend_cuda_nvtx_push_fork") == 0) {
         return (void *)ggml_backend_cuda_nvtx_push_fork;
     }

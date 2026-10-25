@@ -2,7 +2,7 @@
 // random pools, many threads and a shadow memory, with no GPU and no model. llama-moecache-fork.cpp includes this and calls these (it keeps no second copy of any rule).
 //   block sizing        poolx_block_class     : bytes of one expert block, slice offsets, the read-past guard
 //   lend granularity    poolx_lend_round      : where a lend of n bytes really ends (whole blocks of every class it overlaps)
-//                       poolx_lend_blocks     : blocks of one class a lend takes (never more than the class has; flags the zero block)
+//                       poolx_lend_blocks     : blocks of one class a lend takes (never more than the class has)
 //   owner ledger        poolx_lend / poolx_release / poolx_zone_take / poolx_zone_give / poolx_claim_free: the block owner table + free stack
 //                       owner: >= 0 layer, -1 free, -2 lent to a graph, -3 under the KV zone
 //   region map          poolx_regions / poolx_gate_kind : where each region lies now, and the gate every expert write passes
@@ -46,22 +46,20 @@ static inline poolx_block poolx_block_class(const poolx_slice s[3]) {
 }
 
 // ---- lend granularity -------------------------------------------------------------------------------------------------------------------------
-// where a lend of `bytes` from the start of the buffer really ends: it takes whole blocks of every size class its range overlaps (the classes are stacked in the buffer, each
-// with its own block size), so the end is the furthest of base + ceil((bytes - base) / B) * B over those classes. Rounding by the LARGEST block size is wrong when a smaller-
-// block class sits at the start (MiMo: class 0 has 9.2 MB blocks, the largest class 12.6 MB sits at the end: a 10.8 MB lend ended at 18.3 MB, not 12.6 MB)
+// where a lend of `bytes` from the start of the buffer really ends: at the end of the block it ends in, in the class that block belongs to (the classes lie back to
+// back, each with its own block size; the ones before it are covered whole); a lend that ends on a block edge or past the blocks ends where it ends. Every edge of
+// the pool layout (the lend's end, the KV zone's start) uses this rule. Rounding by the LARGEST block size is wrong when a smaller-block class sits at the start
+// (MiMo: class 0 has 9.2 MB blocks, the largest class 12.6 MB sits at the end: a 10.8 MB lend ended at 18.3 MB, not 12.6 MB)
 template <class P> static size_t poolx_lend_round(const P & ap, size_t bytes) {
-    size_t end = bytes;
     for (const auto & sg : ap.segs) {
-        if (sg.base >= bytes || sg.B == 0) { continue; }
-        end = std::max(end, (size_t) sg.base + (bytes - sg.base + sg.B - 1) / sg.B * sg.B);
+        const size_t end = sg.base + (size_t) sg.n * sg.B;
+        if (sg.B > 0 && bytes > sg.base && bytes < end) { return sg.base + (bytes - sg.base + sg.B - 1) / sg.B * sg.B; }
     }
-    return end;
+    return bytes;
 }
-// the blocks of one class a lend of need_b bytes covers (never more than the class's n expert blocks: the class's zero block is no lendable block), and whether the range
-// reaches the zero block (it must be zeroed again when the lend leaves it)
-template <class S> static int32_t poolx_lend_blocks(const S & sg, size_t need_b, bool * reaches_zero) {
+// the blocks of one class a lend of need_b bytes covers (never more than the class's n blocks: past them lies the next class)
+template <class S> static int32_t poolx_lend_blocks(const S & sg, size_t need_b) {
     const size_t cov = need_b > sg.base ? need_b - sg.base : 0;
-    if (reaches_zero && cov > (size_t) sg.n * sg.B) { *reaches_zero = true; }
     return sg.B == 0 ? 0 : (int32_t) std::min<size_t>((size_t) sg.n, (cov + sg.B - 1) / sg.B);
 }
 
@@ -131,17 +129,12 @@ template <class P> static std::vector<poolx_region> poolx_regions(const P & ap) 
     if (ap.kv_h > 0)   { m.push_back({ "zone", -1, ap.kv_start, poolx_kv_end(ap) }); }
     for (const auto & sg : ap.segs) {
         m.push_back({ "blocks", sg.pcls, sg.base, sg.base + (size_t) sg.n * sg.B });
-        m.push_back({ "zero",   sg.pcls, sg.base + (size_t) sg.n * sg.B, sg.base + (size_t) (sg.n + 1) * sg.B });
     }
     return m;
 }
-// The gate every write into an expert block consults first: nullptr when [lo, hi) is clear, else "zone" or "zero" (and the region in *rlo / *rhi). No allocation.
+// The gate every write into an expert block consults first: nullptr when [lo, hi) is clear, else "zone" (and the region in *rlo / *rhi). No allocation.
 template <class P> static const char * poolx_gate_kind(const P & ap, size_t lo, size_t hi, size_t * rlo, size_t * rhi) {
     if (ap.kv_h > 0 && lo < poolx_kv_end(ap) && hi > ap.kv_start) { *rlo = ap.kv_start; *rhi = poolx_kv_end(ap); return "zone"; }
-    for (const auto & sg : ap.segs) {
-        const size_t z0 = sg.base + (size_t) sg.n * sg.B, z1 = z0 + sg.B;
-        if (lo < z1 && hi > z0) { *rlo = z0; *rhi = z1; return "zero"; }
-    }
     return nullptr;
 }
 
