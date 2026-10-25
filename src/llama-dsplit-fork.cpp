@@ -954,7 +954,9 @@ static void dsplit_mm_bench(const llama_model & model) {
             ggml_backend_buffer_clear(buf, 0);
             ggml_cgraph * gs[2] = { g0, g1 };
             for (int k = 0; k < 2; ++k) {
-                ggml_backend_graph_compute(be, gs[k]);   // warm-up (kernel load, clocks)
+                // a long loop first (user 2026-10-25): 300 ms of the same matmul, so the card runs at the clocks its power cap holds in a long pass, not its
+                // boost clocks (the probe's short burst read a x4 card at 220 W 6% fast, its 3 s burst 20%)
+                for (const int64_t t_end = ggml_time_us() + 300000; ggml_time_us() < t_end; ) { ggml_backend_graph_compute(be, gs[k]); ggml_backend_synchronize(be); }
                 for (int r = 0; r < 5; ++r) {
                     const int64_t t0 = ggml_time_us();
                     ggml_backend_graph_compute(be, gs[k]);
