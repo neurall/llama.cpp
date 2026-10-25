@@ -3271,7 +3271,9 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     // (The KV cache cuts every pass of a call when the call starts, so per-pass sizes need one call per pass.) Only for one sequence whose only output
     // is its last token (a prompt): the earlier passes' outputs would be lost, and a failed later pass cannot take back the earlier ones (KDA state).
     if (!g_split_sub && cparams.moe_cache && memory && !cparams.embeddings && batch_inp.tokens.size() > cparams.n_ubatch) {
-        static const int  split_pass = [] { const char * e = llama_moe_get_opt("split-pass"); return e ? atoi(e) : 1; }();   // default on (0: the old one-card pass, A/B)
+        // default OFF since 2026-10-25: with the equal dense-time shares the share-cut split beat the loop (Qwen3.8 60k 1991 vs 1843, GLM 3.0 708-755 vs 696
+        // prompt t/s), and the loop's big lends left GLM's pools short: a 10336-token call at 62.5k cells found no KV slot and failed (bug log). --moe split-pass=1: on
+        static const int  split_pass = [] { const char * e = llama_moe_get_opt("split-pass"); return e ? atoi(e) : 0; }();
         static const bool forced     = [] { const char * e = llama_moe_get_opt("dense-split"); return e && strcmp(e, "1") == 0; }();
         const auto & tk = batch_inp.tokens;
         const int32_t n = (int32_t) tk.size();

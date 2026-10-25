@@ -1514,7 +1514,7 @@ void dsplit_bal_costs(dsplit_bal & B) {
 // at its one-card limit (llama_context::decode), the other cards at what they finish in the expert card's time (dsplit_zw).
 // 2: equal passes of at most that size; 0: the old pass of one card's limit split by the shares (A/B only)
 int dsplit_split_pass_mode() {
-    static const int m = [] { const char * e = llama_moe_get_opt("split-pass"); return e ? atoi(e) : 1; }();
+    static const int m = [] { const char * e = llama_moe_get_opt("split-pass"); return e ? atoi(e) : 0; }();   // default off (llama_context::decode)
     return m;
 }
 bool dsplit_split_pass_on() { return dsplit_split_pass_mode() != 0; }
@@ -1851,7 +1851,7 @@ std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::ve
 uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch) {
     const char * e = llama_moe_get_opt("dense-split");
     const char * sp = llama_moe_get_opt("split-pass");   // 0 = the old one-card pass: no pass beyond the micro-batch, so the small ring (A/B of the pass size, ring included)
-    if (!e || strcmp(e, "1") != 0 || (sp && strcmp(sp, "0") == 0)) { return n_ubatch; }
+    if (!e || strcmp(e, "1") != 0 || !sp || strcmp(sp, "0") == 0) { return n_ubatch; }   // the loop is off unless --moe split-pass=1 (default off since 2026-10-25)
     // Max pass by default, except for models with sliding-window layers (MiMo): their ring doubles with the pass, which costs ~1.5 GiB of expert cache per card
     // and attention over the bigger ring; 60k prompt, forced split: 16k pass 865-886 t/s vs 32k pass 684-758 (MiMo), while Qwen3.8 gained +7% from the 32k pass.
     for (uint32_t il = 0; il < model->hparams.n_layer(); ++il) { if (model->hparams.is_swa(il)) { return n_ubatch; } }
