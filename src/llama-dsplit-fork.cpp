@@ -1870,6 +1870,23 @@ std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::ve
             ok = per > 0.0;
             if (ok) { r[i] = 1.0 / per; sum += r[i]; }
         }
+        // --moe split-pieces=1 (user 2026-10-25: "finish pieces"): the other cards' dense chains run beside the expert card's own range's experts, not beside its
+        // dense part, so equal dense time is the wrong target. Each other card gets the tokens its dense + hand-offs finish in the time the expert card computes
+        // the experts of its own tokens: n_i / n_x = (expert card's expert us per token) / (card i's dense + hand-off us per token). Equal dense time overrode
+        // this from the second pass on (q36 60k: pieces 3945 / 4164 prompt t/s against 3978 / 4191 without, cuda0x4 idle ~80% of the pass on both).
+        int64_t T_b = 0;
+        for (int64_t t : B.tok) { T_b += t; }
+        const size_t x = dev.size() - 1;
+        if (ok && sum > 0.0 && dsplit_zw_pieces() && B.m.size() == dev.size() && B.m[x] > 0.0 && T_b > 0) {
+            const double mx = B.m[x] * 1e3 / (double) T_b;   // the expert card computes every token's experts: us per token
+            sum = 1.0;
+            r[x] = 1.0;
+            for (size_t i = 0; i < x; ++i) {
+                const double per = B.c[i] + (i < B.hop.size() ? B.hop[i] : 0.0);
+                r[i] = per > 0.0 ? mx / per : 0.0;
+                sum += r[i];
+            }
+        }
         if (ok && sum > 0.0) {
             for (size_t i = 0; i < dev.size(); ++i) { s[i] = r[i] / sum; }
             // the climb's offset on the other cards' share (the expert card, last, takes the rest)
