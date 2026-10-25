@@ -8117,6 +8117,21 @@ static void pp_expert_bytes(moe_cache * mc, ggml_backend_dev_t dev, double & E, 
     }
 }
 
+// The upload of a prompt pass (ms): the expert bytes it touches - every layer's experts x the touched fraction 1 - (1 - k/E)^n of a pass of n tokens with k
+// of E experts per token - less what the expert card's pool holds, over that card's measured link rate. A pass takes at least this long (the uploads overlap
+// the compute, they do not shorten); the dense split leaves it as it is (the experts stay on the expert card) and only shortens the compute, so a split pays
+// only when a pass's compute is longer than this (user 2026-10-25: "is the time it takes to upload the same as computing 7k tokens?"). -1: not known.
+double llama_moe_cache_pass_upload_ms_fork(uint32_t n_tokens, uint32_t n_used, uint32_t n_expert) {
+    moe_cache * mc = g_cache;
+    if (!mc || mc->n_links <= 0 || !mc->link_dev[0] || n_expert == 0 || n_tokens == 0) { return -1.0; }
+    double E = 0.0, R = 0.0;
+    pp_expert_bytes(mc, mc->link_dev[0], E, R);
+    const double gbs = llama_moe_cache_link_gbs_fork(mc->link_dev[0]);
+    if (gbs <= 0.0 || E <= 0.0) { return -1.0; }
+    const double frac = 1.0 - std::pow(1.0 - std::min(1.0, (double) n_used / (double) n_expert), (double) n_tokens);
+    return frac * std::max(0.0, E - R) / (gbs * 1e6);
+}
+
 
 // what a prompt sized without the planner is measured against: its passes and the upload of one (the compute per token is read from every prompt pass on
 // one card, also the first ones, which the split planner needs before it can say anything)

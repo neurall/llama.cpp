@@ -59,6 +59,7 @@ void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fo
 size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
 uint32_t llama_dsplit_pass_size_fork(uint32_t cap);   // the full pass of the split: the fastest card takes the limit
 uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub);
+void     llama_dsplit_bench_fork(const llama_model & model);   // llama-dsplit-fork.cpp: matmul + attention latency per GPU, before this context takes VRAM
 void     llama_dsplit_note_pass_fork(int64_t pos0);   // llama-dsplit-fork.cpp (dsf): every prompt pass is timed for the split factors
 bool     llama_dsplit_pass_open_fork();
 void     llama_dsplit_pass_end_fork();
@@ -239,6 +240,7 @@ llama_context::llama_context(
     // TODO warning when creating llama_context with awkward ctx size that is not a power of 2,
     //     may need to be backend-dependent
     LLAMA_LOG_INFO("%s: constructing llama_context\n", __func__);
+    llama_dsplit_bench_fork(model);   // fork: once per process, while the VRAM is still free (the KV cache and the expert pool come below)
 
     t_start_us = model.t_start_us;
     t_load_us  = model.t_load_us;
