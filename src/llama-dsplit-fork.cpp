@@ -677,7 +677,7 @@ static std::map<std::string, dsf_pt> g_dsf_hop;
 static dsf_pt g_dsf_fill;
 static bool g_dsf_loaded = false;
 static constexpr int64_t DSF_CELLS = 8192;
-struct dsf_pass { int choice = -1; int64_t T = 0, pos0 = -1, t0 = 0; double fill_ms = 0.0; ggml_backend_dev_t xdev = nullptr; };
+struct dsf_pass { int choice = -1; int64_t T = 0, pos0 = -1, t0 = 0; double fill_ms = 0.0; ggml_backend_dev_t xdev = nullptr; double U_us = -1.0; };
 double llama_moe_cache_pass_upload_ms_fork(uint32_t n_tokens, uint32_t n_used, uint32_t n_expert);   // llama-moecache-fork.cpp: a pass's expert upload (ms)
 static dsf_pass g_dsf_ps;                // the prompt pass decided last (open until the synchronize after it)
 static int64_t  g_dsf_next_pos0 = -1;    // the first position of the pass about to be decided (llama_context)
@@ -2147,6 +2147,10 @@ void llama_dsplit_pass_end_fork() {
     if (p.choice < 0 || p.T < 64 || p.pos0 < 0 || p.t0 <= 0) { return; }
     dsf_load();
     double us = (double) (ggml_time_us() - p.t0) - p.fill_ms * 1e3;   // the copy fill is the split's per-prompt cost, kept apart (dsf.fill)
+    // Only a compute-bound pass tells its compute: one that took no longer than its expert upload is upload-bound, its time per token is the upload's, not
+    // the compute's (Qwen3.8 2k: 2441 tokens in 2.2 s against a 2.8 s upload estimate; recorded as compute it made one card look 988 us per token at the
+    // start of the context, where big passes measure 450-650, and the split won the 4k request it lost by 20%). The decision adds the upload as max(U, T c).
+    if (p.U_us > 0.0 && us <= p.U_us) { return; }
     // the compute side of the pass: less the time the expert card's stream waited for expert uploads (stream stamps of this pass, when it was measured).
     // An upload-bound pass then still tells its compute; the decision adds the upload back as max(upload, compute) for the pass size it plans.
     {
@@ -2283,10 +2287,14 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     g_cur = choice;
     g_ngpus = dsplit_n_gpus(model);
     if (choice >= 0 && n_tokens >= 64) {   // the prompt pass about to run: timed until the synchronize after it (dsf)
+        // its expert upload, computed before the factors' lock (it reads the cache under the cache's own lock)
+        const double U_us = llama_moe_cache_pass_upload_ms_fork((uint32_t) n_tokens, std::max<uint32_t>(1, model.hparams.n_expert_used_max()),
+                                                                std::max<uint32_t>(1, model.hparams.n_expert)) * 1e3;
         std::lock_guard<std::mutex> dl(g_dsf_mu);
         g_dsf_ps = dsf_pass();
         g_dsf_ps.choice = choice; g_dsf_ps.T = n_tokens; g_dsf_ps.pos0 = g_dsf_next_pos0; g_dsf_ps.t0 = ggml_time_us();
         g_dsf_ps.xdev = g_cards.empty() ? nullptr : g_cards.back();
+        g_dsf_ps.U_us = U_us;   // this pass's expert upload (<0: not known)
         g_dsf_next_pos0 = -1;
     }
     if (choice >= 0) { g_pf_choice = choice; g_pf_why = why; }
