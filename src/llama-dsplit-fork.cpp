@@ -913,8 +913,23 @@ llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int
     if (!plan_on) {
         return llama_dsplit_plan_fork();
     }
-    const double c_us = llama_moe_cache_compute_us_fork();
+    double c_us = llama_moe_cache_compute_us_fork();
     std::lock_guard<std::mutex> lk(g_plan_mu);
+    // Calculated, not measured, for the first prompt (user 2026-10-25: "calculated split first pass"): before any prompt pass is timed the compute per token
+    // is the weight bytes a token reads (dense weights + its active experts, dsplit_link_model) over the expert card's matmul rate measured at start (probe:
+    // weight bytes x tokens per second, the sustained burst when there is one). Without it the plan was invalid and the first prompt ran on one card
+    // ("no plan or measurement yet: one card first"). The first measured pass replaces it (the probe's small Q4_K graph is only an estimate of the real kernels).
+    if (c_us <= 0.0 && g_w_bytes_tok > 0.0 && !g_cards.empty()) {
+        if (const auto * pr = llama_gpu_probe_find_fork(g_cards.back())) {
+            const double rate = pr->compute_sust > 0.0 ? pr->compute_sust : pr->compute;
+            if (rate > 0.0) {
+                c_us = g_w_bytes_tok / rate * 1e6;
+                static bool said = false;
+                if (!said) { said = true; LLAMA_LOG_WARN("split planner: compute per token calculated (no prompt pass timed yet): %.0f MB of weights per token / %.1f GB*token/s on %s = %.1f us per token\n",
+                        g_w_bytes_tok / 1e6, rate / 1e9, ggml_backend_dev_name(g_cards.back()), c_us); }
+            }
+        }
+    }
     dsplit_calib_load(model);
     const int b = dsplit_bucket_of(n_tokens);
     auto & pc = g_plans[b];
@@ -1710,15 +1725,10 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
             B.passes++;
         }
     }
-    {
-        // Never split on a prediction alone: this size needs a measured one-card pass to compare with (2026-10-23: the model was 2.2 s per pass off on Qwen Next).
-        // The first pass of a size runs on one card; the split is tried once the planner, now scaled by that measurement, still puts it clearly ahead.
-        const auto bk = g_buckets.find(dsplit_bucket_of(n_tokens));
-        if (choice == 1 && dsplit_opt_auto() && managed && (bk == g_buckets.end() || bk->second.n[0] == 0)) {
-            choice = 0;
-            why    = "one card first: no measured one-card pass at this size to compare the split with";
-        }
-    }
+    // (Until 2026-10-25 a size needed a measured one-card pass before the split was tried: "never split on a prediction alone", after the model was 2.2 s per
+    // pass off on Qwen Next. User 2026-10-25: the first pass takes the calculated split. The prediction is now the compute calculated from the probe until a pass
+    // is timed, and once one card is measured the split's estimate is scaled by the same correction (the ratio is trusted, not the size), so a first pass
+    // the model misjudges is corrected by the measured passes after it.)
     if (choice == 1 && n_tokens >= g_veto_tokens) {
         choice = 0;   // the split graph of this size did not fit behind the mirror copies once: one card
         why    = "one card: the split pass did not fit behind the copies";
