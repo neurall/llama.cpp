@@ -6328,6 +6328,7 @@ def run_list(name, argv):
             CELL_TEST[0] += f"  {r['_b']}" + (f"  {r['args'].strip()}" if r.get("args") and r["args"].strip() else "")   # what runs: build, extra server args
             if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, ("s" if r["_b"].startswith("stock") else "") + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
             if not o.dry and not r["_b"].startswith("stock") and not (r.get("args") or "").strip(): learn_bestpp(r["model"], r["test"], tag)
+            if not o.dry and not r["_b"].startswith("stock"): learn_att(r["model"], tag)
             done_s += ex or 0
     finally:   # the cells' lines, then the pool: it holds its RAM whether a model uses it or not: give it back when the list ends, also on Ctrl-C or an error
         if CELL_LINES and not o.dry:   # the final block, complete for a screenshot: the machine, then every cell with what it measured
@@ -6423,6 +6424,31 @@ def scores(seen):
     """{prompt tokens: (answer tokens, prompt t/s, decode t/s)} -> {prompt tokens: score}: prompt speed over the best prompt speed plus decode speed over the best decode speed (best on both = 2)"""
     mp, mt = max(v[1] for v in seen.values()), max(v[2] for v in seen.values())
     return {k: v[1] / mp + v[2] / mt for k, v in seen.items()}
+
+
+def ini_set_key(sec, key, value):
+    """models.ini [sec]: the line `key = value` set (added at the end of the section when missing); other lines untouched"""
+    ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); lines = open(ini).read().split("\n")
+    i0 = next((i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"), None)
+    if i0 is None: return False
+    i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+    while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
+    j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
+    new = f"{key} = {value}"
+    if j is not None and lines[j].strip() == new: return False
+    if j is not None: lines[j] = new
+    else: lines.insert(i1, new)
+    open(ini, "w").write("\n".join(lines)); return True
+
+
+def learn_att(model, tag):
+    """after a cell: the engine's line "attention layers: N full (grow with the context), M sliding-window (window W), K linear (no context term), sparse top-k S" (read from
+    the GGUF at load) stored once in models.ini as `att = full N, swa M/W, linear K, topk S`: which layers make the prompt cost grow with the context (user 2026-10-25)"""
+    sec = model_alias(model); lg = f"{QDIR}/{tag}.server.log"
+    if not sec or not os.path.exists(lg): return
+    m = re.search(r"attention layers: (\d+) full \(grow with the context\), (\d+) sliding-window \(window (\d+)\), (\d+) linear \(no context term\), sparse top-k (\d+)", open(lg, errors="replace").read())
+    if m and ini_set_key(sec, "att", f"full {m[1]}, swa {m[2]}/{m[3]}, linear {m[4]}, topk {m[5]}"):
+        print(col(92, f"{sec}: attention layers full {m[1]}, sliding-window {m[2]} (window {m[3]}), linear {m[4]}, sparse top-k {m[5]}, written to models.ini"), flush=True)
 
 
 def learn_bestpp(model, test, tag):
