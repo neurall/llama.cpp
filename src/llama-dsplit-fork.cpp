@@ -1838,7 +1838,21 @@ std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::ve
     // time, so the pass is limit / the expert card's share. The zero-wait shares starved the other cards there as well (Qwen3.8 60k forced loop 1330-1358
     // prompt t/s against 1910 for the share-cut split with these shares).
     if (dev.size() >= 2) {
-        const dsplit_bal & B = dsplit_bal_get(dsplit_bucket_of(n_tokens), dev);
+        const dsplit_bal * Bp = &dsplit_bal_get(dsplit_bucket_of(n_tokens), dev);
+        // A bucket is a pass size AND a context band (dsplit_bucket_of): the first pass in a new one has no measured costs and fell back to the zero-wait shares,
+        // which an early wrong blame had starved (MiMo 200k, 2026-10-25: cuda0x4 got 12% and 10% of the tokens on every new bucket, 31-46% on the passes between;
+        // the 46% pass ran 1758 us/token against 1966 and 2197 for its neighbours). The cards' cost ratio changes slowly with the context, so a new bucket
+        // starts from the last measured one.
+        const auto measured = [&](const dsplit_bal & x) {
+            if (x.c.size() != dev.size() || x.dev != dev) { return false; }
+            for (double c : x.c) { if (!(c > 0.0)) { return false; } }
+            return true;
+        };
+        if (!measured(*Bp) && g_bal_last >= 0) {
+            const auto last = g_bal.find(g_bal_last);
+            if (last != g_bal.end() && measured(last->second)) { Bp = &last->second; }
+        }
+        const dsplit_bal & B = *Bp;
         std::vector<double> r(dev.size(), 0.0);
         double sum = 0.0;
         bool ok = B.c.size() == dev.size();
