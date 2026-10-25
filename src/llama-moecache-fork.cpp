@@ -5291,6 +5291,32 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
     }
 }
 
+// fork: a CUDA out-of-memory the backend caught (llama_context::decode after ggml_cuda_oom): the watch above never sees a request that failed, so the need
+// stored for the next start stayed what the passes that fitted took (MiMo: 40 MiB learned, then a pass wanted more with 82 MiB free and the process died).
+// The failed request counts at once: what is in use outside the pool now plus what was asked for, or, when the size is not known (a CUDA graph's
+// instantiation), plus all that was still free (it was not enough). Stored right away: the retry may fail again and the next start must leave the room.
+void llama_moe_cache_vram_oom_fork(int cuda_device, size_t bytes) {
+    std::lock_guard<std::mutex> lk(g_vram_mtx);
+    const std::string name = "CUDA" + std::to_string(cuda_device);
+    for (auto & d : g_vram) {
+        if (name != ggml_backend_dev_name(d.dev)) { continue; }
+        size_t f = 0, t = 0;
+        ggml_backend_dev_memory(d.dev, &f, &t);
+        const int64_t outside = std::max<int64_t>(0, (int64_t) d.free_at_size - (int64_t) d.pool - (int64_t) f);
+        const int64_t need_mb = (outside + (int64_t) (bytes ? bytes : f) + (2 << 20) - 1) >> 20;   // rounded up to whole MiB
+        d.peak_mb = std::max<int64_t>(d.peak_mb, need_mb);
+        LLAMA_LOG_WARN("moe-cache: VRAM need outside the pool on %s after a CUDA out-of-memory: %lld MiB (%lld in use outside the pool, %s)%s\n",
+                ggml_backend_dev_name(d.dev), (long long) d.peak_mb, (long long) (outside >> 20),
+                bytes ? ("+" + std::to_string(bytes >> 20) + " MiB asked for").c_str() : ("+" + std::to_string(f >> 20) + " MiB that was free and not enough").c_str(),
+                d.section.empty() ? "" : ", stored for the next start");
+        if (!d.section.empty() && d.peak_mb > d.stored_mb) {
+            moe_state_set(d.section, { { d.key, std::to_string(d.peak_mb) } });
+            d.stored_mb = d.peak_mb;
+            d.from_cold = false;
+        }
+    }
+}
+
 void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots, int32_t window,
                           int32_t predict, int32_t predict_train) {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);

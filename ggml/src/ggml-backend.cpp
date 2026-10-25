@@ -3675,6 +3675,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 for (auto & kv : held_by) { for (int j : kv.second) { pf_finish(j, split_id, splits[j].backend_id); } }
                 held_by.clear();
                 for (int b = 0; b < sched->n_backends; b++) { release_slots(b); }
+                // fork: a failed pass (a CUDA out-of-memory the backend caught, which the caller runs again) is no measurement: its expert chains never end,
+                // and a live set that never completes would stop every later pass from being measured (its card stamps are dropped above)
+                g_cs_cur_set = -1; g_cs_cur_entry = -1;
+                if (ch_set >= 0) {
+                    std::lock_guard<std::mutex> lk(g_chain_mu);
+                    if (g_chain_live == ch_set) { g_chain_live = -1; }
+                }
                 return ec;
             }
             {

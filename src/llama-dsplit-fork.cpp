@@ -682,6 +682,12 @@ struct dsf_pass { int choice = -1; int64_t T = 0, pos0 = -1, t0 = 0; double fill
 double llama_moe_cache_pass_upload_ms_fork(uint32_t n_tokens, uint32_t n_used, uint32_t n_expert);   // llama-moecache-fork.cpp: a pass's expert upload (ms)
 static dsf_pass g_dsf_ps;                // the prompt pass decided last (open until the synchronize after it)
 static int64_t  g_dsf_next_pos0 = -1;    // the first position of the pass about to be decided (llama_context)
+// Measured fallback (user 2026-10-25: "no point to run 2 cards at that point, we should have fallen back to 1 card"): the curves decide a pass from what was measured at
+// other contexts, and extrapolate where the split has not run yet. MiMo 400k, x16 + x4: from 245k cells the split passes took 35 s for 10.9k tokens, one card 22 s,
+// and the verdict still flipped back to the split on the last pass of every call. So a split pass that took longer than the one-card curve says it would have taken at
+// that context ends the split for the rest of this request (a position lower than the last one seen is a new request, which decides from the curves again).
+static bool     g_dsf_ban = false;
+static int64_t  g_dsf_seen_pos0 = -1;
 // The upload estimate (expert bytes not held / the probed link rate) came out ~25% above what passes take (Qwen3.8: 2441 tokens in 2.2 s, estimate 2.8 s).
 // A pass is never shorter than its real upload, so the smallest observed (pass time / estimate) is a correction that cannot go below the truth; in memory
 // only (the link and the cache are measured again at every start).
@@ -1471,7 +1477,12 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
         }
     }
     g_climb.prev_adj = g_climb.adj;
-    g_climb.adj  = std::min(0.45, std::max(-0.45, g_climb.adj + g_climb.dir * g_climb.step));
+    // Never above 0 (user 2026-10-25: "a slower card shall never get more, or even the same, work"): the equal-time share is where the cards finish together, so an
+    // offset above it hands the other cards more than they keep up with. MiMo 400k, x16 + x4 (the x4's dense time per token 2.2 ms against the x16's 1.6): the offset
+    // rose 0.04 a pass to +0.28 in 7 passes and on, the x4 got 70-90% of the tokens and the passes ran 2-3x longer per token. The objective cannot tell a better split
+    // from a longer context: its denominator, the expert card's dense time per token, grows with the cells faster than the pass does, so it fell every pass
+    // (2.99 -> 1.88) and the climb never reversed. Below 0 it can still take work away from the other cards, where a hand-off costs more than measured.
+    g_climb.adj  = std::min(0.0, std::max(-0.45, g_climb.adj + g_climb.dir * g_climb.step));
     LLAMA_LOG_WARN("split climb: pass %.1f us/token = %.3f x the expert card's dense us/token (before %.3f): the other cards' share offset %+.3f -> %+.3f (step %.3f)\n",
             B.v, m, g_climb.last, adj0, g_climb.adj, g_climb.step);
     g_climb.last = m;
@@ -1839,7 +1850,7 @@ std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::ve
         if (ok && sum > 0.0) {
             for (size_t i = 0; i < dev.size(); ++i) { s[i] = r[i] / sum; }
             // the climb's offset on the other cards' share (the expert card, last, takes the rest)
-            const double h = 1.0 - s.back(), h2 = dsplit_climb_on() ? std::min(0.95, std::max(0.02, h + g_climb.adj)) : h;
+            const double h = 1.0 - s.back(), h2 = dsplit_climb_on() ? std::min(h, std::max(0.02, h + g_climb.adj)) : h;   // never above the equal-time share h
             for (size_t i = 0; i + 1 < dev.size(); ++i) { s[i] *= h > 0.0 ? h2 / h : 0.0; }
             s.back() = 1.0 - h2;
         }
@@ -2151,6 +2162,9 @@ static int dsf_decide(const llama_model & model, int64_t n_tokens) {
     std::lock_guard<std::mutex> dl(g_dsf_mu);
     dsf_load();
     if (g_cards.size() < 2 || g_dsf_next_pos0 < 0) { return -1; }
+    if (g_dsf_next_pos0 < g_dsf_seen_pos0) { g_dsf_ban = false; }   // a position lower than the last pass's: a new request
+    g_dsf_seen_pos0 = g_dsf_next_pos0;
+    if (g_dsf_ban) { return 0; }   // a measured split pass was slower than one card: one card for the rest of the request
     const dsf_fit f1 = dsf_fit_pass(g_dsf_one), f2 = dsf_fit_pass(g_dsf_split);
     std::map<std::string, dsf_fit> fd;   // every card's dense curve (split passes)
     for (const auto & e : g_dsf_dense) { fd[e.first] = dsf_fit_curve(e.second); }
@@ -2259,6 +2273,9 @@ static int dsf_decide(const llama_model & model, int64_t n_tokens) {
 // every prompt pass is timed: the pass decided last ends at the synchronize before the next prompt pass and at the end of its call (llama_context)
 void llama_dsplit_note_pass_fork(int64_t pos0) { std::lock_guard<std::mutex> dl(g_dsf_mu); g_dsf_next_pos0 = pos0; }
 bool llama_dsplit_pass_open_fork() { std::lock_guard<std::mutex> dl(g_dsf_mu); return g_dsf_ps.choice >= 0; }
+// a pass that ran out of CUDA memory (llama_context::decode takes its call back and runs it again) is no sample: its open timing would end at the next
+// pass and count the failure, the recovery and the retry as that pass's time (the scheduler drops its card times itself)
+void llama_dsplit_pass_abandon_fork() { std::lock_guard<std::mutex> dl(g_dsf_mu); g_dsf_ps = dsf_pass(); }
 void llama_dsplit_pass_end_fork() {
     std::lock_guard<std::mutex> dl(g_dsf_mu);
     const dsf_pass p = g_dsf_ps;
@@ -2294,6 +2311,15 @@ void llama_dsplit_pass_end_fork() {
     dsf_pt & d = (p.choice == 1 ? g_dsf_split : g_dsf_one)[k];
     dsf_upd(d, us / (double) p.T, (double) p.T);
     dsf_mark(std::string(p.choice == 1 ? "dsf.split.k" : "dsf.one.k") + std::to_string(k), d);
+    if (p.choice == 1 && !g_dsf_ban) {   // measured fallback (see g_dsf_ban): this split pass against what one card's curve says at its context
+        const dsf_fit f1 = dsf_fit_pass(g_dsf_one);
+        const double one_us = f1.ok ? f1.pass((double) p.T, (double) p.pos0 + 0.5 * (double) p.T) : 0.0;
+        if (one_us > 0.0 && us > one_us) {
+            g_dsf_ban = true;
+            LLAMA_LOG_WARN("split factors: the split pass of %lld tokens at %lldk cells took %.0f ms, one card's curve says %.0f ms: one card for the rest of this request\n",
+                    (long long) p.T, (long long) (p.pos0 / 1024), us / 1e3, one_us / 1e3);
+        }
+    }
 }
 void llama_dsplit_note_fill_fork(double ms) {   // llama_context::moe_mirror_fill: the copies of this prompt were filled (part of the split pass decided last)
     std::lock_guard<std::mutex> dl(g_dsf_mu);
