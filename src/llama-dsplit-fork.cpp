@@ -1464,7 +1464,7 @@ struct dsplit_climb {
     double jump_meas = 0.0; int jump_n = 0;     // measured change of the miss across a step (mean of |r - r_prev|)
     int probe = 0; double r_base = 0.0, r_rm = 0.0;   // the probe: 1 a step removed, 2 put back (the miss before, with the step removed)
 };
-dsplit_climb g_climb;   // under g_plan_mu
+std::map<int, dsplit_climb> g_climbs;   // under g_plan_mu: one climb per bucket (pass size and context band): the sizes alternate on a long prompt and each has its own cost per token
 static bool dsplit_climb_on() {
     static const bool on = [] { const char * e = llama_moe_get_opt("share-climb"); return !e || atoi(e) != 0; }();
     return on;
@@ -1478,7 +1478,8 @@ static bool dsplit_adj_forced(double & v) {
     return on;
 }
 static double x_dense_ms(const dsplit_bal & B) { return B.d.empty() ? 0.0 : B.d.back(); }   // the expert card's dense ms in the measured pass
-static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
+static void dsplit_climb_step(const dsplit_bal & B, size_t n, int b) {
+    dsplit_climb & g_climb = g_climbs[b];
     double fv;
     if (dsplit_adj_forced(fv) || !dsplit_climb_on() || g_climb.settled || !g_climb.cut || n < 2 || B.v <= 0.0 || B.c.size() != n || B.c[n - 1] <= 0.0) { return; }
     // The objective (user 2026-10-25: "take the past passes' trajectory, predict, and see if we are below or above it"): a pass's time per token grows with
@@ -1862,7 +1863,7 @@ void dsplit_bal_step(int b) {
         c_max = std::max(c_max, B.c[i]);
     }
     (void) c_max;
-    dsplit_climb_step(B, n);
+    dsplit_climb_step(B, n, b);
     {   // this split pass's per-card factors (dsf): dense us/token at its context; hand-off; and for the experts on a card (dense + experts on cards whose links can
         // stream them, x16 / PCIe 5; user 2026-10-25): its expert compute per token of its expert share, and its measured upload rate
         std::lock_guard<std::mutex> dl(g_dsf_mu);
@@ -1973,12 +1974,12 @@ std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::ve
             for (size_t i = 0; i < dev.size(); ++i) { s[i] = r[i] / sum; }
             // the climb's offset on the other cards' share (the expert card, last, takes the rest)
             double fv = 0.0;
-            const double h = 1.0 - s.back(), h2 = dsplit_adj_forced(fv) ? std::min(0.98, std::max(0.02, h + fv)) : dsplit_climb_on() ? std::min(h, std::max(0.02, h + g_climb.adj)) : h;   // never above the equal-time share h (the forced research offset may)
+            const double h = 1.0 - s.back(), h2 = dsplit_adj_forced(fv) ? std::min(0.98, std::max(0.02, h + fv)) : dsplit_climb_on() ? std::min(h, std::max(0.02, h + g_climbs[dsplit_bucket_of(n_tokens)].adj)) : h;   // never above the equal-time share h (the forced research offset may)
             for (size_t i = 0; i + 1 < dev.size(); ++i) { s[i] *= h > 0.0 ? h2 / h : 0.0; }
             s.back() = 1.0 - h2;
         }
     }
-    g_climb.cut = !llama_dsplit_in_pass_loop_fork();
+    g_climbs[dsplit_bucket_of(n_tokens)].cut = !llama_dsplit_in_pass_loop_fork();
     if (s.size() != dev.size()) { s.assign(dev.size(), dev.empty() ? 0.0 : 1.0 / (double) dev.size()); }   // fewer than two cards: nothing to share
     dsplit_bal_get(dsplit_bucket_of(n_tokens), dev).s = s;   // the shares the pass report shows
     return s;
