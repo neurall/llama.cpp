@@ -2248,12 +2248,12 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
            "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
     row = {}
     TAGBOX["v"] = test   # game4 and edit4 add their prompt below
-    if test in ("ppl", "ppl3", "pplb", "pplc"):
-        nb, nub = {"ppl": ("1", "1"), "ppl3": ("3", "3"), "pplb": ("1024", "1024"), "pplc": ("1024", "256")}[test]   # pplb: 1024-token batches = the big-batch (prefill) path; pplc: the same batch in 256-token ubatches (4 ubatches per decode call)
+    if test in ("ppl", "ppl3", "pplb", "pplc", "ppll"):
+        nb, nub = {"ppl": ("1", "1"), "ppl3": ("3", "3"), "pplb": ("1024", "1024"), "pplc": ("1024", "256"), "ppll": ("8192", "8192")}[test]   # ppll: long chunks (PERF_PPL_CTX, default 32768) of src_128k.cpp in prompt-sized passes: the attention of a chunk's later tokens reaches past the sparse gate   # pplb: 1024-token batches = the big-batch (prefill) path; pplc: the same batch in 256-token ubatches (4 ubatches per decode call)
         nub = os.environ.get("PERF_PPL_UB") or nub   # PERF_PPL_UB=N: the 1024 tokens of a chunk cut into N-token ubatches (how ppl moves with the number of cuts; stored in the note)
-        ctx = os.environ.get("PERF_PPL_CTX", "1024")   # PERF_PPL_CTX=32768: long chunks, so the attention of a chunk's later tokens reaches past the sparse gate (~20k cells)
-        if ctx != "1024" and test == "pplb": nb = nub = os.environ.get("PERF_PPL_UB") or "8192"   # long chunks in prompt-sized passes
-        args = COMMON + ["-f", PPL_TEXT, "-c", ctx, "--chunks", os.environ.get("PERF_PPL_CHUNKS", "2"), "-b", nb, "-ub", nub]   # PERF_PPL_CHUNKS=12: a paired comparison of two compute paths needs more than 2 chunks (a valid path differs by +-0.5% per chunk)
+        ctx = os.environ.get("PERF_PPL_CTX", "32768" if test == "ppll" else "1024")   # the chunk length; ppll's own test name keeps its runs out of the README's pplb table
+        ppl_text = os.path.join(PROMPT_DIR, os.environ["PERF_PPL_FILE"]) if os.environ.get("PERF_PPL_FILE") else (config.prompt_path("src128k") if test == "ppll" and "src128k" in getattr(config, "PROMPTS", {}) else os.path.join(PROMPT_DIR, "src_128k.cpp") if test == "ppll" else PPL_TEXT)
+        args = COMMON + ["-f", ppl_text, "-c", ctx, "--chunks", os.environ.get("PERF_PPL_CHUNKS", "2"), "-b", nb, "-ub", nub]   # PERF_PPL_CHUNKS=12: a paired comparison of two compute paths needs more than 2 chunks (a valid path differs by +-0.5% per chunk)
         args += shlex.split(os.environ.get("PERF_PPL_EXTRA", ""))   # PERF_PPL_EXTRA="--kl-divergence-base F": extra llama-perplexity arguments for stock and ours alike (per-position log-probs, fork/ppl_pos.py)
         env, args = drop_moe_flag(build, env, args)   # the b11509 arm of the regress cell failed on --moe autotune=0,...
         if build.startswith("stock"):   # stock has no --moe-expert-cache
@@ -8329,7 +8329,7 @@ def ppl_chunks_store(start_ts, build, model, test, log):
     except sqlite3.Error as e: print(f"ppl_chunks: {e}", flush=True)
 
 
-PPL_VARIANTS = {"default": "", "one": "moe:dense-split=0 moe:prefill-split=0", "dense": "moe:dense-split=1 moe:split-experts=0 moe:prefill-split=1", "split": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1", "f16": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1 moe:split-f16=1", "f32": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1 moe:split-f16=0"}
+PPL_VARIANTS = {"default": "", "nogate": "moe:sparse-gate=0", "one": "moe:dense-split=0 moe:prefill-split=0", "dense": "moe:dense-split=1 moe:split-experts=0 moe:prefill-split=1", "split": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1", "f16": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1 moe:split-f16=1", "f32": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1 moe:split-f16=0"}
 
 
 def _tool_ppl():
@@ -8341,7 +8341,8 @@ def _tool_ppl():
     ap.add_argument("-b", "--build", default="latest")
     ap.add_argument("--variants", default="default,one,dense,f16,f32")
     ap.add_argument("--chunks", type=int, default=12)
-    ap.add_argument("--test", default="pplb", choices=["pplb", "pplc", "ppl"], help="pplb: 1024-token passes (the prompt path, default); ppl: one token per call (the decode path: cached experts on the GPU, misses on the CPU; slow, use --chunks 2 and --variants default); pplc: 1024 tokens in 256-token micro-batches")
+    ap.add_argument("--no-stock", action="store_true", help="skip the official stock binary (long-context checks: stock at 32k cells takes ~50 min on GLM)")
+    ap.add_argument("--test", default="pplb", choices=["pplb", "pplc", "ppl", "ppll"], help="pplb: 1024-token passes (the prompt path, default); ppl: one token per call (the decode path: cached experts on the GPU, misses on the CPU; slow, use --chunks 2 and --variants default); pplc: 1024 tokens in 256-token micro-batches")
     ap.add_argument("-nrt", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip variants already stored in the last DAYS days (default 1 = today)")
     ap.add_argument("-n", "--dry", action="store_true")
     ap.add_argument("--table", action="store_true", help="only print the README table")
@@ -8364,7 +8365,7 @@ def _tool_ppl():
         except sqlite3.Error: return False
     for m in models:
         nosplit = os.path.basename(m).startswith(("Qwen3.8-27B",))   # plain dense models have no experts and no token-range graphs: no two-card path, the split variants would only repeat the one-card run
-        jobs = [(stock, "default", "")] + [(ours, v, PPL_VARIANTS[v]) for v in a.variants.split(",") if not (nosplit and v not in ("default", "one"))]
+        jobs = ([] if a.no_stock else [(stock, "default", "")]) + [(ours, v, PPL_VARIANTS[v]) for v in a.variants.split(",") if not (nosplit and v not in ("default", "one"))]
         for build, v, words in jobs:
             if done(m, build, v): print(f"skip {os.path.basename(m)} {build} {v}: stored in the last {a.nrt} day(s)"); continue
             cmd = [sys.executable, os.path.abspath(__file__), "bench", "--models", m, "--builds", build, "-t", a.test, "-n", "1", "--campaign", "ppl-pair", "--variants", v] + (["--variant", f"{v}={words}"] if words else [])
@@ -8492,7 +8493,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog="tools (each has its own --help): " + ", ".join(sorted(TOOLS)))
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "pplb", "pplc", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf5k", "pf6k", "pf7k", "pf8k", "pf9k", "pf10k", "pf11k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
+    TESTS = ["ppl", "ppl3", "pplb", "pplc", "ppll", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf5k", "pf6k", "pf7k", "pf8k", "pf9k", "pf10k", "pf11k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
     r = sp.add_parser("run", help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", type=test_name, choices=TestChoices(TESTS + list(ALIASES)))
@@ -8511,7 +8512,7 @@ if __name__ == "__main__":
     b.add_argument("--builds", required=True, help="comma separated build dirs; names starting with stock run the default variant only")
     b.add_argument("--variants", help="comma separated variant names (default: all of default,cache0,atoff and any --variant)")
     b.add_argument("--variant", action="append", default=[], help="NAME=ARGS: add or override a variant, e.g. gate3='--moe upload-wait=3'")
-    b.add_argument("-t", "--test", default="t100", type=test_name, choices=TestChoices(["ppl", "ppl3", "pplb", "pplc", "t100", "tetris"] + TESTS[6:] + list(ALIASES) + list(config.user_tests())))
+    b.add_argument("-t", "--test", default="t100", type=test_name, choices=TestChoices(["ppl", "ppl3", "pplb", "pplc", "ppll", "t100", "tetris"] + TESTS[6:] + list(ALIASES) + list(config.user_tests())))
     b.add_argument("--stock-variant", action="append", default=[], help="NAME=ARGS: stock builds also run this placement (e.g. tuned='--n-cpu-moe 30'): the hand-tuned baseline")
     b.add_argument("--rep-from", type=int, default=0, help="first repetition to run (0-based): -n 2 --rep-from 1 repeats only the second repetition, e.g. one that failed")
     b.add_argument("-n", type=int, help="measured runs per cell, interleaved ABBA (default 3 for fix/fix12k, else 2); the first run of a cell is preceded by a discarded one")
