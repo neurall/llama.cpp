@@ -1500,18 +1500,28 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     const double den  = kn * sxx - sx * sx;
     const double b1   = den != 0.0 ? (kn * sxy - sx * sy) / den : 0.0;
     const double pred = (sy - b1 * sx) / kn + b1 * pc;
+    // the noise of the trajectory itself: the spread of the fitted passes around their own line (2 parameters fitted, so kn - 2 degrees of freedom)
+    double ss = 0.0;
+    for (size_t j = k0; j < g_climb.h.size(); ++j) {
+        const double e = g_climb.h[j].second - ((sy - b1 * sx) / kn + b1 * g_climb.h[j].first);
+        ss += e * e;
+    }
+    const double noise = kn > 2.0 && pred > 0.0 ? std::sqrt(ss / (kn - 2.0)) / pred : 0.0;
     g_climb.h.emplace_back(pc, m);
     if (g_climb.h.size() > 8) { g_climb.h.erase(g_climb.h.begin()); }
     const double adj0 = g_climb.adj;
-    // The rule (user 2026-10-25: "if we are higher than predicted remove work, if lower add"): above the line by more than 1%, the other cards lose a step of
-    // share; below it by more than 1%, they gain one; in between nothing moves. The step is 0.02 of the share, the offset stays in [-0.45, 0]: never above
+    // The rule (user 2026-10-25: "if we are higher than predicted remove work, if lower add"): above the line by more than the threshold, the other cards lose a step of
+    // share; below it by more than the threshold, they gain one; in between nothing moves. The step is 0.02 of the share, the offset stays in [-0.45, 0]: never above
     // the equal-time share (a slower card never gets more than it keeps up with). It tracks for the whole request, no settling.
-    const double r = pred > 0.0 ? m / pred - 1.0 : 0.0;
-    if (r > 0.01)       { g_climb.adj -= g_climb.step; }
-    else if (r < -0.01) { g_climb.adj += g_climb.step; }
+    // Threshold (user 2026-10-25: "above a certain threshold or it will oscillate"): a miss counts only beyond twice the trajectory's own noise (the
+    // spread of the fitted passes around their line), and never under 1%; inside it nothing moves.
+    const double r  = pred > 0.0 ? m / pred - 1.0 : 0.0;
+    const double th = std::max(0.01, 2.0 * noise);
+    if (r > th)       { g_climb.adj -= g_climb.step; }
+    else if (r < -th) { g_climb.adj += g_climb.step; }
     g_climb.adj = std::min(0.0, std::max(-0.45, g_climb.adj));
-    LLAMA_LOG_WARN("split climb: pass %.1f us/token at %.0f cells, predicted %.1f from the trajectory (%+.1f%%): the other cards' share offset %+.3f -> %+.3f\n",
-            B.v, pc, pred, 100.0 * r, adj0, g_climb.adj);
+    LLAMA_LOG_WARN("split climb: pass %.1f us/token at %.0f cells, predicted %.1f from the trajectory (%+.1f%%, threshold %.1f%%): the other cards' share offset %+.3f -> %+.3f\n",
+            B.v, pc, pred, 100.0 * r, 100.0 * th, adj0, g_climb.adj);
     g_climb.last = m;
 }
 bool                            g_bal_used = false;   // a graph builder takes its shares from here
