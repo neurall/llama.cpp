@@ -317,15 +317,10 @@ llama_context::llama_context(
                 // moves it to quantised KV, then RAM KV). A declared context computed here from guessed terms was wrong for sliding-window models (10x too low on MiMo) and
                 // is not needed: the reserve graph uses min(size, step) cells, so the model's own maximum costs nothing until a request needs it. `fit` is only logged.
                 cparams.n_ctx = hparams.n_ctx_train;
-                // The structures that scale with the context (the pass masks: 2 bytes a pass token a cell, summed over the caches) set the pass size: at the trained 1M of DeepSeek-V4.1 the pinned-mask budget
-                // (6.3 GiB) allowed passes of 1056 tokens, 12 passes and 12 expert uploads for a 12k prompt. KV bytes are not the cost (4.5 KB a token). common_auto_ctx already computed the
-                // context that leaves the expert cache its VRAM (kv-budget-ctx): take that, the smaller of it and the model's maximum, not the maximum (user 2026-10-25, after 2026-10-17: the
-                // maximum "costs nothing until a request needs it" held for KV, not for the masks).
-                if (const char * bc = llama_moe_get_opt("kv-budget-ctx"); bc && atoi(bc) > 0) { cparams.n_ctx = std::min<uint32_t>(hparams.n_ctx_train, (uint32_t) atoi(bc)); }
                 if (const char * fb0 = llama_moe_get_opt("kv-fallback")) { LLAMA_LOG_INFO("%s: --moe kv-fallback=%s (the KV tiers after f16 that may be used)\n", __func__, fb0); }
                 // --moe kv-fallback=none: no tier past f16 in the pool, so the context is what VRAM holds (llama_kv_fit_select refuses the rest)
                 if (const char * fb = llama_moe_get_opt("kv-fallback"); fb && strcmp(fb, "none") == 0) { cparams.n_ctx = (uint32_t) std::min<uint64_t>(hparams.n_ctx_train, fit); }
-                LLAMA_LOG_WARN("%s: kv-tail: no -c: context %u tokens (the smaller of the model maximum and the context common_auto_ctx computed; the pool refuses a request it cannot hold; free VRAM %.1f GiB would hold %llu tokens of KV beside nothing else)\n", __func__, cparams.n_ctx, free_b / 1073741824.0, (unsigned long long) (row ? free_b / row : 0));
+                LLAMA_LOG_WARN("%s: kv-tail: no -c: context %u tokens (the model maximum; the pool refuses a request it cannot hold; free VRAM %.1f GiB would hold %llu tokens of KV beside nothing else)\n", __func__, cparams.n_ctx, free_b / 1073741824.0, (unsigned long long) (row ? free_b / row : 0));
             }
         } else if (!tail_possible) {
             // the common code leaves n_ctx at 0 in tail mode (the tail needs no default), and 0 means the model's trained maximum: a static KV (and context-scaled graph
