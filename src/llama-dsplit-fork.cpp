@@ -783,6 +783,7 @@ static void dsplit_link_model(const llama_model & model, int64_t T) {
         if (seen > 0.0) { g_kv_layers.push_back({ a.dev, seen * a.row * 2.0 }); }
     }
 }
+static double dsplit_mm_rate(ggml_backend_dev_t d);   // below: the measured matmul rate of a card (weight bytes x tokens per second)
 static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_us, llama_dsplit_plan_fork & out, std::vector<double> & f_help, std::vector<double> & s_cards) {
     out = llama_dsplit_plan_fork();
     f_help.clear();
@@ -794,14 +795,14 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     }
     const ggml_backend_dev_t dm = cards[x];
     std::vector<double> B(n, 0.0), rel(n, 1.0);   // per card: upload rate, compute against the expert card's (probed at load)
-    const auto * pm = llama_gpu_probe_find_fork(dm);
     for (int i = 0; i < n; ++i) {
         B[i] = dsplit_link_once(cards[i]);
         if (B[i] <= 0.0) {
             return;
         }
-        const auto * pi = llama_gpu_probe_find_fork(cards[i]);
-        if (pm && pi && pm->compute > 0 && pi->compute > 0) { rel[i] = pi->compute / pm->compute; }
+        // compute against the expert card's: the measured matmul latencies (dsplit_mm_bench), else the probe's short burst
+        const double ri = dsplit_mm_rate(cards[i]), rx = dsplit_mm_rate(dm);
+        if (ri > 0.0 && rx > 0.0) { rel[i] = ri / rx; }
     }
     const int    L      = (int) model.hparams.n_layer();
     const double n_used = (double) std::max<uint32_t>(1, model.hparams.n_expert_used_max());
@@ -908,13 +909,98 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
 }
 
 static void dsplit_tune_load(int b);   // below: a size settled by an earlier start
+// ---- matmul latency per card, measured once before the first prompt (user 2026-10-25: "simulate a simple matmul, we need just latencies") --------------------
+// The probe's matmul (a fixed Q4_K shape at 512 tokens, before the model is known) set the cards' compute ratio and, with no prompt pass timed yet, nothing
+// else. Here each card of the split times ONE matmul shaped like the model's largest dense weight (its type, its width; a zeroed weight: the speed does not
+// depend on the values) at two token counts. The slope between them is the card's cost per token at a prompt pass's size (one count alone mixes in the fixed
+// launch and weight-read cost, which dominates at few tokens). Result: weight bytes x tokens per second per card, in g_mm_rate; about 100 MB of VRAM for a
+// few milliseconds. A card whose buffers cannot be allocated keeps the probe's rate.
+static std::map<ggml_backend_dev_t, double> g_mm_rate;   // under g_plan_mu
+static bool g_mm_done = false;
+static double dsplit_mm_rate(ggml_backend_dev_t d) {
+    auto it = g_mm_rate.find(d);
+    if (it != g_mm_rate.end() && it->second > 0.0) { return it->second; }
+    const auto * p = llama_gpu_probe_find_fork(d);
+    return p ? (p->compute_sust > 0.0 ? p->compute_sust : p->compute) : 0.0;
+}
+static void dsplit_mm_bench(const llama_model & model) {
+    if (g_mm_done || g_cards.size() < 2) { return; }
+    g_mm_done = true;
+    const ggml_tensor * big = nullptr;   // the largest dense weight of the model's first layers: its type and width stand for the dense part
+    for (int il = 0; il < (int) model.layers.size() && il < 4; ++il) {
+        const ggml_tensor * const * pt = reinterpret_cast<const ggml_tensor * const *>(&model.layers[il]);
+        for (size_t i = 0; i < sizeof(llama_layer) / sizeof(ggml_tensor *); ++i) {
+            const ggml_tensor * t = pt[i];
+            if (!t || ggml_n_dims(t) != 2 || strstr(t->name, "_exps") || strstr(t->name, "nextn")) { continue; }
+            if (!big || ggml_nbytes(t) > ggml_nbytes(big)) { big = t; }
+        }
+    }
+    if (!big) { return; }
+    const int64_t K = big->ne[0], N = std::min<int64_t>(big->ne[1], 8192);
+    const int64_t T0 = 256, T1 = 1024;
+    for (ggml_backend_dev_t d : g_cards) {
+        ggml_backend_t be = ggml_backend_dev_init(d, nullptr);
+        if (!be) { continue; }
+        ggml_init_params ip = { 8 * ggml_tensor_overhead() + 2 * ggml_graph_overhead(), nullptr, true };
+        ggml_context * ctx = ggml_init(ip);
+        ggml_tensor * W  = ggml_new_tensor_2d(ctx, big->type, K, N);
+        ggml_tensor * X0 = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, K, T0);
+        ggml_tensor * X1 = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, K, T1);
+        ggml_cgraph * g0 = ggml_new_graph(ctx); ggml_build_forward_expand(g0, ggml_mul_mat(ctx, W, X0));
+        ggml_cgraph * g1 = ggml_new_graph(ctx); ggml_build_forward_expand(g1, ggml_mul_mat(ctx, W, X1));
+        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be);
+        double best[2] = { 1e30, 1e30 };
+        if (buf) {
+            ggml_backend_buffer_clear(buf, 0);
+            ggml_cgraph * gs[2] = { g0, g1 };
+            for (int k = 0; k < 2; ++k) {
+                ggml_backend_graph_compute(be, gs[k]);   // warm-up (kernel load, clocks)
+                for (int r = 0; r < 5; ++r) {
+                    const int64_t t0 = ggml_time_us();
+                    ggml_backend_graph_compute(be, gs[k]);
+                    ggml_backend_synchronize(be);
+                    best[k] = std::min(best[k], (double) (ggml_time_us() - t0));
+                }
+            }
+            ggml_backend_buffer_free(buf);
+        }
+        if (buf && best[1] > best[0]) {
+            const double rate = (double) ggml_nbytes(W) * (double) (T1 - T0) / ((best[1] - best[0]) / 1e6);   // weight bytes x tokens per second
+            g_mm_rate[d] = rate;
+            LLAMA_LOG_WARN("split planner: matmul latency on %s (%s %lldx%lld): %.0f us at %lld tokens, %.0f us at %lld: %.2f us per token, %.1f GB*token/s (probe %.1f)\n",
+                    ggml_backend_dev_name(d), ggml_type_name(big->type), (long long) K, (long long) N, best[0], (long long) T0, best[1], (long long) T1,
+                    (best[1] - best[0]) / (double) (T1 - T0), rate / 1e9, [&] { const auto * p = llama_gpu_probe_find_fork(d); return p ? (p->compute_sust > 0 ? p->compute_sust : p->compute) / 1e9 : 0.0; }());
+        } else {
+            LLAMA_LOG_WARN("split planner: matmul latency on %s not measured (no buffer): the probe's rate stands\n", ggml_backend_dev_name(d));
+        }
+        ggml_free(ctx);
+        ggml_backend_free(be);
+    }
+}
+
 llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int64_t n_tokens) {
     static const bool plan_on = [] { const char * e = llama_moe_get_opt("split-plan"); return !e || atoi(e) != 0; }();   // --moe split-plan=0: no model, the measured choice and the old start shares
     if (!plan_on) {
         return llama_dsplit_plan_fork();
     }
-    const double c_us = llama_moe_cache_compute_us_fork();
+    double c_us = llama_moe_cache_compute_us_fork();
     std::lock_guard<std::mutex> lk(g_plan_mu);
+    dsplit_mm_bench(model);
+    // Calculated, not measured, for the first prompt (user 2026-10-25: "calculated split first pass"): before any prompt pass is timed the compute per token
+    // is the weight bytes a token reads (dense weights + its active experts, dsplit_link_model) over the expert card's matmul rate measured at start (probe:
+    // weight bytes x tokens per second, the sustained burst when there is one). Without it the plan was invalid and the first prompt ran on one card
+    // ("no plan or measurement yet: one card first"). The first measured pass replaces it (the probe's small Q4_K graph is only an estimate of the real kernels).
+    if (c_us <= 0.0 && g_w_bytes_tok > 0.0 && !g_cards.empty()) {
+        {
+            const double rate = dsplit_mm_rate(g_cards.back());
+            if (rate > 0.0) {
+                c_us = g_w_bytes_tok / rate * 1e6;
+                static bool said = false;
+                if (!said) { said = true; LLAMA_LOG_WARN("split planner: compute per token calculated (no prompt pass timed yet): %.0f MB of weights per token / %.1f GB*token/s (matmul latency) on %s = %.1f us per token\n",
+                        g_w_bytes_tok / 1e6, rate / 1e9, ggml_backend_dev_name(g_cards.back()), c_us); }
+            }
+        }
+    }
     dsplit_calib_load(model);
     const int b = dsplit_bucket_of(n_tokens);
     auto & pc = g_plans[b];
@@ -1710,15 +1796,10 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
             B.passes++;
         }
     }
-    {
-        // Never split on a prediction alone: this size needs a measured one-card pass to compare with (2026-10-23: the model was 2.2 s per pass off on Qwen Next).
-        // The first pass of a size runs on one card; the split is tried once the planner, now scaled by that measurement, still puts it clearly ahead.
-        const auto bk = g_buckets.find(dsplit_bucket_of(n_tokens));
-        if (choice == 1 && dsplit_opt_auto() && managed && (bk == g_buckets.end() || bk->second.n[0] == 0)) {
-            choice = 0;
-            why    = "one card first: no measured one-card pass at this size to compare the split with";
-        }
-    }
+    // (Until 2026-10-25 a size needed a measured one-card pass before the split was tried: "never split on a prediction alone", after the model was 2.2 s per
+    // pass off on Qwen Next. User 2026-10-25: the first pass takes the calculated split. The prediction is now the compute calculated from the probe until a pass
+    // is timed, and once one card is measured the split's estimate is scaled by the same correction (the ratio is trusted, not the size), so a first pass
+    // the model misjudges is corrected by the measured passes after it.)
     if (choice == 1 && n_tokens >= g_veto_tokens) {
         choice = 0;   // the split graph of this size did not fit behind the mirror copies once: one card
         why    = "one card: the split pass did not fit behind the copies";
