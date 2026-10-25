@@ -39,6 +39,8 @@
 #include <mutex>
 #include <tuple>
 
+int32_t llama_dsplit_sparse_min_fork();   // llama-dsplit-fork.cpp: the measured K/V length from which the sparse attention gather runs (0: backend rule)
+
 // fork (llama-dsplit-fork.cpp): the cards of a dense split pass and their shares, declared here so that no shared header changes
 void   llama_dsplit_cards_fork(std::vector<ggml_backend_dev_t> & out);   // the cards that take a range, the expert card last (empty: no split)
 std::vector<size_t> llama_dsplit_attn_order_fork(const std::vector<ggml_backend_dev_t> & range_devs, const ggml_tensor * cache);   // ranges' attention order: the cache's card last
@@ -4190,6 +4192,8 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         ggml_flash_attn_ext_add_sinks(cur, sinks);
         GGML_ASSERT(n_kv_max >= 0 && n_kv_max <= INT32_MAX);
         ggml_flash_attn_ext_set_n_kv_max(cur, static_cast<int32_t>(n_kv_max));
+        // fork: from which K/V length the gather runs, as measured at load (llama-dsplit-fork.cpp dsplit_att_bench; 0: the backend's own rule)
+        if (const int32_t smin = llama_dsplit_sparse_min_fork(); smin > 0 && n_kv_max > 0) { ggml_flash_attn_ext_set_sparse_min(cur, smin); }
         ggml_prec_set_acc(cur, GGML_PREC_F32);
 
         if (v_mla) {

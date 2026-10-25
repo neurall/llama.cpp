@@ -5655,6 +5655,15 @@ enum ggml_prec ggml_flash_attn_ext_get_prec(
     return (enum ggml_prec) prec_i32;
 }
 
+void ggml_flash_attn_ext_set_sparse_min(
+        struct ggml_tensor * a,
+        int32_t              n_kv_min) {
+    GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
+    GGML_ASSERT(n_kv_min >= 0);
+
+    ggml_set_op_params_i32(a, 5, n_kv_min);
+}
+
 void ggml_flash_attn_ext_set_n_kv_max(
         struct ggml_tensor * a,
         int32_t              n_kv_max) {

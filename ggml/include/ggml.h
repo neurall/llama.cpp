@@ -2538,6 +2538,12 @@ extern "C" {
 
     // Use finite mask entries as a sparse K/V set. Set 0 to disable.
     // n_kv_max must bound the number of finite entries in every mask row.
+    // fork: the K/V length from which a flash attention with n_kv_max uses the sparse gather (0: the backend's own rule). Measured by llama at load:
+    // the context where gathering the selected cells beats attending to all of them with a mask
+    GGML_API void ggml_flash_attn_ext_set_sparse_min(
+            struct ggml_tensor * a,
+            int32_t              n_kv_min);
+
     GGML_API void ggml_flash_attn_ext_set_n_kv_max(
             struct ggml_tensor * a,
             int32_t              n_kv_max);

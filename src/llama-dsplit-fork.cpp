@@ -1032,6 +1032,89 @@ static double dsplit_mm_rate(ggml_backend_dev_t d) {
     const auto * p = llama_gpu_probe_find_fork(d);
     return p ? (p->compute_sust > 0.0 ? p->compute_sust : p->compute) : 0.0;
 }
+// ---- sparse attention gate (models whose attention selects cells: an indexer's top-k, hp.indexer_top_k > 0) ---------------------------------------------
+// Their attention runs with n_kv_max = the selection (glm5-next, qwen4exp), and the CUDA kernel gathers just those cells - but only from a K/V length its own
+// rule fixes (max(4096, 2 x queries per tile x selection): ~33k cells for GLM-5.3-Flash prompt passes). Below that it attends to every cell with a mask, and
+// the cost per token grows with the context: GLM 3.0 on an RTX 3090, 1302 us per token at 24-33k cells on the masked path, 924 at 33-42k on the gather.
+// Here both paths are timed at load for the model's attention (its heads and head sizes) at 4k, 8k, 16k and 32k cells, over a mask that gives every
+// query a DIFFERENT selection (the union the gather collects per tile is then the largest it gets: the gate found is where the gather wins even so), and
+// the gate is set where the gather starts to win (interpolated), the largest over the cards. --moe sparse-gate=0: the kernel's own rule.
+static std::vector<int32_t> g_sparse_min_card;   // under g_plan_mu: one entry per measured card, 0 = the gather did not win up to 32k cells there
+static int32_t g_sparse_min = 0;
+int32_t llama_dsplit_sparse_min_fork() {
+    static const bool on = [] { const char * e = llama_moe_get_opt("sparse-gate"); return !e || atoi(e) != 0; }();
+    return on ? g_sparse_min : 0;
+}
+static void dsplit_sparse_bench(const llama_model & model, ggml_backend_dev_t d, ggml_backend_t be, int64_t hsk, int64_t hsv, int64_t nh, int64_t nkv, bool mla) {
+    const auto & hp = model.hparams;
+    if (hp.indexer_top_k == 0) { return; }
+    const int64_t kpool = std::max<int64_t>(1, hp.indexer_kpool);
+    const int64_t C[4] = { 4096, 8192, 16384, 32768 };
+    double td[4], ts[4];
+    int64_t nsel_last = 0;
+    for (int k = 0; k < 4; ++k) {
+        const int64_t n_pool = C[k] / kpool;
+        const int64_t n_sel  = kpool * std::min<int64_t>(n_pool, (int64_t) hp.indexer_top_k / kpool) + (hp.indexer_kpool_select_tail ? kpool - 1 : 0);
+        nsel_last = n_sel;
+        ggml_init_params ip = { 16 * ggml_tensor_overhead() + 3 * ggml_graph_overhead(), nullptr, true };
+        ggml_context * ctx = ggml_init(ip);
+        ggml_tensor * q  = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, hsk, ATT_T, nh, 1);
+        ggml_tensor * kt = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, hsk, C[k], nkv, 1);
+        ggml_tensor * vt = mla ? ggml_view_4d(ctx, kt, hsv, C[k], nkv, 1, kt->nb[1], kt->nb[2], kt->nb[3], 0)
+                               : ggml_new_tensor_4d(ctx, GGML_TYPE_F16, hsv, C[k], nkv, 1);
+        ggml_tensor * m  = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, C[k], ATT_T, 1, 1);
+        const float scale = 1.0f / sqrtf((float) hsk);
+        ggml_tensor * fd = ggml_flash_attn_ext(ctx, q, kt, vt, m, scale, 0.0f, 0.0f);
+        ggml_tensor * fs = ggml_flash_attn_ext(ctx, q, kt, vt, m, scale, 0.0f, 0.0f);
+        ggml_flash_attn_ext_set_n_kv_max(fs, (int32_t) n_sel);
+        ggml_flash_attn_ext_set_sparse_min(fs, 1);   // the gather whatever the length
+        ggml_cgraph * gd = ggml_new_graph(ctx); ggml_build_forward_expand(gd, fd);
+        ggml_cgraph * gs = ggml_new_graph(ctx); ggml_build_forward_expand(gs, fs);
+        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be);
+        td[k] = ts[k] = 1e30;
+        if (buf) {
+            ggml_backend_buffer_clear(buf, 0);
+            std::vector<ggml_fp16_t> mh((size_t) C[k] * ATT_T, ggml_fp32_to_fp16(-INFINITY));
+            for (int64_t r = 0; r < ATT_T; ++r) {
+                for (int64_t j = 0; j < n_sel; ++j) { mh[(size_t) r * C[k] + (size_t) ((r * n_sel + j) % C[k])] = ggml_fp32_to_fp16(0.0f); }
+            }
+            ggml_backend_tensor_set(m, mh.data(), 0, mh.size() * sizeof(ggml_fp16_t));
+            ggml_cgraph * g2[2] = { gd, gs };
+            double * t2[2] = { &td[k], &ts[k] };
+            for (int a = 0; a < 2; ++a) {
+                for (int r = 0; r < 2; ++r) { ggml_backend_graph_compute(be, g2[a]); }
+                ggml_backend_synchronize(be);
+                for (int r = 0; r < 5; ++r) {
+                    const int64_t t0 = ggml_time_us();
+                    ggml_backend_graph_compute(be, g2[a]);
+                    ggml_backend_synchronize(be);
+                    *t2[a] = std::min(*t2[a], (double) (ggml_time_us() - t0));
+                }
+            }
+            ggml_backend_buffer_free(buf);
+        }
+        ggml_free(ctx);
+        if (!buf) { LLAMA_LOG_WARN("split planner: sparse attention gate on %s not measured (no buffer at %lld cells)\n", ggml_backend_dev_name(d), (long long) C[k]); return; }
+    }
+    // the gate: where the gather starts to win, interpolated between the two lengths around the change (0: it never won up to 32k cells)
+    int32_t gate = 0;
+    for (int k = 0; k < 4 && gate == 0; ++k) {
+        if (ts[k] >= td[k]) { continue; }
+        if (k == 0) { gate = (int32_t) C[0]; break; }
+        const double a = td[k - 1] - ts[k - 1], b = td[k] - ts[k];   // a <= 0 < b
+        gate = (int32_t) ((double) C[k - 1] + (double) (C[k] - C[k - 1]) * (-a) / std::max(1e-9, b - a));
+    }
+    g_sparse_min_card.push_back(gate);
+    bool all = !g_sparse_min_card.empty();
+    int32_t mx = 0;
+    for (int32_t v : g_sparse_min_card) { all = all && v > 0; mx = std::max(mx, v); }
+    g_sparse_min = all ? mx : 0;
+    LLAMA_LOG_WARN("split planner: sparse attention gate on %s (selection %lld cells, %lld query heads, K %lld V %lld%s, %lld tokens): masked / gather %.0f/%.0f, %.0f/%.0f, "
+                   "%.0f/%.0f, %.0f/%.0f us at 4k/8k/16k/32k cells: the gather from %s (the gate now: %d cells)\n", ggml_backend_dev_name(d), (long long) nsel_last,
+            (long long) nh, (long long) hsk, (long long) hsv, mla ? ", MLA" : "", (long long) ATT_T, td[0], ts[0], td[1], ts[1], td[2], ts[2], td[3], ts[3],
+            gate > 0 ? (std::to_string(gate) + " cells").c_str() : "never up to 32k (the kernel's own rule stays)", g_sparse_min);
+}
+
 static void dsplit_att_bench(const llama_model & model, ggml_backend_dev_t d, ggml_backend_t be) {
     const auto & hp = model.hparams;
     {   // which layers grow with the context, from the GGUF (user 2026-10-25: "extract from the gguf how many are quadratic, the rest linear"; run.py stores the line in models.ini)
@@ -1042,7 +1125,7 @@ static void dsplit_att_bench(const llama_model & model, ggml_backend_dev_t d, gg
             for (uint32_t i = 0; i < hp.n_layer(); ++i) { if (hp.is_recr(i)) { lin++; } else if (hp.is_swa(i)) { swa++; } else { full++; } }
             LLAMA_LOG_WARN("split planner: attention layers: %d full (grow with the context), %d sliding-window (window %u), %d linear (no context term), sparse top-k %u%s\n",
                     full, swa, hp.n_swa, lin, hp.indexer_top_k,
-                    hp.indexer_top_k > 0 ? " (the kernel still reads every cell: the selection does not cap the cost)" : "");
+                    hp.indexer_top_k > 0 ? " (the attention gathers only the selected cells above the sparse gate, dsplit_sparse_bench)" : "");
         }
     }
     int il = -1;
@@ -1093,6 +1176,7 @@ static void dsplit_att_bench(const llama_model & model, ggml_backend_dev_t d, gg
     f.a = t[0] - f.b * (double) C[0] - f.g * (double) C[0] * (double) C[0];
     f.ok = f.b > 0.0 || f.g > 0.0;
     g_att_fit[d] = f;
+    dsplit_sparse_bench(model, d, be, hsk, hsv, nh, nkv, mla);
     LLAMA_LOG_WARN("split planner: attention latency on %s (layer %d, %lld heads / %lld KV heads, K %lld V %lld%s, %lld tokens): %.0f / %.0f / %.0f us at 2k / 8k / 32k cells: "
                    "t(c) = %.1f + %.5f c + %.3g c^2 us, %.4f us per token per cell (at 32k cells %.0f%% of it from the c^2 term)\n",
             ggml_backend_dev_name(d), il, (long long) nh, (long long) nkv, (long long) hsk, (long long) hsv, mla ? ", MLA" : "", (long long) ATT_T, t[0], t[1], t[2],
