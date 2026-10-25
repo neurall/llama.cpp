@@ -5024,8 +5024,25 @@ def cell_status(t0, expect, label, total=None):
                 for _, b_ in rows:
                     t_ = sum(c_.get("tok", 0) for c_ in (b_.get("cards") or [])); cum.append(run_tok + t_ / 2); run_tok += t_
                 npass = len(rows) if not sys.stdout.isatty() else max(6, (shutil.get_terminal_size((100, 40)).lines - 24) // 2)   # every pass (user 2026-10-25: keep all) as far as the terminal is tall: a taller block scrolls it and the whole screen repaints, so the oldest drop off first
-                for k, (sg, b) in list(enumerate(rows, 1))[-npass:]:
-                    eng += "".join("\n" + l for l in pass_rows(k, b, lw, sg, cum[k - 1]))
+                # runs (user 2026-10-25: "add separator, count from 1 again"): a pass whose centre is lower than the one before starts a new request (the same prompt
+                # again, or the next cell); each run gets a separator line and its passes are numbered from 1 again
+                run_no, k_run, prev_c = 1, 0, None
+                numbered = []
+                for idx, (sg, b) in enumerate(rows):
+                    c_ = cum[idx]
+                    if prev_c is not None and c_ < prev_c:
+                        run_no += 1
+                        k_run = 0
+                    prev_c = c_
+                    k_run += 1
+                    numbered.append((run_no, k_run, sg, b, c_))
+                shown = numbered[-npass:]
+                last_run = None
+                for run_i, k, sg, b, c_ in shown:
+                    if run_i != last_run and (last_run is not None or run_no > 1):
+                        eng += "\n" + col(90, f"  ---- run {run_i} " + "-" * 60)
+                    last_run = run_i
+                    eng += "".join("\n" + l for l in pass_rows(k, b, lw, sg, c_))
                 cur = sp.get("cur") or {}
                 if cur.get("cards"):   # the pass running now (the ranges of the split graph built last); after the last pass it equals that pass and ages out
                     cap = cur.get("cap_max") or cur.get("cap") or 0   # % of the context's card limit
