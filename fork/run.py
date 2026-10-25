@@ -5006,7 +5006,7 @@ def cell_status(t0, expect, label, total=None):
                     # the global wait sum (user 2026-10-25: "judge from the sum of wait times, keep the global sum visible"): every measured pass of this run,
                     # per card: its waiting (for its dense / expert inputs and for another card) and its whole time on the cards; the share of waiting is the
                     # efficiency to compare between builds
-                    wsum, tsum, per = {}, 0.0, {}
+                    wsum, tsum, per, wall = {}, 0.0, {}, 0.0
                     for _, bb in rows:
                         for c in (bb.get("cards") or []):
                             wt = (c.get("xw_ms", 0) if c.get("xw_ms") is not None and "xw_ms" in c else (c.get("wait_dense_ms", 0) + c.get("wait_moe_ms", 0))) / 1e3
@@ -5014,9 +5014,11 @@ def cell_status(t0, expect, label, total=None):
                             wsum[k_] = wsum.get(k_, 0.0) + wt
                             per[k_] = per.get(k_, 0) + 1
                         tsum += (bb.get("span_ms") or 0) / 1e3 * max(1, len(bb.get("cards") or []))
+                        wall += (bb.get("span_ms") or 0) / 1e3   # wall time of the passes (the cards overlap inside a pass)
                     tot_w = sum(wsum.values())
                     eng += ("\n" + col(37, f"  waits so far: {len(rows)} passes, " + ", ".join(f"{k} {v:.1f} s" for k, v in wsum.items())
-                            + f", all cards {tot_w:.1f} s" + (f" = {100 * tot_w / tsum:.0f}% of the cards' time" if tsum > 0 else "")))
+                            + f", all cards {tot_w:.1f} s" + (f" = {100 * tot_w / tsum:.0f}% of the cards' time" if tsum > 0 else "")
+                            + f"; passes wall {wall:.1f} s"))
                     eng += "\n" + col(37, "  pass tokens   time  " + "card".ljust(lw) + " " + " ".join(n.rjust(w) for n, w in PW))
                 cum, run_tok = [], 0   # the cells each pass is centred on: the tokens of the passes before it plus half its own
                 for _, b_ in rows:
