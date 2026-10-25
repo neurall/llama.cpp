@@ -648,6 +648,106 @@ static std::string dsplit_state_key(const std::string & what) {
     return what + "@" + g_hw_key + "#" + (bid ? bid : "");
 }
 static bool dsplit_state_on() { return !g_calib_section.empty() && !g_hw_key.empty() && llama_moe_get_opt("build-id"); }   // no build id (a tool without common's setup): session only
+// ---- dense-split factors learned from every request (user 2026-10-25: "any request measures and stores ... per GPU per token times"; "decide dense on or off
+// from them for a given prompt length") ------------------------------------------------------------------------------------------------------------------------
+// Every prompt pass, one card or split, is timed: wall time from its decision to the synchronize before the next pass (or the end of its call), the copy
+// fill and the expert card's waits for expert uploads taken out, per token: the pass's compute per token (the upload is added back per planned pass size
+// as max(upload, compute), llama_moe_cache_pass_upload_ms_fork). Kept per context bucket of 8192 cells, because a token costs more the more cells it attends to and the sparse-attention gate
+// makes that curve jump (GLM 3.0: 1302 us/token at 24-33k cells, 924 at 33-42k): one-card passes in dsf.one.k<b>, split passes in dsf.split.k<b>. A split
+// pass also keeps each card's dense us/token (dsf.dense.<card>.k<b>). Only these go to the state file, per model, cards AND build (user: a new build can be faster
+// or slower, it learns its own; "store only what is hard to get, like attention": what a start measures cheaply - link rates, hand-off bytes, the copy fill,
+// a card's matmul rate - is measured again at every start and kept in memory). Loaded at the first decision.
+// The decision for a pass at context c with R tokens left in its call: split when R x (one(c) - split(c)) beats the copy fill still to pay (0 when the copies
+// are valid) by split_min_gain of the one-card time. A side not measured at c takes its nearest measured context; a side never measured comes from the other
+// side and the cards' dense factors: with equal dense time on every card a token's dense part costs 1 / sum_i 1 / (d_i + hop_i) instead of d_x, so the
+// split saves sigma = d_x - 1 / sum_i 1 / (d_i + hop_i) per token. Nothing measured yet (a new build's first request): the planner as before.
+// ponytail: the nearest context is taken as it is (no attention correction between buckets), one value per bucket whatever the pass size.
+// a measured value: the median of its last DSF_KEEP samples (user 2026-10-25: "us/token are noisy as well": one slow pass - cold caches, a clock dip, a
+// background job - cannot move a median of five), n = samples seen
+static constexpr size_t DSF_KEEP = 5;
+struct dsf_pt {
+    std::vector<double> s;
+    int n = 0;
+    double us = 0.0;   // the median of s
+};
+static std::mutex g_dsf_mu;   // innermost lock (taken under g_mu and g_plan_mu, never the other way)
+static std::map<int, dsf_pt> g_dsf_one, g_dsf_split;
+static std::map<std::string, std::map<int, dsf_pt>> g_dsf_dense;
+static std::map<std::string, dsf_pt> g_dsf_hop;
+static dsf_pt g_dsf_fill;
+static bool g_dsf_loaded = false;
+static constexpr int64_t DSF_CELLS = 8192;
+struct dsf_pass { int choice = -1; int64_t T = 0, pos0 = -1, t0 = 0; double fill_ms = 0.0; ggml_backend_dev_t xdev = nullptr; };
+double llama_moe_cache_pass_upload_ms_fork(uint32_t n_tokens, uint32_t n_used, uint32_t n_expert);   // llama-moecache-fork.cpp: a pass's expert upload (ms)
+static dsf_pass g_dsf_ps;                // the prompt pass decided last (open until the synchronize after it)
+static int64_t  g_dsf_next_pos0 = -1;    // the first position of the pass about to be decided (llama_context)
+static void dsf_med(dsf_pt & p) {
+    std::vector<double> t = p.s;
+    std::sort(t.begin(), t.end());
+    p.us = t.empty() ? 0.0 : (t.size() % 2 ? t[t.size() / 2] : 0.5 * (t[t.size() / 2 - 1] + t[t.size() / 2]));
+}
+static void dsf_upd(dsf_pt & p, double v) {
+    p.s.push_back(v);
+    if (p.s.size() > DSF_KEEP) { p.s.erase(p.s.begin()); }
+    p.n = std::min(p.n + 1, 1000000);
+    dsf_med(p);
+}
+static std::string dsf_val(const dsf_pt & p) {   // "n v1 v2 ...": samples seen, then the kept samples (oldest first)
+    std::string o = std::to_string(p.n);
+    for (double v : p.s) { char b[32]; snprintf(b, sizeof b, " %.3f", v); o += b; }
+    return o;
+}
+static bool dsf_parse(const std::string & v, dsf_pt & p) {
+    const char * c = v.c_str();
+    char * e = nullptr;
+    p.n = (int) strtol(c, &e, 10);
+    if (e == c) { return false; }
+    for (c = e; ; c = e) { const double x = strtod(c, &e); if (e == c) { break; } p.s.push_back(x); }
+    if (p.s.size() > DSF_KEEP) { p.s.erase(p.s.begin(), p.s.end() - DSF_KEEP); }
+    dsf_med(p);
+    return !p.s.empty();
+}
+static void dsf_save(const std::vector<std::pair<std::string, std::string>> & kv) {   // under g_dsf_mu
+    if (!dsplit_state_on() || kv.empty()) { return; }
+    std::vector<std::pair<std::string, std::string>> o;
+    for (const auto & e : kv) { o.push_back({ dsplit_state_key(e.first), e.second }); }
+    moe_state_set(g_calib_section, o);
+}
+// the samples are kept live in memory; the state file is written once at the end of a call (user 2026-10-25: "observe the last per-token times live, store
+// them at the request's end, if not stored already"), only the buckets that got a sample since
+static std::set<std::string> g_dsf_dirty;                  // keys (dsf.one.k3, dsf.dense.CUDA0.k3, ...) with samples not written yet
+static std::map<std::string, const dsf_pt *> g_dsf_ref;    // the value behind each key (std::map nodes do not move)
+static void dsf_mark(const std::string & key, const dsf_pt & p) { g_dsf_dirty.insert(key); g_dsf_ref[key] = &p; }
+static void dsf_flush() {   // under g_dsf_mu
+    if (g_dsf_dirty.empty()) { return; }
+    std::vector<std::pair<std::string, std::string>> kv;
+    for (const auto & k : g_dsf_dirty) { auto it = g_dsf_ref.find(k); if (it != g_dsf_ref.end() && it->second) { kv.push_back({ k, dsf_val(*it->second) }); } }
+    g_dsf_dirty.clear();
+    dsf_save(kv);
+}
+static void dsf_load() {   // under g_dsf_mu: this build's factors from the state file, once
+    if (g_dsf_loaded || !dsplit_state_on()) { return; }
+    g_dsf_loaded = true;
+    std::vector<std::pair<std::string, std::string>> kv;
+    if (!moe_state_section_kv(g_calib_section, kv)) { return; }
+    const std::string suf = dsplit_state_key("");
+    auto kidx = [](const std::string & w) { const size_t q = w.rfind(".k"); return q == std::string::npos ? -1 : atoi(w.c_str() + q + 2); };
+    for (const auto & e : kv) {
+        const std::string & k = e.first;
+        if (k.rfind("dsf.", 0) != 0 || k.size() <= suf.size() + 4 || k.compare(k.size() - suf.size(), suf.size(), suf) != 0) { continue; }
+        const std::string w = k.substr(4, k.size() - suf.size() - 4);   // one.k3, split.k3, dense.CUDA0.k3, hop.CUDA0, fill
+        dsf_pt pt;
+        if (!dsf_parse(e.second, pt)) { continue; }
+        if (w.rfind("one.k", 0) == 0) { g_dsf_one[kidx(w)] = pt; }
+        else if (w.rfind("split.k", 0) == 0) { g_dsf_split[kidx(w)] = pt; }
+        else if (w.rfind("dense.", 0) == 0 && w.rfind(".k") != std::string::npos) { g_dsf_dense[w.substr(6, w.rfind(".k") - 6)][kidx(w)] = pt; }
+        else if (w.rfind("hop.", 0) == 0) { g_dsf_hop[w.substr(4)] = pt; }
+        else if (w == "fill") { g_dsf_fill = pt; }
+    }
+    LLAMA_LOG_WARN("split factors: %zu one-card and %zu split contexts, dense curves of %zu cards, copy fill %.0f ms (%d prompts) from the state file (this build)\n",
+            g_dsf_one.size(), g_dsf_split.size(), g_dsf_dense.size(), g_dsf_fill.us, g_dsf_fill.n);
+}
+
 static void dsplit_calib_load(const llama_model & model) {
     if (!g_calib_section.empty()) { return; }
     g_calib_section = moe_state_section(model);
@@ -1013,8 +1113,8 @@ static double dsplit_att_us_tok(const llama_model & model, ggml_backend_dev_t d,
     return us;
 }
 
-static void dsplit_mm_bench(const llama_model & model) {
-    if (g_mm_done || g_cards.size() < 2) { return; }
+static void dsplit_mm_bench(const llama_model & model, const std::vector<ggml_backend_dev_t> & devs) {
+    if (g_mm_done || devs.size() < 2) { return; }
     g_mm_done = true;
     const ggml_tensor * big = nullptr;   // the largest dense weight of the model's first layers: its type and width stand for the dense part
     for (int il = 0; il < (int) model.layers.size() && il < 4; ++il) {
@@ -1028,7 +1128,7 @@ static void dsplit_mm_bench(const llama_model & model) {
     if (!big) { return; }
     const int64_t K = big->ne[0], N = std::min<int64_t>(big->ne[1], 8192);
     const int64_t T0 = 256, T1 = 1024;
-    for (ggml_backend_dev_t d : g_cards) {
+    for (ggml_backend_dev_t d : devs) {
         ggml_backend_t be = ggml_backend_dev_init(d, nullptr);
         if (!be) { continue; }
         ggml_init_params ip = { 8 * ggml_tensor_overhead() + 2 * ggml_graph_overhead(), nullptr, true };
@@ -1071,6 +1171,16 @@ static void dsplit_mm_bench(const llama_model & model) {
     }
 }
 
+// The matmul and attention latencies are timed when the first context is created, before its KV cache and the expert pool take the VRAM. At the first prompt
+// (where they ran in pre7/pre8) the pool had left 96-358 MiB on each card: the timing's own backend, buffers and kernel scratch did not fit, and auto mode died
+// with "CUDA error: out of memory" in cuMemCreate (MiMo 60k, pre7; forced dense split never reached the planner, so it never timed and never failed).
+void llama_dsplit_bench_fork(const llama_model & model) {
+    std::vector<ggml_backend_dev_t> devs;
+    for (const auto & d : model.devices) { if (ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { devs.push_back(d.dev); } }
+    std::lock_guard<std::mutex> lk(g_plan_mu);
+    dsplit_mm_bench(model, devs);
+}
+
 llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int64_t n_tokens) {
     static const bool plan_on = [] { const char * e = llama_moe_get_opt("split-plan"); return !e || atoi(e) != 0; }();   // --moe split-plan=0: no model, the measured choice and the old start shares
     if (!plan_on) {
@@ -1078,7 +1188,6 @@ llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int
     }
     double c_us = llama_moe_cache_compute_us_fork();
     std::lock_guard<std::mutex> lk(g_plan_mu);
-    dsplit_mm_bench(model);
     // Calculated, not measured, for the first prompt (user 2026-10-25: "calculated split first pass"): before any prompt pass is timed the compute per token
     // is the weight bytes a token reads (dense weights + its active experts, dsplit_link_model) over the expert card's matmul rate measured at start (probe:
     // weight bytes x tokens per second, the sustained burst when there is one). Without it the plan was invalid and the first prompt ran on one card
@@ -1545,6 +1654,32 @@ void dsplit_bal_step(int b) {
     }
     (void) c_max;
     dsplit_climb_step(B, n);
+    {   // this split pass's per-card factors (dsf): dense us/token at its context; hand-off; and for the experts on a card (dense + experts on cards whose links can
+        // stream them, x16 / PCIe 5; user 2026-10-25): its expert compute per token of its expert share, and its measured upload rate
+        std::lock_guard<std::mutex> dl(g_dsf_mu);
+        dsf_load();
+        if (g_dsf_ps.choice == 1 && g_dsf_ps.pos0 >= 0) {
+            const int kb = (int) ((g_dsf_ps.pos0 + g_dsf_ps.T / 2) / DSF_CELLS);
+            for (size_t i = 0; i < n && i < B.c.size(); ++i) {
+                if (g_rng_tok[i] <= 0 || B.c[i] <= 0.0) { continue; }
+                const std::string nm = ggml_backend_dev_name(g_rng_dev[i]);
+                dsf_pt & dd = g_dsf_dense[nm][kb];
+                dsf_upd(dd, B.c[i]);
+                dsf_mark("dsf.dense." + nm + ".k" + std::to_string(kb), dd);
+                if (i < B.hop.size() && B.hop[i] > 0.0) { dsf_upd(g_dsf_hop[nm], B.hop[i]); }   // in memory only: bytes per token / link rate, known at every start
+                if (i < B.f_run.size() && B.f_run[i] > 0.0 && i < B.m.size() && B.m[i] > 0.0) {   // us per token of this card's share of a layer's experts
+                    static std::map<std::string, dsf_pt> moe;
+                    dsf_pt & m = moe[nm];
+                    dsf_upd(m, B.m[i] * 1e3 / ((double) T * B.f_run[i]));   // in memory only (user 2026-10-25: store only what is hard to get, like attention)
+                }
+                if (i < B.ln.size() && B.ln[i] > 0.0 && i < B.gb_up.size() && B.gb_up[i] > 0.01) {   // measured upload GB/s on this card's link (expert uploads)
+                    static std::map<std::string, dsf_pt> up;
+                    dsf_pt & u = up[nm];
+                    dsf_upd(u, B.gb_up[i] / (B.ln[i] / 1e3));   // in memory only: the probe measures the links at every start
+                }
+            }
+        }
+    }
     // the next pass's shares: the zero-wait rule from this pass's measured times (dsplit_zw); every expert stays on the expert card (the dense split alone)
     dsplit_zw_step(B, T);
     const std::string msg = format("zero-wait shares (%s)", g_zw.src.c_str());
@@ -1807,6 +1942,143 @@ static void dsplit_hw_check(const llama_model & model) {
     g_plans.clear(); g_bal.clear(); g_tune.clear();
 }
 
+// A curve of us/token over the context, fitted to the buckets' medians (user 2026-10-25: "store all per token times in an array, then extract the linear and
+// the nonlinear part: the token number where it changes and its term"): one line a + b c, or two lines with a break at c0 - the sparse-attention gate makes
+// a token's cost drop there (GLM 3.0: 1302 us/token at 24-33k cells, 924 at 33-42k). The break is kept only when it beats the single line by AIC (n ln(SSE/n)
+// + 2k, k the parameters: 2 for a line, 5 for two lines and the break), so noise between buckets does not make one; at least 3 buckets on each side.
+struct dsf_fit {
+    bool   ok = false;
+    double a = 0.0, b = 0.0, c0 = -1.0, a2 = 0.0, b2 = 0.0;
+    double at(double c) const { return c0 >= 0.0 && c >= c0 ? a2 + b2 * c : a + b * c; }
+};
+static void dsf_line(const std::vector<std::pair<double, double>> & p, size_t i0, size_t i1, double & a, double & b, double & sse) {
+    const double n = (double) (i1 - i0);
+    double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+    for (size_t i = i0; i < i1; ++i) { sx += p[i].first; sy += p[i].second; sxx += p[i].first * p[i].first; sxy += p[i].first * p[i].second; }
+    const double den = n * sxx - sx * sx;
+    b = den > 0.0 ? (n * sxy - sx * sy) / den : 0.0;
+    a = (sy - b * sx) / n;
+    sse = 0.0;
+    for (size_t i = i0; i < i1; ++i) { const double r = p[i].second - (a + b * p[i].first); sse += r * r; }
+}
+static dsf_fit dsf_fit_curve(const std::map<int, dsf_pt> & m) {
+    std::vector<std::pair<double, double>> p;   // (the context at the bucket's middle, its median us/token), in context order
+    for (const auto & e : m) { if (e.second.n > 0) { p.push_back({ ((double) e.first + 0.5) * (double) DSF_CELLS, e.second.us }); } }
+    dsf_fit f;
+    if (p.empty()) { return f; }
+    f.ok = true;
+    if (p.size() == 1) { f.a = p[0].second; return f; }
+    double sse = 0.0;
+    dsf_line(p, 0, p.size(), f.a, f.b, sse);
+    const double n = (double) p.size();
+    auto aic = [&](double e, int k) { return n * std::log(std::max(e, 1e-9) / n) + 2.0 * k; };
+    double best = aic(sse, 2);
+    for (size_t k = 3; k + 3 <= p.size(); ++k) {
+        double a1, b1, s1, a2, b2, s2;
+        dsf_line(p, 0, k, a1, b1, s1);
+        dsf_line(p, k, p.size(), a2, b2, s2);
+        const double v = aic(s1 + s2, 5);
+        if (v < best) { best = v; f.a = a1; f.b = b1; f.c0 = 0.5 * (p[k - 1].first + p[k].first); f.a2 = a2; f.b2 = b2; }
+    }
+    return f;
+}
+static std::string dsf_fit_str(const dsf_fit & f) {
+    if (!f.ok) { return "-"; }
+    if (f.c0 < 0.0) { return format("%.1f + %.5f c", f.a, f.b); }
+    return format("%.1f + %.5f c below %.0fk cells, %.1f + %.5f c above", f.a, f.b, f.c0 / 1024.0, f.a2, f.b2);
+}
+// the choice for a pass from the learned factors (-1: not enough measured); under g_mu
+static int dsf_decide(const llama_model & model, int64_t n_tokens) {
+    std::lock_guard<std::mutex> dl(g_dsf_mu);
+    dsf_load();
+    if (g_cards.size() < 2 || g_dsf_next_pos0 < 0) { return -1; }
+    const dsf_fit f1 = dsf_fit_curve(g_dsf_one), f2 = dsf_fit_curve(g_dsf_split);
+    std::map<std::string, dsf_fit> fd;   // every card's dense curve (split passes)
+    for (const auto & e : g_dsf_dense) { fd[e.first] = dsf_fit_curve(e.second); }
+    const std::string xdev = ggml_backend_dev_name(g_cards.back());
+    // the dense us a split saves per token at context c: equal dense time on every card (see dsf)
+    auto sigma = [&](double c) -> double {
+        auto ix = fd.find(xdev);
+        if (ix == fd.end() || !ix->second.ok) { return -1.0; }
+        const double dx = ix->second.at(c);
+        if (dx <= 0.0) { return -1.0; }
+        double inv = 1.0 / dx;
+        int others = 0;
+        for (const auto & e : fd) {
+            if (e.first == xdev || !e.second.ok) { continue; }
+            const double d = e.second.at(c);
+            if (d <= 0.0) { continue; }
+            auto h = g_dsf_hop.find(e.first);
+            inv += 1.0 / (d + (h != g_dsf_hop.end() ? h->second.us : 0.0));
+            others++;
+        }
+        return others ? dx - 1.0 / inv : -1.0;
+    };
+    if (!f1.ok && !f2.ok) { return -1; }
+    const char * src = f1.ok && f2.ok ? "both fitted" : f1.ok ? "split from the cards' dense curves" : "one card from the cards' dense curves";
+    if ((!f1.ok || !f2.ok) && sigma((double) g_dsf_next_pos0) < 0.0) { return -1; }
+    auto one_at   = [&](double c) { return f1.ok ? f1.at(c) : f2.at(c) + sigma(c); };
+    auto split_at = [&](double c) { return f2.ok ? f2.at(c) : f1.at(c) - sigma(c); };
+    // the passes left in this call (passes of n_tokens, the last one what remains), each max(its expert upload, its compute): the dense split shortens the
+    // compute only, so it gains nothing on a pass whose upload is longer (user 2026-10-25: upload against compute decides; Qwen3.8 2k: split -40%, 60k: +28%)
+    const int64_t end = std::max<int64_t>((int64_t) llama_moe_cache_pp_cells_get_fork(), g_dsf_next_pos0 + n_tokens);
+    const int64_t R = end - g_dsf_next_pos0;
+    const uint32_t k_used = std::max<uint32_t>(1, model.hparams.n_expert_used_max()), n_exp = std::max<uint32_t>(1, model.hparams.n_expert);
+    double t_one = 0.0, t_split = 0.0, u_first = -1.0;
+    for (int64_t c = g_dsf_next_pos0; c < end; c += n_tokens) {
+        const int64_t T = std::min<int64_t>(n_tokens, end - c);
+        const double cm = (double) c + 0.5 * (double) T;
+        const double U = std::max(0.0, llama_moe_cache_pass_upload_ms_fork((uint32_t) T, k_used, n_exp)) * 1e3;   // us
+        if (u_first < 0.0) { u_first = U; }
+        t_one   += std::max(U, (double) T * one_at(cm));
+        t_split += std::max(U, (double) T * split_at(cm));
+    }
+    const double fill_us = g_mirror_fill_us.load() > 0.0 ? (g_dsf_fill.n ? g_dsf_fill.us * 1e3 : g_mirror_fill_us.load()) : 0.0;   // copies to fill first (0: valid)
+    const double gain = t_one - t_split;
+    const int c = gain - fill_us > llama_moe_live_get("split_min_gain") * t_one ? 1 : 0;
+    static int logged = 0;
+    if (logged++ < 64) {
+        LLAMA_LOG_WARN("split factors: pass of %lld tokens from %lldk cells, %lld tokens left (%s): compute per token one card %s; split %s; expert upload %.0f ms "
+                       "per pass; over the passes left one card %.0f ms, split %.0f ms + copy fill %.0f ms: %s\n", (long long) n_tokens,
+                (long long) (g_dsf_next_pos0 / 1024), (long long) R, src, dsf_fit_str(f1).c_str(), dsf_fit_str(f2).c_str(), u_first / 1e3,
+                t_one / 1e3, t_split / 1e3, fill_us / 1e3, c ? "split" : "one card");
+    }
+    return c;
+}
+// every prompt pass is timed: the pass decided last ends at the synchronize before the next prompt pass and at the end of its call (llama_context)
+void llama_dsplit_note_pass_fork(int64_t pos0) { std::lock_guard<std::mutex> dl(g_dsf_mu); g_dsf_next_pos0 = pos0; }
+bool llama_dsplit_pass_open_fork() { std::lock_guard<std::mutex> dl(g_dsf_mu); return g_dsf_ps.choice >= 0; }
+void llama_dsplit_pass_end_fork() {
+    std::lock_guard<std::mutex> dl(g_dsf_mu);
+    const dsf_pass p = g_dsf_ps;
+    g_dsf_ps = dsf_pass();
+    if (p.choice < 0 || p.T < 64 || p.pos0 < 0 || p.t0 <= 0) { return; }
+    dsf_load();
+    double us = (double) (ggml_time_us() - p.t0) - p.fill_ms * 1e3;   // the copy fill is the split's per-prompt cost, kept apart (dsf.fill)
+    // the compute side of the pass: less the time the expert card's stream waited for expert uploads (stream stamps of this pass, when it was measured).
+    // An upload-bound pass then still tells its compute; the decision adds the upload back as max(upload, compute) for the pass size it plans.
+    {
+        dsplit_card_stat st[16]; long gen = 0;
+        static long last_gen = -1;
+        const int nst = ggml_backend_sched_card_stats(st, 16, &gen);
+        if (gen != last_gen && p.xdev) {
+            for (int j = 0; j < nst; ++j) { if (st[j].backend && ggml_backend_get_device(st[j].backend) == p.xdev) { us -= (double) st[j].up_wait_us; } }
+        }
+        last_gen = gen;
+    }
+    if (us <= 0.0) { return; }
+    const int k = (int) ((p.pos0 + p.T / 2) / DSF_CELLS);
+    dsf_pt & d = (p.choice == 1 ? g_dsf_split : g_dsf_one)[k];
+    dsf_upd(d, us / (double) p.T);
+    dsf_mark(std::string(p.choice == 1 ? "dsf.split.k" : "dsf.one.k") + std::to_string(k), d);
+}
+void llama_dsplit_note_fill_fork(double ms) {   // llama_context::moe_mirror_fill: the copies of this prompt were filled (part of the split pass decided last)
+    std::lock_guard<std::mutex> dl(g_dsf_mu);
+    dsf_load();
+    g_dsf_ps.fill_ms += ms;
+    dsf_upd(g_dsf_fill, ms);   // in memory only: before the first fill of a run the planner's estimate (copy bytes / link rate) stands
+}
+
 bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     std::lock_guard<std::mutex> lk(g_mu);
     dsplit_hw_check(model);
@@ -1836,6 +2108,10 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
         dsplit_link_model(model, n_tokens);   // the balance's hand-off and KV numbers, in auto and forced mode alike
     }
     if (managed && n_tokens >= 64) {
+        {   // the state file's section and hardware key for the split factors, also in forced runs (they teach the factors too)
+            std::lock_guard<std::mutex> pk(g_plan_mu);
+            dsplit_calib_load(model);
+        }
         if (dsplit_opt_one()) {
             choice = 0;   // forced to one card (tests)
             why = "forced: dense-split=one";
@@ -1889,6 +2165,14 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
                 choice = found >= 0 ? found : 0;   // nothing measured and no plan yet: one card first (it measures the compute the planner needs)
                 why = found >= 0 ? "measured: the nearest size" : "no plan or measurement yet: one card first";
             }
+            // the factors learned from earlier requests decide whenever both configurations can be estimated at this pass's context (see dsf)
+            {
+                const int fc = dsf_decide(model, n_tokens);
+                if (fc >= 0) {
+                    choice = fc;
+                    why = fc ? "factors: the split is faster at this context over the tokens left" : "factors: one card is faster at this context over the tokens left";
+                }
+            }
             B.passes++;
         }
     }
@@ -1902,6 +2186,13 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     }
     g_cur = choice;
     g_ngpus = dsplit_n_gpus(model);
+    if (choice >= 0 && n_tokens >= 64) {   // the prompt pass about to run: timed until the synchronize after it (dsf)
+        std::lock_guard<std::mutex> dl(g_dsf_mu);
+        g_dsf_ps = dsf_pass();
+        g_dsf_ps.choice = choice; g_dsf_ps.T = n_tokens; g_dsf_ps.pos0 = g_dsf_next_pos0; g_dsf_ps.t0 = ggml_time_us();
+        g_dsf_ps.xdev = g_cards.empty() ? nullptr : g_cards.back();
+        g_dsf_next_pos0 = -1;
+    }
     if (choice >= 0) { g_pf_choice = choice; g_pf_why = why; }
     if (choice >= 0) {
         g_pending  = g_pending == -1 || g_pending == choice ? choice : -2;
@@ -2053,6 +2344,8 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
         std::lock_guard<std::mutex> pk(g_plan_mu);
         dsplit_pass_step_locked();   // (the last pass of the call; the passes before it were taken by llama_dsplit_pass_done_fork)
     }
+    llama_dsplit_pass_end_fork();   // the call's last prompt pass ends here (synchronized): its time per token for the split factors
+    { std::lock_guard<std::mutex> dl(g_dsf_mu); dsf_flush(); }   // and the call's new samples go to the state file, once
     if (g_pending >= 0 && n_tokens > 0 && us > 0 && dsplit_opt_auto()) {
         dsplit_bucket & B = g_buckets[dsplit_bucket_of(g_pend_max)];
         const int c = g_pending;
