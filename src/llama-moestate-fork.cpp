@@ -438,7 +438,8 @@ void llama_moe_decision_fork(const char * name, const char * value, const char *
     // the decision goes to the log when it changes (run.py calib reads the engine's pass ceiling from "this call fits the ceiling N" there; the live endpoint shows it only while the server runs)
     for (auto & d : g_decisions) {
         if (d.name == name) {
-            if (d.value != value || d.why != why) { LLAMA_LOG_WARN("%s: decision %s = %s (%s)\n", __func__, name, value, why); }
+            // a changed value, or a new reason of the pass size (once per prompt call); not every reason update: some tuners rewrite theirs with live numbers each step
+            if (d.value != value || (d.why != why && strcmp(name, "ubatch") == 0)) { LLAMA_LOG_WARN("%s: decision %s = %s (%s)\n", __func__, name, value, why); }
             d.value = value; d.why = why; d.t = t; return;   // the reason follows the live numbers too (a tuner updates it as it measures)
         }
     }
