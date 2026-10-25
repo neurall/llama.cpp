@@ -1492,7 +1492,7 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     if (g_climb.last_pos >= 0 && (int64_t) pc < g_climb.last_pos) { g_climb.h.clear(); g_climb.stepped = false; }
     g_climb.last_pos = (int64_t) pc;
     const double m = B.v;
-    if (g_climb.h.size() < 6) {   // at least six passes make the trajectory (user 2026-10-25)
+    if (g_climb.h.size() < 3) {   // a line needs three passes; up to six, whatever is there (user 2026-10-25)
         g_climb.h.emplace_back(pc, m);
         return;
     }
