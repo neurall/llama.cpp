@@ -1887,52 +1887,7 @@ std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::ve
                 sum += r[i];
             }
         }
-        // Measured overlap instead of the climb (user 2026-10-25: tune the algorithm on q36's many passes). Equal dense time is only the best split when the
-        // cards' chains run side by side. q36 60k: the pass took 2957 ms against 3024 ms of the two cards' kernels added up (pcuda1x16 dense 1136 + experts
-        // 1292, cuda0x4 dense 596), so only 67 of cuda0x4's 596 ms overlapped (o 0.11: the linear-attention layers carry a state through the tokens and the
-        // later range waits for the earlier one). The climb looked for that missing term through a ratio that drifts with the context (0 -> -0.10 in five
-        // passes, never reversing). Here o is measured on every pass from its own times, o = (sum of kernels - span) / (sum of kernels - largest kernels),
-        // 1 = fully side by side, 0 = one after the other, and the helpers' shares are scaled by the lambda in [0, 1] that minimizes the predicted span
-        // sum K - o (sum K - max K), K per card from its measured cost per token (helpers: dense + hand-offs; the expert card: its dense plus every token's
-        // experts). lambda never exceeds 1: never above the equal-time share (user rule). --moe share-model=0: the old equal-time shares plus the climb.
-        static const bool model_on = [] { const char * e = llama_moe_get_opt("share-model"); return !e || atoi(e) != 0; }();
-        bool modelled = false;
-        if (ok && sum > 0.0 && model_on && B.span > 0.0 && B.d.size() == dev.size() && B.m.size() == dev.size() && B.tok.size() == dev.size() && T_b > 0) {
-            double sk = 0.0, mk = 0.0;
-            int with = 0;
-            for (size_t i = 0; i < dev.size(); ++i) {
-                const double k = B.d[i] + B.m[i];
-                sk += k; mk = std::max(mk, k);
-                with += B.tok[i] > 0 ? 1 : 0;
-            }
-            if (with >= 2 && sk > mk) {
-                const double o = std::min(1.0, std::max(0.0, (sk - B.span) / (sk - mk)));
-                const double mtok = B.m[x] * 1e3 / (double) T_b;
-                const double cx   = B.c[x];
-                double best_l = 1.0, best_t = 0.0;
-                for (int li = 0; li <= 50; ++li) {
-                    const double l = li / 50.0;
-                    double hs = 0.0;
-                    for (size_t i = 0; i < x; ++i) { hs += l * r[i] / sum; }
-                    double ks = 0.0, km = 0.0;
-                    for (size_t i = 0; i < x; ++i) {
-                        const double k = l * r[i] / sum * (B.c[i] + (i < B.hop.size() ? B.hop[i] : 0.0));
-                        ks += k; km = std::max(km, k);
-                    }
-                    const double kx = (1.0 - hs) * cx + mtok;   // us per pass token
-                    ks += kx; km = std::max(km, kx);
-                    const double t = ks - o * (ks - km);
-                    if (li == 0 || t < best_t) { best_t = t; best_l = l; }
-                }
-                best_l = std::max(best_l, 0.02);   // a range stays on every helper, so it is measured again (the overlap is learned from it)
-                double hs = 0.0;
-                for (size_t i = 0; i < x; ++i) { s[i] = best_l * r[i] / sum; hs += s[i]; }
-                s[x] = 1.0 - hs;
-                modelled = true;
-                LLAMA_LOG_WARN("split share model: overlap %.2f (kernels %.0f ms, span %.0f ms), helpers x%.2f of the equal-time share -> expert card %.0f%%\n", o, sk, B.span, best_l, 100.0 * s[x]);
-            }
-        }
-        if (ok && sum > 0.0 && !modelled) {
+        if (ok && sum > 0.0) {
             for (size_t i = 0; i < dev.size(); ++i) { s[i] = r[i] / sum; }
             // the climb's offset on the other cards' share (the expert card, last, takes the rest)
             double fv = 0.0;
