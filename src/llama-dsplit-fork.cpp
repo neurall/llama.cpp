@@ -1460,6 +1460,7 @@ struct dsplit_climb {
     int64_t last_pos = -1;
     double r_prev = 0.0; bool stepped = false;  // the last pass's miss and whether a step followed it
     double jump_meas = 0.0; int jump_n = 0;     // measured change of the miss across a step (mean of |r - r_prev|)
+    int probe = 0; double r_base = 0.0, r_rm = 0.0;   // the probe: 1 a step removed, 2 put back (the miss before, with the step removed)
 };
 dsplit_climb g_climb;   // under g_plan_mu
 static bool dsplit_climb_on() {
@@ -1525,8 +1526,35 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     for (size_t i = 0; i + 1 < n; ++i) { per_o = std::max(per_o, B.c[i] + (i < B.hop.size() ? B.hop[i] : 0.0)); }
     const double jump_est = B.span > 0.0 && T_b > 0 ? g_climb.step * (double) T_b * per_o / 1e3 / B.span : 0.0;
     const double r  = pred > 0.0 ? m / pred - 1.0 : 0.0;
-    // Measured (user 2026-10-25: "you need to measure it"): after every step the change of the miss from the pass before is what that step did; their
-    // mean replaces the estimate above once one step has been seen.
+    // Measured (user 2026-10-25: "you need to measure it ... by adding and removing, and store that delta as the threshold"): once the line stands, a probe
+    // takes one step of work from the other cards for one pass and puts it back on the next; the step's jump is the removed pass's miss against the mean of
+    // the misses before and after it. That delta is kept as the threshold (for the run, every request); later steps refine it with the change of the miss
+    // across them.
+    if (g_climb.jump_n == 0 && g_climb.probe == 0 && g_climb.adj - g_climb.step >= -0.45) {
+        g_climb.r_base = r;
+        g_climb.adj   -= g_climb.step;
+        g_climb.probe  = 1;
+        g_climb.stepped = false;
+        g_climb.r_prev = r;
+        LLAMA_LOG_WARN("split climb: probe at %.0f cells: one step (%.3f) taken from the other cards for one pass (miss now %+.1f%%)\n", pc, g_climb.step, 100.0 * r);
+        return;
+    }
+    if (g_climb.probe == 1) {
+        g_climb.r_rm   = r;
+        g_climb.adj   += g_climb.step;
+        g_climb.probe  = 2;
+        g_climb.r_prev = r;
+        LLAMA_LOG_WARN("split climb: probe: the step put back (miss with it removed %+.1f%%)\n", 100.0 * r);
+        return;
+    }
+    if (g_climb.probe == 2) {
+        g_climb.jump_meas = std::fabs(g_climb.r_rm - 0.5 * (g_climb.r_base + r));
+        g_climb.jump_n    = 1;
+        g_climb.probe     = 3;   // done
+        LLAMA_LOG_WARN("split climb: probe: one step moves a pass by %.1f%% (misses %+.1f%% before, %+.1f%% removed, %+.1f%% back): the threshold\n",
+                100.0 * g_climb.jump_meas, 100.0 * g_climb.r_base, 100.0 * g_climb.r_rm, 100.0 * r);
+        g_climb.stepped = false;
+    }
     if (g_climb.stepped) {
         g_climb.jump_meas = (g_climb.jump_meas * g_climb.jump_n + std::fabs(r - g_climb.r_prev)) / (g_climb.jump_n + 1);
         ++g_climb.jump_n;
