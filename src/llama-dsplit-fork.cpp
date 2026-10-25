@@ -1455,7 +1455,7 @@ std::map<int, dsplit_bal>       g_bal;                // under g_plan_mu
 // the same 8192 tokens), and the dense time per token grows with it, so the ratio leaves what the shares did. --moe share-climb=0 turns it off.
 // ponytail: one offset for all pass sizes and helpers, not stored between runs; a per-model stored offset when it proves out.
 struct dsplit_climb {
-    double adj = 0.0, step = 0.04, prev_adj = 0.0; int dir = -1;   // down first: the offset may not go above 0 (the equal-time share) double last = 0.0; bool cut = false, settled = false;
+    double adj = 0.0, step = 0.02, prev_adj = 0.0; int dir = -1; double last = 0.0; bool cut = false, settled = false;
     std::vector<std::pair<double, double>> h;   // this request's passes: (centre position in cells, us per token)
     int64_t last_pos = -1;
 };
@@ -1479,7 +1479,7 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     // its position in the prompt whatever the shares do (q36: 211 us/token in pass 1, 683 by pass 14), so comparing a pass with the one before measured the
     // context, not the share; the old ratio to the expert card's dense time per token fell with the context too and walked the offset one way (0 -> -0.10
     // in five passes at 60k, never reversing). Now a straight line through this request's last passes (time per token against the pass's centre position)
-    // predicts this pass; only a pass at least 1% under its prediction counts as better (keep going), anything else reverses and halves the step. The first three passes
+    // predicts this pass, and the offset follows the miss (below). The first three passes
     // of a request only build the line; a lower position than the last pass's starts a new request (the offset learned so far is kept).
     if (g_dsf_ps.pos0 < 0 || g_dsf_ps.T <= 0) { return; }
     const double pc = (double) g_dsf_ps.pos0 + 0.5 * (double) g_dsf_ps.T;
@@ -1503,27 +1503,15 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     g_climb.h.emplace_back(pc, m);
     if (g_climb.h.size() > 8) { g_climb.h.erase(g_climb.h.begin()); }
     const double adj0 = g_climb.adj;
-    // Settling (user 2026-10-25: "settle after a few noisy ups and downs"): every reversal halves the step; once it would drop below 0.01 (three reversals
-    // from 0.04) the offset stays at the middle of the last two tried and the climb stops for the run, so noise between passes cannot keep it moving.
-    if (pred > 0.0 && m > 0.99 * pred) {   // not clearly better (1% under the line): the step did not pay, so back and smaller; flat ground settles where it is
-        g_climb.dir = -g_climb.dir;
-        g_climb.step /= 2.0;
-        if (g_climb.step < 0.01) {
-            g_climb.adj = 0.5 * (g_climb.adj + g_climb.prev_adj);
-            g_climb.settled = true;
-            LLAMA_LOG_WARN("split climb: settled at the other cards' share offset %+.3f (pass %.1f us/token, predicted %.1f)\n", g_climb.adj, B.v, pred);
-            return;
-        }
-    }
-    g_climb.prev_adj = g_climb.adj;
-    // Never above 0 (user 2026-10-25: "a slower card shall never get more, or even the same, work"): the equal-time share is where the cards finish together, so an
-    // offset above it hands the other cards more than they keep up with. MiMo 400k, x16 + x4 (the x4's dense time per token 2.2 ms against the x16's 1.6): the offset
-    // rose 0.04 a pass to +0.28 in 7 passes and on, the x4 got 70-90% of the tokens and the passes ran 2-3x longer per token. The objective cannot tell a better split
-    // from a longer context: its denominator, the expert card's dense time per token, grows with the cells faster than the pass does, so it fell every pass
-    // (2.99 -> 1.88) and the climb never reversed. Below 0 it can still take work away from the other cards, where a hand-off costs more than measured.
-    g_climb.adj  = std::min(0.0, std::max(-0.45, g_climb.adj + g_climb.dir * g_climb.step));
-    LLAMA_LOG_WARN("split climb: pass %.1f us/token at %.0f cells, predicted %.1f from the trajectory (%+.1f%%): the other cards' share offset %+.3f -> %+.3f (step %.3f)\n",
-            B.v, pc, pred, pred > 0.0 ? 100.0 * (m / pred - 1.0) : 0.0, adj0, g_climb.adj, g_climb.step);
+    // The rule (user 2026-10-25: "if we are higher than predicted remove work, if lower add"): above the line by more than 1%, the other cards lose a step of
+    // share; below it by more than 1%, they gain one; in between nothing moves. The step is 0.02 of the share, the offset stays in [-0.45, 0]: never above
+    // the equal-time share (a slower card never gets more than it keeps up with). It tracks for the whole request, no settling.
+    const double r = pred > 0.0 ? m / pred - 1.0 : 0.0;
+    if (r > 0.01)       { g_climb.adj -= g_climb.step; }
+    else if (r < -0.01) { g_climb.adj += g_climb.step; }
+    g_climb.adj = std::min(0.0, std::max(-0.45, g_climb.adj));
+    LLAMA_LOG_WARN("split climb: pass %.1f us/token at %.0f cells, predicted %.1f from the trajectory (%+.1f%%): the other cards' share offset %+.3f -> %+.3f\n",
+            B.v, pc, pred, 100.0 * r, adj0, g_climb.adj);
     g_climb.last = m;
 }
 bool                            g_bal_used = false;   // a graph builder takes its shares from here
