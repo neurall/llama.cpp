@@ -1556,7 +1556,9 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
         g_climb.stepped = false;
     }
     if (g_climb.stepped) {
-        g_climb.jump_meas = (g_climb.jump_meas * g_climb.jump_n + std::fabs(r - g_climb.r_prev)) / (g_climb.jump_n + 1);
+        // every step re-measures it for free and the jump drifts with the context (a step's tokens cost more deeper in the prompt), so the recent steps
+        // weigh most: half the old value, half the new
+        g_climb.jump_meas = g_climb.jump_n > 0 ? 0.5 * (g_climb.jump_meas + std::fabs(r - g_climb.r_prev)) : std::fabs(r - g_climb.r_prev);
         ++g_climb.jump_n;
     }
     const double jump = g_climb.jump_n > 0 ? g_climb.jump_meas : jump_est;
