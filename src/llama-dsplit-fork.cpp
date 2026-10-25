@@ -2113,8 +2113,29 @@ static int dsf_decide(const llama_model & model, int64_t n_tokens) {
     if (!f1.ok && !f2.ok) { return -1; }
     const char * src = f1.ok && f2.ok ? "both fitted" : f1.ok ? "split from the cards' dense curves" : "one card from the cards' dense curves";
     if ((!f1.ok || !f2.ok) && sigma((double) g_dsf_next_pos0) < 0.0) { return -1; }
-    auto one_at   = [&](double c) { return f1.ok ? f1.at(c) : f2.at(c) + sigma(c); };
-    auto split_at = [&](double c) { return f2.ok ? f2.at(c) : f1.at(c) - sigma(c); };
+    // A curve is trusted near the contexts it was measured at (within one bucket); further out the other configuration's curve plus the cards' dense
+    // difference stands in where that one was measured (MiMo 60k, pre9: one card measured at 0-16k only, extrapolated to 45k it said 17.9 s for a pass that
+    // took 24.4 s, while the split had been measured there: the pass ran on one card at 670 against 945 prompt t/s split)
+    auto span = [](const std::map<int, dsf_pt> & m, double & lo, double & hi) {
+        lo = 1e30; hi = -1.0;
+        for (const auto & e : m) { if (e.second.n > 0) { const double c = ((double) e.first + 0.5) * (double) DSF_CELLS; lo = std::min(lo, c); hi = std::max(hi, c); } }
+    };
+    double lo1, hi1, lo2, hi2;
+    span(g_dsf_one, lo1, hi1);
+    span(g_dsf_split, lo2, hi2);
+    auto covered = [](double c, double lo, double hi) { return hi >= 0.0 && c >= lo - (double) DSF_CELLS && c <= hi + (double) DSF_CELLS; };
+    auto one_at = [&](double c) {
+        if (f1.ok && (covered(c, lo1, hi1) || !f2.ok)) { return f1.at(c); }
+        const double sg = sigma(c);
+        if (f2.ok && sg >= 0.0 && (covered(c, lo2, hi2) || !f1.ok)) { return f2.at(c) + sg; }
+        return f1.ok ? f1.at(c) : f2.at(c) + std::max(0.0, sg);
+    };
+    auto split_at = [&](double c) {
+        if (f2.ok && (covered(c, lo2, hi2) || !f1.ok)) { return f2.at(c); }
+        const double sg = sigma(c);
+        if (f1.ok && sg >= 0.0 && (covered(c, lo1, hi1) || !f2.ok)) { return f1.at(c) - sg; }
+        return f2.ok ? f2.at(c) : f1.at(c) - std::max(0.0, sg);
+    };
     // the passes left in this call (passes of n_tokens, the last one what remains), each max(its expert upload, its compute): the dense split shortens the
     // compute only, so it gains nothing on a pass whose upload is longer (user 2026-10-25: upload against compute decides; Qwen3.8 2k: split -40%, 60k: +28%)
     const int64_t end = std::max<int64_t>((int64_t) llama_moe_cache_pp_cells_get_fork(), g_dsf_next_pos0 + n_tokens);
