@@ -1458,6 +1458,8 @@ struct dsplit_climb {
     double adj = 0.0, step = 0.02, prev_adj = 0.0; int dir = -1; double last = 0.0; bool cut = false, settled = false;
     std::vector<std::pair<double, double>> h;   // this request's passes: (centre position in cells, us per token)
     int64_t last_pos = -1;
+    double r_prev = 0.0; bool stepped = false;  // the last pass's miss and whether a step followed it
+    double jump_meas = 0.0; int jump_n = 0;     // measured change of the miss across a step (mean of |r - r_prev|)
 };
 dsplit_climb g_climb;   // under g_plan_mu
 static bool dsplit_climb_on() {
@@ -1483,7 +1485,7 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     // of a request only build the line; a lower position than the last pass's starts a new request (the offset learned so far is kept).
     if (g_dsf_ps.pos0 < 0 || g_dsf_ps.T <= 0) { return; }
     const double pc = (double) g_dsf_ps.pos0 + 0.5 * (double) g_dsf_ps.T;
-    if (g_climb.last_pos >= 0 && (int64_t) pc < g_climb.last_pos) { g_climb.h.clear(); }
+    if (g_climb.last_pos >= 0 && (int64_t) pc < g_climb.last_pos) { g_climb.h.clear(); g_climb.stepped = false; }
     g_climb.last_pos = (int64_t) pc;
     const double m = B.v;
     if (g_climb.h.size() < 3) {
@@ -1521,14 +1523,23 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     for (int64_t t : B.tok) { T_b += t; }
     double per_o = 0.0;
     for (size_t i = 0; i + 1 < n; ++i) { per_o = std::max(per_o, B.c[i] + (i < B.hop.size() ? B.hop[i] : 0.0)); }
-    const double jump = B.span > 0.0 && T_b > 0 ? g_climb.step * (double) T_b * per_o / 1e3 / B.span : 0.0;
+    const double jump_est = B.span > 0.0 && T_b > 0 ? g_climb.step * (double) T_b * per_o / 1e3 / B.span : 0.0;
     const double r  = pred > 0.0 ? m / pred - 1.0 : 0.0;
+    // Measured (user 2026-10-25: "you need to measure it"): after every step the change of the miss from the pass before is what that step did; their
+    // mean replaces the estimate above once one step has been seen.
+    if (g_climb.stepped) {
+        g_climb.jump_meas = (g_climb.jump_meas * g_climb.jump_n + std::fabs(r - g_climb.r_prev)) / (g_climb.jump_n + 1);
+        ++g_climb.jump_n;
+    }
+    const double jump = g_climb.jump_n > 0 ? g_climb.jump_meas : jump_est;
     const double th = std::max(jump, 2.0 * noise);
     if (r > th)       { g_climb.adj -= g_climb.step; }
     else if (r < -th) { g_climb.adj += g_climb.step; }
     g_climb.adj = std::min(0.0, std::max(-0.45, g_climb.adj));
-    LLAMA_LOG_WARN("split climb: pass %.1f us/token at %.0f cells, predicted %.1f from the trajectory (%+.1f%%, threshold %.1f%%: one step %.1f%%, noise x2 %.1f%%): the other cards' share offset %+.3f -> %+.3f\n",
-            B.v, pc, pred, 100.0 * r, 100.0 * th, 100.0 * jump, 200.0 * noise, adj0, g_climb.adj);
+    g_climb.stepped = g_climb.adj != adj0;
+    g_climb.r_prev  = r;
+    LLAMA_LOG_WARN("split climb: pass %.1f us/token at %.0f cells, predicted %.1f from the trajectory (%+.1f%%, threshold %.1f%%: one step %.1f%% %s, noise x2 %.1f%%): the other cards' share offset %+.3f -> %+.3f\n",
+            B.v, pc, pred, 100.0 * r, 100.0 * th, 100.0 * jump, g_climb.jump_n > 0 ? "measured" : "estimated", 200.0 * noise, adj0, g_climb.adj);
     g_climb.last = m;
 }
 bool                            g_bal_used = false;   // a graph builder takes its shares from here
