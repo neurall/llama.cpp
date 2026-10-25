@@ -9,7 +9,7 @@ M = [("olmoe", "/m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf", 3), ("q36", "/m/q/36/Qwen3
      ("q27nl", "/m/q/4/Qwen3.8-27B-IQ4_NL.gguf", 3), ("q27mtp", "/m/q/5/Qwen3.8-27B-MTP-Q5_K_M.gguf", 3), ("qni3", "/m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf", 3),
      ("qni4", "/m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf", 3), ("glm", "/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf", 3),
      ("mimo", "/m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf", 2), ("glm35", "/m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf", 2)]
-T = [("i", "pf12k", 64), ("io", "edit4c", 1024), ("o", "tetrisc", 1024)]
+T = [("i", "pf12k", 64), ("io", "edit4c", 1024), ("o4", "tetrisc", 4096)]   # o4 (user 2026-10-25): a 4k answer, 1k was too short for the decode side to show (the cache warms over the answer)
 R = "python3 /p/bw/wt-main/fork/run.py cell"
 out, k = [], 0
 def add(id_, cli, note):
