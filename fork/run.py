@@ -2251,7 +2251,9 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
     if test in ("ppl", "ppl3", "pplb", "pplc"):
         nb, nub = {"ppl": ("1", "1"), "ppl3": ("3", "3"), "pplb": ("1024", "1024"), "pplc": ("1024", "256")}[test]   # pplb: 1024-token batches = the big-batch (prefill) path; pplc: the same batch in 256-token ubatches (4 ubatches per decode call)
         nub = os.environ.get("PERF_PPL_UB") or nub   # PERF_PPL_UB=N: the 1024 tokens of a chunk cut into N-token ubatches (how ppl moves with the number of cuts; stored in the note)
-        args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", os.environ.get("PERF_PPL_CHUNKS", "2"), "-b", nb, "-ub", nub]   # PERF_PPL_CHUNKS=12: a paired comparison of two compute paths needs more than 2 chunks (a valid path differs by +-0.5% per chunk)
+        ctx = os.environ.get("PERF_PPL_CTX", "1024")   # PERF_PPL_CTX=32768: long chunks, so the attention of a chunk's later tokens reaches past the sparse gate (~20k cells)
+        if ctx != "1024" and test == "pplb": nb = nub = os.environ.get("PERF_PPL_UB") or "8192"   # long chunks in prompt-sized passes
+        args = COMMON + ["-f", PPL_TEXT, "-c", ctx, "--chunks", os.environ.get("PERF_PPL_CHUNKS", "2"), "-b", nb, "-ub", nub]   # PERF_PPL_CHUNKS=12: a paired comparison of two compute paths needs more than 2 chunks (a valid path differs by +-0.5% per chunk)
         args += shlex.split(os.environ.get("PERF_PPL_EXTRA", ""))   # PERF_PPL_EXTRA="--kl-divergence-base F": extra llama-perplexity arguments for stock and ours alike (per-position log-probs, fork/ppl_pos.py)
         env, args = drop_moe_flag(build, env, args)   # the b11509 arm of the regress cell failed on --moe autotune=0,...
         if build.startswith("stock"):   # stock has no --moe-expert-cache
