@@ -1456,6 +1456,11 @@ def decisions(log):
     u = re.findall(r"MoE model .*?ubatch (\d+)", log)
     if u:
         d["ubatch_max"] = int(u[-1])
+    # the real maximum: the smaller of the engine's pass ceiling (the size its compute buffer was reserved for) and the pass the RAM allows ("prompt pass N tokens
+    # (cut from M to fit)"), the last of each in the log; the auto setup's first pick above (16384 on DeepSeek-V4.1) never ran when either is smaller
+    lims = [int(x[-1]) for x in (re.findall(r"limit (\d+) from the pinned-mask budget", log), re.findall(r"fits the ceiling (\d+)", log), re.findall(r"prompt pass (\d+) tokens \(cut from", log)) if x]
+    if lims:
+        d["ubatch_max"] = min(lims)
     rows = []
     for line in re.findall(r"prefill decision: (.*)", log):
         rows.append({k: v.strip('"') for k, v in re.findall(r'(\w+)=("[^"]*"|\S+)', line)})
@@ -4882,7 +4887,12 @@ def cell_status(t0, expect, label, total=None):
             ub = lv.get("ubatch") or pr.get("ubatch") or sv.get("n_ubatch")
             parts = []
             io = []   # the transfer rates on a line of their own: on the engine line it wrapped once "pp by size" listed two sizes (user 2026-10-25: stale cpu/engine rows, 1-row jumps)
-            if ub: parts.append(col(36, f"ubatch {ub}") + (col(90, f" (max {pr['ceiling']})") if (lv.get("ubatch") or pr.get("ubatch")) and pr.get("ceiling") else ""))
+            if ub:   # max = the real maximum: the engine's pass ceiling (VRAM: what its compute buffer holds) or, when smaller, the pass the RAM allows (decision "prompt pass")
+                _mx, _why = (int(pr["ceiling"]), "VRAM") if pr.get("ceiling") else (None, "")
+                for _d in es.get("decisions") or []:
+                    _m = re.match(r"(\d+) tokens \(cut from", str(_d.get("value") or "")) if _d.get("name") == "prompt pass" else None
+                    if _m and (_mx is None or int(_m.group(1)) < _mx): _mx, _why = int(_m.group(1)), "RAM"
+                parts.append(col(36, f"ubatch {ub}") + (col(90, f" (max {_mx} {_why})") if (lv.get("ubatch") or pr.get("ubatch")) and _mx else ""))
             if sv.get("threads") is not None: parts.append(col(36, f"thr {sv.get('threads')}/{sv.get('threads_batch')}"))
             if sv.get("n_ctx_slot") is not None: parts.append(col(36, f"ctx {sv.get('n_ctx_slot')}"))
             if ht and lv and ht.get("prompt_recent", -1) >= 0: parts.append(level(1 - ht["prompt_recent"] / 100, 0.15, 0.4, f"prompt hit {ht['prompt_recent']:.1f}%") + col(90, f" (call so far {ht.get('prompt_all', 0):.1f}%)"))   # the experts of the running prompt pass found in the cache
