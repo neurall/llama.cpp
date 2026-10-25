@@ -1018,6 +1018,11 @@ static void dsplit_tune_load(int b);   // below: a size settled by an earlier st
 // launch and weight-read cost, which dominates at few tokens). Result: weight bytes x tokens per second per card, in g_mm_rate; about 100 MB of VRAM for a
 // few milliseconds. A card whose buffers cannot be allocated keeps the probe's rate.
 static std::map<ggml_backend_dev_t, double> g_mm_rate;   // under g_plan_mu
+// The timing runs when the first context is created - at startup that is the parameter fit, which mutes the log - so its lines are kept here and printed once
+// at the first prompt decision (llama_dsplit_decide_fork), where fork/run.py reads them (the attention layer kinds go to models.ini).
+static std::string g_bench_log;   // under g_plan_mu
+static bool        g_bench_logged = false;
+#define BENCH_LOG(...) do { const std::string bl_ = format(__VA_ARGS__); g_bench_log += bl_; LLAMA_LOG_WARN("%s", bl_.c_str()); } while (0)
 // attention per card (user 2026-10-25: "time just attn, the only nonlinear term"; "fit a curve by 3 points, extract the nonlinear coefs"): one flash-attention
 // op of the model's first full-attention layer (its heads and head sizes; MLA: the compressed cache, one KV head) for ATT_T query tokens over 2k, 8k and 32k cells,
 // fitted exactly by t(c) = a + b c + g c^2 (us for ATT_T tokens, one layer). b is the cost per cell, g what grows faster than the cells (cache effects; ~0 when
@@ -1094,7 +1099,7 @@ static void dsplit_sparse_bench(const llama_model & model, ggml_backend_dev_t d,
             ggml_backend_buffer_free(buf);
         }
         ggml_free(ctx);
-        if (!buf) { LLAMA_LOG_WARN("split planner: sparse attention gate on %s not measured (no buffer at %lld cells)\n", ggml_backend_dev_name(d), (long long) C[k]); return; }
+        if (!buf) { BENCH_LOG("split planner: sparse attention gate on %s not measured (no buffer at %lld cells)\n", ggml_backend_dev_name(d), (long long) C[k]); return; }
     }
     // the gate: where the gather starts to win, interpolated between the two lengths around the change (0: it never won up to 32k cells)
     int32_t gate = 0;
@@ -1109,7 +1114,7 @@ static void dsplit_sparse_bench(const llama_model & model, ggml_backend_dev_t d,
     int32_t mx = 0;
     for (int32_t v : g_sparse_min_card) { all = all && v > 0; mx = std::max(mx, v); }
     g_sparse_min = all ? mx : 0;
-    LLAMA_LOG_WARN("split planner: sparse attention gate on %s (selection %lld cells, %lld query heads, K %lld V %lld%s, %lld tokens): masked / gather %.0f/%.0f, %.0f/%.0f, "
+    BENCH_LOG("split planner: sparse attention gate on %s (selection %lld cells, %lld query heads, K %lld V %lld%s, %lld tokens): masked / gather %.0f/%.0f, %.0f/%.0f, "
                    "%.0f/%.0f, %.0f/%.0f us at 4k/8k/16k/32k cells: the gather from %s (the gate now: %d cells)\n", ggml_backend_dev_name(d), (long long) nsel_last,
             (long long) nh, (long long) hsk, (long long) hsv, mla ? ", MLA" : "", (long long) ATT_T, td[0], ts[0], td[1], ts[1], td[2], ts[2], td[3], ts[3],
             gate > 0 ? (std::to_string(gate) + " cells").c_str() : "never up to 32k (the kernel's own rule stays)", g_sparse_min);
@@ -1123,7 +1128,7 @@ static void dsplit_att_bench(const llama_model & model, ggml_backend_dev_t d, gg
             said = &model;
             int full = 0, swa = 0, lin = 0;
             for (uint32_t i = 0; i < hp.n_layer(); ++i) { if (hp.is_recr(i)) { lin++; } else if (hp.is_swa(i)) { swa++; } else { full++; } }
-            LLAMA_LOG_WARN("split planner: attention layers: %d full (grow with the context), %d sliding-window (window %u), %d linear (no context term), sparse top-k %u%s\n",
+            BENCH_LOG("split planner: attention layers: %d full (grow with the context), %d sliding-window (window %u), %d linear (no context term), sparse top-k %u%s\n",
                     full, swa, hp.n_swa, lin, hp.indexer_top_k,
                     hp.indexer_top_k > 0 ? " (the attention gathers only the selected cells above the sparse gate, dsplit_sparse_bench)" : "");
         }
@@ -1167,7 +1172,7 @@ static void dsplit_att_bench(const llama_model & model, ggml_backend_dev_t d, gg
         ggml_backend_buffer_free(buf);
     }
     ggml_free(ctx);
-    if (!buf) { LLAMA_LOG_WARN("split planner: attention latency on %s not measured (no buffer)\n", ggml_backend_dev_name(d)); return; }
+    if (!buf) { BENCH_LOG("split planner: attention latency on %s not measured (no buffer)\n", ggml_backend_dev_name(d)); return; }
     // exact quadratic through the three points (divided differences)
     const double d1 = (t[1] - t[0]) / (double) (C[1] - C[0]), d2 = (t[2] - t[1]) / (double) (C[2] - C[1]);
     dsplit_att_fit f;
@@ -1177,7 +1182,7 @@ static void dsplit_att_bench(const llama_model & model, ggml_backend_dev_t d, gg
     f.ok = f.b > 0.0 || f.g > 0.0;
     g_att_fit[d] = f;
     dsplit_sparse_bench(model, d, be, hsk, hsv, nh, nkv, mla);
-    LLAMA_LOG_WARN("split planner: attention latency on %s (layer %d, %lld heads / %lld KV heads, K %lld V %lld%s, %lld tokens): %.0f / %.0f / %.0f us at 2k / 8k / 32k cells: "
+    BENCH_LOG("split planner: attention latency on %s (layer %d, %lld heads / %lld KV heads, K %lld V %lld%s, %lld tokens): %.0f / %.0f / %.0f us at 2k / 8k / 32k cells: "
                    "t(c) = %.1f + %.5f c + %.3g c^2 us, %.4f us per token per cell (at 32k cells %.0f%% of it from the c^2 term)\n",
             ggml_backend_dev_name(d), il, (long long) nh, (long long) nkv, (long long) hsk, (long long) hsv, mla ? ", MLA" : "", (long long) ATT_T, t[0], t[1], t[2],
             f.a, f.b, f.g, f.b / (double) ATT_T, t[2] > 0.0 ? 100.0 * f.g * 32768.0 * 32768.0 / t[2] : 0.0);
@@ -1243,11 +1248,11 @@ static void dsplit_mm_bench(const llama_model & model, const std::vector<ggml_ba
         if (buf && best[1] > best[0]) {
             const double rate = (double) ggml_nbytes(W) * (double) (T1 - T0) / ((best[1] - best[0]) / 1e6);   // weight bytes x tokens per second
             g_mm_rate[d] = rate;
-            LLAMA_LOG_WARN("split planner: matmul latency on %s (%s %lldx%lld): %.0f us at %lld tokens, %.0f us at %lld: %.2f us per token, %.1f GB*token/s (probe %.1f)\n",
+            BENCH_LOG("split planner: matmul latency on %s (%s %lldx%lld): %.0f us at %lld tokens, %.0f us at %lld: %.2f us per token, %.1f GB*token/s (probe %.1f)\n",
                     ggml_backend_dev_name(d), ggml_type_name(big->type), (long long) K, (long long) N, best[0], (long long) T0, best[1], (long long) T1,
                     (best[1] - best[0]) / (double) (T1 - T0), rate / 1e9, [&] { const auto * p = llama_gpu_probe_find_fork(d); return p ? (p->compute_sust > 0 ? p->compute_sust : p->compute) / 1e9 : 0.0; }());
         } else {
-            LLAMA_LOG_WARN("split planner: matmul latency on %s not measured (no buffer): the probe's rate stands\n", ggml_backend_dev_name(d));
+            BENCH_LOG("split planner: matmul latency on %s not measured (no buffer): the probe's rate stands\n", ggml_backend_dev_name(d));
         }
         ggml_free(ctx);
         dsplit_att_bench(model, d, be);
@@ -2168,6 +2173,10 @@ void llama_dsplit_note_fill_fork(double ms) {   // llama_context::moe_mirror_fil
 
 bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     std::lock_guard<std::mutex> lk(g_mu);
+    if (n_tokens >= 64) {   // the load-time timing's lines, once (they were written while the parameter fit muted the log)
+        std::lock_guard<std::mutex> pk(g_plan_mu);
+        if (!g_bench_logged && !g_bench_log.empty()) { g_bench_logged = true; LLAMA_LOG_WARN("%s", g_bench_log.c_str()); }
+    }
     dsplit_hw_check(model);
     auto it = g_sets.find(&model);
     {
