@@ -2111,8 +2111,23 @@ static int dsf_decide(const llama_model & model, int64_t n_tokens) {
         return others ? dx - 1.0 / inv : -1.0;
     };
     if (!f1.ok && !f2.ok) { return -1; }
+    // the dense curves' saving against what was measured: where both configurations ran at the same context, (one card - split) over the predicted saving
+    // (median over those contexts) scales sigma wherever one side has to be derived (MiMo 60k: 240 us/token predicted, 353 measured: one card also loses
+    // the overlap the split has, which the dense times alone do not show). 1 until both ran somewhere.
+    double k_sig = 1.0;
+    {
+        std::vector<double> r;
+        for (const auto & e : g_dsf_one) {
+            auto it = g_dsf_split.find(e.first);
+            if (e.second.n == 0 || it == g_dsf_split.end() || it->second.n == 0) { continue; }
+            const double sg = sigma(((double) e.first + 0.5) * (double) DSF_CELLS);
+            if (sg > 0.0) { r.push_back((e.second.us - it->second.us) / sg); }
+        }
+        if (!r.empty()) { std::sort(r.begin(), r.end()); k_sig = std::min(3.0, std::max(0.5, r[r.size() / 2])); }
+    }
+    auto sigma_k = [&](double c) { const double v = sigma(c); return v >= 0.0 ? k_sig * v : v; };
     const char * src = f1.ok && f2.ok ? "both fitted" : f1.ok ? "split from the cards' dense curves" : "one card from the cards' dense curves";
-    if ((!f1.ok || !f2.ok) && sigma((double) g_dsf_next_pos0) < 0.0) { return -1; }
+    if ((!f1.ok || !f2.ok) && sigma_k((double) g_dsf_next_pos0) < 0.0) { return -1; }
     // A curve is trusted near the contexts it was measured at (within one bucket); further out the other configuration's curve plus the cards' dense
     // difference stands in where that one was measured (MiMo 60k, pre9: one card measured at 0-16k only, extrapolated to 45k it said 17.9 s for a pass that
     // took 24.4 s, while the split had been measured there: the pass ran on one card at 670 against 945 prompt t/s split)
@@ -2126,13 +2141,13 @@ static int dsf_decide(const llama_model & model, int64_t n_tokens) {
     auto covered = [](double c, double lo, double hi) { return hi >= 0.0 && c >= lo - (double) DSF_CELLS && c <= hi + (double) DSF_CELLS; };
     auto one_at = [&](double c) {
         if (f1.ok && (covered(c, lo1, hi1) || !f2.ok)) { return f1.at(c); }
-        const double sg = sigma(c);
+        const double sg = sigma_k(c);
         if (f2.ok && sg >= 0.0 && (covered(c, lo2, hi2) || !f1.ok)) { return f2.at(c) + sg; }
         return f1.ok ? f1.at(c) : f2.at(c) + std::max(0.0, sg);
     };
     auto split_at = [&](double c) {
         if (f2.ok && (covered(c, lo2, hi2) || !f1.ok)) { return f2.at(c); }
-        const double sg = sigma(c);
+        const double sg = sigma_k(c);
         if (f1.ok && sg >= 0.0 && (covered(c, lo1, hi1) || !f2.ok)) { return f1.at(c) - sg; }
         return f2.ok ? f2.at(c) : f1.at(c) - std::max(0.0, sg);
     };
@@ -2152,13 +2167,27 @@ static int dsf_decide(const llama_model & model, int64_t n_tokens) {
     }
     const double fill_us = g_mirror_fill_us.load() > 0.0 ? (g_dsf_fill.n ? g_dsf_fill.us * 1e3 : g_mirror_fill_us.load()) : 0.0;   // copies to fill first (0: valid)
     const double gain = t_one - t_split;
-    const int c = gain - fill_us > llama_moe_live_get("split_min_gain") * t_one ? 1 : 0;
+    // the margin the split has to win by: the measured noise of the samples behind the two curves (their relative half range, per bucket with two or more
+    // samples, averaged; one card's and the split's combined), so a steady measurement decides on a small difference and a noisy one needs a clear one.
+    // No bucket with two samples yet: split_min_gain (8%; it was the margin for the per-size verdicts, which flapped on noise).
+    auto spread = [](const std::map<int, dsf_pt> & m) {
+        double sum = 0.0; int nb = 0;
+        for (const auto & e : m) {
+            if (e.second.s.size() < 2 || e.second.us <= 0.0) { continue; }
+            const auto mm = std::minmax_element(e.second.s.begin(), e.second.s.end());
+            sum += 0.5 * (*mm.second - *mm.first) / e.second.us; nb++;
+        }
+        return nb ? sum / nb : -1.0;
+    };
+    const double s1 = spread(g_dsf_one), s2 = spread(g_dsf_split);
+    const double margin = s1 >= 0.0 && s2 >= 0.0 ? std::sqrt(s1 * s1 + s2 * s2) : llama_moe_live_get("split_min_gain");
+    const int c = gain - fill_us > margin * t_one ? 1 : 0;
     static int logged = 0;
     if (logged++ < 64) {
         LLAMA_LOG_WARN("split factors: pass of %lld tokens from %lldk cells, %lld tokens left (%s): compute per token one card %s; split %s; expert upload %.0f ms "
-                       "per pass; over the passes left one card %.0f ms, split %.0f ms + copy fill %.0f ms: %s\n", (long long) n_tokens,
+                       "per pass; over the passes left one card %.0f ms, split %.0f ms + copy fill %.0f ms (margin %.1f%%, dense-curve factor %.2f): %s\n", (long long) n_tokens,
                 (long long) (g_dsf_next_pos0 / 1024), (long long) R, src, dsf_fit_str(f1).c_str(), dsf_fit_str(f2).c_str(), u_first / 1e3,
-                t_one / 1e3, t_split / 1e3, fill_us / 1e3, c ? "split" : "one card");
+                t_one / 1e3, t_split / 1e3, fill_us / 1e3, 100.0 * margin, k_sig, c ? "split" : "one card");
     }
     return c;
 }
