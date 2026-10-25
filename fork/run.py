@@ -142,7 +142,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
         cp = configparser.ConfigParser(defaults={"here": os.environ.get("FORK_PROMPTS_DIR") or os.path.join(here, "prompts")})
         cp.read([os.path.join(here, "prompts.ini"), os.path.join(here, "prompts.local.ini")])   # prompts.local.ini: your own prompts and tests, not in git
         out = {k: dict(cp[k]) for k in cp.sections()}
-        for n in range(1, 101):   # pf<N>k1k / pf<N>k: the first N thousand tokens of the 12k source (cut in run.py), answer 1024 tokens; any size, nothing stored per size
+        for n in range(1, 1025):   # pf<N>k1k / pf<N>k: the first N thousand tokens of the 12k / 128k source (cut in run.py; beyond 128k the source repeats), answer 1024 tokens; any size up to 1m (the longest trained context, MiMo), nothing stored per size
             out.setdefault(f"pf{n}k1k", dict(alias=f"pf{n}k", tokens="1024", prefix="code_review", **{"in": f"{n}k"})); out.setdefault(f"test-pf{n}k", {"in": f"{n}k"})
         # a file you drop into the prompts directory is a test of its own, named after the file: prompt-NAME.txt (not claimed by a section above) -> test NAME, the whole file one chat message,
         # 1024 tokens out (tokens = / ctx = need a section). No ini edit: copy the file, `run run ... ` with a cell whose test is NAME.
@@ -1789,7 +1789,7 @@ def post(path, body, timeout=3600, every=10, idle_polls=2):
     PARTIAL["text"] = ""
     def work():
         try:
-            resp = urllib.request.urlopen(req, timeout=timeout)
+            resp = urllib.request.urlopen(req, timeout=None if not stream else timeout)   # a plain request answers once at the end (stock MiMo 200k: ~70 min); the loop below stops a dead server
             if not stream:
                 box["r"] = json.load(resp); return
             last = {}
@@ -1836,14 +1836,20 @@ def post(path, body, timeout=3600, every=10, idle_polls=2):
 def post_loopguard(path, body, timeout=3600, every=128, min_tokens=400, window=150):
     """/completion as a stream: every `every` tokens (from `min_tokens` on) the last `window` words are tested; a repetition loop (unique word 4-gram share < 0.5) closes the connection (the server stops
     generating) and the result is marked _loop: a loop costs about a minute instead of the whole run. Returns the same fields as the plain post (content, timings)."""
-    req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", json.dumps({**body, "stream": True}).encode(), {"Content-Type": "application/json"})
+    # return_progress: the server streams the prompt's progress after every batch, so a read waits for one batch, not for the whole prompt (stock MiMo takes
+    # ~70 min for a 200k prompt at 50 t/s, and the socket timeout below cut such a request at 60 min); `timeout` is the longest silence of a live server
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", json.dumps({**body, "stream": True, "return_progress": True}).encode(), {"Content-Type": "application/json"})
     resp = urllib.request.urlopen(req, timeout=timeout)
-    text, n, last = "", 0, {}
+    text, n, last, prog = "", 0, {}, None
     for raw in resp:
         line = raw.decode().strip()
         if not line.startswith("data:") or line == "data: [DONE]":
             continue
-        j = json.loads(line[5:]); last = j
+        j = json.loads(line[5:])
+        if "prompt_progress" in j and not j.get("content"):
+            prog = j["prompt_progress"]   # the prompt's progress, no token: the last one times the whole prompt (kept for an answer that loops)
+            continue
+        last = j
         text += j.get("content", ""); n += 1
         if j.get("stop"):
             break
@@ -1852,7 +1858,9 @@ def post_loopguard(path, body, timeout=3600, every=128, min_tokens=400, window=1
             g = [tuple(w[i:i + 4]) for i in range(len(w) - 3)]
             if len(w) >= window and g and len(set(g)) / len(g) < 0.5:
                 resp.close()
-                return {"content": text, "_loop": True, "timings": {"predicted_per_second": 0, "prompt_per_second": 0, "predicted_n": n, "prompt_n": 0, "prompt_ms": 0}}
+                # the prompt ran whatever the answer did: its speed from the last progress (processed less cached tokens, ms since the prompt started)
+                pn, pms = (prog["processed"] - prog["cache"], prog["time_ms"]) if prog else (0, 0)
+                return {"content": text, "_loop": True, "timings": {"predicted_per_second": 0, "prompt_per_second": pn / pms * 1e3 if pms > 0 else 0, "predicted_n": n, "prompt_n": pn, "prompt_ms": pms}}
     resp.close()
     return {**last, "content": text}
 
@@ -3076,6 +3084,7 @@ SAMPLER = ""   # --sampler: extra sampling parameters merged into every request 
 _PI = config.prompts_ini()   # test aliases from prompts.ini: [name] alias = real test, tokens = answer length, prefix = prompt section prepended, snippet = prompt section sent instead of the default source
 def test_name(t):
     """a size is written without the pf (8k, 60k1k, user 2026-10-24: no prefixes); the code's own key still has it"""
+    if (m := re.fullmatch(r"(\d+)m(\d+k)?", str(t))): t = f"{int(m[1]) * 1024}k{m[2] or ''}"   # 1m1k = 1024k1k (a million-token prompt: the 128k source repeated, cut on the fly)
     return "pf" + t if re.fullmatch(r"\d+k(\d+k)?", str(t)) else t
 
 
@@ -4870,8 +4879,8 @@ def cell_status(t0, expect, label, total=None):
             lv = es.get("live") or {}
             LIVE_DONE[0] = lv.get("done") or 0   # a prompt call is running: its pass size, not the finished one before it
             ub = lv.get("ubatch") or pr.get("ubatch") or sv.get("n_ubatch")
-            parts = [col(37, "engine")]
-            io = [col(37, "engine")]   # the transfer rates on a line of their own: on the engine line it wrapped once "pp by size" listed two sizes (user 2026-10-25: stale cpu/engine rows, 1-row jumps)
+            parts = []
+            io = []   # the transfer rates on a line of their own: on the engine line it wrapped once "pp by size" listed two sizes (user 2026-10-25: stale cpu/engine rows, 1-row jumps)
             if ub: parts.append(col(36, f"ubatch {ub}") + (col(90, f" (max {pr['ceiling']})") if (lv.get("ubatch") or pr.get("ubatch")) and pr.get("ceiling") else ""))
             if sv.get("threads") is not None: parts.append(col(36, f"thr {sv.get('threads')}/{sv.get('threads_batch')}"))
             if sv.get("n_ctx_slot") is not None: parts.append(col(36, f"ctx {sv.get('n_ctx_slot')}"))
@@ -4880,13 +4889,15 @@ def cell_status(t0, expect, label, total=None):
             if tk.get("tokens"): parts.append(col(94, f"{tk['last64']:.1f} ms/tok") + col(90, f" (last {tk['last']:.1f}, all {tk['all']:.1f})"))
             if lv.get("done") and lv.get("s"): parts.append(col(32, f"pp {lv['done'] / lv['s']:.0f} t/s") + col(90, f" running: {lv['done']}/{lv['tokens']} tok in {lv['s']:.0f} s"))   # the running prompt call, live
             elif pr.get("last_tps"): parts.append(col(32, f"pp {pr['last_tps']:.0f} t/s") + (col(90, " by size " + " ".join(f"{k}:{v:.0f}" for k, v in (pr.get("tps_by_ubatch") or {}).items())) if pr.get("tps_by_ubatch") else ""))
-            if rx and lv: io.append(col(37, "pcie rx ") + " ".join(f"g{i} {v:.1f} GB/s" for i, v in enumerate(rx)) + col(90, " (nvidia-smi, live)"))
+            if rx and lv: io.append(col(37, "pcie rx ") + " ".join(f"g{i} {v:.1f} GB/s" for i, v in enumerate(rx)))
             if bw:   # RAM read rate (CPU experts + uploads) and each PCIe link, in GB/s against the probed maximum, and as a share of it
                 pc = lambda v, mx: 100 * v / mx if mx else 0
                 rp = pc(bw.get("ram_gbs", 0), bw.get("ram_max_gbs", 0))
                 io.append(col(37, "mem bw ") + level(rp / 100, 0.7, 0.9, f"{bw.get('ram_gbs', 0):.1f}/{bw.get('ram_max_gbs', 0):.0f} GB/s {rp:.0f}%"))
+                try: io.append(col(37, "ram free ") + level(1 - mem_avail_gib() / max(1, ram_total_gib()), 0.85, 0.95, f"{mem_avail_gib():.0f}G"))
+                except (OSError, ValueError): pass
                 io.append(col(37, "pcie ") + " ".join(level(pc(l["gbs"], l["max_gbs"]) / 100, 0.7, 0.9, f"l{l['link']} {l['gbs']:.1f}/{l['max_gbs']:.0f} GB/s {pc(l['gbs'], l['max_gbs']):.0f}%") for l in bw.get("links", [])))
-            eng = " ".join(parts) + ("\n" + " ".join(io) if len(io) > 1 else "")
+            eng = " ".join(parts) + ("\n" + " ".join(io) if io else "")
             sp = es.get("split") or {}; links = bw.get("links", []) if bw else []
             # cards that COMPUTE at the same time (user 2026-10-23): only a split prompt pass runs on several cards at once; every other pass and every decode token
             # runs its layers on one card after another (layer split), however many cards hold cache layers (shown apart as "cache on N cards")
@@ -4896,8 +4907,8 @@ def cell_status(t0, expect, label, total=None):
             mode = [col(32, "moe cache") if bw else col(33, "stock placement")]
             mode.append(col(32, f"dense split ON {sp.get('devs', '')}") if sp.get("prefill") == 1 else col(33, "dense split off (one card)") if sp.get("prefill") == 0 else col(90, "dense split n/a"))
             mode.append(col(36, f"par gpus prompt {pgpus or '?'} decode 1") + (col(90, f"  cache on {ncache} cards") if ncache else "") + (col(35, f" uploading on {up}/{len(links)} links") if links else ""))
-            if sp.get("why"): mode.append(col(90, sp["why"]))
-            eng = eng + "\n" + col(37, "engine") + " " + "  ".join(mode)
+            eng = eng + "\n" + "  ".join(mode) + "\n" + kv_line()
+            if sp.get("why"): eng += "\n" + col(90, sp["why"])   # own line: beside the mode it passed the screen width, the wrapped line broke the redraw (cpu row repeated, user 2026-10-25)
             if CELL_REF[0] and (best := best_ref(*CELL_REF[0])):   # live speeds against the best earlier run of this model, test and power limits (runs.db)
                 bpp, bpb, btg, btb = best
                 if LAST_PP.get("t0") != t0: LAST_PP.clear(); LAST_PP["t0"] = t0
@@ -4906,7 +4917,7 @@ def cell_status(t0, expect, label, total=None):
                 ltg = 1000 / tk["last64"] if tk.get("tokens") and tk.get("last64") else None
                 gain = lambda v, b: (col(32 if v >= b else 91, f"{100 * (v / b - 1):+.0f}%") if v and b else col(90, "-"))
                 eng += ("\n" + col(37, "vs best ") + col(32, f"pp {lpp:.0f}" if lpp else "pp -") + col(90, f" / {bpp:.0f} ({bpb}) ") + col(90, f"{1000 / lpp:.2f} / {1000 / bpp:.2f} ms/tok " if lpp else "") + gain(lpp, bpp)
-                        + "   " + col(94, f"tt {ltg:.1f}" if ltg else "tt -") + col(90, f" / {btg:.1f} ({btb}) ") + col(90, f"{1000 / ltg:.1f} / {1000 / btg:.1f} ms/tok " if ltg else "") + gain(ltg, btg) + col(90, "  (best stored speed of an earlier run: same model, test, power limits)"))
+                        + "   " + col(94, f"tt {ltg:.1f}" if ltg else "tt -") + col(90, f" / {btg:.1f} ({btb}) ") + col(90, f"{1000 / ltg:.1f} / {1000 / btg:.1f} ms/tok " if ltg else "") + gain(ltg, btg))
             bal = sp.get("bal")
             cur0 = sp.get("cur") or {}
             if not (bal and bal.get("cards")) and cur0.get("cards"):   # the first split pass of a run, before any pass is measured
@@ -4924,7 +4935,7 @@ def cell_status(t0, expect, label, total=None):
                 # spass30: 6 of its 7 passes stored).
                 if SPLIT_PASSES["t0"] != t0: SPLIT_PASSES["t0"] = t0; SPLIT_PASSES["rows"] = []; SPLIT_PASSES["peak"] = {}; SPLIT_PASSES["old"] = sig if not bal.get("t_ms") or bal["t_ms"] / 1e3 < t0 else None
                 for l in bw.get("links") or []: SPLIT_PASSES.setdefault("peak", {})[l.get("dev")] = max(SPLIT_PASSES.get("peak", {}).get(l.get("dev"), 0), l.get("gbs", 0))   # the busiest second of each card's host link in this cell
-                if sig != SPLIT_PASSES.get("old") and (not SPLIT_PASSES["rows"] or SPLIT_PASSES["rows"][-1][0] != sig): SPLIT_PASSES["rows"].append((sig, bal))   # a new measured pass
+                if sig != SPLIT_PASSES.get("old") and (not SPLIT_PASSES["rows"] or SPLIT_PASSES["rows"][-1][0] != sig): SPLIT_PASSES["rows"].append((sig, bal)); PASS_KV.setdefault(sig, kv_tier())   # a new measured pass
                 eng += ("\n" + col(37, "split ") + col(32, bal.get("phase", "")) + col(90, f"  pass {bal.get('us_tok', 0):.1f} us/token")
                         + (col(90, f", dense alone {bal['ref_us_tok']:.1f}") if bal.get("ref_us_tok") else "") + col(90, f"  ({bal.get('last', '')})"))
                 # One row per card per pass of this run as each is measured, then the pass running now (user 2026-10-24: every pass, errors must show while the run
@@ -4934,13 +4945,16 @@ def cell_status(t0, expect, label, total=None):
                 # split) = total, the pass. link: its upload stream busy (overlaps compute); GB host / GB card: what crossed its link into it. Without pass-stats
                 # (-ns, older builds) the upload waits sit in compute, every gap counts as wait, and upload / link / GB show "-".
                 PW = [("tokens", 6), ("%limit", 6), ("compute", 7), ("%", 4), ("upload", 6), ("%", 4), ("wait", 6), ("%", 4), ("stall", 6), ("%", 4),
-                      ("total", 6), ("link", 6), ("%", 4), ("GB host", 7), ("GB card", 7), ("vs best", 7)]
+                      ("t/s", 6), ("link", 6), ("%", 4), ("GB host", 7), ("GB card", 7), ("vs best", 7), ("us/tok", 6), ("card t/s", 8)]   # t/s: the whole pass (first row); us/tok: this card's compute time per token, rising as the context grows; card t/s: this card's tokens over the pass time (the cards add up to t/s)
                 # "vs best" (user 2026-10-24): the pass's time per token against the best earlier run of ours of this model and test (any other build; run.py has per-run
                 # speeds, not per-pass ones, so the reference is that run's average time per token): above 1 is faster than the best so far, below 1 slower.
                 bk = (CELL_REF[0][0], CELL_REF[0][1], CELL_BUILD[0], CELL_ASKED[0]) if CELL_REF[0] else None
                 if bk and bk not in BEST_MEMO: BEST_MEMO[bk] = best_prev(*bk)
                 bestus = 1e6 / BEST_MEMO[bk][1] if bk and BEST_MEMO.get(bk) and BEST_MEMO[bk][1] else None
-                def pass_rows(k, b, lw):
+                def vsb(bk, pos, T, span):   # the pass's time per token against the best earlier one at the same cells (interpolated between the passes we know): above 1 is faster
+                    y = pass_best_at(bk[0], bk[2], pos)
+                    return f"{y * T / (span * 1e6):.2f}" if y and span and T else "first"
+                def pass_rows(k, b, lw, k_sig=None, pos=0):
                     pc = sorted(b.get("cards") or [], key=lambda c: not c.get("experts"))
                     T = sum(c.get("tok", 0) for c in pc)
                     span = (b.get("span_ms") or b.get("us_tok", 0) * T / 1e3) / 1e3
@@ -4957,10 +4971,11 @@ def cell_status(t0, expect, label, total=None):
                         ln = c.get("link_ms", 0) / 1e3
                         limp = c.get("lim_pct") or (100 * c.get("tok", 0) / CARD_LIM[0] if CARD_LIM[0] else 0)   # the engine fills lim_pct only in the forced pass loop: else of the card limit it reports
                         vals = [str(c.get("tok", 0)), f"{limp:.0f}%", f"{comp:.1f}s", pcf(comp),
-                                f"{up:.1f}s" if det else "-", pcf(up) if det else "-", f"{wt:.1f}s", pcf(wt), f"{st:.1f}s", pcf(st), f"{comp + up + wt + st:.1f}s",
+                                f"{up:.1f}s" if det else "-", pcf(up) if det else "-", f"{wt:.1f}s", pcf(wt), f"{st:.1f}s", pcf(st), f"{T / span:.0f}" if i == 0 and span else "",
                                 f"{ln:.1f}s" if det else "-", pcf(ln) if det else "-",
                                 f"{c.get('gb_up', 0) + c.get('gb_host', 0):.2f}" if det else "-", f"{c.get('gb_in', 0):.2f}" if det else "-",
-                                (f"{(pass_best_us(bk[0], bk[1], bk[2], T) or bestus or 0) * T / (span * 1e6):.2f}" if bk and (bestus or pass_best_us(bk[0], bk[1], bk[2], T)) and span and T else "first" if bk else "") if i == 0 else ""]   # best time per token / this pass's; "first" without an earlier run
+                                (vsb(bk, pos, T, span) if bk else "") if i == 0 else "",
+                                f"{comp * 1e6 / c['tok']:.0f}" if c.get("tok") else "-", f"{c.get('tok', 0) / span:.0f}" if span else "-"]   # best time per token / this pass's; "first" without an earlier run
                         cells = [v.rjust(w) for v, (_, w) in zip(vals, PW)]   # header labels are right-aligned to the same widths: the two cannot drift
                         hot = lambda v: span and v / span > 0.05
                         colour = {1: 36, 4: 94, 5: 94, 6: (91 if hot(wt) else 92) if c.get("experts") else 33, 7: (91 if hot(wt) else 92) if c.get("experts") else 33,
@@ -4987,10 +5002,28 @@ def cell_status(t0, expect, label, total=None):
                     if cl:   # the two limits once (user 2026-10-24): what one card holds (its range, its buffers) and what a pass of all cards takes
                         eng += ("\n" + col(37, "  limits: ") + (col(36, f"card max {cm} tokens") + col(90, " (the context's micro-batch: %limit is of this one number)") + col(37, " | ") if cm else "")
                                 + col(36, f"card now {cl} tokens") + col(90, " (what the pools hold beside the KV now)" if cm else " (one card's micro-batch; %limit of each pass is of the limit that pass ran under)")
-                                + col(37, " | ") + col(36, f"pass {pl} tokens" if pl else "pass -") + col(90, f" (all cards; {prim} takes its card limit)"))
+                                + "\n" + col(37, "  limits: ") + col(36, f"pass {pl} tokens" if pl else "pass -") + col(90, f" (all cards; {prim} takes its card limit)"))   # own line: the one line passed the screen width (user 2026-10-25)
+                    # the global wait sum (user 2026-10-25: "judge from the sum of wait times, keep the global sum visible"): every measured pass of this run,
+                    # per card: its waiting (for its dense / expert inputs and for another card) and its whole time on the cards; the share of waiting is the
+                    # efficiency to compare between builds
+                    wsum, tsum, per = {}, 0.0, {}
+                    for _, bb in rows:
+                        for c in (bb.get("cards") or []):
+                            wt = (c.get("xw_ms", 0) if c.get("xw_ms") is not None and "xw_ms" in c else (c.get("wait_dense_ms", 0) + c.get("wait_moe_ms", 0))) / 1e3
+                            k_ = card_label(c)
+                            wsum[k_] = wsum.get(k_, 0.0) + wt
+                            per[k_] = per.get(k_, 0) + 1
+                        tsum += (bb.get("span_ms") or 0) / 1e3 * max(1, len(bb.get("cards") or []))
+                    tot_w = sum(wsum.values())
+                    eng += ("\n" + col(37, f"  waits so far: {len(rows)} passes, " + ", ".join(f"{k} {v:.1f} s" for k, v in wsum.items())
+                            + f", all cards {tot_w:.1f} s" + (f" = {100 * tot_w / tsum:.0f}% of the cards' time" if tsum > 0 else "")))
                     eng += "\n" + col(37, "  pass tokens   time  " + "card".ljust(lw) + " " + " ".join(n.rjust(w) for n, w in PW))
-                for k, (_, b) in list(enumerate(rows, 1))[-6:]:   # the last 6 passes (12 rows): a taller block than the terminal scrolls it and the whole screen repaints (user 2026-10-25); the log has every pass
-                    eng += "".join("\n" + l for l in pass_rows(k, b, lw))
+                cum, run_tok = [], 0   # the cells each pass is centred on: the tokens of the passes before it plus half its own
+                for _, b_ in rows:
+                    t_ = sum(c_.get("tok", 0) for c_ in (b_.get("cards") or [])); cum.append(run_tok + t_ / 2); run_tok += t_
+                npass = len(rows) if not sys.stdout.isatty() else max(6, (shutil.get_terminal_size((100, 40)).lines - 24) // 2)   # every pass (user 2026-10-25: keep all) as far as the terminal is tall: a taller block scrolls it and the whole screen repaints, so the oldest drop off first
+                for k, (sg, b) in list(enumerate(rows, 1))[-npass:]:
+                    eng += "".join("\n" + l for l in pass_rows(k, b, lw, sg, cum[k - 1]))
                 cur = sp.get("cur") or {}
                 if cur.get("cards"):   # the pass running now (the ranges of the split graph built last); after the last pass it equals that pass and ages out
                     cap = cur.get("cap_max") or cur.get("cap") or 0   # % of the context's card limit
@@ -5321,9 +5354,84 @@ def live_tty():
     return bool(os.environ.get("RUN_DAEMON")) or sys.stdout.isatty()
 
 
+LIVE_W = int(os.environ.get("RUN_LIVE_W") or 150)   # the widest status line; a detached run does not know the viewer's terminal, so one width for all (RUN_LIVE_W changes it)
+ANSI_RE = re.compile(r"\033\[[0-9;]*[A-Za-z]")
+
+
+KV_RE = (re.compile(rb"kv-fit: KV tiers with the expert cache at its floor: f16 up to (\d+) tokens, q8_0/q8_0 up to (\d+), q4_0/q4_0 up to (\d+)"),
+         re.compile(rb"kv-fit: \d+ tokens: KV now (\S+) in place|kv-ram: KV of .* moved to host memory"), re.compile(rb"(\d+) cells (?:in use|at its end)"))
+
+
+def kv_tier():
+    """the KV type now (f16, q8_0, q4_0, RAM) from the newest server log, "" before the plan is printed: stamped on every pass row, so a switch shows as a jump in the pass speed"""
+    try:
+        f = max(glob.glob("/tmp/perf-*.log"), key=os.path.getmtime)
+        with open(f, "rb") as h: h.seek(max(0, os.path.getsize(f) - (4 << 20))); t = h.read()
+    except (ValueError, OSError): return ""
+    if not KV_RE[0].search(t): return ""
+    sw = list(KV_RE[1].finditer(t))
+    return "f16" if not sw else (sw[-1][1] or b"RAM").decode().split("/")[0]
+
+
+PASS_KV = {}   # pass signature -> the KV type when the pass was first seen
+
+
+def kv_line():
+    """The KV against what VRAM can hold (user 2026-10-25): its type now (f16, then q8_0, q4_0, part in RAM as the context grows) and the cells in use as a % of that
+    type's VRAM limit, so the switch to the next type can be seen coming at 100%. From the newest server log (/tmp/perf-<build>.log): the tier plan the engine prints
+    once (kv-fit: KV tiers ...), its switches (kv-fit: ... KV now ..., kv-ram: ...) and the cells of the last pass (kv-tail / pass size lines). None before the plan is printed."""
+    try:
+        f = max(glob.glob("/tmp/perf-*.log"), key=os.path.getmtime)
+        with open(f, "rb") as h: h.seek(max(0, os.path.getsize(f) - (4 << 20))); t = h.read()
+    except (ValueError, OSError): return col(37, "kv ") + col(90, "no server log yet")   # always shown (user 2026-10-25)
+    caps = KV_RE[0].findall(t)
+    if not caps: return col(37, "kv ") + col(90, "plan not printed yet")
+    f16, q8, q4 = (int(x) for x in caps[-1])
+    sw = list(KV_RE[1].finditer(t)); cells = KV_RE[2].findall(t)
+    row = float(m[1]) * 1024 if (m := re.search(rb"\(([\d.]+) KB of f16 KV per token", t)) else 0   # f16 bytes per token over all cards
+    tier = "f16" if not sw else (sw[-1][1] or b"RAM").decode().split("/")[0]
+    n = int(cells[-1]) if cells else 0
+    cap = {"f16": f16, "q8_0": q8, "q4_0": q4}.get(tier)
+    per = row * {"f16": 1, "q8_0": 34 / 64, "q4_0": 18 / 64}.get(tier, 1)   # bytes per token of that type (q8_0: 34 bytes per 32 values, q4_0: 18)
+    if not cap: return col(37, "kv ") + col(91, f"part in RAM {n * per / 2**30:.1f} GB, VRAM full")
+    # space left in this type and what comes next (user 2026-10-25): the tiers' limits are in cells, f16 < q8_0 < q4_0 < part in RAM
+    nxt = {"f16": "q8_0", "q8_0": "q4_0", "q4_0": "RAM"}.get(tier, "")
+    # The model's own context caps the tier: MiMo allows 1M tokens and its f16 KV (22.5 KB a token) fits the pools up to 1.58M, so the switch to q8_0 can never come
+    # (user 2026-10-25: 34 GB was the pool's limit, not the model's). Shown against what can really happen, and the space the zones hold now (grown on demand).
+    mm = re.search(rb"\(model cap (\d+)\)", t); mcap = int(mm[1]) if mm else 0
+    zone = {}
+    for d, z, r in re.findall(rb"kv-tail (CUDA\d+): zone \d+ -> (\d+) cells at [\d.]+ -> [\d.]+ MiB \((\d+) B per cell", t): zone[d] = int(z) * int(r)
+    res = f" reserved {sum(zone.values()) / 2**30:.1f}G" if zone else ""
+    if mcap and cap >= mcap: cap, nxt = mcap, ""
+    left = max(0, cap - n)
+    return (col(37, "kv ") + col(36, tier) + " " + level(n / cap, 0.8, 0.95, f"{100 * n / cap:.0f}% {n * per / 2**30:.1f}/{cap * per / 2**30:.0f}G") + col(90, res) + " "
+            + level(n / cap, 0.8, 0.95, f"{left // 1000}k left") + (col(90, f" next {nxt}") if nxt else col(90, " no q8 needed" if tier == "f16" else "")))
+
+
+def mem_avail_gib():
+    return next(int(l.split()[1]) for l in open("/proc/meminfo") if l.startswith("MemAvailable:")) / 2**20
+
+
+def ram_total_gib():
+    return next(int(l.split()[1]) for l in open("/proc/meminfo") if l.startswith("MemTotal:")) / 2**20
+
+
 def fit_block(txt):
-    """The status block is printed whole: no cutting, no wrapping by us (user 2026-10-24: what is long stays long; zoom the terminal out to see it)."""
-    return txt
+    """The status block, every line whole (nothing cut, user 2026-10-24) but none wider than LIVE_W: a longer line is broken at its last separator
+    (" | ", two spaces, " (") before the width and goes on, indented, on the next line (user 2026-10-25: a line the terminal wraps puts the cursor-up
+    redraw one row short and the cpu row repeats). The key speed lines are kept short at their source instead (vs best: no explanation)."""
+    out = []
+    for line in txt.split("\n"):
+        while len(ANSI_RE.sub("", line)) > LIVE_W:
+            vis = 0; cut = None; i = 0
+            while i < len(line) and vis <= LIVE_W:   # the last separator at or before the width, counted in visible characters
+                if (m := ANSI_RE.match(line, i)): i = m.end(); continue
+                if vis > 20 and any(line.startswith(sep, i) for sep in (" | ", "  ", " (")): cut = i
+                vis += 1; i += 1
+            if cut is None: break   # no separator: the line stays whole and long
+            out.append(line[:cut] + "\033[0m"); line = "    " + line[cut:].lstrip(" |")
+        out.append(line)
+    return "\n".join(out)
 
 
 def live_clear():
@@ -5385,6 +5493,47 @@ def pass_best_us(model, test, build, tokens):
         r = c.execute("select min(us_tok) from (select us_tok from passes where model=? and test=? and build!=?" + HWF[0] + " order by abs(tokens - ?) limit 5)", (os.path.basename(model), ALIASES.get(test, test), str(build), int(tokens))).fetchone()
         return r[0] if r and r[0] else None
     except sqlite3.Error: return None
+
+
+PASS_CURVES = {}   # (model, build, machine) -> one curve per earlier run: the live view asks every second
+
+
+def pass_curves(model, build):
+    """time per token against the cells a pass is centred on, one curve per earlier run of this model on this machine (any prompt length: the cost per token depends on
+    the cells, not on how long the prompt is), other builds of ours. The cells of a pass are the tokens of the passes before it plus half its own."""
+    import sqlite3
+    key = (os.path.basename(model), str(build), HWF[0])
+    if key in PASS_CURVES: return PASS_CURVES[key]
+    out = []
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        runs, last = {}, {}
+        for b, test, k, tok, us in c.execute("select build, test, k, tokens, us_tok from passes where model=? and build!=? and build not like 'stock%'" + HWF[0] + " order by rowid", key[:2]):
+            if (b, test) not in runs or k <= last[(b, test)]: runs[(b, test, len(runs))] = runs.pop((b, test), None) or []   # k restarts at 1: the next run of the cell
+            runs.setdefault((b, test), []).append((tok, us)); last[(b, test)] = k
+        for pts in runs.values():
+            pos, cur = 0, []
+            for tok, us in pts: cur.append((pos + tok / 2, us)); pos += tok
+            if cur: out.append(cur)
+    except sqlite3.Error: pass
+    PASS_CURVES[key] = out
+    return out
+
+
+def pass_best_at(model, build, pos):
+    """the best earlier time per token (us) at `pos` cells: every earlier run's curve interpolated linearly between its two passes around `pos` (outside its range only
+    the nearest pass within 20% of the position, at least 8k cells), the smallest of them; None without any"""
+    best = None
+    for cur in pass_curves(model, build):
+        lo = [q for q in cur if q[0] <= pos]; hi = [q for q in cur if q[0] > pos]
+        if lo and hi:
+            (x0, y0), (x1, y1) = lo[-1], hi[0]
+            y = y0 + (y1 - y0) * (pos - x0) / (x1 - x0)
+        else:
+            x, y = lo[-1] if lo else hi[0]
+            if abs(x - pos) > max(8192, 0.2 * pos): continue
+        if best is None or y < best: best = y
+    return best
 
 
 def best_prev(model, test, build, asked=0):
@@ -6175,8 +6324,11 @@ def run_list(name, argv):
         for r in rows: _first.setdefault(r["model"], r)
         _known = {r["test"] for r in rows} | set(TESTS) | set(ALIASES) | set(ALIASES.values())
         def _ps(p, r):   # 100k4k = prompt of 100k tokens + 4000 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test, 4000 answer tokens
+            if (m := re.fullmatch(r"(\d+)m((?:\d+k)?)", p)): p = f"{int(m[1]) * 1024}k{m[2]}"   # 1m1k = 1024k1k
             if (m := re.fullmatch(r"(\d+)k(?:(\d+)k)?", p)):   # the source cut at that many tokens behind an instruction (PS_INSTR); an instruct model needs its chat template
-                return dict(r, test=f"pf{m[1]}k", **({"tokens": str(int(m[2]) * 1000)} if m[2] else {}), extra=((r.get("extra") or "") + " --chat " + shlex.quote(PS_INSTR)).strip())
+                # --keep-loops: beyond the source's length the prompt repeats it, and an answer about a repeated text may loop; repeating the request (3 more
+                # full prompts: ~15 min ours, ~3.5 h stock at 200k) cannot change that. The row keeps loop=1 (out of every statistic), the prompt speed stands.
+                return dict(r, test=f"pf{m[1]}k", **({"tokens": str(int(m[2]) * 1000)} if m[2] else {}), extra=((r.get("extra") or "") + " --keep-loops --chat " + shlex.quote(PS_INSTR)).strip())
             if (m := re.fullmatch(r"([a-z]\w*?)(\d+)k", p)) and m[1] in _known: return dict(r, test=m[1], tokens=str(int(m[2]) * 1000))
             return dict(r, test=p if p.startswith("pf") or p in _known else "pf" + p)
         rows = [dict(_ps(p, r), name=r["name"].split("-")[0] + "-" + p) for r in _first.values() for p in o.ps]
@@ -6709,6 +6861,13 @@ def cmd_cell(a):
     open(os.path.join(Q5, a.tag + ".build"), "w").write(a.builds + "\n")   # which build(s) this cell really ran ("latest" resolved)
     cell_args, nomount = nomount_args(a.args, a.model)
     args = "-np 1 " + cell_args
+    # a pool that is mounted now (pool_sanity above mounts it when it can) is used when the model fits it: -lm pin loads the weights into its 1 GiB pages (2-3% seen,
+    # user 2026-10-25). The engine's automatic mode pins too, but from ordinary RAM, and left a mounted pool unused (101 of 101 pages free, open bug). No pool, a model
+    # bigger than it, a cell with its own -lm / -nm, a stock build or RUN_POOL_PIN=0: the automatic mode as before.
+    if os.path.ismount("/mnt/huge1g") and os.path.exists(HUGE_NR) and not nomount and not too_big and os.environ.get("RUN_POOL_PIN") != "0" \
+            and not any(b.startswith("stock") for b in a.builds.split(",")) and not re.search(r"(^|\s)(-lm|--load-mode)(\s|$)", cell_args):
+        need = -(-sum(os.path.getsize(p) for p in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", a.model))) >> 30)
+        if int(open(HUGE_NR).read()) >= need + 1: args += " -lm pin"
     hog = ",".join(k + "=" + str(int(float(v) * 1024)) for k, v in (("sim-vram", a.hog_gpu), ("sim-ram", a.hog_ram)) if v is not None)
     if hog:   # --moe sim-vram / sim-ram: the server takes the memory itself (common_hog), freed by the OS with the process, no helper process to leave behind
         args += " --moe " + hog
