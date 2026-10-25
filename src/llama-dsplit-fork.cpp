@@ -1492,12 +1492,12 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     if (g_climb.last_pos >= 0 && (int64_t) pc < g_climb.last_pos) { g_climb.h.clear(); g_climb.stepped = false; }
     g_climb.last_pos = (int64_t) pc;
     const double m = B.v;
-    if (g_climb.h.size() < 3) {
+    if (g_climb.h.size() < 6) {   // at least six passes make the trajectory (user 2026-10-25)
         g_climb.h.emplace_back(pc, m);
         return;
     }
     double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
-    const size_t k0 = g_climb.h.size() > 4 ? g_climb.h.size() - 4 : 0;
+    const size_t k0 = g_climb.h.size() > 6 ? g_climb.h.size() - 6 : 0;   // the last six passes
     double kn = 0.0;
     for (size_t j = k0; j < g_climb.h.size(); ++j) {
         const double xx = g_climb.h[j].first, yy = g_climb.h[j].second;
@@ -1514,7 +1514,7 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     }
     const double noise = kn > 2.0 && pred > 0.0 ? std::sqrt(ss / (kn - 2.0)) / pred : 0.0;
     g_climb.h.emplace_back(pc, m);
-    if (g_climb.h.size() > 8) { g_climb.h.erase(g_climb.h.begin()); }
+    if (g_climb.h.size() > 12) { g_climb.h.erase(g_climb.h.begin()); }
     const double adj0 = g_climb.adj;
     // The rule (user 2026-10-25: "if we are higher than predicted remove work, if lower add"): above the line by more than the threshold, the other cards lose a step of
     // share; below it by more than the threshold, they gain one; in between nothing moves. The step is 0.02 of the share, the offset stays in [-0.45, 0]: never above
