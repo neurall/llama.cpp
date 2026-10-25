@@ -1514,15 +1514,21 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     // share; below it by more than the threshold, they gain one; in between nothing moves. The step is 0.02 of the share, the offset stays in [-0.45, 0]: never above
     // the equal-time share (a slower card never gets more than it keeps up with). It tracks for the whole request, no settling.
     // Threshold (user 2026-10-25: "above a certain threshold or it will oscillate"): a miss counts only beyond twice the trajectory's own noise (the
-    // spread of the fitted passes around their line), and never under 3%: one step of the share moves a pass by a jump of about that size (user
-    // 2026-10-25: "assume 3%"), so a smaller miss cannot tell a step that paid from one that did not; inside it nothing moves.
+    // spread of the fitted passes around their line), and never under the jump one step makes (user 2026-10-25: "adding or removing work is a measurable
+    // jump or drop; act only beyond it"): one step moves step x the pass's tokens between the cards, so the pass changes by about those tokens x the other
+    // cards' measured cost per token (dense + hand-offs), as a share of the pass. A smaller miss cannot tell a step that paid from one that did not.
+    int64_t T_b = 0;
+    for (int64_t t : B.tok) { T_b += t; }
+    double per_o = 0.0;
+    for (size_t i = 0; i + 1 < n; ++i) { per_o = std::max(per_o, B.c[i] + (i < B.hop.size() ? B.hop[i] : 0.0)); }
+    const double jump = B.span > 0.0 && T_b > 0 ? g_climb.step * (double) T_b * per_o / 1e3 / B.span : 0.0;
     const double r  = pred > 0.0 ? m / pred - 1.0 : 0.0;
-    const double th = std::max(0.03, 2.0 * noise);
+    const double th = std::max(jump, 2.0 * noise);
     if (r > th)       { g_climb.adj -= g_climb.step; }
     else if (r < -th) { g_climb.adj += g_climb.step; }
     g_climb.adj = std::min(0.0, std::max(-0.45, g_climb.adj));
-    LLAMA_LOG_WARN("split climb: pass %.1f us/token at %.0f cells, predicted %.1f from the trajectory (%+.1f%%, threshold %.1f%%): the other cards' share offset %+.3f -> %+.3f\n",
-            B.v, pc, pred, 100.0 * r, 100.0 * th, adj0, g_climb.adj);
+    LLAMA_LOG_WARN("split climb: pass %.1f us/token at %.0f cells, predicted %.1f from the trajectory (%+.1f%%, threshold %.1f%%: one step %.1f%%, noise x2 %.1f%%): the other cards' share offset %+.3f -> %+.3f\n",
+            B.v, pc, pred, 100.0 * r, 100.0 * th, 100.0 * jump, 200.0 * noise, adj0, g_climb.adj);
     g_climb.last = m;
 }
 bool                            g_bal_used = false;   // a graph builder takes its shares from here
