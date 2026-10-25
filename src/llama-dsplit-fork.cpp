@@ -1533,7 +1533,7 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     // takes one step of work from the other cards for one pass and puts it back on the next; the step's jump is the removed pass's miss against the mean of
     // the misses before and after it. That delta is kept as the threshold (for the run, every request); later steps refine it with the change of the miss
     // across them.
-    if (g_climb.jump_n == 0 && g_climb.probe == 0 && g_climb.adj - g_climb.step >= -0.45) {
+    if (false) {   // probe retired: the threshold is the clean layer time now
         g_climb.r_base = r;
         g_climb.adj   -= g_climb.step;
         g_climb.probe  = 1;
