@@ -29,13 +29,33 @@ static uint32_t dsv4_comp_size(uint32_t kv_size, uint32_t ratio) {
     return std::max<uint32_t>(1, (kv_size + ratio - 1)/ratio);
 }
 
-static void dsv4_clear_tensor_stream(ggml_tensor * tensor, uint32_t stream) {
-    GGML_ASSERT(ggml_is_contiguous(tensor));
+// fork: --moe kv-tail makes a layer's K a strided view into one per-cell record whose rows are backed only up to the claimed cell: the bytes of a stream are then NOT one range.
+// visit the first n_rows rows of a stream as byte ranges: one range for a packed tensor, one per row for a strided view (row r of stream s at s*nb[2] + r*nb[1])
+template <typename F>
+static void dsv4_for_stream_ranges(const ggml_tensor * tensor, uint32_t stream, uint32_t n_rows, F && fn) {
+    const size_t row_size = ggml_row_size(tensor->type, tensor->ne[0]);
+    if (ggml_is_contiguous(tensor)) {
+        fn((size_t) stream*tensor->nb[2], (size_t) n_rows*row_size);
+        return;
+    }
+    GGML_ASSERT(tensor->ne[3] == 1 && tensor->nb[1] >= row_size);
+    for (uint32_t r = 0; r < n_rows; ++r) {
+        fn((size_t) stream*tensor->nb[2] + (size_t) r*tensor->nb[1], row_size);
+    }
+}
+
+// n_rows: rows to clear; a strided view (kv-tail) must not be cleared past the cells that were used: the rest of its address range may hold expert blocks
+static void dsv4_clear_tensor_stream(ggml_tensor * tensor, uint32_t stream, uint32_t n_rows = UINT32_MAX) {
     GGML_ASSERT(tensor->ne[3] == 1);
     GGML_ASSERT(stream < (uint32_t) tensor->ne[2]);
 
-    const size_t stream_size = tensor->nb[2];
-    ggml_backend_tensor_memset(tensor, 0, stream*stream_size, stream_size);
+    if (ggml_is_contiguous(tensor)) {
+        const size_t stream_size = tensor->nb[2];
+        ggml_backend_tensor_memset(tensor, 0, stream*stream_size, stream_size);
+        return;
+    }
+    dsv4_for_stream_ranges(tensor, stream, std::min<uint32_t>(n_rows, (uint32_t) tensor->ne[1]),
+            [&](size_t off, size_t size) { ggml_backend_tensor_memset(tensor, 0, off, size); });
 }
 
 static uint32_t dsv4_state_n_used_k_rows(llama_pos pos_max, uint32_t ratio, uint32_t kv_size) {
@@ -272,7 +292,6 @@ static void dsv4_state_write_tensor_streams(
     io.write(&rows,     sizeof(rows));
     io.write(&row_size, sizeof(row_size));
 
-    const size_t stream_stride = (size_t) tensor_rows*row_size;
     const size_t size          = (size_t) n_rows*row_size;
     if (size == 0) {
         return;
@@ -287,8 +306,7 @@ static void dsv4_state_write_tensor_streams(
         if ((int64_t) stream >= tensor->ne[2]) {
             throw std::runtime_error("DSV4 state tensor stream out of range");
         }
-        const size_t offset = (size_t) stream*stream_stride;
-        io.write_tensor(tensor, offset, size);
+        dsv4_for_stream_ranges(tensor, stream, n_rows, [&](size_t off, size_t len) { io.write_tensor(tensor, off, len); });
     }
 }
 
@@ -321,15 +339,13 @@ static void dsv4_state_read_tensor_streams(
         throw std::runtime_error("DSV4 state tensor row count exceeds storage");
     }
 
-    const size_t stream_stride = (size_t) tensor_rows*row_size;
     const size_t size          = (size_t) n_rows*row_size;
     if (size == 0) {
         return;
     }
 
     for (uint32_t s = 0; s < ns; ++s) {
-        const size_t offset = (size_t) (s0 + s)*stream_stride;
-        io.read_tensor(tensor, offset, size);
+        dsv4_for_stream_ranges(tensor, s0 + s, n_rows, [&](size_t off, size_t len) { io.read_tensor(tensor, off, len); });
     }
 }
 
@@ -440,16 +456,16 @@ static void dsv4_state_read_k_cache(
         GGML_ASSERT(t_src->type == t_dst->type && t_src->ne[0] == t_dst->ne[0]);
 
         const size_t row_size      = ggml_row_size(t_src->type, t_src->ne[0]);
-        const size_t stream_stride = (size_t) kv_size*row_size;
         const size_t size          = (size_t) n_rows_ref*row_size;
         if (size == 0) {
             continue;
         }
         buf.resize(size);
         for (uint32_t s = 0; s < ns; ++s) {
-            const size_t offset = (size_t) (s0 + s)*stream_stride;
-            ggml_backend_tensor_get(t_src, buf.data(), offset, size);
-            ggml_backend_tensor_set(t_dst, buf.data(), offset, size);
+            dsv4_for_stream_ranges(t_src, s0 + s, n_rows_ref, [&](size_t off, size_t len) {
+                ggml_backend_tensor_get(t_src, buf.data(), off, len);
+                ggml_backend_tensor_set(t_dst, buf.data(), off, len);
+            });
         }
     }
 }
@@ -1934,12 +1950,13 @@ void llama_kv_cache_dsv4::clear_compressed(llama_seq_id seq_id, bool data) {
         GGML_ASSERT((uint32_t) seq_id < n_seq_max);
 
         const auto clear_seq = [seq_id, data](llama_kv_cache * kv) {
+            const uint32_t n_used = kv->get_cells(seq_id).used_max_p1();   // before seq_rm frees the cells: how far a strided (kv-tail) K was written
             kv->seq_rm(seq_id, -1, -1);
 
             if (data) {
                 //TODO: do not clear the kv-cache during `seq_rm`, ref: https://github.com/ggml-org/llama.cpp/pull/26490#discussion_r3798143663
                 for (uint32_t il : kv->get_layer_ids()) {
-                    dsv4_clear_tensor_stream(kv->get_k_storage(il), (uint32_t) seq_id);
+                    dsv4_clear_tensor_stream(kv->get_k_storage(il), (uint32_t) seq_id, n_used);
                 }
             }
         };
