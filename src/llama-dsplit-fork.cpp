@@ -112,6 +112,7 @@ bool dsplit_opt_auto() {
 
 }  // namespace
 
+int g_climb_nlayer = 0;   // the model's layers (set with the split plan): one layer's clean time is the threshold
 void llama_dsplit_mirror_build_fork(llama_model & model) {
     {
         // the per-pass choice (--moe dense-split=auto) is managed for any model on two or more GPUs, with or without copies
@@ -132,6 +133,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
         return;
     }
     const int n_layer = (int) model.hparams.n_layer();
+    g_climb_nlayer = n_layer;
     dsplit_set S;
     for (ggml_backend_dev_t D : gpus) {
         std::vector<ggml_tensor *> src;
@@ -1475,6 +1477,7 @@ static bool dsplit_adj_forced(double & v) {
     v = val;
     return on;
 }
+static double x_dense_ms(const dsplit_bal & B) { return B.d.empty() ? 0.0 : B.d.back(); }   // the expert card's dense ms in the measured pass
 static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
     double fv;
     if (dsplit_adj_forced(fv) || !dsplit_climb_on() || g_climb.settled || !g_climb.cut || n < 2 || B.v <= 0.0 || B.c.size() != n || B.c[n - 1] <= 0.0) { return; }
@@ -1561,7 +1564,10 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n) {
         g_climb.jump_meas = g_climb.jump_n > 0 ? 0.5 * (g_climb.jump_meas + std::fabs(r - g_climb.r_prev)) : std::fabs(r - g_climb.r_prev);
         ++g_climb.jump_n;
     }
-    const double jump = g_climb.jump_n > 0 ? g_climb.jump_meas : jump_est;
+    // Clean layer time (user 2026-10-25: "use clean layer time as threshold"): the expert card's dense time over the pass divided by its layers is one
+    // layer's work with no waits in it; as a share of the pass that is the miss one layer of work makes. Replaces the probe and the online update.
+    const double L = (double) std::max(1, g_climb_nlayer);
+    const double jump = B.span > 0.0 && n > 0 && x_dense_ms(B) > 0.0 ? (x_dense_ms(B) / L) / B.span : jump_est;
     const double th = std::max(jump, 2.0 * noise);
     if (r > th)       { g_climb.adj -= g_climb.step; }
     else if (r < -th) { g_climb.adj += g_climb.step; }
