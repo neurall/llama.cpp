@@ -3663,15 +3663,16 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             // A slower prompt rather than none (user 2026-10-25): the pass's host buffer grows with the context (the f16 mask is 2 bytes per pass token per cell: 6.3 GiB
             // for a 16384-token pass at 203k cells) and was pinned beside 108 GiB of pinned weights: RAM ran out, the box thrashed (PSI 97%) and the MiMo 200k prompt
             // failed. Pinning does not fail, the kernel swaps and stalls, so there is nothing to catch: the pass is cut BEFORE it is pinned, to the largest that fits, while its buffer (the
-            // startup fit, the same numbers as the check below) would leave less than the 8 GiB margin of RAM. RAM = available + free pool pages + the
+            // startup fit, the same numbers as the check below) would leave less than the RAM margin (4 GiB). RAM = available + free pool pages + the
             // buffer the scheduler holds now (freed before the new one is pinned). Each halving re-uploads the experts once more per pass: slower, never stuck.
             {
                 uint64_t ram = avail + (pool_free << 30) + (backend_cpu ? (uint64_t) ggml_backend_sched_get_buffer_size(sched.get(), backend_cpu) : 0);
                 if (const char * sr = getenv("GGML_SIM_RAM_MB")) { ram = (uint64_t) atoll(sr) << 20; }
-                // 8 GiB (user 2026-10-25; the 4 GiB margin froze the box at 164k cells with 3.2 GiB left: the kernel needs headroom for page cache, other buffers and the OS)
+                // 4 GiB (user 2026-10-25, later the same day: 8 GiB cut DeepSeek-V4.1 passes to ~4.2k tokens beside 101 GiB pinned). Earlier that day 4 GiB froze the box
+                // at 164k cells with 3.2 GiB left (MiMo 200k, 108 GiB pinned): pin less (-nm) for such prompts, or raise it with ram-margin-mb
                 // --moe ram-margin-mb=N overrides (e.g. 12288 for a 12 GiB margin)
                 const char * rm = llama_moe_get_opt("ram-margin-mb");
-                const uint64_t ram_margin = rm ? (uint64_t) atoll(rm) << 20 : (uint64_t) 8 << 30;
+                const uint64_t ram_margin = rm ? (uint64_t) atoll(rm) << 20 : (uint64_t) 4 << 30;
                 const double room = ram > ram_margin ? (double) (ram - ram_margin) : 0.0;
                 auto need = [&](uint32_t u) { return (double) u * per_tok + g_host_d * (double) n_kv_end + g_host_c; };
                 uint32_t lim = n_ubatch_lim;
@@ -3685,8 +3686,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 if (lim < n_ubatch_lim) {
                     char v[64], why[256];
                     snprintf(v, sizeof v, "%u tokens (cut from %u to fit)", lim, n_ubatch_lim);
-                    snprintf(why, sizeof why, "RAM: a %u-token pass needs %.0f MiB of host buffer at %llu cells, %.0f MiB of RAM is left beside the 8 GiB margin",
-                             n_ubatch_lim, need(n_ubatch_lim) / 1048576.0, (unsigned long long) n_kv_end, room / 1048576.0);
+                    snprintf(why, sizeof why, "RAM: a %u-token pass needs %.0f MiB of host buffer at %llu cells, %.0f MiB of RAM is left beside the %.0f GiB margin",
+                             n_ubatch_lim, need(n_ubatch_lim) / 1048576.0, (unsigned long long) n_kv_end, room / 1048576.0, ram_margin / 1073741824.0);
                     llama_moe_decision_fork("prompt pass", v, why);
                     LLAMA_LOG_WARN("%s: prompt pass %s: %s\n", __func__, v, why);
                     n_ubatch_lim = lim;
