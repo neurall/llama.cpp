@@ -934,6 +934,17 @@ static double dsplit_mm_rate(ggml_backend_dev_t d) {
 }
 static void dsplit_att_bench(const llama_model & model, ggml_backend_dev_t d, ggml_backend_t be) {
     const auto & hp = model.hparams;
+    {   // which layers grow with the context, from the GGUF (user 2026-10-25: "extract from the gguf how many are quadratic, the rest linear"; run.py stores the line in models.ini)
+        static const llama_model * said = nullptr;
+        if (said != &model) {
+            said = &model;
+            int full = 0, swa = 0, lin = 0;
+            for (uint32_t i = 0; i < hp.n_layer(); ++i) { if (hp.is_recr(i)) { lin++; } else if (hp.is_swa(i)) { swa++; } else { full++; } }
+            LLAMA_LOG_WARN("split planner: attention layers: %d full (grow with the context), %d sliding-window (window %u), %d linear (no context term), sparse top-k %u%s\n",
+                    full, swa, hp.n_swa, lin, hp.indexer_top_k,
+                    hp.indexer_top_k > 0 ? " (the kernel still reads every cell: the selection does not cap the cost)" : "");
+        }
+    }
     int il = -1;
     for (uint32_t i = 0; i < hp.n_layer(); ++i) { if (!hp.is_recr(i) && !hp.is_swa(i)) { il = (int) i; break; } }
     if (il < 0) { for (uint32_t i = 0; i < hp.n_layer(); ++i) { if (!hp.is_recr(i)) { il = (int) i; break; } } }
