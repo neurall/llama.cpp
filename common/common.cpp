@@ -1914,11 +1914,14 @@ static void common_hog(void) {
         }
     }
     // --moe hog-<card>=MB (hog-CUDA0=7943): take MB MiB on that one card, a control run that holds what something else would (a DSpark draft took 7943 MiB of the
-    // x4 card's expert pool: the same cut without the draft separates the smaller cache from the cost of drafting)
+    // x4 card's expert pool: the same cut without the draft separates the smaller cache from the cost of drafting). The --moe parser stores every key in
+    // lower case (hog-cuda0), so the card name is looked up in lower case too: with the name as the backend spells it no key ever matched (2026-10-27)
     static bool hog_done = false;
     for (size_t i = 0; i < ggml_backend_dev_count() && !hog_done; i++) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-        const char * h = ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU ? llama_moe_get_opt((std::string("hog-") + ggml_backend_dev_name(dev)).c_str()) : nullptr;
+        std::string key = std::string("hog-") + ggml_backend_dev_name(dev);
+        for (char & c : key) { c = (char) tolower((unsigned char) c); }
+        const char * h = ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU ? llama_moe_get_opt(key.c_str()) : nullptr;
         if (!h || atof(h) <= 0) { continue; }
         ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), (size_t) (atof(h) * 1048576.0));
         if (!buf) { LOG_WRN("hog: could not take %s MiB on %s\n", h, ggml_backend_dev_name(dev)); continue; }
