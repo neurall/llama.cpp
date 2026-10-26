@@ -539,8 +539,14 @@ uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint3
 static uint32_t g_live_tokens = 0, g_live_ub = 0, g_live_done = 0, g_live_pass = 0, g_live_passes = 0;   // pass = passes finished so far, passes = how many the call needs at its pass size (run.py shows "pass 2/3")
 static int64_t  g_live_t0 = 0, g_live_tp = 0;
 static uint64_t g_live_h0 = 0, g_live_q0 = 0; static int64_t g_live_sv0 = 0, g_live_st0 = 0;   // the cache's prompt hit counters at the end of the previous pass: a pass's hit rate is the difference
+void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total);   // src/llama-moecache-fork.cpp
 bool llama_moe_cache_prompt_hits_fork(uint64_t * hit, uint64_t * query, int64_t * saved_b, int64_t * streamed_b);   // src/llama-moecache-fork.cpp
 void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch) {
+    if (n_tokens > 1) {   // (before g_tok_mu: the cache lock is taken inside, the other code takes it first)
+        uint64_t filled, total;
+        llama_moe_cache_fill_fork(&filled, &total);
+        if (total) { LLAMA_LOG_WARN("%s: prompt call of %u tokens starts with %llu of %llu cache blocks holding an expert (%.0f%%)\n", __func__, n_tokens, (unsigned long long) filled, (unsigned long long) total, 100.0 * filled / total); }
+    }
     std::lock_guard<std::mutex> lk(g_tok_mu);
     g_live_tokens = n_tokens; g_live_ub = ubatch; g_live_done = 0; g_live_t0 = g_live_tp = ggml_time_us();
     g_live_pass = 0; g_live_passes = ubatch > 0 ? (n_tokens + ubatch - 1) / ubatch : 1;

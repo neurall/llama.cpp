@@ -1363,7 +1363,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     if (!ok) {
         return 0;
     }
-    LLAMA_LOG_INFO("moe-cache: usage profile from %s\n", from);
+    LLAMA_LOG_WARN("moe-cache: usage profile from %s\n", from);   // a warning: the server's log keeps no library INFO lines, and whether the cache starts filled is worth seeing
     size_t queued = 0;
     std::lock_guard<std::mutex> lk(mc->wmtx);
     // each layer's hottest experts (its share of the pool), then placed hottest first over ALL layers: pick_slot hands out the highest free block,
@@ -6201,7 +6201,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         resource_probe(mc);
         numa_probe(mc);
         if (const size_t n = profile_preload(mc, model)) {
-            LLAMA_LOG_INFO("moe-cache: preloading %zu experts (usage profile)\n", n);
+            LLAMA_LOG_WARN("moe-cache: preloading %zu experts (usage profile)\n", n);
+        } else {
+            LLAMA_LOG_WARN("moe-cache: nothing preloaded: no usage profile of this model and layout in the state file, the cache fills from the first prompt\n");
         }
         {
             size_t n_slow = 0, n_hot = 0, n_stk = 0;
@@ -8552,6 +8554,18 @@ uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
     return on ? ppx_equal_pass(n, ub_max, mb) : ub_max;
 }
 
+
+// Blocks of the expert pools that hold an expert now, and all blocks (lent and free ones count in the total): how full the cache is when a prompt starts.
+void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total) {
+    *filled = *total = 0;
+    moe_cache * mc = g_cache;
+    if (!mc) { return; }
+    std::lock_guard<std::mutex> lk(mc->mtx);
+    for (const auto & p : mc->pool) {
+        *total += p.owner.size();
+        for (int32_t o : p.owner) { *filled += o >= 0; }
+    }
+}
 
 // The experts the prompt passes asked the cache for and found in it (the counters of GET /moe/stats prompt_all), read by the per-pass log line of the prompt
 // (llama_moe_prompt_progress_fork) to say what share of each pass came from the cache. False without a cache.
