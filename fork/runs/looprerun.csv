@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+q36-200k,qwen36,1,pf200k1k,1000,,--keep-loops
+q36-200k-split,qwen36,1,pf200k1k,1000,"--moe dense-split=1,split-experts=0,mode=cache",--keep-loops
+qn4-60k,qn_iq4xs,1,pf60k1k,64,,--keep-loops
+qn4-12k,qn_iq4xs,2,pf12k1k,64,,--keep-loops
+glm-60k,glm,1,pf60k1k,64,,--keep-loops
+mimo-200k,mimo,1,pf200k1k,1000,,--keep-loops

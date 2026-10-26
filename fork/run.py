@@ -2342,7 +2342,8 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             _pf_text = OVR.get("prefix", "") + _pf_text
             if OVR.get("prefix"):   # an instruction (12kin_1kout_code_review): an instruct model needs its chat template or a long answer loops, so it goes through the chat endpoint
                 res, logf = server_run(build, env, args, "/v1/chat/completions",
-                                       {"messages": [{"role": "user", "content": _pf_text}], "max_tokens": int(OVR.get("tokens") or 1024), **GREEDY, "cache_prompt": False})
+                                       {"messages": [{"role": "user", "content": _pf_text}], "max_tokens": int(OVR.get("tokens") or 1024), **GREEDY, "cache_prompt": False,
+                                        "reasoning_format": "none", **({"logprobs": True, "top_logprobs": 1} if os.environ.get("RUN_DBG_TOKENS") else {})})   # DeepSeek V4.1 chat answers came back with content "" (everything generated is thinking, 256 of 256 tokens, finish length, no reasoning_content): the parser dropped it; "none" leaves the raw text in content, so every answer is stored and loop-checked (2026-10-26)
             else:
               _np = int(OVR.get("tokens") or os.environ.get("PERF_NPRED", 64 if test == "pf128k" else 256 if test == "fix12k" else 32))
               if OVR.get("chat"):   # --chat: an instruct model gets its chat template (raw cut text: Qwen3.8 stopped after 1 token at 40k, 2026-10-18); /completion keeps the clamp and the loop guard
@@ -2359,6 +2360,11 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             # a chat answer keeps its reasoning part too (a thinking model can put everything there and leave the content empty)
             _m = ((res.get("choices") or [{}])[0].get("message") or {})
             row["output"] = res.get("content") or ((_m.get("reasoning_content") + "\n---\n" if _m.get("reasoning_content") else "") + (_m.get("content") or ""))
+            if os.environ.get("RUN_DBG_TOKENS"):   # debug: the first generated tokens as the server decoded them (repr), to see what an answer that renders empty is made of
+                _lp = (((res.get("choices") or [{}])[0].get("logprobs") or {}).get("content") or [])
+                print("DBG TOKENS (first 60 of %d): %s" % (len(_lp), [(x.get("token"), x.get("id")) for x in _lp[:40]]), flush=True)
+            if not row["output"]:   # no answer text (DeepSeek pf cells stored 0 characters, 2026-10-26): show what the server did send, so the cause is read from the log
+                print("NO ANSWER TEXT: response keys " + str(sorted(res.keys())) + "; message keys " + str(sorted(_m.keys())) + "; finish " + str((res.get("choices") or [{}])[0].get("finish_reason")) + "; raw " + json.dumps(res, default=str)[:600], flush=True)
             if test == "fix12k":
                 row["md5"] = hashlib.md5(res["content"].encode()).hexdigest()[:8]
             row.update(PROCSTAT)   # load time, rss, GPU log and power of the request window (--gpulog)

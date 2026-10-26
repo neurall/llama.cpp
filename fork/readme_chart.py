@@ -14,6 +14,7 @@ ap.add_argument("--ours", default="rc5")
 ap.add_argument("--stock", default="stock-b11866-official")
 ap.add_argument("--hw", default="2x RTX 3090 (x16 + x4)")
 ap.add_argument("--db", default=os.path.join(here, "runs.db"))
+ap.add_argument("--note", default="", help="one more line under the chart (what is partial, what state the box was in)")
 ap.add_argument("--out", default=os.path.join(here, "docs", "mimo-gain-by-prompt.svg"))
 o = ap.parse_args()
 
@@ -64,6 +65,7 @@ if any(p["d"] for p in pts): print("\n\\* stock was not run at this size: interp
 
 # ---- the chart
 W, H, L, R, T, B = 760, 440, 58, 132, 96, 84
+if o.note: H += 18; B += 18   # room for the note line, the plot keeps its height
 pw, ph = W - L - R, H - T - B
 x0, x1 = min(p["n"] for p in pts), max(p["n"] for p in pts)
 ymax = max(5, math.ceil(max(max(p["gp"], p["gt"]) for p in pts) * 1.12 / 5) * 5)
@@ -108,6 +110,7 @@ last = pts[-1]
 if peak is not last: e.append(f'<text x="{X(peak["n"]):.1f}" y="{Y(peak["gp"]) - 12:.1f}" text-anchor="middle" class="lb">{fx(peak["gp"])}</text>')
 for key, name in (("gp", "prompt"), ("gt", "decode")):   # direct labels at the line ends: name and value
     e.append(f'<text x="{X(last["n"]) + 12:.1f}" y="{Y(last[key]) + 4:.1f}" class="lb">{name} {fx(last[key])}</text>')
+if o.note: e.append(f'<text x="{L}" y="{T + ph + 84}" class="sm t2">{o.note}</text>')
 if any(p["d"] for p in pts):
     e.append(f'<text x="{L}" y="{T + ph + 66}" class="sm t2">hollow marker: stock was run at neighbouring sizes only, its speed here is interpolated</text>')
 e.append("</svg>")

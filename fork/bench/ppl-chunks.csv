@@ -1793,3 +1793,23 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-10-25 08:27:35,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1221
 2026-10-25 08:28:25,prerelease5-18e7fea76 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1336
 2026-10-25 08:28:25,prerelease5-18e7fea76 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1263
+2026-10-26 14:56:16,stock-b11887-official -fitt 2048,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,1,1.2422
+2026-10-26 14:56:16,stock-b11887-official -fitt 2048,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,2,1.3617
+2026-10-26 14:56:16,stock-b11887-official -fitt 2048,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,3,1.3937
+2026-10-26 14:56:16,stock-b11887-official -fitt 2048,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,4,1.5167
+2026-10-26 14:56:16,stock-b11887-official -fitt 2048,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,5,1.5089
+2026-10-26 14:56:16,stock-b11887-official -fitt 2048,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,6,1.5338
+2026-10-26 14:56:16,stock-b11887-official -fitt 2048,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,7,1.6075
+2026-10-26 14:56:16,stock-b11887-official -fitt 2048,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,8,1.607
+2026-10-26 14:56:16,stock-b11887-official -fitt 2048,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,9,1.5841
+2026-10-26 14:56:16,stock-b11887-official -fitt 2048,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,10,1.5665
+2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,1,1.2383
+2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,2,1.3581
+2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,3,1.3882
+2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,4,1.5138
+2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,5,1.5056
+2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,6,1.5314
+2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,7,1.6061
+2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,8,1.6057
+2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,9,1.5826
+2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,10,1.5662
