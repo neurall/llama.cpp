@@ -1111,6 +1111,8 @@ def ovr_prompt(default):
     return (p or default) + "\n" * PROMPT_TWEAK
 GREEDY = {"temperature": 0, "top_p": 1, "top_k": 1}
 ANTILOOP = {"repeat_penalty": 1.15, "repeat_last_n": 256}   # --antiloop: the same penalty for every build of a cell; it changes the text, so a loop-prone base model (OLMoE) produces a real answer. Speed and cache hit rate are not touched by it (a sampler step on the logits)
+if sys.argv[1:2] == ["run"] and "-al" in sys.argv:   # run ... -al: the same switch on demand for a list run (a cell option of its own, so no other subcommand's -al is touched)
+    sys.argv.remove("-al"); sys.argv.insert(1, "--antiloop")
 if "--antiloop" in sys.argv:   # a global switch for every subcommand (run, cell, bench, remote, rcell); the env var carries it to the cells started as child processes
     sys.argv.remove("--antiloop"); os.environ["RUN_ANTILOOP"] = "1"
 if os.environ.get("RUN_ANTILOOP"): GREEDY.update(ANTILOOP)
@@ -4709,6 +4711,7 @@ def run_list_help():
     print("run.py run -c NAME [-b B] [-onl TEXT[,TEXT]] [-s] [-dsc] [-nm] [-w] [-r N] [-n]   run the cells of fork/runs/NAME.csv (campaign list: gainers, reg, ctx)\n"
           "  -skp TEXT rows to skip, same matching as -onl (comma list)\n"
           "  -sc, -su each cell on the newest stock binary first, then on -b\n"
+          "  -al      antiloop: repeat_penalty 1.15 over the last 256 tokens for every cell (same for stock and ours; changes the text, not the speed); also --antiloop before any subcommand\n"
           "  -nrt [DAYS]  skip cells already run in the last DAYS days (default 1 = today; runs.db); a stock pulled within those days is kept, no newer release is looked for\n"
           "  -b B     binary under devbuilds/ (default latest); the campaign of a row is B-<row name>\n"
           "  -onl TEXT rows whose name contains TEXT, comma list ok; the trailing '-' keeps glm- apart from glm35-; add i|io|o for one test\n"
