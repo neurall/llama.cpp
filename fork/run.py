@@ -3084,6 +3084,11 @@ def cmd_show(a):
               f"{mean('spp'):7.2f} {mean('hit'):6.1f} {mean('pp'):7.1f}  {','.join(sorted({x['md5'] for x in g if x['md5']}))}")
 
 
+def first_shard(path):
+    """the name shown for a model: its first file only (a split model lists NAME-00001-of-0000N.gguf, not every shard)"""
+    return os.path.basename(re.split(r"[,\s]", str(path).strip())[0])
+
+
 def model_name():
     return re.split(r"[\\/]", MODEL)[-1]
 
@@ -5060,7 +5065,7 @@ def cell_status(t0, expect, label, total=None):
                 last_run = None
                 for run_i, k, sg, b, c_ in shown:
                     if run_i != last_run and (last_run is not None or run_no > 1):
-                        eng += "\n" + col(90, f"  ---- run {run_i} " + "-" * 60)
+                        eng += "\n\n" + col("1;90", f"  ======== run {run_i} " + "=" * 60)
                     last_run = run_i
                     eng += "".join("\n" + l for l in pass_rows(k, b, lw, sg, c_))
                 cur = sp.get("cur") or {}
@@ -6624,7 +6629,7 @@ def run_list(name, argv):
                             with contextlib.redirect_stdout(io.StringIO()): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
                         except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
                 else: run_list_pool(size(r))
-            if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;94", os.path.basename(shown)), flush=True)   # after the pool line: which model the next cells run
+            if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;94", first_shard(shown)), flush=True)   # after the pool line: which model the next cells run
             tag = f"{r['_b']}-{r['name']}"
             cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], (" " + r["args"]) if r.get("args") else ""] + (["--warm"] if o.warm else []) + ([] if (o.kill or o.clean_state) else ["--keep-server"]) + (["--clean-state"] if o.clean_state else [])
             cmd += (["--tokens", r["tokens"]] if r.get("tokens") else []) + shlex.split(r.get("extra") or "")
@@ -6920,7 +6925,7 @@ def _run_list_remote(o, rows, name, m, here, bad):
                    "--results", f"{QDIR}/{tag}-{r['test']}.run.out", "--slots", REMOTE_SLOTS[0], "--campaign", key]
             if not o.dry: live_clear(); push_build(m, r["_b"])   # a build the machine does not have yet goes there first (once)
             if o.dry: print(f"[{name}] {tag} on {o.machine}: {found} {r['test']} -n {r['n'] or 2} args: {args}", flush=True); continue
-            if r["model"] != shown: shown = r["model"]; live_clear(); print(col("1;94", os.path.basename(shown)), flush=True)
+            if r["model"] != shown: shown = r["model"]; live_clear(); print(col("1;94", first_shard(shown)), flush=True)
             try: os.remove(f"{QDIR}/{tag}-{r['test']}.run.out")
             except OSError: pass
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
