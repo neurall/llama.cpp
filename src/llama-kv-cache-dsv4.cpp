@@ -611,6 +611,19 @@ static llama_kv_cache_dsv4_context::comp_plan dsv4_build_comp_plan(
         }
     }
 
+    // fork: the row a dummy block writes: the sequence's next row to complete (not visible yet; its block overwrites it). Upstream wrote the last slot
+    // (kv_size - 1): under --moe kv-tail a growing record has rows only up to its zone, so that slot lay GiBs past it, in an expert block (two cards: silent)
+    // or past the pool (one card, DeepSeek 4.1 16k: 'illegal memory access' at the first 1-token decode; its ratio-2 cache completes a block every other token)
+    const auto dummy_row = [&](llama_seq_id seq_id) -> int64_t {
+        llama_pos pos_max = -1;
+        for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
+            if (ubatch.pos[i] >= 0 && dsv4_token_has_seq(ubatch, i, seq_id)) {
+                pos_max = std::max(pos_max, ubatch.pos[i]);
+            }
+        }
+        return std::min<int64_t>((int64_t) (pos_max + 1)/ratio, (int64_t) kv_size - 1);
+    };
+
     if (pad_blocks && !plan.state_pos.empty()) {
         assert(kv_size > 0);
 
@@ -619,7 +632,7 @@ static llama_kv_cache_dsv4_context::comp_plan dsv4_build_comp_plan(
             const int64_t cache_off = dsv4_stream_offset(n_stream, seq_id, kv_size);
             const int32_t source_idx = state_source_idx(seq_id, ubatch.pos[i]);
 
-            plan.state_write_idxs.push_back(cache_off + kv_size - 1);
+            plan.state_write_idxs.push_back(cache_off + dummy_row(seq_id));
             plan.state_write_pos .push_back(0);
 
             if (overlap) {
@@ -685,7 +698,7 @@ static llama_kv_cache_dsv4_context::comp_plan dsv4_build_comp_plan(
         const int64_t cache_off = dsv4_stream_offset(n_stream, seq_id, kv_size);
         const int32_t source_idx = state_source_idx(seq_id, ubatch.pos[i]);
 
-        plan.state_write_idxs.push_back(cache_off + kv_size - 1);
+        plan.state_write_idxs.push_back(cache_off + dummy_row(seq_id));
         plan.state_write_pos .push_back(0);
 
         for (uint32_t j = 0; j < ratio; ++j) {
