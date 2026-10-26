@@ -36,7 +36,7 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 |---|---|---|---|---|---|---|---|---|
 | DeepSeek 4.1 Flash IQ2_XXS (231.7 GiB)\*\* | 4k/64† | 1.45<br>42.30 | 34.7<br>160.2 | +2818% 29.18x† | +362% 4.62x | -<br>- | b14010 | -<br>[19574s](fork/outputs/19574s.txt) |
 | MiMo 2.6F 3-bit | 16k/64† | 13.73<br>26.67 | 48.6<br>1123.9 | +94% 1.94x† | +2212% 23.12x | -<br>- | b13954 | [19204](fork/outputs/19204.txt)<br>[19571s](fork/outputs/19571s.txt) |
-| DeepSeek 4.1 Flash IQ2_XXS (231.7 GiB)\*\* | 16k/1k | 1.5<br>33.4 | 43<br>315 | +2131% 22.3x | +632% 7.3x | -<br>- | b11887<br>ds41i5 (decode), deep-seek (prompt) | -<br>- |
+| DeepSeek 4.1 Flash IQ2_XXS (231.7 GiB)\*\* | 16k/1k | 1.5<br>33.4 | 43<br>315 | +2131% 22.3x | +632% 7.3x | -<br>- | b11887<br>b14013, b14020 | -<br>- |
 | MiMo 2.6F 3-bit | 12k/1k | 14.0<br>26.6 | 49<br>1025 | +90% | +1975% 20.8x | 1.8758<br>1.8758 | b13842 | [18373](fork/outputs/18373.txt)<br>[18221s](fork/outputs/18221s.txt) |
 | GLM 5.3 3-bit | 16k/64† | 12.53<br>18.58 | 41.7<br>821.2 | +48% 1.48x† | +1869% 19.69x | -<br>- | b13959 | [19212](fork/outputs/19212.txt)<br>[19572s](fork/outputs/19572s.txt) |
 | GLM 5.3 3-bit | 12k/1k | 12.8<br>19.8 | 43<br>689 | +55% | +1518% 16.2x | 1.7626<br>1.7578 | b13838 | [18209](fork/outputs/18209.txt)<br>[18232s](fork/outputs/18232s.txt) |
@@ -45,7 +45,7 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 | Qwen 3.8 Next IQ4_XS | 4k/64† | 30.22<br>53.92 | 209.5<br>1705.0 | +78% 1.78x† | +714% 8.14x | -<br>- | b13964 | [19270](fork/outputs/19270.txt)<br>[19567s](fork/outputs/19567s.txt) |
 | Qwen 3.8 Next IQ4_XS | 16k/64† | 31.98<br>50.24 | 207.9<br>1659.8 | +57% 1.57x† | +698% 7.98x | -<br>- | b13959 | [19208](fork/outputs/19208.txt)<br>[19568s](fork/outputs/19568s.txt) |
 | GLM 5.3 3.5-bit* | 3k/1k | 10.7<br>16.1 | 33<br>241 | +50% | +640% 7.4x | 1.6326<br>1.6265 | b13842 | [18429](fork/outputs/18429.txt)<br>[18277s](fork/outputs/18277s.txt) |
-| Qwen 3.8 Next IQ4_XS | 12k/1k | 32.6<br>52.7 | 213<br>1902 | +62% | +793% 8.9x | 1.4101<br>1.4101 | b13838 (decode), deep-seek (prompt) | [18203](fork/outputs/18203.txt), [19588](fork/outputs/19588.txt)<br>[18227s](fork/outputs/18227s.txt) |
+| Qwen 3.8 Next IQ4_XS | 12k/1k | 32.6<br>52.7 | 213<br>1902 | +62% | +793% 8.9x | 1.4101<br>1.4101 | b13838, b14020 | [18203](fork/outputs/18203.txt), [19588](fork/outputs/19588.txt)<br>[18227s](fork/outputs/18227s.txt) |
 | GLM 5.3 3.5-bit* | 12k/1k | 10.8<br>11.0 | 34<br>230 | +2% | +572% 6.7x | 1.6326<br>1.6265 | b13563 | [16759](fork/outputs/16759.txt)<br>[17143s](fork/outputs/17143s.txt) |
 | Qwen 3.8 Next IQ4_XS | 3k/1k | 32.1<br>54.9 | 209<br>1339 | +71% | +542% 6.4x | 1.4101<br>1.4101 | b13842 | [18381](fork/outputs/18381.txt)<br>[18228s](fork/outputs/18228s.txt) |
 | Qwen 3.8 Next IQ3_S | 12k/1k | 43.8<br>53.6 | 372<br>1477 | +22% | +297% 4.0x | 1.3927<br>1.3927 | b13586 | [16719](fork/outputs/16719.txt)<br>[17094s](fork/outputs/17094s.txt) |
