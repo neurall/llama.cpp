@@ -3515,15 +3515,29 @@ static bool kv_rec_fixed(size_t cells_max, size_t ratio, size_t tokens_max, size
     return ratio > 1 ? cells_max <= step : cells_max < tokens_max;
 }
 
-void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec) {
-    std::lock_guard<std::mutex> lk(g_kvt_mtx);
-    g_kvt.push_back(rec);
-}
 static std::atomic<bool> g_kv_pool_expected { true };
 void llama_moe_cache_kv_pool_expected_fork(bool on) { g_kv_pool_expected = on; }
 bool llama_moe_cache_kv_pool_expected_fork() { return g_kv_pool_expected.load(); }
+// The records a context registered while it expected an expert pool (the target): they belong to that pool's tail. The flag above is set by every context at its
+// creation, so it is captured per record here and asked per cache afterwards. A draft context (no pool, ctx_other) created after the target set it to false,
+// and with one global flag that broke the target twice (DeepSeek 4.1 + DSpark draft, 2026-10-26):
+//  - the target's reserves (get_size_reserve) sized its KV at the full context instead of one growth step: the prompt graph grew to 13.5 GiB on CUDA0 and the
+//    micro-batch fell from 16384 to 640 (prompt 59 -> 22-37 t/s);
+//  - the draft's first decode (at load, before the target's first request starts the pool) took the target's records into a fixed full-context arena:
+//    7.05 GiB for 1048576 tokens, the expert cache 28.6 instead of 41.3 GiB.
+// Only the target takes its records into an arena, once its pool started and left them (kv_arena_start); the pool's detach only checks them.
+static std::mutex             g_kvt_pb_mtx;   // only around this set: get_size_reserve asks it from graph reserves
+static std::set<const void *> g_kvt_pool_bound;
+static bool kvt_pool_bound(const void * owner) { std::lock_guard<std::mutex> lk(g_kvt_pb_mtx); return g_kvt_pool_bound.count(owner) > 0; }
+bool llama_moe_cache_kv_pool_bound_fork(const void * owner) { return kvt_pool_bound(owner); }   // declared where it is used (llama-kv-cache.cpp), no header edit
+void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec) {
+    std::lock_guard<std::mutex> lk(g_kvt_mtx);
+    g_kvt.push_back(rec);
+    if (g_kv_pool_expected) { std::lock_guard<std::mutex> lk2(g_kvt_pb_mtx); g_kvt_pool_bound.insert(rec.owner); }
+}
 void llama_moe_cache_kv_tail_remove_fork(void * owner) {
     std::lock_guard<std::mutex> lk(g_kvt_mtx);
+    { std::lock_guard<std::mutex> lk2(g_kvt_pb_mtx); g_kvt_pool_bound.erase(owner); }
     g_kvt.erase(std::remove_if(g_kvt.begin(), g_kvt.end(), [&](const llama_kv_tail_fork & r) { return r.owner == owner; }), g_kvt.end());
     if (moe_cache * mc = g_cache) {
         for (auto & ap : mc->alias) {
@@ -3539,7 +3553,7 @@ void llama_moe_cache_kv_tail_report_fork(const char * when) {
 }
 void llama_moe_cache_kv_tail_detach_fork() {
     std::lock_guard<std::mutex> lk(g_kvt_mtx);
-    for (auto & r : g_kvt) { if (r.detach) { r.detach(); } }
+    for (auto & r : g_kvt) { if (r.detach && kvt_pool_bound(r.owner)) { r.detach(); } }   // the pool's own records: a draft's KV in its arena may hold cells
 }
 
 // ---- the KV zone of a card (kv-tail, fork/docs/kv-grow.md) ----
@@ -4032,18 +4046,21 @@ static size_t kv_arena_cells(const kv_arena_t & ar) { return ar.size / std::max<
 static std::vector<kv_arena_t> g_kv_arena;
 static std::string g_kv_arena_err;   // why a card got no arena (the records stay unattached: a graph built over them aborts in the allocator); asked for by decode()
 
-void llama_moe_cache_kv_arena_start_fork() {
+// pool_records: whether the records of the context that expects the expert pool may go to an arena (see g_kvt_pool_bound). That context passes true once its
+// pool started (the records the pool did not take); every other context (a draft) false, so it takes only its own records.
+static void kv_arena_start(bool pool_records) {
     std::lock_guard<std::mutex> lk(g_kvt_mtx);
+    auto take = [&](const llama_kv_tail_fork & r) { return !r.attached && (pool_records || !kvt_pool_bound(r.owner)); };
     std::vector<ggml_backend_dev_t> devs;
-    for (auto & r : g_kvt) { if (!r.attached && r.dev && std::find(devs.begin(), devs.end(), r.dev) == devs.end()) { devs.push_back(r.dev); } }
+    for (auto & r : g_kvt) { if (take(r) && r.dev && std::find(devs.begin(), devs.end(), r.dev) == devs.end()) { devs.push_back(r.dev); } }
     for (ggml_backend_dev_t dev : devs) {
         // growing records in one combined row, sliding-window rings fixed at full size in front (as in the pool, kv_rec_fixed); tmax: the most tokens a record
         // covers, cmax: the most rows of a growing record (the combined rows the arena needs)
         size_t row = 0, fixed = 0, cmax = 0, tmax = 0;
         auto fixed_of = [&](const llama_kv_tail_fork & r) { return kv_rec_fixed(r.bytes / r.row, llama_kv_cache_tail_ratio_fork(r.owner), tmax, r.step > 0 ? r.step : 10240); };
-        for (auto & r : g_kvt) { if (!r.attached && r.dev == dev && r.row) { tmax = std::max(tmax, r.bytes / r.row * llama_kv_cache_tail_ratio_fork(r.owner)); } }
+        for (auto & r : g_kvt) { if (take(r) && r.dev == dev && r.row) { tmax = std::max(tmax, r.bytes / r.row * llama_kv_cache_tail_ratio_fork(r.owner)); } }
         for (auto & r : g_kvt) {
-            if (r.attached || r.dev != dev || !r.row) { continue; }
+            if (!take(r) || r.dev != dev || !r.row) { continue; }
             if (fixed_of(r)) { fixed += (r.bytes + 255) / 256 * 256; } else { row += r.row; cmax = std::max(cmax, r.bytes / r.row); }
         }
         if (row == 0) { continue; }
@@ -4051,7 +4068,7 @@ void llama_moe_cache_kv_arena_start_fork() {
         ggml_backend_dev_memory(dev, &free_b, &total);
         const size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 384) * 1024 * 1024;
         size_t pad = 256;   // the attention reads the cells rounded up to the pad: the buffer holds at least one whole pad of rows behind the fixed part
-        for (auto & r : g_kvt) { if (!r.attached && r.dev == dev && r.row) { pad = std::max<size_t>(pad, r.pad); } }
+        for (auto & r : g_kvt) { if (take(r) && r.dev == dev && r.row) { pad = std::max<size_t>(pad, r.pad); } }
         const size_t least = fixed + pad * row;
         if (free_b <= margin + (64u << 20) || free_b - margin < least) {
             LLAMA_LOG_ERROR("kv-arena: %s has %.1f MiB free: no room for the KV\n", ggml_backend_dev_name(dev), free_b / 1048576.0);
@@ -4088,7 +4105,7 @@ void llama_moe_cache_kv_arena_start_fork() {
         uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
         size_t prefix = 0, fpos = 0;
         for (auto & r : g_kvt) {
-            if (r.attached || r.dev != dev || !r.row) { continue; }
+            if (!take(r) || r.dev != dev || !r.row) { continue; }
             const bool fx = fixed_of(r);
             if (r.attach) { r.attach(buf, fx ? base + fpos : base + fixed + prefix, fx ? r.row : row); }
             r.attached = true;
@@ -4100,6 +4117,8 @@ void llama_moe_cache_kv_arena_start_fork() {
                 (size) / 1048576.0, ar.runs.size(), fixed / 1048576.0, row, kv_arena_cells(ar));
     }
 }
+void llama_moe_cache_kv_arena_start_fork() { kv_arena_start(true); }
+void llama_moe_cache_kv_arena_start_own_fork(bool pool_records) { kv_arena_start(pool_records); }   // declared where it is called (llama-context.cpp), no header edit
 
 // the reason, when a card that keeps its KV outside an expert pool got no arena (a record still unattached after the start): decode() then fails with this text instead of building a
 // graph over records without memory (the allocator aborted: 'cache_kv_record already has a buffer', OLMoE with 0.47 GiB VRAM left, 2026-10-18)

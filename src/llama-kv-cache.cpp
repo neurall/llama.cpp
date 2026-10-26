@@ -3386,9 +3386,12 @@ static std::atomic<uint32_t> g_kv_reserve_override { 0 };
 void llama_kv_reserve_override_fork(uint32_t n) { g_kv_reserve_override.store(n); }
 uint32_t llama_kv_reserve_override_get_fork() { return g_kv_reserve_override.load(); }   // the k-pool sizes follow it (llama-memory-hybrid-idx.cpp)
 
+bool llama_moe_cache_kv_pool_bound_fork(const void * owner);
 uint32_t llama_kv_cache::get_size_reserve() const {
     if (const uint32_t o = g_kv_reserve_override.load()) { return std::min<uint32_t>(get_size(), o); }
-    return kv_tail_on && kv_tail_step > 0 && llama_moe_cache_kv_pool_expected_fork() ? std::min<uint32_t>(get_size(), kv_tail_step) : get_size();
+    // whether THIS cache's context expects the pool (captured when the record was added), not the last context created: a DSpark draft created after the target
+    // turned the global flag off and the target's reserves took its full 1M-cell context (micro-batch 16384 -> 640, 2026-10-26)
+    return kv_tail_on && kv_tail_step > 0 && llama_moe_cache_kv_pool_bound_fork(this) ? std::min<uint32_t>(get_size(), kv_tail_step) : get_size();
 }
 uint32_t llama_kv_cache::kv_tail_cap(uint32_t n) const {
     if (!kv_tail_on) { return n; }
