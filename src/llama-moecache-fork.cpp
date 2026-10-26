@@ -419,6 +419,7 @@ struct moe_cache {
     double               cpu_gbs_meas = 0;   // EMA of the CPU phases' read rate
     std::atomic<int64_t> cpu_bytes_phase{0};
     std::atomic<int64_t> cpu_bytes{0}, up_bytes{0};
+    std::atomic<int64_t> pf_hit_bytes{0};   // prompt passes: bytes of experts found in the cache and copied from it on the card (the upload skipped), the counterpart of pf_bytes
     std::atomic<int64_t> pf_bytes{0}, pf_link[MAX_LINKS] = {};   // prompt passes: bytes of experts not found in the cache, which the pass streams from RAM over the link (live view in GET /moe/stats only, not in the decode churn columns)
     std::atomic<int64_t> link_bytes[MAX_LINKS] = {};   // uploaded bytes per link, for GET /moe/stats
     int64_t              seg_cpu_bytes = 0, seg_up_bytes = 0;
@@ -3165,6 +3166,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
         return streamed();
     }
     mc->n_src_hit++;
+    mc->pf_hit_bytes += (int64_t) weight->nb[2];
     *data   = (const uint8_t *) c->data + (size_t) ls.expert_slot[expert]*c->nb[2];
     *buffer = c->buffer;
     return true;
@@ -8553,10 +8555,10 @@ uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
 
 // The experts the prompt passes asked the cache for and found in it (the counters of GET /moe/stats prompt_all), read by the per-pass log line of the prompt
 // (llama_moe_prompt_progress_fork) to say what share of each pass came from the cache. False without a cache.
-bool llama_moe_cache_prompt_hits_fork(uint64_t * hit, uint64_t * query) {
+bool llama_moe_cache_prompt_hits_fork(uint64_t * hit, uint64_t * query, int64_t * saved_b, int64_t * streamed_b) {
     moe_cache * mc = g_cache;
     if (!mc) { return false; }
-    *hit = mc->n_src_hit; *query = mc->n_src_query;
+    *hit = mc->n_src_hit; *query = mc->n_src_query; *saved_b = mc->pf_hit_bytes; *streamed_b = mc->pf_bytes;   // saved = copied from the cache, streamed = taken from RAM
     return true;
 }
 

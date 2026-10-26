@@ -538,19 +538,19 @@ uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint3
 // a prompt call (more than one token) starts: tokens and the pass size it runs with, so GET /moe/stats shows the running call, not the finished one before it
 static uint32_t g_live_tokens = 0, g_live_ub = 0, g_live_done = 0, g_live_pass = 0, g_live_passes = 0;   // pass = passes finished so far, passes = how many the call needs at its pass size (run.py shows "pass 2/3")
 static int64_t  g_live_t0 = 0, g_live_tp = 0;
-static uint64_t g_live_h0 = 0, g_live_q0 = 0;   // the cache's prompt hit counters at the end of the previous pass: a pass's hit rate is the difference
-bool llama_moe_cache_prompt_hits_fork(uint64_t * hit, uint64_t * query);   // src/llama-moecache-fork.cpp
+static uint64_t g_live_h0 = 0, g_live_q0 = 0; static int64_t g_live_sv0 = 0, g_live_st0 = 0;   // the cache's prompt hit counters at the end of the previous pass: a pass's hit rate is the difference
+bool llama_moe_cache_prompt_hits_fork(uint64_t * hit, uint64_t * query, int64_t * saved_b, int64_t * streamed_b);   // src/llama-moecache-fork.cpp
 void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch) {
     std::lock_guard<std::mutex> lk(g_tok_mu);
     g_live_tokens = n_tokens; g_live_ub = ubatch; g_live_done = 0; g_live_t0 = g_live_tp = ggml_time_us();
     g_live_pass = 0; g_live_passes = ubatch > 0 ? (n_tokens + ubatch - 1) / ubatch : 1;
-    if (!llama_moe_cache_prompt_hits_fork(&g_live_h0, &g_live_q0)) { g_live_h0 = g_live_q0 = 0; }
+    if (!llama_moe_cache_prompt_hits_fork(&g_live_h0, &g_live_q0, &g_live_sv0, &g_live_st0)) { g_live_h0 = g_live_q0 = 0; g_live_sv0 = g_live_st0 = 0; }
 }
 // one pass of the running prompt call finished: tokens done so far
 // (one log line per pass, so a run is followed pass by pass and the time of every pass is in the server log)
 void llama_moe_prompt_progress_fork(uint32_t done) {
     uint32_t pass, passes, prev, tokens;
-    double s_all, s_pass, hit = -1.0;
+    double s_all, s_pass, hit = -1.0, saved_mib = 0.0, streamed_mib = 0.0;
     {
         std::lock_guard<std::mutex> lk(g_tok_mu);
         const int64_t now = ggml_time_us();
@@ -558,17 +558,18 @@ void llama_moe_prompt_progress_fork(uint32_t done) {
         g_live_done = done; ++g_live_pass;
         pass = g_live_pass; passes = std::max(g_live_passes, g_live_pass);
         s_all = (now - g_live_t0) / 1e6; s_pass = (now - g_live_tp) / 1e6; g_live_tp = now;
-        uint64_t h, q;
-        if (llama_moe_cache_prompt_hits_fork(&h, &q)) {
+        uint64_t h, q; int64_t sv, st;
+        if (llama_moe_cache_prompt_hits_fork(&h, &q, &sv, &st)) {
             if (q > g_live_q0) { hit = 100.0 * (double) (h - g_live_h0) / (double) (q - g_live_q0); }
-            g_live_h0 = h; g_live_q0 = q;
+            saved_mib = (double) (sv - g_live_sv0) / 1048576.0; streamed_mib = (double) (st - g_live_st0) / 1048576.0;
+            g_live_h0 = h; g_live_q0 = q; g_live_sv0 = sv; g_live_st0 = st;
         }
     }
     if (tokens) {
-        char hs[40] = "";
-        if (hit >= 0.0) { snprintf(hs, sizeof hs, ", experts from cache %.0f%%", hit); }
+        char hs2[96] = "";
+        if (hit >= 0.0) { snprintf(hs2, sizeof hs2, ", experts from cache %.0f%% (%.0f MiB copied on the card, %.0f MiB streamed)", hit, saved_mib, streamed_mib); }
         LLAMA_LOG_WARN("%s: prompt pass %u/%u: %u tokens in %.1f s (%.0f t/s)%s, %u of %u done after %.1f s\n", __func__, pass, passes,
-                done - prev, s_pass, s_pass > 0 ? (done - prev) / s_pass : 0.0, hs, done, tokens, s_all);
+                done - prev, s_pass, s_pass > 0 ? (done - prev) / s_pass : 0.0, hs2, done, tokens, s_all);
     }
 }
 // a prompt call (more than one token) finished: tokens, milliseconds
