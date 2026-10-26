@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+ds-1k-nodraft-stats,ds,2,1k1k,1024,,
+ds-1k-jig-d5-stats,ds,2,1k1k,1024,-md /m/ds/dspark/DeepSeek-V4.1-Flash-DSpark.sp.gguf --spec-type draft-dspark --spec-draft-n-max 5 --moe spec-depth=5,
