@@ -8567,12 +8567,15 @@ void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total) {
     }
 }
 
-// The experts the prompt passes asked the cache for and found in it (the counters of GET /moe/stats prompt_all), read by the per-pass log line of the prompt
-// (llama_moe_prompt_progress_fork) to say what share of each pass came from the cache. False without a cache.
-bool llama_moe_cache_prompt_hits_fork(uint64_t * hit, uint64_t * query, int64_t * saved_b, int64_t * streamed_b) {
+// What the prompt passes asked the cache for since the start (the per-pass log line takes the difference): experts asked, found on the card they are needed on (copied
+// there, the upload skipped), and asked of the wrong card (the layer's cache lives on the other card: nothing to copy, the expert comes from RAM). Both lookups count:
+// the staging fill of a pass (moe_where_cb, the live path: whole layers per pass) and the scheduler's per-expert query (moe_src_cb). False without a cache.
+bool llama_moe_cache_staging_counts_fork(int64_t * asked, int64_t * found, int64_t * wrong) {
     moe_cache * mc = g_cache;
     if (!mc) { return false; }
-    *hit = mc->n_src_hit; *query = mc->n_src_query; *saved_b = mc->pf_hit_bytes; *streamed_b = mc->pf_bytes;   // saved = copied from the cache, streamed = taken from RAM
+    *asked = g_ac.where_range.load() + (int64_t) mc->n_src_query;
+    *found = g_ac.where_found.load() + (int64_t) mc->n_src_hit;
+    *wrong = g_ac.where_wrongdev.load();
     return true;
 }
 
