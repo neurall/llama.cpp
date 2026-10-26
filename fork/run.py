@@ -5521,6 +5521,30 @@ def passes_save(model, test, build):
     except sqlite3.Error as e: print("passes:", e, file=sys.stderr)
 
 
+def prompt_passes_save(model, test, build):
+    """every prompt pass of the cell's server log (engine line `prompt pass k/m: N tokens in X s (Y t/s), experts from cache H%, ...`) into runs.db table prompt_passes: one row per
+    pass with its tokens, seconds, speed and the share of its experts that came from the cache, so the first pass (a cold cache) and the later ones can be compared. Called once at the end of a cell."""
+    import sqlite3
+    log = f"/tmp/perf-{build}.log"
+    if not model or not os.path.exists(log): return
+    call = 0; rows = []
+    for ln in open(log, errors="replace"):
+        m = re.search(r"prompt pass (\d+)/(\d+): (\d+) tokens in ([\d.]+) s \((\d+) t/s\)(?:, experts from cache (\d+)%)?", ln)
+        if not m: continue
+        k, n, tok, sec, tps, hit = m.groups()
+        if k == "1": call += 1
+        rows.append((call, int(k), int(n), int(tok), float(sec), int(tps), None if hit is None else int(hit)))
+    if not rows: return
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        c.execute("create table if not exists prompt_passes (ts text, hw text, model text, test text, build text, call int, k int, n int, tokens int, secs real, tps int, hit_pct int)")
+        hw = (HWF[0].split("'")[1] if "'" in HWF[0] else "")
+        ts = time.strftime("%F %T")
+        c.executemany("insert into prompt_passes values (?,?,?,?,?,?,?,?,?,?,?,?)", [(ts, hw, os.path.basename(model), ALIASES.get(test, test), str(build)) + r for r in rows])
+        c.commit()
+    except sqlite3.Error as e: print("prompt passes:", e, file=sys.stderr)
+
+
 def pass_best_us(model, test, build, tokens):
     """best (smallest) time per token among the 5 earlier passes of this model and test on this machine, other builds of ours, closest to `tokens` in pass size (no size window to guess); None without history"""
     import sqlite3
@@ -5882,7 +5906,7 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
         _le = os.path.getmtime(LOAD_FILE); _g = PHASE.get("gen") if PHASE.get("t0") == t0 else None
         if lt and _g and _g > _le: lt += f" p {_tf(_g - _le)} g {_tf(time.time() - _g)}"; CELL_PG[:] = [_g - _le, time.time() - _g]
     except (OSError, ValueError, NameError): pass
-    if peek: passes_save(peek[0], peek[1], cmd[5])
+    if peek: passes_save(peek[0], peek[1], cmd[5]); prompt_passes_save(peek[0], peek[1], cmd[5])
     CELL_REC.append(dict(asked=CELL_ASKED[0], ref=ours_reference(peek[0], peek[1]) if peek and str(cmd[5]).startswith("stock") and res else None, sbno=own_build_no(cmd[5]), xfer="" if str(cmd[5]).startswith("stock") else xfer_of(own_build_no(cmd[5]), " ".join(map(str, cmd))), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, cmd[5], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, cmd[5], "llama-server")) else "", rid=run_id(f"{cmd[3]}-{peek[1]}") if peek else None, build=str(cmd[5]), prompt=CELL_PROMPT[0], model=peek[0] if peek else None, test=peek[1] if peek else None, name=label, el=el, lt=lt, rc=rc or (0 if res else 1), res=res, st=STOCK_REC[0], stock_row=str(cmd[5]).startswith("stock")))
     try:
         if peek: store_gains(CELL_REC[-1], str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1], t0)
