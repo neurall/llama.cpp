@@ -538,9 +538,11 @@ uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint3
 // a prompt call (more than one token) starts: tokens and the pass size it runs with, so GET /moe/stats shows the running call, not the finished one before it
 static uint32_t g_live_tokens = 0, g_live_ub = 0, g_live_done = 0, g_live_pass = 0, g_live_passes = 0;   // pass = passes finished so far, passes = how many the call needs at its pass size (run.py shows "pass 2/3")
 static int64_t  g_live_t0 = 0, g_live_tp = 0;
-static int64_t g_live_a0 = 0, g_live_f0 = 0, g_live_w0 = 0;   // the cache's prompt hit counters at the end of the previous pass: a pass's hit rate is the difference
+static int64_t g_live_a0 = 0, g_live_f0 = 0, g_live_w0 = 0;
+static int64_t g_live_c0[4][3] = {};   // per card (link): asked / found / wrong at the end of the previous pass   // the cache's prompt hit counters at the end of the previous pass: a pass's hit rate is the difference
 void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total);   // src/llama-moecache-fork.cpp
-bool llama_moe_cache_staging_counts_fork(int64_t * asked, int64_t * found, int64_t * wrong);   // src/llama-moecache-fork.cpp
+bool llama_moe_cache_staging_counts_fork(int64_t * asked, int64_t * found, int64_t * wrong);
+bool llama_moe_cache_staging_card_fork(int k, const char ** name, int64_t * asked, int64_t * found, int64_t * wrong);   // src/llama-moecache-fork.cpp   // src/llama-moecache-fork.cpp
 void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch) {
     if (n_tokens > 1) {   // (before g_tok_mu: the cache lock is taken inside, the other code takes it first)
         uint64_t filled, total;
@@ -551,6 +553,11 @@ void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch) {
     g_live_tokens = n_tokens; g_live_ub = ubatch; g_live_done = 0; g_live_t0 = g_live_tp = ggml_time_us();
     g_live_pass = 0; g_live_passes = ubatch > 0 ? (n_tokens + ubatch - 1) / ubatch : 1;
     if (!llama_moe_cache_staging_counts_fork(&g_live_a0, &g_live_f0, &g_live_w0)) { g_live_a0 = g_live_f0 = g_live_w0 = 0; }
+    for (int k = 0; k < 4; ++k) {
+        const char * nm; int64_t ca, cf, cw;
+        if (!llama_moe_cache_staging_card_fork(k, &nm, &ca, &cf, &cw)) { break; }
+        g_live_c0[k][0] = ca; g_live_c0[k][1] = cf; g_live_c0[k][2] = cw;
+    }
 }
 // one pass of the running prompt call finished: tokens done so far
 // (one log line per pass, so a run is followed pass by pass and the time of every pass is in the server log)
@@ -558,6 +565,7 @@ void llama_moe_prompt_progress_fork(uint32_t done) {
     uint32_t pass, passes, prev, tokens;
     double s_all, s_pass;
     int64_t d_asked = 0, d_found = 0, d_wrong = 0;
+    std::string per_card;   // " | CUDA1: 12% of 90000 found, 3% other card; CUDA0: ..." the pass's lookups card by card
     {
         std::lock_guard<std::mutex> lk(g_tok_mu);
         const int64_t now = ggml_time_us();
@@ -570,10 +578,18 @@ void llama_moe_prompt_progress_fork(uint32_t done) {
             d_asked = a - g_live_a0; d_found = f - g_live_f0; d_wrong = w - g_live_w0;
             g_live_a0 = a; g_live_f0 = f; g_live_w0 = w;
         }
+        for (int k = 0; k < 4; ++k) {
+            const char * nm; int64_t ca, cf, cw;
+            if (!llama_moe_cache_staging_card_fork(k, &nm, &ca, &cf, &cw)) { break; }
+            const int64_t da = ca - g_live_c0[k][0], df = cf - g_live_c0[k][1], dw = cw - g_live_c0[k][2];
+            g_live_c0[k][0] = ca; g_live_c0[k][1] = cf; g_live_c0[k][2] = cw;
+            if (da > 0) { char b[120]; snprintf(b, sizeof b, "%s %s: %.0f%% of %lld found, %.0f%% other card", per_card.empty() ? "" : ";", nm, 100.0 * df / da, (long long) da, 100.0 * dw / da); per_card += b; }
+        }
     }
     if (tokens) {
-        char hs2[160] = "";   // of the experts this pass asked for: found on the card it needs them on (copied there, upload skipped) / asked of the other card (its layer's cache is there) / the rest comes from RAM
+        char hs2[400] = "";   // of the experts this pass asked for: found on the card it needs them on (copied there, upload skipped) / asked of the other card (its layer's cache is there) / the rest comes from RAM
         if (d_asked > 0) { snprintf(hs2, sizeof hs2, ", experts from cache %.0f%% (%lld of %lld asked; %.0f%% belong to the other card's cache, the rest uploaded)", 100.0 * d_found / d_asked, (long long) d_found, (long long) d_asked, 100.0 * d_wrong / d_asked); }
+        if (!per_card.empty()) { snprintf(hs2 + strlen(hs2), sizeof hs2 - strlen(hs2), " [%s]", per_card.c_str()); }
         LLAMA_LOG_WARN("%s: prompt pass %u/%u: %u tokens in %.1f s (%.0f t/s)%s, %u of %u done after %.1f s\n", __func__, pass, passes,
                 done - prev, s_pass, s_pass > 0 ? (done - prev) / s_pass : 0.0, hs2, done, tokens, s_all);
     }

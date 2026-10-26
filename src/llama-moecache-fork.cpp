@@ -420,6 +420,7 @@ struct moe_cache {
     std::atomic<int64_t> cpu_bytes_phase{0};
     std::atomic<int64_t> cpu_bytes{0}, up_bytes{0};
     std::atomic<int64_t> pf_hit_bytes{0};   // prompt passes: bytes of experts found in the cache and copied from it on the card (the upload skipped), the counterpart of pf_bytes
+    std::atomic<int64_t> pf_ask[MAX_LINKS] = {}, pf_found[MAX_LINKS] = {}, pf_wrong[MAX_LINKS] = {};   // staging lookups per card (link): experts asked, found on that card, asked of a card whose cache is not this one
     std::atomic<int64_t> pf_bytes{0}, pf_link[MAX_LINKS] = {};   // prompt passes: bytes of experts not found in the cache, which the pass streams from RAM over the link (live view in GET /moe/stats only, not in the decode churn columns)
     std::atomic<int64_t> link_bytes[MAX_LINKS] = {};   // uploaded bytes per link, for GET /moe/stats
     int64_t              seg_cpu_bytes = 0, seg_up_bytes = 0;
@@ -3109,10 +3110,13 @@ static int moe_where_cb(const ggml_tensor * weight, int32_t lo, int32_t hi, ggml
     }
     layer_state & ls = mc->layers[it->second.first];
     std::lock_guard<std::mutex> lock(mc->mtx);
+    int lk = -1;
+    for (int k = 0; k < mc->n_links; ++k) { if (mc->link_dev[k] == dev) { lk = k; break; } }
     ggml_tensor * c = it->second.second == 0 ? ls.pub.up_c : it->second.second == 1 ? ls.pub.gate_c : ls.pub.down_c;
     if (!c || !c->buffer || c->nb[2] < weight->nb[2] || c->nb[1] != weight->nb[1] ||
         ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) != dev) {
         moe_where_count(hi - lo, 0, 0, hi - lo);
+        if (lk >= 0) { mc->pf_ask[lk] += hi - lo; mc->pf_wrong[lk] += hi - lo; }
         return 0;
     }
     int n = 0, inflight = 0;
@@ -3129,6 +3133,7 @@ static int moe_where_cb(const ggml_tensor * weight, int32_t lo, int32_t hi, ggml
         ++n;
     }
     moe_where_count(hi - lo, n, inflight, 0);
+    if (lk >= 0) { mc->pf_ask[lk] += hi - lo; mc->pf_found[lk] += n; }
     *buffer = c->buffer;
     return n;
 }
@@ -8570,6 +8575,16 @@ void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total) {
 // What the prompt passes asked the cache for since the start (the per-pass log line takes the difference): experts asked, found on the card they are needed on (copied
 // there, the upload skipped), and asked of the wrong card (the layer's cache lives on the other card: nothing to copy, the expert comes from RAM). Both lookups count:
 // the staging fill of a pass (moe_where_cb, the live path: whole layers per pass) and the scheduler's per-expert query (moe_src_cb). False without a cache.
+// the same per card (link k): its name and counts, false past the last card. The staging fill of a card asks for the experts of every layer its tokens route to; the share
+// "wrong" belongs to layers whose cache is on the other card (the dense split runs every layer on every card, on different tokens)
+bool llama_moe_cache_staging_card_fork(int k, const char ** name, int64_t * asked, int64_t * found, int64_t * wrong) {
+    moe_cache * mc = g_cache;
+    if (!mc || k < 0 || k >= mc->n_links || !mc->link_dev[k]) { return false; }
+    *name = ggml_backend_dev_name(mc->link_dev[k]);
+    *asked = mc->pf_ask[k]; *found = mc->pf_found[k]; *wrong = mc->pf_wrong[k];
+    return true;
+}
+
 bool llama_moe_cache_staging_counts_fork(int64_t * asked, int64_t * found, int64_t * wrong) {
     moe_cache * mc = g_cache;
     if (!mc) { return false; }
