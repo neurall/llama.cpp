@@ -2942,12 +2942,15 @@ common_context_seq_rm_type common_context_can_seq_rm(llama_context * ctx) {
         return COMMON_CONTEXT_SEQ_RM_TYPE_NO;
     }
 
-    if (llama_n_rs_seq(ctx) > 0) {
+    // fork: a context with rollback slots runs the probe decode too and stays RS: the expert pool and the KV records at its tail start at the first decode,
+    // which belongs at load. DeepSeek 4.1 with a DSpark draft (rollback slots) skipped it: the pool start fell into the first request's prompt time, and that
+    // request's sequence removal cleared KV records that had no memory yet ('tensor not allocated')
+    const bool rs = llama_n_rs_seq(ctx) > 0;
+    if (rs) {
         COM_TRC("%s", "the context supports bounded partial sequence removal\n");
-        return COMMON_CONTEXT_SEQ_RM_TYPE_RS;
     }
 
-    common_context_seq_rm_type res = COMMON_CONTEXT_SEQ_RM_TYPE_PART;
+    common_context_seq_rm_type res = rs ? COMMON_CONTEXT_SEQ_RM_TYPE_RS : COMMON_CONTEXT_SEQ_RM_TYPE_PART;
 
     llama_memory_clear(mem, true);
 
@@ -2965,12 +2968,14 @@ common_context_seq_rm_type common_context_can_seq_rm(llama_context * ctx) {
     }
     if (ret != 0) {
         COM_ERR("llama_process() failed: %d\n", ret);
-        res = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
+        if (!rs) {
+            res = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
+        }
         goto done;
     }
 
     // try to remove the last tokens
-    if (!llama_memory_seq_rm(mem, 0, 1, -1)) {
+    if (!rs && !llama_memory_seq_rm(mem, 0, 1, -1)) {
         COM_TRC("%s", "the context does not support partial sequence removal\n");
         res = COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
         goto done;

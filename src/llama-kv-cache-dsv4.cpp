@@ -52,6 +52,10 @@ static void dsv4_clear_tensor_stream(ggml_tensor * tensor, uint32_t stream, uint
     GGML_ASSERT(tensor->ne[3] == 1);
     GGML_ASSERT(stream < (uint32_t) tensor->ne[2]);
 
+    if (tensor->data == nullptr) {   // fork: a kv-tail record before its context's first decode has no memory yet (the pool or an arena gives it there) and no cells to clear
+        return;
+    }
+
     if (ggml_is_contiguous(tensor)) {
         const size_t stream_size = tensor->nb[2];
         ggml_backend_tensor_memset(tensor, 0, stream*stream_size, stream_size);
