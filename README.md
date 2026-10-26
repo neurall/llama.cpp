@@ -138,25 +138,25 @@ The first request is slower because the expert cache and the pass sizes are stil
 
 **Where the two-card dense split starts to pay.** Per prompt, the planner measures one card and two cards and takes the faster; it does not use a fixed size. The medians of all runs since 2026-10-20 (220 + 280 W, answers not looped; each cell has 2 to 50 runs from several builds, so differences under 10% are noise) show where it wins:
 
-| model | prompt | one card (pp t/s) | two cards (pp t/s) | change |
-|---|---|---|---|---|
-| Qwen3.8 Next IQ3_S | 4k | 1684 | 1350 | -20% |
-| | 8k | 1663 | 1513 | -9% |
-| | 11k | 1581 | 1824 | +15% |
-| | 12k | 1502 | 1648 | +10% |
-| | 60k | 1595 | 1692 | +6% |
-| GLM-5.3-Flash 3.0-bit | 4k | 670 | 639 | -5% |
-| | 12k | 652 | 447 | -31% |
-| | 16k | 657 | 775 | +18% |
-| | 30k | 419 | 527 | +26% |
-| | 60k | 566 | 693 | +22% |
-| MiMo-V2.6-Flash 3-bit | 4k | 905 | 903 | 0% |
-| | 8k | 1062 | 999 | -6% |
-| | 12k | 988 | 1150 (1 run) | +16% |
-| | 16k | 906 | 1094 | +21% |
-| | 60k | 846 | 841 | 0% (best runs 1046 and 1037) |
-| DeepSeek-V4.1-Flash | 3.4k | 214 | 210 | 0% |
-| | 16k | not measured | 228 median, 265 best | - |
+| model | prompt | one card (pp t/s) | two cards (pp t/s) | change  official stock (pp t/s) | two cards against stock |
+|---|---|---|---|---|---|---|
+| Qwen3.8 Next IQ3_S | 4k | 1684 | 1350 | -20% | - | - |
+| | 8k | 1663 | 1513 | -9% | - | - |
+| | 11k | 1581 | 1824 | +15% | - | - |
+| | 12k | 1502 | 1648 | +10% | - | - |
+| | 60k | 1595 | 1692 | +6% | - | - |
+| GLM-5.3-Flash 3.0-bit | 4k | 670 | 639 | -5% | - | - |
+| | 12k | 652 | 447 | -31% | - | - |
+| | 16k | 657 | 775 | +18% | - | - |
+| | 30k | 419 | 527 | +26% | - | - |
+| | 60k | 566 | 693 | +22% | - | - |
+| MiMo-V2.6-Flash 3-bit | 4k | 905 | 903 | 0% | - | - |
+| | 8k | 1062 | 999 | -6% | - | - |
+| | 12k | 988 | 1150 (1 run) | +16% | - | - |
+| | 16k | 906 | 1094 | +21% | - | - |
+| | 60k | 846 | 841 | 0% (best runs 1046 and 1037) | - | - |
+| DeepSeek-V4.1-Flash | 3.4k | 214 | 210 | 0% | - | - |
+| | 16k | not measured | 228 median, 265 best | - | 43 (own defaults), 127-131 (`-ub 4096`) | 6.1x (5.3x median), 2.0x against `-ub 4096` |
 
 - **The split starts to pay at about 11k-16k prompt tokens**: Qwen3.8 Next from 11k, GLM and MiMo from 16k. Below about 8k one card is as fast or faster (the second card sits in a x4 slot and the hand-offs between cards cost more than the shorter pass saves). The auto setup takes one card there.
 - **Largest gains: GLM +18% to +26% (16k to 60k), MiMo +21% at 16k, Qwen3.8 Next +15% at 11k.** Qwen3.6 and OLMoE fit in VRAM and show no split gain.
