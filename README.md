@@ -117,6 +117,48 @@ The gain depends on how much of the model fits in VRAM. Measured on 2x RTX 3090 
 - **The less of the model fits in VRAM, the more there is to gain.** The biggest gains here are at 44-45% nominal share. Models bigger than RAM run partly from SSD, where a few extra tokens per second decide between unusable and usable: GLM 3.5-bit (127.7 GiB, larger than this machine's 128 GB RAM) still gains +21% decode and 7x prompt speed over stock on the 3k prompt (b13563). I have not yet measured models that stock runs below 5 t/s; reports are welcome.
 - **On your hardware:** divide your total VRAM by the model file for the share, and expect the same shape: stock speed when it fits, the largest gains when the model fits in RAM but only a third to a half in VRAM. Only this one machine is measured so far; reports from others are welcome.
 
+## Recent gains: DeepSeek 4.1 and the two-card prompt split
+
+Measured 2026-10-25/26 on 2x RTX 3090 (x16 + x4), 128 GB RAM, from runs.db (answers checked, not looped).
+
+**DeepSeek-V4.1-Flash IQ2_XXS (231.7 GiB, three times the RAM, so most of it streams from the SSD).** One request: a 17.6k-token prompt, 1024 tokens out. Upper number stock, lower ours. Stock is the official b11887 release; "stock tuned" adds `-ub 4096 -b 4096` (`-ub 17600` runs out of memory on the x4 card). Prompt speed is only compared with prompt speed, decode with decode.
+
+| build | prompt speed (pp t/s) | decode speed (t/s) | total time |
+|---|---|---|---|
+| stock, own defaults | 43 | 1.5 | about 20 min |
+| stock tuned (`-ub 4096`) | 127-131 | 1.4 | - |
+| ours, first request after a start | 163-233 | 31.7-34.9 | - |
+| ours, repeat request | 265-269 | 31.7-33.4 | - |
+| gain, repeat request | 6.2x against stock, 2.0x against stock tuned | 22x (stock streams the experts from the SSD for every token) | - |
+
+The first request is slower because the expert cache and the pass sizes are still learned; the second request uses what the first one measured. The prompt runs as one pass of 16384 tokens (before 2026-10-26 it ran as three of 5472: 191 pp t/s). Short DeepSeek prompts run on one card: 2k tokens give 121-150 pp t/s, a 3.4k edit prompt 173-174 pp t/s with or without the split.
+
+**Where the two-card dense split starts to pay.** Per prompt, the planner measures one card and two cards and takes the faster; it does not use a fixed size. The medians of all runs since 2026-10-20 (220 + 280 W, answers not looped; each cell has 2 to 50 runs from several builds, so differences under 10% are noise) show where it wins:
+
+| model | prompt | one card (pp t/s) | two cards (pp t/s) | change |
+|---|---|---|---|---|
+| Qwen3.8 Next IQ3_S | 4k | 1684 | 1350 | -20% |
+| | 8k | 1663 | 1513 | -9% |
+| | 11k | 1581 | 1824 | +15% |
+| | 12k | 1502 | 1648 | +10% |
+| | 60k | 1595 | 1692 | +6% |
+| GLM-5.3-Flash 3.0-bit | 4k | 670 | 639 | -5% |
+| | 12k | 652 | 447 | -31% |
+| | 16k | 657 | 775 | +18% |
+| | 30k | 419 | 527 | +26% |
+| | 60k | 566 | 693 | +22% |
+| MiMo-V2.6-Flash 3-bit | 4k | 905 | 903 | 0% |
+| | 8k | 1062 | 999 | -6% |
+| | 12k | 988 | 1150 (1 run) | +16% |
+| | 16k | 906 | 1094 | +21% |
+| | 60k | 846 | 841 | 0% (best runs 1046 and 1037) |
+| DeepSeek-V4.1-Flash | 3.4k | 214 | 210 | 0% |
+| | 16k | not measured | 228 median, 265 best | - |
+
+- **The split starts to pay at about 11k-16k prompt tokens**: Qwen3.8 Next from 11k, GLM and MiMo from 16k. Below about 8k one card is as fast or faster (the second card sits in a x4 slot and the hand-offs between cards cost more than the shorter pass saves). The auto setup takes one card there.
+- **Largest gains: GLM +18% to +26% (16k to 60k), MiMo +21% at 16k, Qwen3.8 Next +15% at 11k.** Qwen3.6 and OLMoE fit in VRAM and show no split gain.
+- The split is chosen by the planner and needs no switch; `--moe dense-split=0` forces one card, `=1` forces the split.
+
 ## What each feature contributes
 
 Each row is one paired A/B on the same binary and settings, measured when the feature was added (2x RTX 3090 unless noted; older builds, one A/B each, so read them as the size of the effect, not as additive shares of the table above). Method and run notes per feature: [fork/docs/features.md](fork/docs/features.md).
