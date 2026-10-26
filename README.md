@@ -34,9 +34,7 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 
 | model | test | t/s | pp | gain t | gain pp | ppl | build | output |
 |---|---|---|---|---|---|---|---|---|
-| DeepSeek 4.1 Flash IQ2_XXS (231.7 GiB)\*\* | 4k/64† | 1.45<br>42.30 | 34.7<br>160.2 | +2818% 29.18x† | +362% 4.62x | -<br>- | b14010 | -<br>[19574s](fork/outputs/19574s.txt) |
 | MiMo 2.6F 3-bit | 16k/64† | 13.73<br>26.67 | 48.6<br>1123.9 | +94% 1.94x† | +2212% 23.12x | -<br>- | b13954 | [19204](fork/outputs/19204.txt)<br>[19571s](fork/outputs/19571s.txt) |
-| DeepSeek 4.1 Flash IQ2_XXS (231.7 GiB)\*\* | 16k/1k | 1.5<br>33.4 | 43<br>315 | +2131% 22.3x | +632% 7.3x | -<br>- | b11887<br>b14013, b14020 | -<br>- |
 | MiMo 2.6F 3-bit | 12k/1k | 14.0<br>26.6 | 49<br>1025 | +90% | +1975% 20.8x | 1.8758<br>1.8758 | b13842 | [18373](fork/outputs/18373.txt)<br>[18221s](fork/outputs/18221s.txt) |
 | GLM 5.3 3-bit | 16k/64† | 12.53<br>18.58 | 41.7<br>821.2 | +48% 1.48x† | +1869% 19.69x | -<br>- | b13959 | [19212](fork/outputs/19212.txt)<br>[19572s](fork/outputs/19572s.txt) |
 | GLM 5.3 3-bit | 12k/1k | 12.8<br>19.8 | 43<br>689 | +55% | +1518% 16.2x | 1.7626<br>1.7578 | b13838 | [18209](fork/outputs/18209.txt)<br>[18232s](fork/outputs/18232s.txt) |
@@ -56,8 +54,7 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 | GLM 5.3 3.5-bit* | short/1k | 10.7<br>17.1 | -<br>- | +59% | - | 1.6326<br>1.6265 | b13842 | [18431](fork/outputs/18431.txt)<br>[18279s](fork/outputs/18279s.txt) |
 | Qwen 3.8 Next IQ3_S | short/1k | 43.5<br>56.9 | -<br>- | +31% | - | 1.3927<br>1.3927 | b13563 | [16766](fork/outputs/16766.txt)<br>[17102s](fork/outputs/17102s.txt) |
 
-† Rows with a 64-token answer (/64): stock was asked for 64 tokens, below the 256 tokens a decode speed is taken from, so the decode gain of these rows is for information; the prompt gain stands. The valid decode comparison for DeepSeek is the 16k/1k row (stock answered 857 tokens). Our DeepSeek answer text was not stored, so the 4k row has no output link for ours. The new rows show the best decode speed and the best prompt speed among the runs of the cell (what the run list prints, two decimals); the linked answer is one of those runs, so its header can show a slower speed than the table.  
-\*\* DeepSeek: stock is the official b11887 (it is the build that loads this model), 17.6k-token prompt, 857 answer tokens against our 1024; the file is three times the RAM, so stock streams the experts from the SSD for every token (1.5 t/s). Stock also cannot run big contexts on this hardware: it sizes its own context at start (32768 tokens for Qwen IQ4_XS, 63488 for IQ3_S) and refuses 30k and 60k prompts, while ours serves them (see the dense split table below). With stock tuned (`-ub 4096 -b 4096`) the prompt is 127-131 pp t/s, so the prompt gain is 2.0x against that. Our run is the repeat request of a start; the first request is 163-233 pp t/s. Measured on a development build of this release; our answer text was not stored, so there is no output link and no perplexity yet.  
+† Rows with a 64-token answer (/64): stock was asked for 64 tokens, below the 256 tokens a decode speed is taken from, so the decode gain of these rows is for information; the prompt gain stands. The new rows show the best decode speed and the best prompt speed among the runs of the cell (what the run list prints, two decimals); the linked answer is one of those runs, so its header can show a slower speed than the table.  
 \* GLM 3.5-bit (127.7 GiB) is larger than this machine's 128 GB RAM, so part of it runs from the SSD and the system swaps (up to about 4 GiB of swap in use during runs). Ours is faster than stock despite that.  
 
 Every answer behind the table is in [fork/outputs](fork/outputs) as `<id>.txt` (header: build, test, speeds, arguments, power); stock's answers as `<id>s.txt`. With the run database: `python3 fork/run.py out ID` (get it with `git fetch https://github.com/neurall/llama.cpp runs-db && git show FETCH_HEAD:runs.db > fork/runs.db`).
@@ -117,7 +114,6 @@ The gain depends on how much of the model fits in VRAM. Measured on 2x RTX 3090 
 | Qwen3.8 Next IQ1_M | 54.4 GiB | 88% | 1.04x | -0.5% |
 | Qwen3.8 Next IQ3_S | 77.8 GiB | 62% | 3.9x | +31% |
 | Qwen3.8 Next IQ4_XS | 87.2 GiB | 55% | 7.1x | +78% |
-| DeepSeek-V4.1-Flash IQ2_XXS | 231.7 GiB | 21% | 6.1x | +2131% (22.3x) |
 | MiMo-V2.6-Flash 3-bit | 107.7 GiB | 45% | 19.4x | +131% (2.3x) |
 | GLM-5.3-Flash 3.0-bit | 109.4 GiB | 44% | 14.8x | +62% |
 | GLM-5.3-Flash 3.5-bit* | 127.7 GiB | 38% | 6.7x | +37% |
@@ -126,21 +122,7 @@ The gain depends on how much of the model fits in VRAM. Measured on 2x RTX 3090 
 - **The less of the model fits in VRAM, the more there is to gain.** The biggest gains here are at 44-45% nominal share. Models bigger than RAM run partly from SSD, where a few extra tokens per second decide between unusable and usable: GLM 3.5-bit (127.7 GiB, larger than this machine's 128 GB RAM) still gains +21% decode and 7x prompt speed over stock on the 3k prompt (b13563). I have not yet measured models that stock runs below 5 t/s; reports are welcome.
 - **On your hardware:** divide your total VRAM by the model file for the share, and expect the same shape: stock speed when it fits, the largest gains when the model fits in RAM but only a third to a half in VRAM. Only this one machine is measured so far; reports from others are welcome.
 
-## Recent gains: DeepSeek 4.1 and the two-card prompt split
-
-Measured 2026-10-25/26 on 2x RTX 3090 (x16 + x4), 128 GB RAM, from runs.db (answers checked, not looped).
-
-**DeepSeek-V4.1-Flash IQ2_XXS (231.7 GiB, three times the RAM, so most of it streams from the SSD).** One request: a 17.6k-token prompt, 1024 tokens out. Upper number stock, lower ours. Stock is the official b11887 release; "stock tuned" adds `-ub 4096 -b 4096` (`-ub 17600` runs out of memory on the x4 card). Prompt speed is only compared with prompt speed, decode with decode.
-
-| build | prompt speed (pp t/s) | decode speed (t/s) | total time |
-|---|---|---|---|
-| stock, own defaults | 43 | 1.5 | about 20 min |
-| stock tuned (`-ub 4096`) | 127-131 | 1.4 | - |
-| ours, first request after a start | 163-233 | 31.7-34.9 | - |
-| ours, repeat request | 265-269 | 31.7-33.4 | - |
-| gain, repeat request | 6.2x against stock, 2.0x against stock tuned | 22x (stock streams the experts from the SSD for every token) | - |
-
-The first request is slower because the expert cache and the pass sizes are still learned; the second request uses what the first one measured. The prompt runs as one pass of 16384 tokens (before 2026-10-26 it ran as three of 5472: 191 pp t/s). Short DeepSeek prompts run on one card: 2k tokens give 121-150 pp t/s, a 3.4k edit prompt 173-174 pp t/s with or without the split.
+## Other notable changes: the two-card prompt split
 
 **Where the two-card dense split starts to pay.** Per prompt, the planner measures one card and two cards and takes the faster; it does not use a fixed size. The medians of all runs since 2026-10-20 (220 + 280 W, answers not looped; each cell has 2 to 50 runs from several builds, so differences under 10% are noise) show where it wins:
 
@@ -165,9 +147,8 @@ The first request is slower because the expert cache and the pass sizes are stil
 |  | 12k | 988 | 1150 (1 run) | 49, b11829 | 20.2x | 23.5x | rc5 |
 |  | 16k | 906 | 1094 | 49, b11887 | 18.5x | 22.3x | pre9 |
 |  | 60k | 846 | 841 | - | - | - | pre12 |
-| DeepSeek-V4.1-Flash | 16k | - | 228 | 43, b11887 | - | 5.3x | ds41i5 |
 
-Stock cells: official ggml-org binaries with their own defaults (`-np 1` only, micro-batch and context auto); where the stock prompt size differs from the row it is named. **fail: context too small** = stock sizes its context itself (32768 tokens at 30k, 63488 at 60k on Qwen) and refuses a prompt that does not fit (a 30k prompt is 33.6k tokens, a 60k prompt 68.3k): `request (68337 tokens) exceeds the available context size (63488 tokens)`. It needs `-c` set by hand, which was not done here, so stock cannot serve these prompts as shipped; ours sizes the context per request. Stock is CPU-bound, so its prompt speed is nearly the same at every size (GLM 42-43, MiMo 48-50, Qwen IQ4_XS 208-213). DeepSeek stock at a 4.8k prompt: 35 pp t/s (decode 1.5 t/s). "-" = not measured (stock at 60k would take 20 minutes or more per cell on GLM and MiMo; GLM 30k took 12 minutes).
+Stock cells: official ggml-org binaries with their own defaults (`-np 1` only, micro-batch and context auto); where the stock prompt size differs from the row it is named. **fail: context too small** = stock sizes its context itself (32768 tokens at 30k, 63488 at 60k on Qwen) and refuses a prompt that does not fit (a 30k prompt is 33.6k tokens, a 60k prompt 68.3k): `request (68337 tokens) exceeds the available context size (63488 tokens)`. It needs `-c` set by hand, which was not done here, so stock cannot serve these prompts as shipped; ours sizes the context per request. Stock is CPU-bound, so its prompt speed is nearly the same at every size (GLM 42-43, MiMo 48-50, Qwen IQ4_XS 208-213). "-" = not measured (stock at 60k would take 20 minutes or more per cell on GLM and MiMo; GLM 30k took 12 minutes).
 
 - **The split starts to pay at about 11k-16k prompt tokens**: Qwen3.8 Next from 11k, GLM and MiMo from 16k (MiMo possibly 12k, one run). Below about 8k one card is as fast or faster (the second card sits in a x4 slot and the hand-offs between cards cost more than the shorter pass saves). The auto setup takes one card there.
 - **Largest gains: GLM +18% to +26% (16k to 60k), MiMo +21% at 16k, Qwen3.8 Next +15% at 11k.** Qwen3.6 and OLMoE fit in VRAM and show no split gain.
