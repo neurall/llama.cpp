@@ -2474,6 +2474,8 @@ def generate(build, env, args, prompt, n, chat, extra=None, tag=None):
     templ = chat and TEMPLATED   # --templated: the server's own /apply-template renders the model's chat template, the rendered text goes to /completion (same tokens as the chat endpoint, raw path, loop guard applies)
     body = {"messages": [{"role": "user", "content": prompt}], "max_tokens": n, **GREEDY} if chat and not templ else {"prompt": prompt, "n_predict": n, **GREEDY}
     body.update(extra or {})
+    if chat and not templ and OVR.get("nothink"):
+        body["chat_template_kwargs"] = {"enable_thinking": False}   # --nothink: reasoning off, the answer starts at once
     res, logf = server_run(build, env, args, "/completion" if templ else "/v1/chat/completions" if chat else "/completion", body, render=[{"role": "user", "content": prompt}] if templ else None)
     PROCSTAT["endpoint"] = "completion-templated" if templ else "chat" if chat else "completion"
     if chat and not templ:
@@ -3138,7 +3140,7 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par", "lead", "chat"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par", "lead", "chat", "nothink"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
     if getattr(a, "test", None) in ALIAS_TOKENS and "tokens" not in OVR:
@@ -4200,6 +4202,7 @@ def add_overrides(sub):
     sub.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), metavar="N[k]",
                      help="cut the prompt of the test to N tokens (8k = 8000, so it fits one -ub 8192 pass), measured with the server's own /tokenize, for any model; raw-prompt tests only")
     sub.add_argument("--chat", metavar="INSTR", help="pf tests: send INSTR + the prompt through the model's chat template (instruct models stop or loop on raw cut text); --clamp cuts the text before the template")
+    sub.add_argument("--nothink", action="store_const", const=True, help="chat tests (tetrisc, edit4c ...): reasoning off (chat_template_kwargs enable_thinking=false), the answer is the text itself")
     sub.add_argument("--lead", type=int, help="first a request with a prompt of about N tokens to the same server, then the measured one (the KV grows, then shrinks)")
     sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
     sub.add_argument("--par", type=int, help="send N identical requests at once (start the server with -np N too, e.g. --variant 'v=-np 10'); the row is the aggregate: generated tokens of all requests over the wall time, prompt tokens of all over the longest prompt phase; a failed request fails the run")
@@ -6429,6 +6432,7 @@ def run_list(name, argv):
     ap.add_argument("-fb", "-from-best", "--from-best", dest="from_best", action="store_true", help="cells with the biggest known gain over stock first (from runs.db: newest runs of ours against the newest official stock; cells with no gain known last), so the best gainers run and print first")
     ap.add_argument("-dsc", "-d", "--desc", "-from-biggest", "--from-biggest", dest="desc", action="store_true", help="biggest model files first (same-size rows keep the list order): the pool fragments with each unmount, so the big models go while it is still whole")
     ap.add_argument("-nodl", "--skip-download", dest="nodl", action="store_true", help="no check for a newer official stock release and no download: the stock already on disk (stock-latest) is used")
+    ap.add_argument("-draft", "--draft", dest="draft", type=int, metavar="N", help="speculative draft on OUR cells of every model that has a `draft =` file in models.ini (ds: the DSpark draft): depth N (--spec-draft-n-max N and --moe spec-depth=N, the tuner out of the loop); the row name gets -draftN; stock cells and models without a draft file run as before")
     ap.add_argument("-a", "--cell-args", default="", metavar="ARGS", help="extra cell arguments for OUR cells (not stock), e.g. -a \"moe:split-f16=1\" (one moe: word per --moe key); stored in the args column of the runs, so the rows stay apart from the defaults. -nrt matches by cell, not by arguments: leave it off for an A/B")
     ap.add_argument("-pt", "--prompt-type", dest="pt", metavar="LIST", help="only the cells of these prompt types (comma list): i = input-heavy (mimo-i), io = input+output-heavy (mimo-io), o = output-heavy (mimo-o); the last word of the row name")
     ap.add_argument("-ps", "--prompt-size", dest="ps", action="append", metavar="TEST", help="run THESE sizes instead of the list's own, for the models the other filters leave (repeatable): 100k4k = the source cut at 100k tokens behind an instruction, 4000 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test with 4000 answer tokens; any other name is a test as it is")
@@ -6604,6 +6608,11 @@ def run_list(name, argv):
             stock = r["_b"].startswith("stock")   # stock has no --moe keys: it gets only the plain flags (-a "-ub 4096 -b 4096"), a tuned stock cell, recorded in the args column
             words = [w for w in argv_of(o.cell_args) if not (stock and re.fullmatch(r"[\w-]+=\S*", w))]
             r["args"] = ((r.get("args") or "") + " " + shlex.join("moe:" + w if not stock and re.fullmatch(r"[\w-]+=\S*", w) else w for w in words)).strip()   # a bare key=value is a --moe key (-a "split-experts=0")
+    for r in rows:   # -draft N: our cells of a model with a draft file in models.ini
+        d = (fcfg.models_ini() or {}).get(model_alias(r["model"]) or "", {}).get("draft") if o.draft and not r["_b"].startswith("stock") and "-md" not in shlex.split(r.get("args") or "") else None   # a row that names its own draft keeps it
+        if d:
+            r["args"] = ((r.get("args") or "") + f" -md {shlex.quote(os.path.expanduser(d))} --spec-type draft-dspark --spec-draft-n-max {o.draft} --moe spec-depth={o.draft}").strip()
+            r["name"] += f"-draft{o.draft}"
     if o.machine != "pc1": return run_list_remote(o, rows, name)
     def size(r):   # bytes of the model; a split model counts all its parts (NAME-00001-of-0000N.gguf)
         return sum(os.path.getsize(f) for f in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
@@ -7054,7 +7063,7 @@ def cmd_cell(a):
         args += " --moe " + hog
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
-           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else [])
+           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else []) + (["--nothink"] if getattr(a, "nothink", None) else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG=LOG_LETTERS)   # r unless the caller set PERF_LOG (PERF_LOG=rp run ...: the periodic cache stats reach the server's --moe log=)
     if os.path.ismount("/mnt/huge1g") and not nomount and not too_big: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
@@ -8995,6 +9004,7 @@ if __name__ == "__main__":
     ce.add_argument("--hog-gpu", help="GiB left free on every GPU (the server takes the rest at start: --moe sim-vram=MiB), simulates a smaller card")
     ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe sim-ram=MiB)")
     ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
+    ce.add_argument("--nothink", action="store_const", const=True, help="chat tests: reasoning off (enable_thinking=false)")
     ce.add_argument("--lead", type=int, help="a request of about N prompt tokens first, same server")
     ce.add_argument("--prompt", help="prompt text or @file instead of the test's own")
     ce.add_argument("--tokens", type=int, help="generated tokens instead of the test's own")
