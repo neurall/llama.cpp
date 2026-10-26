@@ -1144,6 +1144,7 @@ RUN_COLS += ["vram_mib"]   # GPU memory in use at the end of the run, all GPUs t
 RUN_COLS += ["endpoint"]
 RUN_COLS += ["knobs_end"]   # what the build actually ran with, from the run.knobs line of the end-of-run state snapshot: key settings (slots, workers, upload path, bounce, policy) | every cache knob incl. tuner decisions (defaults differ between builds; * = set by the user)   # completion (raw prompt), chat (template) or cli (llama-cli)
 RUN_COLS += ["load_mode"]   # how the weights were loaded, from the server log: pinned (+ upload path), mmap, mmap after a failed pin ("reloading with mmap"); load time (load_s) tells too: pinned GLM 3.0 about 85-120 s, mmap about 25 s
+RUN_COLS += ["prompt_s", "gen_s"]   # the cell as the screen shows it: prompt = end of the load to the first decoded token, gen = first token to the end (the live bar's p and g); written with wall_s by store_cell_time
 RUN_COLS += ["start_ts", "end_ts", "load_s", "wall_s"]   # start_ts / end_ts: when the process started and ended (local time); load_s: seconds until the model was loaded and ready (server: ready to answer; llama-cli / perplexity: the "load time" it prints); wall_s: seconds the whole run took, start to end
 RUN_COLS += ["uniq4", "out_chars", "code", "loop"]   # text class of the generated output: share of unique word 4-grams (a repetition loop is ~0.1, real text ~0.9+), characters, 1 if it contains code; the text itself is in runs.db table outputs
 RUN_COLS += ["thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "gain_t", "gain_pp", "stock_id", "stock_bno"]   # the server's auto choices (threads for decode / batch, batch, ubatch, context) from its log; the machine line of the run; our decode / prompt speed over the newest stock row (best run of the cell against the stock row it was shown with, set when the cell ends) and that stock row's id and build number
@@ -1398,11 +1399,13 @@ _HWL = {}
 _PF_POS = {}   # server log -> how much of it the previous row already read (prompt decisions per run, see the row writer)
 
 
-def store_cell_time(build, model, test, hw, since, el):
+def store_cell_time(build, model, test, hw, since, el, prompt_s=None, gen_s=None):
     """the cell's real time as the screen showed it (start of the cell to its end: server start, load, the requests, the teardown) into wall_s of its rows, so -nrt and later tables show the same time (the rows hold what the cell process knew: load + requests)"""
     import sqlite3
     c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-    c.execute("UPDATE runs SET wall_s=? WHERE hw=? AND build=? AND model=? AND test=? AND ts>=?", (round(el, 1), hw, build, os.path.basename(model), test, time.strftime("%F %T", time.localtime(since - 5))))
+    if prompt_s is not None and "prompt_s" not in [r[1] for r in c.execute("pragma table_info(runs)")]:
+        for k in ("prompt_s", "gen_s"): c.execute(f"ALTER TABLE runs ADD COLUMN {k} REAL")
+    c.execute("UPDATE runs SET wall_s=?" + (", prompt_s=?, gen_s=?" if prompt_s is not None else "") + " WHERE hw=? AND build=? AND model=? AND test=? AND ts>=?", (round(el, 1), *((round(prompt_s, 1), round(gen_s, 1)) if prompt_s is not None else ()), hw, build, os.path.basename(model), test, time.strftime("%F %T", time.localtime(since - 5))))
     c.commit(); c.close()
 
 
@@ -4002,7 +4005,7 @@ def cmd_bench(a):
         MODEL = model
         if not m:
             prep_model()
-        cells = [(build, name, (stock_variants.get(name, "") if build.startswith("stock") else variants[name]))
+        cells = [(build, name, (stock_variants.get(name, variants[names[0]] if name == "default" and len(names) == 1 and not stock_variants else "") if build.startswith("stock") else variants[name]))   # a stock cell takes the cell's one --variant text too (run -a "-ub 17600 -b 17600" was dropped: the server ran with the defaults)
                  for build in [resolve_build(x) for x in a.builds.split(",")] for name in (list(dict.fromkeys(["default"] + list(stock_variants))) if build.startswith("stock") else names)]
         # a variant may set environment variables: "env:KEY=VALUE" words (e.g. lru='env:LLAMA_MOE_CACHE_POLICY=lru'), the rest are server args
         P = (4 if a.test in ("game4c", "edit4c", "game4", "edit4") else 1) if a.cold_hot else 1   # --cold-hot: every prompt runs twice, 0 = cold (empty state file), 1 = hot (the state that run wrote)
@@ -4884,6 +4887,7 @@ def cell_status(t0, expect, label, total=None):
                 if len(f) >= 3 and f[0].isdigit() and f[1].isdigit(): rx.append(int(f[1]) / 1000)
             lv = es.get("live") or {}
             LIVE_DONE[0] = lv.get("done") or 0   # a prompt call is running: its pass size, not the finished one before it
+            LIVE_PASS[:] = [lv.get("pass") or 0, lv.get("passes") or 0] if lv.get("passes", 0) > 1 else [0, 0]   # passes finished / passes of the call (engine builds with the per-pass log): the "now:" line shows "pass 2/3 running"
             ub = lv.get("ubatch") or pr.get("ubatch") or sv.get("n_ubatch")
             parts = []
             io = []   # the transfer rates on a line of their own: on the engine line it wrapped once "pp by size" listed two sizes (user 2026-10-25: stale cpu/engine rows, 1-row jumps)
@@ -5155,6 +5159,7 @@ PHASE = {}   # per cell: t0 and when the first decoded token was seen (cell_stat
 LAST_ST = [""]
 NOSTATS = [os.environ.get("RUN_NS") == "1"]   # -ns: nothing that samples the machine or polls the server while a cell runs (no status probes, no nvidia-smi / sys / slots samplers on a remote box): the timings are the engine's alone
 TRACE, TRACE_LAST, TRACE_T0, TRACE_H, TRACE_P = [], {}, [None], [], []   # one cell's tuning timeline: (seconds into the cell, knob, old, new), from the status ticks
+LIVE_PASS = [0, 0]   # (passes finished, passes of the call) of the running prompt call, from /moe/stats live; [0, 0] = one pass or an older engine
 LIVE_DONE = [0]   # tokens of the running prompt call the engine has finished (its own /moe/stats live block): the server counts only after a whole decode call
 PEEK = [None]   # (prompt tokens done, tokens decoded, expected decoded, expected prompt) of the last /slots answer: cell_status re-estimates the cell's end from it
 
@@ -5311,7 +5316,7 @@ def peek_line(exp):
         if pt: pn = pt
         if dt and dt - dd < 10**6: gen = dt
     PEEK[0] = (n_prompt, n_dec, gen, pn)
-    if not n_dec and n_prompt: return col(33, "    now: ") + ld + col(32, f"prompt {n_prompt}" + (f"/~{int(pn)} tok" + (f" ~{min(100, 100 * n_prompt // int(pn))}%" if pn and n_prompt <= pn else " +") if pn else " tok"))   # the phase colours of the bar: prompt green
+    if not n_dec and n_prompt: return col(33, "    now: ") + ld + col(32, (f"pass {min(LIVE_PASS[0] + 1, LIVE_PASS[1])}/{LIVE_PASS[1]}  " if LIVE_PASS[1] > 1 else "") + f"prompt {n_prompt}" + (f"/~{int(pn)} tok" + (f" ~{min(100, 100 * n_prompt // int(pn))}%" if pn and n_prompt <= pn else " +") if pn else " tok"))   # the phase colours of the bar: prompt green
     if n_dec: return col(33, "    now: ") + ld + col(34, f"{n_dec}" + (f"/~{int(gen)} tok " + (f"~{100 * n_dec // int(gen)}%" if n_dec <= gen else "+") if gen else " tok"))   # generation blue
     return ""
 
@@ -5348,6 +5353,7 @@ def result_lines(res):
 
 PRELUDE = [0, 0]   # lines of a remote list's start (old servers stopped, disk check) and of its transfer bars still on screen: erased when the transfers are done
 LIVE_UP = [0]       # lines of the status block on screen: the next cell redraws over it, nothing scrolls
+CELL_PG = [None, None]   # seconds of the finished cell's prompt and generation phases (stored with wall_s)
 CELL_ASKED = [0]    # tokens asked for in the running cell
 CELL_PROMPT = [""]   # the running cell's prompt text (set per row)
 CELL_BUILD = [""]   # the running cell's build: the "vs best" columns leave its own earlier runs out
@@ -5643,8 +5649,10 @@ def run_times(rid):
     """(seconds the run took, `l 44s` load text) of runs.db row rid, from its wall_s and load_s; (None, "") when not recorded"""
     import sqlite3
     try:
-        r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select wall_s, load_s from runs where rowid=?", (rid,)).fetchone()
-    except sqlite3.Error: r = None
+        r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select wall_s, load_s, prompt_s, gen_s from runs where rowid=?", (rid,)).fetchone()
+    except sqlite3.Error:
+        try: r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select wall_s, load_s, null, null from runs where rowid=?", (rid,)).fetchone()   # a db from before the prompt_s / gen_s columns
+        except sqlite3.Error: r = None
     if not r or not r[0]: return None, ""
     lv = r[1]
     if not lv:   # a repeat on a kept server loads nothing: show the load of the cell's first run (same build, model and test, started before it)
@@ -5654,7 +5662,8 @@ def run_times(rid):
                 "and b.rowid>=a.rowid-3 where a.rowid=? order by b.rowid desc limit 1", (rid,)).fetchone()
             if q: lv = q[0]
         except sqlite3.Error: pass
-    return float(r[0]), ("" if lv is None or lv < 0 else "l " + (f"{int(lv)}s" if lv < 100 else f"{int(lv // 60)}m{int(lv % 60):02d}s"))
+    tf = lambda x: f"{int(x)}s" if x < 100 else f"{int(x // 60)}m{int(x % 60):02d}s"
+    return float(r[0]), ("" if lv is None or lv < 0 else "l " + tf(lv) + (f" p {tf(r[2])} g {tf(r[3])}" if r[2] is not None and r[3] is not None else ""))   # l load, p prompt, g generation
 
 
 def out_len(ours_id, stock_id):
@@ -5865,15 +5874,21 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
     STOCK_REC[0] = None
     try: gain = stock_gain(peek, res, cmd[5]) if peek and res else ""
     except Exception as e: gain = f"  | gain: {e}"   # a display problem never ends the list
+    CELL_PG[:] = [None, None]
     try: lv = float(open(LOAD_FILE).read()); lt = "" if lv < 0 else "l " + (f"{int(lv)}s" if lv < 100 else f"{int(lv // 60)}m{int(lv % 60):02d}s")
     except (OSError, ValueError): lt = ""
+    try:   # the finished cell keeps the live bar's phases: l load, p prompt (load end to first decoded token), g generation (to the end), then the total time of the cell
+        _tf = lambda x: f"{x:.0f}s" if x < 60 else f"{int(x // 60)}m{int(x % 60):02d}s"
+        _le = os.path.getmtime(LOAD_FILE); _g = PHASE.get("gen") if PHASE.get("t0") == t0 else None
+        if lt and _g and _g > _le: lt += f" p {_tf(_g - _le)} g {_tf(time.time() - _g)}"; CELL_PG[:] = [_g - _le, time.time() - _g]
+    except (OSError, ValueError, NameError): pass
     if peek: passes_save(peek[0], peek[1], cmd[5])
     CELL_REC.append(dict(asked=CELL_ASKED[0], ref=ours_reference(peek[0], peek[1]) if peek and str(cmd[5]).startswith("stock") and res else None, sbno=own_build_no(cmd[5]), xfer="" if str(cmd[5]).startswith("stock") else xfer_of(own_build_no(cmd[5]), " ".join(map(str, cmd))), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, cmd[5], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, cmd[5], "llama-server")) else "", rid=run_id(f"{cmd[3]}-{peek[1]}") if peek else None, build=str(cmd[5]), prompt=CELL_PROMPT[0], model=peek[0] if peek else None, test=peek[1] if peek else None, name=label, el=el, lt=lt, rc=rc or (0 if res else 1), res=res, st=STOCK_REC[0], stock_row=str(cmd[5]).startswith("stock")))
     try:
         if peek: store_gains(CELL_REC[-1], str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1], t0)
     except Exception as e: print(f"gains not stored: {e}", flush=True)   # a display problem or a locked db never ends the list
     try:
-        if peek and not rc: store_cell_time(str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1], t0, el)
+        if peek and not rc: store_cell_time(str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1], t0, el, *CELL_PG)
     except Exception as e: print(f"time not stored: {e}", flush=True)
     CELL_LINES.append(col(1, f"{label[:NAMEW[0]]:<{NAMEW[0]}}") + f" {int(el // 60):>3}:{int(el % 60):02d} " + col(37, "cell") + (col(37, ",") + " " + col(33, lt) if lt else "") + "  " + (col(31, "FAILED ") if rc or not res else "") + "  ".join(speed_txt(t, p) for t, p in res) + gain )   # decode blue, prompt green, load yellow: the colors of the status bar
     try:   # the end-of-cell engine state, if the cell saved one: one more status build with it (the live ticks of a short cell miss the engine)
@@ -6473,7 +6488,10 @@ def run_list(name, argv):
                 print(f"  {k}. {cmd_}{cells}", flush=True)
         return 0
     for r in rows:   # -a: the same cells with extra arguments on our build
-        if o.cell_args and not r["_b"].startswith("stock"): r["args"] = ((r.get("args") or "") + " " + " ".join("moe:" + w if re.fullmatch(r"[\w-]+=\S*", w) else w for w in o.cell_args.split())).strip()   # a bare key=value is a --moe key (-a "split-experts=0")
+        if o.cell_args:
+            stock = r["_b"].startswith("stock")   # stock has no --moe keys: it gets only the plain flags (-a "-ub 4096 -b 4096"), a tuned stock cell, recorded in the args column
+            words = [w for w in o.cell_args.split() if not (stock and re.fullmatch(r"[\w-]+=\S*", w))]
+            r["args"] = ((r.get("args") or "") + " " + " ".join("moe:" + w if not stock and re.fullmatch(r"[\w-]+=\S*", w) else w for w in words)).strip()   # a bare key=value is a --moe key (-a "split-experts=0")
     if o.machine != "pc1": return run_list_remote(o, rows, name)
     def size(r):   # bytes of the model; a split model counts all its parts (NAME-00001-of-0000N.gguf)
         return sum(os.path.getsize(f) for f in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
