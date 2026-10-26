@@ -562,6 +562,22 @@ llama_context::llama_context(
             }
             backends.emplace_back(backend);
         }
+        // a context that runs on tensors of another model (a draft's token embeddings or lm head, shared through ctx_other) needs a backend on every card that
+        // holds them: a DSpark draft given -devd CUDA1 aborted on the target's output.weight in CUDA0 ("pre-allocated tensor (output.weight) in a buffer (CUDA0)
+        // that cannot run the operation", 2026-10-26). The extra backend only runs the ops on those tensors; the draft's own layers stay on the cards -devd names.
+        if (cparams.ctx_other) {
+            for (const auto & od : llama_get_model(cparams.ctx_other)->devices) {
+                if (od.is_meta || std::any_of(devs.begin(), devs.end(), [&](const llama_device & d) { return d.dev == od.dev; })) {
+                    continue;
+                }
+                ggml_backend_t backend = ggml_backend_dev_init(od.dev, nullptr);
+                if (backend == nullptr) {
+                    throw std::runtime_error(format("failed to initialize %s backend", ggml_backend_dev_name(od.dev)));
+                }
+                LLAMA_LOG_INFO("%s: %s added for the tensors this context shares with its target\n", __func__, ggml_backend_dev_name(od.dev));
+                backends.emplace_back(backend);
+            }
+        }
 
         // add ACCEL backends (such as BLAS)
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
@@ -3447,7 +3463,12 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         // itself (user 2026-10-26: start from the most threads; too many costs little, too few a lot)
         sched_reserve(); // the compute graph now includes the cache chain
     }
-    llama_moe_cache_kv_arena_start_fork();   // --moe kv-tail=1: KV records no expert pool took (dense models) get their buffer, once, at the first real decode
+    {   // --moe kv-tail=1: KV records no expert pool took (dense models) get their buffer, once, at the first real decode. Only this context's records: the records of
+        // the context that expects the pool wait for it (a draft decoding at load took the target's records into a fixed full-context arena, 7 GiB on DeepSeek 4.1);
+        // that context hands the ones its pool did not take to an arena once the pool started (or when it decodes with the start deferred, as before)
+        extern void llama_moe_cache_kv_arena_start_own_fork(bool pool_records);
+        llama_moe_cache_kv_arena_start_own_fork(cparams.moe_cache && (cparams.moe_cache_started || moe_cache_defer));
+    }
     {
         extern const char * llama_moe_cache_kv_arena_unplaced_fork();
         if (const char * why = llama_moe_cache_kv_arena_unplaced_fork()) {   // no memory for the KV: refuse, do not build a graph over records that have none
