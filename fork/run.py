@@ -2976,12 +2976,19 @@ def stock_fitt_put(hw, v):
         f.write(f"{os.path.basename(MODEL)},{hw},{v},{time.strftime('%F %T')}\n")
 
 
+def argv_of(s):
+    """Cell and variant arguments as a shell splits them: quotes group a word (-otd "blk\\.0\\..*=CUDA1,blk\\.2\\..*=CUDA0"). str.split() kept the quote characters,
+    and the server read CUDA0" as a buffer type ("unknown buffer type", the DSpark placement cells of 2026-10-26). Unbalanced quotes fall back to plain words."""
+    try: return shlex.split(s or "")
+    except ValueError: return (s or "").split()
+
+
 def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
     """One measured run, preceded by a discarded run with the same build and settings: model switches, a previous pinned load
     (drops the page cache) and cache/tuner warm-up all showed 5-12% swings on the first run."""
     global BARE, IDX
     BARE = bare
-    xargs = args.split() if args else ()
+    xargs = argv_of(args) if args else ()
     hw = hw or os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
     fitt_user = "-fitt" in xargs or "--fit-target" in xargs
     if build.startswith("stock") and not fitt_user:   # the tested value of this model and machine, else upstream's default
@@ -3924,8 +3931,8 @@ def remote_cell(mid, m, build, test, args, note, warm=True, env=None):
 def split_variant(build, vargs):
     """A variant has server args, env:KEY=VALUE words, and moe:key=value words (fork settings): newer builds read settings only as --moe keys, the first fork releases only as
     LLAMA_MOE_CACHE_<KEY> environment variables. A moe: word goes the way the build reads it, so one variant pins both kinds of build (autotune=0 -> LLAMA_AUTOTUNE=0)."""
-    words = vargs.split()
-    args = " ".join(w for w in words if not (w.startswith("env:") or w.startswith("moe:")))
+    words = argv_of(vargs)
+    args = shlex.join(w for w in words if not (w.startswith("env:") or w.startswith("moe:")))
     env = dict(w[4:].split("=", 1) for w in words if w.startswith("env:"))
     pins = [w[4:] for w in words if w.startswith("moe:")]
     if pins and not build.startswith("stock"):
@@ -4149,7 +4156,7 @@ def cmd_ctl(a):
             break
         time.sleep(2)
     p, logf = server_start(a.build, {**os.environ, "LD_LIBRARY_PATH": os.path.join(HERE, a.build), "LLAMA_MOE_CACHE_STATS": "1",
-                                     "LLAMA_MOE_CACHE_CTL": ctl}, a.args.split() if a.args else [])
+                                     "LLAMA_MOE_CACHE_CTL": ctl}, argv_of(a.args) if a.args else [])
     try:
         if "from pageable host memory" in open(logf).read():
             sys.exit("ctl: weights not pinned (pageable uploads), results would not compare: aborting")
@@ -5622,7 +5629,10 @@ def best_prev(model, test, build, asked=0):
         gen = asked or ALIAS_TOKENS.get(test) or 0   # the answer length the cell asked for (pf60k1k cells ask 64), else the alias's
         # every earlier run of the prompt: its prompt speed does not depend on the answer length (MiMo's only 60k rows asked 1024 tokens: "vs best pp" stayed empty
         # for a 64-token cell); the decode speed is compared only within about the same answer length (a longer answer decodes at a longer context)
-        rows = c.execute("select tps, pp, build, n_gen from runs where model=? and test=? and build not like 'stock%' and build!=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'",
+        # an answer of less than half a character per token is no text (the deep-seek release without -c answered token 0: 7 characters for 1024 tokens at 43.7 t/s,
+        # and every DeepSeek cell after the fix showed 0.5x "vs best" against it, 2026-10-26); rows without a recorded answer stay in
+        rows = c.execute("select tps, pp, build, n_gen from runs where model=? and test=? and build not like 'stock%' and build!=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'"
+                         " and not (coalesce(out_chars,'') != '' and coalesce(n_gen,0) > 0 and cast(out_chars as integer) * 2 < n_gen)",
                          (os.path.basename(model), ALIASES.get(test, test), str(build))).fetchall()
     except sqlite3.Error: return None
     if not rows: return None
@@ -6592,8 +6602,8 @@ def run_list(name, argv):
     for r in rows:   # -a: the same cells with extra arguments on our build
         if o.cell_args:
             stock = r["_b"].startswith("stock")   # stock has no --moe keys: it gets only the plain flags (-a "-ub 4096 -b 4096"), a tuned stock cell, recorded in the args column
-            words = [w for w in o.cell_args.split() if not (stock and re.fullmatch(r"[\w-]+=\S*", w))]
-            r["args"] = ((r.get("args") or "") + " " + " ".join("moe:" + w if not stock and re.fullmatch(r"[\w-]+=\S*", w) else w for w in words)).strip()   # a bare key=value is a --moe key (-a "split-experts=0")
+            words = [w for w in argv_of(o.cell_args) if not (stock and re.fullmatch(r"[\w-]+=\S*", w))]
+            r["args"] = ((r.get("args") or "") + " " + shlex.join("moe:" + w if not stock and re.fullmatch(r"[\w-]+=\S*", w) else w for w in words)).strip()   # a bare key=value is a --moe key (-a "split-experts=0")
     if o.machine != "pc1": return run_list_remote(o, rows, name)
     def size(r):   # bytes of the model; a split model counts all its parts (NAME-00001-of-0000N.gguf)
         return sum(os.path.getsize(f) for f in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0

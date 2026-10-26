@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+ds-1k-nodraft,ds,2,1k1k,1024,,
+ds-1k-flavio-d2,ds,2,1k1k,1024,-md /m/ds/dspark/DeepSeek-V4.1-Flash-1017-DSpark.flavio.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe spec-depth=2,
+ds-1k-jig-d2,ds,2,1k1k,1024,-md /m/ds/dspark/DeepSeek-V4.1-Flash-DSpark.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe spec-depth=2,
+ds-1k-luce-d2,ds,2,1k1k,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe spec-depth=2,
+ds-1k-flavio-auto,ds,2,1k1k,1024,-md /m/ds/dspark/DeepSeek-V4.1-Flash-1017-DSpark.flavio.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 5,
