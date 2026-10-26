@@ -8551,6 +8551,15 @@ uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
 }
 
 
+// The experts the prompt passes asked the cache for and found in it (the counters of GET /moe/stats prompt_all), read by the per-pass log line of the prompt
+// (llama_moe_prompt_progress_fork) to say what share of each pass came from the cache. False without a cache.
+bool llama_moe_cache_prompt_hits_fork(uint64_t * hit, uint64_t * query) {
+    moe_cache * mc = g_cache;
+    if (!mc) { return false; }
+    *hit = mc->n_src_hit; *query = mc->n_src_query;
+    return true;
+}
+
 // GET /moe/stats, bandwidth part: RAM and each PCIe link in use (rate since the previous call, at least 0.5 s apart) against the probed maximum, bytes uploaded per link
 std::string llama_moe_bw_json_fork() {
     moe_cache * mc = g_cache;
