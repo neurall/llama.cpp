@@ -181,6 +181,7 @@ Same text, same chunks, official stock `llama-perplexity` against ours. The numb
 
 | model | stock ppl | ours default | ours, one card | ours, dense split only | ours, two cards (f32 hand-offs) | chunks |
 | --- | --- | --- | --- | --- | --- | --- |
+| DeepSeek-V4.1-Flash-IQ2_XXS | 1.5665 | 1.5662 (-0.02 ± 0.13%) | - | - | - | 10 |
 | GLM-5.3-Flash-GSQ-RCO-3.0bit | 1.7626 | 1.7578 (-0.27 ± 0.18%) | 1.7599 (-0.15 ± 0.27%) | 1.7584 (-0.24 ± 0.53%) | 1.7631 (+0.03 ± 0.39%) | 9 |
 | GLM-5.3-Flash-GSQ-RCO-3.5bit | 1.6326 | 1.6265 (-0.37 ± 0.20%) | 1.6260 (-0.41 ± 0.19%) | 1.6349 (+0.14 ± 0.51%) | 1.6288 (-0.23 ± 0.28%) | 9 |
 | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit | 1.8758 | 1.8758 (+0.00) | 1.8758 (+0.00) | 1.8736 (-0.12 ± 0.11%) | 1.8725 (-0.18 ± 0.25%) | 9 |
@@ -193,6 +194,8 @@ Same text, same chunks, official stock `llama-perplexity` against ours. The numb
 | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003 | 1.4101 | 1.4101 (+0.00) | 1.4101 (+0.00) | 1.4114 (+0.09 ± 0.18%) | 1.4111 (+0.07 ± 0.14%) | 10 |
 
 Measured on build b13600 (12 chunks asked, 9 to 12 used where a text ended earlier), stock is the official b11742 binary.
+
+DeepSeek 4.1 row: build dsfix1 (the fix for the all-zero token bug without `-c`), stock is the official b11887 binary, default path only, 10 chunks of 1024 tokens; 4 of 10 chunks are worse than stock, the cumulative difference shrinks from -0.31% after chunk 1 to -0.02% after chunk 10. Its decode speed rows are not in the tables yet: they come back after the gainers are rerun on this build.
 
 Reproduce: see [Reproduce a row](#reproduce-a-row), step 4.
 
