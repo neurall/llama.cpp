@@ -138,7 +138,7 @@ The first request is slower because the expert cache and the pass sizes are stil
 
 **Where the two-card dense split starts to pay.** Per prompt, the planner measures one card and two cards and takes the faster; it does not use a fixed size. The medians of all runs since 2026-10-20 (220 + 280 W, answers not looped; each cell has 2 to 50 runs from several builds, so differences under 10% are noise) show where it wins:
 
-| model | prompt | one card (pp t/s) | two cards (pp t/s) | change  official stock (pp t/s) | two cards against stock |
+| model | prompt | one card (pp t/s) | two cards (pp t/s) | change | official stock (pp t/s) | two cards against stock |
 |---|---|---|---|---|---|---|
 | Qwen3.8 Next IQ3_S | 4k | 1684 | 1350 | -20% | - | - |
 | | 8k | 1663 | 1513 | -9% | - | - |
