@@ -401,12 +401,27 @@ struct common_params_speculative {
         return synth_len != -1.0 || !synth_rates.empty();
     }
 
+    // Any speculative type rejects tokens, and a rejected token has to be undone in the
+    // recurrent state too: on a DSV4 cache the compressor keeps a partial group the raw KV
+    // cannot rewind. Restricting this to model-based drafts left every n-gram type decoding
+    // into a cache it could not rewind (positions past what the cache held). Depth is the
+    // largest draft any active type can produce; the snapshots are small, so generous is free.
+    // ref: JigSawPT/llama.cpp dsv41-porte caab38d
     uint32_t need_n_rs_seq() const {
-        bool needs_rs_seq = std::any_of(types.begin(), types.end(), [&](auto t) {
-            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
+        const bool needs_rs_seq = std::any_of(types.begin(), types.end(), [&](auto t) {
+            return t != COMMON_SPECULATIVE_TYPE_NONE;
         });
-
-        return needs_rs_seq ? draft.n_max : 0u;
+        if (!needs_rs_seq) {
+            return 0u;
+        }
+        int32_t depth = draft.n_max;
+        const bool has_ngram_mod = std::any_of(types.begin(), types.end(), [&](auto t) {
+            return t == COMMON_SPECULATIVE_TYPE_NGRAM_MOD;
+        });
+        if (has_ngram_mod) {
+            depth = std::max(depth, ngram_mod.n_max);
+        }
+        return depth > 0 ? (uint32_t) depth : 0u;
     }
 };
 
