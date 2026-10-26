@@ -8390,7 +8390,10 @@ static std::vector<upload_job> preheat_swap(moe_cache * mc, const std::vector<ui
     bool tail = false;
     for (auto & ap : mc->alias) { tail = tail || !ap.kvt.empty(); }
     std::vector<upload_job> jobs;
-    if (!tail || mc->starved.load()) { return jobs; }
+    // After a prompt only the blocks the prompt borrowed and gave back (empty) are refilled (reheat_free_blocks); a cached expert is never evicted for the
+    // prompt's own, which are mostly not the answer's. --moe pswap=1 brings the swap back.
+    static const bool swap_on = [] { const char * e = moe_opt("pswap"); return e && atoi(e) != 0; }();
+    if (!swap_on || !tail || mc->starved.load()) { return jobs; }
     for (size_t pc = 0; pc < mc->pool.size(); ++pc) {
         struct cand { double sc; size_t li; int32_t e; int32_t b; };
         std::vector<cand> hot, cold;
