@@ -11,9 +11,12 @@
 #include <climits>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <sstream>
 #include <stdexcept>
+
+void llama_kv_cache_tail_rows_fork(const void * kv, std::function<size_t()> fn);   // llama-kv-cache.cpp (fork; declared here, no header edit)
 
 static constexpr uint32_t DSV4_CSA_RATIO = 4;
 static constexpr uint32_t DSV4_HCA_RATIO = 128;
@@ -1481,6 +1484,20 @@ llama_kv_cache_dsv4::llama_kv_cache_dsv4(
     // otherwise leak in (instance-specific garbage) and corrupt recall. Zero all
     // compressed buffers up front so reads of un-written rows are deterministic.
     clear_compressed(-1, true);
+
+    // fork: --moe kv-tail lays a growing record out, moves it and zeroes the pad rows its attention reads by the rows in use (llama_kv_cache_tail_rows_fork,
+    // llama-kv-cache.cpp). The compressed rows are graph outputs at pos / ratio (dsv4_build_comp_plan), never cells marked used, so the count comes from the raw
+    // cache: the completed blocks of the longest sequence (the raw cells of the batch being decoded are applied before its graph is built, so they count).
+    // The raw window cache marks its cells itself; the compressor states are separate small buffers, not records of the pool.
+    for (const auto & [kv, ratio] : { std::make_pair(kv_csa.get(), csa_state->get_ratio()),
+                                      std::make_pair(kv_hca.get(), hca_state->get_ratio()),
+                                      std::make_pair(kv_lid.get(), lid_state->get_ratio()) }) {
+        llama_kv_cache_tail_rows_fork(kv, [this, ratio = ratio]() -> size_t {
+            llama_pos p = -1;
+            for (uint32_t s = 0; s < this->n_seq_max; ++s) { p = std::max(p, kv_raw->seq_pos_max((llama_seq_id) s)); }
+            return p < 0 ? 0 : (size_t) (p + 1) / ratio;
+        });
+    }
 }
 
 // Engram hashes the n-gram ending at each token, so a token shared by several sequences (llama-batched prompt)
