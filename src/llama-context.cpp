@@ -58,6 +58,7 @@ void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch);
 void     llama_dsplit_note_limit_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the one-card pass limit of this call
 void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the context's card limit (what %limit is of)
 size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
+void     llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, size_t graph_bytes);   // src/llama-moecache-fork.cpp: a load-time measure-only reserve is a measured graph size for the pass planner
 uint32_t llama_dsplit_pass_size_fork(uint32_t cap);   // the full pass of the split: the fastest card takes the limit
 uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub);
 void     llama_dsplit_bench_fork(const llama_model & model);   // llama-dsplit-fork.cpp: matmul + attention latency per GPU, before this context takes VRAM
@@ -1552,6 +1553,7 @@ void llama_context::sched_reserve() {
             ggml_cgraph * mg = graph_reserve(u, n_seqs, n_seqs, mctx.get(), true, s.data());
             probes++;
             list_top(mg, u);
+            for (const auto & [i, d] : gi) { llama_moe_cache_note_graph_fork(d, u, s[i]); }
             for (const auto & [i, d] : gi) { if (s[i] > llama_moe_cache_alias_room_fork(d, u)) { return false; } }
             return true;
         };

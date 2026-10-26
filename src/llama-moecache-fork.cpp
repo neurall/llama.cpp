@@ -3323,6 +3323,29 @@ size_t llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens
     return 0;
 }
 
+// A measure-only reserve of the load-time micro-batch fit (llama_context::sched_reserve) knows the real graph of that many tokens before any prompt ran. It goes into
+// need_tok like a graph that ran, so the first prompt plans its passes from measured sizes: with the 1160-token warm-up call as the only point the planner took
+// that graph's bytes per token (its fixed part spread over 1160 tokens) as the slope and cut a 16384-token prompt to 3 passes of 5472, although the load had measured
+// the 16384-token graph (9962 MiB on a pool that lends 17139) and the next prompt, with two points, ran it as ONE pass (DS4.1 IQ2_XXS, 2026-10-26). The reserve's
+// bytes are the graph without the CUDA scratch of its expert matmuls (llama_moe_cache_alias_room_fork subtracts that from the room), so the scratch is added here;
+// a real graph of the same size later replaces the point when it is bigger (alias, same rule as a graph that ran).
+void llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, size_t graph_bytes) {
+    moe_cache * mc = g_cache;
+    if (!mc || !alias_on() || n_tokens < 64 || graph_bytes == 0) {
+        return;
+    }
+    for (auto & ap : mc->alias) {
+        if (ap.dev != dev) {
+            continue;
+        }
+        const size_t scratch = ap.cuda_dev >= 0 || strncmp(ggml_backend_dev_name(ap.dev), "CUDA", 4) == 0
+                             ? GGML_PAD((size_t) n_tokens * alias_tok_bytes(mc, ap), (size_t) 2 << 20) : 0;
+        size_t & nt = ap.need_tok[(int32_t) n_tokens];
+        nt = std::max(nt, graph_bytes + scratch);
+        return;
+    }
+}
+
 static std::atomic<int> g_pp_k { -1 };   // staging slots the pass planner gave the prompt it sized last (-1: no plan, a prompt graph takes what fits)
 
 // --moe log=f: what the blocks of the pool hold, per card: before a prompt's first pass, when the prompt is over (its borrowed blocks back) and 8 / 32 / 128
