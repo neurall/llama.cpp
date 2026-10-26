@@ -34,6 +34,7 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 
 | model | test | t/s | pp | gain t | gain pp | ppl | build | output |
 |---|---|---|---|---|---|---|---|---|
+| DeepSeek 4.1 Flash IQ2_XXS (231.7 GiB)** | 16k/1k | 1.5<br>33.4 | 43<br>265 | +2131% 22.3x | +512% 6.1x | -<br>- | b11887<br>ds41i5 | -<br>- |
 | MiMo 2.6F 3-bit | 12k/1k | 14.0<br>26.6 | 49<br>1025 | +90% | +1975% 20.8x | 1.8758<br>1.8758 | b13842 | [18373](fork/outputs/18373.txt)<br>[18221s](fork/outputs/18221s.txt) |
 | GLM 5.3 3-bit | 12k/1k | 12.8<br>19.8 | 43<br>689 | +55% | +1518% 16.2x | 1.7626<br>1.7578 | b13838 | [18209](fork/outputs/18209.txt)<br>[18232s](fork/outputs/18232s.txt) |
 | MiMo 2.6F 3-bit | 3k/1k | 14.1<br>31.6 | 48<br>754 | +124% 2.2x | +1460% 15.6x | 1.8758<br>1.8758 | b13838 | [18199](fork/outputs/18199.txt)<br>[18223s](fork/outputs/18223s.txt) |
@@ -50,6 +51,7 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 | GLM 5.3 3.5-bit* | short/1k | 10.7<br>17.1 | -<br>- | +59% | - | 1.6326<br>1.6265 | b13842 | [18431](fork/outputs/18431.txt)<br>[18279s](fork/outputs/18279s.txt) |
 | Qwen 3.8 Next IQ3_S | short/1k | 43.5<br>56.9 | -<br>- | +31% | - | 1.3927<br>1.3927 | b13563 | [16766](fork/outputs/16766.txt)<br>[17102s](fork/outputs/17102s.txt) |
 
+\*\* DeepSeek: stock is the official b11887 (it is the build that loads this model), 17.6k-token prompt, 857 answer tokens against our 1024; the file is three times the RAM, so stock streams the experts from the SSD for every token (1.5 t/s). With stock tuned (`-ub 4096 -b 4096`) the prompt is 127-131 pp t/s, so the prompt gain is 2.0x against that. Our run is the repeat request of a start; the first request is 163-233 pp t/s. Measured on a development build of this release; our answer text was not stored, so there is no output link and no perplexity yet.  
 \* GLM 3.5-bit (127.7 GiB) is larger than this machine's 128 GB RAM, so part of it runs from the SSD and the system swaps (up to about 4 GiB of swap in use during runs). Ours is faster than stock despite that.  
 
 Every answer behind the table is in [fork/outputs](fork/outputs) as `<id>.txt` (header: build, test, speeds, arguments, power); stock's answers as `<id>s.txt`. With the run database: `python3 fork/run.py out ID` (get it with `git fetch https://github.com/neurall/llama.cpp runs-db && git show FETCH_HEAD:runs.db > fork/runs.db`).
@@ -109,6 +111,7 @@ The gain depends on how much of the model fits in VRAM. Measured on 2x RTX 3090 
 | Qwen3.8 Next IQ1_M | 54.4 GiB | 88% | 1.04x | -0.5% |
 | Qwen3.8 Next IQ3_S | 77.8 GiB | 62% | 3.9x | +31% |
 | Qwen3.8 Next IQ4_XS | 87.2 GiB | 55% | 7.1x | +78% |
+| DeepSeek-V4.1-Flash IQ2_XXS | 231.7 GiB | 21% | 6.1x | +2131% (22.3x) |
 | MiMo-V2.6-Flash 3-bit | 107.7 GiB | 45% | 19.4x | +131% (2.3x) |
 | GLM-5.3-Flash 3.0-bit | 109.4 GiB | 44% | 14.8x | +62% |
 | GLM-5.3-Flash 3.5-bit* | 127.7 GiB | 38% | 6.7x | +37% |
