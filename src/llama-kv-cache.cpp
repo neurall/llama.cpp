@@ -119,16 +119,25 @@ std::string llama_moe_cache_kv_tail_why_fork(void * owner, size_t max_cell);   /
 // experts) and never zeroed the pad rows that their attention reads past the last row. DeepSeek 4.1 without -c, where its per-token compressed cache is the only
 // record that grows, read expert bytes as K (NaN) and produced token 0 for every token (2026-10-26). Such a cache's owner registers how many rows are in use;
 // the entry goes with the cache (tail_guard).
+// The owner also gives the tokens one row covers (ratio, 1 for a cache with a row per token). A compressed cache covers the whole context with fewer rows; a
+// sliding-window ring has fewer rows because it forgets. Only the ratio tells them apart: the pool lays a ring out at full size and grows a compressed cache with
+// the zone (llama_kv_cache_tail_ratio_fork, read by llama-moecache-fork.cpp).
+struct tail_rows_ent { std::function<size_t()> fn; size_t ratio = 1; };
 static std::mutex g_tail_rows_mu;
-static std::unordered_map<const void *, std::function<size_t()>> g_tail_rows;
-void llama_kv_cache_tail_rows_fork(const void * kv, std::function<size_t()> fn) {   // declared where it is used (llama-kv-cache-dsv4.cpp), no header edit
+static std::unordered_map<const void *, tail_rows_ent> g_tail_rows;
+void llama_kv_cache_tail_rows_fork(const void * kv, std::function<size_t()> fn, size_t ratio) {   // declared where it is used (llama-kv-cache-dsv4.cpp), no header edit
     std::lock_guard<std::mutex> lk(g_tail_rows_mu);
-    if (fn) { g_tail_rows[kv] = std::move(fn); } else { g_tail_rows.erase(kv); }
+    if (fn) { g_tail_rows[kv] = { std::move(fn), std::max<size_t>(1, ratio) }; } else { g_tail_rows.erase(kv); }
 }
 static std::function<size_t()> tail_rows_get(const void * kv) {
     std::lock_guard<std::mutex> lk(g_tail_rows_mu);
     const auto it = g_tail_rows.find(kv);
-    return it != g_tail_rows.end() ? it->second : std::function<size_t()>();
+    return it != g_tail_rows.end() ? it->second.fn : std::function<size_t()>();
+}
+size_t llama_kv_cache_tail_ratio_fork(const void * kv) {   // declared where it is used (llama-moecache-fork.cpp), no header edit
+    std::lock_guard<std::mutex> lk(g_tail_rows_mu);
+    const auto it = g_tail_rows.find(kv);
+    return it != g_tail_rows.end() ? it->second.ratio : 1;
 }
 
 llama_kv_cache::llama_kv_cache(
@@ -3369,7 +3378,7 @@ void llama_kv_cache_context::get_prev_tokens(const llama_ubatch & ubatch, uint32
 }
 
 void llama_moe_cache_kv_tail_remove_fork(void * owner);
-llama_kv_cache::tail_guard::~tail_guard() { llama_moe_cache_kv_tail_remove_fork(o); llama_kv_cache_tail_rows_fork(o, nullptr); }
+llama_kv_cache::tail_guard::~tail_guard() { llama_moe_cache_kv_tail_remove_fork(o); llama_kv_cache_tail_rows_fork(o, nullptr, 1); }
 
 size_t llama_moe_cache_kv_tail_cap_fork(void * owner);
 // the context calibrates the host buffer of a pass with three small reserves at different cell counts (llama_context, host_calibrate): while one runs, the reserve graph sees this many cells

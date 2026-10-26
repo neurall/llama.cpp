@@ -292,7 +292,7 @@ struct moe_cache {
         size_t                base_off = 0;     // where the graph being built starts: mirror_b when it splits (the copies before it), else 0
         // KV zone (--moe kv-tail=1, fork/docs/kv-grow.md): the records of the caches on this card interleaved in one combined row per cell (kv_row bytes, record r at
         // byte `prefix` of it), [kv_start, kv_start + kv_h * kv_row) of the buffer, behind the compute lend and in front of the experts; blocks under it are owner -3
-        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0, pad = 1, prefix = 0, cells_max = 0; bool fixed = false; std::function<size_t()> rows; std::function<void(ggml_backend_buffer_t, uint8_t *, size_t)> attach; size_t cells = 0, plan = 0; float bpv = 2.0f;   // plan: the cells the prompt being planned will fill; bpv: bytes per value of the record's types
+        struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0, pad = 1, prefix = 0, cells_max = 0, ratio = 1; bool fixed = false; std::function<size_t()> rows; std::function<void(ggml_backend_buffer_t, uint8_t *, size_t)> attach; size_t cells = 0, plan = 0; float bpv = 2.0f;   // plan: the cells the prompt being planned will fill; bpv: bytes per value of the record's types
                          std::function<size_t(ggml_type, ggml_type, const std::vector<char> *, std::vector<llama_kv_tail_fork::seg> *)> layout;   // qkv-ram-fallback in place (llama_kv_tail_fork)
                          std::function<void(ggml_type, ggml_type, const std::vector<char> *, const std::vector<std::pair<uint8_t *, size_t>> *, ggml_backend_buffer_t)> retype;
                          std::vector<char> out, out_next; std::vector<std::pair<uint8_t *, size_t>> host;   // RAM part: layers in host memory now / after the next relayout; where
@@ -3503,6 +3503,18 @@ static std::mutex                  g_kvt_mtx;
 static std::vector<llama_kv_tail_fork> g_kvt;
 static struct { std::atomic<size_t> claim_n{0}, release_n{0}, evicted{0}; } g_kvs;
 
+size_t llama_kv_cache_tail_ratio_fork(const void * kv);   // llama-kv-cache.cpp: the tokens one row of a record covers (declared here, no header edit)
+// Which records of a card are laid out at full size in front of the growing rows (fixed) and which grow with the zone, one combined row per cell. A record whose rows
+// cover fewer tokens than the largest is a sliding-window ring (its cells are reused): fixed. A compressed cache (DSV4: one row per `ratio` tokens, written at row
+// pos / ratio) covers the whole context with fewer rows; until 2026-10-26 the rule "fewer cells than the largest" took it for a ring and laid it out at full size:
+// DeepSeek 4.1's ratio-2 cache held 1920 MiB of the x16 card's pool at every context (524288 rows x 3840 B, 9.4% of the pool) and every zone move copied it whole.
+// It now grows with the zone: its row i sits in combined row i (all records share the row index), so it takes its full row per cell and leaves the rows past its
+// own end unused; that is less than the full size below rows_max cells of context and up to `ratio` times more at the model's maximum. A compressed cache
+// whose full size is at most one growth step of its rows stays fixed (DSV4 V4's ratio-128 cache, 8192 rows): growing would never make it smaller.
+static bool kv_rec_fixed(size_t cells_max, size_t ratio, size_t tokens_max, size_t step) {
+    return ratio > 1 ? cells_max <= step : cells_max < tokens_max;
+}
+
 void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec) {
     std::lock_guard<std::mutex> lk(g_kvt_mtx);
     g_kvt.push_back(rec);
@@ -3721,8 +3733,9 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     // (kv_tail_pad_zero zeroes them only inside the zone). A horizon clamped to the bare cell count left them in the expert blocks behind the zone: MiMo,
     // 15 GiB free per card, 11673 cells -> the zone ended at cell 11673, the last query chunk (rows 11520+) read expert bytes as K/V, NaN in layer 0, '!!!!'
     // from ~9k tokens up (2026-10-18). Whatever clamps h (room, the pool end, the zero-block rule below), it never goes under this.
-    size_t pad = 1, cmax = (size_t) -1, need = cells;   // need: the cells in use or planned for the prompt being laid out, whichever is more
-    for (const auto & r : ap.kvt) { if (!r.fixed) { pad = std::max(pad, r.pad); cmax = std::min(cmax, r.cells_max); need = std::max(need, r.plan); } }
+    // cmax: the most cells any growing record has (a compressed cache has fewer rows than the context: it must not cap the others' horizon at its own rows)
+    size_t pad = 1, cmax = 0, need = cells;   // need: the cells in use or planned for the prompt being laid out, whichever is more
+    for (const auto & r : ap.kvt) { if (!r.fixed) { pad = std::max(pad, r.pad); cmax = std::max(cmax, r.cells_max); need = std::max(need, r.plan); } }
     const size_t h_min = std::min((need + pad - 1) / pad * pad, cmax);
     const size_t h_pool = ap.kv_row > 0 ? kv_gap_fit(ap, bmax, lend_min, ap.kv_row) : (size_t) -1;   // the largest zone any gap can hold
     if (led_on()) { LLAMA_LOG_WARN("kv-gap %s: h %zu h_min %zu h_pool %zu lend_min %.1f MiB want %.1f MiB fixed %.1f MiB row %zu tail_end %.1f MiB segs %zu\n", led_card(ap), h, h_min, h_pool, lend_min / 1048576.0, l / 1048576.0, ap.kv_fixed / 1048576.0, ap.kv_row, ap.tail_end / 1048576.0, ap.segs.size()); }
@@ -3754,13 +3767,15 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     if (lo != lo_old) { kv_move_bytes(ap, lo_old, lo, n_used); }
     kv_blocks_apply(mc, ap, lo, hi, false, true, n_take, n_give, n_evict);
     uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
-    if (first && ap.kv_fixed > 0) {   // the fixed records are read up to their padded cells from the first token on: zero, once (the attention multiplies masked rows too)
+    auto zero = [&](size_t z0, size_t z1) {   // bytes [z0, z1) of the pool to 0 (a device memset)
+        if (z1 <= z0) { return; }
         ggml_tensor z = {};
-        z.type = GGML_TYPE_I8; z.buffer = ap.buf; z.data = base + lo;
-        z.ne[0] = (int64_t) ap.kv_fixed; z.ne[1] = z.ne[2] = z.ne[3] = 1;
-        z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = ap.kv_fixed;
-        ggml_backend_tensor_memset(&z, 0, 0, ap.kv_fixed);
-    }
+        z.type = GGML_TYPE_I8; z.buffer = ap.buf; z.data = base + z0;
+        z.ne[0] = (int64_t) (z1 - z0); z.ne[1] = z.ne[2] = z.ne[3] = 1;
+        z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = z1 - z0;
+        ggml_backend_tensor_memset(&z, 0, 0, z1 - z0);
+    };
+    if (first && ap.kv_fixed > 0) { zero(lo, lo + ap.kv_fixed); }   // the fixed records are read up to their padded cells from the first token on: zero, once (the attention multiplies masked rows too)
     for (auto & r : ap.kvt) {
         if (!r.attach) { continue; }
         if (r.fixed) { r.attach(ap.buf, base + lo + r.prefix, r.row); }
@@ -3770,6 +3785,11 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     kv_zone_check(ap, lend_min, "kv_layout");
     led_map(ap, "kv_layout");
     pool_fill(ap, lo + std::max(n_used, ap.kv_fixed), hi, 4);   // --moe poison: rows nobody wrote yet are 4 (the fixed part is zeroed above)
+    // A compressed record shares the combined rows with records that fill them faster (DSV4: its row i covers tokens 2i, 2i+1): its pad rows, which its attention
+    // reads past its own rows in use, lie BELOW the cells in use of the others, where the pad window (kv_tail_pad_zero, whole rows from the largest count up) never
+    // comes. Those rows must be finite from the moment the zone holds them, so every byte the zone gets here beyond the rows it brought along is zeroed (also over a
+    // poison fill: they are read by design). One device memset of the zone's free rows per layout change (10240 cells x 5120 B = 50 MiB on DeepSeek 4.1's x16 card).
+    for (const auto & r : ap.kvt) { if (!r.fixed && r.ratio > 1) { zero(lo + std::max(n_used, ap.kv_fixed), hi); break; } }
     pool_move_end(ap);
     ap.kv_zhi = 0;   // the pad window (rows past the cells in use that the attention reads) is zeroed again
     ap.blocked = ap.segs.empty() ? 0 : ap.segs[0].blocked;
@@ -3812,7 +3832,7 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
     bool any = false;
     for (auto & ap : mc->alias) {
         if (ap.kvt.empty() || ap.kv_row == 0) { continue; }
-        size_t eff = 0, cells = 0, cells_max = (size_t) -1;
+        size_t eff = 0, cells = 0, cells_max = 0;   // cells_max: the most cells of any growing record (a compressed cache's fewer rows never cap the others)
         for (auto & r : ap.kvt) {
             if (r.fixed) { continue; }   // laid out at full size
             const size_t c = r.rows ? r.rows() : 0;
@@ -3825,7 +3845,7 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
             e = e > 0 ? (e + r.pad - 1) / r.pad * r.pad : 0;
             eff = std::max(eff, e);
             cells = std::max(cells, c);
-            cells_max = std::min(cells_max, r.cells_max);
+            cells_max = std::max(cells_max, r.cells_max);
         }
         const size_t step = std::max<size_t>(256, ap.kv_step);
         size_t h = (allow_shrink || ap.kv_h == 0) ? step : ap.kv_h;
@@ -3957,16 +3977,17 @@ static void kv_tail_bind(moe_cache::alias_pool & ap) {
         kr.layout = r.layout; kr.retype = r.retype; kr.tk = r.type_k; kr.tv = r.type_v; kr.convertible = r.convertible && r.layout && r.retype;
         kr.unit = r.layout ? kv_rec_unit(r.type_k, r.type_v) : 256;
         kr.cells_max = r.row ? r.bytes / r.row : 0;
+        kr.ratio = llama_kv_cache_tail_ratio_fork(r.owner);
         if (r.step > 0) { ap.kv_step = r.step; }
         ap.kvt.push_back(kr);
         r.attached = true;
     }
     if (ap.kvt.empty()) { return; }
-    // records with the most cells (the model's context) grow together in one combined row; smaller ones (a sliding-window cache: its cells are a ring
-    // of the window plus a batch) are fixed: laid out at full size in front of the growing part
-    size_t cmax = 0;
-    for (auto & kr : ap.kvt) { cmax = std::max(cmax, kr.cells_max); }
-    for (auto & kr : ap.kvt) { kr.fixed = kr.cells_max < cmax; kr.tk0 = kr.tk; kr.tv0 = kr.tv; }
+    // records covering the most tokens (the model's context) grow together in one combined row; a sliding-window cache (its cells are a ring of the window plus
+    // a batch) is fixed: laid out at full size in front of the growing part. A compressed cache covers the whole context with fewer rows: kv_rec_fixed
+    size_t cmax = 0;   // tokens
+    for (auto & kr : ap.kvt) { cmax = std::max(cmax, kr.cells_max * kr.ratio); }
+    for (auto & kr : ap.kvt) { kr.fixed = kv_rec_fixed(kr.cells_max, kr.ratio, cmax, ap.kv_step); kr.tk0 = kr.tk; kr.tv0 = kr.tv; }
     kv_zone_offsets(ap.kvt, ap.kv_fixed, ap.kv_row);
     kv_lend_pc_of(ap.kvt, ap.kv_lend_pc, ap.kv_lend_pc_dec);
     uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
@@ -4016,11 +4037,14 @@ void llama_moe_cache_kv_arena_start_fork() {
     std::vector<ggml_backend_dev_t> devs;
     for (auto & r : g_kvt) { if (!r.attached && r.dev && std::find(devs.begin(), devs.end(), r.dev) == devs.end()) { devs.push_back(r.dev); } }
     for (ggml_backend_dev_t dev : devs) {
-        size_t row = 0, fixed = 0, cmax = 0;   // growing records in one combined row, smaller ones (sliding window) fixed at full size in front (as in the pool)
-        for (auto & r : g_kvt) { if (!r.attached && r.dev == dev && r.row) { cmax = std::max(cmax, r.bytes / r.row); } }
+        // growing records in one combined row, sliding-window rings fixed at full size in front (as in the pool, kv_rec_fixed); tmax: the most tokens a record
+        // covers, cmax: the most rows of a growing record (the combined rows the arena needs)
+        size_t row = 0, fixed = 0, cmax = 0, tmax = 0;
+        auto fixed_of = [&](const llama_kv_tail_fork & r) { return kv_rec_fixed(r.bytes / r.row, llama_kv_cache_tail_ratio_fork(r.owner), tmax, r.step > 0 ? r.step : 10240); };
+        for (auto & r : g_kvt) { if (!r.attached && r.dev == dev && r.row) { tmax = std::max(tmax, r.bytes / r.row * llama_kv_cache_tail_ratio_fork(r.owner)); } }
         for (auto & r : g_kvt) {
             if (r.attached || r.dev != dev || !r.row) { continue; }
-            if (r.bytes / r.row < cmax) { fixed += (r.bytes + 255) / 256 * 256; } else { row += r.row; }
+            if (fixed_of(r)) { fixed += (r.bytes + 255) / 256 * 256; } else { row += r.row; cmax = std::max(cmax, r.bytes / r.row); }
         }
         if (row == 0) { continue; }
         size_t free_b = 0, total = 0;
@@ -4065,7 +4089,7 @@ void llama_moe_cache_kv_arena_start_fork() {
         size_t prefix = 0, fpos = 0;
         for (auto & r : g_kvt) {
             if (r.attached || r.dev != dev || !r.row) { continue; }
-            const bool fx = r.bytes / r.row < cmax;
+            const bool fx = fixed_of(r);
             if (r.attach) { r.attach(buf, fx ? base + fpos : base + fixed + prefix, fx ? r.row : row); }
             r.attached = true;
             ar.runs.push_back(kv_arena_run{ r.owner, r.rows, r.bytes / r.row, fx });
@@ -4409,6 +4433,18 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
         n_give_all += ng; n_take_all += nt;
         uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
         for (auto & r : ap.kvt) { if (r.attach) { r.attach(ap.buf, base + Z + (r.fixed ? r.prefix : cp.F + r.prefix), r.fixed ? r.row : cp.R); } }
+        for (const auto & r : ap.kvt) {   // a compressed record's pad rows lie below the others' cells in use: the rows past the converted ones must be finite (as in kv_layout)
+            if (r.fixed || r.ratio <= 1) { continue; }
+            const size_t z0 = Z + cp.F + cp.cells * cp.R, z1 = Z + cp.F + cp.h * cp.R;
+            if (z1 > z0) {
+                ggml_tensor z = {};
+                z.type = GGML_TYPE_I8; z.buffer = ap.buf; z.data = base + z0;
+                z.ne[0] = (int64_t) (z1 - z0); z.ne[1] = z.ne[2] = z.ne[3] = 1;
+                z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = z1 - z0;
+                ggml_backend_tensor_memset(&z, 0, 0, z1 - z0);
+            }
+            break;
+        }
         ap.kv_h = cp.h; ap.kv_zhi = 0; ap.kv_last_cells = 0;
         for (auto & sg : ap.segs) {   // a lent block past the lend (the staging took lent ones: kv_blocks_apply lowered `blocked`) is nobody's: free
             auto & ps = mc->pool[sg.pcls];
@@ -4907,8 +4943,8 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             size_t cells = 0;
             for (auto & r : ap.kvt) { if (!r.fixed) { cells = std::max(cells, r.rows ? r.rows() : 0); } }
             {   // the attention reads the cells in use rounded up to the pad: the zone must hold those rows too (OLMoE on W10, 2026-10-18: 33568 cells in use, a zone of 33740 after the lend grew, padded read 33792, abort in set_input_k_idxs)
-                size_t pad = 1, cmx = (size_t) -1;
-                for (auto & r : ap.kvt) { if (!r.fixed) { pad = std::max(pad, r.pad); cmx = std::min(cmx, r.cells_max); } }
+                size_t pad = 1, cmx = 0;   // cmx: the most cells of a growing record (a compressed cache's fewer rows never cap the others)
+                for (auto & r : ap.kvt) { if (!r.fixed) { pad = std::max(pad, r.pad); cmx = std::max(cmx, r.cells_max); } }
                 cells = std::min((cells + pad - 1) / pad * pad, cmx);
             }
             // the zone moves behind exactly this graph's lend, its start on the block edge the lend ends on (no headroom: a bigger graph later moves it again, a
