@@ -6607,7 +6607,9 @@ def run_list(name, argv):
         sl = os.path.realpath(os.path.join(DEVBUILDS, "stock-latest")); print(f"{col(36, 'stock')}: {os.path.basename(sl)}  {col(33, time.strftime('%F %H:%M', time.localtime(os.path.getmtime(os.path.join(sl, 'llama-server')))))}  {col(94, 'b' + own_build_no(os.path.basename(sl)))}", flush=True)
     if not o.dry: CUR_HWL[0] = hw_line(); print(col(1, CUR_HWL[0]), flush=True)
     NAMEW[0] = max((len(("s" if r["_b"].startswith("stock") else "") + r["name"]) for r in rows), default=NAMEW[0] - 1) + 1
-    total_s = sum(cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm) or 0 for r in rows); done_s = 0; run_t0 = time.time()   # expected seconds of the whole list, from runs.db
+    exp_all = [cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm) for r in rows]
+    known = [x for x in exp_all if x]; fill = (sum(known) / len(known)) if known else 600.0   # a cell without history counts the average of the known ones, so the whole-run bar and its time cover every cell of the list
+    total_s = sum(x or fill for x in exp_all); done_s = 0; run_t0 = time.time()   # expected seconds of the whole list, from runs.db
     try:
         for r in rows:
             key = (r["model"], r["_b"].startswith("stock"))   # the official stock binary knows no pool: it runs without one (the pool's RAM is its page cache), ours size it per model
@@ -6633,7 +6635,7 @@ def run_list(name, argv):
             if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, ("s" if r["_b"].startswith("stock") else "") + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
             if not o.dry and not r["_b"].startswith("stock") and not (r.get("args") or "").strip(): learn_bestpp(r["model"], r["test"], tag)
             if not o.dry and not r["_b"].startswith("stock"): learn_att(r["model"], tag)
-            done_s += ex or 0
+            done_s += ex or fill
     finally:   # the cells' lines, then the pool: it holds its RAM whether a model uses it or not: give it back when the list ends, also on Ctrl-C or an error
         if CELL_LINES and not o.dry:   # the final block, complete for a screenshot: the machine, then every cell with what it measured
             live_clear(); print("\n" + (col(1, hw_line()) + "\n" if any(not x.get("skipped") for x in CELL_REC) else "") + "\n".join(final_table(CELL_REC) or CELL_LINES), flush=True)   # the machine line is at the top already when no cell ran
