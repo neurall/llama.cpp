@@ -34,7 +34,7 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 
 | model | test | t/s | pp | gain t | gain pp | ppl | build | output |
 |---|---|---|---|---|---|---|---|---|
-| DeepSeek 4.1 Flash IQ2_XXS (231.7 GiB)** | 16k/1k | 1.5<br>33.4 | 43<br>265 | +2131% 22.3x | +512% 6.1x | -<br>- | b11887<br>ds41i5 | -<br>- |
+| DeepSeek 4.1 Flash IQ2_XXS (231.7 GiB)\*\* | 16k/1k | 1.5<br>33.4 | 43<br>265 | +2131% 22.3x | +512% 6.1x | -<br>- | b11887<br>ds41i5 | -<br>- |
 | MiMo 2.6F 3-bit | 12k/1k | 14.0<br>26.6 | 49<br>1025 | +90% | +1975% 20.8x | 1.8758<br>1.8758 | b13842 | [18373](fork/outputs/18373.txt)<br>[18221s](fork/outputs/18221s.txt) |
 | GLM 5.3 3-bit | 12k/1k | 12.8<br>19.8 | 43<br>689 | +55% | +1518% 16.2x | 1.7626<br>1.7578 | b13838 | [18209](fork/outputs/18209.txt)<br>[18232s](fork/outputs/18232s.txt) |
 | MiMo 2.6F 3-bit | 3k/1k | 14.1<br>31.6 | 48<br>754 | +124% 2.2x | +1460% 15.6x | 1.8758<br>1.8758 | b13838 | [18199](fork/outputs/18199.txt)<br>[18223s](fork/outputs/18223s.txt) |
