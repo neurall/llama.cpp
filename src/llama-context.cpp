@@ -2473,54 +2473,51 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     if (!thr.on || cparams.n_threads < 2) {
         return;
     }
-    // First tokens: find the thread count by bracketing, not by +-2 steps. Too few threads costs far more than too many, so the search errs upward.
-    // 1. start at the default (already capped by the container quota / probe), halve every 5 tokens down the whole ladder (default, /2, /4, /8: one slow
-    //    slice must not end it); b = the fewest threads within 2% of the fastest, w = the next lower count tried
-    // 2. bisect [w, b] geometrically up to 3 times, re-measuring b next to each probe so slow drift is not read as a win; stop at a 10% bracket
-    // 3. keep b plus one step (10%) of margin, never above the default, and stay there: the +-2 tuner below is switched off
-    // File-local state: one decoding context per process, and thr's layout is in a header (full rebuild).
-    static struct { int st = 0, n = 0, tok = 0, b = 0, w = 0, mid = 0, iter = 0, drift = 0, wn = 0, lc = 0, ln[4] = {}; double lt[4] = {}, sum = 0, best = 0, mm = 0, wsum = 0; } d;
-    if (d.st < 3) {
+    // First tokens: find the decode thread count top-down from the default, every hardware thread (common_init_result; user 2026-10-26). Too many threads
+    // costs little (the same speed or a few percent: barriers, SMT siblings), too few costs a lot (half the threads: up to half the speed while the CPU computes
+    // the cache misses). The halving ladder used before (6 -> 3, bisected to 4 on PC1) ran a third of the first tokens on 3-4 threads. Now it never jumps down:
+    // 1. measure the default b (5 tokens after a warm-up token), step = a quarter of it
+    // 2. probe c = b - step, then measure b again right after it: the expert cache warms up over the first tokens, so a later slice is faster by itself;
+    //    comparing the probe with the measurement that follows it makes that drift favour the higher count
+    // 3. the probe is not slower: b = c, same step down again; it is slower: halve the step (16 threads: 16 -> 12 -> 8, or 14 / 10); stop below one thread
+    // 4. keep b and stay there: the +-2 tuner below is switched off
+    // Half the threads run only when every step on the way down did not lose. File-local state: one decoding context per process, thr's layout is in a header.
+    static struct { int st = 0, n = 0, tok = 0, b = 0, c = 0, step = 0, drift = 0, wn = 0; double sum = 0, tb = 0, tc = 0, best = 0, wsum = 0; } d;
+    if (d.st != 3) {   // 0 start, 1 measuring b, 2 measuring the probe c, 4 measuring b again after the probe; 3 settled (below)
         auto set_n = [&](int n) {
             d.n = n; d.tok = -1; d.sum = 0; cparams.n_threads = (uint32_t) n;
             char v[32]; snprintf(v, sizeof v, "%d (testing)", n);   // visible in the decisions list while the search runs: every tried count
-            llama_moe_decision_fork("threads_decode", v, d.best > 0 ? "searching: best so far is faster than this count's neighbours" : "searching: first tokens, halving from the default");
+            llama_moe_decision_fork("threads_decode", v, d.st == 2 ? "searching: one step down from the best count so far" :
+                                                         d.st == 4 ? "searching: the best count again, right after the probe" : "searching: first tokens, on every hardware thread");
         };
-        auto refine = [&]() {   // next probe, or finish
-            const int mid = (int) std::sqrt((double) d.w*d.b);
-            if (d.w == 0 || d.iter >= 3 || d.b - d.w <= std::max(1, d.b/10) || mid <= d.w || mid >= d.b) {
-                const int pick = std::min(thr.base0, d.b + std::max(1, d.b/10));
-                LLAMA_LOG_INFO("%s: thread search: %d -> %d threads (best %d at %.2f ms/token, worse below %d)\n", __func__, thr.base, pick, d.b, d.best/1000.0, d.w);
-                llama_moe_decision_fork("threads_decode", std::to_string(pick).c_str(), "bracketed by halving every 5 tokens, bisected, +10% margin (too few costs more than too many)");
+        auto next = [&]() {   // the next probe below b, or finish
+            while (d.step >= 1 && d.b - d.step < 1) { d.step /= 2; }
+            if (d.step < 1) {
+                const int pick = d.b;   // no margin on top: a step down was taken only when it was at least as fast as b measured right after it
+                LLAMA_LOG_INFO("%s: thread search: %d -> %d threads (%.2f ms/token; one step down was slower)\n", __func__, thr.base, pick, d.tb/1000.0);
+                llama_moe_decision_fork("threads_decode", std::to_string(pick).c_str(), "from every hardware thread down while a step was not slower (too few costs more than too many)");
                 if (pick != thr.base) { thr.base = pick; threads_save(model, "threads", thr.base0, pick); }
                 cparams.n_threads = (uint32_t) thr.base;
+                d.best = d.tb;
                 d.st = 3; d.drift = 0; d.wn = 0; d.wsum = 0;   // settled: the count stays until the token time drifts (below)
                 return;
             }
-            d.mid = mid; d.st = 1; set_n(mid);
+            d.c = d.b - d.step; d.st = 2; set_n(d.c);
         };
-        if (d.st == 0) { d.st = 1; d.b = 0; set_n(thr.base); }   // stage 1 with b == 0: halving phase
+        if (d.st == 0) { d.b = thr.base; d.step = std::max(1, d.b/4); d.st = 1; set_n(d.b); }
         if (d.tok++ < 0) { return; }           // the first token after a change is a warm-up
         d.sum += (double) dt_us;
         if (d.tok < 5) { return; }
         const double m = d.sum/5.0;
-        if (d.st == 1 && d.mid == 0) {         // halving phase: always the whole ladder (default, /2, /4, /8): one slow slice must not end it, each slice is only 5 tokens
-            d.ln[d.lc] = d.n; d.lt[d.lc] = m; d.lc++;
-            if (d.lc < 4 && d.n/2 >= 2) { set_n(d.n/2); return; }
-            double mn = d.lt[0]; for (int k = 1; k < d.lc; ++k) { mn = std::min(mn, d.lt[k]); }
-            int bi = 0; for (int k = 0; k < d.lc; ++k) { if (d.lt[k] <= 1.02*mn) { bi = k; } }   // the fewest threads within 2% of the fastest
-            d.b = d.ln[bi]; d.best = d.lt[bi]; d.w = bi + 1 < d.lc ? d.ln[bi + 1] : 0;
-            refine();
-            return;
-        }
-        if (d.st == 1) { d.mm = m; d.st = 2; set_n(d.b); return; }   // probe measured, now re-measure b
-        d.best = m;                            // st == 2: b re-measured next to the probe
-        if (d.mm < 1.02*m) { d.b = d.mid; d.best = d.mm; } else { d.w = d.mid; }
-        d.iter++; d.mid = 0;
-        refine();
+        if (d.st == 1) { d.tb = m; next(); return; }                // b measured: probe one step down
+        if (d.st == 2) { d.tc = m; d.st = 4; set_n(d.b); return; }  // probe measured: b again, right after it
+        d.tb = m;                                                    // st == 4: b measured next to the probe
+        if (d.tc <= d.tb) { d.b = d.c; d.tb = d.tc; }                // the probe did not lose: go down, same step
+        else              { d.step /= 2; }                           // it lost: a smaller step from b
+        next();
         return;
     }
-    if (d.st == 3) {   // settled: stay, and watch. Windows of 64 tokens; a mean 10% above the best seen, twice in a row, means the box changed (other load, a new prompt mix): search again from twice the settled count
+    if (d.st == 3) {   // settled: stay, and watch. Windows of 64 tokens; a mean 10% above the best seen, twice in a row, means the box changed (other load, a new prompt mix): search again from the default
         d.wsum += (double) dt_us;
         if (++d.wn < 64) { return; }
         const double m = d.wsum/64.0; d.wsum = 0; d.wn = 0;
@@ -2528,8 +2525,8 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         d.drift = m > 1.10*d.best ? d.drift + 1 : 0;
         if (d.drift >= 2) {
             LLAMA_LOG_INFO("%s: thread search again: %.2f ms/token against %.2f settled\n", __func__, m/1000.0, d.best/1000.0);
-            thr.base = std::min(thr.base0, 2*thr.base);
-            d.st = 0; d.b = d.w = d.mid = d.iter = d.lc = 0; d.best = 0;
+            thr.base = thr.base0;
+            d.st = 0; d.b = d.c = d.step = 0; d.best = 0;
         }
         return;
     }
@@ -3448,7 +3445,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             apply_moe_alias();
             sched_need_reserve = true;
         }
-        thread_cap_from_probe(llama_moe_cache_cpu_sat_threads_fork());
+        // no cap from the RAM probe (3 x the threads that saturate the read rate): the decode search starts on every hardware thread and steps down
+        // itself (user 2026-10-26: start from the most threads; too many costs little, too few a lot)
         sched_reserve(); // the compute graph now includes the cache chain
     }
     llama_moe_cache_kv_arena_start_fork();   // --moe kv-tail=1: KV records no expert pool took (dense models) get their buffer, once, at the first real decode

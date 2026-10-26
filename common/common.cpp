@@ -2207,12 +2207,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
         g_moe_auto_ub_auto = ub;
         params.n_ubatch = ub;
     }
-    // leave one core per GPU to drive it (measured on 2 GPUs: 6 of 8 cores beats 8)
-    for (auto * cp : { &params.cpuparams, &params.cpuparams_batch }) {
-        if (cp->auto_threads) {
-            cp->n_threads = std::max(2, cp->n_threads - n_gpu);
-        }
-    }
+    // no core is left per GPU any more (user 2026-10-26: the OS runs thousands of threads anyway; the GPU and upload threads share the cores), and the
+    // decode search starts on every hardware thread and steps down if fewer are faster (common_init_result, llama_context::thread_tune_feed)
     // resource saturator: compute threads on physical cores only (SMT siblings add no memory bandwidth), filled L3 domain
     // by domain so each domain's threads compute its rows (GGML_MOE_CCX_SPLIT), leaving each domain's highest core to its
     // L3 prefetch thread. Linux sysfs / Windows GetLogicalProcessorInformationEx; only without a user CPU mask (LLAMA_AUTO_PLACE=1).
@@ -2396,6 +2392,12 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     pimpl(new impl{}) {
     common_moe_cache_auto(params);
     common_spec_auto(params);
+    // the decode thread search starts on every hardware thread, SMT siblings included, and steps down while a step is not slower
+    // (llama_context::thread_tune_feed). User 2026-10-26: on an EPYC all threads gained; too many threads costs little, too few a lot. The decode pool is
+    // created this big and the search only lowers the count inside it. Only for a count that came from the default; the batch count is not changed here.
+    if (params.cpuparams.auto_threads && common_autotune_on(params)) {
+        params.cpuparams.n_threads = std::max<int32_t>(params.cpuparams.n_threads, (int32_t) std::thread::hardware_concurrency());
+    }
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
 
