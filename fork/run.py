@@ -4748,6 +4748,8 @@ def gpu_class(hwl, hw=""):
 
 def cell_expect(model, test, n, build, warm=True):
     """the time of a cell from its own history; a sized prompt (16k1k, 7k1k) without history of its size takes the time of the 12k one of the model (a calib probe has none)"""
+    try: test = best_test(model, test)   # pfbest1k -> pf<N>k1k: the model's own best prompt size, as the cell runs it (its history is stored under that test)
+    except SystemExit: pass   # no best prompt stored yet: the names below still apply
     r = cell_expect_1(model, test, n, build, warm)
     return r if r is not None or not re.fullmatch(r"pf\d+k1k", test or "") or test == "pf12k1k" else cell_expect_1(model, "pf12k1k", n, build, warm)
 
