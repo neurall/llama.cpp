@@ -151,8 +151,8 @@ The first request is slower because the expert cache and the pass sizes are stil
 |  | 60k | 1546 | 1864 | fail: context too small | - | - | um6g |
 | GLM-5.3-Flash 3.0-bit | 4k | 703 | 639 | 42 (5k prompt), b11829 | 16.7x | 15.2x | pre9 |
 |  | 12k | 658 | 609 | 43, b11829 | 15.3x | 14.2x | ceil1 |
-|  | 16k | 660 | 775 | - | - | - | pre10 |
-|  | 30k | 557 | 686 | - | - | - | ncard6 |
+|  | 16k | 660 | 775 | 42, b11887 | 15.7x | 18.4x | pre10 |
+|  | 30k | 557 | 686 | 42, b11887 | 13.3x | 16.3x | ncard6 |
 |  | 60k | 566 | 694 | - | - | - | pre10 |
 | MiMo-V2.6-Flash 3-bit | 4k | 905 | 903 | 48 (3.4k prompt), b11866 | 18.9x | 18.8x | pre13 |
 |  | 8k | 1062 | 999 | 50, b11866 | 21.2x | 20.0x | relmf1 |
@@ -161,7 +161,7 @@ The first request is slower because the expert cache and the pass sizes are stil
 |  | 60k | 846 | 841 | - | - | - | pre12 |
 | DeepSeek-V4.1-Flash | 16k | - | 228 | 43, b11887 | - | 5.3x | ds41i5 |
 
-Stock cells: official ggml-org binaries with their own defaults (`-np 1` only, micro-batch and context auto); where the stock prompt size differs from the row it is named. **fail: context too small** = stock sizes its context itself (32768 tokens at 30k, 63488 at 60k on Qwen) and refuses a prompt that does not fit (a 30k prompt is 33.6k tokens, a 60k prompt 68.3k): `request (68337 tokens) exceeds the available context size (63488 tokens)`. It needs `-c` set by hand, which was not done here, so stock cannot serve these prompts as shipped; ours sizes the context per request. Stock is CPU-bound, so its prompt speed is nearly the same at every size (GLM 42-43, MiMo 48-50, Qwen IQ4_XS 208-213). "-" = not measured (stock at 60k would take 20 minutes or more per cell on GLM and MiMo).
+Stock cells: official ggml-org binaries with their own defaults (`-np 1` only, micro-batch and context auto); where the stock prompt size differs from the row it is named. **fail: context too small** = stock sizes its context itself (32768 tokens at 30k, 63488 at 60k on Qwen) and refuses a prompt that does not fit (a 30k prompt is 33.6k tokens, a 60k prompt 68.3k): `request (68337 tokens) exceeds the available context size (63488 tokens)`. It needs `-c` set by hand, which was not done here, so stock cannot serve these prompts as shipped; ours sizes the context per request. Stock is CPU-bound, so its prompt speed is nearly the same at every size (GLM 42-43, MiMo 48-50, Qwen IQ4_XS 208-213). DeepSeek stock at a 4.8k prompt: 35 pp t/s (decode 1.5 t/s). "-" = not measured (stock at 60k would take 20 minutes or more per cell on GLM and MiMo; GLM 30k took 12 minutes).
 
 - **The split starts to pay at about 11k-16k prompt tokens**: Qwen3.8 Next from 11k, GLM and MiMo from 16k (MiMo possibly 12k, one run). Below about 8k one card is as fast or faster (the second card sits in a x4 slot and the hand-offs between cards cost more than the shorter pass saves). The auto setup takes one card there.
 - **Largest gains: GLM +18% to +26% (16k to 60k), MiMo +21% at 16k, Qwen3.8 Next +15% at 11k.** Qwen3.6 and OLMoE fit in VRAM and show no split gain.
