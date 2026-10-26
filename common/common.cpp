@@ -1913,6 +1913,19 @@ static void common_hog(void) {
             LOG_WRN("sim-vram: %s holds %.2f GiB, %.2f GiB left free\n", ggml_backend_dev_name(dev), ggml_backend_buffer_get_size(buf) / 1073741824.0, f2 / 1073741824.0);
         }
     }
+    // --moe hog-<card>=MB (hog-CUDA0=7943): take MB MiB on that one card, a control run that holds what something else would (a DSpark draft took 7943 MiB of the
+    // x4 card's expert pool: the same cut without the draft separates the smaller cache from the cost of drafting)
+    static bool hog_done = false;
+    for (size_t i = 0; i < ggml_backend_dev_count() && !hog_done; i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        const char * h = ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU ? llama_moe_get_opt((std::string("hog-") + ggml_backend_dev_name(dev)).c_str()) : nullptr;
+        if (!h || atof(h) <= 0) { continue; }
+        ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), (size_t) (atof(h) * 1048576.0));
+        if (!buf) { LOG_WRN("hog: could not take %s MiB on %s\n", h, ggml_backend_dev_name(dev)); continue; }
+        gpu_hog.push_back(buf);
+        LOG_WRN("hog: %s holds %.0f MiB\n", ggml_backend_dev_name(dev), ggml_backend_buffer_get_size(buf) / 1048576.0);
+    }
+    hog_done = true;
 #ifdef __linux__
     if (hr && !ram_hog) {
         const size_t keep = (size_t) (atof(hr) * 1048576.0);   // stress test: exactly what was asked for, no floor (swapping is part of what is being tested)
