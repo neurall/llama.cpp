@@ -5693,6 +5693,17 @@ def run_times(rid):
     return float(r[0]), ("" if lv is None or lv < 0 else "l " + tf(lv) + (f" p {tf(r[2])} g {tf(r[3])}" if r[2] is not None and r[3] is not None else ""))   # l load, p prompt, g generation
 
 
+def loop_flag(rid):
+    """True when the stored run `rid` (runs.db rowid) has a detected repetition loop (loop=1): the table shows LOOP next to FAIL, and its numbers are not comparable"""
+    import sqlite3
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        r = c.execute("select loop from runs where rowid=?", (rid,)).fetchone() if rid else None
+        return bool(r and str(r[0]) == "1")
+    except sqlite3.Error:
+        return False
+
+
 def out_len(ours_id, stock_id):
     """`843/345`: tokens of the answer of our run / of the stock run (runs.db n_gen); the asked length is in the prompt column"""
     import sqlite3
@@ -5761,7 +5772,7 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         elif r.get("stock_row") and res:   # a stock cell and none of ours yet: the stock numbers in the stock columns, ours empty
             st = dict(t=t, p=p, ob="", od="", sb=r.get("sbno") or "?", sd=r.get("sdate") or "", sid=r.get("rid")); t = p = None; rid_show = None
         gt = t / st["t"] if st and t else None; gp = p / st["p"] if st and p and st["p"] else None
-        body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" + (f" {min(99, int(100 * el / r['exp']))}%" if el is not None and r.get("exp") else "") if el is not None else f"~{int(r['est'] // 60)}:{int(r['est'] % 60):02d}" if r.get("est") else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
+        body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" + (f" {min(99, int(100 * el / r['exp']))}%" if el is not None and r.get("exp") else "") if el is not None else f"~{int(r['est'] // 60)}:{int(r['est'] % 60):02d}" if r.get("est") else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), loop=loop_flag(rid_show), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
                          st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, ppl=(ppl_pair(r.get("model"), st.get("ob")) if st and st.get("ob") else ""), nost=(not st and not r["stock_row"])))
         bb = best_prev(r.get("model"), r.get("test"), r.get("build"), r.get("asked") or 0) if not r.get("ref") and not r.get("stock_row") and res else None   # this run over the best earlier run of ours
         vt = t / bb[0] if bb and t and bb[0] else None; vp = p / bb[1] if bb and p and bb[1] else None
@@ -5805,7 +5816,7 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         cell = lambda k: "  " + col(c[k][0], f"{c[k][1]:>{W[k]}}")
         gcell = lambda k, v: "  " + (col("1;91" if v < 1 else "37" if v < 2 else "1;97" if v < 10 else "1;93" if v < 40 else "1;92", f"{x[k]:>{W[k]}}") if v is not None else " " * W[k])   # below 1 red, 1-2 plain, 2x bold white, 10x yellow, 40x green
         vcell = lambda k: "  " + (col("1;91" if x[k + "v"] < 0.99 else "1;92" if x[k + "v"] > 1.01 else "37", f"{x[k]:>{W[k]}}") if x.get(k + "v") else col(90, f"{x[k]:>{W[k]}}") if x.get(k) == "first" else " " * W[k])   # against the best earlier run of ours: below 0.99 red (worse), above 1.01 green (better), "first" without one
-        ln = col(37 if x.get("is_old") else {"done": "1;92", "running": "1;97", "queued": "90"}.get(x.get("section"), 1), f"{x['name']:<{W['name']}}") + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "")   # name colour = state (`run status`): green done, white running, grey next
+        ln = col(37 if x.get("is_old") else {"done": "1;92", "running": "1;97", "queued": "90"}.get(x.get("section"), 1), f"{x['name']:<{W['name']}}") + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "") + (col(33, " LOOP") if x.get("loop") else "")   # name colour = state (`run status`): green done, white running, grey next
         tail = cell("st") + cell("sp") + gcell("gt", x["gtv"]) + gcell("gp", x["gpv"]) + vcell("vt") + vcell("vp") + "  " + col(36, f"{x.get('ppl', ''):>{W['ppl']}}") + "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}") + "".join("  " + col(37 if k == "id" else 36, f"{x[k]:>{W[k]}}") for k in ("id", "sid"))
         if not x["st"] and not x.get("is_old"):   # no stock row to compare with: the stock cells stay empty, "vs best" (against our own earlier builds) is still shown
             tail = " " * sum(W[k] + 2 for k in ("st", "sp", "gt", "gp")) + vcell("vt") + vcell("vp")
