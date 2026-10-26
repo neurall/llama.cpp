@@ -5902,7 +5902,7 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
             if results and (rl := result_lines(cell_results(results, t0))): txt += "\n" + rl   # per-run speeds so far, below the bars
             if pl: txt += "\n" + pl   # the run in progress: tokens so far against the earlier runs
             txt = fit_block(txt) if tty else txt
-            live_clear(); print(txt, flush=True); LIVE_UP[0] = txt.count("\n") + 1 if tty else 0
+            live_clear(); print(("\x1e" if os.environ.get("RUN_DAEMON") else "") + txt, flush=True); LIVE_UP[0] = txt.count("\n") + 1 if tty else 0   # \x1e marks the first line of a status frame for the viewer (ViewFilter: it shows only as many frame lines as its screen has rows)
     except KeyboardInterrupt:   # Ctrl-C: the cell, its bench and its server are stopped for real (kill_tree: `timeout` is a process group of its own, the terminal's SIGINT never reaches them), then run_list ends (list line, kept server, pool)
         live_clear(); print(f"{label}: Ctrl-C, stopping the cell ...", flush=True)
         kill_tree(p.pid); kept_kill()
@@ -6251,6 +6251,53 @@ def cmd_status(a):
     return run_list(name, [x for x in argv if x not in ("-n", "--dry", "--status")] + ["--dry", "--status"])
 
 
+class ViewFilter:
+    """The viewer's own redraw (`run run`, attach). The detached run writes its status block with cursor-up codes counted in its own lines. A terminal narrower than a line wraps it,
+    the cursor-up then goes short and the block repeats down the screen; a block taller than the screen scrolls its top out of reach. The detached run cannot know the viewer's
+    terminal, so the viewer does the fitting itself: every line is clipped to the terminal width (queried on every chunk, so a resize counts; ANSI codes do not count, nothing wraps,
+    one logical line is exactly one row) and a block that is taller than the screen is cleared with the whole screen instead of cursor-up (the rows above are out of reach).
+    Old logs replay through the same filter, so a replayed history draws like a live one."""
+    CLEAR = re.compile(r"\033\[(\d+)A\033\[J")
+
+    def __init__(self):
+        import codecs, collections
+        self.dec = codecs.getincrementaldecoder("utf-8")("replace"); self.buf = ""; self.rows = collections.deque(maxlen=600)
+        self.frame = False; self.budget = 0; self.hidden = 0
+
+    @staticmethod
+    def clip(line, w):
+        vis = 0; i = 0
+        while i < len(line):
+            if (m := ANSI_RE.match(line, i)): i = m.end(); continue
+            if vis >= w: return line[:i] + "\033[0m"
+            vis += 1; i += 1
+        return line
+
+    def feed(self, data):
+        cols, rows_h = shutil.get_terminal_size((120, 40)); w = max(20, cols - 1); out = []
+        self.buf += self.dec.decode(data)
+        while True:
+            m = self.CLEAR.search(self.buf); nl = self.buf.find("\n")
+            if m and (nl < 0 or m.start() < nl):
+                out.append(self.buf[:m.start()]); self.buf = self.buf[m.end():]
+                n = int(m.group(1)); took = 0; self.frame = False
+                for _ in range(min(n, len(self.rows))): took += self.rows.pop()
+                out.append("\033[H\033[2J" if took >= rows_h - 1 else (f"\033[{took}A\033[J" if took else "\033[J"))
+            elif nl >= 0:
+                line = self.buf[:nl]; self.buf = self.buf[nl + 1:]
+                if line.startswith("\x1e"): line = line[1:]; self.frame = True; self.budget = max(8, rows_h - 3)
+                if self.frame:   # a status frame: no more rows than the screen has (the rest stays in the log); the last row says how many are hidden
+                    if self.budget <= 0: self.rows.append(0); self.hidden += 1; continue
+                    if self.budget == 1:
+                        self.budget = 0; self.rows.append(1)
+                        out.append(self.clip(f"... the rest of the status is hidden: this terminal has {rows_h} rows (the log has it all)", w) + "\n"); continue
+                    self.budget -= 1
+                out.append(self.clip(line, w) + "\n"); self.rows.append(1)
+            else:
+                break
+        return "".join(out)
+
+
 def run_list_detached(name, argv):
     """`run NAME ...` runs the list in a detached process (own session, output in a log) and shows that log: Ctrl-C only closes the view, the run goes on.
     `run NAME ...` again while one runs attaches instead of starting a second: the log is replayed from its start (the status block's cursor codes redraw
@@ -6294,18 +6341,22 @@ def run_list_detached(name, argv):
         try: os.kill(rec["pid"], signal.SIGINT)
         except OSError: pass
     signal.signal(signal.SIGQUIT, kill_run)   # Ctrl-\ (a terminal's Shift+Ctrl+C is copy, no signal reaches us)
+    vf = ViewFilter() if sys.stdout.isatty() else None   # on a terminal the viewer fits the block to its own width and height; into a pipe or a file the log goes through as it is
+    def show(chunk):
+        if vf: sys.stdout.write(vf.feed(chunk)); sys.stdout.flush()
+        else: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush()
     try:
         again = False
         with open(rec["log"], "rb") as f:
             while True:
                 chunk = f.read(65536)
-                if chunk: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush(); continue
+                if chunk: show(chunk); continue
                 try:
                     if child and child.poll() is not None: raise OSError   # our own child: a finished one is a zombie that kill(0) still finds
                     os.kill(rec["pid"], 0)
                 except OSError:
                     chunk = f.read()   # the last lines written before it ended
-                    if chunk: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush()
+                    if chunk: show(chunk)
                     if name is None and not child:   # plain `run run` is a viewer: the run ended, wait for the next one instead of exiting (user 2026-10-24)
                         print("\nthe run ended.\n", flush=True)
                         again = True
