@@ -138,28 +138,34 @@ The first request is slower because the expert cache and the pass sizes are stil
 
 **Where the two-card dense split starts to pay.** Per prompt, the planner measures one card and two cards and takes the faster; it does not use a fixed size. The medians of all runs since 2026-10-20 (220 + 280 W, answers not looped; each cell has 2 to 50 runs from several builds, so differences under 10% are noise) show where it wins:
 
-| model | prompt | one card (pp t/s) | two cards (pp t/s) | change | official stock (pp t/s) | two cards against stock |
-|---|---|---|---|---|---|---|
-| Qwen3.8 Next IQ3_S | 4k | 1684 | 1350 | -20% | - | - |
-| | 8k | 1663 | 1513 | -9% | - | - |
-| | 11k | 1581 | 1824 | +15% | - | - |
-| | 12k | 1502 | 1648 | +10% | - | - |
-| | 60k | 1595 | 1692 | +6% | - | - |
-| GLM-5.3-Flash 3.0-bit | 4k | 670 | 639 | -5% | - | - |
-| | 12k | 652 | 447 | -31% | - | - |
-| | 16k | 657 | 775 | +18% | - | - |
-| | 30k | 419 | 527 | +26% | - | - |
-| | 60k | 566 | 693 | +22% | - | - |
-| MiMo-V2.6-Flash 3-bit | 4k | 905 | 903 | 0% | - | - |
-| | 8k | 1062 | 999 | -6% | - | - |
-| | 12k | 988 | 1150 (1 run) | +16% | - | - |
-| | 16k | 906 | 1094 | +21% | - | - |
-| | 60k | 846 | 841 | 0% (best runs 1046 and 1037) | - | - |
-| DeepSeek-V4.1-Flash | 3.4k | 214 | 210 | 0% | - | - |
-| | 16k | not measured | 228 median, 265 best | - | 43 (own defaults), 127-131 (`-ub 4096`) | 6.1x (5.3x median), 2.0x against `-ub 4096` |
+| model | prompt | one card (pp t/s) | two cards (pp t/s) | official stock (pp t/s, build) | one card vs stock | two cards vs stock | best of our builds |
+|---|---|---|---|---|---|---|---|
+| Qwen3.8 Next IQ4_XS | 4k | 1684 | 1350 | 209, b11887 | 8.1x | 6.5x | pre7 |
+|  | 8k | 1663 | 1513 | 213 (9k prompt), b11829 | 7.8x | 7.1x | pre9 |
+|  | 11k | 1581 | 1824 | 211 (10k prompt), b11829 | 7.5x | 8.6x | rc5 |
+|  | 12k | 1498 | 1648 | 213, b11829 | 7.0x | 7.7x | spass15 |
+|  | 16k | 1543 | 1115 | 208, b11887 | 7.4x | 5.4x | pre9 |
+|  | 30k | 1553 | 1554 | fail: context too small | - | - | ncard6 |
+|  | 60k | 1600 | 1668 | fail: context too small | - | - | pre10 |
+| Qwen3.8 Next IQ3_S | 12k | 1443 | - | 379, b11829 | 3.8x | - | relfx1 |
+|  | 60k | 1546 | 1864 | fail: context too small | - | - | um6g |
+| GLM-5.3-Flash 3.0-bit | 4k | 703 | 639 | 42 (5k prompt), b11829 | 16.7x | 15.2x | pre9 |
+|  | 12k | 658 | 609 | 43, b11829 | 15.3x | 14.2x | ceil1 |
+|  | 16k | 660 | 775 | - | - | - | pre10 |
+|  | 30k | 557 | 686 | - | - | - | ncard6 |
+|  | 60k | 566 | 694 | - | - | - | pre10 |
+| MiMo-V2.6-Flash 3-bit | 4k | 905 | 903 | 48 (3.4k prompt), b11866 | 18.9x | 18.8x | pre13 |
+|  | 8k | 1062 | 999 | 50, b11866 | 21.2x | 20.0x | relmf1 |
+|  | 12k | 988 | 1150 (1 run) | 49, b11829 | 20.2x | 23.5x | rc5 |
+|  | 16k | 906 | 1094 | 49, b11887 | 18.5x | 22.3x | pre9 |
+|  | 60k | 846 | 841 | - | - | - | pre12 |
+| DeepSeek-V4.1-Flash | 16k | - | 228 | 43, b11887 | - | 5.3x | ds41i5 |
 
-- **The split starts to pay at about 11k-16k prompt tokens**: Qwen3.8 Next from 11k, GLM and MiMo from 16k. Below about 8k one card is as fast or faster (the second card sits in a x4 slot and the hand-offs between cards cost more than the shorter pass saves). The auto setup takes one card there.
+Stock cells: official ggml-org binaries with their own defaults (`-np 1` only, micro-batch and context auto); where the stock prompt size differs from the row it is named. **fail: context too small** = stock sizes its context itself (32768 tokens at 30k, 63488 at 60k on Qwen) and refuses a prompt that does not fit (a 30k prompt is 33.6k tokens, a 60k prompt 68.3k): `request (68337 tokens) exceeds the available context size (63488 tokens)`. It needs `-c` set by hand, which was not done here, so stock cannot serve these prompts as shipped; ours sizes the context per request. Stock is CPU-bound, so its prompt speed is nearly the same at every size (GLM 42-43, MiMo 48-50, Qwen IQ4_XS 208-213). "-" = not measured (stock at 60k would take 20 minutes or more per cell on GLM and MiMo).
+
+- **The split starts to pay at about 11k-16k prompt tokens**: Qwen3.8 Next from 11k, GLM and MiMo from 16k (MiMo possibly 12k, one run). Below about 8k one card is as fast or faster (the second card sits in a x4 slot and the hand-offs between cards cost more than the shorter pass saves). The auto setup takes one card there.
 - **Largest gains: GLM +18% to +26% (16k to 60k), MiMo +21% at 16k, Qwen3.8 Next +15% at 11k.** Qwen3.6 and OLMoE fit in VRAM and show no split gain.
+- **Big contexts at full speed are one of the main benefits of this fork.** Stock sizes the context once at start from the free memory (32768 and 63488 tokens on the Qwen IQ4_XS and IQ3_S cells above); a longer prompt is refused. Ours claims the KV it needs per request from the same buffer as the experts and gives it back at the end of the request, so no `-c` has to be guessed and a big context costs nothing while it is not in use. Measured prompts, prompt speed (pp t/s), on this machine: Qwen3.8 Next IQ4_XS 60k 1600-1668 (stock: refused with its own context), Qwen3.6-35B 200k 3216-3251, MiMo 200k 663 and 400k 363. Details of the KV handling are in [fork/docs/features.md](fork/docs/features.md).
 - The split is chosen by the planner and needs no switch; `--moe dense-split=0` forces one card, `=1` forces the split.
 
 ## What each feature contributes
