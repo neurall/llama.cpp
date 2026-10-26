@@ -5523,21 +5523,21 @@ def passes_save(model, test, build):
 
 def prompt_passes_save(model, test, build):
     """every prompt pass of the cell's server log (engine line `prompt pass k/m: N tokens in X s (Y t/s), experts from cache H%, ...`) into runs.db table prompt_passes: one row per
-    pass with its tokens, seconds, speed, the share of its experts that came from the cache (hit_pct; copied_mib = copied on the card with the upload skipped, streamed_mib = taken from RAM), so the first pass (a cold cache) and the later ones can be compared. Called once at the end of a cell."""
+    pass with its tokens, seconds, speed, the share of its experts that came from the cache (hit_pct = found on the card, copied there with the upload skipped; asked = experts asked for; other_card_pct = the share whose layer cache is on the other card), so the first pass (a cold cache) and the later ones can be compared. Called once at the end of a cell."""
     import sqlite3
     log = f"/tmp/perf-{build}.log"
     if not model or not os.path.exists(log): return
     call = 0; rows = []
     for ln in open(log, errors="replace"):
-        m = re.search(r"prompt pass (\d+)/(\d+): (\d+) tokens in ([\d.]+) s \((\d+) t/s\)(?:, experts from cache (\d+)% \((\d+) MiB copied on the card, (\d+) MiB streamed\))?", ln)
+        m = re.search(r"prompt pass (\d+)/(\d+): (\d+) tokens in ([\d.]+) s \((\d+) t/s\)(?:, experts from cache (\d+)% \((\d+) of (\d+) asked; (\d+)% belong to the other card's cache)?", ln)
         if not m: continue
-        k, n, tok, sec, tps, hit, cp, st = m.groups()
+        k, n, tok, sec, tps, hit, fnd, ask, wr = m.groups()
         if k == "1": call += 1
-        rows.append((call, int(k), int(n), int(tok), float(sec), int(tps), None if hit is None else int(hit), None if cp is None else int(cp), None if st is None else int(st)))
+        rows.append((call, int(k), int(n), int(tok), float(sec), int(tps), None if hit is None else int(hit), None if ask is None else int(ask), None if fnd is None else int(fnd), None if wr is None else int(wr)))
     if not rows: return
     try:
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-        c.execute("create table if not exists prompt_passes (ts text, hw text, model text, test text, build text, call int, k int, n int, tokens int, secs real, tps int, hit_pct int, copied_mib int, streamed_mib int)")
+        c.execute("create table if not exists prompt_passes (ts text, hw text, model text, test text, build text, call int, k int, n int, tokens int, secs real, tps int, hit_pct int, asked int, found int, other_card_pct int)")
         hw = (HWF[0].split("'")[1] if "'" in HWF[0] else "")
         ts = time.strftime("%F %T")
         c.executemany("insert into prompt_passes values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [(ts, hw, os.path.basename(model), ALIASES.get(test, test), str(build)) + r for r in rows])
