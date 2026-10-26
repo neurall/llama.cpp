@@ -2473,48 +2473,46 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     if (!thr.on || cparams.n_threads < 2) {
         return;
     }
-    // First tokens: find the decode thread count top-down from the default, every hardware thread (common_init_result; user 2026-10-26). Too many threads
-    // costs little (the same speed or a few percent: barriers, SMT siblings), too few costs a lot (half the threads: up to half the speed while the CPU computes
-    // the cache misses). The halving ladder used before (6 -> 3, bisected to 4 on PC1) ran a third of the first tokens on 3-4 threads. Now it never jumps down:
-    // 1. measure the default b (5 tokens after a warm-up token), step = a quarter of it
-    // 2. probe c = b - step, then measure b again right after it: the expert cache warms up over the first tokens, so a later slice is faster by itself;
-    //    comparing the probe with the measurement that follows it makes that drift favour the higher count
-    // 3. the probe is not slower: b = c, same step down again; it is slower: halve the step (16 threads: 16 -> 12 -> 8, or 14 / 10); stop below one thread
-    // 4. keep b and stay there: the +-2 tuner below is switched off
-    // Half the threads run only when every step on the way down did not lose. File-local state: one decoding context per process, thr's layout is in a header.
-    static struct { int st = 0, n = 0, tok = 0, b = 0, c = 0, step = 0, drift = 0, wn = 0; double sum = 0, tb = 0, tc = 0, best = 0, wsum = 0; } d;
-    if (d.st != 3) {   // 0 start, 1 measuring b, 2 measuring the probe c, 4 measuring b again after the probe; 3 settled (below)
-        auto set_n = [&](int n) {
-            d.n = n; d.tok = -1; d.sum = 0; cparams.n_threads = (uint32_t) n;
-            char v[32]; snprintf(v, sizeof v, "%d (testing)", n);   // visible in the decisions list while the search runs: every tried count
-            llama_moe_decision_fork("threads_decode", v, d.st == 2 ? "searching: one step down from the best count so far" :
-                                                         d.st == 4 ? "searching: the best count again, right after the probe" : "searching: first tokens, on every hardware thread");
-        };
-        auto next = [&]() {   // the next probe below b, or finish
-            while (d.step >= 1 && d.b - d.step < 1) { d.step /= 2; }
-            if (d.step < 1) {
-                const int pick = d.b;   // no margin on top: a step down was taken only when it was at least as fast as b measured right after it
-                LLAMA_LOG_INFO("%s: thread search: %d -> %d threads (%.2f ms/token; one step down was slower)\n", __func__, thr.base, pick, d.tb/1000.0);
-                llama_moe_decision_fork("threads_decode", std::to_string(pick).c_str(), "from every hardware thread down while a step was not slower (too few costs more than too many)");
-                if (pick != thr.base) { thr.base = pick; threads_save(model, "threads", thr.base0, pick); }
+    // First tokens: find the decode thread count by ALTERNATING between the best count so far (b) and one lower candidate (c) on consecutive tokens (user 2026-10-26).
+    // The search starts on every hardware thread (common_init_result): too many threads costs little (barriers, SMT siblings), too few costs a lot, and on a multi-die
+    // CPU only all of them reach every die's memory path. One token is a noisy sample (expert cache hits differ per token), so c is never judged on a run of its own:
+    //   tokens   b c b c b   (2 pairs; 3 pairs when the step is small, 4*(b-c) <= b, where the gap is near the noise)
+    // and every c token is compared with the mean of the two b tokens around it, so the expert cache warming up (later tokens are faster by themselves) cancels.
+    // c is adopted only if it was faster than its neighbours in EVERY pair (a tie or a mixed result keeps the higher count; a mixed result gets one more pair first,
+    // then c needs more wins than losses). Candidates: b/2 first (16 -> 8 -> 4); a lost candidate becomes the lower bound L and the next one is the midpoint of
+    // b and L (8 vs 4 lost -> 6, then 5): about 4-6 tokens per candidate, the count settles in about 20 tokens. The cost in tokens does not matter (user), the
+    // quality of the decision does. Then the +-2 tuner below stays off (settled, with the drift watch). File-local state: one decoding context per process.
+    static struct { int st = 0, b = 0, c = 0, lo = 0, pairs = 0, k = 0, warm = 0, drift = 0, wn = 0; std::vector<double> sb, sc; double best = 0, wsum = 0; } d;
+    if (d.st != 3) {   // 0 start, 1 sampling the alternation; 3 settled (below)
+        auto plan = [&]() {   // the next candidate below b, or finish
+            const int c = d.lo == 0 ? d.b/2 : (d.b + d.lo)/2;
+            if (c < 1 || c >= d.b || c <= d.lo) {
+                LLAMA_LOG_INFO("%s: thread search: %d -> %d threads (alternating b/c tokens; the next lower candidate was not clearly faster)\n", __func__, thr.base, d.b);
+                llama_moe_decision_fork("threads_decode", std::to_string(d.b).c_str(), "from every hardware thread down, alternating with a lower count token by token; a lower count must win every pair (too few costs more than too many)");
+                if (d.b != thr.base) { thr.base = d.b; threads_save(model, "threads", thr.base0, d.b); }
                 cparams.n_threads = (uint32_t) thr.base;
-                d.best = d.tb;
-                d.st = 3; d.drift = 0; d.wn = 0; d.wsum = 0;   // settled: the count stays until the token time drifts (below)
+                d.st = 3; d.drift = 0; d.wn = 0; d.wsum = 0; d.best = 0;   // settled: the count stays until the token time drifts (below)
                 return;
             }
-            d.c = d.b - d.step; d.st = 2; set_n(d.c);
+            d.c = c; d.pairs = 4*(d.b - c) <= d.b ? 3 : 2; d.k = 0; d.sb.clear(); d.sc.clear();
+            cparams.n_threads = (uint32_t) d.b;   // the sequence starts on b
+            char v[48]; snprintf(v, sizeof v, "%d vs %d (testing)", d.b, c);
+            llama_moe_decision_fork("threads_decode", v, "searching: alternating the best count so far with one lower candidate, token by token");
         };
-        if (d.st == 0) { d.b = thr.base; d.step = std::max(1, d.b/4); d.st = 1; set_n(d.b); }
-        if (d.tok++ < 0) { return; }           // the first token after a change is a warm-up
-        d.sum += (double) dt_us;
-        if (d.tok < 5) { return; }
-        const double m = d.sum/5.0;
-        if (d.st == 1) { d.tb = m; next(); return; }                // b measured: probe one step down
-        if (d.st == 2) { d.tc = m; d.st = 4; set_n(d.b); return; }  // probe measured: b again, right after it
-        d.tb = m;                                                    // st == 4: b measured next to the probe
-        if (d.tc <= d.tb) { d.b = d.c; d.tb = d.tc; }                // the probe did not lose: go down, same step
-        else              { d.step /= 2; }                           // it lost: a smaller step from b
-        next();
+        if (d.st == 0) { d.b = thr.base; d.lo = 0; d.st = 1; d.warm = 2; plan(); if (d.st != 1) { return; } }   // the first tokens warm the expert cache: not sampled
+        if (d.warm > 0) { --d.warm; return; }
+        (d.k % 2 == 0 ? d.sb : d.sc).push_back((double) dt_us);   // token k ran on b (even k) or on c (odd k)
+        if (d.k < 2*d.pairs) { ++d.k; cparams.n_threads = (uint32_t) (d.k % 2 == 0 ? d.b : d.c); return; }
+        // the sequence b c b c (b) is complete: every c against the mean of its two neighbouring b tokens
+        int wins = 0, losses = 0;
+        for (int i = 0; i < d.pairs; ++i) { (d.sc[i] < 0.5*(d.sb[i] + d.sb[i + 1]) ? wins : losses)++; }
+        if (wins > 0 && losses > 0 && d.pairs < 4) { ++d.pairs; ++d.k; cparams.n_threads = (uint32_t) d.c; return; }   // mixed: one more pair, the last b token is its first neighbour
+        double mb = 0, mc = 0;
+        for (double x : d.sb) { mb += x; } for (double x : d.sc) { mc += x; }
+        LLAMA_LOG_INFO("%s: thread search: %d threads %.2f ms/token vs %d threads %.2f ms/token, %d of %d pairs won by the lower count -> %s\n", __func__,
+                d.b, mb/d.sb.size()/1000.0, d.c, mc/d.sc.size()/1000.0, wins, wins + losses, wins > losses ? "lower" : "keep");
+        if (wins > losses) { d.b = d.c; } else { d.lo = d.c; }
+        plan();
         return;
     }
     if (d.st == 3) {   // settled: stay, and watch. Windows of 64 tokens; a mean 10% above the best seen, twice in a row, means the box changed (other load, a new prompt mix): search again from the default
@@ -2526,7 +2524,7 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         if (d.drift >= 2) {
             LLAMA_LOG_INFO("%s: thread search again: %.2f ms/token against %.2f settled\n", __func__, m/1000.0, d.best/1000.0);
             thr.base = thr.base0;
-            d.st = 0; d.b = d.c = d.step = 0; d.best = 0;
+            d.st = 0; d.b = d.c = d.lo = 0; d.best = 0;
         }
         return;
     }
