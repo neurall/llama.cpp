@@ -34,11 +34,16 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 
 | model | test | t/s | pp | gain t | gain pp | ppl | build | output |
 |---|---|---|---|---|---|---|---|---|
+| DeepSeek 4.1 Flash IQ2_XXS (231.7 GiB)\*\* | 4k/64† | 1.5<br>42.3 | 35<br>160 | +2817% 29.2x† | +362% 4.6x | -<br>- | b14010 | -<br>[19574s](fork/outputs/19574s.txt) |
+| MiMo 2.6F 3-bit | 16k/64† | 13.7<br>26.7 | 49<br>1124 | +94%† | +2212% 23.1x | -<br>- | b13954 | [19204](fork/outputs/19204.txt)<br>[19571s](fork/outputs/19571s.txt) |
 | DeepSeek 4.1 Flash IQ2_XXS (231.7 GiB)\*\* | 16k/1k | 1.5<br>33.4 | 43<br>265 | +2131% 22.3x | +512% 6.1x | -<br>- | b11887<br>ds41i5 | -<br>- |
 | MiMo 2.6F 3-bit | 12k/1k | 14.0<br>26.6 | 49<br>1025 | +90% | +1975% 20.8x | 1.8758<br>1.8758 | b13842 | [18373](fork/outputs/18373.txt)<br>[18221s](fork/outputs/18221s.txt) |
+| GLM 5.3 3-bit | 16k/64† | 12.5<br>18.6 | 42<br>821 | +48%† | +1869% 19.7x | -<br>- | b13959 | [19212](fork/outputs/19212.txt)<br>[19572s](fork/outputs/19572s.txt) |
 | GLM 5.3 3-bit | 12k/1k | 12.8<br>19.8 | 43<br>689 | +55% | +1518% 16.2x | 1.7626<br>1.7578 | b13838 | [18209](fork/outputs/18209.txt)<br>[18232s](fork/outputs/18232s.txt) |
 | MiMo 2.6F 3-bit | 3k/1k | 14.1<br>31.6 | 48<br>754 | +124% 2.2x | +1460% 15.6x | 1.8758<br>1.8758 | b13838 | [18199](fork/outputs/18199.txt)<br>[18223s](fork/outputs/18223s.txt) |
 | GLM 5.3 3-bit | 3k/1k | 12.7<br>20.2 | 40<br>617 | +59% | +1443% 15.4x | 1.7626<br>1.7578 | b13838 | [18211](fork/outputs/18211.txt)<br>[18235s](fork/outputs/18235s.txt) |
+| Qwen 3.8 Next IQ4_XS | 4k/64† | 30.2<br>53.3 | 210<br>1705 | +76%† | +714% 8.1x | -<br>- | b13964 | [19270](fork/outputs/19270.txt)<br>[19567s](fork/outputs/19567s.txt) |
+| Qwen 3.8 Next IQ4_XS | 16k/64† | 32.0<br>49.4 | 208<br>1660 | +54%† | +698% 8.0x | -<br>- | b13959 | [19208](fork/outputs/19208.txt)<br>[19568s](fork/outputs/19568s.txt) |
 | GLM 5.3 3.5-bit* | 3k/1k | 10.7<br>16.1 | 33<br>241 | +50% | +640% 7.4x | 1.6326<br>1.6265 | b13842 | [18429](fork/outputs/18429.txt)<br>[18277s](fork/outputs/18277s.txt) |
 | Qwen 3.8 Next IQ4_XS | 12k/1k | 32.6<br>52.7 | 213<br>1489 | +62% | +599% 7.0x | 1.4101<br>1.4101 | b13838 | [18203](fork/outputs/18203.txt)<br>[18227s](fork/outputs/18227s.txt) |
 | GLM 5.3 3.5-bit* | 12k/1k | 10.8<br>11.0 | 34<br>230 | +2% | +572% 6.7x | 1.6326<br>1.6265 | b13563 | [16759](fork/outputs/16759.txt)<br>[17143s](fork/outputs/17143s.txt) |
@@ -51,7 +56,8 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 | GLM 5.3 3.5-bit* | short/1k | 10.7<br>17.1 | -<br>- | +59% | - | 1.6326<br>1.6265 | b13842 | [18431](fork/outputs/18431.txt)<br>[18279s](fork/outputs/18279s.txt) |
 | Qwen 3.8 Next IQ3_S | short/1k | 43.5<br>56.9 | -<br>- | +31% | - | 1.3927<br>1.3927 | b13563 | [16766](fork/outputs/16766.txt)<br>[17102s](fork/outputs/17102s.txt) |
 
-\*\* DeepSeek: stock is the official b11887 (it is the build that loads this model), 17.6k-token prompt, 857 answer tokens against our 1024; the file is three times the RAM, so stock streams the experts from the SSD for every token (1.5 t/s). With stock tuned (`-ub 4096 -b 4096`) the prompt is 127-131 pp t/s, so the prompt gain is 2.0x against that. Our run is the repeat request of a start; the first request is 163-233 pp t/s. Measured on a development build of this release; our answer text was not stored, so there is no output link and no perplexity yet.  
+† Rows with a 64-token answer (/64): stock was asked for 64 tokens, below the 256 tokens a decode speed is taken from, so the decode gain of these rows is for information; the prompt gain stands. The valid decode comparison for DeepSeek is the 16k/1k row (stock answered 857 tokens). Our DeepSeek answer text was not stored, so the 4k row has no output link for ours.  
+\*\* DeepSeek: stock is the official b11887 (it is the build that loads this model), 17.6k-token prompt, 857 answer tokens against our 1024; the file is three times the RAM, so stock streams the experts from the SSD for every token (1.5 t/s). Stock also cannot run big contexts on this hardware: it sizes its own context at start (32768 tokens for Qwen IQ4_XS, 63488 for IQ3_S) and refuses 30k and 60k prompts, while ours serves them (see the dense split table below). With stock tuned (`-ub 4096 -b 4096`) the prompt is 127-131 pp t/s, so the prompt gain is 2.0x against that. Our run is the repeat request of a start; the first request is 163-233 pp t/s. Measured on a development build of this release; our answer text was not stored, so there is no output link and no perplexity yet.  
 \* GLM 3.5-bit (127.7 GiB) is larger than this machine's 128 GB RAM, so part of it runs from the SSD and the system swaps (up to about 4 GiB of swap in use during runs). Ours is faster than stock despite that.  
 
 Every answer behind the table is in [fork/outputs](fork/outputs) as `<id>.txt` (header: build, test, speeds, arguments, power); stock's answers as `<id>s.txt`. With the run database: `python3 fork/run.py out ID` (get it with `git fetch https://github.com/neurall/llama.cpp runs-db && git show FETCH_HEAD:runs.db > fork/runs.db`).
