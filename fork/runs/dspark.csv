@@ -9,3 +9,4 @@ ds-1k-luce,ds,2,1k1k,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.g
 ds-16k-auto,ds,2,16k1k,1024,,
 ds-16k-dsplit1,ds,2,16k1k,1024,--moe dense-split=1,
 ds-16k-dsplit0,ds,2,16k1k,1024,--moe dense-split=0,
+ds-16k-1gpu,ds,2,16k1k,1024,,--env CUDA_VISIBLE_DEVICES=1

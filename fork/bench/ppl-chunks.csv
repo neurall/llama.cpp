@@ -1813,3 +1813,7 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,8,1.6057
 2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,9,1.5826
 2026-10-26 14:59:32,dsfix1,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,pplb,10,1.5662
+2026-10-26 19:36:03,fix_deepseek_no_garbage_without_ctx_flag,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,ppll,1,1.4014
+2026-10-26 19:36:03,fix_deepseek_no_garbage_without_ctx_flag,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,ppll,2,1.3276
+2026-10-26 19:36:03,fix_deepseek_no_garbage_without_ctx_flag,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,ppll,3,1.4108
+2026-10-26 19:36:03,fix_deepseek_no_garbage_without_ctx_flag,DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf,ppll,4,1.4381
