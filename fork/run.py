@@ -3032,7 +3032,8 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
                     row = {"ok": 0, "note": f"also failed with -fitt {v}: " + str(e2)[:250]}
     rec = {**extra, **({"bare": "1"} if bare else {}), **({"plain": "1"} if plain else {}), **({"args": args} if args else {}),
            **{k: str(v) for k, v in OVR.items() if k != "prompt"},
-           **{k: os.environ[k] for k in DIAG_ENV if os.environ.get(k)}}   # a diagnostic that costs time (live pool view, ledger, scratch check) marks the row: speed comparisons group by env
+           **{k: os.environ[k] for k in DIAG_ENV if os.environ.get(k) not in (None, "", "0")},
+           **({"PERF_LOG": os.environ["PERF_LOG"]} if os.environ.get("PERF_LOG", "r") != "r" else {})}   # research logging beyond the run line (cache stats, traces) marks the row too   # a diagnostic that costs time (live pool view, ledger, scratch check) marks the row: speed comparisons group by env
     want = int(OVR["tokens"]) if OVR.get("tokens") else 0
     for k in range(3):   # a repetition loop is not comparable (a short generation that ended with a real answer is kept): stored as a failed run (ok=0, loop=1 for a loop; excluded from every statistic) and repeated, up to 3 times
         if not row.get("ok", 1):
