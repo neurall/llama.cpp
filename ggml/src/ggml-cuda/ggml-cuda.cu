@@ -6143,6 +6143,10 @@ static void ggml_cuda_scratch_check_end_fork(int device, const ggml_cgraph * cgr
     if (s.base == nullptr) {   // no region set: nothing was measured
         return;
     }
+    static std::atomic<bool> active_shown[GGML_CUDA_MAX_DEVICES];   // once per card: silence after this line means every node took exactly what was computed
+    if (!active_shown[device].exchange(true)) {
+        GGML_LOG_WARN("scratch check CUDA%d: active (every node's scratch measured against its mirror; mismatches are logged once each)\n", device);
+    }
     size_t computed = 0;
     for (int k = i0; k < i0 + n; ++k) {
         computed = std::max(computed, ggml_backend_cuda_node_scratch_fork(device, cgraph->nodes[k]));
