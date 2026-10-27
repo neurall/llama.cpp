@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """livelist.py [PORT]: web view of the ACTIVE run.py run list (default port 7000, all interfaces).
-The first tab (default) is the live pool view (/pool): a server started with --moe statsjson=1 writes its pool map and every read and write of pool bytes to
-/dev/shm (pool-snaps-<pid>.jsonl, pool-events-<pid>.jsonl, see llama-moecache-fork.cpp); the page draws both cards' pools and expert blocks, replays them on a
-time line and flashes red where a range runs past its region. The other four tabs, all with the terminal's own colours: the run-list screen (what run.py prints: per-cell lines with t/s, pp, gains over stock, plans),
+The first tab (default) is the live pool view (/pool): while the page is open, every running server answers GET /moe/pool on its own port (its newest pool
+map and every read and write of pool bytes since the last call, from memory; builds from 2026-10-27 on, nothing to set) and this script appends the answers to
+/dev/shm (pool-snaps-<pid>.jsonl, pool-events-<pid>.jsonl, the files a server started with --moe statsjson=1 writes itself, see llama-moecache-fork.cpp); the
+page draws both cards' pools and expert blocks, replays them on a time line and flashes red where a range runs past its region. The other four tabs, all with the terminal's own colours: the run-list screen (what run.py prints: per-cell lines with t/s, pp, gains over stock, plans),
 the output of the current cell (<cell>.run.out) and the server log of the current cell. The status tab is `run.py status`, the table `run LIST -nrt` prints (-nrt format: every cell run today with t/s, pp, stock and gains, then the cells still to run). The screen is rebuilt like a terminal would show it
 (carriage returns and cursor-up redraws of the progress bars are applied), so a finished cell keeps its result lines and the running one shows its live bar.
 Reads $RUN_QDIR/run-list.json (written by run.py run) and the logs next to it; read-only, stdlib only."""
@@ -155,6 +156,7 @@ def auto_state():
     # a server that writes a pool trace and still runs counts as live even when it is silent for a while (one long prompt pass writes no snapshot): the page must not flip
     # back to the activity list in between; an ended server counts for 20 s more, so its last map stays on screen before the page goes back
     live = any(os.path.exists("/proc/" + re.search(r"snaps-(\d+)", f).group(1)) or time.time() - os.path.getmtime(f) < 20 for f in glob.glob(os.path.join(SHM, "pool-snaps-*.jsonl")))
+    live = live or bool(live_servers())   # a running server that answers GET /moe/pool
     if not parts and glob.glob(os.path.join(SHM, "pool-snaps-*.jsonl")): live = True   # nothing running: the last trace stays on screen
     return {"pool": live, "html": "\n".join(parts) or "nothing running"}
 
@@ -222,11 +224,70 @@ def pool_idx(pid, kind):
 
 
 def pool_runs():
-    out = []
+    out = [{"pid": pid, "mtime": time.time(), "alive": True, "port": port} for pid, port, _ in live_servers()]   # running servers first
+    seen = {r["pid"] for r in out}
     for f in os.listdir(SHM):
         m = re.fullmatch(r"pool-snaps-(\d+)\.jsonl", f)
-        if m: out.append({"pid": int(m.group(1)), "mtime": os.path.getmtime(os.path.join(SHM, f)), "alive": os.path.exists(f"/proc/{m.group(1)}")})
+        if m and int(m.group(1)) not in seen: out.append({"pid": int(m.group(1)), "mtime": os.path.getmtime(os.path.join(SHM, f)), "alive": os.path.exists(f"/proc/{m.group(1)}")})
     return sorted(out, key=lambda r: -r["mtime"])
+
+
+# ---- the same view from a running server: GET /moe/pool -----------------------------------------------------------------------------------------------
+_srv, _srv_mu, _ing = {"t": 0.0, "v": []}, threading.Lock(), {}
+
+
+def http_pool(port, since):
+    """GET /moe/pool?since=N of the server on that port: {"pid", "snap": newest map or None, "ev": events numbered above N, "more"}; None when it does not answer
+    (stock builds, builds before 2026-10-27, a server still loading)"""
+    import urllib.request
+    try: return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/moe/pool?since={since}", timeout=3))
+    except Exception: return None
+
+
+def live_servers():
+    """running llama-server processes that answer GET /moe/pool: [(pid, port, writes its own files)], looked up at most every 2 s. A call keeps the server's
+    maps and events coming for 5 s (it builds them only while someone asks), so this runs only while the page is open"""
+    with _srv_mu:
+        if time.time() - _srv["t"] < 2: return _srv["v"]
+        out = []
+        for d in os.listdir("/proc"):
+            if not d.isdigit(): continue
+            try: argv = open(f"/proc/{d}/cmdline", "rb").read().decode("utf-8", "replace").split("\0")
+            except OSError: continue
+            if not argv[0].endswith("llama-server"): continue
+            port = server_port(int(d))
+            if port and http_pool(port, 1 << 62) is not None: out.append((int(d), port, "statsjson=1" in " ".join(argv)))
+        _srv["t"], _srv["v"] = time.time(), out
+        return out
+
+
+def prune_dead():
+    """the trace files of servers that ended, all but the newest (as the server's own sj_prune does)"""
+    dead = sorted((os.path.getmtime(f), m.group(1)) for f in glob.glob(os.path.join(SHM, "pool-snaps-*.jsonl"))
+                  if (m := re.search(r"snaps-(\d+)\.jsonl$", f)) and not os.path.exists("/proc/" + m.group(1)))
+    for _, pid in dead[:-1]:
+        for k in ("snaps", "events"):
+            try: os.remove(os.path.join(SHM, f"pool-{k}-{pid}.jsonl"))
+            except OSError: pass
+
+
+def ingest(pid, port):
+    """GET /moe/pool of a running server appended to the files a --moe statsjson=1 server writes itself, so the live view and the time line work alike for both;
+    at most every 200 ms and only while the page asks"""
+    st = _ing.setdefault(pid, {"t": 0.0, "n": 0, "seq": None, "mu": threading.Lock()})
+    with st["mu"]:
+        if time.time() - st["t"] < 0.2: return
+        st["t"] = time.time()
+        r = http_pool(port, st["n"])
+        if not r: return
+        s, ev = r.get("snap"), r.get("ev") or []
+        if s and s.get("seq") != st["seq"]:
+            if st["seq"] is None: prune_dead()
+            st["seq"] = s.get("seq")
+            with open(os.path.join(SHM, f"pool-snaps-{pid}.jsonl"), "a") as f: f.write(json.dumps(s, separators=(",", ":")) + "\n")
+        if ev:
+            with open(os.path.join(SHM, f"pool-events-{pid}.jsonl"), "a") as f: f.write("".join(json.dumps(e, separators=(",", ":")) + "\n" for e in ev))
+            st["n"] = ev[-1]["n"]
 
 
 def server_port(pid):
@@ -257,6 +318,8 @@ def pool_api(what, q):
     runs = pool_runs()
     pid = int(q["pid"]) if q.get("pid") else (runs[0]["pid"] if runs else 0)
     if not pid: return {}
+    for p, port, own in live_servers():
+        if p == pid and not own: ingest(pid, port)   # a server that writes its own files (--moe statsjson=1) is read from them
     s, e = pool_idx(pid, "snaps"), pool_idx(pid, "events")
     if what == "span":
         t0 = min([x for x in (s.t[:1] + e.t[:1]) if x] or [0])
@@ -411,14 +474,14 @@ cv.onmousemove=e=>{mouse={x:e.clientX,y:e.clientY-PG}};cv.onmouseleave=()=>{mous
 let seekT=0;async function seek(){const t=tv;seekT=t;const[s,e]=await Promise.all([J(`/pool/snap?pid=${pid}&t=${t}`),J(`/pool/events?pid=${pid}&t0=${t-KEEP}&t1=${t+1e6}`)]);if(seekT!==t)return;setSnap(s);if(e)ev=e.ev;lastFetch=t+1e6}
 sl.oninput=()=>{drag=true;live=false;playing=false;pp.textContent='play';tv=span.t0+(span.t1-span.t0)*sl.value/10000;clearTimeout(sl.tm);sl.tm=setTimeout(seek,80)};sl.onchange=()=>{drag=false};
 pp.onclick=()=>{playing=!playing;pp.textContent=playing?'pause':'play';if(playing&&tv>=span.t1-2e5)live=true;if(!playing)live=false};
-let lastFetch=0;
+let lastFetch=0,progBusy=false;
 async function poll(){
  const runs=await J('/pool/runs');if(runs&&runs.length&&(!pid||(live&&runs[0].pid!==pid))){pid=runs[0].pid;lastN=0;ev=[];snap=null;prev=null;blk={};cellCol.clear()}
  if(!pid){setTimeout(poll,1000);return}
- {const g=await J(`/pool/progress?pid=${pid}`);   // the server's /slots: while generating its n_prompt_tokens counts the generated tokens too, so the prompt is the processed count then
+ if(!progBusy){progBusy=true;(async()=>{const g=await J(`/pool/progress?pid=${pid}`);progBusy=false;   // not awaited: /slots waits for a prompt pass to end (2 s timeout here) and the maps must not wait with it; the server's /slots: while generating its n_prompt_tokens counts the generated tokens too, so the prompt is the processed count then
   if(g&&g.busy){const P=Math.max(1,g.gen>0?g.done:g.total),pd=g.gen>0?P:Math.min(g.done,P),all=P+g.gen;$('pgp').style.width=(100*pd/all)+'%';$('pgg').style.width=(100*g.gen/all)+'%';
    $('pgt').textContent=`prompt ${pd}/${P} tokens (${(100*pd/P).toFixed(0)}%)`+(g.gen?`  |  generated ${g.gen}`+(g.limit>0?` of ${g.limit} (${(100*g.gen/g.limit).toFixed(0)}%)`:'')+`  |  bar = prompt + generated, ${all} tokens`:'  |  (the server answers between passes: one big pass jumps from its start to 100%)')}
-  else{$('pgp').style.width='0';$('pgg').style.width='0';$('pgt').textContent=g&&g.total?`server idle (${g.total} tokens of the last request in its cache)`:'no request'}}
+  else{$('pgp').style.width='0';$('pgg').style.width='0';$('pgt').textContent=g&&g.total?`server idle (${g.total} tokens of the last request in its cache)`:'no request'}})()}
  const sp=await J(`/pool/span?pid=${pid}`);if(sp&&sp.t1){span={t0:sp.t0,t1:sp.t1};runEl.textContent=`server pid ${pid}${sp.alive?'':' (ended)'} | ${sp.snaps} maps, ${sp.events} events`}
  if(live){const[s,e]=await Promise.all([J(`/pool/snap?pid=${pid}`),J(`/pool/events?pid=${pid}&since=${lastN}`)]);setSnap(s);
   if(e&&e.ev.length){ev.push(...e.ev);lastN=e.ev[e.ev.length-1].n}if(playing){tv=Math.max(tv,span.t1)}}

@@ -6612,7 +6612,8 @@ def run_list(name, argv):
     for r in rows:   # -a: the same cells with extra arguments on our build
         if o.cell_args:
             stock = r["_b"].startswith("stock")   # stock has no --moe keys: it gets only the plain flags (-a "-ub 4096 -b 4096"), a tuned stock cell, recorded in the args column
-            words = [w for w in argv_of(o.cell_args) if not (stock and re.fullmatch(r"[\w-]+=\S*", w))]
+            # "--moe K=V" as on a server line is K=V: the bare --moe word left in broke the server line (-np 1 --moe -lm mmap ..., 2026-10-27)
+            words = [w for w in argv_of(o.cell_args) if w != "--moe" and not (stock and re.fullmatch(r"[\w-]+=\S*", w))]
             r["args"] = ((r.get("args") or "") + " " + shlex.join("moe:" + w if not stock and re.fullmatch(r"[\w-]+=\S*", w) else w for w in words)).strip()   # a bare key=value is a --moe key (-a "split-experts=0")
     for r in rows:   # -draft N: our cells of a model with a draft file in models.ini
         d = (fcfg.models_ini() or {}).get(model_alias(r["model"]) or "", {}).get("draft") if o.draft and not r["_b"].startswith("stock") and "-md" not in shlex.split(r.get("args") or "") else None   # a row that names its own draft keeps it
