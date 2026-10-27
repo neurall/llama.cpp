@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+ds-o-psw,ds,2,tetrisc,1024,"--moe pswap=1",
+ds-o-rh2,ds,2,tetrisc,1024,"--moe reheat=2",
+ds-o-both,ds,2,tetrisc,1024,"--moe pswap=1,reheat=2",
