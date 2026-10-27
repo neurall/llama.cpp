@@ -2927,8 +2927,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         }
 
         n_reused++;
-        if (llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens)) { reuse = false; }   // fork: the KV zone moved behind this graph: build it again
-        if (const char * why = llama_moe_cache_alias_err_fork()) {   // fork: the graph and the KV do not fit the pool: this pass is refused (the request fails, the server lives)
+        // fork: only the context whose graphs live in the pool (moe_alias_bufs) lends from it. A draft context (DSpark) has its own compute buffers and its KV
+        // in its own arena; its call set the lend to its small graph and the card's CUDA scratch just behind it, both over the target's graph: the blocks under the
+        // target's graph went back to the free list, the after-prompt refill uploaded experts into them, and the draft's scratch writes (its own streams) raced
+        // the target's verify step: illegal memory access at depth 2 and 3 (DeepSeek 4.1 + Lucebox draft, tetris prompt, reasoning off, 2026-10-27)
+        if (!moe_alias_bufs.empty() && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens)) { reuse = false; }   // the KV zone moved behind this graph: build it again
+        if (const char * why = moe_alias_bufs.empty() ? nullptr : llama_moe_cache_alias_err_fork()) {   // fork: the graph and the KV do not fit the pool: this pass is refused (the request fails, the server lives)
             LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
             ret = GGML_STATUS_FAILED;
             return nullptr;
@@ -2965,8 +2969,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             if (ggml_backend_sched_alloc_graph(sched.get(), gf)) {
                 // fork: --moe alias=1 lends the pool blocks this graph's tensors reach to it; when the graph reached into the KV zone (kv-tail), the zone moved behind
                 // it and this graph's views of the KV point at the old place: it is built again (the next graph of this size gets its lend before it is built)
-                const bool moved = llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);
-                if (const char * why = llama_moe_cache_alias_err_fork()) {   // the graph and the KV do not fit the pool: refuse this pass instead of aborting
+                const bool moved = !moe_alias_bufs.empty() && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);   // only the pool's own context (see above)
+                if (const char * why = moe_alias_bufs.empty() ? nullptr : llama_moe_cache_alias_err_fork()) {   // the graph and the KV do not fit the pool: refuse this pass instead of aborting
                     LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
                     ret = GGML_STATUS_FAILED;
                     return nullptr;
