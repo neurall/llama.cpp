@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+ds-rep-luce-d2-tetris-c8192,ds,1,tetrisc,64,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe spec-depth=2,--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt

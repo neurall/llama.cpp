@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+ds-tetris4k-jig-d1,ds,2,tetrisc,4096,-md /m/ds/dspark/DeepSeek-V4.1-Flash-DSpark.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt
+ds-tetris4k-jigq3k-d1,ds,2,tetrisc,4096,-md /m/ds/dspark/dspark-jig-q3_k.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt
+ds-tetris4k-jigq2k-d1,ds,2,tetrisc,4096,-md /m/ds/dspark/dspark-jig-q2_k.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt

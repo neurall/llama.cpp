@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+ds-rep13-control-night,ds,1,tetrisc,64,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe 'spec-depth=2',--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt
+ds-rep13-draft-on-cpu,ds,1,tetrisc,64,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 -devd none --moe 'spec-depth=2',--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt
+ds-rep13-draft-on-cuda1,ds,1,tetrisc,64,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 -devd CUDA1 --moe 'spec-depth=2',--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt
+ds-rep13-draft-on-cuda0,ds,1,tetrisc,64,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 -devd CUDA0 --moe 'spec-depth=2',--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt
+ds-rep13-kvtail-off,ds,1,tetrisc,64,"-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe 'spec-depth=2,kv-tail=0'",--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt
