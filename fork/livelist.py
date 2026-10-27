@@ -307,6 +307,12 @@ const MiB=x=>(x/1048576).toFixed(1),GiB=x=>(x/1073741824).toFixed(2);
 const SZ=(n,c)=>(n/1073741824).toFixed(n<1073741824?3:2)+' GiB = '+(100*n/c.bytes).toFixed(n/c.bytes<.1?2:1)+'%';   // size and share of the card's pool
 async function J(u){try{const r=await fetch(u,{cache:'no-store'});return r.ok?await r.json():null}catch(e){return null}}
 const heat=f=>{f=Math.max(0,Math.min(1,f));return f<.5?[510*f,440*f,0]:[255,220*(2-2*f),0]};
+// expert blocks: each size class its own pastel hue (golden-angle steps, so neighbours differ), heat = saturation: the class's hottest block is the most saturated,
+// its coldest a washed pastel (rank inside the class, so every class shows where its own hottest sit). Lent = near white, KV = green stripes, free = near black.
+const hsl=(h,s,l)=>{const k=n=>(n+h/30)%12,a=s*Math.min(l,1-l),f=n=>l-a*Math.max(-1,Math.min(k(n)-3,9-k(n),1));return[255*f(0),255*f(8),255*f(4)]};
+const HUE=c=>(c*137.508)%360;
+const clsCol=(c,f)=>hsl(HUE(c),.12+.83*f,.83-.31*f);
+const blkCol=x=>x.o===-2?[236,240,244]:x.o===-3?[46,140,70]:x.o===-1?[22,25,30]:x.e<0?[62,66,74]:clsCol(x.c,x.hc||0);
 const RGN={lend:'rgba(120,170,255,.42)',copies:'rgba(170,170,200,.45)',graph:'rgba(120,170,255,.42)',scratch:'rgba(90,210,230,.5)',staging:'rgba(190,140,250,.45)',zone:'rgba(130,215,140,.42)'};
 const CLS=['rgba(250,220,140,.35)','rgba(250,170,120,.35)','rgba(200,160,250,.35)','rgba(140,210,230,.35)','rgba(240,150,190,.35)'];
 const READ=new Set(['read','read-wide','copy-r']),BAD=new Set(['VIOLATION','OVERLAP']);
@@ -314,7 +320,8 @@ function cards(){return snap?[...snap.cards].sort((a,b)=>((b.label||'')[0]=='p')
 function blocksOf(c){const out=[];for(const k of [...c.classes].sort((a,b)=>a.base-b.base)){const v=k.b;for(let i=0;i<k.n;i++)out.push({c:k.c,i,lo:k.base+i*k.B,hi:k.base+(i+1)*k.B,o:v[5*i],il:v[5*i+1],e:v[5*i+2],rc:v[5*i+3],gc:v[5*i+4]})}return out}
 function setSnap(s){if(!s||!s.cards)return;if(snap&&s.seq===snap.seq&&s.pid===snap.pid)return;prev=snap;snap=s;const nb={};maxRc=1;const now=performance.now();
  for(const c of s.cards){const b=blocksOf(c);nb[c.name]=b;for(const x of b)if(x.o>=0&&x.rc>maxRc)maxRc=x.rc;
-  {const u=b.filter(x=>x.o>=0&&x.e>=0&&x.rc>0).map(x=>x.rc).sort((p,q)=>p-q);for(const x of b)x.h=x.o>=0&&x.rc>0&&u.length?(u.indexOf(x.rc)+u.lastIndexOf(x.rc))/2/u.length:0}   // heat = rank among the card's used blocks (recent uses are very skewed: p50 2, max 80, so a linear scale left everything dark)
+  {const by={};for(const x of b)if(x.o>=0&&x.e>=0&&x.rc>0)(by[x.c]=by[x.c]||[]).push(x.rc);for(const k in by)by[k].sort((p,q)=>p-q);   // heat = rank among the used blocks of the same class
+   for(const x of b){const u=by[x.c];x.hc=x.o>=0&&x.rc>0&&u&&u.length?(u.indexOf(x.rc)+u.lastIndexOf(x.rc))/2/Math.max(1,u.length-1):0}}
   const ob=prev&&prev.pid===s.pid?blk[c.name]:null;if(ob&&ob.length===b.length)for(let i=0;i<b.length;i++){const p=ob[i],q=b[i];if(p.o!==q.o||p.e!==q.e||p.il!==q.il)flash.set(c.name+':'+i,{until:now+900,evict:q.o<0||q.e<0})}}
  blk=nb}
 function region(c,off){   // the region a byte is in: a part of the lend (copies, graph, scratch, staging), the KV zone, one expert block (the classes lie back to back)
@@ -346,7 +353,7 @@ function bar(c,y0,HB,W,t){
   const x=ch.length*cw;cx.fillStyle='#2d333b';cx.fillRect(x+1,y0+HB-18,cw-2,16);cx.fillStyle='#8b98a5';cx.save();cx.beginPath();cx.rect(x+1,y0+HB-18,cw-4,16);cx.clip();cx.fillText('draft, dense, compute outside pool: not tracked',x+4,y0+HB-6);cx.restore()}
  for(const r of [...c.regions].sort((p,q)=>(p.k!=='blocks')-(q.k!=='blocks'))){const x1=X(r.lo),x2=Math.max(x1+(r.k==='blocks'?1:5),X(r.hi));cx.fillStyle=r.k==='blocks'?CLS[(r.c||0)%CLS.length]:(RGN[r.k]||'rgba(200,200,200,.3)');cx.fillRect(x1,l0,x2-x1,l1-l0);
   if(x2-x1>150){cx.fillStyle='#e6edf3';cx.fillText((r.k==='blocks'?'moe c'+r.c:r.k==='zone'?'kv':r.k)+' '+SZ(r.hi-r.lo,c),x1+3,l0+12)}}
- for(const x of b){const x1=X(x.lo),w=Math.max(1,X(x.hi)-x1);cx.fillStyle=x.o===-2?'rgba(120,170,255,.95)':x.o===-3?'rgba(130,215,140,.95)':x.o===-1?'#2a2f37':x.e<0?'#3b4a6b':'rgb('+heat(x.h).map(Math.round).join(',')+')';cx.fillRect(x1,s0,w,s1-s0)}
+ for(const x of b){const x1=X(x.lo),w=Math.max(1,X(x.hi)-x1);cx.fillStyle='rgb('+blkCol(x).map(Math.round).join(',')+')';cx.fillRect(x1,s0,w,s1-s0)}
  const ob=(snap.bufs||[]).filter(o=>o.card===c.name);let bx=0;const bw=ob.length?W/ob.length:W;
  for(const o of ob){cx.fillStyle='#2d333b';cx.fillRect(bx,s1+1,bw-2,12);cx.fillStyle='rgba(220,180,255,.6)';cx.fillRect(bx,s1+1,(bw-2)*Math.min(1,o.hi_seen/o.bytes),12);cx.fillStyle='#e6edf3';cx.fillText(o.name+' '+SZ(o.hi_seen,c)+' of '+SZ(o.bytes,c),bx+3,s1+11);bx+=bw}
  const blink=(performance.now()/150|0)%2;
@@ -357,23 +364,29 @@ function bar(c,y0,HB,W,t){
  cx.setLineDash([]);return{y0,HB,X,c,l0,s1}}
 function map(c,x0,y0,W,H,t){
  const b=blk[c.name]||[],N=b.length;cx.fillStyle='#101317';cx.fillRect(x0,y0,W,H);if(!N)return null;
- let s=Math.max(2,Math.floor(Math.sqrt(W*H/N)));while(s>2&&Math.ceil(N/Math.max(1,Math.floor(H/s)))*s>W)s--;const rows=Math.max(1,Math.floor(H/s)),now=performance.now();
+ // the grid fills the whole width and height under its title line: columns of `rows` cells, each cw x ch (as square as the area allows, not whole pixels)
+ const TT=16,gy=y0+TT,GH=Math.max(1,H-TT);let rows=Math.max(1,Math.round(Math.sqrt(N*GH/W)));const cols=Math.ceil(N/rows);rows=Math.ceil(N/cols);
+ const cw=W/cols,ch=GH/rows,s=Math.min(cw,ch),now=performance.now();
+ const P=i=>{const k=Math.floor(i/rows),r=i%rows,xa=x0+Math.floor(k*cw),ya=gy+Math.floor(r*ch);return[xa,ya,Math.max(1,x0+Math.floor((k+1)*cw)-xa-1),Math.max(1,gy+Math.floor((r+1)*ch)-ya-1)]};
  const lab=s>=16,fs=Math.max(6,Math.floor(s*.36));cx.font=fs+'px ui-monospace,monospace';cx.textAlign='center';
- for(let i=0;i<N;i++){const x=b[i],cxp=x0+Math.floor(i/rows)*s,cyp=y0+(i%rows)*s,key=c.name+':'+i;
-  const tg=x.o===-2?[70,110,190]:x.o===-3?[80,160,90]:x.o===-1?[22,25,30]:x.e<0?[40,55,90]:heat(x.h);
+ for(let i=0;i<N;i++){const x=b[i],[cxp,cyp,w,h]=P(i),key=c.name+':'+i;
+  const tg=blkCol(x);
   let cc=cellCol.get(key);if(!cc){cc=tg.slice();cellCol.set(key,cc)}for(let k=0;k<3;k++)cc[k]+=(tg[k]-cc[k])*.18;
-  cx.fillStyle=`rgb(${cc[0]|0},${cc[1]|0},${cc[2]|0})`;cx.fillRect(cxp,cyp,s-1,s-1);
-  const f=flash.get(key);if(f){if(f.until<now)flash.delete(key);else{cx.strokeStyle=f.evict?'#fff':'#9cf';cx.lineWidth=2;cx.strokeRect(cxp+1,cyp+1,s-3,s-3)}}
-  if(lab&&x.o>=0&&x.e>=0){cx.fillStyle=(cc[0]+cc[1]>300)?'#000':'#cfd6de';cx.fillText(x.il,cxp+s/2,cyp+s/2-1);cx.fillText(x.e,cxp+s/2,cyp+s/2+fs)}}
+  cx.fillStyle=`rgb(${cc[0]|0},${cc[1]|0},${cc[2]|0})`;cx.fillRect(cxp,cyp,w,h);if(x.o===-3&&s>=4){cx.save();cx.beginPath();cx.rect(cxp,cyp,w,h);cx.clip();cx.strokeStyle='#0d2614';cx.lineWidth=1;cx.beginPath();for(let d=-h;d<w;d+=4){cx.moveTo(cxp+d,cyp);cx.lineTo(cxp+d+h,cyp+h)}cx.stroke();cx.restore()}
+  const f=flash.get(key);if(f){if(f.until<now)flash.delete(key);else{cx.strokeStyle=f.evict?'#fff':'#9cf';cx.lineWidth=2;cx.strokeRect(cxp+1,cyp+1,w-2,h-2)}}
+  if(lab&&x.o>=0&&x.e>=0){cx.fillStyle=(cc[0]+cc[1]>300)?'#000':'#cfd6de';cx.fillText(x.il,cxp+w/2,cyp+h/2-1);cx.fillText(x.e,cxp+w/2,cyp+h/2+fs)}}
  cx.textAlign='left';const blink=(now/150|0)%2;
  for(const e of ev){if(e.card!==c.name||e.buf||e.kind==='read-wide')continue;const age=t-e.t;if(age<0)continue;const bad=BAD.has(e.kind),pr=past(c,e);
   if(!bad&&!pr&&age>FADE)continue;if((bad||pr)&&age>VIOL)continue;
   let lo=0,hi=N;while(lo<hi){const m=(lo+hi)>>1;if(b[m].hi<=e.lo)lo=m+1;else hi=m}
-  for(let i=lo;i<N&&b[i].lo<e.hi&&i<lo+64;i++){const cxp=x0+Math.floor(i/rows)*s,cyp=y0+(i%rows)*s;
-   if(bad||pr){if(blink){cx.fillStyle='rgba(255,30,30,.8)';cx.fillRect(cxp,cyp,s-1,s-1)}continue}
-   const a=1-age/FADE;cx.lineWidth=s>8?2:1;if(READ.has(e.kind)){cx.setLineDash([]);cx.strokeStyle=`rgba(90,170,255,${a})`}else{cx.setLineDash([3,2]);cx.strokeStyle=`rgba(255,70,70,${a})`}cx.strokeRect(cxp+.5,cyp+.5,s-2,s-2)}}
- cx.setLineDash([]);cx.fillStyle='#e6edf3';cx.font='bold 12px ui-monospace,monospace';cx.fillText((c.label||c.name)+' experts ('+N+' blocks, pool order: start top left, tail at the right edge)',x0+4,y0+13);
- return{x0,y0,s,rows,N,c}}
+  for(let i=lo;i<N&&b[i].lo<e.hi&&i<lo+64;i++){const [cxp,cyp,w,h]=P(i);
+   if(bad||pr){if(blink){cx.fillStyle='rgba(255,30,30,.8)';cx.fillRect(cxp,cyp,w,h)}continue}
+   const a=1-age/FADE;cx.lineWidth=s>8?2:1;if(READ.has(e.kind)){cx.setLineDash([]);cx.strokeStyle=`rgba(90,170,255,${a})`}else{cx.setLineDash([3,2]);cx.strokeStyle=`rgba(255,70,70,${a})`}cx.strokeRect(cxp+.5,cyp+.5,w-1,h-1)}}
+ cx.setLineDash([]);cx.fillStyle='#e6edf3';cx.font='bold 12px ui-monospace,monospace';{const tt=(c.label||c.name)+': '+N+' blocks, start top left, tail right';cx.fillText(tt,x0+4,y0+13);let lx=x0+12+cx.measureText(tt).width;cx.font='11px ui-monospace,monospace';
+  for(const k of [...c.classes].sort((p,q)=>p.base-q.base)){for(let q=0;q<5;q++){cx.fillStyle='rgb('+clsCol(k.c,q/4).map(Math.round).join(',')+')';cx.fillRect(lx+q*7,y0+3,7,11)}cx.fillStyle='#e6edf3';cx.fillText('c'+k.c,lx+38,y0+13);lx+=38+cx.measureText('c'+k.c).width+10}
+  cx.fillStyle='rgb(236,240,244)';cx.fillRect(lx,y0+3,11,11);cx.fillStyle='#e6edf3';cx.fillText('lent',lx+14,y0+13);lx+=14+cx.measureText('lent').width+10;cx.fillStyle='rgb(46,140,70)';cx.fillRect(lx,y0+3,11,11);cx.fillStyle='#e6edf3';cx.fillText('KV',lx+14,y0+13);
+  lx+=36;cx.fillStyle='#8b98a5';cx.fillText('pale = cold, full colour = hottest of its class',lx,y0+13)}
+ return{x0,y0:gy,cw,ch,rows,N,c}}
 let hit={bars:[],maps:[]};
 function draw(){requestAnimationFrame(draw);const now=performance.now();
  if(playing){tv+= (now-tvAt)*1000;if(live)tv=Math.min(tv,span.t1+5e5);else if(tv>=span.t1){live=true}}tvAt=now;
@@ -391,8 +404,8 @@ function hover(){const{x,y}=mouse;let s=null;const t=tv;
   if(bl)s+=`\nblock owner ${bl.o===-2?'LENT to the graph':bl.o===-3?'KV zone':bl.o===-1?'free':'layer '+bl.il+(bl.e>=0?' expert '+bl.e+'  recent uses '+bl.rc+', lifetime '+bl.gc:' (empty: upload in flight)')}`;
   s+=`\nlend ${MiB(c.lend)} MiB (mirror ${MiB(c.mirror)}, scratch last ${MiB(c.scr_last)}, high ${MiB(c.scr_hwm)}, ${c.tok_bytes} B/token, staging ${c.stage} x ${MiB(c.slot_b)} MiB)\nKV zone [${MiB(c.kv_start)}, ${MiB(c.kv_end)}) MiB: ${c.cells} cells used of ${c.kv_h}, row ${c.kv_row} B, fixed ${MiB(c.kv_fixed)} MiB`;
   const near=ev.filter(e=>e.card===c.name&&!e.buf&&e.lo<=off&&e.hi>off&&t-e.t<VIOL&&t>=e.t).slice(-8);for(const e of near)s+=`\n${((t-e.t)/1e3).toFixed(0)} ms ago ${e.kind} [${MiB(e.lo)}, ${MiB(e.hi)}) ${e.who}`}}
- for(const m of hit.maps){if(m&&y>=m.y0&&x>=m.x0){const i=Math.floor((x-m.x0)/m.s)*m.rows+Math.floor((y-m.y0)/m.s);const b=(blk[m.c.name]||[])[i];
-  if(b&&Math.floor((y-m.y0)/m.s)<m.rows)s=`${m.c.label} block ${b.i} of class ${b.c} at ${MiB(b.lo)} MiB\n${b.o===-2?'LENT to the graph':b.o===-3?'under the KV zone':b.o===-1?'free':'layer '+b.il+' expert '+(b.e>=0?b.e:'(empty: upload in flight)')}\nrecent uses (hot counter) ${b.rc}\nlifetime uses ${b.gc}`}}
+ for(const m of hit.maps){if(m&&y>=m.y0&&x>=m.x0){const i=Math.floor((x-m.x0)/m.cw)*m.rows+Math.floor((y-m.y0)/m.ch);const b=(blk[m.c.name]||[])[i];
+  if(b&&Math.floor((y-m.y0)/m.ch)<m.rows)s=`${m.c.label} block ${b.i} of class ${b.c} at ${MiB(b.lo)} MiB\n${b.o===-2?'LENT to the graph':b.o===-3?'under the KV zone':b.o===-1?'free':'layer '+b.il+' expert '+(b.e>=0?b.e:'(empty: upload in flight)')}\nrecent uses (hot counter) ${b.rc}\nlifetime uses ${b.gc}`}}
  if(s){tip.textContent=s;tip.style.display='block';tip.style.left=Math.min(x+14,innerWidth-660)+'px';tip.style.top=Math.min(y+14,innerHeight-200)+'px'}else tip.style.display='none'}
 cv.onmousemove=e=>{mouse={x:e.clientX,y:e.clientY-PG}};cv.onmouseleave=()=>{mouse=null;tip.style.display='none'};
 let seekT=0;async function seek(){const t=tv;seekT=t;const[s,e]=await Promise.all([J(`/pool/snap?pid=${pid}&t=${t}`),J(`/pool/events?pid=${pid}&t0=${t-KEEP}&t1=${t+1e6}`)]);if(seekT!==t)return;setSnap(s);if(e)ev=e.ev;lastFetch=t+1e6}
