@@ -2822,6 +2822,41 @@ static void ggml_backend_sched_nan_check(ggml_backend_sched_t sched, int split_i
     }
 }
 
+// The NaN checks cover graphs of at least this many splits (the big graphs of a model whose layers run on several cards and the CPU); GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+// takes every graph, the small ones of a draft model too
+static int ggml_sched_nan_min_splits() {
+    static const int n = getenv("GGML_SCHED_NAN_CHECK_MIN_SPLITS") ? atoi(getenv("GGML_SCHED_NAN_CHECK_MIN_SPLITS")) : 30;
+    return n;
+}
+
+// GGML_SCHED_NAN_CHECK=2: the node launched last (scheduler, graph, split, card, node, operation, name, shape), printed when a CUDA error aborts the process.
+// Every node runs on its own and its card is drained after it, so an illegal memory access is reported at the drain right after the node that made it
+// (DSpark draft on DeepSeek 4.1, 2026-10-27: the error came 10-30 ms after the draft's graph with no node to name). The callback hands on to the one before.
+static char                  g_trace_last[512] = "none yet";
+static ggml_abort_callback_t g_trace_prev_abort = NULL;
+static void ggml_sched_trace_abort(const char * msg) {
+    fprintf(stderr, "nan-node: the last node launched before the abort: %s\n", g_trace_last);
+    if (g_trace_prev_abort) {
+        g_trace_prev_abort(msg);
+    } else {
+        fprintf(stderr, "%s\n", msg);
+    }
+}
+static void ggml_sched_trace_install() {
+    static bool done = false;
+    if (!done) {
+        done = true;
+        g_trace_prev_abort = ggml_set_abort_callback(ggml_sched_trace_abort);
+    }
+}
+static void ggml_sched_trace_note(ggml_backend_sched_t sched, int split_id, int j, long graph_no) {
+    const struct ggml_backend_sched_split * split = &sched->splits[split_id];
+    const struct ggml_tensor * t = split->graph.nodes[j];
+    snprintf(g_trace_last, sizeof(g_trace_last), "scheduler %p graph %ld, split %d of %d on %s, node %d of %d: %s '%s' [%lld,%lld,%lld,%lld] %s",
+            (void *) sched, graph_no, split_id, sched->n_splits, ggml_backend_name(sched->backends[split->backend_id]), j, split->graph.n_nodes, ggml_op_name(t->op), t->name,
+            (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3], ggml_type_name(t->type));
+}
+
 // GGML_SCHED_NAN_CHECK=2 (debug, very slow): every node of a big graph is run on its own and its output is read back before any later node can reuse memory.
 // The first float output that holds a NaN is reported (an infinity is a legitimate value: masked scores) with the state of each of its inputs at that moment: bad values in a float input, the
 // smallest and largest value of an integer input (an expert id outside the tensor reads memory that is not an expert). One report per process.
@@ -3622,11 +3657,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             static const int nan_mode = getenv("GGML_SCHED_NAN_CHECK") ? atoi(getenv("GGML_SCHED_NAN_CHECK")) : 0;
             static long nan_graph2 = 0;
             enum ggml_status ec = GGML_STATUS_SUCCESS;
-            if (nan_mode == 2 && sched->n_splits >= 30) {
+            if (nan_mode == 2 && sched->n_splits >= ggml_sched_nan_min_splits()) {
                 if (split_id == 0) { nan_graph2++; }
+                ggml_sched_trace_install();
                 for (int nj = 0; nj < split->graph.n_nodes && ec == GGML_STATUS_SUCCESS; nj++) {
+                    ggml_sched_trace_note(sched, split_id, nj, nan_graph2);
                     struct ggml_cgraph gv = ggml_graph_view(&split->graph, nj, nj + 1);
                     ec = ggml_backend_graph_compute_async(split_backend, &gv);
+                    ggml_backend_synchronize(split_backend);   // a fault of this node is reported here, while it is the node noted (the NaN check below stops draining after its first report)
                     ggml_backend_sched_nan_check_node(sched, split_id, nj, nan_graph2);
                 }
             } else {
@@ -3687,7 +3725,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             {
                 static const bool nan_check = getenv("GGML_SCHED_NAN_CHECK") && atoi(getenv("GGML_SCHED_NAN_CHECK")) == 1;
                 static long nan_graph = 0;
-                if (nan_check && sched->n_splits >= 30) {
+                if (nan_check && sched->n_splits >= ggml_sched_nan_min_splits()) {
                     if (split_id == 0) { nan_graph++; }
                     ggml_backend_sched_nan_check(sched, split_id, nan_graph);
                 }
