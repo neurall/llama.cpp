@@ -269,10 +269,8 @@ struct moe_cache {
         int32_t               blocked = 0;
         int32_t               want    = 0;
         int                   cuda_dev = -1;    // CUDA device index (the backend's scratch region lives in the lent blocks), -1: other backend
-        size_t                tok_bytes = 0;    // CUDA scratch of the largest expert matmul per batch token (see llama_moe_cache_alias_fork)
         size_t                hwm       = 0;    // the largest scratch a graph asked for so far (reported with log=a)
-        size_t                small     = 0;    // the most scratch a small graph (< 64 tokens) asked for
-        int32_t               last_n    = 0;    // the previous graph: its tokens and the scratch it was lent (the rate is corrected from it)
+        int32_t               last_n    = 0;    // the previous graph: its tokens and the scratch it was lent (checked against what it asked for)
         size_t                last_scr  = 0;
         size_t                refused_room = 0;   // what the pool could lend beside the KV when refused_b was refused
         size_t                refused_b = 0;    // the least graph lend (bytes) refused as not fitting the pool or reaching the KV zone: a same or bigger lend is refused again until the zone moves (the blocks are already lent, so the lend check alone would pass it)
@@ -281,6 +279,7 @@ struct moe_cache {
         int                   n_cfg     = 0;    // staging slots a graph may use at most (the scheduler's ring size, --moe pf-slots)
         size_t                graph_tok = 0;    // graph bytes per batch token of the biggest prompt graphs seen (the prompt pass planner)
         uint32_t              graph_tok_n = 0;  // tokens of the graph graph_tok was taken from: only a graph at least as big replaces it
+        size_t                scr_tok   = 0;    // the computed CUDA scratch per batch token of that same graph (the prompt pass planner)
         // Lending from every size class (--moe alias-all, default on): the classes lie back to back in the buffer (the first one at 0, nothing between them),
         // so the lent range [0, bytes) runs past the first class into the next ones, and each class gives the blocks the range covers. One class only (the
         // old rule) capped the micro-batch at what the biggest class holds (MiMo-V2.6-Flash: 4 GB of a 15 GB pool, Qwen3.8-Flash-Next: 4.8 GB of 19 GB).
@@ -3229,49 +3228,57 @@ std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork() {
     return out;
 }
 
-// CUDA scratch per batch token of the biggest expert matmul (see llama_moe_cache_alias_fork): experts per token x padded input width x 2 bytes.
-// Only the start value where the CUDA backend cannot say what its expert matmuls ask for (alias_scratch)
-static size_t alias_tok_bytes(moe_cache * mc, moe_cache::alias_pool & ap) {
-    if (ap.tok_bytes == 0) {
-        for (const auto & l : mc->layers) {
-            const int64_t n_used = std::max<int64_t>(1, mc->n_expert_used);
-            for (const ggml_tensor * t : { l.pub.up_src, l.pub.gate_src, l.pub.down_src }) {
-                ap.tok_bytes = std::max(ap.tok_bytes, (size_t) n_used * (size_t) GGML_PAD(t->ne[0], 512) * 2);
-            }
-        }
-    }
-    return ap.tok_bytes;
-}
+GGML_API size_t ggml_backend_sched_node_max_dev(ggml_backend_sched_t sched, ggml_backend_dev_t dev, size_t (*fn)(void * user, struct ggml_tensor * const * nodes, int n),
+        size_t (*copy_fn)(ggml_backend_t src_backend, ggml_backend_t dst_backend, const struct ggml_tensor * src, const struct ggml_tensor * dst), void * user);   // ggml-backend.cpp
 
-// The CUDA scratch a graph of n_tokens tokens is lent on this card, before it runs: what its expert matmuls ask for, computed by the CUDA backend for
-// the path it takes with each of the model's expert tensors (ggml_backend_cuda_mmid_scratch_fork: MMQ quantizes the activations, the sorting path of
-// types without MMQ gathers activations and outputs as f32 and converts each expert's weights), the largest of them. At least the rate the graphs
-// measured so far asked for (ap.tok_bytes: the attention and other temporaries). Before, the start value alone (used experts x input width x 2 bytes)
-// lent DeepSeek 4.1's IQ1_M experts a third of their 178 KB per token: the first big pass of a start took the rest from the VRAM beside the pool and ran
-// out of memory (edit cell, 2026-10-27). A card that is no CUDA device gets none; without the backend function the old start value.
-static size_t alias_scratch(moe_cache * mc, moe_cache::alias_pool & ap, size_t n_tokens) {
+// The CUDA scratch a graph is lent on this card, before it runs: the most any node that runs on THIS card takes, each computed by the backend from the node itself
+// (ggml_backend_cuda_nodes_scratch_fork: the matmuls, flash attention, top-k and argsort mirror their own pool allocations; tests/test-scratch-fork.cpp runs each op
+// and checks that what it took equals what was computed). The scheduler keeps the value per split until it splits again (ggml_backend_sched_node_max_dev), so a
+// reused graph (a decode step) asks nothing. A card that computes a share of the tokens (the dense split) is lent the scratch of its share: the
+// whole batch lent cuda0x4 648 MiB where its share asked for 119 MiB (DeepSeek 4.1, 3389 tokens, 2026-10-27). Nothing is learned or guessed on top: a rate
+// learned from a graph that was lent too little (a 2-token decode graph whose flash attention took 2.02 MiB) once lent a 3389-token pass 3416 MiB on each card
+// where its nodes took at most 678 (DeepSeek 4.1, 2026-10-27). The scheduler holds the graph's splits: the graph about to run (llama_moe_cache_alias_fork), the
+// reserved one (llama_moe_cache_alias_fit_fork) or a measure-only reserve (llama_moe_cache_graph_scratch_fork). A card that is no CUDA device gets none.
+// --moe log=a: what computing the scratch costs the lend (host time, calls, splits whose nodes were asked: a reused graph asks none)
+static std::atomic<int64_t> g_scr_us{0}, g_scr_n{0}, g_scr_splits{0};
+static size_t node_scratch(void * user, struct ggml_tensor * const * nodes, int n) {
+    using nodes_fn_t = size_t (*)(int, const ggml_tensor * const *, int);
+    static nodes_fn_t fn = [] {
+        ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+        return reg ? (nodes_fn_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nodes_scratch_fork") : nullptr;
+    }();
+    g_scr_splits++;
+    return fn ? fn(*(const int *) user, nodes, n) : 0;
+}
+static size_t alias_scratch(const moe_cache::alias_pool & ap, ggml_backend_sched_t sched) {
     const char * nm = ggml_backend_dev_name(ap.dev);
     if (ap.cuda_dev < 0 && (!nm || strncmp(nm, "CUDA", 4) != 0)) {
         return 0;
     }
-    static size_t (*mmid_fn)(int, int, int64_t, int64_t, int64_t, int64_t, int64_t) = [] {
+    using copy_fn_t = size_t (*)(ggml_backend_t, ggml_backend_t, const ggml_tensor *, const ggml_tensor *);
+    static copy_fn_t copy_fn = [] {   // the inputs other cards copy from this one: a gappy view is gathered here first (ggml_backend_cuda_copy_scratch_fork)
         ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-        return reg ? (size_t (*)(int, int, int64_t, int64_t, int64_t, int64_t, int64_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_mmid_scratch_fork") : nullptr;
+        return reg ? (copy_fn_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_copy_scratch_fork") : nullptr;
     }();
-    size_t need = 0;
-    if (mmid_fn) {
-        const int     dev    = ap.cuda_dev >= 0 ? ap.cuda_dev : atoi(nm + 4);
-        const int64_t n_used = std::max<int64_t>(1, mc->n_expert_used);
-        for (const auto & l : mc->layers) {
-            for (const ggml_tensor * t : { l.pub.up_src, l.pub.gate_src, l.pub.down_src }) {
-                if (t) { need = std::max(need, mmid_fn(dev, (int) t->type, t->ne[0], t->ne[1], t->ne[2], n_used, (int64_t) n_tokens)); }
-            }
-        }
-        need = std::max(need, n_tokens * ap.tok_bytes);   // tok_bytes: only what graphs measured (no start value with the backend function)
-    } else {
-        need = n_tokens * alias_tok_bytes(mc, ap);
+    const int64_t t0 = ggml_time_us();
+    int dev = ap.cuda_dev >= 0 ? ap.cuda_dev : atoi(nm + 4);
+    const size_t need = ggml_backend_sched_node_max_dev(sched, ap.dev, node_scratch, copy_fn, &dev);
+    g_scr_us += ggml_time_us() - t0;
+    g_scr_n++;
+    return need;
+}
+
+// the CUDA scratch of the graph the scheduler split last, on dev's pool (0: dev has no pool). llama_context::sched_reserve adds it to each measure-only reserve's
+// graph bytes: what a pass of that size borrows from the pool is its tensors and that scratch.
+size_t llama_moe_cache_graph_scratch_fork(ggml_backend_sched_t sched, ggml_backend_dev_t dev) {
+    moe_cache * mc = g_cache;
+    if (!mc || !alias_on()) {
+        return 0;
     }
-    return GGML_PAD(need, (size_t) 2 << 20);
+    for (const auto & ap : mc->alias) {
+        if (ap.dev == dev) { return alias_scratch(ap, sched); }
+    }
+    return 0;
 }
 
 // After a worst-case reserve: do the graph, its scratch and the prefetch staging slots fit in what the pool lends? (graph: needed, stage: optional)
@@ -3288,7 +3295,7 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
             if (ggml_backend_get_device(be) == ap.dev) { peak = ggml_backend_sched_graph_peak(sched, be); }
         }
         const size_t cap     = kv_lend_potential(ap, (size_t) n_tokens);
-        const size_t scratch = alias_scratch(mc, ap, (size_t) n_tokens);
+        const size_t scratch = alias_scratch(ap, sched);
         const size_t base    = GGML_PAD(ap.base_off + GGML_PAD(peak, 256) + scratch, 256);   // behind the dense split's copies when the reserved graph splits
         {   // what the shrink-to-fit decided on, once per reserve size (a graph of this many tokens against what the pool can lend)
             static int said_tok = -1;
@@ -3323,7 +3330,11 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
             static const bool seed = [] { const char * e = moe_opt("pp-seed"); return !e || atoi(e) != 0; }();
             if (seed && n_tokens >= 64) {
                 if (ap.slot_b == 0 && slot_b > 0) { ap.slot_b = slot_b; }
-                if (ap.graph_tok == 0 && peak > 0) { ap.graph_tok = (peak + (size_t) n_tokens - 1) / (size_t) n_tokens; ap.graph_tok_n = (uint32_t) n_tokens; }
+                if (ap.graph_tok == 0 && peak > 0) {
+                    ap.graph_tok   = (peak    + (size_t) n_tokens - 1) / (size_t) n_tokens;
+                    ap.scr_tok     = (scratch + (size_t) n_tokens - 1) / (size_t) n_tokens;
+                    ap.graph_tok_n = (uint32_t) n_tokens;
+                }
             }
             const size_t stage = slot_b * (size_t) std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
             if (stage > 0 && base + stage > cap) {
@@ -3338,9 +3349,9 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
 }
 
 // What the pool of `dev` can lend the graph of a prompt pass of n_tokens tokens: up to the KV zone of those cells, behind the dense split's copies (the worst
-// case: a pass that splits), less the CUDA scratch of its expert matmuls and one block of the lend's rounding to whole blocks (kv_lend_round). The staging
-// slots are not counted: they take what the graph leaves (ppx_stage_slots), the micro-batch is never cut for them. 0: no pool on dev.
-// llama_context::sched_reserve sizes the micro-batch with it against the measured graph of each size.
+// case: a pass that splits), less one block of the lend's rounding to whole blocks (kv_lend_round). The staging slots are not counted: they take what the
+// graph leaves (ppx_stage_slots), the micro-batch is never cut for them. 0: no pool on dev. llama_context::sched_reserve sizes the micro-batch with it against
+// the measured graph of each size plus its computed CUDA scratch (llama_moe_cache_graph_scratch_fork).
 size_t llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens) {
     moe_cache * mc = g_cache;
     if (!mc || !alias_on()) {
@@ -3350,11 +3361,10 @@ size_t llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens
         if (ap.dev != dev) {
             continue;
         }
-        const size_t cap     = kv_lend_potential(ap, (size_t) n_tokens);
-        const size_t scratch = alias_scratch(mc, ap, (size_t) n_tokens);
+        const size_t cap  = kv_lend_potential(ap, (size_t) n_tokens);
         size_t bmax = 0;
         for (const auto & sg : ap.segs) { bmax = std::max(bmax, sg.B); }
-        const size_t used = ap.mirror_b + scratch + bmax;
+        const size_t used = ap.mirror_b + bmax;
         return cap > used ? cap - used : 0;
     }
     return 0;
@@ -3364,8 +3374,8 @@ size_t llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens
 // need_tok like a graph that ran, so the first prompt plans its passes from measured sizes: with the 1160-token warm-up call as the only point the planner took
 // that graph's bytes per token (its fixed part spread over 1160 tokens) as the slope and cut a 16384-token prompt to 3 passes of 5472, although the load had measured
 // the 16384-token graph (9962 MiB on a pool that lends 17139) and the next prompt, with two points, ran it as ONE pass (DS4.1 IQ2_XXS, 2026-10-26). The reserve's
-// bytes are the graph without the CUDA scratch of its expert matmuls (llama_moe_cache_alias_room_fork subtracts that from the room), so the scratch is added here;
-// a real graph of the same size later replaces the point when it is bigger (alias, same rule as a graph that ran).
+// bytes are the graph's tensors plus the CUDA scratch its nodes take on this card (the caller adds llama_moe_cache_graph_scratch_fork); a real graph of the same
+// size later replaces the point when it is bigger (alias, same rule as a graph that ran).
 void llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, size_t graph_bytes) {
     moe_cache * mc = g_cache;
     if (!mc || !alias_on() || n_tokens < 64 || graph_bytes == 0) {
@@ -3375,9 +3385,8 @@ void llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, 
         if (ap.dev != dev) {
             continue;
         }
-        const size_t scratch = alias_scratch(mc, ap, (size_t) n_tokens);
         size_t & nt = ap.need_tok[(int32_t) n_tokens];
-        nt = std::max(nt, graph_bytes + scratch);
+        nt = std::max(nt, graph_bytes);
         return;
     }
 }
@@ -3439,8 +3448,9 @@ static void moe_where_count(int64_t range, int64_t found, int64_t inflight, int6
 }
 static void alias_cost_log(const char * why) {
     if (!moe_log_has("a")) { return; }   // not a static: the first call comes before the --moe options are set, a cached false hid the counters for the whole run
-    LLAMA_LOG_WARN("moe-cache: alias cost (%s): lend %lld calls %.1f ms | keep-hot %lld calls %.1f ms | sync %lld calls %.1f ms | in-flight drain %.1f ms | release %lld calls %.1f ms | %lld blocks evicted\n",
-            why, (long long) g_ac.lend_n.load(), g_ac.lend_us.load() / 1e3, (long long) g_ac.keephot_n.load(), g_ac.keephot_us.load() / 1e3,
+    LLAMA_LOG_WARN("moe-cache: alias cost (%s): lend %lld calls %.1f ms (scratch %lld calls %.1f ms, %lld splits asked) | keep-hot %lld calls %.1f ms | sync %lld calls %.1f ms | in-flight drain %.1f ms | release %lld calls %.1f ms | %lld blocks evicted\n",
+            why, (long long) g_ac.lend_n.load(), g_ac.lend_us.load() / 1e3, (long long) g_scr_n.load(), g_scr_us.load() / 1e3, (long long) g_scr_splits.load(),
+            (long long) g_ac.keephot_n.load(), g_ac.keephot_us.load() / 1e3,
             (long long) g_ac.sync_n.load(), g_ac.sync_us.load() / 1e3, g_ac.drain_us.load() / 1e3, (long long) g_ac.release_n.load(), g_ac.release_us.load() / 1e3,
             (long long) g_ac.evict_n.load());
     LLAMA_LOG_WARN("moe-cache: staging lookups: %lld range calls, %lld experts asked, %lld found on the card, %lld found but still in flight, %lld asked of the wrong card\n",
@@ -4905,12 +4915,9 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             ggml_backend_t be = ggml_backend_sched_get_backend(sched, i);
             if (ggml_backend_get_device(be) == ap.dev) { peak = ggml_backend_sched_graph_peak(sched, be); }
         }
-        // the backend's scratch goes into the lent blocks right after the graph's tensors. Its size per batch token is measured: every graph
-        // reports what it asked for (fitting or not), and big graphs (>= 64 tokens) raise the rate when they asked for more than they were lent.
-        // The start value is what the expert matmuls of a prompt batch ask for: experts per token x input width x 2 bytes (the activations as
-        // f16, one row per token and used expert; GLM-5.3-Flash: 8 x 4096 x 2 = 65536 B per token, measured 256 MiB at 4096 tokens, 768 MiB at
-        // 12284). It is not a pure function of the batch: one 4092-token graph deep in the context asked for 75 KB per token. A graph that
-        // asks for more than it was lent takes the rest from the device pool (the VRAM margin), once; small graphs get the most a small one asked.
+        // the backend's scratch goes into the lent blocks right after the graph's tensors. Its size is computed per card from the graph's own nodes
+        // (alias_scratch); every graph then reports what it really asked for (fitting or not), and one that asked for more than it was lent is logged as an
+        // error with both numbers: an op whose scratch mirror is missing or wrong (GGML_CUDA_SCRATCH_CHECK=1 names it). Nothing is learned from it.
         static size_t (*scratch_fn)(int, void *, size_t) = [] {
             ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
             return reg ? (size_t (*)(int, void *, size_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_scratch_fork") : nullptr;
@@ -4923,17 +4930,16 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         if (ap.cuda_dev >= 0) {
             const size_t asked = scratch_fn(ap.cuda_dev, nullptr, 0);   // what the previous graph asked for, fitting or not
             ap.hwm = std::max(ap.hwm, asked);
-            if (ap.last_n > 0 && ap.last_n < 64) {
-                ap.small = std::max(ap.small, asked);
+            if (asked > ap.last_scr && ap.last_n > 0) {
+                // the previous graph asked for more than it was lent: the rest came from the device pool (the VRAM beside the pool)
+                static std::atomic<int> said { 0 };
+                if (said++ < 16) {
+                    LLAMA_LOG_ERROR("moe-cache: alias %s: SCRATCH SHORT: a %d-token graph asked for %zu bytes, %zu were computed and lent (%zu short, taken from the device pool): "
+                            "an op's scratch mirror is missing or wrong, GGML_CUDA_SCRATCH_CHECK=1 names it\n",
+                            ggml_backend_dev_name(ap.dev), ap.last_n, asked, ap.last_scr, asked - ap.last_scr);
+                }
             }
-            if (asked > ap.last_scr && ap.last_n >= 64) {
-                // a big graph took more than it was lent: the rest came from the device pool (the VRAM margin). From now on every graph gets it
-                const size_t per_tok = (asked + ap.last_n - 1) / ap.last_n;
-                LLAMA_LOG_WARN("moe-cache: alias %s: a %d-token graph asked for %.1f MiB of scratch, %.1f MiB were lent: %zu -> %zu bytes per token from now on\n",
-                        ggml_backend_dev_name(ap.dev), ap.last_n, asked / 1048576.0, ap.last_scr / 1048576.0, ap.tok_bytes, std::max(ap.tok_bytes, per_tok));
-                ap.tok_bytes = std::max(ap.tok_bytes, per_tok);
-            }
-            scratch = n_tokens >= 64 ? alias_scratch(mc, ap, (size_t) n_tokens) : GGML_PAD(ap.small + (1u << 20), (size_t) 2 << 20);
+            scratch = alias_scratch(ap, sched);   // computed per card from its own nodes, exactly (no slack on top)
             ap.last_n   = n_tokens;
             ap.last_scr = scratch;
         }
@@ -4959,7 +4965,11 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             // token than a 512-token one (its fixed part is spread over 8x fewer tokens), and the max-batch calibration of a first start runs 64..512-token graphs
             // before the first prompt, so the max made every pass look 2.6x heavier: a 512-token pass "did not fit" the 1.0 GiB pool and the first prompts ran in
             // passes of 320 (Qwen3.6-35B 12k, 934 prompt t/s against 1490 with a state file, which skips that calibration).
-            if (n_tokens >= 64 && (uint32_t) n_tokens >= ap.graph_tok_n) { ap.graph_tok = (peak + n_tokens - 1) / n_tokens; ap.graph_tok_n = (uint32_t) n_tokens; }
+            if (n_tokens >= 64 && (uint32_t) n_tokens >= ap.graph_tok_n) {
+                ap.graph_tok   = (peak    + n_tokens - 1) / n_tokens;
+                ap.scr_tok     = (scratch + n_tokens - 1) / n_tokens;
+                ap.graph_tok_n = (uint32_t) n_tokens;
+            }
         }
         const size_t need_b = stage_off + stage;   // the bytes this graph borrows from the start of the buffer: its tensors, the CUDA scratch, the staging slots
         if (!ap.need_tok.empty() || !ap.kvt.empty()) {   // remembered per graph size: the next graph of this size gets its lend before it is built (prepare)
@@ -8298,14 +8308,14 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     size_t pad = 1;
     for (const auto & r : ap.kvt) { if (!r.fixed) { pad = std::max<size_t>(pad, r.pad); } }
     // No prompt-sized graph of this run lent yet (a start that took the max-batch probe from the state file runs no calibration graphs before its first
-    // prompt): the planner's bytes per pass token, which the startup reserve seeds (graph_tok + tok_bytes), still keeps that first pass and the zone for
+    // prompt): the planner's bytes per pass token, which the startup reserve seeds (graph_tok + scr_tok), still keeps that first pass and the zone for
     // the prompt's KV inside the pool. Without it the first prompt of a warm start was planned with no room for its KV (Qwen3.6-35B, 3 GiB free per card:
     // a 4579-token pass left no gap for the zone, the server retried with halved batches: 1860 prompt t/s against 3706 on the cold start, 2026-10-22).
     // The graph bytes per token leave out the staging slots (a fixed part), added when known. No headroom on top (user 2026-10-22: no cap may cost a pass
     // where fewer were possible; GLM 12k ran 5 passes instead of 3 with 1.35x): a pass the estimate lets past the KV zone's room fails its call and the
     // server retries it smaller, which only small cards (3 GiB free per card) met.
     auto seeded = [&]() -> uint32_t {   // the graph alone: the staging slots take what the pool holds behind it (ppx_stage_slots), they never cut a pass
-        return ap.graph_tok > 0 ? kvz_pass_cap(ap, n_prompt, ub, 0.0, (double) (ap.graph_tok + ap.tok_bytes), pad, ap.mirror_b) : ub;
+        return ap.graph_tok > 0 ? kvz_pass_cap(ap, n_prompt, ub, 0.0, (double) (ap.graph_tok + ap.scr_tok), pad, ap.mirror_b) : ub;
     };
     if (ap.need_tok.empty()) { return seeded(); }
     // every measured size at the cells this call ends at (need_at_cells): the fit below then includes the masks' growth with the context
@@ -8382,7 +8392,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
             const uint32_t passes = (n + ub_old - 1) / ub_old;
             ub_old = std::min<uint32_t>(ub_old, ((n + passes - 1) / passes + 31) / 32 * 32);
         }
-        if (moe_log_has("w")) { LLAMA_LOG_WARN("moe-cache: pass plan input: n %u ub_max %u -> %u, ub_old %u -> %u, span %zu, graph_tok %zu, tok_bytes %zu, slot_b %zu, mirror_b %zu, need_tok %zu\n", n, ub_max0, ub_max, ub_old0, ub_old, (size_t) ap->span, (size_t) ap->graph_tok, (size_t) ap->tok_bytes, (size_t) ap->slot_b, (size_t) ap->mirror_b, ap->need_tok.size()); }
+        if (moe_log_has("w")) { LLAMA_LOG_WARN("moe-cache: pass plan input: n %u ub_max %u -> %u, ub_old %u -> %u, span %zu, graph_tok %zu, scr_tok %zu, slot_b %zu, mirror_b %zu, need_tok %zu\n", n, ub_max0, ub_max, ub_old0, ub_old, (size_t) ap->span, (size_t) ap->graph_tok, (size_t) ap->scr_tok, (size_t) ap->slot_b, (size_t) ap->mirror_b, ap->need_tok.size()); }
     }
     if (!on || mc->alias.empty() || mc->n_links <= 0 || !mc->link_dev[0]) {
         return pp_record(mc, n, ub_old);
@@ -8408,7 +8418,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
         pp_c_us_stored();
         c_us = pp_c_at();   // for the log line only: nothing below decides on it
     }
-    const double per_t = (double) (ap->graph_tok + ap->tok_bytes);
+    const double per_t = (double) (ap->graph_tok + ap->scr_tok);
     // The fewest passes whose graph fits the pool, never more (user rules 2026-10-23: no more passes than b13838; 2026-10-24: the micro-batch first, the staging
     // slots take what the graph leaves, ppx_stage_slots). Every pass streams the experts again, so a further pass costs a whole upload. A pass of u tokens lends
     // mirror_b (the dense split's copies, counted for every pass: the plan is made before the split choice) + per_t x u. There is no time model any more: it chose

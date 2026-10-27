@@ -82,3 +82,29 @@ void ggml_cuda_op_mean(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_kernel_launch(reduce_rows_f32_strided</*norm=*/true>, launch_params, src0_d_bytes, dst_d, ncols,
             src0->ne[1], src0->ne[2], src0->nb[1], src0->nb[2], src0->nb[3]);
 }
+
+// fork: the scratch the expert-cache pool lends a graph is computed per node before the graph runs (ggml_backend_cuda_nodes_scratch_fork, ggml-cuda.cu). This
+// mirrors ggml_cuda_op_mean: one long row reduces with CUB (its temporary storage from the pool, CUB's own size query with the same types). Whether a row of
+// 32769..65536 columns does depends on the CUDA graph state when it runs, not known before: from 32769 columns on. tests/test-scratch-fork.cpp checks it.
+size_t ggml_cuda_mean_scratch_fork(const ggml_tensor * dst, size_t top) {
+#ifdef GGML_CUDA_USE_CUB
+    const ggml_tensor * src0 = dst->src[0];
+    const int64_t ncols = src0->ne[0];
+    const int64_t nrows = ggml_nrows(src0);
+#ifdef USE_CUDA_GRAPH
+    const int64_t min_cols = 32768;
+#else
+    const int64_t min_cols = 65536;
+#endif // USE_CUDA_GRAPH
+    if (nrows == 1 && ncols > min_cols) {
+        size_t tmp_size = 0;
+        CUDA_CHECK(DeviceReduce::Sum(nullptr, tmp_size, (const float *) nullptr, (float *) nullptr, ncols, (cudaStream_t) nullptr));
+        if (tmp_size > 0) {
+            top = GGML_PAD(top, 256) + tmp_size;
+        }
+    }
+#else
+    GGML_UNUSED(dst);
+#endif // GGML_CUDA_USE_CUB
+    return top;
+}

@@ -888,3 +888,42 @@ void ggml_cuda_op_ssm_scan_fused_cache(ggml_backend_cuda_context & ctx, ggml_ten
                                        ggml_cuda_ssm_scan_fused_cache cache) {
     ggml_cuda_op_ssm_scan_impl(ctx, dst, &cache);
 }
+
+// fork: the scratch the expert-cache pool lends a graph is computed per node before the graph runs (ggml_backend_cuda_nodes_scratch_fork, ggml-cuda.cu). This
+// mirrors ggml_cuda_op_ssm_scan_impl: the SSD path (Mamba-2, long sequences, NVIDIA Turing+) takes its seven work buffers, in that order, all held until
+// the scan ends; the scan path takes none. tests/test-scratch-fork.cpp checks it.
+size_t ggml_cuda_ssm_scan_scratch_fork(const ggml_tensor * dst, size_t top) {
+#if !defined(GGML_USE_HIP)
+    const ggml_tensor * src0 = dst->src[0];  // s
+    const ggml_tensor * src1 = dst->src[1];  // x
+    const ggml_tensor * src3 = dst->src[3];  // A
+    const ggml_tensor * src4 = dst->src[4];  // B
+    const int64_t nc  = src0->ne[0];  // d_state
+    const int64_t nr  = src0->ne[1];  // head_dim
+    const int64_t nh  = src1->ne[1];  // n_head
+    const int64_t ng  = src4->ne[1];  // n_group
+    const int64_t n_t = src1->ne[2];  // tokens per sequence
+    const int64_t n_s = src1->ne[3];  // sequences
+    const int32_t K_param = ggml_get_op_params_i32(dst, 0);
+    const int64_t K = K_param > 0 ? K_param : 1;
+    const bool is_mamba2 = (src3->nb[1] == sizeof(float));
+    const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+    const bool use_ssd = is_mamba2 && n_t > SSM_SSD_MIN_TOKENS && K == 1 && n_t <= SSM_SSD_MAX_TOKENS && GGML_CUDA_CC_IS_NVIDIA(cc) &&
+                         cc >= GGML_CUDA_CC_TURING && nr % 8 == 0;
+    if (!use_ssd) {
+        return top;
+    }
+    const int64_t chunk = SSM_SSD_CHUNK_SIZE;
+    auto take = [&top](size_t n) { if (n > 0) { top = GGML_PAD(top, 256) + n; } };
+    take(n_t * nh * n_s * sizeof(float));             // dt_sp_buf
+    take(n_t * nh * n_s * sizeof(float));             // cs_buf
+    take(chunk * chunk * ng * n_s * sizeof(float));   // CB_buf
+    take(chunk * nr * nh * n_s * sizeof(half));       // X_dt_buf (matmul_t = half)
+    take(nc * chunk * nh * n_s * sizeof(half));       // B_w_buf
+    take(nc * chunk * nh * n_s * sizeof(float));      // C_s_buf
+    take(chunk * chunk * nh * n_s * sizeof(half));    // M_buf
+#else
+    GGML_UNUSED(dst);
+#endif
+    return top;
+}

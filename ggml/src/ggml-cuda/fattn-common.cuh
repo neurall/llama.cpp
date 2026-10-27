@@ -977,6 +977,12 @@ static __global__ void flash_attn_combine_results(
     dst[tid] = VKQ_numerator / VKQ_denominator;
 }
 
+// fork: the expert-cache pool lends a graph its CUDA scratch before the graph runs, computed per node (ggml_cuda_fattn_scratch_fork, ggml-cuda.cu). While this is
+// set, launch_fattn converts, takes and launches nothing: it adds the pool allocations it would make, in the same order, each from a multiple of 256 (as
+// ggml_cuda_pool_scratch places them), to *ggml_cuda_fattn_plan_fork and returns. The kernel choice and the occupancy query run as in a real call, so the bytes are
+// the call's own; tests/test-scratch-fork.cpp runs the op and checks them.
+extern thread_local size_t * ggml_cuda_fattn_plan_fork;
+
 template <int DV, int ncols1, int ncols2>
 void launch_fattn(
     ggml_backend_cuda_context & ctx, ggml_tensor * dst, fattn_kernel_t fattn_kernel, const int nwarps, const size_t nbytes_shared,
@@ -984,6 +990,8 @@ void launch_fattn(
     const int warp_size = WARP_SIZE, const bool async_kv_preload = false
 ) {
     constexpr int ncols = ncols1 * ncols2;
+    size_t * const plan = ggml_cuda_fattn_plan_fork;   // fork: see above
+    auto plan_take = [plan](size_t n) { if (n > 0) { *plan = GGML_PAD(*plan, 256) + n; } };
 
     const ggml_tensor * Q = dst->src[0];
     const ggml_tensor * K = dst->src[1];
@@ -1006,7 +1014,7 @@ void launch_fattn(
     GGML_ASSERT(!mask || mask->type == GGML_TYPE_F16);
 
     ggml_cuda_pool & pool = ctx.pool();
-    cudaStream_t main_stream = ctx.stream();
+    cudaStream_t main_stream = plan ? nullptr : ctx.stream();
     const int id  = ggml_cuda_get_device();
     const int cc  = ggml_cuda_info().devices[id].cc;
     const int nsm = ggml_cuda_info().devices[id].nsm;
@@ -1028,7 +1036,7 @@ void launch_fattn(
     size_t nb22 = V->nb[2];
     size_t nb23 = V->nb[3];
 
-    if (need_f16_K && K->type != GGML_TYPE_F16) {
+    if (!plan && need_f16_K && K->type != GGML_TYPE_F16) {
         const size_t bs = ggml_blck_size(K->type);
         const size_t ts = ggml_type_size(K->type);
 
@@ -1056,7 +1064,7 @@ void launch_fattn(
         K_data = (char *) K_f16;
     }
 
-    if (need_f16_V && V->type != GGML_TYPE_F16) {
+    if (!plan && need_f16_V && V->type != GGML_TYPE_F16) {
         if (V_is_K_view) {
             V_data = K_data;
             nb21   = nb11;
@@ -1107,15 +1115,21 @@ void launch_fattn(
 
         const size_t n_lists = size_t(ntiles_x) * mask->ne[3];
 
-        KV_max.alloc(size_t(n_kv_max)*n_lists + n_lists);
-        ggml_cuda_flash_attn_ext_compact_mask(mask, KV_max.ptr, KV_max.ptr + size_t(n_kv_max)*n_lists, Q->ne[1], ncols1, n_kv_max, main_stream);
+        if (plan) {
+            plan_take((size_t(n_kv_max)*n_lists + n_lists) * sizeof(int));
+        } else {
+            KV_max.alloc(size_t(n_kv_max)*n_lists + n_lists);
+            ggml_cuda_flash_attn_ext_compact_mask(mask, KV_max.ptr, KV_max.ptr + size_t(n_kv_max)*n_lists, Q->ne[1], ncols1, n_kv_max, main_stream);
+        }
     }
 
     // Optional optimization where the mask is scanned to determine whether part of the calculation can be skipped.
     // Only worth the overhead if there is at lease one FATTN_KQ_STRIDE x FATTN_KQ_STRIDE square to be skipped or
     //     multiple sequences of possibly different lengths.
     const bool scan_mask = !use_sparse && mask && K->ne[1] % FATTN_KQ_STRIDE == 0 && (Q->ne[1] >= 1024 || Q->ne[3] > 1);
-    if (scan_mask) {
+    if (scan_mask && plan) {
+        plan_take(size_t(ntiles_x) * Q->ne[3] * sizeof(int));   // KV_max below
+    } else if (scan_mask) {
         const int64_t s31 = mask->nb[1] / sizeof(half2);
         const int64_t s33 = mask->nb[3] / sizeof(half2);
 
@@ -1186,7 +1200,11 @@ void launch_fattn(
         }
 
         if (ntiles_dst % blocks_num.x != 0) { // Fixup is only needed if the SMs work on fractional tiles.
-            dst_tmp_meta.alloc((size_t(blocks_num.x) * ncols * (2 + DV/2)));
+            if (plan) {
+                plan_take((size_t(blocks_num.x) * ncols * (2 + DV/2)) * sizeof(float2));
+            } else {
+                dst_tmp_meta.alloc((size_t(blocks_num.x) * ncols * (2 + DV/2)));
+            }
         }
     } else {
         // parallel_blocks must not be larger than what the tensor size allows:
@@ -1219,9 +1237,17 @@ void launch_fattn(
         blocks_num.z = ntiles_z_gqa*K->ne[2]*Q->ne[3];
 
         if (parallel_blocks > 1) {
-            dst_tmp.alloc(parallel_blocks*ggml_nelements(KQV));
-            dst_tmp_meta.alloc(parallel_blocks*ggml_nrows(KQV));
+            if (plan) {
+                plan_take(parallel_blocks*ggml_nelements(KQV) * sizeof(float));
+                plan_take(parallel_blocks*ggml_nrows(KQV) * sizeof(float2));
+            } else {
+                dst_tmp.alloc(parallel_blocks*ggml_nelements(KQV));
+                dst_tmp_meta.alloc(parallel_blocks*ggml_nrows(KQV));
+            }
         }
+    }
+    if (plan) {
+        return;
     }
 
     float scale         = 1.0f;

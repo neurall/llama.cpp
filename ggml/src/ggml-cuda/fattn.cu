@@ -5,6 +5,8 @@
 #include "fattn-vec.cuh"
 #include "fattn.cuh"
 
+thread_local size_t * ggml_cuda_fattn_plan_fork = nullptr;   // fork: launch_fattn plans instead of running (fattn-common.cuh)
+
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 // one list per group of ncols1 queries: a column is selected if any query of the group can see it
 template <int ncols1, bool oob>

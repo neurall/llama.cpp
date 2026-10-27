@@ -59,6 +59,7 @@ void     llama_dsplit_note_limit_fork(uint32_t cap);   // src/llama-dsplit-fork.
 void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the context's card limit (what %limit is of)
 size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
 void     llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, size_t graph_bytes);   // src/llama-moecache-fork.cpp: a load-time measure-only reserve is a measured graph size for the pass planner
+size_t   llama_moe_cache_graph_scratch_fork(ggml_backend_sched_t sched, ggml_backend_dev_t dev);   // src/llama-moecache-fork.cpp: the computed CUDA scratch of the graph the scheduler split last, on dev's pool
 uint32_t llama_dsplit_pass_size_fork(uint32_t cap);   // the full pass of the split: the fastest card takes the limit
 uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub);
 void     llama_dsplit_bench_fork(const llama_model & model);   // llama-dsplit-fork.cpp: matmul + attention latency per GPU, before this context takes VRAM
@@ -1522,10 +1523,10 @@ void llama_context::sched_reserve() {
 
     // fork: with the pool lending the graphs, the micro-batch is the largest prompt pass whose graph every card's pool holds, computed (user 2026-10-24:
     // "simply calculate max ubatch properly"; before, a reserve that did not fit was cut by a fixed 0.78 and 0.97: GLM 3.0 8192 -> 6176 where 8192 and 16384
-    // had run). Each size is checked with a measure-only reserve (nothing allocated) of the real graph against llama_moe_cache_alias_room_fork: the pool up to
-    // the KV zone of those cells, behind the dense split's copies, less the CUDA scratch. The first probe below the configured size is the line through two
-    // measured sizes (graph bytes = a + b x tokens per card) against each card's room; then bisection in 32-token steps between the largest size that fit and
-    // the smallest that did not. 0: not even 512 tokens fit.
+    // had run). Each size is checked with a measure-only reserve (nothing allocated) of the real graph, plus the CUDA scratch its nodes take on each card
+    // (computed from them), against llama_moe_cache_alias_room_fork: the pool up to the KV zone of those cells, behind the dense split's copies. The first
+    // probe below the configured size is the line through two measured sizes (graph bytes = a + b x tokens per card) against each card's room; then
+    // bisection in 32-token steps between the largest size that fit and the smallest that did not. 0: not even 512 tokens fit.
     // once per process: what the prompt graph of each card is made of (its largest tensors), so a size that does not fit names its cause (GLM 3.0: 1.84 MiB per
     // token at the start, 0.5 in the real passes, 2026-10-24)
     std::vector<size_t> lt(backend_ptrs.size(), 0);
@@ -1569,6 +1570,9 @@ void llama_context::sched_reserve() {
             ggml_cgraph * mg = graph_reserve(u, n_seqs, n_seqs, mctx.get(), true, s.data());
             probes++;
             list_top(mg, u);
+            if (mg) {
+                for (const auto & [i, d] : gi) { s[i] += llama_moe_cache_graph_scratch_fork(sched.get(), d); }   // the reserve's splits are still in the scheduler
+            }
             for (const auto & [i, d] : gi) { llama_moe_cache_note_graph_fork(d, u, s[i]); }
             for (const auto & [i, d] : gi) { if (s[i] > llama_moe_cache_alias_room_fork(d, u)) { return false; } }
             return true;
@@ -1576,7 +1580,7 @@ void llama_context::sched_reserve() {
         std::string line;
         auto say = [&](uint32_t u, const char * how) {
             for (const auto & [i, d] : gi) {
-                line += format(" | %s: graph %.0f MiB, room %.0f MiB", ggml_backend_dev_name(d), s[i] / 1048576.0, llama_moe_cache_alias_room_fork(d, u) / 1048576.0);
+                line += format(" | %s: graph + scratch %.0f MiB, room %.0f MiB", ggml_backend_dev_name(d), s[i] / 1048576.0, llama_moe_cache_alias_room_fork(d, u) / 1048576.0);
             }
             LLAMA_LOG_WARN("%s: micro-batch from the pools: %u tokens (%s, %d measure-only reserves)%s\n", __func__, u, how, probes, line.c_str());
         };

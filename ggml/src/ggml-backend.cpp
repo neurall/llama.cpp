@@ -1278,6 +1278,14 @@ struct ggml_backend_sched_split {
     int inputs_capacity;
     // graph view of this split
     struct ggml_cgraph graph;
+    // fork: ggml_backend_sched_node_max_dev's values for this split, valid while the split keeps the uid they were computed for: the most scratch its nodes
+    // take on its own card, and per source backend the most the copy of one of its inputs takes there
+    uint64_t node_max_uid;
+    void   * node_max_fn;
+    size_t   node_max_val;
+    uint64_t copy_max_uid;
+    void   * copy_max_fn;
+    size_t   copy_max_val[GGML_SCHED_MAX_BACKENDS];
 };
 
 #ifndef GGML_SCHED_MAX_PREFETCH_SLOTS
@@ -2194,6 +2202,8 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
     // set ids for all splits
     for (int i = 0; i < sched->n_splits; ++i) {
         sched->splits[i].graph.uid = ggml_graph_next_uid();
+        sched->splits[i].node_max_uid = 0;   // fork: new nodes and inputs, ggml_backend_sched_node_max_dev computes again
+        sched->splits[i].copy_max_uid = 0;
     }
 }
 
@@ -3996,6 +4006,61 @@ size_t ggml_backend_sched_prefetch_slot_bytes_dev(ggml_backend_sched_t sched, gg
         }
     }
     return best ? GGML_PAD(best, 256) : 0;
+}
+
+// fork: the CUDA scratch the graph in the scheduler takes on card `dev`, the largest of: fn(user, nodes, n) over the splits that run on `dev` (fn gets a split's
+// nodes at once and returns the most any of them takes), and copy_fn(src backend, dst backend, input, copy) over the inputs that other splits copy FROM `dev`
+// (a gappy view is gathered into a compact block on its source card first). Nothing else is alive in the card's pool during an input copy, so the largest of
+// them is what the card needs. The expert-cache pool asks the CUDA backend (ggml_backend_cuda_nodes_scratch_fork, ggml_backend_cuda_copy_scratch_fork),
+// from the node's own shapes, so a card that computes a share of the tokens (the dense split) is lent the scratch of its share, not of the whole batch.
+// Declared where it is used (llama-moecache-fork.cpp): the public header stays as it is.
+// The values are kept per split until the scheduler splits again: a split keeps its nodes, inputs and their shapes until then, and every split gets a new uid
+// each time (ggml_graph_next_uid, the rule the CUDA graph cache relies on too). A reused graph (every decode step after the first) then costs no call: the
+// DeepSeek 4.1 decode step asks ~1000 nodes on two cards, 0.37 ms per step (2026-10-27). So fn(user, ...) must depend on the nodes and on dev only.
+GGML_API size_t ggml_backend_sched_node_max_dev(ggml_backend_sched_t sched, ggml_backend_dev_t dev, size_t (*fn)(void * user, struct ggml_tensor * const * nodes, int n),
+        size_t (*copy_fn)(ggml_backend_t src_backend, ggml_backend_t dst_backend, const struct ggml_tensor * src, const struct ggml_tensor * dst), void * user);
+size_t ggml_backend_sched_node_max_dev(ggml_backend_sched_t sched, ggml_backend_dev_t dev, size_t (*fn)(void * user, struct ggml_tensor * const * nodes, int n),
+        size_t (*copy_fn)(ggml_backend_t src_backend, ggml_backend_t dst_backend, const struct ggml_tensor * src, const struct ggml_tensor * dst), void * user) {
+    bool on_dev[GGML_SCHED_MAX_BACKENDS] = { false };
+    for (int b = 0; b < sched->n_backends; b++) {
+        on_dev[b] = ggml_backend_get_device(sched->backends[b]) == dev;
+    }
+    size_t best = 0;
+    for (int s = 0; s < sched->n_splits; s++) {
+        struct ggml_backend_sched_split * split = &sched->splits[s];
+        const uint64_t uid = split->graph.uid;
+        if (on_dev[split->backend_id]) {
+            if (uid == 0 || split->node_max_uid != uid || split->node_max_fn != (void *) fn) {
+                split->node_max_val = fn(user, split->graph.nodes, split->graph.n_nodes);
+                split->node_max_uid = uid;
+                split->node_max_fn  = (void *) fn;
+            }
+            best = std::max(best, split->node_max_val);
+        }
+        if (copy_fn == NULL) {
+            continue;
+        }
+        if (uid == 0 || split->copy_max_uid != uid || split->copy_max_fn != (void *) copy_fn) {
+            memset(split->copy_max_val, 0, sizeof(split->copy_max_val));
+            for (int j = 0; j < split->n_inputs; j++) {
+                struct ggml_tensor * input = split->inputs[j];
+                const int ib = tensor_backend_id(input);
+                if (ib < 0 || ib == split->backend_id) {
+                    continue;
+                }
+                struct ggml_tensor * input_cpy = tensor_copy(input, split->backend_id, sched->cur_copy);
+                split->copy_max_val[ib] = std::max(split->copy_max_val[ib], copy_fn(sched->backends[ib], sched->backends[split->backend_id], input, input_cpy));
+            }
+            split->copy_max_uid = uid;
+            split->copy_max_fn  = (void *) copy_fn;
+        }
+        for (int b = 0; b < sched->n_backends; b++) {
+            if (on_dev[b]) {
+                best = std::max(best, split->copy_max_val[b]);
+            }
+        }
+    }
+    return best;
 }
 
 // fork: the staging slots of the card `dev` are ranges of `buffer` the host owns, from offset, capacity bytes (the expert cache lends the blocks of that card's pool);

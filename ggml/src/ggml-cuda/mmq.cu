@@ -541,3 +541,68 @@ bool ggml_cuda_mmq_fusion_is_efficient(const ggml_type type, const int64_t nrows
     const int64_t tiles_efficiency_percent = 100 * ntiles / (nsm*tiles_nwaves);
     return tiles_efficiency_percent >= 90;
 }
+
+// fork: the scratch bytes ggml_cuda_mul_mat_q (no fusion) takes from the pool for src0 x src1 -> dst on device `id` (ids: the expert ids of a MUL_MAT_ID, else
+// nullptr), added to `top` in the order it takes them (each pool allocation starts at a multiple of 256, see ggml_cuda_pool_scratch). The tile width, its padding
+// and the stream-k fixup come from the same helpers the op calls (the expert-cache pool lends this before the op runs: llama_moe_cache_alias_fork). Declared where
+// used (ggml-cuda.cu); tests/test-scratch-fork.cpp runs the op and checks the bytes it took equal these.
+size_t ggml_cuda_mmq_scratch_fork(const int id, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, const ggml_tensor * dst, size_t top) {
+    const int     cc    = ggml_cuda_info().devices[id].cc;
+    const size_t  smpbo = ggml_cuda_info().devices[id].smpbo;
+    const int     nsm   = ggml_cuda_info().devices[id].nsm;
+    const int64_t ne00 = src0->ne[0], ne01 = src0->ne[1], ne02 = src0->ne[2];
+    const int64_t ne10 = src1->ne[0], ne11 = src1->ne[1], ne12 = src1->ne[2], ne13 = src1->ne[3];
+    const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
+    const bool fallback = ggml_cuda_mmq_needs_fallback(ne01);
+    const ggml_prec prec_src1 = ggml_cuda_mmq_get_prec_src1(src0, dst, cc);
+    const bool use_native_fp4 = prec_src1 == GGML_PREC_Q4;
+    const size_t y_block_size       = use_native_fp4 ? sizeof(block_fp4_mmq) : sizeof(block_q8_1_mmq);
+    const size_t y_values_per_block = use_native_fp4 ? QK_FP4_MMQ            : QK8_1_MMQ;
+    const int64_t n_expert_used = ids ? ids->ne[0] : 0;
+
+    int64_t ncols_opt = ne11;
+    if (ids) {
+        ncols_opt = ne12;
+        if (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
+            ncols_opt = (ne12*n_expert_used + ne02 - 1) / ne02;
+        }
+    }
+    int nthreads_best = 0;
+    const int J_best = ggml_cuda_mmq_get_J_best(src0->type, ncols_opt, fallback, cc, smpbo, prec_src1, &nthreads_best);
+    GGML_ASSERT(J_best > 0);
+    const size_t load_chunk = nthreads_best * sizeof(int);
+    const size_t q8_padding = ((J_best * sizeof(block_q8_1_mmq) + load_chunk - 1) / load_chunk) * load_chunk;
+
+    auto take = [&top](size_t n) { if (n > 0) { top = GGML_PAD(top, 256) + n; } };   // a size-0 request never reaches the region
+    int64_t ncols_max, nchannels_y;   // launch_mul_mat_q's tile grid: columns, channels (x samples)
+    if (!ids) {
+        take(ne13*ne12*ne11*ne10_padded * y_block_size/y_values_per_block + q8_padding);                          // src1_q8_1
+        if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) { take(ne13*ne12*ne11 * sizeof(float)); }            // src1_scale
+        ncols_max   = dst->ne[1];
+        nchannels_y = ne12 * ne13;
+    } else {
+        const int64_t ne_get_rows = ne12 * n_expert_used;
+        take(ne_get_rows * sizeof(int32_t));                      // ids_src1
+        take((ne_get_rows + J_best - 1) * sizeof(int32_t));       // ids_dst, padded for the unconditional reads
+        take((ne02 + 1) * sizeof(int32_t));                       // expert_bounds
+        take(ne_get_rows*ne10_padded * y_block_size/y_values_per_block + q8_padding);                             // src1_q8_1
+        if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) { take(ne_get_rows * sizeof(float)); }               // src1_scale
+        ncols_max   = ne12;
+        nchannels_y = ne02 * ne13;
+    }
+
+    // launch_mul_mat_q: the stream-k kernel's fixup buffer (unfused; a fused call tiles and takes none, so this is its upper bound)
+    const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(src0->type, J_best, fallback, cc, prec_src1);
+    if (config.stream_k) {
+        const int nty = (ne01 + config.I - 1) / config.I;
+        const int ntx = (ncols_max + config.J - 1) / config.J;
+        const int ntzw = nchannels_y;
+        const int ntiles_dst = ntx * nty * ntzw;
+        const int tiles_nwaves = (ntiles_dst + nsm - 1) / nsm;
+        const int tiles_efficiency_percent = 100 * ntiles_dst / (nsm*tiles_nwaves);
+        const int nwork = ntiles_dst * ((ne00 + config.K_vram - 1) / config.K_vram);
+        const int blocks = GGML_CUDA_CC_IS_NVIDIA(cc) && tiles_efficiency_percent >= 90 ? ntiles_dst : std::min(nsm, nwork);
+        if (ntiles_dst % blocks != 0) { take((size_t) blocks * config.J * config.I * sizeof(float)); }
+    }
+    return top;
+}
