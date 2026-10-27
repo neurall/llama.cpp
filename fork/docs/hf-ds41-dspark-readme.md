@@ -47,7 +47,7 @@ For quality numbers (AIME25, GPQA-Diamond, LiveCodeBench v6) see ISTA-DASLab's c
 | `...-00003-of-00005.gguf` | 39.2 GB | header only |
 | `...-00004-of-00005.gguf` | 20.5 GB | Engram q and k tensors removed (replaced by the gate above), `engram_wkv` renamed to `engram_kv` |
 | `...-00005-of-00005.gguf` | 110.6 GB | the original `DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`: header only (architecture `deepseek41`, the two Engram tables named as one `per_layer_token_embd.weight`); the table data is byte for byte the original |
-| `dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf` | 4.9 GB | Lucebox's `DeepSeek-V4.1-Flash-DSpark-draft-Q2K-Q4K.gguf`: architecture renamed to llama.cpp's `dflash` draft with its key and tensor names, tokenizer and chat template added, DSV4.1 draft settings (target layers 37-39, block size 5), single-pass hyper-connection flag |
+| `Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf` | 4.9 GB | Lucebox's `DeepSeek-V4.1-Flash-DSpark-draft-Q2K-Q4K.gguf`: architecture renamed to llama.cpp's `dflash` draft with its key and tensor names, tokenizer and chat template added, DSV4.1 draft settings (target layers 37-39, block size 5), single-pass hyper-connection flag |
 
 Keep all five shards in one directory and point llama.cpp at shard 1.
 
@@ -87,7 +87,7 @@ With the DSpark draft:
 
 ```
 llama-server -m DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf -np 1 \
-  -md dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf \
+  -md Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf \
   --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1
 ```
 
