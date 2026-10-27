@@ -3056,6 +3056,43 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         nb1, nb2, nb3, stream);
 }
 
+// fork: the device-pool bytes ggml_cuda_mul_mat_id above asks for when it computes n_tokens tokens of an expert matmul with weights of `type`
+// [ne00 x ne01 x n_expert] and n_used experts per token on `device`: the same path tests in the same order, the same allocations. The expert-cache
+// pool lends a prompt graph its CUDA scratch before the graph runs (llama_moe_cache_alias_fork) and took the size from a start value (used experts x
+// input width x 2 bytes, the activations as f16: what the MMQ path asks) until a graph asked for more. The sorting path at the end (types without
+// MMQ, IQ1_M among them) gathers the activations and the outputs as f32, then runs every expert through cuBLAS with its weights converted:
+// DeepSeek 4.1 (IQ1_M experts, 6 of 384 used, 5120 x 2304) asks 178 KB per token there, three times the start value. Its first 3389-token pass of a
+// start needed 386 MiB beyond the lend, the card had 276 MiB beside the pool, and the request failed (edit cell, every build up to 2026-10-27).
+static size_t ggml_backend_cuda_mmid_scratch_fork(int device, int type_i, int64_t ne00, int64_t ne01, int64_t n_expert, int64_t n_used, int64_t n_tokens) {
+    const ggml_type type      = (ggml_type) type_i;
+    const int       cc        = ggml_cuda_info().devices[device].cc;
+    const int       warp_size = ggml_cuda_info().devices[device].warp_size;
+    const size_t    rows      = (size_t) (n_tokens * n_used);   // (token, used expert) pairs
+    const size_t    ne00_p    = (size_t) GGML_PAD(ne00, MATRIX_ROW_PADDING);
+    if (n_tokens <= MMVQ_MAX_BATCH_SIZE && ggml_is_quantized(type) && n_tokens <= get_mmvq_mmid_max_batch(type, cc)) {
+        return rows * ne00_p * sizeof(block_q8_1) / QK8_1;   // MMVQ: the activations as q8_1
+    }
+    if (ggml_cuda_should_use_mmq(type, cc, n_tokens, n_expert)) {
+        // ids_src1, ids_dst (padded by a tile of at most 128 columns), expert_bounds; one q8_1 row per (token, used expert) and a tile's padding
+        return (2*rows + 128 + (size_t) n_expert + 1) * sizeof(int32_t) + rows * ne00_p * sizeof(block_q8_1_mmq) / QK8_1_MMQ + 128 * sizeof(block_q8_1_mmq);
+    }
+    const size_t  ts    = ggml_type_size(type);
+    const size_t  rs    = ggml_row_size(type, ne00);
+    const int64_t ne[4] = { ne00, ne01, n_expert, 1 };
+    const size_t  nb[4] = { ts, rs, rs * (size_t) ne01, rs * (size_t) ne01 * (size_t) n_expert };
+    if (ggml_cuda_should_use_mmf(type, cc, warp_size, ne, nb, (int) n_tokens, /*mul_mat_id=*/true)) {
+        return (2*rows + (size_t) n_expert + 1) * sizeof(int32_t);   // the compact id maps and expert bounds
+    }
+    // the sorting path: the id maps, the activations sorted by expert (f32 for quantized weights) and the outputs (f32); on top of them, one expert at a
+    // time, ggml_cuda_mul_mat_cublas: the weights converted (f16 on hardware with fast f16, else f32) and that expert's activations and outputs as f16
+    // (at most every token: a token uses an expert once)
+    const bool   f16c    = fast_fp16_hardware_available(cc);
+    const size_t ts_src1 = (type == GGML_TYPE_F16 && !f16c) || ggml_is_quantized(type) ? sizeof(float) : ts;
+    const size_t w_cvt   = ggml_is_quantized(type) || (type == GGML_TYPE_F16 && !f16c)
+                         ? (size_t) ne00 * (size_t) ne01 * (f16c && ggml_is_quantized(type) ? sizeof(half) : sizeof(float)) : 0;
+    return 2*rows * sizeof(int32_t) + rows * ((size_t) ne00 * ts_src1 + (size_t) ne01 * sizeof(float)) + w_cvt + (size_t) n_tokens * (size_t) (ne00 + ne01) * sizeof(half);
+}
+
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
     switch (dst->op) {
         case GGML_OP_ARGMAX:
@@ -7642,6 +7679,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_scratch_fork") == 0) {
         return (void *)ggml_backend_cuda_scratch_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_mmid_scratch_fork") == 0) {   // fork: the scratch an expert matmul asks for, before it runs
+        return (void *)ggml_backend_cuda_mmid_scratch_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_driver_version_fork") == 0) {   // fork: part of the key of the VRAM need the engine stores (where /proc has no driver)
         return (void *)ggml_backend_cuda_driver_version_fork;

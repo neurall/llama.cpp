@@ -3229,7 +3229,8 @@ std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork() {
     return out;
 }
 
-// CUDA scratch per batch token of the biggest expert matmul (see llama_moe_cache_alias_fork): experts per token x padded input width x 2 bytes
+// CUDA scratch per batch token of the biggest expert matmul (see llama_moe_cache_alias_fork): experts per token x padded input width x 2 bytes.
+// Only the start value where the CUDA backend cannot say what its expert matmuls ask for (alias_scratch)
 static size_t alias_tok_bytes(moe_cache * mc, moe_cache::alias_pool & ap) {
     if (ap.tok_bytes == 0) {
         for (const auto & l : mc->layers) {
@@ -3240,6 +3241,37 @@ static size_t alias_tok_bytes(moe_cache * mc, moe_cache::alias_pool & ap) {
         }
     }
     return ap.tok_bytes;
+}
+
+// The CUDA scratch a graph of n_tokens tokens is lent on this card, before it runs: what its expert matmuls ask for, computed by the CUDA backend for
+// the path it takes with each of the model's expert tensors (ggml_backend_cuda_mmid_scratch_fork: MMQ quantizes the activations, the sorting path of
+// types without MMQ gathers activations and outputs as f32 and converts each expert's weights), the largest of them. At least the rate the graphs
+// measured so far asked for (ap.tok_bytes: the attention and other temporaries). Before, the start value alone (used experts x input width x 2 bytes)
+// lent DeepSeek 4.1's IQ1_M experts a third of their 178 KB per token: the first big pass of a start took the rest from the VRAM beside the pool and ran
+// out of memory (edit cell, 2026-10-27). A card that is no CUDA device gets none; without the backend function the old start value.
+static size_t alias_scratch(moe_cache * mc, moe_cache::alias_pool & ap, size_t n_tokens) {
+    const char * nm = ggml_backend_dev_name(ap.dev);
+    if (ap.cuda_dev < 0 && (!nm || strncmp(nm, "CUDA", 4) != 0)) {
+        return 0;
+    }
+    static size_t (*mmid_fn)(int, int, int64_t, int64_t, int64_t, int64_t, int64_t) = [] {
+        ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+        return reg ? (size_t (*)(int, int, int64_t, int64_t, int64_t, int64_t, int64_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_mmid_scratch_fork") : nullptr;
+    }();
+    size_t need = 0;
+    if (mmid_fn) {
+        const int     dev    = ap.cuda_dev >= 0 ? ap.cuda_dev : atoi(nm + 4);
+        const int64_t n_used = std::max<int64_t>(1, mc->n_expert_used);
+        for (const auto & l : mc->layers) {
+            for (const ggml_tensor * t : { l.pub.up_src, l.pub.gate_src, l.pub.down_src }) {
+                if (t) { need = std::max(need, mmid_fn(dev, (int) t->type, t->ne[0], t->ne[1], t->ne[2], n_used, (int64_t) n_tokens)); }
+            }
+        }
+        need = std::max(need, n_tokens * ap.tok_bytes);   // tok_bytes: only what graphs measured (no start value with the backend function)
+    } else {
+        need = n_tokens * alias_tok_bytes(mc, ap);
+    }
+    return GGML_PAD(need, (size_t) 2 << 20);
 }
 
 // After a worst-case reserve: do the graph, its scratch and the prefetch staging slots fit in what the pool lends? (graph: needed, stage: optional)
@@ -3256,8 +3288,7 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
             if (ggml_backend_get_device(be) == ap.dev) { peak = ggml_backend_sched_graph_peak(sched, be); }
         }
         const size_t cap     = kv_lend_potential(ap, (size_t) n_tokens);
-        const size_t scratch = ap.cuda_dev >= 0 || strncmp(ggml_backend_dev_name(ap.dev), "CUDA", 4) == 0
-                             ? GGML_PAD((size_t) n_tokens * alias_tok_bytes(mc, ap), (size_t) 2 << 20) : 0;
+        const size_t scratch = alias_scratch(mc, ap, (size_t) n_tokens);
         const size_t base    = GGML_PAD(ap.base_off + GGML_PAD(peak, 256) + scratch, 256);   // behind the dense split's copies when the reserved graph splits
         {   // what the shrink-to-fit decided on, once per reserve size (a graph of this many tokens against what the pool can lend)
             static int said_tok = -1;
@@ -3320,8 +3351,7 @@ size_t llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens
             continue;
         }
         const size_t cap     = kv_lend_potential(ap, (size_t) n_tokens);
-        const size_t scratch = ap.cuda_dev >= 0 || strncmp(ggml_backend_dev_name(ap.dev), "CUDA", 4) == 0
-                             ? GGML_PAD((size_t) n_tokens * alias_tok_bytes(mc, ap), (size_t) 2 << 20) : 0;
+        const size_t scratch = alias_scratch(mc, ap, (size_t) n_tokens);
         size_t bmax = 0;
         for (const auto & sg : ap.segs) { bmax = std::max(bmax, sg.B); }
         const size_t used = ap.mirror_b + scratch + bmax;
@@ -3345,8 +3375,7 @@ void llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, 
         if (ap.dev != dev) {
             continue;
         }
-        const size_t scratch = ap.cuda_dev >= 0 || strncmp(ggml_backend_dev_name(ap.dev), "CUDA", 4) == 0
-                             ? GGML_PAD((size_t) n_tokens * alias_tok_bytes(mc, ap), (size_t) 2 << 20) : 0;
+        const size_t scratch = alias_scratch(mc, ap, (size_t) n_tokens);
         size_t & nt = ap.need_tok[(int32_t) n_tokens];
         nt = std::max(nt, graph_bytes + scratch);
         return;
@@ -4892,7 +4921,6 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         }
         size_t scratch = 0;
         if (ap.cuda_dev >= 0) {
-            alias_tok_bytes(mc, ap);
             const size_t asked = scratch_fn(ap.cuda_dev, nullptr, 0);   // what the previous graph asked for, fitting or not
             ap.hwm = std::max(ap.hwm, asked);
             if (ap.last_n > 0 && ap.last_n < 64) {
@@ -4905,9 +4933,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                         ggml_backend_dev_name(ap.dev), ap.last_n, asked / 1048576.0, ap.last_scr / 1048576.0, ap.tok_bytes, std::max(ap.tok_bytes, per_tok));
                 ap.tok_bytes = std::max(ap.tok_bytes, per_tok);
             }
-            const size_t n_expert = mc->layers.empty() ? 0 : (size_t) mc->layers[0].pub.up_src->ne[2];
-            scratch = n_tokens >= 64 ? GGML_PAD((size_t) n_tokens * ap.tok_bytes + (n_expert + 1) * 4, (size_t) 2 << 20)
-                                     : GGML_PAD(ap.small + (1u << 20), (size_t) 2 << 20);
+            scratch = n_tokens >= 64 ? alias_scratch(mc, ap, (size_t) n_tokens) : GGML_PAD(ap.small + (1u << 20), (size_t) 2 << 20);
             ap.last_n   = n_tokens;
             ap.last_scr = scratch;
         }
