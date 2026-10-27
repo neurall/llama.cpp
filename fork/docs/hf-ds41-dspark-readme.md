@@ -22,7 +22,7 @@ ISTA-DASLab's **GSQ-RCO IQ2_XXS** quantization of DeepSeek-V4.1-Flash-1017 (2.00
 Also here: the **DSpark draft** from Lucebox, changed the same way, for speculative decoding in [our llama.cpp fork](https://github.com/neurall/llama.cpp).
 
 - Runs on **stock llama.cpp**, but slowly: about 1.5 tokens/s of answer on our test machine.
-- Answers **12x to 20x faster** in our fork (prompt 2.4x to 7x), which keeps the experts in RAM and uses the free VRAM as a live expert cache.
+- Whole requests take **9.7x to 19x less time** in our fork, which keeps the experts in RAM and uses the free VRAM as a live expert cache: the least with a long prompt (16k prompt, 1k answer: 1097 s against 114 s), the most with a short one (27-token prompt, 1k answer: 689 s against 36 s).
 - The DSpark draft adds about **8-10%** decode speed on top in our fork (measured, details below).
 
 ## Credits
@@ -54,13 +54,15 @@ Keep all five shards in one directory and point llama.cpp at shard 1.
 ## Speed
 
 Test machine: AMD Ryzen 7 3700X (8 cores), 128 GB RAM, 2x RTX 3090 24 GB (PCIe x16 and x4), Linux. The model (248.8 GB) is about twice the RAM, so part of it is read from the SSD.  
-Same machine, same day, power limits 220/280 W, one request at a time, temperature 0. Best of 2 runs per row.
+Same machine, same day, power limits 220/280 W, one request at a time, temperature 0. Each row is one run per build: the one with the shortest request of 2 (the fork's 16k: 1 run). Request time = the measured prompt time + the answer at the measured decode speed (1024 tokens; stock stopped the 16k answer at 857, its time is for 1024 at the same speed).
 
-| test | stock decode t/s | fork decode t/s | decode gain | stock prompt t/s | fork prompt t/s | prompt gain |
-|---|---|---|---|---|---|---|
-| 1k prompt, 1k answer | 1.46 | 25.73 | 17.6x | 27.1 | 65.3 | 2.4x |
-| tetris prompt, 1k answer | 1.47 | 29.11 | 19.8x | – | – | – |
-| 16k prompt, 1k answer | 1.47 | 18.16 | 12.4x | 43.9 | 307.4 | 7.0x |
+| test | stock request s | fork request s | stock decode t/s | fork decode t/s | stock prompt t/s | fork prompt t/s | request gain | decode gain | prompt gain |
+|---|---|---|---|---|---|---|---|---|---|
+| 27-token prompt (tetris), 987-token answer | 689 | 36 | 1.47 | 29.11 | 1.5 | 14.6 | 19.3x | 19.8x | 9.7x |
+| 1k prompt (1099 tokens), 1k answer | 742 | 58 | 1.46 | 25.73 | 27.1 | 62.2 | 12.9x | 17.6x | 2.3x |
+| 16k prompt (17575 tokens), 1k answer | 1097 | 114 | 1.47 | 18.16 | 43.9 | 307.4 | 9.7x | 12.4x | 7.0x |
+
+The longer the prompt against the answer, the lower the gain: prompt processing gains less than answering.
 
 Stock is the official llama.cpp release b11887 (`-np 1 -fitt 2048`). The fork ran with `-np 1` plus our test harness's load settings (memory-mapped load, at most 101 GiB of the model pinned in RAM).
 
