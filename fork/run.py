@@ -1694,10 +1694,14 @@ def merge_moe(args):
     return out + ["--moe", ",".join(mine + [v for v in vals if v not in mine])]
 
 
+DIAG_ENV = ("POOL_LIVE", "PERF_LEDGER", "GGML_CUDA_SCRATCH_CHECK")   # diagnostics recorded in a row's env (see cmd_cell's rec): ~10% decode for the scratch check on MiMo
+
+
 def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
                              + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")   # the pool write ledger (who writes which bytes of a card's pool): cells turn it on, see cmd_cell
+                             + (",statsjson=1" if os.environ.get("POOL_LIVE") == "1" else "")   # the live pool view (livelist.py, port 7000): pool maps and ledger writes to /dev/shm
                              + ("" if NOSTATS[0] else ",pass-stats=1")]   # the split pass report per card (extra stream stamps, off in the engine by default): -ns leaves it off
     elif not build.startswith("stock") and STATE_FILE["v"]:
         env = {**env, "LLAMA_MOE_STATE": STATE_FILE["v"]}   # the first releases (no --moe flag) read the environment variable
@@ -3027,7 +3031,8 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
                 except Exception as e2:
                     row = {"ok": 0, "note": f"also failed with -fitt {v}: " + str(e2)[:250]}
     rec = {**extra, **({"bare": "1"} if bare else {}), **({"plain": "1"} if plain else {}), **({"args": args} if args else {}),
-           **{k: str(v) for k, v in OVR.items() if k != "prompt"}}
+           **{k: str(v) for k, v in OVR.items() if k != "prompt"},
+           **{k: os.environ[k] for k in DIAG_ENV if os.environ.get(k)}}   # a diagnostic that costs time (live pool view, ledger, scratch check) marks the row: speed comparisons group by env
     want = int(OVR["tokens"]) if OVR.get("tokens") else 0
     for k in range(3):   # a repetition loop is not comparable (a short generation that ended with a real answer is kept): stored as a failed run (ok=0, loop=1 for a loop; excluded from every statistic) and repeated, up to 3 times
         if not row.get("ok", 1):
@@ -4469,9 +4474,9 @@ def cmd_build(a):
              f"cmake -S {W} -B {B} -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS={gtd} -DCMAKE_CXX_FLAGS={gtd} "
              "-DCMAKE_CUDA_HOST_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/gcc -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DBUILD_SHARED_LIBS=ON "
              "-DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_CUDA=ON -DGGML_CUDA_NCCL=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=ON "
-             f"-DOPENSSL_USE_STATIC_LIBS=ON -DOPENSSL_ROOT_DIR=/opt/openssl -DLLAMA_BUILD_TESTS={'ON' if a.release else 'OFF'} -DLLAMA_BUILD_UI=OFF "
+             f"-DOPENSSL_USE_STATIC_LIBS=ON -DOPENSSL_ROOT_DIR=/opt/openssl -DLLAMA_BUILD_TESTS={'ON' if a.release or any(t.startswith('test-') for t in a.targets) else 'OFF'} -DLLAMA_BUILD_UI=OFF "
              "-DCMAKE_EXE_LINKER_FLAGS=\"$SLD -pthread\" -DCMAKE_SHARED_LINKER_FLAGS=\"$SLD\" -DCMAKE_MODULE_LINKER_FLAGS=\"$SLD\" && "
-             + (f"cmake --build {B} -j $(nproc)" if a.release else f"cmake --build {B} -j 8 --target llama-server llama-cli llama-perplexity"))
+             + (f"cmake --build {B} -j $(nproc)" if a.release else f"cmake --build {B} -j 8 --target llama-server llama-cli llama-perplexity " + " ".join(a.targets)))
     lk = queue_lock(wait=True)   # no build while a benchmark runs (a build takes the CPU the measurements use)
     iid = _image("llama-rel-el8", keep=a.release)
     idf = os.path.join(B, ".image-id")   # a build dir keeps the absolute toolkit paths of the image that configured it (CUDA 13.2 paths broke a 13.4 release build, 2026-10-22): another image, or a dir from before this check, is configured afresh; the objects come back from ccache
@@ -8967,6 +8972,7 @@ if __name__ == "__main__":
     bd.add_argument("--machine", default="pc1", choices=["pc1", "pc3"])
     bd.add_argument("--w10-base", default="6846d4803", help="a commit the W10 repository has: the bundle carries only what is newer")
     bd.add_argument("--no-regress", action="store_true", help="skip the regress cell after the build")
+    bd.add_argument("--targets", nargs="+", default=[], help="dev build: more cmake targets beside server, cli and perplexity (a test-* target turns the tests on), e.g. --targets test-scratch-fork")
     qk = sp.add_parser("quick", help="the short benchmark for any machine: --fork build against --stock, short chat answers and a 12k-token prompt, one markdown table (nothing is recorded unless --record)")
     qk.add_argument("--model", required=True, help="the .gguf file (the first part of a split model)")
     qk.add_argument("--fork", required=True, help="directory with the fork's llama-server")
