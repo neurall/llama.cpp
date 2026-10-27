@@ -62,7 +62,10 @@ static __global__ void argmax_f32(const float * __restrict__ x, int32_t * __rest
     }
 
     if (warp_id == 0 && lane_id == 0) {
-        dst[row] = argmax;
+        // a row with no value above -FLT_MAX (all NaN or all -inf) found no column: answer 0 like the CPU op, not -1,
+        // because the result is used as a row index (DSpark markov head: get_rows(markov_w1, argmax) read one row
+        // before the weight and faulted with "illegal memory access")
+        dst[row] = argmax < 0 ? 0 : argmax;
     }
 }
 
