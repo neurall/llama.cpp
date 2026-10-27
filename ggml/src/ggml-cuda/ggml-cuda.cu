@@ -814,11 +814,15 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
 // While it is set, the main stream's temporary buffers (quantized activations, expert-sorted copies, cuBLAS scratch) are taken from it in
 // stack order instead of the device pool, so they never stay mapped after the graph (the VMM pool keeps its peak forever). What does not fit
 // goes to the device pool as before. The high-water mark counts what was asked for, whether it fitted or not, so the caller learns the need.
+// The region serves only the backend context that lent it (owner): the region stays set from one lend to the next, and another context on the same card
+// (a DSpark draft between two target steps) would otherwise take its scratch from blocks lent to the target's graph, on its own stream, and add its own asks
+// to the high-water mark the next lend compares against (2026-10-27: "SCRATCH SHORT" 5.28 MB asked against 2.64 MB lent after depth-3 draft steps).
 struct ggml_cuda_scratch_region {
     char * base = nullptr;
     size_t cap  = 0;
     size_t top  = 0;
     size_t hwm  = 0;
+    const void * owner = nullptr;   // the ggml_backend_cuda_context the region serves (nullptr: any, the caller did not say)
     struct piece { size_t off, size; bool freed; };
     std::vector<piece> live;
 };
@@ -826,12 +830,13 @@ static ggml_cuda_scratch_region g_cuda_scratch[GGML_CUDA_MAX_DEVICES];
 
 struct ggml_cuda_pool_scratch : public ggml_cuda_pool {
     int device;
+    const void * ctx;   // the backend context whose main stream this pool serves: it takes from the region only when the region is lent to it
     std::unique_ptr<ggml_cuda_pool> inner;
-    ggml_cuda_pool_scratch(int device, std::unique_ptr<ggml_cuda_pool> inner) : device(device), inner(std::move(inner)) {}
+    ggml_cuda_pool_scratch(int device, const void * ctx, std::unique_ptr<ggml_cuda_pool> inner) : device(device), ctx(ctx), inner(std::move(inner)) {}
 
     void * alloc(size_t size, size_t * actual_size) override {
         ggml_cuda_scratch_region & s = g_cuda_scratch[device];
-        if (s.base != nullptr && size > 0) {
+        if (s.base != nullptr && size > 0 && (s.owner == nullptr || s.owner == ctx)) {
             const size_t off = GGML_PAD(s.top, 256);
             s.hwm = std::max(s.hwm, off + size);
             if (off + size <= s.cap) {
@@ -866,14 +871,16 @@ static int ggml_backend_cuda_driver_version_fork(void) {
     return v;
 }
 
-// set (base != NULL) or clear the scratch region of a device; returns the high-water mark since the last call and resets it
-static size_t ggml_backend_cuda_scratch_fork(int device, void * base, size_t cap) {
+// set (base != NULL) or clear the scratch region of a device for the backend `owner` (the one whose graph the region is lent to; NULL: any backend);
+// returns the high-water mark since the last call and resets it
+static size_t ggml_backend_cuda_scratch_fork(int device, void * base, size_t cap, ggml_backend_t owner) {
     ggml_cuda_scratch_region & s = g_cuda_scratch[device];
     const size_t hwm = s.hwm;
     if (s.live.empty()) {   // never move a region that still holds live buffers
-        s.base = (char *) base;
-        s.cap  = base ? cap : 0;
-        s.top  = 0;
+        s.base  = (char *) base;
+        s.cap   = base ? cap : 0;
+        s.top   = 0;
+        s.owner = base && owner ? owner->context : nullptr;
     } else if (s.base != (char *) base) {
         // The caller has laid out its memory for the new place (graph, scratch, staging slots, see llama_moe_cache_alias_fork): a region that stays behind
         // overlaps whatever was put there. This must not happen between two graphs (every user frees its buffers before its operation returns); reported
@@ -905,7 +912,7 @@ std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(g
         p.reset(new ggml_cuda_pool_leg(ctx, device));
     }
     if (stream_no == 0) {   // fork: the main stream may take its scratch from a region the caller lends (ggml_backend_cuda_scratch_fork)
-        p.reset(new ggml_cuda_pool_scratch(device, std::move(p)));
+        p.reset(new ggml_cuda_pool_scratch(device, &ctx, std::move(p)));
     }
     return p;
 }
@@ -6323,7 +6330,9 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 }
 
                 static const bool scratch_check = getenv("GGML_CUDA_SCRATCH_CHECK") != nullptr;   // fork: ggml_cuda_scratch_check_end_fork
-                const bool check_node = scratch_check && cuda_ctx->curr_stream_no == 0;
+                // only the context the region is lent to takes from it: another context's nodes (a draft between two target steps) would read as "took 0"
+                const bool check_node = scratch_check && cuda_ctx->curr_stream_no == 0
+                    && (g_cuda_scratch[cuda_ctx->device].owner == nullptr || g_cuda_scratch[cuda_ctx->device].owner == cuda_ctx);
                 const size_t check_saved = check_node ? ggml_cuda_scratch_check_begin_fork(cuda_ctx->device) : 0;
 
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);

@@ -25,10 +25,11 @@
 #include <functional>
 #include <vector>
 
-using scratch_t = size_t (*)(int, void *, size_t);
+using scratch_t = size_t (*)(int, void *, size_t, ggml_backend_t);   // device, region, capacity, the backend the region serves (nullptr: any)
 using node_t    = size_t (*)(int, const ggml_tensor *);
 using nodes_t   = size_t (*)(int, const ggml_tensor * const *, int);
 static scratch_t scratch_fn = nullptr;
+static ggml_backend_t g_owner = nullptr;   // run_op lends the region to this backend instead of the one running the op (the owner case)
 static node_t    node_fn    = nullptr;
 static nodes_t   nodes_fn   = nullptr;
 
@@ -67,10 +68,11 @@ static bool run_op(ggml_backend_t be, int d, void * base, size_t cap, const std:
     if (ids) {
         ggml_backend_tensor_set(ids, ids_v.data(), 0, ggml_nbytes(ids));
     }
-    scratch_fn(d, base, cap);                // set the region, clear the mark
+    ggml_backend_t owner = g_owner ? g_owner : be;
+    scratch_fn(d, base, cap, owner);                // set the region, clear the mark
     ggml_backend_graph_compute(be, gf);
     ggml_backend_synchronize(be);
-    asked    = scratch_fn(d, base, cap);     // the mark of that one op: what it took, fitting or not
+    asked    = scratch_fn(d, base, cap, owner);     // the mark of that one op: what it took, fitting or not
     computed = node_fn(d, y);
     ggml_backend_buffer_free(buf);
     ggml_free(ctx);
@@ -158,6 +160,25 @@ int main(int argc, char ** argv) {
                     check(asked, computed, true);
                 }
             }
+        }
+        // the region serves only the context it is lent to: another context on the same card (a DSpark draft between two target steps) takes its scratch from
+        // the device pool and adds nothing to the region's mark (2026-10-27: the draft's asks were taken from, and counted against, the target's lend)
+        if (ggml_backend_t other = ggml_backend_dev_init(dev, nullptr)) {
+            size_t asked = 0, computed = 0;
+            g_owner = other;
+            const bool ran = run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) {
+                    return ggml_mul_mat(ctx, ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_0, 2048, 1024), ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 8));
+                }, no_ids, asked, computed);
+            g_owner = nullptr;
+            if (ran) {
+                snprintf(what, sizeof(what), "MUL_MAT Q4_0 2048 x 1024, 8 columns, the region lent to another context on the card");
+                check(asked, 0, true);
+                n_run++;
+                if (computed == 0) { n_failed++; printf("  FAILED: the owner case needs an op that takes scratch (computed 0)\n"); }
+            } else {
+                n_skipped++;
+            }
+            ggml_backend_free(other);
         }
         // cuBLAS with what the cases above do not reach: a broadcast batch (attention's KQ: pointer arrays), f16 activations (no conversion of either input), and
         // a weight whose f32 copy is over the conversion limit (precision f32: converted in chunks, one after another)
@@ -379,7 +400,7 @@ int main(int argc, char ** argv) {
             ggml_free(wctx);
             ggml_backend_free(cpu);
         }
-        scratch_fn((int) d, nullptr, 0);   // give the region back
+        scratch_fn((int) d, nullptr, 0, nullptr);   // give the region back
         ggml_backend_buffer_free(region);
         ggml_backend_free(be);
         printf("  card %zu: %s\n", d, bad_card ? "FAILED" : "OK");
@@ -416,13 +437,13 @@ int main(int argc, char ** argv) {
             for (int c = 0; c < 2; ++c) {
                 int user = c;
                 computed[c] = ggml_backend_sched_node_max_dev(sched, dv[c], count_nodes_fn, copy_fn, &user);
-                scratch_fn(c, rb[c], rcap);   // set the region, clear the mark
+                scratch_fn(c, rb[c], rcap, bk[c]);   // set the region, clear the mark
             }
             ggml_backend_sched_graph_compute(sched, gf);
             ggml_backend_sched_synchronize(sched);
             for (int c = 0; c < 2; ++c) {
-                took[c] = scratch_fn(c, rb[c], rcap);
-                scratch_fn(c, nullptr, 0);
+                took[c] = scratch_fn(c, rb[c], rcap, bk[c]);
+                scratch_fn(c, nullptr, 0, nullptr);
             }
         }
         const size_t block = ggml_row_size(GGML_TYPE_F32, 256) * 4096;

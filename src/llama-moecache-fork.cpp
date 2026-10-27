@@ -4911,16 +4911,19 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     kv_tail_pad_zero(mc);   // the KV rows this graph writes first: the lend below stops in front of them (ap.span); a decode graph ends the plan of the last prompt
     for (auto & ap : mc->alias) {
         size_t peak = 0;
+        ggml_backend_t ap_be = nullptr;   // this context's backend on the card: the only one the scratch region below serves
         for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
             ggml_backend_t be = ggml_backend_sched_get_backend(sched, i);
-            if (ggml_backend_get_device(be) == ap.dev) { peak = ggml_backend_sched_graph_peak(sched, be); }
+            if (ggml_backend_get_device(be) == ap.dev) { peak = ggml_backend_sched_graph_peak(sched, be); ap_be = be; }
         }
         // the backend's scratch goes into the lent blocks right after the graph's tensors. Its size is computed per card from the graph's own nodes
         // (alias_scratch); every graph then reports what it really asked for (fitting or not), and one that asked for more than it was lent is logged as an
         // error with both numbers: an op whose scratch mirror is missing or wrong (GGML_CUDA_SCRATCH_CHECK=1 names it). Nothing is learned from it.
-        static size_t (*scratch_fn)(int, void *, size_t) = [] {
+        // the region serves only the backend passed with it (ap_be): another context on the card (a DSpark draft between two target steps) takes its scratch
+        // from the device pool, and its asks do not count in the high-water mark compared below
+        static size_t (*scratch_fn)(int, void *, size_t, ggml_backend_t) = [] {
             ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-            return reg ? (size_t (*)(int, void *, size_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_scratch_fork") : nullptr;
+            return reg ? (size_t (*)(int, void *, size_t, ggml_backend_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_scratch_fork") : nullptr;
         }();
         if (ap.cuda_dev < 0 && scratch_fn) {
             const char * nm = ggml_backend_dev_name(ap.dev);
@@ -4928,7 +4931,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         }
         size_t scratch = 0;
         if (ap.cuda_dev >= 0) {
-            const size_t asked = scratch_fn(ap.cuda_dev, nullptr, 0);   // what the previous graph asked for, fitting or not
+            const size_t asked = scratch_fn(ap.cuda_dev, nullptr, 0, nullptr);   // what the previous graph asked for, fitting or not
             ap.hwm = std::max(ap.hwm, asked);
             if (asked > ap.last_scr && ap.last_n > 0) {
                 // the previous graph asked for more than it was lent: the rest came from the device pool (the VRAM beside the pool)
@@ -5035,7 +5038,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         }
         ap.want   = ap.segs.empty() ? 0 : (int32_t) std::min<size_t>((size_t) ap.n, (ap.want_b + ap.B - 1) / ap.B);
         if (ap.cuda_dev >= 0) {
-            scratch_fn(ap.cuda_dev, scratch > 0 ? (char *) ggml_backend_buffer_get_base(ap.buf) + peak_al : nullptr, scratch);
+            scratch_fn(ap.cuda_dev, scratch > 0 ? (char *) ggml_backend_buffer_get_base(ap.buf) + peak_al : nullptr, scratch, ap_be);
         }
         {
             // the staging slots come only from lent blocks: if the pool cannot lend them, this card's splits of this graph run without prefetch (never a new buffer)
