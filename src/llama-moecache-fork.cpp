@@ -5350,13 +5350,28 @@ static const std::string & vram_driver() {
     return d;
 }
 
+// The live llama_contexts and their models (llama_init_from_model adds, llama_free removes). What the other contexts of the process (a DFlash or
+// DSpark draft, an MTP head) take on a card after the pool is sized is part of the need stored below, so the need is stored apart for each set of
+// them: DeepSeek-V4.1 + DSpark depth 3 (2026-10-27): plain runs stored 38 MiB on cuda0x4; the draft's compute buffer grows by 256 MiB after the pool
+// is sized (its first decode after the speculative setup turned on its extra outputs) and did not fit in the 104 MiB left: cudaMalloc failed at load,
+// at every start, as a draft run's target calls are all verify batches of several tokens and it never stored a figure of its own.
+static std::mutex g_live_mtx;
+static std::map<const void *, const llama_model *> g_live_ctx;
+static uint64_t g_vram_others = 0;   // bytes of the other contexts' models when the pool was sized (0: the cache's context is the only one)
+
+void llama_moe_cache_context_live_fork(const void * ctx, const llama_model * model, bool live) {
+    std::lock_guard<std::mutex> lk(g_live_mtx);
+    if (live) { g_live_ctx[ctx] = model; } else { g_live_ctx.erase(ctx); }
+}
+
 // cold: this start runs the max-batch probe (no stored timings), whose calibration graphs take ~100 MiB more outside the pool than a warm start
 // (GLM 3.0 140 against 49 MiB, MiMo 111 against 36, Qwen3.8 166 against 52, 2026-10-22): the two are stored apart
 static std::string vram_key(ggml_backend_dev_t dev, bool cold) {
     std::string gpu = ggml_backend_dev_description(dev);
     for (char & c : gpu) { if (!isalnum((unsigned char) c)) { c = '_'; } }
     const char * b = moe_opt("build-id");
-    return hw_key("vram_need." + gpu + ".drv" + vram_driver() + ".b" + (b ? b : "0") + (cold ? ".cold" : ".warm"));
+    const std::string with = g_vram_others ? ".with" + std::to_string(g_vram_others >> 20) : "";   // a plain run keeps the key it always had
+    return hw_key("vram_need." + gpu + ".drv" + vram_driver() + ".b" + (b ? b : "0") + with + (cold ? ".cold" : ".warm"));
 }
 
 // the margin a pool leaves on a card: --moe vram-reserve-mb / margin_mb if set, else the need an earlier session measured on this card, driver and build
@@ -5522,6 +5537,19 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         const std::string vram_section = profile_path(model);
         std::string probe_v;
         const bool vram_cold = vram_section.empty() || !moe_state_get(vram_section, hw_key("batch.cost2"), probe_v);   // the max-batch probe runs this start
+        {   // the other contexts now (the server creates the draft before the target's first decode, which sizes the pool): their models key the stored need
+            std::lock_guard<std::mutex> lk(g_live_mtx);
+            bool own = false;
+            g_vram_others = 0;
+            for (const auto & lc : g_live_ctx) {
+                if (lc.second == &model && !own) { own = true; continue; }   // the cache's own context (an MTP head runs a second one on the same model)
+                g_vram_others += llama_model_size(lc.second);
+            }
+            if (g_vram_others) {
+                LLAMA_LOG_WARN("moe-cache: other contexts on the process hold models of %.0f MiB (a draft or MTP head): the VRAM need outside the pool is "
+                        "stored apart for them\n", g_vram_others / 1048576.0);
+            }
+        }
         auto slots_for = [&](ggml_backend_buffer_type_t buft, const std::vector<cand> & cands) -> int32_t {
             if (n_slots > 0) {
                 return n_slots;

@@ -79,6 +79,7 @@ uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint3
 uint32_t llama_moe_ubadapt_next_fork(uint32_t n_tokens, uint32_t ceil);
 void llama_moe_decision_fork(const char * name, const char * value, const char * why);
 void llama_moe_cache_vram_watch_fork(bool prompt);   // src/llama-moecache-fork.cpp: the lowest free VRAM per pool card
+void llama_moe_cache_context_live_fork(const void * ctx, const llama_model * model, bool live);   // src/llama-moecache-fork.cpp: the live contexts' models
 
 static void llama_verify_hadamard_graph(
         ggml_cgraph * gf,
@@ -6240,6 +6241,7 @@ llama_context * llama_init_from_model(
 
     try {
         auto * ctx = new llama_context(*model, params);
+        llama_moe_cache_context_live_fork(ctx, model, true);   // fork: the expert pool keys its stored VRAM need by the other live contexts (a draft)
         const auto & cparams = ctx->get_cparams();
 
         if (cparams.rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_YARN && cparams.rope_freq_scale != model->hparams.rope_freq_scale_train) {
@@ -6264,6 +6266,7 @@ llama_context * llama_new_context_with_model(
 }
 
 void llama_free(llama_context * ctx) {
+    llama_moe_cache_context_live_fork(ctx, nullptr, false);
     delete ctx;
 }
 
