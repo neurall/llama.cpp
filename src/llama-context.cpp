@@ -2868,6 +2868,62 @@ bool llama_dsplit_prev_split_fork();
 void llama_dsplit_pass_done_fork();
 bool llama_dsplit_drop_experts_fork(int64_t n_tokens);
 
+// fork: --moe idx-check=1 (debug, slow: the card is drained and every index input read back before each graph). Before a graph runs, in every context (the
+// target and a draft): each row index the host set for it (SET_ROWS / GET_ROWS fed by an input tensor: the KV write rows, k_idxs / v_idxs, the DSV4 compressor's
+// state and row indices, token ids) must lie inside the tensor it addresses, and each view must still point where its source lives (a graph built before its
+// source moved reads and writes the old place). An index outside its tensor reads or writes the neighbour of that record in the pool: the DSpark draft's KV
+// sits between the target's lend and the target's growing rows (2026-10-27, 'illegal memory access' at spec depth 2 and 3 that launch blocking hid). The
+// first bad index or view is logged with its node and the run aborts before the kernel runs; a line per context for the first graphs and every 256th says
+// the check runs.
+static void fork_idx_check(ggml_backend_sched_t sched, ggml_cgraph * gf, const char * who, int64_t n_graph) {
+    ggml_backend_sched_synchronize(sched);   // inputs set asynchronously are on the card before they are read back
+    static std::vector<uint8_t> buf;
+    int64_t n_idx = 0, n_view = 0;
+    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+        const ggml_tensor * t = ggml_graph_node(gf, i);
+        if (t->view_src && t->data && t->view_src->data) {
+            n_view++;
+            if ((const char *) t->data != (const char *) t->view_src->data + t->view_offs) {
+                LLAMA_LOG_ERROR("idx-check: %s graph %lld: node %d '%s' (%s) is a view of '%s' at %p, but its source now lives at %p + %zu = %p: the graph was built before the source moved\n",
+                        who, (long long) n_graph, i, t->name, ggml_op_name(t->op), t->view_src->name, t->data, t->view_src->data, t->view_offs,
+                        (const void *) ((const char *) t->view_src->data + t->view_offs));
+                GGML_ABORT("idx-check: stale view");
+            }
+        }
+        const ggml_tensor * idx = nullptr;
+        const ggml_tensor * tab = nullptr;
+        if (t->op == GGML_OP_SET_ROWS) { idx = t->src[1]; tab = t->src[2]; }   // set_rows: src[0] the rows, src[1] the indices, src[2] the destination
+        if (t->op == GGML_OP_GET_ROWS) { idx = t->src[1]; tab = t->src[0]; }
+        if (!idx || !tab || !(idx->flags & GGML_TENSOR_FLAG_INPUT) || !idx->buffer || !idx->data || !ggml_is_contiguous(idx) ||
+                (idx->type != GGML_TYPE_I32 && idx->type != GGML_TYPE_I64)) {
+            continue;
+        }
+        const int64_t n = ggml_nelements(idx);
+        if (n == 0) {
+            continue;
+        }
+        buf.resize(ggml_nbytes(idx));
+        ggml_backend_tensor_get(idx, buf.data(), 0, buf.size());
+        int64_t mn = INT64_MAX, mx = INT64_MIN;
+        for (int64_t k = 0; k < n; ++k) {
+            const int64_t v = idx->type == GGML_TYPE_I32 ? (int64_t) ((const int32_t *) buf.data())[k] : ((const int64_t *) buf.data())[k];
+            mn = std::min(mn, v);
+            mx = std::max(mx, v);
+        }
+        n_idx++;
+        if (mn < 0 || mx >= tab->ne[1]) {
+            LLAMA_LOG_ERROR("idx-check: %s graph %lld: node %d '%s' (%s): index input '%s' holds [%lld, %lld] (%lld values), but '%s' has %lld rows (data %p, row stride %zu B, %s): "
+                    "the out-of-range rows lie in its neighbour's memory\n",
+                    who, (long long) n_graph, i, t->name, ggml_op_name(t->op), idx->name, (long long) mn, (long long) mx, (long long) n, tab->name, (long long) tab->ne[1],
+                    tab->data, tab->nb[1], tab->buffer ? ggml_backend_buffer_name(tab->buffer) : "no buffer");
+            GGML_ABORT("idx-check: row index outside its tensor");
+        }
+    }
+    if (n_graph < 4 || n_graph % 256 == 0) {
+        LLAMA_LOG_WARN("idx-check: %s graph %lld: %lld index inputs inside their tensors, %lld views at their sources\n", who, (long long) n_graph, (long long) n_idx, (long long) n_view);
+    }
+}
+
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
     if (mctx && !mctx->apply()) {
@@ -3031,6 +3087,13 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         res->set_inputs(&ubatch);
 
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+    }
+
+    // fork: --moe idx-check=1: every index input and view of this graph checked before it runs (fork_idx_check)
+    static const bool idx_check = [] { const char * e = llama_moe_get_opt("idx-check"); return e && atoi(e) != 0; }();
+    if (idx_check) {
+        static std::map<const llama_context *, int64_t> n_graphs;   // per context, here and not a member (no header edit for a debug switch)
+        fork_idx_check(sched.get(), res->get_gf(), cparams.ctx_other ? "draft" : "target", n_graphs[this]++);
     }
 
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
