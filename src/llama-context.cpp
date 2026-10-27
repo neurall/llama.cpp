@@ -6904,7 +6904,17 @@ int32_t llama_process(llama_context * ctx, llama_process_type type, llama_batch_
         case LLAMA_PROCESS_TYPE_DECODE: {
             // the server's decode path: per-token and per-prompt-call times for GET /moe/stats
             const int64_t t_us = ggml_time_us();
+            // debug (bug 153, draft crash): LLAMA_PROC_DBG=1 log each call, 2 + sync the draft context after it, 3 + sync the target
+            // context around it, 4 + sync before it too. Staged so the level that hides the crash names the racing step.
+            static const int dbg = getenv("LLAMA_PROC_DBG") ? atoi(getenv("LLAMA_PROC_DBG")) : 0;
+            llama_context * other = ctx->get_cparams().ctx_other;
+            if (dbg >= 4) { llama_synchronize(ctx); }
+            if (dbg >= 3 && other) { llama_synchronize(other); }
+            if (dbg >= 1) { LLAMA_LOG_WARN("procdbg: %s decode begin\n", other ? "draft" : "target"); }
             int ret = ctx->decode(*batch);
+            if (dbg >= 2 && other) { llama_synchronize(ctx); }
+            if (dbg >= 3 && other) { llama_synchronize(other); }
+            if (dbg >= 1) { LLAMA_LOG_WARN("procdbg: %s decode end ret %d n %d\n", other ? "draft" : "target", ret, (int) g_decode_n_tokens); }
             for (int t = 0; ret == 1 && t < 8 && g_oom_retry.exchange(0); ++t) { ret = ctx->decode(*batch); }   // fork: taken back after a CUDA out-of-memory (g_oom_tc)
             if (ret == 0) {
                 const int32_t n = (int32_t) g_decode_n_tokens;
