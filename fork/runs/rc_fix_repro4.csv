@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+ds-1k-scrdbg,ds,1,1k1k,64,,--env GGML_CUDA_SCRATCH_DEBUG=1 --env GGML_CUDA_SCRATCH_CHECK=1

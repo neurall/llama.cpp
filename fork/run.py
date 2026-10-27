@@ -2080,7 +2080,7 @@ def server_run(build, env, args, path, body, render=None):
     PROCSTAT["cache_state"] = model_residency()
     _t0 = time.time(); PROCSTAT["start_ts"] = time.strftime("%F %T", time.localtime(_t0))
     PROCSTAT["endpoint"] = "completion" if path == "/completion" else "chat"
-    key = repr((build, MODEL, tuple(args), sorted((k, v) for k, v in env.items() if os.environ.get(k) != v)))
+    key = repr((build, MODEL, tuple(args), sorted((k, v) for k, v in env.items() if os.environ.get(k) != v), os.environ.get("PERF_CELL_ENV", "")))
     d = kept_get() if KEEP_SERVER else None
     if d and d["key"] == key:
         p, logf = PidProc(d["pid"]), d["logf"]   # kept from an earlier run or cell: no start, no load wait
@@ -7077,6 +7077,9 @@ def cmd_cell(a):
     env.setdefault("PERF_LEDGER", "0")   # the pool write ledger is a debug tool and off in cells (it cost our side a few percent that stock never pays); --env PERF_LEDGER=1 records it: kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
     for kv in (a.env or []):
         k, _, v = kv.partition("="); env[k] = v
+    # the cell's --env values are this bench process's own environment, so server_run's key (env that differs from it) never saw them: a cell that
+    # differed from the one before only by --env reused its kept server and the values never reached a server (2026-10-27, GGML_CUDA_SCRATCH_CHECK=1)
+    env["PERF_CELL_ENV"] = " ".join(sorted(a.env or []))
     t_cell0 = time.time()
     try:
         with open(out, "w") as f:
