@@ -1913,6 +1913,22 @@ static void common_hog(void) {
             LOG_WRN("sim-vram: %s holds %.2f GiB, %.2f GiB left free\n", ggml_backend_dev_name(dev), ggml_backend_buffer_get_size(buf) / 1073741824.0, f2 / 1073741824.0);
         }
     }
+    // --moe hog-<card>=MB (hog-CUDA0=7943): take MB MiB on that one card, a control run that holds what something else would (a DSpark draft took 7943 MiB of the
+    // x4 card's expert pool: the same cut without the draft separates the smaller cache from the cost of drafting). The --moe parser stores every key in
+    // lower case (hog-cuda0), so the card name is looked up in lower case too: with the name as the backend spells it no key ever matched (2026-10-27)
+    static bool hog_done = false;
+    for (size_t i = 0; i < ggml_backend_dev_count() && !hog_done; i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        std::string key = std::string("hog-") + ggml_backend_dev_name(dev);
+        for (char & c : key) { c = (char) tolower((unsigned char) c); }
+        const char * h = ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU ? llama_moe_get_opt(key.c_str()) : nullptr;
+        if (!h || atof(h) <= 0) { continue; }
+        ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), (size_t) (atof(h) * 1048576.0));
+        if (!buf) { LOG_WRN("hog: could not take %s MiB on %s\n", h, ggml_backend_dev_name(dev)); continue; }
+        gpu_hog.push_back(buf);
+        LOG_WRN("hog: %s holds %.0f MiB\n", ggml_backend_dev_name(dev), ggml_backend_buffer_get_size(buf) / 1048576.0);
+    }
+    hog_done = true;
 #ifdef __linux__
     if (hr && !ram_hog) {
         const size_t keep = (size_t) (atof(hr) * 1048576.0);   // stress test: exactly what was asked for, no floor (swapping is part of what is being tested)
@@ -2207,12 +2223,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
         g_moe_auto_ub_auto = ub;
         params.n_ubatch = ub;
     }
-    // leave one core per GPU to drive it (measured on 2 GPUs: 6 of 8 cores beats 8)
-    for (auto * cp : { &params.cpuparams, &params.cpuparams_batch }) {
-        if (cp->auto_threads) {
-            cp->n_threads = std::max(2, cp->n_threads - n_gpu);
-        }
-    }
+    // no core is left per GPU any more (user 2026-10-26: the OS runs thousands of threads anyway; the GPU and upload threads share the cores), and the
+    // decode search starts on every hardware thread and steps down if fewer are faster (common_init_result, llama_context::thread_tune_feed)
     // resource saturator: compute threads on physical cores only (SMT siblings add no memory bandwidth), filled L3 domain
     // by domain so each domain's threads compute its rows (GGML_MOE_CCX_SPLIT), leaving each domain's highest core to its
     // L3 prefetch thread. Linux sysfs / Windows GetLogicalProcessorInformationEx; only without a user CPU mask (LLAMA_AUTO_PLACE=1).
@@ -2396,6 +2408,12 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     pimpl(new impl{}) {
     common_moe_cache_auto(params);
     common_spec_auto(params);
+    // the decode thread search starts on every hardware thread, SMT siblings included, and steps down while a step is not slower
+    // (llama_context::thread_tune_feed). User 2026-10-26: on an EPYC all threads gained; too many threads costs little, too few a lot. The decode pool is
+    // created this big and the search only lowers the count inside it. Only for a count that came from the default; the batch count is not changed here.
+    if (params.cpuparams.auto_threads && common_autotune_on(params)) {
+        params.cpuparams.n_threads = std::max<int32_t>(params.cpuparams.n_threads, (int32_t) std::thread::hardware_concurrency());
+    }
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
 
@@ -2940,12 +2958,15 @@ common_context_seq_rm_type common_context_can_seq_rm(llama_context * ctx) {
         return COMMON_CONTEXT_SEQ_RM_TYPE_NO;
     }
 
-    if (llama_n_rs_seq(ctx) > 0) {
+    // fork: a context with rollback slots runs the probe decode too and stays RS: the expert pool and the KV records at its tail start at the first decode,
+    // which belongs at load. DeepSeek 4.1 with a DSpark draft (rollback slots) skipped it: the pool start fell into the first request's prompt time, and that
+    // request's sequence removal cleared KV records that had no memory yet ('tensor not allocated')
+    const bool rs = llama_n_rs_seq(ctx) > 0;
+    if (rs) {
         COM_TRC("%s", "the context supports bounded partial sequence removal\n");
-        return COMMON_CONTEXT_SEQ_RM_TYPE_RS;
     }
 
-    common_context_seq_rm_type res = COMMON_CONTEXT_SEQ_RM_TYPE_PART;
+    common_context_seq_rm_type res = rs ? COMMON_CONTEXT_SEQ_RM_TYPE_RS : COMMON_CONTEXT_SEQ_RM_TYPE_PART;
 
     llama_memory_clear(mem, true);
 
@@ -2963,12 +2984,14 @@ common_context_seq_rm_type common_context_can_seq_rm(llama_context * ctx) {
     }
     if (ret != 0) {
         COM_ERR("llama_process() failed: %d\n", ret);
-        res = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
+        if (!rs) {
+            res = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
+        }
         goto done;
     }
 
     // try to remove the last tokens
-    if (!llama_memory_seq_rm(mem, 0, 1, -1)) {
+    if (!rs && !llama_memory_seq_rm(mem, 0, 1, -1)) {
         COM_TRC("%s", "the context does not support partial sequence removal\n");
         res = COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
         goto done;

@@ -39,3 +39,19 @@ void ggml_cuda_op_sum(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 
     sum_f32_cuda(pool, src0_d, dst_d, ne, stream);
 }
+
+// fork: the scratch the expert-cache pool lends a graph is computed per node before the graph runs (ggml_backend_cuda_nodes_scratch_fork, ggml-cuda.cu). This
+// mirrors sum_f32_cuda: CUB's temporary storage for the whole tensor, from CUB's own size query with the same types. tests/test-scratch-fork.cpp checks it.
+size_t ggml_cuda_sum_scratch_fork(const ggml_tensor * dst, size_t top) {
+#ifdef GGML_CUDA_USE_CUB
+    size_t tmp_size = 0;
+    const int64_t ne = ggml_nelements(dst->src[0]);
+    CUDA_CHECK(DeviceReduce::Sum(nullptr, tmp_size, (const float *) nullptr, (float *) nullptr, ne, (cudaStream_t) nullptr));
+    if (tmp_size > 0) {
+        top = GGML_PAD(top, 256) + tmp_size;
+    }
+#else
+    GGML_UNUSED(dst);
+#endif // GGML_CUDA_USE_CUB
+    return top;
+}

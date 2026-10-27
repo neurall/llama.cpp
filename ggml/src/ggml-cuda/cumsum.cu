@@ -305,3 +305,28 @@ void ggml_cuda_op_cumsum(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
             GGML_ABORT("fatal error");
     }
 }
+
+// fork: the scratch the expert-cache pool lends a graph is computed per node before the graph runs (ggml_backend_cuda_nodes_scratch_fork, ggml-cuda.cu). This
+// mirrors cumsum_cuda: rows contiguous along the scan and long (one row over 1024, or over 4096 per row) scan with CUB, one row after another, each row's
+// temporary storage freed before the next one's: one row's. tests/test-scratch-fork.cpp checks it.
+size_t ggml_cuda_cumsum_scratch_fork(const ggml_tensor * dst, size_t top) {
+#ifdef GGML_CUDA_USE_CUB
+    const ggml_tensor * src0 = dst->src[0];
+    if (src0->type != GGML_TYPE_F32) {
+        return top;
+    }
+    const int64_t ne00  = src0->ne[0];
+    const int64_t nrows = src0->ne[1] * src0->ne[2] * src0->ne[3];
+    const bool is_contiguous = src0->nb[0] == sizeof(float) && dst->nb[0] == sizeof(float);
+    if (is_contiguous && (((nrows == 1) && (ne00 > 1024)) || (ne00 / nrows > 4096))) {
+        size_t tmp_size = 0;
+        CUDA_CHECK(cub::DeviceScan::InclusiveSum(nullptr, tmp_size, (const float *) nullptr, (float *) nullptr, ne00, (cudaStream_t) nullptr));
+        if (tmp_size > 0) {
+            top = GGML_PAD(top, 256) + tmp_size;
+        }
+    }
+#else
+    GGML_UNUSED(dst);
+#endif // GGML_CUDA_USE_CUB
+    return top;
+}

@@ -11,9 +11,12 @@
 #include <climits>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <sstream>
 #include <stdexcept>
+
+void llama_kv_cache_tail_rows_fork(const void * kv, std::function<size_t()> fn, size_t ratio);   // llama-kv-cache.cpp (fork; declared here, no header edit)
 
 static constexpr uint32_t DSV4_CSA_RATIO = 4;
 static constexpr uint32_t DSV4_HCA_RATIO = 128;
@@ -48,6 +51,10 @@ static void dsv4_for_stream_ranges(const ggml_tensor * tensor, uint32_t stream, 
 static void dsv4_clear_tensor_stream(ggml_tensor * tensor, uint32_t stream, uint32_t n_rows = UINT32_MAX) {
     GGML_ASSERT(tensor->ne[3] == 1);
     GGML_ASSERT(stream < (uint32_t) tensor->ne[2]);
+
+    if (tensor->data == nullptr) {   // fork: a kv-tail record before its context's first decode has no memory yet (the pool or an arena gives it there) and no cells to clear
+        return;
+    }
 
     if (ggml_is_contiguous(tensor)) {
         const size_t stream_size = tensor->nb[2];
@@ -604,6 +611,19 @@ static llama_kv_cache_dsv4_context::comp_plan dsv4_build_comp_plan(
         }
     }
 
+    // fork: the row a dummy block writes: the sequence's next row to complete (not visible yet; its block overwrites it). Upstream wrote the last slot
+    // (kv_size - 1): under --moe kv-tail a growing record has rows only up to its zone, so that slot lay GiBs past it, in an expert block (two cards: silent)
+    // or past the pool (one card, DeepSeek 4.1 16k: 'illegal memory access' at the first 1-token decode; its ratio-2 cache completes a block every other token)
+    const auto dummy_row = [&](llama_seq_id seq_id) -> int64_t {
+        llama_pos pos_max = -1;
+        for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
+            if (ubatch.pos[i] >= 0 && dsv4_token_has_seq(ubatch, i, seq_id)) {
+                pos_max = std::max(pos_max, ubatch.pos[i]);
+            }
+        }
+        return std::min<int64_t>((int64_t) (pos_max + 1)/ratio, (int64_t) kv_size - 1);
+    };
+
     if (pad_blocks && !plan.state_pos.empty()) {
         assert(kv_size > 0);
 
@@ -612,7 +632,7 @@ static llama_kv_cache_dsv4_context::comp_plan dsv4_build_comp_plan(
             const int64_t cache_off = dsv4_stream_offset(n_stream, seq_id, kv_size);
             const int32_t source_idx = state_source_idx(seq_id, ubatch.pos[i]);
 
-            plan.state_write_idxs.push_back(cache_off + kv_size - 1);
+            plan.state_write_idxs.push_back(cache_off + dummy_row(seq_id));
             plan.state_write_pos .push_back(0);
 
             if (overlap) {
@@ -678,7 +698,7 @@ static llama_kv_cache_dsv4_context::comp_plan dsv4_build_comp_plan(
         const int64_t cache_off = dsv4_stream_offset(n_stream, seq_id, kv_size);
         const int32_t source_idx = state_source_idx(seq_id, ubatch.pos[i]);
 
-        plan.state_write_idxs.push_back(cache_off + kv_size - 1);
+        plan.state_write_idxs.push_back(cache_off + dummy_row(seq_id));
         plan.state_write_pos .push_back(0);
 
         for (uint32_t j = 0; j < ratio; ++j) {
@@ -1481,6 +1501,22 @@ llama_kv_cache_dsv4::llama_kv_cache_dsv4(
     // otherwise leak in (instance-specific garbage) and corrupt recall. Zero all
     // compressed buffers up front so reads of un-written rows are deterministic.
     clear_compressed(-1, true);
+
+    // fork: --moe kv-tail lays a growing record out, moves it and zeroes the pad rows its attention reads by the rows in use (llama_kv_cache_tail_rows_fork,
+    // llama-kv-cache.cpp). The compressed rows are graph outputs at pos / ratio (dsv4_build_comp_plan), never cells marked used, so the count comes from the raw
+    // cache: the completed blocks of the longest sequence (the raw cells of the batch being decoded are applied before its graph is built, so they count).
+    // The raw window cache marks its cells itself; the compressor states are separate small buffers, not records of the pool.
+    // The ratio goes with the count: a compressed cache has a row per `ratio` tokens over the whole context, so the pool grows it with the zone instead of laying it
+    // out at full size like a sliding-window ring (V4.1's ratio-2 cache: 1920 MiB on the x16 card at every context before 2026-10-26).
+    for (const auto & [kv, ratio] : { std::make_pair(kv_csa.get(), csa_state->get_ratio()),
+                                      std::make_pair(kv_hca.get(), hca_state->get_ratio()),
+                                      std::make_pair(kv_lid.get(), lid_state->get_ratio()) }) {
+        llama_kv_cache_tail_rows_fork(kv, [this, ratio = ratio]() -> size_t {
+            llama_pos p = -1;
+            for (uint32_t s = 0; s < this->n_seq_max; ++s) { p = std::max(p, kv_raw->seq_pos_max((llama_seq_id) s)); }
+            return p < 0 ? 0 : (size_t) (p + 1) / ratio;
+        }, ratio);
+    }
 }
 
 // Engram hashes the n-gram ending at each token, so a token shared by several sequences (llama-batched prompt)

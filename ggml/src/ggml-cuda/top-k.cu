@@ -209,13 +209,19 @@ static __global__ void top_k_radix_gather(
     }
 }
 
+// fork: shared with the scratch mirror below (ggml_cuda_top_k_scratch_fork)
+static constexpr int TOP_K_RADIX_BITS = 8;
+static int top_k_radix_blocks_per_row(const int ncols) {
+    return (int) std::min<int64_t>(((int64_t) ncols + 1023) / 1024, 64);
+}
+
 static void top_k_radix_cuda(
         ggml_cuda_pool & pool,
         const float * src, int * dst, int ncols, int64_t nrows, int k, cudaStream_t stream) {
     constexpr int BLOCK_SIZE = 256;
-    constexpr int RADIX_BITS = 8;
+    constexpr int RADIX_BITS = TOP_K_RADIX_BITS;
     constexpr int NBINS = 1 << RADIX_BITS;
-    const int blocks_per_row = (int) std::min<int64_t>(((int64_t) ncols + 1023) / 1024, 64);
+    const int blocks_per_row = top_k_radix_blocks_per_row(ncols);
 
     // chunk the rows to bound the histogram memory to 64 MB
     const int64_t chunk_nrows = ggml_cuda_chunk_nrows((size_t) blocks_per_row * NBINS * sizeof(int), nrows);
@@ -334,4 +340,92 @@ void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 #else                             // GGML_CUDA_USE_CUB
     top_k_radix_cuda(pool, src0_d, dst_d, ncols, nrows, k, stream);
 #endif                            // CUB_TOP_K_AVAILABLE
+}
+
+// fork: the scratch the expert-cache pool lends a graph is computed per node before the graph runs (ggml_backend_cuda_node_scratch_fork, ggml-cuda.cu). This
+// mirrors ggml_cuda_op_top_k: the same path tests, the pool allocations of the path in the same order, each from a multiple of 256 (as ggml_cuda_pool_scratch
+// places them), added to `top`; CUB's temporary storage from CUB's own size query. tests/test-scratch-fork.cpp runs the op and checks the bytes.
+#ifdef GGML_CUDA_USE_CUB
+size_t ggml_cuda_argsort_cub_scratch_fork(const int ncols, const int nrows, const ggml_sort_order order, size_t top);   // argsort.cu
+#endif  // GGML_CUDA_USE_CUB
+
+static void top_k_take_fork(size_t & top, const size_t n) {
+    if (n > 0) { top = GGML_PAD(top, 256) + n; }
+}
+
+// top_k_argsort_cuda: the sorted indices of a chunk of rows; under CUB the sort's own buffers on top, per chunk (freed after it): a full chunk or the last one
+static size_t top_k_argsort_scratch_fork(const int64_t ncols, const int64_t nrows, const bool use_cub, size_t top) {
+    const int64_t chunk_nrows = ggml_cuda_chunk_nrows((size_t) ncols * sizeof(int), nrows);
+    top_k_take_fork(top, (size_t) ncols * chunk_nrows * sizeof(int));
+#ifdef GGML_CUDA_USE_CUB
+    if (use_cub) {
+        size_t need = ggml_cuda_argsort_cub_scratch_fork((int) ncols, (int) chunk_nrows, GGML_SORT_ORDER_DESC, top);
+        if (nrows % chunk_nrows != 0) {
+            need = std::max(need, ggml_cuda_argsort_cub_scratch_fork((int) ncols, (int) (nrows % chunk_nrows), GGML_SORT_ORDER_DESC, top));
+        }
+        return need;
+    }
+#else
+    GGML_UNUSED(use_cub);
+#endif  // GGML_CUDA_USE_CUB
+    return top;
+}
+
+// top_k_radix_cuda: the row states and the block histograms of a chunk of rows
+static size_t top_k_radix_scratch_fork(const int ncols, const int64_t nrows, size_t top) {
+    constexpr int NBINS = 1 << TOP_K_RADIX_BITS;
+    const int blocks_per_row = top_k_radix_blocks_per_row(ncols);
+    const int64_t chunk_nrows = ggml_cuda_chunk_nrows((size_t) blocks_per_row * NBINS * sizeof(int), nrows);
+    top_k_take_fork(top, (size_t) chunk_nrows * sizeof(top_k_radix_state));
+    top_k_take_fork(top, (size_t) chunk_nrows * blocks_per_row * NBINS * sizeof(int));
+    return top;
+}
+
+size_t ggml_cuda_top_k_scratch_fork(const ggml_tensor * dst, size_t top) {
+    const ggml_tensor * src0  = dst->src[0];
+    const int64_t       ncols = src0->ne[0];
+    const int64_t       nrows = ggml_nrows(src0);
+    const int64_t       k     = dst->ne[0];
+    const int           device = ggml_cuda_get_device();
+
+#ifdef CUB_TOP_K_AVAILABLE
+    const bool bitonic_short    = nrows > 1 && ncols <= GGML_CUDA_TOP_K_NCOLS_THRESHOLD_BITONIC;
+#else
+    const bool bitonic_short    = ncols <= GGML_CUDA_TOP_K_NCOLS_THRESHOLD_BITONIC;
+#endif // CUB_TOP_K_AVAILABLE
+    const bool bitonic_few_rows = nrows > GGML_CUDA_TOP_K_NROWS_THRESHOLD &&
+                                  ncols <= GGML_CUDA_TOP_K_NCOLS_THRESHOLD_BITONIC_FEW_ROWS &&
+                                  nrows <= ggml_cuda_info().devices[device].nsm;
+    if (bitonic_short || bitonic_few_rows) {
+        const int ncols_pad = next_power_of_2(ncols);
+        if (ncols_pad * sizeof(int) <= ggml_cuda_info().devices[device].smpb) {
+            return top_k_argsort_scratch_fork(ncols, nrows, false, top);
+        }
+    }
+    if (nrows > GGML_CUDA_TOP_K_NROWS_THRESHOLD) {
+        return top_k_radix_scratch_fork((int) ncols, nrows, top);
+    }
+#ifdef CUB_TOP_K_AVAILABLE
+    {   // one DeviceTopK per row, one after another (each frees its storage)
+        auto requirements = cuda::execution::require(cuda::execution::determinism::not_guaranteed,
+                                                     cuda::execution::output_ordering::unsorted);
+        auto stream_env   = cuda::stream_ref{ (cudaStream_t) nullptr };
+        auto env          = cuda::std::execution::env{ stream_env, requirements };
+        auto indexes_in   = cuda::make_counting_iterator(0);
+        size_t temp_storage_bytes = 0;
+        CUDA_CHECK(DeviceTopK::MaxPairs(nullptr, temp_storage_bytes, (const float *) nullptr, cuda::discard_iterator(), indexes_in, (int *) nullptr,
+                             (int) ncols, (int) k, env));
+        top_k_take_fork(top, temp_storage_bytes);
+        return top;
+    }
+#elif defined(GGML_CUDA_USE_CUB)
+    GGML_UNUSED(k);
+    if (ncols <= GGML_CUDA_TOP_K_NCOLS_THRESHOLD_ARGSORT) {
+        return top_k_argsort_scratch_fork(ncols, nrows, true, top);
+    }
+    return top_k_radix_scratch_fork((int) ncols, nrows, top);
+#else
+    GGML_UNUSED(k);
+    return top_k_radix_scratch_fork((int) ncols, nrows, top);
+#endif  // CUB_TOP_K_AVAILABLE
 }

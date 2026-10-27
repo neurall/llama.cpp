@@ -1278,6 +1278,14 @@ struct ggml_backend_sched_split {
     int inputs_capacity;
     // graph view of this split
     struct ggml_cgraph graph;
+    // fork: ggml_backend_sched_node_max_dev's values for this split, valid while the split keeps the uid they were computed for: the most scratch its nodes
+    // take on its own card, and per source backend the most the copy of one of its inputs takes there
+    uint64_t node_max_uid;
+    void   * node_max_fn;
+    size_t   node_max_val;
+    uint64_t copy_max_uid;
+    void   * copy_max_fn;
+    size_t   copy_max_val[GGML_SCHED_MAX_BACKENDS];
 };
 
 #ifndef GGML_SCHED_MAX_PREFETCH_SLOTS
@@ -2194,6 +2202,8 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
     // set ids for all splits
     for (int i = 0; i < sched->n_splits; ++i) {
         sched->splits[i].graph.uid = ggml_graph_next_uid();
+        sched->splits[i].node_max_uid = 0;   // fork: new nodes and inputs, ggml_backend_sched_node_max_dev computes again
+        sched->splits[i].copy_max_uid = 0;
     }
 }
 
@@ -2820,6 +2830,41 @@ static void ggml_backend_sched_nan_check(ggml_backend_sched_t sched, int split_i
         if (g_nan_hook_fork) { g_nan_hook_fork(); }   // --moe poison: dump the pool while the bad bytes are still there (after the report above: the hook exits the process)
         return;
     }
+}
+
+// The NaN checks cover graphs of at least this many splits (the big graphs of a model whose layers run on several cards and the CPU); GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+// takes every graph, the small ones of a draft model too
+static int ggml_sched_nan_min_splits() {
+    static const int n = getenv("GGML_SCHED_NAN_CHECK_MIN_SPLITS") ? atoi(getenv("GGML_SCHED_NAN_CHECK_MIN_SPLITS")) : 30;
+    return n;
+}
+
+// GGML_SCHED_NAN_CHECK=2: the node launched last (scheduler, graph, split, card, node, operation, name, shape), printed when a CUDA error aborts the process.
+// Every node runs on its own and its card is drained after it, so an illegal memory access is reported at the drain right after the node that made it
+// (DSpark draft on DeepSeek 4.1, 2026-10-27: the error came 10-30 ms after the draft's graph with no node to name). The callback hands on to the one before.
+static char                  g_trace_last[512] = "none yet";
+static ggml_abort_callback_t g_trace_prev_abort = NULL;
+static void ggml_sched_trace_abort(const char * msg) {
+    fprintf(stderr, "nan-node: the last node launched before the abort: %s\n", g_trace_last);
+    if (g_trace_prev_abort) {
+        g_trace_prev_abort(msg);
+    } else {
+        fprintf(stderr, "%s\n", msg);
+    }
+}
+static void ggml_sched_trace_install() {
+    static bool done = false;
+    if (!done) {
+        done = true;
+        g_trace_prev_abort = ggml_set_abort_callback(ggml_sched_trace_abort);
+    }
+}
+static void ggml_sched_trace_note(ggml_backend_sched_t sched, int split_id, int j, long graph_no) {
+    const struct ggml_backend_sched_split * split = &sched->splits[split_id];
+    const struct ggml_tensor * t = split->graph.nodes[j];
+    snprintf(g_trace_last, sizeof(g_trace_last), "scheduler %p graph %ld, split %d of %d on %s, node %d of %d: %s '%s' [%lld,%lld,%lld,%lld] %s",
+            (void *) sched, graph_no, split_id, sched->n_splits, ggml_backend_name(sched->backends[split->backend_id]), j, split->graph.n_nodes, ggml_op_name(t->op), t->name,
+            (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3], ggml_type_name(t->type));
 }
 
 // GGML_SCHED_NAN_CHECK=2 (debug, very slow): every node of a big graph is run on its own and its output is read back before any later node can reuse memory.
@@ -3622,11 +3667,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             static const int nan_mode = getenv("GGML_SCHED_NAN_CHECK") ? atoi(getenv("GGML_SCHED_NAN_CHECK")) : 0;
             static long nan_graph2 = 0;
             enum ggml_status ec = GGML_STATUS_SUCCESS;
-            if (nan_mode == 2 && sched->n_splits >= 30) {
+            if (nan_mode == 2 && sched->n_splits >= ggml_sched_nan_min_splits()) {
                 if (split_id == 0) { nan_graph2++; }
+                ggml_sched_trace_install();
                 for (int nj = 0; nj < split->graph.n_nodes && ec == GGML_STATUS_SUCCESS; nj++) {
+                    ggml_sched_trace_note(sched, split_id, nj, nan_graph2);
                     struct ggml_cgraph gv = ggml_graph_view(&split->graph, nj, nj + 1);
                     ec = ggml_backend_graph_compute_async(split_backend, &gv);
+                    ggml_backend_synchronize(split_backend);   // a fault of this node is reported here, while it is the node noted (the NaN check below stops draining after its first report)
                     ggml_backend_sched_nan_check_node(sched, split_id, nj, nan_graph2);
                 }
             } else {
@@ -3687,7 +3735,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             {
                 static const bool nan_check = getenv("GGML_SCHED_NAN_CHECK") && atoi(getenv("GGML_SCHED_NAN_CHECK")) == 1;
                 static long nan_graph = 0;
-                if (nan_check && sched->n_splits >= 30) {
+                if (nan_check && sched->n_splits >= ggml_sched_nan_min_splits()) {
                     if (split_id == 0) { nan_graph++; }
                     ggml_backend_sched_nan_check(sched, split_id, nan_graph);
                 }
@@ -3958,6 +4006,61 @@ size_t ggml_backend_sched_prefetch_slot_bytes_dev(ggml_backend_sched_t sched, gg
         }
     }
     return best ? GGML_PAD(best, 256) : 0;
+}
+
+// fork: the CUDA scratch the graph in the scheduler takes on card `dev`, the largest of: fn(user, nodes, n) over the splits that run on `dev` (fn gets a split's
+// nodes at once and returns the most any of them takes), and copy_fn(src backend, dst backend, input, copy) over the inputs that other splits copy FROM `dev`
+// (a gappy view is gathered into a compact block on its source card first). Nothing else is alive in the card's pool during an input copy, so the largest of
+// them is what the card needs. The expert-cache pool asks the CUDA backend (ggml_backend_cuda_nodes_scratch_fork, ggml_backend_cuda_copy_scratch_fork),
+// from the node's own shapes, so a card that computes a share of the tokens (the dense split) is lent the scratch of its share, not of the whole batch.
+// Declared where it is used (llama-moecache-fork.cpp): the public header stays as it is.
+// The values are kept per split until the scheduler splits again: a split keeps its nodes, inputs and their shapes until then, and every split gets a new uid
+// each time (ggml_graph_next_uid, the rule the CUDA graph cache relies on too). A reused graph (every decode step after the first) then costs no call: the
+// DeepSeek 4.1 decode step asks ~1000 nodes on two cards, 0.37 ms per step (2026-10-27). So fn(user, ...) must depend on the nodes and on dev only.
+GGML_API size_t ggml_backend_sched_node_max_dev(ggml_backend_sched_t sched, ggml_backend_dev_t dev, size_t (*fn)(void * user, struct ggml_tensor * const * nodes, int n),
+        size_t (*copy_fn)(ggml_backend_t src_backend, ggml_backend_t dst_backend, const struct ggml_tensor * src, const struct ggml_tensor * dst), void * user);
+size_t ggml_backend_sched_node_max_dev(ggml_backend_sched_t sched, ggml_backend_dev_t dev, size_t (*fn)(void * user, struct ggml_tensor * const * nodes, int n),
+        size_t (*copy_fn)(ggml_backend_t src_backend, ggml_backend_t dst_backend, const struct ggml_tensor * src, const struct ggml_tensor * dst), void * user) {
+    bool on_dev[GGML_SCHED_MAX_BACKENDS] = { false };
+    for (int b = 0; b < sched->n_backends; b++) {
+        on_dev[b] = ggml_backend_get_device(sched->backends[b]) == dev;
+    }
+    size_t best = 0;
+    for (int s = 0; s < sched->n_splits; s++) {
+        struct ggml_backend_sched_split * split = &sched->splits[s];
+        const uint64_t uid = split->graph.uid;
+        if (on_dev[split->backend_id]) {
+            if (uid == 0 || split->node_max_uid != uid || split->node_max_fn != (void *) fn) {
+                split->node_max_val = fn(user, split->graph.nodes, split->graph.n_nodes);
+                split->node_max_uid = uid;
+                split->node_max_fn  = (void *) fn;
+            }
+            best = std::max(best, split->node_max_val);
+        }
+        if (copy_fn == NULL) {
+            continue;
+        }
+        if (uid == 0 || split->copy_max_uid != uid || split->copy_max_fn != (void *) copy_fn) {
+            memset(split->copy_max_val, 0, sizeof(split->copy_max_val));
+            for (int j = 0; j < split->n_inputs; j++) {
+                struct ggml_tensor * input = split->inputs[j];
+                const int ib = tensor_backend_id(input);
+                if (ib < 0 || ib == split->backend_id) {
+                    continue;
+                }
+                struct ggml_tensor * input_cpy = tensor_copy(input, split->backend_id, sched->cur_copy);
+                split->copy_max_val[ib] = std::max(split->copy_max_val[ib], copy_fn(sched->backends[ib], sched->backends[split->backend_id], input, input_cpy));
+            }
+            split->copy_max_uid = uid;
+            split->copy_max_fn  = (void *) copy_fn;
+        }
+        for (int b = 0; b < sched->n_backends; b++) {
+            if (on_dev[b]) {
+                best = std::max(best, split->copy_max_val[b]);
+            }
+        }
+    }
+    return best;
 }
 
 // fork: the staging slots of the card `dev` are ranges of `buffer` the host owns, from offset, capacity bytes (the expert cache lends the blocks of that card's pool);

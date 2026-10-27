@@ -95,6 +95,8 @@
 #include <initializer_list>
 #include <limits>
 #include <map>
+#include <set>
+#include <tuple>
 #include <memory>
 #include <mutex>
 #include <cstdarg>
@@ -812,11 +814,15 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
 // While it is set, the main stream's temporary buffers (quantized activations, expert-sorted copies, cuBLAS scratch) are taken from it in
 // stack order instead of the device pool, so they never stay mapped after the graph (the VMM pool keeps its peak forever). What does not fit
 // goes to the device pool as before. The high-water mark counts what was asked for, whether it fitted or not, so the caller learns the need.
+// The region serves only the backend context that lent it (owner): the region stays set from one lend to the next, and another context on the same card
+// (a DSpark draft between two target steps) would otherwise take its scratch from blocks lent to the target's graph, on its own stream, and add its own asks
+// to the high-water mark the next lend compares against (2026-10-27: "SCRATCH SHORT" 5.28 MB asked against 2.64 MB lent after depth-3 draft steps).
 struct ggml_cuda_scratch_region {
     char * base = nullptr;
     size_t cap  = 0;
     size_t top  = 0;
     size_t hwm  = 0;
+    const void * owner = nullptr;   // the ggml_backend_cuda_context the region serves (nullptr: any, the caller did not say)
     struct piece { size_t off, size; bool freed; };
     std::vector<piece> live;
 };
@@ -824,12 +830,13 @@ static ggml_cuda_scratch_region g_cuda_scratch[GGML_CUDA_MAX_DEVICES];
 
 struct ggml_cuda_pool_scratch : public ggml_cuda_pool {
     int device;
+    const void * ctx;   // the backend context whose main stream this pool serves: it takes from the region only when the region is lent to it
     std::unique_ptr<ggml_cuda_pool> inner;
-    ggml_cuda_pool_scratch(int device, std::unique_ptr<ggml_cuda_pool> inner) : device(device), inner(std::move(inner)) {}
+    ggml_cuda_pool_scratch(int device, const void * ctx, std::unique_ptr<ggml_cuda_pool> inner) : device(device), ctx(ctx), inner(std::move(inner)) {}
 
     void * alloc(size_t size, size_t * actual_size) override {
         ggml_cuda_scratch_region & s = g_cuda_scratch[device];
-        if (s.base != nullptr && size > 0) {
+        if (s.base != nullptr && size > 0 && (s.owner == nullptr || s.owner == ctx)) {
             const size_t off = GGML_PAD(s.top, 256);
             s.hwm = std::max(s.hwm, off + size);
             if (off + size <= s.cap) {
@@ -864,14 +871,16 @@ static int ggml_backend_cuda_driver_version_fork(void) {
     return v;
 }
 
-// set (base != NULL) or clear the scratch region of a device; returns the high-water mark since the last call and resets it
-static size_t ggml_backend_cuda_scratch_fork(int device, void * base, size_t cap) {
+// set (base != NULL) or clear the scratch region of a device for the backend `owner` (the one whose graph the region is lent to; NULL: any backend);
+// returns the high-water mark since the last call and resets it
+static size_t ggml_backend_cuda_scratch_fork(int device, void * base, size_t cap, ggml_backend_t owner) {
     ggml_cuda_scratch_region & s = g_cuda_scratch[device];
     const size_t hwm = s.hwm;
     if (s.live.empty()) {   // never move a region that still holds live buffers
-        s.base = (char *) base;
-        s.cap  = base ? cap : 0;
-        s.top  = 0;
+        s.base  = (char *) base;
+        s.cap   = base ? cap : 0;
+        s.top   = 0;
+        s.owner = base && owner ? owner->context : nullptr;
     } else if (s.base != (char *) base) {
         // The caller has laid out its memory for the new place (graph, scratch, staging slots, see llama_moe_cache_alias_fork): a region that stays behind
         // overlaps whatever was put there. This must not happen between two graphs (every user frees its buffers before its operation returns); reported
@@ -903,7 +912,7 @@ std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(g
         p.reset(new ggml_cuda_pool_leg(ctx, device));
     }
     if (stream_no == 0) {   // fork: the main stream may take its scratch from a region the caller lends (ggml_backend_cuda_scratch_fork)
-        p.reset(new ggml_cuda_pool_scratch(device, std::move(p)));
+        p.reset(new ggml_cuda_pool_scratch(device, &ctx, std::move(p)));
     }
     return p;
 }
@@ -2322,6 +2331,8 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
     }
 }
 
+static constexpr size_t ggml_cuda_cublas_max_src0_convert = 512ull * 1024 * 1024;   // fork: shared with its scratch mirror (ggml_cuda_cublas_scratch_fork)
+
 static void ggml_cuda_mul_mat_cublas(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     const int cc = ggml_cuda_info().devices[ctx.device].cc;
     const ggml_prec prec = (ggml_prec) ggml_get_op_params_i32(dst, 0);
@@ -2362,7 +2373,7 @@ static void ggml_cuda_mul_mat_cublas(ggml_backend_cuda_context & ctx, const ggml
         }
     }
 
-    constexpr size_t max_src0_convert_size = 512ull * 1024 * 1024;
+    constexpr size_t max_src0_convert_size = ggml_cuda_cublas_max_src0_convert;
     const size_t src0_f32_size = ggml_nelements(src0) * sizeof(float);
 
     if (compute_type == GGML_TYPE_F32 &&
@@ -3056,6 +3067,301 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         nb1, nb2, nb3, stream);
 }
 
+// fork: the scratch the matmuls take, computed before they run. The expert-cache pool lends a graph its CUDA scratch before the graph runs (llama_moe_cache_alias_fork),
+// per card, from the nodes that run on that card (a card that computes a share of the tokens is lent its share). Each function below mirrors one op: the same path
+// tests in the same order, the same pool allocations in the same order, each starting at a multiple of 256 (ggml_cuda_pool_scratch), added to `top`. A size-0 request
+// never reaches the region. MMQ's part lives next to its code (mmq.cu) and uses the helpers the op itself calls. tests/test-scratch-fork.cpp runs every op on every
+// card and checks that the bytes it took equal these: whoever changes an op's allocations without its mirror fails there.
+size_t ggml_cuda_mmq_scratch_fork(const int id, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, const ggml_tensor * dst, size_t top);
+
+static inline void ggml_cuda_take_fork(size_t & top, size_t n) {
+    if (n > 0) { top = GGML_PAD(top, 256) + n; }
+}
+
+// ggml_cuda_mul_mat_cublas_impl<compute_type>: the converted inputs, the output in the compute type, the batched pointer arrays
+static size_t ggml_cuda_cublas_impl_scratch_fork(int device, ggml_type compute_type, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst, size_t top) {
+    const size_t ts = compute_type == GGML_TYPE_F32 ? sizeof(float) : sizeof(half);   // cuda_t: float, half or nv_bfloat16
+    bool is_src0_cont_2 = ggml_is_contiguous_2(src0);
+    bool is_src1_cont_2 = ggml_is_contiguous_2(src1);
+    if (src0->type != compute_type) {
+        ggml_cuda_take_fork(top, ggml_nelements(src0) * ts);
+        if (!ggml_is_contiguously_allocated(src0)) { is_src0_cont_2 = true; }
+    }
+    if (src1->type != compute_type) {
+        ggml_cuda_take_fork(top, ggml_nelements(src1) * ts);
+        if (!ggml_is_contiguously_allocated(src1)) { is_src1_cont_2 = true; }
+    }
+    const int cc = ggml_cuda_info().devices[device].cc;
+    bool prefer_f32_output = false;
+    if (compute_type == GGML_TYPE_F16) {
+        prefer_f32_output = cc == GGML_CUDA_CC_VOLTA || GGML_CUDA_CC_IS_RDNA4(cc) || GGML_CUDA_CC_IS_CDNA(cc);
+    } else if (compute_type == GGML_TYPE_BF16) {
+        prefer_f32_output = !GGML_CUDA_CC_IS_RDNA3(cc) && !GGML_CUDA_CC_IS_CDNA(cc);
+    }
+    if (!prefer_f32_output && compute_type != GGML_TYPE_F32) {
+        ggml_cuda_take_fork(top, ggml_nelements(dst) * ts);   // dst_temp
+    }
+    const int64_t ne12 = src1->ne[2], ne13 = src1->ne[3];
+    const int64_t r2 = ne12/src0->ne[2], r3 = ne13/src0->ne[3];
+    if (!(ne12 == 1 && ne13 == 1) && !(r2 == 1 && r3 == 1 && is_src0_cont_2 && is_src1_cont_2)) {   // cublasGemmBatchedEx
+        ggml_cuda_take_fork(top, 2*ne12*ne13 * sizeof(void *));   // ptrs_src
+        ggml_cuda_take_fork(top,   ne12*ne13 * sizeof(void *));   // ptrs_dst
+    }
+    return top;
+}
+
+// ggml_cuda_mul_mat_cublas: the compute type, then the chunks (they run one after another and free their buffers: the first, largest one is the need)
+static size_t ggml_cuda_cublas_scratch_fork(int device, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst, size_t top) {
+    const int cc = ggml_cuda_info().devices[device].cc;
+    const ggml_prec prec = (ggml_prec) ggml_get_op_params_i32(dst, 0);
+    ggml_type compute_type = src0->type;
+    if (ggml_is_quantized(compute_type)) {
+        compute_type = fast_fp16_hardware_available(cc) ? GGML_TYPE_F16 : GGML_TYPE_F32;
+    } else if (compute_type == GGML_TYPE_F16 && !fast_fp16_hardware_available(cc)) {
+        compute_type = GGML_TYPE_F32;
+    } else if (compute_type == GGML_TYPE_BF16 && !fast_bf16_hardware_available(cc)) {
+        if (GGML_CUDA_CC_IS_AMD(cc) && src1->ne[1] > 32) {
+            compute_type = GGML_TYPE_F32;
+        }
+        if (GGML_CUDA_CC_IS_NVIDIA(cc) && src1->ne[1] > (cc >= GGML_CUDA_CC_VOLTA ? 8 : 128)) {
+            compute_type = GGML_TYPE_F32;
+        }
+    }
+    if (prec == GGML_PREC_BF16 && compute_type == GGML_TYPE_F16) {
+        compute_type = fast_bf16_hardware_available(cc) ? GGML_TYPE_BF16 : GGML_TYPE_F32;
+    } else if (prec == GGML_PREC_F32) {
+        compute_type = GGML_TYPE_F32;
+    }
+    static const ggml_type env_type = [] {   // GGML_CUDA_CUBLAS_COMPUTE_TYPE, read the same way (COUNT: not set or auto)
+        const char * env_c = getenv("GGML_CUDA_CUBLAS_COMPUTE_TYPE");
+        if (env_c == nullptr) { return GGML_TYPE_COUNT; }
+        std::string env_cpp = env_c;
+        for (char & c : env_cpp) { c = std::tolower(c); }
+        if (env_cpp == "f32" || env_cpp == "fp32") { return GGML_TYPE_F32; }
+        if (env_cpp == "f16" || env_cpp == "fp16") { return GGML_TYPE_F16; }
+        if (env_cpp == "bf16")                     { return GGML_TYPE_BF16; }
+        return GGML_TYPE_COUNT;
+    }();
+    if (env_type != GGML_TYPE_COUNT) {
+        compute_type = env_type;
+    }
+    const size_t src0_f32_size = ggml_nelements(src0) * sizeof(float);
+    if (compute_type == GGML_TYPE_F32 && (src0->type == GGML_TYPE_F16 || src0->type == GGML_TYPE_BF16) && src0_f32_size > ggml_cuda_cublas_max_src0_convert) {
+        const size_t  f32_row_size   = src0_f32_size / src0->ne[1];
+        const int64_t rows_per_chunk = std::max<int64_t>(1, (int64_t) (ggml_cuda_cublas_max_src0_convert / f32_row_size));
+        if (rows_per_chunk < src0->ne[1]) {
+            ggml_tensor src0_chunk = *src0;
+            ggml_tensor dst_chunk  = *dst;
+            src0_chunk.ne[1] = rows_per_chunk;
+            dst_chunk.ne[0]  = rows_per_chunk;
+            return ggml_cuda_cublas_impl_scratch_fork(device, GGML_TYPE_F32, &src0_chunk, src1, &dst_chunk, top);
+        }
+    }
+    return ggml_cuda_cublas_impl_scratch_fork(device, compute_type, src0, src1, dst, top);
+}
+
+// ggml_cuda_mul_mat (src0 x src1 -> dst): fwht, the vector and float kernels take nothing; MMVQ the activations as q8_1; MMQ (mmq.cu); else cuBLAS
+static size_t ggml_cuda_mm_scratch_fork(int device, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst, size_t top) {
+    if (ggml_cuda_op_mul_mat_use_fwht(dst)) {   // ggml_cuda_op_fwht accepts everything use_fwht does
+        return top;
+    }
+    const bool bad_padding_clear = src0->buffer && ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE
+        && ggml_nbytes(src0) != ggml_backend_buffer_get_alloc_size(src0->buffer, src0) && src0->view_src;   // no buffer: a node the planner made up
+    if (bad_padding_clear || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
+        return ggml_cuda_cublas_scratch_fork(device, src0, src1, dst, top);
+    }
+    const int     cc        = ggml_cuda_info().devices[device].cc;
+    const int     warp_size = ggml_cuda_info().devices[device].warp_size;
+    const int64_t ne10 = src1->ne[0], ne11 = src1->ne[1], ne12 = src1->ne[2], ne13 = src1->ne[3];
+    if (ggml_cuda_should_use_mmvf(src0->type, cc, warp_size, src0->ne, src0->nb, ne11)) {
+        return top;
+    }
+    if (src0->ne[1] == 1 && ne11 > MMVF_MAX_BATCH_SIZE && dst->ne[2] == 1 && dst->ne[3] == 1
+            && src0->type == GGML_TYPE_F32
+            && ggml_is_contiguous(src0) && ggml_is_contiguous(src1) && ggml_is_contiguous(dst)
+            && ggml_cuda_should_use_mmvf(src1->type, cc, warp_size, src1->ne, src1->nb, /*ne11 =*/ 1)) {
+        return top;
+    }
+    if (ggml_cuda_should_use_mmf(src0->type, cc, warp_size, src0->ne, src0->nb, ne11, /*mul_mat_id =*/ false)) {
+        return top;
+    }
+    if (ggml_cuda_should_use_mmvq(src0->type, cc, ne11)) {
+        ggml_cuda_take_fork(top, ne13*ne12 * ne11*GGML_PAD(ne10, MATRIX_ROW_PADDING) * sizeof(block_q8_1)/QK8_1);
+        return top;
+    }
+    if (ggml_cuda_should_use_mmq(src0->type, cc, ne11, /*n_experts =*/ 0)) {
+        return ggml_cuda_mmq_scratch_fork(device, src0, src1, nullptr, dst, top);
+    }
+    return ggml_cuda_cublas_scratch_fork(device, src0, src1, dst, top);
+}
+
+// The sorting path's per-expert matmul runs once per expert with that expert's tokens, so its need depends on the routing, which is not known before the graph
+// runs: any expert may get 1..T tokens (a token uses an expert once). The need is the most over t = 1..T, and the dispatch picks its kernel by t, so it is not
+// monotonic in t: kept as a running maximum per expert shape, from a 256-aligned start (the slices are made as ggml_cuda_mul_mat_id makes them).
+static size_t ggml_cuda_mmid_sorted_inner_fork(int device, const ggml_tensor * dst, ggml_type type_src1_sorted, int64_t T) {
+    const ggml_tensor * src0 = dst->src[0];
+    ggml_tensor s0 = *src0;
+    s0.ne[2]    = 1;
+    s0.nb[3]    = s0.nb[2];
+    s0.op       = GGML_OP_VIEW;
+    s0.view_src = const_cast<ggml_tensor *>(src0);
+    ggml_tensor s1;
+    memset(&s1, 0, sizeof(s1));
+    s1.buffer = dst->src[1]->buffer;
+    s1.type   = type_src1_sorted;
+    s1.ne[0]  = dst->src[1]->ne[0];
+    s1.ne[2]  = s1.ne[3] = 1;
+    s1.nb[0]  = ggml_type_size(type_src1_sorted);
+    s1.nb[1]  = s1.ne[0] * s1.nb[0];
+    ggml_tensor d;
+    memset(&d, 0, sizeof(d));
+    memcpy(d.op_params, dst->op_params, sizeof(d.op_params));
+    d.buffer = dst->buffer;
+    d.type   = GGML_TYPE_F32;
+    d.ne[0]  = dst->ne[0];
+    d.ne[2]  = d.ne[3] = 1;
+    d.nb[0]  = sizeof(float);
+    d.nb[1]  = d.ne[0] * d.nb[0];
+    const bool bad_padding_clear = s0.buffer && ggml_backend_buffer_get_usage(s0.buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE
+        && ggml_nbytes(&s0) != ggml_backend_buffer_get_alloc_size(s0.buffer, &s0);
+
+    std::string key((const char *) &device, sizeof(device));   // everything the per-expert dispatch reads
+    key.append((const char *) &s0.type, sizeof(s0.type));
+    key.append((const char *) s0.ne, sizeof(s0.ne));
+    key.append((const char *) s0.nb, sizeof(s0.nb));
+    key.append((const char *) &type_src1_sorted, sizeof(type_src1_sorted));
+    key.append((const char *) &bad_padding_clear, sizeof(bad_padding_clear));
+    key.append((const char *) d.op_params, sizeof(d.op_params));
+    static std::mutex mtx;
+    static std::map<std::string, std::vector<size_t>> most;   // [t-1]: the most over 1..t tokens
+    std::lock_guard<std::mutex> lock(mtx);
+    std::vector<size_t> & m = most[key];
+    while ((int64_t) m.size() < T) {
+        const int64_t t = (int64_t) m.size() + 1;
+        s1.ne[1] = t;
+        s1.nb[2] = s1.nb[3] = t * s1.nb[1];
+        d.ne[1]  = t;
+        d.nb[2]  = d.nb[3] = t * d.nb[1];
+        const size_t need = ggml_cuda_mm_scratch_fork(device, &s0, &s1, &d, 0);
+        m.push_back(std::max(need, m.empty() ? (size_t) 0 : m.back()));
+    }
+    return T > 0 ? m[T - 1] : 0;
+}
+
+// ggml_cuda_mul_mat_id (the MUL_MAT_ID node dst): MMVQ, MMQ, MMF, else the sorting path
+static size_t ggml_cuda_mmid_scratch_fork(int device, const ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    const ggml_tensor * ids  = dst->src[2];
+    const ggml_type type      = src0->type;
+    const int       cc        = ggml_cuda_info().devices[device].cc;
+    const int       warp_size = ggml_cuda_info().devices[device].warp_size;
+    const int64_t   ne10 = src1->ne[0], ne11 = src1->ne[1], ne12 = src1->ne[2], ne13 = src1->ne[3];
+    const int64_t   n_used = ids->ne[0];
+    const size_t    rows   = (size_t) (ne12 * n_used);   // (token, used expert) pairs
+    size_t top = 0;
+    if (dst->ne[2] <= MMVQ_MAX_BATCH_SIZE) {
+        if (ggml_is_quantized(type)) {
+            if (dst->ne[2] <= get_mmvq_mmid_max_batch(type, cc)) {   // MMVQ: the activations as q8_1 (mmvq.cu)
+                ggml_cuda_take_fork(top, ne13*ne12 * ne11*GGML_PAD(ne10, MATRIX_ROW_PADDING) * sizeof(block_q8_1)/QK8_1);
+                return top;
+            }
+        } else if (GGML_CUDA_CC_IS_AMD(cc)) {   // MMVF: nothing
+            return top;
+        }
+    }
+    if (ggml_cuda_should_use_mmq(type, cc, ne12, /*n_experts=*/src0->ne[2])) {
+        return ggml_cuda_mmq_scratch_fork(device, src0, src1, ids, dst, top);
+    }
+    if (ggml_cuda_should_use_mmf(type, cc, warp_size, src0->ne, src0->nb, src1->ne[2], /*mul_mat_id=*/true)) {
+        if (dst->ne[2] > 16) {   // mmf.cu: the compact id maps and expert bounds (ncols_dst = tokens)
+            ggml_cuda_take_fork(top, rows * sizeof(int32_t));
+            ggml_cuda_take_fork(top, rows * sizeof(int32_t));
+            ggml_cuda_take_fork(top, (size_t) (src0->ne[2] + 1) * sizeof(int32_t));
+        }
+        return top;
+    }
+    // the sorting path: the id maps, the activations sorted by expert, the outputs (f32); on top of them, one expert at a time, ggml_cuda_mul_mat
+    const ggml_type type_src1_sorted = (type == GGML_TYPE_F16 && !fast_fp16_hardware_available(cc)) || ggml_is_quantized(type) ? GGML_TYPE_F32 : type;
+    ggml_cuda_take_fork(top, 2*rows * sizeof(int32_t));
+    ggml_cuda_take_fork(top, rows * (size_t) ne10 * ggml_type_size(type_src1_sorted));
+    ggml_cuda_take_fork(top, (size_t) (dst->ne[2] * n_used * dst->ne[0]) * sizeof(float));
+    const size_t inner = ggml_cuda_mmid_sorted_inner_fork(device, dst, type_src1_sorted, ne12);
+    return inner > 0 ? GGML_PAD(top, 256) + inner : top;
+}
+
+size_t ggml_cuda_top_k_scratch_fork(const ggml_tensor * dst, size_t top);     // top-k.cu
+size_t ggml_cuda_argsort_scratch_fork(const ggml_tensor * dst, size_t top);   // argsort.cu
+size_t ggml_cuda_soft_max_scratch_fork(const ggml_tensor * dst, size_t top);  // softmax.cu
+size_t ggml_cuda_sum_scratch_fork(const ggml_tensor * dst, size_t top);       // sum.cu
+size_t ggml_cuda_mean_scratch_fork(const ggml_tensor * dst, size_t top);      // mean.cu
+size_t ggml_cuda_cumsum_scratch_fork(const ggml_tensor * dst, size_t top);    // cumsum.cu
+size_t ggml_cuda_solve_tri_scratch_fork(const ggml_tensor * dst, size_t top); // solve_tri.cu
+size_t ggml_cuda_ssm_scan_scratch_fork(const ggml_tensor * dst, size_t top);  // ssm-scan.cu
+extern thread_local size_t * ggml_cuda_fattn_plan_fork;                        // fattn.cu, read by launch_fattn (fattn-common.cuh)
+
+// ggml_cuda_flash_attn_ext: the kernel choice and launch_fattn run as in a real call, in plan mode (fattn-common.cuh): nothing is converted, taken or launched,
+// launch_fattn adds what it would take. A call needs a backend context: one per device that never computes (no stream is made, the pool takes nothing).
+static size_t ggml_cuda_fattn_scratch_fork(int device, const ggml_tensor * dst) {
+    if (!ggml_cuda_flash_attn_ext_supported(device, dst)) {
+        return 0;
+    }
+    static std::mutex mtx;
+    static ggml_backend_cuda_context * plan_ctx[GGML_CUDA_MAX_DEVICES] = {};
+    std::lock_guard<std::mutex> lock(mtx);
+    if (!plan_ctx[device]) {
+        plan_ctx[device] = new ggml_backend_cuda_context(device);
+    }
+    size_t top = 0;
+    ggml_cuda_fattn_plan_fork = &top;
+    ggml_cuda_flash_attn_ext(*plan_ctx[device], const_cast<ggml_tensor *>(dst));
+    ggml_cuda_fattn_plan_fork = nullptr;
+    return top;
+}
+
+// the most scratch any of the n nodes takes when they run on `device`; 0 for the ops that take none (and for any op without a mirror: GGML_CUDA_SCRATCH_CHECK=1
+// lists those; the ops that take pool memory and have none are training and vision ops: OUT_PROD, CROSS_ENTROPY_LOSS, CONV_2D/3D, and the tensor-parallel
+// all-reduce). The pool asks this once per split of every new graph (the scheduler keeps the value until it splits again): one call per split, the device set
+// once (some path tests read the current device's properties, ggml_cuda_should_use_mmq: shared memory per block; switching per node cost 0.2 ms per DeepSeek
+// 4.1 decode step).
+static size_t ggml_backend_cuda_nodes_scratch_fork(int device, const ggml_tensor * const * nodes, int n) {
+    int prev = -1;
+    size_t need = 0;
+    for (int i = 0; i < n; ++i) {
+        const ggml_tensor * node = nodes[i];
+        switch (node->op) {
+            case GGML_OP_MUL_MAT_ID: case GGML_OP_MUL_MAT: case GGML_OP_FLASH_ATTN_EXT: case GGML_OP_TOP_K: case GGML_OP_ARGSORT:
+            case GGML_OP_SOFT_MAX: case GGML_OP_SUM: case GGML_OP_MEAN: case GGML_OP_CUMSUM: case GGML_OP_SOLVE_TRI: case GGML_OP_SSM_SCAN: break;
+            default: continue;
+        }
+        if (prev < 0) {
+            CUDA_CHECK(cudaGetDevice(&prev));
+            ggml_cuda_set_device(device);
+        }
+        switch (node->op) {
+            case GGML_OP_MUL_MAT_ID:     need = std::max(need, ggml_cuda_mmid_scratch_fork(device, node));                            break;
+            case GGML_OP_MUL_MAT:        need = std::max(need, ggml_cuda_mm_scratch_fork(device, node->src[0], node->src[1], node, 0)); break;
+            case GGML_OP_FLASH_ATTN_EXT: need = std::max(need, ggml_cuda_fattn_scratch_fork(device, node));                           break;
+            case GGML_OP_TOP_K:          need = std::max(need, ggml_cuda_top_k_scratch_fork(node, 0));                                break;
+            case GGML_OP_ARGSORT:        need = std::max(need, ggml_cuda_argsort_scratch_fork(node, 0));                              break;
+            case GGML_OP_SOFT_MAX:       need = std::max(need, ggml_cuda_soft_max_scratch_fork(node, 0));                             break;
+            case GGML_OP_SUM:            need = std::max(need, ggml_cuda_sum_scratch_fork(node, 0));                                  break;
+            case GGML_OP_MEAN:           need = std::max(need, ggml_cuda_mean_scratch_fork(node, 0));                                 break;
+            case GGML_OP_CUMSUM:         need = std::max(need, ggml_cuda_cumsum_scratch_fork(node, 0));                               break;
+            case GGML_OP_SOLVE_TRI:      need = std::max(need, ggml_cuda_solve_tri_scratch_fork(node, 0));                            break;
+            case GGML_OP_SSM_SCAN:       need = std::max(need, ggml_cuda_ssm_scan_scratch_fork(node, 0));                             break;
+            default:                                                                                                                   break;
+        }
+    }
+    if (prev >= 0) {
+        ggml_cuda_set_device(prev);
+    }
+    return need;
+}
+static size_t ggml_backend_cuda_node_scratch_fork(int device, const ggml_tensor * node) {
+    return ggml_backend_cuda_nodes_scratch_fork(device, &node, 1);
+}
+
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
     switch (dst->op) {
         case GGML_OP_ARGMAX:
@@ -3738,6 +4044,31 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
         }
     }
     return true;
+}
+
+// fork: what ggml_backend_cuda_cpy_tensor_async above takes from the SOURCE card's pool when the scheduler copies a split's input to another card: a gappy view
+// (a layer's K or V inside the token-major KV record; the scheduler makes the destination compact, ggml_dup_tensor_layout) is gathered into one compact block on
+// the source card first, ggml_nbytes(dst); every other copy takes nothing. Same tests as the copy. The expert pool lends it with the graph's scratch
+// (ggml_backend_sched_node_max_dev); tests/test-scratch-fork.cpp copies such a view between two cards and checks the bytes.
+static size_t ggml_backend_cuda_copy_scratch_fork(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, const ggml_tensor * dst) {
+    if (backend_src == backend_dst || !ggml_backend_is_cuda(backend_src) || !ggml_backend_is_cuda(backend_dst)) {
+        return 0;
+    }
+    ggml_backend_buffer_t buf_src = src->view_src ? src->view_src->buffer : src->buffer;
+    ggml_backend_buffer_t buf_dst = dst->view_src ? dst->view_src->buffer : dst->buffer;
+    if (!buf_src || !buf_dst || !ggml_backend_buffer_is_cuda(buf_src) || !ggml_backend_buffer_is_cuda(buf_dst)) {
+        return 0;
+    }
+    const ggml_backend_cuda_context        * cuda_ctx_src = (const ggml_backend_cuda_context *) backend_src->context;
+    const ggml_backend_cuda_context        * cuda_ctx_dst = (const ggml_backend_cuda_context *) backend_dst->context;
+    const ggml_backend_cuda_buffer_context * buf_ctx_src  = (const ggml_backend_cuda_buffer_context *) buf_src->context;
+    const ggml_backend_cuda_buffer_context * buf_ctx_dst  = (const ggml_backend_cuda_buffer_context *) buf_dst->context;
+    if (cuda_ctx_src->device != buf_ctx_src->device || cuda_ctx_dst->device != buf_ctx_dst->device) {
+        return 0;
+    }
+    const bool rows_copy = !ggml_are_same_layout(src, dst) && src->type == dst->type && ggml_are_same_shape(src, dst) &&
+                           src->nb[0] == dst->nb[0] && ggml_is_contiguous(dst);
+    return rows_copy ? ggml_nbytes(dst) : 0;
 }
 
 // fork: tells the scheduler which copies are written on the destination's own stream (the two-half copy above), so it does not wait for the destination card
@@ -5802,6 +6133,45 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     return 0;
 }
 
+// fork: GGML_CUDA_SCRATCH_CHECK=1 checks the scratch mirrors on real graphs: what each node (or fused group) took from the scratch region, from the region's
+// high-water mark around the call, against what ggml_backend_cuda_node_scratch_fork computes for it. A node that took more than computed is a lend that spills
+// to the device pool (the DeepSeek 4.1 out-of-memory, 2026-10-27); less is lent blocks experts could hold. Each distinct (op, took, computed) is logged once,
+// so a run lists every op that still lacks an exact mirror. Main stream only (the other streams do not take from the region); off: one branch per node.
+static size_t ggml_cuda_scratch_check_begin_fork(int device) {
+    ggml_cuda_scratch_region & s = g_cuda_scratch[device];
+    const size_t saved = s.hwm;
+    s.hwm = s.top;
+    return saved;
+}
+static void ggml_cuda_scratch_check_end_fork(int device, const ggml_cgraph * cgraph, int i0, int n, size_t saved) {
+    ggml_cuda_scratch_region & s = g_cuda_scratch[device];
+    const size_t took = s.hwm;
+    s.hwm = std::max(saved, took);
+    if (s.base == nullptr) {   // no region set: nothing was measured
+        return;
+    }
+    static std::atomic<bool> active_shown[GGML_CUDA_MAX_DEVICES];   // once per card: silence after this line means every node took exactly what was computed
+    if (!active_shown[device].exchange(true)) {
+        GGML_LOG_WARN("scratch check CUDA%d: active (every node's scratch measured against its mirror; mismatches are logged once each)\n", device);
+    }
+    size_t computed = 0;
+    for (int k = i0; k < i0 + n; ++k) {
+        computed = std::max(computed, ggml_backend_cuda_node_scratch_fork(device, cgraph->nodes[k]));
+    }
+    if (took == computed) {
+        return;
+    }
+    const ggml_tensor * node = cgraph->nodes[i0];
+    static std::mutex mtx;
+    static std::set<std::tuple<int, std::string, size_t, size_t>> seen;
+    std::lock_guard<std::mutex> lock(mtx);
+    if (seen.size() < 4096 && seen.insert({ device, ggml_op_desc(node), took, computed }).second) {
+        GGML_LOG_WARN("scratch check CUDA%d: %s %s%s [%lld %lld %lld %lld] took %zu bytes, computed %zu (%+lld)\n", device, ggml_op_desc(node), node->name,
+                n > 1 ? " (fused group)" : "", (long long) node->ne[0], (long long) node->ne[1], (long long) node->ne[2], (long long) node->ne[3],
+                took, computed, (long long) computed - (long long) took);
+    }
+}
+
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
     bool graph_evaluated_or_captured = false;
 
@@ -5959,9 +6329,16 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     continue;
                 }
 
+                static const bool scratch_check = getenv("GGML_CUDA_SCRATCH_CHECK") != nullptr;   // fork: ggml_cuda_scratch_check_end_fork
+                // only the context the region is lent to takes from it: another context's nodes (a draft between two target steps) would read as "took 0"
+                const bool check_node = scratch_check && cuda_ctx->curr_stream_no == 0
+                    && (g_cuda_scratch[cuda_ctx->device].owner == nullptr || g_cuda_scratch[cuda_ctx->device].owner == cuda_ctx);
+                const size_t check_saved = check_node ? ggml_cuda_scratch_check_begin_fork(cuda_ctx->device) : 0;
+
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
 
                 if (nodes_to_skip != 0) {
+                    if (check_node) { ggml_cuda_scratch_check_end_fork(cuda_ctx->device, cgraph, i, nodes_to_skip + 1, check_saved); }
 #ifdef GGML_CUDA_DEBUG
                     const int last_fused = i + nodes_to_skip;
                     GGML_LOG_INFO("nodes_fused: %d, first: %s (%s), last: %s (%s)\n",
@@ -5993,6 +6370,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 if (nvtx_nodes) { char nb[128]; snprintf(nb, sizeof nb, "NODE %s %s", ggml_op_desc(node), node->name); nvtxRangePushA(nb); }
                 bool ok = ggml_cuda_compute_forward(*cuda_ctx, node);
                 if (nvtx_nodes) { nvtxRangePop(); }
+                if (check_node) { ggml_cuda_scratch_check_end_fork(cuda_ctx->device, cgraph, (int) i, 1, check_saved); }
                 if (!ok) {
                     GGML_LOG_ERROR("%s: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
                 }
@@ -7642,6 +8020,15 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_scratch_fork") == 0) {
         return (void *)ggml_backend_cuda_scratch_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_node_scratch_fork") == 0) {   // fork: the scratch a node takes, before it runs
+        return (void *)ggml_backend_cuda_node_scratch_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_nodes_scratch_fork") == 0) {  // fork: the most scratch any of a split's nodes takes (one device switch)
+        return (void *)ggml_backend_cuda_nodes_scratch_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_copy_scratch_fork") == 0) {   // fork: the scratch a cross-card input copy takes on its source card
+        return (void *)ggml_backend_cuda_copy_scratch_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_driver_version_fork") == 0) {   // fork: part of the key of the VRAM need the engine stores (where /proc has no driver)
         return (void *)ggml_backend_cuda_driver_version_fork;

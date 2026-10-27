@@ -478,3 +478,28 @@ void ggml_cuda_op_soft_max_back(ggml_backend_cuda_context & ctx, ggml_tensor * d
 
     soft_max_back_f32_cuda(src0_d, src1_d, dst_d, ncols, nrows, scale, stream);
 }
+
+// fork: the scratch the expert-cache pool lends a graph is computed per node before the graph runs (ggml_backend_cuda_nodes_scratch_fork, ggml-cuda.cu). This
+// mirrors soft_max_f32_cuda: only the cooperative path (a few rows too long for shared memory, without mask or sinks: the sampler's softmax over the
+// vocabulary) takes two per-SM arrays from the pool (each nsm * sizeof(float) floats, as allocated there). tests/test-scratch-fork.cpp checks the bytes.
+size_t ggml_cuda_soft_max_scratch_fork(const ggml_tensor * dst, size_t top) {
+    const ggml_tensor * src0 = dst->src[0];
+    float scale    = 1.0f;
+    float max_bias = 0.0f;
+    memcpy(&scale,    (const float *) dst->op_params + 0, sizeof(float));
+    memcpy(&max_bias, (const float *) dst->op_params + 1, sizeof(float));
+    const int64_t ncols_x       = src0->ne[0];
+    const size_t  nbytes_shared = (GGML_PAD(ncols_x, WARP_SIZE) + WARP_SIZE)*sizeof(float);
+    const int     id            = ggml_cuda_get_device();
+    if (nbytes_shared <= ggml_cuda_info().devices[id].smpbo) {
+        return top;
+    }
+    if (ggml_cuda_info().devices[id].supports_cooperative_launch &&
+        ncols_x / (src0->ne[1] * src0->ne[2] * src0->ne[3]) > 8192 && dst->src[1] == nullptr && dst->src[2] == nullptr &&
+        scale == 1.0f && max_bias == 0.0f) {
+        const size_t n = (size_t) ggml_cuda_info().devices[id].nsm * sizeof(float) * sizeof(float);
+        top = GGML_PAD(top, 256) + n;   // tmp_maxs
+        top = GGML_PAD(top, 256) + n;   // tmp_sums
+    }
+    return top;
+}

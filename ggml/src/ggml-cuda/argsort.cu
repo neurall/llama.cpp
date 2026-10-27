@@ -306,3 +306,77 @@ void ggml_cuda_op_argsort(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     argsort_f32_i32_cuda_bitonic(src0_d, (int *) dst_d, ncols, nrows, order, stream);
 #endif
 }
+
+// fork: the scratch the expert-cache pool lends a graph is computed per node before the graph runs (ggml_backend_cuda_node_scratch_fork, ggml-cuda.cu). These
+// mirror the pool allocations above, in the same order, each from a multiple of 256 (as ggml_cuda_pool_scratch places them), added to `top`; CUB's temporary
+// storage comes from CUB's own size query, with the same types. tests/test-scratch-fork.cpp runs the op and checks the bytes.
+#ifdef GGML_CUDA_USE_CUB
+// argsort_f32_i32_cuda_cub. A CUDA graph being captured picks the segmented radix sort, else the segmented sort: which one is not known before the graph runs,
+// so the larger of the two
+size_t ggml_cuda_argsort_cub_scratch_fork(const int ncols, const int nrows, const ggml_sort_order order, size_t top) {
+    auto take = [&top](size_t n) { if (n > 0) { top = GGML_PAD(top, 256) + n; } };
+    take((size_t) ncols * nrows * sizeof(int));     // temp_indices
+    take((size_t) ncols * nrows * sizeof(float));   // temp_keys
+    take((size_t) ncols * nrows * sizeof(float));   // temp_keys_out
+#ifdef STRIDED_ITERATOR_AVAILABLE
+    auto offset_iterator = cuda::make_strided_iterator(cuda::make_counting_iterator(0), ncols);
+#else
+    take((size_t) (nrows + 1) * sizeof(int));       // offsets
+    int * offset_iterator = nullptr;
+#endif
+    float *      keys   = nullptr;
+    int *        idx    = nullptr;
+    cudaStream_t stream = nullptr;
+    size_t bytes = 0, bytes_capture = 0;
+    if (order == GGML_SORT_ORDER_ASC) {
+        if (nrows == 1) {
+            CUDA_CHECK(DeviceRadixSort::SortPairs(nullptr, bytes, keys, keys, idx, idx, ncols, 0, sizeof(float) * 8, stream));
+        } else {
+#ifdef USE_CUDA_GRAPH
+            CUDA_CHECK(DeviceSegmentedRadixSort::SortPairs(nullptr, bytes_capture, keys, keys, idx, idx, ncols * nrows, nrows,
+                                                           offset_iterator, offset_iterator + 1, 0, sizeof(float) * 8, stream));
+#endif  // USE_CUDA_GRAPH
+            CUDA_CHECK(DeviceSegmentedSort::SortPairs(nullptr, bytes, keys, keys, idx, idx, ncols * nrows, nrows,
+                                                      offset_iterator, offset_iterator + 1, stream));
+        }
+    } else {
+        if (nrows == 1) {
+            CUDA_CHECK(DeviceRadixSort::SortPairsDescending(nullptr, bytes, keys, keys, idx, idx, ncols, 0, sizeof(float) * 8, stream));
+        } else {
+#ifdef USE_CUDA_GRAPH
+            CUDA_CHECK(DeviceSegmentedRadixSort::SortPairsDescending(nullptr, bytes_capture, keys, keys, idx, idx, ncols * nrows, nrows,
+                                                                     offset_iterator, offset_iterator + 1, 0, sizeof(float) * 8, stream));
+#endif  // USE_CUDA_GRAPH
+            CUDA_CHECK(DeviceSegmentedSort::SortPairsDescending(nullptr, bytes, keys, keys, idx, idx, ncols * nrows, nrows,
+                                                                offset_iterator, offset_iterator + 1, stream));
+        }
+    }
+    take(std::max(bytes, bytes_capture));           // temp_storage
+    return top;
+}
+#endif  // GGML_CUDA_USE_CUB
+
+// ggml_cuda_op_argsort: the bitonic sort takes nothing; CUB sorts in chunks of rows, one after another (each frees its buffers): the larger of a full chunk and
+// the last, shorter one
+size_t ggml_cuda_argsort_scratch_fork(const ggml_tensor * dst, size_t top) {
+#ifdef GGML_CUDA_USE_CUB
+    const ggml_tensor * src0 = dst->src[0];
+    const int64_t ncols = src0->ne[0];
+    const int64_t nrows = ggml_nrows(src0);
+    const enum ggml_sort_order order = (enum ggml_sort_order) dst->op_params[0];
+    const size_t shared_mem     = next_power_of_2(ncols) * sizeof(int);
+    const size_t max_shared_mem = ggml_cuda_info().devices[ggml_cuda_get_device()].smpb;
+    if (shared_mem <= max_shared_mem && ncols <= 1024) {
+        return top;
+    }
+    const int chunk_nrows = ggml_cuda_chunk_nrows(src0->nb[1], nrows);
+    size_t need = ggml_cuda_argsort_cub_scratch_fork(ncols, chunk_nrows, order, top);
+    if (nrows % chunk_nrows != 0) {
+        need = std::max(need, ggml_cuda_argsort_cub_scratch_fork(ncols, (int) (nrows % chunk_nrows), order, top));
+    }
+    return need;
+#else
+    GGML_UNUSED(dst);
+    return top;
+#endif  // GGML_CUDA_USE_CUB
+}

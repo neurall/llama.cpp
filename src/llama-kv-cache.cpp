@@ -113,6 +113,33 @@ static void ggml_gen_hadamard(ggml_tensor * tensor) {
 
 std::string llama_moe_cache_kv_tail_why_fork(void * owner, size_t max_cell);   // llama-moecache-fork.cpp
 
+// fork: the rows in use of a kv-tail record whose cells are never marked used. The DSV4 compressed caches (llama-kv-cache-dsv4.cpp) are written by the graph
+// at row pos / ratio (set_rows with the indices of the compressor plan), not through find_slot / apply, so used_max_p1() stays 0. The pool sizes, moves and
+// pads the KV zone by the rows in use: with 0 it moved none of their rows when the zone moved (the rows written before stayed in blocks that went back to the
+// experts) and never zeroed the pad rows that their attention reads past the last row. DeepSeek 4.1 without -c, where its per-token compressed cache is the only
+// record that grows, read expert bytes as K (NaN) and produced token 0 for every token (2026-10-26). Such a cache's owner registers how many rows are in use;
+// the entry goes with the cache (tail_guard).
+// The owner also gives the tokens one row covers (ratio, 1 for a cache with a row per token). A compressed cache covers the whole context with fewer rows; a
+// sliding-window ring has fewer rows because it forgets. Only the ratio tells them apart: the pool lays a ring out at full size and grows a compressed cache with
+// the zone (llama_kv_cache_tail_ratio_fork, read by llama-moecache-fork.cpp).
+struct tail_rows_ent { std::function<size_t()> fn; size_t ratio = 1; };
+static std::mutex g_tail_rows_mu;
+static std::unordered_map<const void *, tail_rows_ent> g_tail_rows;
+void llama_kv_cache_tail_rows_fork(const void * kv, std::function<size_t()> fn, size_t ratio) {   // declared where it is used (llama-kv-cache-dsv4.cpp), no header edit
+    std::lock_guard<std::mutex> lk(g_tail_rows_mu);
+    if (fn) { g_tail_rows[kv] = { std::move(fn), std::max<size_t>(1, ratio) }; } else { g_tail_rows.erase(kv); }
+}
+static std::function<size_t()> tail_rows_get(const void * kv) {
+    std::lock_guard<std::mutex> lk(g_tail_rows_mu);
+    const auto it = g_tail_rows.find(kv);
+    return it != g_tail_rows.end() ? it->second.fn : std::function<size_t()>();
+}
+size_t llama_kv_cache_tail_ratio_fork(const void * kv) {   // declared where it is used (llama-moecache-fork.cpp), no header edit
+    std::lock_guard<std::mutex> lk(g_tail_rows_mu);
+    const auto it = g_tail_rows.find(kv);
+    return it != g_tail_rows.end() ? it->second.ratio : 1;
+}
+
 llama_kv_cache::llama_kv_cache(
         const llama_model & model,
         const llama_hparams & hparams,
@@ -453,7 +480,10 @@ llama_kv_cache::llama_kv_cache(
             reg.step  = kv_tail_step;
             reg.bpv   = (float) ggml_row_size(type_k, 256) / 256.0f;   // equal K and V types here (tail_possible)
             reg.pad   = std::max(n_pad, 256u);   // the attention reads the cells rounded up as get_n_kv does (at least 256): those rows must be claimed and finite
-            reg.rows  = [this]() -> size_t { return v_cells.empty() ? 0 : (size_t) v_cells[0].used_max_p1(); };
+            reg.rows  = [this]() -> size_t {
+                if (const auto fn = tail_rows_get(this)) { return fn(); }   // a cache the graph writes by row (DSV4 compressed): its owner counts the rows
+                return v_cells.empty() ? 0 : (size_t) v_cells[0].used_max_p1();
+            };
             reg.detach = [this]() {
                 GGML_ASSERT((v_cells.empty() || v_cells[0].used_max_p1() == 0) && "kv-tail: the pool starts while the cache holds cells");
             };
@@ -3348,7 +3378,7 @@ void llama_kv_cache_context::get_prev_tokens(const llama_ubatch & ubatch, uint32
 }
 
 void llama_moe_cache_kv_tail_remove_fork(void * owner);
-llama_kv_cache::tail_guard::~tail_guard() { llama_moe_cache_kv_tail_remove_fork(o); }
+llama_kv_cache::tail_guard::~tail_guard() { llama_moe_cache_kv_tail_remove_fork(o); llama_kv_cache_tail_rows_fork(o, nullptr, 1); }
 
 size_t llama_moe_cache_kv_tail_cap_fork(void * owner);
 // the context calibrates the host buffer of a pass with three small reserves at different cell counts (llama_context, host_calibrate): while one runs, the reserve graph sees this many cells
@@ -3356,9 +3386,12 @@ static std::atomic<uint32_t> g_kv_reserve_override { 0 };
 void llama_kv_reserve_override_fork(uint32_t n) { g_kv_reserve_override.store(n); }
 uint32_t llama_kv_reserve_override_get_fork() { return g_kv_reserve_override.load(); }   // the k-pool sizes follow it (llama-memory-hybrid-idx.cpp)
 
+bool llama_moe_cache_kv_pool_bound_fork(const void * owner);
 uint32_t llama_kv_cache::get_size_reserve() const {
     if (const uint32_t o = g_kv_reserve_override.load()) { return std::min<uint32_t>(get_size(), o); }
-    return kv_tail_on && kv_tail_step > 0 && llama_moe_cache_kv_pool_expected_fork() ? std::min<uint32_t>(get_size(), kv_tail_step) : get_size();
+    // whether THIS cache's context expects the pool (captured when the record was added), not the last context created: a DSpark draft created after the target
+    // turned the global flag off and the target's reserves took its full 1M-cell context (micro-batch 16384 -> 640, 2026-10-26)
+    return kv_tail_on && kv_tail_step > 0 && llama_moe_cache_kv_pool_bound_fork(this) ? std::min<uint32_t>(get_size(), kv_tail_step) : get_size();
 }
 uint32_t llama_kv_cache::kv_tail_cap(uint32_t n) const {
     if (!kv_tail_on) { return n; }

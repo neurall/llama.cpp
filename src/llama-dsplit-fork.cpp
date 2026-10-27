@@ -1582,13 +1582,15 @@ static void dsplit_climb_step(const dsplit_bal & B, size_t n, int b) {
 bool                            g_bal_used = false;   // a graph builder takes its shares from here
 int                             g_bal_last = -1;      // the bucket of the last step
 long long                       g_bal_t_ms = 0;       // wall time (ms since the epoch) of the last step: run.py tells this cell's passes from an earlier cell's
+dsplit_bal                      g_one_bal;            // the last prompt pass that ran on ONE card (user 2026-10-26: pass statistics for single-GPU runs too), under g_plan_mu
+long long                       g_one_t_ms = 0;       // wall time of that pass; /moe/stats reports whichever of the two reports is newer
 std::vector<ggml_backend_dev_t> g_rng_dev;            // the cards of the last split graph, in range order (the cards with no range included)
 std::vector<int64_t>            g_rng_tok;            // and their tokens
 int64_t                         g_rng_seq = 0;        // split graphs built so far (one per pass whose size changed) and when the last was built: the pass running now
 int64_t                         g_rng_t0  = 0;
 long                            g_card_seen = 0;
 const char * dsplit_bal_phase(int p) {
-    return p == 0 ? "balancing the token shares" : p == 1 ? "experts on trial" : p == 2 ? "dense split alone" : "dense split with experts";
+    return p == 0 ? "balancing the token shares" : p == 1 ? "experts on trial" : p == 2 ? "dense split alone" : p == 4 ? "one card" : "dense split with experts";
 }
 dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) {
     auto it = g_bal.find(b);
@@ -2126,15 +2128,16 @@ std::string llama_dsplit_state_json_fork() {
              g_pf_choice == 1 ? (n_rng > 0 ? n_rng : g_ngpus) : g_pf_choice == 0 ? 1 : 0, why.c_str());
     // the live balance of the last measured split pass: every card's shares, dense and MoE times, the phase, what the last step did
     auto bt = g_bal_last >= 0 ? g_bal.find(g_bal_last) : g_bal.end();
-    if (bt != g_bal.end() && !bt->second.dev.empty()) {
-        const dsplit_bal & B = bt->second;
+    const bool one_newer = !g_one_bal.dev.empty() && g_one_t_ms > g_bal_t_ms;   // the last measured pass ran on one card: its statistics, same shape as a split pass's
+    if (one_newer || (bt != g_bal.end() && !bt->second.dev.empty())) {
+        const dsplit_bal & B = one_newer ? g_one_bal : bt->second;
         std::string last = B.last;
         for (char & c : last) { if (c == '"' || c == '\\' || c < ' ') { c = ' '; } }
         static const bool detail = getenv("GGML_SCHED_PASS_STATS") && atoi(getenv("GGML_SCHED_PASS_STATS")) == 1;   // --moe pass-stats: the breakdown below is measured
         std::string zsrc = g_zw.src;
         for (char & c : zsrc) { if (c == '"' || c == '\\' || c < ' ') { c = ' '; } }
         out += format(",\"bal\":{\"t_ms\":%lld,\"phase\":\"%s\",\"n\":%d,\"us_tok\":%.2f,\"ref_us_tok\":%.2f,\"span_ms\":%.1f,\"cap\":%u,\"plim\":%u,\"detail\":%d,\"last\":\"%s\",\"zw_src\":\"%s\",\"cards\":[",
-                g_bal_t_ms, dsplit_bal_phase(B.phase), B.n, B.v, B.ref_v, B.span, B.cap, B.plim, detail ? 1 : 0, last.c_str(), zsrc.c_str());
+                one_newer ? g_one_t_ms : g_bal_t_ms, dsplit_bal_phase(B.phase), B.n, B.v, B.ref_v, B.span, B.cap, B.plim, detail ? 1 : 0, last.c_str(), zsrc.c_str());
         const auto at = [](const std::vector<double> & v, size_t i) { return i < v.size() ? v[i] : 0.0; };
         // The cards' measured speeds against the best card's (user 2026-10-24: "make those scores 1 normalized ... 0.25 for upload and 0.8 for compute"): compute from the
         // probe's sustained matmul burst (power-capped clocks included), upload from the probed host-to-card rate; both measured once at server start, 1.00 = the best card
@@ -2400,7 +2403,15 @@ bool llama_dsplit_pass_open_fork() { std::lock_guard<std::mutex> dl(g_dsf_mu); r
 // a pass that ran out of CUDA memory (llama_context::decode takes its call back and runs it again) is no sample: its open timing would end at the next
 // pass and count the failure, the recovery and the retry as that pass's time (the scheduler drops its card times itself)
 void llama_dsplit_pass_abandon_fork() { std::lock_guard<std::mutex> dl(g_dsf_mu); g_dsf_ps = dsf_pass(); }
+static void dsplit_pass_end_locked();
+static void dsplit_one_report(const dsf_pass & p);
 void llama_dsplit_pass_end_fork() {
+    dsf_pass p0;
+    { std::lock_guard<std::mutex> dl(g_dsf_mu); p0 = g_dsf_ps; }
+    dsplit_pass_end_locked();
+    if (p0.choice == 0) { dsplit_one_report(p0); }   // after the dsf lock is released: the report takes g_plan_mu, the balance step takes them the other way round
+}
+static void dsplit_pass_end_locked() {
     std::lock_guard<std::mutex> dl(g_dsf_mu);
     const dsf_pass p = g_dsf_ps;
     g_dsf_ps = dsf_pass();
@@ -2450,6 +2461,42 @@ void llama_dsplit_note_fill_fork(double ms) {   // llama_context::moe_mirror_fil
     dsf_load();
     g_dsf_ps.fill_ms += ms;
     dsf_upd(g_dsf_fill, ms);   // in memory only: before the first fill of a run the planner's estimate (copy bytes / link rate) stands
+}
+
+// A prompt pass that ran on one card, for /moe/stats and run.py's pass table (the split balance only reports split passes). The scheduler stamps every pass of
+// the card (compute, upload wait, link), so the same columns exist; nothing is balanced or learned from it. The pass is the card's alone: no wait for other cards.
+static void dsplit_one_report(const dsf_pass & p) {
+    if (!p.xdev || p.T < 2) { return; }
+    dsplit_card_stat st[16]; long gen = 0;
+    const int nst = ggml_backend_sched_card_stats(st, 16, &gen);
+    const dsplit_card_stat * c = nullptr;
+    for (int j = 0; j < nst; ++j) { if (st[j].backend && ggml_backend_get_device(st[j].backend) == p.xdev) { c = &st[j]; } }
+    if (!c || c->dense_us + c->moe_us <= 0 || c->last_us <= c->first_us) { return; }
+    std::lock_guard<std::mutex> pk(g_plan_mu);
+    static long seen = -1;
+    if (gen == seen) { return; }   // the same stamps as the last report: this pass was not measured
+    seen = gen;
+    dsplit_bal B;
+    const std::vector<ggml_backend_dev_t> dev = { p.xdev };
+    B.dev = dev; B.s = { 1.0 }; B.f = { 1.0 }; B.s_run = B.s; B.f_run = B.f;
+    B.hop = { 0.0 }; B.k = { 0.0 }; B.wd = { c->wait_dense_us / 1e3 }; B.wm = { c->wait_moe_us / 1e3 }; B.wx = { c->max_wait_us / 1e3 };
+    B.d = { c->dense_us / 1e3 }; B.m = { c->moe_us / 1e3 };
+    B.c = { (double) c->dense_us / (double) p.T };
+    B.tok = { p.T };
+    B.span = (double) (c->last_us - c->first_us) / 1e3;
+    B.v = B.span * 1e3 / (double) p.T;
+    B.uw = { c->up_wait_us / 1e3 }; B.xw = { 0.0 }; B.ln = { c->link_us / 1e3 };
+    B.st = { std::max(0.0, B.span - (c->dense_us + c->moe_us + c->up_wait_us) / 1e3) };   // nothing queued: the rest of the pass
+    uint64_t hb = 0, ib = 0, ob = 0;
+    const uint64_t ub = ggml_backend_sched_upload_bytes_fork(p.xdev);
+    ggml_backend_sched_link_bytes_fork(p.xdev, &hb, &ib, &ob);
+    B.gb_up = { ub / 1e9 }; B.gb_host = { hb / 1e9 }; B.gb_in = { ib / 1e9 }; B.gb_out = { ob / 1e9 };
+    const double gbs = dsplit_link_once(p.xdev);
+    B.up = { gbs > 0.0 ? (double) ub / (gbs * 1e6) : 0.0 };
+    B.cap = g_card_lim.load(); B.plim = g_pass_lim.load();
+    B.phase = 4; B.n = g_one_bal.n + 1; B.last = "one card";
+    g_one_bal = B;
+    g_one_t_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
 bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {

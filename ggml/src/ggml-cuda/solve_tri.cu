@@ -271,3 +271,19 @@ void ggml_cuda_op_solve_tri(ggml_backend_cuda_context & ctx, ggml_tensor * dst) 
                              dst->nb[3] / sizeof(float), ctx.stream());
     }
 }
+
+// fork: the scratch the expert-cache pool lends a graph is computed per node before the graph runs (ggml_backend_cuda_nodes_scratch_fork, ggml-cuda.cu). This
+// mirrors ggml_cuda_op_solve_tri: the cuBLAS path (n > MAX_N_FAST or k > MAX_K_FAST) takes the two batched pointer arrays. tests/test-scratch-fork.cpp checks it.
+size_t ggml_cuda_solve_tri_scratch_fork(const ggml_tensor * dst, size_t top) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    const int64_t n             = src0->ne[0];
+    const int64_t k             = src1->ne[0];
+    const int64_t total_batches = src0->ne[2] * src0->ne[3];
+    if ((n <= MAX_N_FAST && k <= MAX_K_FAST) || total_batches == 0) {
+        return top;
+    }
+    top = GGML_PAD(top, 256) + total_batches * sizeof(const float *);   // A_ptrs
+    top = GGML_PAD(top, 256) + total_batches * sizeof(float *);         // X_ptrs
+    return top;
+}

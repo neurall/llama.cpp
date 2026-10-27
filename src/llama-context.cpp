@@ -59,6 +59,7 @@ void     llama_dsplit_note_limit_fork(uint32_t cap);   // src/llama-dsplit-fork.
 void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the context's card limit (what %limit is of)
 size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
 void     llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, size_t graph_bytes);   // src/llama-moecache-fork.cpp: a load-time measure-only reserve is a measured graph size for the pass planner
+size_t   llama_moe_cache_graph_scratch_fork(ggml_backend_sched_t sched, ggml_backend_dev_t dev);   // src/llama-moecache-fork.cpp: the computed CUDA scratch of the graph the scheduler split last, on dev's pool
 uint32_t llama_dsplit_pass_size_fork(uint32_t cap);   // the full pass of the split: the fastest card takes the limit
 uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub);
 void     llama_dsplit_bench_fork(const llama_model & model);   // llama-dsplit-fork.cpp: matmul + attention latency per GPU, before this context takes VRAM
@@ -78,6 +79,7 @@ uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint3
 uint32_t llama_moe_ubadapt_next_fork(uint32_t n_tokens, uint32_t ceil);
 void llama_moe_decision_fork(const char * name, const char * value, const char * why);
 void llama_moe_cache_vram_watch_fork(bool prompt);   // src/llama-moecache-fork.cpp: the lowest free VRAM per pool card
+void llama_moe_cache_context_live_fork(const void * ctx, const llama_model * model, bool live);   // src/llama-moecache-fork.cpp: the live contexts' models
 
 static void llama_verify_hadamard_graph(
         ggml_cgraph * gf,
@@ -561,6 +563,22 @@ llama_context::llama_context(
                 throw std::runtime_error(format("failed to initialize %s backend", ggml_backend_dev_name(dev.dev)));
             }
             backends.emplace_back(backend);
+        }
+        // a context that runs on tensors of another model (a draft's token embeddings or lm head, shared through ctx_other) needs a backend on every card that
+        // holds them: a DSpark draft given -devd CUDA1 aborted on the target's output.weight in CUDA0 ("pre-allocated tensor (output.weight) in a buffer (CUDA0)
+        // that cannot run the operation", 2026-10-26). The extra backend only runs the ops on those tensors; the draft's own layers stay on the cards -devd names.
+        if (cparams.ctx_other) {
+            for (const auto & od : llama_get_model(cparams.ctx_other)->devices) {
+                if (od.is_meta || std::any_of(devs.begin(), devs.end(), [&](const llama_device & d) { return d.dev == od.dev; })) {
+                    continue;
+                }
+                ggml_backend_t backend = ggml_backend_dev_init(od.dev, nullptr);
+                if (backend == nullptr) {
+                    throw std::runtime_error(format("failed to initialize %s backend", ggml_backend_dev_name(od.dev)));
+                }
+                LLAMA_LOG_INFO("%s: %s added for the tensors this context shares with its target\n", __func__, ggml_backend_dev_name(od.dev));
+                backends.emplace_back(backend);
+            }
         }
 
         // add ACCEL backends (such as BLAS)
@@ -1506,10 +1524,10 @@ void llama_context::sched_reserve() {
 
     // fork: with the pool lending the graphs, the micro-batch is the largest prompt pass whose graph every card's pool holds, computed (user 2026-10-24:
     // "simply calculate max ubatch properly"; before, a reserve that did not fit was cut by a fixed 0.78 and 0.97: GLM 3.0 8192 -> 6176 where 8192 and 16384
-    // had run). Each size is checked with a measure-only reserve (nothing allocated) of the real graph against llama_moe_cache_alias_room_fork: the pool up to
-    // the KV zone of those cells, behind the dense split's copies, less the CUDA scratch. The first probe below the configured size is the line through two
-    // measured sizes (graph bytes = a + b x tokens per card) against each card's room; then bisection in 32-token steps between the largest size that fit and
-    // the smallest that did not. 0: not even 512 tokens fit.
+    // had run). Each size is checked with a measure-only reserve (nothing allocated) of the real graph, plus the CUDA scratch its nodes take on each card
+    // (computed from them), against llama_moe_cache_alias_room_fork: the pool up to the KV zone of those cells, behind the dense split's copies. The first
+    // probe below the configured size is the line through two measured sizes (graph bytes = a + b x tokens per card) against each card's room; then
+    // bisection in 32-token steps between the largest size that fit and the smallest that did not. 0: not even 512 tokens fit.
     // once per process: what the prompt graph of each card is made of (its largest tensors), so a size that does not fit names its cause (GLM 3.0: 1.84 MiB per
     // token at the start, 0.5 in the real passes, 2026-10-24)
     std::vector<size_t> lt(backend_ptrs.size(), 0);
@@ -1553,6 +1571,9 @@ void llama_context::sched_reserve() {
             ggml_cgraph * mg = graph_reserve(u, n_seqs, n_seqs, mctx.get(), true, s.data());
             probes++;
             list_top(mg, u);
+            if (mg) {
+                for (const auto & [i, d] : gi) { s[i] += llama_moe_cache_graph_scratch_fork(sched.get(), d); }   // the reserve's splits are still in the scheduler
+            }
             for (const auto & [i, d] : gi) { llama_moe_cache_note_graph_fork(d, u, s[i]); }
             for (const auto & [i, d] : gi) { if (s[i] > llama_moe_cache_alias_room_fork(d, u)) { return false; } }
             return true;
@@ -1560,7 +1581,7 @@ void llama_context::sched_reserve() {
         std::string line;
         auto say = [&](uint32_t u, const char * how) {
             for (const auto & [i, d] : gi) {
-                line += format(" | %s: graph %.0f MiB, room %.0f MiB", ggml_backend_dev_name(d), s[i] / 1048576.0, llama_moe_cache_alias_room_fork(d, u) / 1048576.0);
+                line += format(" | %s: graph + scratch %.0f MiB, room %.0f MiB", ggml_backend_dev_name(d), s[i] / 1048576.0, llama_moe_cache_alias_room_fork(d, u) / 1048576.0);
             }
             LLAMA_LOG_WARN("%s: micro-batch from the pools: %u tokens (%s, %d measure-only reserves)%s\n", __func__, u, how, probes, line.c_str());
         };
@@ -2473,54 +2494,49 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     if (!thr.on || cparams.n_threads < 2) {
         return;
     }
-    // First tokens: find the thread count by bracketing, not by +-2 steps. Too few threads costs far more than too many, so the search errs upward.
-    // 1. start at the default (already capped by the container quota / probe), halve every 5 tokens down the whole ladder (default, /2, /4, /8: one slow
-    //    slice must not end it); b = the fewest threads within 2% of the fastest, w = the next lower count tried
-    // 2. bisect [w, b] geometrically up to 3 times, re-measuring b next to each probe so slow drift is not read as a win; stop at a 10% bracket
-    // 3. keep b plus one step (10%) of margin, never above the default, and stay there: the +-2 tuner below is switched off
-    // File-local state: one decoding context per process, and thr's layout is in a header (full rebuild).
-    static struct { int st = 0, n = 0, tok = 0, b = 0, w = 0, mid = 0, iter = 0, drift = 0, wn = 0, lc = 0, ln[4] = {}; double lt[4] = {}, sum = 0, best = 0, mm = 0, wsum = 0; } d;
-    if (d.st < 3) {
-        auto set_n = [&](int n) {
-            d.n = n; d.tok = -1; d.sum = 0; cparams.n_threads = (uint32_t) n;
-            char v[32]; snprintf(v, sizeof v, "%d (testing)", n);   // visible in the decisions list while the search runs: every tried count
-            llama_moe_decision_fork("threads_decode", v, d.best > 0 ? "searching: best so far is faster than this count's neighbours" : "searching: first tokens, halving from the default");
-        };
-        auto refine = [&]() {   // next probe, or finish
-            const int mid = (int) std::sqrt((double) d.w*d.b);
-            if (d.w == 0 || d.iter >= 3 || d.b - d.w <= std::max(1, d.b/10) || mid <= d.w || mid >= d.b) {
-                const int pick = std::min(thr.base0, d.b + std::max(1, d.b/10));
-                LLAMA_LOG_INFO("%s: thread search: %d -> %d threads (best %d at %.2f ms/token, worse below %d)\n", __func__, thr.base, pick, d.b, d.best/1000.0, d.w);
-                llama_moe_decision_fork("threads_decode", std::to_string(pick).c_str(), "bracketed by halving every 5 tokens, bisected, +10% margin (too few costs more than too many)");
-                if (pick != thr.base) { thr.base = pick; threads_save(model, "threads", thr.base0, pick); }
+    // First tokens: find the decode thread count by ALTERNATING between the best count so far (b) and one lower candidate (c) on consecutive tokens (user 2026-10-26).
+    // The search starts on every hardware thread (common_init_result): too many threads costs little (barriers, SMT siblings), too few costs a lot, and on a multi-die
+    // CPU only all of them reach every die's memory path. One token is a noisy sample (expert cache hits differ per token), so c is never judged on a run of its own:
+    //   tokens   b c b c b   (2 pairs; 3 pairs when the step is small, 4*(b-c) <= b, where the gap is near the noise)
+    // and every c token is compared with the mean of the two b tokens around it, so the expert cache warming up (later tokens are faster by themselves) cancels.
+    // c is adopted only if it was faster than its neighbours in EVERY pair (a tie or a mixed result keeps the higher count; a mixed result gets one more pair first,
+    // then c needs more wins than losses). Candidates: b/2 first (16 -> 8 -> 4); a lost candidate becomes the lower bound L and the next one is the midpoint of
+    // b and L (8 vs 4 lost -> 6, then 5): about 4-6 tokens per candidate, the count settles in about 20 tokens. The cost in tokens does not matter (user), the
+    // quality of the decision does. Then the +-2 tuner below stays off (settled, with the drift watch). File-local state: one decoding context per process.
+    static struct { int st = 0, b = 0, c = 0, lo = 0, pairs = 0, k = 0, warm = 0, drift = 0, wn = 0; std::vector<double> sb, sc; double best = 0, wsum = 0; } d;
+    if (d.st != 3) {   // 0 start, 1 sampling the alternation; 3 settled (below)
+        auto plan = [&]() {   // the next candidate below b, or finish
+            const int c = d.lo == 0 ? d.b/2 : (d.b + d.lo)/2;
+            if (c < 1 || c >= d.b || c <= d.lo) {
+                LLAMA_LOG_INFO("%s: thread search: %d -> %d threads (alternating b/c tokens; the next lower candidate was not clearly faster)\n", __func__, thr.base, d.b);
+                llama_moe_decision_fork("threads_decode", std::to_string(d.b).c_str(), "from every hardware thread down, alternating with a lower count token by token; a lower count must win every pair (too few costs more than too many)");
+                if (d.b != thr.base) { thr.base = d.b; threads_save(model, "threads", thr.base0, d.b); }
                 cparams.n_threads = (uint32_t) thr.base;
-                d.st = 3; d.drift = 0; d.wn = 0; d.wsum = 0;   // settled: the count stays until the token time drifts (below)
+                d.st = 3; d.drift = 0; d.wn = 0; d.wsum = 0; d.best = 0;   // settled: the count stays until the token time drifts (below)
                 return;
             }
-            d.mid = mid; d.st = 1; set_n(mid);
+            d.c = c; d.pairs = 4*(d.b - c) <= d.b ? 3 : 2; d.k = 0; d.sb.clear(); d.sc.clear();
+            cparams.n_threads = (uint32_t) d.b;   // the sequence starts on b
+            char v[48]; snprintf(v, sizeof v, "%d vs %d (testing)", d.b, c);
+            llama_moe_decision_fork("threads_decode", v, "searching: alternating the best count so far with one lower candidate, token by token");
         };
-        if (d.st == 0) { d.st = 1; d.b = 0; set_n(thr.base); }   // stage 1 with b == 0: halving phase
-        if (d.tok++ < 0) { return; }           // the first token after a change is a warm-up
-        d.sum += (double) dt_us;
-        if (d.tok < 5) { return; }
-        const double m = d.sum/5.0;
-        if (d.st == 1 && d.mid == 0) {         // halving phase: always the whole ladder (default, /2, /4, /8): one slow slice must not end it, each slice is only 5 tokens
-            d.ln[d.lc] = d.n; d.lt[d.lc] = m; d.lc++;
-            if (d.lc < 4 && d.n/2 >= 2) { set_n(d.n/2); return; }
-            double mn = d.lt[0]; for (int k = 1; k < d.lc; ++k) { mn = std::min(mn, d.lt[k]); }
-            int bi = 0; for (int k = 0; k < d.lc; ++k) { if (d.lt[k] <= 1.02*mn) { bi = k; } }   // the fewest threads within 2% of the fastest
-            d.b = d.ln[bi]; d.best = d.lt[bi]; d.w = bi + 1 < d.lc ? d.ln[bi + 1] : 0;
-            refine();
-            return;
-        }
-        if (d.st == 1) { d.mm = m; d.st = 2; set_n(d.b); return; }   // probe measured, now re-measure b
-        d.best = m;                            // st == 2: b re-measured next to the probe
-        if (d.mm < 1.02*m) { d.b = d.mid; d.best = d.mm; } else { d.w = d.mid; }
-        d.iter++; d.mid = 0;
-        refine();
+        if (d.st == 0) { d.b = thr.base; d.lo = 0; d.st = 1; d.warm = 2; plan(); if (d.st != 1) { return; } }   // the first tokens warm the expert cache: not sampled
+        if (d.warm > 0) { --d.warm; return; }
+        (d.k % 2 == 0 ? d.sb : d.sc).push_back((double) dt_us);   // token k ran on b (even k) or on c (odd k)
+        if (d.k < 2*d.pairs) { ++d.k; cparams.n_threads = (uint32_t) (d.k % 2 == 0 ? d.b : d.c); return; }
+        // the sequence b c b c (b) is complete: every c against the mean of its two neighbouring b tokens
+        int wins = 0, losses = 0;
+        for (int i = 0; i < d.pairs; ++i) { (d.sc[i] < 0.5*(d.sb[i] + d.sb[i + 1]) ? wins : losses)++; }
+        if (wins > 0 && losses > 0 && d.pairs < 4) { ++d.pairs; ++d.k; cparams.n_threads = (uint32_t) d.c; return; }   // mixed: one more pair, the last b token is its first neighbour
+        double mb = 0, mc = 0;
+        for (double x : d.sb) { mb += x; } for (double x : d.sc) { mc += x; }
+        LLAMA_LOG_INFO("%s: thread search: %d threads %.2f ms/token vs %d threads %.2f ms/token, %d of %d pairs won by the lower count -> %s\n", __func__,
+                d.b, mb/d.sb.size()/1000.0, d.c, mc/d.sc.size()/1000.0, wins, wins + losses, wins > losses ? "lower" : "keep");
+        if (wins > losses) { d.b = d.c; } else { d.lo = d.c; }
+        plan();
         return;
     }
-    if (d.st == 3) {   // settled: stay, and watch. Windows of 64 tokens; a mean 10% above the best seen, twice in a row, means the box changed (other load, a new prompt mix): search again from twice the settled count
+    if (d.st == 3) {   // settled: stay, and watch. Windows of 64 tokens; a mean 10% above the best seen, twice in a row, means the box changed (other load, a new prompt mix): search again from the default
         d.wsum += (double) dt_us;
         if (++d.wn < 64) { return; }
         const double m = d.wsum/64.0; d.wsum = 0; d.wn = 0;
@@ -2528,8 +2544,8 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         d.drift = m > 1.10*d.best ? d.drift + 1 : 0;
         if (d.drift >= 2) {
             LLAMA_LOG_INFO("%s: thread search again: %.2f ms/token against %.2f settled\n", __func__, m/1000.0, d.best/1000.0);
-            thr.base = std::min(thr.base0, 2*thr.base);
-            d.st = 0; d.b = d.w = d.mid = d.iter = d.lc = 0; d.best = 0;
+            thr.base = thr.base0;
+            d.st = 0; d.b = d.c = d.lo = 0; d.best = 0;
         }
         return;
     }
@@ -2857,6 +2873,62 @@ bool llama_dsplit_prev_split_fork();
 void llama_dsplit_pass_done_fork();
 bool llama_dsplit_drop_experts_fork(int64_t n_tokens);
 
+// fork: --moe idx-check=1 (debug, slow: the card is drained and every index input read back before each graph). Before a graph runs, in every context (the
+// target and a draft): each row index the host set for it (SET_ROWS / GET_ROWS fed by an input tensor: the KV write rows, k_idxs / v_idxs, the DSV4 compressor's
+// state and row indices, token ids) must lie inside the tensor it addresses, and each view must still point where its source lives (a graph built before its
+// source moved reads and writes the old place). An index outside its tensor reads or writes the neighbour of that record in the pool: the DSpark draft's KV
+// sits between the target's lend and the target's growing rows (2026-10-27, 'illegal memory access' at spec depth 2 and 3 that launch blocking hid). The
+// first bad index or view is logged with its node and the run aborts before the kernel runs; a line per context for the first graphs and every 256th says
+// the check runs.
+static void fork_idx_check(ggml_backend_sched_t sched, ggml_cgraph * gf, const char * who, int64_t n_graph) {
+    ggml_backend_sched_synchronize(sched);   // inputs set asynchronously are on the card before they are read back
+    static std::vector<uint8_t> buf;
+    int64_t n_idx = 0, n_view = 0;
+    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+        const ggml_tensor * t = ggml_graph_node(gf, i);
+        if (t->view_src && t->data && t->view_src->data) {
+            n_view++;
+            if ((const char *) t->data != (const char *) t->view_src->data + t->view_offs) {
+                LLAMA_LOG_ERROR("idx-check: %s graph %lld: node %d '%s' (%s) is a view of '%s' at %p, but its source now lives at %p + %zu = %p: the graph was built before the source moved\n",
+                        who, (long long) n_graph, i, t->name, ggml_op_name(t->op), t->view_src->name, t->data, t->view_src->data, t->view_offs,
+                        (const void *) ((const char *) t->view_src->data + t->view_offs));
+                GGML_ABORT("idx-check: stale view");
+            }
+        }
+        const ggml_tensor * idx = nullptr;
+        const ggml_tensor * tab = nullptr;
+        if (t->op == GGML_OP_SET_ROWS) { idx = t->src[1]; tab = t->src[2]; }   // set_rows: src[0] the rows, src[1] the indices, src[2] the destination
+        if (t->op == GGML_OP_GET_ROWS) { idx = t->src[1]; tab = t->src[0]; }
+        if (!idx || !tab || !(idx->flags & GGML_TENSOR_FLAG_INPUT) || !idx->buffer || !idx->data || !ggml_is_contiguous(idx) ||
+                (idx->type != GGML_TYPE_I32 && idx->type != GGML_TYPE_I64)) {
+            continue;
+        }
+        const int64_t n = ggml_nelements(idx);
+        if (n == 0) {
+            continue;
+        }
+        buf.resize(ggml_nbytes(idx));
+        ggml_backend_tensor_get(idx, buf.data(), 0, buf.size());
+        int64_t mn = INT64_MAX, mx = INT64_MIN;
+        for (int64_t k = 0; k < n; ++k) {
+            const int64_t v = idx->type == GGML_TYPE_I32 ? (int64_t) ((const int32_t *) buf.data())[k] : ((const int64_t *) buf.data())[k];
+            mn = std::min(mn, v);
+            mx = std::max(mx, v);
+        }
+        n_idx++;
+        if (mn < 0 || mx >= tab->ne[1]) {
+            LLAMA_LOG_ERROR("idx-check: %s graph %lld: node %d '%s' (%s): index input '%s' holds [%lld, %lld] (%lld values), but '%s' has %lld rows (data %p, row stride %zu B, %s): "
+                    "the out-of-range rows lie in its neighbour's memory\n",
+                    who, (long long) n_graph, i, t->name, ggml_op_name(t->op), idx->name, (long long) mn, (long long) mx, (long long) n, tab->name, (long long) tab->ne[1],
+                    tab->data, tab->nb[1], tab->buffer ? ggml_backend_buffer_name(tab->buffer) : "no buffer");
+            GGML_ABORT("idx-check: row index outside its tensor");
+        }
+    }
+    if (n_graph < 4 || n_graph % 256 == 0) {
+        LLAMA_LOG_WARN("idx-check: %s graph %lld: %lld index inputs inside their tensors, %lld views at their sources\n", who, (long long) n_graph, (long long) n_idx, (long long) n_view);
+    }
+}
+
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
     if (mctx && !mctx->apply()) {
@@ -2916,8 +2988,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         }
 
         n_reused++;
-        if (llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens)) { reuse = false; }   // fork: the KV zone moved behind this graph: build it again
-        if (const char * why = llama_moe_cache_alias_err_fork()) {   // fork: the graph and the KV do not fit the pool: this pass is refused (the request fails, the server lives)
+        // fork: only the context whose graphs live in the pool (moe_alias_bufs) lends from it. A draft context (DSpark) has its own compute buffers and its KV
+        // in its own arena; its call set the lend to its small graph and the card's CUDA scratch just behind it, both over the target's graph: the blocks under the
+        // target's graph went back to the free list, the after-prompt refill uploaded experts into them, and the draft's scratch writes (its own streams) raced
+        // the target's verify step: illegal memory access at depth 2 and 3 (DeepSeek 4.1 + Lucebox draft, tetris prompt, reasoning off, 2026-10-27)
+        if (!moe_alias_bufs.empty() && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens)) { reuse = false; }   // the KV zone moved behind this graph: build it again
+        if (const char * why = moe_alias_bufs.empty() ? nullptr : llama_moe_cache_alias_err_fork()) {   // fork: the graph and the KV do not fit the pool: this pass is refused (the request fails, the server lives)
             LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
             ret = GGML_STATUS_FAILED;
             return nullptr;
@@ -2954,8 +3030,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             if (ggml_backend_sched_alloc_graph(sched.get(), gf)) {
                 // fork: --moe alias=1 lends the pool blocks this graph's tensors reach to it; when the graph reached into the KV zone (kv-tail), the zone moved behind
                 // it and this graph's views of the KV point at the old place: it is built again (the next graph of this size gets its lend before it is built)
-                const bool moved = llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);
-                if (const char * why = llama_moe_cache_alias_err_fork()) {   // the graph and the KV do not fit the pool: refuse this pass instead of aborting
+                const bool moved = !moe_alias_bufs.empty() && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);   // only the pool's own context (see above)
+                if (const char * why = moe_alias_bufs.empty() ? nullptr : llama_moe_cache_alias_err_fork()) {   // the graph and the KV do not fit the pool: refuse this pass instead of aborting
                     LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
                     ret = GGML_STATUS_FAILED;
                     return nullptr;
@@ -3016,6 +3092,13 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         res->set_inputs(&ubatch);
 
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+    }
+
+    // fork: --moe idx-check=1: every index input and view of this graph checked before it runs (fork_idx_check)
+    static const bool idx_check = [] { const char * e = llama_moe_get_opt("idx-check"); return e && atoi(e) != 0; }();
+    if (idx_check) {
+        static std::map<const llama_context *, int64_t> n_graphs;   // per context, here and not a member (no header edit for a debug switch)
+        fork_idx_check(sched.get(), res->get_gf(), cparams.ctx_other ? "draft" : "target", n_graphs[this]++);
     }
 
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
@@ -3448,10 +3531,16 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             apply_moe_alias();
             sched_need_reserve = true;
         }
-        thread_cap_from_probe(llama_moe_cache_cpu_sat_threads_fork());
+        // no cap from the RAM probe (3 x the threads that saturate the read rate): the decode search starts on every hardware thread and steps down
+        // itself (user 2026-10-26: start from the most threads; too many costs little, too few a lot)
         sched_reserve(); // the compute graph now includes the cache chain
     }
-    llama_moe_cache_kv_arena_start_fork();   // --moe kv-tail=1: KV records no expert pool took (dense models) get their buffer, once, at the first real decode
+    {   // --moe kv-tail=1: KV records no expert pool took (dense models) get their buffer, once, at the first real decode. Only this context's records: the records of
+        // the context that expects the pool wait for it (a draft decoding at load took the target's records into a fixed full-context arena, 7 GiB on DeepSeek 4.1);
+        // that context hands the ones its pool did not take to an arena once the pool started (or when it decodes with the start deferred, as before)
+        extern void llama_moe_cache_kv_arena_start_own_fork(bool pool_records);
+        llama_moe_cache_kv_arena_start_own_fork(cparams.moe_cache && (cparams.moe_cache_started || moe_cache_defer));
+    }
     {
         extern const char * llama_moe_cache_kv_arena_unplaced_fork();
         if (const char * why = llama_moe_cache_kv_arena_unplaced_fork()) {   // no memory for the KV: refuse, do not build a graph over records that have none
@@ -6152,6 +6241,7 @@ llama_context * llama_init_from_model(
 
     try {
         auto * ctx = new llama_context(*model, params);
+        llama_moe_cache_context_live_fork(ctx, model, true);   // fork: the expert pool keys its stored VRAM need by the other live contexts (a draft)
         const auto & cparams = ctx->get_cparams();
 
         if (cparams.rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_YARN && cparams.rope_freq_scale != model->hparams.rope_freq_scale_train) {
@@ -6176,6 +6266,7 @@ llama_context * llama_new_context_with_model(
 }
 
 void llama_free(llama_context * ctx) {
+    llama_moe_cache_context_live_fork(ctx, nullptr, false);
     delete ctx;
 }
 
@@ -6820,7 +6911,17 @@ int32_t llama_process(llama_context * ctx, llama_process_type type, llama_batch_
         case LLAMA_PROCESS_TYPE_DECODE: {
             // the server's decode path: per-token and per-prompt-call times for GET /moe/stats
             const int64_t t_us = ggml_time_us();
+            // debug (bug 153, draft crash): LLAMA_PROC_DBG=1 log each call, 2 + sync the draft context after it, 3 + sync the target
+            // context around it, 4 + sync before it too. Staged so the level that hides the crash names the racing step.
+            static const int dbg = getenv("LLAMA_PROC_DBG") ? atoi(getenv("LLAMA_PROC_DBG")) : 0;
+            llama_context * other = ctx->get_cparams().ctx_other;
+            if (dbg >= 4) { llama_synchronize(ctx); }
+            if (dbg >= 3 && other) { llama_synchronize(other); }
+            if (dbg >= 1) { LLAMA_LOG_WARN("procdbg: %s decode begin\n", other ? "draft" : "target"); }
             int ret = ctx->decode(*batch);
+            if (dbg >= 2 && other) { llama_synchronize(ctx); }
+            if (dbg >= 3 && other) { llama_synchronize(other); }
+            if (dbg >= 1) { LLAMA_LOG_WARN("procdbg: %s decode end ret %d n %d\n", other ? "draft" : "target", ret, (int) g_decode_n_tokens); }
             for (int t = 0; ret == 1 && t < 8 && g_oom_retry.exchange(0); ++t) { ret = ctx->decode(*batch); }   // fork: taken back after a CUDA out-of-memory (g_oom_tc)
             if (ret == 0) {
                 const int32_t n = (int32_t) g_decode_n_tokens;
