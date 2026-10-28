@@ -3210,6 +3210,12 @@ void llama_moe_cache_alias_drop_fork() {
     g_alias_dropped = true;
 }
 
+// Bumped when a graph's place in a card's pool changes: the dense split's copies in front of the graph grew or shrank, or a graph starts at another offset.
+// A graph reused from before keeps its tensors where they were allocated, so it is not reused across a change (llama_moe_cache_graph_reusable_fork), the
+// same rule as the KV zone's epoch. Until 2026-10-28 only a moved KV zone stopped a reuse.
+static std::atomic<int> g_lend_epoch{0};
+static int g_lend_epoch_built = 0;
+
 // the dense split's copies sit at the start of dev's pool buffer (llama_dsplit_mirror_place_fork): the pass planner keeps room for them
 void llama_moe_cache_alias_mirror_fork(ggml_backend_dev_t dev, size_t bytes) {
     moe_cache * mc = g_cache;
@@ -3217,7 +3223,10 @@ void llama_moe_cache_alias_mirror_fork(ggml_backend_dev_t dev, size_t bytes) {
         return;
     }
     for (auto & ap : mc->alias) {
-        if (ap.dev == dev) { ap.mirror_b = bytes; }
+        if (ap.dev == dev) {
+            if (ap.mirror_b != bytes) { g_lend_epoch++; }
+            ap.mirror_b = bytes;
+        }
     }
 }
 
@@ -3228,7 +3237,10 @@ void llama_moe_cache_alias_offset_fork(ggml_backend_dev_t dev, size_t off) {
         return;
     }
     for (auto & ap : mc->alias) {
-        if (ap.dev == dev) { ap.base_off = off; }
+        if (ap.dev == dev) {
+            if (ap.base_off != off) { g_lend_epoch++; }
+            ap.base_off = off;
+        }
     }
 }
 
@@ -5169,8 +5181,10 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     }
     if (changed) {
         const int64_t s0 = ggml_time_us();
-        flush_tables();
-        ggml_backend_sched_synchronize(sched);   // the previous graph may still read those blocks; this graph's inputs are written next
+        // the previous graph may still read those blocks and the tables that point into them: it finishes first, then the tables change (flushed before
+        // the sync, a still-running previous graph saw the evicted experts as uncached in its later layers and dropped them from that token)
+        ggml_backend_sched_synchronize(sched);
+        flush_tables();   // this graph's inputs are written next
         for (const auto & f : pfills) { pool_fill(*f.ap, f.lo, f.hi, f.v); }   // --moe poison
         g_ac.sync_us += ggml_time_us() - s0; g_ac.sync_n++;
     }
@@ -8906,7 +8920,8 @@ static bool g_starved_built = false;
 bool llama_moe_cache_graph_reusable_fork() {
     const bool starved = g_cache && g_cache->starved.load();
     return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built && g_split_epoch == g_split_epoch_built && starved == g_starved_built &&
-           g_kv_epoch.load() == g_kv_epoch_built;   // a moved KV zone: the old graph's views point at the old place
+           g_kv_epoch.load() == g_kv_epoch_built &&   // a moved KV zone: the old graph's views point at the old place
+           g_lend_epoch.load() == g_lend_epoch_built;   // a graph placed elsewhere in the pool since: the old graph's tensors sit at the old place
 }
 
 int32_t llama_moe_cache_cpu_sat_threads_fork() {
@@ -8919,6 +8934,7 @@ void llama_moe_cache_graph_built_fork() {
     g_pred_epoch_built = g_pred_epoch;
     g_split_epoch_built = g_split_epoch;
     g_kv_epoch_built = g_kv_epoch.load();
+    g_lend_epoch_built = g_lend_epoch.load();
 }
 
 namespace {
