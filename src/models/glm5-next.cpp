@@ -783,9 +783,9 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
         // The per-range slices of the attention inputs (masks and cache indices) are cut ONCE per pass: a slice made per layer is a new tensor each time and
         // the scheduler copied it to the range's card for every attention layer (kq_mask 34 MB, gather_mask 25 MB, pool_mask 8.5 MB per layer for 3k tokens),
         // as an upload queued behind that card's expert uploads (nsys, GLM-5.3-Flash 5.5k: the x16 card waited 64 ms of a 231 ms attention layer for it).
-        std::vector<ggml_tensor *> dsa_kqm(NR), dsa_pm(NR), dsa_gm(NR), dsa_tail(NR), dsa_kim(NR), dsa_kil(NR);
+        // No kq_mask slice: the selection replaces the kq_mask (upstream #31009), so no range reads it and it stays unallocated.
+        std::vector<ggml_tensor *> dsa_pm(NR), dsa_gm(NR), dsa_tail(NR), dsa_kim(NR), dsa_kil(NR);
         if (dsa_split) {
-            ggml_tensor * kq_mask = inp_attn->get_kq_mask();
             ggml_tensor * k_mla   = inp_attn->get_k_idxs();
             ggml_tensor * k_lid   = inp_kpool->k_idxs;
             const int64_t n_kv_   = mctx_hyb->get_idx()->get_n_kv();
@@ -796,7 +796,6 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
             const int64_t n_sel_  = sel_m ? sel_m->ne[0] : 0;
             for (size_t r = 0; r < NR; ++r) {
                 const int64_t nr = R[r].t1 - R[r].t0, t0 = R[r].t0;
-                dsa_kqm[r]  = ggml_view_2d(ctx0, kq_mask, n_kv_, nr, kq_mask->nb[1], t0 * kq_mask->nb[1]);
                 dsa_pm[r]   = ggml_view_2d(ctx0, inp_kpool->pool_mask, n_pool_, nr, inp_kpool->pool_mask->nb[1], t0 * inp_kpool->pool_mask->nb[1]);
                 dsa_gm[r]   = sel_m ? ggml_reshape_2d(ctx0, ggml_view_4d(ctx0, sel_m, n_sel_, 1, 1, nr, sel_m->nb[1],
                                     sel_m->nb[2], sel_m->nb[3], t0 * sel_m->nb[3]), n_sel_, nr) : nullptr;
@@ -994,7 +993,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                             ggml_tensor * idx_f = ggml_cast(ctx0, sel_idx, GGML_TYPE_F32);
                             idx_f = ggml_add(ctx0, ggml_mul(ctx0, ggml_sub(ctx0, idx_f, dump), live), dump);
                             sel = ggml_set_rows(ctx0, mask_all, zeros, ggml_reshape_3d(ctx0, ggml_cast(ctx0, idx_f, GGML_TYPE_I32), n_sel, nr, 1));
-                            sel = ggml_view_2d(ctx0, sel, n_kv, nr, sel->nb[2], 0);
+                            sel = ggml_cont(ctx0, ggml_view_2d(ctx0, sel, n_kv, nr, sel->nb[2], 0));   // as the one-card path: no kq_mask added, contiguous for the reshape below
                         }
                         prev_sel_r[r] = sel;
                     } else {
