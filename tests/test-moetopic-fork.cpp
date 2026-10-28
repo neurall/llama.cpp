@@ -67,15 +67,17 @@ int main() {
     CHECK(s.add(keys2(a, am).data(), ca.data(), 0.9f) == 0);
     CHECK(s.add(keys2(b, bm).data(), cb.data(), 0.9f) == 1);
     CHECK(s.size() == 2);
-    std::vector<float> a2 = a;
-    a2[0] += 0.01f;
+    std::vector<float> a2 = a, a2m = am;   // a prompt near a, not the same one (cosine about 0.995, below SAME_KEY)
+    const std::vector<float> na = rnd(g, E), nam = rnd(g, E);
+    for (uint32_t j = 0; j < E; ++j) { a2[j] += 0.1f * na[j]; a2m[j] += 0.1f * nam[j]; }
     a2 = unit(a2);
+    a2m = unit(a2m);
     auto nb = s.nearest(a2.data(), 2, moe_topic_store::KEY_MEAN);
     CHECK(nb.size() == 2 && nb[0].second == 0 && nb[0].first > 0.95f && nb[1].first < nb[0].first);
     CHECK(s.nearest(bm.data(), 1, moe_topic_store::KEY_MAX)[0].second == 1);
 
     // a request that used the same experts merges into its record (lookup by the max key, the default): counts add, both keys stay unit length
-    CHECK(s.add(keys2(a2, am).data(), ca.data(), 0.9f) == 0);
+    CHECK(s.add(keys2(a2, a2m).data(), ca.data(), 0.9f) == 0 && !s.last_same);
     CHECK(s.size() == 2 && s.n_req[0] == 2 && s.counts[1] == 20);
     for (int k = 0; k < moe_topic_store::N_KEYS; ++k) {
         const std::vector<float> k0 = s.key_of(0, k);
@@ -84,13 +86,16 @@ int main() {
         CHECK(std::fabs(n - 1.0) < 1e-4);
     }
 
-    // store only a better hit rate: a request of a stored topic that hit worse leaves the record as it was; one that hit better replaces its rate
+    // the same prompt again: one record, its map replaced only by a better hit rate (not added: repeated runs keep the best map); a run not measured changes nothing
     {
         moe_topic_store h;
         CHECK(h.open("", E, L, X));
-        CHECK(h.add(keys2(a, am).data(), ca.data(), 0.9f, 0.60f, 0) == 0 && h.hit[0] == 0.60f && h.src[0] == 0);
-        CHECK(h.add(keys2(a, am).data(), ca.data(), 0.9f, 0.50f, 1) == 0 && h.last_kept && h.n_req[0] == 1 && h.counts[1] == 10 && h.src[0] == 0);
-        CHECK(h.add(keys2(a, am).data(), ca.data(), 0.9f, 0.80f, 1) == 0 && !h.last_kept && h.n_req[0] == 2 && h.hit[0] == 0.80f && h.src[0] == 1);
+        std::vector<uint32_t> ca2(ca);
+        for (uint32_t & c : ca2) { c *= 2; }
+        CHECK(h.add(keys2(a, am).data(), ca.data(), 0.9f, 0.60f, 0) == 0 && h.hit[0] == 0.60f && h.src[0] == 0 && !h.last_same);
+        CHECK(h.add(keys2(a, am).data(), ca2.data(), 0.9f, 0.50f, 1) == 0 && h.last_same && h.last_kept && h.n_req[0] == 1 && h.counts[1] == 10 && h.src[0] == 0);
+        CHECK(h.add(keys2(a, am).data(), ca2.data(), 0.9f, -1.0f, 1) == 0 && h.last_kept && h.counts[1] == 10);
+        CHECK(h.add(keys2(a, am).data(), ca2.data(), 0.9f, 0.80f, 1) == 0 && !h.last_kept && h.size() == 1 && h.n_req[0] == 2 && h.counts[1] == 20 && h.hit[0] == 0.80f && h.src[0] == 1);
     }
 
     // pooling keeps the hottest: a request on the same experts adds its counts, and an expert below its layer's mean use is dropped; a request that shares
@@ -128,7 +133,7 @@ int main() {
         t.seen = { 0.88f, 0.90f, 0.91f, 0.92f, 0.93f, 0.95f };
         CHECK(t.auto_threshold() == 0.90f);
         t.seen.clear();
-        CHECK(t.add(keys2(a, am).data(), cc.data(), -1.0f) == 0 && t.add(keys2(a, am).data(), ch.data(), -1.0f) == 1 && !t.last_merged);   // 0.5 < 0.9: new
+        CHECK(t.add(keys2(a, am).data(), cc.data(), -1.0f) == 0 && t.add(keys2(b, bm).data(), ch.data(), -1.0f) == 1 && !t.last_merged);   // another prompt, 0.5 < 0.9: new
     }
 
     // the merged heat of a key near a, one scale for all layers: expert 1 of layers 0 and 1 (2/3 of their uses) is 1.0 and expert 2 there 0.5; layer 2

@@ -5445,7 +5445,7 @@ static void topic_store_pending(moe_cache * mc) {
         const size_t at = g_topic.store.add(g_topic.key.data(), cnt.data(), g_topic.merge_overlap, hr, g_topic.use() ? 1u : 0u);
         LLAMA_LOG_WARN("moe-cache: dynhot: request stored (hit %.1f%% with the cache on %s): best overlap with a record %.2f, threshold %.2f%s: %s record %zu "
                 "(its hit %.1f%%, %zu records, %.2f ms)\n", 100.0 * hr, g_topic.use() ? "the hot maps" : "the ini's hot experts", g_topic.store.last_best,
-                g_topic.store.last_thr, g_topic.merge_overlap < 0.0f ? " (automatic)" : "", g_topic.store.last_kept ? "kept (hit rate not better)" : g_topic.store.last_merged ? "pooled into" : "new",
+                g_topic.store.last_thr, g_topic.merge_overlap < 0.0f ? " (automatic)" : "", g_topic.store.last_kept ? "kept (hit rate not better)" : g_topic.store.last_same ? "the same prompt: map replaced in" : g_topic.store.last_merged ? "pooled into" : "new",
                 at, 100.0 * g_topic.store.hit[at], g_topic.store.size(), (ggml_time_us() - t0) / 1e3);
     }
     g_topic.key.clear();
