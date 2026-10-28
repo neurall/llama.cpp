@@ -51,6 +51,7 @@ Trigger: DeepSeek 4.1 + DSpark draft, every repeat request broke after ~256 toke
 | shared functions, copies only when measured slower | every bound (zone end for N cells, padded read cells, lend end, blocks under a range) comes from one function; the hand copies of `kv_start + kv_fixed + cells x kv_row` (about 15 in llama-moecache-fork.cpp) call it. |
 | fast reuse, autogrow, automove, tight fit stay | layout work only per pass or growth step, never per token; moves copy only rows in use; no free and realloc of CUDA memory (one buffer per card, owner swaps). |
 | one cheap check per graph, always on | before a graph runs: every pool region it touches is owned by its request at that moment (KV rows up to the padded read inside the zone and owned by the KV, lend parts not overlapping, every expert table entry pointing at a block owned by that layer). A comparison of a few numbers per region, not per byte. |
+| easy to trace and to find the culprit | every region carries its owner, the call site that asked for it and the serial of the commit that last changed it; poison fills carry the same serial, so bad bytes lead back to a commit. A ring of the last few hundred commits is always kept in memory (cheap) and dumped with the region map on any failed check or abort, so the dump already holds the culprit. A failed check prints the region, the owner it expected, the owner it found, the graph, and the last commits that touched that range. The ledger, the pool dump, the live pool page and the fuzz test all read the manager's own map. |
 
 ## Speed rules
 
