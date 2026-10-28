@@ -5399,11 +5399,11 @@ static bool topic_key(const llama_model & model, const int32_t * ids, int32_t n,
     static std::vector<int32_t>  uniq;
     if ((int64_t) tok_n.size() < nv) { tok_n.assign(nv, 0); }
     uniq.clear();
-    static const bool own_text = [] { const char * k = moe_opt("dynhot-key"); return !(k && strcmp(k, "all") == 0); }();
+    static const bool raw = [] { const char * k = moe_opt("dynhot-key"); return !(k && strcmp(k, "all") == 0); }();
     *n_tmpl = 0;
     for (int32_t i = 0; i < n; ++i) {
         if (ids[i] < 0 || ids[i] >= nv) { continue; }
-        if (own_text && (size_t) ids[i] < g_tmpl_tok.size() && g_tmpl_tok[(size_t) ids[i]]) { ++*n_tmpl; continue; }
+        if (raw && (size_t) ids[i] < g_tmpl_tok.size() && g_tmpl_tok[(size_t) ids[i]]) { ++*n_tmpl; continue; }
         if (tok_n[ids[i]]++ == 0) { uniq.push_back(ids[i]); }
     }
     *n_distinct = (int32_t) uniq.size();
