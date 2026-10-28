@@ -3698,7 +3698,7 @@ static size_t kv_gap_place(const moe_cache::alias_pool & ap, size_t bmax, size_t
 static void kv_zone_check(const moe_cache::alias_pool & ap, size_t lend_end, const char * who) {   // a violation used to show up as '!!!!' or a NaN many tokens later; now it stops here, with the numbers
     if (const char * bad = kvz_bad(ap, lend_end)) {
         GGML_ABORT("kv-zone invariant (%s) on %s: %s: zone [%zu, %zu) fixed %zu h %zu row %zu, lend end %zu, tail_end %zu",
-                   who, ggml_backend_dev_name(ap.dev), bad, ap.kv_start, ap.kv_start + ap.kv_fixed + ap.kv_h * ap.kv_row, ap.kv_fixed, (size_t) ap.kv_h, ap.kv_row, lend_end, ap.tail_end);
+                   who, ggml_backend_dev_name(ap.dev), bad, ap.kv_start, kvz_end(ap), ap.kv_fixed, (size_t) ap.kv_h, ap.kv_row, lend_end, ap.tail_end);
     }
 }
 
@@ -3806,7 +3806,7 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     // cmax: the most cells any growing record has (a compressed cache has fewer rows than the context: it must not cap the others' horizon at its own rows)
     size_t pad = 1, cmax = 0, need = cells;   // need: the cells in use or planned for the prompt being laid out, whichever is more
     for (const auto & r : ap.kvt) { if (!r.fixed) { pad = std::max(pad, r.pad); cmax = std::max(cmax, r.cells_max); need = std::max(need, r.plan); } }
-    const size_t h_min = std::min((need + pad - 1) / pad * pad, cmax);
+    const size_t h_min = kvz_read_cells(need, pad, cmax);
     const size_t h_pool = ap.kv_row > 0 ? kv_gap_fit(ap, bmax, lend_min, ap.kv_row) : (size_t) -1;   // the largest zone any gap can hold
     if (led_on()) { LLAMA_LOG_WARN("kv-gap %s: h %zu h_min %zu h_pool %zu lend_min %.1f MiB want %.1f MiB fixed %.1f MiB row %zu tail_end %.1f MiB segs %zu\n", led_card(ap), h, h_min, h_pool, lend_min / 1048576.0, l / 1048576.0, ap.kv_fixed / 1048576.0, ap.kv_row, ap.tail_end / 1048576.0, ap.segs.size()); }
     if (!dry && h_pool < h_min) {   // no gap behind this lend holds the padded rows of the cells in use: the pass is refused here, not written and aborted in set_input_k_idxs (Qwen3.6 on PC1 with 8 GiB, 13720 cells, gap of 13780, padded read 13824, 2026-10-18)
@@ -3818,14 +3818,14 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     }
     h = std::min(std::max(h, std::min(h_min, h_pool)), h_pool);   // never past what a gap holds: there the cache refuses the cells (llama_moe_cache_kv_tail_covers_fork checks the padded count)
     {
-        const size_t ls = kv_gap_place(ap, bmax, lend_min, l, ap.kv_fixed + h * ap.kv_row);
+        const size_t ls = kv_gap_place(ap, bmax, lend_min, l, kvz_bytes(ap, h));
         if (ls != (size_t) -1) { l = ls; }
     }
     if (h == ap.kv_h && l == ap.kv_start) { return false; }
     if (dry) { return true; }
-    const size_t lo_old = ap.kv_start, h_old = ap.kv_h, lo = l, hi = l + ap.kv_fixed + h * ap.kv_row;
+    const size_t lo_old = ap.kv_start, h_old = ap.kv_h, lo = l, hi = l + kvz_bytes(ap, h);
     const bool   first  = h_old == 0;   // nothing laid out yet: no rows to move, the fixed part is zeroed below
-    const size_t n_used = first ? 0 : ap.kv_fixed + std::min(cells, std::min(h, h_old)) * ap.kv_row;   // the fixed part and the growing rows in use: one contiguous range
+    const size_t n_used = first ? 0 : kvz_bytes(ap, std::min(cells, std::min(h, h_old)));   // the fixed part and the growing rows in use: one contiguous range
     size_t n_take = 0, n_give = 0, n_evict = 0;
     pool_move_begin(ap, std::min(lo, lo_old), std::max(hi, h_old > 0 ? led_kv_end(ap) : hi));   // no DMA runs in either place, none starts until the move ends
     kv_blocks_apply(mc, ap, lo, hi, true, false, n_take, n_give, n_evict);
@@ -3912,7 +3912,7 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
             }
             const size_t plan = !dry ? r.plan : (plan_extra > 0 ? c + plan_extra : (reset_plan ? 0 : r.plan));
             size_t e = std::max(c, plan);
-            e = e > 0 ? (e + r.pad - 1) / r.pad * r.pad : 0;
+            e = kvz_read_cells(e, r.pad);
             eff = std::max(eff, e);
             cells = std::max(cells, c);
             cells_max = std::max(cells_max, r.cells_max);
@@ -3935,9 +3935,9 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
         }
         // the end of the pool is a hard limit (nothing past tail_end is the KV's: the claim check cannot even see it). When the cells this call needs do not fit
         // behind the lend, the lend shrinks (the call's passes get smaller: pp_cap_to_pool sees the zone), never below what a decode graph borrows.
-        if (ap.tail_end <= lr + ap.kv_fixed + eff * ap.kv_row) {
+        if (ap.tail_end <= lr + kvz_bytes(ap, eff)) {
             const size_t floor_l = kv_lend_round(ap, ap.dec_need);   // what a decode graph borrows (measured), on its block edge
-            const size_t zone_b  = ap.kv_fixed + eff * ap.kv_row;
+            const size_t zone_b  = kvz_bytes(ap, eff);
             if (ap.tail_end > zone_b + floor_l) { lr = std::min(lr, std::max(floor_l, kvz_block_floor(ap, ap.tail_end - zone_b))); }
         }
         const size_t hard = ap.tail_end > lr + ap.kv_fixed ? (ap.tail_end - lr - ap.kv_fixed) / ap.kv_row : 0;
@@ -4418,7 +4418,7 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
         auto & ap = *cp.ap;
         size_t nt = 0, ng = 0, ne = 0;
         const size_t Z = ap.kv_start;
-        b_old += ap.kv_fixed + cp.cells * ap.kv_row;
+        b_old += kvz_bytes(ap, cp.cells);
         kv_blocks_apply(mc, ap, cp.s_lo, cp.s_hi, true, false, nt, ng, ne);   // the staging: its experts out (uploads into it dropped or awaited)
         if (cp.up) { kv_blocks_apply(mc, ap, Z, Z + cp.F + cp.h * cp.R, true, false, nt, ng, ne); }   // converting up: the new extent's experts out before rows land there
         const size_t nr = ap.kvt.size();
@@ -4447,7 +4447,7 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
                 const auto & h = q.host[2 * sg.lay + (sg.v ? 1 : 0)];
                 const int64_t nh = (int64_t) (ggml_row_size(sg.type, sg.ne0) / 2);
                 ggml_tensor * a = ggml_new_tensor_2d(hx, GGML_TYPE_F16, nh, (int64_t) cp.cells);
-                a->nb[1] = ap.kv_row; a->nb[2] = a->nb[3] = ap.kv_row * cp.cells; a->data = base + Z + ap.kv_fixed + r.prefix + sg.off; a->buffer = ap.buf;
+                a->nb[1] = ap.kv_row; a->nb[2] = a->nb[3] = ap.kv_row * cp.cells; a->data = base + kvz_row_at(ap, 0) + r.prefix + sg.off; a->buffer = ap.buf;
                 ggml_tensor * b = ggml_new_tensor_2d(hx, GGML_TYPE_F16, nh, (int64_t) cp.cells);
                 b->nb[1] = h.second; b->nb[2] = b->nb[3] = h.second * cp.cells; b->data = h.first; b->buffer = ap.buf;
                 ggml_build_forward_expand(hg, ggml_cpy(hx, a, b));
@@ -4744,7 +4744,7 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens) {
             // zone read to 1536, 2026-10-18). The lend only grows with c and the gap only shrinks with the lend: bisection.
             auto fits = [&](size_t c) -> bool {
                 const size_t lend = lend_at(c);
-                return lend + ap.kv_fixed + c * ap.kv_row <= ap.tail_end && kv_gap_fit(ap, bmax, lend, ap.kv_row) >= c;   // c is in whole pads: the attention reads exactly c rows   // one pad of margin: the lend is a fit through measured sizes and the real graph came 0.3% bigger (Qwen3.6 PC1, gap 13780 for 13824 cells)
+                return lend + kvz_bytes(ap, c) <= ap.tail_end && kv_gap_fit(ap, bmax, lend, ap.kv_row) >= c;   // c is in whole pads: the attention reads exactly c rows   // one pad of margin: the lend is a fit through measured sizes and the real graph came 0.3% bigger (Qwen3.6 PC1, gap 13780 for 13824 cells)
             };
             size_t lo = 0, hi = cap / pad;   // in pads: lo fits (0 cells), hi is the advertised limit
             while (lo < hi) {
@@ -4756,6 +4756,15 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens) {
         }
     }
     return res;
+}
+
+// The bytes record r's reads cover while cells [0, max_cell] are in use: for a fixed record (a sliding-window ring with its own row) the cells themselves, for a
+// growing record whole pads of combined rows (flash attention reads up to the pad). One function for the check (kv_tail_covers_fork) and its message (kv_tail_why_fork):
+// until 2026-10-28 the message described the unpadded range while the check tested the padded one.
+static void kv_read_range(const moe_cache::alias_pool & ap, const moe_cache::alias_pool::kvt_run & r, size_t max_cell, size_t & lo, size_t & hi) {
+    if (r.fixed) { lo = ap.kv_start + r.prefix; hi = lo + (max_cell + 1) * r.row; return; }
+    lo = kvz_row_at(ap, 0);
+    hi = kvz_row_at(ap, kvz_read_cells(max_cell + 1, r.pad, r.cells_max));
 }
 
 // why kv_tail_covers_fork says no, for the message before its assert (declared locally in llama-kv-cache.cpp: no header change)
@@ -4770,8 +4779,8 @@ std::string llama_moe_cache_kv_tail_why_fork(void * owner, size_t max_cell) {
                      ggml_backend_dev_name(ap.dev), r.fixed ? "fixed (sliding-window ring)" : "growing", max_cell, (size_t) r.cells_max, (size_t) ap.kv_h, (size_t) ap.kv_start, (size_t) ap.kv_fixed, (size_t) ap.kv_row, (size_t) r.row, (size_t) ap.tail_end);
             std::string more;
             {   // the first block under the range that is not the KV's
-                size_t lo = r.fixed ? ap.kv_start + r.prefix : ap.kv_start + ap.kv_fixed;
-                size_t hi = lo + (max_cell + 1) * (r.fixed ? r.row : ap.kv_row);
+                size_t lo, hi;
+                kv_read_range(ap, r, max_cell, lo, hi);
                 for (auto & sg : ap.segs) {
                     const auto & ps = mc->pool[sg.pcls];
                     for (int32_t b = 0; b < sg.n; ++b) {
@@ -4802,17 +4811,15 @@ bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell) {
         for (auto & ap : mc->alias) {
             for (auto & r : ap.kvt) {
                 if (r.owner != owner) { continue; }
-                size_t lo, hi;   // every block under [lo, hi) must be the KV's (owner -3)
                 if (r.fixed) {
                     if (max_cell + 1 > r.cells_max) { return false; }
-                    lo = ap.kv_start + r.prefix; hi = lo + (max_cell + 1) * r.row;
                 } else {
                     // the attention reads up to the cells rounded up to the pad: all of those rows must be the zone's, not just the cells written
-                    const size_t rd = std::min((max_cell + 1 + r.pad - 1) / r.pad * r.pad, (size_t) r.cells_max);
-                    if (rd > ap.kv_h) { return false; }
+                    if (kvz_read_cells(max_cell + 1, r.pad, r.cells_max) > ap.kv_h) { return false; }
                     if (kv_any_out(ap) && max_cell + 1 > ap.host_cells) { return false; }
-                    lo = ap.kv_start + ap.kv_fixed; hi = lo + rd * ap.kv_row;
                 }
+                size_t lo, hi;   // every block under [lo, hi) must be the KV's (owner -3)
+                kv_read_range(ap, r, max_cell, lo, hi);
                 for (auto & sg : ap.segs) {
                     const auto & ps = mc->pool[sg.pcls];
                     for (int32_t b = 0; b < sg.n; ++b) {
@@ -4827,7 +4834,7 @@ bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell) {
     for (auto & ar : g_kv_arena) {   // every arena the cache has records on must cover the cell, not the first
         for (auto & q : ar.runs) {
             if (q.owner != owner) { continue; }
-            if (q.fixed ? (max_cell + 1) > q.cells_max : (max_cell + 1 + ar.pad - 1) / ar.pad * ar.pad > kv_arena_cells(ar)) { return false; }
+            if (q.fixed ? (max_cell + 1) > q.cells_max : kvz_read_cells(max_cell + 1, ar.pad) > kv_arena_cells(ar)) { return false; }
             break;
         }
     }
@@ -4846,13 +4853,13 @@ static void kv_tail_pad_zero(moe_cache * mc) {
         if (cells < ap.kv_last_cells) { ap.kv_zhi = 0; }   // the cache shrank (a new request): the window is set up again
         ap.kv_last_cells = cells;
         if (cells == 0) { continue; }
-        const size_t hi = std::min<size_t>((cells + pad - 1) / pad * pad, ap.kv_h);
+        const size_t hi = kvz_read_cells(cells, pad, ap.kv_h);
         const size_t lo = std::max(ap.kv_zhi, cells);
         if (hi <= lo) { continue; }
         ggml_tensor z = {};
         z.type = GGML_TYPE_I8; z.buffer = ap.buf;
-        z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + ap.kv_start + ap.kv_fixed + lo * ap.kv_row;
-        led_line(led_card(ap), "kv-pad", ap.kv_start + ap.kv_fixed + lo * ap.kv_row, ap.kv_start + ap.kv_fixed + hi * ap.kv_row, tr_fmt("rows %zu-%zu zeroed", lo, hi));
+        z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + kvz_row_at(ap, lo);
+        led_line(led_card(ap), "kv-pad", kvz_row_at(ap, lo), kvz_row_at(ap, hi), tr_fmt("rows %zu-%zu zeroed", lo, hi));
         z.ne[0] = (int64_t) ((hi - lo) * ap.kv_row); z.ne[1] = z.ne[2] = z.ne[3] = 1;
         z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = (size_t) z.ne[0];
         ggml_backend_tensor_memset(&z, 0, 0, (size_t) z.ne[0]);
@@ -5020,11 +5027,11 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             {   // the attention reads the cells in use rounded up to the pad: the zone must hold those rows too (OLMoE on W10, 2026-10-18: 33568 cells in use, a zone of 33740 after the lend grew, padded read 33792, abort in set_input_k_idxs)
                 size_t pad = 1, cmx = 0;   // cmx: the most cells of a growing record (a compressed cache's fewer rows never cap the others)
                 for (auto & r : ap.kvt) { if (!r.fixed) { pad = std::max(pad, r.pad); cmx = std::max(cmx, r.cells_max); } }
-                cells = std::min((cells + pad - 1) / pad * pad, cmx);
+                cells = kvz_read_cells(cells, pad, cmx);
             }
             // the zone moves behind exactly this graph's lend, its start on the block edge the lend ends on (no headroom: a bigger graph later moves it again, a
             // device copy of the rows in use, ~2.5 ms per GB; 25% headroom pushed MiMo's zone 3.4 GiB further back and the decode then found no room for its cells)
-            const size_t keep = ap.kv_fixed + std::max(cells, (size_t) 1) * ap.kv_row;   // the zone as it is now must still fit behind the lend
+            const size_t keep = kvz_bytes(ap, std::max(cells, (size_t) 1));   // the zone as it is now must still fit behind the lend
             const size_t lr_max = ap.tail_end > keep ? kvz_block_floor(ap, ap.tail_end - keep) : 0;
             const size_t lr = kv_lend_round(ap, need_b);   // the zone starts where the lend really ends
             if (lr + keep > ap.tail_end) {
@@ -8404,7 +8411,7 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     // headroom there (Qwen3.6-35B, 3 GiB free per card, cold: a 4128-token pass lent 1222 of the x4 card's 1282 MiB and its KV did not fit, 2026-10-22)
     if (moe_log_has("w")) {   // the cap's inputs: a 22381-token call of GLM (split-pass=0, 55k cells) was capped to 96 tokens (239 passes)
         LLAMA_LOG_WARN("moe-cache: pass cap: n %u cells_end %zu pts %zu a %.0f b %.0f mirror %zu lend_potential %zu -> %u\n", n_prompt, cells_end, pts.size(), a, b, ap.mirror_b,
-                (size_t) kvz_lend_potential(ap, (std::max<size_t>(n_prompt, ap.kv_h) + pad - 1) / pad * pad), kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b));
+                (size_t) kvz_lend_potential(ap, kvz_read_cells(std::max<size_t>(n_prompt, ap.kv_h), pad)), kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b));
         for (const auto & p : pts) { LLAMA_LOG_WARN("moe-cache: pass cap point: %d tokens -> %zu B\n", p.first, p.second); }
     }
     return kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b);   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
