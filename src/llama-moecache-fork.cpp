@@ -5341,6 +5341,7 @@ static struct topic_t {
     int32_t             prev_n = 0;       // tokens of the previous decode call: a prompt starts where a call of more than a step follows a step
     bool                after_prompt = false;   // a prompt began: its first decode step drops the experts foreign to the topic and the request
     uint64_t h0 = 0, m0 = 0;   // decode hits and misses when the request began
+    bool     ro = false;       // --moe dynhot-ro=1: the stored maps are read, never changed
 } g_topic;
 
 // the keys of a prompt (moe_topic_store::N_KEYS x n_embd floats, each unit length): the mean of its tokens' input embeddings and per value their largest,
@@ -5412,7 +5413,8 @@ static bool topic_key(const llama_model & model, const int32_t * ids, int32_t n,
 
 // the request just served: its counts under its key (merged into a stored request it nearly equals)
 static void topic_store_pending(moe_cache * mc) {
-    if (g_topic.key.empty() || g_topic.store.n_exp == 0) {
+    if (g_topic.key.empty() || g_topic.store.n_exp == 0 || g_topic.ro) {
+        g_topic.key.clear();
         return;
     }
     std::vector<uint32_t> cnt(g_topic.store.rec_cells(), 0);
@@ -5459,16 +5461,18 @@ static size_t topic_drop_foreign(moe_cache * mc) {
 }
 
 // <state dir>/hotmaps/<model section><ext>: the files of the hot maps per topic and of the per-expert tokens, one per model, next to the state file
-// ("" when there is no state file)
+// ("" when there is no state file). --moe hotmaps=DIR puts them in DIR instead: one set of maps that outlives clean-state benchmark cells (their state file
+// is a new one per cell), and the frozen set reg tests read (dynhot-ro=1)
 static std::string hotmap_path(const llama_model & model, const char * ext) {
+    const char * hd = moe_opt("hotmaps");
     const std::string sf = moe_state_file();
-    if (sf.empty()) {
+    if (hd == nullptr && sf.empty()) {
         return "";
     }
     std::string sec = moe_state_section(model);
     for (char & ch : sec) { if (!isalnum((unsigned char) ch) && ch != '-' && ch != '.') { ch = '_'; } }
     const std::filesystem::path sp(sf);
-    const std::string dir = (sp.has_parent_path() ? sp.parent_path() : std::filesystem::path(".")).string() + "/hotmaps";
+    const std::string dir = hd != nullptr ? std::string(hd) : (sp.has_parent_path() ? sp.parent_path() : std::filesystem::path(".")).string() + "/hotmaps";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir + "/" + sec + ext;
@@ -5581,13 +5585,14 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         size_t max_rec = 1024;
         const char * e = moe_opt("dynhot");
         const std::string sf = moe_state_file();
-        g_topic.on = e != nullptr && atoi(e) != 0 && !sf.empty() && model.tok_embd != nullptr && model.hparams.n_expert > 0 ? 1 : 0;
+        g_topic.on = e != nullptr && atoi(e) != 0 && (!sf.empty() || moe_opt("hotmaps") != nullptr) && model.tok_embd != nullptr && model.hparams.n_expert > 0 ? 1 : 0;
         if (g_topic.on == 0) {
             return;
         }
         if (const char * m = moe_opt("dynhot-pool"))  { g_topic.pool = strcmp(m, "max") == 0 ? moe_topic_store::KEY_MAX : moe_topic_store::KEY_MEAN; }
         if (const char * m = moe_opt("dynhot-max"))   { max_rec = (size_t) atoll(m); }   // records kept: 0 = no limit (while testing)
         if (const char * m = moe_opt("dynhot-min"))   { g_topic.min_cos   = (float) atof(m); }
+        if (const char * m = moe_opt("dynhot-ro"))    { g_topic.ro = atoi(m) != 0; }   // frozen maps: lookups only, no request stored (reg tests on one fixed file)
         if (const char * m = moe_opt("dynhot-merge")) { g_topic.merge_overlap = m[0] == 'a' ? -1.0f : (float) atof(m); }   // a number, or "auto" (the default)
         const std::string path = hotmap_path(model, ".hotmap");   // <state dir>/hotmaps/<model>.hotmap
         g_topic.store.pool = g_topic.pool;
@@ -5595,8 +5600,8 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         if (!g_topic.store.open(path, (uint32_t) model.hparams.n_embd, (uint32_t) model.hparams.n_layer(), (uint32_t) model.hparams.n_expert)) {
             LLAMA_LOG_WARN("moe-cache: dynhot: %s holds maps of another shape (model or layer count): not used, not written\n", path.c_str());
         }
-        LLAMA_LOG_WARN("moe-cache: dynhot: %zu stored requests in %s (nearest at cosine >= %.2f fill the cache; none: the answer starts with the prompt's experts only)\n",
-                g_topic.store.size(), path.c_str(), g_topic.min_cos);
+        LLAMA_LOG_WARN("moe-cache: dynhot: %zu stored requests in %s (nearest at cosine >= %.2f fill the cache; none: the answer starts with the prompt's experts only)%s\n",
+                g_topic.store.size(), path.c_str(), g_topic.min_cos, g_topic.ro ? ", frozen: nothing stored" : "");
         g_topic_on.store(true);
     }
     topic_store_pending(mc);   // the request before this prompt, now searchable too
