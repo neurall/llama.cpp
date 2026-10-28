@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+glm-fixed-graphs-on,glm,1,pf12k,256,-ub 4096 --moe fixed=1,
+glm-fixed-graphs-off,glm,1,pf12k,256,-ub 4096 --moe fixed=1,--env GGML_CUDA_DISABLE_GRAPHS=1

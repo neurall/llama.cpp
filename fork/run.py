@@ -2702,8 +2702,8 @@ CELLS = {}   # (model, test, build, args, campaign, hw) -> (t/s of its runs, pp 
 # Answer checks of every run, printed at once (2026-10-28: 15 DeepSeek + DSpark repeat requests had stopped printing at ~717 characters for 4096 tokens over
 # a day before anyone saw it; their uniq4 and loop looked fine, only the length was wrong):
 #  - an answer under half a character per generated token stopped printing (real text is ~3, code ~2.5, CJK ~1): ANSWER STOPPED
-#  - the runs of one cell answer the same prompt the same way under greedy decoding: a later run whose text differs from the cell's first run prints where they
-#    part (a repeat request that breaks, a cache or replay bug), REPEAT DIFFERS. Sampling runs (a temperature in the cell's args) are not compared.
+#  - a later run of the same greedy cell whose answer is over 15% shorter or longer than the first run's (a repeat request that breaks, a cache or replay bug):
+#    REPEAT DIFFERS with the lengths and where they part. Smaller differences are the cache's normal numeric drift. Sampling runs are not compared.
 FIRST_ANSWER = {}
 
 
@@ -2718,8 +2718,13 @@ def answer_checks(row, key):
     first = FIRST_ANSWER.setdefault(key, out)
     if first is out or first == out:
         return
+    # With the expert cache, upload timing decides which experts run on the GPU and which on the CPU, and that numeric drift changes the text late in a
+    # long answer: a later run that parts from the first is normal. A repeat much shorter or longer than the first is not (the DSpark break: 717 against
+    # 887 characters): only that is flagged.
+    if 0.85 * len(first) <= len(out) <= 1.15 * len(first):
+        return
     k = next((i for i, (x, y) in enumerate(zip(first, out)) if x != y), min(len(first), len(out)))
-    print(col("1;93", f"    REPEAT DIFFERS from the cell's first run at character {k} ({len(first)} vs {len(out)} characters): ...{out[max(0, k - 40):k + 40]!r}"), flush=True)
+    print(col("1;93", f"    REPEAT DIFFERS from the cell's first run: {len(out)} against {len(first)} characters, parting at character {k}: ...{out[max(0, k - 40):k + 40]!r}"), flush=True)
 
 
 def text_class(text):
