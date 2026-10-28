@@ -789,7 +789,7 @@ Every run is stored twice: as a row of fork/bench/run-history.csv (append-only, 
 `load` rebuilds the database from the CSV any time.
 
   python3 fork/run.py runlog load                     rebuild the database from the CSV
-  python3 fork/run.py runlog sync                     add the CSV rows the database lacks (after a git merge of run-history.csv from another machine)
+  python3 fork/run.py runlog sync                     both ways: CSV rows the database lacks go in, database rows the CSV lacks are appended (bad_runs stay out) (after a git merge of run-history.csv or runs from another worktree)
   python3 fork/run.py runlog bestpl MODEL TEST PL     like best, only the rows measured at one power limit, e.g. 280+280
   python3 fork/run.py runlog best MODEL [TEST]        per build: runs, consistent best t/s and pp, first and last date (MODEL is a substring of the file name)
   python3 fork/run.py runlog runs MODEL [TEST] [BUILD] every run, newest first
@@ -920,7 +920,9 @@ consistent best = the highest value that at least two runs agree on within 5% (a
         if os.path.exists(archive): attach_old(con, archive)
         con.commit(); print(f"{n} runs loaded into {DB}")
     def sync():
-        """append the CSV rows the database lacks (runs that came in by a git merge from another machine); never deletes anything"""
+        """both ways, never deletes: the CSV rows the database lacks (runs that came in by a git merge from another machine) go into the database, and the
+    database rows the CSV lacks (runs that run.py of another worktree wrote to its own CSV copy) are appended to the CSV; runs moved to bad_runs
+    (run.py bad-runs) come back on neither side, also when a merge brings their CSV rows back"""
         con = connect()
         cols, rows = read_csv_rows()
         ensure(con, cols)
@@ -928,11 +930,25 @@ consistent best = the highest value that at least two runs agree on within 5% (a
             t = num(tps)
             return (str(ts), str(build or ""), str(test or ""), None if t is None else round(t, 3))
         have = {key(*r) for r in con.execute("SELECT ts, build, test, tps FROM runs")}
+        bad = {key(*r) for r in con.execute("SELECT ts, build, test, tps FROM bad_runs")} if con.execute("SELECT 1 FROM sqlite_master WHERE name = 'bad_runs'").fetchone() else set()
         n = 0
         for r in rows:
-            if key(r.get("ts"), r.get("build"), r.get("test"), r.get("tps")) in have: continue
+            k = key(r.get("ts"), r.get("build"), r.get("test"), r.get("tps"))
+            if k in have or k in bad: continue
             con.execute(ins(cols), row_values(r, cols)); n += 1
         con.commit(); n and print(f"{n} CSV rows added to {DB} ({len(rows)} in the CSV)")
+        inc = {key(r.get("ts"), r.get("build"), r.get("test"), r.get("tps")) for r in rows}
+        with open(CSV, newline="") as f: head = next(csv.reader(f))   # the file's own header: a repeated name (wall_s, ddr_util) gets the value in its first column only
+        cur = con.execute("SELECT * FROM runs ORDER BY ts"); names = [d[0] for d in cur.description]
+        def txt(v): return "" if v is None else str(int(v)) if isinstance(v, float) and v.is_integer() else str(v)
+        out = []
+        for v in cur:
+            d = dict(zip(names, v))
+            if key(d.get("ts"), d.get("build"), d.get("test"), d.get("tps")) in inc: continue
+            out.append([txt(d.get(c)) if c not in head[:i] else "" for i, c in enumerate(head)])
+        if out:
+            with open(CSV, "a", newline="") as f: csv.writer(f, lineterminator="\n").writerows(out)
+            print(f"{len(out)} database rows appended to {CSV}")
     def show(cur):
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
