@@ -1285,7 +1285,7 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
                 for (size_t r = 0; r < NR; ++r) {
                     ds_skip();
                     residual[r] = x[r];
-                    cur_r[r] = build_hc_pre(x[r], L[r].hc_attn_fn, L[r].hc_attn_scale, L[r].hc_attn_base, &post[r], &comb[r], il);
+                    { hc_pre hp = build_hc_pre(x[r], L[r].hc_attn_fn, L[r].hc_attn_scale, L[r].hc_attn_base, il); cur_r[r] = hp.cur; post[r] = hp.post; comb[r] = hp.comb; }
                     cur_r[r] = build_norm(cur_r[r], L[r].attn_norm, nullptr, LLM_NORM_RMS, il);
                     ds_pin(ds_r[r].b);
                 }
@@ -1302,7 +1302,7 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
                     ggml_tensor * a = ggml_cont(ctx0, ds_rows(att, r));
                     ggml_tensor * h = build_hc_post(a, residual[r], post[r], comb[r], il);
                     residual[r] = h;
-                    cur_r[r] = build_hc_pre(h, L[r].hc_ffn_fn, L[r].hc_ffn_scale, L[r].hc_ffn_base, &post[r], &comb[r], il);
+                    { hc_pre hp = build_hc_pre(h, L[r].hc_ffn_fn, L[r].hc_ffn_scale, L[r].hc_ffn_base, il); cur_r[r] = hp.cur; post[r] = hp.post; comb[r] = hp.comb; }
                     ffn_in[r] = build_norm(cur_r[r], L[r].ffn_norm, nullptr, LLM_NORM_RMS, il);
                     lg[r] = build_lora_mm(L[r].ffn_gate_inp, ffn_in[r]);
                     ds_pin(ds_r[r].b);

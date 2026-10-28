@@ -821,7 +821,8 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
             for (size_t r = 0; r < NR; ++r) {
                 skip();
                 res[r] = x[r];
-                ggml_tensor * c = build_hc_pre(x[r], L[r].hc_attn_fn, L[r].hc_attn_scale, L[r].hc_attn_base, &post[r], &comb[r], il);
+                hc_pre hp = build_hc_pre(x[r], L[r].hc_attn_fn, L[r].hc_attn_scale, L[r].hc_attn_base, il);
+                ggml_tensor * c = hp.cur; post[r] = hp.post; comb[r] = hp.comb;
                 cr[r] = build_norm(c, L[r].attn_norm, nullptr, LLM_NORM_RMS, il);
                 pin(R[r].b);
             }
@@ -1026,7 +1027,8 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                 skip();
                 x[r]   = build_hc_post(cr[r], res[r], post[r], comb[r], il);
                 res[r] = x[r];
-                ggml_tensor * c = build_hc_pre(x[r], L[r].hc_ffn_fn, L[r].hc_ffn_scale, L[r].hc_ffn_base, &post[r], &comb[r], il);
+                hc_pre hp = build_hc_pre(x[r], L[r].hc_ffn_fn, L[r].hc_ffn_scale, L[r].hc_ffn_base, il);
+                ggml_tensor * c = hp.cur; post[r] = hp.post; comb[r] = hp.comb;
                 cr[r] = build_norm(c, L[r].ffn_norm, nullptr, LLM_NORM_RMS, il);
                 pin(R[r].b);
             }

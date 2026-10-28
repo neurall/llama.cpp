@@ -690,7 +690,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
 
                 for (size_t r = 0; r < NR; ++r) {
                     ds_skip();
-                    cr[r] = build_hc_mix(x[r], L[r].hc_attn_norm, L[r].hc_attn_down, L[r].hc_attn_up, L[r].hc_attn_inject, L[r].hc_attn_down_inject, &inj[r], il);
+                    { hc_mix m = build_hc_mix(x[r], L[r].hc_attn_norm, L[r].hc_attn_down, L[r].hc_attn_up, L[r].hc_attn_inject, L[r].hc_attn_down_inject, il); cr[r] = m.cur; inj[r] = m.inject; }
                     ds_pin(ds_r[r].b);
                 }
 
@@ -891,7 +891,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                 for (size_t r = 0; r < NR; ++r) {
                     ds_skip();
                     x[r]  = build_hc_combine(x[r], cr[r], inj[r], il);
-                    cr[r] = build_hc_mix(x[r], L[r].hc_ffn_norm, L[r].hc_ffn_down, L[r].hc_ffn_up, L[r].hc_ffn_inject, L[r].hc_ffn_down_inject, &inj[r], il);
+                    { hc_mix m = build_hc_mix(x[r], L[r].hc_ffn_norm, L[r].hc_ffn_down, L[r].hc_ffn_up, L[r].hc_ffn_inject, L[r].hc_ffn_down_inject, il); cr[r] = m.cur; inj[r] = m.inject; }
                     ds_pin(ds_r[r].b);
                 }
                 if (state_late == 2 && !pieces) {   // the memory card's own attention residual and mixer are in the graph before the write that waits for the helper's scan
