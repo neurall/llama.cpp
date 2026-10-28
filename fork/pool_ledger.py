@@ -16,6 +16,13 @@ WHILE the copy ran (the live check only sees the two ends), and it answers "who 
                                                write that lands in a region it does not belong to, per writer kind, with bytes
   pool_ledger.py LEDGER.csv --blame N          the Nth OVERLAP line with the writes before and after it on the same bytes (who touched them last)
   pool_ledger.py LEDGER.csv --at T_US          the lend, the zone and the uploads in flight at that time, per card
+  pool_ledger.py LEDGER.csv --races            a graph's window (its lend line to its graph-done line) crossed by another thread's write into its bytes,
+                                               and upload windows that overlap a graph window on the same bytes (needs the thread column, 2026-10-28)
+  pool_ledger.py LEDGER.csv --stale            CUDA graph replays whose scratch range lies outside the lend of that card at that moment (an address kept
+                                               from an older layout, the DSpark repeat-request bug of 2026-10-28)
+
+Columns since 2026-10-28: t_us, thread, card, kind, rw (w write, o owner change, rw a graph's read and write, x violation), state (start / done /
+once), lo, hi, bytes, who. Older files without thread / rw / state still load; --races then has no threads to tell apart.
 """
 import argparse, collections, csv, sys
 
@@ -62,6 +69,77 @@ def crossed(rows, wins):
     return bad
 
 
+def load_full(path):
+    """rows with the columns of 2026-10-28: (t, thread, card, kind, rw, state, lo, hi, who); thread / rw / state are '' in older files"""
+    rows = []
+    import gzip
+    with (gzip.open(path, "rt", newline="") if path.endswith(".gz") else open(path, newline="")) as f:
+        for r in csv.DictReader(f):
+            try:
+                rows.append((int(r["t_us"]), r.get("thread", "") or "", r["card"], r["kind"], r.get("rw", "") or "", r.get("state", "") or "",
+                             int(r["lo"]), int(r["hi"]), r["who"]))
+            except (KeyError, ValueError):
+                continue
+    rows.sort(key=lambda x: x[0])
+    return rows
+
+
+def graph_windows(full):
+    """per card: (t_start, t_end, lo, hi, thread, who) from a lend line to the next graph-done line of that card"""
+    out, open_ = [], {}
+    for t, th, card, kind, rw, st, lo, hi, who in full:
+        if kind == "lend":
+            if card in open_:   # a lend without a graph-done before the next one: close at the next lend
+                t0, l0, h0, th0, w0 = open_.pop(card)
+                out.append((t0, t, l0, h0, th0, w0, card))
+            open_[card] = (t, lo, hi, th, who)
+        elif kind == "graph-done" and card in open_:
+            t0, l0, h0, th0, w0 = open_.pop(card)
+            out.append((t0, t, l0, h0, th0, w0, card))
+    return out
+
+
+def races(full):
+    """another thread's write into a graph's bytes inside its window; an upload window overlapping a graph window on the same bytes"""
+    gw = graph_windows(full)
+    by_card = collections.defaultdict(list)
+    for g in gw:
+        by_card[g[6]].append(g)
+    bad = []
+    up_open = {}
+    for t, th, card, kind, rw, st, lo, hi, who in full:
+        if kind == "up-start":
+            up_open[(card, lo, who.replace(" bg", ""))] = (t, th)
+            continue
+        if kind == "up-done":
+            k = (card, lo, who.replace(" bg", ""))
+            if k in up_open:
+                t0, th0 = up_open.pop(k)
+                for g0, g1, a, b, gth, gwho, _ in by_card[card]:
+                    if t0 < g1 and t > g0 and lo < b and hi > a:
+                        bad.append((max(t0, g0), card, f"upload {who} ({th0}) running {t0}-{t}", f"graph window {g0}-{g1} [{a}, {b}) {gwho}"))
+            continue
+        if rw != "w" or not th:
+            continue
+        for g0, g1, a, b, gth, gwho, _ in by_card[card]:
+            if g0 < t < g1 and lo < b and hi > a and th != gth:
+                bad.append((t, card, f"{kind} by {th} [{lo}, {hi}) {who}", f"graph window {g0}-{g1} of {gth} [{a}, {b}) {gwho}"))
+    return bad
+
+
+def stale(full):
+    """cuda-replay lines whose range is not inside the lend of that card at that time"""
+    lend, bad = {}, []
+    for t, th, card, kind, rw, st, lo, hi, who in full:
+        if kind == "lend":
+            lend[card] = (lo, hi)
+        elif kind == "cuda-replay" and card in lend:
+            a, b = lend[card]
+            if lo < a or hi > b:
+                bad.append((t, card, lo, hi, who, a, b))
+    return bad
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("ledger")
@@ -70,11 +148,23 @@ def main():
     ap.add_argument("--map", action="store_true")
     ap.add_argument("--blame", type=int)
     ap.add_argument("--max", type=int, default=40, help="lines per list")
+    ap.add_argument("--races", action="store_true")
+    ap.add_argument("--stale", action="store_true")
     a = ap.parse_args()
     rows = load(a.ledger)
     if not rows:
         sys.exit("no rows")
     t_first = rows[0][0]
+    if a.races or a.stale:
+        full = load_full(a.ledger)
+        found = races(full) if a.races else []
+        for t, card, what, against in found[: a.max]:
+            print(f"RACE {(t - t_first) / 1e6:10.3f}s {card}: {what}  x  {against}")
+        st_ = stale(full) if a.stale else []
+        for t, card, lo, hi, who, la, lb in st_[: a.max]:
+            print(f"STALE {(t - t_first) / 1e6:10.3f}s {card}: replay [{lo / MIB:.3f}, {hi / MIB:.3f}) MiB outside the lend [{la / MIB:.3f}, {lb / MIB:.3f}) MiB  {who}")
+        print(f"races {len(found)}, stale replays {len(st_)}")
+        sys.exit(1 if found or st_ else 0)
     if a.blame is not None:
         ov = [r for r in rows if r[2] == "OVERLAP"]
         if not 0 < a.blame <= len(ov):

@@ -2699,6 +2699,29 @@ def save_stats(build, ts, test, hw, model):
 CELLS = {}   # (model, test, build, args, campaign, hw) -> (t/s of its runs, pp of its runs)
 
 
+# Answer checks of every run, printed at once (2026-10-28: 15 DeepSeek + DSpark repeat requests had stopped printing at ~717 characters for 4096 tokens over
+# a day before anyone saw it; their uniq4 and loop looked fine, only the length was wrong):
+#  - an answer under half a character per generated token stopped printing (real text is ~3, code ~2.5, CJK ~1): ANSWER STOPPED
+#  - the runs of one cell answer the same prompt the same way under greedy decoding: a later run whose text differs from the cell's first run prints where they
+#    part (a repeat request that breaks, a cache or replay bug), REPEAT DIFFERS. Sampling runs (a temperature in the cell's args) are not compared.
+FIRST_ANSWER = {}
+
+
+def answer_checks(row, key):
+    out = row.get("output") or ""
+    n_gen = int(float(row.get("n_gen") or 0))
+    np_ = re.search(r"(?:^|\s)-np\s+(\d+)", str(key[3]))
+    if n_gen >= 256 and len(out) * 2 < n_gen and not (np_ and int(np_.group(1)) > 1):   # -np N > 1: n_gen counts every slot, the text is one slot's
+        print(col("1;91", f"    ANSWER STOPPED: {len(out)} characters for {n_gen} tokens (under half a character per token: the rest printed nothing)"), flush=True)
+    if not out or "temp" in str(key[3]) or "--sampler" in str(key[3]):
+        return
+    first = FIRST_ANSWER.setdefault(key, out)
+    if first is out or first == out:
+        return
+    k = next((i for i, (x, y) in enumerate(zip(first, out)) if x != y), min(len(first), len(out)))
+    print(col("1;93", f"    REPEAT DIFFERS from the cell's first run at character {k} ({len(first)} vs {len(out)} characters): ...{out[max(0, k - 40):k + 40]!r}"), flush=True)
+
+
 def text_class(text):
     """(unique word 4-gram share, characters, has code): the speed of an MoE decode depends on what is written (a repetition loop reuses few experts)"""
     w = (text or "").split()
@@ -2801,6 +2824,7 @@ def store(row, build, test, rec, note, hw, vstr):
     w = save_stats(build, row["ts"], test, hw, row["model"])
     row["uniq4"], row["out_chars"], row["code"] = text_class(row.get("output"))
     row["loop"] = int(bool(row.get("loop_abort")) or is_loop(row.get("output")))
+    answer_checks(row, (row["model"], test, build, rec.get("args", ""), CAMPAIGN, hw))
     try:   # the generated text (zlib) into runs.db table outputs, keyed by ts + build
         import runlog
         runlog.insert_output(row["ts"], hw, build, test, row["model"], row.get("md5"), row.get("output"), row["uniq4"], row["out_chars"], row["code"])
@@ -4442,7 +4466,9 @@ def cmd_publish(a):
     if not a.name:
         return
     rev = _git(tree, "rev-parse", "HEAD"); h = rev[:9]
-    arch = sorted(f for f in os.listdir(REL_OUT) if "llama-release-b" in f and f"-{h}-" in f)
+    # the commit in an archive name is as long as the building git made it (the Linux recipe gave 10 characters on 2026-10-28, the Windows build 9): match the
+    # 9-character prefix and any further hex digits
+    arch = sorted(f for f in os.listdir(REL_OUT) if "llama-release-b" in f and re.search(rf"-{h}[0-9a-f]*-", f))
     if not arch: sys.exit(f"publish: no archives for {h} in {REL_OUT}")
     b = re.search(r"llama-release-b(\d+)-", arch[0]).group(1); tag = f"release-b{b}-{h}-{a.name}"
     gh = ["gh", "-R", "neurall/llama.cpp"]
@@ -7133,7 +7159,8 @@ def cmd_cell(a):
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG=LOG_LETTERS)   # r unless the caller set PERF_LOG (PERF_LOG=rp run ...: the periodic cache stats reach the server's --moe log=)
     if os.path.ismount("/mnt/huge1g") and not nomount and not too_big: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
-    env.setdefault("PERF_LEDGER", "0")   # the pool write ledger is a debug tool and off in cells (it cost our side a few percent that stock never pays); --env PERF_LEDGER=1 records it: kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
+    fix_build = any(os.path.basename(b.rstrip("/")).startswith("fix_") for b in re.split(r"[,\s]+", str(a.builds or "")) if b)
+    env.setdefault("PERF_LEDGER", "1" if fix_build else "0")   # fix builds (fix_*) keep the ledger on: a fix-validation run records who wrote what when (user 2026-10-28); the pool write ledger is a debug tool and off in cells (it cost our side a few percent that stock never pays); --env PERF_LEDGER=1 records it: kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
     for kv in (a.env or []):
         k, _, v = kv.partition("="); env[k] = v
     # the cell's --env values are this bench process's own environment, so server_run's key (env that differs from it) never saw them: a cell that
@@ -8783,7 +8810,7 @@ def _tool_bad_runs():
         try:
             if "!!!!" in zlib.decompress(blob).decode("utf8", "replace"): bang.add((ts, b, t, m)); bang.add(md5) if md5 else None
         except Exception: pass
-    def reason(loop, uniq4, chars, key, md5=None, tps=None, faults=None, ok=None, note=None):
+    def reason(loop, uniq4, chars, key, md5=None, tps=None, faults=None, ok=None, note=None, n_gen=None, args=None):
         if str(loop) == "1": return "loop"
         if str(ok) == "0": return "failed: " + re.sub(r"\s+", " ", note or "no answer")[:90]   # out of memory, HTTP 400, a crash: no answer to judge
         try:
@@ -8792,12 +8819,20 @@ def _tool_bad_runs():
         try:
             if uniq4 not in (None, "") and float(uniq4) < 0.4 and int(float(chars or 0)) >= 300: return "nonsense (uniq4 %.2f)" % float(uniq4)
         except ValueError: pass
+        try:   # under half a character per generated token: the answer stopped printing (2026-10-28, DSpark repeat requests: ~717 characters for 4096 tokens).
+            # Only with a stored answer (rows from before answers were stored have 0 characters and no md5: unknown, not empty) and one slot (-np N > 1 counts
+            # the tokens of every slot against one slot's text)
+            np_ = re.search(r"(?:^|\s)-np\s+(\d+)", args or "")
+            if n_gen not in (None, "") and chars not in (None, "") and float(n_gen) >= 256 and int(float(chars)) * 2 < float(n_gen) \
+                    and (md5 or int(float(chars)) > 0) and not (np_ and int(np_.group(1)) > 1):
+                return "answer stopped (%d characters for %d tokens)" % (int(float(chars)), int(float(n_gen)))
+        except ValueError: pass
         return "!!!! in the answer" if key in bang or (md5 and md5 in bang) else ""
     # database
     cols = [r[1] for r in con.execute("pragma table_info(runs)")]
     bad = []
-    for r in con.execute("select rowid, ts, build, test, model, \"loop\", uniq4, out_chars, md5, tps, major_faults, ok, note from runs"):
-        why = reason(r[5], r[6], r[7], (r[1], r[2], r[3], r[4]), r[8], r[9], r[10], r[11], r[12])
+    for r in con.execute("select rowid, ts, build, test, model, \"loop\", uniq4, out_chars, md5, tps, major_faults, ok, note, n_gen, args from runs"):
+        why = reason(r[5], r[6], r[7], (r[1], r[2], r[3], r[4]), r[8], r[9], r[10], r[11], r[12], r[13], r[14])
         if why: bad.append((r[0], why))
     # csv
     with open(csvp, newline="") as f: rd = csv.DictReader(f); head = rd.fieldnames; rows = list(rd)
