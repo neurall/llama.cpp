@@ -962,17 +962,18 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                     const int64_t nr = R[r].t1 - R[r].t0;
                     const llama_layer & Lr = L[r];
                     skip();
-                    ggml_tensor * kq_mask_r = dsa_kqm[r];
                     ggml_tensor * sel = nullptr;
                     if (full_idx) {
                         ggml_tensor * pmask = dsa_pm[r];
                         ggml_tensor * score = ggml_lightning_indexer(ctx0, iq[r], pooled, iw[r], pmask);
                         ggml_tensor * top_k = ggml_top_k(ctx0, score, n_top_pool);
                         if (cparams.fused_top_k_mask) {
-                            // same as the one-card path (build_kpool_select): the fused op builds the range's mask from its slice of kq_mask
+                            // same as the one-card path (build_kpool_select): every retained cell is in the token's sequence, so the kq_mask is not needed
                             ggml_tensor * tail = hparams.indexer_kpool_select_tail ? dsa_tail[r] : nullptr;
                             GGML_ASSERT(kpool*n_top_pool + (tail ? tail->ne[0] : 0) == (int64_t) inp_kpool->n_sel);
-                            sel = build_fused_top_k_mask(kq_mask_r, top_k, score, inp_kpool->pool_idxs, tail, nullptr, il);
+                            ggml_tensor * keep = ggml_fill(ctx0, ggml_new_tensor_1d(ctx0, cparams.flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32, n_kv), 0.0f);
+                            sel = ggml_top_k_mask(ctx0, keep, top_k, score, inp_kpool->pool_idxs, tail);
+                            res->add_fused_node({LLM_FUSED_OP_TOP_K_MASK, sel, il});
                         } else {
                             ggml_tensor * sel_score = ggml_get_rows(ctx0, ggml_reshape_3d(ctx0, score, 1, n_pool, nr), top_k);
                             ggml_tensor * sel_order = ggml_argsort(ctx0, ggml_reshape_2d(ctx0, sel_score, n_top_pool, nr), GGML_SORT_ORDER_DESC);
@@ -994,7 +995,6 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                             idx_f = ggml_add(ctx0, ggml_mul(ctx0, ggml_sub(ctx0, idx_f, dump), live), dump);
                             sel = ggml_set_rows(ctx0, mask_all, zeros, ggml_reshape_3d(ctx0, ggml_cast(ctx0, idx_f, GGML_TYPE_I32), n_sel, nr, 1));
                             sel = ggml_view_2d(ctx0, sel, n_kv, nr, sel->nb[2], 0);
-                            sel = ggml_add(ctx0, sel, kq_mask_r);
                         }
                         prev_sel_r[r] = sel;
                     } else {
@@ -1015,7 +1015,9 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                 ggml_tensor * all = cr[0];
                 for (size_t r = 1; r < NR; ++r) { all = ggml_concat(ctx0, all, cr[r], 1); }
                 pin(bl);
-                ggml_tensor * out = build_dsa_layer(all, layer, mctx_hyb, inp_attn, inp_kpool, &prev_sel, il);
+                dsa_out dsa = build_dsa_layer(all, layer, mctx_hyb, inp_attn, inp_kpool, prev_sel, il);
+                ggml_tensor * out = dsa.cur;
+                prev_sel = dsa.sel;
                 skip();
                 for (size_t r = 0; r < NR; ++r) {
                     cr[r] = ggml_cont(ctx0, ggml_view_2d(ctx0, out, n_embd, R[r].t1 - R[r].t0, out->nb[1], R[r].t0 * out->nb[1]));
