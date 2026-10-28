@@ -83,7 +83,7 @@ struct moe_topic_store {
     size_t size() const { return n_req.size(); }
     size_t rec_cells() const { return (size_t) n_layers * n_exp; }
     size_t key_bytes() const { return (n_embd + 1) / 2; }
-    size_t rec_bytes() const { return sizeof(uint32_t) + sizeof(float) + N_KEYS * (sizeof(float) + key_bytes() + n_embd * sizeof(float)) + rec_cells() * sizeof(uint32_t); }
+    size_t rec_bytes() const { return sizeof(float) + sizeof(uint32_t) + N_KEYS * (sizeof(float) + key_bytes() + n_embd * sizeof(float)) + rec_cells() * sizeof(uint32_t); }
     static size_t head_bytes() { return sizeof(MAGIC) + 4 * sizeof(uint32_t); }
     uint8_t *       qk(size_t i, int kind)       { return qkeys.data() + (i * N_KEYS + kind) * key_bytes(); }
     const uint8_t * qk(size_t i, int kind) const { return qkeys.data() + (i * N_KEYS + kind) * key_bytes(); }
@@ -106,10 +106,10 @@ struct moe_topic_store {
             std::vector<uint8_t> r(rec_bytes());
             while (fread(r.data(), 1, r.size(), f) == r.size()) {
                 const uint8_t * at = r.data();
+                float hr; memcpy(&hr, at, sizeof hr); at += sizeof hr;   // a record: hit rate, requests, per key (1 / length, 4-bit key, float key), counts
+                hit.push_back(hr);
                 uint32_t n; memcpy(&n, at, sizeof n); at += sizeof n;
                 n_req.push_back(n);
-                float hr; memcpy(&hr, at, sizeof hr); at += sizeof hr;
-                hit.push_back(hr);
                 last.push_back(0);
                 for (int k = 0; k < N_KEYS; ++k) {
                     float qi; memcpy(&qi, at, sizeof qi); at += sizeof qi;
@@ -265,8 +265,8 @@ struct moe_topic_store {
             fwrite(h, sizeof(uint32_t), 4, f);
         }
         if (fseek(f, (long) (head_bytes() + i * rec_bytes()), SEEK_SET) == 0) {
-            fwrite(&n_req[i], sizeof(uint32_t), 1, f);
             fwrite(&hit[i], sizeof(float), 1, f);
+            fwrite(&n_req[i], sizeof(uint32_t), 1, f);
             for (int k = 0; k < N_KEYS; ++k) {
                 fwrite(&qinv[i * N_KEYS + k], sizeof(float), 1, f);
                 fwrite(qk(i, k), 1, key_bytes(), f);

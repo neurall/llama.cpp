@@ -144,7 +144,7 @@ int main() {
 
     // the file holds both records with both keys: a second store reads them back
     moe_topic_store r;
-    CHECK(r.open(path, E, L, X) && r.size() == 2 && r.fkeys.size() == 2 * moe_topic_store::N_KEYS * E && r.key_of(1, 0) == s.key_of(1, 0) && r.qkeys == s.qkeys && r.n_req[0] == 2 && r.counts[1] == 20 && r.counts[L * X + 6] == 7);
+    CHECK(r.open(path, E, L, X) && r.size() == 2 && r.fkeys.size() == 2 * moe_topic_store::N_KEYS * E && r.key_of(1, 0) == s.key_of(1, 0) && r.qkeys == s.qkeys && r.hit == s.hit && r.n_req[0] == 2 && r.counts[1] == 20 && r.counts[L * X + 6] == 7);
     CHECK(r.nearest(b.data(), 1, moe_topic_store::KEY_MEAN)[0].second == 1 && r.nearest(bm.data(), 1, moe_topic_store::KEY_MAX)[0].second == 1);
 
     // another shape (another model or layer split): not read, and never written over
