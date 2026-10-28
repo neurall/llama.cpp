@@ -2142,9 +2142,11 @@ private:
     }
 
     bool launch_slot_with_task(server_slot & slot, server_task && task) {
-        {   // fork: a request starts: the MoE cache takes the next decode call as its prompt's first, the key of its topic from the whole prompt
-            const llama_tokens pt = task.tokens.get_text_tokens();
-            llama_moe_request_begin_fork(pt.data(), (int32_t) pt.size());
+        {   // fork: a request starts: the MoE cache takes the next decode call as its prompt's first, the key of its topic from the request's own text
+            // (a chat request's user input), else from the whole prompt
+            const bool         own = !task.params.fork_own_tokens.empty();
+            const llama_tokens pt  = own ? task.params.fork_own_tokens : task.tokens.get_text_tokens();
+            llama_moe_request_begin_fork(pt.data(), (int32_t) pt.size(), own);
         }
 
         // process per-request lora adapters
@@ -5643,6 +5645,15 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     data);
 
             task.apply_chat_session(chat_session);
+
+            {   // fork: the request's own text for the topic key of --moe dynhot: the user-input parts of the rendered chat template, not the template around
+                // them (user 2026-10-28: "pool just raw pretemplate prompts"); the key pools tokens without their positions, so the parts are tokenized apart
+                std::string own;
+                for (const auto & part : chat_session.prompt().parts) {
+                    if (part.is_input) { own += part.text; own += '\n'; }
+                }
+                if (!own.empty()) { task.params.fork_own_tokens = common_tokenize(ctx_server.vocab, own, false, false); }
+            }
 
             task.id_slot = json_value(data, "id_slot", -1);
             sse_ping_interval = task.params.sse_ping_interval;

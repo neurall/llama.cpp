@@ -5577,11 +5577,13 @@ static void exptok_call(const llama_model & model, const int32_t * ids, int32_t 
 // a request started (the server's hook): the next call starts its prompt, however short it is (topic_begin). Not set before the first request: the
 // server's warm-up decodes at load are no prompt (a record of their 2 tokens would be stored at every start)
 static std::atomic<bool> g_req_boundary{false};
-static std::vector<int32_t> g_req_prompt;   // the whole prompt of the request that started: the tokens of its topic's key (the server's thread, as decode)
+static std::vector<int32_t> g_req_prompt;   // the tokens of the topic key of the request that started (the server's thread, as decode)
+static bool                 g_req_own = false;   // they are the request's own text (a chat request's user input), not its whole prompt
 
 // the server's hooks (llama-fork-hooks.h): a request starts; a request ended: the per-expert token ids to the file, so the file is whole while the server waits
-void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_prompt) {
+void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_prompt, bool own_text) {
     g_req_prompt.assign(prompt, prompt + (prompt != nullptr ? std::max(0, n_prompt) : 0));
+    g_req_own = own_text;
     g_req_boundary.store(true);
 }
 
@@ -5680,8 +5682,9 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
     }
     g_topic.key          = std::move(key);
     g_topic.after_prompt = g_topic.steer;
-    LLAMA_LOG_WARN("moe-cache: dynhot: prompt of %d tokens (%d distinct, %d in this call), nearest of %zu stored requests at cosine %.3f by %s pooling (%.3f by %s): %s "
-            "(key %.1f ms, search %.1f ms)\n", kn, n_distinct, n, g_topic.store.size(), best, g_topic.pool == moe_topic_store::KEY_MAX ? "max" : "mean", best_other,
+    LLAMA_LOG_WARN("moe-cache: dynhot: prompt of %d tokens (%d distinct, %d in this call; key: %s), nearest of %zu stored requests at cosine %.3f by %s pooling (%.3f "
+            "by %s): %s (key %.1f ms, search %.1f ms)\n", kn, n_distinct, n, whole.empty() ? "this call's tokens" : g_req_own ? "the request's own text" : "the whole prompt",
+            g_topic.store.size(), best, g_topic.pool == moe_topic_store::KEY_MAX ? "max" : "mean", best_other,
             g_topic.pool == moe_topic_store::KEY_MAX ? "mean" : "max",
             !g_topic.use() ? "store only, the ini's hot experts pick the cache's" : g_topic.steer ? tr_fmt("%zu maps merged and the global map at weight %.2f, "
                 "they rate %zu experts", used, g_topic.store.last_wg, rated).c_str() : "nothing stored: the ini's hot experts pick the cache's",
