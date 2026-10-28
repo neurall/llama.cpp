@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+ds-rep12-luce-d2-tetris-nodetrace,ds,1,tetrisc,64,"-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe 'spec-depth=2,poison=3,ledger=1,idx-check=1'",--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt

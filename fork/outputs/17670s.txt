@@ -1,0 +1,63 @@
+run 17670 | stock-b11804-official | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 13.79 t/s | prompt 48.8 t/s | 1024 tokens | args:  | power 200+200 W | 2026-10-22 03:53:26
+
+Let me carefully review both source files.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+Let me go through this systematically.
+
+### `build_repetition`
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+**Issue 1**: When `min_items == 0` and `max_items == 1` with a separator rule, it returns `item_rule + "?"` which is correct (only one item possible). But wait, the check for `max_items == 0` returns `""` — this means an empty array would produce `""` for the repetition part, which combined with the array rule would produce `"[" space "" space "]"` — actually looking at how it's called:
+
+```cpp
+return _add_rule(rule_name, "\"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\"");
+```
+
+If `build_repetition` returns `""`, we get `"[" space  space "]"` — there's a double space. Not a bug per se (grammar whitespace), but it's a bit ugly. Actually wait, it would be `"[" space " space "]"` — no, it would be `"[" space  space "]"` which has two spaces between `space` and `space`. That's fine in GBNF.
+
+Actually wait, let me re-read. The string would be `"[" space ` + `` + ` space "]"` = `"[" space  space "]"`. That's fine.
+
+**Issue 2**: When `min_items == 0 && max_items == 1` with a separator rule, it returns `item_rule + "?"`. But this check happens before the separator check, so it's correct — with max 1, no separator is needed.
+
+**Issue 3**: When `min_items == 1 && max_items == 1` with a separator rule, the code goes to the separator branch. `min_items == 0 ? 0 : min_items - 1` = `0`, `has_max ? max_items - 1 : max_items` = `0`. So `build_repetition("(" + sep + " " + item + ")", 0, 0)` returns `""`. Result = `item + " " + ""` = `item + " "`. Then since `min_items != 0`, no wrapping. So result = `item + " "`. That trailing space is harmless but slightly odd.
+
+Actually wait, `max_items == 0` returns `""`, so `item_rule + " " + ""` = `item_rule + " "`. That trailing space is fine.
+
+**Issue 4**: When `min_items == 0 && max_items == 1` with separator, returns `item_rule + "?"`. This is correct.
+
+**Issue 5**: When `min_items == 0 && max_items == 0` with separator, returns `""`. Correct.
+
+**Issue 6**: When `min_items == 0 && max_items == 2` with separator: `min_items == 0 ? 0 : min_items - 1` = `0`, `has_max ? max_items - 1 : max_items` = `1`. So `build_repetition("(" + sep + " " + item + ")", 0, 1)` = `("(" + sep + " " + item + ")") + "?"`. Result = `item + " " + "(" + sep + " " + item + ")?". Then wrapped: `"(item (sep item)?)?"`. That's correct for 0-2 items.
+
+**Issue 7**: When `min_items == 1 && max_items == 2` with separator: `min_items
+---

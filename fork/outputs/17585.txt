@@ -1,0 +1,23 @@
+run 17585 | tokms13 | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 25.84 t/s | prompt 1043.9 t/s | 914 tokens | args: -np 1 -c 4096 | power 475 W | 2026-10-21 22:13:35
+
+Here's a function that counts and prints the lines of this file. Add the required includes at the top of the file:
+
+```cpp
+// Add to the existing include block:
+#include <fstream>
+#include <iostream>
+```
+
+Then add the function (e.g., after the `format_literal` function or anywhere among the static helpers):
+
+```cpp
+static void print_line_count(const std::string & file_path = "common/json-schema-to-grammar.cpp") {
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        std::cerr << "Error: could not open file \"" << file_path << "\"" << std::endl;
+        return;
+    }
+
+    size_t line_count = 0;
+    std::string line;
+    while (std::getline(file, line))

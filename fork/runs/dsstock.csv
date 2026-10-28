@@ -1,0 +1,10 @@
+name,model,n,test,tokens,args,extra
+qn4-4k,qn_iq4xs,1,pf4k1k,64,,
+qn4-16k,qn_iq4xs,1,pf16k1k,64,,
+qn4-30k,qn_iq4xs,1,pf30k1k,64,,
+qn4-60k,qn_iq4xs,1,pf60k1k,64,,
+qn3-60k,qwen38,1,pf60k1k,64,,
+glm-16k,glm,1,pf16k1k,64,,
+glm-30k,glm,1,pf30k1k,64,,
+mimo-16k,mimo,1,pf16k1k,64,,
+ds-4k,ds,1,pf4k1k,64,,

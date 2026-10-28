@@ -1,0 +1,64 @@
+run 19365 | rc5 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.24 t/s | prompt 121.2 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-25 08:39:21
+
+The user wants the smallest HTML Tetris game. Let me think about this. "Smallest" — they want minimal code. But I don't want to just dump a bare minified blob; I'd rather make it genuinely playable and actually well-made, with a small but polished presentation.
+
+There's a tension: "smallest html tetris game" — the ask is explicit about size. I should honor the request: deliver a compact single-file Tetris. But I can make it compact AND nice-looking — small source, rich result. Let me aim for a genuinely tiny but complete implementation, presented nicely with a bit of styling that's still compact.
+
+Let me write it carefully.
+
+Requirements: 14 lines, playable, keyboard controls, score, next piece, level/speed, game over, restart.
+
+Let me write compact Tetris in JS.
+
+```html
+<canvas id=c width=260 height=520></canvas>
+```
+
+Standard minimal tetris:
+
+```js
+const W=10,H=20,S=26,x=c.getContext`2d`,P=[...
+```
+
+Let me write a known-compact implementation and verify correctness.
+
+Approach: pieces as 4 rotation states generated from a base string, or use the classic "matrix rotate" trick.
+
+Compact approach using a single string of tetromino definitions with rotation via index math:
+
+Classic tiny trick:
+```js
+P = '0,1,2,5|1,2,3,6|1,2,4,5|...'
+```
+Hmm.
+
+Better: use the well-known compact representation where each piece is defined by 4 cells in a 4x4 grid and rotation is `(x,y) => (y, 3-x)` — but tetris uses 3x3/4x4 mixed.
+
+Simplest reliable: define each piece as array of 4 [x,y] offsets per rotation, precomputed via rotate function around a pivot. Let me just do the classic:
+
+```js
+const T='1357,0125,1458,1356'.split(',')  // no
+```
+
+Let me use the well-known tiny tetris representation: pieces defined as hex bitmasks of 4x4 (or 3x3) grids, rotate by bit manipulation.
+
+Actually the cleanest compact: represent each piece as a number whose bits form a 4x4 grid; rotate = bit transpose+reverse.
+
+```js
+let P=[0xf00,0x6600,0x6060,0x3c0,0xe600,0x7200,0x2700,0x5400,0x3600,0xc60]
+```
+Hmm getting complicated.
+
+Alternative compact and readable: use string-based 4x4 with rotation function.
+
+Let me do this:
+
+```js
+const SHAPES = '1111,111.1,1111..,11.11,111.1,1111,1111'
+```
+No.
+
+OK let me just write it straightforwardly but tersely. Define pieces as arrays of 4 coordinates in a 4x4 box, and rotate with a function that maps (x,y)->(y,3-x) for 4x4 boxes. For O piece, using 4x4 with cells at (1,1),(2,1),(1,2),(2,2) rotates correctly around center. For others in 4x4 box, rotation around center of 4x4 works but produces offsets that shift; standard SRS-ish issues but for a tiny game it's fine as long as rotation is consistent and pieces stay in bounds. Actually rotating around the 4x4 center for I piece: I at row 1 (y=1): (0,1),(1,1),(2,1),(3,1) -> (1,3),(2,3),(3,3),(4,3)? Wait (x,y)->(y,3-x): (0,1)->(1,3); (1,1)->(1,2); (2,1)->(1,1); (3,1)->(1,0). So vertical column at x=1, y=0..3. Good, stays in box.
+
+For T piece in 3x3 embedded in 4x4...
+---

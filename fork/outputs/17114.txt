@@ -1,0 +1,65 @@
+run 17114 | stock-b11742-official | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 30.93 t/s | prompt 46.4 t/s | 965 tokens | args:  | power 220+280 W | 2026-10-20 04:44:04
+
+The user wants the smallest HTML Tetris game. Let me make a single-file Tetris. "Smallest" — they want compact. But I also want it to be genuinely good: crafted, polished, alive. There's tension: smallest code vs. rich polish.
+
+The request is explicit: "smallest html tetris game." So I should honor minimalism — but I can still make it *feel* crafted: nice colors, subtle glow, ghost piece, next piece, score, line-clear animation. Small code, but not ugly.
+
+Let me write a compact but readable single HTML file. Aim for genuinely tiny while playable and attractive.
+
+Let me think about the approach: canvas-based, ~40 lines of JS. Use a compact encoding of tetrominoes.
+
+Classic minimal approach: pieces defined as rotation states via string or via matrix math.
+
+Compact approach: use the "P" trick — encode each piece as a number and rotate via bit ops. A well-known tiny trick:
+
+```
+const S="␀"; // no
+```
+
+A known minimal Tetris uses:
+```
+pieces = "0,1,2,3|..." 
+```
+
+Let me use the approach where each piece is a 4x4 bit pattern in a hex number, and rotation is done by rotating a 4x4 bit matrix. Actually simpler: use the classic "o" array trick:
+
+```
+o=[I,J,L,O,S,T,Z] as 4x4 or 3x3 bitmasks
+```
+
+Known tiny implementation (from "tetris in 100 lines"):
+
+```js
+const M=[
+ [0,[17,34,17,34]], // O? 
+]
+```
+
+Actually a very compact known trick: represent each tetromino as a 32-bit int of a 4x4 grid, rotate by bit permutation. Rotation of 4x4 bit matrix:
+
+```js
+r = m => { let x=0; for(let i=0;i<16;i++) x |= ((m>>i&1)<<((i%4)*4 + (3-(i/4|0)))); return x }
+```
+
+Hmm, that's fine but let's just do the classic: pieces as arrays of coordinates, rotate by (x,y)->(y,-x).
+
+Simplest compact: define shapes as strings, rotate by transforming string. Let me do:
+
+```js
+const P = "1111 0100 1110 0110 0010 1100 0110 1100 0110" // messy
+```
+
+Better: use the well-known minimal encoding where each piece is defined by a number and rotation index using the "tetromino as 4 nibbles" trick:
+
+```js
+const T=[0xF0,0x226,0x22C,0x2E,0x27,0x3C,0x6C] // hmm need consistent 4x4
+```
+
+Let me define pieces in a 4x4 grid, row-major, 16 bits, top row = bits 0-3.
+
+- I: row1 = 1111 → 0x0F0 (bits 4,5,6,7) → value 0b000011110000 = 0x0F0
+- O: rows 1,2 cols 1,2: bits: row1 col1 = index 5, row1 col2=6, row2 col1=9, row2 col2=10 → 0b0110_0110_0000 shifted... let me index: index = r*4+c. bit = 1<<index.
+  - O: r1c1(5), r1c2(6), r2c1(9), r2c2(10) → 32+64+512+1024 = 1632 = 0x660
+- T: r0c1(1), r1c0(4), r1c1(5), r1c2(6) → 2+16+32+64=114 = 0x72
+- S: r0c1(1),r0c2(2),r
+---

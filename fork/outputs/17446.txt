@@ -1,0 +1,118 @@
+run 17446 | autopin | tetrisc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 489.24 t/s | prompt 268.4 t/s | 1004 tokens | args: -np 1 | power 220+280 W | 2026-10-21 13:27:02
+
+
+---
+Creating a fully functional Tetris game from scratch in HTML, CSS, and JavaScript is quite involved and goes beyond a simple response. However, I can guide you through the basics of how you might start building a simple Tetris game using HTML, CSS, and JavaScript. This will be a very basic version to get you started.
+
+### HTML
+
+First, let's set up the basic structure of our game.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tetris Game</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+        .game-container {
+            width: 400px;
+            height: 400px;
+            background-color: #000;
+            position: relative;
+            overflow: hidden;
+        }
+        .tetris-block {
+            width: 50px;
+            height: 50px;
+            position: absolute;
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <div class="tetris-block" data-x="0" data-y="0"></div>
+        <!-- Add more tetris-blocks as needed -->
+    </div>
+    <script src="tetris.js"></script>
+</body>
+</html>
+```
+
+### CSS
+
+Next, let's add some basic styling to center the game and make it look more like Tetris:
+
+```css
+body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    background-color: #f0f0f0;
+    font-family: Arial, sans-serif;
+}
+
+.game-container {
+    width: 400px;
+    height: 400px;
+    background-color: #000;
+    position: relative;
+    overflow: hidden;
+    border: 2px solid #fff; /* To make the game area visible */
+}
+
+.tetris-block {
+    width: 50px;
+    height: 50px;
+    position: absolute;
+    background-color: #fff; /* To make the blocks visible */
+}
+```
+
+### JavaScript
+
+Now, let's add some basic JavaScript to handle the Tetris logic:
+
+```javascript
+document.addEventListener('DOMContentLoaded', () => {
+    const gameContainer = document.querySelector('.game-container');
+    const tetrisBlocks = Array.from({length: 9}, (_, i) => `${i % 4 === 0 ? 'I' : i % 2 === 0 ? 'O' : ''} ${i / 2}`);
+
+    function drawBlock(x, y, block) {
+        const blockElement = document.createElement('div');
+        blockElement.classList.add('tetris-block');
+        blockElement.style.left = `${x * 50}px`;
+        blockElement.style.top = `${y * 50}px`;
+        gameContainer.appendChild(blockElement);
+        blockElement.innerHTML = block;
+    }
+
+    function moveBlock(x, y) {
+        const blockIndex = y * 50 + x;
+        const blockToRemove = document.querySelector(`div[data-x="${x}"][data-y="${y}"]`);
+        if (blockToRemove) {
+            gameContainer.removeChild(blockToRemove);
+        }
+        setTimeout(() => {
+            const newBlock = document.createElement('div');
+            newBlock.classList.add('tetris-block');
+            newBlock.style.left = `${x * 50}px`;
+            newBlock.style.top = `${y * 50}px`;
+            gameContainer.appendChild(newBlock);
+        }, 100);
+    }
+
+    function rotateBlock(block) {
+        const blockElement = document.createElement('div');
+        blockElement.classList.add('tetris-block');
+        blockElement.style.transform = `rotate(${Math

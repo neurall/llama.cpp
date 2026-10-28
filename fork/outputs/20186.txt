@@ -1,0 +1,53 @@
+run 20186 | dynhot_two_pool_keys | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 89.6 t/s | prompt 59.0 t/s | 1007 tokens | args: -np 1 --moe state=/tmp/runstate/dynab-q36-pure.ini --moe sim-vram=3072 | power 220+280 W | 2026-10-28 07:49:55
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means a single HTML file (or minimal structure) that implements a playable Tetris game using HTML, CSS, and JavaScript. The goal is to minimize code size while maintaining core functionality (grid, pieces, movement, rotation, collision, line clearing, scoring, game over).
+
+2.  **Identify Core Requirements for Tetris:**
+   - 10x20 grid
+   - 7 tetromino shapes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Piece rotation
+   - Collision detection (walls, existing blocks)
+   - Line clearing
+   - Scoring
+   - Game over condition
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Minimize Code Strategy:**
+   - Use a single HTML file with inline CSS and JS.
+   - Use `<canvas>` for rendering (more compact than DOM manipulation).
+   - Use compact variable names and bitwise/array tricks where possible.
+   - Avoid external libraries.
+   - Keep logic minimal but functional.
+   - Use a compact representation for pieces (e.g., arrays of coordinates or bit patterns).
+   - Use a single loop for game logic.
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head>
+     <style>
+       canvas { background: #000; display: block; margin: auto; }
+     </style>
+   </head>
+   <body>
+     <canvas id="c" width="200" height="400"></canvas>
+     <script>
+       // Game logic here
+     </script>
+   </body>
+   </html>
+   ```
+
+5.  **Develop Core Logic (Mental Refinement):**
+   - Grid: 2D array `g[20][10]` (0 = empty, 1 = filled)
+   - Pieces: Define shapes as arrays of [x,y] offsets or bit patterns. Let's use bit patterns for compactness: `0x0000, 0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020, 0x0040, 0x0080, 0x0100, 0x0200, 0x0400, 0x0800, 0x1000, 0x2000, 0x4000, 0x8000`? Actually, standard tetrominoes are better represented as arrays of coordinates or a compact string/bitmask.
+   - Let's use a compact representation: `P = [0x0000, 0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020, 0x0040, 0x0080, 0x0100, 0x0200, 0x0400, 0x0800, 0x1000, 0x2000, 0x4000, 0x8000]` - no, that's not right.
+   - Better: Define shapes as arrays of 4 cells relative to a pivot. Or use a single string/bitmask per shape. Actually, a common compact approach is:
+     `S = [0x0000, 0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020, 0x0040, 0x0080, 0x0100, 0x0200, 0x0400, 0x0800, 0x1000, 0x2000, 0x4000, 0x8000]` - still messy.
+   - Let's use a simpler approach: `P = [[0,0,0,1],[0,
+---

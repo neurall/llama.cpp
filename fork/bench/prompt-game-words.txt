@@ -1,4 +1,0 @@
-tetris
-racing
-shooter
-snake

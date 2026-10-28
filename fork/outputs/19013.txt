@@ -1,0 +1,125 @@
+run 19013 | spass19 | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 34.56 t/s | prompt 24.6 t/s | 1010 tokens | args: -np 1 | power 220+280 W | 2026-10-24 17:13:48
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal but complete Tetris game:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+// Tetris game
+</script>
+</body>
+</html>
+```
+
+Let me write a complete, compact Tetris game. I need:
+- Game board (10x20 grid)
+- 7 tetromino pieces
+- Movement (left, right, down, rotate)
+- Line clearing
+- Score
+- Game over
+
+Let me write this as compactly as possible while keeping it functional.
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let board=Array.from({length:H},()=>Array(W).fill(0));
+const pieces=[
+  [[1,1,1,1]], // I
+  [[1,1],[1,1]], // O
+  [[0,1,0],[1,1,1]], // T
+  [[1,0,0],[1,1,1]], // S
+  [[0,0,1],[1,1,1]], // Z
+  [[1,1,0],[0,1,1]], // J... wait
+  [[0,1,1],[1,1,0]], // L... 
+];
+```
+
+Actually let me think about the standard tetrominoes:
+
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+
+Let me write a compact version:
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let b=Array.from({length:H},()=>Array(W).fill(0));
+const P=[
+ [[1,1,1,1]],
+ [[1,1],[1,1]],
+ [[0,1,0],[1,1,1]],
+ [[0,1,1],[1,1,0]],
+ [[1,1,0],[0,1,1]],
+ [[1,0,0],[1,1,1]],
+ [[0,0,1],[1,1,1]]
+];
+const C=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+let p,px,py,sc=0,go=false;
+
+function newPiece(){
+  p=P[Math.random()*7|0];
+  px=3;py=0;
+  if(!valid(p,px,py))go=true;
+}
+function valid(p,x,y){
+  for(let r=0;r<p.length;r++)
+    for(let c=0;c<p[r].length;c++)
+      if(p[r][c]){
+        let nx=x+c,ny=y+r;
+        if(nx<0||nx>=W||ny>=H)return false;
+        if(ny>=0&&b[ny][nx])return false;
+      }
+  return true;
+}
+function rotate(p){
+  return p[0].map((_,i)=>p.map(r=>r[i]).reverse());
+}
+function merge(){
+  for(let r=0;r<p.length;r++)
+    for(let c=0;c<p[r].length;c++)
+      if(p[r][c]&&py+r>=0)b[py+r][px+c]=1;
+}
+function clear(){
+  for(let r=H-1;r>=0;r--){
+    if(b[r].every(v=>v)){
+      b.splice(r,1);
+      b.unshift(Array(W).fill(0));
+      sc+=100;
+      r++;
+    }
+  }
+}
+function draw(){
+  x.fillStyle='#000';
+  x.fillRect(0,0,W*S,H*S);
+  // board
+  for(let r=0;r<H;r++)
+    for(let c=0;c<W;c++)
+      if(b[r][c]){
+        x.fillStyle=C[0]; // hmm, we lose color info
+        x.fillRect(c*S,r*S,S-1,S-1);
+      }
+  // current piece
+  if(p&&!go){
+    x.fillStyle='#fff';
+    for(let r=0;r<p.length;r
+---

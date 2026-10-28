@@ -1,0 +1,76 @@
+run 18206 | relfl6 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.47 t/s | prompt 126.3 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-23 04:20:54
+
+The user wants the smallest HTML Tetris game. Let me think about what "smallest" means — they want a compact, minimal HTML file that plays Tetris. But I don't want to just dump a tiny minified blob — I want it to actually feel like a real, playable game with real feedback.
+
+The request is "generate smallest html tetris game." So the deliverable is a minimal single-file Tetris. I should honor that: small code. But I can still make it look decent without much code. There's a tension: "smallest" vs. crafted. The user explicitly asked for smallest. I'll deliver a genuinely compact single-file Tetris, but with a bit of styling so it isn't ugly — keeping it tight.
+
+Let me write compact Tetris.
+
+Classic minimal approach:
+
+```html
+<canvas id=c width=160 height=320></canvas>
+<script>
+// tetris
+</script>
+```
+
+Let me write it carefully and compactly.
+
+```js
+const B=c.getContext`2d`,W=10,H=20,S=16;
+let g=Array.from({length:H},()=>Array(W).fill(0)),p,o=0,x=3,y=0,n=N();
+function N(){return[(k=(Math.random()*7)|0),[[1,1,1,1],[1,1,1,1],[1,1,1],[1,1,1],[1,1,0,1],[1,0,1,1,0,1]...
+```
+
+Hmm, let me use a standard compact technique: piece shapes as rotation via matrix rotation.
+
+Compact approach: define pieces as arrays of strings or numbers, rotate by transposing.
+
+Let me use the well-known tiny tetris:
+
+```js
+const R=(m)=>m[0].map((_,i)=>m.map(r=>r[i]).reverse())
+```
+
+Pieces:
+```js
+const P=[[1,1,1,1],[1,1,1,1],[1,1,1],[1,1,1],[1,1,1],[1,1],[1,1]] // not right
+```
+
+Better: use the classic "tetromino as flat index" trick. A very compact known representation:
+
+```js
+const S="⦿"...
+```
+
+Let me just do it plainly with matrices:
+
+```js
+const T=[[[1,1,1],[0,1,0]],[[1,1,1],[1,0,0]],[[1,1,1],[0,1,1]],[[1,1,1],[0,0,1]],[[1,1],[1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]]]
+```
+That's T, J, L, S... wait order: I-piece needs 4 in a row. Let me define:
+
+- I: [[1,1,1,1]]
+- O: [[1,1],[1,1]]
+- T: [[1,1,1],[0,1,0]]
+- S: [[0,1,1],[1,1,0]]
+- Z: [[1,1,0],[0,1,1]]
+- J: [[1,0,0],[1,1,1]]
+- L: [[0,0,1],[1,1,1]]
+
+Rotation with R(m) = m[0].map((_,i)=>m.map(r=>r[i]).reverse()) — rotates clockwise.
+
+For I as [[1,1,1,1]], rotating gives [[1],[1],[1],[1]] — 4 rows 1 col. Works, though it shifts position. Fine for a minimal game.
+
+Collision check:
+```js
+const C=(p,x,y)=>{for(let r=0;r<p.length;r++)for(let c=0;c<p[r].length;c++)if(p[r][c]&&(x+c<0||x+c>=W||y+r>=H||(y+r>=0&&g[y+r][x+c])))return 1}
+```
+
+Spawn: x = (W - p[0].length)/2 | 0, y = -1 or 0.
+
+Line clear:
+```js
+g=g.filter(r=>r.some(v=>!v));while(g.length<H)g.unshift(Array(W).fill
+---

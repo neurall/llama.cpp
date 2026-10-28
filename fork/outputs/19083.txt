@@ -1,0 +1,40 @@
+run 19083 | spass32 | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 34.21 t/s | prompt 24.5 t/s | 859 tokens | args: -np 1 | power 220+280 W | 2026-10-24 23:15:32
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal Tetris game with:
+- Canvas-based rendering
+- All 7 tetromino pieces
+- Rotation
+- Line clearing
+- Score
+- Game over
+
+Let me make it as compact as possible while still being functional.
+---
+```html
+<!DOCTYPE html><html><body><canvas id=c width=300 height=600></canvas><script>
+const c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=30;
+let g=Array.from({length:H},()=>Array(W).fill(0)),p,pX,pY,s=0,over=false;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0],[1,0],[1,1]],[[0,1],[0,1],[1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]]];
+const C=['#0ff','#ff0','#f0f','#00f','#f80','#0f0','#f00'];
+function spawn(){p=P[Math.random()*7|0];pX=3;pY=0;if(collide())over=true}
+function collide(){return p.some((r,y)=>r.some((v,xx)=>v&&(pX+xx<0||pX+xx>=W||pY+y>=H||g[pY+y][pX+xx])))}
+function merge(){p.forEach((r,y)=>r.forEach((v,xx)=>v&&(g[pY+y][pX+xx]=1)));for(let y=H-1;y>=0;y--)if(g[y].every(v=>v)){g.splice(y,1);g.unshift(Array(W).fill(0));s+=100;y++}}
+function rotate(){let t=p[0].map((_,i)=>p.map(r=>r[i]).reverse());let o=p;p=t;if(collide())p=o}
+function draw(){x.fillStyle='#000';x.fillRect(0,0,W*S,H*S);g.forEach((r,y)=>r.forEach((v,xx)=>{if(v){x.fillStyle='#fff';x.fillRect(xx*S,y*S,S-1,S-1)}}));if(p)p.forEach((r,y)=>r.forEach((v,xx)=>{if(v){x.fillStyle=C[P.indexOf(p)];x.fillRect((pX+xx)*S,(pY+y)*S,S-1,S-1)}}));x.fillStyle='#fff';x.font='20px monospace';x.fillText('Score:'+s,10,25);if(over){x.fillStyle='#f00';x.font='30px monospace';x.fillText('GAME OVER',50,300)}}
+function tick(){if(over)return;pY++;if(collide()){pY--;merge();spawn()}draw()}
+function move(d){pX+=d;if(collide())pX-=d;draw()}
+document.onkeydown=e=>{if(over)return;switch(e.key){case'ArrowLeft':move(-1);break;case'ArrowRight':move(1);break;case'ArrowDown':pY++;if(collide()){pY--;merge();spawn()}draw();break;case'ArrowUp':rotate();draw();break;case' ':pY++;while(!collide())pY++;pY--;merge();spawn();draw();break}};
+spawn();draw();setInterval(tick,500);
+</script></body></html>
+```
+
+
+
+**Features:**
+- **← →** move, **↑** rotate, **↓** soft drop, **Space** hard drop
+- All 7 tetrominoes with distinct colors
+- Line clearing + score
+- Game over detection
+- ~1.5KB total

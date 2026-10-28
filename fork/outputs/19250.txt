@@ -1,0 +1,61 @@
+run 19250 | pre13 | pf4k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 28.48 t/s | prompt 911.1 t/s | 1000 tokens | args: -np 1 --moe log=w | power 220+280 W | 2026-10-25 06:02:11
+
+<think>Let me analyze this code carefully to find bugs. This appears to be a JSON schema to GBNF grammar converter. Let me go through it systematically.
+
+Let me look at the code more carefully:
+
+1. **`build_repetition` function**: 
+   - When `separator_rule` is not empty and `min_items == 0`, the result wraps in `(...)?`. But when `min_items > 0`, the first item is `item_rule` followed by `(separator item)*` repeated `min_items-1` times. This seems correct.
+
+2. **`build_min_max_int` function**:
+   - The `uniform_range` lambda looks complex. Let me trace through it.
+   - When `has_min && has_max` and both negative: it negates and swaps. Looks correct.
+   - When `has_min && has_max` and min negative, max positive: handles negative part then continues with positive. Looks correct.
+   - The loop `for (auto digits = min_digits; digits < max_digits; digits++)` - this iterates through digit lengths between min and max. Looks correct.
+
+3. **`_add_rule` function**: 
+   - When a rule name already exists with a different rule, it appends a number. The while loop condition checks if the key exists AND has a different rule. If the key doesn't exist, it stops. If it exists with the same rule, it stops. This seems correct.
+
+4. **`_generate_union_rule`**: Looks correct.
+
+5. **`_visit_pattern`**: Snapshots rules, tries to convert, reverts on failure. Looks correct.
+
+6. **`_pattern_to_rule`**: 
+   - Checks for `^` and `$` anchors. Looks correct.
+   - The `to_rule` lambda converts literal to quoted string or returns rule name. Looks correct.
+
+7. **`replacePattern` function**: 
+   - Uses `std::regex_search` in a loop. The `searchStart` is updated to `match.suffix().first`. Looks correct.
+
+8. **`format_literal`**: Escapes special characters and wraps in quotes. Looks correct.
+
+9. **`gbnf_escape_length`**: Checks for escape sequences. Looks correct.
+
+10. **`is_reserved_name`**: Checks against reserved names. Looks correct.
+
+11. **`INVALID_RULE_CHARS_RE`**: `[^a-zA-Z0-9-]+` - matches one or more invalid characters. Looks correct.
+
+12. **`GRAMMAR_LITERAL_ESCAPE_RE`**: `[\r\n\"\\\\]` - matches carriage return, newline, quote, backslash. Looks correct.
+
+13. **`GRAMMAR_RANGE_LITERAL_ESCAPE_RE`**: `[\r\n\"\\]\\-\\\\]` - matches carriage return, newline, quote, closing bracket, dash, backslash. Looks correct.
+
+14. **`GRAMMAR_LITERAL_ESCAPES`**: Maps characters to escape sequences. Looks correct.
+
+15. **`NON_LITERAL_SET`**: Characters that are not literal. Looks correct.
+
+16. **`ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`**: Characters that need escaping in regexps but not in literals. Looks correct.
+
+17. **`SPACE_RULE`**: Looks correct.
+
+18. **`PRIMITIVE_RULES`**: 
+    - `boolean`: `("true" | "false")` - correct
+    - `decimal-part`: `[0-9]{1,16}` - correct
+    - `integral-part`: `[0] | [1-9] [0-9]{0,15}` - correct
+    - `number`: `("-"? integral-part) ("." decimal-part)? ([eE] [-+]? integral-part)?` - correct
+    - `integer`: `("-"? integral-part)` - correct
+    - `value`: `object | array | string | number | boolean | null` - correct
+    - `object`: `"{" space ( string ":" space value ("," space string ":" space value)* )? space "}"` - correct
+    - `array`: `"[" space ( value ("," space value)* )? space "]"` - correct
+    - `uuid`: `"\"" [0-9a-fA-F]{8} "-" [0-9a-fA-F]{4} "-" [0-9a-fA-F]{4} "-" [0-9a-fA-F]{4} "-" [0-9a-fA-F]{12} "\""` - correct
+    - `char`: `[^"\\\x7F\x00-\x1F] | [\\] (["\\bfnrt] | "u" [0-9a-fA-F]{4})` - correct
+   

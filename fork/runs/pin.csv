@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+olmoei-pin-o,olmoei,2,tetrisc,1024,--moe-expert-cache 90 -pin,
+olmoei-mmap-o,olmoei,2,tetrisc,1024,--moe-expert-cache 90 -nm,
+olmoei-pin-io,olmoei,2,edit4c,1024,--moe-expert-cache 90 -pin,
+olmoei-mmap-io,olmoei,2,edit4c,1024,--moe-expert-cache 90 -nm,
+olmoei-pin-i,olmoei,2,pf12k1k,1024,-pin,
+olmoei-mmap-i,olmoei,2,pf12k1k,1024,-nm,
+olmoei-pin-io-u,olmoei,2,edit4c,1024,-pin,
+olmoei-mmap-io-u,olmoei,2,edit4c,1024,-nm,
+qni4-pin-i,qn_iq4xs,2,pf12k1k,1024,-pin,
+qni4-mmap-i,qn_iq4xs,2,pf12k1k,1024,-nm,
+qni4-pin-io,qn_iq4xs,2,edit4c,1024,-pin,
+qni4-mmap-io,qn_iq4xs,2,edit4c,1024,-nm,

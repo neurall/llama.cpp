@@ -1,0 +1,131 @@
+run 19597 | deep-seek | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.49 t/s | prompt 23.5 t/s | 1010 tokens | args: -np 1 | power 220+280 W | 2026-10-26 10:57:11
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal but complete Tetris game:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+// Tetris game
+</script>
+</body>
+</html>
+```
+
+Let me write a complete, compact Tetris game. I need:
+- Board (10x20)
+- 7 tetrominoes
+- Piece movement (left, right, down, rotate)
+- Collision detection
+- Line clearing
+- Score
+- Game over
+
+Let me write this as compactly as possible while keeping it functional.
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let b=[],p,sc=0,over=false;
+// board init
+for(let i=0;i<H;i++)b[i]=[];
+// pieces
+const P=[
+[[1,1,1,1]], // I
+[[1,1],[1,1]], // O
+[[0,1,0],[1,1,1]], // T
+[[1,0,0],[1,1,1]], // J
+[[0,0,1],[1,1,1]], // L
+[[0,1,1],[1,1,0]], // S
+[[1,1,0],[0,1,1]]  // Z
+];
+const C=['#0ff','#ff0','#f0f','#00f','#f80','#0f0','#f00'];
+```
+
+Let me think about this more carefully and write a complete working game.
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let b=[],p,sc=0,over=false;
+for(let i=0;i<H;i++)b[i]=Array(W).fill(0);
+
+const P=[
+[[1,1,1,1]],
+[[1,1],[1,1]],
+[[0,1,0],[1,1,1]],
+[[1,0,0],[1,1,1]],
+[[0,0,1],[1,1,1]],
+[[0,1,1],[1,1,0]],
+[[1,1,0],[0,1,1]]
+];
+const C=['#0ff','#ff0','#f0f','#00f','#f80','#0f0','#f00'];
+
+function newP(){
+  let t=Math.floor(Math.random()*7);
+  p={s:P[t],c:C[t],x:Math.floor(W/2)-Math.floor(P[t][0].length/2),y:0};
+}
+
+function collide(dx,dy){
+  for(let r=0;r<p.s.length;r++)
+    for(let col=0;col<p.s[r].length;col++)
+      if(p.s[r][col]){
+        let nx=p.x+col+dx,ny=p.y+r+dy;
+        if(nx<0||nx>=W||ny>=H||(ny>=0&&b[ny][nx]))return true;
+      }
+  return false;
+}
+
+function lock(){
+  for(let r=0;r<p.s.length;r++)
+    for(let col=0;col<p.s[r].length;col++)
+      if(p.s[r][col]){
+        let ny=p.y+r;
+        if(ny<0){over=true;return;}
+        b[ny][p.x+col]=p.c;
+      }
+  // clear lines
+  for(let r=H-1;r>=0;r--){
+    if(b[r].every(v=>v)){
+      b.splice(r,1);
+      b.unshift(Array(W).fill(0));
+      sc+=100;
+      r++;
+    }
+  }
+  newP();
+  if(collide(0,0))over=true;
+}
+
+function rotate(){
+  let s=p.s;
+  let n=s[0].length;
+  let r=[];
+  for(let i=0;i<n;i++){
+    r[i]=[];
+    for(let j=0;j<s.length;j++)
+      r[i][j]=s[s.length-1-j][i];
+  }
+  let old=p.s;
+  p.s=r;
+  if(collide(0,0))p.s=old;
+}
+
+function draw(){
+  x.fillStyle='#000';
+  x.fillRect(0,0,W*S,H*S);
+  // board
+  for(let r=0;r<H;r++)
+    for(let col=0;col<W;col++)
+
+---

@@ -1,0 +1,51 @@
+run 18425 | relfx1 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.59 t/s | prompt 39.6 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-23 12:51:07
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I'll keep it small but make it feel crafted and alive rather than a bare canvas: add a layered background, micro-interactions, a distinctive display font paired with readable body font, strong contrast in type sizes.
+
+But "smallest" is the explicit request — so I should keep the code compact. Balance: deliver genuinely compact code (small byte count), but with a well-designed shell. I think the right move: a compact single-file Tetris, minified-ish but readable, with a nice arcade-CRT aesthetic. Tetris naturally leans on tetromino colors, which is a genuine multi-color palette, so no need for a single neon accent on black. Use the classic Tetris color set (cyan, blue, orange, yellow, green, purple, red) on a dark slate/arcade cabinet background with a subtle grid/scanline texture.
+
+Fonts: use a distinctive display face — e.g., "Press Start 2P" is cliché-ish arcade but characteristic. Maybe pair a bold condensed display like "Archivo Black" or "Bungee" with a readable body like "IBM Plex Mono" or "Space Grotesk". Let's do display: "Bungee" or "Silkscreen"? For an arcade cabinet feel, "Bungee" is bold and characteristic. Body: "IBM Plex Mono". Good pairing.
+
+Opening: not a generic hero. Most characteristic of Tetris: the playfield itself, or falling tetrominoes. Open with the board front and center, with a "NEXT" queue and score panel — the game IS the hero. Maybe a marquee title strip on the left rotated, plus falling tetromino background animation.
+
+Layout: an asymmetric arcade cabinet: left column with big vertical title + stats, center playfield, right column with next pieces / hold / controls legend.
+
+Features to keep it alive:
+- Canvas-based board rendering with ghost piece.
+- Next queue (3 pieces), hold piece.
+- Score, lines, level.
+- Line-clear flash animation, particle-ish.
+- Level speed-up.
+- Pause, restart.
+- Keyboard controls + touch buttons for mobile.
+- Sound via WebAudio blips (tiny).
+- Background: subtle animated tetromino grid drift, scanlines, vignette.
+- Hover micro-interactions on buttons/legend keys.
+- Scroll reveal not really needed for a single-screen game, but maybe a small "how to play" section below with reveal.
+
+Keep code small-ish. The user asked "smallest" — I'll aim for a compact core game loop but the shell adds size. I'll mention the core game logic is ~X lines. Maybe I should offer the truly tiny version too? I could include a note: "core game in ~40 lines" and then the styled build. Hmm, the instruction says deliver a polished page. I'll deliver the polished single file, and note the game logic is compact.
+
+Actually, to honor "smallest," I could make the whole thing quite compact: one HTML file, no external JS, CSS inline in <style>, game in ~60 lines of JS. That's reasonable.
+
+Let me write it.
+
+Structure:
+
+```html
+<!doctype html><html lang="en"><head>
+<meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>TETRIS — 7 pieces, one well</title>
+<link href="https://fonts.googleapis.com/css2?family=Bungee&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>...</style>
+</head><body>
+<div class=bg></div> ... 
+```
+
+Design details:
+
+Palette:
+- bg: #0d1117-ish deep blue-slate #10151f, with layered radial + grid.
+- panel: #161d2b with 1px border #2a3548.
+- text: #e8edf5, muted #8b98ad.
+- Tetromino colors: I #22d3ee? Use classic: I cyan #2fbfd6, O yellow #f2c53d, T purple #a06cd5, S green #4bbf6b, Z red #e0
+---

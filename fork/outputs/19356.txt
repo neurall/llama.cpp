@@ -1,0 +1,35 @@
+run 19356 | rc5 | pf8k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 28.47 t/s | prompt 1067.2 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-25 08:31:28
+
+Let me carefully review this C++ source file for code quality, correctness, potential bugs, and style issues.
+
+Let me go through the file systematically.
+
+1. **`build_repetition` function:**
+   - The function handles various repetition cases. Looks reasonable.
+   - When `separator_rule` is not empty and `min_items == 0`, the result wraps in `(...)?`. But when `min_items > 0`, the first item is always required. This seems correct.
+   - Edge case: when `max_items == 0`, returns empty string. But what if `min_items > 0` and `max_items == 0`? That's contradictory (min > max). The function silently returns empty string. Could be a bug or could be intentional.
+
+2. **`build_min_max_int` function:**
+   - Complex recursive function for building integer range rules.
+   - The `uniform_range` lambda captures `out` by reference, which is fine since it's used within the function scope.
+   - The `digit_range` lambda uses `char` parameters - potential issue if `from[i]` or `to[i]` are not digits (though they should be since they come from `std::to_string`).
+   - In the `has_min && has_max` case with `min_value < 0 && max_value < 0`, it negates both and recurses. But what about `min_value == INT64_MIN`? `-min_value` would overflow. Actually, `min_value < 0 && max_value < 0` means both are negative, so `-max_value` and `-min_value` are both positive. But if `min_value == INT64_MIN`, then `-min_value` overflows. This is a potential bug.
+   - Wait, actually `min_value < 0 && max_value < 0` - if `min_value` is `INT64_MIN`, then `-min_value` would be `INT64_MIN` again (overflow). This is a real bug.
+
+3. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting to parse, and restores on failure. This is a good pattern for rollback.
+   - However, `_rules` is a `std::map<std::string, std::string>` - copying the entire map on every pattern visit could be expensive for large schemas.
+
+4. **`_pattern_to_rule` function:**
+   - Complex regex-to-grammar conversion.
+   - The `transform` lambda is recursive (calls itself for groups). The `paren_depth` check against `MAX_PATTERN_DEPTH` prevents stack overflow.
+   - In the character class parsing (`[` case), there's no handling for negated character classes (`[^...]`). The `^` after `[` would be treated as a regular character. Actually wait, looking more carefully - the code just copies characters until `]`. So `[^abc]` would be copied as `[^abc]` which is actually correct for GBNF character classes. But wait, the `^` is in `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`... no, that's for the literal parsing path, not the character class path. In the character class path, `^` is just copied as-is. That seems correct.
+   - Actually, looking at the character class parsing more carefully: it doesn't handle `]` as the first character (which is a valid regex feature: `[]abc]` means `]`, `a`, `b`, `c`). But this is an edge case.
+   - The `|` handling: `seq.emplace_back("|", false)` - this adds a pipe as a non-literal. Then `to_rule` would return it as-is (not wrapped in quotes). This seems correct for GBNF alternation.
+   - The quantifier handling (`*`, `+`, `?`): `seq.back() = std::make_pair(to_rule(seq.back()) + c, false)` - this converts the last element to a rule and appends the quantifier. But if the last element was a literal, `to_rule` wraps it in quotes. So `"abc"*` would become `"abc"*`. That seems correct.
+   - The `{` handling: creates a sub-rule for the repeated element if it's not a literal. The sub-rule naming uses `name + "-" + std::to_string(sub_rule_ids.size())` which could collide with other rule names.
+
+5. **`_not_strings` function:**
+   - Builds a trie-based rule to match strings that are not in a given set.
+   - The `rejects` string accumulates characters for the negated character class. If a character is a regex special character (like `]`, `-`, `^`), it could break the character class. For example, if a property name contains `]`, the generated `[^
+---

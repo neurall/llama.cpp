@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+glmh-i,glm,3,pf12k1k,128,--moe pf-chunks=2,
+mimoh-i,mimo,2,pf12k1k,128,--moe pf-chunks=2,
+q38h-i,qwen38,2,pf12k1k,128,--moe pf-chunks=2,

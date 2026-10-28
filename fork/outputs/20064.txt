@@ -1,0 +1,3 @@
+run 20064 | fix_draft_keeps_its_own_vram_need | pf1k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 23.68 t/s | prompt 51.4 t/s | 64 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 19:05:11
+
+<think>We need answer code review. Need inspect source file truncated? User provided partial file ending mid lambda. Need review following source file. We need identify issues. Need perhaps mention incomplete snippet. Need analyze code. Need produce review. Need be thorough but desired oververbosity 5. Need likely C++ code from llama.cpp

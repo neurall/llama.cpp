@@ -1,0 +1,31 @@
+run 18288 | splitfix | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 11.11 t/s | prompt 282.3 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 09:55:49
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- Note: `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, returns "". OK.
+- Potential issue: when `min_items > 0` and `max_items == 0`... returns "" which is fine.
+- When separator_rule is non-empty and min_items == 0, max_items == 1: the first check `min_items == 0 && max_items == 1` returns `item_rule + "?"` — but wait, with a separator, if max_items == 1, there's no separator needed, so that's correct.
+- Hmm, but there's a subtle bug: `min_items == 0 && max_items == 1` returns `item_rule + "?"` even when separator_rule is non-empty — that's correct since with max 1 item there's no separator.
+- What about `min_items > max_items`? Not validated. E.g., min_items=2, max_items=1 would produce weird grammar. Probably caller's responsibility.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead.
+- `decimals_left = 16` default. There's a potential infinite recursion? Let's check: `build_min_max_int` with `has_min` and `min_value > 9` calls itself with `std::stoll(min_s.substr(1))` and `less_decimals`. `less_decimals = std::max(decimals_left - 1, 1)`. So decimals_left decreases but bottoms out at 1. Hmm, if decimals_left stays at 1 forever, could recursion be infinite? Let's trace: min_value > 9, len = min_s.length(). It calls `build_min_max_int(stoll(min_s.substr(1)), INT64_MAX, out, less_decimals, false)`. The new min_value is min_s without first digit. If min_s = "1000000000000000" (16 digits), substr(1) = "000000000000000" = 0. Then min_value == 0 branch: if top_level false → `more_digits(1, decimals_left)`. OK terminates.
+- What if min_value = 19? min_s = "19", c = '1', c > '1' false, so digit_range('1','1'), then recursive call with stoll("9") = 9, INT64_MAX, less_decimals. min_value = 9 ≤ 9 branch: c = '9', range_start = '0' (top_level false), c > range_start so digit_range('0','8') + more_digits(1, less_decimals) + " | " then digit_range('9','9') + more_digits(0, less_decimals). Terminates.
+- Potential overflow: `-min_value` when min_value == INT64_MIN? In the `has_min && has_max` branch: `if (min_value < 0 && max_value < 0)` calls `build_min_max_int(-max_value, -min_value, ...)`. If min_value == INT64_MIN and max_value < 0, then `-min_value` overflows (UB). But wait, if min_value == INT64_MIN, then `has_min` is false, so we wouldn't be in this branch. OK. But what about `max_value == INT64_MIN`? Then has_max is true, max_value < 0, and `-max_value` = INT64_MAX... wait `-max_value` where max_value == INT64_MIN gives -INT64_MIN which overflows to INT64_MIN (UB in standard C++, but in practice wraps). Hmm, but can max_value be INT64_MIN? has_max = max_value != INT64_MAX, so yes max_value could be INT64_MIN. Then `-max_value` is UB/overflow. Actually in the branch `min_value < 0 && max_value < 0`: calls with `-max_value` as min. If max_value == INT64_MIN, `-max_value` overflows. Edge case, probably unlikely but worth noting.
+- Also in `has_min` branch: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min
+---

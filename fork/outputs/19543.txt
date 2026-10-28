@@ -1,0 +1,36 @@
+run 19543 | ds41i4 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 25.08 t/s | prompt 7.7 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-25 23:13:34
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 300x600? Board 10x20, cell 30. Canvas width 300 height 600. Draw grid. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Tetromino definitions:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+Need rotation function. Use matrix rotate clockwise: new matrix rows = old columns reversed? For matrix m with rows, rotate clockwise: m2[i][j] = m[m.length-1-j][i]? Let's derive. For 2x3, clockwise: new rows = old cols reversed? Example [[1,2,3],[4,5,6]] clockwise -> [[4,1],[5,2],[6,3]]. Formula new[i][j] = old[n-1-j][i] where n=old rows? Let's test i=0,j=0 -> old[1][0]=4 yes. i=0,j=1 -> old[0][0]=1 yes. i=1,j=0 -> old[1][1]=5. i=1,j=1 -> old[0][1]=2. i=2,j=0 -> old[1][2]=6. i=2,j=1 -> old[0][2]=3. Good. So rotate(m): m[0].length rows, m.length cols: new[i][j] = m[m.length-1-j][i]. Need handle.
+
+Game state: board 20 rows x 10 cols, 0 empty, 1 filled. Current piece: shape matrix, x, y. Spawn at x = floor((10 - shape[0].length)/2), y=0? Need ensure top. If collision at spawn game over. Use y=0. For I shape width 4, x=3. O width2 x=4. T width3 x=3? floor((10-3)/2)=3. Good.
+
+Collision: for each cell in shape if 1, check board[y+r][x+c] if out of bounds or filled. Need y+r < 20, x+c <10, >=0. If y+r <0? spawn y=0. Rotation may cause negative? We can adjust? Rotation around matrix top-left can shift shape; collision handles out of bounds. But rotation may cause piece to extend left/right; if collision, don't rotate. Need maybe wall kick? Minimal no.
+
+Movement: left/right/down. Down if no collision. If collision, lock piece into board, clear lines, spawn new. Gravity interval. Use setInterval or requestAnimationFrame. Need handle drop. Use keydown.
+
+Line clear: for each row from bottom to top, if all 10 filled, remove row and unshift empty row. Score += 10? Maybe 100. Need update.
+
+Draw: clear canvas, draw board cells, current piece. Maybe draw grid. Use colors? Minimal. Could use fillStyle. Need maybe draw background. Use canvas.
+
+Need ensure "smallest html" maybe code compact. Could use CSS minimal. Need include instructions. Need maybe no external dependencies.
+
+Let's craft code. Need maybe use `<!doctype html><html><head><meta charset=utf-8><title>Tetris</title><style>body{...}</style></head><body><canvas id=c width=300 height=600></canvas><script>...</script></body></html>`. Need maybe include score display? Could draw score on
+---

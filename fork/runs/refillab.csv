@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+qni4-60k,qn_iq4xs,1,60k1k,1024,,
+qni4-60k-ps,qn_iq4xs,1,60k1k,1024,--moe pswap=1,
+qni4-60k-rh0,qn_iq4xs,1,60k1k,1024,--moe reheat=0,
+glm-60k,glm,1,60k1k,1024,,
+glm-60k-ps,glm,1,60k1k,1024,--moe pswap=1,
+glm-60k-rh0,glm,1,60k1k,1024,--moe reheat=0,

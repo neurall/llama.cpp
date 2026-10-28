@@ -1,5 +1,0 @@
-Add a function that counts the lines of this file and prints the count.
-Delete the code in this file that is never used.
-Add a short comment above every function in this file.
-Rename the longest function in this file to a clearer name and update its callers.
-Fix the bugs in this code.

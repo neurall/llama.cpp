@@ -1,0 +1,53 @@
+run 17764 | coldplan2 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 12.45 t/s | prompt 14.8 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-10-22 15:08:53
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal code size. I should honor that request: make it genuinely tiny, but still functional and playable. Let me think about what "smallest" means here — fewest characters/bytes in the HTML file.
+
+Let me design a minimal Tetris:
+
+Core requirements for a playable Tetris:
+- 10x20 grid
+- 7 tetrominoes (I, O, T, S, Z, J, L) with rotation
+- Falling with gravity
+- Move left/right, rotate, drop
+- Line clear detection
+- Game over
+- Score maybe (optional for minimalism, but nice)
+
+The classic minimal Tetris approach: represent pieces as arrays of rotation states, or use a compact encoding.
+
+Let me think about the most compact way. A famous minimal Tetris in JS uses bit-encoded pieces. Let me write my own compact version.
+
+Approach:
+- Canvas for rendering (small canvas, e.g., 120x240, cell size 12).
+- Grid as a 2D array or a single array of 200 cells.
+- Pieces: encode each tetromino's rotations compactly.
+
+Compact piece encoding idea: each tetromino has 4 rotations, each rotation can be described by 4 cell coordinates within a bounding box. Or use the classic trick: represent each rotation as a bitmask.
+
+A very compact known trick: pieces as arrays of strings like ".XX.XX....." etc. Or use the "SRS-lite" approach with rotation via coordinate transformation.
+
+Actually, a super compact approach: define pieces as arrays of 4 rotation states, each state being an array of [x,y] offsets. But that's verbose.
+
+Alternative compact encoding: each piece = string of 16 chars (4x4 grid) per rotation? Too verbose.
+
+Better: encode each rotation as a number (bitmask of 16 bits for 4x4, or use offsets). 
+
+Known golfed Tetris (like "Tetris in 140 bytes" style) uses clever math. Let me aim for something small but readable-ish — maybe ~500-800 bytes of JS. The user said "smallest" — I'll aim for genuinely compact, single-line-ish code, but I can keep it as one long line or a few short lines.
+
+Let me think about a clean compact design:
+
+Pieces as bitmask in a 4x4 box: each rotation is a 16-bit number. For example:
+- I: rotations: 0x0F00 (horizontal bar at top row: cells (0,0),(1,0),(2,0),(3,0) → bits 0,1,2,3 of row 0 → 0b1111000000000000 = 0xF000), vertical: column... etc.
+
+Actually let me use a simpler scheme: each piece defined by a list of rotation states, each state a 16-bit mask over a 4x4 (or 4x2 for I?) grid. Then rendering: for bit i, x = i%4, y = i/4|0.
+
+But rotation by bit manipulation is complex. Simpler: store all rotations explicitly.
+
+Compact data: For each of 7 pieces, store 4 rotations as 16-bit masks. That's 28 numbers. Could encode as a single string or array.
+
+Alternatively, a classic trick: define pieces by their cells in one rotation and derive rotations by rotating coordinates: (x,y) -> (y, 3-x) or (y, size-1-x) within bounding box. But different pieces have different box sizes (I is 4x4 or uses 2x4 alternating; O is 2x2). Using a uniform 4x4 box with rotation (x,y)->(y,3-x) works for I, T, S, Z, J, L but O would just stay (it's fine, O rotation is identity anyway — rotating a 2x2 block within 4x4: cells at some position; rotating moves them around the box which is wrong for O). Hmm, for O we can just use same mask for all rotations.
+
+Let me define each piece as one 16-bit mask for its "spawn" state, then compute rotations by rotating the 4x4 mask: newMask bit at (x,y) = old bit at (y, 3-x)? Let's verify: rotating clockwise 90°: cell at (x,y) in old goes to (3-y, x) in new... Let me be careful.
+
+Clockwise rotation of a grid: the cell at row r, column c moves to row c, column (N-1-r). So
+---

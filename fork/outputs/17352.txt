@@ -1,0 +1,61 @@
+run 17352 | iq3sw | pf12k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 311.85 t/s | prompt 33367.0 t/s | 1024 tokens | args: -np 1 | power ? W | 2026-10-21 12:34:34
+
+The provided source file `common/json-schema-to-grammar.cpp` contains several code snippets and functions that are intended to convert JSON schema definitions into a grammar format suitable for parsing with a PEG.js parser. Here's a review of the code:
+
+1. **`build_repetition` Function**:
+   - This function constructs a regular expression that matches the repetition of a JSON schema rule. It handles optional, minimum, and maximum repetitions using the `?`, `*`, and `+` operators respectively.
+   - The function is well-structured and handles edge cases appropriately.
+
+2. **`get_min_max_int` Function**:
+   - This function extracts integer values from a JSON schema definition and constructs a string representation of the range (minimum inclusive, maximum exclusive).
+   - It correctly handles negative values and zero.
+
+3. **`get_args` and `get_env` Functions**:
+   - These functions are designed to extract command-line arguments and environment variables, respectively, and populate a vector for further processing.
+   - They are straightforward and handle edge cases like empty input correctly.
+
+4. **`parse_tensor_buffer_overrides` Function**:
+   - This function parses override strings for tensor buffer settings, dynamically creating a list of overrides for different backend buffers.
+   - It uses a map to store buffer types and their corresponding strings, ensuring that buffer names are unique.
+   - The function handles memory leaks by storing strings alive and ensuring they don't get leaked by storing them in a static vector.
+
+5. **`clean_file_name` Function**:
+   - This function cleans a file name by replacing backslashes with forward slashes and removing leading/trailing whitespaces.
+   - It's a simple utility function that serves its purpose.
+
+6. **`handle_model_result` Struct**:
+   - This struct is used to store results from parsing model parameters, including whether specific backend models were found.
+   - It's a simple struct to encapsulate the parsed results.
+
+7. **`kv_cache_types` and `kv_cache_type_from_str` Functions**:
+   - These functions map string representations of JSON schema types to their corresponding `ggml_type` enum values.
+   - They are well-implemented and handle various types correctly.
+
+8. **`get_all_kv_cache_types` Function**:
+   - This function returns a string containing all cache type names, separated by commas.
+   - It's a straightforward utility function that serves its purpose.
+
+9. **`parse_bool_value` Function**:
+   - This function checks if a given string is a truthy or falsey value and returns a boolean accordingly.
+   - It's a simple utility function that handles boolean values correctly.
+
+10. **`arg_removed` Function**:
+    - This function is a noreturn utility function that throws an exception if an argument is removed from the command line.
+    - It's a defensive programming approach to ensure arguments are not lost.
+
+11. **`get_default_local_path` Function**:
+    - This function constructs the default local path for a JSON schema URL by splitting the URL on the `#` character and taking the first part.
+    - It's a simple utility function that serves its purpose.
+
+12. **`spec_types_is_default` Function**:
+    - This function checks if the provided `common_params` object meets the default specifications for JSON schema types.
+    - It's a utility function that ensures the input conforms to the expected schema types.
+
+Overall, the code is well-structured and follows good practices for C++ programming, including using `std::string` for string manipulation, proper error handling, and clear separation of concerns through structs and functions. The code is clean and easy to understand, making it suitable for its intended purpose of converting JSON schema definitions into a grammar format for parsing.
+
+However, there are a few areas where the code could be improved:
+
+- **Error Handling**: The `parse_bool_value` function does not handle invalid boolean inputs. It would be better to throw an exception or return `false` in such cases.
+- **Memory Management**: The `parse_tensor_buffer_overrides` function could be improved by dynamically allocating memory for the `overrides` vector and ensuring it gets cleaned up properly.
+- **Code Comments**: While the code is mostly self-explanatory, adding comments where necessary would help in understanding the purpose of complex sections or the rationale behind certain design choices.
+- **Code Reusability**: The `parse_bool_value` function could be made more generic to handle other

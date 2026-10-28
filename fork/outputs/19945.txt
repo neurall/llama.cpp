@@ -1,0 +1,338 @@
+run 19945 | fix_cuda_argmax_returns_zero_for_nonfinite_row | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 19.04 t/s | prompt 17.0 t/s | 4096 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 5 --moe spec-depth=5,pin-budget=108447924224 -lm mmap | power 200+200 W | 2026-10-27 03:04:56
+
+
+---
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>3D Tetris — Polycube Well</title>
+<style>
+  :root {
+    --bg: #0b0f1a;
+    --panel: rgba(14,20,32,0.85);
+    --accent: #6fd3ff;
+    --text: #e8f1ff;
+    --muted: #8fa3bd;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .hud {
+    position: fixed; pointer-events: none;
+    font-size: 13px; letter-spacing: 0.04em;
+  }
+  #topLeft {
+    top: 14px; left: 16px;
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.25);
+    border-radius: 10px;
+    padding: 10px 14px;
+    backdrop-filter: blur(6px);
+  }
+  #topLeft .row { display: flex; gap: 14px; align-items: center; }
+  #topLeft .label { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+  #topLeft .val { font-weight: 700; font-size: 15px; }
+  #combo { color: #ffd36f; }
+  #b2b { color: #ff8fb1; }
+
+  #topRight {
+    top: 14px; right: 16px;
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.25);
+    border-radius: 10px;
+    padding: 10px 14px;
+    backdrop-filter: blur(6px);
+    text-align: right;
+  }
+  #topRight .label { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+  #topRight .val { font-weight: 700; font-size: 15px; }
+
+  #preview {
+    position: fixed; right: 16px; bottom: 16px;
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.25);
+    border-radius: 10px;
+    padding: 10px;
+    backdrop-filter: blur(6px);
+    pointer-events: none;
+  }
+  #preview .label { color: var(--muted); font-size: 11px; text-transform: uppercase; margin-bottom: 6px; }
+  #preview .slots { display: flex; gap: 8px; }
+  #preview canvas { width: 64px; height: 64px; border-radius: 6px; background: rgba(0,0,0,0.35); }
+
+  #hold {
+    position: fixed; left: 16px; bottom: 16px;
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.25);
+    border-radius: 10px;
+    padding: 10px;
+    backdrop-filter: blur(6px);
+    pointer-events: none;
+  }
+  #hold .label { color: var(--muted); font-size: 11px; text-transform: uppercase; margin-bottom: 6px; }
+  #hold canvas { width: 64px; height: 64px; border-radius: 6px; background: rgba(0,0,0,0.35); }
+
+  .btn {
+    pointer-events: auto;
+    background: rgba(111,211,255,0.12);
+    border: 1px solid rgba(111,211,255,0.35);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .btn:hover { background: rgba(111,211,255,0.22); }
+  .btn:active { background: rgba(111,211,255,0.32); }
+
+  #controls {
+    position: fixed; left: 16px; top: 50%; transform: translateY(-50%);
+    display: flex; flex-direction: column; gap: 8px;
+    pointer-events: auto;
+  }
+
+  .overlay {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(5,8,14,0.75);
+    backdrop-filter: blur(8px);
+    pointer-events: auto;
+    opacity: 0; transition: opacity 0.25s;
+  }
+  .overlay.show { opacity: 1; }
+  .card {
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.3);
+    border-radius: 14px;
+    padding: 22px 26px;
+    max-width: 520px;
+    width: 90%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  .card h2 { margin: 0 0 12px; font-size: 20px; }
+  .card p { margin: 0 0 12px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .card .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .card table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .card table td, .card table th { padding: 6px 8px; text-align: left; border-bottom: 1px solid rgba(111,211,255,0.15); }
+  .card table th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+
+  .settings-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 13px; }
+  .settings-row label { flex: 1; color: var(--muted); }
+  .settings-row input[type=range] { width: 160px; }
+  .settings-row select { background: rgba(0,0,0,0.4); color: var(--text); border: 1px solid rgba(111,211,255,0.3); border-radius: 6px; padding: 4px 8px; }
+
+  #touch {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    display: none; gap: 8px;
+    pointer-events: auto;
+  }
+  #touch .btn { padding: 10px 14px; font-size: 14px; }
+
+  @media (max-width: 720px) {
+    #controls { display: none; }
+    #touch { display: flex; }
+    #preview { right: 8px; bottom: 8px; }
+    #hold { left: 8px; bottom: 8px; }
+  }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="gl"></canvas></div>
+
+<div class="hud" id="topLeft">
+  <div class="row">
+    <div><div class="label">Score</div><div class="val" id="score">0</div></div>
+    <div><div class="label">Level</div><div class="val" id="level">1</div></div>
+    <div><div class="label">Lines</div><div class="val" id="lines">0</div></div>
+    <div><div class="label">Combo</div><div class="val" id="combo">0</div></div>
+    <div><div class="label">B2B</div><div class="val" id="b2b">0</div></div>
+  </div>
+</div>
+
+<div class="hud" id="topRight">
+  <div class="label">High Score</div>
+  <div class="val" id="highScore">0</div>
+</div>
+
+<div id="preview">
+  <div class="label">Next</div>
+  <div class="slots">
+    <canvas id="next1" width="64" height="64"></canvas>
+    <canvas id="next2" width="64" height="64"></canvas>
+    <canvas id="next3" width="64" height="64"></canvas>
+  </div>
+</div>
+
+<div id="hold">
+  <div class="label">Hold</div>
+  <canvas id="holdCanvas" width="64" height="64"></canvas>
+</div>
+
+<div id="controls">
+  <button class="btn" id="btnPause">Pause</button>
+  <button class="btn" id="btnHelp">Help</button>
+  <button class="btn" id="btnSettings">Settings</button>
+</div>
+
+<div id="touch">
+  <button class="btn" id="tLeft">◀</button>
+  <button class="btn" id="tRight">▶</button>
+  <button class="btn" id="tRotX">↻X</button>
+  <button class="btn" id="tRotY">↻Y</button>
+  <button class="btn" id="tRotZ">↻Z</button>
+  <button class="btn" id="tDrop">⤓</button>
+  <button class="btn" id="tHold">Hold</button>
+</div>
+
+<div class="overlay" id="pauseOverlay">
+  <div class="card">
+    <h2>Paused</h2>
+    <p>The well is frozen. Resume when ready.</p>
+    <div class="actions">
+      <button class="btn" id="btnResume">Resume</button>
+      <button class="btn" id="btnRestart">Restart</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="gameOverOverlay">
+  <div class="card">
+    <h2>Game Over</h2>
+    <p id="goSummary">The well overflowed.</p>
+    <div class="actions">
+      <button class="btn" id="btnPlayAgain">Play Again</button>
+      <button class="btn" id="btnViewScores">High Scores</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="helpOverlay">
+  <div class="card">
+    <h2>How to Play</h2>
+    <p>
+      Pieces are 3D polycubes falling into a 3D well. Clear a full horizontal layer to collapse it.
+      <br><br>
+      <strong>Mouse:</strong> drag to orbit, scroll to zoom. <strong>Keyboard:</strong> arrows orbit, WASD move piece, Q/E rotate around X, R/F rotate around Y, Z/C rotate around Z, Space hard drop, Shift soft drop, H hold, P pause.
+      <br><br>
+      <strong>New mechanics:</strong>
+      <br>
+      • <em>Gravity Shear</em> — when a layer clears, the well's gravity briefly tilts, causing the falling piece to slide sideways. This is a visual and gameplay twist: the piece's horizontal position drifts during the collapse animation.
+      <br>
+      • <em>Resonance Combo</em> — clearing multiple layers in one drop builds a combo multiplier. Consecutive clears without a miss grant a back-to-back bonus. The combo meter decays if you place a piece without clearing.
+    </p>
+    <div class="actions">
+      <button class="btn" id="btnCloseHelp">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="settingsOverlay">
+  <div class="card">
+    <h2>Settings</h2>
+    <div class="settings-row">
+      <label>Volume</label>
+      <input type="range" id="vol" min="0" max="1" step="0.05" value="0.6">
+    </div>
+    <div class="settings-row">
+      <label>Ghost piece</label>
+      <select id="ghostSel">
+        <option value="on">On</option>
+        <option value="off">Off</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label>Colour theme</label>
+      <select id="themeSel">
+        <option value="neon">Neon</option>
+        <option value="pastel">Pastel</option>
+        <option value="mono">Mono</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label>Camera speed</label>
+      <input type="range" id="camSpeed" min="0.2" max="2.5" step="0.1" value="1">
+    </div>
+    <div class="actions">
+      <button class="btn" id="btnCloseSettings">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="scoresOverlay">
+  <div class="card">
+    <h2>High Scores</h2>
+    <table id="scoreTable">
+      <thead><tr><th>#</th><th>Score</th><th>Level</th><th>Lines</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="actions">
+      <button class="btn" id="btnCloseScores">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================================
+   3D TETRIS — POLYCUBE WELL
+   ----------------------------------------------------------------------------
+   NEW MECHANICS (not in classic Tetris):
+   1. GRAVITY SHEAR — When a layer clears, the well's gravity briefly tilts,
+      causing the falling piece to slide sideways during the collapse animation.
+      This is a visual and gameplay twist: the piece's horizontal position drifts
+      while the layer collapses.
+   2. RESONANCE COMBO — Clearing multiple layers in one drop builds a combo
+      multiplier. Consecutive clears without a miss grant a back-to-back bonus.
+      The combo meter decays if you place a piece without clearing.
+   ============================================================================ */
+
+/* ---------------------------------------------------------------------------
+   Constants & configuration
+   --------------------------------------------------------------------------- */
+const WELL_W = 7;      // width in cells
+const WELL_D = 7;      // depth in cells
+const WELL_H = 14;     // height in cells
+const CELL = 1.0;      // world units per cell
+
+const COLORS = {
+  neon:   ['#6fd3ff','#ff6fb5','#ffd36f','#7dff9a','#b48cff','#ff8f5a','#5ad1c8'],
+  pastel: ['#a8d8ff','#ffb3d1','#ffe6a8','#b8f0c8','#d8c4ff','#ffc4a8','#a8e6e0'],
+  mono:   ['#cfd8e3','#9fb0c4','#e8eef6','#7f8fa3','#b8c4d4','#a0b0c0','#d0d8e0']
+};
+
+/* ---------------------------------------------------------------------------
+   Piece definitions — 7 classic tetrominoes + 3D pentacube variants
+   Each piece is a list of [x,y,z] offsets (integer cells).
+   --------------------------------------------------------------------------- */
+const PIECES = [
+  // I tetromino (4 cells, long axis)
+  { name:'I', cells:[[0,0,0],[1,0,0],[2,0,0],[3,0,0]] },
+  // O tetromino (2x2)
+  { name:'O', cells:[[0,0,0],[1,0,0],[0,0,1],[1,0,1]] },
+  // T tetromino (3+1)
+  { name:'T', cells:[[0,0,0],[1,0,0],[2,0,0],[1,0,1]] },
+  // S tetromino
+  { name:'S', cells:[[0,0,0],[1,0,0],[1,0,1],[2,0,1]] },
+  // Z tetromino
+  { name:'Z', cells:[[0,0,1],[1,0,1],[1,0,0],[2,0,0]] },
+  // J tetromino
+  { name:'J', cells:[[0,0,0],[0,0,1],[1,0,1],[2,0,1]] },
+  // L tetromino
+  { name:'L', cells:[[2,0,0],[0,0,1],[1,0,1],[2,0,1]] },
+  // 3D pentacube variants (5 cells)
+  { name:'P1', cells:[[0,0,0],[1,0,0],[0,0,1],[1,0,1],[0,1,0]] },
+  { name:'P2', cells:[[0,0,0],[1,0,0],[2,0,0],[1,0,1],[1,1,0]] },
+  { name:'P3', cells:[[0,0,0],[0,0,1],[0,0,2],[1,0,1],[0,1,1]] },
+  { name:'P4', cells:[[

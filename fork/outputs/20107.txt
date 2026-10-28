@@ -1,0 +1,53 @@
+run 20107 | ds41i4 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 19.64 t/s | prompt 6.4 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 20:50:21
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need ensure game playable. Need maybe keyboard controls, score, game over. Need smallest possible. We can write compact code. Need answer likely code block only. Need think through implementation.
+
+We need generate smallest HTML Tetris game. Need produce a single HTML file. Need maybe use canvas and JS. Need ensure no external dependencies. Need minimal code but functional. Need maybe use 10x20 grid, tetrominoes, rotation, collision, line clear, score, game over. Need controls: arrows left/right/down, up rotate, space hard drop? Maybe restart. Need compact.
+
+Let's design.
+
+HTML:
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Tetris</title>
+<style>
+body{margin:0;background:#111;color:#fff;font:14px monospace;display:flex;justify-content:center;align-items:center;height:100vh}
+canvas{background:#000;border:1px solid #444}
+#s{position:absolute;top:10px;left:10px}
+</style>
+</head>
+<body>
+<canvas id=c width=200 height=400></canvas>
+<div id=s></div>
+<script>
+...
+</script>
+</body>
+</html>
+
+Need maybe canvas 200x400, cell 20. Board 10x20. Use ctx.
+
+JS compact:
+const c=document.getElementById('c'),x=c.getContext('2d'),S=20,W=10,H=20;
+let b=Array.from({length:H},()=>Array(W).fill(0)),p,score=0,over=false;
+const shapes=[
+ [[1,1,1,1]], // I
+ [[1,1],[1,1]], // O
+ [[0,1,0],[1,1,1]], // T
+ [[1,0,0],[1,1,1]], // L? Actually J? 
+ [[0,0,1],[1,1,1]], // J
+ [[0,1,1],[1,1,0]], // S
+ [[1,1,0],[0,1,1]] // Z
+];
+Need rotation. Could use matrix rotate. Need spawn random shape. Need p={s:shape, x:3, y:0}. Need collision function. Need draw.
+
+Need handle rotation: rotate matrix clockwise: n=s[0].length; m=s.length; r=Array.from({length:n},()=>Array(m).fill(0)); for i,j r[j][n-1-i]=s[i][j]? Let's verify. For matrix rows m, cols n. Clockwise rotation: new rows n, cols m. new[j][m-1-i]? Wait formula: new[r][c] = old[m-1-c][r]? Let's derive. Clockwise: old (i,j) -> new (j, m-1-i) if old rows m, cols n? New dimensions n rows, m cols. new[j][m-1-i] = old[i][j]. So new row index j (0..n-1), col index m-1-i. Yes. Code: r[j][m-1-i]=s[i][j]. Good.
+
+Collision: for each cell in shape if 1, nx=p.x+j, ny=p.y+i; if nx<0||nx>=W||ny>=H||b[ny][nx] return true. Also ny<0? spawn y=0, rotation may have negative? no. Need allow y<0? no.
+
+Spawn: p={s:shapes[Math.random()*shapes.length|0], x:3, y:0}; if collision then over=true. But x=3 for all shapes? For I width 4, x=3 fits 3..6. For O width2 x=3 fits 3..4. For T width3 x=3 fits 3..5. Fine. But for shapes width 3, x=3. Good. Could center x=Math.floor((W - s[0].length)/2). Use that.
+
+Need game loop. Use setInterval or requestAnimationFrame. Need gravity. Could use setInterval(tick, 500). Need keyboard. Need draw.
+
+Need line clear: after lock, for each row from H-1 down? If row all nonzero, remove and
+---

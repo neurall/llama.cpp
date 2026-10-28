@@ -1,0 +1,6 @@
+run 18808 | ncard3 | pf30k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 8.96 t/s | prompt 385.6 t/s | 64 tokens | args: -np 1 --moe dense-split=1,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-23 22:13:21
+
+The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. These appear to be from the llama.cpp project. Let me carefully review both files for bugs, code smells, style issues, potential security issues, etc.
+
+Let me go through the first
+---

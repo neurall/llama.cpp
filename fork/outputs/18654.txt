@@ -1,0 +1,6 @@
+run 18654 | relmf1 | pf3k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 17.96 t/s | prompt 614.9 t/s | 64 tokens | args: -np 1 | power 220+280 W | 2026-10-23 18:25:08
+
+Let me analyze this source file carefully. It's a JSON schema to GBNF grammar converter, likely from llama.cpp (the file name `common/json-schema-to-grammar.cpp` and references to `common_json`, `common_grammar_builder` suggest this is from the llama.cpp project).
+
+The file appears to be
+---

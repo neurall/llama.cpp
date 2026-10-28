@@ -1,0 +1,11 @@
+name,model,n,test,tokens,args,extra
+ds-1k-jig-n5,ds,2,1k1k,1024,-md /m/ds/dspark/DeepSeek-V4.1-Flash-DSpark.sp.gguf --spec-type draft-dspark --spec-draft-n-max 5,
+ds-1k-luce-n5,ds,2,1k1k,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 5,
+ds-1k-jig-n2,ds,2,1k1k,1024,-md /m/ds/dspark/DeepSeek-V4.1-Flash-DSpark.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2,
+ds-1k-luce-n2,ds,2,1k1k,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2,
+ds-1k-jig-n2-cmoe,ds,2,1k1k,1024,-md /m/ds/dspark/DeepSeek-V4.1-Flash-DSpark.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --spec-draft-n-cpu-moe 3,
+ds-1k-luce-n2-x4,ds,2,1k1k,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 -devd CUDA0,
+ds-1k-luce-n2-x16,ds,2,1k1k,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 -devd CUDA1,
+ds-1k-luce-n2-a-x16-heavy,ds,2,1k1k,1024,"-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 -devd CUDA0,CUDA1 -otd ""blk\.[01]\..*=CUDA1,blk\.2\..*=CUDA0""",
+ds-1k-luce-n2-b-even,ds,2,1k1k,1024,"-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 -devd CUDA0,CUDA1 -otd ""blk\.0\..*=CUDA0,blk\.2\.ffn_(gate|up)_exps.*=CUDA0,blk\.[12]\..*=CUDA1""",
+ds-1k-luce-n2-c-x4-heavy,ds,2,1k1k,1024,"-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 -devd CUDA0,CUDA1 -otd ""blk\.[01]\..*=CUDA0,blk\.2\..*=CUDA1""",

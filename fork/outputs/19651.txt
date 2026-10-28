@@ -1,0 +1,45 @@
+run 19651 | dsfix3 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 26.42 t/s | prompt 9.5 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 15:08:00
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design smallest HTML Tetris. Need include controls, scoring? "smallest" means minimal code. Need produce a single HTML file. Need maybe use canvas and keyboard. Need implement Tetris mechanics: board 10x20, tetrominoes, rotation, collision, line clear, gravity, game over. Minimal.
+
+Need think through code carefully. Need produce valid HTML. Could use canvas 200x400? Use CSS. JS.
+
+Let's craft compact but readable. Need ensure no bugs.
+
+Approach:
+- Canvas width 200 height 400, cell 20, board 10x20.
+- Tetromino shapes as arrays of coordinates or matrices. Use 7 shapes with rotations? Could define shapes as matrices and rotate by transpose? Need handle rotation. Simpler define each tetromino as list of 4 cells in a 4x4 matrix? Use rotation function.
+
+Could use shapes as arrays of 4 coordinates relative to top-left? Rotation around center. Need collision.
+
+Simplest: define tetrominoes as matrices:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]? Rotation works but bounding box 4x4. O: [[1,1],[1,1]]? Rotation no change. Others 3x3 matrices. Use rotate matrix clockwise: new[r][c] = old[n-1-c][r]? For square matrix. For I 4x4, rotation yields vertical. For O 2x2. For T etc 3x3. Need spawn at x=3? y=0? Use matrix coordinates. Need collision with board. Need drop.
+
+Could define shapes as matrices:
+I = [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]
+J = [[1,0,0],[1,1,1],[0,0,0]]? L? Need 7.
+L = [[0,0,1],[1,1,1],[0,0,0]]
+T = [[0,1,0],[1,1,1],[0,0,0]]
+S = [[0,1,1],[1,1,0],[0,0,0]]
+Z = [[1,1,0],[0,1,1],[0,0,0]]
+O = [[1,1],[1,1]]
+Maybe J and L mirrored. Need include all.
+
+Rotation: function rot(m) { let n=m.length; let r=Array.from({length:n},()=>Array(n).fill(0)); for(let i=0;i<n;i++) for(let j=0;j<n;j++) r[j][n-1-i]=m[i][j]; return r; } This rotates clockwise? Let's test T [[0,1,0],[1,1,1],[0,0,0]] -> r[j][2-i]=m[i][j]. For i=0,j=1 -> r[1][2]=1. Hmm. Need not matter.
+
+Need spawn: choose random shape. Need position x,y. For matrix size n, spawn x = Math.floor((10 - n)/2)? y=0. But for I 4x4, x=3. For 3x3 x=3? floor((10-3)/2)=3. For O 2x2 x=4. Good. But matrix may have empty top rows; y=0. Need collision check. If spawn collides, game over.
+
+Need board array 20 rows x 10 cols. Use 0/1. Need draw.
+
+Game loop: requestAnimationFrame or setInterval. Need gravity. Use timestamp. Simpler setInterval 500ms. But need handle keydown. Use setInterval for drop. Need maybe speed. Minimal.
+
+Need collision function: for each cell in matrix where 1, board[y+i][x+j] if out of bounds or occupied. Need check.
+
+Need merge: set board cells.
+
+Need clear lines: for each row from bottom to top, if all 1, remove row and unshift empty row. Score += 10? Minimal.
+
+Need game over: if spawn collision or cannot
+---

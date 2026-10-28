@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+glmmask-i,glm,2,pf12k1k,128,--moe mask-mb=3500,--env PERF_LOG=rw

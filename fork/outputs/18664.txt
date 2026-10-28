@@ -1,0 +1,6 @@
+run 18664 | relmf1 | pf2k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 9.36 t/s | prompt 109.6 t/s | 64 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 18:34:44
+
+Let me analyze this code carefully. This is a JSON schema to grammar converter, likely from llama.cpp (the file name `common/json-schema-to-grammar.cpp` and the style suggests it). The file appears to be truncated at the end (it cuts off mid-initializer of `PRIMITIVE_RULES`).
+
+Let
+---

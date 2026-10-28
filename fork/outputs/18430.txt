@@ -1,0 +1,50 @@
+run 18430 | relfx1 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.62 t/s | prompt 9.3 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 13:01:00
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. This is different from my usual approach of making polished, memorable experiences. The user explicitly asked for "smallest" — so the goal here is extreme minification while keeping it functional and playable.
+
+Let me think about what "smallest" means here. A minimal Tetris in a single HTML file. I should aim for genuinely tiny code — a few hundred bytes to maybe 1-2KB. This is a fun challenge. Let me write it carefully.
+
+Key requirements for a playable Tetris:
+1. Canvas rendering (or even simpler — could use a `<pre>` with text? Actually canvas is compact)
+2. 10x20 board
+3. 7 tetrominoes with rotation
+4. Gravity (falling)
+5. Collision detection
+6. Line clearing
+7. Scoring (optional for "smallest")
+8. Keyboard controls (left/right/down/rotate)
+9. Game over
+
+Let me write the most compact version I can.
+
+Classic minimal Tetris approaches:
+
+```html
+<body onload="setInterval(f,100)">
+<canvas id=c width=100 height=200>
+<script>
+...
+```
+
+Let me design the code.
+
+Board: 10 wide, 20 tall. Cell size 10px → canvas 100x200.
+
+Pieces: I can encode the 7 tetrominoes as arrays of coordinates, or use a compact string encoding. A well-known trick: encode each piece as 4 binary-encoded cells in a 4x4 or use rotation via matrix transpose.
+
+A very compact approach: store pieces as arrays of [x,y] pairs, rotate with (x,y)→(y, 3-x) or similar. Or store each piece as a number bitmask.
+
+Known ultra-compact Tetris implementations exist. Let me write my own carefully.
+
+Approach: pieces as arrays of 4 [x,y] offsets. Rotation: rotate around a pivot. For simplicity, rotate within a 4x4 box: new x = 3 - y? Hmm, that shifts things. Let's think.
+
+If piece cells are in a 4x4 grid (0..3), rotation clockwise: (x,y) → (3-y, x)? That maps the 4x4 grid onto itself. But pieces defined in 4x4 grids with cells placed appropriately... Actually a common trick: define each piece as 4 cells in a 4x4 box, rotate with (x,y)→(y,3-x) (counter-clockwise) or (x,y)→(3-y,x) (clockwise). This works if the piece occupies cells such that rotation keeps it in bounds. For I piece in a 4x4: cells (0,1),(1,1),(2,1),(3,1). Rotate CW: (3-y,x) → (2,0),(2,1),(2,2),(2,3). Good, vertical I in column 2. For O piece: cells (1,0),(2,0),(1,1),(2,1). Rotate CW: (3-y,x): (1,0)→(3,1)? Hmm (x=1,y=0) → (3-0, 1) = (3,1). (2,0)→(3,2). (1,1)→(2,1). (2,1)→(2,2). That moves the O piece — bad, O would wander. But if O is at (1,1),(2,1),(1,2),(2,2) in the 4x4: rotate CW (3-y,x): (1,1)→(2,1), (2,1)→(2,2), (1,2)→(1,1), (2,2)→(1,2). Same set! Great, O stays fixed if centered at (1.5,1.5)... wait cells (1,1),(2,1),(1,2),(2,2) rotate to (2,1),(2,2),(1,1),(1,2) — same set. 
+
+So define pieces in 4x4 grids:
+- I: (0,1),(1,1),(2,1),(3,1)
+- O: (1,1),(2,1),(1,2),(2,2)
+- T: (1,0),(0,1),(1,1),(2,1)
+- S: (1,0),(2,0),(0,1),(1,1)
+- Z: (0,0),(1,0),(1,1),(2,1)
+- J: (0,0),(0
+---

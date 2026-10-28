@@ -1,0 +1,51 @@
+run 17809 | b13600 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.23 t/s | prompt 23.5 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-10-22 16:09:25
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf / minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous tiny Tetris implementations. The classic "smallest tetris" is around a few hundred bytes of JS. There's a well-known one by @fskree or "Tetris in 140 bytes" etc. But I should write my own, not copy a famous one verbatim. I'll write my own compact implementation.
+
+Constraints I care about:
+- Single self-contained HTML file.
+- Real gameplay: falling tetrominoes, rotation, movement, line clearing, score, game over, restart.
+- Keyboard controls.
+- No external dependencies (smallest = no CDN needed anyway).
+- Should still look decent — but "smallest" means minimal markup. I can still make it look good with careful minimal CSS: a dark background, a canvas, monospace-ish rendering. Actually for smallest, I'd render blocks on canvas with fillRect. Colors per piece type.
+
+Let me design the implementation compactly.
+
+Plan:
+- Canvas 2D, cell size ~16px, board 10×20.
+- Pieces as arrays of rotation states? Compact representation: use the standard trick — encode each tetromino as a set of coordinates derived from a 4x4 grid via bit patterns, or use the "binary string" trick.
+
+A very compact approach: represent each piece as a 2D array of 4 rotation states, each state as array of [x,y] offsets. That's verbose. Alternative compact trick: each tetromino defined by 4 cells in a 4×4 box encoded as a 16-bit number per rotation, or generate rotations by rotating coordinates.
+
+Compact classic trick: define pieces by their cells in a 4x4 matrix encoded as a single number where each rotation is 16 bits. E.g., piece shapes as arrays of 4 numbers (16-bit masks). Then rendering: for bit i (0..15), x = i%4, y = i/4|0.
+
+Even more compact: use strings. Like shapes = ["0F00..."] hmm.
+
+A known compact approach (from tiny tetris golfed versions):
+
+```js
+d=[[1,1,1,1],[[1],[1],[1],[1]],[[1,1],[1,1]],[[0,1],[1,1],[1,0]],[[1,1],[0,1],[0,1]],[[1,0],[1,1],[0,1]],[[0,1,0],[1,1,1]]]
+```
+
+Hmm, that's the "each piece as list of rows" approach, and rotation computed by transposing. Rotation via transpose+reverse is compact:
+
+rotate(m) = m[0].map((_,i)=>m.map(r=>r[i]).reverse()) — or simpler: for rotation, store pieces as arrays of [x,y] and rotate (x,y)->(y, 3-x) or similar within a bounding box.
+
+Let me think about the truly compact classic: There's a famous ~500-byte tetris. I'll write my own in a similar spirit but readable-ish with short variable names and minimal whitespace, but I should keep it somewhat comprehensible and correct. The user asked for "smallest" — I'll aim for genuinely small (maybe ~600-900 bytes of code total in the file) while keeping it fully functional and looking clean.
+
+Let me write the logic:
+
+Board: B = array of 20 rows, each row array of 10 cells (0 or color index). Or use a flat array / strings.
+
+Pieces: 7 shapes. Compact encoding: each shape as array of 4 rotation states, each state as list of [x,y]. To be compact, I can define shapes via a string of coordinates.
+
+Alternative super-compact: define each tetromino by 4 numbers, one per rotation, each a 16-bit bitmask in a 4x4 grid. E.g.:
+
+I: rotations in 4x4 box:
+- state0: row1 all four: bits 4,5,6,7 → 0b0000000011110000 = 0x0F00
+- state1: column 2 all rows: bits 2,6,10,14 → 0x2222
+- state2: row2 all: bits 8..11 → 0x00F0
+- state3: column1: bits 
+---

@@ -1,0 +1,57 @@
+run 20188 | dynhot_two_pool_keys | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 90.52 t/s | prompt 59.6 t/s | 1007 tokens | args: -np 1 --moe state=/tmp/runstate/dynab-q36-pure.ini --moe sim-vram=3072 | power 220+280 W | 2026-10-28 07:50:45
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means a single HTML file (or minimal structure) that implements a playable Tetris game using HTML, CSS, and JavaScript. The goal is to minimize code size while maintaining core functionality (grid, pieces, movement, rotation, collision, line clearing, scoring, game over).
+
+2.  **Identify Core Requirements for Tetris:**
+   - 10x20 grid
+   - 7 tetromino shapes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Piece rotation
+   - Collision detection (walls, existing blocks)
+   - Line clearing
+   - Scoring
+   - Game over condition
+   - Controls (keyboard)
+   - Rendering (canvas or div-based)
+
+3.  **Minimize Code Strategy:**
+   - Use a single HTML file with inline CSS and JS.
+   - Use `<canvas>` for rendering (more compact than div-based).
+   - Use compact variable names and bitwise/array tricks where possible.
+   - Avoid external libraries.
+   - Keep logic minimal but functional.
+   - Use a compact representation for pieces (e.g., arrays of coordinates or bit patterns).
+   - Use a single loop for game logic.
+   - Minimize comments and whitespace.
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head><title>Tetris</title><style>body{margin:0;background:#000}canvas{display:block}</style></head>
+   <body><canvas id=c></canvas><script>
+   // Setup
+   const W=10, H=20, c=document.getElementById('c'), ctx=c.getContext('2d');
+   c.width=W*10; c.height=H*10;
+   // Grid
+   const g=Array(H).fill(0);
+   // Pieces
+   const P=[[[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]], ...]; // Too verbose
+   // Better: Use compact representation
+   // Actually, standard compact: define shapes as arrays of rotations or use a single array with offsets
+   // Let's use a common compact approach: shapes as arrays of [x,y] relative to center, or use bit patterns
+   // Actually, for minimal code, I'll use a simple array of shapes where each shape is an array of 4 cells, and rotation is handled by transposing/swapping.
+   // But that's still bulky. Let's use a known minimal Tetris implementation pattern.
+   ```
+
+   Let's think of a proven minimal approach:
+   - Use a 1D array for the grid (200 cells)
+   - Use a compact piece definition: `const T=[[1,1,1,1],[1,1,0,0],[0,1,1,0],[1,0,1,0],[1,1,1,0],[0,1,1,1],[1,0,0,1]]` (7 shapes, each 4 cells)
+   - Actually, standard minimal Tetris uses: `const P=[[[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]], ...]` but that's long.
+   - Better: Use a single array of 7 shapes, each shape is an array of 4 offsets. Rotation can be done by swapping coordinates.
+   - Actually, I'll use a well-known compact representation: `const S=[[1,1,1,1],[1,1,0,0],[0,1,1,0],[1,0,1,0],[1,1,1,0],[0,1,1,1],[1,0,0,1]]` - wait, that's not quite right for rotation.
+   - Let's use a simpler approach: define shapes as arrays of 4 cells, and rotation is handled by a function that swaps x/y and negates one. But that's verbose.
+   - Actually, I'll use a known minimal code golf approach: `const T=[[[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]],[[1,1,0,0],[1,1,0,0],[0,0,0,0],[0,0,0,
+---

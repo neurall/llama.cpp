@@ -1,0 +1,9 @@
+run 18829 | ncard4 | pf8k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 20.98 t/s | prompt 990.9 t/s | 64 tokens | args: -np 1 --moe dense-split=1 | power 220+280 W | 2026-10-23 22:31:23
+
+Let me carefully review this source file for code quality, correctness, potential bugs, and style issues.
+
+Let me go through it systematically.
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?
+---

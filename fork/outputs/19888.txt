@@ -1,0 +1,6 @@
+run 19888 | fix_dsv4_dummy_block_row_inside_zone | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 18.06 t/s | prompt 8.9 t/s | 64 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe spec-depth=2,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-27 01:13:42
+
+We need answer only code. Need build complete single HTML file with WebGL raw or software renderer. Need genuinely novel 3D Tetris. Need satisfy many requirements. Need comment every function. Need explain two new mechanics in comment block top. Need polished. Need no libraries. Need output only code.
+
+We need
+---

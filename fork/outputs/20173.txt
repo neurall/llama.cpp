@@ -1,0 +1,113 @@
+run 20173 | dynhot_two_pool_keys | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 85.33 t/s | prompt 102.0 t/s | 1007 tokens | args: -np 1 --moe state=/tmp/runstate/dynab-q36-off.ini --moe sim-vram=3072 | power 220+280 W | 2026-10-28 07:41:14
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the *smallest* HTML Tetris game. This means I need to minimize code size while keeping it functional as a Tetris game. It should be a single HTML file (or as close as possible) with inline CSS and JavaScript.
+
+2.  **Key Requirements for Tetris:**
+   - Grid/board (typically 10x20)
+   - Tetromino pieces (7 shapes)
+   - Movement (left, right, down, rotate)
+   - Collision detection
+   - Line clearing
+   - Game over condition
+   - Score tracking (optional but good)
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Minimization Strategies:**
+   - Use a single `<canvas>` for rendering
+   - Minimize variable names
+   - Use compact logic (bit manipulation, arrays, loops)
+   - Avoid external libraries
+   - Inline everything in one file
+   - Use modern JS features (ES6+) for brevity
+   - Consider using a compact representation for pieces and board
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <body>
+   <canvas id=c></canvas>
+   <script>
+     // Setup
+     const c = document.getElementById('c');
+     const ctx = c.getContext('2d');
+     c.width = 200; c.height = 400;
+     const W = 10, H = 20, S = 20;
+     // Board: 0 = empty, 1 = filled
+     const b = Array(H).fill(0).map(() => Array(W).fill(0));
+     // Pieces: 7 tetrominoes
+     const P = [
+       [[1,1,1,1]], // I
+       [[1,1],[1,1]], // O
+       [[1,1,1],[0,1,0]], // T
+       [[1,1,1],[1,0,0]], // L
+       [[1,1,1],[0,0,1]], // J
+       [[1,1,0],[0,1,1]], // S
+       [[0,1,1],[1,1,0]]  // Z
+     ];
+     // State
+     let p, x, y, score = 0;
+     // Controls
+     document.onkeydown = e => {
+       if(e.key=='ArrowLeft') x--;
+       if(e.key=='ArrowRight') x++;
+       if(e.key=='ArrowDown') y++;
+       if(e.key=='ArrowUp') rotate();
+       if(e.key=='Enter') spawn();
+     };
+     // Spawn piece
+     function spawn() {
+       p = P[Math.floor(Math.random()*7)];
+       x = 3; y = 0;
+       if(check()) gameover();
+     }
+     // Check collision
+     function check() {
+       for(let r=0;r<p.length;r++)
+         for(let c=0;c<p[r].length;c++)
+           if(p[r][c] && b[y+r][x+c]) return 1;
+       return 0;
+     }
+     // Rotate
+     function rotate() {
+       let r = p.map((row,i) => row.map((_,j) => p[j][i]));
+       p = r;
+       if(check()) p = p.map((row,i) => row.map((_,j) => p[j][i])); // undo
+     }
+     // Move down
+     function down() {
+       y++;
+       if(check()) {
+         y--;
+         place();
+         clear();
+         spawn();
+       }
+     }
+     // Place piece
+     function place() {
+       for(let r=0;r<p.length;r++)
+         for(let c=0;c<p[r].length;c++)
+           if(p[r][c]) b[y+r][x+c] = 1;
+     }
+     // Clear lines
+     function clear() {
+       for(let i=H-1;i>=0;i--) {
+         if(b[i].every(v=>v)) {
+           b.splice(i,1);
+           b.unshift(Array(W).fill(0));
+           score++;
+           i++;
+         }
+       }
+     }
+     // Render
+     function draw() {
+       ctx.fillStyle = '#000';
+       ctx.fillRect(0,0,c.width,c.height);
+       ctx.fillStyle = '#fff';
+       for
+---

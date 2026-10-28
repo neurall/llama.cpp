@@ -1,0 +1,72 @@
+run 19113 | pre6 | pf60k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 23.62 t/s | prompt 985.3 t/s | 1000 tokens | args: -np 1 --moe log=w | power 220+280 W | 2026-10-25 02:19:36
+
+<think>The user wants me to find and fix bugs in this large C++ source code. Let me carefully review both files.
+
+Let me go through the code systematically looking for bugs.
+
+**File 1: common/json-schema-to-grammar.cpp**
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps in `(...)?`. But when `min_items > 0`, the first item is required. Let me check the logic more carefully.
+
+Actually, looking at the `build_repetition` function with separator:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+if (min_items == 0) {
+    result = "(" + result + ")?";
+}
+```
+
+When `min_items == 0`, the first item is made optional with `(...)?`. But the first item itself is `item_rule` which is required in the expression. So `item_rule + " " + build_repetition(...)` - when min_items is 0, the repetition part has min=0, so it's `item_rule + " " + (sep item)*` wrapped in `(...)?`. That seems correct.
+
+When `min_items == 1`, the first item is required, and the repetition has min=0. So `item_rule + " " + (sep item)*`. That's correct.
+
+When `min_items == 2`, first item required, repetition has min=1. So `item_rule + " " + (sep item)+`. That's correct.
+
+2. In `build_min_max_int`, let me check the `uniform_range` lambda. It uses `from` and `to` as `std::string_view`. The `sub_len` calculation:
+```cpp
+auto sub_len = from.length() - i - 1;
+```
+This is the length of the remaining suffix after position `i`. Then `from_sub = from.substr(i + 1)` and `to_sub = to.substr(i + 1)`.
+
+Wait, `sub_len` should be `from.length() - i - 1` which is the length of `from.substr(i + 1)`. That's correct.
+
+3. In `_pattern_to_rule`, the `join_seq` function returns `std::make_pair(string_join(results, " "), false)`. But `literal_or_rule` is `std::pair<std::string, bool>`. The `false` means it's not a literal. But if there's only one item and it's a literal, it should still be marked as literal... Actually, looking at how `to_rule` works:
+```cpp
+auto to_rule = [&](const literal_or_rule & ls) {
+    auto is_literal = ls.second;
+    auto s = ls.first;
+    return is_literal ? "\"" + s + "\"" : s;
+};
+```
+
+If `join_seq` returns `false` for `is_literal`, then `to_rule` will return `s` directly (without quotes). But `s` is the joined result of already-quoted rules. So that's correct - the joined result is already a rule expression, not a literal.
+
+4. In `_pattern_to_rule`, when handling `{` (curly brackets), the code does:
+```cpp
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+```
+
+But `sub` might already be a rule name (if `sub_is_literal` is false). If `sub_is_literal` is true, it wraps in quotes. If false, it uses `sub` directly. But wait, if `sub_is_literal` is false, `sub` could be a rule reference or a rule expression. The code creates a sub_rule_id for non-literals:
+```cpp
+if (!sub_is_literal) {
+    std::string & sub_id = sub_rule_ids[sub];
+    if (sub_id.empty()) {
+        sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+    }
+    sub = sub_id;
+}
+```
+
+So `sub` becomes a rule name. Then `build_repetition(sub, ...)` is called with the rule name. That seems correct.
+
+5. In `_pattern_to_rule`, the handling of `*`, `+`, `?`:
+```cpp
+seq.back() = std::make_pair(to_rule(seq.back()) + c, false);
+```
+
+`to_rule` converts the last element to a rule expression (adding quotes if literal). Then appends the quantifier. The result is marked as `false

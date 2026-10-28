@@ -1,0 +1,43 @@
+run 18196 | relfl6 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.89 t/s | prompt 1003.1 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-23 04:11:12
+
+The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This file converts JSON schemas to GBNF grammars
+- It's complex with pattern matching, rule building, and schema traversal
+
+### Issues I can spot:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` via the recursive call. This could lead to double-optional behavior. Let me trace through:
+     - `build_repetition(item, 0, 5, sep)` → `item (sep item){0,4}?` → `(item (sep item){0,4})?` — this seems correct actually.
+   - When `max_items == 0`, returns empty string — but what if `min_items > 0`? That would be an invalid schema (min > max), but it's not checked.
+
+2. **`build_min_max_int` function:**
+   - Very complex recursive function. The `decimals_left` parameter is confusingly named — it's about digit depth, not decimals.
+   - The `top_level` parameter controls whether leading zeros are allowed.
+   - Potential issue: when `min_value == 0` and `top_level` is true, it outputs `[0] | [1-9] ...` which allows "0" but also allows numbers starting with 1-9. This seems correct.
+   - When `has_min` and `min_value < 0` and `max_value < 0`, it negates both and recurses. But `-min_value` when `min_value == INT64_MIN` would overflow. Let me check: `min_value < 0 && max_value < 0` — if `min_value == INT64_MIN`, then `-min_value` overflows. This is a potential bug.
+   - Actually wait, `min_value < 0 && max_value < 0` — if `min_value == INT64_MIN`, then `-min_value` is undefined behavior (signed overflow). This is a real bug.
+
+3. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a reasonable approach but could be expensive for large rule sets.
+   - The `std::move(rules_snapshot)` in the catch blocks — after `std::move`, `rules_snapshot` is in a valid but unspecified state. Since it's a local variable that goes out of scope, this is fine.
+
+4. **`_pattern_to_rule` function:**
+   - The `transform` lambda is complex and recursive.
+   - `paren_depth` is checked against `MAX_PATTERN_DEPTH` (100) — good.
+   - The character class parsing: when encountering `]` inside a character class, it stops. But what about escaped `]`? The `gbnf_escape_length` function handles `]` as a 2-char escape, so that should work.
+   - The curly bracket parsing: `std::stoi` can throw `std::out_of_range` which is a subclass of `std::logic_error` — wait, actually `std::out_of_range` derives from `std::logic_error`. So the catch block `catch (const std::logic_error &)` would catch both `std::invalid_argument` and `std::out_of_range`. That's correct.
+   - Actually, `std::stoi` throws `std::invalid_argument` (if no conversion) and `std::out_of_range` (if out of range). Both derive from `std::logic_error`. So the catch is correct.
+
+5. **`_not_strings` function:**
+   - The `rejects` string accumulates characters for the negated character class. If any character is a regex metacharacter (like `]`, `-`, `^`), this could produce an invalid character class. For example, if a property name contains `]`, the output would be `[^"]...]` which is malformed.
+   - Actually, looking more carefully: `rejects += c` where `c` is a UTF-8 character. If `c` is `]`, then `[^"]...]` would be `[^"]...]` — the `]` would close the character class early. This is a bug.
+   - Similarly, if `c` is `-`, it could create an unintended range.
+   - If `c` is `^`, it could be interpreted as
+---

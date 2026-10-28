@@ -1,0 +1,58 @@
+run 19603 | deep-seek | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.59 t/s | prompt 20.9 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-26 11:06:14
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and looking decent (minimal but not ugly).
+
+Let me think about what "smallest" means. I could go for extreme minification (single-letter variables, no whitespace), which is the classic "smallest tetris" challenge. There are famous tiny Tetris implementations. Let me write my own compact one.
+
+Requirements for a real Tetris:
+- 10×20 board
+- 7 tetrominoes (I, O, T, S, Z, J, L) with rotation
+- Movement: left, right, down (soft drop), rotate, hard drop maybe
+- Line clearing
+- Score
+- Game over
+- Gravity/tick
+
+I'll write it in a compact but readable-ish golfed style. I should keep it genuinely small — maybe under ~1000 bytes of JS if I'm clever. Let me design.
+
+Approach: canvas rendering. Board as a 2D array or a flat string. Pieces defined compactly.
+
+Classic compact trick: represent each tetromino as a set of coordinates in a 4×4 or use rotation via matrix rotation of coordinate pairs.
+
+A very compact representation: each piece as array of 4 cells [x,y], rotation by (x,y)->(y, 4-1-x) or similar within a bounding box. Or use the classic "binary encoding" trick.
+
+Let me think of a well-known ultra-compact Tetris. There's the famous "smallest tetris in JS" entries. One approach:
+
+Pieces as strings where each piece is encoded. E.g.:
+
+```js
+P = [
+ [0x4444, ...], // I
+ ...
+]
+```
+
+Alternative compact approach used in many golfed tetris:
+
+```js
+// pieces: each rotation state as list of [x,y]
+```
+
+Let me design my own. I'll aim for clarity-with-compactness: short variable names, minimal code, but still functional and playable. I'll also add minimal styling so it doesn't look like garbage — dark background, centered canvas, monospace-ish font, score display. But keep the whole file small. The user asked for smallest, so I shouldn't bloat with fancy UI. A tiny bit of CSS is fine (a few hundred bytes).
+
+Let me write the game logic.
+
+Board: 10 wide, 20 tall. Represent as array of 20 strings? Or array of rows, each row an array of 10 numbers (0 empty, else color index). For line clearing, rows as arrays are easy: splice.
+
+Colors: 7 colors. Could render all cells same color for ultra-small, but colors make it feel like real Tetris. Colors can be a compact array of 7 hex strings. That's cheap: `C=['#4a4','...']` etc. Actually to keep small, maybe use a palette string split. `C="#1f8f2f...".split(...)` hmm. Just an array literal is fine and compact.
+
+Pieces: I'll encode each tetromino's 4 rotations as coordinate lists. Compact encoding: for each piece, a string of digits? Let me think.
+
+A neat trick: define pieces via a 4x4 grid encoded as 16-bit numbers per rotation. Then extract cells by bit index. E.g., for each piece, array of 4 numbers (16 bits each), bit (y*4+x) set means block. Then rendering: for y in 0..3, x in 0..3, if bits>>(y*4+x)&1 draw at px+x, py+y.
+
+Encoding 4 rotations × 4 numbers per piece × 7 pieces = 28 numbers. Each number up to 0xFFFF. In hex, 4 chars each + 0x prefix... that's ~28*6 = 168 chars. Alternatively use decimal? Hex shorter. Or encode all rotations of a piece as one 64-bit... JS numbers can hold up to 2^53, so 4×16=64 bits won't fit exactly. Could use BigInt — too heavy.
+
+Alternative: encode each piece as a single string of 16 hex digits (64 bits) — no, same problem.
+
+Better trick: rotation can be computed! If I define one orientation per piece as coordinate pairs, I can rotate mathematically. Rotation within a bounding box: (x,y) -> (y, size-1-x) for clockwise. But different pieces have different natural bounding boxes (I in 4×4, O in 2×2,
+---

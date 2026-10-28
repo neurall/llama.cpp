@@ -1,0 +1,43 @@
+run 18244 | stock-b11829-official | pf12k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 150.15 t/s | prompt 5014.7 t/s | 1024 tokens | args:  | power 220+280 W | 2026-10-23 05:30:00
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants a code review of two provided source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. The code appears to be part of a C++ project (likely Llama.cpp or similar, given the context like `common_chat_schema`, `ggml`, `LLAMA_EXAMPLE_*`, etc.).
+
+2.  **Analyze File 1: `common/json-schema-to-grammar.cpp`**
+    *   **Purpose:** Converts JSON schemas to a grammar format (likely for LLM context generation/grammar-based sampling).
+    *   **Key Components:**
+        *   `build_repetition`: Handles repetition rules (min/max items, separators).
+        *   `build_min_max_int`: Generates regex-like grammar for integer ranges.
+        *   `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`: Predefined grammar rules for JSON types.
+        *   `common_chat_schema_converter`: Main class handling conversion.
+        *   `visit`: Dispatches based on schema kind.
+        *   `_pattern_to_rule`: Converts regex patterns to grammar.
+        *   `_not_strings`: Generates a trie-based rule to exclude specific strings.
+        *   `_build_object_rule`: Handles JSON object properties, required/optional, additional properties.
+        *   `json_schema_to_grammar`, `build_grammar`: Entry points.
+    *   **Potential Issues/Improvements:**
+        *   *Complexity & Readability:* The code is quite dense. `_pattern_to_rule` has a complex recursive lambda `transform` that parses regex manually. This is error-prone and hard to maintain.
+        *   *Regex Handling:* The manual regex parser handles `^`, `$`, `.`, `()`, `[]`, `|`, `*`, `+`, `?`, `{}`. It throws `unsupported_pattern` or `invalid_pattern`. This is good for safety but might miss edge cases. The `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` set is hardcoded.
+        *   *Integer Range Generation (`build_min_max_int`):* Very complex logic for generating character ranges. It handles negative numbers, min/max, decimals. It's likely correct but hard to verify. Could be simplified or tested thoroughly.
+        *   *Trie for `_not_strings`:* Uses a custom `common_trie`. The logic generates a grammar that matches strings *not* in the trie. This is clever but complex. Might be inefficient for large sets.
+        *   *Object Rule Generation (`_build_object_rule`):* Handles required/optional properties and additional properties. The recursive lambda `get_recursive_refs` generates a complex grammar for optional properties. It might produce very long/complex grammars for many optional properties. Could be optimized or simplified.
+        *   *Error Handling:* Uses `_errors` and `_warnings` vectors. Throws exceptions in `check_errors()`. Good, but warnings are printed to stderr. Might be better to return them or log properly.
+        *   *Performance:* Uses `std::regex` for escaping/replacing. Could be optimized with manual string processing, but fine for this use case.
+        *   *Constants/Types:* `MAX_PATTERN_DEPTH = 100` is hardcoded. `decimals_left = 16` in `build_min_max_int` is magic.
+        *   *Namespace/Scope:* Uses `using json = common_json;` and `static` functions. Good.
+        *   *Missing Includes/Dependencies:* Relies on `common.h`, `trie.h`, `unicode.h`, `common_chat_schema`, `common_grammar_builder`, etc. Not provided, but assumed to exist.
+        *   *Code Style:* Generally follows C++ conventions. Uses `std::function`, lambdas, `std::regex`. Some parts could be refactored for clarity.
+
+3.  **Analyze File 2: `common/arg.cpp`**
+    *   **Purpose:** Command-line argument parsing and handling for a CLI tool (likely Llama.cpp).
+    *   **Key Components:**
+        *   `common_arg` class with methods for setting examples, excludes, env, sampling, etc.
+        *   `get_common_arg_defs()`: Initializes common arguments.
+        *   `read_file`, `break_str_into_lines`, `to_string`, `get_args`, `get_env`.
+        *   `parse_tensor_buffer_overrides`: Parses tensor buffer overrides.
+        *   `clean_file_name`, `kv_cache_types`, `parse_bool_value`, `arg_removed`.
+        *   `handle_model_result`, `get_default_local_path`, `spec_types_is_default`.
+    *   **Potential Issues/Improvements:**
+        *   *Platform-specific includes:*
+---

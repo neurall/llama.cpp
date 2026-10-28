@@ -1,0 +1,11 @@
+name,model,n,test,tokens,args,extra
+glm35-3k-ds1,glm35,2,pf3k1k,64,--moe dense-split=1,
+glm35-3k-ds0,glm35,2,pf3k1k,64,--moe dense-split=0,
+glm35-4k-ds1,glm35,2,pf4k1k,64,--moe dense-split=1,
+glm35-4k-ds0,glm35,2,pf4k1k,64,--moe dense-split=0,
+glm35-5k-ds1,glm35,2,pf5k1k,64,--moe dense-split=1,
+glm35-5k-ds0,glm35,2,pf5k1k,64,--moe dense-split=0,
+glm35-6k-ds1,glm35,2,pf6k1k,64,--moe dense-split=1,
+glm35-6k-ds0,glm35,2,pf6k1k,64,--moe dense-split=0,
+glm35-2k-ds1,glm35,2,pf2k1k,64,--moe dense-split=1,
+glm35-2k-ds0,glm35,2,pf2k1k,64,--moe dense-split=0,

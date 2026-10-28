@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+ds-1k-jig-n5,ds,2,1k1k,1024,-md /m/ds/dspark/DeepSeek-V4.1-Flash-DSpark.gguf --spec-type draft-dspark --spec-draft-n-max 5,
+ds-1k-jig-n2,ds,2,1k1k,1024,-md /m/ds/dspark/DeepSeek-V4.1-Flash-DSpark.gguf --spec-type draft-dspark --spec-draft-n-max 2,
+ds-1k-jig-cpu-n5,ds,2,1k1k,1024,-md /m/ds/dspark/DeepSeek-V4.1-Flash-DSpark.gguf --spec-type draft-dspark --spec-draft-n-max 5 -devd none,
+ds-1k-luce-n5,ds,2,1k1k,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.gguf --spec-type draft-dspark --spec-draft-n-max 5,

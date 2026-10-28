@@ -1,0 +1,78 @@
+run 18375 | relfx1 | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 31.53 t/s | prompt 627.4 t/s | 906 tokens | args: -np 1 | power 220+280 W | 2026-10-23 12:15:24
+
+Let me analyze this file carefully to identify which code is never used.
+
+Let me go through each function, variable, and definition:
+
+1. `build_repetition` - static function, need to check if it's called anywhere in this file.
+
+2. `build_min_max_int` - static function, need to check if it's called.
+
+3. `SPACE_RULE` - const string, need to check if used.
+
+4. `BuiltinRule` struct - used by PRIMITIVE_RULES and STRING_FORMAT_RULES.
+
+5. `PRIMITIVE_RULES` - used by `is_reserved_name` and likely elsewhere.
+
+6. `STRING_FORMAT_RULES` - used by `is_reserved_name` and likely elsewhere.
+
+7. `is_reserved_name` - static function, need to check if called.
+
+8. `INVALID_RULE_CHARS_RE` - static regex, need to check if used.
+
+9. `GRAMMAR_LITERAL_ESCAPE_RE` - used by `format_literal`.
+
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - need to check if used.
+
+11. `GRAMMAR_LITERAL_ESCAPES` - used by `format_literal`.
+
+12. `MAX_PATTERN_DEPTH` - need to check if used.
+
+13. `NON_LITERAL_SET` - need to check if used.
+
+14. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - need to check if used.
+
+15. `replacePattern` - used by `format_literal`.
+
+16. `format_literal` - used by `gbnf_format_literal`.
+
+17. `gbnf_format_literal` - public function, likely used elsewhere.
+
+18. `gbnf_escape_length` - public function, likely used elsewhere.
+
+Now let me check which static functions/variables are actually called within this file:
+
+- `build_repetition` - I don't see any call to it in the visible code. Let me search... No, it's not called anywhere in the visible portion of the file.
+
+- `build_min_max_int` - It's called recursively within itself, but is it called from outside? Looking at the code... it's only called recursively within `build_min_max_int`. But wait, it's a static function that could be called from later in the file (the file is truncated). However, since the file is truncated, I need to consider what's visible.
+
+Actually, the file is truncated at `gbnf_escape_length`. So there's more code after that. Let me reconsider.
+
+The question says "Delete the code in this file that is never used." Since the file is truncated, I should consider what's visible and determine what's unused based on the visible code.
+
+Wait, but the file is clearly truncated - `gbnf_escape_length` function body is cut off. So there's more code. I need to think about what's used in the full file.
+
+Let me reconsider. The file is a JSON schema to grammar converter. Let me think about what's likely used:
+
+- `build_repetition` - likely used later in the file for array/object schemas
+- `build_min_max_int` - likely used later for integer constraints
+- `SPACE_RULE` - likely used later
+- `PRIMITIVE_RULES` - likely used later
+- `STRING_FORMAT_RULES` - likely used later
+- `is_reserved_name` - likely used later
+- `INVALID_RULE_CHARS_RE` - likely used later
+- `GRAMMAR_LITERAL_ESCAPE_RE` - used by `format_literal`
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - likely used later
+- `GRAMMAR_LITERAL_ESCAPES` - used by `format_literal`
+- `MAX_PATTERN_DEPTH` - likely used later
+- `NON_LITERAL_SET` - likely used later
+- `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - likely used later
+- `replacePattern` - used by `format_literal`
+- `format_literal` - used by `gbnf_format_literal`
+- `gbnf_format_literal` - public, used elsewhere
+- `gbnf_escape_length` - public, used elsewhere
+
+Hmm, but the question asks me to delete code that is "never used." Since the file is truncated, I can't see the full file. But based on what's visible, let me check:
+
+Actually, wait. The file is truncated but the question is asking me to identify unused code. Let me look more
+---

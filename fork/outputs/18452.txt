@@ -1,0 +1,47 @@
+run 18452 | mfx1 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.54 t/s | prompt 954.7 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-23 14:22:32
+
+The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This file converts JSON Schema to GBNF grammar rules
+- It's a complex file with pattern matching, rule building, and schema traversal
+
+### Issues I can spot:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is provided and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through: if `min_items == 0` and separator is provided, it calls `build_repetition("(" + sep + " " + item + ")", 0, max-1)`. If max is 1, then `max_items == 0` returns `""`. So the result would be `item + " " + ""` = `item + " "`, then wrapped in `(...)?`. That seems correct.
+   - Actually wait, if `min_items == 0` and `max_items == 1` with separator, the first check `max_items == 0` doesn't trigger (max is 1). Then `min_items == 0 && max_items == 1` triggers and returns `item_rule + "?"`. But this ignores the separator! For arrays with separator, if max is 1, there's only one item so no separator needed. That's actually correct.
+   - Hmm, but the separator case: if `min_items == 0 && max_items == 1`, it returns `item_rule + "?"` before checking separator. For an array with separator and max 1, there's only one element so no separator needed. Correct.
+
+2. **`build_min_max_int` function:**
+   - Complex recursive function for generating integer ranges
+   - The `uniform_range` lambda captures `out` by reference - fine
+   - `decimals_left` parameter is used to limit digit depth - good for preventing exponential blowup
+   - Potential issue: when `min_value == 0` and `top_level == false`, it calls `more_digits(1, decimals_left)` which means at least 1 digit. But if `min_value == 0` and not top level, we're in a sub-context where leading zeros might be an issue. Actually, looking at the logic more carefully, when `top_level` is false, it means we're in a nested position (after a digit), so leading zeros are not allowed. `more_digits(1, decimals_left)` means at least 1 digit from [0-9], which could include 0. Hmm, but in a nested position after a digit, 0 is fine as a subsequent digit.
+
+3. **`_add_rule` function:**
+   - The deduplication logic: if the rule already exists with the same content, it returns the existing name. If it exists with different content, it appends a number. This could lead to O(n²) behavior in pathological cases but is generally fine.
+
+4. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for rollback.
+   - However, `_rules` is a `std::map` and copying it on every pattern visit could be expensive for large schemas.
+
+5. **`_pattern_to_rule` function:**
+   - The `transform` lambda is complex and recursive
+   - `paren_depth` tracking for balanced parentheses
+   - Character class parsing: handles escapes but could have edge cases
+   - The literal accumulation logic is complex - the condition for continuing to accumulate literals is intricate
+
+6. **`_not_strings` function:**
+   - Uses a trie to generate a rule that matches strings not in a given set
+   - The `rejects` string accumulates characters for the negated character class - if characters include regex metacharacters like `]`, `-`, `\`, this could be problematic. The function doesn't escape these characters in the character class.
+   - Actually, looking more carefully: `rejects` is built from UTF-8 characters from the trie. If any of these characters are `]`, `-`, or `\`, they would need escaping in the character class. This is a potential bug.
+
+7. **`_resolve_ref` function:**
+   - Handles `$ref` resolution with cycle detection via `_refs_being_resolved`
+   - If a ref is already being resolved (cycle), it returns `ref_name` which might not exist yet in `_rules`. This could lead to referencing a rule that doesn't exist
+---

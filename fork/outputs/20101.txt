@@ -1,0 +1,41 @@
+run 20101 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 21.89 t/s | prompt 7.5 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 20:31:12
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need ensure game playable. Need concise.
+
+We need generate smallest HTML Tetris game. Could provide code block. Need maybe explain controls. Need make it as small as possible while functional. Need think through implementation.
+
+We need create Tetris game in HTML. Minimal code. Use canvas, keyboard. Need implement board 10x20, tetrominoes, rotation, collision, line clear, score, game over. Need maybe no fancy styling. Need ensure code works.
+
+Let's design compact JS.
+
+HTML:
+<!doctype html>
+<html>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=30;
+let b=Array(H).fill().map(()=>Array(W).fill(0)),p,px,py,r,score=0,over=false;
+const T=[
+ [[1,1,1,1]],
+ [[1,1],[1,1]],
+ [[0,1,0],[1,1,1]],
+ [[1,0,0],[1,1,1]],
+ [[0,0,1],[1,1,1]],
+ [[1,1,0],[0,1,1]],
+ [[0,1,1],[1,1,0]]
+];
+function spawn(){let t=T[Math.random()*T.length|0];p=t.map(a=>a.slice());px=3;py=0;r=0;if(hit())over=true;}
+function rot(){let q=p[0].map((_,i)=>p.map(a=>a[i]).reverse());let old=p;p=q;if(hit())p=old;}
+function hit(){for(let y=0;y<p.length;y++)for(let x=0;x<p[y].length;x++)if(p[y][x]){let X=px+x,Y=py+y;if(X<0||X>=W||Y>=H||b[Y][X])return true;}return false;}
+function drop(){py++;if(hit()){py--;for(let y=0;y<p.length;y++)for(let x=0;x<p[y].length;x++)if(p[y][x])b[py+y][px+x]=1;let n=0;for(let y=H-1;y>=0;y--){if(b[y].every(v=>v)){b.splice(y,1);b.unshift(Array(W).fill(0));n++;}}score+=n*100;spawn();}}
+function draw(){x.fillStyle='#000';x.fillRect(0,0,c.width,c.height);for(let y=0;y<H;y++)for(let X=0;X<W;X++)if(b[y][X]){x.fillStyle='#fff';x.fillRect(X*S,y*S,S-1,S-1);}if(!over)for(let y=0;y<p.length;y++)for(let X=0;X<p[y].length;X++)if(p[y][X]){x.fillStyle='#0ff';x.fillRect((px+X)*S,(py+y)*S,S-1,S-1);}x.fillStyle='#fff';x.font='16px monospace';x.fillText('Score '+score,10,20);if(over)x.fillText('Game Over',10,40);}
+function loop(){if(!over){drop();draw();}else draw();}
+spawn();draw();setInterval(loop,500);
+addEventListener('keydown',e=>{if(over)return;if(e.key=='ArrowLeft'){px--;if(hit())px++;}if(e.key=='ArrowRight'){px++;if(hit())px--;}if(e.key=='ArrowDown'){drop();}if(e.key=='ArrowUp'){rot();}draw();});
+</script>
+</body>
+</html>
+
+Need check rotation function. p[0].map((_,i)=>p.map(a=>a[i]).reverse()) rotates clockwise? For p = [[1,1,1,1]], p[0].map i=0 => p.map(a=>a[0]).reverse() = [1].reverse = [1]? Wait p has one row, p[0].length=4. For i=
+---

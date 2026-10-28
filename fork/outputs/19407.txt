@@ -1,0 +1,57 @@
+run 19407 | rc5 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.62 t/s | prompt 141.8 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-25 09:08:17
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, working Tetris in a single HTML file.
+
+"Smallest" suggests code golf / minimal size. But I don't want to just dump a bare minified blob — even a tiny game deserves to feel considered. So I'll deliver a compact but readable implementation, plus a nicely crafted presentation around it: a playable Tetris with a distinctive arcade/CRT aesthetic, and show the minified version too.
+
+Let me think about the design: Tetris → arcade cabinet, CRT scanlines, blocky pixel type. A near-black field with one neon accent would feel thin here; the tetrominoes themselves are already seven bright colors, so the board naturally carries a full palette. I can build a richer palette around them: a dark blue-gray or deep plum cabinet rather than pure black, with multiple accent colors (the 7 tetromino colors). That's alive and matches the subject.
+
+Type: a blocky/pixel display face for the title (Press Start 2P is the obvious arcade pick — but maybe too cliché? It's characteristic though). Let me pair a pixel display font with a readable body face. Options: display = "Press Start 2P" or "Silkscreen" or "VT323"; body = "IBM Plex Sans" or "Space Grotesk". I'll use Silkscreen for display (blocky, arcade) and IBM Plex Mono/Sans for body. Actually for the code block, mono is needed. Let's do: display "Silkscreen" (700), body "IBM Plex Sans", mono "IBM Plex Mono". Good pairing.
+
+Layout: rather than a generic centered header, I'll open with the thing most characteristic of the subject — the game itself, immediately, in a cabinet-like frame, with the score panel to the side. Like an arcade cabinet front: marquee title at top, screen, side panels with HOLD / NEXT / stats.
+
+Let me design:
+- Full-viewport dark cabinet. Left: the playfield (canvas or DOM grid). Right: next queue, hold, stats (score, lines, level, time). Top: marquee with title in pixel type, letter-spaced.
+- Background: layered — subtle CRT scanlines, a faint grid, vignette, and a slow-moving ambient gradient. Maybe a "falling tetromino" faint background pattern? Could do a CSS repeating pattern of blocks drifting slowly. Keep it tasteful.
+- Micro-interactions: line-clear flash, piece lock shake, hover on buttons, key hints that light up when pressed, score counter tick animation, level-up flash.
+- Sound: tiny WebAudio blips (optional, toggle).
+
+The "smallest" ask: I should provide the minified one-file version prominently — a code panel with a copy button and byte count. And the demo above it is the full-featured presentation. That satisfies both: the deliverable is smallest, the page is a crafted showcase.
+
+Let me write the smallest Tetris. Target: something like ~600-900 bytes minified. Let's craft it.
+
+Classic golfed Tetris approach:
+
+```html
+<canvas id=c width=160 height=320></canvas>
+<script>
+// 10x20 grid, cell 16
+</script>
+```
+
+Let me write a compact but correct implementation.
+
+```js
+let x=c.getContext`2d`,g=[...Array(220)].map(_=>0),p=0,s=0,l=0,lv=1,n=0
+let R=n=>Math.random()*7|0
+// piece shapes via string
+```
+
+A common golf trick: define pieces as numbers/bit patterns.
+
+Let me use the standard approach with a matrix rotation:
+
+Pieces as arrays of 4x4 or as coordinate lists.
+
+Compact approach: use a string of hex digits per piece per rotation? Or use the "matrix rotate" trick where pieces are defined in a 4x4 or 3x3 grid and rotation = transpose+reverse.
+
+Golf approach:
+```
+P=[0,1,3,5,6,7,9] // piece codes
+```
+Hmm.
+
+Simplest readable-but-small: define each piece as a 4-bit-per-row array.
+
+Let me do this: pieces defined as arrays of [x,y] offsets for 4 cells, and rotation via rotating offsets (x,y)->
+---

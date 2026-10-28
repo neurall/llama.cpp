@@ -1,0 +1,52 @@
+run 19986 | fix_first_pass_scratch_computed | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 23.6 t/s | prompt 173.4 t/s | 680 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 13:43:27
+
+We need answer user asks: "Delete the code in this file that is never used." They provided file content. Need identify unused code in common/json-schema-to-grammar.cpp and provide cleaned code? Need infer task likely from code review: remove unused functions/variables/includes? Need analyze entire file. We only have partial file? It ends at gbnf_escape_length with blank. Maybe file truncated? Need answer likely list code to delete. Need inspect for unused code. Need be careful: They ask "Delete the code in this file that is never used." Could be from benchmark where expected output is modified file? Need provide code after deleting unused code. Need determine unused entities.
+
+Let's parse file. It includes headers. Functions:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- BuiltinRule
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- INVALID_RULE_CHARS_RE
+- GRAMMAR_LITERAL_ESCAPE_RE
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE
+- GRAMMAR_LITERAL_ESCAPES
+- MAX_PATTERN_DEPTH
+- NON_LITERAL_SET
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS
+- replacePattern
+- format_literal
+- gbnf_format_literal
+- gbnf_escape_length (incomplete)
+
+Need know which are used elsewhere in file? We only see partial. The file likely continues with functions using these. Need not delete used by rest. But user says "in this file" and provided only up to gbnf_escape_length. Maybe they expect identify unused code within shown snippet? But many are used by later code not shown. Need maybe from actual llama.cpp common/json-schema-to-grammar.cpp. Let's recall source. This is from llama.cpp. There is a file common/json-schema-to-grammar.cpp. It contains functions for converting JSON schema to GBNF grammar. We can reconstruct full file and identify unused code. The snippet is beginning. Need delete code never used in entire file. Need know actual file. Let's search memory.
+
+I know llama.cpp has common/json-schema-to-grammar.cpp. It defines:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- BuiltinRule
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- INVALID_RULE_CHARS_RE
+- GRAMMAR_LITERAL_ESCAPE_RE
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE
+- GRAMMAR_LITERAL_ESCAPES
+- MAX_PATTERN_DEPTH
+- NON_LITERAL_SET
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS
+- replacePattern
+- format_literal
+- gbnf_format_literal
+- gbnf_escape_length
+- gbnf_escape_char
+- gbnf_escape_string
+- gbnf_escape_unicode
+- gbnf_escape_unicode_char
+- gbnf_escape_unicode_string
+- gbnf
+---

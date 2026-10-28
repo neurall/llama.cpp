@@ -1,0 +1,137 @@
+run 17126 | stock-b11742-official | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 14.31 t/s | prompt 21.7 t/s | 1010 tokens | args:  | power 220+280 W | 2026-10-20 05:11:07
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+1. A canvas or grid to display the game
+2. Piece definitions (tetrominoes)
+3. Game loop (falling pieces)
+4. Collision detection
+4. Line clearing
+5. Controls (left, right, rotate, drop)
+6. Score
+
+Let me write a compact version:
+
+```html
+<canvas id=c width=200 height=400></canvas>
+<script>
+// Minimal Tetris
+</script>
+```
+
+Let me write a compact but functional version:
+
+```html
+<canvas id=c width=200 height=400></canvas>
+<script>
+let c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=20;
+let b=Array.from({length:H},()=>Array(W).fill(0));
+let p,px,py,rot,score=0;
+let shapes=[
+  [[1,1,1,1]], // I
+  [[1,1],[1,1]], // O
+  [[0,1,0],[1,1,1]], // T
+  [[1,0,0],[1,1,1]], // J
+  [[0,0,1],[1,1,1]], // L
+  [[0,1,1],[1,1,0]], // S
+  [[1,1,0],[0,1,1]]  // Z
+];
+let colors=['#0ff','#ff0','#f0f','#00f','#f80','#0f0','#f00'];
+
+function newPiece(){
+  p=Math.floor(Math.random()*7);
+  px=3;py=0;rot=0;
+}
+
+function rotate(s){
+  return s[0].map((_,i)=>s.map(r=>r[i]).reverse());
+}
+
+function getShape(){
+  let s=shapes[p];
+  for(let i=0;i<rot;i++)s=rotate(s);
+  return s;
+}
+
+function collide(s,ox,oy){
+  for(let r=0;r<s.length;r++)
+    for(let c=0;c<s[r].length;c++)
+      if(s[r][c]){
+        let nx=ox+c,ny=oy+r;
+        if(nx<0||nx>=W||ny>=H)return true;
+        if(ny>=0&&b[ny][nx])return true;
+      }
+  return false;
+}
+
+function merge(){
+  let s=getShape();
+  for(let r=0;r<s.length;r++)
+    for(let c=0;c<s[r].length;c++)
+      if(s[r][c]&&py+r>=0)b[py+r][px+c]=colors[p];
+}
+
+function clearLines(){
+  for(let r=H-1;r>=0;r--){
+    if(b[r].every(v=>v)){
+      b.splice(r,1);
+      b.unshift(Array(W).fill(0));
+      score+=100;
+      r++;
+    }
+  }
+}
+
+function draw(){
+  x.fillStyle='#000';
+  x.fillRect(0,0,W*S,H*S);
+  // board
+  for(let r=0;r<H;r++)
+    for(let c=0;c<W;c++)
+      if(b[r][c]){
+        x.fillStyle=b[r][c];
+        x.fillRect(c*S,r*S,S-1,S-1);
+      }
+  // piece
+  let s=getShape();
+  for(let r=0;r<s.length;r++)
+    for(let c=0;c<s[r].length;c++)
+      if(s[r][c]){
+        x.fillStyle=colors[p];
+        x.fillRect((px+c)*S,(py+r)*S,S-1,S-1);
+      }
+  // score
+  x.fillStyle='#fff';
+  x.font='16px monospace';
+  x.fillText(score,4,16);
+}
+
+function drop(){
+  if(!collide(getShape(),px,py+1))py++;
+  else{
+    merge();
+    clearLines();
+    newPiece();
+    if(collide(getShape(),px,py)){
+      // game over
+      b=Array.from({length:H},()=>Array(W).fill(0));
+      score=0;
+    }
+  }
+}
+
+newPiece();
+draw();
+
+setInterval(drop,500);
+
+document.onkeydown=e=>{
+  if(e.key==='ArrowLeft'&&!collide(getShape(),px-1,py))px--;
+  if(e.key==='ArrowRight'&&!collide(getShape(),px+1,py))px++;
+  if(e.key==='ArrowDown')drop();
+  if(e.key==='ArrowUp'){
+    let old=rot;
+    rot=(rot+1)%4;
+    if(collide(get
+---

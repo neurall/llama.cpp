@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+glm-30k-one,glm,2,pf30k1k,64,"--moe dense-split=0",
+qn4-30k-one,qn_iq4xs,2,pf30k1k,64,"--moe dense-split=0",

@@ -1,0 +1,60 @@
+run 18272 | stock-b11829-official | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 43.88 t/s | prompt 82.0 t/s | 965 tokens | args:  | power 220+280 W | 2026-10-23 05:46:28
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact single-file Tetris.
+
+But I don't want to ship a bare black terminal with a tiny grid — even a tiny game deserves to feel alive and crafted. I'll keep the code compact but wrap it in a nicely designed page with a distinctive display face, ambient background, living elements (score, level, next-piece preview, hold, ghost piece, keyboard legend), micro-interactions.
+
+Balance: "smallest" — they want compact code. I should honor that: keep the game logic terse, and mention the code is compact. But the page around it can be rich. I think the right read: deliver a single self-contained HTML file that's small in code but well-designed visually. I'll keep the JS terse-ish but readable, and add polish: next queue, hold, ghost, level speed, line-clear animation, score board, mobile touch buttons, ambient background reacting to level, particles on line clear.
+
+Let me design:
+
+Palette: for Tetris, the classic NES palette is iconic — the tetromino colors (cyan, blue, orange, yellow, green, purple, red) are the real subject, so those seven hues should carry the palette rather than some generic accent. Background: deep slate/graphite with a subtle grid texture and a faint scanline. Use a chunky arcade display font. Options via Google Fonts: display face — "Silkscreen" (pixel), or "Bungee", or "Archivo Black", or "Space Grotesk". A pixel font fits Tetris. Pair with a readable body face like "IBM Plex Mono" or "DM Sans". Let's do display: "Silkscreen" (pixel) for headings/numbers, body: "Space Grotesk" for readable UI text. Numbers in Silkscreen look great and arcade-y.
+
+Actually maybe display: "Bungee" is too heavy. Silkscreen + Space Grotesk is a nice pairing. Or "Press Start 2P" — very arcade but huge and hard to read. Silkscreen is good.
+
+Layout: rather than a centered title stack, I'll do a three-column arcade cabinet layout: left rail (title, stats, controls), center playfield, right rail (next queue, hold). Header as a marquee bar with the wordmark left and live stats right.
+
+Open with something characteristic of Tetris: the playfield itself + the falling piece preview. So the top of the page is the cabinet, not a hero.
+
+Let me write the game compactly.
+
+Compact Tetris core:
+
+```js
+const W=10,H=20;let g=Array.from({length:H+1},()=>Array(W).fill(0));
+```
+
+Standard tiny implementation:
+
+```js
+const W=10,H=20,S=24;
+let b=[],p,i,x,y,s=0,l=0,ln=0,ov=0,nx,hd,spd;
+```
+
+Piece definitions using the classic "s" string rotation trick (Tetris zine / 13-line tetris by Tino Zippel?). A well-known compact approach:
+
+```js
+const P = [
+ [1,1,1,1],          // I
+ [1,1,1,0],          // J ... 
+]
+```
+
+Simplest readable compact: define pieces as matrices, rotate by transpose+reverse.
+
+```js
+const SH=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,1],[0,1,0]]];
+```
+
+Wait O shouldn't rotate weirdly — 2x2 rotate is fine.
+
+Colors: index 1..7 mapping to palette.
+
+Rotation: `rot(m)=m[0].map((_,i)=>m.map(r=>r[i]).reverse())` — clockwise.
+
+Collision:
+```js
+const dr=(m,x,y)=>m.some((r,j)=>r.some((v,k)=>v&&y+j<H&&x+k>=0&&x+k<W&&(y+j<0||b[y+j][x+k])))
+```
+Hmm y+j<0 means above board — allowed unless
+---

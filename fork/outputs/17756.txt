@@ -1,0 +1,67 @@
+run 17756 | coldplan2 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 39.23 t/s | prompt 26.9 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-10-22 14:49:46
+
+The user wants the smallest HTML Tetris game. The request literally says "smallest" — so brevity is the point. I should produce a compact, self-contained HTML file with Tetris. But I want it to actually feel like a real, crafted game rather than a bare canvas: crisp playfield, next piece, score, level, line-clear flash, sound, pause, game over.
+
+Balance: keep it small but complete and playable. I'll aim for a tight single file — dense but readable — with solid visuals.
+
+Let me write compact Tetris in HTML with inline JS/CSS.
+
+Key design: distinctive display typeface (e.g., a monospace/pixel-ish font pairing), a layered background, motion, micro-interactions.
+
+Let me design:
+- Canvas for board, small canvas or divs for next piece.
+- Colors per tetromino.
+- Score/level/lines panel.
+- Ghost piece.
+- Hold? Maybe skip to keep small. Actually a hold piece is nice. Keep it modest.
+
+Let me write it compactly but functional.
+
+Approach: use a single canvas 10x20, cell size 24 → 240x480. Plus side panel with NEXT and HOLD as small canvases.
+
+Piece definitions using string rotation states or matrix rotation. Compact: define pieces as arrays of coords, rotate by (x,y)->(y,-x) then normalize.
+
+Compact SRS-ish:
+
+```
+P='0,1,2,3|0,1,10,11|1,10,11,20|1,2,10,11|1,10,11,21|1,11,20,21|1,10,11,20,21'
+```
+Hmm, better: encode each piece as list of cell offsets in a bounding box using strings.
+
+Simplest compact: define shapes as arrays of strings per rotation? That's long. Use base shape matrix and rotate mathematically. For I and O, rotation about center needs care.
+
+Standard trick: use 4x4 for I, 2x2 for O, 3x3 for others, rotate matrix. That gives proper-ish rotation without wall kicks. Good enough.
+
+Let me define:
+
+```js
+S=[ // shapes as [matrix, color]
+ [[1,1,1,1],'#4cc9f0'], // I in 4x4 row 1? 
+ ...
+]
+```
+
+Rotation: for NxN matrix, rotate: m[y][x] -> m[x][N-1-y].
+
+I in 4x4 with row index 1: rotating gives column 1 — works, oscillates between row1 and col1. Good.
+O in 2x2: rotation no change. Good.
+Others in 3x3:
+T: [[0,1,0],[1,1,0],[0,0,0]] — hmm center at (1,1). Rotating works.
+S: [[0,1,1],[1,1,0],[0,0,0]]
+Z: [[1,1,0],[0,1,1],[0,0,0]]
+J: [[1,0,0],[1,1,0],[0,0,0]]
+L: [[0,0,1],[1,1,0],[0,0,0]]
+2: [[0,1,0],[0,1,0],[0,0,0]]? No, that's not a tetromino. O is 2x2.
+
+Spawn: x = 3 for 4-wide, x=3 for 3-wide (centered-ish), y = -1 or 0 so pieces partially visible.
+
+Collision check with negative y allowed (above board).
+
+Line clear, gravity speed by level, score: 100/300/500/800 * level, soft drop +1, hard drop +2/cell.
+
+Controls: arrows, space hard drop, Z/X rotate, P pause, H hold. Touch: on-screen buttons? Add simple swipe? Keep small: add tap buttons row for mobile — maybe minimal.
+
+Visual design: dark slate background with subtle grid/scanline, board with beveled blocks, ghost outline, line-clear flash animation, level-up pulse, score counter animation. Side panel with big display numerals.
+
+Typography: display
+---

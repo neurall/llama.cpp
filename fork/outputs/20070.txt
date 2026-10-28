@@ -1,0 +1,32 @@
+run 20070 | fix_draft_keeps_its_own_vram_need | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 21.05 t/s | prompt 154.5 t/s | 680 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 19:12:46
+
+We need answer user asks: "Delete the code in this file that is never used." They provided file content. Need identify unused code and provide modified file? Need infer task: likely wants remove unused code from common/json-schema-to-grammar.cpp. Need analyze code for unused functions/variables/constants. Need produce cleaned code. Need be careful: This is from llama.cpp? Need identify unused code in snippet. We need delete code never used. Need inspect.
+
+We have file content truncated at end: static size_t gbnf_escape_length(const std::string & pattern, size_t pos) { ... blank. The snippet ends mid-function. User asks delete code never used. Maybe they expect us to remove unused code from this file. Need determine which parts are unused. Need maybe from actual llama.cpp file. Let's recall common/json-schema-to-grammar.cpp in llama.cpp. It has functions build_repetition, build_min_max_int, PRIMITIVE_RULES, STRING_FORMAT_RULES, is_reserved_name, regexes, replacePattern, format_literal, gbnf_format_literal, gbnf_escape_length, etc. Need identify unused code. The snippet includes many functions. Need know full file? It ends at gbnf_escape_length. Maybe there are more functions after. But user only provided this portion. They ask delete code in this file that is never used. Could be a code cleanup task: remove unused functions/constants. Need identify from provided code.
+
+Let's parse. The file includes:
+- build_repetition: used? likely in schema conversion later (not shown). In snippet, not used within snippet. But may be used later in file. Since snippet truncated, cannot know. But if full file, build_repetition used by json_schema_to_grammar. Need not delete if used later.
+- build_min_max_int: used later.
+- SPACE_RULE: used in PRIMITIVE_RULES object/array.
+- BuiltinRule struct: used.
+- PRIMITIVE_RULES: used.
+- STRING_FORMAT_RULES: used.
+- is_reserved_name: used later.
+- INVALID_RULE_CHARS_RE: used later.
+- GRAMMAR_LITERAL_ESCAPE_RE: used in format_literal.
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE: maybe used later in gbnf_escape? Need check.
+- GRAMMAR_LITERAL_ESCAPES: used in format_literal.
+- MAX_PATTERN_DEPTH: used later.
+- NON_LITERAL_SET: used later.
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS: used later.
+- replacePattern: used in format_literal and maybe later.
+- format_literal: used by gbnf_format_literal and later.
+- gbnf_format_literal: exported, used elsewhere.
+- gbnf_escape_length: maybe used later.
+
+Need know actual file. Let's search memory. llama.cpp common/json-schema-to-grammar.cpp. I can reconstruct. It has functions:
+static std::string build_repetition(...)
+static void build_min_max_int(...)
+const std::string SPACE_RULE = ...
+struct Builtin
+---

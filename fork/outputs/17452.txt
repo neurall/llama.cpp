@@ -1,0 +1,5 @@
+run 17452 | autopin | edit4c | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 356.51 t/s | prompt 10407.1 t/s | 25 tokens | args: -np 1 --moe-expert-cache 90 -lm pin | power 220+280 W | 2026-10-21 13:28:15
+
+
+---
+To count the lines in the given C++ file, you can use the `std::ifstream` to read the file

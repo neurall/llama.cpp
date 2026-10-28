@@ -1,0 +1,68 @@
+run 19455 | rc5 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.66 t/s | prompt 39.0 t/s | 965 tokens | args: -np 1 -lm pin | power 220+280 W | 2026-10-25 10:13:57
+
+The user wants the smallest HTML Tetris game. Let me think about what "smallest" means — they want a compact, minimal HTML file that plays Tetris. But I don't want to just dump a tiny golfed blob with no care. The best response: a genuinely small single-file Tetris that actually works well, plus maybe a brief note on controls.
+
+Let me write compact but working Tetris.
+
+Let me write it carefully.
+
+```html
+<!DOCTYPE html><meta charset=utf-8><title>TETRIS</title>
+<style>
+body{margin:0;background:#0b0b12;color:#e8e8f0;font:14px system-ui;display:grid;place-items:center;height:100vh}
+canvas{image-rendering:pixelated;background:#000;border:2px solid #444}
+</style>
+<canvas id=c width=126 height=252></canvas>
+<script>
+// minimal tetris
+</script>
+```
+
+Let me write the game logic compactly but correctly.
+
+Standard approach:
+
+```js
+const W=10,H=20,S=12,c=document.getElementById('c'),x=c.getContext('2d');
+let g=Array(W*H).fill(0),p,px,py,pt,score=0,over=0,t=0,drop=0;
+const P='⚞⚟⚠⚏'... 
+```
+
+Better: define pieces as rotation arrays. A classic compact trick: use the "S" string encoding.
+
+Compact piece definitions using bit tricks:
+
+```js
+const T=[0,0x66,0, 0x0e4,0x22c,0, 0x2e2,0x44,0, 0x8f,0xc4,0x40, 0x44e,0x8c,0, 0x268,0x2e,0, 0x62c,0xc8]
+```
+
+Hmm, that's the 7-bit-per-3-row encoding. Let me use a simpler approach: define each piece as a set of 4 cells relative coords, and rotate with (x,y)->(y,-x).
+
+```js
+const P=[[0,1,2,3],[0,1,2,3].map(i=>i+4)... 
+```
+
+Simplest readable-compact: define pieces as 4x4 bitmasks per rotation? Let's do:
+
+```js
+const S="0,1,2,3|4,5,6,7|..." 
+```
+
+Alternative classic minimal: use the tetromino base shapes as coordinate arrays and rotate around pivot.
+
+```js
+const B=[[1,1,1,1],[1,1,1,1],[1,1,1],[1,1,1,1],...]
+```
+
+Let me just do the well-known compact approach: pieces defined by 4 (x,y) offsets in a 4x4 grid, rotation via matrix rotation.
+
+```js
+const P=[[0,1,2,3],[0,4,8,12],[1,5,9,13],[0,1,4,5],[1,2,5,6],[0,1,2,6],[2,4,5,6],[0,1,2,4],[2,4,5,6]...]
+```
+
+Hmm getting messy. Let me use the cleanest: each piece is a 4-bit-per-row, 4-row bitmask integer, and rotation is computed by rotating a 4x4 bit matrix. Actually for I and O you need 4x4; others fit in 3x3. Using 4x4 uniformly with rotation (x,y)->(3-y,x) works but shifts pieces. Using 3x3 for all but I and O... 
+
+Simplest robust: store each piece's 4 rotations explicitly as strings. That's 7 pieces × 4 rotations. But many rotations repeat.
+
+Let me just do: pieces as arrays of [x,y] cells, rotate by (x,y) => (y, -x) then normalize. That's mathematically correct for all pieces and gives 2 rotations for O and I properly if we use proper pivots. For I with cells (0,0),(1,0),(2,0),(3,0):
+---

@@ -1,0 +1,4 @@
+run 19573 | stock-b11887-official | pf30k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 12.54 t/s | prompt 42.4 t/s | 64 tokens | args: -np 1 | power 220+280 W | 2026-10-26 10:06:21
+
+The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. The second file appears to be cut off mid-way (it ends abruptly in the middle of a `string_format` call for `--dry-sequence-breaker`). Let me do a
+---

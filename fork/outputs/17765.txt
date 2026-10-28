@@ -1,0 +1,44 @@
+run 17765 | coldplan2 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 14.25 t/s | prompt 16.2 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-10-22 15:14:28
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: make it genuinely tiny, but still playable and not broken. The user's priority is explicit: smallest. So I should optimize for byte count while keeping it a real, working Tetris.
+
+Let me think about what "smallest" means here. Single HTML file, minimal bytes. I should aim for something like under 1000 bytes if possible, or a few hundred bytes. Classic minimal Tetris implementations exist around 200-500 bytes in JS golf competitions. Let me try to write a genuinely compact one.
+
+Key features needed for a real Tetris:
+- 10x20 board
+- 7 tetrominoes (I, O, T, S, Z, J, L) with rotation
+- Falling with gravity timer
+- Left/right movement, rotation, maybe soft drop
+- Line clear detection
+- Game over detection
+- Score (optional but nice)
+
+To keep it small, I can:
+- Use canvas for rendering (small API calls)
+- Encode pieces as compact data
+- Use keyboard events
+- Minimal styling
+
+Let me design the data structures.
+
+Tetrominoes can be encoded as bit patterns in a 4x4 or via rotation function. A classic trick: define each piece as a set of coordinates in one rotation state, and rotate mathematically: (x,y) -> (y, max-x) or similar. Or use strings.
+
+A very compact approach: pieces as arrays of 4 cells [x,y] pairs, rotation via transform. For rotation around a pivot: for most pieces rotating (x,y) -> (y, 3-x) in a 4x4 box works for some, but O and I need care. Actually a common golf trick: represent each rotation state of each piece as a 16-bit number (4x4 grid bitmask). 7 pieces × 4 rotations = 28 numbers, each 16 bits. Encode as a string or array.
+
+Alternative super-compact: use a single string where each piece's 4 rotations are encoded. Let me think about the bitmask approach.
+
+4x4 grid, bit index = y*4+x. For each piece rotation, a 16-bit mask.
+
+I piece horizontal: row 1 (y=1): x=0..3 → bits 4,5,6,7 → 0b0000111100000000 = 0x0F00 = 3840.
+I vertical: x=2, y=0..3 → bits 2,6,10,14 → 0x2222 = 8738. Actually let me compute: bit at (x=2,y=0) = 2; (2,1)=6; (2,2)=10; (2,3)=14 → 4+64+256+1024... wait bit values: 1<<2=4, 1<<6=64, 1<<10=1024, 1<<14=16384 → sum = 17476 = 0x4444. Hmm, 0x4444 = 17476. Yes.
+
+O piece: 2x2 block. In 4x4: cells (1,1),(2,1),(1,2),(2,2) → bits 5,6,9,10 → 32+64+512+1024 = 1632 = 0x0660. All rotations same.
+
+T piece: pointing up: cells (1,0),(0,1),(1,1),(2,1)? Let me define T with the nub up: row0: x=1; row1: x=0,1,2 → bits 4, 8+16+32... wait bit (1,0)=1<<4=16; (0,1)=1<<8=256; (1,1)=512; (2,1)=1024 → 16+256+512+1024 = 1808 = 0x0710? 0x0710 = 1808. Yes.
+
+Hmm, this is getting complex. There's a well-known ultra-compact Tetris in ~few hundred bytes. Let me just write my own carefully.
+
+Actually, a neat trick used in many golfed Tetris: represent pieces as strings of 4 rotations each, e.g. "I: 0F00/2222/0F00/2222" but that's verbose. Better: use a single string of hex digits for all masks, parse with parseInt.
+
+28 masks × 4 hex digits = 
+---

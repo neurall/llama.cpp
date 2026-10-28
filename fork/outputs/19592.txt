@@ -1,0 +1,85 @@
+run 19592 | deep-seek | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 56.05 t/s | prompt 39.6 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-26 10:51:27
+
+The user wants the smallest HTML Tetris game. Let me make it compact but actually good. "Smallest" — they want minimal code. But I should still make it feel crafted. Let me balance: a genuinely tiny Tetris that works, but presented nicely with a bit of polish.
+
+Let me write compact Tetris in HTML. Keep it small but playable and looking sharp.
+
+Let me write it:
+
+```html
+<!DOCTYPE html><meta charset=utf-8><title>TETRIS</title>
+<style>
+body{margin:0;background:#0b0b12;color:#eee;font:14px/1.4 system-ui;display:grid;place-items:center;height:100vh;gap:12px}
+canvas{background:#11121c;image-rendering:pixelated;border:2px solid #2a2c3e;box-shadow:0 0 40px #0008}
+#s{font:700 28px ui-monospace,monospace}
+kbd{...}
+</style>
+<canvas id=c width=180 height=360></canvas>
+<div id=s>0</div>
+<script>
+// tetris
+</script>
+```
+
+Compact Tetris implementation:
+
+```js
+const c=c0.getContext`2d`,S=18,W=10,H=20
+```
+
+Let me write a tight version:
+
+```js
+C=c.getContext`2d`,B=18,M=10,N=20
+let g=[],p,x,y,o,s=0,l=1,t=0,d=0,r=0
+const P='⚡' // no
+```
+
+Standard approach: pieces as rotation arrays via string or numbers.
+
+Classic tiny trick:
+```js
+const K=[[0,1,1,2],[0,2,1,1,1],[0,1,1,2,2],[0,1,1,2,1],[0,1,2,1],[0,1,1,1,2],[0,2,1,1,2]]
+```
+Hmm, better to use the well-known minimal representation:
+
+```js
+// each piece: 4 cells as [x,y] offsets in 4 rotations computed by rotation math
+```
+
+Simplest: define pieces as 4x4 bit patterns and rotate.
+
+Let me use the well-known one-liner approach:
+
+```js
+P=[768,0x66,0x3c,0x1e,0xe0,0x18,0x70,0x36,0xcc,0x78,0x1c,0x6c,0xc6,0x38,0xe4,0x2c]
+```
+That's the 16-bit tetromino table. Actually there's a famous trick:
+
+```js
+const SHAPES = [
+  [0,0,0,0, 1,1,1,1, 0,0,0,0, 0,0,0,0], // I
+  ...
+]
+```
+
+Let me just do a clean readable-but-small version using 4x4 bitmask per piece and rotate function on 4x4 (or NxN).
+
+Famous minimal: pieces encoded as numbers where each piece is a 4x4 grid of bits, rotate by bit manipulation.
+
+I'll do:
+```js
+const T=[0xF00,0x8888,0x0, ...]
+```
+Hmm, let me use the classic:
+
+```js
+// 4x4 bitmaps
+const P=[0x0F00,0x2222,0x0660,0x0246,0x0440,0x06C0,0x0C60] // wait need proper
+```
+
+Let me define each tetromino as a 16-bit number, row-major, 4 bits per row:
+- I: rows 1111,0,0,0 → 0xF000
+- O: 0000,0110,0110,0 → 0x0660
+- T: 0000,1110,0100,0 → 0x0E4
+---

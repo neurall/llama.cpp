@@ -1,0 +1,51 @@
+run 18208 | relfl6 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.44 t/s | prompt 565.8 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-23 04:22:18
+
+Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params) {` with no body. So I should note that the file appears incomplete/truncated.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Issues:
+- If `min_items > 0` and `max_items == 0`, returns "" — but that's contradictory (min > max). Actually if max_items == 0 and min_items > 0, that's an invalid schema (min > max). The function returns "" which would silently produce an empty rule. Hmm, actually wait — if max_items == 0, then min_items should be 0 too for a valid schema. If min_items > 0 and max_items == 0, the schema is invalid, and returning "" silently accepts it. Minor issue.
+- Negative min_items: if min_items is negative (e.g., -1), `item_rule + "{" + std::to_string(-1) + ...}` would produce `{-1,...}` which is invalid GBNF. Callers seem to pass arr.min_items directly. Is min_items validated? In KIND_ARRAY: `arr.min_items` used directly. If schema has negative min_items... probably schema parsing guarantees non-negative. Not sure.
+- With separator: `min_items == 0 ? 0 : min_items - 1` — recursion. For large max_items with separator, this recursion is O(max_items) deep? No wait — with separator, the recursion is on the repetition of "(sep item)" with min-1, max-1. If max_items is large (e.g., INT_MAX), has_max stays true and max_items - 1 each time... wait no. Let me re-check: `has_max ? max_items - 1 : max_items`. If max_items == INT_MAX, has_max is false, so it passes max_items unchanged (INT_MAX), so has_max remains false in recursion. OK so unbounded stays unbounded. But if max_items is, say, 1000000, the recursion would be 1,000,000 deep — stack overflow! Actually wait, the recursion: build_repetition(sep_item_rule, min-1, max-1). Each level decrements max by 1. So for max_items = N, recursion depth is N. For large N (like 1000+), this could stack overflow. Hmm, but realistically max_items in schemas is small. Still, a pathological schema with max_items = 100000 would crash. Worth noting as a potential DoS with adversarial schemas. Actually wait, let me re-read. The recursion happens once per call: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. So yes, each recursive call decrements max_items by 1. Depth = max_items. For max_items = 100000, that's 100000 stack frames, each with string concatenation... stack overflow likely around ~10k-100k frames depending on frame size. This is a real concern for untrusted schemas. Also the generated grammar would be enormous (N repetitions
+---

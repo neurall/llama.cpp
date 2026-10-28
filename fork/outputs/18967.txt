@@ -1,0 +1,65 @@
+run 18967 | spass19 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 56.26 t/s | prompt 40.1 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-24 15:27:38
+
+The user wants the smallest HTML Tetris game. Let me think about what "smallest" means — minimal code, single file. But I don't want to just dump a cramped one-liner that's unreadable. The request is "smallest html tetris game" — so the deliverable should be genuinely compact.
+
+Let me think about how small I can make a working Tetris while keeping it actually playable.
+
+Core requirements: 10x20 board, 7 tetrominoes, rotation, movement, soft/hard drop, line clear, scoring, game over, restart.
+
+Let me write it compactly.
+
+```html
+<canvas id=c width=300 height=600></canvas>
+<script>
+// game code
+</script>
+```
+
+Let me write a compact but readable-ish version.
+
+```js
+let W=10,H=20,S=30,x=c.getContext`2d`,g=Array(W*H).fill(0),p,px,py,pt,sc=0,ov=0;
+let B="⚀⚑"... 
+```
+
+Better approach: define shapes as arrays of rotation states via a compact string.
+
+Classic compact approach: use a number per tetromino encoding the 4x4 rotation bitfield.
+
+A well-known trick: shapes defined as `[0xf00,0x44c0,...]` hmm.
+
+Let me use the standard: each piece is a 4x4 bit mask, rotate by bit manipulation.
+
+Pieces (4x4 grid, row-major 16 bits):
+- I: rows: 1111 at row1 → 0x0F00? Let's define bit index = r*4+c, MSB first: value = sum(1<<(15-(r*4+c))).
+  I at row 1: c0..3 → bits 11,10,9,8 → 0x0F00.
+- O: rows1,2 cols1,2 → bits 10,9,6,5 → 0x0660.
+- T: row1 c0,c1,c2 ; row2 c1 → bits 11,10,9,6 → 0x0E40.
+- S: row1 c1,c2; row2 c0,c1 → bits 10,9,6,5... wait row2 c0,c1 → bits 7,6. So S: bits 10,9,7,6 → 0x0CC0.
+- Z: row1 c0,c1; row2 c1,c2 → bits 11,10,6,5 → 0x0A60.
+- J: row1 c0,c1,c2; row2 c2 → bits 11,10,9,7 → 0x0E80.
+- L: row1 c0,c1,c2; row2 c0 → bits 11,10,9,4 → 0x0E10.
+
+Rotation of 4x4 bitfield: transpose then reverse rows (clockwise). Bit manipulation for 4x4 is doable but messy. Simpler: store coordinates.
+
+Alternative compact: store each piece as 4 rotation states of 4 [x,y] pairs... that's long.
+
+Simplest compact rotation: store shape as a string of 16 chars ('0'/'1' or spaces), rotate by index mapping.
+
+Actually a neat trick: represent piece as array of 4 numbers (each a 4-bit row) for a NxN matrix where N=4 for I and O, N=3 for others. Rotation of NxN: `m.map((row,i)=> ... )`.
+
+Let me use: pieces as arrays of rows (each row a bitmask of N bits), N = rows count. Rotate CW: new[r][c] = old[N-1-c][r].
+
+```js
+P=[[0xf0,0,0,0],[0xc0,0x40,0,0],...]  // messy
+```
+
+Let me just do:
+```js
+const P=[9911,3156,...] // nah
+```
+
+Cleanest compact: 
+```js
+S=[[0,15,0,0],[0,12,6,0],[0,6,12,
+---

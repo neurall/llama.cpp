@@ -1,0 +1,110 @@
+run 19867 | fix_dsv4_dummy_block_row_inside_zone | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 25.87 t/s | prompt 9.8 t/s | 1013 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 200+200 W | 2026-10-27 00:21:41
+
+
+---
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tetris</title>
+<style>
+  body{margin:0;background:#111;display:flex;justify-content:center;align-items:center;height:100vh;font-family:monospace}
+  canvas{background:#000;border:2px solid #333}
+  #score{color:#fff;position:absolute;top:10px;left:10px;font-size:14px}
+</style>
+</head>
+<body>
+<div id="score">0</div>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let board=Array.from({length:H},()=>Array(W).fill(0));
+let score=0;
+const shapes=[
+ [[1,1,1,1]],
+ [[1,1],[1,1]],
+ [[0,1,0],[1,1,1]],
+ [[1,0,0],[1,1,1]],
+ [[0,0,1],[1,1,1]],
+ [[1,1,0],[0,1,1]],
+ [[0,1,1],[1,1,0]]
+];
+const colors=['#00f','#0f0','#f00','#ff0','#f0f','#0ff','#f80'];
+let cur=null,px=0,py=0,rot=0,ci=0;
+
+function spawn(){
+  ci=Math.floor(Math.random()*shapes.length);
+  cur=shapes[ci].map(r=>r.slice());
+  px=Math.floor((W-cur[0].length)/2);
+  py=0;
+  rot=0;
+  if(collide()){board=Array.from({length:H},()=>Array(W).fill(0));score=0;}
+}
+function rotate(){
+  const n=cur.length,m=cur[0].length;
+  const r=Array.from({length:m},()=>Array(n).fill(0));
+  for(let i=0;i<n;i++)for(let j=0;j<m;j++)r[j][n-1-i]=cur[i][j];
+  return r;
+}
+function collide(){
+  for(let i=0;i<cur.length;i++)for(let j=0;j<cur[i].length;j++){
+    if(cur[i][j]){
+      const y=py+i,xx=px+j;
+      if(xx<0||xx>=W||y>=H||board[y][xx])return true;
+    }
+  }
+  return false;
+}
+function lock(){
+  for(let i=0;i<cur.length;i++)for(let j=0;j<cur[i].length;j++)
+    if(cur[i][j])board[py+i][px+j]=ci+1;
+  let cleared=0;
+  for(let y=H-1;y>=0;y--){
+    if(board[y].every(v=>v)){
+      board.splice(y,1);
+      board.unshift(Array(W).fill(0));
+      cleared++;
+    }
+  }
+  score+=cleared*100;
+  document.getElementById('score').textContent=score;
+  spawn();
+}
+function draw(){
+  x.fillStyle='#000';x.fillRect(0,0,c.width,c.height);
+  for(let y=0;y<H;y++)for(let xx=0;xx<W;xx++){
+    if(board[y][xx]){
+      x.fillStyle=colors[board[y][xx]-1];
+      x.fillRect(xx*S,y*S,S-1,S-1);
+    }
+  }
+  if(cur){
+    x.fillStyle=colors[ci];
+    for(let i=0;i<cur.length;i++)for(let j=0;j<cur[i].length;j++)
+      if(cur[i][j])x.fillRect((px+j)*S,(py+i)*S,S-1,S-1);
+  }
+}
+function tick(){
+  py++;
+  if(collide()){py--;lock();}
+  draw();
+}
+spawn();
+draw();
+setInterval(tick,400);
+document.addEventListener('keydown',e=>{
+  if(!cur)return;
+  if(e.key==='ArrowLeft'){px--;if(collide())px++;}
+  if(e.key==='ArrowRight'){px++;if(collide())px--;}
+  if(e.key==='ArrowDown'){py++;if(collide())py--;}
+  if(e.key==='ArrowUp'){
+    const r=rotate();
+    const old=cur;cur=r;
+    if(collide())cur=old;
+  }
+  draw();
+});
+</script>
+</body

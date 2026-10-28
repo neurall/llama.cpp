@@ -1,0 +1,60 @@
+run 18419 | relfx1 | tetrisc | Qwen3.8-27B-MTP-Q5_K_M.gguf | decode 39.06 t/s | prompt 33.6 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-23 12:45:49
+
+The user is asking for the smallest possible HTML Tetris game. "Smallest" is the key constraint — they want a minimal, compact Tetris in a single HTML file. But I still want it to be a genuinely playable, polished Tetris: 7 tetrominoes, rotation, line clearing, score, next piece preview, game over, keyboard controls, and ideally a bit of visual polish (colors, subtle animations) without bloating the code.
+
+"Smallest" — I should aim for a truly compact single file. But it should still be a real Tetris: 10x20 grid, 7 pieces, SRS-like rotation (simple rotation is fine), gravity, line clearing, score, level speed-up, next piece, game over, restart.
+
+Let me write a tight but complete implementation. I can use canvas for rendering. Keep the code compact but readable enough.
+
+Design considerations: I want it to feel alive — a subtle background, a glowing score, a flash on line clear, a drop animation. But "smallest" means I should balance. I'll add a few cheap touches: a dark background with a subtle radial glow, colored pieces with a slight inner bevel, a flash on line clear, a pulsing game over overlay. Keep the CSS minimal.
+
+Let me write the code:
+
+```html
+<!doctype html>
+<html><head><meta charset=utf-8><title>Tetris</title>
+<style>
+body{margin:0;height:100vh;display:grid;place-items:center;background:#0b0e1a radial-gradient(circle at 50% 30%,#1a2140,#0b0e1a);font-family:monospace;color:#cfd8ff}
+...
+</style>
+```
+
+Game logic:
+
+- Board 10x20, array of 0 or color index.
+- Pieces defined as rotation states or as matrices rotated by transposing.
+- Use a matrix per piece, rotate by transposing + reversing.
+
+Pieces:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+
+Colors: I cyan, O yellow, T purple, S green, Z red, J blue, L orange.
+
+Game loop via setInterval or requestAnimationFrame with a drop timer. Use a tick counter.
+
+Controls: ArrowLeft/Right to move, ArrowDown to soft drop, ArrowUp or X to rotate, Space for hard drop, P to pause, R to restart.
+
+Score: 100/300/500/800 × level for 1/2/3/4 lines. Level up every 10 lines. Speed = max(100, 800 - level*70) ms.
+
+Next piece preview: small canvas.
+
+Game over: overlay text, press R or Enter.
+
+Line clear flash: track a clearing state — simpler: just clear immediately and add a quick CSS flash? To keep it small, I can do a short white flash on the canvas: set a `flash` timer and draw a white overlay for a few frames. Cheap.
+
+Let me write compact JS:
+
+```js
+const C=document.getElementById('c'),X=C.getContext('2d'),W=10,H=20,S=20;
+C.width=W*S;C.height=H*S;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]]];
+const COL=['#0ff','#ff0','#c0f','#0f8','#f44','#48f','#fa0'];
+let B,pc,x,y,nx,sc,ln,lv,drop,over,flash;
+function reset(){B=Array.from({length:H},()=>Array(W).fill
+---

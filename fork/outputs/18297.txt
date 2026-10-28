@@ -1,0 +1,60 @@
+run 18297 | splitfix | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 11.44 t/s | prompt 276.4 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 10:08:05
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## json-schema-to-grammar.cpp
+
+### 1. `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Issue: If `max_items == 0` but `min_items > 0`, this returns an empty string, which would create an invalid grammar (e.g., `"[" space  space "]"` — actually with empty string it would produce `"[" space  space "]"` with double space). Actually wait, let me check how it's used. In KIND_ARRAY:
+
+```cpp
+return _add_rule(rule_name, "\"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\"");
+```
+
+If `max_items == 0` and `min_items > 0`, the schema is contradictory (min > max), and the generated grammar would be `"[" space  space "]"` which matches an empty array — silently accepting something that shouldn't match. This is a minor edge case. Also the empty string would leave double spaces in the grammar. Minor.
+
+Also, `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, we return "" — fine.
+
+Another subtle issue: when `separator_rule` is non-empty and `min_items == 0 && max_items == 1`, the code returns `item_rule + "?"` — correct.
+
+Wait, there's a potential bug: in the separator case:
+
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+
+If `max_items == 1` and `min_items == 1`, then inner call gets `min_items = 0, max_items = 0`, which returns "" — so result is `item_rule + " " + ""` = `item_rule ` with trailing space. Hmm, that produces `item_rule ` followed by... wait let me re-check. `build_repetition(sep_rule, 0, 0)` returns "" because `max_items == 0`. So result = `item_rule + " " + ""` = `"item_rule "`. Trailing space in grammar. GBNF parsers might tolerate extra spaces? Actually in GBNF, spaces in rule definitions are generally ignored/allowed as whitespace? In llama.cpp's grammar parser, whitespace between elements is allowed. So trailing space is fine syntactically. But it's sloppy. Actually wait — is it? Let me think about `min_items == 1, max_items == 1` with separator: expected output should be just `item_rule`. The code produces `item_rule ` (with trailing space). That's cosmetically wrong but functionally OK if the parser ignores whitespace. Hmm, but actually in llama.cpp grammar parser, spaces are skipped outside of literals, so it's fine. Minor cosmetic issue.
+
+Actually wait, there's a deeper issue: when `min_items == 0` and `max_items == 1` with a separator, the code returns `item_rule + "?"` before the separator handling — correct.
+
+What about `min_items == 0, max_items == 2` with separator? Inner: `build_repetition("(sep item)", 0, 1)` → returns `"(sep item)" + "?"`. Result: `item (sep item)?`. Correct.
+
+`min_items == 1, max_items == 2`: inner gets `(0, 1)` → `(sep item)?`. Result: `item (sep item)?`. Correct.
+
+OK.
+
+### 2. `build_min_max_int`
+
+This is complex recursive regex-building for integer ranges. Let me look for bugs.
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+```
+
+- `has_min`/`has_max` sentinel-based detection: uses `std::numeric_limits<int64_t>::min()/max()` as "unset" markers. This means you can't express a schema that actually requires exactly INT64_MIN or INT64_MAX. Edge case, probably acceptable.
+
+- In the `has_min && has_max` branch with both negative: `out << "\"-\" (";
+---

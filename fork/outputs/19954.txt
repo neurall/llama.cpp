@@ -1,0 +1,108 @@
+run 19954 | fix_cuda_argmax_returns_zero_for_nonfinite_row | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 28.32 t/s | prompt 12.1 t/s | 1013 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 200+200 W | 2026-10-27 03:35:44
+
+
+---
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tetris</title>
+<style>
+  body{margin:0;background:#111;display:flex;justify-content:center;align-items:center;height:100vh;font-family:monospace}
+  canvas{background:#000;border:2px solid #333}
+</style>
+</head>
+<body>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+const shapes=[
+ [[1,1,1,1]],
+ [[1,1],[1,1]],
+ [[0,1,0],[1,1,1]],
+ [[1,0,0],[1,1,1]],
+ [[0,0,1],[1,1,1]],
+ [[1,1,0],[0,1,1]],
+ [[0,1,1],[1,1,0]]
+];
+const colors=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+let board=Array.from({length:H},()=>Array(W).fill(0));
+let piece,px,py,rot,color,score=0,over=false;
+
+function spawn(){
+  const i=Math.floor(Math.random()*shapes.length);
+  piece=shapes[i];rot=0;color=colors[i];
+  px=Math.floor((W-piece[0].length)/2);py=0;
+  if(collide(px,py,rot))over=true;
+}
+function cells(p,r){
+  const s=p.length,out=[];
+  for(let i=0;i<s;i++)for(let j=0;j<s;j++){
+    let a,b;
+    if(r===0){a=i;b=j}
+    else if(r===1){a=j;b=s-1-i}
+    else if(r===2){a=s-1-i;b=s-1-j}
+    else{a=s-1-j;b=i}
+    if(p[a][b])out.push([i,j]);
+  }
+  return out;
+}
+function collide(x,y,r){
+  for(const [i,j] of cells(piece,r)){
+    const nx=x+j,ny=y+i;
+    if(nx<0||nx>=W||ny>=H||board[ny][nx])return true;
+  }
+  return false;
+}
+function lock(){
+  for(const [i,j] of cells(piece,rot))board[py+i][px+j]=color;
+  let cleared=0;
+  for(let y=H-1;y>=0;y--){
+    if(board[y].every(v=>v)){
+      board.splice(y,1);board.unshift(Array(W).fill(0));cleared++;y++;
+    }
+  }
+  score+=cleared*100;
+  spawn();
+}
+function draw(){
+  x.fillStyle='#000';x.fillRect(0,0,c.width,c.height);
+  for(let y=0;y<H;y++)for(let xx=0;xx<W;xx++){
+    if(board[y][xx]){
+      x.fillStyle=board[y][xx];
+      x.fillRect(xx*S,y*S,S-1,S-1);
+    }
+  }
+  if(!over){
+    for(const [i,j] of cells(piece,rot)){
+      x.fillStyle=color;
+      x.fillRect((px+j)*S,(py+i)*S,S-1,S-1);
+    }
+  }
+  x.fillStyle='#fff';x.font='16px monospace';
+  x.fillText('Score: '+score,10,25);
+  if(over){x.fillStyle='#f00';x.font='24px monospace';x.fillText('GAME OVER',60,300);}
+}
+function tick(){
+  if(over)return;
+  if(!collide(px,py+1,rot))py++;
+  else lock();
+  draw();
+}
+document.addEventListener('keydown',e=>{
+  if(over)return;
+  if(e.key==='ArrowLeft'&&!collide(px-1,py,rot))px--;
+  else if(e.key==='ArrowRight'&&!collide(px+1,py,rot))px++;
+  else if(e.key==='ArrowDown'&&!collide(px,py+1,rot))py++;
+  else if(e.key==='ArrowUp'){
+    const nr=(rot+1)%4;
+    if(!collide(px,py,nr))rot=nr;
+  }
+  draw();
+});
+spawn();
+draw();
+setInterval(tick,500);
+</script

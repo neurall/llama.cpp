@@ -1,0 +1,7 @@
+run 17560 | ubfit | pf12k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 388.61 t/s | prompt 21451.9 t/s | 128 tokens | args: -np 1 | power 280+280 W | 2026-10-21 18:00:17
+
+The provided file `common/json-schema-to-grammar.cpp` contains several code snippets and functions related to JSON schema to grammar conversion, including static strings, helper functions, and a main logic block for converting JSON schemas into grammar rules. Here's a breakdown of the key components:
+
+1. **Static Strings**:
+   - `build_repetition`: Constructs a repetition rule for JSON schema items, taking min_items, max_items, separator_rule, and item_rule as parameters.
+   - `json_to_grammar`: Converts a JSON schema string into

@@ -1,0 +1,48 @@
+run 17672 | tokms31 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 24.24 t/s | prompt 759.0 t/s | 1024 tokens | args: -np 1 | power 200+200 W | 2026-10-22 04:01:37
+
+The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1, "")` 
+  - For `min_items=0, max_items=5`: inner is `build_repetition("(sep item)", 0, 4, "")` which gives `(sep item){0,4}` or `(sep item)?` if max is 1.
+  - Then result = `item (sep item){0,4}` and since min_items==0, wraps: `(item (sep item){0,4})?`
+  - This seems correct for 0-5 items with separator.
+
+- When `separator_rule` is non-empty and `min_items > 0`:
+  - `item_rule + " " + build_repetition("(" + sep + " " + item + ")", min_items - 1, max_items - 1, "")`
+  - For `min_items=2, max_items=5`: `item (sep item){1,4}` - correct, 2 items minimum.
+
+- Edge case: `min_items=0, max_items=0` returns "" - correct.
+- Edge case: `min_items=1, max_items=1` with separator: `item (sep item){0,0}` = `item` - correct.
+
+### build_min_max_int function
+- Complex function. Let me check some edge cases.
+- When both min and max are negative: negates both and recurses. Seems correct.
+- When min is negative and max is positive: handles negative part then continues with 0 to max. Seems correct.
+- The `uniform_range` lambda is complex but appears to handle digit-by-digit range matching.
+
+- Potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is empty, but since `min_value > 9` in that branch, `min_s` has at least 2 characters, so `min_s.substr(1)` is non-empty.
+
+- The `decimals_left` parameter limits recursion depth for unbounded cases. Default is 16, which limits to 16 digits. This seems reasonable.
+
+- Potential issue: In the `has_min` branch when `min_value < 0`, it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. This means it's building a rule for `[-INT64_MIN, -min_value]` which is `[INT64_MIN, -min_value]`... wait, that's wrong. Let me re-read.
+
+Actually, when `min_value < 0` and there's no max:
+```
+out << "\"-\" (";
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+out << ") | [0] | [1-9] ";
+more_digits(0, decimals_left - 1);
+```
+
+Wait, `build_min_max_int(INT64_MIN, -min_value, ...)` - this is building a rule for numbers in range `[INT64_MIN, -min_value]`. But we want negative numbers in range `[min_value, -1]`, which means their absolute values are in range `[1, -min_value]`. So we should be building `build_min_max_int(1, -min_value, ...)` or `build_min_max_int(0, -min_value, ...)`.
+
+Hmm, but `INT64_MIN` is negative, so `has_min` would be true and `has_max` would be true (since `-min_value` is positive). Then it would go into the `has_min && has_max` branch. Since `min_value < 0 && max_value > 0` (INT64_MIN < 0, -min_value > 0), it would handle the negative part and then the non-negative part.
+
+Wait, actually `INT64_MIN` is `std::numeric_limits<int64_t>::min()` which is negative. And `-min_value` is positive (since `min_value < 0`). So in the recursive call, `min_value = INT64_MIN < 0` and `max_value = -min_value > 0`. This would go
+---

@@ -1,0 +1,56 @@
+run 18111 | tokms31 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.6 t/s | prompt 999.0 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-23 01:47:35
+
+The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, max-1, "")` 
+  - For the inner call with min=0, it would produce `(...){0,...}` or `(...)*` etc.
+  - Then wrapping in `(...)?` makes the whole thing optional.
+  - This seems correct for arrays like `[item (, item)*]` when min=0.
+
+- When `max_items == 0`, returns empty string. But what if `min_items > 0` and `max_items == 0`? That's an invalid state (min > max), but it silently returns empty. Could be a bug if the caller doesn't validate.
+
+- The `has_max` check: `max_items != std::numeric_limits<int>::max()`. This is fine.
+
+### build_min_max_int function
+- Complex function with many branches. Let me check some edge cases:
+  - When both min and max are set and both negative: handles by negating and recursing. Looks correct.
+  - When min is negative and max is positive: handles negative part then sets min to 0. Looks correct.
+  - The `uniform_range` lambda is complex but seems to handle digit-by-digit range matching.
+  - `decimals_left` parameter: used to limit digit depth. Default is 16.
+  - `top_level` parameter: used to handle leading zeros.
+
+- Potential issue: In the `has_min` branch when `min_value < 0`, it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. This means it's building a rule for `[-INT64_MIN, -min_value]` which is `[INT64_MIN, -min_value]`... wait, that's wrong. If min_value is negative, say -5, then -min_value is 5. So it's building for `[INT64_MIN, 5]`... but we want `[-5, ...]` for the negative part. Actually wait, the negative part should be `[-5, -1]` or something. Let me re-read.
+
+Actually, looking at the code more carefully:
+```
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+    out << ") | [0] | [1-9] ";
+    more_digits(0, decimals_left - 1);
+}
+```
+
+Wait, this is in the `has_min` only branch (no max). So if min_value is -5, we want numbers >= -5. The negative numbers >= -5 are -5, -4, -3, -2, -1. So we want `-(5, 4, 3, 2, 1)` which is `-(1..5)`. But the code calls `build_min_max_int(INT64_MIN, -min_value, ...)` which is `build_min_max_int(INT64_MIN, 5, ...)`. That would generate rules for numbers from INT64_MIN to 5, which is way too broad.
+
+Hmm, wait. Let me re-read. The function is `build_min_max_int(min_value, max_value, ...)`. So `build_min_max_int(INT64_MIN, 5)` means min=INT64_MIN, max=5. But we want the absolute values of negative numbers >= -5, which are 1..5. So we want `build_min_max_int(1, 5)` or `build_min_max_int(0, 5)`.
+
+Actually wait, I think I'm misreading. Let me look again:
+
+```cpp
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+    out << ") | [0] | [1-9] ";
+    more_digits(0, decimals_left - 1);
+}
+```
+
+Hmm, `std::numeric_limits<int64_t>::min()` as the min_value...
+---

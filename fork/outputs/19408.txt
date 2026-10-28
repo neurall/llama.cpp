@@ -1,0 +1,64 @@
+run 19408 | rc5 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.13 t/s | prompt 40.5 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-25 09:09:05
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I'll keep it small, but I don't want it to be a bare throwaway — I want it genuinely playable and crafted, with real game feel: particle line clears, ghost piece, hold, next queue, level curve, sound via WebAudio, keyboard + touch controls.
+
+"Smallest" is the explicit ask, so I should honor it: keep it a single file, no dependencies, compact code. But I can still make it feel alive with CSS and effects while staying reasonably small. Balance: deliver a tight single-file Tetris that's small in bytes but polished. I'll aim for something like ~150-250 lines total — small but rich.
+
+Let me design:
+
+- Canvas-based board rendering (10x20).
+- Side panel: score, level, lines, next queue, hold.
+- Keyboard: arrows, Z/X rotate, Space hard drop, C hold, P pause.
+- Touch buttons for mobile.
+- Line clear flash + particle burst.
+- WebAudio blips for rotate/move/lock/clear.
+- Level speed curve.
+- Ghost piece.
+- 7-bag randomizer.
+- SRS-ish kicks (simplified).
+
+Visual design: Tetris is inherently a grid of colored blocks, so rather than a generic headline block I'll open straight with the playfield itself — a stacked "machine" layout: board on left, telemetry on right, big score numerals. The most characteristic thing about Tetris is the falling tetromino, so I'll make the page open with the board and a live preview of the next pieces.
+
+Palette: classic Tetris piece colors (cyan, blue, orange, yellow, green, purple, red) already give me a full multi-color set, which suits the game. For the frame I want something arcade/CRT-flavored rather than a flat dark rectangle — a deep blue-slate console with layered grid + scanlines + a subtle animated diagonal shimmer. Type: I want a distinctive display face — "Chakra Petch" (techy, angular) for headings and numerals, paired with "IBM Plex Mono" for the body/labels. Both from Google Fonts. But "smallest" — a font link adds bytes but it's fine; I'll include one link with both families. Actually to keep it truly self-contained and small, maybe use system fonts? A distinctive display face is worth the one link — I'll include the Google Fonts link (still one file, no build).
+
+Let me write compact but readable code.
+
+Implementation details:
+
+Board: 10 x 20 (plus hidden spawn rows). Use a flat array.
+
+Pieces as rotation matrices via coordinate lists. Compact approach: define pieces as strings of 4x4 or use matrix rotation.
+
+Compact classic approach:
+
+```
+P={'I':[0,1,2,3].map(i=>[i,0]) ...}
+```
+
+Simplest: represent each piece as a square matrix and rotate by transposing.
+
+```js
+const S={
+I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+J:[[1,0,0],[1,1,1],[0,0,0]],
+L:[[0,0,1],[1,1,1],[0,0]],
+O:[[1,1],[1,1]],
+S:[[0,1,1],[1,1,0],[0,0,0]],
+T:[[0,1,0],[1,1,1],[0,0,0]],
+Z:[[1,1,0],[0,1,1],[0,0,0]]};
+```
+
+Rotation: rotate matrix clockwise: `m.map((r,i)=>r.map((_,j)=>m[n-1-j][i]))`.
+
+Kicks: simple wall kick — try offsets [0,-1,1,-2,2].
+
+Colors array indexed by piece letter.
+
+Rendering: canvas 300x600 for 10x20 at 30px. Plus mini canvases for next/hold.
+
+Particles: array of {x,y,vx,vy,c,life} drawn on main canvas.
+
+Line clear animation: flash rows white for ~180ms then collapse.
+
+Score:
+---

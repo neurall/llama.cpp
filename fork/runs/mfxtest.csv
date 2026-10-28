@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+mimo-io-s1,mimo,2,edit4c,1024,,
+mimo-i-s1,mimo,2,pf12k1k,1024,,
+qni4-io-s1,qn_iq4xs,2,edit4c,1024,,
+glm-i-s1,glm,2,pf12k1k,1024,,
+mimo-io-s2,mimo,2,edit4c,1024,,
+mimo-i-s2,mimo,2,pf12k1k,1024,,

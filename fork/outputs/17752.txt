@@ -1,0 +1,39 @@
+run 17752 | coldplan2 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 52.88 t/s | prompt 59.0 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-10-22 14:44:09
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained HTML file that plays Tetris.
+
+Since the ask is "smallest," I should keep it tight — but I can still make it feel crafted: a nice arcade/CRT cabinet aesthetic, a distinctive display font pairing, some ambient background, keyboard controls, next-piece preview, score/lines/level, subtle micro-interactions. But "smallest" means I shouldn't bloat it into a giant page. The right move: a compact single-file game that's small in bytes but still has character. I'll aim for genuinely small code (a few hundred lines max, ideally ~100 lines) with a strong arcade look.
+
+Let me think about the design: an arcade cabinet / CRT vibe. Tetris is Soviet-origin, blocky, and its iconic visual world is the flat Game Boy palette: near-black greens on a pale olive screen. That's characteristic and distinctive, so I'll open with it rather than a generic framing.
+
+Let me do a CRT arcade monitor look: dark cold-gray-blue surround, scanlines overlay, phosphor glow on the blocks, chunky monospace/pixel display type. Pair a distinctive display face with a readable body face. Use Google Fonts? That adds a network request — but "smallest" argues against external fonts. Hmm. I could use a system pixel-ish stack. But I want a distinctive display face paired with a readable body face. I can load one small Google font for display (e.g., "Silkscreen" — a pixel font, tiny) and use system monospace for body. That's a good compromise: one font link, small.
+
+Actually, to keep it truly small and offline-capable, maybe use font stacks only. But the aesthetic benefits from Silkscreen or "Press Start 2P". I'll include one Google Fonts link for "Silkscreen" (display) and use ui-monospace/system mono for body. That's a good compromise: one font link, small.
+
+Palette: Game Boy-ish? Or classic Tetris NES colors? Let me do a phosphor CRT: background deep charcoal #101314 with a subtle grid/vignette, screen panel slightly lighter with scanlines. Tetromino colors: classic — I cyan, O yellow, T magenta, S green, Z red, J blue, L orange. On a dark screen with glow. Accent: amber/green for HUD.
+
+Layout: the most characteristic thing about Tetris is the playfield itself, so I'll lead with that rather than any header. Left: HUD stack (score, lines, level, next). Center: board. Right: controls legend. Actually a compact asymmetric layout: big board on the left-ish, HUD column to the right with big numbers.
+
+Type contrast: huge score numerals (48-64px Silkscreen), tiny uppercase labels with letterspacing.
+
+Micro-interactions: 
+- Line clear flash animation (row flashes white before collapsing).
+- Piece lock shake / subtle screen shake on hard drop.
+- Hover on buttons.
+- Ghost piece.
+- Hold piece? Adds code. Maybe include hold — it's nice but "smallest". I'll include hold since it's cheap (~10 lines) and makes it feel complete. Hmm, keep it. Actually let's include it — it's a real feature and cheap.
+- Level speed-up.
+- Pause.
+- Game over overlay with restart.
+
+Controls: arrows, space hard drop, Z/X rotate, C hold, P pause, R restart. Also touch buttons? Adds size. Maybe minimal touch: on-screen buttons for mobile. Could skip. I'll add a compact touch pad row that only shows on coarse pointers — small CSS + a few lines. Hmm, "smallest" — I'll add a tiny touch bar since it makes it actually playable on phone; it's ~15 lines. Let me include it but keep it terse.
+
+Let me write the game logic compactly.
+
+Board: 10x20 (plus hidden spawn rows). Use canvas for rendering — much smaller than DOM grid. Canvas 2D, cell size 24 → 240x480. Scale with CSS for crispness? Use devicePixelRatio-ish. Simpler: canvas width=300 height=600, cell 30. CSS width responsive.
+
+Tetromino definitions compactly:
+
+```
+const S='0111100,0
+---

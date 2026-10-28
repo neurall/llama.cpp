@@ -1,0 +1,77 @@
+run 17408 | iq3sw | edit4c | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 313.04 t/s | prompt 11224.0 t/s | 1024 tokens | args: -np 1 --moe-expert-cache 90 -lm pin -c 4096 | power ? W | 2026-10-21 12:59:48
+
+a-fA-F0-9]{8}-?\\d{4}-?\\d{4}-?\\d{4}-?\\d{12}"}
+};
+
+static std::unordered_map<std::string, const json_schema_to_grammar::BuiltinRule*> PRIMITIVE_RULES_POINTERS = {
+    {"boolean", &BuiltinRule::{"boolean", {}}},
+    {"decimal-part", &BuiltinRule::{"decimal-part", {}}},
+    {"integral-part", &BuiltinRule::{"integral-part", {}}},
+    {"number", &BuiltinRule::{"number", {}}},
+    {"integer", &BuiltinRule::{"integer", {}}},
+    {"value", &BuiltinRule::{"value", {}}},
+    {"object", &BuiltinRule::{"object", {}}},
+    {"array", &BuiltinRule::{"array", {}}},
+    {"uuid", &BuiltinRule::{"uuid", {}}}
+};
+
+static std::unordered_map<std::string, const json_schema_to_grammar::BuiltinRule*> PRIMITIVE_RULES_POINTER_TO_BUILTIN = {
+    {"boolean", nullptr},
+    {"decimal-part", nullptr},
+    {"integral-part", nullptr},
+    {"number", nullptr},
+    {"integer", nullptr},
+    {"value", nullptr},
+    {"object", nullptr},
+    {"array", nullptr},
+    {"uuid", nullptr}
+};
+
+static const std::string SPACE_RULE = " \\+ | \\+ \\s+ | \\s+";
+
+static std::string json_schema_to_grammar::build_rule(const std::string& item_rule, const std::string& separator_rule, int min_items, int max_items, const std::string& separator_separator_rule, const std::string& object_start_rule, const std::string& array_start_rule) {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+    auto has_min = min_items != 0;
+
+    std::string result = item_rule;
+
+    if (separator_rule.empty()) {
+        if (has_min && has_max) {
+            result += "?";
+        }
+        if (has_min && !has_max) {
+            result += "+";
+        }
+        if (has_max) {
+            result += "(?>" + separator_separator_rule + ")" + item_rule + "?";
+        } else {
+            result += item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+        }
+    } else {
+        result += separator_rule + " " + build_rule(item_rule, separator_separator_rule, min_items, max_items, separator_separator_rule, object_start_rule, array_start_rule);
+    }
+
+    return result;
+}
+
+static void json_schema_to_grammar::build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream& out, int decimals_left, bool top_level) {
+    out << std::to_string(min_value);
+    if (top_level && max_value != std::numeric_limits<int64_t>::max()) {
+        out << " - " << std::to_string(max_value);
+    }
+}
+
+static void json_schema_ amongst_others::build_rule(const std::string& item_rule, const std::string& separator_rule, int min_items, int max_items, const std::string& separator_separator_rule, const std::string& object_start_rule, const std::string& array_start_rule) {
+    auto has_min = min_items != 0;
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    std::string result = item_rule;
+
+    if (separator_rule.empty()) {
+        if (has_min && has_max) {
+            result += "?";
+        }
+        if (has_min) {
+            result += object_start_rule;
+        } else if (has_max) {
+            result += array_start_rule;

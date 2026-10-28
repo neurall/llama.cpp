@@ -1,0 +1,89 @@
+run 19609 | deep-seek | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.31 t/s | prompt 8.8 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 11:18:26
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. This is different from my usual approach of making polished, memorable experiences. The user explicitly asked for "smallest" — so the goal here is extreme minification while keeping it functional and playable.
+
+Let me think about what "smallest" means here. A minimal Tetris in a single HTML file. I should aim for genuinely tiny code — a few hundred bytes to maybe 1-2KB. This is a fun challenge. Let me write it carefully.
+
+Key requirements for a playable Tetris:
+1. Canvas rendering (or even simpler — could use a `<pre>` with text? Actually canvas is compact)
+2. 10x20 grid
+3. 7 tetrominoes with rotation
+4. Gravity (falling)
+5. Collision detection
+6. Line clearing
+7. Scoring (optional for "smallest")
+8. Keyboard controls (left/right/down/rotate)
+9. Game over
+
+Let me try to write the most compact Tetris possible.
+
+Classic minimal Tetris approaches use a string-encoded board and pieces. Let me think about a very compact encoding.
+
+One famous minimal Tetris (by someone) fits in a tweet. Let me construct my own.
+
+Approach: use canvas, a single array for the board (10 wide, 20 tall), pieces defined as arrays of coordinates or as bit patterns.
+
+Compact piece definition: Each tetromino can be defined as 4 [x,y] pairs. Or use rotation via matrix math. A common trick: define pieces as binary numbers and rotate with bit manipulation.
+
+Let me try a straightforward compact approach:
+
+```html
+<body onload="setInterval(f,300)">
+<canvas id=c width=100 height=200></canvas>
+<script>
+...
+</script>
+```
+
+Actually let me write the logic:
+
+```js
+B=[] // board, 200 cells
+P=[] // current piece cells
+```
+
+Piece shapes: I can encode each piece as 4 coordinates relative to origin. Rotation: rotate (x,y) -> (y, -x) or similar around pivot.
+
+Compact encoding of shapes: a string like "0110 0110..." Hmm.
+
+A very compact known trick: define pieces as arrays of 4 numbers where each number encodes x,y: e.g. `[[0,0],[1,0],[0,1],[1,1]]` for O.
+
+Alternative super-compact: use strings. For each rotation state, a 4x4 or 3x3 bitmask.
+
+Let me think about the classic "smallest tetris" implementations:
+
+One known approach (from code golf):
+
+```js
+d=document
+b=d.body
+b.innerHTML='<canvas id=c>'
+x=c.getContext('2d')
+...
+```
+
+Let me just write my own clean-ish minimal version and then minify.
+
+Plan:
+
+```js
+// board: array of 200, 0 or color index
+// piece: current shape as list of [x,y] offsets, position px,py
+// shapes: 7 pieces
+
+S=[[[1,1,1,1]], ...] // hmm
+```
+
+Compact shape encoding using binary strings per piece, 4 rotations each? That's a lot. Better: define each piece once as coordinates and rotate mathematically.
+
+Rotation of a piece around its center: for cells (x,y) in a NxN box, rotate 90° CW: (x,y) -> (N-1-y, x). If I store pieces as coordinates in a bounding box of size N (I=4, others 3, O=2), rotation works.
+
+Let me define shapes as arrays of [x,y]:
+
+- I: [[0,1],[1,1],[2,1],[3,1]] in 4x4
+- J: [[0,0],[0,1],[1,1],[2,1]] in 3x3
+- L: [[2,0],[0,1],[1,1],[2,1]]
+- O: [[1,0],[2,0],[1,1],[2,1]] in... hmm O in 3x3 rotates weird. Better O in 2x2: [[0,0],[1,0],[0,1],[1,1]] but then spawn offset differs. For minimalism, O in a 3x3 at [[1,0],[2,0],[1,1],[2,1]] — rotating gives [[2,1],[2,2],[1,1],[1,2]] which is a different position but same shape shifted — acceptable for minimal Tetris (piece wobbles). Actually many minimal tetris implementations accept that.
+
+- S: [[1,0],[2,0],[0,1],[
+---

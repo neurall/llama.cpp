@@ -1,0 +1,95 @@
+run 18428 | relfx1 | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.31 t/s | prompt 214.8 t/s | 914 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 12:57:31
+
+The user wants me to add a function that counts the lines of this file and prints the count. This is a C++ file (json-schema-to-grammar.cpp). I need to add a function that reads the file itself and counts lines, then prints the count.
+
+The file path would be "common/json-schema-to-grammar.cpp" based on the comment at the top.
+
+Let me write a function that:
+1. Opens the file "common/json-schema-to-grammar.cpp"
+2. Counts lines
+3. Prints the count
+
+I should include `<fstream>` and `<iostream>` headers for this.
+
+Let me write the function:
+
+```cpp
+static void count_and_print_file_lines(const std::string & file_path = "common/json-schema-to-grammar.cpp") {
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        std::cerr << "Error: could not open file " << file_path << std::endl;
+        return;
+    }
+    size_t line_count = 0;
+    std::string line;
+    while (std::getline(file, line)) {
+        line_count++;
+    }
+    std::cout << "File " << file_path << " has " << line_count << " lines." << std::endl;
+}
+```
+
+I need to add `#include <fstream>` and `#include <iostream>` to the includes.
+
+The user's message ends mid-function (`gbnf_escape_length` is cut off), so I should just provide the addition. I'll show the includes to add and the function itself. Maybe also show how to call it, e.g., from main or somewhere. Since this is a library file without main, I could suggest calling it, or just provide the function.
+
+Let me provide a clean answer: add the includes, add the function, and optionally show a call example. I could also make it more robust by using `__FILE__` but that would give the path at compile time which might be relative to the build. Actually using `__FILE__` could be a nice touch, but the file path given is "common/json-schema-to-grammar.cpp". Let me default to that path but allow an override parameter.
+
+Alternative: count lines of the source file at compile time? That's more complex. Runtime reading is simpler and what's asked.
+
+Let me write the answer with the code snippet showing where to add things.
+---
+Here's a function that reads the file at runtime, counts its lines, and prints the result. Add the required includes at the top of the file:
+
+```cpp
+// Add to the existing include block:
+#include <fstream>
+#include <iostream>
+```
+
+Then add the function (e.g., near the bottom of the file, or anywhere after the includes):
+
+```cpp
+static void print_file_line_count(const std::string & file_path = "common/json-schema-to-grammar.cpp") {
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        std::cerr << "Error: could not open file \"" << file_path << "\"" << std::endl;
+        return;
+    }
+
+    size_t line_count = 0;
+    std::string line;
+    while (std::getline(file, line)) {
+        line_count++;
+    }
+
+    std::cout << "File \"" << file_path << "\" has " << line_count << " lines." << std::endl;
+}
+```
+
+**Example usage** — call it from wherever appropriate, for instance at the start of the schema-to-grammar entry point, or temporarily for testing:
+
+```cpp
+int main() {
+    print_file_line_count();
+    return 0;
+}
+```
+
+Output would look like:
+
+```
+File "common/json-schema-to-grammar.cpp" has 412 lines.
+```
+
+**Notes:**
+
+- `std::getline` counts lines by newline characters, so a file ending with a trailing newline is counted correctly (the final empty segment after the last `\n` is not counted as an extra line).
+- The path defaults to the relative path shown in the file's header comment (`common/json-schema-to-grammar.cpp`), so run the program from the repository root — or pass an explicit path / use `__FILE__` if you want it resolved relative to the translation unit at compile time:
+
+```cpp
+static void print_file_line_count() {
+    std::ifstream file(__FILE__);  // resolves to this .cpp file's compile-time path
+    ...
+}
+``

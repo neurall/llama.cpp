@@ -1,0 +1,67 @@
+run 19454 | rc5 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.32 t/s | prompt 120.3 t/s | 965 tokens | args: -np 1 -lm pin | power 220+280 W | 2026-10-25 10:12:58
+
+The user wants the smallest HTML Tetris game. Let me think about how small I can go while still being a complete, playable Tetris.
+
+Core requirements: board 10x20, 7 tetrominoes, rotation, movement, drop, line clear, scoring, game over, restart.
+
+Smallest possible: use canvas, minimal JS. Let me write it compactly but still readable-ish.
+
+Let me craft it. The user asked for "smallest" — so the deliverable is a tiny file. But I can still make it look decent with minimal CSS (black bg, centered canvas). Small doesn't mean ugly — a tiny bit of styling costs bytes but makes it feel crafted. I'll keep it tight but add a couple of niceties.
+
+Let me write compact Tetris:
+
+```html
+<canvas id=c width=250 height=500></canvas>
+<script>
+let B=[],W=10,H=20,S=25,x=3,y=0,p=r(),n=r(),s=0,g=0;
+function r(){return[...Array(4)].map((_,i)=>[0,1,2,3].map(j=>[1,1,1,1][j]&&0))}
+```
+
+Hmm, better approach: use classic matrix rotation with predefined shapes as strings.
+
+Compact approach: shapes as numbers using bit tricks, or use the classic "tetromino as array of strings".
+
+Let me use the well-known tiny approach:
+
+```js
+T=[I=[[]]] // nah
+```
+
+A known minimal Tetris uses this trick: pieces defined by a number, rotation via index math. Let me just do the straightforward readable-compact version:
+
+```js
+S=[[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[1,1,1],[0,1,0]]]
+```
+
+That's 7 shapes (O, T, S, Z, J, L, I-ish 2-row). Rotation: transpose + reverse.
+
+Collision check:
+
+```js
+function k(o,d,r=p.map((v,i)=>[...v])){ // move
+}
+```
+
+Let me write it properly:
+
+```js
+let c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,Z=25,
+B=Array.from({length:H},()=>Array(W).fill(0)),
+S=[[[1,1],[1,1]],[[1,1,1],[0,1,0]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,1,1],[1,0,0]],[[1,1,1],[0,0,1]],[[1],[1],[1],[1]]],
+p,n,x0,y0,sc,ov;
+
+function R(a){return a[0].map((_,i)=>a.map(r=>r[i]).reverse())}
+function N(){p=S[Math.random()*7|0];n=S[Math.random()*7|0];x0=W/2-p[0].length/2|0;y0=0;if(t(x0,y0,p))ov=1}
+function t(X,Y,P){return P.some((r,i)=>r.some((v,j)=>v&&(B[Y+i]?.[X+j]||Y+i>=H||X+j<0)))}
+```
+
+Wait `B[Y+i]?.[X+j]` — negative X+j index would be undefined→falsy, so need X+j<0 check. Also Y+i<0 should be allowed (spawning above top)? Since y0=0 and pieces start at top, if collision at y=0 → game over. Fine.
+
+Draw:
+
+```js
+function D(){
+ x.fillStyle='#000';x.fillRect(0,0,c.width,c.height);
+ let g=(X,Y,v)=>{x.fillStyle='hsl('+v*45+',90%,55%)';x.fillRect(X*Z,Y*Z,Z-1,Z-1)};
+ B.forEach((r,i)=>r.forEach((v,j
+---

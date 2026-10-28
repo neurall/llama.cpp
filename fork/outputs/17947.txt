@@ -1,0 +1,17 @@
+run 17947 | inifix6 | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 43.42 t/s | prompt 214.2 t/s | 128 tokens | args: -np 1 --moe sim-vram=3000 | power 280+280 W | 2026-10-22 18:30:32
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool parse_cpu_mask(const std::string & mask, std::vector<int32_t> & cpumask) {
+    if (mask.empty()) {
+        return false;
+    }
+    cpumask.clear();
+    for (size_t i = 0; i < mask.size(); i++) {
+        char c = mask[i];
+        if (c == '0' || c == '1') {

@@ -45,7 +45,21 @@ With two or more GPUs the prompt is split between the cards: each card computes 
 
 {{DS}}
 
-`--moe split-experts=0` splits the dense part between the GPUs only: no MoE experts are streamed to the second GPU, the card on the fastest link computes and holds every expert, and the other cards compute just their token ranges of the dense part. The dense weights are small and stay resident on every card, uploaded once at load, so nothing crosses the narrow link during the prompt. It is the right setting for a fast GPU in a narrow slot (x1 or x4 risers, mining-style boards): that card would spend the prompt time waiting for expert uploads over its link, and this way the extra GPU still gives you fast prompt processing. The default (`auto`) lets the planner decide per layer.
+`--moe split-experts=0` splits the dense part between the GPUs only: no MoE experts are streamed to the second GPU, the card on the fastest link computes and holds every expert, and the other cards compute just their token ranges of the dense part. The other cards hold copies of the dense weights in their expert-cache blocks, filled at the start of a split prompt (GLM-5.3-Flash 3.0-bit: 4.5 GB over the x4 link, ~1.4 s) and given back to the cache for decoding; the experts never cross the narrow link. It is the right setting for a fast GPU in a narrow slot (x1 or x4 risers, mining-style boards): that card would spend the prompt time waiting for expert uploads over its link, and this way the extra GPU still gives you fast prompt processing. This is the default; `--moe split-experts=auto` lets the planner also put experts on the other cards per layer (worth it only on fast links: x16 PCIe 4/5).
+
+### When the split pays, and how the server decides
+
+A prompt pass costs the longer of two things: streaming the experts it needs that are not cached on the card, and computing its tokens. The split shortens only the computing, so it pays once a pass is compute-bound, and only by more than the dense-weight copies it fills on the other card first. On 2x RTX 3090 (x16 + x4) that is from about:
+
+| model | split pays from | max micro-batch |
+|---|---|---|
+| GLM-5.3-Flash 3.0-bit | ~5-7k prompt tokens | 10368 |
+| Qwen3.8-Flash-Next IQ4_XS | ~8k | 16384 |
+| MiMo-V2.6-Flash 3-bit | ~10-12k | 16384 |
+
+You do not set this. The server times every prompt pass, keeps the compute per token per card at each context length (the attention makes a token cost more the more context it sees), computes each pass's expert upload from what the cache holds, and picks one card or the split per request from those numbers, starting from timings taken when the model loads. The timings are kept per model, cards and build in the state file, so a restart does not start over. `--moe dense-split=1` forces the split, `dense-split=0` one card.
+
+Models whose attention selects cells (GLM-5.3, Qwen3.8: the indexer's top 2048) now read only the selected cells from the context length where that is faster on your card, measured at load (~20k cells on an RTX 3090) instead of a fixed ~33k.
 
 ## Perplexity against stock
 

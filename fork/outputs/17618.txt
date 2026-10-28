@@ -1,0 +1,92 @@
+run 17618 | tokms17 | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 269.48 t/s | prompt 78.9 t/s | 1007 tokens | args: -np 1 -c 1024 | power 475 W | 2026-10-21 23:11:04
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means a single HTML file (or minimal code) that implements a playable Tetris game. I need to prioritize code size while maintaining functionality.
+
+2.  **Key Requirements for Tetris:**
+   - Grid/board (10x20 standard)
+   - Tetromino pieces (7 shapes)
+   - Movement (left, right, down, rotate)
+   - Collision detection
+   - Line clearing
+   - Score tracking
+   - Game over condition
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Constraints for "Smallest":**
+   - Single HTML file
+   - Minimal CSS/JS
+   - Use canvas for rendering (more compact than DOM)
+   - Compact variable names
+   - Avoid unnecessary features (animations, sounds, etc.)
+   - Use efficient algorithms
+
+4.  **Drafting - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head>
+     <style>
+       canvas { display: block; margin: auto; }
+     </style>
+   </head>
+   <body>
+     <canvas id="c" width="200" height="400"></canvas>
+     <script>
+       // Game logic here
+     </script>
+   </body>
+   </html>
+   ```
+
+5.  **Core Logic Implementation (Mental Refinement):**
+   - Board: 10x20 array of 0s
+   - Pieces: Define shapes as arrays of coordinates or bit patterns
+   - Rotation: Standard rotation matrix or pre-defined shapes
+   - Controls: Arrow keys + space for drop
+   - Loop: `setInterval` or `requestAnimationFrame`
+   - Rendering: Draw filled cells
+
+   Let's aim for ~300-400 bytes of JS. That's extremely compact. I'll need to be clever.
+
+   Key optimizations:
+   - Use a single string/array for board
+   - Use bitwise or compact shape definitions
+   - Minimize variable names
+   - Use `for` loops efficiently
+   - Combine logic where possible
+
+   Let's write it step-by-step mentally, then compress.
+
+   **Board:** `b = Array(200).fill(0)` (10x20)
+   **Pieces:** `p = [[1,1,1,1],[1,1,0,1],[0,1,1,1],[1,1,1,0],[1,1,0,0],[0,1,1,0],[1,0,1,0]]` (standard tetrominoes, but need rotation)
+   Actually, better to use a compact representation. Many minified Tetris games use a single array of shapes with rotation handled by transposing/rotating.
+
+   Let's use a standard approach but compressed:
+   ```js
+   const c = document.getElementById('c');
+   const ctx = c.getContext('2d');
+   const w = 10, h = 20;
+   const b = Array(w*h).fill(0);
+   const p = [[1,1,1,1],[1,1,0,1],[0,1,1,1],[1,1,1,0],[1,1,0,0],[0,1,1,0],[1,0,1,0]];
+   let x = 0, y = 0, rot = 0, score = 0;
+   function draw() {
+     ctx.fillStyle = '#000'; ctx.fillRect(0,0,w*20,h*20);
+     ctx.fillStyle = '#fff';
+     for(let i=0;i<w*h;i++) if(b[i]) ctx.fillRect(i%w*20, Math.floor(i/w)*20, 20, 20);
+     // draw current piece
+     for(let i=0;i<4;i++) {
+       let px = (x + p[rot][i])%w, py = y + Math.floor(p[rot][i]/4);
+       if(b[py*w+px]) continue;
+       ctx.fillRect(px*20, py*20, 20, 20);
+     }
+   }
+   function move() {
+     // check collision, update, clear lines, spawn new
+   }
+   ```
+
+   This is getting messy. Let's think of a proven minimal Tetris implementation. I recall a famous ~300-byte
+---

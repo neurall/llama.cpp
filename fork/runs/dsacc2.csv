@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+ds-acc2-d1-2k-nocacheprompt,ds,2,tetrisc,2048,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1 --no-cache-prompt,--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt

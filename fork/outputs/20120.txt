@@ -1,0 +1,50 @@
+run 20120 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 25.77 t/s | prompt 13.7 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 21:32:44
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need ensure game playable. Need maybe no external libs. Need concise.
+
+We need generate smallest HTML Tetris game. Need answer with code block. Need maybe explain controls. Need make code as small as possible while functional. Need think through implementation.
+
+We need create Tetris game in HTML. Could use canvas and JS. Need include board 10x20, tetrominoes, rotation, collision, line clearing, score, game over, restart. Minimal code.
+
+Need ensure code works. Let's design compact.
+
+HTML:
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Tetris</title>
+<style>
+body{margin:0;background:#111;color:#fff;font:14px monospace;display:flex;justify-content:center;align-items:center;height:100vh}
+canvas{background:#000;border:1px solid #444}
+#s{position:absolute;top:10px;left:10px}
+</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<div id=s></div>
+<script>
+...
+</script>
+</body>
+</html>
+
+Need maybe canvas width 300 height 600, cell 30. Board 10x20. Draw grid? Minimal.
+
+JS:
+const c=document.getElementById('c'),x=c.getContext('2d'),S=30,W=10,H=20;
+let b=Array.from({length:H},()=>Array(W).fill(0)), p, score=0, over=false;
+const shapes=[
+ [[1,1,1,1]], // I
+ [[1,1],[1,1]], // O
+ [[0,1,0],[1,1,1]], // T
+ [[1,0,0],[1,1,1]], // J? 
+ [[0,0,1],[1,1,1]], // L
+ [[0,1,1],[1,1,0]], // S
+ [[1,1,0],[0,1,1]] // Z
+];
+Need rotation. Could represent shape as array of coordinates? Simpler: use matrix and rotate function. Need spawn at top. Need collision.
+
+Tetromino object: {m: matrix, x:3, y:0}. Need rotation around matrix center? For 2x2 O rotation no change. For 3x3 T etc. For I 1x4 rotation to 4x1. Need rotate matrix: transpose + reverse rows? For clockwise: new matrix rows = old columns reversed? Let's derive. rotate(m): n=m.length; return m[0].map((_,i)=>m.map(r=>r[i]).reverse())? For clockwise: new[r][c] = old[n-1-c][r]? Let's test 2x3 [[1,0,0],[1,1,1]] clockwise should [[1,1],[1,0],[1,0]]? Actually rotate clockwise: rows become columns reversed. m[0].map((_,i)=>m.map(r=>r[i]).reverse()) gives for i=0: [m[0][0],m[1][0]] reversed? Wait m.map(r=>r[i]) = [1,1], reverse => [1,1]; i=1: [0,1] reverse [1,0]; i=2: [0,1] reverse [1,0] => [[1,1],[1,0],[1,0]]. That's clockwise? Original:
+1 0 0
+1 1 1
+Clockwise rotation around center? Coordinates: (0,0)->(0,2)? Hmm matrix rotation clockwise: new row0 = old col0 bottom-to-top? Let's use standard: rotate clockwise: new[i][j] = old[n-1-j][i]. For n rows, m rows. For 2x3, new dimensions 3x2. new[0][0]=old[1][0]=1; new[0][1]=old[0][0]=1 => [1,1]; new[1][0]=old[1][1]=1; new[1][1]=old[0][1]=0 => [1,0]; new[2][0]=old[1][2]=1; new[2][1]=old[0][2]=
+---

@@ -8,8 +8,15 @@ which a 1k-in / short-out cell shows as a drop; what a user feels is how long th
 Runs are compared only under the same power limits (the pl column; day 220/280 W, night 200/200 W). Cells without a prompt_s in the note use n_gen / decode speed only (short prompts: the prompt part is under a second)."""
 import re, sqlite3, statistics, sys
 pre, cand, rel = sys.argv[1], sys.argv[2], sys.argv[3]
+# SINCE (optional 4th argument, 'YYYY-MM-DD HH:MM'): only runs from then on. The release's older runs may come from another hardware state
+# (GPU unlock 2026-10-27 11:08: tensor math 1.3-1.5x faster) or carry a since-fixed bug (DeepSeek token-0 answers before dsfix1), so a gate reruns both builds and reads only those rows
+since = sys.argv[4] if len(sys.argv) > 4 else ""
 c = sqlite3.connect("/p/bw/wt-main/fork/runs.db")
-rows = c.execute("select campaign, build, tps, pp, n_gen, note, pl, pw_avg, out_chars, loop from runs where campaign like ? and build in (?, ?) and tps > 0", (pre + "%", cand, rel)).fetchall()
+rows = c.execute("select campaign, build, tps, pp, n_gen, note, pl, pw_avg, out_chars, loop from runs where build in (?, ?) and tps > 0 and ts >= ?", (cand, rel, since)).fetchall()
+# run.py run names a cell's campaign <build>-<row>-<test>: the build prefix comes off, so the candidate's and the release's runs of a row meet in one cell
+# (campaigns named the same for both builds, e.g. gate-..., stay as they are); PREFIX then filters the cell names
+rows = [((camp[len(b) + 1:] if camp.startswith(b + "-") else camp), b) + tuple(rest) for camp, b, *rest in rows]
+rows = [r for r in rows if r[0].startswith(pre)]
 # power limits differ by time of day (day 220/280 W, night 200/200 W): only runs under the SAME limits are compared, per cell the limits of the candidate's runs
 cand_pl = {}
 for camp, b, tps, pp, n_gen, note, pl, pw, oc, lp in rows:

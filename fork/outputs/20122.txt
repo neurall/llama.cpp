@@ -1,0 +1,32 @@
+run 20122 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 22.83 t/s | prompt 9.2 t/s | 987 tokens | args: -np 1 --moe pswap=1,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-27 21:34:44
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design smallest HTML Tetris. Need include controls, scoring? "smallest" means minimal code. Need produce a single HTML file. Need maybe use canvas and keyboard. Need implement Tetris mechanics: board 10x20, tetrominoes, rotation, collision, line clear, gravity, game over. Minimal.
+
+Need think through code carefully. Need produce valid HTML. Could use canvas 200x400? Use grid 10x20, cell 20. Canvas width 200 height 400. Use JS.
+
+Need implement tetromino shapes. Could use arrays of coordinates. Need rotation. Need spawn. Need drop. Need line clear. Need score maybe optional. Need controls: left/right/down/up rotate, space hard drop? Minimal.
+
+Need ensure no bugs. Let's craft compact code.
+
+Option: Use canvas, draw board. Use 10x20 grid. Tetromino represented by matrix? Simpler: shapes as arrays of [x,y] relative coordinates. Rotation around origin? Need handle rotation. Could use 4x4 matrices for each tetromino and rotate matrix. But code longer. Could use coordinate arrays and rotate by (x,y)->(-y,x) around center? Need ensure shape fits. For tetrominoes, rotation around center of bounding box. If using coordinates relative to center, can rotate. But spawn positions and collision.
+
+Alternative use predefined rotations for each tetromino. Minimal? Could define shapes as arrays of 4 rotations. But code longer. Use matrix rotation.
+
+Let's design robust minimal.
+
+Board: 10 columns, 20 rows. Use array board of 20 rows x 10 cols, 0 empty, 1 filled. Current piece: type, rotation, x, y (top-left of 4x4 matrix). Use 4x4 matrix for each tetromino. Rotation by matrix. Collision checks cells where matrix[r][c]==1 at board y+r, x+c. Need spawn at x=3, y=0? For 4x4 matrix, top-left. Need ensure piece starts at top. For I shape matrix maybe row 1? Let's define matrices with cells in 4x4. Spawn x=3, y=0. But if matrix has cells at row 0, okay. Need avoid spawn collision. If collision at spawn, game over.
+
+Tetromino matrices:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]? Actually 4x4 with row 1. Spawn y=0, cells row1. Fine.
+O: [[0,0,0,0],[0,1,1,0],[0,1,1,0],[0,0,0,0]]
+T: [[0,0,0,0],[0,1,0,0],[1,1,1,0],[0,0,0,0]]? Need shape. Could use row1 center, row2 three. 
+S: [[0,0,0,0],[0,1,1,0],[1,1,0,0],[0,0,0,0]]
+Z: [[0,0,0,0],[1,1,0,0],[0,1,1,0],[0,0,0,0]]
+J: [[0,0,0,0],[1,0,0,0],[1,1,1,0],[0,0,0,0]]
+L: [[0,0,0,0],[0,0,1,0],[1,1,1,0],[0,0,0,0]]
+Need rotation. Rotate matrix clockwise: new[r][c] = old[3-c][r]? For 4x4 clockwise: new[r][c] = old[3-c][r]. Let's verify. Or use coordinates. Need rotate piece. We can store matrix and rotate function.
+
+But if rotate around 4x4 center, shapes may shift. That's okay. Need collision. Need spawn x=3, y=0. For I matrix row1, after rotation becomes column? Let's see. I row1 all ones. Rotate clockwise: new[r][
+---

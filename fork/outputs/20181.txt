@@ -1,0 +1,60 @@
+run 20181 | dynhot_two_pool_keys | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 82.52 t/s | prompt 100.3 t/s | 1007 tokens | args: -np 1 --moe state=/tmp/runstate/dynab-q36-on.ini,dynhot=1,dynhot-merge=2,dynhot-max=0 --moe sim-vram=3072 | power 220+280 W | 2026-10-28 07:46:32
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the *smallest* HTML Tetris game. This means I need to minimize code size while keeping it functional as a Tetris game. It should be a single HTML file (or as close as possible) with inline CSS and JavaScript.
+
+2.  **Key Requirements for Tetris:**
+   - Grid/board (typically 10x20)
+   - Tetromino pieces (7 shapes)
+   - Movement (left, right, down, rotate)
+   - Collision detection
+   - Line clearing
+   - Game over condition
+   - Rendering (canvas or DOM)
+   - Controls (keyboard)
+   - Score/level (optional but good)
+
+3.  **Minimization Strategies:**
+   - Use a single `<canvas>` for rendering
+   - Use compact variable names
+   - Avoid comments
+   - Use bitwise operations or compact representations for pieces
+   - Use a single loop for game logic
+   - Minimize CSS (inline, minimal)
+   - Use `onkeydown` for controls
+   - Keep the board as a 1D array or 2D array with compact representation
+   - Use `Math.random()` for piece generation
+   - Use `requestAnimationFrame` for game loop
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <canvas id=c></canvas>
+   <script>
+   const c=document.getElementById('c'),ctx=c.getContext('2d');
+   c.width=200;c.height=400;
+   const W=10,H=20,B=[];
+   for(let y=0;y<H;y++)B[y]=new Array(W).fill(0);
+   const P=[[[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]],...]; // 7 pieces
+   // Actually, compact piece representation is better
+   // Let's use a standard compact representation
+   // Or just use a 1D array of shapes
+   // Better: use a single string/array for each piece
+   // Let's stick to a simple 2D array representation but compact
+   // Actually, I can use a single array of 7 pieces, each as a 4x4 or 3x3 array
+   // But for size, I'll use a compact representation: each piece as a string of coordinates or a bitmask
+   // Bitmask is good: 4 bits per row? No, 10x20 board, pieces are 4x4 max.
+   // Let's use a simple array of 7 pieces, each as a 2D array of 0/1
+   // Actually, I can use a single string representation for each piece: "1111", "1010", etc.
+   // But rotation is tricky.
+   // Let's use a standard approach: piece as array of [x,y] offsets
+   // Or just use a 4x4 grid representation and rotate by swapping indices
+   // For minimal code, I'll use a compact piece definition:
+   const T=[[[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]],[[1,0,1,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]],...];
+   // This is too long.
+   // Better: use a single string for each piece and a rotation function
+   // Actually, I can use a well-known compact Tetris piece representation:
+   // Each piece as a 4-bit number? No.
+   // Let's use a standard approach but minimize:
+   const P=[[[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]],[[1,0,1,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]],[[0,1,1,1],[1,0,0,0],[0,0,0,0],[0,0,0,0]],[[1,1,0,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]],[[0,1,1,0],[1,1,0,0],[0,0,0,0],[0,0,0,0]],[[1,0,0,0],[1,1,1,0],[0,
+---
