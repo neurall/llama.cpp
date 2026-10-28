@@ -3051,7 +3051,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     }
     // GGML_PF_STATS=1: one line per prompt graph on stderr, how many splits were staged by the prefetch ring and why the others were not (see prefetch_target for 1..5)
     static const bool pf_stats = getenv("GGML_PF_STATS") != NULL;
-    int pfs_fired = 0, pfs_why[7] = {0}, pfs_card = 0, pfs_dev = 0, pfs_prep = 0, pfs_off = pf_on ? 0 : 1;
+    int pfs_fired = 0, pfs_why[7] = {0}, pfs_card = 0, pfs_dev = 0, pfs_prep = 0;
     double pfs_res_b = 0.0, pfs_up_b = 0.0;   // staged bytes copied on the card from its expert cache / uploaded from host memory
     // GGML_PF_TRACE=1: for graphs of 300+ splits, one line per staged copy (split, card, expert range, microseconds since the graph started, the split being launched at that moment)
     // and one per launched split (card, first node), to read the issue order of both cards' copies against an nsys timeline.

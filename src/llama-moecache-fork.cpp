@@ -3998,7 +3998,6 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
         const size_t step = std::max<size_t>(256, ap.kv_step);
         size_t h = (allow_shrink || ap.kv_h == 0) ? step : ap.kv_h;
         while (eff + step / 2 > h) { h += step; }
-        const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
         // the zone stays where it is unless the lend of this graph size reaches it. Rounding its own start again to the block grids of all classes (they do not
         // line up) moved it one block up at every call: 584 MB of rows copied and the graph built again for every decoded token, until it crept over a zero
         // block (2026-10-18, pool ledger). The lend's end is rounded as kv_layout lays it out (the block edge it ends on).
@@ -4471,7 +4470,6 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
         if (!le && !ge) { say("kv-fit: %s: tier %d's layout is neither smaller nor larger everywhere (records keep their order)", dn, tier); return false; }
         cp.up = !le;
         for (auto & r : ap.kvt) { if (!r.fixed) { cp.cells = std::max(cp.cells, r.rows ? r.rows() : 0); } }
-        const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
         const size_t room = ap.tail_end > ap.kv_start + cp.F ? (ap.tail_end - ap.kv_start - cp.F) / std::max<size_t>(1, cp.R) : 0;   // every block behind the zone's start
         if (cp.cells > room) { say("kv-fit: %s: %zu cells do not fit the zone as tier %d (room for %zu)", dn, cp.cells, tier, room); return false; }
         cp.h = std::min(std::max(ap.kv_h, cp.cells), std::max(room, cp.cells));
@@ -5099,7 +5097,6 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         if (!ap.kvt.empty() && lend_end > ap.span) {
             // the graph reaches into the KV zone: the zone moves behind it (a device copy of the rows in use), and since this graph's views of the KV point at the old
             // place it is built again (the caller). Never silently over the KV, and no abort: only when the zone cannot fit behind the graph at all.
-            const size_t bmax = kv_bmax(ap);
             size_t cells = 0;
             for (auto & r : ap.kvt) { if (!r.fixed) { cells = std::max(cells, r.rows ? r.rows() : 0); } }
             {   // the attention reads the cells in use rounded up to the pad: the zone must hold those rows too (OLMoE on W10, 2026-10-18: 33568 cells in use, a zone of 33740 after the lend grew, padded read 33792, abort in set_input_k_idxs)
