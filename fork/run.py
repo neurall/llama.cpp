@@ -3,7 +3,7 @@
 
   run.py bench  --models M1,M2 --builds autotune,stock-X [--variants default,cache0,atoff] [-t t100] [-n 2] [--machine pc1]
   run.py report [--campaign NAME] [--last N] [--tol 0.95]      variants against stock, per model / test / machine
-  run.py run    [-t TEST] [-n N] [-e K=V ...] [--bare] [--plain] [--args '...'] BUILD...   (MODEL=/path/model.gguf)
+  run.py jobs    [-t TEST] [-n N] [-e K=V ...] [--bare] [--plain] [--args '...'] BUILD...   (MODEL=/path/model.gguf)
   run.py machine [add ID --ssh user@host --root DIR --os linux|windows]    machines reached over ssh (llama-cli runs)
   run.py prompt short|12k|128k|chatv|code [--url U]            the benchmark prompts against a running server
   run.py ctl    BUILD name:KEY=V,KEY=V ...                     one server, settings switched at runtime, rotating prompts
@@ -1134,6 +1134,7 @@ STAT_COLS = ["prompt", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_
 RUN_COLS += STAT_COLS + PRESSURE_COLS
 RUN_COLS += ["pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end"]   # predictor outcomes of the run, from cache.csv (see cache_csv_totals)
 RUN_COLS += ["up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms"]   # per GPU: mean upload time of one expert on the fast / slow link (engine log) and the effective speed MiB per expert / that time; the startup link speed of each CUDA device; admit-pred builds also: uploads, MiB and copy time per link from cache.csv
+RUN_COLS += ["repro"]   # the run.py command line that made the row (the outermost process; cells started by it inherit it): paste it to repeat the run
 RUN_COLS += ["bestpp"]   # every run, better or worse (regressions show): the run as a models.ini bestpp tuple (total VRAM GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s)
 RUN_COLS += ["up_ms_expert", "up_gbs_eff"]   # from the engine log: mean upload time of one expert (all three tensors) over the second half of the run, and the effective speed of one upload = MiB per expert / that time
 RUN_COLS += ["pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb"]   # nvidia-smi dmon over the server run: GB host->device during the request (all GPUs; the server is already loaded), the peak of any GPU in a second, the mean of the seconds that moved data, GB device->host
@@ -2811,7 +2812,7 @@ def store(row, build, test, rec, note, hw, vstr):
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=row.get("pl") or power_limits(hw), **{k: row.get(k) for k in ("thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs")}, proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
-        branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
+        branch=bi.get("branch", ""), patch=bi.get("patch", ""), repro=os.environ.get("RUNPY_REPRO"), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
     save_output_file(row["ts"], build, test, row["model"])   # fork/outputs/<run id>.txt: the answer, readable on GitHub without runs.db
     global _EMB_OFF
     try:
@@ -4397,6 +4398,46 @@ def _package_linux(a, W, binp, log):
     return N, dst
 
 
+def _publish_db(here):
+    """fork/runs.db as the ONLY commit of branch runs-db (no parent: the history of the binary never accumulates), force-with-lease to the fork, that branch only.
+    Get it: git fetch neurall runs-db && git show FETCH_HEAD:runs.db > fork/runs.db"""
+    import sqlite3, tempfile
+    R = _git(here, "rev-parse", "--show-toplevel"); out = os.path.join(tempfile.mkdtemp(), "runs.db")
+    c = sqlite3.connect(os.path.join(here, "runs.db"), timeout=60)
+    sys.modules["runstats"].refresh(c)   # the statistics of records added since the last query are current in the published file
+    c.execute("VACUUM INTO ?", (out,)); c.close()
+    n = sqlite3.connect(out).execute("select count(*) from runs").fetchone()[0]
+    blob = _git(R, "hash-object", "-w", out)
+    tree = subprocess.run(["git", "-C", R, "mktree"], input=f"100644 blob {blob}\truns.db\n", capture_output=True, text=True, check=True).stdout.strip()
+    com = _git(R, "commit-tree", tree, "-m", f"runs.db: {n} runs, {time.strftime('%F %H:%M')} (only commit of this branch, replaced on every publish)")
+    _git(R, "update-ref", "refs/heads/runs-db", com)
+    subprocess.run(["git", "-C", R, "reflog", "expire", "--expire=now", "refs/heads/runs-db"], capture_output=True)
+    subprocess.run(["git", "-C", R, "push", "--force-with-lease=refs/heads/runs-db", "neurall", "refs/heads/runs-db:refs/heads/runs-db"], check=True)
+    print(f"runs-db = {com[:9]} ({n} runs)", flush=True)
+
+def cmd_publish(a):
+    """run.py publish [--tree DIR] [--name NAME --notes FILE [--replace OLDTAG]]: pushes the tree's branch to the fork (remote neurall, explicit refspec, no force), replaces runs.db there (branch runs-db), and with --name tags the head
+    release-b<build>-<hash>-<name> and makes the GitHub release (neurall/llama.cpp) from the archives of that build in REL_OUT; --replace OLDTAG deletes that release and its tag first. Never origin."""
+    tree = os.path.abspath(a.tree); here = os.path.dirname(os.path.abspath(__file__))
+    br = _git(tree, "branch", "--show-current")
+    for ref in [f"refs/heads/{br}:refs/heads/{br}"]:
+        subprocess.run(["git", "-C", tree, "push", "neurall", ref], check=True)
+    _publish_db(here)
+    if not a.name:
+        return
+    rev = _git(tree, "rev-parse", "HEAD"); h = rev[:9]
+    arch = sorted(f for f in os.listdir(REL_OUT) if "llama-release-b" in f and f"-{h}-" in f)
+    if not arch: sys.exit(f"publish: no archives for {h} in {REL_OUT}")
+    b = re.search(r"llama-release-b(\d+)-", arch[0]).group(1); tag = f"release-b{b}-{h}-{a.name}"
+    gh = ["gh", "-R", "neurall/llama.cpp"]
+    if a.replace:
+        subprocess.run(gh + ["release", "delete", a.replace, "--cleanup-tag", "-y"], check=True)
+    subprocess.run(["git", "-C", tree, "tag", "-a", tag, "-m", f"b{b} {a.name}", rev], check=True)
+    subprocess.run(["git", "-C", tree, "push", "neurall", f"refs/tags/{tag}:refs/tags/{tag}"], check=True)
+    subprocess.run(gh + ["release", "create", tag, "--title", f"b{b} {a.name}", "--notes-file", a.notes, "--latest"] + [os.path.join(REL_OUT, f) for f in arch], check=True)
+    print(f"published {tag}: {', '.join(arch)}", flush=True)
+
+
 def cmd_build(a):
     r"""Builds, in containers (pc1) or on the W10 laptop (pc3), with ccache.
     default: dev build (the release container and flags, llama-server / llama-cli / llama-perplexity only) of a worktree as it is (--tree) or of a commit
@@ -4733,9 +4774,9 @@ def cmd_queue(a):
         os.replace(INI + ".tmp", INI)
     return 0
 def run_list_help():
-    """`run.py run --help`: the list mode (fork/runs/NAME.csv), the lists with their model names (the --only values) and the plain `run BUILD...` usage below it."""
+    """`run.py jobs --help`: the list mode (fork/runs/NAME.csv), the lists with their model names (the --only values) and the plain `run BUILD...` usage below it."""
     d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs")
-    print("run.py run -c NAME [-b B] [-onl TEXT[,TEXT]] [-s] [-dsc] [-nm] [-w] [-r N] [-n]   run the cells of fork/runs/NAME.csv (campaign list: gainers, reg, ctx)\n"
+    print("run.py jobs -c NAME [-b B] [-onl TEXT[,TEXT]] [-s] [-dsc] [-nm] [-w] [-r N] [-n]   run the cells of fork/runs/NAME.csv (campaign list: gainers, reg, ctx)\n"
           "  -skp TEXT rows to skip, same matching as -onl (comma list)\n"
           "  -sc, -su each cell on the newest stock binary first, then on -b\n"
           "  -al      antiloop: repeat_penalty 1.15 over the last 256 tokens for every cell (same for stock and ours; changes the text, not the speed); also --antiloop before any subcommand\n"
@@ -4761,7 +4802,7 @@ def run_list_help():
             sz = sum(os.path.getsize(p) for p in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
             seen[m] = 1
             print(f"  {m:<14} {os.path.basename(r['model']):<52} {-(-sz >> 30) if sz else '?'}")
-    print("\nrun.py run BUILD... [-t TEST] [-n N] ...   measured runs of one test (below)\n")
+    print("\nrun.py jobs BUILD... [-t TEST] [-n N] ...   measured runs of one test (below)\n")
 
 
 CUR_HWL = [None]   # the machine line of the running list (hw_line()): the GPU class and count of the cells it runs, for the expected time of a cell
@@ -5117,7 +5158,8 @@ def cell_status(t0, expect, label, total=None):
                     chg = DEC_SEEN.get(d["name"]) not in (None, (d["value"], d["why"]))
                     DEC_SEEN[d["name"]] = (d["value"], d["why"])
                     bad = d["name"] == "placement" and "stock" in d["value"] and "fits" not in d["value"]
-                    eng += "\n" + col(37, "decided") + " " + col("1;93" if chg else 33 if bad else 32, f"{d['name']} {d['value']}") + col("1;37" if chg else 90, f"  {d['why']}")
+                    why = "" if d["name"] == "threads_decode" else f"  {d['why']}"   # the decode thread search: its count only, its reason text is noise here (user 2026-10-27)
+                    eng += "\n" + col(37, "decided") + " " + col("1;93" if chg else 33 if bad else 32, f"{d['name']} {d['value']}") + col("1;37" if chg else 90, why)
         except (ValueError, KeyError, TypeError, AttributeError): pass
         if eng: st = st + "\n" + eng
         if eng or not LAST_ST[0]: LAST_ST[0] = st   # (the last tick WITH engine data: the tick after the server is gone shows an idle machine and would replace it)
@@ -5135,11 +5177,12 @@ def cell_status(t0, expect, label, total=None):
     ex0 = expect or 0   # the whole-run bar follows the cell's re-estimate
     if sf and el > 10: expect = el / sf
     elif expect and el > expect: expect = el * 1.2
-    if not total: return (st + "\n" if st else "") + l1
+    rp = os.environ.get("RUNPY_REPRO"); rl = (col(90, "repro ".ljust(LW) + " " + rp) + "\n") if rp else ""   # the command line of this run, under every status: copy it to repeat the run
+    if not total: return (st + "\n" if st else "") + rl + l1
     done_s, total_s, run_t0, k, n = total   # expected seconds done / in all, start of the whole run, cell number k of n
     total_s += (expect or 0) - ex0
     tel = time.time() - run_t0; part = done_s + min(el, expect or 0)
-    return (st + "\n" if st else "") + l1 + "\n" + col(33, "whole run".ljust(LW)) + f" {bar(part, total_s, shown=tel)}  " + col(33, f"cell {k}/{n}")
+    return (st + "\n" if st else "") + rl + l1 + "\n" + col(33, "whole run".ljust(LW)) + f" {bar(part, total_s, shown=tel)}  " + col(33, f"cell {k}/{n}")
 
 
 def cell_results(path, since):
@@ -5790,7 +5833,7 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
     """the finished cells as an aligned table without grid lines, as wide as the data needs and no wider than the terminal. t/s and pp are named once in the header; ours, stock, the two gains; the builds below.
     Too wide: the load column goes, then the time column, then the dates of the builds; a row is never split in two lines"""
     if not recs: return []
-    # a detached run (no terminal, e.g. started with nohup and watched with `run run`) does not know the viewer's width: no wrapping there, the viewer's terminal
+    # a detached run (no terminal, e.g. started with nohup and watched with `jobs`) does not know the viewer's width: no wrapping there, the viewer's terminal
     # decides (user 2026-10-24: the 100-column fallback split every row in two, unreadable)
     try: cols = int(os.environ.get("COLUMNS") or (shutil.get_terminal_size((100, 24)).columns if sys.stdout.isatty() else 1000))
     except (ValueError, OSError): cols = 100
@@ -6107,7 +6150,7 @@ def cmd_onepass(a):
         if not m: continue
         nt = re.search(r"prompt_n=(\d+)", note or "")
         cells[(model, int(m.group(1)))] = dict(passes=int(ps) if str(ps or "").isdigit() else 0, pass_tok=pt, pp=float(pp), tokens=int(nt.group(1)) if nt else 0)   # the last run of the cell wins (warm)
-    if not cells: sys.exit(f"onepass: no rows for build {b}; run `run.py run onepass -b {b} -day -nodl` first")
+    if not cells: sys.exit(f"onepass: no rows for build {b}; run `run.py jobs onepass -b {b} -day -nodl` first")
     cards = n_cards(); ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); picks = {}
     for model in sorted({k[0] for k in cells}):
         sizes = sorted((n for (m_, n) in cells if m_ == model), reverse=True)
@@ -6154,7 +6197,7 @@ def cmd_calib(a):
         base = r["name"].rsplit("-", 1)[0]; name = f"{base}-p{n}"
         with open(os.path.join(here, "runs", "calib.csv"), "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(r.keys())); w.writeheader(); w.writerow(dict(r, name=name, test=f"pf{n}k1k", n="1"))
-        cmd = [sys.executable, os.path.join(here, "run.py"), "run", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else []) + list(getattr(a, "pass_args", None) or [])
+        cmd = [sys.executable, os.path.join(here, "run.py"), "jobs", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else []) + list(getattr(a, "pass_args", None) or [])
         print(col(90, " ".join(cmd)), flush=True)
         if a.dry: return None
         st = os.path.join(QDIR, "calib-state.json")   # what `run status` shows for a calib: the model, its build, when it began and the probe now running
@@ -6172,7 +6215,7 @@ def cmd_calib(a):
         base = r["name"].rsplit("-", 1)[0]; name = f"{base}-a{n}"; ctx = int(n * 1100 + 2048)
         with open(os.path.join(here, "runs", "calib.csv"), "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(r.keys())); w.writeheader(); w.writerow(dict(r, name=name, test="pf2k1k", n="1", tokens="1", extra=f"--ctx {ctx}"))
-        cmd = [sys.executable, os.path.join(here, "run.py"), "run", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else []) + list(getattr(a, "pass_args", None) or [])
+        cmd = [sys.executable, os.path.join(here, "run.py"), "jobs", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else []) + list(getattr(a, "pass_args", None) or [])
         print(col(90, f"dry allocation of {ctx} tokens of context: " + " ".join(cmd)), flush=True)
         if a.dry: return False
         subprocess.call(cmd)
@@ -6284,7 +6327,7 @@ def cmd_status(a):
 
 
 class ViewFilter:
-    """The viewer's own redraw (`run run`, attach). The detached run writes its status block with cursor-up codes counted in its own lines. A terminal narrower than a line wraps it,
+    """The viewer's own redraw (`jobs`, attach). The detached run writes its status block with cursor-up codes counted in its own lines. A terminal narrower than a line wraps it,
     the cursor-up then goes short and the block repeats down the screen; a block taller than the screen scrolls its top out of reach. The detached run cannot know the viewer's
     terminal, so the viewer does the fitting itself: every line is clipped to the terminal width (queried on every chunk, so a resize counts; ANSI codes do not count, nothing wraps,
     one logical line is exactly one row) and a block that is taller than the screen is cleared with the whole screen instead of cursor-up (the rows above are out of reach).
@@ -6351,7 +6394,7 @@ def run_list_detached(name, argv):
         for _ in range(180):
             time.sleep(1); rec = alive()
             if rec or subprocess.call(["pgrep", "-f", "[r]un.py calib"], stdout=subprocess.DEVNULL) != 0: break
-    if name is None and not rec:   # plain `run run`: attach only; with none going, wait for the next one (user 2026-10-24: wait instead of exiting)
+    if name is None and not rec:   # plain `jobs`: attach only; with none going, wait for the next one (user 2026-10-24: wait instead of exiting)
         print("no detached run is going: waiting for one to start (Ctrl-C quits) ...", flush=True)
         try:
             while not rec:
@@ -6362,7 +6405,7 @@ def run_list_detached(name, argv):
     else:
         log = f"{QDIR}/run-list-{time.strftime('%m%d-%H%M%S')}.log"
         with open(log, "ab") as lf:
-            p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "run", name] + list(argv), stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
+            p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "jobs", name] + list(argv), stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
                                  env=dict(os.environ, RUN_DAEMON="1", PYTHONUNBUFFERED="1", COLUMNS=str(shutil.get_terminal_size((100, 24)).columns)), start_new_session=True)
             child = p
         json.dump({"pid": p.pid, "log": log}, open(RUN_LIVE, "w")); rec = {"pid": p.pid, "log": log}
@@ -6389,7 +6432,7 @@ def run_list_detached(name, argv):
                 except OSError:
                     chunk = f.read()   # the last lines written before it ended
                     if chunk: show(chunk)
-                    if name is None and not child:   # plain `run run` is a viewer: the run ended, wait for the next one instead of exiting (user 2026-10-24)
+                    if name is None and not child:   # plain `jobs` is a viewer: the run ended, wait for the next one instead of exiting (user 2026-10-24)
                         print("\nthe run ended.\n", flush=True)
                         again = True
                         break
@@ -6415,11 +6458,11 @@ def run_list_detached(name, argv):
 
 
 def run_list(name, argv):
-    """`run.py run NAME [-b B] [-o TEXT] [-s] [-dsc] [-nm] [-w] [-r N] [-n]`: run the cells listed in fork/runs/NAME.csv (columns name, model, n, test, tokens, args, extra), one after the other,
+    """`run.py jobs NAME [-b B] [-o TEXT] [-s] [-dsc] [-nm] [-w] [-r N] [-n]`: run the cells listed in fork/runs/NAME.csv (columns name, model, n, test, tokens, args, extra), one after the other,
     each through `cell` (waits for free GPUs, checks the pool, logs to q5h). The campaign of a row is B-name (B defaults to `latest`, the newest dev build), so a rerun
     with another build never collides. A failed cell is reported and the list goes on. -o keeps the rows whose name contains TEXT; -d runs the biggest models first, a model's rows together. Before each new model the pool is
     rebuilt to its size (run_list_pool; --no-pool skips that). Lists: gainers, reg, ctx."""
-    ap = argparse.ArgumentParser(prog=f"run.py run {name}")
+    ap = argparse.ArgumentParser(prog=f"run.py jobs {name}")
     ap.add_argument("-b", "--build", default="latest"); ap.add_argument("-onl", "-o", "--only", help="rows whose name contains TEXT; comma list: glm-,mimo-"); ap.add_argument("-t", "--test", help="rows whose test is TEXT (comma list): best1k = only the best-prompt input rows, edit4c, tetrisc"); ap.add_argument("-n", "--dry", action="store_true")
     ap.add_argument("-skp", "--skip", help="skip rows whose name contains TEXT; comma list: glm-,mimo-")
     ap.add_argument("-ng", "--gpus", dest="n_gpus", type=int, metavar="N", help="use only N cards: the best N (fastest slot, then fastest card), the fastest one last; 0 = CPU only. Remote machines (-pc) and this host")
@@ -6590,7 +6633,7 @@ def run_list(name, argv):
             CELL_REC.append(dict(tag=t, section="queued", asked=0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt="", model="", test="", name=t, el=None, lt="", rc=0, res=[], st=None, stock_row=False))
         print(col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC)), flush=True)
         if qd and not qd_on: print(col(90, f"queue daemon off: {len(qd)} old tasks wait in tasks.csv (none starts)"), flush=True)
-        waiting = []   # waiter shells (`while pgrep ...; do sleep; done; ... python3 run.py run LIST`): what starts when the current run ends, in start order
+        waiting = []   # waiter shells (`while pgrep ...; do sleep; done; ... python3 run.py jobs LIST`): what starts when the current run ends, in start order
         try:
             ps_ = subprocess.run(["ps", "-eo", "pid,ppid,args"], capture_output=True, text=True).stdout.splitlines()
             started = {int(l.split()[1]) for l in ps_[1:] if "run.py" in l}   # a waiter whose list already runs (its python child exists) is not queued any more
@@ -6603,7 +6646,7 @@ def run_list(name, argv):
         if waiting:
             print(col(1, "\nqueued next (start by themselves, in this order):"), flush=True)
             for k, (pid_, cmd_) in enumerate(sorted(waiting), 1):
-                nm = re.search(r"run\.py run (\w+)", cmd_); cells = ""
+                nm = re.search(r"run\.py (?:run|jobs) (\w+)", cmd_); cells = ""
                 if nm and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", nm.group(1) + ".csv")):
                     names = [r["name"] for r in csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", nm.group(1) + ".csv"), newline=""))]
                     cells = f"  ({len(names)} cells: {', '.join(names[:6])}{' ...' if len(names) > 6 else ''})"
@@ -6677,7 +6720,7 @@ def run_list(name, argv):
             done_s += ex or fill
     finally:   # the cells' lines, then the pool: it holds its RAM whether a model uses it or not: give it back when the list ends, also on Ctrl-C or an error
         if CELL_LINES and not o.dry:   # the final block, complete for a screenshot: the machine, then every cell with what it measured
-            live_clear(); print("\n" + (col(1, hw_line()) + "\n" if any(not x.get("skipped") for x in CELL_REC) else "") + "\n".join(final_table(CELL_REC) or CELL_LINES), flush=True)   # the machine line is at the top already when no cell ran
+            live_clear(); print("\n" + (col(1, hw_line()) + "\n" if any(not x.get("skipped") for x in CELL_REC) else "") + "\n".join(final_table(CELL_REC) or CELL_LINES) + ("\n" + col(90, "repro  " + os.environ["RUNPY_REPRO"]) if os.environ.get("RUNPY_REPRO") else ""), flush=True)   # the command line under the table: copy it to repeat the run; the machine line is at the top already when no cell ran
         if CELL_LINES and not o.dry: open(f"{QDIR}/{o.build}-{name}.list.txt", "a").write("\n".join(CELL_LINES) + "\n")   # the screen shows only the current cell; the finished cells' lines go here
         if not o.dry: kept_kill()   # the kept server holds the pool: it goes before the unmount
         if not o.no_pool and not o.dry and os.path.ismount("/mnt/huge1g"):
@@ -7113,6 +7156,114 @@ def cmd_cell(a):
             f.write(f"{time.strftime('%F %T')} ERROR {a.tag} {a.test} builds={a.builds} model={os.path.basename(a.model)} run.py exit={rc}\n" + "".join(e + "\n" for e in errs))
         return 1
     return 0
+def cmd_hotmapmat(a):
+    """Reads a --moe dynhot store (<state dir>/hotmap/<model>.hotmap) and prints, for its records in the order the requests were stored, the key cosine of each
+    pooling (mean, max) and the expert overlap of every pair: overlap = per layer the share of its uses each expert got, the smaller of the two shares summed
+    over the experts, averaged over the layers either request used (1 = the same experts used alike); shared hot = of the experts used above their layer's
+    mean by the row's request, the part the column's request also used above its mean. Last the correlation of each pooling's cosine with the overlap over
+    all pairs: the pooling whose key predicts the experts used better has the higher one. Records are one request each when the run used dynhot-merge=2
+    (nothing pools); --names labels them (a comma list, in storing order)."""
+    import struct
+    raw = open(a.file, "rb").read()
+    if raw[:8] != b"MOETOPC3":
+        sys.exit(f"{a.file}: not a hotmap store of this layout (MOETOPC3)")
+    e, l, x, _ = struct.unpack_from("<4I", raw, 8)
+    kb = (e + 1) // 2   # keys are 4 bits per value: q = nibble - 8, times qinv (1 / length of q); two keys per record (mean pooling, max pooling)
+    rec = 4 + 2 * (4 + kb) + 4 * l * x
+    n = (len(raw) - 24) // rec
+    keys, cnt = ([], []), []
+    for i in range(n):
+        o = 24 + i * rec + 4
+        for k in range(2):
+            qi = struct.unpack_from("<f", raw, o)[0]
+            keys[k].append([(((raw[o + 4 + j // 2] >> (4 * (j & 1))) & 15) - 8) * qi for j in range(e)])
+            o += 4 + kb
+        cnt.append([struct.unpack_from(f"<{x}I", raw, o + 4 * x * j) for j in range(l)])
+    names = ((a.names.split(",") if a.names else []) + [str(i + 1) for i in range(n)])[:n]
+    def overlap(p, q):
+        tot, layers = 0.0, 0
+        for j in range(l):
+            tp, tq = sum(p[j]), sum(q[j])
+            if tp == 0 and tq == 0:
+                continue
+            layers += 1
+            if tp and tq:
+                tot += sum(min(u / tp, v / tq) for u, v in zip(p[j], q[j]))
+        return tot / layers if layers else 0.0
+    hots = [[{k for k, u in enumerate(c[j]) if u > 0 and u * x >= sum(c[j])} for j in range(l)] for c in cnt]
+    def shared(i, k):
+        den = sum(len(s) for s in hots[i])
+        return sum(len(s & t) for s, t in zip(hots[i], hots[k])) / den if den else 0.0
+    def cos(p, q):
+        return sum(u * v for u, v in zip(p, q))
+    ov = [[overlap(cnt[i], cnt[k]) for k in range(n)] for i in range(n)]
+    mats = (("key cosine, mean pooling", [[cos(keys[0][i], keys[0][k]) for k in range(n)] for i in range(n)]),
+            ("key cosine, max pooling", [[cos(keys[1][i], keys[1][k]) for k in range(n)] for i in range(n)]),
+            ("expert overlap", ov),
+            ("shared hot experts (row's hot set also hot in column)", [[shared(i, k) for k in range(n)] for i in range(n)]))
+    for title, m in mats:
+        print(f"\n{title}")
+        print(" " * 12 + "".join(f"{nm[:7]:>8}" for nm in names))
+        for i in range(n):
+            print(f"{names[i][:11]:<12}" + "".join(f"{m[i][k]:8.2f}" for k in range(n)))
+    pairs = [(i, k) for i in range(n) for k in range(i + 1, n)]
+    def corr(m):
+        xs, ys = [m[i][k] for i, k in pairs], [ov[i][k] for i, k in pairs]
+        if len(xs) < 3:
+            return float("nan")
+        mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+        sx = sum((u - mx) ** 2 for u in xs) ** 0.5
+        sy = sum((v - my) ** 2 for v in ys) ** 0.5
+        return sum((u - mx) * (v - my) for u, v in zip(xs, ys)) / (sx * sy) if sx and sy else float("nan")
+    print(f"\ncorrelation of key cosine with expert overlap over {len(pairs)} pairs: mean pooling {corr(mats[0][1]):.2f}, max pooling {corr(mats[1][1]):.2f}")
+
+def cmd_hitlog(a):
+    """Per request of the cells whose name (runs.db campaign: build-cell-test) starts with PREFIX: the cache hit rate the server printed for that request
+    ("moe cache = on, hit X% this request"), the uploads it caused, prompt and decode speed, and the --moe dynhot lines of its prompt (nearest stored
+    request and its cosine by both poolings, distinct tokens, key and search time, experts dropped at decode start, time to store the request before it).
+    Each request leaves a copy of the server's log (bench/logs/runs/<end time>-<build>-<test>.log, the whole log of a kept server so far): the row's log
+    is the one named by its end time, and its request is the last one in it."""
+    import datetime, sqlite3
+    fork = os.path.dirname(os.path.abspath(__file__))   # runs.db and bench/logs sit beside run.py (HERE is the builds directory)
+    db = sqlite3.connect(os.path.join(fork, "runs.db"))
+    rows = db.execute("select campaign, end_ts, tps, pp, build, test from runs where campaign like ? order by rowid", (a.prefix + "%",)).fetchall()
+    if not rows:
+        sys.exit(f"no runs.db rows whose campaign starts with {a.prefix}")
+    logs = []
+    for f in glob.glob(os.path.join(fork, "bench", "logs", "runs", "*.log")):
+        m = re.match(r"(\d{4}-\d\d-\d\d_\d\d:\d\d:\d\d)-(.*)\.log$", os.path.basename(f))
+        if m:
+            logs.append((datetime.datetime.strptime(m.group(1), "%Y-%m-%d_%H:%M:%S"), m.group(2), f))
+    print(f"{'cell':<26}{'hit %':>7}{'uploads':>9}{'pp t/s':>9}{'dec t/s':>9}  dynhot (prompt: nearest stored request; decode start: experts dropped)")
+    for camp, en, tps, pp, build, test in rows:
+        te = datetime.datetime.strptime(en, "%Y-%m-%d %H:%M:%S")
+        cand = [l for l in logs if l[1] == f"{build}-{test}" and abs((l[0] - te).total_seconds()) <= 5]
+        hit = up = ""
+        dyn = []
+        if cand:
+            lines = open(min(cand, key=lambda l: abs((l[0] - te).total_seconds()))[2], errors="replace").read().split("\n")
+            ends = [i for i, l in enumerate(lines) if "this request /" in l]
+            if ends:
+                start = ends[-2] + 1 if len(ends) > 1 else 0
+                for line in lines[start:ends[-1] + 3]:
+                    m = re.search(r"hit ([\d.]+)% this request", line)
+                    if m:
+                        hit = m.group(1)
+                    m = re.search(r"moe churn = (\d+) uploads", line)
+                    if m:
+                        up = m.group(1)
+                    m = re.search(r"dynhot: prompt of (\d+) tokens \((\d+) distinct\), nearest of (\d+) stored requests at cosine ([-\d.]+) by (\w+) pooling \(([-\d.]+) by (\w+)\): (.*?) \(key ([\d.]+) ms, search ([\d.]+) ms\)", line)
+                    if m:
+                        dyn.append(f"{m.group(1)} tok ({m.group(2)} distinct), {m.group(3)} stored, cos {m.group(5)} {m.group(4)} / {m.group(7)} {m.group(6)}: {m.group(8)}, key {m.group(9)} ms search {m.group(10)} ms")
+                    m = re.search(r"dynhot: the prompt is over: (\d+) cached experts .* dropped \(([\d.]+) ms", line)
+                    if m:
+                        dyn.append(f"dropped {m.group(1)} ({m.group(2)} ms)")
+                    m = re.search(r"dynhot: request stored: best overlap with a record ([\d.]+), threshold ([\d.]+).*?: (.*?) \((\d+) records, ([\d.]+) ms\)", line)
+                    if m:
+                        dyn.append(f"stored the request before ({m.group(3)}, overlap {m.group(1)}, {m.group(5)} ms)")
+        name = camp[len(a.prefix):] if camp.startswith(a.prefix) else camp
+        print(f"{name[:25]:<26}{hit:>7}{up:>9}{(pp or 0):9.1f}{(tps or 0):9.1f}  {'; '.join(dyn)}")
+
 def cmd_stop(a):
     """Stops a running measurement chain for real: the harness (bench, regress, exp, run, quick, ctl, prompt with their flock wrappers), the servers and tools of our builds and an nsys around them, every descendant of it (the
     servers and tools it started: a killed script does not take its children with it, and a lone kill of the harness lets the parent script start the next cell),
@@ -8842,6 +8993,8 @@ TOOLS = {
 if __name__ == "__main__":
     import atexit
     atexit.register(_sync_runs_db)
+    os.environ.setdefault("RUNPY_REPRO", "python3 fork/run.py " + shlex.join(sys.argv[1:]))   # rows record how they were started; a child run.py keeps the parent's line
+    if len(sys.argv) > 1 and sys.argv[1] == "jobs": sys.argv[1] = "run"   # `run.py jobs` is the name of the old `run.py jobs` (both work; the code keeps the old subcommand key)
     if len(sys.argv) > 1 and sys.argv[1] in TOOLS:   # a merged tool: it keeps its own argument parser
         _tool = sys.argv[1]
         sys.argv = [f"run.py {_tool}"] + sys.argv[2:]
@@ -8853,7 +9006,7 @@ if __name__ == "__main__":
                                  epilog="tools (each has its own --help): " + ", ".join(sorted(TOOLS)))
     sp = ap.add_subparsers(dest="cmd", required=True)
     TESTS = ["ppl", "ppl3", "pplb", "pplc", "ppll", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf5k", "pf6k", "pf7k", "pf8k", "pf9k", "pf10k", "pf11k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
-    r = sp.add_parser("run", help="measured runs of one test for BUILD...")
+    r = sp.add_parser("run", aliases=["jobs"], help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", type=test_name, choices=TestChoices(TESTS + list(ALIASES)))
     r.add_argument("-n", type=int, default=1)
@@ -8911,6 +9064,8 @@ if __name__ == "__main__":
     m.add_argument("--ssh", help="ssh alias or user@host, or a whole ssh command line in quotes (-p PORT user@host ...): then ~/.ssh/config is written for the name")
     m.add_argument("--root", help="directory holding the build dirs on that machine")
     m.add_argument("--os", default="linux")
+    pu = sp.add_parser("publish", help="push the tree's branch to the fork (neurall) + runs.db; with --name the tag and the GitHub release from the REL_OUT archives")
+    pu.add_argument("--tree", default="/p/bw/wt-rel"); pu.add_argument("--name"); pu.add_argument("--notes"); pu.add_argument("--replace", help="old release tag to delete first")
     dp = sp.add_parser("devpub", help="publish a dev build as the prerelease dev-BUILD on the fork (not latest) so remote machines download it instead of receiving a push"); dp.add_argument("build")
     nm = sp.add_parser("numa", help="NUMA map and node x node RAM read-rate table of a machine (-pc ID for a remote one), no model needed")
     nm.add_argument("-pc", "--machine", default="pc1")
@@ -8991,6 +9146,10 @@ if __name__ == "__main__":
     hp = sp.add_parser("hugepool", help="the 1 GiB huge-page pool for the pinned-weights cache: mount [SIZE|MODEL...] | unmount | status (was resident_pin.sh)")
     hp.add_argument("action", choices=["mount", "unmount", "status"])
     hp.add_argument("what", nargs="*", help="mount: a size like 100g or model file(s); nothing = the most the machine can spare")
+    hl = sp.add_parser("hitlog", help="per request: cache hit rate, uploads, speeds and the --moe dynhot lines, for the cells whose runs.db name starts with PREFIX")
+    hl.add_argument("prefix", help="the start of the runs.db campaign, e.g. dynhot_two_pool_keys- (build-cell-test)")
+    hm = sp.add_parser("hotmapmat", help="print key cosine and expert overlap between the requests in a --moe dynhot store (hotmap/<model>.hotmap)")
+    hm.add_argument("file"); hm.add_argument("--names", help="comma list of labels in storing order")
     st = sp.add_parser("stop", help="stop the running measurement chain properly: parent scripts, harness, all children; then wait for free GPU memory and restore the power limits")
     st.add_argument("tasks", nargs="*", type=int, help="only these tasks, by the numbers --dry lists (1 = started first); none = all")
     st.add_argument("--last", type=int, default=0, metavar="N", help="only the N most recently started tasks")
@@ -9053,12 +9212,12 @@ if __name__ == "__main__":
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
     ns.add_argument("--gaps", type=int, default=0, help="list the N longest compute-stream waits per card with the kernels around them")
     if len(sys.argv) > 1 and (sys.argv[1] in ("-h", "--help") or sys.argv[1] == "run" and len(sys.argv) > 2 and sys.argv[2] in ("-h", "--help")): run_list_help()
-    if len(sys.argv) == 2 and sys.argv[1] == "run": sys.exit(run_list_detached(None, []))   # `run run` alone: attach to the detached run, if any
+    if len(sys.argv) == 2 and sys.argv[1] == "run": sys.exit(run_list_detached(None, []))   # `jobs` alone: attach to the detached run, if any
     if len(sys.argv) > 3 and sys.argv[1] == "run" and "-c" in sys.argv[2:-1]:   # `run -c gainers ...` = `run gainers ...`: -c names the campaign list
         i = sys.argv.index("-c", 2); sys.argv[2:i + 2] = [sys.argv[i + 1]] + sys.argv[2:i]
     if len(sys.argv) > 2 and sys.argv[1] == "run" and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", sys.argv[2] + ".csv")):
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
-    {"run": cmd_run, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+    {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
