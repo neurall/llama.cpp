@@ -2935,6 +2935,78 @@ static void fork_idx_check(ggml_backend_sched_t sched, ggml_cgraph * gf, const c
     }
 }
 
+// fork: --moe dynhot keys (user 2026-10-28: the key of a request's hot map is the activations at the prompt's last token, "literally on prefill end", before
+// the logits: every token before it is mixed in, nothing of the template; "pool all last token layers activations"). The pass that ends a prompt copies its
+// last token's router input (the source of ffn_gate_inp) of every MoE layer and its final hidden state (result_norm, what the logits are made from) into
+// small outputs (dynkey-0.., dynkey-final); after the pass they are fetched, and the next call hands them to the MoE cache (llama_moe_topic_act_fork).
+// Other graphs stay as they were: an eval callback would turn the scheduler's prefetch off.
+bool llama_moe_topic_key_wanted_fork(void);
+void llama_moe_topic_act_fork(const float * const * rows, int n_rows, int64_t n_embd);
+namespace {
+struct dynkey_state {
+    std::vector<std::vector<float>> rows;   // the MoE layers' router inputs in layer order, then the final hidden state (empty: not in the graph)
+    bool pending = false;                   // fetched after a prompt's last pass, not handed over yet
+} g_dynkey;
+
+// t's last row (a 2-D float tensor) copied out as an output named name
+bool dynkey_out(ggml_context * ctx, ggml_cgraph * gf, ggml_tensor * t, const char * name) {
+    if (t == nullptr || t->type != GGML_TYPE_F32 || t->ne[1] < 1 || t->ne[2] != 1 || t->ne[3] != 1 || t->nb[0] != sizeof(float)) { return false; }
+    ggml_tensor * out = ggml_cont(ctx, ggml_view_1d(ctx, t, t->ne[0], (size_t) (t->ne[1] - 1) * t->nb[1]));
+    ggml_set_name(out, name);
+    ggml_set_output(out);
+    ggml_build_forward_expand(gf, out);
+    return true;
+}
+
+// the copies of a prompt's last pass: the router input of every MoE layer found in the graph, and the final hidden state
+void dynkey_add(ggml_context * ctx, ggml_cgraph * gf, int n_layer) {
+    std::vector<std::pair<int, ggml_tensor *>> rin;   // per MoE layer (once each): its router's input
+    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+        ggml_tensor * t = ggml_graph_node(gf, i);
+        int il = -1, end = 0;
+        if (t->op != GGML_OP_MUL_MAT || t->src[0] == nullptr || sscanf(t->src[0]->name, "blk.%d.ffn_gate_inp.weight%n", &il, &end) != 1 || end == 0 || il < 0 || il >= n_layer) {
+            continue;
+        }
+        bool seen = false;
+        for (const auto & r : rin) { seen = seen || r.first == il; }
+        if (!seen) { rin.emplace_back(il, t->src[1]); }
+    }
+    std::sort(rin.begin(), rin.end(), [](const auto & a, const auto & b) { return a.first < b.first; });
+    int n = 0;
+    for (const auto & r : rin) {
+        char name[32];
+        snprintf(name, sizeof(name), "dynkey-%d", n);
+        n += dynkey_out(ctx, gf, r.second, name);
+    }
+    dynkey_out(ctx, gf, ggml_graph_get_tensor(gf, "result_norm"), "dynkey-final");
+}
+
+// after the pass: the copies into host rows, queued on their backends (the next call synchronizes before it hands them over)
+void dynkey_fetch(ggml_backend_sched_t sched, ggml_cgraph * gf) {
+    std::vector<ggml_tensor *> rows;
+    ggml_tensor * fin = nullptr;
+    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+        ggml_tensor * t = ggml_graph_node(gf, i);
+        if (strncmp(t->name, "dynkey-", 7) != 0) { continue; }
+        if (strcmp(t->name + 7, "final") == 0) { fin = t; continue; }
+        const int k = atoi(t->name + 7);
+        if (k >= (int) rows.size()) { rows.resize(k + 1, nullptr); }
+        rows[k] = t;
+    }
+    rows.push_back(fin);
+    g_dynkey.rows.resize(rows.size());
+    bool any = false;
+    for (size_t k = 0; k < rows.size(); ++k) {
+        g_dynkey.rows[k].clear();
+        if (rows[k] == nullptr) { continue; }
+        g_dynkey.rows[k].resize((size_t) rows[k]->ne[0]);
+        ggml_backend_tensor_get_async(ggml_backend_sched_get_tensor_backend(sched, rows[k]), rows[k], g_dynkey.rows[k].data(), 0, ggml_nbytes(rows[k]));
+        any = true;
+    }
+    g_dynkey.pending = any;
+}
+}  // namespace
+
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
     if (mctx && !mctx->apply()) {
@@ -2983,6 +3055,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     const int64_t t_graph0 = ggml_time_us();
     bool graph_rebuilt = false;
     bool reuse = !graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork() && !ds_changed && !ctl_changed;
+    // fork (--moe dynhot): the pass that ends a prompt (its last token has the output) copies the key rows out; a reused graph without the copies is built again
+    const bool want_key = cparams.moe_cache_started && !cparams.ctx_other && ubatch.output != nullptr && ubatch.output[ubatch.n_tokens - 1] &&
+                          llama_moe_topic_key_wanted_fork();
+    if (reuse && want_key && ggml_graph_get_tensor(res->get_gf(), "dynkey-final") == nullptr && ggml_graph_get_tensor(res->get_gf(), "dynkey-0") == nullptr) {
+        reuse = false;
+    }
     if (reuse) {
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
 
@@ -3027,6 +3105,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
                 ret = GGML_STATUS_FAILED;
                 return nullptr;
+            }
+            if (want_key) {
+                dynkey_add(res->get_ctx(), gf, (int) model.hparams.n_layer());
             }
 
             moe_mirror_offsets();   // fork: --moe mirror-pool: a pass that splits behind the dense split's copies, any other graph over them
@@ -3112,6 +3193,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
         return nullptr;
+    }
+    if (want_key) {
+        dynkey_fetch(sched.get(), res->get_gf());
     }
 
     ret = GGML_STATUS_SUCCESS;
@@ -3544,6 +3628,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         // no cap from the RAM probe (3 x the threads that saturate the read rate): the decode search starts on every hardware thread and steps down
         // itself (user 2026-10-26: start from the most threads; too many costs little, too few a lot)
         sched_reserve(); // the compute graph now includes the cache chain
+    }
+    if (g_dynkey.pending && cparams.moe_cache_started && !cparams.ctx_other) {   // fork (--moe dynhot): the key rows of the prompt's last pass to the MoE cache
+        synchronize();
+        std::vector<const float *> rows;
+        for (const auto & r : g_dynkey.rows) { rows.push_back(r.empty() ? nullptr : r.data()); }
+        llama_moe_topic_act_fork(rows.data(), (int) rows.size(), (int64_t) model.hparams.n_embd);
+        g_dynkey.pending = false;
     }
     if (cparams.moe_cache_started && !cparams.ctx_other) {   // fork (--moe dynhot=1, hot maps per topic): the first call of a prompt looks up the stored requests nearest to it
         std::vector<int32_t> ids;

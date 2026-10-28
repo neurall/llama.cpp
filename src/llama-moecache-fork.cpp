@@ -180,7 +180,9 @@ struct layer_state {
 
     std::vector<uint64_t> glob_count;     // expert id -> lifetime uses
     std::vector<uint64_t> glob_base;      // the counts a profile preloaded at start (research emb=1 records this run's counts: glob_count - glob_base)
-    std::vector<uint32_t> topic_cnt;      // expert id -> uses in the request being served (prompt and answer): stored under its prompt's key (hot maps per topic, --moe dynhot=1)
+    std::vector<uint32_t> topic_cnt;      // expert id -> uses in the request being served (prompt and answer): its own term of the eviction score (hot maps per topic, --moe dynhot)
+    std::vector<uint32_t> topic_dec;      // expert id -> uses in its answer (the decode steps the hit rate counts): its record keeps the hottest of these (topic_hottest)
+    std::vector<uint32_t> topic_think;    // the same while it thinks (between <think> and </think>): the record's second map
     uint32_t              topic_max = 0;  // the largest topic_cnt of this layer (the score's scale: g_topic_tmax, the largest of all layers)
     std::vector<float>    topic_heat;     // expert id -> heat in the map merged from the stored requests nearest to this prompt (0..1 on one scale for all layers; 0: none)
     uint64_t              glob_max = 1;
@@ -835,6 +837,8 @@ std::atomic<bool> g_rel_dead{false};   // policy r without router probabilities:
 // hot maps per topic (--moe dynhot=1, set at the first prompt): the lifetime term of the score is the topic's map plus this request's own uses (scale: its busiest
 // expert of any layer, g_topic_tmax) instead of the one map of every request ever served
 std::atomic<bool>     g_topic_on{false};
+std::atomic<bool>     g_topic_thinking{false};   // the request being served is thinking (between <think> and </think>): its answer's uses count in the thinking map
+std::atomic<bool>     g_topic_answer{false};     // its prompt is over (its key came): from here on its uses are the answer's (a short prompt runs as decode steps too)
 
 // --moe expids=N (0: off, the default): per expert of every layer, the last N token ids the router sent to it (user idea 2026-10-28: per expert the
 // pooled input embedding of the tokens that activated it, for a predictor that plans expert uploads from the coming tokens). The ids, not vectors: a
@@ -851,6 +855,25 @@ struct exptok_state {
     std::string           path;
     bool                  dirty = false;
 } g_exptok;
+
+// --moe tokdump=PATH (experiment, user 2026-10-28: "store all selected (8) of all layers moes per layer 0 activation ... see how much bigger hitrate we
+// would have if we used it to prefetch too"): per answer token, the input of the first and of the last MoE layer (fp16; the first already holds the whole
+// context, through that layer's attention) and the experts every MoE layer picked for it, each with whether it was cached then. run.py tokpred replays the
+// file as a nearest-neighbour memory (activation -> the experts of all layers) and counts the misses a prefetch from it would have saved; nothing here
+// changes what the cache does. Decode steps only: a prompt pass on the GPU never shows its routing to the host.
+// File: "MOETOKD1", then n_embd, MoE layers, experts per token, experts per layer (uint32 each); per token: its request's number (uint32), the two inputs
+// (n_embd fp16 each), per MoE layer the experts it picked (int16) and whether each was cached (uint8).
+struct tokdump_state {
+    int      on = -1;                 // -1: not decided yet
+    FILE *   f  = nullptr;
+    uint32_t n_embd = 0, n_lay = 0, n_used = 0;
+    uint32_t req = 0;                 // requests begun (llama_moe_cache_topic_begin_fork)
+    uint64_t step = UINT64_MAX;       // the step whose tokens are being filled
+    int64_t  n_tok = 0;               // its tokens (0: none)
+    std::vector<ggml_fp16_t> k0, kl;  // per token: the input of the first and of the last MoE layer
+    std::vector<int16_t>     ids;     // per token: MoE layers x experts per token
+    std::vector<uint8_t>     hit;     // per token: MoE layers x experts per token, 1 = cached
+} g_tokdump;
 std::atomic<uint32_t> g_topic_tmax{1};
 
 policy get_policy() {
@@ -1754,6 +1777,65 @@ void moe_phase_cb(int busy, size_t bytes, void * ud) {
     ddr_trace(mc, t);
 }
 
+// --moe tokdump: one MoE layer of a decode step (from the observer, mc->mtx held): the experts its tokens picked, at the first and the last MoE layer
+// their input too; the step's tokens go to the file after its last MoE layer
+static void tokdump_layer(moe_cache * mc, const layer_state & ls, size_t li, const ggml_tensor * ids, const ggml_tensor * op) {
+    auto & d = g_tokdump;
+    if (d.on < 0) {
+        const char * p = moe_opt("tokdump");
+        d.f  = p && *p ? fopen(p, "ab") : nullptr;   // appended: a server started again adds its requests (run.py tokpred numbers them anew)
+        d.on = d.f != nullptr;
+        if (p && *p && d.f == nullptr) { LLAMA_LOG_WARN("moe-cache: tokdump: cannot write %s\n", p); }
+    }
+    const ggml_tensor * x = op ? op->src[1] : nullptr;   // the experts' input: [n_embd, 1, tokens] (or [n_embd, tokens])
+    const int64_t n_tok = ids->ne[1], n_ids = ids->ne[0];
+    if (d.on == 0 || x == nullptr || x->type != GGML_TYPE_F32 || x->data == nullptr || (x->ne[2] != n_tok && x->ne[1] != n_tok)) { return; }
+    if (d.n_embd == 0) {
+        d.n_embd = (uint32_t) x->ne[0];
+        d.n_lay  = (uint32_t) mc->layers.size();
+        d.n_used = (uint32_t) n_ids;
+        const uint32_t h[4] = { d.n_embd, d.n_lay, d.n_used, (uint32_t) ls.expert_slot.size() };
+        fseek(d.f, 0, SEEK_END);
+        if (ftell(d.f) == 0) {   // a new file: the header first
+            fwrite("MOETOKD1", 1, 8, d.f);
+            fwrite(h, sizeof(uint32_t), 4, d.f);
+        }
+    }
+    if (x->ne[0] != (int64_t) d.n_embd || n_ids != (int64_t) d.n_used || li >= d.n_lay) { return; }
+    const size_t ne = d.n_embd, nc = (size_t) d.n_lay * d.n_used;
+    if (li == 0 || d.n_tok != n_tok) {   // a new step (not by mc->n_steps: it moves on after the first MoE layer, and the first layer's key was lost)
+        d.step  = mc->n_steps;
+        d.n_tok = n_tok;
+        d.k0.assign((size_t) n_tok * ne, 0);
+        d.kl.assign((size_t) n_tok * ne, 0);
+        d.ids.assign((size_t) n_tok * nc, -1);
+        d.hit.assign((size_t) n_tok * nc, 0);
+    }
+    const size_t xs = x->ne[2] == n_tok ? x->nb[2] : x->nb[1];
+    for (int64_t t = 0; t < n_tok; ++t) {
+        const float * row = (const float *) ((const char *) x->data + t * xs);
+        if (li == 0)           { ggml_fp32_to_fp16_row(row, d.k0.data() + (size_t) t * ne, (int64_t) ne); }
+        if (li + 1 == d.n_lay) { ggml_fp32_to_fp16_row(row, d.kl.data() + (size_t) t * ne, (int64_t) ne); }
+        for (int64_t i = 0; i < n_ids; ++i) {
+            const int32_t id = *(const int32_t *) ((const char *) ids->data + t * ids->nb[1] + i * ids->nb[0]);
+            const size_t  c  = (size_t) t * nc + li * d.n_used + (size_t) i;
+            d.ids[c] = (int16_t) id;
+            d.hit[c] = id >= 0 && id < (int32_t) ls.expert_slot.size() && ls.expert_slot[id] >= 0;
+        }
+    }
+    if (li + 1 == d.n_lay) {   // the step's last MoE layer: its tokens to the file
+        for (int64_t t = 0; t < n_tok; ++t) {
+            fwrite(&d.req, sizeof(uint32_t), 1, d.f);
+            fwrite(d.k0.data() + (size_t) t * ne, sizeof(ggml_fp16_t), ne, d.f);
+            fwrite(d.kl.data() + (size_t) t * ne, sizeof(ggml_fp16_t), ne, d.f);
+            fwrite(d.ids.data() + (size_t) t * nc, sizeof(int16_t), nc, d.f);
+            fwrite(d.hit.data() + (size_t) t * nc, 1, nc, d.f);
+        }
+        fflush(d.f);
+        d.n_tok = 0;
+    }
+}
+
 void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct ggml_tensor * op, void * ud) {
     moe_cache * mc = (moe_cache *) ud;
 
@@ -1814,6 +1896,9 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
                 g_exptok.dirty = true;
             }
             ls->topic_max = std::max(ls->topic_max, ++ls->topic_cnt[id]);   // the request's own map (hot maps per topic): prompt and answer, whatever the lifetime counts take
+            if (!prefill && g_topic_answer.load(std::memory_order_relaxed)) {   // what its record stores: the answer's uses, per phase (not a short prompt's tokens)
+                (g_topic_thinking.load(std::memory_order_relaxed) ? ls->topic_think : ls->topic_dec)[id]++;
+            }
             if (!prefill || count_prompt) {   // the lifetime counts (eviction score, saved hot map): the answer's experts, not the question's, with count-prompt=0
                 ls->glob_max = std::max(ls->glob_max, ++ls->glob_count[id]);
             }
@@ -1849,6 +1934,9 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
 
     // router prediction for the next layers, off this thread (the other CPU threads wait at a barrier)
     const size_t li = ls - mc->layers.data();
+    if (!prefill && g_tokdump.on != 0) {
+        tokdump_layer(mc, *ls, li, ids, op);   // --moe tokdump (experiment)
+    }
     if (!prefill && tr_on()) {
         int n_miss = 0, n_str = 0;
         std::string idl;
@@ -5320,8 +5408,9 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
 
 // ---- hot maps per topic (task 158; user idea 2026-10-27; the store: llama-moetopic-fork.h) ---------------------------------------------------------
 // --moe dynhot=full|store|read|off (1 = full, 0 = off; default store, user 2026-10-28: "dynhot full/onlystore/onlyread/off meaning only store uses ini hotmoes
-// for decode"): every request's expert uses (prompt and answer, topic_cnt) and its decode hit rate are stored under its prompt's keys, the max and the mean
-// of the input embeddings of the whole prompt (template included); a record changes only for a better hit rate. store collects only: the cache runs on the
+// for decode"): the hottest experts of every request's answer (topic_dec, as many as the cache holds: topic_hottest) and its decode hit rate are stored
+// under its prompt's keys, the mean and the max of the input embeddings of the request's own text (the chat template's user parts; a /completion prompt
+// with the template's markers cut); a prompt stored before changes its record only for a better hit rate. store collects only: the cache runs on the
 // ini's hot experts, so the maps the ini steers and the maps dynhot steers (full) can be compared (each record says which); read steers from a frozen file
 // and stores nothing (reg tests). With full and read the first pass of the next prompt looks up the 4 stored records nearest to it and merges their maps,
 // each weighted by its cosine (topic_heat, 0..1 per expert): a query not asked before takes the maps of the nearest topics, at least as near to it as the
@@ -5339,10 +5428,20 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
 static struct topic_t {
     int                 on = -1;          // -1: not decided yet (the first prompt opens the store)
     moe_topic_store     store;
-    std::vector<float>  mean;             // the vocabulary's mean input embedding: keys are centered on it (a mean over many tokens is mostly the common ones)
-    std::vector<float>  key;              // the key of the request being served (empty: none)
-    int                 pool = moe_topic_store::KEY_MAX;   // --moe dynhot-pool=max (default) | avg: the pooled key the lookup uses (both are stored)
-    float               min_cos = -1.0f, merge_cos = 0.80f;   // lookup: the 4 nearest records (only those at least min_cos alike; -1: any); store: a request at least merge_cos alike joins the record
+    std::vector<float>  key;              // the key of the request being served: the rows at its prompt's last token as the model gave them (n_rows x n_embd)
+    uint32_t            n_rows = 0;       // its rows: the router input of every MoE layer, then the final hidden state
+    moe_topic_text      text;             // what it said, thought and answered (the first few hundred bytes of each: the record's line keeps them)
+    uint64_t            phash = 0;        // a hash of its prompt's tokens: the same prompt is the same record
+    bool                act_wait = false; // its prompt began: the layers' keys come with its last pass (llama_moe_topic_act_fork)
+    bool                act_ok   = false; // they came: the request can be stored
+    int32_t             n_prompt = 0;     // its prompt's tokens (the log)
+    bool                own = false;      // its prompt text is the request's own text (the chat template's user parts), not the whole prompt
+    llama_token         tok_open = -2, tok_close = -2;   // the model's <think> and </think> (LLAMA_TOKEN_NULL: none; -2: not looked up yet)
+    bool                switched = false; // a </think> came in the answer: the answer map counts from there (topic_phase)
+    uint64_t            h_sw = 0, m_sw = 0;   // the decode hits and misses at that switch: the two phases' hit rates
+    // lookup: the 4 nearest records (only those at least min_cos alike; -1: any); store: a request at least merge_cos alike joins the record. Default 2:
+    // never, every prompt a record of its own (user 2026-10-28: merging is offline, a merged map must hit about as well as its parts and keep the hottest of both)
+    float               min_cos = -1.0f, merge_cos = 2.0f;
     int32_t             prev_n = 0;       // tokens of the previous decode call: a prompt starts where a call of more than a step follows a step
     bool                after_prompt = false;   // a prompt began: its first decode step drops the experts foreign to the topic and the request
     uint64_t h0 = 0, m0 = 0;   // decode hits and misses when the request began
@@ -5353,106 +5452,116 @@ static struct topic_t {
     bool keep() const { return mode == FULL || mode == STORE; }   // requests are stored
 } g_topic;
 
-// the keys of a prompt (moe_topic_store::N_KEYS x n_embd floats, each unit length): the mean of its tokens' input embeddings and per value their largest,
-// both minus the vocabulary's mean. A token's row is converted once however often it occurs (a code prompt repeats its tokens), weighted by its count for
-// the mean; past 8192 distinct tokens every k-th of them is taken (the counts still weight the mean)
-static bool topic_key(const llama_model & model, const int32_t * ids, int32_t n, std::vector<float> & key, int32_t * n_distinct) {
-    const ggml_tensor * te = model.tok_embd;
-    if (te == nullptr || n <= 0 || (te->type != GGML_TYPE_F32 && ggml_get_type_traits(te->type)->to_float == nullptr)) {
-        return false;
+// up to 400 bytes of text into t (cut at a character boundary): what a record keeps of a request's words
+static void topic_text_add(std::string & t, const std::string & piece) {
+    if (t.size() >= 400) { return; }
+    t += piece;
+    if (t.size() > 400) {
+        size_t n = 400;
+        while (n > 0 && ((unsigned char) t[n] & 0xC0) == 0x80) { --n; }
+        t.resize(n);
     }
-    const int64_t ne0 = te->ne[0], nv = te->ne[1];
-    const size_t  rb  = ggml_row_size(te->type, ne0);
-    const bool    host = te->buffer != nullptr && ggml_backend_buffer_is_host(te->buffer);
-    std::vector<uint8_t> raw(host ? 0 : rb);
-    std::vector<float>   row(ne0);
-    auto get_row = [&](int64_t r) -> const float * {
-        const void * src = nullptr;
-        if (host) { src = (const uint8_t *) te->data + r * te->nb[1]; }
-        else      { ggml_backend_tensor_get(te, raw.data(), r * te->nb[1], rb); src = raw.data(); }
-        if (te->type == GGML_TYPE_F32) { memcpy(row.data(), src, ne0 * sizeof(float)); }
-        else                           { ggml_get_type_traits(te->type)->to_float(src, row.data(), ne0); }
-        return row.data();
-    };
-    if (g_topic.mean.empty()) {   // once: every 64th row of the vocabulary
-        std::vector<double> m(ne0, 0.0);
-        int64_t c = 0;
-        for (int64_t r = 0; r < nv; r += 64) { const float * x = get_row(r); for (int64_t j = 0; j < ne0; ++j) { m[j] += x[j]; } c++; }
-        g_topic.mean.resize(ne0);
-        for (int64_t j = 0; j < ne0; ++j) { g_topic.mean[j] = (float) (m[j] / (double) std::max<int64_t>(1, c)); }
-    }
-    static std::vector<uint32_t> tok_n;   // per vocabulary entry: its count in this prompt (zero again after each call)
-    static std::vector<int32_t>  uniq;
-    if ((int64_t) tok_n.size() < nv) { tok_n.assign(nv, 0); }
-    uniq.clear();
-    for (int32_t i = 0; i < n; ++i) {
-        if (ids[i] < 0 || ids[i] >= nv) { continue; }
-        if (tok_n[ids[i]]++ == 0) { uniq.push_back(ids[i]); }
-    }
-    *n_distinct = (int32_t) uniq.size();
-    std::vector<double> sum(ne0, 0.0), mx(ne0, -1e30);
-    const size_t step = std::max<size_t>(1, uniq.size() / 8192);
-    double w_tot = 0.0;
-    for (size_t u = 0; u < uniq.size(); u += step) {
-        const float * x = get_row(uniq[u]);
-        const double  w = (double) tok_n[uniq[u]];
-        for (int64_t j = 0; j < ne0; ++j) { sum[j] += w * x[j]; mx[j] = std::max(mx[j], (double) x[j]); }
-        w_tot += w;
-    }
-    for (int32_t id : uniq) { tok_n[id] = 0; }
-    if (w_tot <= 0.0) {
-        return false;
-    }
-    key.assign((size_t) moe_topic_store::N_KEYS * ne0, 0.0f);
-    for (int k = 0; k < moe_topic_store::N_KEYS; ++k) {
-        float * kk = key.data() + (size_t) k * ne0;
-        double nn = 0.0;
-        for (int64_t j = 0; j < ne0; ++j) {
-            kk[j] = (float) ((k == moe_topic_store::KEY_MAX ? mx[j] : sum[j] / w_tot) - g_topic.mean[j]);
-            nn += (double) kk[j] * kk[j];
-        }
-        if (nn <= 0.0) {
-            return false;
-        }
-        const float inv = (float) (1.0 / std::sqrt(nn));
-        for (int64_t j = 0; j < ne0; ++j) { kk[j] *= inv; }
-    }
-    return true;
 }
 
-// the request just served: its counts under its key (merged into a stored request it nearly equals)
+// the hottest of a request's answer counts (cnt: layer x expert, cut in place), as many as the cache had room for (user 2026-10-28: "store only hottest
+// for him as any other is just stealing precious moe cache space"; the cache's lifetime counts are the state over many requests, a record is one
+// request's): per size class of the block pool the most used experts of all its layers, as many as the class has blocks for experts (free or holding one;
+// not lent to compute, not under the KV) - the layers of a class compete for its blocks, so these are the fill that would have hit most; a layer with its
+// own slots (--moe pool=0) keeps its n_cache most used. Counted over the whole answer, not read from the cache at its end: what most of its tokens needed
+// may be gone by its last token. Returns the experts kept. Called with mc->mtx held.
+static size_t topic_hottest(moe_cache * mc, std::vector<uint32_t> & cnt) {
+    const uint32_t ne = g_topic.store.n_exp;
+    size_t kept = 0;
+    auto keep_top = [&](std::vector<size_t> & cells, size_t n) {   // all but the n most used of cells to 0
+        if (cells.size() > n) {
+            std::nth_element(cells.begin(), cells.begin() + (ptrdiff_t) n, cells.end(), [&](size_t a, size_t b) { return cnt[a] > cnt[b]; });
+            for (size_t i = n; i < cells.size(); ++i) { cnt[cells[i]] = 0; }
+        }
+        kept += std::min(n, cells.size());
+    };
+    std::vector<std::vector<size_t>> by_cls(mc->pool.size());
+    for (const auto & ls : mc->layers) {
+        if (ls.pub.il < 0 || (uint32_t) ls.pub.il >= g_topic.store.n_layers) { continue; }
+        std::vector<size_t>   own;
+        std::vector<size_t> & cells = ls.pcls >= 0 && (size_t) ls.pcls < by_cls.size() ? by_cls[ls.pcls] : own;
+        for (uint32_t e = 0; e < ne; ++e) {
+            const size_t c = (size_t) ls.pub.il * ne + e;
+            if (cnt[c] > 0) { cells.push_back(c); }
+        }
+        if (&cells == &own) { keep_top(own, (size_t) std::max(0, ls.n_cache)); }
+    }
+    for (size_t p = 0; p < by_cls.size(); ++p) {
+        size_t blocks = 0;
+        for (int32_t b = 0; b < mc->pool[p].n_active(); ++b) { blocks += mc->pool[p].owner[b] >= -1; }
+        keep_top(by_cls[p], blocks);
+    }
+    return kept;
+}
+
+// the request just served: the hottest experts of its answer under its key, a record of its own (merging is offline: user 2026-10-28)
 static void topic_store_pending(moe_cache * mc) {
-    if (g_topic.key.empty() || g_topic.store.n_exp == 0 || !g_topic.keep()) {
+    if (g_topic.key.empty() || g_topic.store.n_exp == 0 || !g_topic.keep() || !g_topic.act_ok) {
+        if (!g_topic.key.empty() && g_topic.keep() && !g_topic.act_ok) {
+            LLAMA_LOG_WARN("moe-cache: dynhot: no key from the prompt's last pass (%s): the request is not stored\n", g_topic.act_wait ? "it never came" : "not all three rows");
+        }
         g_topic.key.clear();
+        g_topic.act_wait = g_topic.act_ok = false;
         return;
     }
-    std::vector<uint32_t> cnt(g_topic.store.rec_cells(), 0);
-    uint64_t tot = 0;
+    // the two maps: the answer's uses (after </think>, or all of it) and the thinking phase's, each cut to what the cache holds
+    std::vector<uint32_t> cnt(g_topic.store.rec_cells(), 0), cth(g_topic.store.rec_cells(), 0);
+    uint64_t tot = 0, all = 0, n_used = 0, tot_t = 0, all_t = 0, n_used_t = 0;   // per map: uses kept, uses, experts used
+    size_t   kept = 0, kept_t = 0;
+    uint64_t h1 = 0, m1 = 0;
     {
         std::lock_guard<std::mutex> lk(mc->mtx);
         for (const auto & ls : mc->layers) {
+            h1 += ls.n_hit;
+            m1 += ls.n_miss;
             if (ls.pub.il < 0 || (uint32_t) ls.pub.il >= g_topic.store.n_layers) { continue; }
-            for (size_t e = 0; e < ls.topic_cnt.size() && e < g_topic.store.n_exp; ++e) {
-                cnt[(size_t) ls.pub.il * g_topic.store.n_exp + e] = ls.topic_cnt[e];
-                tot += ls.topic_cnt[e];
+            for (size_t e = 0; e < ls.topic_dec.size() && e < g_topic.store.n_exp; ++e) {
+                const size_t c = (size_t) ls.pub.il * g_topic.store.n_exp + e;
+                cnt[c]    = ls.topic_dec[e];
+                all      += ls.topic_dec[e];
+                n_used   += ls.topic_dec[e] > 0;
+                cth[c]    = ls.topic_think[e];
+                all_t    += ls.topic_think[e];
+                n_used_t += ls.topic_think[e] > 0;
             }
         }
+        kept   = topic_hottest(mc, cnt);
+        kept_t = all_t > 0 ? topic_hottest(mc, cth) : 0;
+        for (const uint32_t c : cnt) { tot += c; }
+        for (const uint32_t c : cth) { tot_t += c; }
     }
-    if (tot > 0) {
+    if (tot > 0 || tot_t > 0) {
         const int64_t t0 = ggml_time_us();
-        uint64_t h1 = 0, m1 = 0;
-        { std::lock_guard<std::mutex> lk(mc->mtx); for (const auto & ls : mc->layers) { h1 += ls.n_hit; m1 += ls.n_miss; } }
-        const uint64_t dh = h1 - g_topic.h0, dm = m1 - g_topic.m0;
-        const float hr = dh + dm > 0 ? (float) ((double) dh / (double) (dh + dm)) : -1.0f;   // this request's decode hit rate (unknown when it decoded nothing)
+        // the phases' decode hit rates (unknown: < 0): thinking from the request's start to the </think>, the answer after it (all of it without thinking)
+        auto rate = [](uint64_t h, uint64_t m) { return h + m > 0 ? (float) ((double) h / (double) (h + m)) : -1.0f; };
+        const bool  thought = all_t > 0;
+        const uint64_t he = thought && g_topic.switched ? g_topic.h_sw : h1, me = thought && g_topic.switched ? g_topic.m_sw : m1;
+        const float ht = thought ? rate(he - g_topic.h0, me - g_topic.m0) : -1.0f;
+        const float hr = !thought ? rate(h1 - g_topic.h0, m1 - g_topic.m0) : g_topic.switched ? rate(h1 - he, m1 - me) : -1.0f;
         const float  mcos = g_topic.merge_cos;
-        const size_t at = g_topic.store.add(g_topic.key.data(), cnt.data(), mcos, hr, g_topic.steer ? 1u : 0u);
+        const size_t at = g_topic.store.add(g_topic.key.data(), g_topic.n_rows, cnt.data(), mcos, tot > 0 ? hr : -1.0f, g_topic.steer ? 1u : 0u, g_topic.phash,
+                                            thought ? cth.data() : nullptr, thought ? ht : -1.0f, &g_topic.text);
+        if (at == SIZE_MAX) {
+            LLAMA_LOG_WARN("moe-cache: dynhot: a key of %u rows, the store holds keys of %u: the request is not stored\n", g_topic.n_rows, g_topic.store.n_rows);
+            g_topic.key.clear();
+            g_topic.act_ok = false;
+            return;
+        }
         const auto & st = g_topic.store;
-        LLAMA_LOG_WARN("moe-cache: dynhot: request stored (hit %.1f%% with the cache on %s): nearest record at cosine %.3f (joins at >= %.2f), maps overlap %.2f: "
-                "%s record %zu (its hit %.1f%%, %u requests, %zu records, %.2f ms)\n", 100.0 * hr, g_topic.steer ? "the hot maps" : "the ini's hot experts",
+        LLAMA_LOG_WARN("moe-cache: dynhot: request stored (hit %.1f%% with the cache on %s; its %zu hottest of %llu experts the answer used, %.1f%% of its uses%s): "
+                "nearest record at cosine %.3f (joins at >= %.2f), maps overlap %.2f: %s record %zu (its hit %.1f%%, %u requests, %zu records, %.2f ms)\n",
+                100.0 * hr, g_topic.steer ? "the hot maps" : "the ini's hot experts", kept, (unsigned long long) n_used, 100.0 * (double) tot / (double) std::max<uint64_t>(1, all),
+                thought ? tr_fmt("; thinking: hit %.1f%%, its %zu hottest of %llu experts, %.1f%% of its uses%s", 100.0 * ht, kept_t, (unsigned long long) n_used_t,
+                    100.0 * (double) tot_t / (double) std::max<uint64_t>(1, all_t), g_topic.switched ? "" : ", never closed").c_str() : "",
                 st.last_cos, mcos, st.last_best, st.last_kept ? "kept (hit rate not better)" : st.last_same ? "the same prompt: map replaced in" : st.last_merged ? "joined" : "new",
                 at, 100.0 * st.hit[at], st.n_req[at], st.size(), (ggml_time_us() - t0) / 1e3);
     }
     g_topic.key.clear();
+    g_topic.act_ok = false;
 }
 
 // the prompt is over: every cached expert that neither the topic's map rates nor the request used goes (not a pinned one, not one an upload is writing), its
@@ -5589,7 +5698,12 @@ void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_prompt, bool
 
 void llama_moe_request_end_fork(void) {
     exptok_save();
+    if (g_cache != nullptr) {
+        topic_store_pending(g_cache);   // the request's map now, not when the next prompt begins: a server's last request is kept too
+    }
 }
+
+static void topic_phase(const llama_model & model, const int32_t * ids, int32_t n, bool first);   // below: the thinking phase
 
 void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t * ids, int32_t n) {
     moe_cache * mc = g_cache;
@@ -5602,6 +5716,8 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
     }
     g_topic.prev_n = n;
     exptok_call(model, ids, n, first);   // --moe expids: every call
+    g_tokdump.req += first;              // --moe tokdump: the answer tokens that follow belong to a new request
+    topic_phase(model, ids, n, first);   // --moe dynhot: <think> / </think> among the tokens fed (prompt and answer)
     if (mc == nullptr || !first || g_topic.on == 0) {
         return;
     }
@@ -5618,14 +5734,12 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
             g_req_prompt.clear();
             return;
         }
-        if (const char * m = moe_opt("dynhot-pool"))  { g_topic.pool = strcmp(m, "max") == 0 ? moe_topic_store::KEY_MAX : moe_topic_store::KEY_MEAN; }
         if (const char * m = moe_opt("dynhot-max"))   { max_rec = (size_t) atoll(m); }   // records kept: 0 = no limit (while testing)
         if (const char * m = moe_opt("dynhot-min"))   { g_topic.min_cos   = (float) atof(m); }
-        if (const char * m = moe_opt("dynhot-merge")) { g_topic.merge_cos = (float) atof(m); }   // the 4-bit cosine at which a request joins a record (default 0.80; > 1: never)
+        if (const char * m = moe_opt("dynhot-merge")) { g_topic.merge_cos = (float) atof(m); }   // the 4-bit cosine at which a request joins a record (default 2: never)
         if (const char * m = moe_opt("dynhot-global")) { g_topic.store.use_glob = atoi(m) != 0; }
         if (const char * m = moe_opt("dynhot-same"))   { g_topic.store.same_pool = strcmp(m, "pool") == 0; }   // the same prompt again: replace (a better run's map) | pool (every run's counts)   // 0: the lookup blends the nearest topics only (the A/B against the global map)
-        const std::string path = hotmap_path(model, ".hotmap");   // <hot map dir>/<model>.hotmap
-        g_topic.store.pool = g_topic.pool;
+        const std::string path = hotmap_path(model, ".js");   // <hot map dir>/<model>.js (one assignment per line; the binary .hotmap before it is deleted)
         g_topic.store.max_records = max_rec;   // a record is the keys and a count per expert of every layer: 49 KB on DeepSeek-V4.1, 49 MB of RAM at the default 1024
         if (!g_topic.store.open(path, (uint32_t) model.hparams.n_embd, (uint32_t) model.hparams.n_layer(), (uint32_t) model.hparams.n_expert)) {
             LLAMA_LOG_WARN("moe-cache: dynhot: %s holds maps of another shape (model or layer count): not used, not written\n", path.c_str());
@@ -5636,59 +5750,191 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
                 "cosine >= %.2f)\n", g_topic.store.size(), g_topic.store.glob_req, path.c_str(), what[g_topic.mode],
                 g_topic.min_cos > -1.0f ? tr_fmt(" at cosine >= %.2f", g_topic.min_cos).c_str() : "", g_topic.store.use_glob ? " and the global map" : "", g_topic.merge_cos);
     }
-    topic_store_pending(mc);   // the request before this prompt, now searchable too
-    const int64_t t0 = ggml_time_us();
-    std::vector<float> key;
-    std::vector<float> heat;
-    float   best = -1.0f, best_other = -1.0f;   // the nearest record by the lookup key, and by the other pooling (the log compares the two)
-    size_t  used = 0;
-    int32_t n_distinct = 0;
-    int64_t t_key = 0;
-    // the key: the server's whole prompt (its prompt cache may decode only the tail: the 4 tokens of a repeated prompt were a new topic), else this call's tokens
+    topic_store_pending(mc);   // the request before this prompt, if its end did not store it
+    // the server's prompt (the request's own text when the chat template's parts are known, else the whole prompt; its prompt cache may decode only the
+    // tail: the 4 tokens of a repeated prompt were a new topic), else this call's tokens: the hash that finds the same prompt again, and its text
     const std::vector<int32_t> whole = std::move(g_req_prompt);
     g_req_prompt.clear();
     const int32_t * kt = whole.empty() ? ids : whole.data();
     const int32_t   kn = whole.empty() ? n : (int32_t) whole.size();
-    if (topic_key(model, kt, kn, key, &n_distinct)) {   // no key (an embedding type without a float conversion): a new topic, and nothing stored for it
-        t_key = ggml_time_us() - t0;
-        const uint32_t ne = g_topic.store.n_embd;
-        const int      other = moe_topic_store::N_KEYS - 1 - g_topic.pool;
-        if (g_topic.use()) {
-            used = g_topic.store.merge(key.data() + (size_t) g_topic.pool * ne, 4, g_topic.min_cos, heat, &best);
-        } else {   // store: only how near the nearest record is (the log)
-            const auto nb = g_topic.store.nearest(key.data() + (size_t) g_topic.pool * ne, 1, g_topic.pool);
-            best = nb.empty() ? -1.0f : nb[0].first;
-        }
-        const auto nb = g_topic.store.nearest(key.data() + (size_t) other * ne, 1, other);
-        best_other = nb.empty() ? -1.0f : nb[0].first;
-    }
-    size_t rated = 0;
+    uint64_t ph = 1469598103934665603ull;   // FNV-1a over the token ids
+    for (int32_t i = 0; i < kn; ++i) { ph = (ph ^ (uint64_t) (uint32_t) kt[i]) * 1099511628211ull; }
+    moe_topic_text tx;
+    for (int32_t i = 0; i < kn && tx.prompt.size() < 400; ++i) { topic_text_add(tx.prompt, model.vocab.token_to_piece(kt[i])); }
     {
         std::lock_guard<std::mutex> lk(mc->mtx);
         for (auto & ls : mc->layers) {
             std::fill(ls.topic_cnt.begin(), ls.topic_cnt.end(), 0u);
+            std::fill(ls.topic_dec.begin(), ls.topic_dec.end(), 0u);
+            std::fill(ls.topic_think.begin(), ls.topic_think.end(), 0u);
+            std::fill(ls.topic_heat.begin(), ls.topic_heat.end(), 0.0f);
             ls.topic_max = 0;
-            const bool in = used > 0 && ls.pub.il >= 0 && (uint32_t) ls.pub.il < g_topic.store.n_layers;
-            for (size_t e = 0; e < ls.topic_heat.size(); ++e) {
-                ls.topic_heat[e] = in && e < g_topic.store.n_exp ? heat[(size_t) ls.pub.il * g_topic.store.n_exp + e] : 0.0f;
-                rated += ls.topic_heat[e] > 0.0f;
-            }
         }
         g_topic_tmax.store(1);
-        g_topic.steer = g_topic.use() && (used > 0 || g_topic.store.last_wg > 0.0f);   // nothing stored: the ini picks for this request
-        g_topic_on.store(g_topic.steer);
+        g_topic.steer = false;   // the prompt runs on the ini's hot experts: the maps are looked up at its last pass (llama_moe_topic_act_fork)
+        g_topic_on.store(false);
         g_topic.h0 = g_topic.m0 = 0;   // the decode hits so far: this request's hit rate is what comes after
         for (const auto & ls : mc->layers) { g_topic.h0 += ls.n_hit; g_topic.m0 += ls.n_miss; }
     }
-    g_topic.key          = std::move(key);
+    g_topic_answer.store(false);
+    g_topic.key.clear();
+    g_topic.n_rows       = 0;
+    g_topic.text         = std::move(tx);
+    g_topic.phash        = ph;
+    g_topic.act_wait     = true;
+    g_topic.act_ok       = false;
+    g_topic.after_prompt = false;
+    g_topic.n_prompt     = kn;
+    g_topic.own          = !whole.empty() && g_req_own;
+}
+
+// --moe dynhot=full|read: the maps of the records nearest to the request's key (their thinking maps or their answer maps) into the cache's score, and the
+// drop and refill of the next decode step (topic_drop_foreign, reheat_free_blocks) put them in; nothing stored: the ini picks. Returns the records used
+static size_t topic_steer(moe_cache * mc, bool thinking, float * best, size_t * rated) {
+    std::vector<float> heat;
+    if (best) { *best = -1.0f; }
+    if (g_topic.store.n_rows != 0 && g_topic.store.n_rows != g_topic.n_rows) { return 0; }   // keys of another row count: nothing to compare with
+    const std::vector<float> u = g_topic.store.n_rows ? g_topic.store.unit_rows(g_topic.key.data()) : std::vector<float>();
+    const size_t used = u.empty() ? 0 : g_topic.store.merge(u.data(), 4, g_topic.min_cos, heat, best, thinking);
+    size_t n = 0;
+    {
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        for (auto & ls : mc->layers) {
+            const bool in = used > 0 && ls.pub.il >= 0 && (uint32_t) ls.pub.il < g_topic.store.n_layers;
+            for (size_t e = 0; e < ls.topic_heat.size(); ++e) {
+                ls.topic_heat[e] = in && e < g_topic.store.n_exp ? heat[(size_t) ls.pub.il * g_topic.store.n_exp + e] : 0.0f;
+                n += ls.topic_heat[e] > 0.0f;
+            }
+        }
+        g_topic.steer = used > 0 || g_topic.store.last_wg > 0.0f;   // nothing stored: the ini picks for this request
+        g_topic_on.store(g_topic.steer);
+    }
     g_topic.after_prompt = g_topic.steer;
-    LLAMA_LOG_WARN("moe-cache: dynhot: prompt of %d tokens (%d distinct, %d in this call; key: %s), nearest of %zu stored requests at cosine %.3f by %s pooling (%.3f "
-            "by %s): %s (key %.1f ms, search %.1f ms)\n", kn, n_distinct, n, whole.empty() ? "this call's tokens" : g_req_own ? "the request's own text" : "the whole prompt",
-            g_topic.store.size(), best, g_topic.pool == moe_topic_store::KEY_MAX ? "max" : "mean", best_other,
-            g_topic.pool == moe_topic_store::KEY_MAX ? "mean" : "max",
+    if (rated) { *rated = n; }
+    return used;
+}
+
+// --moe dynhot: the thinking phase (user 2026-10-28: "store 2 maps per emb ... if think tokens detected"; "load nonthinking hot map on thinking end").
+// Every token fed to the model passes here, the prompt's and the answer's: <think> starts the phase, </think> ends it. A </think> in the answer (after
+// the prompt's last pass) is the switch: the answer's uses count in the answer map from then on, and with full or read the nearest records' answer maps
+// replace their thinking maps in the cache. A model without the tags never thinks here: one map
+static void topic_phase(const llama_model & model, const int32_t * ids, int32_t n, bool first) {
+    if (g_topic.tok_open == -2) {
+        g_topic.tok_open  = model.vocab.text_to_token("<think>");
+        g_topic.tok_close = model.vocab.text_to_token("</think>");
+    }
+    if (first) {
+        g_topic_thinking.store(false);
+        g_topic.switched = false;
+    }
+    const bool tags   = g_topic.tok_open != LLAMA_TOKEN_NULL && g_topic.tok_close != LLAMA_TOKEN_NULL;
+    const bool answer = g_topic_answer.load() && g_topic.on == 1;   // the prompt is over: these are the answer's tokens, its words go to the record
+    bool th = g_topic_thinking.load(), closed = false;
+    for (int32_t i = 0; i < n; ++i) {
+        if (tags && ids[i] == g_topic.tok_open)  { th = true; continue; }
+        if (tags && ids[i] == g_topic.tok_close) { closed = closed || th; th = false; continue; }
+        if (answer && ids[i] >= 0) { topic_text_add(th ? g_topic.text.thinking : g_topic.text.answer, model.vocab.token_to_piece(ids[i])); }
+    }
+    g_topic_thinking.store(th);
+    moe_cache * mc = g_cache;
+    if (!closed || mc == nullptr || g_topic.on != 1 || g_topic.act_wait || g_topic.key.empty() || g_topic.switched) {
+        return;   // no switch, or a </think> of the prompt itself (thinking turned off in the template)
+    }
+    g_topic.switched = true;
+    {
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        g_topic.h_sw = g_topic.m_sw = 0;
+        for (const auto & ls : mc->layers) { g_topic.h_sw += ls.n_hit; g_topic.m_sw += ls.n_miss; }
+    }
+    if (g_topic.use()) {
+        float  best  = -1.0f;
+        size_t rated = 0;
+        const size_t used = topic_steer(mc, false, &best, &rated);
+        LLAMA_LOG_WARN("moe-cache: dynhot: </think>: the answer maps of %zu records (nearest at cosine %.3f) replace their thinking maps, they rate %zu experts\n",
+                used, best, rated);
+    }
+}
+
+// asked by the server's context before each pass: does the pass that ends this prompt copy its last token's key rows out (llama-context.cpp, dynkey_add)
+bool llama_moe_topic_key_wanted_fork(void) {
+    return g_cache != nullptr && g_topic.on == 1 && g_topic.act_wait;
+}
+
+// the prompt's last pass is over: its last token's router input of every MoE layer in layer order and then its final hidden state (rows, n_rows of
+// n_embd floats; nullptr: not in the graph) become the request's layer keys, each at unit length and raw (which normalization tells topics apart is
+// decided from the collected records): the first and the middle MoE layer's, the final state, and all MoE layers' pooled (each at unit length first, so
+// no layer outweighs the others). Then the lookup: with full or read the nearest maps pick the cache's experts for the answer (topic_drop_foreign at its
+// first decode step and the refill after it), with store only the log says how near the nearest record is. With --moe tokdump every row also goes to
+// <tokdump>.acts (per request: its prompt hash, the row count, the rows in fp16), so other poolings can be tried on them later
+void llama_moe_topic_act_fork(const float * const * rows, int n_rows, int64_t n_embd) {
+    moe_cache * mc = g_cache;
+    if (mc == nullptr || g_topic.on != 1 || !g_topic.act_wait || n_embd != (int64_t) g_topic.store.n_embd || n_rows < 1) {
+        return;
+    }
+    g_topic.act_wait = false;
+    {   // the answer starts here: its hit rate and its maps count from now (a prompt shorter than the cache's max batch ran as decode steps)
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        g_topic.h0 = g_topic.m0 = 0;
+        for (const auto & ls : mc->layers) { g_topic.h0 += ls.n_hit; g_topic.m0 += ls.n_miss; }
+        for (auto & ls : mc->layers) {
+            std::fill(ls.topic_dec.begin(), ls.topic_dec.end(), 0u);
+            std::fill(ls.topic_think.begin(), ls.topic_think.end(), 0u);
+        }
+    }
+    g_topic_answer.store(true);
+    const int64_t t0 = ggml_time_us();
+    // the key: every row as the model gave it (each compared only with the same row of a stored key, the cosines averaged; moe_topic_store); a row the
+    // graph did not have makes the request one this store cannot keep
+    g_topic.key.assign((size_t) n_rows * n_embd, 0.0f);
+    g_topic.n_rows = (uint32_t) n_rows;
+    int n_ok = 0;
+    for (int r = 0; r < n_rows; ++r) {
+        if (rows[r] == nullptr) { continue; }
+        std::copy(rows[r], rows[r] + n_embd, g_topic.key.begin() + (ptrdiff_t) r * n_embd);
+        n_ok++;
+    }
+    g_topic.act_ok = n_ok == n_rows && n_rows > 1;
+    if (const char * dp = moe_opt("tokdump"); dp && *dp) {   // --moe tokdump: every row of the prompt's last token beside the token dump
+        static FILE * fa = nullptr;
+        if (fa == nullptr) {
+            fa = fopen((std::string(dp) + ".acts").c_str(), "ab");
+            if (fa != nullptr) {
+                fseek(fa, 0, SEEK_END);
+                if (ftell(fa) == 0) {
+                    const uint32_t h = (uint32_t) n_embd;
+                    fwrite("MOEACTS1", 1, 8, fa);
+                    fwrite(&h, sizeof(h), 1, fa);
+                }
+            }
+        }
+        if (fa != nullptr) {
+            const uint32_t nr = (uint32_t) n_rows;
+            fwrite(&g_topic.phash, sizeof(g_topic.phash), 1, fa);
+            fwrite(&nr, sizeof(nr), 1, fa);
+            std::vector<ggml_fp16_t> h(n_embd);
+            for (int i = 0; i < n_rows; ++i) {
+                if (rows[i] != nullptr) { ggml_fp32_to_fp16_row(rows[i], h.data(), n_embd); } else { std::fill(h.begin(), h.end(), ggml_fp32_to_fp16(0.0f)); }
+                fwrite(h.data(), sizeof(ggml_fp16_t), n_embd, fa);
+            }
+            fflush(fa);
+        }
+    }
+    float  best = -1.0f;
+    size_t used = 0, rated = 0;
+    const bool thinking = g_topic_thinking.load();   // the answer starts with thinking: the records' thinking maps first, their answer maps at </think>
+    if (g_topic.use()) {
+        used = topic_steer(mc, thinking, &best, &rated);
+    } else if (g_topic.act_ok && g_topic.store.n_rows == g_topic.n_rows) {   // store: only how near the nearest record is (the log)
+        const std::vector<float> u = g_topic.store.unit_rows(g_topic.key.data());
+        const auto nb = g_topic.store.nearest(u.data(), 1);
+        best = nb.empty() ? -1.0f : nb[0].first;
+    }
+    LLAMA_LOG_WARN("moe-cache: dynhot: prompt of %d tokens (%s), key: %d of %d rows at its last token (MoE layers and the final state), nearest of %zu stored "
+            "requests at similarity %.3f%s: %s (%.1f ms)\n", g_topic.n_prompt, g_topic.own ? "the request's own text" : "the whole prompt", n_ok, n_rows,
+            g_topic.store.size(), best, thinking ? ", it starts thinking" : "",
             !g_topic.use() ? "store only, the ini's hot experts pick the cache's" : g_topic.steer ? tr_fmt("%zu maps merged and the global map at weight %.2f, "
                 "they rate %zu experts", used, g_topic.store.last_wg, rated).c_str() : "nothing stored: the ini's hot experts pick the cache's",
-            t_key / 1e3, (ggml_time_us() - t0 - t_key) / 1e3);
+            (ggml_time_us() - t0) / 1e3);
 }
 
 // ---- block pool layout -------------------------------------------------------------------------------------------------------------------------
@@ -6371,6 +6617,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             }
             ls.glob_count.assign(n_expert, 0);
             ls.topic_cnt.assign(n_expert, 0);
+            ls.topic_dec.assign(n_expert, 0);
+            ls.topic_think.assign(n_expert, 0);
             ls.topic_heat.assign(n_expert, 0.0f);
             ls.sticky.assign(n_expert, false);
             ls.adopt_slot.assign(n_expert, -1);

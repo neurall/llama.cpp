@@ -1,6 +1,7 @@
-// Unit test of the per-topic hot map store (src/llama-moetopic-fork.h, task 158): the 4-bit keys, nearest-record search by cosine similarity, merging of
-// requests that used the same experts (keys pooled by their own rule, the coldest experts dropped), the automatic merge threshold, replacement past the
-// record cap, the merged heat map, and the file round trip (a store of another shape is never read or overwritten). No GPU, no model.
+// Unit test of the hot map store (src/llama-moetopic-fork.h, task 158): keys of several rows compared row by row (the averaged cosine of 4-bit rows),
+// one record per prompt (its hash), each of the two maps (answer, thinking) replaced on its own better hit rate, the merged heat of the nearest records,
+// the global map, and the JS file: one assignment per line, the last assignment of a name wins, opening rewrites the file with those, a key of another
+// width is refused, the binary file of the layouts before is deleted. No GPU, no model.
 //
 // build: cmake --build <dir> --target test-moetopic-fork;  run: ctest -R test-moetopic-fork
 #include "../src/llama-moetopic-fork.h"
@@ -14,186 +15,160 @@
 // a check that also runs in release builds (assert is gone under NDEBUG, and several checks below call the store)
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "test-moetopic-fork: FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); return 1; } } while (0)
 
-static std::vector<float> unit(std::vector<float> v) {
-    double n = 0.0;
-    for (float x : v) { n += (double) x * x; }
-    for (float & x : v) { x = (float) (x / std::sqrt(n)); }
-    return v;
-}
-
-static std::vector<float> rnd(std::mt19937 & g, uint32_t n) {
+// a key as the model would give it: rows of normal values
+static std::vector<float> rnd(std::mt19937 & g, size_t n) {
     std::normal_distribution<float> d;
     std::vector<float> v(n);
     for (float & x : v) { x = d(g); }
-    return unit(v);
+    return v;
 }
 
-// the two keys of a request (mean pooling, max pooling) side by side, as topic_key writes them
-static std::vector<float> keys2(const std::vector<float> & mean, const std::vector<float> & max) {
-    std::vector<float> k(mean);
-    k.insert(k.end(), max.begin(), max.end());
-    return k;
+static size_t lines_of(const std::string & path) {
+    size_t n = 0;
+    moe_topic_store::for_lines(path, [&](const std::string & l) { n += !l.empty(); });
+    return n;
 }
 
 int main() {
-    const uint32_t E = 64, L = 3, X = 8;
-    const float NEVER = 2.0f;   // a merge cosine no key reaches: every request its own record
-    const std::string path = std::string(P_tmpdir) + "/test-moetopic-fork.bin";
+    const uint32_t E = 64, L = 3, X = 8, R = 4;   // values per row, layers, experts per layer, rows per key
+    const float NEVER = 2.0f;                     // a merge similarity no key reaches: every prompt a record of its own
+    const std::string path = std::string(P_tmpdir) + "/test-moetopic-fork.js";
+    const std::string gpath = std::string(P_tmpdir) + "/test-moetopic-fork.global.js";
     std::remove(path.c_str());
+    std::remove(gpath.c_str());
     std::mt19937 g(7);
 
-    // a 4-bit key keeps its direction: on a 5120-wide random unit key (a real key's width) the cosine to the exact key stays above 0.97, the quantized key
-    // has unit length, and the search kernel agrees with the dequantized vector
+    // a 4-bit row keeps its direction: on a 5120-wide random unit row the cosine to the exact row stays above 0.97, the quantized row has unit length,
+    // and the search kernel agrees with the dequantized vector
     {
         const uint32_t W = 5120;
         std::vector<float> wide = rnd(g, W), back(W);
+        double nn = 0.0;
+        for (float x : wide) { nn += (double) x * x; }
+        for (float & x : wide) { x = (float) (x / std::sqrt(nn)); }
         std::vector<uint8_t> q((W + 1) / 2);
         float qi = 0.0f;
         moe_topic_quant(wide.data(), W, q.data(), &qi);
         moe_topic_dequant(q.data(), W, qi, back.data());
-        double d = 0.0, nn = 0.0;
-        for (uint32_t j = 0; j < W; ++j) { d += (double) wide[j] * back[j]; nn += (double) back[j] * back[j]; }
-        CHECK(d > 0.97 && std::fabs(nn - 1.0) < 1e-4);
+        double d = 0.0, bn = 0.0;
+        for (uint32_t j = 0; j < W; ++j) { d += (double) wide[j] * back[j]; bn += (double) back[j] * back[j]; }
+        CHECK(d > 0.97 && std::fabs(bn - 1.0) < 1e-4);
         CHECK(std::fabs(moe_topic_qdot(q.data(), wide.data(), W) * qi - d) < 1e-3);
     }
 
     moe_topic_store s;
     CHECK(s.open(path, E, L, X) && s.size() == 0);
 
-    // two topics far apart: their own records, each found by a key near it, by either pooling's key
-    const std::vector<float> a = rnd(g, E), am = rnd(g, E), b = rnd(g, E), bm = rnd(g, E);
+    // two prompts far apart, each a record; a key of another row count is refused
+    const std::vector<float> a = rnd(g, R * E), b = rnd(g, R * E);
     std::vector<uint32_t> ca(L * X, 0), cb(L * X, 0);
     for (uint32_t l = 0; l < L; ++l) { ca[l * X + 1] = 10; ca[l * X + 2] = l == 2 ? 10 : 5; cb[l * X + 6] = 7; }   // layer 2 spreads its uses
-    CHECK(s.add(keys2(a, am).data(), ca.data(), 0.9f) == 0);
-    CHECK(s.add(keys2(b, bm).data(), cb.data(), 0.9f) == 1);
-    CHECK(s.size() == 2);
-    std::vector<float> a2 = a, a2m = am;   // a prompt near a, not the same one (cosine about 0.995, below SAME_KEY)
-    const std::vector<float> na = rnd(g, E), nam = rnd(g, E);
-    for (uint32_t j = 0; j < E; ++j) { a2[j] += 0.1f * na[j]; a2m[j] += 0.1f * nam[j]; }
-    a2 = unit(a2);
-    a2m = unit(a2m);
-    auto nb = s.nearest(a2.data(), 2, moe_topic_store::KEY_MEAN);
-    CHECK(nb.size() == 2 && nb[0].second == 0 && nb[0].first > 0.95f && nb[1].first < nb[0].first);
-    CHECK(s.nearest(bm.data(), 1, moe_topic_store::KEY_MAX)[0].second == 1);
+    CHECK(s.add(a.data(), R, ca.data(), NEVER, 0.6f, 0, 11) == 0 && s.n_rows == R);
+    CHECK(s.add(b.data(), R, cb.data(), NEVER, 0.7f, 0, 22) == 1 && s.size() == 2);
+    CHECK(s.add(a.data(), R + 1, ca.data(), NEVER) == SIZE_MAX && s.size() == 2);
 
-    // a near prompt (not the same one) joins its record (lookup by the max key, the default): counts add, the record keeps its first prompt's keys
-    CHECK(s.add(keys2(a2, a2m).data(), ca.data(), 0.9f) == 0 && !s.last_same && s.last_merged && s.last_cos >= 0.9f);
-    CHECK(s.size() == 2 && s.n_req[0] == 2 && s.counts[1] == 20);
-    CHECK(s.key_of(0, moe_topic_store::KEY_MEAN) == a && s.key_of(0, moe_topic_store::KEY_MAX) == am);
+    // a key near a (every row moved a little) finds a first: the averaged row cosine
+    std::vector<float> a2 = a;
+    const std::vector<float> na = rnd(g, R * E);
+    for (size_t j = 0; j < a2.size(); ++j) { a2[j] += 0.1f * na[j]; }
+    const std::vector<float> ua2 = s.unit_rows(a2.data());
+    const auto nb = s.nearest(ua2.data(), 2);
+    CHECK(nb.size() == 2 && nb[0].second == 0 && nb[0].first > 0.9f && nb[1].first < nb[0].first);
 
-    // the same prompt again: one record, its map replaced only by a better hit rate (not added: repeated runs keep the best map); a run not measured changes nothing
+    // the same prompt (its hash): the map replaced only by a better hit rate; another prompt with the same key is a record of its own
+    CHECK(s.add(a.data(), R, cb.data(), NEVER, 0.5f, 0, 11) == 0 && s.last_same && s.last_kept && s.counts[1] == 10);
+    CHECK(s.add(a2.data(), R, cb.data(), NEVER, 0.8f, 1, 11) == 0 && !s.last_kept && s.counts[6] == 7 && s.counts[1] == 0 && s.hit[0] == 0.8f && s.src[0] == 1 &&
+          s.n_req[0] == 2);
+    CHECK(s.add(a.data(), R, ca.data(), NEVER, 0.9f, 0, 33) == 2 && s.size() == 3 && !s.last_same);
+
+    // two maps per record: the thinking map is replaced on its own better hit rate, the answer's on its own; a request that did not think leaves the
+    // thinking map as it was; a new record of a request that did not think has an empty one; the thinking maps merge without the global map
     {
-        moe_topic_store h;
-        CHECK(h.open("", E, L, X));
-        std::vector<uint32_t> ca2(ca);
-        for (uint32_t & c : ca2) { c *= 2; }
-        CHECK(h.add(keys2(a, am).data(), ca.data(), 0.9f, 0.60f, 0) == 0 && h.hit[0] == 0.60f && h.src[0] == 0 && !h.last_same);
-        CHECK(h.add(keys2(a, am).data(), ca2.data(), 0.9f, 0.50f, 1) == 0 && h.last_same && h.last_kept && h.n_req[0] == 1 && h.counts[1] == 10 && h.src[0] == 0);
-        CHECK(h.add(keys2(a, am).data(), ca2.data(), 0.9f, -1.0f, 1) == 0 && h.last_kept && h.counts[1] == 10);
-        CHECK(h.add(keys2(a, am).data(), ca2.data(), 0.9f, 0.80f, 1) == 0 && !h.last_kept && h.size() == 1 && h.n_req[0] == 2 && h.counts[1] == 20 && h.hit[0] == 0.80f && h.src[0] == 1);
-    }
-
-    // a prompt of the topic adds its counts and the experts below their layer's mean use are dropped; a prompt far from every record is a record of its own;
-    // merging off (merge_cos > 1): every request its own record, the same one again too
-    std::vector<uint32_t> cc(L * X, 0), ch(L * X, 0);
-    for (uint32_t l = 0; l < L; ++l) { cc[l * X + 1] = 100; cc[l * X + 2] = 60; cc[l * X + 7] = 1; ch[l * X + 1] = 100; ch[l * X + 5] = 100; }
-    {
-        moe_topic_store p;
-        CHECK(p.open("", E, L, X));
-        CHECK(std::fabs(p.overlap(ch.data(), cc.data()) - 0.5f) < 1e-5f);   // how alike two maps are (the log): the smaller shares summed
-        CHECK(p.add(keys2(a, am).data(), cc.data(), 0.9f) == 0 && p.add(keys2(a2, a2m).data(), cc.data(), 0.9f) == 0 && p.size() == 1 && std::fabs(p.last_best - 1.0f) < 1e-5f);
-        CHECK(p.counts[1] == 200 && p.counts[2] == 120 && p.counts[7] == 0 && p.n_req[0] == 2);   // expert 7 (2 of 322 uses) is below the mean of 40
-        CHECK(p.add(keys2(b, bm).data(), ch.data(), 0.9f) == 1 && p.size() == 2 && !p.last_merged);
-        CHECK(p.add(keys2(a, am).data(), cc.data(), NEVER) == 2 && p.size() == 3);
-    }
-
-    // dynhot-same=pool: the same prompt again adds its counts whatever its hit rate (the best rate is kept)
-    {
-        moe_topic_store q;
-        CHECK(q.open("", E, L, X));
-        q.same_pool = true;
-        CHECK(q.add(keys2(a, am).data(), ca.data(), 0.9f, 0.60f) == 0 && q.add(keys2(a, am).data(), ca.data(), 0.9f, 0.50f) == 0);
-        CHECK(q.size() == 1 && q.last_same && !q.last_kept && q.n_req[0] == 2 && q.counts[1] == 20 && q.hit[0] == 0.60f);
+        moe_topic_store tk;
+        CHECK(tk.open("", E, L, X));
+        CHECK(tk.add(a.data(), R, ca.data(), NEVER, 0.6f, 0, 5, cb.data(), 0.5f) == 0 && tk.hit_think[0] == 0.5f && tk.think[6] == 7 && tk.counts[1] == 10);
+        CHECK(tk.add(a.data(), R, cb.data(), NEVER, 0.4f, 0, 5, ca.data(), 0.9f) == 0 && !tk.last_kept && tk.counts[1] == 10 && tk.hit[0] == 0.6f &&
+              tk.think[1] == 10 && tk.think[6] == 0 && tk.hit_think[0] == 0.9f);   // a worse answer, a better thinking phase: only the thinking map changes
+        CHECK(tk.add(a.data(), R, cb.data(), NEVER, 0.8f, 0, 5) == 0 && tk.counts[6] == 7 && tk.think[1] == 10 && tk.hit_think[0] == 0.9f);
+        CHECK(tk.add(b.data(), R, cb.data(), NEVER, 0.8f, 0, 6) == 1 && tk.hit_think[1] < 0.0f && tk.think[X * L + 6] == 0);
+        std::vector<float> hk;
+        float bk = 0.0f;
+        const std::vector<float> ua = tk.unit_rows(a.data());
+        CHECK(tk.merge(ua.data(), 1, -1.0f, hk, &bk, true) == 1 && hk[1] == 1.0f && tk.last_wg == 0.0f);
     }
 
     // the merged heat of a key near a, one scale for all layers: expert 1 of layers 0 and 1 (2/3 of their uses) is 1.0 and expert 2 there 0.5; layer 2
     // splits its uses half and half, so both its experts are 0.75 (a scale per layer would make them 1.0); b's expert 6 is absent (b is below min_cos)
-    std::vector<float> heat;
-    float best = 0.0f;
-    s.pool = moe_topic_store::KEY_MEAN;
-    s.use_glob = false;   // the topics' blend alone (the global map: below)
-    CHECK(s.merge(a.data(), 4, 0.5f, heat, &best) == 1 && best > 0.95f);
-    for (uint32_t l = 0; l < L; ++l) {
-        const float h1 = l == 2 ? 0.75f : 1.0f, h2 = l == 2 ? 0.75f : 0.5f;
-        CHECK(std::fabs(heat[l * X + 1] - h1) < 1e-6f && std::fabs(heat[l * X + 2] - h2) < 1e-6f && heat[l * X + 6] == 0.0f);
+    {
+        moe_topic_store m;
+        CHECK(m.open("", E, L, X));
+        m.use_glob = false;
+        m.add(a.data(), R, ca.data(), NEVER, 0.6f, 0, 1);
+        m.add(b.data(), R, cb.data(), NEVER, 0.6f, 0, 2);
+        std::vector<float> heat;
+        float best = 0.0f;
+        CHECK(m.merge(ua2.data(), 4, 0.5f, heat, &best) == 1 && best > 0.9f);
+        for (uint32_t l = 0; l < L; ++l) {
+            const float h1 = l == 2 ? 0.75f : 1.0f, h2 = l == 2 ? 0.75f : 0.5f;
+            CHECK(std::fabs(heat[l * X + 1] - h1) < 1e-6f && std::fabs(heat[l * X + 2] - h2) < 1e-6f && heat[l * X + 6] == 0.0f);
+        }
+        // a key far from every record takes the global map at weight 1 - its best similarity; with use_glob off none
+        m.use_glob = true;
+        std::vector<float> far(a.size());
+        for (size_t j = 0; j < far.size(); ++j) { far[j] = -(a[j] + b[j]); }   // away from a and b alike
+        const std::vector<float> uf = m.unit_rows(far.data());
+        CHECK(m.merge(uf.data(), 4, -1.0f, heat, &best) == 0 && best < 0.0f && m.last_wg == 1.0f && heat[1] > 0.0f && heat[6] > 0.0f);
     }
 
-    // the file holds both records with both keys: a second store reads them back
+    // the global map: every stored request's answer counts (s: ca, cb, cb kept, cb, ca), the refused key not
+    CHECK(s.glob_req == 5 && s.glob[1] == 20 && s.glob[6] == 21);
+
+    // the file: 12 lines per change (4 changes of 3 records); opening keeps the last line of each name and rewrites the file with those
+    CHECK(lines_of(path) == 48);
     moe_topic_store r;
-    CHECK(r.open(path, E, L, X) && r.size() == 2 && r.fkeys.size() == 2 * moe_topic_store::N_KEYS * E && r.key_of(1, 0) == s.key_of(1, 0) && r.qkeys == s.qkeys && r.hit == s.hit && r.src == s.src && r.n_req[0] == 2 && r.counts[1] == 20 && r.counts[L * X + 6] == 7);
-    CHECK(r.nearest(b.data(), 1, moe_topic_store::KEY_MEAN)[0].second == 1 && r.nearest(bm.data(), 1, moe_topic_store::KEY_MAX)[0].second == 1);
+    CHECK(r.open(path, E, L, X) && r.size() == 3 && r.n_rows == R && lines_of(path) == 36);
+    CHECK(r.phash == s.phash && r.counts == s.counts && r.think == s.think && r.hit == s.hit && r.src == s.src && r.n_req == s.n_req && r.seq == s.seq);
+    CHECK(r.glob_req == 5 && r.glob == s.glob);
+    const std::vector<float> ub = r.unit_rows(b.data());
+    CHECK(r.nearest(ub.data(), 1)[0].second == 1);
 
-    // the global map: every stored request's counts added, none dropped, and read back with the file
-    CHECK(r.glob_req == s.glob_req && r.glob == s.glob && s.glob_req == 3 && s.glob[1] == 20 && s.glob[6] == 7);   // a, b and a2 added
-    // a key far from every topic takes the global map at weight 1 - its best cosine; the same prompt nearly none of it; with use_glob off none
+    // past the record cap the least recently used record is replaced: its id dropped from the file, the new record with a new id
     {
-        moe_topic_store w;
-        CHECK(w.open("", E, L, X));
-        w.pool = moe_topic_store::KEY_MEAN;
-        w.add(keys2(a, am).data(), ca.data(), 0.9f);
-        w.add(keys2(b, bm).data(), cb.data(), NEVER);
-        std::vector<float> hw;
-        float bw = 0.0f;
-        w.merge(a.data(), 1, -1.0f, hw, &bw);
-        CHECK(std::fabs(w.last_wg - (1.0f - bw)) < 1e-6f && w.last_wg < 0.05f);
-        std::vector<float> far(E, 0.0f);
-        for (uint32_t j = 0; j < E; ++j) { far[j] = -(a[j] + b[j]); }   // away from a and b alike: cosine < 0 with both
-        far = unit(far);
-        CHECK(w.merge(far.data(), 4, -1.0f, hw, &bw) == 0 && bw < 0.0f && w.last_wg == 1.0f && hw[1] > 0.0f && hw[6] > 0.0f);   // the global map alone
-        w.use_glob = false;
-        w.merge(a.data(), 1, -1.0f, hw, &bw);
-        CHECK(w.last_wg == 0.0f);
+        moe_topic_store c;
+        CHECK(c.open(path, E, L, X) && c.size() == 3);
+        c.max_records = 3;
+        std::vector<float> hc;
+        const std::vector<float> ua = c.unit_rows(a.data());
+        c.merge(ua.data(), 2, 0.5f, hc);   // records 0 and 2 (key a) used last: record 1 (b) is the one to go
+        const std::vector<float> z = rnd(g, R * E);
+        CHECK(c.add(z.data(), R, cb.data(), NEVER, 0.5f, 0, 44) == 1 && c.size() == 3 && c.seq[1] == 3 && c.phash[1] == 44);
+        moe_topic_store c2;
+        CHECK(c2.open(path, E, L, X) && c2.size() == 3 && c2.phash[0] == 11 && c2.phash[1] == 33 && c2.phash[2] == 44);   // id order: 0, 2, 3
     }
 
-    // an older layout of the store: moved beside under its own name, never overwritten; the store starts anew
+    // a key of another width (another model): the file is refused and never written over
     {
-        const std::string op = std::string(P_tmpdir) + "/test-moetopic-old.bin";
-        std::remove(op.c_str()); std::remove((op + ".MOETOPC5").c_str());
-        FILE * f = fopen(op.c_str(), "wb");
-        fwrite("MOETOPC5", 1, 8, f);
+        moe_topic_store o;
+        CHECK(!o.open(path, E + 1, L, X) && o.size() == 0 && o.path.empty());
+        moe_topic_store o2;
+        CHECK(o2.open(path, E, L, X) && o2.size() == 3);
+    }
+
+    // the binary file of the layouts before: deleted at open (old maps are junk, no copies kept)
+    {
+        const std::string old = std::string(P_tmpdir) + "/test-moetopic-fork.hotmap";
+        FILE * f = fopen(old.c_str(), "wb");
+        fwrite("MOETOPC8", 1, 8, f);
         fclose(f);
-        moe_topic_store o5;
-        CHECK(o5.open(op, E, L, X) && o5.size() == 0 && !o5.path.empty());
-        FILE * kept = fopen((op + ".MOETOPC5").c_str(), "rb");
-        CHECK(kept != nullptr);
-        if (kept) { fclose(kept); }
-        std::remove(op.c_str()); std::remove((op + ".MOETOPC5").c_str());
+        moe_topic_store o;
+        CHECK(o.open(path, E, L, X));
+        FILE * gone = fopen(old.c_str(), "rb");
+        CHECK(gone == nullptr);
+        if (gone) { fclose(gone); }
     }
-
-    // another shape (another model or layer split): not read, and never written over
-    moe_topic_store o;
-    CHECK(!o.open(path, E, L + 1, X) && o.size() == 0 && o.path.empty());
-    o.add(keys2(a, am).data(), std::vector<uint32_t>((L + 1) * X, 1).data(), 0.9f);
-    moe_topic_store r2;
-    CHECK(r2.open(path, E, L, X) && r2.size() == 2);
-
-    // past the record cap the least recently used record is replaced; with no cap (0) the store grows
-    moe_topic_store c;
-    CHECK(c.open("", E, L, X));
-    c.max_records = 2;
-    c.pool = moe_topic_store::KEY_MEAN;
-    c.add(keys2(a, am).data(), ca.data(), 0.9f);
-    c.add(keys2(b, bm).data(), cb.data(), 0.9f);
-    c.nearest(a.data(), 1, moe_topic_store::KEY_MEAN);
-    c.merge(a.data(), 1, 0.5f, heat);   // a is used last: b is the one to go
-    const std::vector<float> z = rnd(g, E), zm = rnd(g, E);
-    std::vector<uint32_t> cz(L * X, 0);
-    for (uint32_t l = 0; l < L; ++l) { cz[l * X + 3] = 9; }
-    CHECK(c.add(keys2(z, zm).data(), cz.data(), 0.9f) == 1 && c.size() == 2 && c.nearest(z.data(), 1, moe_topic_store::KEY_MEAN)[0].second == 1);
-    c.max_records = 0;
-    CHECK(c.add(keys2(b, bm).data(), cb.data(), NEVER) == 2 && c.size() == 3);
 
     std::remove(path.c_str());
+    std::remove(gpath.c_str());
     printf("test-moetopic-fork: OK\n");
     return 0;
 }
