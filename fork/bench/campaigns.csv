@@ -5106,3 +5106,4 @@ dspark_fix2-ds-warm3-nocudagraphs-d1-tetrisc,2026-10-28 11:31:52,bench /m/ds/Dee
 dspark_fix2-ds-warm3-control-d1-tetrisc,2026-10-28 11:33:57,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds dspark_fix2 variants v test tetrisc n=2,,
 fix_cuda_graph_scratch_moved-ds-warm4-fixcheck-d1-tetrisc,2026-10-28 11:37:31,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds fix_cuda_graph_scratch_moved variants v test tetrisc n=2,,
 fix_cuda_graph_scratch_moved-ds-tetris4k-luce-d1-tetrisc,2026-10-28 11:40:26,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds fix_cuda_graph_scratch_moved variants v test tetrisc n=2,,
+dspark_fix3-ds-warm4-fixcheck-d1-tetrisc,2026-10-28 13:10:23,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds dspark_fix3 variants v test tetrisc n=2,,
