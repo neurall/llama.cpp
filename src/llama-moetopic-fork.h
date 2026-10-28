@@ -62,7 +62,7 @@ static inline float moe_topic_qdot(const uint8_t * q, const float * key, uint32_
 }
 
 struct moe_topic_store {
-    static constexpr char MAGIC[8] = { 'M', 'O', 'E', 'T', 'O', 'P', 'C', '5' };
+    static constexpr char MAGIC[8] = { 'M', 'O', 'E', 'T', 'O', 'P', 'C', '6' };
     enum { KEY_MEAN = 0, KEY_MAX = 1, N_KEYS = 2 };
     uint32_t n_embd = 0, n_layers = 0, n_exp = 0;
     size_t   max_records = 4096;   // the oldest-used record is replaced past this (0: no limit)
@@ -78,6 +78,13 @@ struct moe_topic_store {
     uint64_t clock = 0;
     std::string path;
     float last_cos = 0.0f, last_best = 0.0f;   // the last add: the nearest record's cosine (4-bit, as the lookup reads it), how alike the maps were (the log)
+    // the model's global map: every stored request's counts added, none dropped (as the ini's hot map counted them). Its hottest are the experts every request
+    // needs whatever the task - language, grammar, syntax (user 2026-10-28) - and it stands in where the nearest topic is far (merge). In the file after the
+    // header: requests (uint32), then the counts
+    std::vector<uint32_t> glob;
+    uint32_t glob_req = 0;
+    bool     use_glob = true;    // merge blends it in (--moe dynhot-global=0: the nearest topics only, for the A/B)
+    float    last_wg  = 0.0f;    // the last merge: the global map's weight
     bool  last_merged = false, last_kept = false;   // last_merged: the request went to a stored record; last_kept: its prompt, but no better hit rate: nothing changed
     bool  last_same = false;                         // the last add was a prompt already stored (its key as alike as SAME_KEY)
     static constexpr float SAME_KEY = 0.999f;        // keys this alike (cosine of the float keys) are one prompt: one record, its map replaced only by a better hit rate
@@ -87,6 +94,7 @@ struct moe_topic_store {
     size_t key_bytes() const { return (n_embd + 1) / 2; }
     size_t rec_bytes() const { return sizeof(float) + 2 * sizeof(uint32_t) + N_KEYS * (sizeof(float) + key_bytes() + n_embd * sizeof(float)) + rec_cells() * sizeof(uint32_t); }
     static size_t head_bytes() { return sizeof(MAGIC) + 4 * sizeof(uint32_t); }
+    size_t glob_bytes() const { return sizeof(uint32_t) + rec_cells() * sizeof(uint32_t); }
     uint8_t *       qk(size_t i, int kind)       { return qkeys.data() + (i * N_KEYS + kind) * key_bytes(); }
     const uint8_t * qk(size_t i, int kind) const { return qkeys.data() + (i * N_KEYS + kind) * key_bytes(); }
     // record i's key of one kind as floats, unit length
@@ -100,10 +108,20 @@ struct moe_topic_store {
     bool open(const std::string & p, uint32_t e, uint32_t l, uint32_t x) {
         path = p; n_embd = e; n_layers = l; n_exp = x;
         qkeys.clear(); fkeys.clear(); qinv.clear(); counts.clear(); n_req.clear(); hit.clear(); src.clear(); last.clear();
+        glob.assign(rec_cells(), 0);
+        glob_req = 0;
         FILE * f = fopen(path.c_str(), "rb");
         if (!f) { return true; }   // a new store: the first add creates the file
         char m[8]; uint32_t h[4];
-        bool ok = fread(m, 1, 8, f) == 8 && memcmp(m, MAGIC, 8) == 0 && fread(h, sizeof(uint32_t), 4, f) == 4 && h[0] == e && h[1] == l && h[2] == x;
+        const bool magic = fread(m, 1, 8, f) == 8 && memcmp(m, MAGIC, 8) == 0;
+        if (!magic && memcmp(m, MAGIC, 7) == 0) {   // an older layout of this store: kept beside under its own name, the store starts anew (collecting goes on)
+            fclose(f);
+            std::string old = path + "." + std::string(m, 8);
+            for (int n = 1; FILE * t = fopen(old.c_str(), "rb"); ++n) { fclose(t); old = path + "." + std::string(m, 8) + "." + std::to_string(n); }
+            return std::rename(path.c_str(), old.c_str()) == 0 || (path.clear(), false);
+        }
+        bool ok = magic && fread(h, sizeof(uint32_t), 4, f) == 4 && h[0] == e && h[1] == l && h[2] == x;
+        ok = ok && fread(&glob_req, sizeof(uint32_t), 1, f) == 1 && fread(glob.data(), sizeof(uint32_t), rec_cells(), f) == rec_cells();
         if (ok) {
             std::vector<uint8_t> r(rec_bytes());
             while (fread(r.data(), 1, r.size(), f) == r.size()) {
@@ -177,6 +195,7 @@ struct moe_topic_store {
     //     make a few records, not 100k, and a query not asked before finds its topic's map (user 2026-10-28).
     // Else a new record (replacing the least recently used one past max_records). Returns the record's index.
     size_t add(const float * keys, const uint32_t * cnt, float merge_cos, float hit_rate = -1.0f, uint32_t source = 0) {
+        add_glob(cnt);   // every stored request counts in the global map, whatever its record does
         const float * key = keys + (size_t) pool * n_embd;
         const auto nb = nearest(key, 4, pool);
         size_t at = size();
@@ -242,16 +261,9 @@ struct moe_topic_store {
 
     // the record at index i to the file (the header first when the file is new); a write error only costs the record
     void write(size_t i) const {
-        if (path.empty()) { return; }
-        FILE * f = fopen(path.c_str(), "r+b");
-        if (!f) {
-            f = fopen(path.c_str(), "w+b");
-            if (!f) { return; }
-            const uint32_t h[4] = { n_embd, n_layers, n_exp, 0 };
-            fwrite(MAGIC, 1, 8, f);
-            fwrite(h, sizeof(uint32_t), 4, f);
-        }
-        if (fseek(f, (long) (head_bytes() + i * rec_bytes()), SEEK_SET) == 0) {
+        FILE * f = open_rw();
+        if (!f) { return; }
+        if (fseek(f, (long) (head_bytes() + glob_bytes() + i * rec_bytes()), SEEK_SET) == 0) {
             fwrite(&hit[i], sizeof(float), 1, f);
             fwrite(&src[i], sizeof(uint32_t), 1, f);
             fwrite(&n_req[i], sizeof(uint32_t), 1, f);
@@ -265,27 +277,63 @@ struct moe_topic_store {
         fclose(f);
     }
 
+    // the file for writing; a new one gets the header and the global map first ("" path or an error: none)
+    FILE * open_rw() const {
+        if (path.empty()) { return nullptr; }
+        FILE * f = fopen(path.c_str(), "r+b");
+        if (!f) {
+            f = fopen(path.c_str(), "w+b");
+            if (!f) { return nullptr; }
+            const uint32_t h[4] = { n_embd, n_layers, n_exp, 0 };
+            fwrite(MAGIC, 1, 8, f);
+            fwrite(h, sizeof(uint32_t), 4, f);
+            fwrite(&glob_req, sizeof(uint32_t), 1, f);
+            fwrite(glob.data(), sizeof(uint32_t), rec_cells(), f);
+        }
+        return f;
+    }
+
+    // a stored request's counts into the global map, and the map to the file
+    void add_glob(const uint32_t * cnt) {
+        for (size_t j = 0; j < rec_cells(); ++j) { glob[j] = (uint32_t) std::min<uint64_t>(UINT32_MAX, (uint64_t) glob[j] + cnt[j]); }
+        glob_req++;
+        FILE * f = open_rw();
+        if (!f) { return; }
+        if (fseek(f, (long) head_bytes(), SEEK_SET) == 0) {
+            fwrite(&glob_req, sizeof(uint32_t), 1, f);
+            fwrite(glob.data(), sizeof(uint32_t), rec_cells(), f);
+        }
+        fclose(f);
+    }
+
     // the merge of the nearest records the cache fills from (key: the lookup key, of kind pool): per layer, each record's counts as shares of that layer's
     // uses, weighted by its similarity (only records at least min_cos alike), scaled so the hottest expert of all layers is 1: one scale, since experts of
     // different layers compete for the blocks of a size class (a scale per layer rates every expert of a layer that spreads its uses near the top). Returns
-    // the records used and the best similarity.
+    // the records used and the best similarity. The global map comes in weighted 1 - the best similarity used: a prompt stored before takes its topic's map
+    // (which holds the experts every request needs too), a query far from every topic mostly the global map (last_wg; none stored: the global map alone).
     size_t merge(const float * key, size_t k, float min_cos, std::vector<float> & heat, float * best = nullptr) {
         heat.assign(rec_cells(), 0.0f);
-        size_t used = 0;
-        const auto nb = nearest(key, k, pool);
-        if (best) { *best = nb.empty() ? -1.0f : nb[0].first; }
-        for (const auto & p : nb) {
-            if (p.first < min_cos || p.first <= 0.0f) { break; }   // the weight is the cosine: a record pointing away adds nothing
-            const uint32_t * c = counts.data() + p.second * rec_cells();
+        auto add_shares = [&](const uint32_t * c, float w) {   // per layer, each expert's share of the layer's uses, times w
             for (uint32_t l = 0; l < n_layers; ++l) {
                 uint64_t tot = 0;
                 for (uint32_t x = 0; x < n_exp; ++x) { tot += c[(size_t) l * n_exp + x]; }
                 if (tot == 0) { continue; }
-                for (uint32_t x = 0; x < n_exp; ++x) { heat[(size_t) l * n_exp + x] += p.first * (float) c[(size_t) l * n_exp + x] / (float) tot; }
+                for (uint32_t x = 0; x < n_exp; ++x) { heat[(size_t) l * n_exp + x] += w * (float) c[(size_t) l * n_exp + x] / (float) tot; }
             }
+        };
+        size_t used = 0;
+        float  bused = 0.0f;
+        const auto nb = nearest(key, k, pool);
+        if (best) { *best = nb.empty() ? -1.0f : nb[0].first; }
+        for (const auto & p : nb) {
+            if (p.first < min_cos || p.first <= 0.0f) { break; }   // the weight is the cosine: a record pointing away adds nothing
+            add_shares(counts.data() + p.second * rec_cells(), p.first);
+            bused = std::max(bused, std::min(1.0f, p.first));
             last[p.second] = ++clock;
             used++;
         }
+        last_wg = use_glob && glob_req > 0 ? 1.0f - bused : 0.0f;
+        if (last_wg > 0.0f) { add_shares(glob.data(), last_wg); }
         const float mx = heat.empty() ? 0.0f : *std::max_element(heat.begin(), heat.end());
         if (mx > 0.0f) { for (float & h : heat) { h /= mx; } }
         return used;

@@ -112,6 +112,7 @@ int main() {
     std::vector<float> heat;
     float best = 0.0f;
     s.pool = moe_topic_store::KEY_MEAN;
+    s.use_glob = false;   // the topics' blend alone (the global map: below)
     CHECK(s.merge(a.data(), 4, 0.5f, heat, &best) == 1 && best > 0.95f);
     for (uint32_t l = 0; l < L; ++l) {
         const float h1 = l == 2 ? 0.75f : 1.0f, h2 = l == 2 ? 0.75f : 0.5f;
@@ -122,6 +123,43 @@ int main() {
     moe_topic_store r;
     CHECK(r.open(path, E, L, X) && r.size() == 2 && r.fkeys.size() == 2 * moe_topic_store::N_KEYS * E && r.key_of(1, 0) == s.key_of(1, 0) && r.qkeys == s.qkeys && r.hit == s.hit && r.src == s.src && r.n_req[0] == 2 && r.counts[1] == 20 && r.counts[L * X + 6] == 7);
     CHECK(r.nearest(b.data(), 1, moe_topic_store::KEY_MEAN)[0].second == 1 && r.nearest(bm.data(), 1, moe_topic_store::KEY_MAX)[0].second == 1);
+
+    // the global map: every stored request's counts added, none dropped, and read back with the file
+    CHECK(r.glob_req == s.glob_req && r.glob == s.glob && s.glob_req == 3 && s.glob[1] == 20 && s.glob[6] == 7);   // a, b and a2 added
+    // a key far from every topic takes the global map at weight 1 - its best cosine; the same prompt nearly none of it; with use_glob off none
+    {
+        moe_topic_store w;
+        CHECK(w.open("", E, L, X));
+        w.pool = moe_topic_store::KEY_MEAN;
+        w.add(keys2(a, am).data(), ca.data(), 0.9f);
+        w.add(keys2(b, bm).data(), cb.data(), NEVER);
+        std::vector<float> hw;
+        float bw = 0.0f;
+        w.merge(a.data(), 1, -1.0f, hw, &bw);
+        CHECK(std::fabs(w.last_wg - (1.0f - bw)) < 1e-6f && w.last_wg < 0.05f);
+        std::vector<float> far(E, 0.0f);
+        for (uint32_t j = 0; j < E; ++j) { far[j] = -(a[j] + b[j]); }   // away from a and b alike: cosine < 0 with both
+        far = unit(far);
+        CHECK(w.merge(far.data(), 4, -1.0f, hw, &bw) == 0 && bw < 0.0f && w.last_wg == 1.0f && hw[1] > 0.0f && hw[6] > 0.0f);   // the global map alone
+        w.use_glob = false;
+        w.merge(a.data(), 1, -1.0f, hw, &bw);
+        CHECK(w.last_wg == 0.0f);
+    }
+
+    // an older layout of the store: moved beside under its own name, never overwritten; the store starts anew
+    {
+        const std::string op = std::string(P_tmpdir) + "/test-moetopic-old.bin";
+        std::remove(op.c_str()); std::remove((op + ".MOETOPC5").c_str());
+        FILE * f = fopen(op.c_str(), "wb");
+        fwrite("MOETOPC5", 1, 8, f);
+        fclose(f);
+        moe_topic_store o5;
+        CHECK(o5.open(op, E, L, X) && o5.size() == 0 && !o5.path.empty());
+        FILE * kept = fopen((op + ".MOETOPC5").c_str(), "rb");
+        CHECK(kept != nullptr);
+        if (kept) { fclose(kept); }
+        std::remove(op.c_str()); std::remove((op + ".MOETOPC5").c_str());
+    }
 
     // another shape (another model or layer split): not read, and never written over
     moe_topic_store o;

@@ -5620,6 +5620,7 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         if (const char * m = moe_opt("dynhot-max"))   { max_rec = (size_t) atoll(m); }   // records kept: 0 = no limit (while testing)
         if (const char * m = moe_opt("dynhot-min"))   { g_topic.min_cos   = (float) atof(m); }
         if (const char * m = moe_opt("dynhot-merge")) { g_topic.merge_cos = (float) atof(m); }   // the 4-bit cosine at which a request joins a record (default 0.80; > 1: never)
+        if (const char * m = moe_opt("dynhot-global")) { g_topic.store.use_glob = atoi(m) != 0; }   // 0: the lookup blends the nearest topics only (the A/B against the global map)
         const std::string path = hotmap_path(model, ".hotmap");   // <hot map dir>/<model>.hotmap
         g_topic.store.pool = g_topic.pool;
         g_topic.store.max_records = max_rec;   // a record is the keys and a count per expert of every layer: 49 KB on DeepSeek-V4.1, 49 MB of RAM at the default 1024
@@ -5628,9 +5629,9 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         }
         static const char * what[] = { "off", "full: the nearest maps pick the cache's experts, every request stored",
             "store: requests stored, the ini's hot experts pick the cache's", "read: the nearest maps pick the cache's experts, nothing stored (frozen)" };
-        LLAMA_LOG_WARN("moe-cache: dynhot: %zu records in %s; dynhot=%s (lookup: the 4 nearest%s; a request joins a record at cosine >= %.2f)\n",
-                g_topic.store.size(), path.c_str(), what[g_topic.mode], g_topic.min_cos > -1.0f ? tr_fmt(" at cosine >= %.2f", g_topic.min_cos).c_str() : "",
-                g_topic.merge_cos);
+        LLAMA_LOG_WARN("moe-cache: dynhot: %zu records and a global map of %u requests in %s; dynhot=%s (lookup: the 4 nearest%s%s; a request joins a record at "
+                "cosine >= %.2f)\n", g_topic.store.size(), g_topic.store.glob_req, path.c_str(), what[g_topic.mode],
+                g_topic.min_cos > -1.0f ? tr_fmt(" at cosine >= %.2f", g_topic.min_cos).c_str() : "", g_topic.store.use_glob ? " and the global map" : "", g_topic.merge_cos);
     }
     topic_store_pending(mc);   // the request before this prompt, now searchable too
     const int64_t t0 = ggml_time_us();
@@ -5671,7 +5672,7 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
             }
         }
         g_topic_tmax.store(1);
-        g_topic.steer = g_topic.use() && used > 0;   // no stored map: the ini picks for this request
+        g_topic.steer = g_topic.use() && (used > 0 || g_topic.store.last_wg > 0.0f);   // nothing stored: the ini picks for this request
         g_topic_on.store(g_topic.steer);
         g_topic.h0 = g_topic.m0 = 0;   // the decode hits so far: this request's hit rate is what comes after
         for (const auto & ls : mc->layers) { g_topic.h0 += ls.n_hit; g_topic.m0 += ls.n_miss; }
@@ -5681,8 +5682,8 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
     LLAMA_LOG_WARN("moe-cache: dynhot: prompt of %d tokens (%d distinct, %d in this call), nearest of %zu stored requests at cosine %.3f by %s pooling (%.3f by %s): %s "
             "(key %.1f ms, search %.1f ms)\n", kn, n_distinct, n, g_topic.store.size(), best, g_topic.pool == moe_topic_store::KEY_MAX ? "max" : "mean", best_other,
             g_topic.pool == moe_topic_store::KEY_MAX ? "mean" : "max",
-            !g_topic.use() ? "store only, the ini's hot experts pick the cache's" : used > 0 ? tr_fmt("%zu merged, their map rates %zu experts", used, rated).c_str()
-                                                                                  : "nothing stored: the ini's hot experts pick the cache's",
+            !g_topic.use() ? "store only, the ini's hot experts pick the cache's" : g_topic.steer ? tr_fmt("%zu maps merged and the global map at weight %.2f, "
+                "they rate %zu experts", used, g_topic.store.last_wg, rated).c_str() : "nothing stored: the ini's hot experts pick the cache's",
             t_key / 1e3, (ggml_time_us() - t0 - t_key) / 1e3);
 }
 
