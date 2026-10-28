@@ -456,6 +456,7 @@ static void dsv4_state_read_k_cache(
     }
 
     // refill the mirrors from their sources; a mirror gets the same rows as its source, so a whole copy is exact
+    std::vector<uint8_t> buf;
     for (uint32_t il : kv->get_layer_ids()) {
         const int32_t src = kv_src[il];
         if (src == (int32_t) il) {

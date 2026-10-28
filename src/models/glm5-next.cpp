@@ -973,7 +973,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                             GGML_ASSERT(kpool*n_top_pool + (tail ? tail->ne[0] : 0) == (int64_t) inp_kpool->n_sel);
                             ggml_tensor * keep = ggml_fill(ctx0, ggml_new_tensor_1d(ctx0, cparams.flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32, n_kv), 0.0f);
                             sel = ggml_top_k_mask(ctx0, keep, top_k, score, inp_kpool->pool_idxs, tail);
-                            res->add_fused_node({LLM_FUSED_OP_TOP_K_MASK, sel, il});
+                            this->res->add_fused_node({LLM_FUSED_OP_TOP_K_MASK, sel, il});
                         } else {
                             ggml_tensor * sel_score = ggml_get_rows(ctx0, ggml_reshape_3d(ctx0, score, 1, n_pool, nr), top_k);
                             ggml_tensor * sel_order = ggml_argsort(ctx0, ggml_reshape_2d(ctx0, sel_score, n_top_pool, nr), GGML_SORT_ORDER_DESC);
