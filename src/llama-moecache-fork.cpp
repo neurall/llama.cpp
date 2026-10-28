@@ -1,5 +1,6 @@
 #include <csignal>
 #include "llama-moecache-fork.h"
+#include "llama-fork-hooks.h"
 #include "llama-gpu-probe-fork.h"
 #include "llama-moestate-fork.h"
 #include "llama-dsplit-fork.h"
@@ -32,6 +33,7 @@
 #include <thread>
 #include <vector>
 #include "llama-poolalloc-fork.h"
+#include "llama-moetopic-fork.h"
 #include "llama-passplan-fork.h"
 #include "llama-kvtier-fork.h"
 
@@ -164,6 +166,9 @@ struct layer_state {
 
     std::vector<uint64_t> glob_count;     // expert id -> lifetime uses
     std::vector<uint64_t> glob_base;      // the counts a profile preloaded at start (research emb=1 records this run's counts: glob_count - glob_base)
+    std::vector<uint32_t> topic_cnt;      // expert id -> uses in the request being served (prompt and answer): stored under its prompt's key (hot maps per topic, --moe dynhot=1)
+    uint32_t              topic_max = 0;  // the largest topic_cnt of this layer (the score's scale: g_topic_tmax, the largest of all layers)
+    std::vector<float>    topic_heat;     // expert id -> heat in the map merged from the stored requests nearest to this prompt (0..1 on one scale for all layers; 0: none)
     uint64_t              glob_max = 1;
     std::vector<bool>     sticky;         // expert id -> never evicted (most-used by lifetime count)
     std::vector<bool>     hot;            // expert id -> always hot: the fewest experts covering LLAMA_MOE_CACHE_PIN_HOT of the layer's picks
@@ -813,6 +818,26 @@ std::string knob_dump() {
 
 enum class policy { halve, window, hybrid, add, lru, rel };
 std::atomic<bool> g_rel_dead{false};   // policy r without router probabilities: the cache would never fill (relevance 0 everywhere), so it falls back to the default score
+// hot maps per topic (--moe dynhot=1, set at the first prompt): the lifetime term of the score is the topic's map plus this request's own uses (scale: its busiest
+// expert of any layer, g_topic_tmax) instead of the one map of every request ever served
+std::atomic<bool>     g_topic_on{false};
+
+// --moe expids=N (0: off, the default): per expert of every layer, the last N token ids the router sent to it (user idea 2026-10-28: per expert the
+// pooled input embedding of the tokens that activated it, for a predictor that plans expert uploads from the coming tokens). The ids, not vectors: a
+// token's layer-0 input is its embedding row, so any pooling (max, mean) is computed from them later, and 100 ids per expert are 4.4 MB on DeepSeek-V4.1
+// (43 layers x 256 experts) where 4-bit max-pooled vectors would be 28 MB. Decode calls (and any call of one micro-batch) only: a prompt pass on the GPU
+// reports which experts it used, not which token used which (its routing stays on the card). Kept in <state dir>/hotmap/<model>.expids, read at the
+// first prompt, written when a request ends (the server calls llama_moe_request_end_fork), at the start of each later prompt and at the end (exptok_save).
+struct exptok_state {
+    int32_t               n = -1;      // ring size per expert; 0 = off; -1 = not set up yet
+    uint32_t              n_layers = 0, n_exp = 0;
+    std::vector<int32_t>  ring;        // n_layers x n_exp x n token ids
+    std::vector<uint32_t> seen;        // n_layers x n_exp: tokens routed to the expert so far (the ring's next slot = seen % n)
+    std::vector<int32_t>  batch;       // the token ids of the call being computed: row t of a layer's routing is batch[t]
+    std::string           path;
+    bool                  dirty = false;
+} g_exptok;
+std::atomic<uint32_t> g_topic_tmax{1};
 
 policy get_policy() {
     static const policy p = [] {
@@ -844,6 +869,14 @@ double score(const layer_state & ls, int32_t id, uint64_t gmax) {
                 const char * w = moe_opt("global-weight");
                 return w ? atof(w) : 16.0;
             }();
+            // hot maps per topic: the map of the stored requests nearest to this prompt (0..1, 0 for a new topic) and this request's own uses take the
+            // lifetime counts' place: the counts of every past request kept other topics' experts in the cache ("stubborn"), so a new topic evicted them
+            // before its own cold ones
+            // (scale of the own uses: the busiest expert of any layer as of the last step, at least this layer's: current within a prompt's first pass)
+            if (g_topic_on.load(std::memory_order_relaxed)) {
+                const double tmax = (double) std::max(g_topic_tmax.load(std::memory_order_relaxed), ls.topic_max);
+                return ls.win_count[id] + k * ((double) ls.topic_heat[id] + (double) ls.topic_cnt[id] / tmax);
+            }
             return ls.win_count[id] + k * ((double) ls.glob_count[id] / (double) gmax);
         }
         case policy::halve:  return ls.expert_count[id];
@@ -1760,6 +1793,13 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             ls->win_count[id]++;
             ls->expert_last[id] = ++mc->clock;
             ls->recent.back().push_back(id);
+            if (g_exptok.n > 0 && n_tokens == (int64_t) g_exptok.batch.size() && (uint32_t) il < g_exptok.n_layers && (uint32_t) id < g_exptok.n_exp) {
+                const size_t c = (size_t) il * g_exptok.n_exp + (size_t) id;   // --moe expids: this token to this expert's ring
+                g_exptok.ring[c * (size_t) g_exptok.n + g_exptok.seen[c] % (uint32_t) g_exptok.n] = g_exptok.batch[t];
+                g_exptok.seen[c]++;
+                g_exptok.dirty = true;
+            }
+            ls->topic_max = std::max(ls->topic_max, ++ls->topic_cnt[id]);   // the request's own map (hot maps per topic): prompt and answer, whatever the lifetime counts take
             if (!prefill || count_prompt) {   // the lifetime counts (eviction score, saved hot map): the answer's experts, not the question's, with count-prompt=0
                 ls->glob_max = std::max(ls->glob_max, ++ls->glob_count[id]);
             }
@@ -2882,12 +2922,18 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
             return false;
         }
         // victim: a free block, else the non-sticky cached expert with the least lifetime use (block pool: of any layer of the class),
-        // and only if this expert (whose use this prompt just counted) was used more
+        // and only if this expert (whose use this prompt just counted) was used more. Hot maps per topic: the topic's map and this request's
+        // uses stand for the lifetime use, as in score()
+        auto life = [&](const layer_state & l, int32_t v) {
+            return g_topic_on.load(std::memory_order_relaxed)
+                ? (double) l.topic_heat[v] + (double) l.topic_cnt[v] / (double) std::max(g_topic_tmax.load(std::memory_order_relaxed), l.topic_max)
+                : (double) l.glob_count[v];
+        };
         double least;
         const size_t ali = it->second.first;
-        const slot_pick pk = pick_slot(mc, ali, [&](layer_state & lo, size_t, int32_t v) { return pinned(mc, lo, v) ? -1.0 : (double) lo.glob_count[v]; }, least);
+        const slot_pick pk = pick_slot(mc, ali, [&](layer_state & lo, size_t, int32_t v) { return pinned(mc, lo, v) ? -1.0 : life(lo, v); }, least);
         slot = pk.slot;
-        if (slot < 0 || least >= (double) ls.glob_count[expert]) {
+        if (slot < 0 || least >= life(ls, expert)) {
             return false;
         }
         if (pk.owner >= 0) {
@@ -3152,6 +3198,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     // Not queued for upload: extra uploads after a long prompt measured slower (they compete with decode)
     if (it->second.second == 0 && expert >= 0 && expert < (int32_t) ls.expert_slot.size()) {
         ls.expert_count[expert]++;
+        ls.topic_max = std::max(ls.topic_max, ++ls.topic_cnt[expert]);
         ls.glob_max = std::max(ls.glob_max, ++ls.glob_count[expert]);
     }
     // an expert the pass takes from RAM: its bytes cross this card's link (live bandwidth of the prompt phase)
@@ -5208,7 +5255,9 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
                 if (ls.expert_slot[e] >= 0 || ls.queued[e] || ls.adopt_slot[e] >= 0) {
                     continue;
                 }
-                const double sc = ini_only ? (double) ls.glob_count[e] / (double) std::max<uint64_t>(1, mc->gmax_all) : xscore(mc, ls, e);
+                // (hot maps per topic: the score, whose lifetime term is the topic's map and the request's own uses, not the ini's map)
+                const double sc = ini_only && !g_topic_on.load(std::memory_order_relaxed) ? (double) ls.glob_count[e] / (double) std::max<uint64_t>(1, mc->gmax_all)
+                                                                                         : xscore(mc, ls, e);
                 if (sc > 0.0) {
                     c.push_back({ sc, li, e });
                 }
@@ -5250,6 +5299,320 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
                 wait ? "" : " (background uploads)");
     }
     return jobs.size();
+}
+
+// ---- hot maps per topic (task 158; user idea 2026-10-27; the store: llama-moetopic-fork.h) ---------------------------------------------------------
+// --moe dynhot=1 (off by default until an A/B shows the gain): every request's expert uses (prompt and answer, topic_cnt) are stored under its prompt's key,
+// the mean input embedding of its tokens; the first pass of the next prompt looks up the stored requests nearest to it (cosine >= --moe dynhot-min, 0.80)
+// and merges their maps (topic_heat, 0..1 per expert; all 0 for a new topic). From then on:
+//   - score() takes the topic's map plus this request's own uses as its lifetime term, not the counts of every request ever served (the ini's hot map):
+//     those kept other topics' experts in the cache, so a new topic evicted them before its own cold ones (user: "so tetris doesnt spend 2nd run evicting
+//     stubborn irrelevant moes, just his own cold");
+//   - the prompt runs on whatever the cache holds (an expert it finds there is one it does not stream);
+//   - at the first decode step after it, every cached expert that neither the map rates nor the request used goes (topic_drop_foreign), and the refill after
+//     a prompt (reheat_free_blocks, by score) puts the topic's and the request's experts in those blocks: a new topic starts the answer with its own experts
+//     only, the empty start the user asked for, without a cold prompt.
+// Every prompt logs its best similarity: the threshold is calibrated from real prompts. The store lies next to the state file (--moe state=PATH moves both,
+// so a clean-state benchmark cell starts with no stored maps too); the ini's hot map is still counted and saved as before.
+static struct topic_t {
+    int                 on = -1;          // -1: not decided yet (the first prompt opens the store)
+    moe_topic_store     store;
+    std::vector<float>  mean;             // the vocabulary's mean input embedding: keys are centered on it (a mean over many tokens is mostly the common ones)
+    std::vector<float>  key;              // the key of the request being served (empty: none)
+    int                 pool = moe_topic_store::KEY_MAX;   // --moe dynhot-pool=max (default) | avg: the pooled key the lookup uses (both are stored)
+    float               min_cos = 0.80f, merge_overlap = -1.0f;   // lookup: records at least min_cos alike in key; store: requests at least merge_overlap alike in experts used merge (negative: found from the requests, auto_threshold)
+    int32_t             prev_n = 0;       // tokens of the previous decode call: a prompt starts where a call of more than a step follows a step
+    bool                after_prompt = false;   // a prompt began: its first decode step drops the experts foreign to the topic and the request
+} g_topic;
+
+// the keys of a prompt (moe_topic_store::N_KEYS x n_embd floats, each unit length): the mean of its tokens' input embeddings and per value their largest,
+// both minus the vocabulary's mean. A token's row is converted once however often it occurs (a code prompt repeats its tokens), weighted by its count for
+// the mean; past 8192 distinct tokens every k-th of them is taken (the counts still weight the mean)
+static bool topic_key(const llama_model & model, const int32_t * ids, int32_t n, std::vector<float> & key, int32_t * n_distinct) {
+    const ggml_tensor * te = model.tok_embd;
+    if (te == nullptr || n <= 0 || (te->type != GGML_TYPE_F32 && ggml_get_type_traits(te->type)->to_float == nullptr)) {
+        return false;
+    }
+    const int64_t ne0 = te->ne[0], nv = te->ne[1];
+    const size_t  rb  = ggml_row_size(te->type, ne0);
+    const bool    host = te->buffer != nullptr && ggml_backend_buffer_is_host(te->buffer);
+    std::vector<uint8_t> raw(host ? 0 : rb);
+    std::vector<float>   row(ne0);
+    auto get_row = [&](int64_t r) -> const float * {
+        const void * src = nullptr;
+        if (host) { src = (const uint8_t *) te->data + r * te->nb[1]; }
+        else      { ggml_backend_tensor_get(te, raw.data(), r * te->nb[1], rb); src = raw.data(); }
+        if (te->type == GGML_TYPE_F32) { memcpy(row.data(), src, ne0 * sizeof(float)); }
+        else                           { ggml_get_type_traits(te->type)->to_float(src, row.data(), ne0); }
+        return row.data();
+    };
+    if (g_topic.mean.empty()) {   // once: every 64th row of the vocabulary
+        std::vector<double> m(ne0, 0.0);
+        int64_t c = 0;
+        for (int64_t r = 0; r < nv; r += 64) { const float * x = get_row(r); for (int64_t j = 0; j < ne0; ++j) { m[j] += x[j]; } c++; }
+        g_topic.mean.resize(ne0);
+        for (int64_t j = 0; j < ne0; ++j) { g_topic.mean[j] = (float) (m[j] / (double) std::max<int64_t>(1, c)); }
+    }
+    static std::vector<uint32_t> tok_n;   // per vocabulary entry: its count in this prompt (zero again after each call)
+    static std::vector<int32_t>  uniq;
+    if ((int64_t) tok_n.size() < nv) { tok_n.assign(nv, 0); }
+    uniq.clear();
+    for (int32_t i = 0; i < n; ++i) {
+        if (ids[i] < 0 || ids[i] >= nv) { continue; }
+        if (tok_n[ids[i]]++ == 0) { uniq.push_back(ids[i]); }
+    }
+    *n_distinct = (int32_t) uniq.size();
+    std::vector<double> sum(ne0, 0.0), mx(ne0, -1e30);
+    const size_t step = std::max<size_t>(1, uniq.size() / 8192);
+    double w_tot = 0.0;
+    for (size_t u = 0; u < uniq.size(); u += step) {
+        const float * x = get_row(uniq[u]);
+        const double  w = (double) tok_n[uniq[u]];
+        for (int64_t j = 0; j < ne0; ++j) { sum[j] += w * x[j]; mx[j] = std::max(mx[j], (double) x[j]); }
+        w_tot += w;
+    }
+    for (int32_t id : uniq) { tok_n[id] = 0; }
+    if (w_tot <= 0.0) {
+        return false;
+    }
+    key.assign((size_t) moe_topic_store::N_KEYS * ne0, 0.0f);
+    for (int k = 0; k < moe_topic_store::N_KEYS; ++k) {
+        float * kk = key.data() + (size_t) k * ne0;
+        double nn = 0.0;
+        for (int64_t j = 0; j < ne0; ++j) {
+            kk[j] = (float) ((k == moe_topic_store::KEY_MAX ? mx[j] : sum[j] / w_tot) - g_topic.mean[j]);
+            nn += (double) kk[j] * kk[j];
+        }
+        if (nn <= 0.0) {
+            return false;
+        }
+        const float inv = (float) (1.0 / std::sqrt(nn));
+        for (int64_t j = 0; j < ne0; ++j) { kk[j] *= inv; }
+    }
+    return true;
+}
+
+// the request just served: its counts under its key (merged into a stored request it nearly equals)
+static void topic_store_pending(moe_cache * mc) {
+    if (g_topic.key.empty() || g_topic.store.n_exp == 0) {
+        return;
+    }
+    std::vector<uint32_t> cnt(g_topic.store.rec_cells(), 0);
+    uint64_t tot = 0;
+    {
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        for (const auto & ls : mc->layers) {
+            if (ls.pub.il < 0 || (uint32_t) ls.pub.il >= g_topic.store.n_layers) { continue; }
+            for (size_t e = 0; e < ls.topic_cnt.size() && e < g_topic.store.n_exp; ++e) {
+                cnt[(size_t) ls.pub.il * g_topic.store.n_exp + e] = ls.topic_cnt[e];
+                tot += ls.topic_cnt[e];
+            }
+        }
+    }
+    if (tot > 0) {
+        const int64_t t0 = ggml_time_us();
+        const size_t at = g_topic.store.add(g_topic.key.data(), cnt.data(), g_topic.merge_overlap);
+        LLAMA_LOG_WARN("moe-cache: dynhot: request stored: best overlap with a record %.2f, threshold %.2f%s: %s record %zu (%zu records, %.2f ms)\n",
+                g_topic.store.last_best, g_topic.store.last_thr, g_topic.merge_overlap < 0.0f ? " (automatic)" : "", g_topic.store.last_merged ? "pooled into" : "new",
+                at, g_topic.store.size(), (ggml_time_us() - t0) / 1e3);
+    }
+    g_topic.key.clear();
+}
+
+// the prompt is over: every cached expert that neither the topic's map rates nor the request used goes (not a pinned one, not one an upload is writing), its
+// block back to the free list for the refill that follows. Called by the step with mc->mtx held (a sync point; the step flushes the tables at its end).
+static size_t topic_drop_foreign(moe_cache * mc) {
+    size_t n = 0;
+    for (size_t li = 0; li < mc->layers.size(); ++li) {
+        layer_state & ls = mc->layers[li];
+        for (int32_t b = 0; b < (int32_t) ls.slot_expert.size(); ++b) {
+            const int32_t e = ls.slot_expert[b];
+            if (e < 0 || ls.slot_in_flight[b] || ls.is_stream[b] || pinned(mc, ls, e) || ls.topic_heat[e] > 0.0f || ls.topic_cnt[e] > 0) { continue; }
+            evict_slot(mc, ls, b);
+            pool_release(mc, li, b);
+            n++;
+        }
+    }
+    return n;
+}
+
+// <state dir>/hotmap/<model section><ext>: the files of the hot maps per topic and of the per-expert tokens, one per model, next to the state file
+// ("" when there is no state file)
+static std::string hotmap_path(const llama_model & model, const char * ext) {
+    const std::string sf = moe_state_file();
+    if (sf.empty()) {
+        return "";
+    }
+    std::string sec = moe_state_section(model);
+    for (char & ch : sec) { if (!isalnum((unsigned char) ch) && ch != '-' && ch != '.') { ch = '_'; } }
+    const std::filesystem::path sp(sf);
+    const std::string dir = (sp.has_parent_path() ? sp.parent_path() : std::filesystem::path(".")).string() + "/hotmap";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir + "/" + sec + ext;
+}
+
+// --moe expids: the rings to the file (written beside it and renamed over it, so a crash leaves the old file whole); only when tokens came in since
+static void exptok_save() {
+    if (g_exptok.n <= 0 || !g_exptok.dirty || g_exptok.path.empty()) {
+        return;
+    }
+    const std::string tmp = g_exptok.path + ".tmp";
+    FILE * f = fopen(tmp.c_str(), "wb");
+    if (!f) {
+        return;
+    }
+    static const char magic[8] = { 'M', 'O', 'E', 'X', 'P', 'I', 'D', '1' };
+    const uint32_t h[4] = { g_exptok.n_layers, g_exptok.n_exp, (uint32_t) g_exptok.n, 0 };
+    bool ok = fwrite(magic, 1, 8, f) == 8 && fwrite(h, sizeof(uint32_t), 4, f) == 4
+           && fwrite(g_exptok.seen.data(), sizeof(uint32_t), g_exptok.seen.size(), f) == g_exptok.seen.size()
+           && fwrite(g_exptok.ring.data(), sizeof(int32_t), g_exptok.ring.size(), f) == g_exptok.ring.size();
+    ok = fclose(f) == 0 && ok;
+    if (ok) {
+        std::filesystem::rename(tmp, g_exptok.path);
+    } else {
+        std::remove(tmp.c_str());
+    }
+    g_exptok.dirty = false;
+}
+
+// --moe expids, every decode call: set up at the first (read the file of an earlier run: same layers and experts; another ring size keeps the most recent
+// tokens that fit), the call's token ids for the observer, and at the start of a prompt the tokens so far to the file
+static void exptok_call(const llama_model & model, const int32_t * ids, int32_t n, bool first) {
+    if (g_exptok.n < 0) {
+        const char * v = moe_opt("expids");
+        g_exptok.n = v != nullptr && model.hparams.n_expert > 0 ? std::max(0, atoi(v)) : 0;
+        if (g_exptok.n > 0) {
+            const uint32_t L = (uint32_t) model.hparams.n_layer(), X = (uint32_t) model.hparams.n_expert, N = (uint32_t) g_exptok.n;
+            g_exptok.n_layers = L;
+            g_exptok.n_exp    = X;
+            g_exptok.ring.assign((size_t) L * X * N, -1);
+            g_exptok.seen.assign((size_t) L * X, 0);
+            g_exptok.path = hotmap_path(model, ".expids");
+            const char * how = "a new file";
+            if (FILE * f = g_exptok.path.empty() ? nullptr : fopen(g_exptok.path.c_str(), "rb")) {
+                char m[8]; uint32_t h[4];
+                if (fread(m, 1, 8, f) == 8 && memcmp(m, "MOEXPID1", 8) == 0 && fread(h, sizeof(uint32_t), 4, f) == 4 && h[0] == L && h[1] == X && h[2] > 0) {
+                    std::vector<uint32_t> seen((size_t) L * X);
+                    std::vector<int32_t>  ring((size_t) L * X * h[2]);
+                    if (fread(seen.data(), sizeof(uint32_t), seen.size(), f) == seen.size() && fread(ring.data(), sizeof(int32_t), ring.size(), f) == ring.size()) {
+                        for (size_t c = 0; c < seen.size(); ++c) {   // the most recent min(seen, old size, new size) tokens, each at its place in the new ring
+                            const uint32_t keep = std::min({ seen[c], h[2], N });
+                            for (uint32_t k = keep; k >= 1; --k) {
+                                g_exptok.ring[c * N + (seen[c] - k) % N] = ring[c * h[2] + (seen[c] - k) % h[2]];
+                            }
+                            g_exptok.seen[c] = seen[c];
+                        }
+                        how = "read";
+                    }
+                } else {
+                    how = "of another model or layer split: not used, not written";
+                    g_exptok.path.clear();   // never overwrite a file this run cannot read
+                }
+                fclose(f);
+            }
+            LLAMA_LOG_WARN("moe-cache: expids: the last %d token ids per expert (%u layers x %u experts, %.1f MiB) in %s: %s\n", g_exptok.n, L, X,
+                    (double) g_exptok.ring.size() * sizeof(int32_t) / 1048576.0, g_exptok.path.empty() ? "(no file)" : g_exptok.path.c_str(), how);
+        }
+    }
+    if (g_exptok.n <= 0) {
+        return;
+    }
+    if (first) {
+        exptok_save();   // a new prompt: the request before it to the file
+    }
+    if (ids != nullptr && n > 0) {
+        g_exptok.batch.assign(ids, ids + n);
+    } else {
+        g_exptok.batch.clear();
+    }
+}
+
+// a request started (the server's hook): the next call starts its prompt, however short it is (topic_begin). Not set before the first request: the
+// server's warm-up decodes at load are no prompt (a record of their 2 tokens would be stored at every start)
+static std::atomic<bool> g_req_boundary{false};
+
+// the server's hooks (llama-fork-hooks.h): a request starts; a request ended: the per-expert token ids to the file, so the file is whole while the server waits
+void llama_moe_request_begin_fork(void) {
+    g_req_boundary.store(true);
+}
+
+void llama_moe_request_end_fork(void) {
+    exptok_save();
+}
+
+void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t * ids, int32_t n) {
+    moe_cache * mc = g_cache;
+    const int32_t mb = (int32_t) std::max<int64_t>(8, llama_moe_cache_max_batch_fork());
+    // the first call of a prompt: the first call after a request started (the server says so: a prompt shorter than the cache's max batch is one too,
+    // 37 tokens on restricted Qwen3.6 where that batch is larger), or a call above the max batch after steps (llama-cli and the like)
+    bool first = n > mb && g_topic.prev_n <= mb;
+    if (n > 0 && g_req_boundary.exchange(false)) {
+        first = true;
+    }
+    g_topic.prev_n = n;
+    exptok_call(model, ids, n, first);   // --moe expids: every call
+    if (mc == nullptr || !first || g_topic.on == 0) {
+        return;
+    }
+    if (g_topic.on < 0) {   // the first prompt: open the store next to the state file
+        size_t max_rec = 1024;
+        const char * e = moe_opt("dynhot");
+        const std::string sf = moe_state_file();
+        g_topic.on = e != nullptr && atoi(e) != 0 && !sf.empty() && model.tok_embd != nullptr && model.hparams.n_expert > 0 ? 1 : 0;
+        if (g_topic.on == 0) {
+            return;
+        }
+        if (const char * m = moe_opt("dynhot-pool"))  { g_topic.pool = strcmp(m, "max") == 0 ? moe_topic_store::KEY_MAX : moe_topic_store::KEY_MEAN; }
+        if (const char * m = moe_opt("dynhot-max"))   { max_rec = (size_t) atoll(m); }   // records kept: 0 = no limit (while testing)
+        if (const char * m = moe_opt("dynhot-min"))   { g_topic.min_cos   = (float) atof(m); }
+        if (const char * m = moe_opt("dynhot-merge")) { g_topic.merge_overlap = m[0] == 'a' ? -1.0f : (float) atof(m); }   // a number, or "auto" (the default)
+        const std::string path = hotmap_path(model, ".hotmap");   // <state dir>/hotmap/<model>.hotmap
+        g_topic.store.pool = g_topic.pool;
+        g_topic.store.max_records = max_rec;   // a record is the keys and a count per expert of every layer: 49 KB on DeepSeek-V4.1, 49 MB of RAM at the default 1024
+        if (!g_topic.store.open(path, (uint32_t) model.hparams.n_embd, (uint32_t) model.hparams.n_layer(), (uint32_t) model.hparams.n_expert)) {
+            LLAMA_LOG_WARN("moe-cache: dynhot: %s holds maps of another shape (model or layer count): not used, not written\n", path.c_str());
+        }
+        LLAMA_LOG_WARN("moe-cache: dynhot: %zu stored requests in %s (nearest at cosine >= %.2f fill the cache; none: the answer starts with the prompt's experts only)\n",
+                g_topic.store.size(), path.c_str(), g_topic.min_cos);
+        g_topic_on.store(true);
+    }
+    topic_store_pending(mc);   // the request before this prompt, now searchable too
+    const int64_t t0 = ggml_time_us();
+    std::vector<float> key;
+    std::vector<float> heat;
+    float   best = -1.0f, best_other = -1.0f;   // the nearest record by the lookup key, and by the other pooling (the log compares the two)
+    size_t  used = 0;
+    int32_t n_distinct = 0;
+    int64_t t_key = 0;
+    if (topic_key(model, ids, n, key, &n_distinct)) {   // no key (an embedding type without a float conversion): a new topic, and nothing stored for it
+        t_key = ggml_time_us() - t0;
+        const uint32_t ne = g_topic.store.n_embd;
+        const int      other = moe_topic_store::N_KEYS - 1 - g_topic.pool;
+        used = g_topic.store.merge(key.data() + (size_t) g_topic.pool * ne, 4, g_topic.min_cos, heat, &best);
+        const auto nb = g_topic.store.nearest(key.data() + (size_t) other * ne, 1, other);
+        best_other = nb.empty() ? -1.0f : nb[0].first;
+    }
+    size_t rated = 0;
+    {
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        for (auto & ls : mc->layers) {
+            std::fill(ls.topic_cnt.begin(), ls.topic_cnt.end(), 0u);
+            ls.topic_max = 0;
+            const bool in = used > 0 && ls.pub.il >= 0 && (uint32_t) ls.pub.il < g_topic.store.n_layers;
+            for (size_t e = 0; e < ls.topic_heat.size(); ++e) {
+                ls.topic_heat[e] = in && e < g_topic.store.n_exp ? heat[(size_t) ls.pub.il * g_topic.store.n_exp + e] : 0.0f;
+                rated += ls.topic_heat[e] > 0.0f;
+            }
+        }
+        g_topic_tmax.store(1);
+    }
+    g_topic.key          = std::move(key);
+    g_topic.after_prompt = true;
+    LLAMA_LOG_WARN("moe-cache: dynhot: prompt of %d tokens (%d distinct), nearest of %zu stored requests at cosine %.3f by %s pooling (%.3f by %s): %s "
+            "(key %.1f ms, search %.1f ms)\n", n, n_distinct, g_topic.store.size(), best, g_topic.pool == moe_topic_store::KEY_MAX ? "max" : "mean", best_other,
+            g_topic.pool == moe_topic_store::KEY_MAX ? "mean" : "max", used > 0 ? tr_fmt("%zu merged, their map rates %zu experts", used, rated).c_str() : "a new topic",
+            t_key / 1e3, (ggml_time_us() - t0 - t_key) / 1e3);
 }
 
 // ---- block pool layout -------------------------------------------------------------------------------------------------------------------------
@@ -5929,6 +6292,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
             }
             ls.glob_count.assign(n_expert, 0);
+            ls.topic_cnt.assign(n_expert, 0);
+            ls.topic_heat.assign(n_expert, 0.0f);
             ls.sticky.assign(n_expert, false);
             ls.adopt_slot.assign(n_expert, -1);
             ls.cached_since.assign(n_expert, 0);
@@ -7793,10 +8158,23 @@ void llama_moe_cache_step_fork() {
         reheat_free_blocks(mc, det, true);
     }
     mc->gmax_all = 1;
-    for (const auto & l : mc->layers) { mc->gmax_all = std::max(mc->gmax_all, l.glob_max); }
+    uint32_t tmax = 1;
+    for (const auto & l : mc->layers) { mc->gmax_all = std::max(mc->gmax_all, l.glob_max); tmax = std::max(tmax, l.topic_max); }
+    g_topic_tmax.store(tmax, std::memory_order_relaxed);
+    const bool decode_graph = mc->graph_tokens_last <= (int32_t) std::max<int64_t>(8, llama_moe_cache_max_batch_fork());
+    // hot maps per topic: the first decode step after a prompt drops the cached experts neither the topic's map nor the request used; the refill below
+    // fills their blocks too
+    size_t n_drop = 0;
+    if (g_topic.after_prompt && decode_graph) {
+        g_topic.after_prompt = false;
+        const int64_t t0 = ggml_time_us();
+        n_drop = topic_drop_foreign(mc);
+        LLAMA_LOG_WARN("moe-cache: dynhot: the prompt is over: %zu cached experts that neither the topic's map nor the request used dropped (%.2f ms; the refill follows)\n",
+                n_drop, (ggml_time_us() - t0) / 1e3);
+    }
     // blocks came back and the graph that just ran was a decode graph: the prompt is over (between the passes of a prompt nothing comes back, and
     // after a smaller pass that is still a prompt pass the next pass may take the blocks again)
-    if (n_back > 0 && mc->graph_tokens_last <= (int32_t) std::max<int64_t>(8, llama_moe_cache_max_batch_fork())) {
+    if ((n_back > 0 || n_drop > 0) && decode_graph) {
         pool_fill_log(mc, "after a prompt (its blocks back)");
         reheat_free_blocks(mc, det);
         mc->fill_from = (int64_t) mc->n_steps;
@@ -8575,6 +8953,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                 for (int e = 0; e < mc->pf_count_experts && e < (int) ls.expert_count.size(); ++e) {
                     if (u[e]) {
                         ls.expert_count[e]++;
+                        ls.topic_max = std::max(ls.topic_max, ++ls.topic_cnt[e]);
                         ls.glob_max = std::max(ls.glob_max, ++ls.glob_count[e]);
                     }
                 }
@@ -8765,6 +9144,8 @@ void llama_moe_cache_free_fork() {
     if (!mc) {
         return;
     }
+    if (g_topic.on > 0) { topic_store_pending(mc); }   // the last request's map (hot maps per topic)
+    exptok_save();   // --moe expids: the tokens of the last request
     for (const auto & ap : mc->alias) {   // end of run: the whole pool map of every card (what each byte range of the pool holds when the run ends), always logged, once
         size_t total = 0;
         for (const auto & r : pool_map(ap)) { total = std::max(total, r.hi); }

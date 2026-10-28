@@ -15,6 +15,7 @@
 #include "common.h"
 #include "fit.h"
 #include "llama.h"
+#include "llama-fork-hooks.h"
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -2117,6 +2118,8 @@ private:
     }
 
     bool launch_slot_with_task(server_slot & slot, server_task && task) {
+        llama_moe_request_begin_fork();   // fork: a request starts: the MoE cache takes the next decode call as its prompt's first
+
         // process per-request lora adapters
         if (!task.params.lora.empty()) {
             auto task_loras = construct_lora_list(task.params.lora);
@@ -2569,6 +2572,7 @@ private:
             res->tokens      = std::move(slot.generated_tokens);
         }
         { llama_tuning_info ti; llama_get_tuning_info(ctx_tgt, &ti); slot.stats.tuning_end(ti); }
+        llama_moe_request_end_fork();   // fork: the request is over: per-request files of the MoE cache to disk
         res->stats           = slot.stats;
         res->prompt          = slot.task->tokens.detokenize(ctx_tgt, true);
         res->response_fields = std::move(slot.task->params.response_fields);

@@ -3535,6 +3535,12 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         // itself (user 2026-10-26: start from the most threads; too many costs little, too few a lot)
         sched_reserve(); // the compute graph now includes the cache chain
     }
+    if (cparams.moe_cache_started && !cparams.ctx_other) {   // fork (--moe dynhot=1, hot maps per topic): the first call of a prompt looks up the stored requests nearest to it
+        std::vector<int32_t> ids;
+        ids.reserve(batch_inp.tokens.size());
+        for (const auto & t : batch_inp.tokens) { if (!t.has_embd && t.id != LLAMA_TOKEN_NULL) { ids.push_back(t.id); } }
+        llama_moe_cache_topic_begin_fork(model, ids.data(), (int32_t) ids.size());
+    }
     {   // --moe kv-tail=1: KV records no expert pool took (dense models) get their buffer, once, at the first real decode. Only this context's records: the records of
         // the context that expects the pool wait for it (a draft decoding at load took the target's records into a fixed full-context arena, 7 GiB on DeepSeek 4.1);
         // that context hands the ones its pool did not take to an arena once the pool started (or when it decodes with the start deferred, as before)

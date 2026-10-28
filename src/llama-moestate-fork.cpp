@@ -140,6 +140,10 @@ std::string moe_state_section(const llama_model & model) {
     return g_geom_section = name + " " + std::to_string(model.size());
 }
 
+std::string moe_state_file() {
+    return state_path();
+}
+
 bool moe_state_enabled() {
     std::lock_guard<std::mutex> lk(g_mtx);
     return !state_path().empty();
