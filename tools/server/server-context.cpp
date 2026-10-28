@@ -1924,8 +1924,14 @@ private:
                     common_chat_msg m; m.role = "user"; m.content = "x";
                     in.messages = { m };
                     const auto r = common_chat_templates_apply(chat_params.tmpls.get(), in);
-                    const int n = (int) common_tokenize(llama_model_get_vocab(model_tgt), r.prompt.str(), true, true).size();
+                    const llama_tokens rt = common_tokenize(llama_model_get_vocab(model_tgt), r.prompt.str(), true, true);
+                    const int n = (int) rt.size();
                     llama_moe_live_set("min_in_len", n);
+                    // fork: the template's own tokens, with thinking on and off, for the topic key of --moe dynhot (it pools the request's own text)
+                    llama_moe_template_tokens_fork(rt.data(), n);
+                    in.enable_thinking = !in.enable_thinking;
+                    const llama_tokens rt2 = common_tokenize(llama_model_get_vocab(model_tgt), common_chat_templates_apply(chat_params.tmpls.get(), in).prompt.str(), true, true);
+                    llama_moe_template_tokens_fork(rt2.data(), (int32_t) rt2.size());
                     SRV_INF("shortest prompt through the chat template: %d tokens (live parameter min_in_len)\n", n);
                 } catch (const std::exception & e) {
                     SRV_WRN("could not measure the chat template minimum: %s\n", e.what());
