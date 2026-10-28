@@ -87,6 +87,8 @@ struct moe_topic_store {
     float    last_wg  = 0.0f;    // the last merge: the global map's weight
     bool  last_merged = false, last_kept = false;   // last_merged: the request went to a stored record; last_kept: its prompt, but no better hit rate: nothing changed
     bool  last_same = false;                         // the last add was a prompt already stored (its key as alike as SAME_KEY)
+    bool  same_pool = false;                         // the same prompt again: its counts added to the record's whatever its hit rate (--moe dynhot-same=pool), not
+                                                     // the record's map replaced by a better run's (replace, the default): the plateau test compares the two
     static constexpr float SAME_KEY = 0.999f;        // keys this alike (cosine of the float keys) are one prompt: one record, its map replaced only by a better hit rate
 
     size_t size() const { return n_req.size(); }
@@ -208,7 +210,7 @@ struct moe_topic_store {
         last_merged = at < size();
         last_best = last_merged ? overlap(counts.data() + at * rec_cells(), cnt) : 0.0f;
         last_kept = false;
-        if (last_same) {
+        if (last_same && !same_pool) {
             if (hit_rate < 0.0f || (hit[at] >= 0.0f && hit_rate < hit[at])) {   // not measured, or not better: the record stays
                 last_kept = true;
                 return at;

@@ -107,6 +107,15 @@ int main() {
         CHECK(p.add(keys2(a, am).data(), cc.data(), NEVER) == 2 && p.size() == 3);
     }
 
+    // dynhot-same=pool: the same prompt again adds its counts whatever its hit rate (the best rate is kept)
+    {
+        moe_topic_store q;
+        CHECK(q.open("", E, L, X));
+        q.same_pool = true;
+        CHECK(q.add(keys2(a, am).data(), ca.data(), 0.9f, 0.60f) == 0 && q.add(keys2(a, am).data(), ca.data(), 0.9f, 0.50f) == 0);
+        CHECK(q.size() == 1 && q.last_same && !q.last_kept && q.n_req[0] == 2 && q.counts[1] == 20 && q.hit[0] == 0.60f);
+    }
+
     // the merged heat of a key near a, one scale for all layers: expert 1 of layers 0 and 1 (2/3 of their uses) is 1.0 and expert 2 there 0.5; layer 2
     // splits its uses half and half, so both its experts are 0.75 (a scale per layer would make them 1.0); b's expert 6 is absent (b is below min_cos)
     std::vector<float> heat;

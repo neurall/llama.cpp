@@ -5620,7 +5620,8 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         if (const char * m = moe_opt("dynhot-max"))   { max_rec = (size_t) atoll(m); }   // records kept: 0 = no limit (while testing)
         if (const char * m = moe_opt("dynhot-min"))   { g_topic.min_cos   = (float) atof(m); }
         if (const char * m = moe_opt("dynhot-merge")) { g_topic.merge_cos = (float) atof(m); }   // the 4-bit cosine at which a request joins a record (default 0.80; > 1: never)
-        if (const char * m = moe_opt("dynhot-global")) { g_topic.store.use_glob = atoi(m) != 0; }   // 0: the lookup blends the nearest topics only (the A/B against the global map)
+        if (const char * m = moe_opt("dynhot-global")) { g_topic.store.use_glob = atoi(m) != 0; }
+        if (const char * m = moe_opt("dynhot-same"))   { g_topic.store.same_pool = strcmp(m, "pool") == 0; }   // the same prompt again: replace (a better run's map) | pool (every run's counts)   // 0: the lookup blends the nearest topics only (the A/B against the global map)
         const std::string path = hotmap_path(model, ".hotmap");   // <hot map dir>/<model>.hotmap
         g_topic.store.pool = g_topic.pool;
         g_topic.store.max_records = max_rec;   // a record is the keys and a count per expert of every layer: 49 KB on DeepSeek-V4.1, 49 MB of RAM at the default 1024
