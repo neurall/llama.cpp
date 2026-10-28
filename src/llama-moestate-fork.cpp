@@ -22,6 +22,24 @@
 #include <map>
 #include <mutex>
 
+// the user's cache directory of the fork's files (created): <XDG_CACHE_HOME or ~/.cache>/llama.cpp, %LOCALAPPDATA%\llama.cpp on Windows; "" when there is none
+std::string moe_user_dir() {
+#ifdef _WIN32
+    const char * base = getenv("LOCALAPPDATA");
+    const std::string dir = base ? std::string(base) + "\\llama.cpp" : "";
+#else
+    const char * xdg  = getenv("XDG_CACHE_HOME");
+    const char * home = getenv("HOME");
+    const std::string dir = xdg ? std::string(xdg) + "/llama.cpp" : home ? std::string(home) + "/.cache/llama.cpp" : "";
+#endif
+    if (dir.empty()) {
+        return "";
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
 namespace {
 
 using section_t = std::map<std::string, std::string>;
@@ -39,24 +57,6 @@ std::string state_path() {
     }
     const std::string dir = moe_user_dir();
     return dir.empty() ? "" : dir + "/moe-state.ini";
-}
-
-// the user's cache directory of the fork's files (created): <XDG_CACHE_HOME or ~/.cache>/llama.cpp, %LOCALAPPDATA%\llama.cpp on Windows; "" when there is none
-std::string moe_user_dir() {
-#ifdef _WIN32
-    const char * base = getenv("LOCALAPPDATA");
-    const std::string dir = base ? std::string(base) + "\\llama.cpp" : "";
-#else
-    const char * xdg  = getenv("XDG_CACHE_HOME");
-    const char * home = getenv("HOME");
-    const std::string dir = xdg ? std::string(xdg) + "/llama.cpp" : home ? std::string(home) + "/.cache/llama.cpp" : "";
-#endif
-    if (dir.empty()) {
-        return "";
-    }
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    return dir;
 }
 
 std::string trim(const std::string & s) {
