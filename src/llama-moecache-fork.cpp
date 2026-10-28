@@ -5340,6 +5340,7 @@ static struct topic_t {
     float               min_cos = 0.80f, merge_overlap = -1.0f;   // lookup: records at least min_cos alike in key; store: requests at least merge_overlap alike in experts used merge (negative: found from the requests, auto_threshold)
     int32_t             prev_n = 0;       // tokens of the previous decode call: a prompt starts where a call of more than a step follows a step
     bool                after_prompt = false;   // a prompt began: its first decode step drops the experts foreign to the topic and the request
+    uint64_t h0 = 0, m0 = 0;   // decode hits and misses when the request began
 } g_topic;
 
 // the keys of a prompt (moe_topic_store::N_KEYS x n_embd floats, each unit length): the mean of its tokens' input embeddings and per value their largest,
@@ -5428,9 +5429,13 @@ static void topic_store_pending(moe_cache * mc) {
     }
     if (tot > 0) {
         const int64_t t0 = ggml_time_us();
-        const size_t at = g_topic.store.add(g_topic.key.data(), cnt.data(), g_topic.merge_overlap);
+        uint64_t h1 = 0, m1 = 0;
+        { std::lock_guard<std::mutex> lk(mc->mtx); for (const auto & ls : mc->layers) { h1 += ls.n_hit; m1 += ls.n_miss; } }
+        const uint64_t dh = h1 - g_topic.h0, dm = m1 - g_topic.m0;
+        const float hr = dh + dm > 0 ? (float) ((double) dh / (double) (dh + dm)) : -1.0f;   // this request's decode hit rate (unknown when it decoded nothing)
+        const size_t at = g_topic.store.add(g_topic.key.data(), cnt.data(), g_topic.merge_overlap, hr);
         LLAMA_LOG_WARN("moe-cache: dynhot: request stored: best overlap with a record %.2f, threshold %.2f%s: %s record %zu (%zu records, %.2f ms)\n",
-                g_topic.store.last_best, g_topic.store.last_thr, g_topic.merge_overlap < 0.0f ? " (automatic)" : "", g_topic.store.last_merged ? "pooled into" : "new",
+                g_topic.store.last_best, g_topic.store.last_thr, g_topic.merge_overlap < 0.0f ? " (automatic)" : "", g_topic.store.last_kept ? "kept (hit rate not better)" : g_topic.store.last_merged ? "pooled into" : "new",
                 at, g_topic.store.size(), (ggml_time_us() - t0) / 1e3);
     }
     g_topic.key.clear();
@@ -5453,7 +5458,7 @@ static size_t topic_drop_foreign(moe_cache * mc) {
     return n;
 }
 
-// <state dir>/hotmap/<model section><ext>: the files of the hot maps per topic and of the per-expert tokens, one per model, next to the state file
+// <state dir>/hotmaps/<model section><ext>: the files of the hot maps per topic and of the per-expert tokens, one per model, next to the state file
 // ("" when there is no state file)
 static std::string hotmap_path(const llama_model & model, const char * ext) {
     const std::string sf = moe_state_file();
@@ -5463,7 +5468,7 @@ static std::string hotmap_path(const llama_model & model, const char * ext) {
     std::string sec = moe_state_section(model);
     for (char & ch : sec) { if (!isalnum((unsigned char) ch) && ch != '-' && ch != '.') { ch = '_'; } }
     const std::filesystem::path sp(sf);
-    const std::string dir = (sp.has_parent_path() ? sp.parent_path() : std::filesystem::path(".")).string() + "/hotmap";
+    const std::string dir = (sp.has_parent_path() ? sp.parent_path() : std::filesystem::path(".")).string() + "/hotmaps";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir + "/" + sec + ext;
@@ -5584,7 +5589,7 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         if (const char * m = moe_opt("dynhot-max"))   { max_rec = (size_t) atoll(m); }   // records kept: 0 = no limit (while testing)
         if (const char * m = moe_opt("dynhot-min"))   { g_topic.min_cos   = (float) atof(m); }
         if (const char * m = moe_opt("dynhot-merge")) { g_topic.merge_overlap = m[0] == 'a' ? -1.0f : (float) atof(m); }   // a number, or "auto" (the default)
-        const std::string path = hotmap_path(model, ".hotmap");   // <state dir>/hotmap/<model>.hotmap
+        const std::string path = hotmap_path(model, ".hotmap");   // <state dir>/hotmaps/<model>.hotmap
         g_topic.store.pool = g_topic.pool;
         g_topic.store.max_records = max_rec;   // a record is the keys and a count per expert of every layer: 49 KB on DeepSeek-V4.1, 49 MB of RAM at the default 1024
         if (!g_topic.store.open(path, (uint32_t) model.hparams.n_embd, (uint32_t) model.hparams.n_layer(), (uint32_t) model.hparams.n_expert)) {
@@ -5623,6 +5628,8 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
             }
         }
         g_topic_tmax.store(1);
+        g_topic.h0 = g_topic.m0 = 0;   // the decode hits so far: this request's hit rate is what comes after
+        for (const auto & ls : mc->layers) { g_topic.h0 += ls.n_hit; g_topic.m0 += ls.n_miss; }
     }
     g_topic.key          = std::move(key);
     g_topic.after_prompt = true;

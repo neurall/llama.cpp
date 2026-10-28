@@ -62,41 +62,42 @@ static inline float moe_topic_qdot(const uint8_t * q, const float * key, uint32_
 }
 
 struct moe_topic_store {
-    static constexpr char MAGIC[8] = { 'M', 'O', 'E', 'T', 'O', 'P', 'C', '3' };
+    static constexpr char MAGIC[8] = { 'M', 'O', 'E', 'T', 'O', 'P', 'C', '4' };
     enum { KEY_MEAN = 0, KEY_MAX = 1, N_KEYS = 2 };
     uint32_t n_embd = 0, n_layers = 0, n_exp = 0;
     size_t   max_records = 4096;   // the oldest-used record is replaced past this (0: no limit)
     int      pool = KEY_MAX;       // the key the lookup and the merge candidates use
     std::vector<uint8_t>  qkeys;   // records x N_KEYS x key_bytes(): the keys in 4 bits per value (moe_topic_quant)
+    std::vector<float>    fkeys;   // records x N_KEYS x n_embd: the pooled keys as they were (unit length); the file holds both these and the 4-bit copies the search reads
     std::vector<float>    qinv;    // records x N_KEYS: 1 / length of each quantized key
     std::vector<uint32_t> counts;  // records x n_layers x n_exp: uses of each expert
     std::vector<uint32_t> n_req;   // requests merged into each record
+    std::vector<float>    hit;     // the best cache hit rate (0..1) a request on this record's topic reached; a request that did worse does not change the record (<0: unknown)
     std::vector<uint64_t> last;    // the request number that last used a record (memory only: picks the record to replace)
     uint64_t clock = 0;
     std::string path;
     std::vector<float> seen;       // memory only: per stored request the overlap of its nearest record (the values the automatic threshold splits)
     float last_best = 0.0f, last_thr = 0.0f;   // what the last add compared (for the log)
-    bool  last_merged = false;
+    bool  last_merged = false, last_kept = false;   // last_kept: merged topic, but the request hit worse than the record: nothing changed
 
     size_t size() const { return n_req.size(); }
     size_t rec_cells() const { return (size_t) n_layers * n_exp; }
     size_t key_bytes() const { return (n_embd + 1) / 2; }
-    size_t rec_bytes() const { return sizeof(uint32_t) + N_KEYS * (sizeof(float) + key_bytes()) + rec_cells() * sizeof(uint32_t); }
+    size_t rec_bytes() const { return sizeof(uint32_t) + sizeof(float) + N_KEYS * (sizeof(float) + key_bytes() + n_embd * sizeof(float)) + rec_cells() * sizeof(uint32_t); }
     static size_t head_bytes() { return sizeof(MAGIC) + 4 * sizeof(uint32_t); }
     uint8_t *       qk(size_t i, int kind)       { return qkeys.data() + (i * N_KEYS + kind) * key_bytes(); }
     const uint8_t * qk(size_t i, int kind) const { return qkeys.data() + (i * N_KEYS + kind) * key_bytes(); }
     // record i's key of one kind as floats, unit length
     std::vector<float> key_of(size_t i, int kind) const {
-        std::vector<float> k(n_embd);
-        moe_topic_dequant(qk(i, kind), n_embd, qinv[i * N_KEYS + kind], k.data());
-        return k;
+        const float * k = fkeys.data() + (i * N_KEYS + kind) * n_embd;
+        return std::vector<float>(k, k + n_embd);
     }
 
     // opens (or starts) the store at path for this shape; a file of another shape (other model or layer split) or another layout is left alone and the store
     // starts empty in memory and is not written. Returns false then.
     bool open(const std::string & p, uint32_t e, uint32_t l, uint32_t x) {
         path = p; n_embd = e; n_layers = l; n_exp = x;
-        qkeys.clear(); qinv.clear(); counts.clear(); n_req.clear(); last.clear(); seen.clear();
+        qkeys.clear(); fkeys.clear(); qinv.clear(); counts.clear(); n_req.clear(); hit.clear(); last.clear(); seen.clear();
         FILE * f = fopen(path.c_str(), "rb");
         if (!f) { return true; }   // a new store: the first add creates the file
         char m[8]; uint32_t h[4];
@@ -107,11 +108,15 @@ struct moe_topic_store {
                 const uint8_t * at = r.data();
                 uint32_t n; memcpy(&n, at, sizeof n); at += sizeof n;
                 n_req.push_back(n);
+                float hr; memcpy(&hr, at, sizeof hr); at += sizeof hr;
+                hit.push_back(hr);
                 last.push_back(0);
                 for (int k = 0; k < N_KEYS; ++k) {
                     float qi; memcpy(&qi, at, sizeof qi); at += sizeof qi;
                     qinv.push_back(qi);
                     qkeys.insert(qkeys.end(), at, at + key_bytes()); at += key_bytes();
+                    const float * fk = (const float *) at;
+                    fkeys.insert(fkeys.end(), fk, fk + n_embd); at += n_embd * sizeof(float);
                 }
                 const uint32_t * c = (const uint32_t *) at;
                 counts.insert(counts.end(), c, c + rec_cells());
@@ -176,7 +181,7 @@ struct moe_topic_store {
     // by its own rule (the mean key: a mean weighted by the requests each holds; the max key: per value the larger), the counts added, and the experts below
     // their layer's mean use dropped, so a record keeps only the hottest; the record is replaced in place. Else a new record (replacing the least recently
     // used one past max_records). Returns the record's index.
-    size_t add(const float * keys, const uint32_t * cnt, float merge_overlap) {
+    size_t add(const float * keys, const uint32_t * cnt, float merge_overlap, float hit_rate = -1.0f) {
         size_t at = size();
         float  best = 0.0f;
         last_thr = merge_overlap >= 0.0f ? merge_overlap : auto_threshold();   // a negative value asks for the automatic threshold
@@ -191,13 +196,24 @@ struct moe_topic_store {
         }
         if (best < last_thr) { at = size(); }
         last_merged = at < size();
+        last_kept = false;
+        if (at < size() && hit_rate >= 0.0f && hit[at] >= 0.0f && hit_rate < hit[at]) {   // store only a better hit rate: the record already serves this topic better
+            last_kept = true;
+            return at;
+        }
         if (at < size()) {
+            hit[at] = std::max(hit[at], hit_rate);
             const float w = (float) n_req[at];
             for (int k = 0; k < N_KEYS; ++k) {
                 std::vector<float> r = key_of(at, k);
                 const float * key = keys + (size_t) k * n_embd;
                 for (uint32_t j = 0; j < n_embd; ++j) { r[j] = k == KEY_MAX ? std::max(r[j], key[j]) : r[j] * w + key[j]; }
-                moe_topic_quant(r.data(), n_embd, qk(at, k), &qinv[at * N_KEYS + k]);   // quantization sets the length, no normalising before
+                double nn = 0.0;
+                for (uint32_t j = 0; j < n_embd; ++j) { nn += (double) r[j] * r[j]; }
+                const float inv = nn > 0.0 ? (float) (1.0 / std::sqrt(nn)) : 1.0f;
+                for (uint32_t j = 0; j < n_embd; ++j) { r[j] *= inv; }
+                std::copy(r.begin(), r.end(), fkeys.begin() + (ptrdiff_t) ((at * N_KEYS + k) * n_embd));   // the pooled key as it is, unit length
+                moe_topic_quant(r.data(), n_embd, qk(at, k), &qinv[at * N_KEYS + k]);
             }
             uint32_t * c = counts.data() + at * rec_cells();
             for (uint32_t l = 0; l < n_layers; ++l) {
@@ -216,15 +232,21 @@ struct moe_topic_store {
                 at = (size_t) (std::min_element(last.begin(), last.end()) - last.begin());
                 std::copy(cnt, cnt + rec_cells(), counts.begin() + (ptrdiff_t) (at * rec_cells()));
                 n_req[at] = 1;
+                hit[at] = hit_rate;
             } else {
                 at = size();
                 qkeys.resize(qkeys.size() + N_KEYS * key_bytes());
+                fkeys.resize(fkeys.size() + N_KEYS * n_embd);
                 qinv.resize(qinv.size() + N_KEYS, 0.0f);
                 counts.insert(counts.end(), cnt, cnt + rec_cells());
                 n_req.push_back(1);
+                hit.push_back(hit_rate);
                 last.push_back(0);
             }
-            for (int k = 0; k < N_KEYS; ++k) { moe_topic_quant(keys + (size_t) k * n_embd, n_embd, qk(at, k), &qinv[at * N_KEYS + k]); }
+            for (int k = 0; k < N_KEYS; ++k) {
+                std::copy(keys + (size_t) k * n_embd, keys + (size_t) (k + 1) * n_embd, fkeys.begin() + (ptrdiff_t) ((at * N_KEYS + k) * n_embd));
+                moe_topic_quant(keys + (size_t) k * n_embd, n_embd, qk(at, k), &qinv[at * N_KEYS + k]);
+            }
         }
         last[at] = ++clock;
         write(at);
@@ -244,9 +266,11 @@ struct moe_topic_store {
         }
         if (fseek(f, (long) (head_bytes() + i * rec_bytes()), SEEK_SET) == 0) {
             fwrite(&n_req[i], sizeof(uint32_t), 1, f);
+            fwrite(&hit[i], sizeof(float), 1, f);
             for (int k = 0; k < N_KEYS; ++k) {
                 fwrite(&qinv[i * N_KEYS + k], sizeof(float), 1, f);
                 fwrite(qk(i, k), 1, key_bytes(), f);
+                fwrite(fkeys.data() + (i * N_KEYS + k) * n_embd, sizeof(float), n_embd, f);
             }
             fwrite(counts.data() + i * rec_cells(), sizeof(uint32_t), rec_cells(), f);
         }
