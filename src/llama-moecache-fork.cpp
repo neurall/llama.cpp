@@ -1447,25 +1447,74 @@ int parse_layer_from_name(const char * name) {
 //   took the block while the copy ran); a zone that reaches into the lend or covers a class's zero block (the decode tables point uncached experts there);
 //   a zero-block restore or a keep-hot destination inside the zone or the lend.
 // Off by default: a mutex and a formatted line per upload (~2 us against a ~0.1-1 ms copy).
+// Columns (2026-10-28, so a line says who did what to which bytes, when): t_us, thread (the host thread: a name it gave itself, e.g. up-w0 for upload worker
+// 0, else t<n> in the order threads first wrote a line), card, kind, rw (w: writes the bytes, o: changes who owns them, rw: a graph reads and writes its lend,
+// x: a violation), state (start / done for work with a duration: an upload, a graph from its lend to the step after it; once for the rest), lo, hi, bytes,
+// who. The graph's window runs from its "lend" line (queued) to its "graph-done" line (the step after the context synchronised), so a write by another
+// thread into those bytes inside that window is a race. The file is flushed every --moe ledger-flush-ms (default 2000) and at exit, so a hang or a kill
+// keeps all but the last seconds.
 static bool led_on() {
     static const bool on = [] { const char * e = moe_opt("ledger"); return e && atoi(e) != 0; }();
     return on;
 }
+// --moe race-stress=N (debug): every upload worker sleeps a random 0..N ms before each copy and again after it, before the job is reported done. Timing
+// windows that are rare at normal speed (an upload still running when a lend or a zone change takes its block, a report arriving after a graph started) stay
+// open long enough to be hit, so a race shows in every run instead of one in a hundred. Off (0) by default.
+static void race_stress_sleep() {
+    static const int max_ms = [] { const char * e = moe_opt("race-stress"); return e ? std::max(0, atoi(e)) : 0; }();
+    if (max_ms <= 0) { return; }
+    static thread_local uint64_t x = 0x9E3779B97F4A7C15ull ^ (uint64_t) (uintptr_t) &x;
+    x ^= x << 13; x ^= x >> 7; x ^= x << 17;   // xorshift: no shared generator between the workers
+    std::this_thread::sleep_for(std::chrono::microseconds((int64_t) (x % ((uint64_t) max_ms * 1000 + 1))));
+}
 static std::mutex g_led_mu;
 static FILE *     g_led_f = nullptr;
 static int64_t    g_led_n_overlap = 0;
+static int64_t    g_led_flushed_us = 0;
+static thread_local std::string g_led_thread;   // set by led_thread(); empty: t<n>
+static std::atomic<int> g_led_n_threads{0};
+static void led_thread(const std::string & name) { g_led_thread = name; }
+static const std::string & led_thread_name() {
+    if (g_led_thread.empty()) { g_led_thread = "t" + std::to_string(++g_led_n_threads); }
+    return g_led_thread;
+}
+// what a kind of line does to its bytes (rw) and whether it opens or closes a window (state)
+static void led_kind(const char * kind, const char *& rw, const char *& st) {
+    struct k { const char * kind, * rw, * st; };
+    static const k t[] = {
+        { "up-start", "w", "start" }, { "up-done", "w", "done" }, { "lend", "rw", "start" }, { "graph-done", "rw", "done" },
+        { "release", "o", "once" }, { "kv-zone", "o", "once" }, { "map", "o", "once" }, { "fill", "w", "once" }, { "kv-pad", "w", "once" },
+        { "kv-move", "w", "once" }, { "keep-hot", "w", "once" }, { "mirror", "w", "once" }, { "zero", "w", "once" }, { "OVERLAP", "x", "once" },
+        { "cuda-capture", "rw", "once" }, { "cuda-replay", "rw", "once" },
+    };
+    for (const auto & e : t) { if (strcmp(kind, e.kind) == 0) { rw = e.rw; st = e.st; return; } }
+    rw = "?"; st = "once";
+}
+static int64_t led_flush_us() {
+    static const int64_t v = [] { const char * e = moe_opt("ledger-flush-ms"); return (int64_t) (e ? std::max(1, atoi(e)) : 2000) * 1000; }();
+    return v;
+}
 static void led_line(const char * card, const char * kind, size_t lo, size_t hi, const std::string & who) {
     if (!led_on()) { return; }
+    const std::string & th = led_thread_name();
     std::lock_guard<std::mutex> lk(g_led_mu);
     if (!g_led_f) {
         const std::string path = moe_log_file(("pool-ledger-" + std::to_string((long long) time(nullptr)) + ".csv").c_str());
         g_led_f = fopen(path.c_str(), "w");
         if (!g_led_f) { return; }
-        fprintf(g_led_f, "t_us,card,kind,lo,hi,bytes,who\n");
+        fprintf(g_led_f, "t_us,thread,card,kind,rw,state,lo,hi,bytes,who\n");
         LLAMA_LOG_WARN("pool-ledger: writing %s\n", path.c_str());
+        std::atexit([] { std::lock_guard<std::mutex> lk2(g_led_mu); if (g_led_f) { fflush(g_led_f); } });
     }
-    fprintf(g_led_f, "%lld,%s,%s,%zu,%zu,%zu,%s\n", (long long) ggml_time_us(), card, kind, lo, hi, hi > lo ? hi - lo : 0, who.c_str());
-    if (strcmp(kind, "OVERLAP") == 0 || strcmp(kind, "lend") == 0) { fflush(g_led_f); }   // a killed server keeps everything up to its last graph
+    const char * rw = "?", * st = "once";
+    led_kind(kind, rw, st);
+    const int64_t now = ggml_time_us();
+    fprintf(g_led_f, "%lld,%s,%s,%s,%s,%s,%zu,%zu,%zu,%s\n", (long long) now, th.c_str(), card, kind, rw, st, lo, hi, hi > lo ? hi - lo : 0, who.c_str());
+    // a killed server keeps everything up to its last graph (lend) and every violation at once; the rest every ledger-flush-ms
+    if (strcmp(kind, "OVERLAP") == 0 || strcmp(kind, "lend") == 0 || now - g_led_flushed_us >= led_flush_us()) {
+        fflush(g_led_f);
+        g_led_flushed_us = now;
+    }
 }
 static void led_overlap(const char * card, size_t lo, size_t hi, const std::string & what) {
     if (!led_on()) { return; }
@@ -1619,6 +1668,23 @@ static void led_check_range(const moe_cache::alias_pool & ap, const char * kind,
     }
     if (vs_lend && ap.want_b > 0 && lo < ap.want_b) {
         led_overlap(led_card(ap), lo, hi, tr_fmt("%s %s: inside the lend [0, %.1f) MiB", kind, who.c_str(), ap.want_b / 1048576.0));
+    }
+}
+
+// --moe ledger: the CUDA graph cache reports each capture and replay with the scratch region its kernels use (ggml_backend_cuda_set_graph_hook_fork, set at
+// pool allocation). Logged as offsets of that card's pool: a cuda-replay whose range lies outside the lend of its graph (the lend line before it) is a replay
+// that reads and writes bytes it no longer owns, the bug of 2026-10-28 (fork/pool_ledger.py checks it).
+static void led_cuda_graph_hook(int device, const void * graph, const char * what, const void * base, size_t cap) {
+    moe_cache * mc = g_cache;
+    if (!mc || !base || !led_on()) { return; }
+    for (const auto & ap : mc->alias) {
+        if (ap.cuda_dev != device || !ap.buf) { continue; }
+        const uint8_t * b0 = (const uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+        const uint8_t * p  = (const uint8_t *) base;
+        if (p < b0 || p >= b0 + ggml_backend_buffer_get_size(ap.buf)) { continue; }
+        const size_t lo = (size_t) (p - b0);
+        led_line(led_card(ap), what, lo, lo + cap, tr_fmt("cuda graph %p scratch", graph));
+        return;
     }
 }
 
@@ -5780,6 +5846,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     pool_fill(tmp, 0, total - 4096, 5);
                 }
                 if (poison_on()) { ggml_sched_set_nan_hook_fork(pool_dump_all); }
+                if (led_on()) {   // CUDA graph captures and replays with their scratch range go into the ledger
+                    typedef void (*graph_hook_t)(int, const void *, const char *, const void *, size_t);
+                    typedef void (*set_graph_hook_t)(graph_hook_t);
+                    if (auto set = (set_graph_hook_t) cuda_obs_proc("ggml_backend_cuda_set_graph_hook_fork")) { set(led_cuda_graph_hook); }
+                }
                 ggml_backend_buffer_set_usage(pbuf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
                 uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(pbuf);
                 const size_t pool0 = mc->pool.size();
@@ -6085,6 +6156,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         for (size_t w = 0; w < mc->staging.size(); ++w)
         mc->workers.emplace_back([mc, w]() {
             unpin_helper();
+            led_thread("up-w" + std::to_string(w));   // --moe ledger: this worker's lines say which upload thread wrote
             uint8_t * staging_ptr = mc->staging[w] ? (uint8_t *) ggml_backend_buffer_get_base(mc->staging[w]) : nullptr;
             for (;;) {
                 upload_job j;
@@ -6157,6 +6229,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     mc->dcv.notify_all();
                     continue;
                 }
+                race_stress_sleep();   // --moe race-stress: an upload starts late (a lend or a zone change may happen meanwhile)
                 const int64_t t0 = ggml_time_us();
                 led_upload(mc, "up-start", j.layer_idx, j.expert, j.slot, j.bg);
                 const bool busy_start = mc->cpu_busy;
@@ -6262,6 +6335,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                 }
                 if (nosync_used) { cuda_thread_sync(); }
+                race_stress_sleep();   // --moe race-stress: the copy is done, its report comes late
                 if (up_failed) { j.skipped = true; }
                 if (uap) { pool_leave(*uap, ulo, uhi, true); }
                 led_upload(mc, "up-done", j.layer_idx, j.expert, j.slot, j.bg);
@@ -7416,10 +7490,50 @@ static void self_tune(moe_cache * mc) {
     apply_predict(mc);
 }
 
+// Expert tables against block owners: every cached entry of a layer's table points at a block of that layer's size class that the layer owns and that holds
+// that expert. A table entry into a block lent to a graph (-2), under the KV zone (-3), free (-1) or another layer's is how a stale mapping makes a matmul
+// read someone else's bytes (uploads, tables and slots: 21 of the 145 bug-log rows by 2026-10-28). Host tables are the source of the device copies, and only
+// the step (this thread) changes them and the owners. Every step with --moe ledger or poison, else every 64th step (~23k compares on DeepSeek 4.1, ~20 us).
+// The first violations are logged with the numbers (and a ledger line); with --moe poison the process stops at the first, so the pool dump shows it.
+static void tables_check(moe_cache * mc) {
+    static int n_bad = 0;
+    for (size_t li = 0; li < mc->layers.size(); ++li) {
+        const layer_state & ls = mc->layers[li];
+        if (ls.pcls < 0 || ls.pcls >= (int32_t) mc->pool.size() || !ls.pub.host_table) { continue; }
+        const auto & ps = mc->pool[ls.pcls];
+        const int32_t * h = (const int32_t *) ls.pub.host_table->data;
+        const int64_t ne = ggml_nelements(ls.pub.host_table);
+        for (int64_t e = 0; e < ne; ++e) {
+            const int32_t s = h[e];
+            if (s < 0 || s >= ls.pub.n_slots) { continue; }   // uncached (n_slots) or in the JIT pool (n_slots + 1)
+            const int32_t own = s < (int32_t) ps.owner.size() ? ps.owner[s] : -9;
+            const int32_t has = s < (int32_t) ls.slot_expert.size() ? ls.slot_expert[s] : -9;
+            if (own == (int32_t) li && has == (int32_t) e) { continue; }
+            if (n_bad++ < 20) {
+                LLAMA_LOG_ERROR("moe-cache: table check: layer %zu expert %lld -> block %d of class %d, but the block's owner is %d (%s) and it holds expert %d\n",
+                        li, (long long) e, s, ls.pcls, own, own == -1 ? "free" : own == -2 ? "lent to a graph" : own == -3 ? "under the KV zone" : own == -9 ? "out of range" : "another layer", has);
+                size_t lo = 0, hi = 0;
+                if (const moe_cache::alias_pool * ap = led_block(mc, ls.pcls, s, lo, hi)) {
+                    led_line(led_card(*ap), "OVERLAP", lo, hi, tr_fmt("table: L%zu e%lld points at block %d, owner %d holds e%d", li, (long long) e, s, own, has));
+                }
+            }
+            if (poison_on()) { GGML_ABORT("moe-cache: table check failed (layer %zu expert %lld block %d owner %d holds %d)", li, (long long) e, s, own, has); }
+        }
+    }
+}
+
 void llama_moe_cache_step_fork() {
     moe_cache * mc = g_cache;
     if (!mc) {
         return;
+    }
+    if (led_on() || poison_on() || mc->n_steps % 64 == 0) {
+        tables_check(mc);
+    }
+    if (led_on()) {   // the graph that ran is over (the context synchronised before this step): its window on the bytes it was lent closes here
+        for (const auto & ap : mc->alias) {
+            if (ap.want_b > 0) { led_line(led_card(ap), "graph-done", 0, ap.want_b, tr_fmt("graph %d tokens", (int) mc->graph_tokens_last)); }
+        }
     }
     struct flush_at_exit { ~flush_at_exit() { flush_tables(); } } flush_guard; // table changes reach the GPU before the next graph
     if (mc->starved.load()) {

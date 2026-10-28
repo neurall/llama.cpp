@@ -4170,6 +4170,12 @@ static const void * ggml_cuda_graph_get_key(ggml_cgraph * cgraph) {
 // and the node properties hold no scratch address. The region each CUDA graph was captured with is kept here (no header change) and a replay with another
 // region captures again; the uid fast path stays when the region is the same.
 struct ggml_cuda_graph_scratch_fork { const char * base = nullptr; size_t cap = 0; };
+// fork: --moe ledger. The CUDA graph cache reports each capture and each replay with the scratch region its kernels use; the expert cache logs it as pool
+// offsets of the card (pool-ledger lines cuda-capture / cuda-replay), so fork/pool_ledger.py can flag a replay whose captured range is not lent to it any
+// more (a stale address) without a debugger. nullptr (default): nothing is reported.
+typedef void (*ggml_cuda_graph_hook_fork_t)(int device, const void * graph, const char * what, const void * base, size_t cap);
+static ggml_cuda_graph_hook_fork_t g_cuda_graph_hook_fork = nullptr;
+static void ggml_backend_cuda_set_graph_hook_fork(ggml_cuda_graph_hook_fork_t fn) { g_cuda_graph_hook_fork = fn; }
 static std::mutex g_cuda_graph_scratch_mtx;
 static std::unordered_map<const ggml_cuda_graph *, ggml_cuda_graph_scratch_fork> g_cuda_graph_scratch;
 static ggml_cuda_graph_scratch_fork ggml_cuda_scratch_now_fork(const ggml_backend_cuda_context * ctx) {
@@ -4199,6 +4205,10 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
 
     if (cgraph->uid != 0 &&
         cgraph->uid == graph->uid && !scratch_moved) {
+        if (g_cuda_graph_hook_fork) {
+            const ggml_cuda_graph_scratch_fork now = ggml_cuda_scratch_now_fork(cuda_ctx);
+            g_cuda_graph_hook_fork(cuda_ctx->device, graph, "cuda-replay", now.base, now.cap);
+        }
         if (ggml_cuda_graph_debug_enabled()) {
             GGML_LOG_DEBUG("CUDA Graph id %zu reused\n", cgraph->uid);
         }
@@ -4233,6 +4243,11 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
             graph->node_props[i] = prop;
             res = true;
         }
+    }
+
+    if (g_cuda_graph_hook_fork) {   // fork: --moe ledger (see g_cuda_graph_hook_fork)
+        const ggml_cuda_graph_scratch_fork now = ggml_cuda_scratch_now_fork(cuda_ctx);
+        g_cuda_graph_hook_fork(cuda_ctx->device, graph, res ? "cuda-capture" : "cuda-replay", now.base, now.cap);
     }
 
     return res;
@@ -8048,6 +8063,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_host_cache") == 0) {
         return (void *)ggml_backend_cuda_host_cache;
+    }
+    if (strcmp(name, "ggml_backend_cuda_set_graph_hook_fork") == 0) {
+        return (void *) ggml_backend_cuda_set_graph_hook_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_scratch_fork") == 0) {
         return (void *)ggml_backend_cuda_scratch_fork;
