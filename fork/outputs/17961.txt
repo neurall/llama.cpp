@@ -1,0 +1,61 @@
+run 17961 | inifix8 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.23 t/s | prompt 90.9 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-10-22 21:57:11
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact single-file Tetris. I want the playfield to be the star, with the code itself genuinely small but still fully playable.
+
+I'll produce a single HTML file with compact Tetris. But I should still make it feel crafted — but the user asked for "smallest". I should honor that: minimal code. Yet I can make it look nice with minimal CSS. Balance: keep it small but polished. Maybe give the tiny version, then note it's ~X bytes.
+
+Let me write compact Tetris in HTML + JS.
+
+Classic tiny Tetris approach:
+
+```html
+<meta charset=utf-8><title>TETRIS</title>
+<style>body{background:#111;color:#fff;font:12px monospace;display:flex;gap:8px;align-items:flex-start;margin:0;padding:8px}canvas{background:#000;border:1px solid #333}</style>
+<canvas id=c width=... ></canvas>
+<script>...</script>
+```
+
+Let me write a compact but correct implementation.
+
+Standard tiny tetris (golfed-ish but readable):
+
+```js
+const S=20,W=10,H=20,c=document.body.appendChild(document.createElement('canvas'));
+c.width=W*S;c.height=H*S;const x=c.getContext('2d');
+let g=[...Array(H)].map(_=>Array(W).fill(0)),p,sc=0,lv=1,ln=0,ov=0,t=0;
+const P='0000,2222,000,00,00,0220,0220,020,022,200,220,22,22,0200,2220,0200,0220,020,022,200,220'.split(',')
+```
+
+Hmm, better to use the classic tetromino definitions as strings.
+
+A common compact approach: define pieces as arrays of rotation states via a matrix trick. Simplest: define each piece as a string of its 4x4 (or NxN) grid and rotate by transposing.
+
+Compact approach used widely:
+
+```js
+const T='0220,0022,0200,0220,0200,0022,2222,0200,0200,0220,2000,0220,0200,2200,0200,2220,0200,0220,0020,0222,2000'.split(',')
+```
+
+Too messy. Let's use the rotation-by-matrix approach:
+
+Pieces as matrices:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]
+J: [[1,0,0],[1,1,1],[0,0,0]]
+L: [[0,0,1],[1,1,1],[0,0,0]]
+O: [[1,1],[1,1]]
+S: [[0,1,1],[1,1,0],[0,0,0]]
+T: [[0,1,0],[1,1,1],[0,0,0]]
+Z: [[1,1,0],[0,1,1],[0,0,0]]
+
+Rotation: rotate matrix 90°.
+
+Compact string encoding: each piece as a hex-ish string. E.g. use a string of 0/1 per row joined by nothing, with size known.
+
+Let me define:
+```js
+const S=['000011110000','100111000','001111000','1111','011110000','010111000','110011000']
+```
+Each is a flattened NxN grid (N=4 for I, N=2 for O, N=3 for others). Colors by index.
+
+Then piece state
+---

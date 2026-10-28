@@ -1,0 +1,38 @@
+run 20148 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 26.72 t/s | prompt 9.2 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 22:25:32
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, restart. Need minimal code.
+
+Let's design compact single-file HTML.
+
+Use canvas 10x20 grid, cell size maybe 24. Canvas width 240 height 480. Use JS.
+
+Tetromino shapes represented as arrays of coordinates or matrices. Need rotation. Simpler: define pieces as matrices. Use 4x4 matrices? Or coordinate arrays. Need rotation function.
+
+Could use 7 tetrominoes as arrays of [x,y] cells relative to top-left. Rotation around center? For simplicity use matrices and rotate 4x4. But need handle I piece. Use 4x4 matrices with 1s. Rotation by 90 degrees. Collision checks.
+
+Implementation:
+
+const W=10,H=20,S=24;
+const c=document.getElementById('c'), ctx=c.getContext('2d');
+let board=Array.from({length:H},()=>Array(W).fill(0));
+let piece, x, y, score=0, over=false, drop=0;
+
+const shapes = [
+ [[1,1,1,1]], // I? Actually 1x4 matrix. Rotation needs square matrix. Use 4x4 matrices.
+]
+Better define 4x4 matrices:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]
+O: [[1,1],[1,1]]? Need rotation. Could use 2x2.
+T: [[0,1,0],[1,1,1],[0,0,0]]
+S: [[0,1,1],[1,1,0],[0,0,0]]
+Z: [[1,1,0],[0,1,1],[0,0,0]]
+J: [[1,0,0],[1,1,1],[0,0,0]]
+L: [[0,0,1],[1,1,1],[0,0,0]]
+Need rotation for non-square matrices. Could use 4x4 matrices for all. Or use coordinate arrays and rotate around center. Simpler use 4x4 matrices for all pieces. Define each as 4x4 with 1s. Rotation function rotates 4x4 matrix. But for O, 4x4 with 2x2 block? Rotation around center of 4x4 may shift O? If O matrix [[0,0,0,0],[0,1,1,0],[0,1,1,0],[0,0,0,0]], rotating 4x4 yields same. Good. For I, matrix with row 1? Rotating 4x4 yields vertical. Good. For T etc. Use 4x4 matrices. Need spawn at x=3? Since 4x4 matrix, board width 10. Spawn x=3, y=0. But pieces may have empty top row; collision okay. Need ensure spawn not colliding. Use x=3, y=0. For I horizontal row 1, y=0 means cells at row 1, so starts at y=1. Fine. For vertical after rotation, cells in column. Need maybe spawn y=-? But okay.
+
+Rotation: function rot(m){ let n=m.length; let r=Array.from({length:n},()=>Array(n).fill(0)); for i,j r[j][n-1-i]=m[i][j]; return r; } This rotates clockwise. Need collision check with board and bounds. For each cell in matrix, if m[i][j], board y+i, x+j. Need check x+j within 0..W-1, y+i within 0..H-1, and board empty. If y+i <0? We spawn y=0, no negative. Rotation may cause cells at y+? no negative. But if piece at top, okay. Need allow y+i >= H? collision. Need check.
+
+Need line clearing: after locking piece, for each row from H-1 down to 0
+---

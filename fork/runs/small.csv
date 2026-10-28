@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+olmoei-i,olmoei,3,pfbest1k,1024,,
+olmoei-io,olmoei,3,edit4c,1024,,
+olmoei-o,olmoei,3,tetrisc,1024,,
+q36-i,qwen36,3,pfbest1k,1024,,
+q36-io,qwen36,3,edit4c,1024,,
+q36-o,qwen36,3,tetrisc,1024,,
+q27nl-i,q27_iq4nl,3,pfbest1k,1024,,
+q27nl-io,q27_iq4nl,3,edit4c,1024,,
+q27nl-o,q27_iq4nl,3,tetrisc,1024,,
+q27mtp-i,q27_mtp,3,pfbest1k,1024,,
+q27mtp-io,q27_mtp,3,edit4c,1024,,
+q27mtp-o,q27_mtp,3,tetrisc,1024,,

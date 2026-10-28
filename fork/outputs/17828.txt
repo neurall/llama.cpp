@@ -1,0 +1,43 @@
+run 17828 | b13600 | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.5 t/s | prompt 29.5 t/s | 919 tokens | args: -np 1 | power 280+280 W | 2026-10-22 16:41:47
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal Tetris game with:
+- Canvas-based rendering
+- All 7 tetromino pieces
+- Rotation
+- Line clearing
+- Score
+- Game over
+
+Let me make it as compact as possible while still being functional.
+---
+```html
+<!DOCTYPE html><html><head><title>Tetris</title><style>body{margin:0;background:#000;color:#fff;font-family:monospace;text-align:center}canvas{border:1px solid #333}</style></head><body><canvas id="c" width="300" height="600"></canvas><div id="s">Score:0</div><script>
+const c=document.getElementById('c'),x=c.getContext('2d'),s=document.getElementById('s');
+const W=10,H=20,S=30;
+let grid=Array.from({length:H},()=>Array(W).fill(0));
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]]];
+const C=['#0ff','#ff0','#f0f','#00f','#f80','#0f0','#f00'];
+let piece,px,py,score=0,over=false;
+function newPiece(){piece=P[Math.random()*7|0];px=3;py=0;if(collide())over=true}
+function collide(){return piece.some((r,ry)=>r.some((v,rx)=>v&&(px+rx<0||px+rx>=W||py+ry>=H||grid[py+ry][px+rx])))}
+function rotate(){let t=piece[0].map((_,i)=>piece.map(r=>r[i]).reverse());let o=piece;piece=t;if(collide())piece=o}
+function merge(){piece.forEach((r,ry)=>r.forEach((v,rx)=>{if(v)grid[py+ry][px+rx]=1}))}
+function clear(){for(let y=H-1;y>=0;y--){if(grid[y].every(v=>v)){grid.splice(y,1);grid.unshift(Array(W).fill(0));score+=100;s.textContent='Score:'+score;y++}}}
+function draw(){x.fillStyle='#000';x.fillRect(0,0,c.width,c.height);grid.forEach((r,y)=>r.forEach((v,rx)=>{if(v){x.fillStyle='#fff';x.fillRect(rx*S,y*S,S-1,S-1)}}));if(!over&&piece)piece.forEach((r,ry)=>r.forEach((v,rx)=>{if(v){x.fillStyle=C[P.indexOf(piece)];x.fillRect((px+rx)*S,(py+ry)*S,S-1,S-1)}}));if(over){x.fillStyle='#f00';x.font='30px monospace';x.fillText('GAME OVER',50,300)}}
+function drop(){py++;if(collide()){py--;merge();clear();newPiece()}draw()}
+newPiece();draw();
+setInterval(()=>{if(!over)drop()},500);
+document.onkeydown=e=>{if(over)return;let k=e.key;if(k==='ArrowLeft'){px--;if(collide())px++}if(k==='ArrowRight'){px++;if(collide())px--}if(k==='ArrowDown'){py++;if(collide()){py--;merge();clear();newPiece()}}if(k==='ArrowUp')rotate();if(k===' '){while(!collide())py++;py--;merge();clear();newPiece()}draw()}
+</script></body></html>
+```
+
+
+
+**Features:**
+- **All 7 pieces** with correct colors
+- **← →** move, **↑** rotate, **↓** soft drop, **Space** hard drop
+- **Line clearing** with score (+100 per line)
+- **Game over** detection
+- Single file, no dependencies

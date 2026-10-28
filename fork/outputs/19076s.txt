@@ -1,0 +1,42 @@
+run 19076 | stock-b11866-official | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 13.97 t/s | prompt 18.9 t/s | 1010 tokens | args:  | power 220+280 W | 2026-10-24 22:29:31
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+1. A canvas or grid to display the game
+2. Piece definitions (tetrominoes)
+3. Game loop (falling, collision, line clearing)
+4. Controls (left, right, rotate, drop)
+4. Score
+
+Let me write a compact version:
+
+```html
+<canvas id=c width=200 height=400></canvas>
+<script>
+// Minimal Tetris
+</script>
+```
+
+Let me write a compact but functional Tetris game.
+
+```html
+<canvas id=c width=200 height=400></canvas>
+<script>
+let c=document.getElementById('c'),x=c.getContext('2d'),g=[],s=0,p,pX,pY,pR,keys={},t=0,over=0;
+// pieces: I, O, T, S, Z, J, L
+let P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]]];
+let C=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+// init grid
+for(let i=0;i<20;i++)g[i]=[];
+function newP(){p=Math.floor(Math.random()*7);pX=3;pY=0;pR=0;}
+function rot(){let r=[],s=P[p].length,w=P[p][0].length;for(let i=0;i<w;i++){r[i]=[];for(let j=0;j<s;j++)r[i][j]=P[p][s-1-j][i];}return r;}
+function piece(){let a=P[p];if(pR){a=rot();}return a;}
+function collide(a,px,py){for(let i=0;i<a.length;i++)for(let j=0;j<a[i].length;j++){if(a[i][j]){let nx=px+j,ny=py+i;if(nx<0||nx>9||ny>19)return 1;if(g[ny]&&g[ny][nx])return 1;}}return 0;}
+function merge(){let a=piece();for(let i=0;i<a.length;i++)for(let j=0;j<a[i].length;j++){if(a[i][j]){let nx=pX+j,ny=pY+i;if(ny>=0)g[ny][nx]=p+1;}}}
+function clear(){for(let i=19;i>=0;i--){if(g[i].every(v=>v)){g.splice(i,1);g.unshift([]);s+=100;}}}
+function draw(){x.fillStyle='#000';x.fillRect(0,0,200,400);x.strokeStyle='#333';for(let i=0;i<20;i++)for(let j=0;j<10;j++){x.strokeRect(j*20,i*20,20,20);if(g[i]&&g[i][j]){x.fillStyle=C[g[i][j]-1];x.fillRect(j*20,i*20,20,20);}}if(!over){let a=piece();for(let i=0;i<a.length;i++)for(let j=0;j<a[i].length;j++){if(a[i][j]){x.fillStyle=C[p];x.fillRect((pX+j)*20,(pY+i)*20,20,20);}}x.fillStyle='#fff';x.font='16px monospace';x.fillText('Score:'+s,5,20);}}
+function drop(){if(collide(piece(),pX,pY+1)){merge();clear();newP();if(collide(piece(),pX,pY))over=1;}else pY++;}
+function loop(){if(!over){t++;if(t%10==0)drop();if(keys.left&&!collide(piece(),pX-1,pY))pX--;if(keys.right&&!collide(piece(),pX+1,pY))pX++;if(keys.up){let r=rot();if(!collide(r,pX,pY)){pR=(pR+1)%4;}}if(keys.down)drop();keys={};}draw();requestAnimationFrame(loop);}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowLeft')keys.left
+---

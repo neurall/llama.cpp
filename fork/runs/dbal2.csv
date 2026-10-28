@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+glm35-15k-bal4,glm35,3,pf15k1k,64,--moe dense-split=1 -ub 4096,
+glm35-15k-bal8,glm35,3,pf15k1k,64,--moe dense-split=1 -ub 2048,
+glm35-7k-bal4,glm35,3,pf7k1k,64,--moe dense-split=1 -ub 2048,

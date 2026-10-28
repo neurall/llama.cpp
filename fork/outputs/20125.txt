@@ -1,0 +1,32 @@
+run 20125 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 27.43 t/s | prompt 11.6 t/s | 987 tokens | args: -np 1 --moe reheat=2,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-27 21:43:33
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 300x600? Board 10x20, cell 30. Canvas width 300 height 600. Draw grid. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Tetromino definitions:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+Need rotation function. Use matrix rotate clockwise: new matrix rows = old columns reversed? For matrix m with rows, rotate clockwise: m[i][j] -> new[j][n-1-i]? Let's derive. For n rows, m rows. Clockwise rotation: new[r][c] = m[n-1-c][r]? Example [[0,1,0],[1,1,1]] rotate clockwise should [[1,0],[1,1],[1,0]]? Let's compute. Matrix 2x3. Clockwise: new dimensions 3x2. new[0][0]=m[1][0]=1; new[0][1]=m[0][0]=0; new[1][0]=m[1][1]=1; new[1][1]=m[0][1]=1; new[2][0]=m[1][2]=1; new[2][1]=m[0][2]=0 => [[1,0],[1,1],[1,0]]. Good. Formula new[r][c] = m[n-1-c][r] where n = old rows? Wait old rows=2, old cols=3. new rows=3, new cols=2. r=0,c=0 -> m[2-1-0=1][0]=1. yes. r=0,c=1 -> m[1-1=0][0]=0. yes. r=1,c=0 -> m[1][1]=1. yes. r=1,c=1 -> m[0][1]=1. yes. r=2,c=0 -> m[1][2]=1. yes. r=2,c=1 -> m[0][2]=0. yes. So rotate(m): return m[0].map? Need generic: let n=m.length; return Array.from({length:m[0].length}, (_,r)=>Array.from({length:n}, (_,c)=>m[n-1-c][r])); Wait new rows = old cols, new cols = old rows. For r from 0 to old cols-1, c from 0 to old rows-1. m[n-1-c][r]. yes.
+
+Need spawn piece. Board 10x20. Piece object {shape, x, y}. x,y top-left of matrix. Spawn x = floor((10 - shape[0].length)/2), y=0. Need collision: for each cell in shape if 1, board[y+r][x+c] occupied or out of bounds. Need board array 20 rows x 10 cols, 0/1.
+
+Need gravity: setInterval or requestAnimationFrame. Minimal use setInterval 500ms. Need handle drop. Need lock piece when cannot move down. Then clear lines, spawn new. If spawn collision -> game over.
+
+Need controls: left/right/down/up rotate, space hard drop. Need prevent default. Need maybe pause? Not necessary.
+
+Need draw. Canvas. Draw board and current piece. Need maybe score. Use text overlay? Could use HTML score div. Minimal.
+
+Need line clearing: for each row from bottom to
+---

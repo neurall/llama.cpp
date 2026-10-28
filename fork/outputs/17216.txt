@@ -1,0 +1,52 @@
+run 17216 | b13600 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.34 t/s | prompt 6.2 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-20 14:52:12
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — they want minimal code. But I also care about quality. There's tension here: "smallest" means minimal bytes, but my taste says no plain squares as particles, no cheap stuff... but for a code-golf Tetris, the aesthetic is inherently minimal. The user explicitly asked for "smallest" — so I should honor that intent and produce a genuinely tiny, functional Tetris in a single HTML file.
+
+Let me think about what "smallest" means. Probably smallest source code that still works as playable Tetris. I should aim for a very compact implementation. Let me write it carefully and count bytes mentally, aiming for something like under 1KB or close to it.
+
+Key features needed for a legitimate Tetris:
+- 10×20 grid
+- 7 tetrominoes with rotation
+- Movement left/right, soft drop, hard drop maybe, rotation
+- Line clearing
+- Game over
+- Score maybe
+
+Let me design a compact approach.
+
+Classic minimal Tetris approach: represent pieces as arrays of rotation states, or use a single shape and rotate via coordinate transformation.
+
+A well-known trick: store each piece as a 4x4 or use coordinates. Compact representation: each piece as a list of [x,y] pairs, rotate by swapping and negating: (x,y) -> (y, -x) or similar around pivot.
+
+Let me write compact JS:
+
+```js
+c=canvas.getContext`2d`
+```
+
+Using `getContext`2d`` via template literal — works since getContext accepts a string; tagged template: `c.getContext`2d`` calls getContext with "2d". Yes that works.
+
+Board: W=10, H=20. Store board as array of strings or array of numbers. Use `d=[]` with fill.
+
+Pieces: define as arrays of points. Compact: 
+
+```js
+P=[[[1,1],[2,1],[0,1],[1,0]],...] 
+```
+
+Alternative compact encoding: encode each piece as a 16-bit number where bits map to a 4x4 grid. Then rotation can be done by bit manipulation? Rotating a 4x4 bitfield: index i (0-15), row = i>>2, col = i&3. Rotated position: col -> row... For clockwise rotation: new position (3 - col? ...). Actually rotating a 4x4 grid clockwise: cell at (r, c) goes to (c, 3-r). So bit b at index r*4+c goes to index c*4 + (3-r). So newmask |= ((m>>i)&1) << (c*4+3-r) where r=i>>2, c=i&3 → new index = (i&3)*4 + 3-(i>>2).
+
+That's a neat compact rotation. Pieces defined as 16-bit masks:
+
+- I: row 1: 0b0000 1111 0000 0000 → bits 4,5,6,7 → 0xF0 = 240. Actually let's use row 1 (second row): indices 4-7 → 0b11110000... wait bit index 4 = value 16. Mask = 16+32+64+128 = 240 = 0xF0.
+- O: 2x2 block at top-left: bits 0,1,4,5 → 1+2+16+32 = 51 = 0x33.
+- T: row 0 middle + row 1 center: bits 1, 4,5,6 → 2+16+32+64 = 114 = 0x72.
+- S: bits 1,2 (row0 cols1,2), 4,5 (row1 cols 0,1) → 2+4+16+32 = 54 = 0x36.
+- Z: bits 0,1 (row0 cols0,1), 5,6 (row1 cols1,2) → 1+2+32+64 = 99 = 0x63.
+- J: bits 0 (row0 col0), 4,5,6 (row1) → 1+16+32+64 = 113 = 0x71.
+- L: bits 2 (row0 col2), 4,5,6 → 4+16+32+64 = 116 = 0x74.
+
+Rotation function: `r=m=>{for(i=0;i<16;i++)if(m>>i&1)n|=(i&3)*4+3-(i>>2)... }` Hmm need to build n. Compact:
+
+
+---

@@ -1,0 +1,43 @@
+run 20104 | ds41i4 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 25.91 t/s | prompt 6.8 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 20:42:29
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design compact Tetris. Single HTML file. Use canvas 10x20. Controls arrow keys, rotate up, space drop? Need implement.
+
+Need "smallest html tetris game" likely wants code. We can make compact but readable. Need ensure no bugs.
+
+Let's craft minimal Tetris in HTML. Use canvas 200x400? Grid 10x20, cell 20. Use JS.
+
+Need implement tetromino shapes. Could use arrays. Need collision, rotation, line clear, scoring, game over. Need maybe requestAnimationFrame or setInterval. Minimal.
+
+Let's design.
+
+HTML:
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Tetris</title>
+<style>body{background:#111;color:#fff;font:14px monospace;display:flex;gap:16px;align-items:center;justify-content:center;height:100vh;margin:0}canvas{background:#000;border:1px solid #444}</style>
+</head>
+<body>
+<canvas id=c width=200 height=400></canvas>
+<div id=s>Score: 0</div>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d'),S=20,W=10,H=20;
+let b=Array.from({length:H},()=>Array(W).fill(0)),score=0,gameOver=false;
+const shapes=[
+ [[1,1,1,1]],
+ [[1,1],[1,1]],
+ [[0,1,0],[1,1,1]],
+ [[1,0,0],[1,1,1]],
+ [[0,0,1],[1,1,1]],
+ [[1,1,0],[0,1,1]],
+ [[0,1,1],[1,1,0]]
+];
+let p=null;
+function newPiece(){const s=shapes[Math.floor(Math.random()*shapes.length)];p={s:s.map(r=>r.slice()),x:Math.floor((W-s[0].length)/2),y:0};if(hit(p.x,p.y,p.s))gameOver=true;}
+function hit(px,py,s){for(let y=0;y<s.length;y++)for(let x=0;x<s[y].length;x++)if(s[y][x]){const nx=px+x,ny=py+y;if(nx<0||nx>=W||ny>=H||b[ny][nx])return true;}return false;}
+function rotate(s){const h=s.length,w=s[0].length,r=Array.from({length:w},()=>Array(h).fill(0));for(let y=0;y<h;y++)for(let x=0;x<w;x++)r[x][h-1-y]=s[y][x];return r;}
+function draw(){x.clearRect(0,0,c.width,c.height);for(let y=0;y<H;y++)for(let xx=0;xx<W;xx++)if(b[y][xx]){x.fillStyle='#4cf';x.fillRect(xx*S,y*S,S-1,S-1);}if(p){x.fillStyle='#f4c';for(let y=0;y<p.s.length;y++)for(let xx=0;xx<p.s[y].length;xx++)if(p.s[y][xx])x.fillRect((p.x+xx)*S,(p.y+y)*S,S-1,S-1);}document.getElementById('s').textContent='Score: '+score+(gameOver?' Game Over':'');}
+function lock(){for(let y=0;y<p.s.length;y++)for(let xx=0;xx<p.s[y].length;xx++)if(p.s[y][xx])b[p.y+y][p.x+xx]=1;let lines=0;for(let y=H-1;y>=0;y--){if(b[y].every(v=>v)){b.splice(y,1);b.unshift(Array(W).fill(0));lines++;y++;}}score+=lines*100;newPiece();draw();}
+function move(dx,dy){if(!p||gameOver)return;if(!hit
+---

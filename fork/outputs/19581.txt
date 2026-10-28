@@ -1,0 +1,46 @@
+run 19581 | deep-seek | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.8 t/s | prompt 940.7 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-26 10:42:07
+
+We need answer user's request: "Do a code review of the following source file." They provided partial C++ source file common/json-schema-to-grammar.cpp, truncated at end. Need produce code review. Need analyze code, identify issues, suggestions. Need likely mention incomplete file. Need be thorough. Need maybe discuss grammar generation, recursion, integer overflow, regex? Let's inspect code.
+
+File includes headers, using json = common_json.
+
+Function build_repetition:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+Potential issues:
+- If max_items == 0 and min_items > 0? JSON schema invalid? returns empty string, maybe should throw or handle. If min_items > max_items invalid.
+- If min_items negative? not handled.
+- If max_items == INT_MAX and min_items? has_max false. For separator case: has_max ? max_items - 1 : max_items. If max_items == INT_MAX, max_items - 1 overflow? Actually ternary only evaluates chosen branch? In C++ conditional operator only evaluates selected expression, so if has_max false, max_items not decremented. If has_max true and max_items == INT_MAX? has_max false when equal INT_MAX, so no overflow. But if max_items == INT_MAX? has_max false. If max_items == INT_MAX? okay. If max_items == INT_MIN? no.
+- If max_items == 1 and min_items == 0 with separator: result = item_rule + " " + build_repetition(..., 0, 0) => build_repetition returns "" because max_items==0. result = item_rule + " " (trailing space). Then min_items==0 => "(item_rule )?" maybe grammar with trailing space? Could be okay? But if max_items=1, min_items=0, expected optional item, no separator. The code returns "(item_rule )?" with trailing space before )? Actually result = item_rule + " " + "" = "item_rule "; then result = "(item_rule )?" includes trailing space inside parentheses. Could be harmless but ugly. If min_items=1 max_items=1 separator: result = item_rule + " " + build_repetition(...,0,0) => "item_rule "; no optional. Should be just item_rule. So bug: for max_items=1 with separator, should not append separator repetition. More generally if max_items == 1, separator repetition max 0 returns empty but leaves trailing space. Need handle max_items <=1.
+- If min_items=0 max_items=0 returns empty. If min_items=0 max_items=1 returns item_rule? optional. Good.
+- If min_items=0 max_items>1 separator: result = item_rule + " " + rep(...,0,max-1); then optional whole. For max=2: item + " " + rep(...,0,1) => item (sep item)? then optional => (item (sep item)?)? This allows empty, one, two. Good. But if max=1 bug.
+- If min_items>0 max_items=1 separator: should item_rule. Code returns item_rule + " ". Bug.
+- If min_items=0 max_items=1 no separator returns item_rule? optional. Good.
+- If min_items=0 max_items=0 returns empty. If min_items=1 max_items=0 invalid returns empty.
+- Grammar syntax: repetition braces maybe {min,max} with empty max? For unbounded: {min,} okay? If min=0 max unbounded and separator? It goes to separator branch:
+---

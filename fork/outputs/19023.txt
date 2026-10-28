@@ -1,0 +1,42 @@
+run 19023 | spass19 | pf8k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 27.89 t/s | prompt 1072.6 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-24 17:53:20
+
+Let me carefully review this source file for bugs, issues, and potential improvements.
+
+Let me go through the code systematically.
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is not empty and `min_items == 0`, the result wraps in `(...)?`. But when `min_items > 0`, the separator-based repetition starts with `item_rule + " " + build_repetition(...)`. This seems correct for building `item (sep item)*` patterns.
+   - When `max_items == 0`, returns empty string - correct.
+   - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct.
+   - The separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. This builds `item (sep item){min-1,max-1}`. Looks correct.
+
+2. **`build_min_max_int` function:**
+   - This is complex. Let me check edge cases.
+   - When both min and max are set and both negative: negates both and recurses. Correct.
+   - When min is negative and max is positive: handles negative part, then sets min to 0. Correct.
+   - The `uniform_range` lambda: This builds a regex for matching numbers in a range. Let me check the logic carefully.
+   - `sub_len = from.length() - i - 1` - this is the length of the suffix after position i.
+   - When `from_sub == sub_zeros` (all zeros after position i): uses `digit_range(from[i], to[i] - 1)` for the first digit, then `more_digits(sub_len, sub_len)` for the rest. This handles the case where from is like "1000" and to is like "9999".
+   - The `to_reached` flag: when `to_sub == sub_nines`, the range `from[i]+1` to `to[i]` covers everything, so we don't need the `to[i]` case separately.
+   - Looks generally correct but complex.
+
+3. **`_add_rule` function:**
+   - Escapes rule names, then checks if the rule already exists with the same content. If so, returns the existing name. Otherwise, finds a unique name by appending numbers.
+   - Potential issue: The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds a slot where either the name doesn't exist or the rule matches. This seems correct.
+
+4. **`_generate_union_rule`:**
+   - Generates alternatives with numbered names. Looks correct.
+
+5. **`_visit_pattern`:**
+   - Takes a snapshot of `_rules` before attempting to convert the pattern. On failure, reverts. This is a good pattern for rollback.
+   - On `unsupported_pattern`, adds a warning and falls back to accepting any string.
+   - On `invalid_pattern`, adds an error and returns empty string.
+   - **Issue**: The snapshot is taken by copying `_rules` (which is a `std::map<std::string, std::string>`). This could be expensive for large schemas. But functionally correct.
+
+6. **`_pattern_to_rule`:**
+   - Checks for `^` and `$` anchors.
+   - The `transform` lambda is recursive (via `std::function`), handling groups.
+   - **Potential issue with `paren_depth`**: The `paren_depth` is checked after `transform()` returns for closing parens, but the check `if (paren_depth != 0)` after the initial `transform()` call catches unbalanced parens. However, `paren_depth` is a local variable in `_pattern_to_rule`, and the `transform` lambda captures it by reference. When `transform()` is called recursively for groups, the `paren_depth` is incremented before the recursive call and decremented after. This seems correct.
+   - **Issue with character class parsing**: When parsing `[...]`, it doesn't handle `]` as the first character (which is valid in regex as `[]]`). Also doesn't handle `-` at the start/end of character classes. But these might be intentional limitations.
+   - **Issue with `{}` parsing**: The curly bracket parsing doesn't handle escaped characters inside. Also, `std::stoi` could throw `std::out_of_range` which is not caught (only `std::logic_error` is caught). `std::stoi` throws `std::invalid_argument` (derived from `std::logic_error`) for invalid input, and `std::out_of_range` for overflow. The `std::out_of_range`
+---

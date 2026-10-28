@@ -1,1 +1,0 @@
-write smallest html {word} game

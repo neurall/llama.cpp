@@ -1,0 +1,80 @@
+run 19586 | deep-seek | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.28 t/s | prompt 40.5 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-26 10:46:25
+
+The user wants the smallest HTML Tetris game. The literal ask is "smallest" — so code golf-ish, minimal. But I want it to actually feel good to use. Let me balance: a compact single-file Tetris that's small in code but still crafted and playable. I'll aim for genuinely small code (a few hundred bytes-ish minified, readable version maybe ~1.5KB) but present it nicely.
+
+Given "smallest", I'll deliver a compact but complete Tetris. I could give a minified one-liner version plus a slightly formatted readable version. Let me write it.
+
+Classic tiny Tetris approach:
+
+```html
+<meta charset=utf-8><title>TETRIS</title><body style=margin:0;background:#111;display:grid;place-items:center;height:100vh><canvas id=c width=160 height=320 style=image-rendering:pixelated;height:96vh></canvas><script>
+...
+</script>
+```
+
+Let me write a compact Tetris in ~40 lines.
+
+Standard tiny tetris (based on the well-known code-golf tetris):
+
+```js
+c=document.body.children[0],x=c.getContext`2d`,S=0,L=0
+// board
+B=[...Array(18)].map(_=>Array(10).fill(0))
+```
+
+Let me write a clean compact version:
+
+```html
+<canvas id=c width=100 height=180></canvas>
+<script>
+const W=10,H=18,S=10,c=c0=c.getContext`2d`;
+let B=Array(W*H).fill(0),P,
+K='0000,2222,0000,0000;00,00,22,22;200,222,000;020,222,000;002,222,000;022,220,000;220,022,000'.split(';'),
+```
+
+Hmm, need rotation. Common trick: use matrix rotation function.
+
+Let me define pieces as arrays of strings, rotate by transposing+reversing.
+
+```js
+R=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse().join``)
+```
+
+Wait for m as array of strings: m[0].map over string chars. `m[0].map` — strings have map? No. Use [...m[0]].map. Let's do:
+
+```js
+R=m=>[...m[0]].map((_,i)=>m.map(r=>r[i]).reverse().join``)
+```
+
+Yes that rotates clockwise.
+
+Pieces with colors: use digit chars 1-7 as color index.
+
+Board as array of strings? Easier: board as array of arrays of numbers, or a flat string array.
+
+Let me do:
+
+```js
+B=[...Array(18)].map(_=>'0'.repeat(10))
+```
+Board rows as strings; merging rows via string ops. Collision check: for piece P at position (px,py), check cells.
+
+Simpler: keep board as flat array of 180 numbers.
+
+Let me write:
+
+```js
+let B=Array(180).fill(0),P,N,X,Y,S,L=0
+function n(){P=N||K[Math.random()*7|0];N=K[Math.random()*7|0];X=3;Y=0;if(f(P,0,0))gameover()}
+function f(p,dx,dy){return p.some((r,j)=>[...r].some((v,i)=>v&&B[(Y+dy+j)*10+X+dx+i]))}
+```
+
+Wait need bounds check too. Use a board with border walls: width 12 with side walls, height 20 with floor. That's the classic trick.
+
+Board: W=12, H=20, cells: border = 1, empty = 0. Playfield columns 1..10, rows 0..17 (floor row 18, 19 maybe).
+
+```js
+B=[...Array(20)].map((_,y)=>Array(12).fill(y>17?1:0))
+```
+Hmm
+---

@@ -1,0 +1,91 @@
+run 18996 | spass19 | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.63 t/s | prompt 607.0 t/s | 918 tokens | args: -np 1 | power 220+280 W | 2026-10-24 16:20:56
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function, used by... let me check. It's used in the schema conversion code (which appears to be cut off in the provided snippet). Actually, the file is truncated at `gbnf_escape_length`. So I only see part of the file. Hmm, but the task says "Delete the code in this file that is never used." I need to work with what's shown.
+
+Wait, the file shown is incomplete - it ends mid-function at `gbnf_escape_length`. So I need to determine what's unused based on what's visible. But functions defined here might be used later in the file (which isn't shown). This is tricky.
+
+Let me think about what's actually in the real llama.cpp `json-schema-to-grammar.cpp` file and what's unused there.
+
+Actually, let me recall the actual llama.cpp file. The real file has:
+- `build_repetition`
+- `build_min_max_int`
+- `SPACE_RULE`
+- `BuiltinRule`, `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`
+- `is_reserved_name`
+- regexes: `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`, `GRAMMAR_LITERAL_ESCAPES`
+- `MAX_PATTERN_DEPTH`
+- `NON_LITERAL_SET`, `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`
+- `replacePattern`
+- `format_literal`, `gbnf_format_literal`
+- `gbnf_escape_length`
+- ... more functions like `gbnf_escape`, `parse_pattern`, etc.
+
+In the actual llama.cpp code, let me recall what's unused. Hmm.
+
+Actually, in the real llama.cpp file, there's a known issue: `MAX_PATTERN_DEPTH` is defined but... let me think. In the real file:
+
+```cpp
+static const int MAX_PATTERN_DEPTH = 100;
+```
+
+Hmm, actually I recall in llama.cpp's json-schema-to-grammar.cpp there's `MAX_PATTERN_DEPTH` used in `parse_pattern` for recursion depth checking? Let me recall...
+
+Actually the real file (from llama.cpp common/json-schema-to-grammar.cpp):
+
+```cpp
+// disable the copy of grammar-serializer
+...
+```
+
+Let me try to reconstruct. The real file has functions:
+- `build_repetition`
+- `build_min_max_int`
+- `SPACE_RULE`
+- `BuiltinRule` struct
+- `PRIMITIVE_RULES`
+- `STRING_FORMAT_RULES`
+- `is_reserved_name`
+- `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`, `GRAMMAR_LITERAL_ESCAPES`
+- `MAX_PATTERN_DEPTH`
+- `NON_LITERAL_SET`, `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`
+- `replacePattern`
+- `format_literal`
+- `gbnf_format_literal`
+- `gbnf_escape_length`
+- `gbnf_escape`
+- `parse_pattern` (with `pattern_to_gbnf`)
+- `unquote_...`?
+- `SchemaToGrammar` class / `build_schema_grammar`?
+- `check_grammar`?
+
+Hmm, I remember there was a cleanup PR in llama.cpp that removed unused stuff. Let me think about what's actually unused in this file.
+
+Known unused things in llama.cpp's json-schema-to-grammar.cpp (as of some version):
+
+1. `MAX_PATTERN_DEPTH` - I believe this is unused. Let me check... In the real file, I recall:
+
+```cpp
+static const int MAX_PATTERN_DEPTH = 100;
+```
+
+Hmm, actually I'm not sure. Let me think about `parse_pattern`:
+
+```cpp
+static std::string parse_pattern(const std::string & pattern, size_t & i, const std::map<std::string, std::string> & refs, int & depth) {
+    ...
+}
+```
+
+Hmm, I don't remember depth being checked against MAX_PATTERN_DEPTH. Actually wait — I recall there was a `MAX_PATTERN_DEPTH` used in an older version with `depth > MAX_PATTERN_DEPTH` throwing an error. Let me think...
+
+Actually, in the llama.cpp file, I recall this snippet:
+
+```cpp
+static std::string
+---

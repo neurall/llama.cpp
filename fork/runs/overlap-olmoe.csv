@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+ov01-tetris,olmoei,1,tetrisc,1024,"--moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2",
+ov02-snake,olmoei,1,snakec,1024,"--moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2",
+ov03-breakout,olmoei,1,breakoutc,1024,"--moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2",
+ov04-scifi,olmoei,1,scific,1024,"--moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2",
+ov05-scifi2,olmoei,1,scifi2c,1024,"--moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2",
+ov06-poem,olmoei,1,poemc,1024,"--moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2",
+ov07-tetris,olmoei,1,tetrisc,1024,"--moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2",
+ov08-snake,olmoei,1,snakec,1024,"--moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2",
+ov09-breakout,olmoei,1,breakoutc,1024,"--moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2",
+ov10-scifi,olmoei,1,scific,1024,"--moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2",
+ov11-scifi2,olmoei,1,scifi2c,1024,"--moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2",
+ov12-poem,olmoei,1,poemc,1024,"--moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2",

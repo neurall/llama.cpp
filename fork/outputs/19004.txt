@@ -1,0 +1,67 @@
+run 19004 | spass19 | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.12 t/s | prompt 231.8 t/s | 918 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-24 16:43:05
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Is it used? In the shown portion of the file, I don't see it being called. But the file is truncated — it ends at `static size_t gbnf_escape_length(...)`. The file shown is incomplete. Hmm, the user gave a partial file and asked to delete code that is never used. This is tricky because the file is cut off mid-function.
+
+Wait, let me re-read. The file ends with:
+
+```cpp
+static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
+   
+```
+
+So the file is truncated. The user wants me to delete unused code from this file. Since the file is truncated, I need to reason about what's used within the visible portion, and possibly what would be used in the rest of the file (which I can't see).
+
+Actually, this looks like a task from a benchmark where the file is given and we need to identify dead code. The typical approach: find functions/variables defined but never referenced anywhere in the file.
+
+Let me list all definitions:
+
+- `build_repetition` (static function)
+- `build_min_max_int` (static function)
+- `SPACE_RULE` (const std::string)
+- `struct BuiltinRule`
+- `PRIMITIVE_RULES` (static unordered_map)
+- `STRING_FORMAT_RULES` (static unordered_map)
+- `is_reserved_name` (static function)
+- `INVALID_RULE_CHARS_RE` (static regex)
+- `GRAMMAR_LITERAL_ESCAPE_RE` (static regex)
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` (static regex)
+- `GRAMMAR_LITERAL_ESCAPES` (static unordered_map)
+- `MAX_PATTERN_DEPTH` (static const int)
+- `NON_LITERAL_SET` (static unordered_set)
+- `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` (static unordered_set)
+- `replacePattern` (static function)
+- `format_literal` (static function)
+- `gbnf_format_literal` (non-static function — exported, declared in header presumably)
+- `gbnf_escape_length` (static function, truncated)
+
+Now, within the visible code:
+
+- `build_repetition` is not called in the visible portion. But in the actual llama.cpp file, `build_repetition` is used later in the file (in `build_object_rule` and in schema-to-grammar conversion). Since the file is truncated, we can't be sure. Hmm.
+
+Actually wait — this is a known llama.cpp file. Let me recall the actual content of `json-schema-to-grammar.cpp` in llama.cpp. The full file includes:
+
+- `build_repetition` — used in `build_object_rule` and in the main schema conversion for arrays with minItems/maxItems, and string patterns with repetitions.
+- `build_min_max_int` — used for integer minimum/maximum constraints.
+- `SPACE_RULE` — used in generated rules.
+- `PRIMITIVE_RULES`, `STRING_FORMAT_RULES` — used.
+- `is_reserved_name` — used.
+- `INVALID_RULE_CHARS_RE` — used in `parse_pattern` / rule name sanitization.
+- `GRAMMAR_LITERAL_ESCAPE_RE` — used in `format_literal`.
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` — used in `parse_pattern` for char ranges.
+- `GRAMMAR_LITERAL_ESCAPES` — used in `format_literal` and `parse_pattern`.
+- `MAX_PATTERN_DEPTH` — used in `parse_pattern` recursion check.
+- `NON_LITERAL_SET` — used in `parse_pattern`.
+- `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` — used in `parse_pattern`.
+- `replacePattern` — used in `format_literal` and `parse_pattern`.
+- `format_literal` — used.
+- `gbnf_format_literal` — exported function used by other files (e.g., in `common/common.cpp` or `minja`?). Actually `gbnf_format_literal` is declared in the header and used elsewhere.
+- `gbnf_escape_length` — used in `gbnf_format_literal`? Let me recall.
+
+Hmm, actually in the real llama.cpp file, there's
+---

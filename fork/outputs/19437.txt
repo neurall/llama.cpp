@@ -1,0 +1,5 @@
+run 19437 | rc5 | edit4c | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 379.85 t/s | prompt 19271.5 t/s | 29 tokens | args: -np 1 | power 220+280 W | 2026-10-25 10:03:42
+
+
+---
+The provided file appears to be a header file (`common.h`) that defines various utility functions related to JSON schemas and grammar rules parsing.

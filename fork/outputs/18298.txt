@@ -1,0 +1,40 @@
+run 18298 | splitfix | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.44 t/s | prompt 345.9 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 10:11:11
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - Wait, there's a subtle bug: `if (max_items == 0) return "";` — if `min_items > 0` and `max_items == 0`, this is contradictory (min > max), and returning empty string silently accepts invalid input. Actually returning "" means the rule matches empty, which would violate min_items. But this is an edge case.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, then `max_items - 1` is fine. But if `min_items == 0` and `max_items == 1` with a separator... let's trace: `min_items == 0 && max_items == 1` returns `item_rule + "?"` before the separator check — wait no, that check happens before the separator check. Let me re-read:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+```
+
+So for min=0, max=1 with separator, it returns `item_rule + "?"` ignoring the separator — that's correct since a single item has no separator.
+
+   - Potential issue: `max_items - 1` when `max_items == 0`? No, that's handled by early return.
+   - `min_items - 1` when `min_items == 0`? Handled by ternary: `min_items == 0 ? 0 : min_items - 1`.
+   - What about `min_items > max_items`? Not validated. E.g., min=5, max=3 would produce `{5,3}` which is invalid grammar. Minor.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead; could use a helper struct or explicit recursion. Minor style.
+   - `decimals_left = 16` default. The recursion decrements. `less_decimals = std::max(decimals_left - 1, 1)`.
+   - In the `has_min && has_max` branch with negative values: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == std::numeric_limits<int64_t>::min()`, then `-min_value` is UB (signed overflow). Wait, but `has_min` is true means `min_value != INT64_MIN`. And `has_max` true means `max_value != INT64_MAX`. So in the `has_min && has_max` branch, negation is safe. But in the `has_min` only branch: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — here `-min_value` where `min_value != INT64_MIN` (since has_min), so safe. And passing INT64_MIN as min means `has_min` false in the recursive call — clever trick to represent "no min". OK.
+   - In `has_max` branch: `build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), ...)` — `max_value < 0` so `-max_value` is safe (max_value != INT64_MIN because... wait, has_max means max_value != INT64_MAX, and max_value < 0, so max_value could be INT64_MIN? No wait — if max_value == INT64_MIN, then has_max is true (since INT64_MIN != INT64_MAX). And max_value < 0. So `-max_value` = `-INT64_MIN` which is UB! Hmm, let me check: `if (max_value >= 0)` else branch: `build_min_max_int(-max_value, ...)`. If `max_value == INT64_MIN`, `-max_value` overflows. Is that reachable? The function is called with `i.minimum` and `i.maximum` from schema. If schema says `maximum: -9223372036854775808`... that's an edge case but technically UB. Actually wait, in the `has_min && has_max` branch
+---

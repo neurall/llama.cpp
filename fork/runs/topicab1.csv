@@ -1,0 +1,9 @@
+name,model,n,test,tokens,args,extra
+off-game1,ds,2,tetrisc,1024,--moe state=/tmp/runstate/topicab1-off.ini,
+off-prose1,ds,2,scific,1024,--moe state=/tmp/runstate/topicab1-off.ini,
+off-game2,ds,2,tetrisc,1024,--moe state=/tmp/runstate/topicab1-off.ini,
+off-prose2,ds,2,scific,1024,--moe state=/tmp/runstate/topicab1-off.ini,
+on-game1,ds,2,tetrisc,1024,"--moe state=/tmp/runstate/topicab1-on.ini,dynhot=1",
+on-prose1,ds,2,scific,1024,"--moe state=/tmp/runstate/topicab1-on.ini,dynhot=1",
+on-game2,ds,2,tetrisc,1024,"--moe state=/tmp/runstate/topicab1-on.ini,dynhot=1",
+on-prose2,ds,2,scific,1024,"--moe state=/tmp/runstate/topicab1-on.ini,dynhot=1",

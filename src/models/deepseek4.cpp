@@ -349,25 +349,23 @@ ggml_tensor * llama_model_deepseek4::graph::build_hc_sinkhorn(
     return comb;
 }
 
-ggml_tensor * llama_model_deepseek4::graph::build_hc_pre(
+llama_model_deepseek4::graph::hc_pre
+llama_model_deepseek4::graph::build_hc_pre(
         ggml_tensor * x,
         ggml_tensor * hc_fn,
         ggml_tensor * hc_scale,
         ggml_tensor * hc_base,
-        ggml_tensor ** post,
-        ggml_tensor ** comb,
         int il) const {
-    return build_hc_pre(x, build_hc_mixes(x, hc_fn, hc_scale, hc_base, post, comb, false, il), il);
+    hc_mixes mixes = build_hc_mixes(x, hc_fn, hc_scale, hc_base, il);
+    return { build_hc_pre(x, mixes.pre, il), mixes.post, mixes.comb };
 }
 
-ggml_tensor * llama_model_deepseek4::graph::build_hc_mixes(
+llama_model_deepseek4::graph::hc_mixes
+llama_model_deepseek4::graph::build_hc_mixes(
         ggml_tensor * x,
         ggml_tensor * hc_fn,
         ggml_tensor * hc_scale,
         ggml_tensor * hc_base,
-        ggml_tensor ** post,
-        ggml_tensor ** comb,
-        bool f32_src,
         int il) const {
     const int64_t hc         = hparams.dsv4_hc_mult;
     const int64_t hc_dim     = hc*n_embd;
@@ -380,10 +378,6 @@ ggml_tensor * llama_model_deepseek4::graph::build_hc_mixes(
     ggml_tensor * flat = ggml_reshape_2d(ctx0, x, hc_dim, nt);
     ggml_tensor * flat_norm = ggml_rms_norm(ctx0, flat, norm_rms_eps);
     ggml_tensor * mixes = ggml_mul_mat(ctx0, hc_fn, flat_norm);
-    if (f32_src && !ggml_is_quantized(hc_fn->type)) {
-        // F32 weights (model.py hc_pre runs in fp32): request F32 inputs, the mixes are near-tie sensitive
-        ggml_prec_set_src(mixes, GGML_PREC_F32, 1);
-    }
     cb(mixes, "hc_mixes", il);
 
     ggml_tensor * scale_pre  = dsv4_view_1d(ctx0, hc_scale, 1, 0);
@@ -398,28 +392,29 @@ ggml_tensor * llama_model_deepseek4::graph::build_hc_mixes(
     pre = ggml_scale_bias(ctx0, pre, 1.0f, hparams.dsv4_hc_eps);
     cb(pre, "hc_pre", il);
 
-    *post = dsv4_view_2d(ctx0, mixes, hc, nt, hc);
-    *post = dsv4_hc_affine(ctx0, *post, scale_post, base_post);
-    *post = ggml_sigmoid(ctx0, *post);
-    *post = ggml_scale(ctx0, *post, 2.0f);
-    cb(*post, "hc_post", il);
+    ggml_tensor * post = dsv4_view_2d(ctx0, mixes, hc, nt, hc);
+    post = dsv4_hc_affine(ctx0, post, scale_post, base_post);
+    post = ggml_sigmoid(ctx0, post);
+    post = ggml_scale(ctx0, post, 2.0f);
+    cb(post, "hc_post", il);
 
+    ggml_tensor * comb = nullptr;
     if (cparams.fused_dsv4_hc_comb) {
-        *comb = ggml_dsv4_hc_comb(ctx0, mixes, hc_scale, hc_base, hparams.dsv4_hc_eps,
+        comb = ggml_dsv4_hc_comb(ctx0, mixes, hc_scale, hc_base, hparams.dsv4_hc_eps,
                 (int32_t) hparams.dsv4_hc_sinkhorn_iters);
-        res->add_fused_node({LLM_FUSED_OP_DSV4_HC_COMB, *comb, il});
+        res->add_fused_node({LLM_FUSED_OP_DSV4_HC_COMB, comb, il});
     } else {
         ggml_tensor * scale_comb = dsv4_view_1d(ctx0, hc_scale, 1, 2);
         ggml_tensor * base_comb  = dsv4_view_1d(ctx0, hc_base, hc*hc, 2*hc);
 
-        *comb = dsv4_view_2d(ctx0, mixes, hc*hc, nt, 2*hc);
-        *comb = dsv4_hc_affine(ctx0, *comb, scale_comb, base_comb);
-        *comb = ggml_reshape_3d(ctx0, *comb, hc, hc, nt);
-        *comb = build_hc_sinkhorn(*comb, il);
+        comb = dsv4_view_2d(ctx0, mixes, hc*hc, nt, 2*hc);
+        comb = dsv4_hc_affine(ctx0, comb, scale_comb, base_comb);
+        comb = ggml_reshape_3d(ctx0, comb, hc, hc, nt);
+        comb = build_hc_sinkhorn(comb, il);
     }
-    cb(*comb, "hc_comb", il);
+    cb(comb, "hc_comb", il);
 
-    return pre;
+    return { pre, post, comb };
 }
 
 ggml_tensor * llama_model_deepseek4::graph::build_hc_post(
@@ -698,7 +693,7 @@ ggml_tensor * llama_model_deepseek4::graph::build_top_k_mask(
     GGML_ASSERT(top_k);
 
     if (cparams.fused_top_k_mask) {
-        ggml_tensor * kq_mask_top_k = build_fused_top_k_mask(kq_mask, top_k, nullptr, nullptr, nullptr, nullptr, il);
+        ggml_tensor * kq_mask_top_k = build_fused_top_k_mask(kq_mask, top_k, il);
         cb(kq_mask_top_k, name, il);
 
         return kq_mask_top_k;
@@ -1256,6 +1251,18 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
     inpL = ggml_repeat_4d(ctx0, inpL, n_embd, hc, n_tokens, 1);
     cb(inpL, "hc_init", -1);
 
+    // fork: the layer inputs a draft reads (DSpark: layers 37-39), of only the pass's last rows when the draft sees no more than those
+    // (llama_set_embeddings_layer_inp_last: its sliding window, 129 positions). The mean is taken of those rows alone, so a prompt pass of 16384 tokens holds
+    // 3 x 129 rows (8 MiB) for the draft instead of 3 x 16384 (960 MiB of VRAM, kept to the end of the graph; it no longer fit beside the pool when the
+    // draft switched them on after the pool was sized, 2026-10-28)
+    auto layer_inp = [&](ggml_tensor * x) {
+        const int64_t last = cparams.embeddings_layer_inp_last;
+        if (last > 0 && x->ne[2] > last) {
+            x = ggml_view_3d(ctx0, x, x->ne[0], x->ne[1], last, x->nb[1], x->nb[2], (size_t) (x->ne[2] - last) * x->nb[2]);
+        }
+        return build_hc_mean(x);
+    };
+
     // ---- fork: dense split (token ranges, one per card; the shared kit in llama-graph.cpp, the reasoning in llama-dsplit-fork.cpp) ---------------------------
     // Everything of a DeepSeek-4 layer is per token except the attention block: the compressors (CSA / HCA) keep a running state over the tokens and the
     // indexer selects over the compressed cache, so the attention stays whole. Per layer: every card runs the hyper-connection mix, the norm and (after the
@@ -1278,7 +1285,7 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
                 for (size_t r = 0; r < NR; ++r) {
                     ds_skip();
                     residual[r] = x[r];
-                    cur_r[r] = build_hc_pre(x[r], L[r].hc_attn_fn, L[r].hc_attn_scale, L[r].hc_attn_base, &post[r], &comb[r], il);
+                    { hc_pre hp = build_hc_pre(x[r], L[r].hc_attn_fn, L[r].hc_attn_scale, L[r].hc_attn_base, il); cur_r[r] = hp.cur; post[r] = hp.post; comb[r] = hp.comb; }
                     cur_r[r] = build_norm(cur_r[r], L[r].attn_norm, nullptr, LLM_NORM_RMS, il);
                     ds_pin(ds_r[r].b);
                 }
@@ -1295,7 +1302,7 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
                     ggml_tensor * a = ggml_cont(ctx0, ds_rows(att, r));
                     ggml_tensor * h = build_hc_post(a, residual[r], post[r], comb[r], il);
                     residual[r] = h;
-                    cur_r[r] = build_hc_pre(h, L[r].hc_ffn_fn, L[r].hc_ffn_scale, L[r].hc_ffn_base, &post[r], &comb[r], il);
+                    { hc_pre hp = build_hc_pre(h, L[r].hc_ffn_fn, L[r].hc_ffn_scale, L[r].hc_ffn_base, il); cur_r[r] = hp.cur; post[r] = hp.post; comb[r] = hp.comb; }
                     ffn_in[r] = build_norm(cur_r[r], L[r].ffn_norm, nullptr, LLM_NORM_RMS, il);
                     lg[r] = build_lora_mm(L[r].ffn_gate_inp, ffn_in[r]);
                     ds_pin(ds_r[r].b);
@@ -1341,20 +1348,18 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
 
     for (int il = 0; il < n_layer && !ds_done; ++il) {
         if ((size_t) il < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il]) {
-            res->t_layer_inp[il] = build_hc_mean(inpL);
+            res->t_layer_inp[il] = layer_inp(inpL);
             cb(res->t_layer_inp[il], "layer_inp", il);
             ggml_build_forward_expand(gf, res->t_layer_inp[il]);
         }
 
         ggml_tensor * residual = inpL;
-        ggml_tensor * post = nullptr;
-        ggml_tensor * comb = nullptr;
-
-        cur = build_hc_pre(inpL,
+        const hc_pre attn_hc = build_hc_pre(inpL,
                 model.layers[il].hc_attn_fn,
                 model.layers[il].hc_attn_scale,
                 model.layers[il].hc_attn_base,
-                &post, &comb, il);
+                il);
+        cur = attn_hc.cur;
         cb(cur, "hc_attn_pre", il);
 
         cur = build_norm(cur, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
@@ -1362,20 +1367,21 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
 
         cur = build_attention(model, inp_dsv4, cur, inp_pos, il);
 
-        inpL = build_hc_post(cur, residual, post, comb, il);
+        inpL = build_hc_post(cur, residual, attn_hc.post, attn_hc.comb, il);
         cb(inpL, "hc_attn_post", il);
 
         residual = inpL;
-        cur = build_hc_pre(inpL,
+        const hc_pre ffn_hc = build_hc_pre(inpL,
                 model.layers[il].hc_ffn_fn,
                 model.layers[il].hc_ffn_scale,
                 model.layers[il].hc_ffn_base,
-                &post, &comb, il);
+                il);
+        cur = ffn_hc.cur;
         cb(cur, "hc_ffn_pre", il);
 
         ggml_build_forward_expand(gf, residual);
-        ggml_build_forward_expand(gf, post);
-        ggml_build_forward_expand(gf, comb);
+        ggml_build_forward_expand(gf, ffn_hc.post);
+        ggml_build_forward_expand(gf, ffn_hc.comb);
 
         cur = build_norm(cur, model.layers[il].ffn_norm, nullptr, LLM_NORM_RMS, il);
         cb(cur, "ffn_norm", il);
@@ -1425,13 +1431,13 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
         cur = ggml_add(ctx0, moe_out, ffn_shexp);
         cb(cur, "ffn_out", il);
 
-        inpL = build_hc_post(cur, residual, post, comb, il);
+        inpL = build_hc_post(cur, residual, ffn_hc.post, ffn_hc.comb, il);
         inpL = build_cvec(inpL, il);
         cb(inpL, "l_last", il);
     }
 
     if ((size_t) n_layer < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[n_layer]) {
-        res->t_layer_inp[n_layer] = build_hc_mean(inpL);
+        res->t_layer_inp[n_layer] = layer_inp(inpL);
         cb(res->t_layer_inp[n_layer], "layer_inp", n_layer);
         ggml_build_forward_expand(gf, res->t_layer_inp[n_layer]);
     }
@@ -1525,14 +1531,12 @@ llama_model_deepseek4::graph_mtp::graph_mtp(const llama_model & model, const llm
     cb(inpL, "mtp_eh_proj", il);
 
     ggml_tensor * residual = inpL;
-    ggml_tensor * post = nullptr;
-    ggml_tensor * comb = nullptr;
-
-    ggml_tensor * cur = build_hc_pre(inpL,
+    hc_pre attn_hc = build_hc_pre(inpL,
             layer.hc_attn_fn,
             layer.hc_attn_scale,
             layer.hc_attn_base,
-            &post, &comb, il);
+            il);
+    ggml_tensor * cur = attn_hc.cur;
     cb(cur, "mtp_hc_attn_pre", il);
 
     cur = build_norm(cur, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
@@ -1540,15 +1544,16 @@ llama_model_deepseek4::graph_mtp::graph_mtp(const llama_model & model, const llm
 
     cur = build_attention(model, inp_attn, cur, inp_pos, il);
 
-    inpL = build_hc_post(cur, residual, post, comb, il);
+    inpL = build_hc_post(cur, residual, attn_hc.post, attn_hc.comb, il);
     cb(inpL, "mtp_hc_attn_post", il);
 
     residual = inpL;
-    cur = build_hc_pre(inpL,
+    hc_pre ffn_hc = build_hc_pre(inpL,
             layer.hc_ffn_fn,
             layer.hc_ffn_scale,
             layer.hc_ffn_base,
-            &post, &comb, il);
+            il);
+    cur = ffn_hc.cur;
     cb(cur, "mtp_hc_ffn_pre", il);
 
     cur = build_norm(cur, layer.ffn_norm, nullptr, LLM_NORM_RMS, il);
@@ -1578,7 +1583,7 @@ llama_model_deepseek4::graph_mtp::graph_mtp(const llama_model & model, const llm
     cur = ggml_add(ctx0, moe_out, ffn_shexp);
     cb(cur, "mtp_ffn_out", il);
 
-    inpL = build_hc_post(cur, residual, post, comb, il);
+    inpL = build_hc_post(cur, residual, ffn_hc.post, ffn_hc.comb, il);
     inpL = build_cvec(inpL, il);
     cb(inpL, "mtp_l_out", il);
 

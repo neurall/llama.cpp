@@ -1,0 +1,36 @@
+run 19994 | fix_scratch_per_card_from_graph | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 22.96 t/s | prompt 165.3 t/s | 680 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 14:02:22
+
+We need answer user asks: "Delete the code in this file that is never used." They provided file content. Need identify unused code in common/json-schema-to-grammar.cpp and provide cleaned code? Need infer task likely from benchmark: remove unused code. Need analyze file. Need produce modified file with unused code deleted. Need be careful: code snippet ends mid-function at gbnf_escape_length with blank. Maybe file truncated? Need identify unused functions/static variables etc. Need maybe answer with code after deletion. Need inspect.
+
+We have file common/json-schema-to-grammar.cpp. Need delete code never used. Need determine unused entities within this file. Could be functions like gbnf_escape_length? It starts but incomplete. Maybe rest omitted? The prompt includes only up to "static size_t gbnf_escape_length(const std::string & pattern, size_t pos) { \n\n" then blank. Maybe actual file has more code not shown? They ask delete code in this file never used. We need maybe identify unused code in provided snippet. But snippet incomplete. Need maybe from llama.cpp source? Let's recall actual file json-schema-to-grammar.cpp in llama.cpp. It has many functions. Need know unused code? Let's search memory. This is from llama.cpp common/json-schema-to-grammar.cpp. It defines build_repetition, build_min_max_int, SPACE_RULE, PRIMITIVE_RULES, STRING_FORMAT_RULES, is_reserved_name, regexes, replacePattern, format_literal, gbnf_format_literal, gbnf_escape_length, gbnf_escape_char, gbnf_escape_string, etc. Need identify unused code in this file. Maybe there are functions not used: gbnf_escape_length? Let's recall full file.
+
+I can reconstruct from llama.cpp. The file json-schema-to-grammar.cpp likely contains:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- BuiltinRule
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- INVALID_RULE_CHARS_RE
+- GRAMMAR_LITERAL_ESCAPE_RE
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE
+- GRAMMAR_LITERAL_ESCAPES
+- MAX_PATTERN_DEPTH
+- NON_LITERAL_SET
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS
+- replacePattern
+- format_literal
+- gbnf_format_literal
+- gbnf_escape_length
+- gbnf_escape_char
+- gbnf_escape_string
+- gbnf_escape_unicode
+- gbnf_escape_unicode_char
+- gbnf_escape_unicode_string
+- gbnf_escape_unicode_char? 
+- json_schema_to_grammar
+- maybe helper functions.
+
+Need know which are unused. The user says "Delete the code in this file that is never used." Could be a code cleanup task where there are unused functions in file. Need output only code? We need identify all unused code in provided file. But snippet truncated at gbnf_escape
+---

@@ -1,0 +1,46 @@
+run 19995 | fix_scratch_per_card_from_graph | pf8k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.37 t/s | prompt 1020.0 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-27 14:28:01
+
+<think>The user wants a code review of this C++ source file. Let me analyze it thoroughly.
+
+Let me go through the file systematically.</think># Code Review: `common/json-schema-to-grammar.cpp`
+
+## Critical Issues
+
+### 1. Incomplete file
+The file is truncated mid-function (`_visit_all_of` ends abruptly). This won't compile.
+
+### 2. `build_repetition` — incorrect separator handling
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+When `min_items == 0` and a separator is provided, the first `item_rule` is emitted unconditionally, then the recursive call allows zero repetitions of `(sep item)`. This means the result always has at least one item — but `min_items == 0` should allow zero items. The `if (min_items == 0)` guard wraps the whole thing in `()?`, which is correct, but the logic is convoluted and easy to get wrong. Consider restructuring for clarity.
+
+### 3. `build_min_max_int` — `std::stoll` can throw
+```cpp
+build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, /* top_level= */ false);
+```
+If `min_s` is `"1"` (single digit), `min_s.substr(1)` is `""`, and `std::stoll("")` throws `std::invalid_argument`. This path is reachable when `min_value` is between 10 and 99... but also when `min_value` is exactly 10 (min_s = "10", substr(1) = "0" — fine). Actually for `min_value == 10`, `min_s = "10"`, `c = '1'`, `c > '1'` is false, so we go to `digit_range(c, c)` then `std::stoll("0")` = 0 — OK. But for `min_value == 100`, `min_s = "100"`, `c = '1'`, `std::stoll("00")` = 0 — OK. The real risk is if `min_s` has length 1, but that's guarded by `min_value > 9`. Still, `std::stoll` can throw on overflow for very large values — no try/catch.
+
+### 4. `build_min_max_int` — `decimals_left` can go negative
+```cpp
+auto less_decimals = std::max(decimals_left - 1, 1);
+```
+This is clamped to 1, but `more_digits(0, decimals_left - 1)` in the `min_value < 0` branch is **not** clamped. If `decimals_left` is 1, this passes `0` as `max_digits` to `more_digits`, producing `[0-9]{0,0}` — a degenerate quantifier.
+
+### 5. `build_min_max_int` — `top_level` parameter is misleading
+The `top_level` flag controls whether leading zeros are allowed, but it's passed as `true` in some recursive calls where it should arguably be `false` (e.g., the negative-number branch). The semantics are unclear and error-prone.
+
+### 6. `_pattern_to_rule` — `sub_rule_ids` key collision
+```cpp
+std::string & sub_id = sub_rule_ids[sub];
+if (sub_id.empty()) {
+    sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+}
+```
+`sub_rule_ids.size()` is evaluated **after** the `operator[]` has already inserted an entry. So the first call gets `size() == 1` (after insertion), the second gets `size() == 2`, etc. This means rule names start at `name-1` instead of `name-0`, and if two different `sub` values happen to produce the same `name-N` key, they'll collide. The intent seems to be a counter, but using `size()` of a map that's being mutated is fragile.
+
+### 7. `_pattern_to_rule` — `join_seq` returns `pair<string, bool>` with `false`
+```cpp
+return std::make_pair(string_join(results, " "), false);
+```
+The `false` means "not a literal", but the joined string may contain rule references mixed with quoted literals. This is correct for the current design but the `literal_or_rule` pair is confusing — the `bool` field means "is a raw literal that needs

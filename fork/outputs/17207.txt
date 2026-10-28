@@ -1,0 +1,24 @@
+run 17207 | b13600 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 10.9 t/s | prompt 200.1 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-20 12:44:24
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition` with separator: `min_items == 0 ? 0 : min_items - 1`. If `min_items` is 0, then result is `(item (sep item)*)?` — looks right.
+   - Actually wait, there's a potential issue: if `min_items == 0 && max_items == 1` with a separator, it returns `item_rule + "?"` — correct.
+   - Edge case: `max_items == 0` returns "" — but if `min_items > 0` and `max_items == 0`, that's contradictory schema; returning "" silently accepts... Actually returning "" means empty rule which matches empty string. Hmm, if min_items > 0 and max_items == 0, the schema is unsatisfiable, but the code returns "" which matches empty. That's a minor correctness issue but arguably acceptable.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead.
+   - `decimals_left = 16` default. The recursion for negative numbers: `build_min_max_int(-max_value, -min_value, ...)` — careful with `min_value == std::numeric_limits<int64_t>::min()`: negating INT64_MIN is UB! Let me check: in the `has_min && has_max` branch, if `min_value < 0 && max_value < 0`, then `min_value != INT64_MIN` because `has_min` is true means `min_value != INT64_MIN`. So `-min_value` is safe. `-max_value`: `has_max` true means `max_value != INT64_MAX`, and max_value < 0 so `-max_value` is fine. OK.
+   - In the `has_min` branch with `min_value < 0`: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. Here `-min_value` where min_value != INT64_MIN (since has_min). Safe.
+   - In `has_max` branch with `max_value < 0`: `build_min_max_int(-max_value, INT64_MAX, ...)`. `-max_value` where max_value != INT64_MAX and max_value < 0. Safe. But wait — what if `max_value == INT64_MIN`? Then `-max_value` is UB! `has_max` is true means `max_value != INT64_MAX`, but max_value could be INT64_MIN. `-INT64_MIN` is undefined behavior (well, in C++20 it's defined as wrapping, but before that UB). Actually with `max_value = INT64_MIN`, `-max_value` overflows. Hmm, is that reachable? `has_max` branch is entered when `has_min` is false, i.e., `min_value == INT64_MIN`, and `has_max` true, i.e., `max_value != INT64_MAX`. If `max_value < 0`, e.g., `max_value = -5`, then `-max_value = 5`, fine. But if `max_value == INT64_MIN`, `-max_value` is UB. That's an edge case: schema with `minimum: INT64_MIN` (or absent) and `maximum: INT64_MIN`. Very unlikely but technically UB. Worth mentioning.
+   - Also `std::stoll(min_s.substr(1))` — if `min_s` is like "1000000000000000000" (19 digits), stoll handles up to INT64_MAX = 9223372036854775807. If min_value is e.g. 999999999999999999, substr(1) = "99999999999999999" which fits. But what if min_value = INT64_MAX? Then min_s = "9223372036854775807", substr(1) = "223372036854775807" fits. OK. But wait — in the `else` branch (min_value > 9), `build_min_max_int(std::stoll(min_s.substr(1)), INT64_MAX, out, less_decimals, false)`.
+---

@@ -1,0 +1,46 @@
+run 19385 | rc5 | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf | decode 68.76 t/s | prompt 1495.7 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-25 08:54:05
+
+We need answer user: "Do a code review of the following source file." They provided partial C++ source file common/json-schema-to-grammar.cpp. Need review. Need likely identify issues, bugs, style, maintainability, correctness, performance, security, etc. Need maybe mention incomplete file. Need analyze code deeply.
+
+We need produce final answer with code review. Need likely include line-by-line or sections. Need consider C++ code. Let's inspect.
+
+File includes headers: json-schema-to-grammar.h, common.h, trie.h, unicode.h. using json = common_json; but not used in shown code? Maybe later.
+
+Functions:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+Potential issues:
+- If max_items == 0 but min_items > 0? returns empty string, invalid grammar? Should maybe throw or return impossible. If min_items > max_items invalid. Need validate.
+- If min_items negative? undefined.
+- If max_items == 1 and min_items == 0 returns item_rule + "?" even if separator? separator ignored? Actually if separator non-empty and min=0 max=1, returns item_rule + "?" before separator branch. That's okay because separator irrelevant for 0/1. But if min=1 max=1 and separator non-empty? It goes to separator branch: result = item_rule + " " + build_repetition(..., min_items-1=0, max_items-1=0). build_repetition with max=0 returns "" => result = item_rule + " " + "" => trailing space. Then min_items !=0 so returns "item_rule " with trailing space. That's likely bug. For min=1 max=1 with separator, should just item_rule. Need handle max_items == min_items == 1 before separator or adjust.
+- If min_items == 0 and max_items == 1 with separator returns item_rule + "?" okay.
+- If min_items == 0 and max_items == 0 returns "" due max=0. okay.
+- If min_items == 1 and max_items == 1 with separator: bug trailing space.
+- If min_items > max_items? e.g. min=2 max=1: max !=0, min=0? no. separator empty: returns item_rule{2,1} invalid. Should validate.
+- If max_items == std::numeric_limits<int>::max() and min_items == 0? returns item_rule* if separator empty. If separator non-empty: has_max false, max_items - 1? has_max ? max_items -1 : max_items => max_items (INT_MAX). build_repetition with max_items INT_MAX and min_items maybe 0? Could overflow? max_items - 1 not executed if has_max false. But if has_max true and max_items = INT_MAX? has_max false. If max_items = INT_MAX and min_items >0? has_max false. okay. But if max_items = INT_MAX and min_items = 0? okay. If max_items = INT_MAX and min_items = 1? returns item_rule+? no separator. If separator non-empty: result = item_rule + " " + build_repetition(..., min_items-1, max_items) because has_max false. If min_items=1, recursive min=0 max=INT_MAX. If max_items=INT_MAX and min_items=0, recursive returns item_rule*? Wait separator branch: build_repetition("(" + sep + " " + item_rule + ")", 0, INT_MAX). In recursive, has_max false, min=0 max=INT_MAX
+---

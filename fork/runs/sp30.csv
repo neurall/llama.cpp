@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+x1l2,qn_iq4xs,1,pf60k1k,64,"--moe dense-split=1,xsplit-dense=1,state-late=2 -b 131072 -ctxcp 0",--keep-loops
+x1l0,qn_iq4xs,1,pf60k1k,64,"--moe dense-split=1,xsplit-dense=1 -b 131072 -ctxcp 0",--keep-loops

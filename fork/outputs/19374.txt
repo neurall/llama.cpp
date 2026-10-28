@@ -1,0 +1,52 @@
+run 19374 | rc5 | pf3k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 415.13 t/s | prompt 19441.9 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-25 08:50:41
+
+The provided source file `common/json-schema-to-grammar.cpp` is a C++ implementation that converts a JSON Schema string into a regular expression (regex) that can be used to parse JSON data that conforms to the schema. The implementation includes several helper functions and a main class `common_chat_schema_converter` that orchestrates the conversion process. Here's a detailed review of the code:
+
+1. **Includes**: The file includes necessary headers for C++ functionality, including `json`, `trie`, `unordered_map`, `unordered_set`, `regex`, and `string`.
+
+2. **Static Constants**:
+    - `MAX_PATTERN_DEPTH`: Defines the maximum depth allowed for regex patterns to prevent infinite recursion.
+    - `NON_LITERAL_SET`: Contains characters that are not valid in literals but are allowed in regex patterns.
+    - `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`: Contains characters that are escaped in regex patterns but not considered special in literals.
+
+3. **Global Variables**:
+    - `_dotall`: A boolean flag that controls whether the dot (`.`) is treated as a special character or as a literal dot.
+    - `_rules`: A map that stores the JSON Schema rules converted into regex patterns.
+    - `_refs_being_resolved`: A set to keep track of references that are being resolved during the conversion process.
+    - `_errors`, `_warnings`: Contain error messages and warnings for invalid or problematic schema rules.
+
+4. **Helper Functions**:
+    - `build_repetition`: Constructs a regex repetition pattern from a JSON Schema rule string.
+    - `build_min_max_int`: Constructs a regex pattern for minimum and maximum integer values.
+    - `build_string_format_rules`: Constructs regex patterns for string formats (e.g., "date-time", "date-string", "time-string").
+    - `parse_rule`: Parses a JSON Schema rule string into a structured format for easier manipulation.
+    - `replacePattern`: Replaces regex patterns in a string according to a given regex and replacement function.
+    - `format_literal`: Formats a literal string by escaping special regex characters.
+
+5. **Main Function**:
+    - `gbnf_format_literal`: Converts a JSON Schema literal into a format that can be used in a Backus-Naur Form (BNF) grammar.
+
+6. **Class `common_chat_schema_converter`**:
+    - The class encapsulates the conversion logic. It has private members to store parsed rules and references being resolved.
+    - The `build_grammar` function is a template function that takes a callback function and options to customize the generated grammar.
+    - The class provides methods to handle errors, warnings, and to format literals.
+
+7. **Overall Design**:
+    - The approach is to convert JSON Schema rules into regex patterns that can be used to validate JSON data.
+    - The use of helper functions like `build_repetition`, `build_min_max_int`, `build_string_format_rules`, and `parse_rule` is consistent with the goal of breaking down complex rules into manageable parts.
+    - The use of `std::unordered_map` and `std::unordered_set` for storing parsed rules and references is efficient for lookups and insertions.
+
+8. **Potential Improvements**:
+    - The code could benefit from more thorough testing, especially with edge cases and complex schemas.
+    - Error handling could be improved. For example, throwing exceptions for invalid inputs instead of returning strings with errors.
+    - The `build_grammar` template function could be made more generic and reusable across different types of grammar rules.
+
+9. **Code Style and Readability**:
+    - The code is generally well-commented, making it easier to understand the purpose of each section.
+    - The use of `std::regex` for regex operations is standard and efficient.
+    - The `replacePattern` function is a good example of applying regular expressions in a controlled manner.
+
+10. **Security Considerations**:
+    - The code does not appear to have any obvious security vulnerabilities, but it's important to note that regex patterns can be complex and potentially dangerous if not properly sanitized or validated.
+
+In summary, the code is a comprehensive solution for converting JSON Schema rules into regex patterns. It demonstrates a structured approach to parsing complex JSON Schema rules and converting them into regex expressions that can be used for validation purposes. The use of templates and helper functions enhances the modularity and re

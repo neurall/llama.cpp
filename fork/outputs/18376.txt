@@ -1,0 +1,160 @@
+run 18376 | relfx1 | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 34.41 t/s | prompt 25.0 t/s | 1010 tokens | args: -np 1 | power 220+280 W | 2026-10-23 12:16:03
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal but complete Tetris game:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+// Tetris game
+</script>
+</body>
+</html>
+```
+
+Let me write a complete, compact Tetris game. I need:
+- 7 tetromino pieces
+- Board (10x20)
+- Movement (left, right, down, rotate)
+- Line clearing
+- Score
+- Game over
+
+Let me write this as compactly as possible while still being functional.
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let b=[],s=0,go=0,p,px,py,pr;
+const P=[
+[[1,1,1,1]],
+[[1,1],[1,1]],
+[[0,1,1],[1,1,0]],
+[[1,1,0],[0,1,1]],
+[[1,0,0],[1,1,1]],
+[[0,0,1],[1,1,1]],
+[[0,1,0],[1,1,1]]
+];
+const C=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#ff0'];
+
+function init(){
+  b=[];
+  for(let i=0;i<H;i++)b.push(new Array(W).fill(0));
+  spawn();
+}
+
+function spawn(){
+  p=Math.floor(Math.random()*7);
+  px=3;py=0;pr=0;
+  if(!valid(px,py,pr))go=1;
+}
+
+function rot(m){
+  let r=[];
+  for(let i=0;i<m[0].length;i++){
+    r.push([]);
+    for(let j=0;j<m.length;j++){
+      r[i].push(m[m.length-1-j][i]);
+    }
+  }
+  return r;
+}
+
+function getShape(){
+  let s=P[p];
+  for(let i=0;i<pr;i++)s=rot(s);
+  return s;
+}
+
+function valid(x,y,r){
+  let s=getShape();
+  for(let i=0;i<s.length;i++){
+    for(let j=0;j<s[i].length;j++){
+      if(s[i][j]){
+        let nx=x+j,ny=y+i;
+        if(nx<0||nx>=W||ny>=H)return false;
+        if(ny>=0&&b[ny][nx])return false;
+      }
+    }
+  }
+  return true;
+}
+
+function merge(){
+  let s=getShape();
+  for(let i=0;i<s.length;i++){
+    for(let j=0;j<s[i].length;j++){
+      if(s[i][j]){
+        let nx=px+j,ny=py+i;
+        if(ny>=0)b[ny][nx]=p+1;
+      }
+    }
+  }
+  clearLines();
+  spawn();
+}
+
+function clearLines(){
+  for(let i=H-1;i>=0;i--){
+    if(b[i].every(v=>v)){
+      b.splice(i,1);
+      b.unshift(new Array(W).fill(0));
+      s+=100;
+      i++;
+    }
+  }
+}
+
+function draw(){
+  x.fillStyle='#000';
+  x.fillRect(0,0,W*S,H*S);
+  // board
+  for(let i=0;i<H;i++){
+    for(let j=0;j<W;j++){
+      if(b[i][j]){
+        x.fillStyle=C[b[i][j]-1];
+        x.fillRect(j*S,i*S,S-1,S-1);
+      }
+    }
+  }
+  // current piece
+  if(!go){
+    let sh=getShape();
+    for(let i=0;i<sh.length;i++){
+      for(let j=0;j<sh[i].length;j++){
+        if(sh[i][j]){
+          x.fillStyle=C[p];
+          x.fillRect((px+j)*S,(py+i)*S,S-1,S-1);
+        }
+      }
+    }
+  }
+  // score
+  x.fillStyle='#fff';
+  x.font='20px monospace';
+  x.fillText('Score:'+s,10,25);
+  if(go){
+    x.fillStyle='#f00';
+    x.font='30px monospace';
+    x.fillText('GAME OVER',50,300);
+  }
+}
+
+function drop(){
+  if(go)return;
+  if(valid(px,py+1,pr))py++;
+  else merge();
+}
+
+function loop
+---

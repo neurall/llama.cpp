@@ -1,0 +1,74 @@
+run 19210 | pre10 | pf60k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.33 t/s | prompt 755.4 t/s | 1000 tokens | args: -np 1 --moe log=w | power 220+280 W | 2026-10-25 04:42:40
+
+Let me analyze the provided source code files to find bugs that need fixing.
+
+Looking at the first file: `common/json-schema-to-grammar.cpp`
+
+Let me examine the code carefully:
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Wait, there's a bug here. When `min_items == 0` and there's a separator, the recursion should be:
+- `item_rule (separator item_rule)*` with optional wrapping
+
+Actually let me think about this. For min_items=0, max_items=N with separator:
+- The result should be `(item (sep item)* )?` — but the code does:
+  - `result = item_rule + " " + build_repetition("(sep item)", 0, max_items - 1)` — wait, `min_items == 0 ? 0 : min_items - 1` gives 0 when min_items == 0. So the inner repetition is `(sep item){0, max-1}`. Then wrapped in `(...)?`. That gives `(item (sep item){0,max-1})?` which is correct for min=0.
+  
+- For min_items=1, max_items=N: `result = item + " " + build_repetition("(sep item)", 0, max-1)` — wait, `min_items == 0 ? 0 : min_items - 1` gives `min_items - 1 = 0`. So inner is `(sep item){0, max-1}`. Result: `item (sep item){0,max-1}`. That's correct for min=1, max=N.
+
+Hmm wait, but for min_items=2, max_items=N: inner repetition should be `(sep item){1, max-1}`. The code gives `min_items - 1 = 1`. Correct.
+
+But wait — there's a subtle bug: when `min_items == 0` and `max_items` is finite, e.g. min=0, max=2: result = `item (sep item){0,1}` wrapped in `(...)?`. That's `(item (sep item){0,1})?` — correct.
+
+Hmm, but what about when min_items == 0 and max_items == 1? The early return handles `min_items == 0 && max_items == 1` returning `item_rule + "?"`. But that's only when separator is empty... wait no, the early return happens before the separator check. So for min=0, max=1 with a separator, it returns `item?` which is correct (no separator needed for a single item).
+
+OK so `build_repetition` looks fine. Let me compare with the original llama.cpp code:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";

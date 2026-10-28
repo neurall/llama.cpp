@@ -1,0 +1,62 @@
+run 19591 | deep-seek | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.77 t/s | prompt 122.0 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-26 10:50:28
+
+The user wants the smallest HTML Tetris game. Let me make a compact but actually good Tetris in a single HTML file. "Smallest" — but I don't want to just dump 10 lines of minified mush. I can make it genuinely small in source while feeling crafted: nice rendering, ghost piece, next piece, score, hold, level, key hints, subtle motion.
+
+Let me balance: the ask is "smallest html tetris game". I'll deliver a compact single-file game — small source, but polished. I'll aim for something like ~100 lines that's readable-ish but dense, with real polish: canvas rendering, 7-bag randomizer, wall kicks (simplified), ghost piece, next queue, hold, score/lines/level, pause, game over, keyboard + touch.
+
+Let me write it tight but complete.
+
+Design: dark background, canvas, side panel with score. Keep it minimal but with a bit of character — a monospace display face paired with a readable body face. For a tiny terminal-ish game, a pixel display font fits the subject perfectly. Let's use "Press Start 2P" for the logo/labels and "Space Grotesk" for body text. That's a nice pairing and reads well.
+
+But "smallest" — adding a font link adds bytes. I'll include one Google Fonts link; it's small. Actually let me keep it lean: one link tag with both families.
+
+Let me write the game compactly.
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0b0d12;--p:#151922;--ink:#e8ecf4;--dim:#6b7488;--acc:#4ad6b4}
+*{box-sizing:border-box;margin:0}
+body{background:radial-gradient(1200px 800px at 70% -10%,#1a2030,#0b0d12 60%);color:var(--ink);font-family:"Space Grotesk",system-ui;display:grid;place-items:center;min-height:100vh;overflow:hidden}
+...
+</style>
+```
+
+Game logic compact:
+
+```js
+const W=10,H=20,S=26;
+```
+
+Use canvas with devicePixelRatio.
+
+Piece definitions via rotation matrices or bit tricks. Compact approach: define shapes as arrays of 4x4 bitmaps per rotation? That's big. Alternative: use the classic approach with a single number per tetromino and rotate coordinates.
+
+Compact classic trick:
+```js
+const P=[,[15],[12,3],[7,1,12,3],[3,3],[7,3,1,12],[6,3,3,6],[3,6,1,3]];
+```
+Hmm, that's the old JS13k approach. Let me use a cleaner approach: define each piece as a set of 4 cells in a bounding box, rotate within box.
+
+```js
+const T=[[0,1,2,3],[0,1,2,3],...]
+```
+
+Simplest readable compact: define pieces as strings per rotation state? 7 pieces × 4 rotations × 4 chars = a lot but explicit.
+
+Better: define base shape coords and rotate around a pivot.
+
+```js
+const S='IOTSZJ'.split(''),
+B={I:[[0,1],[1,1],[2,1],[3,1]],O:[[0,0],[1,0],[0,1],[1,1]],T:[[0,0],[1,0],[2,0],[1,1]],...}
+```
+Rotation for non-O: rotate around center of bounding box. For 3-wide boxes, rotate (x,y)->(2-y? ) hmm.
+
+Standard approach: for each piece use NxN matrix rotation where N=3 for T,S,Z,J,L, N=4 for I, N=2 for O. Rotate: (x,y) -> (N-1-y, x).
+
+So store N per piece.
+
+```js
+const P={I:[4
+---

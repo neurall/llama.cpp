@@ -1,0 +1,12 @@
+run 18828 | ncard4 | pf8k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 21.97 t/s | prompt 1014.8 t/s | 64 tokens | args: -np 1 --moe dense-split=1 | power 220+280 W | 2026-10-23 22:31:09
+
+The file appears to be truncated - it ends mid-function. Let me review what's there so far.
+
+Let me do a thorough code review of this C++ file.
+---
+# Code Review: `common/json-schema-to-grammar.cpp`
+
+## Critical Issues
+
+### 1. File is truncated
+The file ends

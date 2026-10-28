@@ -1,0 +1,35 @@
+run 18286 | splitfix | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 13.19 t/s | prompt 52.6 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 09:40:48
+
+Let me analyze this code carefully. The user wants a code review of the source file(s). Actually, they've provided two files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated). Let me do a thorough code review.
+
+Let me go through the first file `json-schema-to-grammar.cpp`:
+
+1. **`build_repetition` function**:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- Note: `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, we return "" — fine.
+- Potential issue: if `min_items > 0` and `max_items == 0`, this is contradictory (min > max), and returns "" silently. That may be acceptable.
+- The separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If `max_items == 1` and `min_items == 1`, then inner call gets min=0, max=0 → returns "" → result = item_rule + " " + "" = item_rule + " ". Hmm, that would produce `item_rule " "` with trailing space? Let's check: `result = item_rule + " " + build_repetition(...)`. If inner returns "", result is `item_rule + " "` — trailing space in rule. Actually wait, for max_items == 1, min_items == 1: inner build_repetition with min=0, max=0 returns "". So result = `item_rule ` with trailing space. That's a minor formatting bug — trailing whitespace in grammar rule. Actually wait, let me re-check: `max_items == 0` check happens first in the inner call, returns "". So yes, trailing space. Hmm, but actually is that a real scenario? min_items=1, max_items=1 with separator. The result would be `item_rule ` — with a trailing space. In GBNF, trailing space in a rule definition... the rule would be `foo ::= bar ` — trailing space might be harmless or might be parsed as part of the rule. Actually in GBNF parsing, trailing whitespace is typically ignored. But it's sloppy. Let me double check the logic: `build_repetition(item_rule, 1, 1, sep)`:
+  - has_max = true (1 != INT_MAX)
+  - max_items != 0
+  - min_items == 0 && max_items == 1? No (min is 1)
+  - separator_rule not empty
+  - result = item_rule + " " + build_repetition("(sep item)", 0, 0)
+    - inner: has_max = true; max_items == 0 → return ""
+  - result = item_rule + " "
+  - min_items != 0, so no "?" appended.
+  - Result: `item_rule ` — trailing space. Yes, bug (cosmetic).
+
+Actually wait — is it? Let me re-read. Hmm, actually for min=1, max=1 with separator, the correct grammar is just `item_rule`. The code produces `item_rule ` (with trailing space). Minor.
+
+2. **`build_min_max_int`**: This is complex recursive regex-building for integer ranges. Uses `std::function` for recursion — fine but has overhead. Potential issues:
+   - `decimals_left` default 16, decrements. `less_decimals = std::max(decimals_left - 1, 1)`.
+   - In the `has_min && has_max` branch with negative values: `build_min_max_int(-max_value, -min_value, ...)`. If `min_value == INT64_MIN`... wait, has_min means min_value != INT64_MIN. If both negative: `-max_value` where max_value != INT64_MAX (has_max), so -max_value is fine unless max_value == INT64_MIN? No wait, max_value < 0 here, so max_value != INT64_MAX. `-max_value` could overflow if max_value == INT64_MIN? max_value < 0 and max_value != INT64_MAX. If max_value == INT64_MIN, then -max_value overflows (UB). Hmm: min_value < 0 && max_value < 0. max_value could be INT64_MIN? If max_value == INT64_MIN and min_value < 0... then has_max is true (max != INT64_MAX). -max_value = -INT64_MIN overflows → UB
+---

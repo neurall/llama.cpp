@@ -1,0 +1,58 @@
+run 17881 | inifix6 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.06 t/s | prompt 19.9 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-10-22 17:20:32
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count. This is an explicit user request that overrides my usual preference for elaborate visuals. I should honor the request: make it as small as possible while still being a genuinely playable Tetris.
+
+Let me think about what "smallest" means. Single HTML file, minimal bytes. I should aim for a compact but complete Tetris: falling pieces, rotation, movement, line clearing, score, game over. Keyboard controls.
+
+Let me try to write a really compact Tetris. Classic minimal Tetris implementations exist in ~few hundred bytes of JS. Let me craft one carefully.
+
+Approach: canvas rendering, a grid stored as a 2D array or a flat array. Pieces defined compactly.
+
+Let me design:
+
+- Canvas 200x400 or so, cell size 20 → 10 cols, 20 rows.
+- Board array `b` of 200 cells (0 or color index).
+- Pieces: use a compact encoding. A common trick: represent each tetromino as a set of coordinates in a 4x4 or via bit patterns.
+
+A very compact known approach: define pieces as arrays of rotations where each rotation is a string of offsets, or use the "each piece is 4 cells" with rotation via a transformation.
+
+One classic ultra-compact trick: store pieces as arrays of 4 numbers where each number encodes x,y of each block relative to origin, and rotation is done by (x,y) → (y, -x) or similar. But bounding-box rotation with wall kicks is complex.
+
+Simpler compact approach: precompute all rotations as strings. E.g., pieces as arrays of arrays of [x,y] pairs.
+
+Even more compact: use a string-based representation. Something like:
+
+```js
+P=[[1,1,1,1],[...]] // I piece rows
+```
+
+Alternative well-known minimal tetris (there's a famous one in a tweet). Let me just write my own and compress.
+
+Let me think about the game loop:
+
+- `d` = drop interval; use setInterval or requestAnimationFrame with timestamp.
+- Gravity: every N ms, move piece down; if collision, lock, spawn next, clear lines.
+- Controls: left/right/down move, up rotate.
+
+Collision function: check each cell of piece at position.
+
+Piece representation: I'll use a compact scheme. Each tetromino rotation can be encoded as a list of cell offsets. To keep it small, I can encode pieces as strings of digits.
+
+Idea: represent each rotation shape as a 16-bit-ish pattern in a 4x4 box encoded as a 16-character binary string, then render by iterating 4x4. That's compact-ish.
+
+Even better: encode each piece's rotations as arrays of numbers where each number's binary encodes the 4x4 grid. E.g., I piece horizontal = 0b1111 in row 0 → value 0xF000 (if 4 bits per row, 16 bits total). Then drawing: for i in 0..15, if bit set, fill cell at (x + i%4, y + i/4 | 0).
+
+Rotation: rotating a 4x4 encoded pattern is doable via bit manipulation but messy. Precompute all rotations instead: 7 pieces × up to 4 rotations. Store as one flat array of 16-bit numbers. Total ~28 numbers. Encode as a compact string? Could use base-36 or just literal numbers.
+
+Let me define shapes with 4x4 grids (16 bits each):
+
+Using row-major, bit index = row*4 + col, with bit 0 = top-left or bit 15... Let me pick: bit (r*4+c), value = 1<<(r*4+c).
+
+I piece:
+- Horizontal: row 1 (or row 0): cells at c=0..3 → bits 0,1,2,3 → 0x000F (if bit0 = r0c0). Actually let me use row 1 for nicer spawn: bits 4,5,6,7 → 0x00F0.
+- Vertical: col 2: bits r=0..3, c=2 → 1, 1<<4+2=... bits: 1<<2, 1<<6, 1<<10, 1<<14 → 0x4444.
+
+O piece: 2x2 block. In 4x4: rows 1-2, cols 1-2 → bits 5,6,9,10 → 0x0660. Same for all rotations (only need 1).
+
+
+---

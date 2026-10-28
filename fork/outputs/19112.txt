@@ -1,0 +1,74 @@
+run 19112 | pre6 | pf60k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 22.62 t/s | prompt 776.1 t/s | 1000 tokens | args: -np 1 --moe log=w | power 220+280 W | 2026-10-25 02:16:38
+
+<think>The user wants me to find and fix bugs in this large C++ source code. Let me carefully analyze both files.
+
+Let me go through the code systematically looking for bugs.
+
+**File 1: common/json-schema-to-grammar.cpp**
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps in `(...)?`. But when `min_items > 0`, the first item is always required. Let me check the logic more carefully.
+
+Actually, looking at the `build_repetition` function with separator:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+if (min_items == 0) {
+    result = "(" + result + ")?";
+}
+```
+
+When `min_items == 0`, the first item is optional (wrapped in `(...)?`), and the repetition starts from 0. That seems correct.
+
+When `min_items == 1`, the first item is required, and the repetition starts from 0 (min_items - 1 = 0). That seems correct.
+
+When `min_items == 2`, the first item is required, and the repetition starts from 1 (min_items - 1 = 1). That seems correct.
+
+2. In `build_min_max_int`, let me check the `uniform_range` lambda. It's defined as a `std::function` but captures `out` by reference. The `out` is a `std::stringstream &`. This should be fine.
+
+3. In `_pattern_to_rule`, the `join_seq` function returns `std::make_pair(string_join(results, " "), false)`. But `results` contains strings that are either quoted literals or rule references. The `false` means it's not a literal. This seems correct.
+
+4. In `_pattern_to_rule`, when handling `{` (curly brackets), the code does:
+```cpp
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+```
+But `sub` was already modified if `!sub_is_literal` - it was replaced with `sub_id`. So when `sub_is_literal` is true, `sub` is the original literal. When `sub_is_literal` is false, `sub` is now `sub_id`. The ternary `sub_is_literal ? "\"" + sub + "\"" : sub` correctly handles both cases. This seems fine.
+
+5. In `_pattern_to_rule`, the `to_rule` lambda:
+```cpp
+auto to_rule = [&](const literal_or_rule & ls) {
+    auto is_literal = ls.second;
+    auto s = ls.first;
+    return is_literal ? "\"" + s + "\"" : s;
+};
+```
+This wraps literals in quotes. Seems correct.
+
+6. In `_not_strings`, the function builds a rule that matches a JSON string that is none of the provided strings. Let me check the logic... It uses a trie. The `rejects` string accumulates characters that should be rejected. The `[^"rejects]` part rejects those characters. This seems correct.
+
+7. In `_resolve_ref`, the function resolves a `$ref`. It checks if the ref is already being resolved (to handle circular refs). Seems correct.
+
+8. In `_build_object_rule`, the function builds an object rule with required and optional properties. Let me check the logic for optional properties...
+
+The `get_recursive_refs` function builds alternatives for optional properties. When `first_is_optional` is true, it adds `?` or `*` to the first key. When false, it doesn't. This seems correct.
+
+9. In `visit`, for `KIND_STRING` with `min_length` or `max_length`:
+```cpp
+if (str.min_length > 0 || str.max_length >= 0) {
+    std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+    int max_len = str.max_length < 0 ? std::numeric_limits<int>::max() : str.max_length;
+    return _add_rule(rule_name, "\"\\\"\" " + build_repetition(char_rule, str.min_length, max_len) + " \"\\\"\"");
+}
+```
+This seems correct.
+
+10. In `visit`, for `KIND_INTEGER`:
+```cpp
+if (i.minimum == std::numeric_limits<int64_t>::min() && i.maximum == std::numeric_limits<int64_t>::max()) {
+    return _visit_primitive(rule_name, "integer");
+}
+```
+This checks if both min and max

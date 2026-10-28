@@ -1,0 +1,4 @@
+run 17314 | stock-b11787-official | edit4c | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 290.84 t/s | prompt 21604.0 t/s | 15 tokens | args: -c 4096 | power ? W | 2026-10-21 12:14:00
+
+<|im_end|>
+<|im_start|>assistant

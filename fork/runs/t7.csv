@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+glmm-i,glm,2,pf12k1k,128,--moe margin_mb=800,
+mimom-i,mimo,2,pf12k1k,128,--moe margin_mb=800,
+q38m-i,qwen38,2,pf12k1k,128,--moe margin_mb=800,
+q36rm-i,qwen36,2,pf12k1k,128,--moe sim-vram=3000 --moe margin_mb=800,

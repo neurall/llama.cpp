@@ -1,0 +1,112 @@
+run 17373 | iq3sw | tetrisc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 393.63 t/s | prompt 148.0 t/s | 1004 tokens | args: -np 1 -c 1024 | power ? W | 2026-10-21 12:43:05
+
+Creating a fully functional Tetris game from scratch in HTML, CSS, and JavaScript is quite involved and goes beyond a simple response. However, I can guide you through the basics of how you might start building a simple Tetris game using HTML, CSS, and JavaScript. This will be a very basic version to get you started.
+
+### HTML
+
+First, let's set up the basic structure of our game.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tetris Game</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        .tetris-container {
+            width: 400px;
+            height: 400px;
+            position: relative;
+            overflow: hidden;
+        }
+        .tetris-block {
+            width: 50px;
+            height: 50px;
+            position: absolute;
+        }
+    </style>
+</head>
+<body>
+    <div class="tetris-container">
+        <!-- This will be filled by the Tetris logic -->
+        <div class="tetris-block"></div>
+        <div class="tetris-block"></div>
+        <div class="tetris-block"></div>
+        <div class="tetris-block"></div>
+        <div class="tetris-block"></div>
+    </div>
+    <script src="tetris.js"></script>
+</body>
+</html>
+```
+
+### CSS
+
+The CSS is minimal and mainly for centering the game in the browser window.
+
+```css
+body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    background-color: #f0f0f0;
+}
+```
+
+### JavaScript (Using `requestAnimationFrame` for animation)
+
+This is a very basic implementation using `requestAnimationFrame` for the game loop.
+
+```javascript
+document.addEventListener('DOMContentLoaded', () => {
+    const tetrisBlockSize = 50;
+    const gridSize = 400;
+    const blockCount = gridSize * gridSize;
+    const blockArray = new Array(blockCount).fill(0);
+
+    const draw = () => {
+        for (let i = 0; i < blockCount; i++) {
+            const x = (i % gridSize) * tetrisBlockSize;
+            const y = Math.floor(i / gridSize) * tetrisBlockSize;
+            const block = document.createElement('div');
+            block.classList.add('tetris-block');
+            block.style.left = `${x}px`;
+            block.style.top = `${y}px`;
+            document.body.appendChild(block);
+            blockArray[i] = block;
+        }
+    };
+
+    const moveBlock = (dx, dy) => {
+        for (let i = 0; i < blockCount; i++) {
+            const x = (i % gridSize) * tetrisBlockSize;
+            const y = Math.floor(i / gridSize);
+            const block = document.getElementById(`block${i}`);
+            const newX = x + dx;
+            const newY = y + dy;
+            if (newX >= 0 && newX < gridSize && newY >= 0 && newY < tetrisBlockSize) {
+                block.style.left = `${newX}px`;
+                block.style.top = `${newY}px`;
+            } else {
+                block.style.left = `${x}px`;
+                block.style.top = `${y}px`;
+            }
+        }
+    };
+
+    const rotate = () => {
+        for (let i = 0; i < blockCount; i++) {
+            const block = document.getElementById(`block${i}`);
+            const angle = Math.atan2(block.offsetHeight, block.offsetWidth);
+            const newX = block.offsetLeft

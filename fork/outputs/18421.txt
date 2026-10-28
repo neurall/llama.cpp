@@ -1,0 +1,21 @@
+run 18421 | relfx1 | pf12k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 55.02 t/s | prompt 1537.8 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-23 12:47:58
+
+We need answer user's request: "Do a code review of the following source file." They provided two files? Actually content includes // file: common/json-schema-to-grammar.cpp then later // file: common/arg.cpp. They say source file singular but pasted two files concatenated. Need review. Need likely identify issues, bugs, style, security, correctness, performance. Need be thorough. Need maybe note second file truncated? It ends at static bool spec_types_is_default... incomplete. Need review both? Could say provided content appears to contain two files and second is truncated. Need focus on visible code. Need maybe not rewrite entire code but code review. Need include high-level, correctness, maintainability, performance, security, tests. Need maybe mention C++ issues: static initialization order? regex statics? global mutable maps? exceptions? recursion depth? integer overflow? signed/unsigned? unsafe casts? resource? Windows? etc.
+
+Need analyze code deeply.
+
+First file json-schema-to-grammar.cpp:
+- Converts JSON schema to GBNF grammar.
+- Potential issues:
+  - build_repetition: if max_items == 0 returns empty string. But if min_items >0 and max_items==0 invalid schema? Should maybe error. If min_items > max_items? Not validated. If min_items negative? Could produce weird. If max_items < min_items? Could produce invalid repetition. If min_items == 0 && max_items == 1 returns item_rule + "?" even with separator? But if separator_rule non-empty and max=1, min=0, returns item_rule? Wait code: if min_items == 0 && max_items == 1 return item_rule + "?"; before separator handling. For array with separator and max_items=1, min=0, returns item_rule? Actually item_rule + "?" no separator, okay because only one item no separator. If min=1 max=1 with separator returns item_rule + "{1,}"? Let's see: has_max true, min=1 max=1, separator non-empty: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); min=1 => inner min=0 max=0. build_repetition with max=0 returns ""; result = item_rule + " " + "" => trailing space? Then if min=0 no. So returns "item " with trailing space. In grammar maybe okay? But could be malformed? For min=1 max=1 with separator, expected just item_rule. The code returns item_rule + " " + empty. In GBNF trailing space maybe okay? But if used inside array: "\"[\" space " + result + " space \"]\"" => "\"[\" space item_rule space space \"]\"" maybe double space? GBNF space between tokens maybe okay? But could be ugly. If max_items=1 min=1, should return item_rule. If min=0 max=1 with separator returns item_rule? Actually returns item_rule + "?" before separator, okay. If min=0 max=0 returns empty. If min=0 max=1 with separator and item_rule maybe okay.
+  - build_repetition with separator and max_items=0? returns empty before separator. If min=0 max=0 okay. If min>0 max=0 invalid.
+  - build_repetition with max_items = numeric_limits<int>::max() and min_items=0? returns item_rule + "*". Good.
+  - For separator and max_items=1 min=0 returns item_rule + "?" but if item_rule is a rule name? okay.
+  - For separator and max_items=1 min=1 returns trailing space. Could be bug.
+  - For separator and max_items=2 min=0: result = item + " " + build_repetition("(sep item)", 0,1) => item (sep item)?; if min=0 wrap (result)? => (item (sep item)?)? This matches empty or item or item sep item. Good.
+  - For min=2 max=2: result = item (sep item){1,1}; good.
+
+- build_min_max_int:
+  - Recursive, decimals_left default 16. Potential infinite recursion? Need inspect.
+  - uniform_range uses string_repeat, string_view. It assumes from/to same length? Called with min_s and max_s possibly different lengths? In has_min&&has_max loop: for digits from min_digits to max_digits-1: uniform_range(min_s, string_repeat("9", digits)); min_s = "1" + zeros(digits). Here from and to same length? min_s length digits? Initially min_s length min_digits, to length digits. If min_digits < digits? Wait loop: for (auto digits
+---

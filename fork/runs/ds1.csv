@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+glmdh-i,glm,2,pf12k1k,128,--moe dense-host=1,
+mimodh-i,mimo,2,pf12k1k,128,--moe dense-host=1,
+q38dh-i,qwen38,2,pf12k1k,128,--moe dense-host=1,

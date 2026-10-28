@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+glm35-i-auto,glm35,1,pf12k1k,1024,,
+glm35-i-one,glm35,1,pf12k1k,1024,--moe dense-split=one,

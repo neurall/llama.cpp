@@ -1,0 +1,106 @@
+run 19525 | um6g | pf60k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.82 t/s | prompt 233.0 t/s | 1000 tokens | args: -np 1 --moe dense-split=0 | power 220+280 W | 2026-10-25 17:34:09
+
+Let me analyze the provided source code to find bugs that need fixing.
+
+Looking at the first file `common/json-schema-to-grammar.cpp`:
+
+1. In `build_repetition`, the logic looks mostly fine.
+
+2. In `build_min_max_int`, there's a `std::function` used with `uniform_range` - that's fine.
+
+3. Looking at `_visit_pattern` - the `unsupported_pattern` catch reverts rules via `_rules = std::move(rules_snapshot);` - wait, `rules_snapshot` is a copy (`auto rules_snapshot = _rules;`), so `std::move` on it is fine.
+
+4. In `_pattern_to_rule`, there's handling of `{` curly brackets. Let me check the `build_repetition` call:
+```cpp
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+```
+Hmm, wait. In the original llama.cpp code, this is:
+```cpp
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+```
+Actually wait, in the original code from llama.cpp (json-schema-to-grammar.cpp), the pattern handling for `{` is:
+
+```cpp
+} else if (c == '{') {
+    std::string curly_brackets = std::string(1, c);
+    i++;
+    while (i < length && sub_pattern[i] != '}') {
+        curly_brackets += sub_pattern[i];
+        i++;
+    }
+    if (i >= length) {
+        throw unsupported_pattern("unterminated curly brackets");
+    }
+    curly_brackets += '}';
+    i++;
+    auto nums = string_split(curly_brackets.substr(1, curly_brackets.length() - 2), ",");
+    int min_times = 0;
+    int max_times = std::numeric_limits<int>::max();
+    if (nums.size() != 1 && nums.size() != 2) {
+        throw unsupported_pattern("wrong number of values in curly brackets");
+    }
+    try {
+        if (nums.size() == 1) {
+            min_times = max_times = std::stoi(nums[0]);
+        } else {
+            if (!nums[0].empty()) {
+                min_times = std::stoi(nums[0]);
+            }
+            if (!nums[1].empty()) {
+                max_times = std::stoi(nums[1]);
+            }
+        }
+    } catch (const std::logic_error &) {
+        throw unsupported_pattern("invalid number in curly brackets");
+    }
+    if (seq.empty()) {
+        throw invalid_pattern("nothing to repeat");
+    }
+    auto &last = seq.back();
+    auto &sub = last.first;
+    auto sub_is_literal = last.second;
+
+    if (!sub_is_literal) {
+        std::string & sub_id = sub_rule_ids[sub];
+        if (sub_id.empty()) {
+            sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+        }
+        sub = sub_id;
+    }
+    seq.back().first = build_repetition(
+        sub_is_literal ? "\"" + sub + "\"" : sub,
+        min_times,
+        max_times,
+        ""
+    );
+    seq.back().second = false;
+}
+```
+
+Hmm wait, there's a subtle bug here. When `sub_is_literal` is false, `sub` is replaced with `sub_id`, but then `seq.back().first = build_repetition(sub_is_literal ? ... : sub, ...)`. Since `sub` was modified in place (it's a reference to `last.first`), `sub` now equals `sub_id`. So `build_repetition(sub, ...)` uses the rule id. That's correct.
+
+But wait — there's a bug: when `sub_is_literal` is true, `sub` is the literal text, and we pass `"\"" + sub + "\""`. But the literal may contain characters that need escaping (like `"` itself, which was already escaped during parsing as `\"`). Actually during parsing, `"` is converted to `\"` in the literal. So wrapping in quotes is fine.
+
+Hmm, but actually there's a real bug in the original llama.cpp code that was fixed at some point. Let me recall... In the original code:
+
+```cpp
+} else if (c == '*' || c == '+' || c == '?') {
+    if (seq.empty()) {
+        throw invalid_pattern("nothing to repeat");
+    }
+    seq.back() = std::make_pair(to_rule(seq.back()) + c, false);
+    i++;
+}
+```
+
+Wait, `to_rule(seq.back())` — if `seq.back()` is a literal, `to_rule` returns `"\"" + s + "\""`.

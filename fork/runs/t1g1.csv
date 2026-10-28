@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+q38g1-i,qwen38,2,pf12k1k,128,,
+q38g1-o,qwen38,2,tetrisc,1024,,
+glmg1-i,glm,2,pf12k1k,128,,
+glmg1-o,glm,2,tetrisc,1024,,
+mimog1-i,mimo,2,pf12k1k,128,,
+mimog1-o,mimo,2,tetrisc,1024,,

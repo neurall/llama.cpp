@@ -1,0 +1,22 @@
+run 19091 | spass33 | pf8k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 27.9 t/s | prompt 1024.8 t/s | 1024 tokens | args: -np 1 --moe dense-split=1,split-experts=0 | power 220+280 W | 2026-10-24 23:30:22
+
+Let me carefully review this source file for bugs, style issues, potential problems, and other concerns.
+
+Let me go through the file systematically.
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?`. But when `min_items > 0`, the separator-based repetition doesn't handle the case where `min_items == 0` correctly for the recursive call. Let me trace through:
+     - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`
+     - When `min_items == 0`, the recursive call gets `min_items = 0`, which could return `""` if `max_items == 0`. But `max_items` was already checked to not be 0 at the top. However, `has_max ? max_items - 1 : max_items` — if `max_items == 1` and `has_max`, then `max_items - 1 = 0`, and the recursive call would return `""`. So for `min_items=0, max_items=1` with a separator, we'd get `item_rule + " " + ""` = `item_rule + " "`, then wrapped in `(...)?`. That seems correct — 0 or 1 item.
+   - Actually wait, `min_items == 0 && max_items == 1` is handled early: `return item_rule + "?";`. So that case is fine.
+   - What about `min_items == 0, max_items == 2` with separator? The recursive call gets `min_items=0, max_items=1`, which returns `item_rule + "?"`. So result = `item_rule + " " + "(sep item)?"`, then wrapped in `(...)?`. That gives 0 or 1 or 2 items. Seems correct.
+
+2. **`build_min_max_int` function:**
+   - This is complex. Let me look for issues.
+   - `uniform_range` lambda captures `out` by reference — fine.
+   - The `to_reached` variable is declared inside the `if (sub_len > 0)` block but used across branches — it's initialized to `false` each time, which is correct.
+   - When `from[i] < to[i] - 1` is false (i.e., `from[i] == to[i] - 1`), the `to_reached` stays false, and then the `if (!to_reached)` block adds the `to[i]` case. But wait — if `from[i] == to[i] - 1`, then `from[i] + 1 == to[i]`, so the `digit_range(from[i] + 1, to[i] - 1)` would be `digit_range(to[i], to[i] - 1)` which is an empty/invalid range. But that branch is guarded by `from[i] < to[i] - 1`, so it's not reached. Good.
+   - Actually, let me re-read: `if (from[i] < to[i] - 1)` — this means `from[i] + 1 < to[i]`, so there's at least one digit between `from[i]+1` and `to[i]-1`. If `from[i] == to[i] - 1`, then `from[i] + 1 == to[i]`, so `from[i] < to[i] - 1` is false, and we skip that block. Then `to_reached` is false, and we add `digit_range(to[i], to[i])` which is `digit_range(to[i], to[i])`. But wait, `from[i] == to[i] - 1`, so `to[i] == from[i] + 1`. The `to_reached` block adds `digit_range(to[i], to[i])` — that's correct for the case where `from[i] == to[i] - 1`.
+   - Hmm, but what if `from[i] == to[i]`? Then the while loop at the top would have consumed that character. So `from[i] != to[i]` when we reach this point. And since `from < to` lexicographically (they're numeric strings), `from[i] < to[i]`. So `to[i] - 1 >= from[i]`, meaning `from[i] <= to[i] - 1`.
+   - If `from[i] == to[i] - 1`: the `from[i] < to[i] - 1` check is false, so we skip the middle block. `to_reached` is false. We add `
+---

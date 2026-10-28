@@ -1,0 +1,116 @@
+run 19253 | pre13 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.81 t/s | prompt 617.9 t/s | 1000 tokens | args: -np 1 --moe log=w | power 220+280 W | 2026-10-25 06:09:33
+
+Let me analyze this code carefully. The user wants me to return the completed source with bugs fixed. This is a partial file - it's cut off mid-function. I need to complete it.
+
+This is the `json-schema-to-grammar.cpp` file from llama.cpp (common directory). Let me recall the actual implementation from llama.cpp to reconstruct the missing parts.
+
+The file is cut off in the middle of `_pattern_to_rule`, specifically in the `transform` lambda, right after `results.reserve(ret.size());`.
+
+Let me recall the actual llama.cpp implementation of `json-schema-to-grammar.cpp`. The current version (as of recent llama.cpp) has this structure:
+
+```cpp
+// file: common/json-schema-to-grammar.cpp
+
+#include "json-schema-to-grammar.h"
+#include "common.h"
+#include "trie.h"
+#include "unicode.h"
+
+#include <algorithm>
+#include <functional>
+#include <limits>
+#include <map>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+using json = common_json;
+
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    ...
+}
+```
+
+Wait, the given code has `build_min_max_int` with `std::function<void(const std::string_view &, const std::string_view &)> uniform_range`. In the actual llama.cpp code, I recall it uses `std::function`. Let me check the actual code from llama.cpp master.
+
+Actually, let me recall the full file from llama.cpp (as of 2024/2025). The file `common/json-schema-to-grammar.cpp`:
+
+```cpp
+// file: common/json-schema-to-grammar.cpp
+
+#include "json-schema-to-grammar.h"
+#include "common.h"
+#include "trie.h"
+#include "unicode.h"
+
+#include <algorithm>
+#include <limits>
+#include <map>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+using json = common_json;
+
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value !=

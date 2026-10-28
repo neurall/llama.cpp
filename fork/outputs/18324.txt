@@ -1,0 +1,62 @@
+run 18324 | ceil1 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 23.22 t/s | prompt 231.8 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-23 10:46:23
+
+Let me carefully review both source files provided.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+Let me go through this systematically.
+
+### build_repetition function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Issues:
+1. When `min_items == 0 && max_items == 1`, it returns `item_rule + "?"` but this doesn't account for `separator_rule`. If there's a separator rule, this is wrong - but actually with max_items == 1, a separator wouldn't be used anyway since there's only one item. So this is fine.
+
+2. When `max_items == 0`, returns empty string. But what if `min_items > 0`? That would be an invalid constraint (min > max). The function silently returns empty string instead of erroring. This could be a bug - if someone specifies min_items=2, max_items=0, it should probably be an error.
+
+3. The separator case: when `min_items == 0`, the result is wrapped in `(...)?`. But the recursive call passes `min_items == 0 ? 0 : min_items - 1`. So for min_items=0, it passes 0 as min. The recursive call with separator will handle it. Let me trace through:
+   - `build_repetition(item, 0, 3, sep)` → `item + " " + build_repetition("(sep item)", 0, 2)` → `item + " " + "(sep item){0,2}"` → then wrapped: `(item (sep item){0,2})?`
+   - This means 0 items: empty, 1 item: `item`, 2 items: `item sep item`, 3 items: `item sep item sep item`. Correct.
+
+4. When `min_items == 1` with separator: `item + " " + build_repetition("(sep item)", 0, max-1)`. For max=1: `item + " " + build_repetition("(sep item)", 0, 0)` → `item + " " + ""` = `item`. Correct.
+
+5. When `min_items == 1` with separator and no max: `item + " " + build_repetition("(sep item)", 0, max)` where max is INT_MAX. The recursive call has separator empty, so it goes to the non-separator branch: `min_items == 0 && !has_max` → `"(sep item)*"`. Result: `item (sep item)*`. Correct.
+
+6. Edge case: `min_items == 0 && max_items == 0` → returns "" (from the max_items==0 check). But this means an empty array is required... actually it means no items at all. For an array with min=0, max=0, the array must be empty. The caller handles this: `"[" space "" space "]"` = `"[" space space "]"`. Hmm, that's `"[" space space "]"` which has two `space` rules. That's a bit odd but probably works.
+
+Wait, actually looking at the array case:
+```cpp
+return _add_rule(rule_name, "\"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\"");
+```
+If build_repetition returns "", we get `"[" space  space "]"` - double space. This is a minor issue but probably harmless since `space` can match zero characters.
+
+Actually wait, `SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"` - this can match empty string? Let me check...
+---

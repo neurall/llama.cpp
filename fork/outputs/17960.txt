@@ -1,0 +1,43 @@
+run 17960 | inifix8 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 53.59 t/s | prompt 59.2 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-10-22 21:56:11
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. But I don't want to stop at the barest playable grid — the best answer honors "smallest" (compact, single file, no dependencies) while still feeling alive and crafted: a nice cabinet-like frame, a subtle layered background, micro-interactions, keyboard feedback, score/level panels, line-clear animation, sound via WebAudio maybe.
+
+Balance: "smallest" means compact code. I'll deliver a genuinely small-footprint implementation (minified-ish but readable), wrapped in a nicely designed shell. I should keep the code reasonably compact — that's the point — but the presentation (page chrome, HUD, typography) can be richer without bloating the game logic much.
+
+Let me design:
+
+- Single HTML file, no external JS libs. Google Fonts for display + body face (allowed — external font link). Pick a distinctive pairing: display "Chakra Petch" or "Press Start 2P" (too cliché pixel?) Hmm. A tetris-ish arcade vibe. Let's use display: "Bungee" or "Archivo Black"? Pair with mono body: "IBM Plex Mono" or "Space Mono". Arcade CRT feel with a strong display face.
+
+Let me pick: display = "Chakra Petch" (700/600) — techy, angular, distinct. Body/UI = "IBM Plex Mono". Or display "Monoton"? Too decorative. I'll go with "Chakra Petch" for display headings and "IBM Plex Mono" for body/HUD numbers. That's a distinctive pairing.
+
+Palette: a CRT arcade cabinet in dark graphite with a layered background: scanlines, a subtle grid, radial glow, and a faint tetromino-pattern texture. For the accents I want the full tetromino rainbow — cyan, yellow, magenta, green, red, blue, orange — since that's the game's own identity, not a single lonely neon accent. Good.
+
+Layout: rather than a generic centered title, open with the thing that IS the game: the playfield itself, front and center-left, with a big vertical "TETRIS" wordmark rotated, HUD stats stacked to the right (score, level, lines, next piece, hold), controls legend below. Left: big title block with huge type contrast.
+
+Features:
+- Canvas-based rendering (smallest code) with grid, ghost piece, next queue (3), hold.
+- Score, level, lines, combo? Keep modest.
+- Keyboard: arrows, Z/X rotate, Space hard drop, C hold, P pause.
+- Touch buttons for mobile? Adds size. Maybe minimal on-screen buttons row — nice for "alive". Could add small touch pad. Keep it compact but include.
+- Sound: tiny WebAudio beeps (few lines).
+- Line clear flash animation, screen shake on hard drop, particle? Keep small: flash rows + shake.
+- Game over overlay with restart.
+- Level speed curve.
+
+Micro-interactions: HUD numbers tick/flash on change, key legend keys light up when pressed, buttons hover, next-piece mini canvases, hold box, scanline flicker, subtle background grid drift.
+
+Scroll reveals: page is mostly one screen; maybe a small "how to play" section below with reveal. Keep it tight — maybe a footer strip with rules and scoring table. Add IntersectionObserver reveal for that.
+
+Code size: I'll write compact but readable JS (~120 lines). The user asked "smallest" so I should mention it's ~X lines / single file, and offer a truly minified variant? Maybe include a note: "minified: one line" — could be nice but risky. I'll deliver the readable-compact version and note the byte count roughly.
+
+Let me write the game logic compactly.
+
+Tetromino definitions using strings or matrices. Compact approach: use SRS-ish rotation via matrices.
+
+```js
+const P={I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+O:[[1,1],[1,1]],
+T:[[0,1,0],[1,1,1],[0,0,0]],
+S:[[0,1,1],[1,1,0],[0,0,0]],
+Z:[[1,1,0],[0,1,1
+---

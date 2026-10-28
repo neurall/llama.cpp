@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+mimo-16k,mimo,2,16k1k,1024,,
+glm-16k,glm,2,16k1k,1024,,
+qni4-4k,qn_iq4xs,2,4k1k,1024,,
+qni4-16k,qn_iq4xs,2,16k1k,1024,,

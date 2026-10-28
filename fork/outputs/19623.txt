@@ -1,0 +1,65 @@
+run 19623 | deep-seek | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.98 t/s | prompt 8.9 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 11:55:19
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. This is one of the rare cases where the user's explicit request overrides my usual preference for polished, elaborate output — they want a golfed Tetris.
+
+Let me think about what "smallest" means here. A single self-contained HTML file with a playable Tetris, as few bytes as possible. I should still make it genuinely playable: move left/right, rotate, soft drop, hard drop maybe, line clearing, game over, score. The classic minimal Tetris implementations (like the famous 229-byte or ~500-byte ones) exist. Let me write my own compact one.
+
+Let me design a compact Tetris:
+
+- Canvas for rendering (or even simpler: use a `<canvas>` with minimal setup).
+- Board: 10x20 array.
+- Pieces: 7 tetrominoes. Compact encoding: store each piece as a set of coordinates, or use the classic trick of encoding rotations via bit manipulation.
+
+A well-known compact approach: represent pieces as 4x4 bit patterns and rotate by transposing. Or use the "each piece is a 2x4 or 3x3 matrix, rotate by swapping indices" trick.
+
+Classic minimal Tetris in JS (like the famous one by Alexey or the code-golfed ones on codegolf.stackexchange). Let me recall a compact representation:
+
+One popular trick: define pieces as arrays of coordinates in a 3x3 or 4x4 grid, and rotation via `(x,y) -> (y, 3-x)` or similar for 4x4, `(x,y)->(y,2-x)` for 3x3.
+
+Another compact trick: encode all 7 pieces as numbers and extract coordinates via bit operations. E.g., each piece = 16-bit number for 4x4 grid; rotation = bit rotation within the 4x4? Actually rotating a 4x4 bit matrix isn't a simple bit rotation, but you can precompute or compute via loops.
+
+A very compact known approach (from the famous "Tetris in 140 bytes" or similar):
+
+```js
+f=n=>[...n+''+n].map(...)  // something
+```
+
+Let me just write my own clean-ish golfed version. Target maybe ~600-900 bytes total including HTML. That's respectable and fully playable.
+
+Plan:
+
+```html
+<body onload="setInterval(f,100)">
+```
+
+Actually let me structure:
+
+```html
+<canvas id=c width=120 height=240></canvas>
+<script>
+...
+</script>
+```
+
+Minimal HTML: browsers auto-create body; canvas can be created in JS too: `c=document.body.appendChild(document.createElement('canvas'))` — but that's longer than just writing `<canvas id=c>`. Actually `<canvas id=c width=99 height=198>` is short. Or even set width/height in JS: `c.width=99`. Hmm, `<canvas id=c>` then `c.width=99;c.height=198` — that's 22 chars in JS vs ` width=99 height=198` = 20 chars in HTML. Similar. Keep HTML attributes.
+
+Keyboard handling: `onkeydown` on document. Keys: arrow left/right/down, up = rotate, space = hard drop? To keep small: left/right/down move, up rotates. Maybe also 'z' rotate other way — skip.
+
+Game loop: setInterval calling tick function every ~100ms? Or use requestAnimationFrame with time check. setInterval is shorter.
+
+Core logic:
+
+Board: `B=[]` 20 rows of 10. Initialize: `B=[...Array(20)].map(_=>Array(10).fill(0))` — golf: `B=Array.from({length:20},_=>Array(10))`? Hmm. Or use a flat array of 200 zeros: `B=Array(200).fill(0)`. Flat array with index `y*10+x` is compact for collision checks and drawing.
+
+Piece representation: I'll use the classic compact encoding. A neat trick: each tetromino can be defined by 4 cells in a 4x4 grid; encode as a 32-bit or use string. 
+
+Known golfed approach: pieces as arrays of [x,y] pairs generated from a compact string. E.g.:
+
+```js
+P="0123 0124 1234..." 
+```
+
+Alternative well-known trick: represent each piece as a 4x4 matrix encoded in a number, rotate by computing transpose. Let me think of the simplest rotation approach.
+
+Simplest: store current piece as array of 4 [x,y]
+---

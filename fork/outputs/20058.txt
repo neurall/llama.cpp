@@ -1,0 +1,37 @@
+run 20058 | fix_scratch_region_serves_only_its_context | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 18.87 t/s | prompt 167.1 t/s | 680 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 18:36:24
+
+We need answer user asks: "Delete the code in this file that is never used." They provided file content. Need identify unused code and provide modified file? Need infer task likely from code review: remove unused functions/variables/includes? Need analyze C++ file. Need produce cleaned version? Need be careful. We need inspect code. It's common/json-schema-to-grammar.cpp. They ask delete code never used. Need identify unused code in this file. We need maybe output file with unused code removed. Need analyze thoroughly.
+
+We have snippet ends mid-function `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` incomplete. The file likely truncated? User pasted partial file? It ends at function opening. Need answer based on provided code. Need identify unused code in this file. Could be from llama.cpp? Let's recall actual file. common/json-schema-to-grammar.cpp in llama.cpp. It has many functions. The snippet includes only first part. Need know full file? The user says "// file: common/json-schema-to-grammar.cpp" and pasted code up to `static size_t gbnf_escape_length... {` then blank. Maybe they want remove unused code in this file, but file incomplete. Need maybe identify unused code within pasted portion. Let's inspect.
+
+We need determine which code is never used. In C++ file, static functions/variables may be unused. Need compile warnings? Let's list definitions:
+
+- build_repetition: used? likely used later in schema conversion. In snippet not used yet, but full file uses it. Need not delete if used elsewhere.
+- build_min_max_int: used later.
+- SPACE_RULE: used in PRIMITIVE_RULES object/array.
+- BuiltinRule struct: used.
+- PRIMITIVE_RULES: used.
+- STRING_FORMAT_RULES: used.
+- is_reserved_name: used later.
+- INVALID_RULE_CHARS_RE: used later.
+- GRAMMAR_LITERAL_ESCAPE_RE: used in format_literal.
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE: maybe used later in gbnf_escape? Need full file.
+- GRAMMAR_LITERAL_ESCAPES: used in format_literal.
+- MAX_PATTERN_DEPTH: used later.
+- NON_LITERAL_SET: used later.
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS: used later.
+- replacePattern: used in format_literal and later.
+- format_literal: used by gbnf_format_literal and later.
+- gbnf_format_literal: exported? used elsewhere? It's non-static, likely used by other files. Not unused.
+- gbnf_escape_length: incomplete, likely used later.
+
+Need know actual full file to identify unused. Let's recall llama.cpp common/json-schema-to-grammar.cpp. I can reconstruct from memory. It has functions:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- BuiltinRule
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- INVALID_RULE_CH
+---

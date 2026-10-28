@@ -1,0 +1,74 @@
+run 20114 | ds41i4 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 29.17 t/s | prompt 11.9 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 21:24:14
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 10x20 grid, cell size maybe 24. Canvas width 240 height 480. Use JS.
+
+Tetromino shapes represented as arrays of coordinates or matrices. Need rotation. Could use 4x4 matrices for I, O, T, S, Z, J, L. Simpler: define shapes as arrays of [x,y] cells relative to top-left? Rotation around center? Need robust.
+
+Alternative use 4x4 matrices and rotate matrix. For each piece, matrix 4x4 with 1s. Rotation by 90 degrees. Collision checks cells. Spawn at x=3? For 4x4 matrix, board width 10, height 20. Use matrix coordinates. Need handle I piece horizontal in row 1? Let's define matrices.
+
+Tetromino matrices:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]] maybe horizontal. Rotation works.
+O: [[0,0,0,0],[0,1,1,0],[0,1,1,0],[0,0,0,0]]
+T: [[0,0,0,0],[0,1,0,0],[1,1,1,0],[0,0,0,0]]? Need shape. Could use standard:
+T: [[0,1,0],[1,1,1],[0,0,0]] but 3x3. Rotation easier. Use 3x3 for most, I 4x4. But collision with matrix dimensions. Could use arrays of cells and rotate around center. Simpler use 4x4 matrices for all.
+
+Let's define 4x4 matrices with cells:
+I: row 1: [1,1,1,1] at y=1? Actually matrix:
+[
+[0,0,0,0],
+[1,1,1,1],
+[0,0,0,0],
+[0,0,0,0]
+]
+O:
+[
+[0,0,0,0],
+[0,1,1,0],
+[0,1,1,0],
+[0,0,0,0]
+]
+T:
+[
+[0,0,0,0],
+[0,1,0,0],
+[1,1,1,0],
+[0,0,0,0]
+]
+S:
+[
+[0,0,0,0],
+[0,1,1,0],
+[1,1,0,0],
+[0,0,0,0]
+]
+Z:
+[
+[0,0,0,0],
+[1,1,0,0],
+[0,1,1,0],
+[0,0,0,0]
+]
+J:
+[
+[0,0,0,0],
+[1,0,0,0],
+[1,1,1,0],
+[0,0,0,0]
+]
+L:
+[
+[0,0,0,0],
+[0,0,1,0],
+[1,1,1,0],
+[0,0,0,0]
+]
+Need rotation function rotate matrix clockwise: new[i][j] = old[3-j][i]? For 4x4. Let's verify. Clockwise rotation: new[r][c] = old[n-1-c][r]. Yes.
+
+Spawn x maybe 3, y=0. But matrices have empty top row and cells at row 1/2. If y=0, cells at board y=1/2. Fine. Need collision with board. Board 10x20. x can be 3. For I horizontal row 1, x=3 gives cells x=3..6. Good. For O x=3 gives cells x=4,5. Good. For T x=3 gives cells x=3,
+---

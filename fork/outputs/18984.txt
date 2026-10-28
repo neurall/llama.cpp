@@ -1,0 +1,59 @@
+run 18984 | spass19 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.76 t/s | prompt 39.8 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-24 15:51:44
+
+The user wants the smallest HTML Tetris game. The request is literally "smallest" — so minimal code. But I don't want to ship something crude and bare: even a tiny game should look intentional and clean. There's a real tension here: "smallest html tetris game" — they want compact code. I should honor the request: a genuinely small, dense, clever single-file Tetris. But I can still make it look nice with minimal bytes — good colors, a nice font, crisp canvas.
+
+Balance: deliver a tiny Tetris (small byte count) that still feels alive. Maybe I give the ultra-minimal version as the main artifact, and keep styling cheap but tasteful. A small byte counter could be a nice touch — it fits the "smallest" theme.
+
+Let me write compact Tetris in HTML.
+
+Key: keep it readable-ish but small. Let me craft it.
+
+Plan:
+- Single HTML file, canvas, ~1.5KB.
+- Keyboard controls: arrows, Z/X rotate, space hard drop, P pause.
+- Score, next piece, level.
+
+Let me write it compactly.
+
+```html
+<canvas id=c width=260 height=520></canvas>
+```
+
+Let me do a compact implementation using a rotation trick with matrices, or use the classic "string of shapes" approach.
+
+Compact approach: pieces as numbers with rotation via bit rotation of 4x4 (or 3x3) bitmaps.
+
+Classic tiny trick: represent each tetromino as a 32-bit number in a 4x4 grid, rotate by bit manipulation.
+
+I = 0b00011110 << ... hmm. Let's use 4x4 bit rotation:
+rotate: for a 4x4 bitmap n, rotated = ... a known formula:
+```
+R=n=>{let o=0;for(let y=0;y<4;y++)for(let x=0;x<4;x++)o|=(n>>((3-x)*4+y)&1)<<y*4+3-x;return o}
+```
+That's ~110 chars. Alternatively use per-piece coordinate arrays.
+
+Simpler tiny approach used often: define pieces as arrays of 4x4 matrices and rotate by transposing+reversing.
+
+Let me use the well-known compact method:
+
+```js
+P=[0x0F00,0x00F0,0x2C00,0x6C00,0x0E40,0x0C60,0x03C0] // hmm need care
+```
+
+Let me define 4x4 bitmaps, row-major, top row in high bits.
+
+I: rows 0000,1111,0000,0000 → 0x0F00
+O: rows 0000,0110,0110,0000 → 0x0660
+T: rows 0000,1110,0100,0000 → 0x0E40
+S: rows 0000,0110,1100,0000 → 0x06C0
+Z: rows 0000,1100,0110,0000 → 0x0CC0
+J: rows 0000,1000,1110,0000 → 0x08E0
+L: rows 0000,0010,1110,0000 → 0x02E0
+
+Rotation of 4x4 bitmap: rotate clockwise. Bit index for (row y, col x) = y*4+x. Clockwise rotation maps (y,x) → (x, 3-y).
+
+```js
+r=n=>{let o=0;for(let i=0;i<16;i++)o|=(n>>i&1)<<(i%4*4+3-(i/4|0));return o}
+```
+Check: i = y*4+x, so y = i/4|0, x = i%4. New index = x*4 + (3-y). Yes that's (x, 3-y) → row x, col 3-y. Correct for clockwise
+---

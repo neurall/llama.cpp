@@ -5,10 +5,35 @@
 // try as much as possible to not include this header in the rest of the codebase
 
 #include "llama.h"
+#include "llama-arch.h"
 
 #include <cstdint>
 #include <map>
+#include <string>
 #include <vector>
+
+//
+// llama architecture queries
+//
+
+// all the LLM architectures known to the library
+LLAMA_API std::vector<llm_arch> llama_arch_all();
+
+// the canonical name of an architecture (e.g. "llama"), or "unknown"
+LLAMA_API const char * llama_arch_name(llm_arch arch);
+
+// the architecture with the given canonical name, or LLM_ARCH_UNKNOWN
+LLAMA_API llm_arch llama_arch_from_string(const std::string & name);
+
+// the arch-resolved GGUF key of a KV id, e.g. LLM_KV_CONTEXT_LENGTH -> "llama.context_length"
+LLAMA_API std::string llama_arch_kv_name(llm_arch arch, llm_kv key);
+
+LLAMA_API bool llama_arch_supports_sm_tensor(llm_arch arch);
+
+LLAMA_API bool llama_arch_supports_mixed_batch(llm_arch arch);
+
+// FIXME temporary function for better error messages
+LLAMA_API bool llama_arch_supports_save(llm_arch arch);
 
 // Reserve a new compute graph. It is valid until the next call to llama_graph_reserve.
 LLAMA_API struct ggml_cgraph * llama_graph_reserve(
@@ -138,6 +163,11 @@ LLAMA_API const int32_t * llama_get_mtp_dsa_selection(struct llama_context * ctx
 
 // Set whether the context outputs the input embeddings of a specific layer
 LLAMA_API void llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid, bool value);
+
+// fork: of a ubatch longer than n, only the last n rows of the extracted layer inputs are kept and copied out (0: every row, the default); the
+// rows before them hold nothing. A draft that reads only a window of the last positions (DSpark) sets its window, so a prompt pass keeps
+// neither the whole tensors in VRAM to the end of the graph nor a copy of every row in host memory.
+LLAMA_API void llama_set_embeddings_layer_inp_last(struct llama_context * ctx, uint32_t n);
 
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);

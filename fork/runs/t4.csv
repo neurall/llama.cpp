@@ -1,0 +1,11 @@
+name,model,n,test,tokens,args,extra
+q36-i,qwen36,2,pf12k1k,128,,
+q36-o,qwen36,2,tetrisc,1024,,
+q36r-i,qwen36,2,pf12k1k,128,--moe sim-vram=3000,
+q36r-o,qwen36,2,tetrisc,1024,--moe sim-vram=3000,
+q38-i,qwen38,2,pf12k1k,128,,
+q38-o,qwen38,2,tetrisc,1024,,
+glm-i,glm,2,pf12k1k,128,,
+glm-o,glm,2,tetrisc,1024,,
+mimo-i,mimo,2,pf12k1k,128,,
+mimo-o,mimo,2,tetrisc,1024,,

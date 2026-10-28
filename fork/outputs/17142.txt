@@ -1,0 +1,25 @@
+run 17142 | stock-b11742-official | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 10.8 t/s | prompt 33.5 t/s | 1024 tokens | args:  | power 220+280 W | 2026-10-20 05:53:51
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, then `max_items - 1` is fine. But wait — if `min_items == 0` and `max_items == 0`, we return "" early. OK.
+   - Potential issue: `build_repetition` with `min_items == 0 && max_items == 1` returns `item_rule + "?"` — but this ignores the separator. Actually for 0 or 1 items, separator never appears, so that's correct.
+   - Edge case: `min_items > 0 && max_items == 0`? Then `max_items == 0` returns "" — but if min_items > 0, that's contradictory schema; returning "" (empty match) is probably acceptable behavior.
+   - Hmm, wait: `has_max = max_items != std::numeric_limits<int>::max()`. If `max_items == 0`, `has_max` is true, but we return "" before using it. Fine.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — minor performance overhead but needed for lambda recursion.
+   - `decimals_left = 16` default. The recursion decrements `decimals_left`. There's a potential infinite recursion? Let's check: `uniform_range` doesn't recurse into `build_min_max_int`. The recursion happens in `has_min` branch: `build_min_max_int(std::stoll(min_s.substr(1)), ...)` with `less_decimals`. Since `less_decimals = max(decimals_left - 1, 1)`, when decimals_left reaches 1, less_decimals stays 1... could that cause infinite recursion? Let's trace: if `min_value` has many digits... `min_s.substr(1)` reduces the number by one digit each time. `std::stoll` of a single-digit string gives a single digit. Then in the `min_value <= 9` branch, no recursion. So recursion depth is bounded by number of digits in min_value (max 19 for int64). OK.
+   - But wait — `std::stoll(min_s.substr(1))` — if `min_s` is "1000000000000000000" (19 digits), stoll works. But what if min_value is such that min_s.substr(1) overflows int64? min_value max is int64 max = 9223372036854775807 (19 digits). substr(1) of that is 223372036854775807 which fits. OK.
+   - Actually wait, there's a subtle bug: in the `has_min && has_max` branch with both negative: `build_min_max_int(-max_value, -min_value, ...)`. If `min_value == std::numeric_limits<int64_t>::min()`... but has_min would be false then. Hmm, `has_min = min_value != INT64_MIN`. So if min_value is INT64_MIN, has_min is false. OK.
+   - But in the `min_value < 0 && max_value < 0` case: `-max_value` — if `max_value == INT64_MIN`, then `-max_value` is UB (signed overflow)! Wait, can max_value be INT64_MIN here? `has_max = max_value != INT64_MAX`. If max_value == INT64_MIN and min_value < max_value (min_value < 0, max_value < 0)... min_value could be, say, INT64_MIN+1... Actually if max_value == INT64_MIN, then min_value <= max_value = INT64_MIN, so min_value == INT64_MIN, which means has_min == false. So we'd be in the `has_max` only branch. Hmm wait, but the check `if (has_min && has_max)` requires both. If min_value == INT64_MIN, has_min is false, so we skip. So in the both-negative branch, min_value > INT64_MIN and max_value < 0, max_value != INT64_MAX. `-max_value`: max_value could be INT64_MIN? If max_value == INT64_MIN then min_value <= INT64_MIN means min_value == INT64_MIN → has_min false. So no UB there. OK good.
+   - In `min_value < 0` (
+---

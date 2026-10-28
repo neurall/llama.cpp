@@ -1,0 +1,11 @@
+run 17562 | ubfit | pf12k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 389.17 t/s | prompt 19492.1 t/s | 128 tokens | args: -np 1 -ub 512 | power 280+280 W | 2026-10-21 18:00:33
+
+The provided file `common/json-schema-to-grammar.cpp` contains several code snippets and functions related to JSON schema to grammar conversion, including static strings, helper functions, and a main logic block for converting JSON schemas into grammar rules. Here's a structured review and analysis of the code:
+
+### Static Strings
+
+- The file includes several static strings used as constants, such as `build_repetition`, `common_json`, `trie`, `unicode`, etc. These are used throughout the file for various string manipulations.
+
+### Function Definitions
+
+- `build_

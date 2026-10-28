@@ -1,0 +1,63 @@
+run 17427 | autopin | edit4c | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 315.31 t/s | prompt 33196.5 t/s | 1024 tokens | args: -np 1 -lm mmap -c 4096 | power ? W | 2026-10-21 13:18:21
+
+a-fA-F0-9]{8}-?\\d{4}-?\\d{4}-?\\d{4}-?\\d{12}"}
+};
+
+static std::unordered_map<std::string, const json_schema_to_grammar::BuiltinRule*> PRIMITIVE_RULES_POINTERS = {
+    {"boolean", &BuiltinRule::{"boolean", {}}},
+    {"decimal-part", &BuiltinRule::{"decimal-part", {}}},
+    {"integral-part", &BuiltinRule::{"integral-part", {}}},
+    {"number", &BuiltinRule::{"number", {}}},
+    {"integer", &BuiltinRule::{"integer", {}}},
+    {"value", &BuiltinRule::{"value", {}}},
+    {"object", &BuiltinRule::{"object", {}}},
+    {"array", &BuiltinRule::{"array", {}}},
+    {"uuid", &BuiltinRule::{"uuid", {}}}
+};
+
+static std::unordered_map<std::string, const json_schema_to_grammar::BuiltinRule*> PRIMITIVE_RULES_POINTER_TO_RULES = {
+    {"boolean", &BuiltinRule::{'boolean', {}}}
+};
+
+static const json_schema_to_grammar::BuiltinRule PRIMITIVE_RULES_MAP = {
+    {"boolean", {"(\"true\" | \"false\")", {}}},
+    {"decimal-part", {"[0-9]{1,16}", {}}},
+    {"integral-part", {"[0] | [1-9] [0-9]{0,15}", {}}},
+    {"number", {"(\"-\"? integral-part) (\".\" decimal-part)? ([eE] [-+]? integral-part)?", {"integral-part", "decimal-part"}}},
+    {"integer", {"(\"-\"? integral-part)", {"integral-part"}}},
+    {"value", {"object | array | string | number | boolean | null", {"object", "array", "string", "number", "boolean", "null"}}},
+    {"object", {"\"{\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \"}\"", {"string", "value"}}},
+    {"array", {"\"[\" space ( value (\",\" space value)* )? space \"]\"", {"value"}}},
+    {"uuid", {"\"\\\"\\\" [0-9a-fA-F]{8}-?\\d{4}-?\\d{4}-?\\d{4}-?\\d{12}"}
+};
+
+// json_schema_to_grammar::json_schema_to_grammar::BuildGrammar function implementation
+
+json_schema_to_grammar::json_schema_to_grammar::BuildGrammar(const std::string& file_path) {
+    auto parser = json::parser::create_instance<json::parser::token_parser>();
+    parser->set_input_string(json::string_view(file_path.c_str()));
+    parser->set_error_handler([this](const json::error_code& e, const char* msg) {
+        std::cerr << "Error: " << msg << std::endl;
+        throw json::exception("Error parsing JSON schema");
+    });
+
+    // Load the grammar from the JSON schema
+    auto schema = json::load<json::schema::object>(parser->get_root_node());
+    auto grammar = json_schema_to_grammar::build_grammar(schema);
+
+    // Save the generated grammar to the file system
+    std::ofstream grammar_file(file_path + ".grammar", std::ios::out | std::ios::binary);
+    grammar_file << grammar;
+    grammar_file.close();
+
+    // Save the mapping of rules to their corresponding grammar rules
+    for (const auto& rule : PRIMITIVE_RULES_POINTERS) {
+        grammar_file << rule.content << "\n";
+    }
+
+    for (const auto& rule : PRIMITIVE_RULES_POINTER_TO_RULES) {
+        grammar_file << rule.content << "\n";
+    }
+
+    // Save the mapping of built-in rules to their corresponding grammar rules
+    for (const auto& rule : PRIMITIVE_RULES_MAP

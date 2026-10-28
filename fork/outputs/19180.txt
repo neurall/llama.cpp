@@ -1,0 +1,72 @@
+run 19180 | pre9 | pf16k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.93 t/s | prompt 1041.8 t/s | 1000 tokens | args: -np 1 --moe log=w | power 220+280 W | 2026-10-25 03:37:41
+
+<think>The user wants me to return the completed source with bugs fixed. Let me analyze the code carefully.
+
+Looking at the code, I need to identify bugs. Let me go through both files systematically.
+
+**File: common/json-schema-to-grammar.cpp**
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps with `(...)?` but the initial `item_rule` is always included. For `min_items == 0`, the first `item_rule` should be optional too. Let me re-examine...
+
+Actually, looking more carefully at `build_repetition` with separator:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+if (min_items == 0) {
+    result = "(" + result + ")?";
+}
+```
+
+When `min_items == 0`, the result is `item_rule + " " + build_repetition(...)` which always includes at least one item, then wrapped in `(...)?`. That seems correct - it makes the whole thing optional.
+
+Wait, but when `min_items == 0` and `max_items == 1`, it returns `item_rule + "?"` at the top. That's correct.
+
+When `min_items == 0` and `max_items == 0`, it returns `""`. Correct.
+
+Hmm, let me look at the `build_min_max_int` function more carefully.
+
+In the `has_min` branch when `min_value <= 9`:
+```cpp
+char c = '0' + min_value;
+auto range_start = top_level ? '1' : '0';
+if (c > range_start) {
+    digit_range(range_start, c - 1);
+    out << " ";
+    more_digits(1, less_decimals);
+    out << " | ";
+}
+digit_range(c, '9');
+out << " ";
+more_digits(0, less_decimals);
+```
+
+Wait, `more_digits(1, less_decimals)` - this means at least 1 more digit. But if `range_start` is '1' (top_level), then digits from '1' to `c-1` are single digits, and they need at least 1 more digit? No, that's wrong. If we're matching a single digit from '1' to `c-1`, we don't need more digits - the digit itself is the number.
+
+Actually wait, `more_digits(1, less_decimals)` means `[0-9]{1,less_decimals}` - at least 1 more digit. So for a number like `5` (min_value=5), top_level=true:
+- range_start = '1'
+- c = '5'
+- c > range_start: digit_range('1', '4') + " " + more_digits(1, less_decimals) - this means numbers 10-49... wait no.
+
+Hmm, actually `more_digits(1, less_decimals)` means `[0-9]{1,less_decimals}` which is at least 1 digit. So `digit_range('1', '4') + " " + more_digits(1, less_decimals)` would match `1` followed by at least 1 digit, i.e., numbers starting with 1-4 and having at least 2 digits total. That's wrong for single-digit numbers.
+
+Wait, let me re-read. `more_digits(1, less_decimals)`:
+```cpp
+auto more_digits = [&](int min_digits, int max_digits) {
+    out << "[0-9]";
+    if (min_digits == max_digits && min_digits == 1) {
+        return;
+    }
+    out << "{";
+    out << min_digits;
+    if (max_digits != min_digits) {
+        out << ",";
+        if (max_digits != std::numeric_limits<int>::max()) {
+            out << max_digits;
+        }
+    }
+    out << "}";
+};
+```
+
+So `more_digits(1, less_decimals)` outputs `[0-9]{1,less_decimals}` - at least 1 digit. So `digit_range('1', '4') + " " + more_digits(1, less_decimals)` = `[1-4] [0-9]{1,less_decimals}` which matches numbers like 10-49, 100-499, etc. But it doesn't match single digits 1-4.
+
+Hmm, but then `digit_range(c, '9') + " " + more_digits(0, less_decimals)` = `[5-9] [0-9

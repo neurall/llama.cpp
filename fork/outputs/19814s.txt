@@ -1,0 +1,26 @@
+run 19814 | stock-b11887-official | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 1.46 t/s | prompt 39.1 t/s | 680 tokens | args: -np 1 -fitt 2048 | power 220+280 W | 2026-10-26 18:54:51
+
+We need answer user asks: "Delete the code in this file that is never used." They provided file content. Need identify unused code in common/json-schema-to-grammar.cpp and provide cleaned code? Need infer task likely wants remove unused functions/variables etc. Need analyze code. We need produce final answer likely modified file with unused code deleted. Need be careful.
+
+We need inspect provided code. It's partial? Starts with includes and functions. Ends at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` then blank. The file is truncated? The user pasted only part? They ask delete code never used. Need identify unused code in this snippet. But maybe full file has more code not shown? The snippet ends mid-function. We need answer based on provided content. Need determine unused code.
+
+Let's parse. Functions:
+- build_repetition: used? likely used later in full file, but in snippet not called. But if full file, used. We need not delete if used elsewhere? The prompt says "in this file" and provided file content. We only see partial. Need maybe identify code that is never used within this file. But if truncated, cannot know. Need maybe answer with deletions from snippet: `gbnf_escape_length` is declared but body incomplete and likely unused? Actually function starts but no body. Maybe it's unused? Need inspect.
+
+Let's list all symbols:
+Includes: algorithm, limits, map, regex, sstream, string, unordered_map, unordered_set, vector. Some may be unused? `map` maybe unused? `algorithm` used std::max. `limits` used. `regex` used. `sstream` used. `string` used. `unordered_map` used. `unordered_set` used. `vector` used. `map` not used? Search: no std::map. So include <map> unused. `common.h` maybe used? `common_json` alias. `trie.h`? Not used in snippet. `unicode.h`? Not used. But maybe full file uses. Need not delete includes? "code never used" could include unused includes. But likely they want remove unused functions/variables.
+
+Functions:
+- build_repetition: likely used later in full file. In snippet no call. But if full file, used. Need not delete.
+- build_min_max_int: likely used later. In snippet no call. But full file uses.
+- SPACE_RULE: used in PRIMITIVE_RULES object/array. Yes.
+- BuiltinRule struct: used.
+- PRIMITIVE_RULES: used by is_reserved_name and maybe later.
+- STRING_FORMAT_RULES: used by is_reserved_name and later.
+- is_reserved_name: used later? In snippet no call. But likely used in full file.
+- INVALID_RULE_CHARS_RE: not used in snippet. Maybe used later.
+- GRAMMAR_LITERAL_ESCAPE_RE: used in format_literal.
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE: not used in snippet. Maybe used later.
+- GRAMMAR_LITERAL_ESCAPES: used in format_literal.
+- MAX_PATTERN_D
+---

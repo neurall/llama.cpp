@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+q36-ub512,qwen36,2,pf12k1k,128,-ub 512,
+q36-ub1024,qwen36,2,pf12k1k,128,-ub 1024,
+q36-ub2048,qwen36,2,pf12k1k,128,-ub 2048,
+q36-ub4096,qwen36,2,pf12k1k,128,-ub 4096,
+q36-ub8192,qwen36,2,pf12k1k,128,-ub 8192,

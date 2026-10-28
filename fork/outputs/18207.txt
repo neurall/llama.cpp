@@ -1,0 +1,75 @@
+run 18207 | relfl6 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.64 t/s | prompt 40.2 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-23 04:21:49
+
+The user wants the smallest HTML Tetris game. The request is literally "smallest" — so minimal code. But I don't want to hand back something ugly and bare. Even a tiny Tetris should feel considered: dark background, one accent, a clean readable font, and a bit of life. The user asked for smallest, so I'll keep it compact but make it actually playable and look decent.
+
+Let me write a genuinely compact Tetris in one HTML file. Aim for something like 60-80 lines minified-ish but still working.
+
+Let me write it carefully.
+
+```html
+<canvas id=c width=128 height=256 style=background:#111></canvas>
+```
+
+Hmm, but I'd like it to look nice. Balance: give a compact but polished version. Let me do a small readable version — "smallest" honored by being a single file, no dependencies, short code — plus a bit of styling.
+
+Let me write compact Tetris:
+
+```html
+<canvas id=C width=128 height=256></canvas>
+<script>
+with(C){getContext}=0
+</script>
+```
+
+Let me just write it properly and compactly.
+
+```js
+c=C.getContext`2d`,k=0,a=[],s=0,l=0
+R=o=>{for(o.o=(o.o||[]).concat(...),...)}
+```
+
+Standard compact approach:
+
+```js
+c=C.width/4|0 // cols
+```
+
+Let me define:
+- W=8? Use 128x256 canvas with 16px blocks → 8x16 board. Small but fine. Let's do 160x320 → 10x20 standard.
+
+Compact Tetris code:
+
+```js
+const B=C.getContext`2d`,W=10,H=20,S=16
+let g=[],p,r,x,y,s=0,n=0
+const P='㐀㐁... '
+```
+
+A known trick: encode tetromino shapes as strings of hex/binary.
+
+Compact shape definition:
+```js
+const S=[[0x66],[0xf2],[0x2f],[0x4e4],[0x7c],[0x2e],[0xe2],...]
+```
+Hmm, easier: use the classic "for(i=4;i--;)" rotation trick with a string.
+
+Known tiny approach:
+```js
+T=(t,r)=>[0,1,2,3].map(i=>(t>>((r*4+(i%4))*4&15))) // nah
+```
+
+Simplest readable-compact: define pieces as 4x4 bitmasks per rotation using a formula.
+
+Classic trick (from the "tetris in 10 lines" style):
+```js
+P=[0x0f00,0x44c0,0x6c00,0x4640,0x2620,0x4e00,0x2640] // 4x4 bitmasks for I,O,T,S,Z,J,L
+```
+Wait 4x4 bitmask = 16 bits. 
+- I: row1 full = 0x0F00 ✓
+- O: rows 1,2 cols 1,2 = 0110 0110 0000... let's index bits: 16 bits, bit15..bit0, row-major, row0 = bits15-12.
+  O occupies rows1,2 cols1,2 → 0b0110_0110_0000_0000 = 0x6600 ✓
+- T: row0 cols1,2,3? Standard T: top row 3 wide, bottom middle: 0b1110_0100_0000_0000 = 0xE400 ✓
+- S: 0b0110_1100_0000_0000 = 0x6C00 ✓
+- Z: 0b1100_0110_0000_0000 = 0xC600 ✓
+- J: 0b1000_1110_00
+---

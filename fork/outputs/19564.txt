@@ -1,0 +1,21 @@
+run 19564 | ds41i6 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 24.31 t/s | prompt 7.0 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 200+200 W | 2026-10-26 01:32:06
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design smallest HTML Tetris. Need include controls, scoring? "smallest" means minimal code. Need produce a single HTML file. Need maybe use canvas and keyboard. Need implement Tetris mechanics: board 10x20, tetrominoes, rotation, collision, line clear, gravity, game over. Minimal.
+
+Need think through code carefully. Need produce valid HTML. Could use canvas 200x400? Use CSS. JS.
+
+Let's craft compact but readable. Need ensure no bugs.
+
+Approach:
+- Canvas id c, width 200 height 400, cell size 20, board 10x20.
+- Tetromino shapes as arrays of coordinates or matrices. Use 7 shapes with rotations? Simpler: define shapes as matrices and rotate by transpose/reverse. Need collision.
+- Use board array 20 rows x 10 cols, 0/1.
+- Current piece: shape matrix (array of arrays), x,y.
+- spawn: choose random shape from SHAPES, x=3, y=0? Need ensure top. Use matrix.
+- rotate: rotate matrix clockwise: new = matrix[0].map((_,i)=>matrix.map(row=>row[i]).reverse())? Let's verify. For matrix rows, clockwise rotation: new[r][c] = old[n-1-c][r]? Common: rotated = matrix[0].map((_, i) => matrix.map(row => row[i]).reverse()); Example [[1,0],[0,1]] -> matrix[0].map((_,i)=> matrix.map(row=>row[i]).reverse()) i=0: [1,0].reverse? Wait matrix.map(row=>row[i]) gives [1,0], reverse -> [0,1]; i=1: [0,1] reverse -> [1,0]; result [[0,1],[1,0]]? That's not clockwise? Let's test shape L. Better use function rotate: const n=shape.length; return shape[0].map((_,i)=>shape.map(r=>r[n-1-i])); Hmm.
+
+Let's derive. Matrix rows y, cols x. Clockwise rotation: new[y][x] = old[n-1-x][y]? For n=2 old [[a,b],[c,d]], clockwise -> [[c,a],[d,b]]. Formula new[i][j] = old[n-1-j][i]. So new = old[0].map((_, j) => old.map(row => row[n-1-j]))? Wait for each new row i, new[i][j] = old[n-1-j][i]. If we map columns j: new row i = old.map(row => row[n-1-j])? That gives new[i][j] = old[i][n-1-j], not. Let's use simple: rotate = shape.map((row,i)=> row.map((_,j)=> shape[n-1-j][i]))? For n=2: i=0,j=0 -> old[1][0]=c; i=0,j=1 -> old[0][0]=a; row [c,a]. i=1,j=0 -> old[1][1]=d; i=1,j=1 -> old[0][1]=b; row [d,b]. Correct. So rotate = shape.map((row,i)=> row.map((_,j)=> shape[n-1-j][i])); But shape may not square? Tetromino matrices are square? We can use 4x4 matrices for all shapes, easier. Use 4x4 with 1s. Rotation works. But collision with empty cells. Use 4x4 matrices. Spawn x=3, y=0. Board 10x20. Shapes:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]? Actually 4x4. Could use 4x4 with row 1. O: [[0,0,0,0],[0,1,1,0],[0,1,1,0],[0,0,0,0]]. T: [[0,0,0,0],[0,1,0,0],[1,1,1,0],[
+---

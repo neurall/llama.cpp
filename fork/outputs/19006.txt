@@ -1,0 +1,81 @@
+run 19006 | spass19 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.49 t/s | prompt 6.7 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-24 16:46:28
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. This is different from my usual inclination toward polished, memorable experiences. The user explicitly asks for "smallest" — so the goal here is extreme minification: a single HTML file, as few bytes as possible, while still being a genuinely playable Tetris.
+
+Let me think about what "smallest playable Tetris" requires:
+- 10×20 grid
+- 7 tetromino shapes with rotation
+- Falling with gravity, collision detection
+- Line clearing
+- Score (optional but nice)
+- Keyboard controls (left/right/down/rotate)
+- Game over
+
+The famous minimal Tetris implementations exist (like the ~140-byte ones by code golfers, e.g., "Tetris in 140 bytes" style). But those often sacrifice playability. I should aim for something genuinely playable but extremely compact — maybe 500-800 bytes. Let me write my own compact version.
+
+Let me design a compact Tetris in JavaScript, golfed.
+
+Approach: Use a canvas or use a `<pre>` with text characters? Text-based rendering with a `<pre>` and monospace blocks can be very compact. Canvas is also compact. Let me think.
+
+Classic minimal approach: render into a `<pre>` element using text. Grid of 10 wide × 20 tall. Each cell = 2 chars (block + space) for square-ish aspect.
+
+Data structures:
+- Board: array of 20 strings? Or a single string? Or array of rows where each row is a number bitmask? Bitmask rows are compact for collision and line-clear detection (row full = all bits set = 0x3FF for 10 columns).
+
+Pieces: 7 tetrominoes. Compact encoding: each piece as 4 rotations × 4 cells, or store as bit patterns.
+
+A well-known compact trick: store each tetromino as a 16-bit number (4×4 grid), rotate by bit manipulation. Or store coordinates.
+
+Let me think about a really compact representation. One classic approach (from tiny tetris implementations):
+
+Pieces defined as arrays of [x, y] offsets for each rotation. Or use the "S" form: each piece is a string of 4 numbers.
+
+Alternative compact approach used in famous golfed Tetris (e.g., by "bgrins" or the 224-byte one... actually there's a famous one). Let me just write my own clean-ish golfed version.
+
+Plan:
+
+```html
+<body onload="setInterval(f,100)">
+```
+
+Actually let me write it carefully then golf.
+
+Core logic:
+
+```js
+// board: 20 rows, each row a 10-bit integer
+B = Array(20).fill(0)
+
+// piece: current shape (array of 4 [x,y] or encoded), position x,y
+```
+
+Compact piece encoding: For each of 7 pieces, store 4 rotation states, each state as a list of 4 cells encoded as y*16+x or as a 4-bit-per... Hmm.
+
+A neat trick: encode each rotation state of a piece as a single integer where 4 cells each occupy... Actually simpler: encode each piece rotation as a 16-bit 4×4 bitmap. Rotation of a 4×4 bitmap by 90°: 
+
+If bits indexed as i = y*4+x, rotating clockwise: new[x][3-y]... Let me define: rotate CW: cell at (x,y) goes to (3-y, x). In bit index terms: bit at index y*4+x moves to index x*4 + (3-y). 
+
+A compact rotation formula for 16-bit: 
+```js
+r = b => { let n=0; for(i=0;i<16;i++) if(b>>i&1) n |= 1 << (i%4*4 + 3 - (i>>2)); return n }
+```
+Hmm, that's a bit long. Alternative: precompute rotations as data — store all 7 pieces × rotations directly as arrays of cell coordinates. That might be more bytes in data but less code.
+
+Actually, a very compact known trick: define pieces as strings and parse. E.g.:
+
+```js
+P = "0123h0123..." 
+```
+
+Hmm. Let me think about what's genuinely smallest overall.
+
+Known minimal Tetris approaches:
+
+1. **The "tiny" approach**: pieces as arrays of 4 rotations, each rotation an array of 4 [x,y] pairs. Data-heavy but simple code.
+
+2. **Bit rotation**: pieces as 16-bit ints, rotate function. Less data, slightly more code.
+
+3. **String encoding**: e.g., each piece as 4 chars where each char encodes... 
+
+Let me
+---

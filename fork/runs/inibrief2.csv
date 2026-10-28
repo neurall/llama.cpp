@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+q36rdbg-i,qwen36,2,pf12k1k,128,--moe sim-vram=3000,--env PERF_LOG=rw
+q38-i,qwen38,2,pf12k1k,128,,

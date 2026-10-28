@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+glm-30k-ub8,glm,1,pf30k1k,64,"--moe dense-split=1,split-reserve=1 -ub 8192",
+glm-30k-ub16,glm,1,pf30k1k,64,"--moe dense-split=1,split-reserve=1 -ub 16384",

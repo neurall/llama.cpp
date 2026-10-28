@@ -1,0 +1,53 @@
+run 18278 | stock-b11829-official | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 7.59 t/s | prompt 1.0 t/s | 1005 tokens | args:  | power 220+280 W | 2026-10-23 06:11:57
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. However, I should still make it functional and playable — a real Tetris with movement, rotation, line clearing, scoring, game over.
+
+Let me think about what "smallest" means here. The user wants a tiny single-file HTML Tetris. This is a classic code golf challenge. I should aim for a genuinely compact implementation while keeping it fully playable. I'll write it as one HTML file with embedded JS, golfed but readable enough... Actually, for "smallest", I should golf it hard. But I can also provide a brief explanation of how it works.
+
+Let me design a minimal Tetris:
+
+Core requirements:
+- 10×20 grid
+- 7 tetrominoes
+- Move left/right, rotate, soft drop, hard drop maybe
+- Line clearing
+- Game over
+- Score display (optional but nice)
+
+Minimal approach: use canvas, a compact piece representation.
+
+Classic minimal Tetris implementations exist. Let me write my own compact one.
+
+Piece representation: I can encode each tetromino as a set of coordinates, or use a compact string. A common trick: store pieces as 4x4 bit patterns or as arrays of [x,y] pairs.
+
+One very compact approach: represent each rotation state via rotation function. Store each piece as a base shape (array of [x,y]) and rotate mathematically: for rotation, (x,y) -> (y, -x) or similar around pivot. But different pieces have different pivot behavior (I and O). A simpler golf trick: use the "SRS-lite" where rotation is (x,y) -> (3-y, x) in a 4-wide box for all pieces — this works if pieces are defined in a 4x4 or 3x3 box consistently.
+
+Actually a well-known compact trick: define pieces as lists of 4 cells in a grid, rotate by transposing. Let me use the approach where each piece is defined by a number encoding 16 bits (4x4 grid), and rotation is bit manipulation. That's very compact.
+
+Alternative compact approach used in many golfed Tetris: pieces as arrays of rotation states with coordinates.
+
+Let me think of a clean, small design:
+
+```js
+// pieces: each is array of [x,y] cells
+P=[[1,0],[1,1],[1,2],[1,3], ...]
+```
+
+Hmm. Let me use the classic approach from tiny tetris implementations:
+
+A famous tiny Tetris (by "tiny tetris" in C) uses pieces encoded as bit patterns. For JS, a compact method:
+
+Define shapes as strings. E.g.:
+
+```js
+const S="0110 0110", ...
+```
+
+Actually, let me use this approach: each piece = array of 4 rotations, each rotation = array of [x,y]. That's verbose. Better: one rotation + rotate function.
+
+Rotation in a bounding box: if piece cells are stored as (x,y) with the piece in an NxN box (N=4 for I, O... actually I in 4x4, others in 3x3 works with simple rotation), rotation clockwise: (x,y) -> (N-1-y, x).
+
+If I define all pieces in a 4x4 box positioned appropriately, rotation (x,y)->(3-y,x) works for I (vertical bar at x=1? Let's check: I vertical: cells (1,0),(1,1),(1,2),(1,3). Rotate CW: (x,y)->(3-y,x): (1,0)->(3,1), (1,1)->(2,1), (1,2)->(1,1), (1,3)->(0,1). That's horizontal bar at y=1. Good. Rotate again: (3,1)->(2,3), (2,1)->(2,2), (1,1)->(2,1), (0,1)->(2,0): vertical bar at x=2. Good — that's the standard I behavior in a 4x4 box.
+
+For 3x3 pieces (T, S, Z, L, J): define in 3x3 box, rotate (x,y)->(2-y,x). But if I use a uniform 4x4 rotation for everything, 3x3 pieces defined in top-left of 4x4 box would rotate weirdly (they'd drift). Hmm: T piece in 4x4 box: cells (1,0),(0,1),(1,1),(
+---

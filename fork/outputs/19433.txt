@@ -1,0 +1,64 @@
+run 19433 | rc5 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.62 t/s | prompt 39.6 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-25 10:02:37
+
+The user wants the smallest HTML Tetris game. Let me think about this. "Smallest" — they want minimal code. But I don't want to just dump a tiny unreadable blob; I want to make something that's actually a pleasure to open. I can give a compact one-file Tetris, and pair it with a presentation that feels alive — a nice background, some motion — while keeping the game code itself genuinely small.
+
+Balance: the ask is "smallest html tetris game". Deliver a compact single-file Tetris. But I can make the page around it feel crafted without bloating the game logic too much. Hmm — "smallest" is the explicit request, so I should honor it primarily. Maybe give the ultra-minimal version (the tiny one) AND a slightly dressed-up playable version? That could be nice: lead with the tiny one.
+
+Actually, let me think about what's best. The request is explicit: smallest. I'll deliver a genuinely small, complete, playable Tetris in one HTML file. Then maybe offer a "polished" variant. But offering two might dilute. Let me do: primary deliverable = the minified-ish tiny Tetris (readable but dense), presented on a page that itself feels alive.
+
+Hmm, but if I make a "page around it", the page IS the game. Let me just build one great thing: a single HTML file Tetris that is compact in its game logic but renders beautifully. And note the byte count.
+
+Let me reconsider: the user says "smallest". I think the best response is:
+1. A truly tiny version (~ under 1KB) — the showpiece of minimalism.
+2. Optionally mention it's fully playable.
+
+Actually a great approach: give the tiny version as the main artifact, and then a second "same game, dressed up" version. That's generous and shows range. But it doubles length. Let me do the tiny one as the hero, plus a compact-but-designed one. I think that's good — the contrast is nice.
+
+Hmm, let me keep it focused. I'll write ONE file that is small but not unreadably so, and then a minified ~700 byte version as a bonus. Actually let's flip: lead with the readable small one, then the golfed one.
+
+Let me write the Tetris logic compactly.
+
+Classic tiny Tetris approach using canvas and a matrix rotation trick.
+
+```js
+const B=document.body,c=B.appendChild(document.createElement('canvas')),x=c.getContext('2d');
+c.width=160;c.height=320;
+let g={},p,o=0,s=0;
+```
+
+Standard tiny implementation:
+
+```html
+<canvas id=c width=160 height=320></canvas>
+<script>
+const x=c.getContext('2d'),W=10,H=20,S=16;
+let g=Array.from({length:H},()=>Array(W).fill(0)),p,o=0,s=0,d=0;
+const T=[0,0,0,0].map((_,i)=>[[0,1],[1,1],[1,0],[0,0]]); // nah
+```
+
+Better: use the classic "tetromino as 4 rotation states via matrix rotate" with a base shape defined by index.
+
+A well-known tiny approach:
+
+```js
+const O=[
+ [[0,1],[0,1],[1,1]],      // T? 
+]
+```
+
+Let me just define shapes as 3x3 or 4x4 arrays and rotate.
+
+Compact approach used widely:
+
+```js
+S='0110 0000 0110 0000|0000 0110 0110 0000|...'
+```
+
+Simplest readable: define 7 shapes as arrays of [x,y] cells for spawn state, and rotate around a pivot.
+
+```js
+const P=[[[0,0],[1,0],[2,0],[3,0]],[[0,0],[1,0],[1,1],[2,1]],...]
+```
+
+Rotation of arbitrary cells around origin: (x,y)->(y,-x) then normalize. That works for all pieces if we choose pivots consistently... For a 3x3 bounding box, rotate about center: (x,y)->(2-y,x) for 90° CW... Let's use the standard: for a piece defined in a 4
+---

@@ -1,0 +1,29 @@
+run 19719 | fix_deepseek_compressed_kv_grows_and_decode_threads_from_all | edit4c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 156.84 t/s | prompt 6501.2 t/s | 598 tokens | args: -np 1 | power 220+280 W | 2026-10-26 16:14:57
+
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - The user provided a C++ file: `common/json-schema-to-grammar.cpp`
+   - The request is: "Delete the code in this file that is never used."
+   - I need to identify unused code/functions/variables in the provided snippet and remove them.
+
+2.  **Scan the Code for Unused Elements:**
+   Let's go through the code systematically:
+   - Includes: `<algorithm>`, `<limits>`, `<map>`, `<regex>`, `<sstream>`, `<string>`, `<unordered_map>`, `<unordered_set>`, `<vector>`
+   - `using json = common_json;`
+   - `build_repetition` function: Used? Let's check. It's defined but I don't see it called anywhere in the provided snippet. Wait, it might be used elsewhere in the full file, but based on the snippet, it's not explicitly called. However, it's a helper function. I'll keep it unless I'm sure it's unused. Actually, in typical code analysis, I should only remove things that are clearly unused *within this snippet* or globally if I can infer it. But the prompt says "Delete the code in this file that is never used." I'll assume the provided snippet is the whole file or at least the relevant part. I'll check for unused functions/variables.
+   - `build_min_max_int` function: Used? Not called in the snippet. Might be used elsewhere.
+   - `SPACE_RULE`: Defined but not used in the snippet.
+   - `BuiltinRule` struct: Used in `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`.
+   - `PRIMITIVE_RULES` & `STRING_FORMAT_RULES`: Used in `is_reserved_name`.
+   - `is_reserved_name`: Used? Not called in the snippet.
+   - `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`: Defined but not used in the snippet.
+   - `GRAMMAR_LITERAL_ESCAPES`: Used in `format_literal`.
+   - `MAX_PATTERN_DEPTH`: Defined but not used.
+   - `NON_LITERAL_SET`, `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`: Defined but not used.
+   - `replacePattern`: Used in `format_literal`.
+   - `format_literal`: Used in `gbnf_format_literal`.
+   - `gbnf_format_literal`: Defined but not used in the snippet.
+   - `gbnf_escape_length`: Defined but not used in the snippet.
+   - `build_repetition`, `build_min_max_int`, `SPACE_RULE`, `is_reserved_name`, `INVALID_RULE_CHARS_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`, `MAX_PATTERN_DEPTH`, `NON_LITERAL_SET
+---

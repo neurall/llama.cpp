@@ -1,0 +1,41 @@
+run 19624 | deep-seek | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.24 t/s | prompt 9.0 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 11:57:25
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. This is one of the rare cases where the user's explicit request overrides my usual preference for polished, elaborate output — they want a golfed Tetris.
+
+Let me think about what "smallest" means here. A single self-contained HTML file with a playable Tetris, as few bytes as possible. I should still make it genuinely playable: move left/right, rotate, soft drop, hard drop maybe, line clearing, game over, score. The classic minimal Tetris implementations (like the famous 229-byte or ~500-byte ones) exist. Let me write my own compact one.
+
+Let me design a compact Tetris:
+
+- Canvas for rendering (or even simpler: use a `<canvas>` with minimal setup).
+- Board: 10x20, stored as array of strings or array of numbers.
+- Pieces: 7 tetrominoes. Compact encoding: each piece as a set of coordinates, or use the classic trick of encoding rotations via bit manipulation.
+
+A well-known compact approach: represent each tetromino as a 4x4 (or 3x3) matrix encoded in binary, rotate by transposing. Or use the "each rotation as 16-bit number" approach.
+
+Let me write a genuinely small but readable-ish implementation. The user asked for smallest, so I'll golf it but keep it functional. I'll aim for something like ~600-800 bytes total HTML, which is quite small for a full Tetris with rotation, line clear, score, game over, and keyboard controls.
+
+Let me draft:
+
+```html
+<body onload="setInterval(f=()=>{...},99)"><canvas id=c width=99 height=198></canvas><script>...</script>
+```
+
+Actually let me think about the classic minimal Tetris algorithm:
+
+Board: `b = Array(20).fill(0)` where each row is a 10-bit integer? That's very compact for line clearing: a full row is `1023`. Rendering: draw bit by bit. Collision: check bits.
+
+Pieces: encode each of 7 pieces × 4 rotations as 16-bit numbers (4x4 grid). There's a known compact table. Or compute rotations on the fly.
+
+Alternative approach used in tiny Tetris implementations (like the famous "Tetris in 140 bytes" or "smallest tetris" by things like "Tiny Tetris in 433 bytes" by Nicky Case / others). There's a well-known ~465-byte Tetris. Let me write my own from scratch to avoid copying.
+
+Let me design:
+
+- Board: 20 rows × 10 cols, stored as array of ints (bitmask per row).
+- Piece: current piece as list of [x,y] offsets? Or as a 4x4 matrix string.
+
+Compact piece encoding: Each tetromino can be encoded as 4 coordinate pairs, or as a 16-bit number per rotation. A neat trick: store pieces as arrays of 4 rotations, each rotation a 16-bit int. But that's a big table.
+
+Another trick: store each piece as a 2-bit-per-cell 4x4 grid (32 bits total for all rotations?) Hmm.
+
+Simplest compact: define pieces as arrays of [x,y] points relative to a pivot, rotate by (x,y) -> (y, -x) or similar. For tetrominoes with a pivot at a cell corner, rotation works: rotate point (x,y) around origin: (x,y) -> (y,-x). If we use offsets from a pivot point, this works for all 7 pieces if pivot chosen well (SRS-lite). E.g., piece defined as [[0,0],[1,0],[0,1],[1,1]] for O — rotation maps it to itself shifted... actually O rotates to itself if pivot is center; with cell-based pivot it shifts. Common trick: allow the shift, it's fine visually? No — O piece would drift. Hmm, with (x,y)->(y,-x): O cells (0,0),(1,0),(0,1),(1,1) -> (0,0),(0,-1),(1,0),(1,-1). That's the same square shifted up by 1. If we then also normalize... that adds code. Alternatively accept the drift — the square just moves up one each rotation, which after 4 rotations returns. Actually it would collide differently. Many tiny tetris implementations accept this. But it can cause the O piece to clip into the floor when rotating near the bottom — rotation collision check would just fail and keep old orientation, fine
+---

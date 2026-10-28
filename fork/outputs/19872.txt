@@ -1,0 +1,348 @@
+run 19872 | fix_dsv4_dummy_block_row_inside_zone | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 22.96 t/s | prompt 8.0 t/s | 4096 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 200+200 W | 2026-10-27 00:34:05
+
+
+---
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>3D Tetris — Polycube Well</title>
+<style>
+  :root {
+    --bg: #0b0f1a;
+    --panel: rgba(14,20,32,0.85);
+    --accent: #6fd3ff;
+    --text: #e8f1ff;
+    --muted: #8fa3c0;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .hud {
+    position: fixed; pointer-events: none;
+    font-size: 13px; letter-spacing: 0.5px;
+  }
+  #topLeft {
+    top: 12px; left: 12px;
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.25);
+    border-radius: 10px;
+    padding: 10px 14px;
+    line-height: 1.5;
+  }
+  #topLeft .big { font-size: 20px; color: var(--accent); }
+  #topRight {
+    top: 12px; right: 12px;
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.25);
+    border-radius: 10px;
+    padding: 10px 14px;
+    line-height: 1.5;
+    text-align: right;
+  }
+  #bottomLeft {
+    bottom: 12px; left: 12px;
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.25);
+    border-radius: 10px;
+    padding: 10px 14px;
+    line-height: 1.5;
+  }
+  #bottomRight {
+    bottom: 12px; right: 12px;
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.25);
+    border-radius: 10px;
+    padding: 10px 14px;
+    line-height: 1.5;
+    text-align: right;
+  }
+  .label { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+  .val { color: var(--text); }
+
+  /* Overlays */
+  .overlay {
+    position: fixed; inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    background: rgba(5,8,14,0.75);
+    backdrop-filter: blur(4px);
+    z-index: 10;
+  }
+  .overlay.show { display: flex; }
+  .card {
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.35);
+    border-radius: 14px;
+    padding: 22px 26px;
+    max-width: 520px;
+    width: 90%;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  }
+  .card h2 { margin: 0 0 12px; font-size: 20px; color: var(--accent); }
+  .card p { margin: 6px 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .card .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  button {
+    font-family: inherit;
+    font-size: 13px;
+    padding: 9px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(111,211,255,0.4);
+    background: rgba(111,211,255,0.12);
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button:hover { background: rgba(111,211,255,0.25); }
+  button.primary { background: var(--accent); color: #061018; border-color: var(--accent); font-weight: 600; }
+  button.primary:hover { background: #8fe0ff; }
+
+  .settings-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px;
+  }
+  .settings-grid label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .settings-grid input[type=range] { width: 100%; }
+  .settings-grid select { width: 100%; padding: 6px; background: #0e1622; color: var(--text); border: 1px solid rgba(111,211,255,0.3); border-radius: 6px; font-family: inherit; }
+
+  table.hs { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+  table.hs th, table.hs td { padding: 6px 8px; text-align: left; border-bottom: 1px solid rgba(111,211,255,0.15); }
+  table.hs th { color: var(--muted); font-weight: 500; }
+
+  /* Touch controls */
+  #touch {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    display: none;
+    padding: 10px;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+    background: rgba(5,8,14,0.6);
+    z-index: 5;
+  }
+  #touch button {
+    padding: 12px 16px;
+    font-size: 14px;
+    min-width: 60px;
+  }
+  @media (pointer: coarse) {
+    #touch { display: flex; }
+    #bottomLeft, #bottomRight { display: none; }
+  }
+
+  .kbd { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+
+<div class="hud" id="topLeft">
+  <div class="label">Score</div>
+  <div class="big" id="score">0</div>
+  <div class="label">Level</div>
+  <div class="val" id="level">1</div>
+  <div class="label">Lines</div>
+  <div class="val" id="lines">0</div>
+</div>
+
+<div class="hud" id="topRight">
+  <div class="label">Next</div>
+  <div class="val" id="next">—</div>
+  <div class="label">Hold</div>
+  <div class="val" id="hold">—</div>
+</div>
+
+<div class="hud" id="bottomLeft">
+  <div class="label">Combo</div>
+  <div class="val" id="combo">0</div>
+  <div class="label">Back-to-back</div>
+  <div class="val" id="b2b">0</div>
+</div>
+
+<div class="hud" id="bottomRight">
+  <div class="label">Controls</div>
+  <div class="val">Drag orbit · Wheel zoom · <span class="kbd">P</span> pause · <span class="kbd">H</span> help</div>
+</div>
+
+<div id="touch">
+  <button id="tLeft">◀</button>
+  <button id="tRight">▶</button>
+  <button id="tRotX">↻X</button>
+  <button id="tRotY">↻Y</button>
+  <button id="tRotZ">↻Z</button>
+  <button id="tSoft">▼</button>
+  <button id="tHard">⤓</button>
+  <button id="tHold">Hold</button>
+</div>
+
+<!-- Pause overlay -->
+<div class="overlay" id="pauseOverlay">
+  <div class="card">
+    <h2>Paused</h2>
+    <p>Press <span class="kbd">P</span> to resume, or use the buttons below.</p>
+    <div class="row">
+      <button class="primary" id="resumeBtn">Resume</button>
+      <button id="settingsBtn">Settings</button>
+      <button id="helpBtn">Help</button>
+      <button id="restartBtn">Restart</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings overlay -->
+<div class="overlay" id="settingsOverlay">
+  <div class="card">
+    <h2>Settings</h2>
+    <div class="settings-grid">
+      <div>
+        <label>Volume</label>
+        <input type="range" id="volRange" min="0" max="1" step="0.05" value="0.6">
+      </div>
+      <div>
+        <label>Ghost piece</label>
+        <select id="ghostSel">
+          <option value="on">On</option>
+          <option value="off">Off</option>
+        </select>
+      </div>
+      <div>
+        <label>Colour theme</label>
+        <select id="themeSel">
+          <option value="neon">Neon</option>
+          <option value="pastel">Pastel</option>
+          <option value="mono">Mono</option>
+        </select>
+      </div>
+      <div>
+        <label>Camera speed</label>
+        <input type="range" id="camSpeed" min="0.2" max="2.5" step="0.1" value="1">
+      </div>
+    </div>
+    <div class="row">
+      <button class="primary" id="settingsClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Help overlay -->
+<div class="overlay" id="helpOverlay">
+  <div class="card">
+    <h2>How to play</h2>
+    <p><b>Goal:</b> Fill entire horizontal layers of the 3D well. When a layer is completely filled, it collapses and everything above falls down.</p>
+    <p><b>Controls:</b></p>
+    <p>← / → : move piece horizontally<br>
+       ↑ / ↓ : soft drop (↓) and hard drop (Space)<br>
+       Q / E : rotate around X axis<br>
+       W / S : rotate around Y axis<br>
+       A / D : rotate around Z axis<br>
+       C : hold piece<br>
+       P : pause<br>
+       H : help</p>
+    <p><b>Mouse:</b> drag to orbit camera, wheel to zoom.</p>
+    <p><b>New mechanics:</b></p>
+    <p><b>1. Layer Collapse Gravity:</b> When a layer clears, all pieces above it fall down by one layer, and the well's gravity increases slightly for the next piece — rewarding big clears with faster, more intense play.</p>
+    <p><b>2. Polycube Rotation Kicks:</b> Unlike classic Tetris, pieces can rotate around all three axes. If a rotation would collide, the game tries a series of wall-kick offsets (up to 3 cells in each direction) before rejecting the rotation.</p>
+    <div class="row">
+      <button class="primary" id="helpClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Game over overlay -->
+<div class="overlay" id="gameOverOverlay">
+  <div class="card">
+    <h2>Game Over</h2>
+    <p id="finalScore">Final score: 0</p>
+    <p>High scores:</p>
+    <table class="hs" id="hsTable">
+      <thead><tr><th>#</th><th>Score</th><th>Level</th><th>Lines</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="row">
+      <button class="primary" id="restartGameBtn">Play again</button>
+      <button id="clearHsBtn">Clear high scores</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================================
+   3D TETRIS — POLYCUBE WELL
+   ----------------------------------------------------------------------------
+   NEW MECHANICS (not in classic Tetris):
+   1. LAYER COLLAPSE GRAVITY: When a full horizontal layer clears, all pieces
+      above it fall down one layer, and the well's gravity increases slightly
+      for the next piece. Big clears make the game faster and more intense.
+   2. POLYCUBE ROTATION KICKS: Pieces can rotate around all three axes. If a
+      rotation collides, the game tries a series of wall-kick offsets (up to 3
+      cells in each direction) before rejecting the rotation.
+   ============================================================================ */
+
+/* ---------- Constants ---------- */
+const WELL_W = 6;      // width (x)
+const WELL_D = 6;      // depth (z)
+const WELL_H = 14;     // height (y)
+const CELL = 1.0;      // world units per cell
+
+/* ---------- Piece definitions (polycubes) ---------- */
+// Each piece is a list of [x,y,z] cells relative to its origin.
+// Classic tetrominoes extended into 3D, plus 3D pentacube variants.
+const PIECES = [
+  // I — 4-long bar (tetromino)
+  { name: 'I', color: '#6fd3ff', cells: [[0,0,0],[1,0,0],[2,0,0],[3,0,0]] },
+  // O — 2x2 square (tetromino)
+  { name: 'O', color: '#ffd166', cells: [[0,0,0],[1,0,0],[0,0,1],[1,0,1]] },
+  // T — T-shape (tetromino)
+  { name: 'T', color: '#ef476f', cells: [[0,0,0],[1,0,0],[2,0,0],[1,0,1]] },
+  // L — L-shape (tetromino)
+  { name: 'L', color: '#06d6a0', cells: [[0,0,0],[0,0,1],[0,0,2],[1,0,2]] },
+  // J — J-shape (tetromino)
+  { name: 'J', color: '#b388ff', cells: [[0,0,0],[0,0,1],[0,0,2],[-1,0,2]] },
+  // S — S-shape (tetromino)
+  { name: 'S', color: '#ff9f1c', cells: [[0,0,0],[1,0,0],[1,0,1],[2,0,1]] },
+  // Z — Z-shape (tetromino)
+  { name: 'Z', color: '#ff6b6b', cells: [[0,0,0],[1,0,0],[1,0,1],[2,0,1]] },
+  // 3D pentacube variants
+  // P — plus-shaped pentacube (cross in 3D)
+  { name: 'P', color: '#4cc9f0', cells: [[0,0,0],[1,0,0],[-1,0,0],[0,0,1],[0,0,-1]] },
+  // C — corner pentacube (3D L)
+  { name: 'C', color: '#f72585', cells: [[0,0,0],[1,0,0],[0,0,1],[0,0,2],[1,0,2]] },
+  // X — 3D cross pentacube (center + 4 arms)
+  { name: 'X', color: '#7209b7', cells: [[0,0,0],[1,0,0],[-1,0,0],[0,0,1],[0,0,-1]] },
+  // Y — Y-shaped pentacube
+  { name: 'Y', color: '#3a0ca3', cells: [[0,0,0],[0,0,1],[0,0,2],[1,0,2],[-1,0,2]] },
+  // W — W-shaped pentacube
+  { name: 'W', color: '#f4a261', cells: [[0,0,0],[1,0,0],[1,0,1],[2,0,1],[2,0,2]] },
+];
+
+/* ---------- 7-bag randomizer ---------- */
+function makeBag() {
+  // Shuffle the 7 classic tetrominoes (indices 0..6) into a bag.
+  const bag = [0,1,2,3,4,5,6];
+  for (let i = bag.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [bag[i], bag[j]] = [bag[j], bag[i]];
+  }
+  return bag;
+}
+
+/* ---------- Game state ---------- */
+const state = {
+  grid: null,          // 3D array [y][x][z] of color or null
+  current: null,       // { pieceIndex, cells, pos:[x,y,z], rot:[rx,ry,rz] }
+  nextQueue: [],       // indices into PIECES
+  bag: [],
+  hold: null,          // pieceIndex or null
+  score: 0,
+  level: 1,
+  lines:

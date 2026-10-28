@@ -1,0 +1,24 @@
+run 19473 | rc5u | pf200k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 19.63 t/s | prompt 672.1 t/s | 1000 tokens | args: -np 1 -lm mmap --moe pin-budget=96636764160 | power 220+280 W | 2026-10-25 13:10:44
+
+<think>The user wants me to return the completed source with bugs fixed. Let me analyze the code carefully to find bugs.
+
+Looking at the code, I need to find bugs that were introduced. Let me compare the two versions of `json-schema-to-grammar.cpp` that appear in the file - they seem to be duplicated. Let me look for differences.
+
+Actually, looking more carefully, the file contains multiple source files concatenated together. Let me focus on finding bugs.
+
+Let me look at the `common/chat-auto-parser-helpers.cpp` file more carefully, specifically the `calculate_diff_split` function.
+
+Looking at the `calculate_diff_split` function, I see a potential issue with the `eat_segment` lambda:
+
+
+I'm noticing that `eat_segment` takes `str` by value but uses `std::move(str)` to append `seg.value`, which should work fine since `str` is a local parameter. Let me trace through the logic more carefully to see if there's an issue with how the segments are being accumulated. I'm tracing through the logic of how `eat_segment` works with `std::accumulate` — it takes the accumulated string by value, appends the segment value, and returns the result, which is correct. Now I'm looking at the `common_prefix_len` function to see if there's an issue there.
+
+The function computes the common prefix length between two strings by comparing characters from the start, and it's being called with substrings that exclude the suffix portion to avoid overlaps between prefix and suffix. I'm checking whether the substrings could be shorter than expected...
+
+Actually, I need to verify that `remainder_left.size()` is at least `suffix_len` — since `suffix_len` comes from `common_suffix_len(remainder_left, remainder_right)`, it's bounded by the minimum of both lengths, so the subtraction should be safe.
+
+Now I'm looking at the `until_common_prefix` function, which finds the common prefix between two strings and then locates that prefix within a full string to return everything before it.
+
+I'm also examining `after_common_suffix`, which does the mirror operation — finding the common suffix between two strings and returning everything after it in the full string.
+
+Now I'm looking at the `segmentize_markers` function, which parses text and identifies marker boundaries. It tracks when we enter and exit markers, splitting the text into segments at those boundaries. I'm noticing a potential issue with how the loop handles the closing bracket — when we find a matching closer, we push the segment and reset the state, but I need to verify the logic handles edge cases correctly. I'm tracing through the logic of how segments are pushed when markers close — the comment says `last_border` will always be smaller than `cur_pos`, which checks out since `last_border` gets set to `cur_pos` when a marker opens, and we only close markers at positions greater than that. Now I'm looking at the `calculate_diff_split` function to see if there are any issues there. I'm tracing through the logic of how `left_end` and `right_end` pointers advance when segments match at both ends, checking whether the iterator decrements correctly and whether `left_fully_consumed` gets set appropriately when we've reached the start of the sequence. I'm tracing through the logic more carefully now. When `left_start` and `left_end` are at the same position, the condition `left_start != left_end` fails, so `left_end` doesn't decrement and `left_fully_consumed` gets set to true instead. The same pattern applies to `right_end`. Then I'm checking what happens when `left_start` equals `left_end` but `right_start` doesn't equal `right_end` — the code compares `*left_start` against `*right_end` to see if they match. I'm tracing through the logic of how `left_end` and `right_end` pointers advance when segments match at both ends, checking whether the iterator decrements correctly and whether `left_fully_consumed` gets set appropriately when we've reached the start of the sequence. I'm tracing through the logic more carefully now. When `left_start` and `left_end` are at the same position, the condition `left_start != left_end` fails, so `left_end` doesn't decrement and `left_fully_consumed` gets set to true instead. The same pattern applies to `right_end`. Then I'm checking what happens when `left_start` equals `left_end` but `right_start` doesn't equal `right_end` — the code compares `*left_start` against `*right_end` to see if they match. I'm tracing through the logic of how `left_end` and `right_end` pointers advance when segments match at both ends, checking whether the iterator decrements correctly and whether `left_fully_consumed` gets set

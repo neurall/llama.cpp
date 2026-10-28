@@ -1,0 +1,40 @@
+run 18106 | memwaste2 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.14 t/s | prompt 982.8 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-23 00:45:20
+
+The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This file converts JSON schemas to GBNF grammars
+- It's a complex file with pattern matching, grammar building, etc.
+
+### Issues I can spot:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` by passing `0` to the recursive call. This seems correct but the logic is subtle.
+   - When `max_items == 0`, returns empty string - but what if `min_items > 0`? That would be an invalid schema (min > max), but it's not checked.
+
+2. **`build_min_max_int` function:**
+   - Very complex recursive function. The `decimals_left` parameter is used as a depth limiter but the name is misleading - it's about digit depth, not decimals.
+   - The `top_level` parameter controls whether leading zeros are allowed.
+   - Potential issue: when `min_value == 0` and `top_level` is true, it outputs `[0] | [1-9] ...` which allows "0" but also multi-digit numbers starting with 1-9. This seems correct.
+   - When `min_value < 0` and only `has_min`, it recursively calls with `std::numeric_limits<int64_t>::min()` as min - but this could cause issues since `has_min` would be false in the recursive call (since `min_value == INT64_MIN`), so it would go to the `has_max` branch. Actually wait, let me re-read... `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false)` - here `min_value` is `INT64_MIN` so `has_min` is false, and `max_value` is `-min_value` which is positive, so `has_max` is true. This would go to the `has_max` branch. Seems correct.
+
+3. **`_add_rule` function:**
+   - The deduplication logic: if a rule with the same name exists but different content, it appends a number. The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the name doesn't exist or the content matches. This seems correct but could be O(n) in pathological cases.
+
+4. **`_pattern_to_rule` function:**
+   - The `sub_rule_ids` map is used to deduplicate sub-rules within a pattern. The key is the rule content and the value is the rule ID. This is a bit unusual - using rule content as a key.
+   - The `to_rule` lambda wraps literals in quotes but doesn't escape them. Wait, actually looking more carefully, the literals are built up in the `literal` variable and they do handle `"` escaping (`literal += "\\\""`). But what about other special characters? The `format_literal` function is not used here - instead, the literal is directly wrapped in quotes. This could be a bug if the literal contains characters that need escaping in GBNF (like `\r`, `\n`, `\\`).
+   
+   Actually wait, let me re-read. The `to_rule` function does `return is_literal ? "\"" + s + "\"" : s;`. So if `s` contains a backslash or newline, it won't be properly escaped. This seems like a potential bug.
+
+   Actually, looking at the literal building code more carefully:
+   - `literal += "\\\""` for quotes - this adds `\"` to the literal
+   - For backslash escapes, it uses `gbnf_escape_length` which returns the GBNF escape sequence
+   - For non-literal characters, they're handled separately
+   
+   But the issue is that when `to_rule` wraps in quotes, it doesn't call `format_literal`. So if the literal contains `\r` or `\n` (as actual characters), they won't be escaped. However, looking at the escape handling, `\r` and `\n` in the regex would be handled by `gbnf_escape_length` which returns 2 for `\r` and `\n`, so the literal would contain the escape sequence `\r` (two characters: backslash and 'r'), not the actual carriage return. So this
+---

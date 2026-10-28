@@ -1,0 +1,77 @@
+run 17878 | inifix6 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.58 t/s | prompt 91.1 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-10-22 17:14:32
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the intent is a compact, self-contained Tetris in one HTML file. I should keep it small but functional. The most fitting form for a tiny game request is just the code — minimal preamble, a tiny note.
+
+Should I add styling flair? The request says "smallest" — so brevity is the aesthetic here. Don't bloat it. But I can make it look decent with minimal CSS. Keep it tight.
+
+Let me write a compact Tetris:
+
+```html
+<canvas id=c width=120 height=240></canvas>
+<script>
+// 10x20 grid, 12px cells
+</script>
+```
+
+Compact implementation:
+
+```html
+<canvas id=c width=120 height=240></canvas>
+<script>
+const B=12,W=10,H=20,g=[...Array(H)].map(_=>Array(W).fill(0)),X=c.getContext('2d');
+const S='0000,22220,02200,2222,220,022,22,22,22200,020,0220,2200,202,022,220,2200'.split(',');
+```
+
+Hmm, let me use a standard compact piece representation. A common trick:
+
+```js
+P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0],[1,1],[1,1]]...]
+```
+
+Simplest approach: define pieces as strings of rows, rotate by transposing+reversing.
+
+```js
+const P="1111|11/11|01/111|10/11/11|1/11/11|111/1|01/11|1/11/11|11/01|11/10".split("|")
+```
+
+Let me do it cleanly:
+
+```js
+P=[
+"1111",
+"11,11",
+"010,111",
+"10,11,11",
+"01,11,11",
+"111,1",
+"111,01"
+]
+```
+
+Parse each piece into a matrix of rows. Rotate: transpose then reverse each row (clockwise).
+
+Colors: index+1.
+
+Game loop with setInterval or requestAnimationFrame with drop timer.
+
+Controls: arrows + space for hard drop, P pause.
+
+Score, next piece, level.
+
+Keep it small but playable. Let me write it:
+
+```html
+<!doctype html><title>Tetris</title>
+<style>body{background:#111;color:#eee;font:14px monospace;display:flex;gap:12px;align-items:center;justify-content:center;height:100vh;margin:0}canvas{background:#000;border:1px solid #333}b{display:block}</style>
+<canvas id=c width=120 height=240></canvas>
+<div id=i></div>
+<script>
+const B=12,W=10,H=20,g=Array.from({length:H},()=>Array(W).fill(0)),x=c.getContext('2d'),
+C=['#000','#0ff','#ff0','#a0f','#0f0','#f00','#f80','#00f'],
+P=['1111','11,11','010,111','10,11,11','01,11,11','111,1','111,01'],
+rot=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse()),
+newP=()=>{let m=P[n=Math.random()*7|0].split(',').map(r=>[...r].map(Number));return{m,x:3-w>>1,y:0}}
+```
+
+Careful: `3-w>>1` — precedence: `>>` lower than `-`, so `
+---

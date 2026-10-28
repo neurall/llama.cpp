@@ -1,0 +1,40 @@
+run 20126 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 21.76 t/s | prompt 9.2 t/s | 987 tokens | args: -np 1 --moe pswap=1,reheat=2,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-27 21:45:27
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML with canvas, JS. Need minimal but functional. Need maybe no external libs. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design compact Tetris. Single HTML file. Use canvas. Need controls keyboard. Need implement tetrominoes, rotation, collision, line clearing, scoring, game over. "smallest html tetris game" could mean minimal code. Need produce concise but functional. Need maybe use canvas 10x20 grid. Use JS.
+
+Let's craft robust minimal code. Need think through implementation.
+
+Option: Use canvas, grid array 10x20. Tetromino shapes as arrays of coordinates. Use 7 pieces. Use random piece. Game loop via requestAnimationFrame or setInterval. Controls: left/right/down/up rotate, space hard drop. Need line clear. Need score. Need game over.
+
+Need ensure rotation works. Could represent each piece as matrix of 4 cells. Simpler: shapes as arrays of [x,y] relative coordinates. Rotation around center? For tetrominoes, use predefined rotations? Minimal: use matrix representation and rotate matrix. But collision and coordinates.
+
+Let's design:
+
+const W=10,H=20,S=24; canvas width W*S, height H*S.
+board = Array(H).fill().map(()=>Array(W).fill(0));
+piece = {shape: [[1,1],[1,1]]? no}. Use shapes as matrices:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+Need rotate matrix clockwise: new matrix rows = old cols, new[r][c] = old[old.length-1-c][r]? Let's derive. For matrix m with rows y, cols x. Clockwise rotation: new[y][x] = old[oldRows-1-x][y]? Example T [[0,1,0],[1,1,1]] rotate clockwise should [[1,0],[1,1],[1,0]]? Let's compute: old rows 2, cols 3. new rows 3, cols 2. new[0][0]=old[1][0]=1; new[0][1]=old[0][0]=0; new[1][0]=old[1][1]=1; new[1][1]=old[0][1]=1; new[2][0]=old[1][2]=1; new[2][1]=old[0][2]=0 => [[1,0],[1,1],[1,0]] yes. Formula new[r][c] = old[oldRows-1-c][r]? For r=0,c=0 old[1][0]=1 yes. r=0,c=1 old[0][0]=0 yes. Good.
+
+Piece state: shape matrix, x,y top-left. Need spawn at x = floor((W - shape[0].length)/2), y=0. But if shape has empty top row? For T matrix top row has 0,1,0; spawn y=0 okay. Need collision check: for each cell in shape where 1, board[y+r][x+c] if out of bounds or occupied. Need allow y negative? spawn y=0. Rotation may cause out of bounds; if invalid, don't rotate. Need maybe wall kick? Minimal no.
+
+Game loop: setInterval tick every maybe 500ms. But need smooth? Use requestAnimationFrame with timer. Simpler setInterval. Need handle drop. On tick, if can move down, y++; else lock piece, clear lines, spawn new. If spawn collision -> game over. Need draw.
+
+Controls:
+document.addEventListener('keydown', e => {
+ if gameOver return maybe restart on Enter?
+ switch e.key:
+ ArrowLeft: move(-1,0)
+ ArrowRight: move(1,0)
+ ArrowDown: move(0,1) (soft drop)
+ ArrowUp: rotate()
+ ' ': hard drop: while can move down y++; lock? Actually hard drop should drop until collision then
+---

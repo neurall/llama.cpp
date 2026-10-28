@@ -1,0 +1,64 @@
+run 17800 | b13600 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 53.03 t/s | prompt 59.2 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-10-22 15:51:45
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I'll keep it small, but I don't want it to be a bland bare script — I want it crafted and polished: a nice arcade/CRT aesthetic, a distinctive display font paired with a readable body font, some motion and micro-interactions, and a layered background. But keep it genuinely small — that's the whole point of the request. So balance: compact code, but a well-designed shell around it.
+
+Let me write a genuinely small Tetris. Key: minimal JS but complete game logic.
+
+Approach: use a canvas, or use DOM grid? Canvas is smaller. Let's do canvas with a compact implementation.
+
+Smallest reasonable Tetris in HTML:
+
+```html
+<canvas id=c width=160 height=320></canvas>
+<script>
+// 10x20 board
+```
+
+Let me write compact but readable-ish code.
+
+Board: 10x20. Pieces as rotation states. A compact way: define pieces as strings or use the "one big number" trick.
+
+Classic tiny Tetris trick: represent pieces as arrays of coordinates generated from a formula. Or use the well-known compact approach:
+
+```js
+P='0000,0222,0000|...'
+```
+
+Simplest compact: define each piece as a set of rotation states via matrices encoded as strings.
+
+Alternative tiny approach: use the "S" matrix trick where each tetromino is defined by a number and rotations computed by rotating a 4x4 or 3x3 grid.
+
+Let me use this known compact method:
+
+```js
+const S='0,0,0|1,1,1|0,1,0' // etc
+```
+
+Actually a nice compact trick: pieces defined as base 4x4 bitmasks, rotate by index math.
+
+Let me do:
+
+```js
+P=[0xF00,0x9900,0xF0,0x6C00,0x44C,0x8E0,0x2E0] // hmm 16-bit
+```
+
+Rotation of a bitmask in a 4x4 grid: rotate = transpose & reverse rows. Doable but fiddly.
+
+Simpler and still small: define each piece's cells as offsets in a 4x4 for each of 2 rotations (I,O,S,Z have 2; T,J,L have 2 distinct... actually all have 2 distinct rotation states for parity? No — T,J,L have 4 rotations, I has 2, O has 1, S/Z have 2). So need 4 states for T,J,L.
+
+Easiest compact: define pieces as strings of 4x4 grids per rotation? Too long.
+
+Alternative: define each piece as a 4x4 bitmask and rotate via a function:
+
+```js
+r=m=>{let x=0;for(let i=0;i<16;i++)x|=(m>>i&1)<<(4*(i%4)+i/4|0);return x}
+```
+
+Wait, for a 4x4 grid with bit i = row-major index (i = y*4+x), rotating clockwise: new(x,y) = old(y, 3-x)... Let's define: cell index i, x=i%4, y=i/4. Rotate CW: new position (x', y') = (3-y, x). So new index = x'*... hmm let's just do: for each set bit at index i, set bit at index (x' + 4*y') where x' = 3 - y, y' = x. Wait that's rotation about center of 4x4. For 4x4 grid, CW rotation maps (x,y) -> (3-y, x). Yes.
+
+So:
+```js
+R=m=>{let n=0;for(let i=0;i<16;i++)if(m>>i&1)n|=1<<(3-(i>>2)+(i&3)*4);return n}
+```
+Check: i = x + 4y, so x = i&3, y = i>>2. New index = x' + 4y' = (3-y) + 4x. Yes: `1<<((3-(i>>2
+---

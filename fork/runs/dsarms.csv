@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+mimo-split,mimo,2,pfbest1k,1024,--moe dense-split=1,
+glm-one,glm,2,pfbest1k,1024,--moe dense-split=one,
+qni4-one,qn_iq4xs,2,pfbest1k,1024,--moe dense-split=one,

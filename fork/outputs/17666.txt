@@ -1,0 +1,9 @@
+run 17666 | tokms31 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 53.8 t/s | prompt 59.1 t/s | 35 tokens | args: -np 1 -c 1024 | power 250+250 W | 2026-10-22 03:38:21
+
+A1
+
+129091969<think> 
+  None, or a copy of a request, and as the response below of only the entire69. So the two possible and well well of their is.
+
+...
+---

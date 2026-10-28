@@ -1,0 +1,10 @@
+name,model,n,test,tokens,args,extra
+qni4-io-one,qn_iq4xs,2,edit4c,1024,--moe dense-split=one,
+qni4-io-dense,qn_iq4xs,2,edit4c,1024,--moe dense-split=1 --moe split-experts=0,
+qni4-io-auto,qn_iq4xs,2,edit4c,1024,,
+qni4-i-one,qn_iq4xs,2,pf12k1k,1024,--moe dense-split=one,
+qni4-i-dense,qn_iq4xs,2,pf12k1k,1024,--moe dense-split=1 --moe split-experts=0,
+glm-i-one,glm,2,pf12k1k,1024,--moe dense-split=one,
+glm-i-dense,glm,2,pf12k1k,1024,--moe dense-split=1 --moe split-experts=0,
+glm35-i-one,glm35,2,pf12k1k,1024,--moe dense-split=one,
+glm35-i-dense,glm35,2,pf12k1k,1024,--moe dense-split=1 --moe split-experts=0,

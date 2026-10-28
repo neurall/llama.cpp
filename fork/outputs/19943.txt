@@ -1,0 +1,362 @@
+run 19943 | fix_cuda_argmax_returns_zero_for_nonfinite_row | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 23.48 t/s | prompt 16.6 t/s | 4096 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 3 --moe spec-depth=3,pin-budget=108447924224 -lm mmap | power 200+200 W | 2026-10-27 02:58:04
+
+
+---
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>3D Tetris — Polycube Well</title>
+<style>
+  :root {
+    --bg: #0b0f1a;
+    --panel: rgba(14,20,32,0.85);
+    --accent: #6fd3ff;
+    --text: #e8f1ff;
+    --muted: #8fa3bd;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .hud {
+    position: fixed; top: 12px; left: 12px;
+    display: flex; gap: 10px; flex-wrap: wrap;
+    pointer-events: none;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.18);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 13px;
+    line-height: 1.35;
+    backdrop-filter: blur(6px);
+  }
+  .card b { color: var(--accent); }
+  .card .muted { color: var(--muted); }
+
+  .right-hud {
+    position: fixed; top: 12px; right: 12px;
+    display: flex; flex-direction: column; gap: 10px;
+    pointer-events: none;
+  }
+  .preview {
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.18);
+    border-radius: 10px;
+    padding: 8px;
+    display: flex; gap: 8px;
+    align-items: center;
+  }
+  .preview canvas { width: 64px; height: 64px; border-radius: 6px; background: rgba(0,0,0,0.35); }
+
+  .controls {
+    position: fixed; bottom: 12px; left: 12px;
+    display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  button {
+    background: rgba(20,30,48,0.9);
+    color: var(--text);
+    border: 1px solid rgba(111,211,255,0.25);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover { background: rgba(40,60,90,0.9); border-color: var(--accent); }
+  button.primary { background: rgba(111,211,255,0.18); border-color: var(--accent); }
+
+  .overlay {
+    position: fixed; inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    background: rgba(5,8,14,0.75);
+    backdrop-filter: blur(4px);
+    padding: 20px;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.25);
+    border-radius: 14px;
+    padding: 20px 24px;
+    max-width: 520px;
+    width: 100%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  .modal h2 { margin: 0 0 12px; font-size: 20px; color: var(--accent); }
+  .modal p { margin: 0 0 12px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+  .modal .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .modal label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .modal input[type="range"] { width: 140px; }
+  .modal select { background: rgba(20,30,48,0.9); color: var(--text); border: 1px solid rgba(111,211,255,0.25); border-radius: 6px; padding: 6px 8px; }
+  .modal table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .modal table td, .modal table th { padding: 6px 8px; text-align: left; border-bottom: 1px solid rgba(111,211,255,0.12); }
+  .modal table th { color: var(--accent); font-weight: 600; }
+
+  .touch {
+    position: fixed; bottom: 12px; right: 12px;
+    display: none;
+    gap: 8px;
+  }
+  .touch button { width: 56px; height: 56px; font-size: 18px; padding: 0; }
+  @media (pointer: coarse) {
+    .touch { display: flex; }
+    .controls { display: none; }
+  }
+
+  .toast {
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(111,211,255,0.15);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    padding: 10px 16px;
+    border-radius: 10px;
+    font-size: 14px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+
+<div class="hud">
+  <div class="card"><b>Score</b> <span id="score">0</span></div>
+  <div class="card"><b>Level</b> <span id="level">1</span></div>
+  <div class="card"><b>Lines</b> <span id="lines">0</span></div>
+  <div class="card"><b>Combo</b> <span id="combo">0</span></div>
+  <div class="card"><b>B2B</b> <span id="b2b">0</span></div>
+</div>
+
+<div class="right-hud">
+  <div class="preview">
+    <canvas id="next1" width="64" height="64"></canvas>
+    <canvas id="next2" width="64" height="64"></canvas>
+    <canvas id="next3" width="64" height="64"></canvas>
+  </div>
+  <div class="preview">
+    <canvas id="hold" width="64" height="64"></canvas>
+  </div>
+</div>
+
+<div class="controls">
+  <button id="btnPause">Pause</button>
+  <button id="btnHelp">Help</button>
+  <button id="btnSettings">Settings</button>
+  <button id="btnRestart">Restart</button>
+</div>
+
+<div class="touch">
+  <button id="tLeft">◀</button>
+  <button id="tRight">▶</button>
+  <button id="tDown">▼</button>
+  <button id="tRotX">X</button>
+  <button id="tRotY">Y</button>
+  <button id="tRotZ">Z</button>
+  <button id="tDrop">⤓</button>
+  <button id="tHold">H</button>
+</div>
+
+<div class="overlay" id="pauseOverlay">
+  <div class="modal">
+    <h2>Paused</h2>
+    <p>Press P or click Resume to continue.</p>
+    <div class="row">
+      <button class="primary" id="btnResume">Resume</button>
+      <button id="btnPauseRestart">Restart</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="gameOverOverlay">
+  <div class="modal">
+    <h2>Game Over</h2>
+    <p id="finalScore"></p>
+    <table id="highScores">
+      <thead><tr><th>#</th><th>Score</th><th>Level</th><th>Lines</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="row">
+      <button class="primary" id="btnRestartGame">Restart</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="helpOverlay">
+  <div class="modal">
+    <h2>Help</h2>
+    <p>
+      <b>Mouse:</b> drag to orbit, scroll to zoom.<br>
+      <b>Keyboard:</b> ←/→ move, ↓ soft drop, Space hard drop, Q/E rotate around X, W/S rotate around Y, A/D rotate around Z, C hold, P pause.<br>
+      <b>Touch:</b> use the on-screen buttons.
+    </p>
+    <p>
+      <b>New mechanics:</b><br>
+      <b>1. Gravity Well:</b> The well is a 3D volume. Pieces fall along the vertical axis, but the well has a "gravity gradient" — pieces near the bottom fall faster. This changes timing and encourages planning.<br>
+      <b>2. Layer Collapse:</b> When a full horizontal layer is cleared, all blocks above it collapse downward by one layer, and the cleared layer's particles burst outward. This is a 3D twist on line clears.
+    </p>
+    <div class="row">
+      <button class="primary" id="btnCloseHelp">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="settingsOverlay">
+  <div class="modal">
+    <h2>Settings</h2>
+    <label>Volume <input type="range" id="vol" min="0" max="1" step="0.05" value="0.6"></label>
+    <label>Ghost <input type="checkbox" id="ghostToggle" checked></label>
+    <label>Theme
+      <select id="themeSelect">
+        <option value="neon">Neon</option>
+        <option value="pastel">Pastel</option>
+        <option value="mono">Mono</option>
+      </select>
+    </label>
+    <label>Camera speed <input type="range" id="camSpeed" min="0.2" max="2" step="0.1" value="1"></label>
+    <div class="row">
+      <button class="primary" id="btnCloseSettings">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============================================================
+   3D TETRIS — POLYCUBE WELL
+   ------------------------------------------------------------
+   NEW MECHANICS (not in classic Tetris):
+   1. GRAVITY WELL: The well is a 3D volume with a vertical
+      gravity gradient. Pieces fall faster near the bottom,
+      and the camera follows the falling piece smoothly.
+   2. LAYER COLLAPSE: When a full horizontal layer is cleared,
+      all blocks above it collapse downward by one layer,
+      and the cleared layer bursts into particles. This is a
+      true 3D line-clear analogue.
+   ============================================================ */
+
+/* ---------- Constants ---------- */
+const WELL_W = 6;      // width in cells
+const WELL_D = 6;      // depth in cells
+const WELL_H = 14;     // height in cells
+const CELL = 1.0;      // world units per cell
+const GRAVITY_BASE = 0.9;
+const GRAVITY_GRADIENT = 0.35;
+
+/* ---------- Utility ---------- */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function randInt(n) { return Math.floor(Math.random() * n); }
+
+/* ---------- Piece definitions ----------
+   Each piece is a set of 3D cells (x,y,z) relative to origin.
+   Classic tetrominoes are extended into 3D by giving them
+   depth (z) variants. We also add 3D pentacube variants.
+*/
+const PIECES = [
+  // I — 4 long, 3D variant: 4x1x1
+  { name: 'I', cells: [[0,0,0],[1,0,0],[2,0,0],[3,0,0]], color: 0x6fd3ff },
+  // O — 2x2x1
+  { name: 'O', cells: [[0,0,0],[1,0,0],[0,0,1],[1,0,1]], color: 0xffd166 },
+  // T — 3x1x1 plus center
+  { name: 'T', cells: [[0,0,0],[1,0,0],[2,0,0],[1,0,1]], color: 0xff6b6b },
+  // S — 3x1x1 zigzag
+  { name: 'S', cells: [[0,0,0],[1,0,0],[1,0,1],[2,0,1]], color: 0x9b5de5 },
+  // Z — 3x1x1 zigzag
+  { name: 'Z', cells: [[0,0,1],[1,0,1],[1,0,0],[2,0,0]], color: 0x00f5d4 },
+  // J — 3x1x1 L
+  { name: 'J', cells: [[0,0,0],[0,0,1],[1,0,1],[2,0,1]], color: 0xf15bb5 },
+  // L — 3x1x1 L
+  { name: 'L', cells: [[2,0,0],[2,0,1],[1,0,1],[0,0,1]], color: 0xfee440 },
+  // 3D pentacube variants
+  { name: 'P1', cells: [[0,0,0],[1,0,0],[0,0,1],[1,0,1],[0,1,0]], color: 0x8ac926 },
+  { name: 'P2', cells: [[0,0,0],[1,0,0],[2,0,0],[1,0,1],[1,1,0]], color: 0x1982c4 },
+  { name: 'P3', cells: [[0,0,0],[0,0,1],[1,0,1],[1,0,0],[0,1,1]], color: 0xff595e },
+];
+
+/* ---------- 7-bag randomizer ---------- */
+function makeBag() {
+  const bag = [];
+  for (let i = 0; i < PIECES.length; i++) bag.push(i);
+  // shuffle
+  for (let i = bag.length - 1; i > 0; i--) {
+    const j = randInt(i + 1);
+    [bag[i], bag[j]] = [bag[j], bag[i]];
+  }
+  return bag;
+}
+
+/* ---------- Game state ---------- */
+const state = {
+  grid: null,          // 3D array [x][y][z] of color or null
+  active: null,        // { pieceIndex, cells, pos, rot }
+  nextQueue: [],
+  hold: null,
+  score: 0,
+  level: 1,
+  lines: 0,
+  combo: 0,
+  b2b: 0,
+  paused: false,
+  gameOver: false,
+  dropTimer: 0,
+  gravity: GRAVITY_BASE,
+  particles: [],
+  clearingLayers: [],
+  camera: {
+    theta: 0.6,
+    phi: 0.35,
+    radius: 18,
+    target: [WELL_W/2, WELL_H/2, WELL_D/2],
+    follow: true,
+    followTarget: null,
+  },
+  settings: {
+    volume: 0.6,
+    ghost: true,
+    theme: 'neon',
+    camSpeed: 1,
+  },
+  highScores: [],
+};
+
+/* ---------- Audio ---------- */
+let audioCtx = null;
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+function playTone(freq, dur, type = 'sine', vol = 0.3) {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t);
+  gain.gain.setValueAtTime(vol * state.settings.volume, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start(t);
+  osc.stop(t + dur);
+}
+function sfxMove() { playTone(220, 0.05, 'square', 0.15); }
+function sfx

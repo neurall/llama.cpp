@@ -1,0 +1,73 @@
+run 17676 | b13600 | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 28.82 t/s | prompt 692.0 t/s | 906 tokens | args: -np 1 | power 200+200 W | 2026-10-22 04:11:58
+
+Let me analyze this file carefully to identify which functions, variables, and code are never used.
+
+Let me go through each item:
+
+1. `build_repetition` - This is a static function. Let me check if it's called anywhere in this file... I don't see it being called in the visible code. But the file is truncated, so there might be more code below. However, based on what's shown, it's not called.
+
+2. `build_min_max_int` - This is a static function. It's called recursively within itself, but is it called from outside? I don't see any external calls in the visible code.
+
+3. `SPACE_RULE` - Is this used? I don't see it referenced in the visible code.
+
+4. `BuiltinRule` struct - Used by `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`.
+
+5. `PRIMITIVE_RULES` - Is it used? It's referenced in `is_reserved_name`. So it's used.
+
+6. `STRING_FORMAT_RULES` - Is it used? It's referenced in `is_reserved_name`. So it's used.
+
+7. `is_reserved_name` - Is it called? I don't see it being called in the visible code.
+
+8. `INVALID_RULE_CHARS_RE` - Is it used? I don't see it being referenced.
+
+9. `GRAMMAR_LITERAL_ESCAPE_RE` - Used in `format_literal`.
+
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - Is it used? I don't see it being referenced.
+
+11. `GRAMMAR_LITERAL_ESCAPES` - Used in `format_literal`.
+
+12. `MAX_PATTERN_DEPTH` - Is it used? I don't see it being referenced.
+
+13. `NON_LITERAL_SET` - Is it used? I don't see it being referenced.
+
+14. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - Is it used? I don't see it being referenced.
+
+15. `replacePattern` - Used in `format_literal`.
+
+16. `format_literal` - Used by `gbnf_format_literal`.
+
+17. `gbnf_format_literal` - This is a non-static function, so it's likely used externally.
+
+18. `gbnf_escape_length` - This is a non-static function, likely used externally.
+
+Wait, but the file is truncated. The question says "Delete the code in this file that is never used." This means I need to identify code that is never used within this file (and possibly not used externally either).
+
+Actually, let me reconsider. The file is truncated at `gbnf_escape_length`. There's likely more code below that uses some of these functions. But based on what's shown, I need to identify what's unused.
+
+Hmm, but the user is asking me to delete code that is "never used." Since the file is truncated, I should consider:
+
+- Functions that are `static` and not called within the visible portion of the file
+- Variables that are `static` and not referenced within the visible portion
+- Non-static functions might be used externally
+
+Let me re-examine:
+
+**Static functions not called in visible code:**
+- `build_repetition` - not called
+- `build_min_max_int` - called recursively but not from outside
+- `is_reserved_name` - not called
+- `replacePattern` - called by `format_literal`
+- `format_literal` - called by `gbnf_format_literal`
+
+**Static variables not referenced in visible code:**
+- `INVALID_RULE_CHARS_RE` - not referenced
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - not referenced
+- `MAX_PATTERN_DEPTH` - not referenced
+- `NON_LITERAL_SET` - not referenced
+- `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - not referenced
+
+**Non-static variables:**
+- `SPACE_RULE` - not referenced in visible code, but could be used externally (it's `const` not `static`... wait, actually it's `const std::string` at file scope, which has internal linkage in C++ for `const` objects. So it's only visible within this file.)
+
+Wait, `SPACE_RULE` is `const std::string SPACE_RULE = ...` - in C++, `const` objects at namespace scope have internal linkage, so it's only visible within this translation unit
+---

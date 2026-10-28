@@ -1,0 +1,46 @@
+run 17416 | autopin | edit4c | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 317.51 t/s | prompt 11323.7 t/s | 706 tokens | args: -np 1 --moe-expert-cache 90 -lm pin -c 4096 | power ? W | 2026-10-21 13:15:35
+
+a-fA-F0-9]{8}-?\\d{0,4}"} // UUID regex pattern
+};
+
+static std::unordered_map<std::string, const json*> json_schema_to_grammar_map = {
+    {"boolean", &json_schema_to_grammar_bool},
+    {"decimal-part", &json_schema_to_grammar_decimal_part},
+    {"integral-part", &json_schema_to_grammar_integral_part},
+    {"number", &json_schema_to_grammar_number},
+    {"integer", &json_schema_to_grammar_integer},
+    {"value", &json_schema_to_grammar_value},
+    {"object", &json_schema_to_grammar_object},
+    {"array", &json_schema_to_grammar_array},
+    {"uuid", &json_schema_to_grammar_uuid}
+};
+
+static void build_grammar(const std::string& json_schema, std::stringstream& grammar) {
+    for (const auto& rule : json_schema_to_grammar_map) {
+        const auto& [name, parser_function] = rule.second;
+        grammar << name << ":" << parser_function;
+    }
+}
+
+int main() {
+    // Example usage:
+    // json_schema_to_grammar_map["boolean"]->(build_grammar(json_schema, grammar));
+    // json_schema_to_grammar_map["integer"].get()->(build_grammar(json_schema, grammar));
+
+    // Your actual JSON schema parsing and generating grammar code goes here
+    // ...
+
+    return 0;
+}
+
+This code defines a static map `json_schema_to_grammar_map` that maps JSON schema rules to functions that generate the corresponding grammar rules. The `json_schema_to_grammar_map` contains entries for various JSON schema primitive types (boolean, decimal part, integral part, number, integer, value, object, array, and UUID) as well as a catch-all rule for any other schema elements.
+
+The `build_grammar` function iterates over the `json_schema_to_grammar_map` and constructs a string stream `grammar` with the grammar rules for the given JSON schema.
+
+The `main` function demonstrates how to use this map by calling `build_grammar` for each rule and then printing the resulting grammar string.
+
+Please note that this is a simplified example and does not handle all possible edge cases or validate the JSON schema against the grammar. For a production-ready solution, you would need to add error handling, validation, and potentially optimize the grammar generation for readability and performance.
+
+Additionally, the regex patterns for the UUID are provided as a string literal. In a real-world scenario, you would want to use a proper regular expression library to handle the UUID specification more accurately.
+
+Lastly, the code assumes that the JSON schema is well-formed and does not include any validation logic to ensure that the schema adheres to the JSON schema specification.

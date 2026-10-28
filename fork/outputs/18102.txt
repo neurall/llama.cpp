@@ -1,0 +1,67 @@
+run 18102 | relfl6 | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 31.5 t/s | prompt 596.7 t/s | 906 tokens | args: -np 1 | power 280+280 W | 2026-10-23 00:33:06
+
+Let me analyze this file carefully to identify which code is never used.
+
+Let me go through each function, variable, and definition:
+
+1. `build_repetition` - static function. Let me check if it's called anywhere in this file... I don't see any calls to it in the provided code. It's defined but never called.
+
+2. `build_min_max_int` - static function. It's called recursively within itself, but is it called from anywhere else in this file? I don't see any calls to it from other functions in this file. Wait, it's called recursively inside itself. But is it called from outside? Let me check... No, I don't see any calls to `build_min_max_int` from other functions in this file.
+
+3. `SPACE_RULE` - const string. Is it used? I don't see it referenced anywhere in this file.
+
+4. `BuiltinRule` struct - used by `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`.
+
+5. `PRIMITIVE_RULES` - used by `is_reserved_name`.
+
+6. `STRING_FORMAT_RULES` - used by `is_reserved_name`.
+
+7. `is_reserved_name` - static function. Is it called anywhere in this file? I don't see any calls to it.
+
+8. `INVALID_RULE_CHARS_RE` - static regex. Is it used? I don't see it referenced anywhere.
+
+9. `GRAMMAR_LITERAL_ESCAPE_RE` - used by `format_literal`.
+
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - Is it used? I don't see it referenced anywhere in this file.
+
+11. `GRAMMAR_LITERAL_ESCAPES` - used by `format_literal`.
+
+12. `MAX_PATTERN_DEPTH` - Is it used? I don't see it referenced anywhere.
+
+13. `NON_LITERAL_SET` - Is it used? I don't see it referenced anywhere.
+
+14. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - Is it used? I don't see it referenced anywhere.
+
+15. `replacePattern` - used by `format_literal`.
+
+16. `format_literal` - used by `gbnf_format_literal`.
+
+17. `gbnf_format_literal` - this is a non-static function, so it could be called from other files. It's declared in the header presumably. Keep it.
+
+18. `gbnf_escape_length` - static function. Is it called anywhere in this file? I don't see any calls to it. But wait, it's a static function... if it's not called in this file, it's unused.
+
+Wait, but the file is truncated. The code ends with `gbnf_escape_length` which is incomplete. Let me re-read...
+
+Actually, the file seems to be cut off at `gbnf_escape_length`. So there might be more code after that which uses some of these functions. But based on what's shown, let me identify what's unused.
+
+Hmm, but the user says "Delete the code in this file that is never used." This means I should only consider what's visible in this file.
+
+Let me re-examine:
+
+- `build_repetition` - never called in this file → unused
+- `build_min_max_int` - never called from outside itself (only recursive calls) → unused (the recursive self-calls don't count as "used" if the function itself is never called from outside)
+- `SPACE_RULE` - never referenced → unused
+- `is_reserved_name` - never called → unused
+- `INVALID_RULE_CHARS_RE` - never referenced → unused
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - never referenced → unused
+- `MAX_PATTERN_DEPTH` - never referenced → unused
+- `NON_LITERAL_SET` - never referenced → unused
+- `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - never referenced → unused
+- `gbnf_escape_length` - never called → unused
+
+Wait, but `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` are only used by `is_reserved_name`, and `is_reserved_name` is never called. So they're also unused.
+
+But `BuiltinRule` is used by `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`.
+
+Actually, let me think about this differently. If `is_reserved_name` is never called, then `PRIMITIVE
+---

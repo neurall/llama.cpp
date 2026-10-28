@@ -1,0 +1,50 @@
+run 18453 | mfx1 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.02 t/s | prompt 1001.0 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-23 14:24:24
+
+The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This file converts JSON schemas to GBNF grammars
+- It's a complex file with pattern matching, grammar building, etc.
+
+### Issues I can spot:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` by passing `0` to the recursive call. This seems correct but the logic is subtle.
+   - When `max_items == 0`, returns empty string - but what if `min_items > 0`? That would be an invalid schema (min > max), but it's not checked.
+
+2. **`build_min_max_int` function:**
+   - Very complex recursive function. The `decimals_left` parameter is confusingly named for integer handling - it seems to be used as a digit limit.
+   - The `top_level` parameter controls whether leading zeros are allowed.
+   - Potential issue: when `min_value` is `INT64_MIN` and we negate it (`-min_value`), this would overflow. Let me check... In the `has_min && has_max` case with `min_value < 0 && max_value < 0`, it does `-max_value` and `-min_value`. If `min_value == INT64_MIN`, `-min_value` would overflow. But wait, `has_min` checks `min_value != INT64_MIN`, so if `min_value == INT64_MIN`, `has_min` is false. So this path wouldn't be taken. Actually wait, let me re-read...
+   
+   Actually, `has_min = min_value != std::numeric_limits<int64_t>::min()`. So if `min_value` is `INT64_MIN`, `has_min` is false. The code only enters the `has_min && has_max` branch when both are set. So `-min_value` in that branch would only be called when `min_value != INT64_MIN`, meaning `-min_value` is safe. Good.
+
+   But in the `has_min` only branch (no max), when `min_value < 0`, it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. Here `-min_value` is safe since `min_value != INT64_MIN` (because `has_min` is true).
+
+   Wait, actually there's a subtle issue. In the `has_min` only branch with `min_value < 0`:
+   ```
+   build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+   ```
+   This passes `INT64_MIN` as `min_value`, which means `has_min` will be false in the recursive call. So it will go to the `has_max` branch. That seems intentional.
+
+3. **`_add_rule` function:**
+   - The deduplication logic with numeric suffixes could potentially create collisions if there are many rules with the same base name.
+
+4. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` for rollback on error. This is a full copy of the map, which could be expensive for large schemas.
+   - The `unsupported_pattern` and `invalid_pattern` exceptions are used for control flow, which is a common pattern but could be slow if patterns are frequently unsupported.
+
+5. **`_pattern_to_rule` function:**
+   - The `transform` lambda is complex and recursive.
+   - The character class parsing doesn't handle `]` as the first character in a class (e.g., `[]abc]`), which is a valid regex feature.
+   - The curly bracket parsing doesn't handle `{` as a literal (e.g., `\{`), though it does handle escapes.
+   - The `sub_rule_ids` map is used to deduplicate sub-rules, but the key is the rule content, which could lead to incorrect deduplication if different contexts produce the same content.
+
+6. **`_not_strings` function:**
+   - The `rejects` string is built by concatenating UTF-8 characters, but these are placed inside a character class `[...]`. If any character is a special regex character (like `]`, `-`, `^`), this could produce an invalid grammar.
+   - Actually, looking more carefully, the `rejects` characters come from trie nodes which are Unicode code
+---

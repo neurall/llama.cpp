@@ -1,0 +1,41 @@
+run 18999 | spass19 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.9 t/s | prompt 21.1 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-24 16:26:42
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf/minimalism request. I should honor that: a single self-contained HTML file, minimal bytes, but still functional and ideally not ugly.
+
+Let me think about what "smallest" means here. The classic minimal Tetris implementations are a few hundred bytes of JS. There's a famous one: "Tetris in 140 bytes" or the ~500 byte versions. Let me try to write a genuinely compact one.
+
+Key features needed for a playable Tetris:
+- 10×20 grid
+- 7 tetrominoes (I, O, T, S, Z, J, L) with rotation
+- Falling with gravity
+- Move left/right, rotate, (maybe soft drop / hard drop)
+- Line clear + scoring
+- Game over detection
+- Collision detection
+
+Minimal approach: represent pieces as arrays of rotations? Or use a compact encoding. A classic trick: store each piece's 4 rotation states as bit patterns, or generate rotations by rotating a 4x4 matrix.
+
+A very compact known approach: pieces defined as strings of coordinates, or as arrays like `[[x1,y1],[x2,y2]...]` and rotate by (x,y)->(y,3-x) or similar within a bounding box.
+
+Let me design my own compact implementation.
+
+Data representation:
+- Board: 10 wide, 20 tall. Store as array of strings? Or array of numbers where each row is a bitmask? Bitmask rows are compact: `B=[...Array(20)].map(_=>0)` — each row a 10-bit int. Collision check: for each cell of piece, check `B[y] & 1<<x`.
+
+Pieces: The 7 tetrominoes. Compact encoding: each piece as a list of 4 cells in a 4x4 (or 3x3) box, rotations computed by rotating the cell list. Rotation in an NxN box: (x,y) -> (N-1-y, x). For I piece we need 4x4 box; others fit in 3x3 except O which is 2x2 (rotation irrelevant). Actually standard SRS-ish rotation: I in 4x4, O in 2x2 (no-op), rest in 3x3. Simple approach: use box size per piece: I:4, O:2 (or just treat O as 2x2 with rotation no-op — rotating (x,y)->(1-y,x) maps O cells to themselves? O cells in 2x2: (0,0),(1,0),(0,1),(1,1). Rotate (x,y)->(1-y,x): (0,0)->(1,0), (1,0)->(1,1)... wait (1,0)->(0-... let me compute: (x,y)->(N-1-y, x) with N=2: (0,0)->(1,0), (1,0)->(1,1), (1,1)->(0,1), (0,1)->(0,0). So the set maps to itself. Good, O rotation is a no-op as a set. 
+
+So: define pieces as arrays of [x,y] cells, with a per-piece box size N. Rotation: map each cell (x,y) -> (N-1-y, x). Apply 0-3 times depending on rotation state.
+
+Compact piece definitions. Using strings: e.g. piece cells encoded as numbers: cell = y*4+x maybe? Or as small arrays.
+
+Classic golfed Tetris (there's a famous one by "tinytetris" in C, and JS ones). Let me just write my own clean-ish minimal JS.
+
+Let me think about the rendering: use a canvas, draw cells as filled rects. Minimal but should look decent — I can add slight cell inset for a nicer look with barely any bytes: `fillRect(x*W+1, y*H+1, W-2, H-2)` gives grid gaps. Colors: could use one color per piece via a palette string indexed by piece id. Compact: `c="#9ff","#ff9",...` Actually store colors array indexed by piece index.
+
+Piece definitions — let me pick compact encodings. Option: each piece as a string of 16 chars (4x4 bitmap) — but that's 7*16=112 chars plus parsing. Alternative: cells as arrays.
+
+Compact trick: define all pieces in one string, e.g.:
+`"0110 1110 ..."`. Hmm.
+
+Another classic trick: encode
+---

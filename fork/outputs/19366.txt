@@ -1,0 +1,68 @@
+run 19366 | rc5 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 53.32 t/s | prompt 38.5 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-25 08:40:20
+
+The user wants the smallest HTML Tetris game. Let me make a compact but actually good Tetris in a single HTML file. "Smallest" — they want minimal code. But I don't want to just dump a bare canvas. Even a tiny game can feel crafted: nice colors, ghost piece, next piece, score, level. Keep it compact but playable and polished.
+
+Let me write a compact Tetris. Aim for something like ~100 lines that's genuinely complete: rotation with wall kicks (simplified), 7-bag randomizer, hold, next queue, soft/hard drop, line clears, scoring, levels, pause, game over.
+
+Let me write it reasonably minified but readable-ish. Balance: "smallest" is the ask, so keep it tight, but make it feel good — dark background, neon accents, crisp canvas rendering.
+
+Let me draft:
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<style>
+body{margin:0;background:#0b0b12;color:#e8e8f0;font:14px/1.4 system-ui;display:grid;place-items:center;height:100vh}
+canvas{background:#000;border:2px solid #333;image-rendering:pixelated}
+#s{display:flex;gap:24px;align-items:center}
+pre{margin:0;font:12px/1.6 ui-monospace}
+b{color:#7df}
+</style>
+<div id=s><canvas id=c width=126 height=252></canvas><pre id=i></pre></div>
+<script>
+...
+</script>
+```
+
+Cell size 18 → 10*18=180 wide, 20*18=360 tall. Let's use 16 → 160x320.
+
+Game logic compact:
+
+```js
+const W=10,H=20,S=16,c=c0.getContext`2d`;
+let g=Array.from({length:H},()=>Array(W).fill(0)), p,n,h,q=[],r=0,x=0,y=0,sc=0,ln=0,lv=1,ov=0,pa=0,t=0,d=0;
+const P='I J L O S T Z';
+```
+
+Classic compact approach: define pieces as 4x4 bit patterns or as rotation via matrix rotation of a bounding box.
+
+Simplest: pieces defined as arrays of coordinates in a box, rotate matrix.
+
+```js
+const B={I:[[1,1,1,1]],J:[[1,0,0],[1,1,1]],L:[[0,0,1],[1,1,1]],O:[[1,1],[1,1]],S:[[0,1,1],[1,1,0]],T:[[0,1,0],[1,1,1]],Z:[[1,1,0],[0,1,1]]};
+```
+
+Color index by piece letter.
+
+Bag: shuffle 'IJLOSTZ'.
+
+Rotation: rotate matrix clockwise: `m[0].map((_,i)=>m.map(r=>r[i]).reverse())`.
+
+Collision check.
+
+Lock, clear lines, scoring: [0,100,300,500,800] * level. Soft drop +1, hard drop +2/cell.
+
+Controls: arrows, space hard drop, Z/X rotate, C hold, P pause, R restart.
+
+Rendering: draw grid, locked cells, ghost, current piece. Use per-piece colors.
+
+Let me write it out carefully.
+
+```js
+c0.width=W*S; c0.height=H*S;
+const C={I:'#3ee0f0',J:'#4a6cf0',L:'#f0973e',O:'#f5d327',S:'#3ef07a',T:'#b45ef0',Z:'#f04a6c'};
+let m,b,x,y,nx,hs,sc,ln,ov,ps,bag=[],g,dr;
+function reset(){g=[...Array(H)].map(_=>Array(W).fill(0));sc=ln=ov=0;ps=1;bag=[];nx=pick();hs=0;m=spawn();dr=0;requestAnimationFrame(loop)}
+```
+
+Hmm,
+---

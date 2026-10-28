@@ -1,0 +1,18 @@
+run 20106 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 28.59 t/s | prompt 11.9 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 20:48:14
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 10x20 grid, cell size maybe 24. Canvas width 240 height 480. Use JS.
+
+Tetromino shapes represented as arrays of coordinates or matrices. Need rotation. Could use 4x4 matrices for each piece. Simpler: define pieces as arrays of [x,y] cells relative to top-left? Rotation around center. Need handle rotation. Could use matrices.
+
+Option: Use 4x4 matrices for I, J, L, O, S, T, Z. Each piece matrix with 1s. Rotation by matrix transpose? For 4x4, rotate clockwise: new[r][c] = old[3-c][r]? Actually rotate 90 clockwise: new[r][c] = old[3-c][r]? Let's verify: old coordinates (x,y) with x row? If matrix rows y, cols x. Rotate clockwise: new row r = old col? Formula new[r][c] = old[3-c][r]? Let's test old at (row=0,col=0) top-left. Clockwise rotation around center maps top-left to top-right? In 4x4, coordinate (r,c) -> (c, 3-r)? Wait rotate clockwise: (r,c) -> (c, 3-r) if rows down, cols right? Let's derive: point (x,y) with x col, y row. Clockwise rotation around center (1.5,1.5): x' = y? Actually standard screen coords y down. Rotate clockwise: (x,y) -> (y, -x) relative center? Let's use matrix. For 4x4, new[r][c] = old[3-c][r]? Test old at row0 col0 (top-left). new row? old[3-0][0]=old[3][0] bottom-left. That's counterclockwise? Hmm.
+
+Let's derive with coordinates row r, col c. Center (1.5,1.5). Clockwise rotation in screen coords (x right, y down): vector (dx,dy) -> (-dy, dx)? Wait standard math y up: clockwise (x,y)->(y,-x). Screen y down: clockwise visually? Let's use matrix: rotate 90 clockwise: new row = old col? Example top-left (0,0) relative center (-1.5,-1.5). Clockwise visually: top-left goes top-right? Imagine square, rotate clockwise: top-left moves to top-right? Actually rotate square clockwise 90: top-left corner moves to top-right? Let's visualize: point at top-left (-1,-1). Rotate clockwise around center: (x,y) -> (y,-x) in math y up. In screen y down, clockwise rotation formula: (x,y) -> (-y,x)? Let's test top-left screen (-1,-1) -> (1,-1) top-right. Yes formula (x,y)->(-y,x). So new col = -old row? new row = old col? Let's use row y, col x. new row = old col? new col = -old row? With center offset. For 4x4 indices: new row = old col? new col = 3 - old row? Test old row0 col0 -> new row0 col3 (top-right). Formula new[r][c] = old[c][3-r]? Let's test: new row r=0, col c=3: old[c=3][3-r=3] = old[3][3] bottom-right, not top-left. Hmm.
+
+Let's derive mapping old (r,c) to new (r',c'). Relative center: dr = r-1.5, dc = c-1.5. Clockwise screen: dr' = dc? Wait formula (x,y)->(-y,x) where x=dc, y=dr. So dc'
+---

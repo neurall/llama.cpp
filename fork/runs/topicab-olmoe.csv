@@ -1,0 +1,9 @@
+name,model,n,test,tokens,args,extra
+off-game1,olmoei,2,tetrisc,1024,"--moe state=/tmp/runstate/topic-olmoe-off.ini",
+off-prose1,olmoei,2,scific,1024,"--moe state=/tmp/runstate/topic-olmoe-off.ini",
+on-game1,olmoei,2,tetrisc,1024,"--moe state=/tmp/runstate/topic-olmoe-on.ini,dynhot=1",
+on-prose1,olmoei,2,scific,1024,"--moe state=/tmp/runstate/topic-olmoe-on.ini,dynhot=1",
+off-game2,olmoei,2,tetrisc,1024,"--moe state=/tmp/runstate/topic-olmoe-off.ini",
+off-prose2,olmoei,2,scific,1024,"--moe state=/tmp/runstate/topic-olmoe-off.ini",
+on-game2,olmoei,2,tetrisc,1024,"--moe state=/tmp/runstate/topic-olmoe-on.ini,dynhot=1",
+on-prose2,olmoei,2,scific,1024,"--moe state=/tmp/runstate/topic-olmoe-on.ini,dynhot=1",

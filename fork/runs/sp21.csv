@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+g1u4k,qn_iq4xs,1,pf60k1k,64,"-ub 4096 -b 131072 -ctxcp 0",--keep-loops
+g1u8k,qn_iq4xs,1,pf60k1k,64,"-ub 8192 -b 131072 -ctxcp 0",--keep-loops
+g1u16k,qn_iq4xs,1,pf60k1k,64,"-ub 16384 -b 131072 -ctxcp 0",--keep-loops

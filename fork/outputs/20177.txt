@@ -1,0 +1,79 @@
+run 20177 | dynhot_two_pool_keys | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 84.95 t/s | prompt 99.8 t/s | 1007 tokens | args: -np 1 --moe state=/tmp/runstate/dynab-q36-on.ini,dynhot=1,dynhot-merge=2,dynhot-max=0 --moe sim-vram=3072 | power 220+280 W | 2026-10-28 07:43:53
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the *smallest* HTML Tetris game. This means I need to minimize code size while maintaining core Tetris functionality (grid, falling pieces, rotation, collision, line clearing, scoring, game over).
+
+2.  **Key Constraints & Goals:**
+   - Single HTML file (no external dependencies)
+   - Minimal code size (bytes)
+   - Functional Tetris mechanics
+   - Use inline CSS/JS
+   - Avoid unnecessary features (keep it simple)
+
+3.  **Core Tetris Mechanics Needed:**
+   - 10x20 grid
+   - 7 tetrominoes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Rotation
+   - Collision detection
+   - Line clearing
+   - Score tracking
+   - Game over condition
+   - Keyboard controls
+
+4.  **Code Minimization Strategies:**
+   - Use compact variable names
+   - Avoid comments
+   - Use bitwise operations or arrays for piece definitions
+   - Use a single loop for rendering/game loop
+   - Minimize CSS (inline, minimal styles)
+   - Use `requestAnimationFrame` or `setInterval` for game loop
+   - Combine logic where possible
+
+5.  **Draft - Mental Construction (Iterative Refinement):**
+   Let's start with a basic structure:
+   ```html
+   <canvas id=c></canvas>
+   <script>
+     // grid, pieces, controls, loop
+   </script>
+   ```
+   I'll aim for ~500-800 bytes if possible, but functionality is priority.
+
+   Key components:
+   - Grid: 2D array or flat array
+   - Pieces: Array of shapes, each shape as array of offsets
+   - Rotation: Matrix rotation or predefined rotated states
+   - Collision: Check bounds and occupied cells
+   - Line clear: Check rows, remove, shift down
+   - Controls: Arrow keys + space for drop/rotate
+
+   Let's write it step-by-step, then compress.
+
+   *Grid & State:*
+   ```js
+   const g=Array(20).fill(0).map(()=>Array(10).fill(0));
+   let p=[0,0,0,0],s=0,x=4,y=0;
+   ```
+   *Pieces:* Need 7 pieces. Each piece can be represented as a string or array. Let's use a compact representation:
+   ```js
+   const T=[
+     [1,1,1,1],
+     [1,1,0,0],[0,1,1,0],[0,0,1,1],[1,0,0,1],
+     [1,1,0,0],[0,1,1,0],[0,1,1,0],[1,1,0,0], // O is same in all rotations
+     [1,1,1,0],[0,1,1,1],[1,0,1,0],[0,1,1,1],
+     [0,1,1,0],[1,1,1,0],[0,1,1,1],[1,1,0,0],
+     [1,1,0,0],[0,1,1,0],[0,1,1,1],[1,0,0,1],
+     [1,0,0,0],[1,1,1,0],[0,0,1,1],[0,1,1,1],
+     [0,0,1,0],[1,1,1,0],[1,0,0,0],[0,1,1,1]
+   ];
+   ```
+   Actually, storing all 4 rotations for each piece is bulky. Better to compute rotation dynamically or use a compact encoding.
+   Let's use a simpler approach: define pieces as arrays of coordinates, and rotate by swapping x/y and negating.
+   Or just hardcode 7 pieces with 4 rotations each as strings:
+   ```js
+   const P=[
+     "1111","1000100010001000","1100011000110011","1001011001100110",
+     "1100011001100110","1100011001100110","110001
+---

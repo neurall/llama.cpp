@@ -1,0 +1,68 @@
+run 17797 | rc1 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.62 t/s | prompt 90.6 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-10-22 15:48:07
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact single-file Tetris. I want the playfield to be the star, with the code itself genuinely small but still fully playable.
+
+I'll produce a single HTML file, compact but playable, with keyboard controls, next piece, score, level, pause, game over, restart. Keep it small — that's the ask. But I don't want a bare canvas; I'll add a CRT-ish arcade cabinet feel, a scanline overlay, a chunky display font for the score, and a bit of ambient background — while keeping the code tight.
+
+Balance: "smallest" is the explicit ask. So I should keep it genuinely compact — maybe ~40 lines — but still with good typography and a bit of life. Let me aim for a tight single file that's small yet feels crafted: monospace/pixel display font, subtle glow, next-piece preview, ghost piece maybe. Keep it lean.
+
+Let me write compact Tetris.
+
+Approach: use CSS grid of divs? Canvas is smaller. Canvas with 2D fillRect.
+
+Compact implementation:
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<style>
+  ... 
+</style>
+<canvas id=c width=... height=...></canvas>
+<script>...</script>
+```
+
+Let me write the game logic compactly.
+
+Pieces as strings? A common trick: define pieces as arrays of rotation states via numbers.
+
+Compact approach: use the "S" piece encoding: each piece defined by a 4x4 bit matrix rotated. Simpler: define pieces as arrays of cell coords, rotate by (x,y)->(y,-x).
+
+```js
+const P='0222,1111,0111,1110,011,1110,1100'.split(',') // hmm
+```
+
+Better classic tiny tetris: use the "one big string" trick where each piece is a 4-bit-per-row hex... Let's just do:
+
+```js
+P=[[[1,1,1,1]],[[0,1,0],[1,1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]],[[1,1,1],[1,0,0]],[[1,1,1],[0,0,1]],[[1,1],[1,1]]]
+```
+Wait O piece should be [[1,1],[1,1]].
+
+Rotation: rotate matrix clockwise: `m[0].map((_,i)=>m.map(r=>r[i]).reverse())`.
+
+Collision check with board array of 10x18 (or 20).
+
+Let me write it:
+
+```js
+B=[],W=10,H=18,for(i=W*H;i--;)B[i]=0
+```
+
+Compact but readable-ish. Let me write final code:
+
+```js
+const c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=18;
+const C=['#0ff','#fe0','#f44','#4f4','#f4f','#44f','#ff4'];
+const P=[[[1,1,1,1]],[[0,1,0],[1,1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]],[[1,1,1],[0,1,0]],[[1,1,1],[1,0,0]],[[1,1],[1,1]]];
+let B=Array(W*H).fill(0),p,n,q,r,sco=0,ln=1,ts=0,ov=0;
+function newP(){p=P[n=Math.random()*7|0];q=C[n];r=s=0; if(hit(0,0))gameover()}
+```
+
+Need next piece preview: keep `n` current index and `m` next index. Let's do: `let cur, nxt`.
+
+Let me write more carefully but compact:
+
+```js
+let B=[],p,c,r,s,sc=0,lv=1,tk=0,ov=0,nx;
+function bag(){return Math
+---

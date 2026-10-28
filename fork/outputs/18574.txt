@@ -1,0 +1,8 @@
+run 18574 | relmf1 | pf6k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 10.13 t/s | prompt 295.2 t/s | 64 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 16:54:55
+
+The user wants a code review of this source file. It's a C++ file from llama.cpp (json-schema-to-grammar.cpp). Let me analyze it carefully.
+
+Let me go through the code section by section:
+
+1. **Includes and setup**: Uses `common_json` as `json` alias — that's
+---

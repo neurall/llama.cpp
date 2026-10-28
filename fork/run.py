@@ -3,7 +3,7 @@
 
   run.py bench  --models M1,M2 --builds autotune,stock-X [--variants default,cache0,atoff] [-t t100] [-n 2] [--machine pc1]
   run.py report [--campaign NAME] [--last N] [--tol 0.95]      variants against stock, per model / test / machine
-  run.py run    [-t TEST] [-n N] [-e K=V ...] [--bare] [--plain] [--args '...'] BUILD...   (MODEL=/path/model.gguf)
+  run.py jobs    [-t TEST] [-n N] [-e K=V ...] [--bare] [--plain] [--args '...'] BUILD...   (MODEL=/path/model.gguf)
   run.py machine [add ID --ssh user@host --root DIR --os linux|windows]    machines reached over ssh (llama-cli runs)
   run.py prompt short|12k|128k|chatv|code [--url U]            the benchmark prompts against a running server
   run.py ctl    BUILD name:KEY=V,KEY=V ...                     one server, settings switched at runtime, rotating prompts
@@ -142,6 +142,8 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
         cp = configparser.ConfigParser(defaults={"here": os.environ.get("FORK_PROMPTS_DIR") or os.path.join(here, "prompts")})
         cp.read([os.path.join(here, "prompts.ini"), os.path.join(here, "prompts.local.ini")])   # prompts.local.ini: your own prompts and tests, not in git
         out = {k: dict(cp[k]) for k in cp.sections()}
+        for n in range(1, 1025):   # pf<N>k1k / pf<N>k: the first N thousand tokens of the 12k / 128k source (cut in run.py; beyond 128k the source repeats), answer 1024 tokens; any size up to 1m (the longest trained context, MiMo), nothing stored per size
+            out.setdefault(f"pf{n}k1k", dict(alias=f"pf{n}k", tokens="1024", prefix="code_review", **{"in": f"{n}k"})); out.setdefault(f"test-pf{n}k", {"in": f"{n}k"})
         # a file you drop into the prompts directory is a test of its own, named after the file: prompt-NAME.txt (not claimed by a section above) -> test NAME, the whole file one chat message,
         # 1024 tokens out (tokens = / ctx = need a section). No ini edit: copy the file, `run run ... ` with a cell whose test is NAME.
         pdir = cp.defaults()["here"]
@@ -196,7 +198,8 @@ def _lib_runnorm():
 
     FAMS = [("GLM-5.3-Flash-GSQ-RCO-3.5bit", "GLM 3.5-bit"), ("GLM-5.3-Flash-GSQ-RCO-3.0bit", "GLM 3.0-bit"), ("MiMo", "MiMo IQ3_XXS"), ("Qwen3.8-Flash-Next-UD-IQ4_XS", "Next IQ4_XS"),
             ("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S", "Next IQ3_S"), ("Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M", "Next IQ1_M"), ("Qwen3.6-35B-A3B-GSQ", "Qwen3.6 Q2_0"), ("qwen36", "Qwen3.6 Q2_0"),
-            ("Qwen3.8-27B-IQ4_NL", "27B IQ4_NL"), ("Qwen3.8-27B-GSQ-RCO-IQ3_S", "27B IQ3_S"), ("Qwen3.8-27B-MTP", "27B Q5_K_M MTP"), ("Qwen3.8-27B", "27B"), ("OLMoE", "OLMoE")]
+            ("Qwen3.8-27B-IQ4_NL", "27B IQ4_NL"), ("Qwen3.8-27B-GSQ-RCO-IQ3_S", "27B IQ3_S"), ("Qwen3.8-27B-MTP", "27B Q5_K_M MTP"), ("Qwen3.8-27B", "27B"), ("OLMoE", "OLMoE"),
+            ("DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS", "DS4.1 IQ2_XXS")]
 
 
     def fam(model, args=""):
@@ -786,7 +789,7 @@ Every run is stored twice: as a row of fork/bench/run-history.csv (append-only, 
 `load` rebuilds the database from the CSV any time.
 
   python3 fork/run.py runlog load                     rebuild the database from the CSV
-  python3 fork/run.py runlog sync                     add the CSV rows the database lacks (after a git merge of run-history.csv from another machine)
+  python3 fork/run.py runlog sync                     both ways: CSV rows the database lacks go in, database rows the CSV lacks are appended (bad_runs stay out) (after a git merge of run-history.csv or runs from another worktree)
   python3 fork/run.py runlog bestpl MODEL TEST PL     like best, only the rows measured at one power limit, e.g. 280+280
   python3 fork/run.py runlog best MODEL [TEST]        per build: runs, consistent best t/s and pp, first and last date (MODEL is a substring of the file name)
   python3 fork/run.py runlog runs MODEL [TEST] [BUILD] every run, newest first
@@ -917,7 +920,9 @@ consistent best = the highest value that at least two runs agree on within 5% (a
         if os.path.exists(archive): attach_old(con, archive)
         con.commit(); print(f"{n} runs loaded into {DB}")
     def sync():
-        """append the CSV rows the database lacks (runs that came in by a git merge from another machine); never deletes anything"""
+        """both ways, never deletes: the CSV rows the database lacks (runs that came in by a git merge from another machine) go into the database, and the
+    database rows the CSV lacks (runs that run.py of another worktree wrote to its own CSV copy) are appended to the CSV; runs moved to bad_runs
+    (run.py bad-runs) come back on neither side, also when a merge brings their CSV rows back"""
         con = connect()
         cols, rows = read_csv_rows()
         ensure(con, cols)
@@ -925,11 +930,25 @@ consistent best = the highest value that at least two runs agree on within 5% (a
             t = num(tps)
             return (str(ts), str(build or ""), str(test or ""), None if t is None else round(t, 3))
         have = {key(*r) for r in con.execute("SELECT ts, build, test, tps FROM runs")}
+        bad = {key(*r) for r in con.execute("SELECT ts, build, test, tps FROM bad_runs")} if con.execute("SELECT 1 FROM sqlite_master WHERE name = 'bad_runs'").fetchone() else set()
         n = 0
         for r in rows:
-            if key(r.get("ts"), r.get("build"), r.get("test"), r.get("tps")) in have: continue
+            k = key(r.get("ts"), r.get("build"), r.get("test"), r.get("tps"))
+            if k in have or k in bad: continue
             con.execute(ins(cols), row_values(r, cols)); n += 1
         con.commit(); n and print(f"{n} CSV rows added to {DB} ({len(rows)} in the CSV)")
+        inc = {key(r.get("ts"), r.get("build"), r.get("test"), r.get("tps")) for r in rows}
+        with open(CSV, newline="") as f: head = next(csv.reader(f))   # the file's own header: a repeated name (wall_s, ddr_util) gets the value in its first column only
+        cur = con.execute("SELECT * FROM runs ORDER BY ts"); names = [d[0] for d in cur.description]
+        def txt(v): return "" if v is None else str(int(v)) if isinstance(v, float) and v.is_integer() else str(v)
+        out = []
+        for v in cur:
+            d = dict(zip(names, v))
+            if key(d.get("ts"), d.get("build"), d.get("test"), d.get("tps")) in inc: continue
+            out.append([txt(d.get(c)) if c not in head[:i] else "" for i, c in enumerate(head)])
+        if out:
+            with open(CSV, "a", newline="") as f: csv.writer(f, lineterminator="\n").writerows(out)
+            print(f"{len(out)} database rows appended to {CSV}")
     def show(cur):
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
@@ -1017,6 +1036,7 @@ MODEL = os.environ.get("MODEL", "")
 MODELS_DIR = os.environ.get("PERF_MODELS_DIR", "")  # other models' pages are dropped from RAM before a run
 PPL_TEXT = os.path.join(PROMPT_DIR, os.environ["PERF_PPL_FILE"]) if os.environ.get("PERF_PPL_FILE") else config.prompt_path("longsrc")  # frozen snapshot of llama.cpp common/json-schema-to-grammar.cpp (code, like agent prompts)
 BARE = False
+CARD_LIM = [0]   # the card limit the engine reported last (the %limit column)
 WRAP = []   # --wrap "CMD ARGS": the server is started as CMD ARGS llama-server ... (a profiler, e.g. nsys profile -o FILE --force-overwrite=true)
 THREADS = os.environ.get("PERF_THREADS", "")                   # decode threads: unset = no -t, so the thread autotune (decode and batch) runs; set only to measure a fixed count (fork/cloud/pod.sh sets it for rented boxes)
 DEVS = os.environ.get("PERF_DEV", "CUDA0,CUDA1")                # -dev list (the GPU order is pinned)
@@ -1107,6 +1127,8 @@ def ovr_prompt(default):
     return (p or default) + "\n" * PROMPT_TWEAK
 GREEDY = {"temperature": 0, "top_p": 1, "top_k": 1}
 ANTILOOP = {"repeat_penalty": 1.15, "repeat_last_n": 256}   # --antiloop: the same penalty for every build of a cell; it changes the text, so a loop-prone base model (OLMoE) produces a real answer. Speed and cache hit rate are not touched by it (a sampler step on the logits)
+if sys.argv[1:2] == ["run"] and "-al" in sys.argv:   # run ... -al: the same switch on demand for a list run (a cell option of its own, so no other subcommand's -al is touched)
+    sys.argv.remove("-al"); sys.argv.insert(1, "--antiloop")
 if "--antiloop" in sys.argv:   # a global switch for every subcommand (run, cell, bench, remote, rcell); the env var carries it to the cells started as child processes
     sys.argv.remove("--antiloop"); os.environ["RUN_ANTILOOP"] = "1"
 if os.environ.get("RUN_ANTILOOP"): GREEDY.update(ANTILOOP)
@@ -1128,6 +1150,8 @@ STAT_COLS = ["prompt", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_
 RUN_COLS += STAT_COLS + PRESSURE_COLS
 RUN_COLS += ["pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end"]   # predictor outcomes of the run, from cache.csv (see cache_csv_totals)
 RUN_COLS += ["up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms"]   # per GPU: mean upload time of one expert on the fast / slow link (engine log) and the effective speed MiB per expert / that time; the startup link speed of each CUDA device; admit-pred builds also: uploads, MiB and copy time per link from cache.csv
+RUN_COLS += ["repro"]   # the run.py command line that made the row (the outermost process; cells started by it inherit it): paste it to repeat the run
+RUN_COLS += ["bestpp"]   # every run, better or worse (regressions show): the run as a models.ini bestpp tuple (total VRAM GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s)
 RUN_COLS += ["up_ms_expert", "up_gbs_eff"]   # from the engine log: mean upload time of one expert (all three tensors) over the second half of the run, and the effective speed of one upload = MiB per expert / that time
 RUN_COLS += ["pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb"]   # nvidia-smi dmon over the server run: GB host->device during the request (all GPUs; the server is already loaded), the peak of any GPU in a second, the mean of the seconds that moved data, GB device->host
 RUN_COLS += ["ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1"]   # from cache.csv (admit-pred builds): mean RAM traffic share of DDR_GBS, mean share of uploads that ran while the CPU read experts, mean slowdown of CPU expert phases with an upload in flight, the first predicted layer ahead per link at the end
@@ -1139,6 +1163,7 @@ RUN_COLS += ["vram_mib"]   # GPU memory in use at the end of the run, all GPUs t
 RUN_COLS += ["endpoint"]
 RUN_COLS += ["knobs_end"]   # what the build actually ran with, from the run.knobs line of the end-of-run state snapshot: key settings (slots, workers, upload path, bounce, policy) | every cache knob incl. tuner decisions (defaults differ between builds; * = set by the user)   # completion (raw prompt), chat (template) or cli (llama-cli)
 RUN_COLS += ["load_mode"]   # how the weights were loaded, from the server log: pinned (+ upload path), mmap, mmap after a failed pin ("reloading with mmap"); load time (load_s) tells too: pinned GLM 3.0 about 85-120 s, mmap about 25 s
+RUN_COLS += ["prompt_s", "gen_s"]   # the cell as the screen shows it: prompt = end of the load to the first decoded token, gen = first token to the end (the live bar's p and g); written with wall_s by store_cell_time
 RUN_COLS += ["start_ts", "end_ts", "load_s", "wall_s"]   # start_ts / end_ts: when the process started and ended (local time); load_s: seconds until the model was loaded and ready (server: ready to answer; llama-cli / perplexity: the "load time" it prints); wall_s: seconds the whole run took, start to end
 RUN_COLS += ["uniq4", "out_chars", "code", "loop"]   # text class of the generated output: share of unique word 4-grams (a repetition loop is ~0.1, real text ~0.9+), characters, 1 if it contains code; the text itself is in runs.db table outputs
 RUN_COLS += ["thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "gain_t", "gain_pp", "stock_id", "stock_bno"]   # the server's auto choices (threads for decode / batch, batch, ubatch, context) from its log; the machine line of the run; our decode / prompt speed over the newest stock row (best run of the cell against the stock row it was shown with, set when the cell ends) and that stock row's id and build number
@@ -1260,7 +1285,7 @@ def power_schedule(now=None):
     return POWER_DAY if 7 * 60 <= m < 23 * 60 + 50 else POWER_NIGHT
 
 
-def power_targets(widths, spec=None, maxes=None):
+def _power_targets_raw(widths, spec=None, maxes=None):
     """W per GPU for any number of cards. spec (-pl): `285` every card, `220,280,...` one per card (the last repeats), `220/280` the cards on a narrower link than the widest get the first value, the others the second
     (PC1: the x4 card 220, the x16 card 280). No spec: the day/night schedule, mapped the same way."""
     spec = spec or os.environ.get("PERF_POWER", "")
@@ -1273,10 +1298,19 @@ def power_targets(widths, spec=None, maxes=None):
     return [narrow if w < max(widths) else wide for w in widths]
 
 
+X4_MAX_W = 220   # the x4 card throttles and faults above this (user 2026-10-23): no spec, schedule or `-pl max` may set a narrower-link card higher
+
+
+def power_targets(widths, spec=None, maxes=None):
+    """_power_targets_raw, with every card on a narrower link than the widest held to X4_MAX_W"""
+    t = _power_targets_raw(widths, spec, maxes)
+    return [min(w, X4_MAX_W) if wd < max(widths) else w for w, wd in zip(t, widths)]
+
+
 def apply_power_schedule():
     """sets the live limits to the schedule's, where they differ (every run start and `run.py stop` call it, so a chain crossing 23:50 or 07:00 changes at its next cell)."""
     try:
-        q = [l.split(",") for l in subprocess.run([NVSMI, "--query-gpu=power.limit,pcie.link.width.max,power.max_limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout.splitlines() if l.count(",") == 2]
+        q = [l.split(",") for l in subprocess.run([NVSMI, "--query-gpu=power.limit,pcie.link.width.current,power.max_limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout.splitlines() if l.count(",") == 2]
         cur = [int(float(a)) for a, _, _ in q]
         want = power_targets([int(b) for _, b, _ in q], maxes=[int(float(c)) for _, _, c in q])
     except Exception:
@@ -1377,17 +1411,20 @@ def cache_stats(log):
 
 
 DECISION_COLS = ["layout", "placement", "ubatch_max", "pf_mode", "pf_gpus", "pf_skipped", "pf_tok_share", "pf_exp_share", "pf_passes", "pf_pass", "pf_slots",
-                 "pf_one_tps", "pf_split_tps", "pf_by", "pf_all"]
+                 "pf_one_tps", "pf_split_tps", "pf_by", "pf_all", "par_gpus"]
 
 
 _HWL = {}
+_PF_POS = {}   # server log -> how much of it the previous row already read (prompt decisions per run, see the row writer)
 
 
-def store_cell_time(build, model, test, hw, since, el):
+def store_cell_time(build, model, test, hw, since, el, prompt_s=None, gen_s=None):
     """the cell's real time as the screen showed it (start of the cell to its end: server start, load, the requests, the teardown) into wall_s of its rows, so -nrt and later tables show the same time (the rows hold what the cell process knew: load + requests)"""
     import sqlite3
     c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-    c.execute("UPDATE runs SET wall_s=? WHERE hw=? AND build=? AND model=? AND test=? AND ts>=?", (round(el, 1), hw, build, os.path.basename(model), test, time.strftime("%F %T", time.localtime(since - 5))))
+    if prompt_s is not None and "prompt_s" not in [r[1] for r in c.execute("pragma table_info(runs)")]:
+        for k in ("prompt_s", "gen_s"): c.execute(f"ALTER TABLE runs ADD COLUMN {k} REAL")
+    c.execute("UPDATE runs SET wall_s=?" + (", prompt_s=?, gen_s=?" if prompt_s is not None else "") + " WHERE hw=? AND build=? AND model=? AND test=? AND ts>=?", (round(el, 1), *((round(prompt_s, 1), round(gen_s, 1)) if prompt_s is not None else ()), hw, build, os.path.basename(model), test, time.strftime("%F %T", time.localtime(since - 5))))
     c.commit(); c.close()
 
 
@@ -1441,6 +1478,11 @@ def decisions(log):
     u = re.findall(r"MoE model .*?ubatch (\d+)", log)
     if u:
         d["ubatch_max"] = int(u[-1])
+    # the real maximum: the smaller of the engine's pass ceiling (the size its compute buffer was reserved for) and the pass the RAM allows ("prompt pass N tokens
+    # (cut from M to fit)"), the last of each in the log; the auto setup's first pick above (16384 on DeepSeek-V4.1) never ran when either is smaller
+    lims = [int(x[-1]) for x in (re.findall(r"limit (\d+) from the pinned-mask budget", log), re.findall(r"fits the ceiling (\d+)", log), re.findall(r"prompt pass (\d+) tokens \(cut from", log)) if x]
+    if lims:
+        d["ubatch_max"] = min(lims)
     rows = []
     for line in re.findall(r"prefill decision: (.*)", log):
         rows.append({k: v.strip('"') for k, v in re.findall(r'(\w+)=("[^"]*"|\S+)', line)})
@@ -1456,6 +1498,65 @@ def decisions(log):
 
 
 RUN_COLS += DECISION_COLS
+
+
+def cmd_nsys(a):
+    """Where the time of a profiled prompt pass went, per card: an nsys report of a cell run with --wrap "nsys profile ..." (exported to sqlite next to it once).
+    The pass is the longest stretch of kernels without a gap over 50 ms (the prompt, its fill copies before it and the few decode tokens after it). Per card: kernel
+    time, the gaps of its compute stream (the card waiting: for a hand-off from the other card, an upload, the host), copies by kind, the staged hand-off reads
+    (k_xstage_read*, the zero-copy write half of a card-to-card copy) and the kernels that took the most time. --gaps N lists the N longest waits with the kernels
+    around them."""
+    import sqlite3
+    rep = a.rep
+    db = re.sub(r"\.nsys-rep$", "", rep) + ".sqlite"
+    if not os.path.exists(db) or os.path.getmtime(db) < os.path.getmtime(rep):
+        subprocess.run(["nsys", "export", "--type", "sqlite", "--force-overwrite", "true", "-o", db, rep], check=True, stdout=subprocess.DEVNULL)
+    c = sqlite3.connect(db)
+    names = dict(c.execute("select id, value from StringIds"))
+    K = c.execute("select start, end, deviceId, streamId, shortName from CUPTI_ACTIVITY_KIND_KERNEL order by start").fetchall()
+    M = c.execute("select start, end, deviceId, streamId, copyKind, bytes from CUPTI_ACTIVITY_KIND_MEMCPY order by start").fetchall()
+    if not K:
+        print("no kernels in", db); return
+    cl, (cs, ce) = [], K[0][:2]
+    for s, e, *_ in K[1:]:
+        if s - ce > 50e6: cl.append((cs, ce)); cs, ce = s, e
+        else: ce = max(ce, e)
+    cl.append((cs, ce))
+    w0, w1 = max(cl, key=lambda x: x[1] - x[0])
+    W = (w1 - w0) / 1e9
+    def union(iv):   # seconds covered by a list of (start, end)
+        t, end = 0, None
+        for s, e in sorted(iv):
+            if end is None or s > end: t += e - s; end = e
+            elif e > end: t += e - end; end = e
+        return t / 1e9
+    kind = {1: "HtoD", 2: "DtoH", 8: "DtoD", 10: "PtoP"}
+    print(f"pass window {W:.3f} s (of {len(cl)} kernel stretches; {(K[-1][1] - K[0][0]) / 1e9:.1f} s profiled)")
+    print("| card | kernels s | compute-stream gaps s | waits over 1 ms | hand-off reads s | HtoD GB in s | DtoH GB in s | PtoP/DtoD GB |")
+    print("|---|---|---|---|---|---|---|---|")
+    top = {}
+    for d in sorted({k[2] for k in K}):
+        kd = [k for k in K if k[2] == d and k[0] >= w0 and k[1] <= w1]
+        if not kd: continue
+        st = max({k[3] for k in kd}, key=lambda s: sum(1 for k in kd if k[3] == s))   # the compute stream: the one with the most kernels
+        ks = [k for k in kd if k[3] == st]
+        gaps = [(ks[i + 1][0] - ks[i][1], i) for i in range(len(ks) - 1) if ks[i + 1][0] > ks[i][1]]
+        g_all = sum(g for g, _ in gaps) / 1e9
+        g_big = [(g, i) for g, i in gaps if g > 1e6]
+        xs = union([(k[0], k[1]) for k in kd if names.get(k[4], "").startswith("k_xstage_read")])
+        md = [m for m in M if m[2] == d and m[0] >= w0 and m[1] <= w1]
+        def cp(ks_):
+            sel = [m for m in md if m[4] in ks_]
+            return sum(m[5] for m in sel) / 1e9, union([(m[0], m[1]) for m in sel])
+        h2d, d2h, p2p = cp((1,)), cp((2,)), cp((8, 10))
+        print(f"| {d} | {union([(k[0], k[1]) for k in kd]):.3f} | {g_all:.3f} | {len(g_big)} ({sum(g for g, _ in g_big) / 1e9:.3f} s) | {xs:.3f} | {h2d[0]:.2f} in {h2d[1]:.3f} | {d2h[0]:.2f} in {d2h[1]:.3f} | {p2p[0]:.2f} |")
+        tk = {}
+        for k in kd: tk[names.get(k[4], "?")] = tk.get(names.get(k[4], "?"), 0) + k[1] - k[0]
+        top[d] = (sorted(tk.items(), key=lambda x: -x[1])[:a.top], sorted(g_big, reverse=True)[:a.gaps], ks)
+    for d, (tk, gb, ks) in top.items():
+        print(f"\ncard {d}: kernels by time: " + ", ".join(f"{n[:40]} {t / 1e9:.3f} s" for n, t in tk))
+        for g, i in gb:
+            print(f"  wait {g / 1e6:7.1f} ms at {(ks[i][1] - w0) / 1e9:7.3f} s after {names.get(ks[i][4], '?')[:40]} before {names.get(ks[i + 1][4], '?')[:40]}")
 
 
 def cmd_cells(a):
@@ -1610,15 +1711,21 @@ def merge_moe(args):
     return out + ["--moe", ",".join(mine + [v for v in vals if v not in mine])]
 
 
+DIAG_ENV = ("POOL_LIVE", "PERF_LEDGER", "GGML_CUDA_SCRATCH_CHECK")   # diagnostics recorded in a row's env (see cmd_cell's rec): ~10% decode for the scratch check on MiMo
+
+
 def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
-                             + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")]   # the pool write ledger (who writes which bytes of a card's pool): cells turn it on, see cmd_cell
+                             + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")   # the pool write ledger (who writes which bytes of a card's pool): cells turn it on, see cmd_cell
+                             + (",statsjson=1" if os.environ.get("POOL_LIVE") == "1" else "")   # the live pool view (livelist.py, port 7000): pool maps and ledger writes to /dev/shm
+                             + ("" if NOSTATS[0] else ",pass-stats=1")]   # the split pass report per card (extra stream stamps, off in the engine by default): -ns leaves it off
     elif not build.startswith("stock") and STATE_FILE["v"]:
         env = {**env, "LLAMA_MOE_STATE": STATE_FILE["v"]}   # the first releases (no --moe flag) read the environment variable
     env, args = drop_moe_flag(build, env, args)
     args = merge_moe(args)
     logf = f"/tmp/perf-{build}{LOGTAG}.log"
+    if os.path.exists(logf): os.replace(logf, logf + ".prev")   # the previous start's log stays readable: in a clean-state cell the cold run is the start before the warm one
     global WATCH_LOG; WATCH_LOG = logf   # post() watches this file
     with open(logf, "w") as lf:
         p = subprocess.Popen(WRAP + [os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
@@ -1714,7 +1821,7 @@ def post(path, body, timeout=3600, every=10, idle_polls=2):
     PARTIAL["text"] = ""
     def work():
         try:
-            resp = urllib.request.urlopen(req, timeout=timeout)
+            resp = urllib.request.urlopen(req, timeout=None if not stream else timeout)   # a plain request answers once at the end (stock MiMo 200k: ~70 min); the loop below stops a dead server
             if not stream:
                 box["r"] = json.load(resp); return
             last = {}
@@ -1761,14 +1868,20 @@ def post(path, body, timeout=3600, every=10, idle_polls=2):
 def post_loopguard(path, body, timeout=3600, every=128, min_tokens=400, window=150):
     """/completion as a stream: every `every` tokens (from `min_tokens` on) the last `window` words are tested; a repetition loop (unique word 4-gram share < 0.5) closes the connection (the server stops
     generating) and the result is marked _loop: a loop costs about a minute instead of the whole run. Returns the same fields as the plain post (content, timings)."""
-    req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", json.dumps({**body, "stream": True}).encode(), {"Content-Type": "application/json"})
+    # return_progress: the server streams the prompt's progress after every batch, so a read waits for one batch, not for the whole prompt (stock MiMo takes
+    # ~70 min for a 200k prompt at 50 t/s, and the socket timeout below cut such a request at 60 min); `timeout` is the longest silence of a live server
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", json.dumps({**body, "stream": True, "return_progress": True}).encode(), {"Content-Type": "application/json"})
     resp = urllib.request.urlopen(req, timeout=timeout)
-    text, n, last = "", 0, {}
+    text, n, last, prog = "", 0, {}, None
     for raw in resp:
         line = raw.decode().strip()
         if not line.startswith("data:") or line == "data: [DONE]":
             continue
-        j = json.loads(line[5:]); last = j
+        j = json.loads(line[5:])
+        if "prompt_progress" in j and not j.get("content"):
+            prog = j["prompt_progress"]   # the prompt's progress, no token: the last one times the whole prompt (kept for an answer that loops)
+            continue
+        last = j
         text += j.get("content", ""); n += 1
         if j.get("stop"):
             break
@@ -1777,7 +1890,9 @@ def post_loopguard(path, body, timeout=3600, every=128, min_tokens=400, window=1
             g = [tuple(w[i:i + 4]) for i in range(len(w) - 3)]
             if len(w) >= window and g and len(set(g)) / len(g) < 0.5:
                 resp.close()
-                return {"content": text, "_loop": True, "timings": {"predicted_per_second": 0, "prompt_per_second": 0, "predicted_n": n, "prompt_n": 0, "prompt_ms": 0}}
+                # the prompt ran whatever the answer did: its speed from the last progress (processed less cached tokens, ms since the prompt started)
+                pn, pms = (prog["processed"] - prog["cache"], prog["time_ms"]) if prog else (0, 0)
+                return {"content": text, "_loop": True, "timings": {"predicted_per_second": 0, "prompt_per_second": pn / pms * 1e3 if pms > 0 else 0, "predicted_n": n, "prompt_n": pn, "prompt_ms": pms}}
     resp.close()
     return {**last, "content": text}
 
@@ -1982,7 +2097,7 @@ def server_run(build, env, args, path, body, render=None):
     PROCSTAT["cache_state"] = model_residency()
     _t0 = time.time(); PROCSTAT["start_ts"] = time.strftime("%F %T", time.localtime(_t0))
     PROCSTAT["endpoint"] = "completion" if path == "/completion" else "chat"
-    key = repr((build, MODEL, tuple(args), sorted((k, v) for k, v in env.items() if os.environ.get(k) != v)))
+    key = repr((build, MODEL, tuple(args), sorted((k, v) for k, v in env.items() if os.environ.get(k) != v), os.environ.get("PERF_CELL_ENV", "")))
     d = kept_get() if KEEP_SERVER else None
     if d and d["key"] == key:
         p, logf = PidProc(d["pid"]), d["logf"]   # kept from an earlier run or cell: no start, no load wait
@@ -2173,10 +2288,12 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
            "LLAMA_MOE_CACHE_TUNED": os.environ.get("LLAMA_MOE_CACHE_TUNED", "0")}  # no saved tuner decisions: every run starts cold
     row = {}
     TAGBOX["v"] = test   # game4 and edit4 add their prompt below
-    if test in ("ppl", "ppl3", "pplb", "pplc"):
-        nb, nub = {"ppl": ("1", "1"), "ppl3": ("3", "3"), "pplb": ("1024", "1024"), "pplc": ("1024", "256")}[test]   # pplb: 1024-token batches = the big-batch (prefill) path; pplc: the same batch in 256-token ubatches (4 ubatches per decode call)
+    if test in ("ppl", "ppl3", "pplb", "pplc", "ppll"):
+        nb, nub = {"ppl": ("1", "1"), "ppl3": ("3", "3"), "pplb": ("1024", "1024"), "pplc": ("1024", "256"), "ppll": ("8192", "8192")}[test]   # ppll: long chunks (PERF_PPL_CTX, default 32768) of src_128k.cpp in prompt-sized passes: the attention of a chunk's later tokens reaches past the sparse gate   # pplb: 1024-token batches = the big-batch (prefill) path; pplc: the same batch in 256-token ubatches (4 ubatches per decode call)
         nub = os.environ.get("PERF_PPL_UB") or nub   # PERF_PPL_UB=N: the 1024 tokens of a chunk cut into N-token ubatches (how ppl moves with the number of cuts; stored in the note)
-        args = COMMON + ["-f", PPL_TEXT, "-c", "1024", "--chunks", os.environ.get("PERF_PPL_CHUNKS", "2"), "-b", nb, "-ub", nub]   # PERF_PPL_CHUNKS=12: a paired comparison of two compute paths needs more than 2 chunks (a valid path differs by +-0.5% per chunk)
+        ctx = os.environ.get("PERF_PPL_CTX", "32768" if test == "ppll" else "1024")   # the chunk length; ppll's own test name keeps its runs out of the README's pplb table
+        ppl_text = os.path.join(PROMPT_DIR, os.environ["PERF_PPL_FILE"]) if os.environ.get("PERF_PPL_FILE") else (config.prompt_path("src128k") if test == "ppll" and "src128k" in getattr(config, "PROMPTS", {}) else os.path.join(PROMPT_DIR, "src_128k.cpp") if test == "ppll" else PPL_TEXT)
+        args = COMMON + ["-f", ppl_text, "-c", ctx, "--chunks", os.environ.get("PERF_PPL_CHUNKS", "2"), "-b", nb, "-ub", nub]   # PERF_PPL_CHUNKS=12: a paired comparison of two compute paths needs more than 2 chunks (a valid path differs by +-0.5% per chunk)
         args += shlex.split(os.environ.get("PERF_PPL_EXTRA", ""))   # PERF_PPL_EXTRA="--kl-divergence-base F": extra llama-perplexity arguments for stock and ours alike (per-position log-probs, fork/ppl_pos.py)
         env, args = drop_moe_flag(build, env, args)   # the b11509 arm of the regress cell failed on --moe autotune=0,...
         if build.startswith("stock"):   # stock has no --moe-expert-cache
@@ -2239,12 +2356,15 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 args += ["-np", "1"]    # stock's auto slots (4) split -c: 16384 / 4 = 4096 per slot, the same HTTP 400 ("exceeds the available context size (4096 tokens)", 2026-10-19)
             _pf_big = test == "pf128k" or (_pfn and int(_pfn.group(1)) > 12)   # pf40k, pf64k ...: the first N thousand tokens of the 128k source
             _pf_text = open(config.prompt_path("src128k" if _pf_big else "src12k")).read()
-            if _pfn and int(_pfn.group(1)) not in (12, 128):   # the 12k file is 12294 tokens (GLM tokenizer, 4.4 characters each): cut in proportion
-                _pf_text = _pf_text[:int(54092 * int(_pfn.group(1)) * 1000 / 12294)]
+            if _pfn and int(_pfn.group(1)) in PF_FILES:   # a frozen file (prompts/src_Nk.cpp, the cut below written out): the one-pass prompts of `run.py onepass`
+                _pf_text = open(config.prompt_path(f"src{_pfn.group(1)}k")).read()
+            elif _pfn and int(_pfn.group(1)) not in (12, 128):   # the 12k file is 12294 tokens (GLM tokenizer, 4.4 characters each): cut in proportion
+                _need = int(54092 * int(_pfn.group(1)) * 1000 / 12294); _pf_text = (_pf_text * (_need // max(len(_pf_text), 1) + 1))[:_need]   # beyond the source (256k contexts): the source again, the speeds do not depend on the text
             _pf_text = OVR.get("prefix", "") + _pf_text
             if OVR.get("prefix"):   # an instruction (12kin_1kout_code_review): an instruct model needs its chat template or a long answer loops, so it goes through the chat endpoint
                 res, logf = server_run(build, env, args, "/v1/chat/completions",
-                                       {"messages": [{"role": "user", "content": _pf_text}], "max_tokens": int(OVR.get("tokens") or 1024), **GREEDY, "cache_prompt": False})
+                                       {"messages": [{"role": "user", "content": _pf_text}], "max_tokens": int(OVR.get("tokens") or 1024), **GREEDY, "cache_prompt": False,
+                                        "reasoning_format": "none", **({"logprobs": True, "top_logprobs": 1} if os.environ.get("RUN_DBG_TOKENS") else {})})   # DeepSeek V4.1 chat answers came back with content "" (everything generated is thinking, 256 of 256 tokens, finish length, no reasoning_content): the parser dropped it; "none" leaves the raw text in content, so every answer is stored and loop-checked (2026-10-26)
             else:
               _np = int(OVR.get("tokens") or os.environ.get("PERF_NPRED", 64 if test == "pf128k" else 256 if test == "fix12k" else 32))
               if OVR.get("chat"):   # --chat: an instruct model gets its chat template (raw cut text: Qwen3.8 stopped after 1 token at 40k, 2026-10-18); /completion keeps the clamp and the loop guard
@@ -2255,12 +2375,17 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                                    {"prompt": ovr_prompt(_pf_text), "n_predict": _np,
                                     "cache_prompt": False, **GREEDY, **(FIXED if test == "fix12k" else {})})
             t = res["timings"]
-            row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
+            row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
                    "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}" + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
             # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
             # a chat answer keeps its reasoning part too (a thinking model can put everything there and leave the content empty)
             _m = ((res.get("choices") or [{}])[0].get("message") or {})
             row["output"] = res.get("content") or ((_m.get("reasoning_content") + "\n---\n" if _m.get("reasoning_content") else "") + (_m.get("content") or ""))
+            if os.environ.get("RUN_DBG_TOKENS"):   # debug: the first generated tokens as the server decoded them (repr), to see what an answer that renders empty is made of
+                _lp = (((res.get("choices") or [{}])[0].get("logprobs") or {}).get("content") or [])
+                print("DBG TOKENS (first 60 of %d): %s" % (len(_lp), [(x.get("token"), x.get("id")) for x in _lp[:40]]), flush=True)
+            if not row["output"]:   # no answer text (DeepSeek pf cells stored 0 characters, 2026-10-26): show what the server did send, so the cause is read from the log
+                print("NO ANSWER TEXT: response keys " + str(sorted(res.keys())) + "; message keys " + str(sorted(_m.keys())) + "; finish " + str((res.get("choices") or [{}])[0].get("finish_reason")) + "; raw " + json.dumps(res, default=str)[:600], flush=True)
             if test == "fix12k":
                 row["md5"] = hashlib.md5(res["content"].encode()).hexdigest()[:8]
             row.update(PROCSTAT)   # load time, rss, GPU log and power of the request window (--gpulog)
@@ -2316,7 +2441,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             text = (m.get("reasoning_content") or "") + "\n---\n" + (m.get("content") or "")
         t = res["timings"]
         log = open(logf).read()
-        row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"],
+        row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
                "output": text, "md5": hashlib.md5(text.encode()).hexdigest()[:8]}
         row.update(PROCSTAT)
         _rx = r"moe churn = (\d+) uploads, (\d+) evictions, ([\d.]+) MiB uploaded \(this request\)"
@@ -2370,6 +2495,8 @@ def generate(build, env, args, prompt, n, chat, extra=None, tag=None):
     templ = chat and TEMPLATED   # --templated: the server's own /apply-template renders the model's chat template, the rendered text goes to /completion (same tokens as the chat endpoint, raw path, loop guard applies)
     body = {"messages": [{"role": "user", "content": prompt}], "max_tokens": n, **GREEDY} if chat and not templ else {"prompt": prompt, "n_predict": n, **GREEDY}
     body.update(extra or {})
+    if chat and not templ and OVR.get("nothink"):
+        body["chat_template_kwargs"] = {"enable_thinking": False}   # --nothink: reasoning off, the answer starts at once
     res, logf = server_run(build, env, args, "/completion" if templ else "/v1/chat/completions" if chat else "/completion", body, render=[{"role": "user", "content": prompt}] if templ else None)
     PROCSTAT["endpoint"] = "completion-templated" if templ else "chat" if chat else "completion"
     if chat and not templ:
@@ -2487,6 +2614,72 @@ def windows_from_cache_csv(build):
     return w or None
 
 
+def gpu_details():
+    """{nvidia-smi index: the card's facts} for the gpuN sections of stats.ini: name, PCI bus id, PCIe link (width now and at most, generation at most: the current generation
+    drops when idle), power limit in W, memory in MiB, driver. {} when nvidia-smi is not on this machine (remote and cloud runs)."""
+    keys = ["name", "pci_bus", "link_width", "link_width_max", "link_gen_max", "power_limit_w", "mem_mib", "driver"]
+    try:
+        r = subprocess.run([NVSMI, "--query-gpu=index,name,pci.bus_id,pcie.link.width.current,pcie.link.width.max,pcie.link.gen.max,power.limit,memory.total,driver_version",
+                            "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    d = {}
+    for l in r.stdout.splitlines():
+        v = [x.strip() for x in l.split(",")]
+        if len(v) == 9:
+            d[v[0]] = dict(zip(keys, [v[1], v[2]] + v[3:6] + [str(round(float(v[6]))) if v[6].replace(".", "").isdigit() else v[6], v[7], v[8]]))
+    return d
+
+
+GPU_DET = []   # gpu_details() of this machine, read once: the live display redraws every tick
+
+
+def card_label(c):
+    """The name a card is shown and called by (user 2026-10-24: "cuda0 cuda1 is confusing"): [p]cuda<n>x<slot width>, p for the primary card (it computes the
+    experts of the dense split and takes its full card limit every pass), e.g. pcuda1x16 and cuda0x4 on PC1. The width is the link's CURRENT width from nvidia-smi
+    (the max field is the card's own: 16 for the card in the x4 slot too). CUDA<n> is nvidia-smi's index n (run.py starts servers with CUDA_DEVICE_ORDER=PCI_BUS_ID),
+    through CUDA_VISIBLE_DEVICES when -ng hides cards. A run on another machine shows no width (this machine's nvidia-smi would describe the wrong cards)."""
+    dev = str(c.get("dev", "?"))
+    if not GPU_DET: GPU_DET.append({} if HOST[0] else gpu_details())
+    k = re.sub(r"\D", "", dev)
+    vis = [x.strip() for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
+    idx = vis[int(k)] if k and vis and int(k) < len(vis) else k
+    w = GPU_DET[0].get(idx, {}).get("link_width", "")
+    return ("p" if c.get("experts") else "") + dev.lower() + (f"x{w}" if str(w).isdigit() else "")
+
+
+def split_sections(key, model, test, hw):
+    """The dense split's passes of the run (SPLIT_PASSES) -> stats.ini: one [key/global] section (pass speed, phase, tokens) and one [key/gpuN] section per card (CUDA<N>: the
+    card's facts from gpu_details, its place in the range order and whether it computes the experts, then per pass its tokens, share, dense, hand-off, KV and expert times and its measured waits), a value per pass. The name has no space before the suffix: backfill.py's
+    'ts build' sections skip them."""
+    rows = [b for _, b in SPLIT_PASSES["rows"]]
+    SPLIT_PASSES["rows"] = []
+    if not rows:
+        return
+    f = lambda xs, fmt: ",".join(fmt % x for x in xs)
+    head = lambda: [f"model={model}", f"test={test}", f"hw={hw}", "every=1  ; pass"]
+    out = [f"[{key}/global]"] + head()
+    out += ["us_tok=" + f([r.get("us_tok", 0) for r in rows], "%.2f"), "tokens=" + f([sum(c.get("tok", 0) for c in r["cards"]) for r in rows], "%d"),
+            "phase=" + ",".join(str(r.get("phase", "")).replace(" ", "_") for r in rows), "cards=" + f([len(r["cards"]) for r in rows], "%d"), ""]
+    devs = sorted({c.get("dev", "?") for r in rows for c in r["cards"]})
+    for dv in devs:
+        cs = [next((c for c in r["cards"] if c.get("dev") == dv), {}) for r in rows]
+        idx = re.sub(r"\D", "", dv) or dv
+        g = gpu_details().get(idx, {})   # the card itself (nvidia-smi index = CUDA index: run.py starts servers with CUDA_DEVICE_ORDER=PCI_BUS_ID)
+        last = rows[-1]["cards"]
+        out += [f"[{key}/gpu{idx}]", f"dev={dv}"] + [f"{k}={v}" for k, v in g.items()]
+        lk = [c.get("link_gbs") for c in last if c.get("dev") == dv and c.get("link_gbs")]
+        out += [f"pcie_h2d_probe_gbs={lk[0]:.2f}" if lk else "pcie_h2d_probe_gbs=", f"pcie_h2d_peak_gbs={SPLIT_PASSES.get('peak', {}).get(dv, 0):.2f}"]   # measured at this start / busiest second of the cell
+        out += [f"range_pos={next((i for i, c in enumerate(last) if c.get('dev') == dv), -1)}", f"experts_card={int(any(c.get('dev') == dv and c.get('experts') for c in last))}", "every=1  ; pass"]
+        for name, k, fmt, mul in (("tokens", "tok", "%d", 1), ("share_pct", "s", "%.1f", 100), ("expert_pct", "f", "%.1f", 100), ("dense_ms", "dense_ms", "%.1f", 1),
+                                  ("dense_us_tok", "dense_us_tok", "%.2f", 1), ("hop_us_tok", "hop_us_tok", "%.2f", 1), ("kv_ms", "kv_ms", "%.1f", 1), ("moe_ms", "moe_ms", "%.1f", 1),
+                                  ("wait_dense_ms", "wait_dense_ms", "%.1f", 1), ("wait_moe_ms", "wait_moe_ms", "%.1f", 1), ("wait_max_ms", "wait_max_ms", "%.2f", 1)):
+            out.append(f"{name}=" + f([c.get(k, 0) * mul for c in cs], fmt))
+        out.append("")
+    with open(os.path.join(DATA, "stats.ini"), "a") as fh:
+        fh.write("\n".join(out) + "\n")
+
+
 def save_stats(build, ts, test, hw, model):
     """The server's statslog file of the measured run (a value per 32 steps: t/s, hit, uploads, evictions, MiB uploaded, DDR and PCIe GB/s) -> a section of stats.ini."""
     f = f"/tmp/perf-{build}{LOGTAG}-stats.txt"
@@ -2495,6 +2688,7 @@ def save_stats(build, ts, test, hw, model):
         os.remove(f)  # the next run of this build must not re-save it
     else:
         w = windows_from_cache_csv(build)   # release-line builds have no statslog file: the same windows from the engine's --moe log=p series (one row per N decode tokens)
+    split_sections(f"{ts} {build}", model, test, hw)
     if w:
         with open(os.path.join(DATA, "stats.ini"), "a") as out:
             sec = stats_section(f"{ts} {build}", model, test, hw, w)
@@ -2503,6 +2697,34 @@ def save_stats(build, ts, test, hw, model):
 
 
 CELLS = {}   # (model, test, build, args, campaign, hw) -> (t/s of its runs, pp of its runs)
+
+
+# Answer checks of every run, printed at once (2026-10-28: 15 DeepSeek + DSpark repeat requests had stopped printing at ~717 characters for 4096 tokens over
+# a day before anyone saw it; their uniq4 and loop looked fine, only the length was wrong):
+#  - an answer under half a character per generated token stopped printing (real text is ~3, code ~2.5, CJK ~1): ANSWER STOPPED
+#  - a later run of the same greedy cell whose answer is over 15% shorter or longer than the first run's (a repeat request that breaks, a cache or replay bug):
+#    REPEAT DIFFERS with the lengths and where they part. Smaller differences are the cache's normal numeric drift. Sampling runs are not compared.
+FIRST_ANSWER = {}
+
+
+def answer_checks(row, key):
+    out = row.get("output") or ""
+    n_gen = int(float(row.get("n_gen") or 0))
+    np_ = re.search(r"(?:^|\s)-np\s+(\d+)", str(key[3]))
+    if n_gen >= 256 and len(out) * 2 < n_gen and not (np_ and int(np_.group(1)) > 1):   # -np N > 1: n_gen counts every slot, the text is one slot's
+        print(col("1;91", f"    ANSWER STOPPED: {len(out)} characters for {n_gen} tokens (under half a character per token: the rest printed nothing)"), flush=True)
+    if not out or "temp" in str(key[3]) or "--sampler" in str(key[3]):
+        return
+    first = FIRST_ANSWER.setdefault(key, out)
+    if first is out or first == out:
+        return
+    # With the expert cache, upload timing decides which experts run on the GPU and which on the CPU, and that numeric drift changes the text late in a
+    # long answer: a later run that parts from the first is normal. A repeat much shorter or longer than the first is not (the DSpark break: 717 against
+    # 887 characters): only that is flagged.
+    if 0.85 * len(first) <= len(out) <= 1.15 * len(first):
+        return
+    k = next((i for i, (x, y) in enumerate(zip(first, out)) if x != y), min(len(first), len(out)))
+    print(col("1;93", f"    REPEAT DIFFERS from the cell's first run: {len(out)} against {len(first)} characters, parting at character {k}: ...{out[max(0, k - 40):k + 40]!r}"), flush=True)
 
 
 def text_class(text):
@@ -2573,11 +2795,30 @@ def store(row, build, test, rec, note, hw, vstr):
                model=model_name(), ts=time.strftime("%F %T"), build=build, test=test,
                env=json.dumps(rec, sort_keys=True), note=" | ".join(x for x in (note, row.get("note"), "sampler=" + SAMPLER if SAMPLER else None) if x) or None)
     if not row.get("pf_mode") and CAMPAIGN and not build.startswith("stock"):   # which path the prompt passes took (one card, two cards, dense split): from the cell's server log; a run with no decision line says so
-        lg = f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log"
-        if os.path.exists(lg):
-            d = decisions(open(lg, errors="replace").read())
+        # the LIVE server log (/tmp/perf-<build>.log): the cell's copy in QDIR is made only when the cell ends, so a run's row used to read the copy of the
+        # cell before (or of an earlier attempt of this cell)
+        lg = next((p for p in (f"/tmp/perf-{build}.log", f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log") if os.path.exists(p)), None)
+        if lg:
+            # a kept server logs every run of the cell into one file: the prompt decisions of THIS run are the lines after the previous row's read
+            # (reading the whole log gave run 2 the decision of run 1: same prompt size, the first line won). Every run is its own process, so the
+            # read position lives in a file, keyed by the log's inode: a server start writes a new log (the old one becomes .prev) and starts again at 0.
+            # Load-time keys still come from the whole log.
+            txt = open(lg, errors="replace").read()
+            pf_pos = os.path.join(QDIR, "pf-pos.json")
+            try: P = json.load(open(pf_pos))
+            except (OSError, ValueError): P = {}
+            ino = os.stat(lg).st_ino
+            pos = P.get(lg, [None, 0])[1] if P.get(lg, [None])[0] == ino else 0
+            if pos > len(txt): pos = 0
+            P[lg] = [ino, len(txt)]
+            try: json.dump(P, open(pf_pos, "w"))
+            except OSError: pass
+            d = {k: v for k, v in decisions(txt).items() if not k.startswith("pf_")}
+            d.update(decisions(txt[pos:]))
             row.update({k: v for k, v in d.items() if k.startswith("pf_") or k in ("layout", "placement", "ubatch_max")})
             if not d.get("pf_mode"): row["pf_mode"] = "no-decision"
+    if not row.get("par_gpus"):   # every row, also when another path filled the prefill fields first (the bench's own log reading): 1,1 without a decision line
+        row["par_gpus"] = par_gpus(row.get("pf_all"), row.get("pf_gpus"), " ".join(str(x) for x in (rec.get("args"), row.get("args")) if x))
     for lg in (f"{QDIR}/{CAMPAIGN}.remote.server.log", f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log") if CAMPAIGN else ():   # the log of the cell: copied from the remote machine, or the local one
         if os.path.exists(lg):
             for k, v in server_params(open(lg, errors="replace").read()).items(): row.setdefault(k, v)
@@ -2588,6 +2829,7 @@ def store(row, build, test, rec, note, hw, vstr):
     w = save_stats(build, row["ts"], test, hw, row["model"])
     row["uniq4"], row["out_chars"], row["code"] = text_class(row.get("output"))
     row["loop"] = int(bool(row.get("loop_abort")) or is_loop(row.get("output")))
+    answer_checks(row, (row["model"], test, build, rec.get("args", ""), CAMPAIGN, hw))
     try:   # the generated text (zlib) into runs.db table outputs, keyed by ts + build
         import runlog
         runlog.insert_output(row["ts"], hw, build, test, row["model"], row.get("md5"), row.get("output"), row["uniq4"], row["out_chars"], row["code"])
@@ -2615,7 +2857,7 @@ def store(row, build, test, rec, note, hw, vstr):
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=row.get("pl") or power_limits(hw), **{k: row.get(k) for k in ("thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs")}, proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
-        branch=bi.get("branch", ""), patch=bi.get("patch", ""), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
+        branch=bi.get("branch", ""), patch=bi.get("patch", ""), repro=os.environ.get("RUNPY_REPRO"), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
     save_output_file(row["ts"], build, test, row["model"])   # fork/outputs/<run id>.txt: the answer, readable on GitHub without runs.db
     global _EMB_OFF
     try:
@@ -2786,12 +3028,19 @@ def stock_fitt_put(hw, v):
         f.write(f"{os.path.basename(MODEL)},{hw},{v},{time.strftime('%F %T')}\n")
 
 
+def argv_of(s):
+    """Cell and variant arguments as a shell splits them: quotes group a word (-otd "blk\\.0\\..*=CUDA1,blk\\.2\\..*=CUDA0"). str.split() kept the quote characters,
+    and the server read CUDA0" as a buffer type ("unknown buffer type", the DSpark placement cells of 2026-10-26). Unbalanced quotes fall back to plain words."""
+    try: return shlex.split(s or "")
+    except ValueError: return (s or "").split()
+
+
 def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
     """One measured run, preceded by a discarded run with the same build and settings: model switches, a previous pinned load
     (drops the page cache) and cache/tuner warm-up all showed 5-12% swings on the first run."""
     global BARE, IDX
     BARE = bare
-    xargs = args.split() if args else ()
+    xargs = argv_of(args) if args else ()
     hw = hw or os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
     fitt_user = "-fitt" in xargs or "--fit-target" in xargs
     if build.startswith("stock") and not fitt_user:   # the tested value of this model and machine, else upstream's default
@@ -2828,7 +3077,9 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
                 except Exception as e2:
                     row = {"ok": 0, "note": f"also failed with -fitt {v}: " + str(e2)[:250]}
     rec = {**extra, **({"bare": "1"} if bare else {}), **({"plain": "1"} if plain else {}), **({"args": args} if args else {}),
-           **{k: str(v) for k, v in OVR.items() if k != "prompt"}}
+           **{k: str(v) for k, v in OVR.items() if k != "prompt"},
+           **{k: os.environ[k] for k in DIAG_ENV if os.environ.get(k) not in (None, "", "0")},
+           **({"PERF_LOG": os.environ["PERF_LOG"]} if os.environ.get("PERF_LOG", "r") != "r" else {})}   # research logging beyond the run line (cache stats, traces) marks the row too   # a diagnostic that costs time (live pool view, ledger, scratch check) marks the row: speed comparisons group by env
     want = int(OVR["tokens"]) if OVR.get("tokens") else 0
     for k in range(3):   # a repetition loop is not comparable (a short generation that ended with a real answer is kept): stored as a failed run (ok=0, loop=1 for a loop; excluded from every statistic) and repeated, up to 3 times
         if not row.get("ok", 1):
@@ -2900,6 +3151,11 @@ def cmd_show(a):
               f"{mean('spp'):7.2f} {mean('hit'):6.1f} {mean('pp'):7.1f}  {','.join(sorted({x['md5'] for x in g if x['md5']}))}")
 
 
+def first_shard(path):
+    """the name shown for a model: its first file only (a split model lists NAME-00001-of-0000N.gguf, not every shard)"""
+    return os.path.basename(re.split(r"[,\s]", str(path).strip())[0])
+
+
 def model_name():
     return re.split(r"[\\/]", MODEL)[-1]
 
@@ -2909,6 +3165,17 @@ SAMPLER = ""   # --sampler: extra sampling parameters merged into every request 
 
 # readable test names <in>_<out>_<what>; they resolve to the tests the history already holds (rows keep the old names, so runs stay comparable)
 _PI = config.prompts_ini()   # test aliases from prompts.ini: [name] alias = real test, tokens = answer length, prefix = prompt section prepended, snippet = prompt section sent instead of the default source
+def test_name(t):
+    """a size is written without the pf (8k, 60k1k, user 2026-10-24: no prefixes); the code's own key still has it"""
+    if (m := re.fullmatch(r"(\d+)m(\d+k)?", str(t))): t = f"{int(m[1]) * 1024}k{m[2] or ''}"   # 1m1k = 1024k1k (a million-token prompt: the 128k source repeated, cut on the fly)
+    return "pf" + t if re.fullmatch(r"\d+k(\d+k)?", str(t)) else t
+
+
+class TestChoices(list):
+    """The tests a bench / run argument accepts: the listed ones and any pf<N>k (the first N thousand tokens of the source, run -ps)."""
+    def __contains__(self, v): return list.__contains__(self, v) or bool(re.fullmatch(r"pf\d+k", str(v)))
+
+
 ALIASES = {k: v["alias"] for k, v in _PI.items() if v.get("alias")}
 ALIAS_TOKENS = {k: int(v["tokens"]) for k, v in _PI.items() if v.get("alias") and v.get("tokens")}
 ALIAS_PREFIX = {k: config.prompt(v["prefix"]) for k, v in _PI.items() if v.get("alias") and v.get("prefix")}   # prepended to the 12k prompt (pf12k alone sends the bare file)
@@ -2925,7 +3192,7 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par", "lead", "chat"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par", "lead", "chat", "nothink"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
     if getattr(a, "test", None) in ALIAS_TOKENS and "tokens" not in OVR:
@@ -3091,6 +3358,56 @@ def gguf_ctx_train(path, data=None):
                 elif arch and k == f"{arch}.context_length": return int(v)
     except (OSError, struct.error, KeyError, ValueError): pass
     return 0
+
+
+def gguf_meta(path):
+    """the scalar metadata of a GGUF header as {key: value} (arrays longer than 64 left out); {} when it cannot be read. For a split model give the first part."""
+    import struct
+    meta = {}
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF": return {}
+            f.read(4); f.read(8); nkv = struct.unpack("<Q", f.read(8))[0]
+            fmt = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
+            def rd(t):
+                if t == 8: return f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf8", "replace")
+                if t == 9:
+                    et = struct.unpack("<I", f.read(4))[0]; n = struct.unpack("<Q", f.read(8))[0]
+                    if et != 8 and et in fmt and n > 64: f.seek(n * struct.calcsize(fmt[et]), 1); return None
+                    return [rd(et) for _ in range(n)]
+                return struct.unpack(fmt[t], f.read(struct.calcsize(fmt[t])))[0]
+            for _ in range(nkv):
+                k = rd(8); t = struct.unpack("<I", f.read(4))[0]; v = rd(t)
+                if k.startswith("tokenizer.") and isinstance(v, list): continue
+                if v is not None and not (isinstance(v, list) and len(v) > 64): meta[k] = v
+    except (OSError, struct.error, KeyError, ValueError): pass
+    return meta
+
+
+def kv_bytes_per_token(meta, kv_bytes=2):
+    """bytes of KV cache one token takes in this model (f16 = 2 bytes per element), from its GGUF metadata. MLA (kv_lora_rank): one latent plus the rope part per layer. Standard attention: K and V of
+    n_head_kv heads of the key/value length per layer. Hybrid models (full_attention_interval) have attention in every Nth layer only. A sliding-window layer is counted as a full one: the estimate
+    errs high, the start prompt errs low and the search corrects it."""
+    arch = meta.get("general.architecture", ""); g = lambda k, d=0: meta.get(f"{arch}.{k}", d)
+    L = int(g("block_count")); emb = int(g("embedding_length")); heads = g("attention.head_count", 1)
+    attn_layers = L // int(g("full_attention_interval", 1) or 1)
+    if g("attention.kv_lora_rank"): return attn_layers * (int(g("attention.kv_lora_rank")) + int(g("rope.dimension_count", 64))) * kv_bytes
+    hkv = g("attention.head_count_kv", heads); hkv = max(hkv) if isinstance(hkv, list) else hkv
+    heads = max(heads) if isinstance(heads, list) else heads
+    kl = int(g("attention.key_length", emb // max(heads, 1))); vl = int(g("attention.value_length", kl))
+    return int(attn_layers * hkv * (kl + vl) * kv_bytes)
+
+
+def feasible_ctx(path, hw_gb):
+    """tokens of context this machine can hold for the model, by arithmetic: the KV cache of one token (kv_bytes_per_token) against the memory it may take: half of the cards' VRAM (the rest
+    holds the weights, the expert cache and the compute buffers) plus a quarter of the available RAM (the KV ladder spills to RAM); never more than the trained context. (tokens, bytes per token, budget GiB)"""
+    meta = gguf_meta(path); bpt = kv_bytes_per_token(meta) if meta else 0
+    try: ram = next(int(l.split()[1]) * 1024 for l in open("/proc/meminfo") if l.startswith("MemAvailable"))
+    except (OSError, ValueError, StopIteration): ram = 0
+    budget = 0.5 * hw_gb * 2**30 + 0.25 * ram
+    train = int(meta.get(f"{meta.get('general.architecture', '')}.context_length", 0) or 0)
+    tok = int(budget / bpt) if bpt else train
+    return (min(tok, train) if train else tok), bpt, budget / 2**30
 
 
 CHARS_PER_TOKEN = 3.0   # a prompt cut for a small-context model: at most this many characters per token is assumed (the densest tokenizers: code and English give 3-4.5), so the cut prompt always fits
@@ -3668,8 +3985,8 @@ def remote_cell(mid, m, build, test, args, note, warm=True, env=None):
 def split_variant(build, vargs):
     """A variant has server args, env:KEY=VALUE words, and moe:key=value words (fork settings): newer builds read settings only as --moe keys, the first fork releases only as
     LLAMA_MOE_CACHE_<KEY> environment variables. A moe: word goes the way the build reads it, so one variant pins both kinds of build (autotune=0 -> LLAMA_AUTOTUNE=0)."""
-    words = vargs.split()
-    args = " ".join(w for w in words if not (w.startswith("env:") or w.startswith("moe:")))
+    words = argv_of(vargs)
+    args = shlex.join(w for w in words if not (w.startswith("env:") or w.startswith("moe:")))
     env = dict(w[4:].split("=", 1) for w in words if w.startswith("env:"))
     pins = [w[4:] for w in words if w.startswith("moe:")]
     if pins and not build.startswith("stock"):
@@ -3762,7 +4079,7 @@ def cmd_bench(a):
         MODEL = model
         if not m:
             prep_model()
-        cells = [(build, name, (stock_variants.get(name, "") if build.startswith("stock") else variants[name]))
+        cells = [(build, name, (stock_variants.get(name, variants[names[0]] if name == "default" and len(names) == 1 and not stock_variants else "") if build.startswith("stock") else variants[name]))   # a stock cell takes the cell's one --variant text too (run -a "-ub 17600 -b 17600" was dropped: the server ran with the defaults)
                  for build in [resolve_build(x) for x in a.builds.split(",")] for name in (list(dict.fromkeys(["default"] + list(stock_variants))) if build.startswith("stock") else names)]
         # a variant may set environment variables: "env:KEY=VALUE" words (e.g. lru='env:LLAMA_MOE_CACHE_POLICY=lru'), the rest are server args
         P = (4 if a.test in ("game4c", "edit4c", "game4", "edit4") else 1) if a.cold_hot else 1   # --cold-hot: every prompt runs twice, 0 = cold (empty state file), 1 = hot (the state that run wrote)
@@ -3893,7 +4210,7 @@ def cmd_ctl(a):
             break
         time.sleep(2)
     p, logf = server_start(a.build, {**os.environ, "LD_LIBRARY_PATH": os.path.join(HERE, a.build), "LLAMA_MOE_CACHE_STATS": "1",
-                                     "LLAMA_MOE_CACHE_CTL": ctl}, a.args.split() if a.args else [])
+                                     "LLAMA_MOE_CACHE_CTL": ctl}, argv_of(a.args) if a.args else [])
     try:
         if "from pageable host memory" in open(logf).read():
             sys.exit("ctl: weights not pinned (pageable uploads), results would not compare: aborting")
@@ -3917,7 +4234,7 @@ def cmd_ctl(a):
                 prompt = CHAT_PROMPTS[(((r - 1) // len(V)) * len(V) + (r - 1 + i) % len(V)) % len(CHAT_PROMPTS)]
                 ask(a.warm, "Say hi in one short sentence.")
                 t = ask(a.tokens, ovr_prompt(prompt))
-                row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "ok": 1, "args": kv}
+                row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t), "ok": 1, "args": kv}
                 store(row, a.build, "ctl", {"variant": name, "settings": kv, "round": str(r), "bare": "1"}, a.note, os.environ.get("PERF_HW") or "pc1", vstr)
                 sums[name].append(row["tps"])
             print(f"round {r}: " + " ".join(f"{n} {sums[n][-1]:.2f}" for n, _ in V), flush=True)
@@ -3937,6 +4254,7 @@ def add_overrides(sub):
     sub.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), metavar="N[k]",
                      help="cut the prompt of the test to N tokens (8k = 8000, so it fits one -ub 8192 pass), measured with the server's own /tokenize, for any model; raw-prompt tests only")
     sub.add_argument("--chat", metavar="INSTR", help="pf tests: send INSTR + the prompt through the model's chat template (instruct models stop or loop on raw cut text); --clamp cuts the text before the template")
+    sub.add_argument("--nothink", action="store_const", const=True, help="chat tests (tetrisc, edit4c ...): reasoning off (chat_template_kwargs enable_thinking=false), the answer is the text itself")
     sub.add_argument("--lead", type=int, help="first a request with a prompt of about N tokens to the same server, then the measured one (the KV grows, then shrinks)")
     sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
     sub.add_argument("--par", type=int, help="send N identical requests at once (start the server with -np N too, e.g. --variant 'v=-np 10'); the row is the aggregate: generated tokens of all requests over the wall time, prompt tokens of all over the longest prompt phase; a failed request fails the run")
@@ -4125,6 +4443,48 @@ def _package_linux(a, W, binp, log):
     return N, dst
 
 
+def _publish_db(here):
+    """fork/runs.db as the ONLY commit of branch runs-db (no parent: the history of the binary never accumulates), force-with-lease to the fork, that branch only.
+    Get it: git fetch neurall runs-db && git show FETCH_HEAD:runs.db > fork/runs.db"""
+    import sqlite3, tempfile
+    R = _git(here, "rev-parse", "--show-toplevel"); out = os.path.join(tempfile.mkdtemp(), "runs.db")
+    c = sqlite3.connect(os.path.join(here, "runs.db"), timeout=60)
+    sys.modules["runstats"].refresh(c)   # the statistics of records added since the last query are current in the published file
+    c.execute("VACUUM INTO ?", (out,)); c.close()
+    n = sqlite3.connect(out).execute("select count(*) from runs").fetchone()[0]
+    blob = _git(R, "hash-object", "-w", out)
+    tree = subprocess.run(["git", "-C", R, "mktree"], input=f"100644 blob {blob}\truns.db\n", capture_output=True, text=True, check=True).stdout.strip()
+    com = _git(R, "commit-tree", tree, "-m", f"runs.db: {n} runs, {time.strftime('%F %H:%M')} (only commit of this branch, replaced on every publish)")
+    _git(R, "update-ref", "refs/heads/runs-db", com)
+    subprocess.run(["git", "-C", R, "reflog", "expire", "--expire=now", "refs/heads/runs-db"], capture_output=True)
+    subprocess.run(["git", "-C", R, "push", "--force-with-lease=refs/heads/runs-db", "neurall", "refs/heads/runs-db:refs/heads/runs-db"], check=True)
+    print(f"runs-db = {com[:9]} ({n} runs)", flush=True)
+
+def cmd_publish(a):
+    """run.py publish [--tree DIR] [--name NAME --notes FILE [--replace OLDTAG]]: pushes the tree's branch to the fork (remote neurall, explicit refspec, no force), replaces runs.db there (branch runs-db), and with --name tags the head
+    release-b<build>-<hash>-<name> and makes the GitHub release (neurall/llama.cpp) from the archives of that build in REL_OUT; --replace OLDTAG deletes that release and its tag first. Never origin."""
+    tree = os.path.abspath(a.tree); here = os.path.dirname(os.path.abspath(__file__))
+    br = _git(tree, "branch", "--show-current")
+    for ref in [f"refs/heads/{br}:refs/heads/{br}"]:
+        subprocess.run(["git", "-C", tree, "push", "neurall", ref], check=True)
+    _publish_db(here)
+    if not a.name:
+        return
+    rev = _git(tree, "rev-parse", "HEAD"); h = rev[:9]
+    # the commit in an archive name is as long as the building git made it (the Linux recipe gave 10 characters on 2026-10-28, the Windows build 9): match the
+    # 9-character prefix and any further hex digits
+    arch = sorted(f for f in os.listdir(REL_OUT) if "llama-release-b" in f and re.search(rf"-{h}[0-9a-f]*-", f))
+    if not arch: sys.exit(f"publish: no archives for {h} in {REL_OUT}")
+    b = re.search(r"llama-release-b(\d+)-", arch[0]).group(1); tag = f"release-b{b}-{h}-{a.name}"
+    gh = ["gh", "-R", "neurall/llama.cpp"]
+    if a.replace:
+        subprocess.run(gh + ["release", "delete", a.replace, "--cleanup-tag", "-y"], check=True)
+    subprocess.run(["git", "-C", tree, "tag", "-a", tag, "-m", f"b{b} {a.name}", rev], check=True)
+    subprocess.run(["git", "-C", tree, "push", "neurall", f"refs/tags/{tag}:refs/tags/{tag}"], check=True)
+    subprocess.run(gh + ["release", "create", tag, "--title", f"b{b} {a.name}", "--notes-file", a.notes, "--latest"] + [os.path.join(REL_OUT, f) for f in arch], check=True)
+    print(f"published {tag}: {', '.join(arch)}", flush=True)
+
+
 def cmd_build(a):
     r"""Builds, in containers (pc1) or on the W10 laptop (pc3), with ccache.
     default: dev build (the release container and flags, llama-server / llama-cli / llama-perplexity only) of a worktree as it is (--tree) or of a commit
@@ -4203,9 +4563,9 @@ def cmd_build(a):
              f"cmake -S {W} -B {B} -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS={gtd} -DCMAKE_CXX_FLAGS={gtd} "
              "-DCMAKE_CUDA_HOST_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/gcc -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DBUILD_SHARED_LIBS=ON "
              "-DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_CUDA=ON -DGGML_CUDA_NCCL=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=ON "
-             f"-DOPENSSL_USE_STATIC_LIBS=ON -DOPENSSL_ROOT_DIR=/opt/openssl -DLLAMA_BUILD_TESTS={'ON' if a.release else 'OFF'} -DLLAMA_BUILD_UI=OFF "
+             f"-DOPENSSL_USE_STATIC_LIBS=ON -DOPENSSL_ROOT_DIR=/opt/openssl -DLLAMA_BUILD_TESTS={'ON' if a.release or any(t.startswith('test-') for t in a.targets) else 'OFF'} -DLLAMA_BUILD_UI=OFF "
              "-DCMAKE_EXE_LINKER_FLAGS=\"$SLD -pthread\" -DCMAKE_SHARED_LINKER_FLAGS=\"$SLD\" -DCMAKE_MODULE_LINKER_FLAGS=\"$SLD\" && "
-             + (f"cmake --build {B} -j $(nproc)" if a.release else f"cmake --build {B} -j 8 --target llama-server llama-cli llama-perplexity"))
+             + (f"cmake --build {B} -j $(nproc)" if a.release else f"cmake --build {B} -j 8 --target llama-server llama-cli llama-perplexity " + " ".join(a.targets)))
     lk = queue_lock(wait=True)   # no build while a benchmark runs (a build takes the CPU the measurements use)
     iid = _image("llama-rel-el8", keep=a.release)
     idf = os.path.join(B, ".image-id")   # a build dir keeps the absolute toolkit paths of the image that configured it (CUDA 13.2 paths broke a 13.4 release build, 2026-10-22): another image, or a dir from before this check, is configured afresh; the objects come back from ccache
@@ -4461,11 +4821,12 @@ def cmd_queue(a):
         os.replace(INI + ".tmp", INI)
     return 0
 def run_list_help():
-    """`run.py run --help`: the list mode (fork/runs/NAME.csv), the lists with their model names (the --only values) and the plain `run BUILD...` usage below it."""
+    """`run.py jobs --help`: the list mode (fork/runs/NAME.csv), the lists with their model names (the --only values) and the plain `run BUILD...` usage below it."""
     d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs")
-    print("run.py run -c NAME [-b B] [-onl TEXT[,TEXT]] [-s] [-dsc] [-nm] [-w] [-r N] [-n]   run the cells of fork/runs/NAME.csv (campaign list: gainers, reg, ctx)\n"
+    print("run.py jobs -c NAME [-b B] [-onl TEXT[,TEXT]] [-s] [-dsc] [-nm] [-w] [-r N] [-n]   run the cells of fork/runs/NAME.csv (campaign list: gainers, reg, ctx)\n"
           "  -skp TEXT rows to skip, same matching as -onl (comma list)\n"
           "  -sc, -su each cell on the newest stock binary first, then on -b\n"
+          "  -al      antiloop: repeat_penalty 1.15 over the last 256 tokens for every cell (same for stock and ours; changes the text, not the speed); also --antiloop before any subcommand\n"
           "  -nrt [DAYS]  skip cells already run in the last DAYS days (default 1 = today; runs.db); a stock pulled within those days is kept, no newer release is looked for\n"
           "  -b B     binary under devbuilds/ (default latest); the campaign of a row is B-<row name>\n"
           "  -onl TEXT rows whose name contains TEXT, comma list ok; the trailing '-' keeps glm- apart from glm35-; add i|io|o for one test\n"
@@ -4488,7 +4849,7 @@ def run_list_help():
             sz = sum(os.path.getsize(p) for p in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
             seen[m] = 1
             print(f"  {m:<14} {os.path.basename(r['model']):<52} {-(-sz >> 30) if sz else '?'}")
-    print("\nrun.py run BUILD... [-t TEST] [-n N] ...   measured runs of one test (below)\n")
+    print("\nrun.py jobs BUILD... [-t TEST] [-n N] ...   measured runs of one test (below)\n")
 
 
 CUR_HWL = [None]   # the machine line of the running list (hw_line()): the GPU class and count of the cells it runs, for the expected time of a cell
@@ -4501,6 +4862,14 @@ def gpu_class(hwl, hw=""):
 
 
 def cell_expect(model, test, n, build, warm=True):
+    """the time of a cell from its own history; a sized prompt (16k1k, 7k1k) without history of its size takes the time of the 12k one of the model (a calib probe has none)"""
+    try: test = best_test(model, test)   # pfbest1k -> pf<N>k1k: the model's own best prompt size, as the cell runs it (its history is stored under that test)
+    except SystemExit: pass   # no best prompt stored yet: the names below still apply
+    r = cell_expect_1(model, test, n, build, warm)
+    return r if r is not None or not re.fullmatch(r"pf\d+k1k", test or "") or test == "pf12k1k" else cell_expect_1(model, "pf12k1k", n, build, warm)
+
+
+def cell_expect_1(model, test, n, build, warm=True):
     """Seconds a cell usually takes: the span of earlier cells of this model and test in runs.db (load wait before the first run + first start to last end), the median of those
     with n runs (else scaled to n; the same build when it has rows, else any build). The discarded warm-up run (--warm) is not in runs.db: one median run is added for it. None without history."""
     try:
@@ -4638,9 +5007,16 @@ def cell_status(t0, expect, label, total=None):
                 if len(f) >= 3 and f[0].isdigit() and f[1].isdigit(): rx.append(int(f[1]) / 1000)
             lv = es.get("live") or {}
             LIVE_DONE[0] = lv.get("done") or 0   # a prompt call is running: its pass size, not the finished one before it
+            LIVE_PASS[:] = [lv.get("pass") or 0, lv.get("passes") or 0] if lv.get("passes", 0) > 1 else [0, 0]   # passes finished / passes of the call (engine builds with the per-pass log): the "now:" line shows "pass 2/3 running"
             ub = lv.get("ubatch") or pr.get("ubatch") or sv.get("n_ubatch")
-            parts = [col(37, "engine")]
-            if ub: parts.append(col(36, f"ubatch {ub}") + (col(90, f" (max {pr['ceiling']})") if (lv.get("ubatch") or pr.get("ubatch")) and pr.get("ceiling") else ""))
+            parts = []
+            io = []   # the transfer rates on a line of their own: on the engine line it wrapped once "pp by size" listed two sizes (user 2026-10-25: stale cpu/engine rows, 1-row jumps)
+            if ub:   # max = the real maximum: the engine's pass ceiling (VRAM: what its compute buffer holds) or, when smaller, the pass the RAM allows (decision "prompt pass")
+                _mx, _why = (int(pr["ceiling"]), "VRAM") if pr.get("ceiling") else (None, "")
+                for _d in es.get("decisions") or []:
+                    _m = re.match(r"(\d+) tokens \(cut from", str(_d.get("value") or "")) if _d.get("name") == "prompt pass" else None
+                    if _m and (_mx is None or int(_m.group(1)) < _mx): _mx, _why = int(_m.group(1)), "RAM"
+                parts.append(col(36, f"ubatch {ub}") + (col(90, f" (max {_mx} {_why})") if (lv.get("ubatch") or pr.get("ubatch")) and _mx else ""))
             if sv.get("threads") is not None: parts.append(col(36, f"thr {sv.get('threads')}/{sv.get('threads_batch')}"))
             if sv.get("n_ctx_slot") is not None: parts.append(col(36, f"ctx {sv.get('n_ctx_slot')}"))
             if ht and lv and ht.get("prompt_recent", -1) >= 0: parts.append(level(1 - ht["prompt_recent"] / 100, 0.15, 0.4, f"prompt hit {ht['prompt_recent']:.1f}%") + col(90, f" (call so far {ht.get('prompt_all', 0):.1f}%)"))   # the experts of the running prompt pass found in the cache
@@ -4648,22 +5024,180 @@ def cell_status(t0, expect, label, total=None):
             if tk.get("tokens"): parts.append(col(94, f"{tk['last64']:.1f} ms/tok") + col(90, f" (last {tk['last']:.1f}, all {tk['all']:.1f})"))
             if lv.get("done") and lv.get("s"): parts.append(col(32, f"pp {lv['done'] / lv['s']:.0f} t/s") + col(90, f" running: {lv['done']}/{lv['tokens']} tok in {lv['s']:.0f} s"))   # the running prompt call, live
             elif pr.get("last_tps"): parts.append(col(32, f"pp {pr['last_tps']:.0f} t/s") + (col(90, " by size " + " ".join(f"{k}:{v:.0f}" for k, v in (pr.get("tps_by_ubatch") or {}).items())) if pr.get("tps_by_ubatch") else ""))
-            if rx and lv: parts.append(col(37, "pcie rx ") + " ".join(f"g{i} {v:.1f} GB/s" for i, v in enumerate(rx)) + col(90, " (nvidia-smi, live)"))
+            if rx and lv: io.append(col(37, "pcie rx ") + " ".join(f"g{i} {v:.1f} GB/s" for i, v in enumerate(rx)))
             if bw:   # RAM read rate (CPU experts + uploads) and each PCIe link, in GB/s against the probed maximum, and as a share of it
                 pc = lambda v, mx: 100 * v / mx if mx else 0
                 rp = pc(bw.get("ram_gbs", 0), bw.get("ram_max_gbs", 0))
-                parts.append(col(37, "mem bw ") + level(rp / 100, 0.7, 0.9, f"{bw.get('ram_gbs', 0):.1f}/{bw.get('ram_max_gbs', 0):.0f} GB/s {rp:.0f}%"))
-                parts.append(col(37, "pcie ") + " ".join(level(pc(l["gbs"], l["max_gbs"]) / 100, 0.7, 0.9, f"l{l['link']} {l['gbs']:.1f}/{l['max_gbs']:.0f} GB/s {pc(l['gbs'], l['max_gbs']):.0f}%") for l in bw.get("links", [])))
-            eng = " ".join(parts)
+                io.append(col(37, "mem bw ") + level(rp / 100, 0.7, 0.9, f"{bw.get('ram_gbs', 0):.1f}/{bw.get('ram_max_gbs', 0):.0f} GB/s {rp:.0f}%"))
+                try: io.append(col(37, "ram free ") + level(1 - mem_avail_gib() / max(1, ram_total_gib()), 0.85, 0.95, f"{mem_avail_gib():.0f}G"))
+                except (OSError, ValueError): pass
+                io.append(col(37, "pcie ") + " ".join(level(pc(l["gbs"], l["max_gbs"]) / 100, 0.7, 0.9, f"l{l['link']} {l['gbs']:.1f}/{l['max_gbs']:.0f} GB/s {pc(l['gbs'], l['max_gbs']):.0f}%") for l in bw.get("links", [])))
+            eng = " ".join(parts) + ("\n" + " ".join(io) if io else "")
             sp = es.get("split") or {}; links = bw.get("links", []) if bw else []
-            pgpus = (len(links) if links else 0) if sp.get("prefill") in (None, -1) else sp.get("prefill_gpus", 0)   # prompt: the split's cards, else one card (the cache path runs the pass on the cards that hold cache layers)
-            dgpus = bw.get("gpus") if bw else sp.get("gpus")
+            # cards that COMPUTE at the same time (user 2026-10-23): only a split prompt pass runs on several cards at once; every other pass and every decode token
+            # runs its layers on one card after another (layer split), however many cards hold cache layers (shown apart as "cache on N cards")
+            pgpus = sp.get("prefill_gpus", 0) if sp.get("prefill") == 1 else 1
+            ncache = bw.get("gpus") if bw else sp.get("gpus")
             up = sum(1 for l in links if l.get("gbs", 0) > 0.05)
             mode = [col(32, "moe cache") if bw else col(33, "stock placement")]
             mode.append(col(32, f"dense split ON {sp.get('devs', '')}") if sp.get("prefill") == 1 else col(33, "dense split off (one card)") if sp.get("prefill") == 0 else col(90, "dense split n/a"))
-            mode.append(col(36, f"prompt gpus {pgpus or '?'}") + col(90, f" decode gpus {dgpus or '?'}") + (col(35, f" uploading on {up}/{len(links)} links") if links else ""))
-            if sp.get("why"): mode.append(col(90, sp["why"]))
-            eng = eng + "\n" + col(37, "engine") + " " + "  ".join(mode)
+            mode.append(col(36, f"par gpus prompt {pgpus or '?'} decode 1") + (col(90, f"  cache on {ncache} cards") if ncache else "") + (col(35, f" uploading on {up}/{len(links)} links") if links else ""))
+            eng = eng + "\n" + "  ".join(mode) + "\n" + kv_line()
+            if sp.get("why"): eng += "\n" + col(90, sp["why"])   # own line: beside the mode it passed the screen width, the wrapped line broke the redraw (cpu row repeated, user 2026-10-25)
+            if CELL_REF[0] and (best := best_ref(*CELL_REF[0])):   # live speeds against the best earlier run of this model, test and power limits (runs.db)
+                bpp, bpb, btg, btb = best
+                if LAST_PP.get("t0") != t0: LAST_PP.clear(); LAST_PP["t0"] = t0
+                if lv.get("done") and lv.get("s") and lv["done"] >= 64: LAST_PP["v"] = lv["done"] / lv["s"]   # a prompt call is running; the 4-token calls of decode say nothing about the prompt speed
+                lpp = LAST_PP.get("v")   # (the last prompt speed of this cell stays on the line while it decodes)
+                ltg = 1000 / tk["last64"] if tk.get("tokens") and tk.get("last64") else None
+                gain = lambda v, b: (col(32 if v >= b else 91, f"{100 * (v / b - 1):+.0f}%") if v and b else col(90, "-"))
+                eng += ("\n" + col(37, "vs best ") + col(32, f"pp {lpp:.0f}" if lpp else "pp -") + col(90, f" / {bpp:.0f} ({bpb}) ") + col(90, f"{1000 / lpp:.2f} / {1000 / bpp:.2f} ms/tok " if lpp else "") + gain(lpp, bpp)
+                        + "   " + col(94, f"tt {ltg:.1f}" if ltg else "tt -") + col(90, f" / {btg:.1f} ({btb}) ") + col(90, f"{1000 / ltg:.1f} / {1000 / btg:.1f} ms/tok " if ltg else "") + gain(ltg, btg))
+            bal = sp.get("bal")
+            cur0 = sp.get("cur") or {}
+            if not (bal and bal.get("cards")) and cur0.get("cards"):   # the first split pass of a run, before any pass is measured
+                cap0 = cur0.get("cap_max") or cur0.get("cap") or 0   # of the context's card limit (one maximum per card), not the pass's cut one
+                eng += "\n" + col(37, "split   pass  1 ") + col(93, f"running {cur0.get('age_ms', 0) / 1e3:.0f} s:") + "".join(
+                    f"  {card_label(dict(c, experts=i == len(cur0['cards']) - 1))} {c.get('tok', 0)} tok" + (f" ({100 * c.get('tok', 0) / cap0:.0f}% of limit)" if cap0 else "")
+                    for i, c in enumerate(cur0["cards"]))
+            if bal and bal.get("cards"):   # the live balance, any number of cards (engine 2026-10-23 N-card): one line per card of the last split pass, the expert card last
+                cs = bal["cards"]
+                sig = (bal.get("n"), bal.get("us_tok"), tuple(c.get("tok", 0) for c in cs))
+                # A new cell: the server is kept between cells, so the pass it reports at the cell's start is the LAST CELL's last pass (user 2026-10-24: the 12k
+                # cell's 13786-token pass showed as pass 1 of the 60k prompt). That one is remembered and never listed; the rows are this prompt's passes only.
+                # The engine stamps each pass with its wall time (bal.t_ms, 2026-10-24): the report is the last cell's only when measured before this cell began.
+                # Without the stamp (older builds) the first report of the cell is taken as old, which dropped the first pass of a fresh server (GLM 60k on
+                # spass30: 6 of its 7 passes stored).
+                if SPLIT_PASSES["t0"] != t0: SPLIT_PASSES["t0"] = t0; SPLIT_PASSES["rows"] = []; SPLIT_PASSES["peak"] = {}; SPLIT_PASSES["old"] = sig if not bal.get("t_ms") or bal["t_ms"] / 1e3 < t0 else None
+                for l in bw.get("links") or []: SPLIT_PASSES.setdefault("peak", {})[l.get("dev")] = max(SPLIT_PASSES.get("peak", {}).get(l.get("dev"), 0), l.get("gbs", 0))   # the busiest second of each card's host link in this cell
+                if sig != SPLIT_PASSES.get("old") and (not SPLIT_PASSES["rows"] or SPLIT_PASSES["rows"][-1][0] != sig): SPLIT_PASSES["rows"].append((sig, bal)); PASS_KV.setdefault(sig, kv_tier())   # a new measured pass
+                eng += ("\n" + col(37, "split ") + col(32, bal.get("phase", "")) + col(90, f"  pass {bal.get('us_tok', 0):.1f} us/token")
+                        + (col(90, f", dense alone {bal['ref_us_tok']:.1f}") if bal.get("ref_us_tok") else "") + col(90, f"  ({bal.get('last', '')})"))
+                # One row per card per pass of this run as each is measured, then the pass running now (user 2026-10-24: every pass, errors must show while the run
+                # goes). Cards by card_label: pcuda1x16 (p: the primary card, the experts and its full card limit every pass), cuda0x4. Every card's pass by cause,
+                # measured with stream stamps by the engine (--moe pass-stats, run.py turns it on unless -ns): compute (kernels) + upload (waiting for its uploads
+                # from host memory, whatever they carry) + wait (for another card's result) + stall (nothing queued: the host, or before its first / after its last
+                # split) = total, the pass. link: its upload stream busy (overlaps compute); GB host / GB card: what crossed its link into it. Without pass-stats
+                # (-ns, older builds) the upload waits sit in compute, every gap counts as wait, and upload / link / GB show "-".
+                PW = [("tokens", 6), ("%limit", 6), ("compute", 7), ("%", 4), ("upload", 6), ("%", 4), ("wait", 6), ("%", 4), ("stall", 6), ("%", 4),
+                      ("t/s", 6), ("link", 6), ("%", 4), ("GB host", 7), ("GB card", 7), ("vs best", 7), ("us/tok", 6), ("card t/s", 8)]   # t/s: the whole pass (first row); us/tok: this card's compute time per token, rising as the context grows; card t/s: this card's tokens over the pass time (the cards add up to t/s)
+                # "vs best" (user 2026-10-24): the pass's time per token against the best earlier run of ours of this model and test (any other build; run.py has per-run
+                # speeds, not per-pass ones, so the reference is that run's average time per token): above 1 is faster than the best so far, below 1 slower.
+                bk = (CELL_REF[0][0], CELL_REF[0][1], CELL_BUILD[0], CELL_ASKED[0]) if CELL_REF[0] else None
+                if bk and bk not in BEST_MEMO: BEST_MEMO[bk] = best_prev(*bk)
+                bestus = 1e6 / BEST_MEMO[bk][1] if bk and BEST_MEMO.get(bk) and BEST_MEMO[bk][1] else None
+                def vsb(bk, pos, T, span):   # the pass's time per token against the best earlier one at the same cells (interpolated between the passes we know): above 1 is faster
+                    y = pass_best_at(bk[0], bk[2], pos)
+                    return f"{y * T / (span * 1e6):.2f}" if y and span and T else "first"
+                def pass_rows(k, b, lw, k_sig=None, pos=0):
+                    pc = sorted(b.get("cards") or [], key=lambda c: not c.get("experts"))
+                    T = sum(c.get("tok", 0) for c in pc)
+                    span = (b.get("span_ms") or b.get("us_tok", 0) * T / 1e3) / 1e3
+                    det = bool(b.get("detail"))
+                    pcf = lambda v: f"{100 * v / span:.0f}%" if span else "-"
+                    out = []
+                    for i, c in enumerate(pc):
+                        comp = (c.get("dense_ms", 0) + c.get("moe_ms", 0)) / 1e3
+                        if det:
+                            up, wt, st = c.get("upw_ms", 0) / 1e3, c.get("xw_ms", 0) / 1e3, c.get("stall_ms", 0) / 1e3
+                        else:
+                            up, wt = 0.0, (c.get("wait_dense_ms", 0) + c.get("wait_moe_ms", 0)) / 1e3
+                            st = max(0.0, span - comp - wt)
+                        ln = c.get("link_ms", 0) / 1e3
+                        limp = c.get("lim_pct") or (100 * c.get("tok", 0) / CARD_LIM[0] if CARD_LIM[0] else 0)   # the engine fills lim_pct only in the forced pass loop: else of the card limit it reports
+                        vals = [str(c.get("tok", 0)), f"{limp:.0f}%", f"{comp:.1f}s", pcf(comp),
+                                f"{up:.1f}s" if det else "-", pcf(up) if det else "-", f"{wt:.1f}s", pcf(wt), f"{st:.1f}s", pcf(st), f"{T / span:.0f}" if i == 0 and span else "",
+                                f"{ln:.1f}s" if det else "-", pcf(ln) if det else "-",
+                                f"{c.get('gb_up', 0) + c.get('gb_host', 0):.2f}" if det else "-", f"{c.get('gb_in', 0):.2f}" if det else "-",
+                                (vsb(bk, pos, T, span) if bk else "") if i == 0 else "",
+                                f"{comp * 1e6 / c['tok']:.0f}" if c.get("tok") else "-", f"{c.get('tok', 0) / span:.0f}" if span else "-"]   # best time per token / this pass's; "first" without an earlier run
+                        cells = [v.rjust(w) for v, (_, w) in zip(vals, PW)]   # header labels are right-aligned to the same widths: the two cannot drift
+                        hot = lambda v: span and v / span > 0.05
+                        colour = {1: 36, 4: 94, 5: 94, 6: (91 if hot(wt) else 92) if c.get("experts") else 33, 7: (91 if hot(wt) else 92) if c.get("experts") else 33,
+                                  8: 91 if hot(st) else 92, 9: 91 if hot(st) else 92, 11: 90, 12: 90, 13: 90, 14: 90, 15: (90 if vals[15] in ("", "first") else 91 if float(vals[15]) < 0.99 else 92 if float(vals[15]) > 1.01 else 37)}
+                        cells = [col(colour[j], v) if j in colour else v for j, v in enumerate(cells)]
+                        head = f"  {k:>4} {T:>6} {f'{span:.1f}s':>6}" if i == 0 else " " * 20
+                        out.append(head + "  " + col(1, card_label(c).ljust(lw)) + " " + " ".join(cells))
+                    return out
+                rows = [r for r in SPLIT_PASSES["rows"] if sum(c.get("tok", 0) for c in (r[1].get("cards") or [])) not in (0, 512)]   # the startup calibration's calls are exactly 512 tokens: not the prompt. Every other pass is listed, however small (user 2026-10-24: 506-token passes were hidden by a "> 512" test)
+                lw = max([4] + [len(card_label(c)) for _, b in rows for c in (b.get("cards") or [])])
+                if any("sc_compute" in c for c in cs):   # the cards' speeds measured once at server start (probe: a sustained matmul burst, a pinned upload), best card = 1.00
+                    eng += ("\n" + col(37, "  card speeds (measured at start, best card = 1.00): ")
+                            + col(90, " | ").join(col(1, card_label(c)) + col(36, f" compute {c.get('sc_compute', 0):.2f}") + col(94, f" upload {c.get('sc_upload', 0):.2f}")
+                                                  for c in sorted(cs, key=lambda c: not c.get("experts"))))
+                if any("zw_k" in c for c in cs):   # the zero-wait rule (engine 2026-10-24): each other card's tokens = k x factor x the primary card's
+                    prim = next((card_label(c) for c in cs if c.get("experts")), "the primary card")
+                    eng += ("\n" + col(37, "  next pass: ") + col(90, " | ").join(
+                                col(1, card_label(c)) + col(93, f" {c.get('zw_k', 0) * c.get('zw_f', 0):.2f} x {prim}'s tokens") + col(90, f" (k {c.get('zw_k', 0):.2f} x factor {c.get('zw_f', 0):.2f})")
+                                for c in cs if not c.get("experts")) + col(90, f"  k from {bal.get('zw_src', '?')}"))
+                cl, pl, cm = (sp.get("cur") or {}).get("cap") or 0, (sp.get("cur") or {}).get("pass_lim") or 0, (sp.get("cur") or {}).get("cap_max") or 0
+                CARD_LIM[0] = cm or cl or CARD_LIM[0]
+                if rows:
+                    prim = next((card_label(c) for c in rows[-1][1].get("cards") or [] if c.get("experts")), "the primary card")
+                    if cl:   # the two limits once (user 2026-10-24): what one card holds (its range, its buffers) and what a pass of all cards takes
+                        eng += ("\n" + col(37, "  limits: ") + (col(36, f"card max {cm} tokens") + col(90, " (the context's micro-batch: %limit is of this one number)") + col(37, " | ") if cm else "")
+                                + col(36, f"card now {cl} tokens") + col(90, " (what the pools hold beside the KV now)" if cm else " (one card's micro-batch; %limit of each pass is of the limit that pass ran under)")
+                                + "\n" + col(37, "  limits: ") + col(36, f"pass {pl} tokens" if pl else "pass -") + col(90, f" (all cards; {prim} takes its card limit)"))   # own line: the one line passed the screen width (user 2026-10-25)
+                    # the global wait sum (user 2026-10-25: "judge from the sum of wait times, keep the global sum visible"): every measured pass of this run,
+                    # per card: its waiting (for its dense / expert inputs and for another card) and its whole time on the cards; the share of waiting is the
+                    # efficiency to compare between builds
+                    wsum, tsum, per, wall = {}, 0.0, {}, 0.0
+                    for _, bb in rows:
+                        for c in (bb.get("cards") or []):
+                            wt = (c.get("xw_ms", 0) if c.get("xw_ms") is not None and "xw_ms" in c else (c.get("wait_dense_ms", 0) + c.get("wait_moe_ms", 0))) / 1e3
+                            k_ = card_label(c)
+                            wsum[k_] = wsum.get(k_, 0.0) + wt
+                            per[k_] = per.get(k_, 0) + 1
+                        tsum += (bb.get("span_ms") or 0) / 1e3 * max(1, len(bb.get("cards") or []))
+                        wall += (bb.get("span_ms") or 0) / 1e3   # wall time of the passes (the cards overlap inside a pass)
+                    tot_w = sum(wsum.values())
+                    eng += ("\n" + col(37, f"  waits so far: {len(rows)} passes, " + ", ".join(f"{k} {v:.1f} s" for k, v in wsum.items())
+                            + f", all cards {tot_w:.1f} s" + (f" = {100 * tot_w / tsum:.0f}% of the cards' time" if tsum > 0 else "")
+                            + f"; passes wall {wall:.1f} s"))
+                    eng += "\n" + col(37, "  pass tokens   time  " + "card".ljust(lw) + " " + " ".join(n.rjust(w) for n, w in PW))
+                cum, run_tok = [], 0   # the cells each pass is centred on: the tokens of the passes before it plus half its own
+                for _, b_ in rows:
+                    t_ = sum(c_.get("tok", 0) for c_ in (b_.get("cards") or [])); cum.append(run_tok + t_ / 2); run_tok += t_
+                npass = len(rows) if not sys.stdout.isatty() else max(6, (shutil.get_terminal_size((100, 40)).lines - 24) // 2)   # every pass (user 2026-10-25: keep all) as far as the terminal is tall: a taller block scrolls it and the whole screen repaints, so the oldest drop off first
+                # runs (user 2026-10-25: "add separator, count from 1 again"): a pass whose centre is lower than the one before starts a new request (the same prompt
+                # again, or the next cell); each run gets a separator line and its passes are numbered from 1 again
+                run_no, k_run, prev_c = 1, 0, None
+                numbered = []
+                for idx, (sg, b) in enumerate(rows):
+                    c_ = cum[idx]
+                    if prev_c is not None and c_ < prev_c:
+                        run_no += 1
+                        k_run = 0
+                    prev_c = c_
+                    k_run += 1
+                    numbered.append((run_no, k_run, sg, b, c_))
+                shown = numbered[-npass:]
+                last_run = None
+                for run_i, k, sg, b, c_ in shown:
+                    if run_i != last_run and (last_run is not None or run_no > 1):
+                        eng += "\n\n" + col("1;90", f"  ======== run {run_i} " + "=" * 60)
+                    last_run = run_i
+                    eng += "".join("\n" + l for l in pass_rows(k, b, lw, sg, c_))
+                cur = sp.get("cur") or {}
+                if cur.get("cards"):   # the pass running now (the ranges of the split graph built last); after the last pass it equals that pass and ages out
+                    cap = cur.get("cap_max") or cur.get("cap") or 0   # % of the context's card limit
+                    ctok = tuple(c.get("tok", 0) for c in cur["cards"])
+                    lb = rows[-1][1] if rows else {}
+                    ltok = tuple(c.get("tok", 0) for c in (lb.get("cards") or []))
+                    lspan = lb.get("us_tok", 0) * sum(ltok) / 1e3 if lb else 0
+                    if not rows or set(ctok) != set(ltok) or cur.get("age_ms", 0) < lspan:
+                        last = len(cur["cards"]) - 1   # the expert card is the last range
+                        eng += "\n" + f"  {len(rows) + 1:>4} " + col(93, f"running {cur.get('age_ms', 0) / 1e3:.0f}s") + "".join(
+                            f" | {card_label(dict(c, experts=i == last))} {c.get('tok', 0)}" + (f" {100 * c.get('tok', 0) / cap:.0f}%" if cap else "") for i, c in enumerate(cur["cards"]))
+            elif bal:   # the live balance of the dense split (engine 2026-10-23, two cards): each card's dense and MoE time of the last split pass, its share of the tokens and experts
+                h, o = bal.get("helper") or {}, bal.get("owner") or {}
+                card = lambda c, ts, fs: (col(1, f"{c.get('dev', '?')} ") + col(36, f"{100 * ts:.0f}% tokens {100 * fs:.0f}% experts") + f"  dense {c.get('dense_ms', 0):.0f} ms "
+                                         + col(93, f"{c.get('dense_us_tok', 0):.1f} us/token") + f"  moe {c.get('moe_ms', 0):.0f} ms")
+                late = h.get("dense_ms", 0) - o.get("dense_ms", 0)
+                eng += ("\n" + col(37, "split ") + col(32, bal.get("phase", "")) + "  " + card(h, bal.get("s", 0), bal.get("f", 0)) + col(90, " | ") + card(o, 1 - bal.get("s", 0), 1 - bal.get("f", 0))
+                        + col(90, f" | pass {bal.get('us_tok', 0):.1f} us/token") + (col(90, f", dense alone {bal['ref_us_tok']:.1f}") if bal.get("ref_us_tok") else "")
+                        + "\n" + col(37, "      ") + col(91 if abs(late) > 0.03 * max(h.get("dense_ms", 0), o.get("dense_ms", 0), 1) else 90, f"{'helper' if late > 0 else 'owner'} dense late by {abs(late):.0f} ms")
+                        + col(90, f"  next: {100 * bal.get('s_next', 0):.0f}% tokens {100 * bal.get('f_next', 0):.0f}% experts  ({bal.get('last', '')})"))
             dec = es.get("decisions") or []
             if dec:   # what the engine chose by itself and why, as it happens: a placement of "stock" for a model bigger than the VRAM stands out in yellow
                 # one line per decision with its whole reason (fit_block cuts at the terminal width); a decision that changed since the last tick is bold, so the tuners can be watched working
@@ -4671,7 +5205,8 @@ def cell_status(t0, expect, label, total=None):
                     chg = DEC_SEEN.get(d["name"]) not in (None, (d["value"], d["why"]))
                     DEC_SEEN[d["name"]] = (d["value"], d["why"])
                     bad = d["name"] == "placement" and "stock" in d["value"] and "fits" not in d["value"]
-                    eng += "\n" + col(37, "decided") + " " + col("1;93" if chg else 33 if bad else 32, f"{d['name']} {d['value']}") + col("1;37" if chg else 90, f"  {d['why']}")
+                    why = "" if d["name"] == "threads_decode" else f"  {d['why']}"   # the decode thread search: its count only, its reason text is noise here (user 2026-10-27)
+                    eng += "\n" + col(37, "decided") + " " + col("1;93" if chg else 33 if bad else 32, f"{d['name']} {d['value']}") + col("1;37" if chg else 90, why)
         except (ValueError, KeyError, TypeError, AttributeError): pass
         if eng: st = st + "\n" + eng
         if eng or not LAST_ST[0]: LAST_ST[0] = st   # (the last tick WITH engine data: the tick after the server is gone shows an idle machine and would replace it)
@@ -4689,11 +5224,12 @@ def cell_status(t0, expect, label, total=None):
     ex0 = expect or 0   # the whole-run bar follows the cell's re-estimate
     if sf and el > 10: expect = el / sf
     elif expect and el > expect: expect = el * 1.2
-    if not total: return (st + "\n" if st else "") + l1
+    rp = os.environ.get("RUNPY_REPRO"); rl = (col(90, "repro ".ljust(LW) + " " + rp) + "\n") if rp else ""   # the command line of this run, under every status: copy it to repeat the run
+    if not total: return (st + "\n" if st else "") + rl + l1
     done_s, total_s, run_t0, k, n = total   # expected seconds done / in all, start of the whole run, cell number k of n
     total_s += (expect or 0) - ex0
     tel = time.time() - run_t0; part = done_s + min(el, expect or 0)
-    return (st + "\n" if st else "") + l1 + "\n" + col(33, "whole run".ljust(LW)) + f" {bar(part, total_s, shown=tel)}  " + col(33, f"cell {k}/{n}")
+    return (st + "\n" if st else "") + rl + l1 + "\n" + col(33, "whole run".ljust(LW)) + f" {bar(part, total_s, shown=tel)}  " + col(33, f"cell {k}/{n}")
 
 
 def cell_results(path, since):
@@ -4745,6 +5281,7 @@ PHASE = {}   # per cell: t0 and when the first decoded token was seen (cell_stat
 LAST_ST = [""]
 NOSTATS = [os.environ.get("RUN_NS") == "1"]   # -ns: nothing that samples the machine or polls the server while a cell runs (no status probes, no nvidia-smi / sys / slots samplers on a remote box): the timings are the engine's alone
 TRACE, TRACE_LAST, TRACE_T0, TRACE_H, TRACE_P = [], {}, [None], [], []   # one cell's tuning timeline: (seconds into the cell, knob, old, new), from the status ticks
+LIVE_PASS = [0, 0]   # (passes finished, passes of the call) of the running prompt call, from /moe/stats live; [0, 0] = one pass or an older engine
 LIVE_DONE = [0]   # tokens of the running prompt call the engine has finished (its own /moe/stats live block): the server counts only after a whole decode call
 PEEK = [None]   # (prompt tokens done, tokens decoded, expected decoded, expected prompt) of the last /slots answer: cell_status re-estimates the cell's end from it
 
@@ -4794,9 +5331,15 @@ def server_frac():
 
 NAMEW = [16]   # name column width of the list lines: longest name + 1 (set when a list starts)
 TEST_IN = config.test_in()   # what the status line says about a test's prompt (prompts.ini in =)
+def out_k(tout):
+    """answer length as written in a size: 1000 and 1024 are 1k, 4000 is 4k, anything else the number"""
+    return "?" if not tout else f"{round(tout / 1000)}k" if tout % 1000 == 0 or tout % 1024 == 0 and tout < 4096 else str(tout)
+
+
 def prompt_txt(test, tokens):
     """the prompt column of the results: tokens in/out, `12k/1k`; the test name when its prompt is not a size"""
     tin = TEST_IN.get(test); tout = int(tokens) if tokens else 0
+    if (m := re.fullmatch(r"pf(\d+)k", test)): return f"{m[1]}k/" + out_k(tout)   # a sized prompt (run -ps 60k1k): never shown with the pf of its test name
     if not (tin and tin[0].isdigit()): return test
     return tin + "/" + (f"{tout // 1024}k" if tout and tout % 1024 == 0 else str(tout) if tout else "?")
 
@@ -4895,7 +5438,7 @@ def peek_line(exp):
         if pt: pn = pt
         if dt and dt - dd < 10**6: gen = dt
     PEEK[0] = (n_prompt, n_dec, gen, pn)
-    if not n_dec and n_prompt: return col(33, "    now: ") + ld + col(32, f"prompt {n_prompt}" + (f"/~{int(pn)} tok" + (f" ~{min(100, 100 * n_prompt // int(pn))}%" if pn and n_prompt <= pn else " +") if pn else " tok"))   # the phase colours of the bar: prompt green
+    if not n_dec and n_prompt: return col(33, "    now: ") + ld + col(32, (f"pass {min(LIVE_PASS[0] + 1, LIVE_PASS[1])}/{LIVE_PASS[1]}  " if LIVE_PASS[1] > 1 else "") + f"prompt {n_prompt}" + (f"/~{int(pn)} tok" + (f" ~{min(100, 100 * n_prompt // int(pn))}%" if pn and n_prompt <= pn else " +") if pn else " tok"))   # the phase colours of the bar: prompt green
     if n_dec: return col(33, "    now: ") + ld + col(34, f"{n_dec}" + (f"/~{int(gen)} tok " + (f"~{100 * n_dec // int(gen)}%" if n_dec <= gen else "+") if gen else " tok"))   # generation blue
     return ""
 
@@ -4927,13 +5470,38 @@ def trace_lines(width=40):
 
 
 def result_lines(res):
-    return "\n".join(f"    run {i}: " + speed_txt(t, p, width=7) + col(92, " t/s") for i, (t, p) in enumerate(res, 1))
+    return "\n".join(f"    run {i}: " + speed_txt(t, p, width=7) + col(92, " t/s") + (col(36, "  " + CELL_PROMPT[0]) if CELL_PROMPT[0] else "") for i, (t, p) in enumerate(res, 1))   # prompt in/out of the cell after each run
 
 
 PRELUDE = [0, 0]   # lines of a remote list's start (old servers stopped, disk check) and of its transfer bars still on screen: erased when the transfers are done
 LIVE_UP = [0]       # lines of the status block on screen: the next cell redraws over it, nothing scrolls
+CELL_PG = [None, None]   # seconds of the finished cell's prompt and generation phases (stored with wall_s)
 CELL_ASKED = [0]    # tokens asked for in the running cell
 CELL_PROMPT = [""]   # the running cell's prompt text (set per row)
+CELL_BUILD = [""]   # the running cell's build: the "vs best" columns leave its own earlier runs out
+BEST_MEMO = {}   # (model, test, build, asked) -> best_prev(...): the live view asks every second
+CELL_REF = [None]   # (model file name, test) of the running cell: its live speeds are held against the best earlier run (best_ref)
+_BEST_REF = {}
+LAST_PP = {}   # the running cell's last live prompt speed (start of the cell, t/s)
+SPLIT_PASSES = {"t0": None, "rows": [], "peak": {}}   # the running cell's split passes as the engine reported them live (/moe/stats split.bal); save_stats writes them to stats.ini
+
+
+def best_ref(model, test):
+    """(pp t/s, build, tg t/s, build) of the best earlier ok, non-looping run of this model and test at the power limits now set (runs.db); None for what has no history.
+    Cached per cell: the live line asks every second."""
+    hw = os.environ.get("PERF_HW") or {"1": "pc1", "2": "pc2", "nb": "pc3"}.get(os.uname().nodename, os.uname().nodename)
+    pl = power_limits(hw)
+    key = (model, test, pl)
+    if key not in _BEST_REF:
+        try:
+            import sqlite3
+            c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+            q = "select coalesce(%s_max, %s), build from runs where model=? and test=? and ok=1 and coalesce(loop,'0') in ('0','') and coalesce(%s_max, %s)>0" + (" and pl=?" if pl else "") + " order by 1 desc limit 1"
+            a = (model, ALIASES.get(test, test)) + ((pl,) if pl else "")
+            pp = c.execute(q % (("pp",) * 4), a).fetchone(); tg = c.execute(q % (("tps",) * 4), a).fetchone()
+            _BEST_REF[key] = (pp[0], pp[1], tg[0], tg[1]) if pp and tg else None
+        except Exception: _BEST_REF[key] = None
+    return _BEST_REF[key]
 CELL_REC = []       # structured twin of CELL_LINES: the final table is built from it
 STOCK_REC = [None]  # set by stock_gain: the stock numbers behind its text
 CELL_LINES = []     # one summary line per finished cell, printed when the list ends
@@ -4944,19 +5512,84 @@ def live_tty():
     return bool(os.environ.get("RUN_DAEMON")) or sys.stdout.isatty()
 
 
+LIVE_W = int(os.environ.get("RUN_LIVE_W") or 150)   # the widest status line; a detached run does not know the viewer's terminal, so one width for all (RUN_LIVE_W changes it)
+ANSI_RE = re.compile(r"\033\[[0-9;]*[A-Za-z]")
+
+
+KV_RE = (re.compile(rb"kv-fit: KV tiers with the expert cache at its floor: f16 up to (\d+) tokens, q8_0/q8_0 up to (\d+), q4_0/q4_0 up to (\d+)"),
+         re.compile(rb"kv-fit: \d+ tokens: KV now (\S+) in place|kv-ram: KV of .* moved to host memory"), re.compile(rb"(\d+) cells (?:in use|at its end)"))
+
+
+def kv_tier():
+    """the KV type now (f16, q8_0, q4_0, RAM) from the newest server log, "" before the plan is printed: stamped on every pass row, so a switch shows as a jump in the pass speed"""
+    try:
+        f = max(glob.glob("/tmp/perf-*.log"), key=os.path.getmtime)
+        with open(f, "rb") as h: h.seek(max(0, os.path.getsize(f) - (4 << 20))); t = h.read()
+    except (ValueError, OSError): return ""
+    if not KV_RE[0].search(t): return ""
+    sw = list(KV_RE[1].finditer(t))
+    return "f16" if not sw else (sw[-1][1] or b"RAM").decode().split("/")[0]
+
+
+PASS_KV = {}   # pass signature -> the KV type when the pass was first seen
+
+
+def kv_line():
+    """The KV against what VRAM can hold (user 2026-10-25): its type now (f16, then q8_0, q4_0, part in RAM as the context grows) and the cells in use as a % of that
+    type's VRAM limit, so the switch to the next type can be seen coming at 100%. From the newest server log (/tmp/perf-<build>.log): the tier plan the engine prints
+    once (kv-fit: KV tiers ...), its switches (kv-fit: ... KV now ..., kv-ram: ...) and the cells of the last pass (kv-tail / pass size lines). None before the plan is printed."""
+    try:
+        f = max(glob.glob("/tmp/perf-*.log"), key=os.path.getmtime)
+        with open(f, "rb") as h: h.seek(max(0, os.path.getsize(f) - (4 << 20))); t = h.read()
+    except (ValueError, OSError): return col(37, "kv ") + col(90, "no server log yet")   # always shown (user 2026-10-25)
+    caps = KV_RE[0].findall(t)
+    if not caps: return col(37, "kv ") + col(90, "plan not printed yet")
+    f16, q8, q4 = (int(x) for x in caps[-1])
+    sw = list(KV_RE[1].finditer(t)); cells = KV_RE[2].findall(t)
+    row = float(m[1]) * 1024 if (m := re.search(rb"\(([\d.]+) KB of f16 KV per token", t)) else 0   # f16 bytes per token over all cards
+    tier = "f16" if not sw else (sw[-1][1] or b"RAM").decode().split("/")[0]
+    n = int(cells[-1]) if cells else 0
+    cap = {"f16": f16, "q8_0": q8, "q4_0": q4}.get(tier)
+    per = row * {"f16": 1, "q8_0": 34 / 64, "q4_0": 18 / 64}.get(tier, 1)   # bytes per token of that type (q8_0: 34 bytes per 32 values, q4_0: 18)
+    if not cap: return col(37, "kv ") + col(91, f"part in RAM {n * per / 2**30:.1f} GB, VRAM full")
+    # space left in this type and what comes next (user 2026-10-25): the tiers' limits are in cells, f16 < q8_0 < q4_0 < part in RAM
+    nxt = {"f16": "q8_0", "q8_0": "q4_0", "q4_0": "RAM"}.get(tier, "")
+    # The model's own context caps the tier: MiMo allows 1M tokens and its f16 KV (22.5 KB a token) fits the pools up to 1.58M, so the switch to q8_0 can never come
+    # (user 2026-10-25: 34 GB was the pool's limit, not the model's). Shown against what can really happen, and the space the zones hold now (grown on demand).
+    mm = re.search(rb"\(model cap (\d+)\)", t); mcap = int(mm[1]) if mm else 0
+    zone = {}
+    for d, z, r in re.findall(rb"kv-tail (CUDA\d+): zone \d+ -> (\d+) cells at [\d.]+ -> [\d.]+ MiB \((\d+) B per cell", t): zone[d] = int(z) * int(r)
+    res = f" reserved {sum(zone.values()) / 2**30:.1f}G" if zone else ""
+    if mcap and cap >= mcap: cap, nxt = mcap, ""
+    left = max(0, cap - n)
+    return (col(37, "kv ") + col(36, tier) + " " + level(n / cap, 0.8, 0.95, f"{100 * n / cap:.0f}% {n * per / 2**30:.1f}/{cap * per / 2**30:.0f}G") + col(90, res) + " "
+            + level(n / cap, 0.8, 0.95, f"{left // 1000}k left") + (col(90, f" next {nxt}") if nxt else col(90, " no q8 needed" if tier == "f16" else "")))
+
+
+def mem_avail_gib():
+    return next(int(l.split()[1]) for l in open("/proc/meminfo") if l.startswith("MemAvailable:")) / 2**20
+
+
+def ram_total_gib():
+    return next(int(l.split()[1]) for l in open("/proc/meminfo") if l.startswith("MemTotal:")) / 2**20
+
+
 def fit_block(txt):
-    """Cut every line of the status block to the terminal width (colour codes do not count): the next redraw moves the cursor up by LINES, so a line that wraps
-    would leave a copy of itself behind on every tick. The detached run gets the viewer's width as COLUMNS."""
-    w = max(shutil.get_terminal_size((100, 24)).columns - 1, 20)
-    def cut(line):
-        out, vis = [], 0
-        for tok in re.findall(r"\x1b\[[0-9;?]*[A-Za-z]|.", line, re.S):
-            if tok[0] == "\x1b" and len(tok) > 1: out.append(tok); continue
-            if vis >= w: break
-            out.append(tok); vis += 1
-        if vis >= w: out.append("\033[0m")
-        return "".join(out)
-    return "\n".join(cut(l) for l in txt.split("\n"))
+    """The status block, every line whole (nothing cut, user 2026-10-24) but none wider than LIVE_W: a longer line is broken at its last separator
+    (" | ", two spaces, " (") before the width and goes on, indented, on the next line (user 2026-10-25: a line the terminal wraps puts the cursor-up
+    redraw one row short and the cpu row repeats). The key speed lines are kept short at their source instead (vs best: no explanation)."""
+    out = []
+    for line in txt.split("\n"):
+        while len(ANSI_RE.sub("", line)) > LIVE_W:
+            vis = 0; cut = None; i = 0
+            while i < len(line) and vis <= LIVE_W:   # the last separator at or before the width, counted in visible characters
+                if (m := ANSI_RE.match(line, i)): i = m.end(); continue
+                if vis > 20 and any(line.startswith(sep, i) for sep in (" | ", "  ", " (")): cut = i
+                vis += 1; i += 1
+            if cut is None: break   # no separator: the line stays whole and long
+            out.append(line[:cut] + "\033[0m"); line = "    " + line[cut:].lstrip(" |")
+        out.append(line)
+    return "\n".join(out)
 
 
 def live_clear():
@@ -4987,6 +5620,131 @@ def older_gainers(model, test, cur_bno, st, gm, limit=2):
         if g > gm: out.append((g, b, int(n), max(x[2] for x in v), t, p, gt, gp, max(x[3] for x in v)))
     out.sort(reverse=True)
     return [(b, n, d, t, p, gt, gp, rid) for g, b, n, d, t, p, gt, gp, rid in out[:limit]]
+
+
+def passes_save(model, test, build):
+    """the finished dense-split passes of the cell into runs.db (table passes), one row per pass: the live "vs best" of a pass compares with the best earlier pass of the same
+    model at a similar size, because dense and expert cost per token differ per model and per pass size (user 2026-10-24). Called once at the end of a cell."""
+    import sqlite3
+    rows = [r[1] for r in SPLIT_PASSES.get("rows", []) if r[1].get("cards")]
+    if not rows or not model or str(build).startswith("stock"): return
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        c.execute("create table if not exists passes (ts text, hw text, model text, test text, build text, k int, tokens int, expert_tokens int, us_tok real, wait_pct real)")
+        hw = (HWF[0].split("'")[1] if "'" in HWF[0] else "")
+        for k, b in enumerate(rows, 1):
+            cs = b["cards"]; T = sum(x.get("tok", 0) for x in cs)
+            span = b.get("span_ms") or b.get("us_tok", 0) * T / 1e3
+            ex = next((x for x in cs if x.get("experts")), cs[-1])
+            if T <= 512 or not span: continue
+            wt = (ex.get("xw_ms") if b.get("detail") else ex.get("wait_dense_ms", 0) + ex.get("wait_moe_ms", 0)) or 0
+            c.execute("insert into passes values (?,?,?,?,?,?,?,?,?,?)", (time.strftime("%F %T"), hw, os.path.basename(model), ALIASES.get(test, test), str(build), k, T, ex.get("tok", 0), span * 1e3 / T, 100.0 * wt / span if span else 0.0))
+        c.commit()
+    except sqlite3.Error as e: print("passes:", e, file=sys.stderr)
+
+
+def prompt_passes_save(model, test, build):
+    """every prompt pass of the cell's server log (engine line `prompt pass k/m: N tokens in X s (Y t/s), experts from cache H%, ...`) into runs.db table prompt_passes: one row per
+    pass with its tokens, seconds, speed, the share of its experts that came from the cache (hit_pct = found on the card, copied there with the upload skipped; asked = experts asked for; other_card_pct = the share whose layer cache is on the other card), so the first pass (a cold cache) and the later ones can be compared. Called once at the end of a cell."""
+    import sqlite3
+    log = f"/tmp/perf-{build}.log"
+    if not model or not os.path.exists(log): return
+    call = 0; rows = []
+    for ln in open(log, errors="replace"):
+        m = re.search(r"prompt pass (\d+)/(\d+): (\d+) tokens in ([\d.]+) s \((\d+) t/s\)(?:, experts from cache (\d+)% \((\d+) of (\d+) asked; (\d+)% belong to the other card's cache)?", ln)
+        if not m: continue
+        k, n, tok, sec, tps, hit, fnd, ask, wr = m.groups()
+        if k == "1": call += 1
+        rows.append((call, int(k), int(n), int(tok), float(sec), int(tps), None if hit is None else int(hit), None if ask is None else int(ask), None if fnd is None else int(fnd), None if wr is None else int(wr)))
+    if not rows: return
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        c.execute("create table if not exists prompt_passes (ts text, hw text, model text, test text, build text, call int, k int, n int, tokens int, secs real, tps int, hit_pct int, asked int, found int, other_card_pct int)")
+        hw = (HWF[0].split("'")[1] if "'" in HWF[0] else "")
+        ts = time.strftime("%F %T")
+        c.executemany("insert into prompt_passes values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [(ts, hw, os.path.basename(model), ALIASES.get(test, test), str(build)) + r for r in rows])
+        c.commit()
+    except sqlite3.Error as e: print("prompt passes:", e, file=sys.stderr)
+
+
+def pass_best_us(model, test, build, tokens):
+    """best (smallest) time per token among the 5 earlier passes of this model and test on this machine, other builds of ours, closest to `tokens` in pass size (no size window to guess); None without history"""
+    import sqlite3
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        r = c.execute("select min(us_tok) from (select us_tok from passes where model=? and test=? and build!=?" + HWF[0] + " order by abs(tokens - ?) limit 5)", (os.path.basename(model), ALIASES.get(test, test), str(build), int(tokens))).fetchone()
+        return r[0] if r and r[0] else None
+    except sqlite3.Error: return None
+
+
+PASS_CURVES = {}   # (model, build, machine) -> one curve per earlier run: the live view asks every second
+
+
+def pass_curves(model, build):
+    """time per token against the cells a pass is centred on, one curve per earlier run of this model on this machine (any prompt length: the cost per token depends on
+    the cells, not on how long the prompt is), other builds of ours. The cells of a pass are the tokens of the passes before it plus half its own."""
+    import sqlite3
+    key = (os.path.basename(model), str(build), HWF[0])
+    if key in PASS_CURVES: return PASS_CURVES[key]
+    out = []
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        runs, last = {}, {}
+        for b, test, k, tok, us in c.execute("select build, test, k, tokens, us_tok from passes where model=? and build!=? and build not like 'stock%'" + HWF[0] + " order by rowid", key[:2]):
+            if (b, test) not in runs or k <= last[(b, test)]: runs[(b, test, len(runs))] = runs.pop((b, test), None) or []   # k restarts at 1: the next run of the cell
+            runs.setdefault((b, test), []).append((tok, us)); last[(b, test)] = k
+        for pts in runs.values():
+            pos, cur = 0, []
+            for tok, us in pts: cur.append((pos + tok / 2, us)); pos += tok
+            if cur: out.append(cur)
+    except sqlite3.Error: pass
+    PASS_CURVES[key] = out
+    return out
+
+
+def pass_best_at(model, build, pos):
+    """the best earlier time per token (us) at `pos` cells: every earlier run's curve interpolated linearly between its two passes around `pos` (outside its range only
+    the nearest pass within 20% of the position, at least 8k cells), the smallest of them; None without any"""
+    best = None
+    for cur in pass_curves(model, build):
+        lo = [q for q in cur if q[0] <= pos]; hi = [q for q in cur if q[0] > pos]
+        if lo and hi:
+            (x0, y0), (x1, y1) = lo[-1], hi[0]
+            y = y0 + (y1 - y0) * (pos - x0) / (x1 - x0)
+        else:
+            x, y = lo[-1] if lo else hi[0]
+            if abs(x - pos) > max(8192, 0.2 * pos): continue
+        if best is None or y < best: best = y
+    return best
+
+
+def best_prev(model, test, build, asked=0):
+    """the best earlier run of ours of this model and test (about the same answer length, this machine, any build of ours except `build`): (best t/s, best pp, build of the best pp) or None.
+    Shown as the "vs best" columns of the results, so a run reads as better or worse than the best so far without looking anything up (user 2026-10-24)"""
+    import sqlite3
+    if not model or not test or not build: return None
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        gen = asked or ALIAS_TOKENS.get(test) or 0   # the answer length the cell asked for (pf60k1k cells ask 64), else the alias's
+        # every earlier run of the prompt: its prompt speed does not depend on the answer length (MiMo's only 60k rows asked 1024 tokens: "vs best pp" stayed empty
+        # for a 64-token cell); the decode speed is compared only within about the same answer length (a longer answer decodes at a longer context)
+        # an answer of less than half a character per token is no text (the deep-seek release without -c answered token 0: 7 characters for 1024 tokens at 43.7 t/s,
+        # and every DeepSeek cell after the fix showed 0.5x "vs best" against it, 2026-10-26); rows without a recorded answer stay in
+        rows = c.execute("select tps, pp, build, n_gen from runs where model=? and test=? and build not like 'stock%' and build!=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'"
+                         " and not (coalesce(out_chars,'') != '' and coalesce(n_gen,0) > 0 and cast(out_chars as integer) * 2 < n_gen)",
+                         (os.path.basename(model), ALIASES.get(test, test), str(build))).fetchall()
+    except sqlite3.Error: return None
+    if not rows: return None
+    # the median of each build's runs, then the best build: one lucky run (decode after a 60k prompt swings +-15% inside one build) is not the bar to beat
+    by_t, by_p = {}, {}
+    for t_, p_, b_, g_ in rows:
+        if p_: by_p.setdefault(b_, []).append(float(p_))
+        if not gen or (g_ and gen // 2 <= g_ <= gen * 2): by_t.setdefault(b_, []).append(float(t_))
+    med_p = {b_: statistics.median(v) for b_, v in by_p.items()}
+    bb = max(med_p, key=med_p.get, default=None)
+    bt = max((statistics.median(v) for v in by_t.values()), default=None)
+    if bt is None and bb is None: return None
+    return (bt, med_p[bb] if bb else None, bb or next(iter(by_t), None))
 
 
 def ours_reference(model, test):
@@ -5040,8 +5798,10 @@ def run_times(rid):
     """(seconds the run took, `l 44s` load text) of runs.db row rid, from its wall_s and load_s; (None, "") when not recorded"""
     import sqlite3
     try:
-        r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select wall_s, load_s from runs where rowid=?", (rid,)).fetchone()
-    except sqlite3.Error: r = None
+        r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select wall_s, load_s, prompt_s, gen_s from runs where rowid=?", (rid,)).fetchone()
+    except sqlite3.Error:
+        try: r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select wall_s, load_s, null, null from runs where rowid=?", (rid,)).fetchone()   # a db from before the prompt_s / gen_s columns
+        except sqlite3.Error: r = None
     if not r or not r[0]: return None, ""
     lv = r[1]
     if not lv:   # a repeat on a kept server loads nothing: show the load of the cell's first run (same build, model and test, started before it)
@@ -5051,7 +5811,19 @@ def run_times(rid):
                 "and b.rowid>=a.rowid-3 where a.rowid=? order by b.rowid desc limit 1", (rid,)).fetchone()
             if q: lv = q[0]
         except sqlite3.Error: pass
-    return float(r[0]), ("" if lv is None or lv < 0 else "l " + (f"{int(lv)}s" if lv < 100 else f"{int(lv // 60)}m{int(lv % 60):02d}s"))
+    tf = lambda x: f"{int(x)}s" if x < 100 else f"{int(x // 60)}m{int(x % 60):02d}s"
+    return float(r[0]), ("" if lv is None or lv < 0 else "l " + tf(lv) + (f" p {tf(r[2])} g {tf(r[3])}" if r[2] is not None and r[3] is not None else ""))   # l load, p prompt, g generation
+
+
+def loop_flag(rid):
+    """True when the stored run `rid` (runs.db rowid) has a detected repetition loop (loop=1): the table shows LOOP next to FAIL, and its numbers are not comparable"""
+    import sqlite3
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        r = c.execute("select loop from runs where rowid=?", (rid,)).fetchone() if rid else None
+        return bool(r and str(r[0]) == "1")
+    except sqlite3.Error:
+        return False
 
 
 def out_len(ours_id, stock_id):
@@ -5064,6 +5836,28 @@ def out_len(ours_id, stock_id):
         return str(int(r[0])) if r and r[0] else ""
     o, s_ = n(ours_id), n(stock_id)
     return f"{o}/{s_}" if (o or s_) else ""
+
+
+def par_gpus(pf_all, pf_gpus, args=""):
+    """`2,1`: the cards that computed at the same time in the prompt and in decode. Prompt: the most cards any prompt pass used (pf_all,
+    tokens:mode/CUDA0+CUDA1 per pass); a run without a decision line ran on one card. Decode: 1, the layers of a token run on one card after another
+    (layer split: the other card waits, apart from its uploads); n only with -sm row/tensor, where every card computes each layer."""
+    passes = [p.rsplit("/", 1)[-1] for p in (pf_all or "").split(";") if "/" in p] or ([pf_gpus] if pf_gpus else [])
+    pf = max([len(g.split("+")) for g in passes if g and g != "None"] or [1])
+    return f"{pf},{max(pf, 2) if re.search(r'(?:-sm|--split-mode)\s+(row|tensor)', args or '') else 1}"
+
+
+def gpus_used(i):
+    """par_gpus of a runs.db row: the stored column, else worked out from its prefill fields (rows before 2026-10-23)"""
+    import sqlite3
+    if not i: return ""
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        have = {x[1] for x in c.execute("pragma table_info(runs)")}
+        r = c.execute(f"select pf_all, pf_gpus, cmd{', par_gpus' if 'par_gpus' in have else ''} from runs where rowid=?", (i,)).fetchone()
+    except sqlite3.Error: r = None
+    if not r: return ""
+    return r[3] if len(r) > 3 and r[3] else par_gpus(r[0], r[1], r[2])
 
 
 def run_id(campaign):
@@ -5082,11 +5876,13 @@ def xfer_of(bno, argtext):
     return "f32" if str(bno).isdigit() and int(bno) >= 13600 else "f16"
 
 
-def final_table(recs, live=False, hdr_out=None):
+def final_table(recs, live=False, hdr_out=None, headers=True):
     """the finished cells as an aligned table without grid lines, as wide as the data needs and no wider than the terminal. t/s and pp are named once in the header; ours, stock, the two gains; the builds below.
-    Too wide: the load column goes, then the time column; still too wide: the stock part wraps onto a second line under its cell"""
+    Too wide: the load column goes, then the time column, then the dates of the builds; a row is never split in two lines"""
     if not recs: return []
-    try: cols = int(os.environ.get("COLUMNS") or shutil.get_terminal_size((100, 24)).columns)
+    # a detached run (no terminal, e.g. started with nohup and watched with `jobs`) does not know the viewer's width: no wrapping there, the viewer's terminal
+    # decides (user 2026-10-24: the 100-column fallback split every row in two, unreadable)
+    try: cols = int(os.environ.get("COLUMNS") or (shutil.get_terminal_size((100, 24)).columns if sys.stdout.isatty() else 1000))
     except (ValueError, OSError): cols = 100
     f = lambda v, d: "" if v is None else f"{v:.{d}f}"
     body = []
@@ -5098,46 +5894,58 @@ def final_table(recs, live=False, hdr_out=None):
         elif r.get("stock_row") and res:   # a stock cell and none of ours yet: the stock numbers in the stock columns, ours empty
             st = dict(t=t, p=p, ob="", od="", sb=r.get("sbno") or "?", sd=r.get("sdate") or "", sid=r.get("rid")); t = p = None; rid_show = None
         gt = t / st["t"] if st and t else None; gp = p / st["p"] if st and p and st["p"] else None
-        body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" if el is not None else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), t=f(t, 2), p=f(p, 1),
+        body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" + (f" {min(99, int(100 * el / r['exp']))}%" if el is not None and r.get("exp") else "") if el is not None else f"~{int(r['est'] // 60)}:{int(r['est'] % 60):02d}" if r.get("est") else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), loop=loop_flag(rid_show), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
                          st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, ppl=(ppl_pair(r.get("model"), st.get("ob")) if st and st.get("ob") else ""), nost=(not st and not r["stock_row"])))
+        bb = best_prev(r.get("model"), r.get("test"), r.get("build"), r.get("asked") or 0) if not r.get("ref") and not r.get("stock_row") and res else None   # this run over the best earlier run of ours
+        vt = t / bb[0] if bb and t and bb[0] else None; vp = p / bb[1] if bb and p and bb[1] else None
+        body[-1].update(vt=f(vt, 2), vp=f(vp, 2), vtv=vt, vpv=vp)
+        if not r.get("ref") and not r.get("stock_row") and res and not str(r.get("build") or "").startswith("stock"):   # no earlier run of ours: "first", not an empty cell that looks broken
+            if vt is None and t: body[-1].update(vt="first")
+            if vp is None and p: body[-1].update(vp="first")
+        body[-1]["section"] = r.get("section")   # `run status`: done / running / queued
         body[-1]["bt"] = (f"b{st['ob']} {st['od'][5:]} vs b{st['sb']} {st['sd'][5:]}" if st["ob"] else f"stock b{st['sb']} {st['sd'][5:]}") if st else ""; body[-1]["bts"] = (f"b{st['ob']} vs b{st['sb']}" if st["ob"] else f"stock b{st['sb']}") if st else ""
         gs = [g for g in (gt, gp) if g]; body[-1]["gm"] = math.prod(gs) ** (1 / len(gs)) if gs else 0   # overall gain: geometric mean of decode and prompt gain
         body[-1]["old"] = [dict(name=r["name"], is_old=True, out="", id=str(orid), sid="", prompt=r.get("prompt") or "", time="", load="", fail=False, t=f(t, 2), p=f(p, 1), st="", sp="", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, nost=False, gm=0, old=[],
-                                bt=f"b{n} {d[5:]} {b}", bts=f"b{n} {b}", st_=None) for b, n, d, t, p, gt, gp, orid in older_gainers(r.get("model"), r.get("test"), st["ob"], st, body[-1]["gm"])] if st and not live and not r.get("ref") else []
-    if not live: body.sort(key=lambda x: -x["gm"])   # biggest overall gainers first (cells without stock last, list order kept)
+                                bt=f"b{n} {d[5:]} {b}", bts=f"b{n} {b}", st_=None, g=gpus_used(orid)) for b, n, d, t, p, gt, gp, orid in older_gainers(r.get("model"), r.get("test"), st["ob"], st, body[-1]["gm"])] if st and not live and not r.get("ref") else []
+    SEC = {"done": 0, "running": 1, "queued": 2}   # `run status`: the sections in this order, each sorted by gain / list order
+    if not live: body.sort(key=lambda x: (SEC.get(x["section"], 0), -x["gm"] if x["section"] in (None, "done") else 0))   # biggest overall gainers first (cells without stock last, list order kept)
     allrows = [y for x in body for y in [x] + x.get("old", [])]
-    for x in allrows: x.setdefault("xfer", "")
+    for x in allrows: x.setdefault("xfer", ""); x.setdefault("vt", ""); x.setdefault("vp", ""); x.setdefault("vtv", None); x.setdefault("vpv", None)
     show_x = any(x["xfer"] not in ("", "f32", "f16") for x in body)   # the hand-off column only when a cell of ours ran with other than the f32 default
     wd = lambda k, h: max([len(h)] + [len(x.get(k, "")) for x in allrows])
-    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
+    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("g", "par gpus"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("vt", "vs best t/s"), ("vp", "vs best pp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
     if live:   # one finished cell as it happens: fixed minimum widths so the rows of successive cells line up
         W["name"] = NAMEW[0] - 1   # the longest name of the list, whatever this cell is called
-        for k, mw in (("prompt", 7), ("out", 7), ("xfer", 4), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("ppl", 13), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
+        for k, mw in (("prompt", 7), ("out", 7), ("xfer", 4), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("g", 4), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("vt", 11), ("vp", 10), ("ppl", 13), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
         for x in allrows: x["bt"] = x.get("bts", x["bt"])   # short builds, so every row decides the same columns
         W["bt"] = max([16, len("builds")] + [len(x["bt"]) for x in allrows])
     def width(keys): return sum(W[k] + 2 for k in keys)
-    ours = ["name", "prompt", "out"] + (["xfer"] if show_x else []) + ["time", "load", "t", "p"]; stk = ["st", "sp", "gt", "gp", "ppl", "bt", "id", "sid"]
+    ours = ["name", "prompt", "out"] + (["xfer"] if show_x else []) + ["time", "load", "t", "p", "g"]; stk = ["st", "sp", "gt", "gp", "vt", "vp", "ppl", "bt", "id", "sid"]
     while width(ours + stk) > cols and len(ours) > 3 and ("load" in ours or "time" in ours): ours.remove("load" if "load" in ours else "time")
     if width(ours + stk) > cols:   # next to go: the dates in the builds column
         for x in allrows: x["bt"] = x["bts"]
         W["bt"] = max([len("builds")] + [len(x["bt"]) for x in allrows] + ([16] if live else []))
-    wrap = width(ours + stk) > cols
-    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "stock id"}
-    HC = {"prompt": 36, "out": 36, "xfer": 35, "t": 96, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "ppl": 36, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
+    wrap = False   # never a row in two lines (user 2026-10-24: the stock part on a second line under the name was unreadable); columns are dropped above instead
+    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "g": "par gpus", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "vt": "vs best t/s", "vp": "vs best pp", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "stock id"}
+    HC = {"prompt": 36, "out": 36, "xfer": 35, "t": 96, "g": 35, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "vt": 96, "vp": 93, "ppl": 36, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
     hl = lambda keys: "".join("  " + col(HC[k], f"{H[k]:<{W[k]}}" if k == "bt" else f"{H[k]:>{W[k]}}") for k in keys)
     out = [" " * W["name"] + hl(ours[1:]) + ("" if wrap else hl(stk))]
     if wrap: out.append(" " * W["name"] + hl(stk))
+    if not headers: out = []   # `run status`: rows only
     if hdr_out is not None: hdr_out.extend(out); out = []   # live rows: the header goes to the caller (printed once)
     for x in allrows:
-        c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "xfer": ("35", x["xfer"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;94", x["t"]), "p": ("1;92", x["p"]), "st": ("94", x["st"]), "sp": ("92", x["sp"])}
+        c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "xfer": ("35", x["xfer"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;94", x["t"]), "p": ("1;92", x["p"]), "g": ("35", x.get("g", "")), "st": ("94", x["st"]), "sp": ("92", x["sp"])}
         cell = lambda k: "  " + col(c[k][0], f"{c[k][1]:>{W[k]}}")
         gcell = lambda k, v: "  " + (col("1;91" if v < 1 else "37" if v < 2 else "1;97" if v < 10 else "1;93" if v < 40 else "1;92", f"{x[k]:>{W[k]}}") if v is not None else " " * W[k])   # below 1 red, 1-2 plain, 2x bold white, 10x yellow, 40x green
-        ln = col(37 if x.get("is_old") else 1, f"{x['name']:<{W['name']}}") + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "")
-        tail = cell("st") + cell("sp") + gcell("gt", x["gtv"]) + gcell("gp", x["gpv"]) + "  " + col(36, f"{x.get('ppl', ''):>{W['ppl']}}") + "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}") + "".join("  " + col(37 if k == "id" else 36, f"{x[k]:>{W[k]}}") for k in ("id", "sid"))
-        if not x["st"] and not x.get("is_old"): tail = ""
+        vcell = lambda k: "  " + (col("1;91" if x[k + "v"] < 0.99 else "1;92" if x[k + "v"] > 1.01 else "37", f"{x[k]:>{W[k]}}") if x.get(k + "v") else col(90, f"{x[k]:>{W[k]}}") if x.get(k) == "first" else " " * W[k])   # against the best earlier run of ours: below 0.99 red (worse), above 1.01 green (better), "first" without one
+        ln = col(37 if x.get("is_old") else {"done": "1;92", "running": "1;97", "queued": "90"}.get(x.get("section"), 1), f"{x['name']:<{W['name']}}") + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "") + (col(33, " LOOP") if x.get("loop") else "")   # name colour = state (`run status`): green done, white running, grey next
+        tail = cell("st") + cell("sp") + gcell("gt", x["gtv"]) + gcell("gp", x["gpv"]) + vcell("vt") + vcell("vp") + "  " + col(36, f"{x.get('ppl', ''):>{W['ppl']}}") + "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}") + "".join("  " + col(37 if k == "id" else 36, f"{x[k]:>{W[k]}}") for k in ("id", "sid"))
+        if not x["st"] and not x.get("is_old"):   # no stock row to compare with: the stock cells stay empty, "vs best" (against our own earlier builds) is still shown
+            tail = " " * sum(W[k] + 2 for k in ("st", "sp", "gt", "gp")) + vcell("vt") + vcell("vp")
+            if not (x.get("vtv") or x.get("vpv") or "first" in (x.get("vt"), x.get("vp"))): tail = ""
         if wrap and tail.strip(): out += [ln, col(37, f"{x['name']:<{W['name']}}") + tail]
         else: out.append(ln + tail)
-    if not live:   # the models of the table stay on screen with their results (the model line of the run scrolled away)
+    if not live and headers:   # the models of the table stay on screen with their results (the model line of the run scrolled away)
         def msz(path):   # size on disk in GiB, all shards of a split model; "" when the file is not here
             try:
                 d = os.path.dirname(path); n = sum(os.path.getsize(os.path.join(d, x)) for x in shard_names(os.path.basename(path)))
@@ -5216,7 +6024,7 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
             if results and (rl := result_lines(cell_results(results, t0))): txt += "\n" + rl   # per-run speeds so far, below the bars
             if pl: txt += "\n" + pl   # the run in progress: tokens so far against the earlier runs
             txt = fit_block(txt) if tty else txt
-            live_clear(); print(txt, flush=True); LIVE_UP[0] = txt.count("\n") + 1 if tty else 0
+            live_clear(); print(("\x1e" if os.environ.get("RUN_DAEMON") else "") + txt, flush=True); LIVE_UP[0] = txt.count("\n") + 1 if tty else 0   # \x1e marks the first line of a status frame for the viewer (ViewFilter: it shows only as many frame lines as its screen has rows)
     except KeyboardInterrupt:   # Ctrl-C: the cell, its bench and its server are stopped for real (kill_tree: `timeout` is a process group of its own, the terminal's SIGINT never reaches them), then run_list ends (list line, kept server, pool)
         live_clear(); print(f"{label}: Ctrl-C, stopping the cell ...", flush=True)
         kill_tree(p.pid); kept_kill()
@@ -5226,14 +6034,21 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
     STOCK_REC[0] = None
     try: gain = stock_gain(peek, res, cmd[5]) if peek and res else ""
     except Exception as e: gain = f"  | gain: {e}"   # a display problem never ends the list
+    CELL_PG[:] = [None, None]
     try: lv = float(open(LOAD_FILE).read()); lt = "" if lv < 0 else "l " + (f"{int(lv)}s" if lv < 100 else f"{int(lv // 60)}m{int(lv % 60):02d}s")
     except (OSError, ValueError): lt = ""
-    CELL_REC.append(dict(asked=CELL_ASKED[0], ref=ours_reference(peek[0], peek[1]) if peek and str(cmd[5]).startswith("stock") and res else None, sbno=own_build_no(cmd[5]), xfer="" if str(cmd[5]).startswith("stock") else xfer_of(own_build_no(cmd[5]), " ".join(map(str, cmd))), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, cmd[5], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, cmd[5], "llama-server")) else "", rid=run_id(f"{cmd[3]}-{peek[1]}") if peek else None, prompt=CELL_PROMPT[0], model=peek[0] if peek else None, test=peek[1] if peek else None, name=label, el=el, lt=lt, rc=rc or (0 if res else 1), res=res, st=STOCK_REC[0], stock_row=str(cmd[5]).startswith("stock")))
+    try:   # the finished cell keeps the live bar's phases: l load, p prompt (load end to first decoded token), g generation (to the end), then the total time of the cell
+        _tf = lambda x: f"{x:.0f}s" if x < 60 else f"{int(x // 60)}m{int(x % 60):02d}s"
+        _le = os.path.getmtime(LOAD_FILE); _g = PHASE.get("gen") if PHASE.get("t0") == t0 else None
+        if lt and _g and _g > _le: lt += f" p {_tf(_g - _le)} g {_tf(time.time() - _g)}"; CELL_PG[:] = [_g - _le, time.time() - _g]
+    except (OSError, ValueError, NameError): pass
+    if peek: passes_save(peek[0], peek[1], cmd[5]); prompt_passes_save(peek[0], peek[1], cmd[5])
+    CELL_REC.append(dict(asked=CELL_ASKED[0], ref=ours_reference(peek[0], peek[1]) if peek and str(cmd[5]).startswith("stock") and res else None, sbno=own_build_no(cmd[5]), xfer="" if str(cmd[5]).startswith("stock") else xfer_of(own_build_no(cmd[5]), " ".join(map(str, cmd))), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, cmd[5], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, cmd[5], "llama-server")) else "", rid=run_id(f"{cmd[3]}-{peek[1]}") if peek else None, build=str(cmd[5]), prompt=CELL_PROMPT[0], model=peek[0] if peek else None, test=peek[1] if peek else None, name=label, el=el, lt=lt, rc=rc or (0 if res else 1), res=res, st=STOCK_REC[0], stock_row=str(cmd[5]).startswith("stock")))
     try:
         if peek: store_gains(CELL_REC[-1], str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1], t0)
     except Exception as e: print(f"gains not stored: {e}", flush=True)   # a display problem or a locked db never ends the list
     try:
-        if peek and not rc: store_cell_time(str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1], t0, el)
+        if peek and not rc: store_cell_time(str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1], t0, el, *CELL_PG)
     except Exception as e: print(f"time not stored: {e}", flush=True)
     CELL_LINES.append(col(1, f"{label[:NAMEW[0]]:<{NAMEW[0]}}") + f" {int(el // 60):>3}:{int(el % 60):02d} " + col(37, "cell") + (col(37, ",") + " " + col(33, lt) if lt else "") + "  " + (col(31, "FAILED ") if rc or not res else "") + "  ".join(speed_txt(t, p) for t, p in res) + gain )   # decode blue, prompt green, load yellow: the colors of the status bar
     try:   # the end-of-cell engine state, if the cell saved one: one more status build with it (the live ticks of a short cell miss the engine)
@@ -5344,6 +6159,267 @@ def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
 RUN_LIVE = QDIR + "/run-list.json"   # {pid, log} of the detached list run
 
 
+def last_run_rec(r, HW):
+    """the fields of a cell that is running or queued: its newest earlier measurement in runs.db (the runs of that run's campaign, ok ones), for ours the gain over the newest stock run of the
+    same prompt and the build and date that made it; for a stock cell the newest stock run. Looser each time nothing matches: any answer length, then any machine, then any build of ours."""
+    import sqlite3
+    stock = r["_b"].startswith("stock")
+    gen = int(r["tokens"]) if r.get("tokens") else None
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        top = None
+        for use_gen, use_hw in ((True, True), (False, True), (False, False)):
+            q = "select campaign, rowid, bno, start_ts from runs where model=? and test=? and build " + ("like 'stock-b%-official'" if stock else "not like 'stock%'") + " and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'" + (" and hw=?" if use_hw else "") + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen and use_gen else "") + " order by start_ts desc limit 1"
+            top = c.execute(q, (os.path.basename(r["model"]), ALIASES.get(r["test"], r["test"])) + ((HW,) if use_hw else ())).fetchone()
+            if top: break
+        if not top: return {}
+        res = [(float(t), float(p or 0)) for t, p in c.execute("select tps, pp from runs where campaign=? and cast(ok as integer)=1 and tps is not null order by ts", (top[0],))]
+    except sqlite3.Error: return {}
+    if stock: return dict(res=res, rid=top[1], st=None, lt=run_times(top[1])[1], sbno=str(top[2] or ""), sdate=str(top[3])[:10])   # the stock numbers in the stock columns, ours empty
+    STOCK_REC[0] = None
+    try: stock_gain((r["model"], r["test"]), res, r["_b"])
+    except Exception: STOCK_REC[0] = None
+    if STOCK_REC[0] and top[2]: STOCK_REC[0]["ob"] = int(top[2]); STOCK_REC[0]["od"] = str(top[3])[:10]   # the build that made the run, not the one this list will run
+    return dict(res=res, rid=top[1], st=STOCK_REC[0], lt=run_times(top[1])[1])
+
+
+def cmd_onepass(a):
+    """`run.py onepass [-b BUILD] [--write]`: the best one-pass input prompt of every model, from the runs of the list `run onepass -b BUILD` (fork/runs/onepass.csv: every model at 12k down to 4k, two
+    runs of 64 answer tokens each; the first run is cold, the last warm and decides). Per model: the sizes that ran in ONE pass (pf_passes = 1 in the last run), the biggest of them whose prompt
+    speed is within 3% of the best one-pass size is the pick. --write puts it in models.ini as best_prompt.<N>gpu (N = the cards seen now; run.py reads it for the test pfbest1k)."""
+    import sqlite3
+    c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+    b = resolve_build(a.build) if a.build != "latest" else a.build
+    rows = c.execute("select campaign, model, test, pf_passes, pf_pass, pp, note, ts from runs where campaign like ? and cast(ok as integer)=1 and pp is not null order by ts", (f"{b}-%-p%-pf%k1k",)).fetchall()
+    cells = {}
+    for camp, model, test, ps, pt, pp, note, ts in rows:
+        m = re.search(r"-p(\d+)-pf\d+k1k$", camp)
+        if not m: continue
+        nt = re.search(r"prompt_n=(\d+)", note or "")
+        cells[(model, int(m.group(1)))] = dict(passes=int(ps) if str(ps or "").isdigit() else 0, pass_tok=pt, pp=float(pp), tokens=int(nt.group(1)) if nt else 0)   # the last run of the cell wins (warm)
+    if not cells: sys.exit(f"onepass: no rows for build {b}; run `run.py jobs onepass -b {b} -day -nodl` first")
+    cards = n_cards(); ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); picks = {}
+    for model in sorted({k[0] for k in cells}):
+        sizes = sorted((n for (m_, n) in cells if m_ == model), reverse=True)
+        one = [n for n in sizes if cells[(model, n)]["passes"] == 1]
+        best_pp = max((cells[(model, n)]["pp"] for n in one), default=0)
+        pick = next((n for n in one if cells[(model, n)]["pp"] >= 0.97 * best_pp), None)
+        print(col("1;94", model))
+        print(col(37, "   size   prompt tokens   passes   pass tokens   prompt t/s"))
+        for n in sizes:
+            x = cells[(model, n)]
+            print(f"  {col('1;92' if n == pick else '1', f'{n:>3}k')}   {x['tokens']:>13}   {x['passes']:>6}   {str(x['pass_tok'] or ''):>11}   {x['pp']:>10.1f}" + (col("1;92", "   <- best one-pass prompt") if n == pick else ""))
+        if pick is None: print(col(33, "  no size ran in one pass: nothing to pick (the biggest tested size stays the default)"))
+        else: picks[model] = pick
+    if a.write and picks:
+        lines = open(ini).read().split("\n")
+        for model, n in picks.items():
+            sec = model_alias(model if os.path.isabs(model) else next((v["path"] for v in fcfg.models_ini().values() if os.path.basename(v.get("path", "")) == model), model))
+            if not sec: print(col(31, f"{model}: no models.ini section, not written")); continue
+            key = f"{hw_key()}bestpp"
+            i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+            while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1   # before the blank lines that end the section
+            j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
+            new = f"{key} = {n}k"
+            if j is not None: lines[j] = new
+            else: lines.insert(i1, new)
+        open(ini, "w").write("\n".join(lines)); print(col(92, f"written to models.ini ({cards} card(s))"))
+
+
+def cmd_calib(a):
+    """`run.py calib [-b BUILD] [-ng N] [-m MODELS] [--dry] [--nowrite]`: find every model's biggest ONE-pass input prompt by bisection and store it in models.ini (best_prompt.<N>gpu, N = the cards seen).
+    Starts at the estimated maximum (12k), halves while the prompt needs more than one pass (12, 6, 3, 1), then bisects between the biggest one-pass size and the smallest multi-pass one. The pass
+    count never grows when the prompt shrinks, so 3-5 requests (64 answer tokens) per model find the biggest one-pass prompt, which is the pick: bigger prompts amortize the uploads of a pass best."""
+    import sqlite3
+    if getattr(a, "pass_args", None) is None:   # standalone calib: its own -nm / -a go to every probe (run run passes its own through pass_args)
+        a.pass_args = (["-nm", a.no_pool] if getattr(a, "no_pool", None) is not None else []) + (["-a", a.cell_args] if getattr(a, "cell_args", "") else [])
+    here = os.path.dirname(os.path.abspath(__file__)); b = resolve_build(a.build) if a.build != "latest" else a.build
+    src = [r for r in csv.DictReader(open(os.path.join(here, "runs", "onepass.csv"), newline="")) if r["test"] == "pf12k1k"]
+    want = [x for x in (a.models or "").split(",") if x]
+    rows = [r for r in src if not want or r["model"] in want]
+    if not rows: sys.exit(f"calib: no models match {want}")
+    sizes = [4, 5, 6, 7, 8, 9, 10, 11, 12]; c = sqlite3.connect(os.path.join(here, "runs.db")); picks = {}
+    def probe(r, n):
+        """one request of n k: (passes, pass tokens, prompt tokens, prompt t/s) of its row; None when it did not run"""
+        base = r["name"].rsplit("-", 1)[0]; name = f"{base}-p{n}"
+        with open(os.path.join(here, "runs", "calib.csv"), "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(r.keys())); w.writeheader(); w.writerow(dict(r, name=name, test=f"pf{n}k1k", n="1"))
+        cmd = [sys.executable, os.path.join(here, "run.py"), "jobs", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else []) + list(getattr(a, "pass_args", None) or [])
+        print(col(90, " ".join(cmd)), flush=True)
+        if a.dry: return None
+        st = os.path.join(QDIR, "calib-state.json")   # what `run status` shows for a calib: the model, its build, when it began and the probe now running
+        try: t0_ = json.load(open(st)).get("t0") if json.load(open(st)).get("model") == r["model"] else None
+        except (OSError, ValueError): t0_ = None
+        json.dump({"model": r["model"], "build": b, "base": base, "now": n, "t0": t0_ or time.time()}, open(st, "w"))
+        subprocess.call(cmd)
+        x = c.execute("select pf_passes, pf_pass, note, pp, tps from runs where campaign like ? and cast(ok as integer)=1 and pp is not null order by ts desc limit 1", (f"{b}-{name}-pf{n}k1k",)).fetchone()
+        if not x: return None
+        tk = re.search(r"prompt_n=(\d+)", x[2] or "")
+        return int(x[0] or 0), int(x[1] or 0), int(tk.group(1)) if tk else 0, float(x[3]), float(x[4] or 0)
+    def fits(r, n):
+        """dry allocation request: can the server hold a context of n nominal k? A 2k prompt with one answer token and --ctx for n k (about 1.1k tokens per nominal k plus the answer): the server allocates
+        the KV and the pool for that context at start and refuses when it is too big, nothing is prefilled. True when the request ran."""
+        base = r["name"].rsplit("-", 1)[0]; name = f"{base}-a{n}"; ctx = int(n * 1100 + 2048)
+        with open(os.path.join(here, "runs", "calib.csv"), "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(r.keys())); w.writeheader(); w.writerow(dict(r, name=name, test="pf2k1k", n="1", tokens="1", extra=f"--ctx {ctx}"))
+        cmd = [sys.executable, os.path.join(here, "run.py"), "jobs", "calib", "-b", b, "-day", "-nodl"] + (["-ng", str(a.n_gpus)] if a.n_gpus is not None else []) + list(getattr(a, "pass_args", None) or [])
+        print(col(90, f"dry allocation of {ctx} tokens of context: " + " ".join(cmd)), flush=True)
+        if a.dry: return False
+        subprocess.call(cmd)
+        return c.execute("select count(*) from runs where campaign like ? and cast(ok as integer)=1", (f"{b}-{name}-pf2k1k",)).fetchone()[0] > 0
+    for r in rows:
+        seen = {}   # size (k) -> (passes, pass tokens, prompt tokens, prompt t/s, decode t/s); passes 0 = the model's rows carry no pass count
+        def ask(n):
+            if n not in seen: seen[n] = probe(r, n)
+            return seen[n]
+        ceil_k = None   # the engine allocates the pass in its pool and knows the free space: its line "this call fits the ceiling N" (tokens of the biggest pass) in the log of a short probe is the one-pass maximum
+        y2 = ask(2)
+        if y2 and y2[2]:
+            try: tail = open(f"/tmp/perf-{b}.log", "rb").read()[-400000:].decode("utf8", "replace")
+            except OSError: tail = ""
+            cm = re.findall(r"fits the ceiling (\d+)", tail) or re.findall(r"ubatch \d+ \(max (\d+)\)", tail) or re.findall(r"common_moe_cache_auto_impl: ubatch (\d+):", tail) or re.findall(r"n_ubatch (\d+)", tail)   # the pool-computed pass ceiling, from either log line
+            if cm: ceil_k = max(1, int(int(cm[-1]) / (y2[2] / 2)) )   # nominal k whose prompt has that many tokens (tokens per nominal k from the probe itself)
+            if ceil_k: print(col(90, f"{r['model']}: the engine's pass ceiling is {cm[-1]} tokens = {ceil_k}k of this text"), flush=True)
+            if ceil_k and not a.nowrite and not a.dry and re.findall(r"fits the ceiling (\d+)", tail): ini_set_maxpp(r["model"], int(cm[-1]))   # only the engine's own ceiling line; ubatch / n_ubatch lines of a model that fits the VRAM are the default micro-batch, not a limit   # kept per VRAM next to bestpp
+            if a.ceil: continue   # --ceil: only the engine's ceiling, no search
+        elif a.ceil: print(col(31, f"{r['model']}: the probe did not run, no ceiling read")); continue
+        mp_ = config.model(r["model"]); mp_ = sorted(glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", mp_)) or [mp_])[0]
+        fit, bpt, gib = feasible_ctx(mp_, int(hw_key()[:-1]))
+        pps = [x[0] for x in c.execute("select pp from runs where model=? and test like 'pf%' and cast(ok as integer)=1 and pp is not null order by ts desc limit 20", (os.path.basename(mp_),))]
+        if pps: fit = min(fit, int(statistics.median(pps) * 600))   # time is a resource too: a probe may take 10 minutes of prefill at the speed the model last showed (feedback: no cell over 10-15 min)
+        n = ceil_k or max(1, int((fit - 2048) * 0.9 / 1000))   # no static start: the biggest prompt the machine can hold, by arithmetic (feasible_ctx), minus the answer and a margin; ~1.1 tokens per nominal token on the big tokenizers
+        print(col(90, f"{r['model']}: KV {bpt} bytes per token, {gib:.0f} GiB for it: {fit} tokens fit (memory, the trained context and 10 minutes of prefill cap it): start at {n}k"), flush=True)
+        if ceil_k: n = min(ceil_k, n)   # the engine's pass ceiling is where one pass ends: the search starts there
+        while True:   # the maximum that fits: a prompt the server cannot allocate or run halves
+            x = ask(n)
+            if x is not None or n <= 1: break
+            n //= 2
+        if x is None: print(col(33, f"{r['model']}: no size ran: nothing stored")); continue
+        score = lambda d: {k: v[3] / max(w[3] for w in d.values()) + v[4] / max(w[4] for w in d.values()) for k, v in d.items() if v and v[4]}
+        # from the biggest one-pass size (the pool's ubatch): the half of it; while the half scores better keep halving, when it scores worse look between (up) again: the score is prompt speed plus decode speed
+        # each over the best seen, a smaller prompt can win and so can more than one pass
+        if True:
+            cur = n
+            while cur > 1:
+                y = ask(cur // 2)
+                if y is None or not y[4]: break
+                sc = score({k: v for k, v in seen.items() if v})
+                if sc.get(cur // 2, 0) > sc.get(cur, 0): cur //= 2
+                else: break
+            for _ in range(3):
+                sc = score({k: v for k, v in seen.items() if v}); best = max(sc, key=lambda k: (sc[k], k)); ks = sorted(sc)
+                lo_ = max((k for k in ks if k < best), default=best // 2); hi_ = min((k for k in ks if k > best), default=best)   # nothing above the pool's ubatch: a bigger prompt only adds passes, and every pass uploads the experts again
+                new = [m for m in ((lo_ + best) // 2, (best + hi_) // 2) if m >= 1 and m not in seen and abs(m - best) >= 1]
+                if not new: break
+                for m in new: ask(m)
+            ok_ = {m: v for m, v in seen.items() if v and v[4]}; lo = max(ok_, default=0)
+        if not ok_: print(col(33, f"{r['model']}: no size with a decode speed: nothing stored")); continue
+        mp, mt = max(v[3] for v in ok_.values()), max(v[4] for v in ok_.values())
+        eff = {n: v[3] / mp + v[4] / mt for n, v in ok_.items()}; k = max(eff, key=lambda n: (round(eff[n], 6), n))
+        picks[r["model"]] = (k, seen[k][2]); print(col("1;92", f"{r['model']}: best prompt {k}k ({seen[k][2]} tokens, {seen[k][0]} pass(es), prompt {seen[k][3]:.0f} t/s, decode {seen[k][4]:.1f} t/s); biggest one-pass {lo}k"))
+        for n in sorted(eff): print(f"   {n:>3}k  {ok_[n][2]:>6} tokens  {ok_[n][0]} pass(es)  prompt {ok_[n][3]:>6.0f} t/s  decode {ok_[n][4]:>5.1f} t/s  score {eff[n]:.3f}  total {ok_[n][2] / ok_[n][3] + 1024 / ok_[n][4]:>5.1f} s")
+    # nothing is written here: every finished sized cell updates models.ini by itself when its request time per token beats the model's best so far (learn_bestpp)
+
+
+def running_cell():
+    """(tag, start time) of the cell a list runs now: the `run.py cell TAG ...` process (tag = BUILD-NAME, what the campaign of its rows starts with); (None, None) when no cell runs"""
+    boot = next((int(l.split()[1]) for l in open("/proc/stat") if l.startswith("btime")), 0)
+    for p in os.listdir("/proc"):
+        if not p.isdigit(): continue
+        try:
+            a = open(f"/proc/{p}/cmdline", "rb").read().decode().split("\0")
+            if len(a) > 3 and a[1].endswith("run.py") and a[2] == "cell":
+                return a[3], boot + int(open(f"/proc/{p}/stat").read().rsplit(")", 1)[1].split()[19]) / os.sysconf("SC_CLK_TCK")
+        except (OSError, ValueError, IndexError): continue
+    return None, None
+
+
+def queue_waiting():
+    """names of the tasks the queue daemon has waiting (tasks.csv status next, in its order); none when the daemon never ran"""
+    try: rows = list(csv.DictReader(open(os.path.join(QDIR, "queue", "tasks.csv"), newline="")))
+    except OSError: return []
+    return [r["campaign"] or r["id"] for r in sorted((r for r in rows if r["status"] == "next"), key=lambda r: float(r["order"] or 0))]
+
+
+def cmd_status(a):
+    """`run.py status [LIST [run options]]`: what the running list is doing, in the table `run LIST -nrt` prints: the cells done today (t/s, pp, stock, gains), the one running now, the
+    cells queued next (with the time each is expected to take) and the queue daemon's waiting tasks. With no LIST: the list that runs now, else the last one that ran. Starts and touches nothing."""
+    last = os.path.join(QDIR, "run-list-last.json")
+    try: j = json.load(open(RUN_LIVE)); os.kill(j["pid"], 0); live = True
+    except (OSError, ValueError, KeyError): live = False
+    lists = sorted(os.path.basename(f)[:-4] for f in glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", "*.csv")))
+    if a.list and a.list not in lists: sys.exit(f"status: no list {a.list!r}; lists: {' '.join(lists)}")
+    if a.list: name, argv = a.list, list(a.rest)
+    else:
+        try: j = json.load(open(last)); name, argv = j["name"], j["argv"]
+        except (OSError, ValueError, KeyError): sys.exit(f"status: no list has run since this command exists: run.py status LIST [-b BUILD]; lists: {' '.join(lists)}")
+        print(col(92, f"list {name}: running") if live else col("1;91", f"NOTHING IS RUNNING. The table is the last list that ran ({name}); rows with only a ~time are cells it planned and never ran"), flush=True)
+    if name == "calib":   # a calib is one list per probe: the probes done, the one running, what comes next
+        try: cs = json.load(open(os.path.join(QDIR, "calib-state.json")))
+        except (OSError, ValueError): cs = None
+        if cs:
+            import sqlite3
+            db = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+            rows = db.execute("select campaign, pf_passes, note, pp, tps, ts from runs where campaign like ? and cast(ok as integer)=1 and pp is not null order by ts", (f"{cs['build']}-{cs['base']}-p%-pf%k1k",)).fetchall()
+            print(col(1, f"calib {cs['model']} on {cs['build']}: probes done"), flush=True)
+            last = {}
+            for cp, ps, nt, pp, tps, ts in rows:
+                if ts is not None and ts >= cs["t0"] - 5: last[cp] = (ps, nt, pp, tps)
+            for cp, (ps, nt, pp, tps) in last.items():
+                tk = re.search(r"prompt_n=(\d+)", nt or ""); print(f"  {cp.split('-')[-2] if cp.count('-') > 1 else cp:<8} {tk.group(1) if tk else '?':>6} tokens  {ps or 0} pass(es)  prompt {pp:6.0f} t/s  decode {tps or 0:5.1f} t/s")
+            print(col(33, f"  now: probe {cs['base']}-p{cs['now']} ({cs['now']}k)") if live else col(90, f"  last probe: {cs['now']}k; the calib is not running"), flush=True)
+            if live: print(col(90, "  next: the search halves while the score rises, then refines around the best (decided from the result of the probe now running)"), flush=True)
+            return 0
+    return run_list(name, [x for x in argv if x not in ("-n", "--dry", "--status")] + ["--dry", "--status"])
+
+
+class ViewFilter:
+    """The viewer's own redraw (`jobs`, attach). The detached run writes its status block with cursor-up codes counted in its own lines. A terminal narrower than a line wraps it,
+    the cursor-up then goes short and the block repeats down the screen; a block taller than the screen scrolls its top out of reach. The detached run cannot know the viewer's
+    terminal, so the viewer does the fitting itself: every line is clipped to the terminal width (queried on every chunk, so a resize counts; ANSI codes do not count, nothing wraps,
+    one logical line is exactly one row) and a block that is taller than the screen is cleared with the whole screen instead of cursor-up (the rows above are out of reach).
+    Old logs replay through the same filter, so a replayed history draws like a live one."""
+    CLEAR = re.compile(r"\033\[(\d+)A\033\[J")
+
+    def __init__(self):
+        import codecs, collections
+        self.dec = codecs.getincrementaldecoder("utf-8")("replace"); self.buf = ""; self.rows = collections.deque(maxlen=600)
+        self.frame = False; self.budget = 0; self.hidden = 0
+
+    @staticmethod
+    def clip(line, w):
+        vis = 0; i = 0
+        while i < len(line):
+            if (m := ANSI_RE.match(line, i)): i = m.end(); continue
+            if vis >= w: return line[:i] + "\033[0m"
+            vis += 1; i += 1
+        return line
+
+    def feed(self, data):
+        cols, rows_h = shutil.get_terminal_size((120, 40)); w = max(20, cols - 1); out = []
+        self.buf += self.dec.decode(data)
+        while True:
+            m = self.CLEAR.search(self.buf); nl = self.buf.find("\n")
+            if m and (nl < 0 or m.start() < nl):
+                out.append(self.buf[:m.start()]); self.buf = self.buf[m.end():]
+                n = int(m.group(1)); took = 0; self.frame = False
+                for _ in range(min(n, len(self.rows))): took += self.rows.pop()
+                out.append("\033[H\033[2J" if took >= rows_h - 1 else (f"\033[{took}A\033[J" if took else "\033[J"))
+            elif nl >= 0:
+                line = self.buf[:nl]; self.buf = self.buf[nl + 1:]
+                if line.startswith("\x1e"): line = line[1:]; self.frame = True; self.budget = max(8, rows_h - 3)
+                if self.frame:   # a status frame: no more rows than the screen has (the rest stays in the log); the last row says how many are hidden
+                    if self.budget <= 0: self.rows.append(0); self.hidden += 1; continue
+                    if self.budget == 1:
+                        self.budget = 0; self.rows.append(1)
+                        out.append(self.clip(f"... the rest of the status is hidden: this terminal has {rows_h} rows (the log has it all)", w) + "\n"); continue
+                    self.budget -= 1
+                out.append(self.clip(line, w) + "\n"); self.rows.append(1)
+            else:
+                break
+        return "".join(out)
+
+
 def run_list_detached(name, argv):
     """`run NAME ...` runs the list in a detached process (own session, output in a log) and shows that log: Ctrl-C only closes the view, the run goes on.
     `run NAME ...` again while one runs attaches instead of starting a second: the log is replayed from its start (the status block's cursor codes redraw
@@ -5360,35 +6436,57 @@ def run_list_detached(name, argv):
             return rec
         except (OSError, ValueError, KeyError): return None
     rec = alive(); child = None
-    if name is None and not rec:   # plain `run run`: attach only
-        print("no detached run is going\n"); run_list_help(); return 1
+    if name is None and not rec and subprocess.call(["pgrep", "-f", "[r]un.py calib"], stdout=subprocess.DEVNULL) == 0:   # a calib is between two probes (each probe is a list of its own): wait for the next one
+        print("calib is between two probes: waiting for the next one ...", flush=True)
+        for _ in range(180):
+            time.sleep(1); rec = alive()
+            if rec or subprocess.call(["pgrep", "-f", "[r]un.py calib"], stdout=subprocess.DEVNULL) != 0: break
+    if name is None and not rec:   # plain `jobs`: attach only; with none going, wait for the next one (user 2026-10-24: wait instead of exiting)
+        print("no detached run is going: waiting for one to start (Ctrl-C quits) ...", flush=True)
+        try:
+            while not rec:
+                time.sleep(1); rec = alive()
+        except KeyboardInterrupt:
+            print(); return 1
     if rec: print(f"a run is going (pid {rec['pid']}): attaching, Ctrl-C detaches, `run stop` stops it", flush=True)
     else:
         log = f"{QDIR}/run-list-{time.strftime('%m%d-%H%M%S')}.log"
         with open(log, "ab") as lf:
-            p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "run", name] + list(argv), stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
+            p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "jobs", name] + list(argv), stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
                                  env=dict(os.environ, RUN_DAEMON="1", PYTHONUNBUFFERED="1", COLUMNS=str(shutil.get_terminal_size((100, 24)).columns)), start_new_session=True)
             child = p
         json.dump({"pid": p.pid, "log": log}, open(RUN_LIVE, "w")); rec = {"pid": p.pid, "log": log}
+        json.dump({"name": name, "argv": list(argv)}, open(QDIR + "/run-list-last.json", "w"))   # `run status` without a list shows this one when none runs
     import signal
     def kill_run(*_):   # SIGINT to the detached run: its Ctrl-C path stops the cell, the server, then the list ends and gives the pool back
         print("\nstopping the run ...", flush=True)
         try: os.kill(rec["pid"], signal.SIGINT)
         except OSError: pass
     signal.signal(signal.SIGQUIT, kill_run)   # Ctrl-\ (a terminal's Shift+Ctrl+C is copy, no signal reaches us)
+    vf = ViewFilter() if sys.stdout.isatty() else None   # on a terminal the viewer fits the block to its own width and height; into a pipe or a file the log goes through as it is
+    def show(chunk):
+        if vf: sys.stdout.write(vf.feed(chunk)); sys.stdout.flush()
+        else: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush()
     try:
+        again = False
         with open(rec["log"], "rb") as f:
             while True:
                 chunk = f.read(65536)
-                if chunk: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush(); continue
+                if chunk: show(chunk); continue
                 try:
                     if child and child.poll() is not None: raise OSError   # our own child: a finished one is a zombie that kill(0) still finds
                     os.kill(rec["pid"], 0)
                 except OSError:
                     chunk = f.read()   # the last lines written before it ended
-                    if chunk: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush()
+                    if chunk: show(chunk)
+                    if name is None and not child:   # plain `jobs` is a viewer: the run ended, wait for the next one instead of exiting (user 2026-10-24)
+                        print("\nthe run ended.\n", flush=True)
+                        again = True
+                        break
                     return 0
                 time.sleep(0.5)
+        # the next run, with the old log closed first (2026-10-24: a viewer that re-attached from inside the open log kept every old log open, one level deeper per run)
+        if again: return run_list_detached(None, [])
     except KeyboardInterrupt:
         print("\ndetached: the run goes on (Ctrl-C again within 2 s, or Ctrl-\\, stops it); `run NAME ...` re-attaches, `run stop` stops it", flush=True)
         try: time.sleep(2)
@@ -5407,16 +6505,18 @@ def run_list_detached(name, argv):
 
 
 def run_list(name, argv):
-    """`run.py run NAME [-b B] [-o TEXT] [-s] [-dsc] [-nm] [-w] [-r N] [-n]`: run the cells listed in fork/runs/NAME.csv (columns name, model, n, test, tokens, args, extra), one after the other,
+    """`run.py jobs NAME [-b B] [-o TEXT] [-s] [-dsc] [-nm] [-w] [-r N] [-n]`: run the cells listed in fork/runs/NAME.csv (columns name, model, n, test, tokens, args, extra), one after the other,
     each through `cell` (waits for free GPUs, checks the pool, logs to q5h). The campaign of a row is B-name (B defaults to `latest`, the newest dev build), so a rerun
     with another build never collides. A failed cell is reported and the list goes on. -o keeps the rows whose name contains TEXT; -d runs the biggest models first, a model's rows together. Before each new model the pool is
     rebuilt to its size (run_list_pool; --no-pool skips that). Lists: gainers, reg, ctx."""
-    ap = argparse.ArgumentParser(prog=f"run.py run {name}")
-    ap.add_argument("-b", "--build", default="latest"); ap.add_argument("-onl", "-o", "--only", help="rows whose name contains TEXT; comma list: glm-,mimo-"); ap.add_argument("-n", "--dry", action="store_true")
+    ap = argparse.ArgumentParser(prog=f"run.py jobs {name}")
+    ap.add_argument("-b", "--build", default="latest"); ap.add_argument("-onl", "-o", "--only", help="rows whose name contains TEXT; comma list: glm-,mimo-"); ap.add_argument("-t", "--test", help="rows whose test is TEXT (comma list): best1k = only the best-prompt input rows, edit4c, tetrisc"); ap.add_argument("-n", "--dry", action="store_true")
     ap.add_argument("-skp", "--skip", help="skip rows whose name contains TEXT; comma list: glm-,mimo-")
     ap.add_argument("-ng", "--gpus", dest="n_gpus", type=int, metavar="N", help="use only N cards: the best N (fastest slot, then fastest card), the fastest one last; 0 = CPU only. Remote machines (-pc) and this host")
     ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="no live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
     ap.add_argument("-sc", "-su", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
+    ap.add_argument("-day", "--day", action="store_true", help="the day power limits (x4 card 220 W, x16 card 280 W) for the whole run, also at night (the schedule drops to 200/200 W from 23:50): same as -pl 220/280")
+    ap.add_argument("--status", action="store_true", help="print the table of the cells run today (the -nrt table: t/s, pp, stock, gains) and the cells still to run; nothing is run, started or touched (the web view calls this)")
     ap.add_argument("-nrt", "--not-today", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip cells (and so models) that already have their runs in runs.db from the last DAYS days (default 1 = today); a stock pulled within those days is not replaced by a newer release")
     ap.add_argument("-pin", dest="force_pin", action="store_true", help="force pinned RAM for every cell (-lm pin) instead of the default auto; `-nm` is the mmap counterpart. In a row's args column: -pin")
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
@@ -5428,13 +6528,29 @@ def run_list(name, argv):
     ap.add_argument("-fb", "-from-best", "--from-best", dest="from_best", action="store_true", help="cells with the biggest known gain over stock first (from runs.db: newest runs of ours against the newest official stock; cells with no gain known last), so the best gainers run and print first")
     ap.add_argument("-dsc", "-d", "--desc", "-from-biggest", "--from-biggest", dest="desc", action="store_true", help="biggest model files first (same-size rows keep the list order): the pool fragments with each unmount, so the big models go while it is still whole")
     ap.add_argument("-nodl", "--skip-download", dest="nodl", action="store_true", help="no check for a newer official stock release and no download: the stock already on disk (stock-latest) is used")
+    ap.add_argument("-draft", "--draft", dest="draft", type=int, metavar="N", help="speculative draft on OUR cells of every model that has a `draft =` file in models.ini (ds: the DSpark draft): depth N (--spec-draft-n-max N and --moe spec-depth=N, the tuner out of the loop); the row name gets -draftN; stock cells and models without a draft file run as before")
     ap.add_argument("-a", "--cell-args", default="", metavar="ARGS", help="extra cell arguments for OUR cells (not stock), e.g. -a \"moe:split-f16=1\" (one moe: word per --moe key); stored in the args column of the runs, so the rows stay apart from the defaults. -nrt matches by cell, not by arguments: leave it off for an A/B")
+    ap.add_argument("-pt", "--prompt-type", dest="pt", metavar="LIST", help="only the cells of these prompt types (comma list): i = input-heavy (mimo-i), io = input+output-heavy (mimo-io), o = output-heavy (mimo-o); the last word of the row name")
+    ap.add_argument("-ps", "--prompt-size", dest="ps", action="append", metavar="TEST", help="run THESE sizes instead of the list's own, for the models the other filters leave (repeatable): 100k4k = the source cut at 100k tokens behind an instruction, 4000 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test with 4000 answer tokens; any other name is a test as it is")
+    ap.add_argument("-ub", "--ubatch", dest="ub", metavar="LIST", help="micro-batch clamps, a comma list (4k,8k,16k; k = 1024): every selected cell once per size with the server argument -ub N, which clamps the largest micro-batch per card (the automatic one is never raised); rows are named <name>-ub<size>")
+    ap.add_argument("-sim", dest="hog_gpu", help="VRAM left free on every GPU for OUR cells (the server takes the rest at start: --moe sim-vram): -sim 16g = every card behaves like a 16 GiB card; a bare number is GiB, m = MiB")
+    ap.add_argument("-simram", dest="hog_ram", help="RAM left free for OUR cells (--moe sim-ram): -simram 32g; a bare number is GiB, m = MiB")
+    ap.add_argument("-ds", "--dense-split", dest="dense_split", choices=["on", "off", "one", "auto"], help="force the dense split for OUR cells: on = --moe dense-split=1, off = 0 (expert split alone), one = copies made but every prompt pass on one card, auto = the engine's own choice (the default); stored in the args column like -a")
     ap.add_argument("-pl", "--power", metavar="W", nargs="?", const="max", help="power limits in W for the whole run instead of the day/night schedule: no value = every card at its maximum; 285 = all cards; 285,285,300,285 = per card; 220/280 = cards on a narrower link than the widest / the widest (PC1: x4 card, x16 card). The max of the x4 card throttled and crashed it once on PC1 (330-350 W): not for PC1's x4 card. A remote host may refuse (blg: Insufficient Permissions)")
     ap.add_argument("-from-smallest", "--from-smallest", dest="asc", action="store_true", help="smallest model files first: the first results come quickly")
     ap.add_argument("-pc", "--machine", default="pc1", help="run the cells on another machine over ssh (`run.py machine`): the builds must be there (`run.py remote ID push BUILD...`), the model is found there by file name, the server and the request run on that machine (`run.py remote`), run.py stays here; -nrt does not apply")
     ap.add_argument("-ssh", "--ssh", metavar="LINE", help="the ssh line of a rented box for this session, in quotes (\" -p 47086 root@93.91.156.104 -L 8080:localhost:8080\"): the machine named by -pc (cld when -pc is not given) is set to it first (~/.ssh/config and machines.csv), see `run.py machine add`")
     o = ap.parse_args([x for x in argv if x != "desc"])   # `run gainers desc` works too
     NOSTATS[0] = o.no_stats; NGPU[0] = o.n_gpus
+    for opt, key in ((o.hog_gpu, "sim-vram"), (o.hog_ram, "sim-ram")):   # GiB -> the server's MiB
+        if opt:
+            v = str(opt).lower().rstrip("ib").rstrip("b")   # 16g, 16gb, 16gib, 16384m, 16
+            mib = float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * 1024
+            o.cell_args = (o.cell_args + f" {key}={int(mib)}").strip()
+    if o.dense_split: o.cell_args = (o.cell_args + " dense-split=" + {"on": "1", "off": "0"}.get(o.dense_split, o.dense_split)).strip()
+    if o.status: o.not_today = o.not_today or 1; o.nodl = True
+    if o.day and not o.power: o.power = "220/280"
+    if o.no_pool is not None: os.environ["RUN_KEEP_POOL"] = "1"   # -nm: the cells never unmount the pool either (pool_sanity); a model bigger than the pool loads without it, the pool stays for the next ones
     if o.no_stats: os.environ["RUN_NS"] = "1"
     if o.n_gpus is not None: os.environ["RUN_NG"] = str(o.n_gpus)
     if o.n_gpus is not None and o.machine == "pc1":   # this host: the children (cells, servers) see the chosen cards only, numbered in the listed order
@@ -5453,8 +6569,43 @@ def run_list(name, argv):
     o.build = resolve_build(o.build)   # -b b13563: a build number
     rows = list(csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", name + ".csv"), newline="")))
     for r in rows: r["model"] = fcfg.model(r["model"])   # the model column is a models.ini alias or a path
+    for r in rows: r["test"] = test_name(r["test"])   # the test column may say 8k / 60k1k
+    _picked = set()
+    _sel = lambda r: (not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))) and (not o.skip or not any(x in r["name"] for x in o.skip.split(",")))   # the -onl and -skp filters below, applied early: a model nobody asked for (or one skipped) is not looked at
+    if o.machine.split("-")[0] == "pc1" and not o.status:   # a model whose rows ask for its best prompt (pfbest) and that has none stored: ask the engine once, here, in this window (calib --ceil), not "go and run calib"
+        for _m in sorted({r["model"] for r in rows if _sel(r) and r["test"].startswith("pfbest")}):
+            if prompt_known(_m): continue
+            if o.dry: print(col(33, f"{model_alias(_m)}: no best prompt or pass ceiling stored for {hw_key()} of VRAM: a real run asks the engine first (calib --ceil); its rows are left out of this listing"), flush=True); rows = [r for r in rows if r["model"] != _m]; continue
+            print(col("1;94", f"{model_alias(_m)}: no best prompt or pass ceiling stored for {hw_key()} of VRAM: asking the engine once (calib --ceil)"), flush=True)
+            # the probe runs with this run's pinning and cell arguments: the ceiling depends on the RAM left beside the pinned weights
+            _pa = (["-nm", o.no_pool] if o.no_pool is not None else []) + (["-a", o.cell_args] if o.cell_args else [])
+            cmd_calib(argparse.Namespace(build=o.build, n_gpus=o.n_gpus, models=model_alias(_m), dry=False, nowrite=False, ceil=True, pass_args=_pa))
+            if not prompt_known(_m): sys.exit(f"{model_alias(_m)}: calib --ceil stored no pass ceiling (the engine gave none): fix that first, nothing is guessed")
+    for r in rows:
+        if not _sel(r): continue
+        was = r["test"]; r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")
+        if r["test"] != was and was != r["test"] and (r["model"], r["test"]) not in _picked and not o.status:
+            _picked.add((r["model"], r["test"]))   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
+    if o.test: rows = [r for r in rows if r["test"] in {x if x.startswith("pf") or x in {r2["test"] for r2 in rows} else "pf" + x for x in o.test.split(",")}]   # best1k = pfbest1k (plain names, no pf prefix)
     rows = [r for r in rows if not o.only or any(r["name"] == x[:-1] if x.endswith("$") else x in r["name"] for x in o.only.split(","))]   # a trailing $ means the exact name: mimo-i$ is not mimo-io
-    rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]   # -skp: same matching as -onl, rows dropped
+    if o.pt: rows = [r for r in rows if r["name"].rsplit("-", 1)[-1] in o.pt.split(",")]   # before -ps renames the rows
+    if o.ps:   # one row per model (its first row keeps the args and the extra words) and per asked size
+        _first = {}
+        for r in rows: _first.setdefault(r["model"], r)
+        _known = {r["test"] for r in rows} | set(TESTS) | set(ALIASES) | set(ALIASES.values())
+        def _ps(p, r):   # 100k4k = prompt of 100k tokens + 4000 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test, 4000 answer tokens
+            if (m := re.fullmatch(r"(\d+)m((?:\d+k)?)", p)): p = f"{int(m[1]) * 1024}k{m[2]}"   # 1m1k = 1024k1k
+            if (m := re.fullmatch(r"(\d+)k(?:(\d+)k)?", p)):   # the source cut at that many tokens behind an instruction (PS_INSTR); an instruct model needs its chat template
+                # --keep-loops: beyond the source's length the prompt repeats it, and an answer about a repeated text may loop; repeating the request (3 more
+                # full prompts: ~15 min ours, ~3.5 h stock at 200k) cannot change that. The row keeps loop=1 (out of every statistic), the prompt speed stands.
+                return dict(r, test=f"pf{m[1]}k", **({"tokens": str(int(m[2]) * 1000)} if m[2] else {}), extra=((r.get("extra") or "") + " --keep-loops --chat " + shlex.quote(PS_INSTR)).strip())
+            if (m := re.fullmatch(r"([a-z]\w*?)(\d+)k", p)) and m[1] in _known: return dict(r, test=m[1], tokens=str(int(m[2]) * 1000))
+            return dict(r, test=p if p.startswith("pf") or p in _known else "pf" + p)
+        rows = [dict(_ps(p, r), name=r["name"].split("-")[0] + "-" + p) for r in _first.values() for p in o.ps]
+    rows = [r for r in rows if not o.skip or not any(x in r["name"] for x in o.skip.split(","))]
+    if o.ub:   # the micro-batch sweep: each row once per size
+        _sz = [(x, int(x[:-1]) * 1024 if x.lower().endswith("k") else int(x)) for x in o.ub.split(",") if x]
+        rows = [dict(r, name=f"{r['name']}-ub{x.lower()}", args=((r.get("args") or "") + f" -ub {n}").strip()) for r in rows for x, n in _sz]   # -skp: same matching as -onl, rows dropped
     for r in rows:
         if o.runs not in (None, "0"): r["n"] = o.runs
     if o.from_best:   # the rows (a stock cell stays with its row) by the gain known from runs.db
@@ -5477,7 +6628,7 @@ def run_list(name, argv):
                 except sqlite3.Error: pass
             return not c.execute(q, a).fetchone()
         except sqlite3.Error: return False
-    rows = [dict(r, _b=b) for r in rows for b in ((sb, o.build) if sb and (o.stock_first or stock_missing(r)) else (o.build,))]   # -sc: the stock cell, then ours; -nrt: the stock cell only where its comparison is missing
+    rows = [dict(r, _b=b) for r in rows for b in ((sb, o.build) if sb and (o.stock_first or stock_missing(r)) and not (r.get("args") or "").strip() else (o.build,))]   # a cell with forced server args (dense-split=0/1) is a test of our own settings: stock has none of them, no stock partner   # -sc: the stock cell, then ours; -nrt: the stock cell only where its comparison is missing
     if o.not_today:   # -nrt: a cell with enough ok rows (warm-up passes and loop retries do not count) from today in runs.db is not run again; a model with no cell left is not loaded or mounted
         import sqlite3
         done = {}   # campaign -> [(t/s, pp t/s) of today's ok runs of the build under test (a campaign named `latest-...` holds the runs of every build `latest` ever pointed to: only this build's count)]
@@ -5493,7 +6644,7 @@ def run_list(name, argv):
             k = f"{r['_b']}-{r['name']}-{r['test']}"
             if k in done or r['_b'].startswith("stock"): return done.get(k, [])
             return next((v for c, v in done.items() if c.endswith(f"-{r['name']}-{r['test']}") and not c.startswith("stock")), [])
-        keep = [r for r in rows if len(today(r)) < int(r["n"] or 1)]
+        keep = [r for r in rows if len(today(r)) < (1 if o.status else int(r["n"] or 1))]   # --status: a cell with any run today has its line
         for r in rows:   # the skipped cells keep their line, with the results of today's runs and the gain over stock, as if they had just run
             if r in keep: continue
             if r['_b'].startswith('stock') and any(q['name'] == r['name'] and q['test'] == r['test'] and not q['_b'].startswith('stock') for q in rows): continue   # our line shows the stock numbers
@@ -5505,12 +6656,60 @@ def run_list(name, argv):
             if STOCK_REC[0] and _rid:   # the label is the build that made the run, not the one `latest` points to now
                 _b = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select bno, start_ts from runs where rowid=?", (_rid,)).fetchone()
                 if _b and _b[0]: STOCK_REC[0]["ob"] = int(_b[0]); STOCK_REC[0]["od"] = str(_b[1])[:10]
-            CELL_REC.append(dict(skipped=True, asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), xfer="" if r["_b"].startswith("stock") else xfer_of(own_build_no(r["_b"]), r.get("args") or ""), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
+            CELL_REC.append(dict(skipped=True, tag=f"{r['_b']}-{r['name']}", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), xfer="" if r["_b"].startswith("stock") else xfer_of(own_build_no(r["_b"]), r.get("args") or ""), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, build=r["_b"], prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
             CELL_LINES.append(col(1, f"{('s' if r['_b'].startswith('stock') else '') + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
         if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run in the last {o.not_today} day(s) skipped (they are in the table at the end)", flush=True)
         rows = keep
+    if o.status:   # one table in the -nrt columns: the cells done today, the one running now, the cells queued next (the rest of the list, then the queue daemon's waiting tasks); nothing else happens
+        run_tag, run_since = running_cell()
+        for rec in CELL_REC: rec["section"] = "running" if rec.get("tag") == run_tag else "done"
+        for r in rows:
+            tag = f"{r['_b']}-{r['name']}"; run_ = tag == run_tag
+            ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
+            rec = dict(tag=tag, section="running" if run_ else "queued", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"],
+                       name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=time.time() - run_since if run_ and run_since else None, est=None if run_ else ex, exp=ex if run_ else None, lt="", rc=0, res=[], st=None, stock_row=r["_b"].startswith("stock"))
+            rec.update(last_run_rec(r, HW))   # the values of its last run, with the gain over stock: what it is expected to beat
+            if not run_: rec["res"] = []   # a cell that has not run shows no speed: the last run of the same model and test is another cell's number
+            CELL_REC.append(rec)
+        for rec in CELL_REC:   # the running cell: its earlier rows (done today) and its expected time give the progress in percent
+            if rec.get("section") == "running" and run_since: rec["el"] = time.time() - run_since   # elapsed since the cell process started, not the time of an earlier run of it
+            if rec.get("section") == "running" and not rec.get("exp"): rec["exp"] = cell_expect(rec["model"], rec["test"], 2, rec["tag"].split("-")[0], o.warm)   # the cell may be one the -nrt skip dropped from rows: its model and test come from its record
+        qd = queue_waiting()   # tasks of the queue daemon (tasks.csv): only their name is known; a stopped daemon starts none of them, they are counted, not listed
+        qd_on = subprocess.run(["systemctl", "is-active", "--quiet", "queued.service"]).returncode == 0
+        for t in (qd if qd_on else []):
+            CELL_REC.append(dict(tag=t, section="queued", asked=0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt="", model="", test="", name=t, el=None, lt="", rc=0, res=[], st=None, stock_row=False))
+        print(col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC)), flush=True)
+        if qd and not qd_on: print(col(90, f"queue daemon off: {len(qd)} old tasks wait in tasks.csv (none starts)"), flush=True)
+        waiting = []   # waiter shells (`while pgrep ...; do sleep; done; ... python3 run.py jobs LIST`): what starts when the current run ends, in start order
+        try:
+            ps_ = subprocess.run(["ps", "-eo", "pid,ppid,args"], capture_output=True, text=True).stdout.splitlines()
+            started = {int(l.split()[1]) for l in ps_[1:] if "run.py" in l}   # a waiter whose list already runs (its python child exists) is not queued any more
+            for ln in (l.split(None, 1)[1] if False else l for l in ps_[1:]):
+                if int(ln.split()[0]) in started: continue
+                ln = ln.split(None, 1)[0] + " " + ln.split(None, 2)[2]   # pid args
+                m = re.search(r"bash -c while .*?done;.*?(python3 run\.py (?:run|calib) [^'\"]*)$", ln)
+                if m and "sudo" not in ln.split("bash -c")[0]: waiting.append((int(ln.split()[0]), m.group(1).strip()))
+        except Exception: pass
+        if waiting:
+            print(col(1, "\nqueued next (start by themselves, in this order):"), flush=True)
+            for k, (pid_, cmd_) in enumerate(sorted(waiting), 1):
+                nm = re.search(r"run\.py (?:run|jobs) (\w+)", cmd_); cells = ""
+                if nm and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", nm.group(1) + ".csv")):
+                    names = [r["name"] for r in csv.DictReader(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", nm.group(1) + ".csv"), newline=""))]
+                    cells = f"  ({len(names)} cells: {', '.join(names[:6])}{' ...' if len(names) > 6 else ''})"
+                print(f"  {k}. {cmd_}{cells}", flush=True)
+        return 0
     for r in rows:   # -a: the same cells with extra arguments on our build
-        if o.cell_args and not r["_b"].startswith("stock"): r["args"] = ((r.get("args") or "") + " " + " ".join("moe:" + w if re.fullmatch(r"[\w-]+=\S*", w) else w for w in o.cell_args.split())).strip()   # a bare key=value is a --moe key (-a "split-experts=0")
+        if o.cell_args:
+            stock = r["_b"].startswith("stock")   # stock has no --moe keys: it gets only the plain flags (-a "-ub 4096 -b 4096"), a tuned stock cell, recorded in the args column
+            # "--moe K=V" as on a server line is K=V: the bare --moe word left in broke the server line (-np 1 --moe -lm mmap ..., 2026-10-27)
+            words = [w for w in argv_of(o.cell_args) if w != "--moe" and not (stock and re.fullmatch(r"[\w-]+=\S*", w))]
+            r["args"] = ((r.get("args") or "") + " " + shlex.join("moe:" + w if not stock and re.fullmatch(r"[\w-]+=\S*", w) else w for w in words)).strip()   # a bare key=value is a --moe key (-a "split-experts=0")
+    for r in rows:   # -draft N: our cells of a model with a draft file in models.ini
+        d = (fcfg.models_ini() or {}).get(model_alias(r["model"]) or "", {}).get("draft") if o.draft and not r["_b"].startswith("stock") and "-md" not in shlex.split(r.get("args") or "") else None   # a row that names its own draft keeps it
+        if d:
+            r["args"] = ((r.get("args") or "") + f" -md {shlex.quote(os.path.expanduser(d))} --spec-type draft-dspark --spec-draft-n-max {o.draft} --moe spec-depth={o.draft}").strip()
+            r["name"] += f"-draft{o.draft}"
     if o.machine != "pc1": return run_list_remote(o, rows, name)
     def size(r):   # bytes of the model; a split model counts all its parts (NAME-00001-of-0000N.gguf)
         return sum(os.path.getsize(f) for f in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
@@ -5537,7 +6736,9 @@ def run_list(name, argv):
         sl = os.path.realpath(os.path.join(DEVBUILDS, "stock-latest")); print(f"{col(36, 'stock')}: {os.path.basename(sl)}  {col(33, time.strftime('%F %H:%M', time.localtime(os.path.getmtime(os.path.join(sl, 'llama-server')))))}  {col(94, 'b' + own_build_no(os.path.basename(sl)))}", flush=True)
     if not o.dry: CUR_HWL[0] = hw_line(); print(col(1, CUR_HWL[0]), flush=True)
     NAMEW[0] = max((len(("s" if r["_b"].startswith("stock") else "") + r["name"]) for r in rows), default=NAMEW[0] - 1) + 1
-    total_s = sum(cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm) or 0 for r in rows); done_s = 0; run_t0 = time.time()   # expected seconds of the whole list, from runs.db
+    exp_all = [cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm) for r in rows]
+    known = [x for x in exp_all if x]; fill = (sum(known) / len(known)) if known else 600.0   # a cell without history counts the average of the known ones, so the whole-run bar and its time cover every cell of the list
+    total_s = sum(x or fill for x in exp_all); done_s = 0; run_t0 = time.time()   # expected seconds of the whole list, from runs.db
     try:
         for r in rows:
             key = (r["model"], r["_b"].startswith("stock"))   # the official stock binary knows no pool: it runs without one (the pool's RAM is its page cache), ours size it per model
@@ -5550,20 +6751,23 @@ def run_list(name, argv):
                             with contextlib.redirect_stdout(io.StringIO()): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
                         except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
                 else: run_list_pool(size(r))
-            if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;94", os.path.basename(shown)), flush=True)   # after the pool line: which model the next cells run
+            if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;94", first_shard(shown)), flush=True)   # after the pool line: which model the next cells run
             tag = f"{r['_b']}-{r['name']}"
             cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], (" " + r["args"]) if r.get("args") else ""] + (["--warm"] if o.warm else []) + ([] if (o.kill or o.clean_state) else ["--keep-server"]) + (["--clean-state"] if o.clean_state else [])
             cmd += (["--tokens", r["tokens"]] if r.get("tokens") else []) + shlex.split(r.get("extra") or "")
-            if o.dry: print(f"[{name}] {tag}: {shlex.join(cmd[3:])}", flush=True)
+            if o.dry: print(f"[{name}] {tag}: {re.sub(r' pf(?=\d+k)', ' ', shlex.join(cmd[3:]))}", flush=True)
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
-            CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")); CELL_ASKED[0] = int(r["tokens"]) if r.get("tokens") else 0
-            CELL_TEST[0] = r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")   # "12k in 1k out", "64t in 1k out"
+            CELL_BUILD[0] = str(r.get("_b") or ""); CELL_REF[0] = (os.path.basename(r["model"]), r["test"]); CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")); CELL_ASKED[0] = int(r["tokens"]) if r.get("tokens") else 0
+            CELL_TEST[0] = (re.sub(r"^(\d+k)/(\w+)$", r"\1\2", CELL_PROMPT[0]) if re.fullmatch(r"pf\d+k", r["test"]) else CELL_PROMPT[0]) if re.fullmatch(r"pf\d+k(1k)?", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")   # "12k in 1k out", "64t in 1k out"
+            CELL_TEST[0] += f"  {r['_b']}" + (f"  {r['args'].strip()}" if r.get("args") and r["args"].strip() else "")   # what runs: build, extra server args
             if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, ("s" if r["_b"].startswith("stock") else "") + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
-            done_s += ex or 0
+            if not o.dry and not r["_b"].startswith("stock") and not (r.get("args") or "").strip(): learn_bestpp(r["model"], r["test"], tag)
+            if not o.dry and not r["_b"].startswith("stock"): learn_att(r["model"], tag)
+            done_s += ex or fill
     finally:   # the cells' lines, then the pool: it holds its RAM whether a model uses it or not: give it back when the list ends, also on Ctrl-C or an error
         if CELL_LINES and not o.dry:   # the final block, complete for a screenshot: the machine, then every cell with what it measured
-            live_clear(); print("\n" + (col(1, hw_line()) + "\n" if any(not x.get("skipped") for x in CELL_REC) else "") + "\n".join(final_table(CELL_REC) or CELL_LINES), flush=True)   # the machine line is at the top already when no cell ran
+            live_clear(); print("\n" + (col(1, hw_line()) + "\n" if any(not x.get("skipped") for x in CELL_REC) else "") + "\n".join(final_table(CELL_REC) or CELL_LINES) + ("\n" + col(90, "repro  " + os.environ["RUNPY_REPRO"]) if os.environ.get("RUNPY_REPRO") else ""), flush=True)   # the command line under the table: copy it to repeat the run; the machine line is at the top already when no cell ran
         if CELL_LINES and not o.dry: open(f"{QDIR}/{o.build}-{name}.list.txt", "a").write("\n".join(CELL_LINES) + "\n")   # the screen shows only the current cell; the finished cells' lines go here
         if not o.dry: kept_kill()   # the kept server holds the pool: it goes before the unmount
         if not o.no_pool and not o.dry and os.path.ismount("/mnt/huge1g"):
@@ -5574,6 +6778,169 @@ def run_list(name, argv):
             except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
     print(f"[{name}] {len(rows)} cells, failed: {', '.join(bad) or 'none'}")
     return 1 if bad else 0
+
+
+PS_INSTR = "Return the completed source with the bugs fixed."   # run -ps: the instruction in front of the cut source
+PF_FILES = ()   # sizes (k) with a frozen prompt file prompts/src_Nk.cpp and a test alias pfNk1k in prompts.ini
+
+
+def n_cards():
+    """how many cards the cells see: -ng N (RUN_NG), else CUDA_VISIBLE_DEVICES, else the cards nvidia-smi lists"""
+    if os.environ.get("RUN_NG", "") != "": return int(os.environ["RUN_NG"])
+    cv = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cv is not None: return len([x for x in cv.split(",") if x.strip()])
+    try: return len([l for l in subprocess.run([os.environ.get("NVIDIA_SMI", "nvidia-smi"), "-L"], capture_output=True, text=True, timeout=30).stdout.splitlines() if l.startswith("GPU ")])
+    except (OSError, subprocess.SubprocessError): return 0
+
+
+def hw_key():
+    """the VRAM of the cards the cells use, in GiB, for models.ini: 24g for one 24 GiB card, 48g for two (the best prompt depends on the VRAM, so a model holds one per setup:
+    bestpp = [48=8,24=7]). -ng N takes the N biggest cards. No card: 0g"""
+    try: mem = sorted((round(int(x) / 1024) for x in subprocess.run([os.environ.get("NVIDIA_SMI", "nvidia-smi"), "--query-gpu=memory.total", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=30).stdout.split()), reverse=True)
+    except (OSError, ValueError, subprocess.SubprocessError): mem = []
+    cv = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cv is not None and not os.environ.get("RUN_NG"): mem = mem[:len([x for x in cv.split(",") if x.strip()])]
+    if os.environ.get("RUN_NG", "") != "": mem = mem[:int(os.environ["RUN_NG"])]
+    return f"{sum(mem)}g"
+
+
+def model_alias(model_path):
+    """the models.ini section of a model file (by file name), None when it has none"""
+    base = os.path.basename(model_path or "")
+    return next((k for k, v in fcfg.models_ini().items() if v.get("path") and os.path.basename(v["path"]) == base), None)
+
+
+def bestpp_entries(text):
+    """models.ini value '[(48,8018,1024,733,18.9,10.9,54.2,1.89),...]' -> {48: (8018, 1024, 733.0, 18.9, 10.9, 54.2, 1.89)}: total VRAM of the cards in GiB -> (prompt tokens, answer tokens, prompt t/s,
+    decode t/s, prompt seconds, answer seconds, score); the request takes prompt + answer seconds"""
+    num = r"\s*,\s*([\d.]+)"
+    return {int(g[0]): (int(g[1]), int(g[2])) + tuple(float(x) for x in g[3:]) for g in re.findall(r"\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)" + num * 5 + r"\s*\)", str(text))}
+
+
+def bestpp_run(t):
+    """the bestpp tuple of one request from the server timings (no load time in them): (total VRAM GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s); stored with
+    every run in runs.db, whether the run is better or worse than the models.ini entry"""
+    try:
+        ans = (t.get("predicted_ms") or t["predicted_n"] / max(t["predicted_per_second"], 1e-9) * 1e3) / 1e3
+        return f"({hw_key()[:-1]},{t['prompt_n']},{t['predicted_n']},{t['prompt_per_second']:.0f},{t['predicted_per_second']:.1f},{t['prompt_ms'] / 1e3:.1f},{ans:.1f})"
+    except (KeyError, TypeError, ZeroDivisionError): return ""
+
+
+def ini_set_bestpp(sec, tok, out, pp, tps, pp_s, tg_s, score):
+    """models.ini [sec]: the line bestpp = [(VRAM GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s, score), ...] with the entry of this VRAM (hw_key) set; other VRAM entries stay"""
+    ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); lines = open(ini).read().split("\n")
+    i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+    while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
+    j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == "bestpp"), None)
+    e = bestpp_entries(lines[j].split("=", 1)[1]) if j is not None else {}; e[int(hw_key()[:-1])] = (tok, out, pp, tps, pp_s, tg_s, score)
+    new = "bestpp = [" + ",".join(f"({g},{t},{o},{p:.0f},{d:.1f},{ps:.1f},{ts:.1f},{sc:.2f})" for g, (t, o, p, d, ps, ts, sc) in sorted(e.items(), reverse=True)) + "]"
+    if j is not None: lines[j] = new
+    else: lines.insert(i1, new)
+    open(ini, "w").write("\n".join(lines))
+
+
+def ini_set_maxpp(sec, tokens):
+    """models.ini [sec]: the line maxpp = [(VRAM GiB, tokens), ...] with the entry of this VRAM (hw_key) set: the biggest pass the engine says fits ("this call fits the ceiling N" in the log of a probe), the start of the search for the best prompt"""
+    ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); lines = open(ini).read().split("\n")
+    i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+    while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
+    j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == "maxpp"), None)
+    e = {int(g): int(t) for g, t in re.findall(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)", lines[j].split("=", 1)[1])} if j is not None else {}; e[int(hw_key()[:-1])] = int(tokens)
+    new = "maxpp = [" + ",".join(f"({g},{t})" for g, t in sorted(e.items(), reverse=True)) + "]"
+    if j is not None: lines[j] = new
+    else: lines.insert(i1, new)
+    open(ini, "w").write("\n".join(lines))
+
+
+BESTPP_MEM = {}   # (alias, VRAM GiB) -> request time per token (ms) of the best prompt so far: read from models.ini once, then only in memory
+
+
+def scores(seen):
+    """{prompt tokens: (answer tokens, prompt t/s, decode t/s)} -> {prompt tokens: score}: prompt speed over the best prompt speed plus decode speed over the best decode speed (best on both = 2)"""
+    mp, mt = max(v[1] for v in seen.values()), max(v[2] for v in seen.values())
+    return {k: v[1] / mp + v[2] / mt for k, v in seen.items()}
+
+
+def ini_set_key(sec, key, value):
+    """models.ini [sec]: the line `key = value` set (added at the end of the section when missing); other lines untouched"""
+    ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); lines = open(ini).read().split("\n")
+    i0 = next((i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"), None)
+    if i0 is None: return False
+    i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+    while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
+    j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
+    new = f"{key} = {value}"
+    if j is not None and lines[j].strip() == new: return False
+    if j is not None: lines[j] = new
+    else: lines.insert(i1, new)
+    open(ini, "w").write("\n".join(lines)); return True
+
+
+def learn_att(model, tag):
+    """after a cell: the engine's line "attention layers: N full (grow with the context), M sliding-window (window W), K linear (no context term), sparse top-k S" (read from
+    the GGUF at load) stored once in models.ini as `att = full N, swa M/W, linear K, topk S`: which layers make the prompt cost grow with the context (user 2026-10-25)"""
+    sec = model_alias(model); lg = f"{QDIR}/{tag}.server.log"
+    if not sec or not os.path.exists(lg): return
+    m = re.search(r"attention layers: (\d+) full \(grow with the context\), (\d+) sliding-window \(window (\d+)\), (\d+) linear \(no context term\), sparse top-k (\d+)", open(lg, errors="replace").read())
+    if m and ini_set_key(sec, "att", f"full {m[1]}, swa {m[2]}/{m[3]}, linear {m[4]}, topk {m[5]}"):
+        print(col(92, f"{sec}: attention layers full {m[1]}, sliding-window {m[2]} (window {m[3]}), linear {m[4]}, sparse top-k {m[5]}, written to models.ini"), flush=True)
+
+
+def learn_bestpp(model, test, tag):
+    """after a finished cell of a sized prompt (7k1k), at any number of passes (one pass is not always the best): its last (warm) run is compared with the model's best prompt for this VRAM (kept in memory, first read from models.ini
+    bestpp). Both prompt speed and decode speed count: each is scaled by the better of the two, the two scaled numbers are added, the higher sum wins, a longer prompt wins a tie. The winner is
+    the entry, in memory and in models.ini; nothing is written when the stored one wins. The best prompt is learned from the runs that happen anyway, no extra run. (Time per token was tried and
+    dropped: a longer prompt spreads the answer over more tokens and always wins, whatever its speed.)"""
+    m = re.fullmatch(r"pf(\d+)k1k", test or ""); sec = model_alias(model)
+    if not m or not sec: return
+    try:
+        import sqlite3
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        x = c.execute("select pp, tps, note, pf_passes, n_gen from runs where campaign like ? and cast(ok as integer)=1 and pp is not null and tps is not null order by ts desc limit 1", (f"{tag}-%",)).fetchone()
+        pn = re.search(r"prompt_n=(\d+)", (x[2] if x else "") or "")
+        if not x or not pn: return   # any pass count counts: one pass is not always the best
+        new = (int(pn.group(1)), int(x[4] or 1024), float(x[0]), float(x[1])); hw = int(hw_key()[:-1]); key = (sec, hw)   # prompt tokens, answer tokens of this run, prompt t/s, decode t/s
+        pp_s, tg_s = new[0] / new[2], new[1] / new[3]; total = pp_s + tg_s   # seconds of the request: the prompt, then the answer the run gave at the decode speed that followed (the server's own timings: no load time)
+        if key not in BESTPP_MEM:   # every one-pass prompt seen so far for this model and VRAM: {prompt tokens: (answer tokens, prompt t/s, decode t/s)}, starting with the models.ini entry
+            e0 = bestpp_entries((fcfg.models_ini().get(sec) or {}).get("bestpp", "")).get(hw); BESTPP_MEM[key] = {e0[0]: e0[1:4]} if e0 else {}
+        seen = BESTPP_MEM[key]; was = max(seen, key=lambda k: scores(seen)[k]) if seen else None   # the stored best before this run
+        seen[new[0]] = new[1:]
+        sc_all = scores(seen); best = max(seen, key=lambda k: (round(sc_all[k], 6), k))   # all seen sizes against the same two best numbers: no order effects
+        if best != was or new[0] == best:
+            o_, p_, d_ = seen[best]; ini_set_bestpp(sec, best, o_, p_, d_, best / p_, o_ / d_, sc_all[best])
+            if best != was: print(col(92, f"best prompt of {sec} at {hw}g: {best} tokens, prompt {p_:.0f} t/s, decode {d_:.1f} t/s, total {best / p_ + o_ / d_:.1f} s, score {sc_all[best]:.2f}, written to models.ini"), flush=True)
+    except Exception as e: print(col(90, f"best prompt not updated: {e}"), flush=True)
+
+
+def vram_known(model_path):
+    """True when the model's bestpp has an entry for the VRAM of the cards in use"""
+    sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {})
+    return int(hw_key()[:-1]) in bestpp_entries(sec.get("bestpp", ""))
+
+
+def prompt_known(model_path):
+    """True when models.ini holds a best prompt or a pass ceiling (maxpp) for the VRAM of the cards in use: best_prompt_k can answer without asking the engine"""
+    sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {}); g = int(hw_key()[:-1])
+    return g in bestpp_entries(sec.get("bestpp", "")) or g in {int(x) for x, _ in re.findall(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)", sec.get("maxpp", ""))}
+
+
+def best_prompt_k(model_path):
+    """the model's best input prompt in nominal thousands of tokens: models.ini `bestpp = [(48,8018,1024,733,18.9,10.9,54.2,1.89),(24,7248,1024,737,21.7,9.6,47.2,2.00)]` (total VRAM in GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s, score) for the cards seen now,
+    tokens rounded to thousands (7248 -> 7k); no entry for this VRAM: the maxpp of this VRAM (the biggest pass the engine says fits); neither stored: run.py stops and says to ask the engine (calib --ceil). Filled by learn_bestpp from the runs that happen anyway."""
+    sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {})
+    t = bestpp_entries(sec.get("bestpp", "")).get(int(hw_key()[:-1]))
+    if t: return max(1, round(t[0] / 1000))
+    mx = re.findall(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)", sec.get("maxpp", ""))
+    mx = {int(g): int(x) for g, x in mx}.get(int(hw_key()[:-1]))
+    if mx: return max(1, mx // 1000)   # no best yet: the biggest pass that fits (maxpp)
+    sys.exit(f"{model_alias(model_path)}: no best prompt and no pass ceiling stored for {hw_key()} of VRAM; ask the engine once: python3 fork/run.py calib --ceil -m {model_alias(model_path)}")   # no guessed size
+
+
+def best_test(model_path, test, remote=False):
+    """pfbest1k -> pf<N>k1k with N = the model's best one-pass prompt (pfbest -> pf<N>k); any other test comes back unchanged. A remote machine runs the 12k prompt (its requests are frozen files)."""
+    test = re.sub(r"^(\d+k\d*k|best\d*k)$", r"pf\1", test)   # the plain names 8k1k, best1k are the tests pf8k1k, pfbest1k
+    m = re.fullmatch(r"pfbest(.*)", test)
+    return f"pf{12 if remote else best_prompt_k(model_path)}k{m.group(1)}" if m else test
 
 
 CLAMPED_SHOWN = set()
@@ -5680,12 +7047,14 @@ def _run_list_remote(o, rows, name, m, here, bad):
                    "--results", f"{QDIR}/{tag}-{r['test']}.run.out", "--slots", REMOTE_SLOTS[0], "--campaign", key]
             if not o.dry: live_clear(); push_build(m, r["_b"])   # a build the machine does not have yet goes there first (once)
             if o.dry: print(f"[{name}] {tag} on {o.machine}: {found} {r['test']} -n {r['n'] or 2} args: {args}", flush=True); continue
-            if r["model"] != shown: shown = r["model"]; live_clear(); print(col("1;94", os.path.basename(shown)), flush=True)
+            if r["model"] != shown: shown = r["model"]; live_clear(); print(col("1;94", first_shard(shown)), flush=True)
             try: os.remove(f"{QDIR}/{tag}-{r['test']}.run.out")
             except OSError: pass
             tin = TEST_IN.get(r["test"]); tout = int(r["tokens"]) if r.get("tokens") else 0
+            CELL_BUILD[0] = str(r.get("_b") or ""); CELL_REF[0] = (os.path.basename(r["model"]), r["test"])
             CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")) if tag not in CLAMPED else f"{CLAMPED[tag] / 1000:.1f}k/" + prompt_txt(r["test"], r.get("tokens")).split("/")[-1]; CELL_ASKED[0] = tout
-            CELL_TEST[0] = r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")
+            CELL_TEST[0] = (re.sub(r"^(\d+k)/(\w+)$", r"\1\2", CELL_PROMPT[0]) if re.fullmatch(r"pf\d+k", r["test"]) else CELL_PROMPT[0]) if re.fullmatch(r"pf\d+k(1k)?", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")
+            CELL_TEST[0] += f"  {r['_b']}" + (f"  {r['args'].strip()}" if r.get("args") and r["args"].strip() else "")   # what runs: build, extra server args
             try:
                 if run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), cell_expect(r["model"], r["test"], r["n"], r["_b"], False), ("s" if r["_b"].startswith("stock") else "") + r["name"],
                                log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
@@ -5767,25 +7136,41 @@ def cmd_cell(a):
         r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True)
         if r.stdout.split() and max(int(x) for x in r.stdout.split()) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
         time.sleep(5)
-    if not nomount_args(a.args)[1] and not kept_get(): pool_sanity(model=a.model)
+    keep_pool = os.environ.get("RUN_KEEP_POOL") == "1"   # run -nm: the pool stays mounted for the whole list (a remount after fragmentation gets only part of it back: 49-58 of 108 pages, 2026-10-22)
+    too_big = False
+    if keep_pool and os.path.ismount("/mnt/huge1g") and os.path.exists(HUGE_NR):
+        need = -(-sum(os.path.getsize(p) for p in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", a.model))) >> 30)
+        too_big = int(open(HUGE_NR).read()) < need   # GLM 3.0 (109.4 GiB) in the 108 pool: this cell loads without the pool, the pool is kept
+    if not nomount_args(a.args)[1] and not kept_get(): pool_sanity(model=None if keep_pool else a.model)
     # the build name "latest" is the symlink the newest dev build moves (cmd_build): resolved HERE, after the wait, so a queued cell runs the newest binary of the moment, and
     # every row, log and tag carries the real build name
     a.builds = ",".join(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, "latest"))) if b == "latest" else resolve_build(b) for b in a.builds.split(","))
     open(os.path.join(Q5, a.tag + ".build"), "w").write(a.builds + "\n")   # which build(s) this cell really ran ("latest" resolved)
     cell_args, nomount = nomount_args(a.args, a.model)
     args = "-np 1 " + cell_args
+    # a pool that is mounted now (pool_sanity above mounts it when it can) is used when the model fits it: -lm pin loads the weights into its 1 GiB pages (2-3% seen,
+    # user 2026-10-25). The engine's automatic mode pins too, but from ordinary RAM, and left a mounted pool unused (101 of 101 pages free, open bug). No pool, a model
+    # bigger than it, a cell with its own -lm / -nm, a stock build or RUN_POOL_PIN=0: the automatic mode as before.
+    if os.path.ismount("/mnt/huge1g") and os.path.exists(HUGE_NR) and not nomount and not too_big and os.environ.get("RUN_POOL_PIN") != "0" \
+            and not any(b.startswith("stock") for b in a.builds.split(",")) and not re.search(r"(^|\s)(-lm|--load-mode)(\s|$)", cell_args):
+        need = -(-sum(os.path.getsize(p) for p in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", a.model))) >> 30)
+        if int(open(HUGE_NR).read()) >= need + 1: args += " -lm pin"
     hog = ",".join(k + "=" + str(int(float(v) * 1024)) for k, v in (("sim-vram", a.hog_gpu), ("sim-ram", a.hog_ram)) if v is not None)
     if hog:   # --moe sim-vram / sim-ram: the server takes the memory itself (common_hog), freed by the OS with the process, no helper process to leave behind
         args += " --moe " + hog
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
-           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else [])
-    env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG="r")
-    if os.path.ismount("/mnt/huge1g") and not nomount: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
+           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else []) + (["--nothink"] if getattr(a, "nothink", None) else [])
+    env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG=LOG_LETTERS)   # r unless the caller set PERF_LOG (PERF_LOG=rp run ...: the periodic cache stats reach the server's --moe log=)
+    if os.path.ismount("/mnt/huge1g") and not nomount and not too_big: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
-    env.setdefault("PERF_LEDGER", "0")   # the pool write ledger is a debug tool and off in cells (it cost our side a few percent that stock never pays); --env PERF_LEDGER=1 records it: kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
+    fix_build = any(os.path.basename(b.rstrip("/")).startswith("fix_") for b in re.split(r"[,\s]+", str(a.builds or "")) if b)
+    env.setdefault("PERF_LEDGER", "1" if fix_build else "0")   # fix builds (fix_*) keep the ledger on: a fix-validation run records who wrote what when (user 2026-10-28); the pool write ledger is a debug tool and off in cells (it cost our side a few percent that stock never pays); --env PERF_LEDGER=1 records it: kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
     for kv in (a.env or []):
         k, _, v = kv.partition("="); env[k] = v
+    # the cell's --env values are this bench process's own environment, so server_run's key (env that differs from it) never saw them: a cell that
+    # differed from the one before only by --env reused its kept server and the values never reached a server (2026-10-27, GGML_CUDA_SCRATCH_CHECK=1)
+    env["PERF_CELL_ENV"] = " ".join(sorted(a.env or []))
     t_cell0 = time.time()
     try:
         with open(out, "w") as f:
@@ -5794,13 +7179,16 @@ def cmd_cell(a):
         HOST[0] = None
     lines = [l.rstrip()[:200] for l in open(out, errors="replace") if re.search(r"n= *\d+ .* t/s", l)]
     with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
-        f.write(f"== {a.test} {args}\n" + "".join(l + "\n" for l in lines))
+        f.write(f"== {re.sub(r'^pf(?=\d+k)', '', a.test)} {args}\n" + "".join(l + "\n" for l in lines))
     if a.builds.count(",") == 0:
         try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
         except OSError: pass
+        try:   # the start before the last one (the cold run of a clean-state cell), when it belongs to this cell
+            if os.path.getmtime(f"/tmp/perf-{a.builds}.log.prev") >= t_cell0: shutil.copy(f"/tmp/perf-{a.builds}.log.prev", os.path.join(Q5, a.tag + ".server.prev.log"))
+        except OSError: pass
     # the pool write ledgers this cell's servers wrote (one per server start): gzipped next to the server log, the replay's summary (overlaps, uploads a lend
     # or the KV zone crossed while they ran) appended to TAG.out
-    import glob, gzip
+    import gzip
     led = sorted((p for p in glob.glob(os.path.join(DATA, "pool-ledger-*.csv")) if os.path.getmtime(p) >= t_cell0), key=os.path.getmtime)
     for i, p in enumerate(led):
         dst = os.path.join(Q5, f"{a.tag}.ledger{'' if i == 0 else '.' + str(i)}.csv.gz")
@@ -5816,6 +7204,114 @@ def cmd_cell(a):
             f.write(f"{time.strftime('%F %T')} ERROR {a.tag} {a.test} builds={a.builds} model={os.path.basename(a.model)} run.py exit={rc}\n" + "".join(e + "\n" for e in errs))
         return 1
     return 0
+def cmd_hotmapmat(a):
+    """Reads a --moe dynhot store (<state dir>/hotmap/<model>.hotmap) and prints, for its records in the order the requests were stored, the key cosine of each
+    pooling (mean, max) and the expert overlap of every pair: overlap = per layer the share of its uses each expert got, the smaller of the two shares summed
+    over the experts, averaged over the layers either request used (1 = the same experts used alike); shared hot = of the experts used above their layer's
+    mean by the row's request, the part the column's request also used above its mean. Last the correlation of each pooling's cosine with the overlap over
+    all pairs: the pooling whose key predicts the experts used better has the higher one. Records are one request each when the run used dynhot-merge=2
+    (nothing pools); --names labels them (a comma list, in storing order)."""
+    import struct
+    raw = open(a.file, "rb").read()
+    if raw[:8] != b"MOETOPC3":
+        sys.exit(f"{a.file}: not a hotmap store of this layout (MOETOPC3)")
+    e, l, x, _ = struct.unpack_from("<4I", raw, 8)
+    kb = (e + 1) // 2   # keys are 4 bits per value: q = nibble - 8, times qinv (1 / length of q); two keys per record (mean pooling, max pooling)
+    rec = 4 + 2 * (4 + kb) + 4 * l * x
+    n = (len(raw) - 24) // rec
+    keys, cnt = ([], []), []
+    for i in range(n):
+        o = 24 + i * rec + 4
+        for k in range(2):
+            qi = struct.unpack_from("<f", raw, o)[0]
+            keys[k].append([(((raw[o + 4 + j // 2] >> (4 * (j & 1))) & 15) - 8) * qi for j in range(e)])
+            o += 4 + kb
+        cnt.append([struct.unpack_from(f"<{x}I", raw, o + 4 * x * j) for j in range(l)])
+    names = ((a.names.split(",") if a.names else []) + [str(i + 1) for i in range(n)])[:n]
+    def overlap(p, q):
+        tot, layers = 0.0, 0
+        for j in range(l):
+            tp, tq = sum(p[j]), sum(q[j])
+            if tp == 0 and tq == 0:
+                continue
+            layers += 1
+            if tp and tq:
+                tot += sum(min(u / tp, v / tq) for u, v in zip(p[j], q[j]))
+        return tot / layers if layers else 0.0
+    hots = [[{k for k, u in enumerate(c[j]) if u > 0 and u * x >= sum(c[j])} for j in range(l)] for c in cnt]
+    def shared(i, k):
+        den = sum(len(s) for s in hots[i])
+        return sum(len(s & t) for s, t in zip(hots[i], hots[k])) / den if den else 0.0
+    def cos(p, q):
+        return sum(u * v for u, v in zip(p, q))
+    ov = [[overlap(cnt[i], cnt[k]) for k in range(n)] for i in range(n)]
+    mats = (("key cosine, mean pooling", [[cos(keys[0][i], keys[0][k]) for k in range(n)] for i in range(n)]),
+            ("key cosine, max pooling", [[cos(keys[1][i], keys[1][k]) for k in range(n)] for i in range(n)]),
+            ("expert overlap", ov),
+            ("shared hot experts (row's hot set also hot in column)", [[shared(i, k) for k in range(n)] for i in range(n)]))
+    for title, m in mats:
+        print(f"\n{title}")
+        print(" " * 12 + "".join(f"{nm[:7]:>8}" for nm in names))
+        for i in range(n):
+            print(f"{names[i][:11]:<12}" + "".join(f"{m[i][k]:8.2f}" for k in range(n)))
+    pairs = [(i, k) for i in range(n) for k in range(i + 1, n)]
+    def corr(m):
+        xs, ys = [m[i][k] for i, k in pairs], [ov[i][k] for i, k in pairs]
+        if len(xs) < 3:
+            return float("nan")
+        mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+        sx = sum((u - mx) ** 2 for u in xs) ** 0.5
+        sy = sum((v - my) ** 2 for v in ys) ** 0.5
+        return sum((u - mx) * (v - my) for u, v in zip(xs, ys)) / (sx * sy) if sx and sy else float("nan")
+    print(f"\ncorrelation of key cosine with expert overlap over {len(pairs)} pairs: mean pooling {corr(mats[0][1]):.2f}, max pooling {corr(mats[1][1]):.2f}")
+
+def cmd_hitlog(a):
+    """Per request of the cells whose name (runs.db campaign: build-cell-test) starts with PREFIX: the cache hit rate the server printed for that request
+    ("moe cache = on, hit X% this request"), the uploads it caused, prompt and decode speed, and the --moe dynhot lines of its prompt (nearest stored
+    request and its cosine by both poolings, distinct tokens, key and search time, experts dropped at decode start, time to store the request before it).
+    Each request leaves a copy of the server's log (bench/logs/runs/<end time>-<build>-<test>.log, the whole log of a kept server so far): the row's log
+    is the one named by its end time, and its request is the last one in it."""
+    import datetime, sqlite3
+    fork = os.path.dirname(os.path.abspath(__file__))   # runs.db and bench/logs sit beside run.py (HERE is the builds directory)
+    db = sqlite3.connect(os.path.join(fork, "runs.db"))
+    rows = db.execute("select campaign, end_ts, tps, pp, build, test from runs where campaign like ? order by rowid", (a.prefix + "%",)).fetchall()
+    if not rows:
+        sys.exit(f"no runs.db rows whose campaign starts with {a.prefix}")
+    logs = []
+    for f in glob.glob(os.path.join(fork, "bench", "logs", "runs", "*.log")):
+        m = re.match(r"(\d{4}-\d\d-\d\d_\d\d:\d\d:\d\d)-(.*)\.log$", os.path.basename(f))
+        if m:
+            logs.append((datetime.datetime.strptime(m.group(1), "%Y-%m-%d_%H:%M:%S"), m.group(2), f))
+    print(f"{'cell':<26}{'hit %':>7}{'uploads':>9}{'pp t/s':>9}{'dec t/s':>9}  dynhot (prompt: nearest stored request; decode start: experts dropped)")
+    for camp, en, tps, pp, build, test in rows:
+        te = datetime.datetime.strptime(en, "%Y-%m-%d %H:%M:%S")
+        cand = [l for l in logs if l[1] == f"{build}-{test}" and abs((l[0] - te).total_seconds()) <= 5]
+        hit = up = ""
+        dyn = []
+        if cand:
+            lines = open(min(cand, key=lambda l: abs((l[0] - te).total_seconds()))[2], errors="replace").read().split("\n")
+            ends = [i for i, l in enumerate(lines) if "this request /" in l]
+            if ends:
+                start = ends[-2] + 1 if len(ends) > 1 else 0
+                for line in lines[start:ends[-1] + 3]:
+                    m = re.search(r"hit ([\d.]+)% this request", line)
+                    if m:
+                        hit = m.group(1)
+                    m = re.search(r"moe churn = (\d+) uploads", line)
+                    if m:
+                        up = m.group(1)
+                    m = re.search(r"dynhot: prompt of (\d+) tokens \((\d+) distinct\), nearest of (\d+) stored requests at cosine ([-\d.]+) by (\w+) pooling \(([-\d.]+) by (\w+)\): (.*?) \(key ([\d.]+) ms, search ([\d.]+) ms\)", line)
+                    if m:
+                        dyn.append(f"{m.group(1)} tok ({m.group(2)} distinct), {m.group(3)} stored, cos {m.group(5)} {m.group(4)} / {m.group(7)} {m.group(6)}: {m.group(8)}, key {m.group(9)} ms search {m.group(10)} ms")
+                    m = re.search(r"dynhot: the prompt is over: (\d+) cached experts .* dropped \(([\d.]+) ms", line)
+                    if m:
+                        dyn.append(f"dropped {m.group(1)} ({m.group(2)} ms)")
+                    m = re.search(r"dynhot: request stored: best overlap with a record ([\d.]+), threshold ([\d.]+).*?: (.*?) \((\d+) records, ([\d.]+) ms\)", line)
+                    if m:
+                        dyn.append(f"stored the request before ({m.group(3)}, overlap {m.group(1)}, {m.group(5)} ms)")
+        name = camp[len(a.prefix):] if camp.startswith(a.prefix) else camp
+        print(f"{name[:25]:<26}{hit:>7}{up:>9}{(pp or 0):9.1f}{(tps or 0):9.1f}  {'; '.join(dyn)}")
+
 def cmd_stop(a):
     """Stops a running measurement chain for real: the harness (bench, regress, exp, run, quick, ctl, prompt with their flock wrappers), the servers and tools of our builds and an nsys around them, every descendant of it (the
     servers and tools it started: a killed script does not take its children with it, and a lone kill of the harness lets the parent script start the next cell),
@@ -7319,7 +8815,7 @@ def _tool_bad_runs():
         try:
             if "!!!!" in zlib.decompress(blob).decode("utf8", "replace"): bang.add((ts, b, t, m)); bang.add(md5) if md5 else None
         except Exception: pass
-    def reason(loop, uniq4, chars, key, md5=None, tps=None, faults=None, ok=None, note=None):
+    def reason(loop, uniq4, chars, key, md5=None, tps=None, faults=None, ok=None, note=None, n_gen=None, args=None):
         if str(loop) == "1": return "loop"
         if str(ok) == "0": return "failed: " + re.sub(r"\s+", " ", note or "no answer")[:90]   # out of memory, HTTP 400, a crash: no answer to judge
         try:
@@ -7328,18 +8824,27 @@ def _tool_bad_runs():
         try:
             if uniq4 not in (None, "") and float(uniq4) < 0.4 and int(float(chars or 0)) >= 300: return "nonsense (uniq4 %.2f)" % float(uniq4)
         except ValueError: pass
+        try:   # under half a character per generated token: the answer stopped printing (2026-10-28, DSpark repeat requests: ~717 characters for 4096 tokens).
+            # Only with a stored answer (rows from before answers were stored have 0 characters and no md5: unknown, not empty) and one slot (-np N > 1 counts
+            # the tokens of every slot against one slot's text)
+            np_ = re.search(r"(?:^|\s)-np\s+(\d+)", args or "")
+            if n_gen not in (None, "") and chars not in (None, "") and float(n_gen) >= 256 and int(float(chars)) * 2 < float(n_gen) \
+                    and (md5 or int(float(chars)) > 0) and not (np_ and int(np_.group(1)) > 1):
+                return "answer stopped (%d characters for %d tokens)" % (int(float(chars)), int(float(n_gen)))
+        except ValueError: pass
         return "!!!! in the answer" if key in bang or (md5 and md5 in bang) else ""
     # database
     cols = [r[1] for r in con.execute("pragma table_info(runs)")]
     bad = []
-    for r in con.execute("select rowid, ts, build, test, model, \"loop\", uniq4, out_chars, md5, tps, major_faults, ok, note from runs"):
-        why = reason(r[5], r[6], r[7], (r[1], r[2], r[3], r[4]), r[8], r[9], r[10], r[11], r[12])
+    for r in con.execute("select rowid, ts, build, test, model, \"loop\", uniq4, out_chars, md5, tps, major_faults, ok, note, n_gen, args from runs"):
+        why = reason(r[5], r[6], r[7], (r[1], r[2], r[3], r[4]), r[8], r[9], r[10], r[11], r[12], r[13], r[14])
         if why: bad.append((r[0], why))
     # csv
     with open(csvp, newline="") as f: rd = csv.DictReader(f); head = rd.fieldnames; rows = list(rd)
     keep, move = [], []
     for r in rows:
-        why = reason(r.get("loop"), r.get("uniq4"), r.get("out_chars"), (r.get("ts"), r.get("build"), r.get("test"), r.get("model")), r.get("md5"), r.get("tps"), r.get("major_faults"), r.get("ok"), r.get("note"))
+        why = reason(r.get("loop"), r.get("uniq4"), r.get("out_chars"), (r.get("ts"), r.get("build"), r.get("test"), r.get("model")), r.get("md5"), r.get("tps"), r.get("major_faults"), r.get("ok"), r.get("note"),
+                     r.get("n_gen"), r.get("args"))
         (move if why else keep).append(dict(r, reason=why) if why else r)
     from collections import Counter
     print(f"runs.db: {len(bad)} of {con.execute('select count(*) from runs').fetchone()[0]} runs corrupt:", dict(Counter(w.split(" (")[0].split(":")[0] for _, w in bad)))
@@ -7391,7 +8896,7 @@ def ppl_chunks_store(start_ts, build, model, test, log):
     except sqlite3.Error as e: print(f"ppl_chunks: {e}", flush=True)
 
 
-PPL_VARIANTS = {"default": "", "one": "moe:dense-split=0 moe:prefill-split=0", "dense": "moe:dense-split=1 moe:split-experts=0 moe:prefill-split=1", "split": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1", "f16": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1 moe:split-f16=1", "f32": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1 moe:split-f16=0"}
+PPL_VARIANTS = {"default": "", "nogate": "moe:sparse-gate=0", "one": "moe:dense-split=0 moe:prefill-split=0", "dense": "moe:dense-split=1 moe:split-experts=0 moe:prefill-split=1", "split": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1", "f16": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1 moe:split-f16=1", "f32": "moe:dense-split=1 moe:split-experts=1 moe:prefill-split=1 moe:split-f16=0"}
 
 
 def _tool_ppl():
@@ -7403,7 +8908,8 @@ def _tool_ppl():
     ap.add_argument("-b", "--build", default="latest")
     ap.add_argument("--variants", default="default,one,dense,f16,f32")
     ap.add_argument("--chunks", type=int, default=12)
-    ap.add_argument("--test", default="pplb", choices=["pplb", "pplc", "ppl"], help="pplb: 1024-token passes (the prompt path, default); ppl: one token per call (the decode path: cached experts on the GPU, misses on the CPU; slow, use --chunks 2 and --variants default); pplc: 1024 tokens in 256-token micro-batches")
+    ap.add_argument("--no-stock", action="store_true", help="skip the official stock binary (long-context checks: stock at 32k cells takes ~50 min on GLM)")
+    ap.add_argument("--test", default="pplb", choices=["pplb", "pplc", "ppl", "ppll"], help="pplb: 1024-token passes (the prompt path, default); ppl: one token per call (the decode path: cached experts on the GPU, misses on the CPU; slow, use --chunks 2 and --variants default); pplc: 1024 tokens in 256-token micro-batches")
     ap.add_argument("-nrt", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip variants already stored in the last DAYS days (default 1 = today)")
     ap.add_argument("-n", "--dry", action="store_true")
     ap.add_argument("--table", action="store_true", help="only print the README table")
@@ -7426,7 +8932,7 @@ def _tool_ppl():
         except sqlite3.Error: return False
     for m in models:
         nosplit = os.path.basename(m).startswith(("Qwen3.8-27B",))   # plain dense models have no experts and no token-range graphs: no two-card path, the split variants would only repeat the one-card run
-        jobs = [(stock, "default", "")] + [(ours, v, PPL_VARIANTS[v]) for v in a.variants.split(",") if not (nosplit and v not in ("default", "one"))]
+        jobs = ([] if a.no_stock else [(stock, "default", "")]) + [(ours, v, PPL_VARIANTS[v]) for v in a.variants.split(",") if not (nosplit and v not in ("default", "one"))]
         for build, v, words in jobs:
             if done(m, build, v): print(f"skip {os.path.basename(m)} {build} {v}: stored in the last {a.nrt} day(s)"); continue
             cmd = [sys.executable, os.path.abspath(__file__), "bench", "--models", m, "--builds", build, "-t", a.test, "-n", "1", "--campaign", "ppl-pair", "--variants", v] + (["--variant", f"{v}={words}"] if words else [])
@@ -7544,6 +9050,8 @@ TOOLS = {
 if __name__ == "__main__":
     import atexit
     atexit.register(_sync_runs_db)
+    os.environ.setdefault("RUNPY_REPRO", "python3 fork/run.py " + shlex.join(sys.argv[1:]))   # rows record how they were started; a child run.py keeps the parent's line
+    if len(sys.argv) > 1 and sys.argv[1] == "jobs": sys.argv[1] = "run"   # `run.py jobs` is the name of the old `run.py jobs` (both work; the code keeps the old subcommand key)
     if len(sys.argv) > 1 and sys.argv[1] in TOOLS:   # a merged tool: it keeps its own argument parser
         _tool = sys.argv[1]
         sys.argv = [f"run.py {_tool}"] + sys.argv[2:]
@@ -7554,10 +9062,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog="tools (each has its own --help): " + ", ".join(sorted(TOOLS)))
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "pplb", "pplc", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf6k", "pf8k", "pf10k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
-    r = sp.add_parser("run", help="measured runs of one test for BUILD...")
+    TESTS = ["ppl", "ppl3", "pplb", "pplc", "ppll", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf5k", "pf6k", "pf7k", "pf8k", "pf9k", "pf10k", "pf11k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
+    r = sp.add_parser("run", aliases=["jobs"], help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
-    r.add_argument("-t", "--test", default="ppl", choices=TESTS + list(ALIASES))
+    r.add_argument("-t", "--test", default="ppl", type=test_name, choices=TestChoices(TESTS + list(ALIASES)))
     r.add_argument("-n", type=int, default=1)
     r.add_argument("-e", "--env", action="append", default=[])
     r.add_argument("--note")
@@ -7573,7 +9081,7 @@ if __name__ == "__main__":
     b.add_argument("--builds", required=True, help="comma separated build dirs; names starting with stock run the default variant only")
     b.add_argument("--variants", help="comma separated variant names (default: all of default,cache0,atoff and any --variant)")
     b.add_argument("--variant", action="append", default=[], help="NAME=ARGS: add or override a variant, e.g. gate3='--moe upload-wait=3'")
-    b.add_argument("-t", "--test", default="t100", choices=["ppl", "ppl3", "pplb", "pplc", "t100", "tetris"] + TESTS[6:] + list(ALIASES) + list(config.user_tests()))
+    b.add_argument("-t", "--test", default="t100", type=test_name, choices=TestChoices(["ppl", "ppl3", "pplb", "pplc", "ppll", "t100", "tetris"] + TESTS[6:] + list(ALIASES) + list(config.user_tests())))
     b.add_argument("--stock-variant", action="append", default=[], help="NAME=ARGS: stock builds also run this placement (e.g. tuned='--n-cpu-moe 30'): the hand-tuned baseline")
     b.add_argument("--rep-from", type=int, default=0, help="first repetition to run (0-based): -n 2 --rep-from 1 repeats only the second repetition, e.g. one that failed")
     b.add_argument("-n", type=int, help="measured runs per cell, interleaved ABBA (default 3 for fix/fix12k, else 2); the first run of a cell is preceded by a discarded one")
@@ -7613,6 +9121,8 @@ if __name__ == "__main__":
     m.add_argument("--ssh", help="ssh alias or user@host, or a whole ssh command line in quotes (-p PORT user@host ...): then ~/.ssh/config is written for the name")
     m.add_argument("--root", help="directory holding the build dirs on that machine")
     m.add_argument("--os", default="linux")
+    pu = sp.add_parser("publish", help="push the tree's branch to the fork (neurall) + runs.db; with --name the tag and the GitHub release from the REL_OUT archives")
+    pu.add_argument("--tree", default="/p/bw/wt-rel"); pu.add_argument("--name"); pu.add_argument("--notes"); pu.add_argument("--replace", help="old release tag to delete first")
     dp = sp.add_parser("devpub", help="publish a dev build as the prerelease dev-BUILD on the fork (not latest) so remote machines download it instead of receiving a push"); dp.add_argument("build")
     nm = sp.add_parser("numa", help="NUMA map and node x node RAM read-rate table of a machine (-pc ID for a remote one), no model needed")
     nm.add_argument("-pc", "--machine", default="pc1")
@@ -7679,6 +9189,7 @@ if __name__ == "__main__":
     bd.add_argument("--machine", default="pc1", choices=["pc1", "pc3"])
     bd.add_argument("--w10-base", default="6846d4803", help="a commit the W10 repository has: the bundle carries only what is newer")
     bd.add_argument("--no-regress", action="store_true", help="skip the regress cell after the build")
+    bd.add_argument("--targets", nargs="+", default=[], help="dev build: more cmake targets beside server, cli and perplexity (a test-* target turns the tests on), e.g. --targets test-scratch-fork")
     qk = sp.add_parser("quick", help="the short benchmark for any machine: --fork build against --stock, short chat answers and a 12k-token prompt, one markdown table (nothing is recorded unless --record)")
     qk.add_argument("--model", required=True, help="the .gguf file (the first part of a split model)")
     qk.add_argument("--fork", required=True, help="directory with the fork's llama-server")
@@ -7692,6 +9203,10 @@ if __name__ == "__main__":
     hp = sp.add_parser("hugepool", help="the 1 GiB huge-page pool for the pinned-weights cache: mount [SIZE|MODEL...] | unmount | status (was resident_pin.sh)")
     hp.add_argument("action", choices=["mount", "unmount", "status"])
     hp.add_argument("what", nargs="*", help="mount: a size like 100g or model file(s); nothing = the most the machine can spare")
+    hl = sp.add_parser("hitlog", help="per request: cache hit rate, uploads, speeds and the --moe dynhot lines, for the cells whose runs.db name starts with PREFIX")
+    hl.add_argument("prefix", help="the start of the runs.db campaign, e.g. dynhot_two_pool_keys- (build-cell-test)")
+    hm = sp.add_parser("hotmapmat", help="print key cosine and expert overlap between the requests in a --moe dynhot store (hotmap/<model>.hotmap)")
+    hm.add_argument("file"); hm.add_argument("--names", help="comma list of labels in storing order")
     st = sp.add_parser("stop", help="stop the running measurement chain properly: parent scripts, harness, all children; then wait for free GPU memory and restore the power limits")
     st.add_argument("tasks", nargs="*", type=int, help="only these tasks, by the numbers --dry lists (1 = started first); none = all")
     st.add_argument("--last", type=int, default=0, metavar="N", help="only the N most recently started tasks")
@@ -7716,6 +9231,7 @@ if __name__ == "__main__":
     ce.add_argument("--hog-gpu", help="GiB left free on every GPU (the server takes the rest at start: --moe sim-vram=MiB), simulates a smaller card")
     ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe sim-ram=MiB)")
     ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
+    ce.add_argument("--nothink", action="store_const", const=True, help="chat tests: reasoning off (enable_thinking=false)")
     ce.add_argument("--lead", type=int, help="a request of about N prompt tokens first, same server")
     ce.add_argument("--prompt", help="prompt text or @file instead of the test's own")
     ce.add_argument("--tokens", type=int, help="generated tokens instead of the test's own")
@@ -7738,13 +9254,27 @@ if __name__ == "__main__":
     mf.add_argument("--days", type=float, default=7.0, help="look at runs of the last N days")
     mf.add_argument("--tol", type=float, default=0.05, help="a choice counts as wrong when the other mode was faster by more than this share")
     mf.add_argument("--model", help="part of the model name")
+    sx = sp.add_parser("status", help="the running list in the -nrt table: done today, running now, queued next (with the expected time), the queue daemon's waiting tasks; nothing is started")
+    sx.add_argument("list", nargs="?", help="a list name (fork/runs/NAME.csv); none = the list that runs now, else the last one")
+    sx.add_argument("rest", nargs=argparse.REMAINDER, help="run options of the list (-b BUILD ...)")
+    op = sp.add_parser("onepass", help="the best one-pass input prompt of every model from the runs of `run onepass -b BUILD` (pass count and prompt speed per size); --write stores it in models.ini")
+    op.add_argument("-b", "--build", default="latest"); op.add_argument("--write", action="store_true")
+    cb = sp.add_parser("calib", help="find every model's biggest one-pass input prompt by halving from 12k, then bisecting and store best_prompt.<N>gpu in models.ini")
+    cb.add_argument("-b", "--build", default="latest"); cb.add_argument("-ng", "--gpus", dest="n_gpus", type=int); cb.add_argument("-m", "--models", help="comma list of model keys of runs/onepass.csv (default all)")
+    cb.add_argument("--dry", action="store_true"); cb.add_argument("--nowrite", action="store_true"); cb.add_argument("--ceil", action="store_true", help="only read the engine's one-pass ceiling (one 2k probe) and store it as maxpp")
+    cb.add_argument("-nm", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="the probes pin at most GB of the model (as run -nm): the ceiling depends on the RAM beside the pinned weights")
+    cb.add_argument("-a", dest="cell_args", default="", metavar="ARGS", help="extra cell arguments for the probes (as run -a)")
+    ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
+    ns.add_argument("rep", help="the .nsys-rep file")
+    ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
+    ns.add_argument("--gaps", type=int, default=0, help="list the N longest compute-stream waits per card with the kernels around them")
     if len(sys.argv) > 1 and (sys.argv[1] in ("-h", "--help") or sys.argv[1] == "run" and len(sys.argv) > 2 and sys.argv[2] in ("-h", "--help")): run_list_help()
-    if len(sys.argv) == 2 and sys.argv[1] == "run": sys.exit(run_list_detached(None, []))   # `run run` alone: attach to the detached run, if any
+    if len(sys.argv) == 2 and sys.argv[1] == "run": sys.exit(run_list_detached(None, []))   # `jobs` alone: attach to the detached run, if any
     if len(sys.argv) > 3 and sys.argv[1] == "run" and "-c" in sys.argv[2:-1]:   # `run -c gainers ...` = `run gainers ...`: -c names the campaign list
         i = sys.argv.index("-c", 2); sys.argv[2:i + 2] = [sys.argv[i + 1]] + sys.argv[2:i]
     if len(sys.argv) > 2 and sys.argv[1] == "run" and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", sys.argv[2] + ".csv")):
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
-    {"run": cmd_run, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells,
+    {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)

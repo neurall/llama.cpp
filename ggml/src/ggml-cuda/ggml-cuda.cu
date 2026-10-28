@@ -237,52 +237,36 @@ static cudaError_t ggml_cuda_device_malloc(void ** ptr, size_t size, int device)
 }
 
 #if defined(GGML_USE_HIP)
-static int ggml_cuda_parse_id(char devName[]) {
+static int ggml_cuda_parse_id(const char * devName) {
     // A list of possible Target IDs can be found under the rocclr/clr repo in device.cpp
     // these values are not stable so this is susceptible to breakage
     // https://github.com/ROCm/clr/blob/amd-staging/rocclr/device/device.cpp
-    int archMajor = 0x0;
-    int archMinor = 0x0;
-    int archNum = GGML_CUDA_CC_OFFSET_AMD;
-    int archLen = strlen(devName);
-    char archName[archLen + 1];
+    // Extract the base architecture model ("gfx908:sramecc+:xnack-" -> "908")
+    std::string archName = devName;
+    archName.erase(0, 3);
+    archName = archName.substr(0, archName.find(':'));
 
-    // strip leading 'gfx' while copying into our buffer
-    if (archLen > 3) {
-        strcpy(archName, &devName[3]);
-        archLen -= 3;
-    }
+    const auto hex = [](const std::string & s) { return (int) strtoul(s.c_str(), nullptr, 16); };
 
-    // trim trailing :xnack- or :sramecc- statuses
-    archLen = strcspn(archName, ":");
-    archName[archLen] = '\0';
+    int cc = 0;
 
     // tease out the version information
-    if (archLen > 8) {
+    if (archName.size() > 8) {
         // versions labeled generic use '-' as delimiter
-        // strip the trailing "-generic" then iterate through what remains
-        if ((strstr(archName, "-generic"))) {
-            archName[archLen - 8] = '\0';
-            char * pch;
-            if ((pch = strtok(archName, "-"))) {
-                archMajor = (int)strtoul(pch, 0, 16);
-                if ((pch = strtok(NULL, "-"))) {
-                    archMinor = 0x10 * (int)strtoul(pch, 0, 16);
-                }
+        if (archName.compare(archName.size() - 8, 8, "-generic") == 0) {
+            archName.resize(archName.size() - 8);
+            const size_t sep = archName.find('-');
+            cc = 0x100 * hex(archName.substr(0, sep));
+            if (sep != std::string::npos) {
+                cc += 0x10 * hex(archName.substr(sep + 1));
             }
         }
-    } else if (archLen >= 3) {
-        // last two digits should be the minor * 0x10 + stepping
-        archMinor = (int)strtoul(&archName[archLen - 2], 0, 16);
-        archName[archLen - 2] = '\0';
-
-        // only the major version remains
-        archMajor = (int)strtoul(archName, 0, 16);
+    } else if (archName.size() >= 3) {
+        // ordinary IDs are the version in hex
+        cc = hex(archName);
     }
-    archNum += archMajor * 0x100;
-    archNum += archMinor;
 
-    return archNum;
+    return GGML_CUDA_CC_OFFSET_AMD + cc;
 }
 #endif // defined(GGML_USE_HIP)
 
@@ -4163,14 +4147,42 @@ static const void * ggml_cuda_graph_get_key(ggml_cgraph * cgraph) {
     return cgraph->nodes[0];
 }
 
+// fork: the scratch region (ggml_backend_cuda_scratch_fork) a CUDA graph was captured with. A captured kernel keeps the scratch address it got during the
+// capture, and the expert pool moves the region whenever a graph's lend changes (the region starts where that graph's tensors end). A replay after such a move
+// wrote its temporaries at the old place, over whatever lay there now: DeepSeek 4.1 with a DSpark draft broke every repeat request ~256 tokens in, at the step
+// whose lend grew by one block (2026-10-28; fine with GGML_CUDA_DISABLE_GRAPHS=1). Neither test below saw it: a reused ggml graph (same uid) skips all checks,
+// and the node properties hold no scratch address. The region each CUDA graph was captured with is kept here (no header change) and a replay with another
+// region captures again; the uid fast path stays when the region is the same.
+struct ggml_cuda_graph_scratch_fork { const char * base = nullptr; size_t cap = 0; };
+static std::mutex g_cuda_graph_scratch_mtx;
+static std::unordered_map<const ggml_cuda_graph *, ggml_cuda_graph_scratch_fork> g_cuda_graph_scratch;
+static ggml_cuda_graph_scratch_fork ggml_cuda_scratch_now_fork(const ggml_backend_cuda_context * ctx) {
+    const ggml_cuda_scratch_region & s = g_cuda_scratch[ctx->device];
+    if (s.base == nullptr || (s.owner != nullptr && s.owner != ctx)) { return {}; }   // this context's pool takes nothing from the region now
+    return { s.base, s.cap };
+}
+
 static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph) {
     bool res = false;
 
     const void * graph_key = ggml_cuda_graph_get_key(cgraph);
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
 
+    bool scratch_moved = false;
+    {
+        const ggml_cuda_graph_scratch_fork now = ggml_cuda_scratch_now_fork(cuda_ctx);
+        std::lock_guard<std::mutex> lock(g_cuda_graph_scratch_mtx);
+        ggml_cuda_graph_scratch_fork & was = g_cuda_graph_scratch[graph];
+        scratch_moved = was.base != now.base || was.cap != now.cap;
+        if (scratch_moved && graph->uid != 0 && getenv("GGML_CUDA_SCRATCH_DEBUG")) {
+            GGML_LOG_WARN("%s: CUDA%d graph %p captured with scratch %p + %zu, region now %p + %zu: captured again\n", __func__, cuda_ctx->device,
+                    (const void *) graph, (const void *) was.base, was.cap, (const void *) now.base, now.cap);
+        }
+        was = now;   // a moved region makes this call return true: the capture that follows takes the region as it is now
+    }
+
     if (cgraph->uid != 0 &&
-        cgraph->uid == graph->uid) {
+        cgraph->uid == graph->uid && !scratch_moved) {
         if (ggml_cuda_graph_debug_enabled()) {
             GGML_LOG_DEBUG("CUDA Graph id %zu reused\n", cgraph->uid);
         }
@@ -4184,6 +4196,9 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
     if ((int)graph->node_props.size() != cgraph->n_nodes) {
         res = true;
         graph->node_props.resize(cgraph->n_nodes);
+    }
+    if (scratch_moved) {
+        res = true;   // fork: see ggml_cuda_graph_scratch_fork
     }
 
     for (int i = 0; i < cgraph->n_nodes; i++) {
@@ -5296,6 +5311,11 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
 
         // the fused softcap kernel is F32 only
         if (scale->src[0]->type != GGML_TYPE_F32 || scale->type != GGML_TYPE_F32) {
+            return false;
+        }
+
+        // TODO: make the fused softcap kernel stride aware, it reads src and writes dst as dense
+        if (!ggml_is_contiguous(scale->src[0]) || !ggml_is_contiguous(scale2)) {
             return false;
         }
 
@@ -7624,7 +7644,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_LOG:
             return true;
         case GGML_OP_SCALE:
-            return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_BF16) && op->type == op->src[0]->type;
+            return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_BF16) && op->type == op->src[0]->type &&
+                   ggml_is_contiguous_rows(op->src[0]);
         case GGML_OP_CLAMP:
             return ggml_is_contiguous_rows(op->src[0]);
         case GGML_OP_ADD:

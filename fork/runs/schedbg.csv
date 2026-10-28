@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+q38dbg-i,qwen38,1,pf2k,1,-v,--env GGML_SCHED_DEBUG=2

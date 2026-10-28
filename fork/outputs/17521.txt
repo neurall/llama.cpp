@@ -1,0 +1,29 @@
+run 17521 | numa3 | edit4c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 154.38 t/s | prompt 5623.6 t/s | 598 tokens | args: -np 1 -ub 1024 | power 280+280 W | 2026-10-21 17:24:19
+
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - The user provided a C++ file: `common/json-schema-to-grammar.cpp`
+   - The request is: "Delete the code in this file that is never used."
+   - I need to identify unused code/functions/variables in the provided snippet and remove them.
+
+2.  **Scan the Code for Unused Elements:**
+   Let's go through the code systematically:
+   - Includes: `<algorithm>`, `<limits>`, `<map>`, `<regex>`, `<sstream>`, `<string>`, `<unordered_map>`, `<unordered_set>`, `<vector>` - all seem used.
+   - `using json = common_json;` - used? Not explicitly in the snippet, but likely used elsewhere. I'll keep it.
+   - `build_repetition` - used? Likely used in grammar generation.
+   - `build_min_max_int` - used? Likely used for number ranges.
+   - `SPACE_RULE` - used? Likely used.
+   - `BuiltinRule` struct - used? Yes, in maps.
+   - `PRIMITIVE_RULES` - used? Yes.
+   - `STRING_FORMAT_RULES` - used? Yes.
+   - `is_reserved_name` - used? Yes.
+   - `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - used? `GRAMMAR_LITERAL_ESCAPE_RE` is used in `format_literal`. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` is defined but *never used* in the provided code. I should check if it's used elsewhere or just dead.
+   - `GRAMMAR_LITERAL_ESCAPES` - used in `format_literal`.
+   - `MAX_PATTERN_DEPTH` - defined but *never used* in the snippet.
+   - `NON_LITERAL_SET`, `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - defined but *never used* in the snippet.
+   - `replacePattern` - used in `format_literal`.
+   - `format_literal` - used.
+   - `gbnf_format_literal` - used? It's just a wrapper for `format_literal`. Might be used elsewhere, but I'll keep it unless it's clearly dead. Actually, it's just `static std::string gbnf_format_literal(const std::string & literal) { return format_literal(literal); };` - it's a direct alias. Could be dead, but I'll leave it or note it. Wait, the prompt says "Delete the code in this file that is never used." I should be careful. I'll stick to clearly unused variables/functions.
+   - `gbnf_escape_length` - declared but the body is empty (`static size_t gbnf_escape_length(const std::string &
+---

@@ -1,0 +1,81 @@
+run 17215 | b13600 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 11.63 t/s | prompt 2.0 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-20 14:49:57
+
+The user wants the smallest HTML Tetris game. This is a classic code-golf style challenge. But I also care about quality — the user explicitly asked for "smallest", so the priority is minimal code size. However, I still want it to be a genuinely playable, decent-looking Tetris, not a broken mess. Let me think about what "smallest" means here: a single self-contained HTML file with the most compact code possible while remaining fully functional.
+
+Let me design a genuinely tiny but complete Tetris:
+
+Requirements for a real Tetris:
+- 10×20 grid
+- 7 tetromino shapes with rotation
+- Movement left/right, soft drop, hard drop ideally
+- Line clearing + scoring
+- Game over
+- Collision detection
+- Next piece preview (optional but nice)
+- Speed increase (optional)
+
+The classic approach for ultra-compact Tetris is canvas-based with a compact piece encoding. Let me write it carefully and golf it while keeping it readable-ish... Actually the user asked for smallest, so I should golf it hard but keep it working. I'll aim for something like ~500-800 bytes of actual code. Let me try to write a really compact one.
+
+A well-known compact encoding: store each tetromino as a 4×4 (or use rotation via matrix math). A very compact trick: encode pieces as binary numbers in a 16-bit integer representing a 4×4 grid, and rotate by bit manipulation. Or store pieces as arrays of coordinates.
+
+Compact approach used in famous tiny Tetris implementations (like the ~140-byte ones) uses clever tricks, but those sacrifice readability and features. I want a balance: small (maybe under 1KB of JS) but fully playable with score, levels, next piece, hard drop, pause maybe.
+
+Let me write my own compact version:
+
+```html
+<!doctype html><html><head><meta charset=utf-8><title>Tetris</title><style>...</style></head><body><canvas id=c></canvas><script>...</script></body></html>
+```
+
+Core data:
+- Board: 20 rows × 10 cols, stored as array of arrays, or a single array of 200 cells.
+- Pieces: 7 shapes. Compact encoding: each piece as a 2D binary matrix (4×4 or 3×3), rotate by transposing+reversing.
+
+A very compact piece representation: use strings. E.g.:
+
+```js
+P=[[0x0F00,...]] // 16-bit rows
+```
+
+Alternative classic trick: define pieces as arrays of 4 rotation states each as [x,y] pairs — verbose.
+
+Better compact trick: define each piece once as a matrix, rotate with a function:
+
+```js
+R=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse())
+```
+
+That rotates clockwise. Then piece = current matrix; rotation applies R repeatedly.
+
+Define shapes compactly as binary strings or arrays:
+
+```js
+S=[[1,1,1,1],[[1,1],[1,1]],...]
+```
+
+Hmm, let me define:
+
+```js
+F=[ // shapes
+ [[1,1,1,1]],           // I (1×4)
+ [[1,1],[1,1]],         // O
+ [[0,1,0],[1,1,1]],     // T
+ [[1,0,0],[1,1,1]],     // J
+ [[0,0,1],[1,1,1]],     // L
+ [[0,1,1],[1,1,0]],     // S
+ [[1,1,0],[0,1,1]]      // Z
+]
+```
+
+Rotation function R works on any NxM matrix. 
+
+Colors: 7 colors. Could use a palette array indexed by piece id. To keep small: `c=['#0af','#ff0','#a0f','#00f','#f80','#0f0','#f00']` — wait, I said I dislike default blue as primary but these are game piece colors, which is fine and expected in Tetris; classic Tetris colors are part of the game's identity. That's not a "default blue scheme" for UI — it's game content. Fine.
+
+Actually for smallest code, I could draw all pieces in one color, but colored pieces are much better UX and cost ~60 bytes. Keep colors.
+
+Game loop with setInterval or requestAnimationFrame. Gravity: move down every N ms, decreasing with score/lines.
+
+Collision:
+
+```js
+function C(m,x,y){for(let r=0;r<m.length;r++)for(let c=0;c<m[r].length;c++)if(m[r][c]&&(y+r>=20||x+c<0||x+c>=10||B[y+r][x
+---

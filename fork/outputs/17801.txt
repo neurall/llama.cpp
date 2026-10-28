@@ -1,0 +1,40 @@
+run 17801 | b13600 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.97 t/s | prompt 90.8 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-10-22 15:52:45
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact single-file Tetris. But I don't want to ship a bare terminal of code — even a tiny game deserves to feel crafted. I'll keep the code genuinely compact (that's the ask) but wrap it in a beautifully designed page: a distinctive arcade/CRT-inspired design, a strong type pairing, living details (level-up flash, line-clear particles, ghost piece, next queue, hold, score), keyboard + touch controls.
+
+Balance: "smallest" is the explicit ask. So the game code itself should be tight — a single file, minimal, no dependencies. But I can still make it feel alive without bloating it into thousands of lines. I'll aim for a compact but complete implementation (~150-250 lines total including CSS), which is reasonable "smallest" while still polished.
+
+Let me think about the design identity: Arcade cabinet / CRT terminal aesthetic. Rather than the near-black-plus-single-neon look that every minimal game page reaches for, I'll go for a warm arcade palette — deep indigo-navy base with multiple tetromino accent colors (cyan, magenta, yellow, green, red, blue, orange) — that's inherently multi-color, which suits Tetris exactly. Add a subtle scanline/grid ambient background, a paper-ish or CRT vibe.
+
+Typography: display face — something distinctive. Available Google Fonts: "Chakra Petch", "Bungee", "Silkscreen", "Press Start 2P" (pixel — very characteristic of Tetris), paired with a readable body face like "Space Grotesk" or "IBM Plex Sans". Press Start 2P is a bit cliché but very characteristic. Maybe use "Bungee" for display and "Space Grotesk" for body? Or "Silkscreen" for numerals. Let me pick: display = "Bungee" (chunky arcade signage), body = "Space Grotesk". Hmm, for a Tetris game, pixel font is characteristic. Let me use "Silkscreen" for the HUD numerals and "Bungee" for the title. Body: "Space Grotesk". Three faces is fine — display + numerals + body.
+
+Actually to keep it "smallest", loading 3 Google fonts is heavy. But the page is a wrapper around the game; it's fine. Let me do 2: "Bungee" (display) + "Space Grotesk" (body), and use tabular numerals from Space Grotesk for HUD. Hmm, but pixel numerals feel better. I'll include "Silkscreen" too — it's small.
+
+Layout: rather than a generic centered title block, I'll open with the thing that most defines Tetris — the playfield itself, immediately. A cabinet layout: left rail with title/vertical marquee, center playfield canvas, right rail with score/level/lines/next/hold, bottom control legend. Like an arcade cabinet front.
+
+Implementation approach: Canvas for the board (compact, fast). Use a single canvas for the board, plus small canvases for next/hold? Or draw next/hold as DOM grids. Canvas is smaller code. I'll use one main canvas and two mini canvases.
+
+Let me write compact Tetris logic:
+
+```js
+const W=10,H=20,S=22; // cell size
+```
+
+Board as Uint8Array or array of strings.
+
+Tetromino definitions using rotation via matrix rotation — compact:
+
+```js
+const P={I:[[0,1],[2,1],[1,1],[1,2]], ...}
+```
+
+Simplest compact approach: define shapes as arrays of coordinate offsets, rotate around pivot.
+
+Classic compact approach:
+
+```js
+const S='IJLOSTZ';
+const F={I:[1,1,1,1],J:[1,0,0,1,1,1],L:[0,0,1,1,1,1],O:[1,1,1,1],S:[0,1,1,1,1,0],T:[0,1,0,1,1,1],Z:[1,1,0,0,1,1]};
+```
+Each as a square matrix (I: 4x4, O: 2x2, others 3x3). Rotation: transpose+reverse. Collision check with matrix. That
+---

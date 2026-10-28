@@ -1,0 +1,61 @@
+run 20105 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 21.29 t/s | prompt 10.2 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 20:44:40
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 300x600? Board 10x20, cell 30. Canvas width 300 height 600. Draw grid. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Option: Use 7 tetrominoes as arrays of 4 cells in 4x4 matrix. Rotation function. Need collision.
+
+Let's craft robust code.
+
+HTML:
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Tetris</title>
+<style>
+body{margin:0;background:#111;color:#eee;font:14px monospace;display:flex;justify-content:center;align-items:center;height:100vh}
+canvas{background:#000;border:1px solid #444}
+#hud{position:fixed;top:10px;left:10px}
+</style>
+</head>
+<body>
+<div id="hud">Score: <span id="score">0</span> | Lines: <span id="lines">0</span></div>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+...
+</script>
+</body>
+</html>
+
+Need implement.
+
+Board: const W=10,H=20,S=30; canvas c; ctx.
+
+board = Array(H).fill().map(()=>Array(W).fill(0)); maybe store color index or 0. Use colors array.
+
+Tetromino definitions. Need shapes. Could use matrices:
+const P=[
+ [[1,1,1,1]], // I
+ [[1,1],[1,1]], // O
+ [[0,1,0],[1,1,1]], // T
+ [[1,0,0],[1,1,1]], // J? Actually J: [[1,0,0],[1,1,1]]? Let's define.
+ [[0,0,1],[1,1,1]], // L
+ [[0,1,1],[1,1,0]], // S
+ [[1,1,0],[0,1,1]] // Z
+];
+Need rotation. For matrix, rotate clockwise: new matrix dimensions swapped: new[r][c] = old[rows-1-c][r]? Let's derive. For old rows R, cols C. Rotate clockwise: new rows C, cols R. new[i][j] = old[R-1-j][i]. Yes.
+
+Need spawn piece at top. Piece object {shape, x, y, color}. x,y top-left of matrix. Spawn x = Math.floor((W - shape[0].length)/2), y=0? For I shape width 4, x=3. For O width2 x=4. For T width3 x=3? Actually floor((10-3)/2)=3. Good. y=0. But if shape has empty top row? T matrix [[0,1,0],[1,1,1]] top row has cell at y=0. Fine. Some shapes top row empty? J [[1,0,0],[1,1,1]] top row has cell. L [[0,0,1],[1,1,1]] top row has cell. S [[0,1,1],[1,1,0]] top row has cell. Z [[1,1,0],[0,1,1]] top row has cell. Good.
+
+Collision: for each cell in shape where 1, board[y+r][x+c] if out of bounds or occupied. Need allow y negative? Spawn y=0. Rotation may extend? We can check.
+
+Need game loop. Use requestAnimationFrame with time. Gravity every maybe 500ms. Need handle keydown. Controls: left/right, down soft drop, up rotate, space hard drop. Need prevent default for arrows/space.
+
+Need line clearing. When piece
+---

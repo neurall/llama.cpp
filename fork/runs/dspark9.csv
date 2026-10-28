@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+ds-1k-luce-d1,ds,2,1k1k,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,
+ds-1k-luce-d2,ds,2,1k1k,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe spec-depth=2,
+ds-1k-luce-d3,ds,2,1k1k,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 3 --moe spec-depth=3,

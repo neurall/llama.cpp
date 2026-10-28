@@ -1,0 +1,38 @@
+run 19379 | rc5 | pf16k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 147.58 t/s | prompt 6829.2 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-25 08:51:48
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants a code review of two provided C++ source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. The code appears to be from a project like `llama.cpp` (based on naming conventions, `common_chat_schema`, `ggml`, `llama.cpp` references, etc.).
+
+2.  **Analyze File 1: `common/json-schema-to-grammar.cpp`**
+    *   **Purpose:** Converts JSON schemas to a grammar format (likely for LLM context/grammar generation).
+    *   **Key Components:**
+        *   `build_repetition`: Handles repetition rules (min/max items, separators).
+        *   `build_min_max_int`: Generates regex-like grammar for integer ranges. Complex logic for handling digits, ranges, negatives.
+        *   `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`: Predefined grammar rules for JSON types.
+        *   `common_chat_schema_converter`: Main class that traverses a JSON schema and builds grammar rules.
+        *   `visit`: Dispatches based on schema kind (ref, any_of, all_of, const, enum, object, tuple, array, string, integer, number, boolean, null, any).
+        *   `_pattern_to_rule`: Converts regex patterns to grammar rules. Handles anchors, groups, character classes, quantifiers, literals.
+        *   `_not_strings`: Generates a grammar that matches strings *not* in a given list (using a trie).
+        *   `_build_object_rule`: Handles JSON object properties, required/optional, additional properties.
+        *   Helper functions: `format_literal`, `gbnf_escape_length`, `replacePattern`, etc.
+    *   **Potential Issues/Improvements:**
+        *   *Complexity/Readability:* `build_min_max_int` is extremely complex and hard to follow. It handles digit ranges, prefixes, and recursive calls. Could be simplified or documented better.
+        *   *Regex Handling:* `_pattern_to_rule` manually parses regex. This is fragile. Regex engines are complex. The manual parser might miss edge cases (e.g., lookarounds, named groups, backreferences, Unicode escapes). It throws `unsupported_pattern` for many cases, which is fine, but the manual parsing logic has potential bugs (e.g., handling `|` inside character classes, nested groups, quantifiers on groups vs literals).
+        *   *State Management:* `_rules` is a `std::map<std::string, std::string>`. `_add_rule` handles deduplication and suffixing. This is okay but could be cleaner.
+        *   *Memory/Performance:* `build_min_max_int` uses `std::stringstream` and recursive calls. Might be inefficient for large ranges, but likely fine for typical JSON schema constraints.
+        *   *Error Handling:* Uses `_errors` and `_warnings` vectors. `check_errors()` throws or prints. Good.
+        *   *Constants/Types:* `MAX_PATTERN_DEPTH = 100` is hardcoded. Could be configurable or documented.
+        *   *Escape Handling:* `gbnf_escape_length` handles `\x`, `\u`, `\U`, and some literal escapes. It's specific to GBNF. Might need to be more robust or aligned with the target grammar spec.
+        *   *Trie for `_not_strings`:* Uses a custom `common_trie`. The logic generates a grammar that rejects specific strings. It's clever but complex. Might have edge cases with overlapping prefixes.
+        *   *Object Rule Generation:* `_build_object_rule` generates recursive rules for optional properties. The logic for `get_recursive_refs` is complex and might generate deeply nested rules. Could be optimized or simplified.
+        *   *Namespace/Scope:* Uses `using json = common_json;` and `static` functions. Fine.
+        *   *Missing Includes/Dependencies:* Relies on `common.h`, `trie.h`, `unicode.h`, `common_chat_schema`, `common_grammar_builder`, etc. Not shown, but assumed to exist.
+        *   *Code Style:* Generally follows C++17/20 conventions. Uses `std::function`, lambdas, `std::regex`. Some parts could be modernized (e.g., `std::string_view` usage in `uniform_range` is good).
+
+3.  **Analyze File 2: `common/arg.cpp`**
+    *   **Purpose:** CLI argument parsing, configuration handling, model downloading, and parameter management for `llama.cpp`.
+    *   **Key Components:**
+        *   `common_arg` class: Handles CLI arguments, help text, environment variables, examples/excludes.
+        *   `common_models_handler`: Handles model downloading,
+---

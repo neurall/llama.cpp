@@ -1,0 +1,38 @@
+run 20166 | hotmap_dynhot | poemc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 523.13 t/s | prompt 773.2 t/s | 375 tokens | args: -np 1 --moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2 | power 220+280 W | 2026-10-28 07:30:02
+
+
+---
+In the soft embrace of twilight's glow,  
+By the sea's gentle murmur we sit, you and I.  
+The stars begin their silent waltz in the sky,  
+As the waves softly chant our serenade, lullaby.
+
+The moon, a silver disc, gently rides the night,  
+Its light dances on the water, a silvery light.  
+The air is filled with the scent of salt and seaweed,  
+A fragrant breeze whispers tales of the deep.
+
+Your hand finds mine, a comforting touch,  
+As we gaze out, lost in each other's eyes.  
+The world seems to pause, in this tranquil spot,  
+Time stands still, in this timeless prize.
+
+The sea's roar is a soothing lullaby,  
+A gentle reminder of life's ebb and flow.  
+We talk of dreams, of love, of days gone by,  
+In hushed voices, under the starry show.
+
+The fireflies begin their twinkling dance,  
+As if to celebrate this perfect romance.  
+The stars seem closer, the night seems less vast,  
+In this moment, with you, I am at last.
+
+The warmth of your presence, a comforting fire,  
+Burns bright in my heart, a constant glow.  
+Our hearts beat in rhythm, a tender desire,  
+In this quiet evening by the sea, we grow.
+
+The sea's symphony crescendos, then fades,  
+Leaving only the sound of our breaths together.  
+In this serene place, under the vast, starry spades,  
+I am yours, and you are my world, forever.

@@ -90,6 +90,8 @@ uint64_t ggml_graph_next_uid(void) {
 #if defined(__linux__)
 #include <sys/prctl.h>
 #include <sys/mman.h>
+#include <spawn.h>
+extern char ** environ;
 #endif
 
 #if defined(__ANDROID__)
@@ -193,6 +195,42 @@ void ggml_print_backtrace(void) {
     fclose(f);
     int lock[2] = { -1, -1 };
     (void) !pipe(lock); // Don't start gdb until after PR_SET_PTRACER
+
+    // fork: the debugger starts through posix_spawn, not fork(). fork() copies every DMA-pinned page of the process at once (Linux does not share pinned
+    // anonymous pages copy-on-write), so a process with its weights pinned (cudaHostRegister: -nm, the expert pool) needs that much free RAM again just to
+    // print its stack: 4 GiB pinned cost the forked child 4.0 GiB (measured on PC1), and a crash with 90 GiB pinned (DeepSeek-V4.1, -nm 90) took 15 GiB in
+    // 8 s until the memory guard stopped it (2026-10-28); with 110 GiB pinned that is a frozen machine. posix_spawn runs the child in the parent's memory
+    // until it execs (vfork), so nothing is copied. The child is a shell that waits on the pipe until PR_SET_PTRACER allows it (the handshake below),
+    // then becomes gdb, or lldb when there is no gdb; neither: the symbols as before.
+    {
+        char pid_s[16];
+        snprintf(pid_s, sizeof(pid_s), "%d", (int) getpid());
+        char * const argv[] = {
+            (char *) "sh", (char *) "-c",
+            (char *) "read -r x <&3; exec 3<&-; "
+                     "if command -v gdb >/dev/null 2>&1; then "
+                     "exec gdb --batch -ex 'set style enabled on' -ex \"attach $1\" -ex 'bt -frame-info source-and-location' -ex detach -ex quit; fi; "
+                     "if command -v lldb >/dev/null 2>&1; then exec lldb --batch -o bt -o quit -p \"$1\"; fi; "
+                     "exit 127",
+            (char *) "sh", pid_s, NULL };
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        posix_spawn_file_actions_adddup2(&fa, lock[0], 3);
+        posix_spawn_file_actions_addclose(&fa, lock[1]);
+        pid_t child = -1;
+        const int rc = posix_spawn(&child, "/bin/sh", &fa, NULL, argv, environ);
+        posix_spawn_file_actions_destroy(&fa);
+        if (rc == 0) {
+            prctl(PR_SET_PTRACER, child);
+        }
+        close(lock[1]);
+        close(lock[0]);
+        int status = 0;
+        if (rc != 0 || waitpid(child, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            ggml_print_backtrace_symbols();
+        }
+        return;
+    }
 #endif
     const int parent_pid = getpid();
     const int child_pid = fork();
@@ -3547,7 +3585,7 @@ static struct ggml_tensor * ggml_scale_impl(
         float                 s,
         float                 b,
         bool                  inplace) {
-    GGML_ASSERT(ggml_is_padded_1d(a));
+    GGML_ASSERT(ggml_is_contiguous_rows(a));
 
     struct ggml_tensor * result = inplace ? ggml_view_tensor(ctx, a) : ggml_dup_tensor(ctx, a);
 

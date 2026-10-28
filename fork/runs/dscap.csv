@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+ds-cap,ds,1,2k1k,128,,
+ds-capoff,ds,1,2k1k,128,--reasoning off,

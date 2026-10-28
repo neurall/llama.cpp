@@ -1,0 +1,57 @@
+run 19819 | alternating_thread_search | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 24.32 t/s | prompt 6.3 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 19:32:39
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design compact Tetris. Single HTML file. Use canvas 10x20. Controls arrow keys, rotate up, space drop? Need implement.
+
+Need "smallest html tetris game" maybe code golf. Need produce minimal HTML. Need ensure no bugs. Let's craft compact but readable enough. Could use canvas and JS.
+
+Need implement Tetris:
+- board 10x20.
+- tetromino shapes. Use arrays of coordinates or bit masks.
+- current piece, rotation, x,y.
+- collision.
+- game loop with requestAnimationFrame or setInterval.
+- keyboard controls: left/right, down, up rotate, space hard drop.
+- scoring maybe not necessary.
+- game over restart.
+
+Need minimal code. Could use canvas 200x400, cell 20. Draw grid and blocks. Use colors.
+
+Need implement shapes. Use 7 tetrominoes as matrices. Could use bitmask representation. Simpler: shapes arrays of 4 cells per rotation? Need rotation. Use base matrices and rotate.
+
+Option: define shapes as arrays of [x,y] for each rotation? Could define base shape matrices and rotate function. Need collision.
+
+Let's write robust compact code.
+
+HTML:
+<!doctype html>
+<html>
+<body>
+<canvas id=c width=200 height=400></canvas>
+<script>
+const c=document.getElementById('c'),g=c.getContext('2d'),W=10,H=20,S=20;
+let b=Array.from({length:H},()=>Array(W).fill(0)),p,px,py,r,score=0,over=false;
+const shapes=[
+ [[1,1],[1,1]], // O? Actually 2x2
+ [[0,0],[1,0],[2,0],[3,0]], // I
+ [[0,0],[1,0],[0,1],[1,1]], // O
+ [[0,0],[1,0],[2,0],[1,1]], // T
+ [[0,0],[1,0],[1,1],[2,1]], // S? Need orientation
+ [[1,0],[0,1],[1,1],[2,1]], // Z? 
+ [[0,0],[0,1],[1,1],[2,1]], // L? 
+ [[2,0],[0,1],[1,1],[2,1]] // J?
+];
+Need 7 shapes. Let's define standard:
+I: [[0,0],[1,0],[2,0],[3,0]]
+O: [[0,0],[1,0],[0,1],[1,1]]
+T: [[0,0],[1,0],[2,0],[1,1]]
+S: [[1,0],[2,0],[0,1],[1,1]]
+Z: [[0,0],[1,0],[1,1],[2,1]]
+L: [[0,0],[0,1],[0,2],[1,2]]? Actually L shape: vertical left with bottom right. Or [[0,0],[0,1],[0,2],[1,2]]
+J: [[1,0],[1,1],[1,2],[0,2]]? Need.
+
+Rotation: For each cell [x,y], rotate around origin? Need normalize. Use rotate function: new coords [y, -x]? Then normalize min x/y to 0. For shapes with coordinates. Need ensure rotation works. For each piece, store base cells. On rotate, transform all cells: (x,y)->(y,-x) maybe clockwise. Then normalize. Need collision. But if shape has cells not centered, rotation around origin may shift. Normalize after rotation. That's okay. Need maintain px,py. Rotation may change bounding box; collision check with new cells at same px,py. If collision, revert. Need maybe wall kick? Not necessary.
+
+Need spawn: choose random shape, r=0, px=3, py=0? Need ensure shape fits. For I width 4, px=3. For O width 2, px=4? Could use px=Math.floor((W - width)/2). Need compute width. Or set px=3 for all? For O at px=3 fits. For I at px=3 fits. For L
+---

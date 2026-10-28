@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+glm-x0,glm,1,pf60k1k,64,"--moe dense-split=1,xsplit-dense=0 -b 131072 -ctxcp 0",--keep-loops
+glm-x1,glm,1,pf60k1k,64,"--moe dense-split=1 -b 131072 -ctxcp 0",--keep-loops
+mimo-x0,mimo,1,pf60k1k,64,"--moe dense-split=1,log=a,xsplit-dense=0 -b 131072 -ctxcp 0",--keep-loops
+mimo-x1,mimo,1,pf60k1k,64,"--moe dense-split=1,log=a -b 131072 -ctxcp 0",--keep-loops

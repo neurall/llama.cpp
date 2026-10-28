@@ -1,0 +1,64 @@
+run 17877 | inifix6 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 52.82 t/s | prompt 59.1 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-10-22 17:13:32
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I'll keep it small, but I don't want it to look like a bare throwaway — I want it to feel like a real arcade piece, alive and responsive, with a layered background, motion, micro-interactions, and strong typographic contrast.
+
+So: smallest possible Tetris that still looks great. Let me write a genuinely compact but polished implementation. Keep it one file, no dependencies.
+
+Design direction: Tetris is inherently a grid, so a generic headline block would miss the point — I want to open with the board itself. Let me do an arcade/CRT terminal aesthetic with a bold blocky display face. The tetromino palette (cyan, blue, orange, yellow, green, red, purple) is already multi-hued by nature, which is perfect here — it's the game's own identity, not an arbitrary accent gradient.
+
+Let me pick: dark slate-blue background with a subtle grid + scanlines, plus ambient floating tetromino shapes drifting slowly. Type: I want a blocky display face. Google Fonts would add a link (bigger), but since "smallest" is about the code, a font link is fine and it makes it feel more finished. For the display face, something blocky and arcade-y fits Tetris: "Silkscreen" is pixel-y and distinctive, great for the logo and big numbers. For the body I'll pair it with "Space Grotesk" — readable and clean. Two families, a distinctive display plus a readable body.
+
+Layout: a three-column arcade cabinet feel — left rail with logo/title vertical, center playfield, right stats rail. Plus next-piece preview, hold, level, lines, score. Keyboard controls listed with keycap micro-interactions that light up when the corresponding key is pressed. That's a lovely "alive" touch: keycaps flash on keypress.
+
+Also: mobile touch buttons? Adds size. Maybe minimal touch buttons row — good for completeness. Keep it modest.
+
+Implementation compactness: Use canvas for board. ~100 lines JS.
+
+Let me write the code.
+
+Core Tetris logic (compact):
+
+```js
+const W=10,H=20,S=24; // cell size
+let g=Array.from({length:H},()=>Array(W).fill(0));
+```
+
+Pieces as strings/rotation via matrix rotation. Compact approach: define pieces as arrays of matrices? Smallest: use the classic "S" string trick. But readability matters less. Let's use a compact approach with matrices generated from strings:
+
+```js
+const P='I3J7L7S4T4Z5'.match(/.{2}/g) // nah
+```
+
+Simplest readable-compact: define each piece by its 4x4 or 3x3 matrix flattened as a string of 0/1, then rotate by index math.
+
+```js
+const SH={
+ I:[[[0,1,1,1,1]],[[1],[1],[1],[1]]] // nah
+}
+```
+
+Better: use matrix rotation function.
+
+```js
+const P={
+ I:[[0,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]],
+ J:[[1,0,0],[1,1,1],[0,0,0]],
+ L:[[0,0,1],[1,1,1],[0,0,0]],
+ O:[[1,1],[1,1]],
+ S:[[0,1,1],[1,1,0],[0,0,0]],
+ T:[[0,1,0],[1,1,1],[0,0,0]],
+ Z:[[1,1,0],[0,1,1],[0,0,0]]
+};
+const rot=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse());
+```
+
+That's clean and small. Colors keyed by letter.
+
+Bag randomizer: shuffle 7.
+
+Collision, merge, line clear, scoring (100/300/500/800 * level), level = floor(lines/10)+1, gravity interval = max(80, 800 - (level-1)*70).
+
+Ghost piece — nice touch, small code.
+
+Hold + next
+---

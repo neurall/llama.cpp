@@ -1,1 +1,0 @@
-There is a bug in the source code above. Find it, explain what goes wrong, and give the corrected code for the affected functions with a short test that would have caught it.

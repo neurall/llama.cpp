@@ -1,0 +1,61 @@
+run 20116 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 26.01 t/s | prompt 14.7 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 21:27:01
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 300x600? Board 10x20, cell 30. Canvas width 300 height 600. Draw grid. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Tetromino definitions:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+Need rotation function. Use matrix rotate clockwise: new matrix rows = old columns reversed? For matrix m with rows, rotate: m[0].map((_, i)=>m.map(row=>row[i]).reverse())? Let's verify. For T [[0,1,0],[1,1,1]], rotate clockwise should [[1,0],[1,1],[1,0]]? Actually T rotated clockwise: original:
+0 1 0
+1 1 1
+Rotate clockwise: rows become columns reversed:
+col0 [0,1] reversed [1,0]
+col1 [1,1] reversed [1,1]
+col2 [0,1] reversed [1,0]
+=> [[1,0],[1,1],[1,0]] yes. Good.
+
+Need board 10x20. Use array of 20 rows x 10 cols, 0 empty, color maybe. Need current piece with shape matrix, x,y, color. Spawn at x=3? y=0. Need collision check: for each cell in shape, if board[y+r][x+c] or out of bounds. Need allow y negative? Spawn y=0. Rotation may go out of bounds; can try wall kick? Minimal: if rotation collides, don't rotate. But if piece at edge, rotation may fail. Could implement simple wall kick by trying offsets -1,0,1? Need not too complex. For minimal, rotation only if valid. But at edges, rotation may be blocked; acceptable? Better implement simple wall kick: try rotate and if invalid, try x offsets -1,0,1 maybe. But code length. Could include.
+
+Need gravity: setInterval or requestAnimationFrame. Use drop every 500ms. Need keyboard: left/right/down/up/space. Need prevent default. Need line clear. Need score. Need game over. Need restart.
+
+Need draw. Use canvas. Need colors. Use array of colors for pieces. Could use color per piece. Board stores color index or string. Need draw board cells. Use ctx.fillStyle. Need draw current piece. Need draw grid maybe.
+
+Need minimal code. Let's craft.
+
+Potential code:
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tetris</title>
+<style>
+body{margin:0;background:#111;display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;color:#fff}
+canvas{background:#222;border:2px solid #555}
+#hud{position:fixed;top:10px;left:10px}
+</style>
+</head>
+<body>
+<div id="hud">Score: <span id="score">0</span></div>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+const c=document.getElementById('c'),ctx=c.getContext('2d'),W=10,H=20,S=30;
+const shapes=[
+ [[1,1,1,1]],
+ [[1,1],[1,1]],
+ [[0,1,0],[1,1,1]],
+ [[0,1,1],[1
+---

@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+ds-16k-1gpu,ds,1,16k1k,1024,,--env CUDA_VISIBLE_DEVICES=1

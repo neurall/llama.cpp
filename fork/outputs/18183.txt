@@ -1,0 +1,83 @@
+run 18183 | relfl6 | tetrisc | Qwen3.8-27B-IQ4_NL.gguf | decode 45.49 t/s | prompt 35.0 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-23 03:56:33
+
+The user is asking for the smallest HTML Tetris game. "Smallest" is the key constraint — they want a minimal, compact Tetris in a single HTML file. But I still want it to be a genuinely playable, polished Tetris — small in code size, not small in quality. The tension: "smallest" means minimal code, but I can still make it feel alive with clever CSS (glow, animations, score pop) without bloating the JS.
+
+Let me think about what "smallest" means. Probably: single file, minimal code, but fully functional. I should aim for a truly compact implementation — maybe 3–6KB — while still including:
+
+- 10×20 board
+- 7 tetrominoes with rotation
+- Wall kicks (basic)
+- Line clearing with animation
+- Score, level, next piece
+- Game over
+- Keyboard controls (arrows, space for hard drop, P for pause)
+- Some visual polish: subtle glow, line-clear flash, score pop
+
+I can use canvas for the board — that's the most compact rendering approach. Canvas + a small amount of CSS.
+
+Let me write a compact but complete Tetris.
+
+Design decisions for compactness:
+- Single `<canvas>` for the board, plus a small canvas or div for the next piece.
+- Use a 2D array grid of 200×100.
+- Pieces defined as rotation states or as a rotation function.
+
+Compact piece representation: define each piece as a matrix and rotate by transposing + reversing.
+
+Let me write it:
+
+```html
+<!DOCTYPE html>
+<html><head><meta charset=utf-8><title>Tetris</title>
+<style>
+body{background:#0b0e1a;display:flex;flex-direction:column;align-items:center;font-family:monospace;color:#cfd8ff;margin-top:20px}
+...
+</style></head><body>
+<canvas id=c width=300 height=600></canvas>
+...
+<script>
+```
+
+Let me design the game logic compactly:
+
+```js
+const W=10,H=20,S=30,c=document.getElementById('c'),x=c.getContext('2d');
+let g,score=0,level=1,lines=0,over=0,drop=0;
+const P=[ // pieces as arrays of [x,y] offsets per rotation? or matrices
+```
+
+Simplest: define pieces as 4x4 or smaller matrices:
+
+```js
+const SHAPES={
+ I:[[0,1],[1,1],[2,1],[3,1]],
+ O:[[1,0],[2,0],[1,1],[2,1]],
+ T:[[1,0],[0,1],[1,1],[2,1]],
+ S:[[1,0],[2,0],[0,1],[1,1]],
+ Z:[[0,0],[1,0],[1,1],[2,1]],
+ J:[[0,0],[0,1],[1,1],[2,1]],
+ L:[[2,0],[0,1],[1,1],[2,1]]
+};
+```
+
+Rotation: rotate around a center. For compactness, rotate the cell list: (x,y) -> (maxY - y, x) or similar. Standard: rotate 90° clockwise: (x,y) -> (size-1-y, x). For pieces of different sizes this gets tricky. A common compact trick: rotate around a fixed point per piece.
+
+Alternative compact approach: precompute all 4 rotations for each piece at load time:
+
+```js
+const R=m=>m.map(([x,y])=>[y,-x]); // rotate
+function rots(cells){let r=[cells];for(let i=0;i<3;i++)r.push(r[i-1].map(([x,y])=>[y,-x]));return r;}
+```
+
+Hmm, rotating (x,y)->(y,-x) rotates around origin; then normalize to keep min at 0. Let me do:
+
+```js
+const rot=c=>c.map(([x,y])=>[y,-x]);
+const norm=c=>{const mx=Math.min(...c.map(p=>p[0])),my=Math.min(...c.map(p=>p[1]));return c.map(([x,y])=>[x-mx,y-my]);};
+```
+
+Precompute rotations:
+
+```js
+const PIECES={I:[...],
+---

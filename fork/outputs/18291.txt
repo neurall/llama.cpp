@@ -1,0 +1,64 @@
+run 18291 | splitfix | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.94 t/s | prompt 9.0 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 10:01:39
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. This is different from my usual inclination toward polished, memorable experiences. The user explicitly asks for "smallest" — so the goal here is extreme minification, a code-golf artifact. I should honor that request literally: produce the tiniest functional Tetris in a single HTML file.
+
+But I can still make it good within that constraint — the craft here is in the golfing itself: clever, dense, readable-enough code with a brief explanation. The aesthetic of a golfed Tetris is its own kind of signature: a tiny block of code that plays a full game.
+
+Let me think about what "smallest" means. Options:
+1. Ultra-minified single-line, single-file HTML with canvas, keyboard controls, scoring, line clears, game over.
+2. Maybe even skip canvas and use characters? Canvas is usually smaller for Tetris.
+
+Let me actually write and golf a Tetris. Key components:
+
+- Canvas, draw cells.
+- Board: 10x20 array.
+- 7 tetromino shapes.
+- Rotation.
+- Gravity tick.
+- Collision detection.
+- Line clear + score.
+- Keyboard: left/right/down (soft drop), up (rotate).
+- Game over.
+
+Classic golfed Tetris approaches exist. Let me write my own compact version.
+
+A well-known trick: represent pieces as bitmasks or as arrays of coordinates. A very compact representation: each rotation of each piece as a 4x4 or encoded string.
+
+One famous compact approach (from code-golf SE "Tetris" entries) uses piece definitions like:
+
+```js
+// pieces as arrays of [x,y] offsets per rotation
+```
+
+Let me design my own minimal version.
+
+Approach: pieces defined as binary numbers in a 4x4 grid, rotated via bit manipulation. Or simpler: define each piece as a matrix and rotate the matrix.
+
+Compact piece data: Use strings. E.g. shapes:
+
+```
+I: 1111 (horizontal) — rotation via transpose
+O: 22/22
+T: 33/03 etc.
+```
+
+A classic trick: encode pieces as numbers where each piece is 4 rotations packed. Or use the "digits" trick: each piece is a 2x2... no.
+
+Let me think of a genuinely small implementation.
+
+Data representation idea: For each of the 7 pieces, store 4 rotation states as 16-bit numbers (4x4 grid). That's 28 numbers. Or store one state per piece and rotate with a function.
+
+Rotating a 4x4 bitmask: cell (x,y) -> rotation. If piece stored as array of 16 bits, rotate 90°: newGrid[y][x] = oldGrid[3-x][y] or similar. With bit ops: for a 16-bit integer b, bit index i = y*4+x. Rotated: bit at (x, 3-y)... Let me define rotation: rotating clockwise, new(x,y) = old(3-y, x)? For a 4x4 grid indexed row-major with y from top: clockwise rotation maps old cell (x,y) to new (3-y, x). So new bit at position (3-y)*4 + x... hmm, let me just do: rot(b) = sum over i of bit i of b shifted to position of rotated coordinate.
+
+Compact JS rotation of 4x4 bitmask:
+
+```js
+r=b=>[...Array(16)].reduce((a,_,i)=>a|b>>i&1<<(i%4*4+3-i/4|0),0)
+```
+
+Hmm, let me verify: we want new grid where new cell at (col c, row r) = old cell at (row r', col c') with clockwise: new(r,c) = old(3-c, r)? Standard clockwise rotation of matrix: new[i][j] = old[N-1-j][i]. So new bit at index i (row = i>>2, col = i&3) equals old bit at index (3-(i&3))*4 + (i>>2) = (3-(i&3))*4 + (i>>2).
+
+So: r = b => { let a=0; for(i=0;i<16;i++) if(b>>i&1) a |= 1 << ((3-(i&3))*4 + (i>>2)); return a; }
+
+Golfed: `R=b=>[...Array(16)].reduce((a,_,i)=>a|(b>>i&1)<<(3-(i&3))*4+(i>>2),0)` — wait need conditional; if bit is 0, shifting 0 is fine: `(
+---

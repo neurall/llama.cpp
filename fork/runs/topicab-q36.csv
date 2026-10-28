@@ -1,0 +1,9 @@
+name,model,n,test,tokens,args,extra
+off-game1,qwen36,2,tetrisc,1024,"--moe state=/tmp/runstate/topic-q36-off.ini",
+off-prose1,qwen36,2,scific,1024,"--moe state=/tmp/runstate/topic-q36-off.ini",
+on-game1,qwen36,2,tetrisc,1024,"--moe state=/tmp/runstate/topic-q36-on.ini,dynhot=1",
+on-prose1,qwen36,2,scific,1024,"--moe state=/tmp/runstate/topic-q36-on.ini,dynhot=1",
+off-game2,qwen36,2,tetrisc,1024,"--moe state=/tmp/runstate/topic-q36-off.ini",
+off-prose2,qwen36,2,scific,1024,"--moe state=/tmp/runstate/topic-q36-off.ini",
+on-game2,qwen36,2,tetrisc,1024,"--moe state=/tmp/runstate/topic-q36-on.ini,dynhot=1",
+on-prose2,qwen36,2,scific,1024,"--moe state=/tmp/runstate/topic-q36-on.ini,dynhot=1",

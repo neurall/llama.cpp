@@ -1,0 +1,40 @@
+run 19604 | deep-seek | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.27 t/s | prompt 15.9 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-26 11:08:13
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count. Let me think about what "smallest" means here: a single self-contained HTML file with a playable Tetris, as compact as possible.
+
+Let me design a genuinely tiny but fully playable Tetris. Key features needed for it to feel like real Tetris:
+- 10×20 board
+- 7 tetrominoes (I, O, T, S, Z, J, L) with proper shapes
+- Rotation (at least basic rotation; wall kicks optional — for minimal size, simple rotation with maybe a shift attempt)
+- Movement left/right/down, hard drop or soft drop
+- Line clearing with score
+- Game over
+- Keyboard controls
+- Some rendering — canvas is smallest
+
+To keep it truly small, I'll use terse code: single-letter variable names, no whitespace, canvas rendering, compact piece encoding.
+
+Let me think about the most compact tetromino encoding. A classic trick: encode each piece as a 2×4 (or 4×2) matrix of bits, or use coordinate lists. A very compact known approach: represent each rotation as a string of offsets.
+
+Actually, a well-known ultra-compact approach: pieces defined by a set of cells in a 4x4 box, with rotation computed by rotating coordinates: (x,y) -> (y, 3-x) or similar within a 4×4 grid... but that doesn't work for all pieces uniformly (O piece, I piece offsets differ). A common compact trick: store each piece as 4 rotations of binary numbers.
+
+Let me think of the classic minimal Tetris implementations. There's a famous tiny Tetris in ~few hundred bytes of JS. Approaches:
+
+1. Encode pieces as arrays of 4 rotation states, each state a bitmask of 16 bits (4×4 grid). Rotation = next index. Rendering: draw cell if bit set.
+
+Compact encoding: each piece's 4 rotations as 16-bit numbers. E.g., piece data as a string, each char encoding... Or use base-36 strings.
+
+2. Another trick: define pieces by their cells and rotate mathematically: for a cell (x,y) in an n×n bounding box, rotation: (x,y) -> (n-1-y, x). For I piece in a 4×4 box this works if positioned correctly. For O in a 2×2 box. Different bounding box sizes per piece: I:4, O:2 (or 3?), others:3. Actually with box sizes: I=4, O=2, T/S/Z/J/L=3. Rotation within box: (x,y) -> (size-1-y, x). This is elegant and compact!
+
+So piece data: for each of 7 pieces, list of [x, y] cells plus box size. E.g.:
+
+- I: size 4, cells (0,1),(1,1),(2,1),(3,1)
+- O: size 2, cells (0,0),(1,0),(0,1),(1,1) — wait O in 2×2: cells (0,0),(1,0),(0,1),(1,1). Rotation keeps it same. Good.
+- T: size 3, cells (1,0),(0,1),(1,1),(2,1) — T pointing up.
+- S: size 3, cells (1,0),(2,0),(0,1),(1,1)
+- Z: size 3, cells (0,0),(1,0),(1,1),(2,1)
+- J: size 3, cells (0,0),(0,1),(1,1),(2,1)
+- L: size 3, cells (2,0),(0,1),(1,1),(2,1)
+
+Rotation: (x,y) -> (s-1-y, x). Check T: cells (1,0)->(2,1)? s=3: (3-1-0, 1) = (2,1). (0,1)->(2,0). (1,1)->(2,1)? wait (3-1-1,1)=(1,1). (2,1)->(1,1)? (3-1-1,2)=(1,2). Hmm let me recompute: rotation (x,y) -> (s-1-y, x). For (1,0): (2, 1). For (0,1): (1, 0)? s-1-y = 3-1-1 =
+---

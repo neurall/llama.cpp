@@ -1,0 +1,59 @@
+run 18424 | relfx1 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.96 t/s | prompt 129.5 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-23 12:50:22
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I'll keep it small, but I don't want it to be a bare gray box — I want it to feel crafted and alive: a nice arcade cabinet aesthetic, responsive keyboard, next piece preview, score/lines/level, ghost piece, hold, pause, game over overlay, subtle animations, sound via WebAudio maybe.
+
+"Smallest" — I should keep the code compact but still make it feel alive. Balance: compact code, but a distinctive look. Let me do a tight single-file Tetris with:
+
+- IIFE, canvas rendering
+- 7-bag randomizer
+- SRS-ish rotation with simple wall kicks
+- Ghost piece
+- Hold, next queue (3)
+- Level speed curve
+- Line clear animation
+- Keyboard controls + touch buttons maybe
+- Scanline/CRT arcade cabinet vibe
+
+For the look I want something characteristic of the subject rather than a generic landing page — Tetris is blocky, arcade, colorful, so the page itself should open with the playfield, not a headline. I'll use a chunky pixel/arcade display font paired with a readable body mono. For the palette, the classic Tetris piece colors (cyan, blue, orange, yellow, green, purple, red) are the natural anchor — I'll build the UI around those on a dark arcade background. A multi-color set drawn from the pieces feels right here; I'll keep the headline as solid bold type rather than a gradient-painted one, which would fight with the piece colors.
+
+Fonts: display face — something arcade/chunky. Google Fonts options: "Press Start 2P" (pixel, very characteristic but heavy), or "Bungee", or "Silkscreen". Pair with a readable body: "IBM Plex Mono" or "Space Grotesk". Let's do display: "Silkscreen" or "Press Start 2P" for numbers/labels, body: "IBM Plex Mono". Actually Press Start 2P is very Tetris-characteristic. Use it sparingly for headings/score labels, and IBM Plex Mono for body/instructions. Good pairing.
+
+Background: layered ambient — subtle grid, CRT scanlines, faint moving gradient glow behind the cabinet, and blocks that occasionally "fall" in the background? Keep it performant. Maybe a CSS animated grid drift + vignette + scanlines. Plus a subtle "stack" silhouette.
+
+Layout: an asymmetric arcade cabinet — left rail with stats (score, lines, level, high score), center playfield canvas, right rail with NEXT queue and HOLD. Header strip at top with the wordmark and key legend. Below: controls legend as a keycap row, and a small "combo/piece stats" maybe. Keep it compact since they asked for smallest — but I can deliver a compact file that still looks great.
+
+Let me write the code carefully.
+
+Game logic:
+
+```js
+const W=10,H=20,CELL=... 
+```
+
+Canvas: playfield 10x20, cell size responsive via CSS scaling (canvas fixed internal resolution, CSS width). Use devicePixelRatio for crispness.
+
+Pieces as rotation states via matrices. Simple approach: define pieces as arrays of rotation states (coordinate lists) or use matrix rotate.
+
+Compact SRS:
+
+```js
+const P={I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],...}
+```
+
+Rotate matrix, with kick table simplified: try offsets [0,-1,-2,1,2] horizontally and [0,-1] vertical.
+
+Let me write:
+
+```js
+const SH={
+ I:[[0,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]] // hmm
+}
+```
+
+Simpler: use standard 4x4 for I, 3x3 for J,L,S,T,Z, 2x2 for O.
+
+SHAPES = {
+ I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+ J:[[1,0,0],[1,1,1],[0,0,0]],
+ L:[[0,0,1],[
+---

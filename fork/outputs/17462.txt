@@ -1,0 +1,5 @@
+run 17462 | autopin | edit4c | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 336.82 t/s | prompt 13794.9 t/s | 25 tokens | args: -np 1 -lm mmap | power 220+280 W | 2026-10-21 13:29:45
+
+
+---
+To count the lines in the given file, you can use the `std::ifstream` to read the file line by

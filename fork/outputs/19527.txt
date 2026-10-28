@@ -1,0 +1,84 @@
+run 19527 | um6g | pf60k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.11 t/s | prompt 669.4 t/s | 1000 tokens | args: -np 1 -lm mmap --moe pin-budget=96636764160 --moe dense-split=1,split-experts=0,mode=cache | power 220+280 W | 2026-10-25 17:57:09
+
+Let me analyze the provided source code files to find bugs that need fixing.
+
+Looking at the first file: `common/json-schema-to-grammar.cpp`
+
+Let me examine the code carefully:
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Wait, there's a bug here. When `min_items == 0` and there's a separator, the recursion should be:
+- `item_rule (separator item_rule)*` — the repetition of separator+item should have min 0, max max_items - 1.
+
+Actually let me check: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`.
+
+Hmm, when min_items == 0, the inner repetition min is 0. That's correct. When min_items > 0, inner min is min_items - 1. Correct.
+
+But wait — there's a subtle bug: when `min_items == 0` and `max_items == 1`... Actually the check `if (min_items == 0 && max_items == 1) return item_rule + "?";` happens before separator handling. Hmm, but with a separator, min 0 max 1 should be `(item_rule)?` — actually with max 1 item, there's no separator needed, so `item_rule?` is correct... Actually wait, if min_items == 0 and max_items == 1, then it's just one optional item, no separator. So `item_rule + "?"` is correct.
+
+Hmm, but what about `min_items == 1 && max_items == 1` with separator? Then result = item_rule + " " + build_repetition("(sep item)", 0, 0). The inner build_repetition with max_items == 0 returns "". So result = "item_rule " — with a trailing space! That's a bug. Let me check the original llama.cpp code:
+
+Original code from llama.cpp (json-schema-to-grammar.cpp):
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Hmm, this matches the original. Let me check the actual original code from llama.cpp... Actually the original is:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::

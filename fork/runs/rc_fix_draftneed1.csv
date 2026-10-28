@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+ds-1k-plain-need,ds,1,1k1k,64,,
+ds-d3-after-plain,ds,1,tetrisc,64,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 3 --moe spec-depth=3,--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt
+ds-d1-after-d3,ds,1,tetrisc,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt
+ds-io-plain-after-draft,ds,1,edit4c,1024,,

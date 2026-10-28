@@ -1,0 +1,100 @@
+run 19956 | fix_cuda_argmax_returns_zero_for_nonfinite_row | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 31.29 t/s | prompt 10.2 t/s | 1012 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,pin-budget=108447924224 -lm mmap | power 200+200 W | 2026-10-27 03:38:14
+
+
+---
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tetris</title>
+<style>
+  body{margin:0;background:#111;display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif}
+  canvas{background:#000;border:2px solid #333}
+  #score{color:#fff;position:absolute;top:10px;left:10px;font-size:14px}
+</style>
+</head>
+<body>
+<canvas id="c" width="300" height="600"></canvas>
+<div id="score">Score: 0</div>
+<script>
+const c=document.getElementById('c'),ctx=c.getContext('2d');
+const W=10,H=20,S=30;
+const shapes=[
+  [[1,1,1,1]],
+  [[1,1],[1,1]],
+  [[0,1,0],[1,1,1]],
+  [[1,0,0],[1,1,1]],
+  [[0,0,1],[1,1,1]],
+  [[1,1,0],[0,1,1]],
+  [[0,1,1],[1,1,0]]
+];
+const colors=['#00f0f0','#f0f000','#a000f0','#00f000','#f00000','#0000f0','#f0a000'];
+let board=Array.from({length:H},()=>Array(W).fill(0));
+let piece,px,py,rot,score=0,over=false;
+function newPiece(){
+  const i=Math.floor(Math.random()*shapes.length);
+  piece=shapes[i].map(r=>r.slice());
+  rot=0;px=Math.floor((W-piece[0].length)/2);py=0;
+  if(collide()) over=true;
+}
+function rotate(){
+  const n=piece.length,m=piece[0].length;
+  const r=Array.from({length:m},()=>Array(n).fill(0));
+  for(let y=0;y<n;y++)for(let x=0;x<m;x++)r[x][n-1-y]=piece[y][x];
+  return r;
+}
+function collide(p=piece,x=px,y=py){
+  for(let i=0;i<p.length;i++)for(let j=0;j<p[i].length;j++){
+    if(!p[i][j])continue;
+    const bx=x+j,by=y+i;
+    if(bx<0||bx>=W||by>=H||board[by][bx])return true;
+  }
+  return false;
+}
+function lock(){
+  for(let i=0;i<piece.length;i++)for(let j=0;j<piece[i].length;j++)
+    if(piece[i][j])board[py+i][px+j]=colors[Math.floor(Math.random()*colors.length)];
+  let cleared=0;
+  for(let y=H-1;y>=0;y--){
+    if(board[y].every(v=>v)){
+      board.splice(y,1);board.unshift(Array(W).fill(0));cleared++;
+    }
+  }
+  score+=cleared*100;
+  document.getElementById('score').textContent='Score: '+score;
+  newPiece();
+}
+function draw(){
+  ctx.clearRect(0,0,c.width,c.height);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    if(board[y][x]){
+      ctx.fillStyle=board[y][x];
+      ctx.fillRect(x*S,y*S,S-1,S-1);
+    }
+  }
+  if(!over){
+    for(let i=0;i<piece.length;i++)for(let j=0;j<piece[i].length;j++){
+      if(piece[i][j]){
+        ctx.fillStyle=colors[0];
+        ctx.fillRect((px+j)*S,(py+i)*S,S-1,S-1);
+      }
+    }
+  }
+}
+function tick(){
+  if(over)return;
+  if(!collide(piece,px,py+1))py++;
+  else lock();
+  draw();
+}
+newPiece();
+draw();
+setInterval(tick,400);
+document.addEventListener('keydown',e=>{
+  if(over)return;
+  if(e.key==='ArrowLeft'&&!collide(piece,px-1,py))px--;
+  if(e.key==='ArrowRight'&&!collide(piece,px+1,py))px++;
+  if(e.key==='ArrowDown'&&!collide(piece,px,py+1))py++;
+  if(e.key==='ArrowUp'){
+    const r=rotate

@@ -1,0 +1,68 @@
+run 19000 | spass19 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.75 t/s | prompt 17.1 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-24 16:28:39
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count. This is an explicit user request that overrides my usual preference for elaborate visuals. Let me write a genuinely tiny Tetris in a single HTML file.
+
+Let me think about how to write the most compact Tetris possible.
+
+Classic minimal Tetris implementations in JS are around 300-500 bytes for the logic. Let me try to build one.
+
+Core components:
+1. Canvas for rendering (or use a `<canvas>` element).
+2. Board: 10 wide, 20 tall (or smaller for compactness, but standard is fine).
+3. Pieces: 7 tetrominoes with rotation.
+4. Gravity timer, movement, rotation, collision, line clear, game over, score.
+
+A well-known ultra-compact Tetris approach: represent pieces as strings or use a rotation trick.
+
+One famous compact approach (from "Tetris in 140 bytes" style golf): use a piece representation where each piece is defined by a set of coordinates, and rotation via a formula.
+
+Let me design my own compact version. I'll aim for something readable-ish but very small — maybe ~600-800 bytes total HTML. Actually let me try to be really aggressive.
+
+Approach: 
+- Board as a single array of 200 cells (10x20), values 0 or color index.
+- Pieces: define each tetromino as a 4x4 (or 3x3/4x4) matrix encoded compactly. A common trick: encode shapes as binary numbers per rotation, or use a single string.
+
+Compact trick: Represent each tetromino's four rotations as bit patterns. Or use the "rotate a list of coordinates" trick: piece = array of [x,y] pairs; rotation: (x,y) -> (y, -x) or (y, x) depending.
+
+Let me think about the classic minimal JS Tetris (there's a famous one by "Alex" — "smallest tetris in JS"). One known implementation:
+
+```js
+c=canvas.getContext('2d');
+b=Array(200).fill(0); // board
+...
+```
+
+Let me write my own from scratch, optimizing.
+
+Plan:
+
+```html
+<canvas id=c width=120 height=240><script>...
+```
+
+Actually, we can even skip the canvas element in HTML and create it in JS: `document.body.appendChild(c=document.createElement('canvas'))` — but that's longer than just writing `<canvas>` in HTML. `<canvas width=120 height=240>` is short.
+
+Even shorter: use `<canvas width=99 height=198>`? Board 10x20 with cell size... Let's use cell size 9 or 10. Width 100 height 200 with cell 10. `<canvas width=100 height=200>`.
+
+Rendering: fill cells with `c.fillRect(x*10,y*10,9,9)` leaving gaps for grid effect — that's compact and looks decent (grid lines appear as background). Set fillStyle per cell color.
+
+Colors: 7 colors. Could use a compact palette string: `"478ACE"` hex chars? Colors like: I=C(cyan), O=Y(yellow), T=P(purple), S=G(green), Z=R(red), J=B(blue), L=O(orange). Use single hex digits? Hex digits only go 0-F. We could map digit d to color via a palette array of 7 CSS colors. Compact: `f="cyan yellow ...".split(' ')` — or use short color names: `['#9ff','#ff9','#f9f','#9f9','#f99','#99f','#fc9']`? Hmm.
+
+Alternative compact palette: use `hsl` computed: `c.fillStyle='hsl('+d*52+',100%,50%)'` — that's compact! Each piece index d gets hue d*52 (roughly distinct hues). Nice trick: `c.fillStyle=`hsl(${d*51},100%,50%)``. Actually template literal with variable — fine.
+
+Even shorter: `c.fillStyle="hsl("+d*52+",100%,50%)"`.
+
+Pieces: The classic compact encoding. Let me define pieces as arrays of coordinates relative to a center, with rotation by transform.
+
+A very compact known trick: define all pieces as one string where each piece is 16 chars of a 4x4 grid with 'X' marks, and rotate by reading columns. E.g.:
+
+```js
+p="0123..." 
+```
+
+Hmm. Let me think about the well-known "tetris in a tweet" style.
+
+One famous minimal implementation (by @fskirsch or similar) uses:
+
+
+---

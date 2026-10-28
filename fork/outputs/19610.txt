@@ -1,0 +1,90 @@
+run 19610 | deep-seek | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.5 t/s | prompt 8.1 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 11:20:32
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. This is different from my usual approach of making polished, memorable experiences. The user explicitly asked for "smallest" — so the goal here is extreme minification while keeping it functional and playable.
+
+Let me think about what "smallest" means here. A truly minimal Tetris in a single HTML file. I should aim for a genuinely tiny byte count while keeping it actually playable: falling tetrominoes, rotation, movement, line clearing, score, game over.
+
+Let me design a minimal Tetris:
+
+Core requirements:
+1. Canvas rendering (or even simpler — could use a `<pre>` with text? Actually canvas is compact).
+2. Game loop with gravity.
+3. 7 tetrominoes with rotation. The classic golf trick: encode pieces as bitmasks or use rotation via matrix math.
+
+A well-known ultra-compact Tetris approach (there's a famous one by Alexey-style golf, "Tetris in 140 bytes" etc.). Let me write my own compact version.
+
+Classic compact approach: represent each piece as a 4x4 or use the trick where rotation is done by rotating coordinates: (x,y) -> (y, 3-x) or similar for 4x4 grid encoded as 16-bit numbers.
+
+A famous minimal Tetris (by "aemkei" — the 140-character one?) uses this trick: pieces encoded as numbers where bit manipulation handles rotation. Let me recall the famous one:
+
+There's the well-known "Tetris in 140 bytes of JavaScript" style. One compact approach:
+
+```js
+D=document
+...
+```
+
+Let me just write my own clean-ish minimal version and then golf it.
+
+Plan:
+- Canvas 120x240, cell size 12? Or use small canvas scaled with CSS.
+- Grid 10x20.
+- Pieces as arrays of rotations? That costs bytes. Better: encode each piece as a 16-bit mask for one orientation, rotate bits in a 4x4 grid.
+
+Bit rotation in 4x4: if piece is bits b0..b15 in row-major 4x4, rotating 90° clockwise: new[r][c] = old[3-c][r]. As bit index i = r*4+c, new bit at (r,c) = old bit at (3-c)*4 + r = 12 - 4c + r. Hmm, formula: rotated bit index j = r*4+c gets value from old index (3-c)*4 + r.
+
+A common golf trick: rotate function:
+```js
+R=m=>m.map((v,i)=>...) 
+```
+
+Alternative simpler approach used in many golfed tetris: store pieces as arrays of [x,y] pairs and rotate via (x,y)->(y, x) with piece-specific offsets. That's fiddly.
+
+Another approach: the famous one by Solomon / "Tetris in a tweet". Let me recall a known compact implementation:
+
+There's this known one (~few hundred bytes):
+
+```html
+<body onload="setInterval('f()',100)"><canvas id=c></canvas><script>
+...
+```
+
+Let me just write it myself carefully.
+
+Data: 7 pieces, each as 16-bit number (4x4 grid, row-major, bit 15 = top-left or bit 0 = top-left).
+
+Let's define bit i = row r = i>>2, col c = i&3, with bit 0 at top-left (so mask 1<<(r*4+c)).
+
+Pieces (I, J, L, O, S, T, Z) in some spawn orientation:
+
+I: row 1: 1111 → bits at r=1, c=0..3 → 0x0F0? With bit0 top-left: value = 0b0000111100000000 = 0x0F00 = 3840.
+
+J: 
+```
+X..
+XXX
+....
+....
+```
+r0c0, r1c0, r1c1, r1c2 → 1 + 16 + 32 + 64 = 113? 1<<0=1, 1<<4=16, 1<<5=32, 1<<6=64 → 113.
+
+L:
+```
+..X
+XXX
+....
+```
+r0c2=4, r1c0=16, r1c1=32, r1c2=64 → 116.
+
+O:
+```
+XX
+XX
+```
+r0c0=1, r0c1=2, r1c0=16, r1c1=32 → 51.
+
+S:
+```
+.XX
+
+---

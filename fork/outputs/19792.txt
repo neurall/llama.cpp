@@ -1,0 +1,24 @@
+run 19792 | alternating_thread_search | pf1k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 22.47 t/s | prompt 37.0 t/s | 1024 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 5 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 17:36:49
+
+<think>We need answer code review. Need inspect source file truncated? User provided partial file ending mid-function. Need review following source file. Need identify issues. We need perhaps mention incomplete snippet. Need analyze code. Need produce code review. Need be thorough but desired oververbosity 5. Need maybe infer rest? The file is truncated at `out << ")";` inside uniform_range. We can review visible code and note incomplete. Need maybe source from llama.cpp? common/json-schema-to-grammar.cpp. I can recall actual file. Need review. Let's parse.
+
+We need do code review of source file. Need identify bugs, style, correctness, edge cases, performance, maintainability. Need maybe mention missing includes: <functional> for std::function, <cstdint> for int64_t, <string_view> for std::string_view. common.h may include? But explicit.
+
+Let's inspect functions.
+
+`build_repetition(item_rule, min_items, max_items, separator_rule="")`:
+- has_max = max_items != INT_MAX.
+- if max_items == 0 return "".
+- if min_items == 0 && max_items == 1 return item_rule + "?";
+- if separator empty:
+  - min=1 no max -> item_rule + "+"
+  - min=0 no max -> item_rule + "*"
+  - return item_rule + "{" + min + "," + (has_max ? max : "") + "}";
+Potential bug: if min_items == max_items? It emits `{n,n}` okay. If min_items == 0 and max_items finite >1, emits `{0,max}`. In GBNF? Does grammar support `{0,3}`? likely yes. But if max_items == 1 and min_items == 1? It doesn't hit min=0 max=1; separator empty: min=1 !has_max false, min=0 false, returns `item_rule + "{1,1}"` rather than item_rule. Not bug but inefficient. If min_items == max_items == 1 could return item_rule. If min_items == 0 max_items == 1 returns optional. If max_items == 0 returns empty even if min_items >0? Invalid input; should assert min<=max. If min_items > max_items, weird. Need validate.
+
+Separator branch:
+`auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);`
+Then if min_items == 0 result = "(" + result + ")?";
+Let's test. For min=0 max=1 sep: result = item + " " + build_repetition("(sep item)", 0, 0) because max-1=0 -> build returns ""; result = item + " " (trailing space). Then wrap `(item )?`? Actually result = item_rule + " " + "" = "item ". Then `("item ")?` includes trailing space. That's wrong: optional item with trailing space. For min=0 max=1 with separator should be `item_rule?` or `(item_rule)?` no separator. The algorithm for separator repetition is flawed for max_items=1 and min=0. Also for min=0 max=2: result = item + " " + build_repetition("(sep item)", 0, 1) -> build returns "(sep item)?" (since min=0 max=1) => result = item + " " + "(sep item)?"; wrap optional => `(item (sep item)?)?` This allows item followed by optional separator+item, but if optional outer absent, no item. If present, item then optional sep item. That represents 0 or 1 or 2 items? For 2 items: item sep item. For 1 item: item. But grammar `(item (sep item)?)?` for 1 item: outer present, item, optional sep item absent -> item. For 0: outer absent. Good. But for max=1: `(item )?` allows item plus space? Actually grammar `(item )?` means optional sequence item followed by space. If present, requires trailing space. That's wrong. Could be `(item)?` or `item?`. Need fix.
+
+Also for min_items=1 max_items=1 sep: result = item + " " + build_repetition("(sep item)", 0, 0) -> item + " " + "" = "item ". Then min !=0 no wrap. Returns `item ` with trailing space. Wrong: should item. For min=1 max=2: result = item

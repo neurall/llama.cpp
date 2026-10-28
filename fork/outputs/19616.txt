@@ -1,0 +1,35 @@
+run 19616 | deep-seek | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 28.64 t/s | prompt 13.3 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 11:31:57
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML with canvas, JS. Need minimal but functional. Need maybe no external libs. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design compact Tetris. Single HTML file. Use canvas. Need controls: arrow keys, rotate, drop. Need game loop. Need implement tetrominoes, collision, line clear, score. Need smallest code but readable enough. Could use canvas 10x20 grid. Use JS.
+
+Let's craft compact but functional. Need avoid bugs. Let's design.
+
+HTML:
+<!doctype html>
+<html><body><canvas id=c width=300 height=600></canvas><script>
+const c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=30;
+let b=Array(H).fill().map(()=>Array(W).fill(0)),p,px,py,score=0,over=false;
+const T=[
+ [[1,1,1,1]],
+ [[1,1],[1,1]],
+ [[0,1,0],[1,1,1]],
+ [[1,0,0],[1,1,1]],
+ [[0,0,1],[1,1,1]],
+ [[1,1,0],[0,1,1]],
+ [[0,1,1],[1,1,0]]
+];
+function spawn(){p=T[Math.random()*T.length|0].map(r=>r.slice());px=3;py=0;if(hit())over=true;}
+function hit(){return p.some((r,y)=>r.some((v,x)=>v&&(px+x<0||px+x>=W||py+y>=H||b[py+y][px+x])));}
+function rot(){p=p[0].map((_,i)=>p.map(r=>r[i]).reverse());if(hit())p=p[0].map((_,i)=>p.map(r=>r[i]).reverse());}
+function move(dx,dy){px+=dx;py+=dy;if(hit()){px-=dx;py-=dy;}}
+function drop(){while(!hit())py++;py--;p.forEach((r,y)=>r.forEach((v,x)=>v&&(b[py+y][px+x]=1)));let n=0;for(let y=H-1;y>=0;y--)if(b[y].every(v=>v)){b.splice(y,1);b.unshift(Array(W).fill(0));n++;}score+=n*100;spawn();}
+function draw(){x.fillStyle='#111';x.fillRect(0,0,c.width,c.height);for(let y=0;y<H;y++)for(let xx=0;xx<W;xx++)if(b[y][xx]){x.fillStyle='#4cf';x.fillRect(xx*S,y*S,S-1,S-1);}if(!over)p.forEach((r,y)=>r.forEach((v,xx)=>v&&(x.fillStyle='#f4c';x.fillRect((px+xx)*S,(py+y)*S,S-1,S-1))));x.fillStyle='#fff';x.font='16px monospace';x.fillText('Score '+score,10,20);if(over){x.fillStyle='#f00';x.font='24px monospace';x.fillText('Game Over',80,300);}}
+function loop(){if(!over){move(0,1);if(hit()){move(0,-1);drop();}}draw();requestAnimationFrame(loop);}
+addEventListener('keydown',e=>{if(over)return;if(e.key=='ArrowLeft')move(-1,0);if(e.key=='ArrowRight')move(1,0);if(e.key=='ArrowDown')move(0,1);if(e.key=='ArrowUp')rot();if(e.key==' ')drop();});
+spawn();loop();
+</script></body></html>
+
+Need check logic. In loop, move(0,1) attempts down. If hit, move(0,-1) then drop. But drop() while(!hit()) py++; py--; then place. Wait if current piece at py and hit() true? Let's analyze. In loop: move(0,1) increments py then if hit, move(0,-1) reverts. Then drop() called. drop()
+---

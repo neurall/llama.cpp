@@ -1,0 +1,52 @@
+run 18388 | relfx1 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.09 t/s | prompt 21.7 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-23 12:29:10
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal code size. I should honor that: a single self-contained HTML file, as compact as possible while still being a genuinely playable Tetris.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris" category — like the ~140-byte-ish obfuscated ones (there's a famous tiny tetris in C, and JS ones around 200-500 bytes). I can't realistically hit those extreme golf numbers with a *good* playable version, but I can get quite compact — maybe under 1KB of actual code, or aim for something like ~700-900 bytes total HTML.
+
+Let me design a genuinely playable minimal Tetris:
+
+Core requirements:
+- 10×20 board
+- 7 tetrominoes (or fewer for golf — but real Tetris needs all 7; I could use a compact encoding)
+- Rotation (at least basic; wall kicks optional — for golf, skip kicks or do simple shift attempts)
+- Line clearing
+- Score
+- Keyboard controls: left/right/down, rotate, maybe hard drop
+- Next piece preview (optional for golf — maybe skip or include if cheap)
+- Gravity timer
+
+Compact encoding ideas:
+
+Pieces: I can encode each tetromino as a set of coordinates. A classic golf trick: define shapes via a string or via bit patterns. Another classic trick: use a single shape generator — all tetrominoes can be derived from rotations of a base? Not easily.
+
+A well-known compact approach: represent pieces as arrays of 4 cells each, e.g. using a string like "17,06,26,36" style. Or use the trick where each piece is defined by two numbers per rotation.
+
+Actually a very compact known trick: encode each tetromino as 4 binary numbers (16-bit rows) — but rotation then needs bit twiddling.
+
+Simpler golf approach: store pieces as arrays of [x,y] offsets in one rotation, and rotate by (x,y)->(y,-x) around a pivot. For I piece that's awkward with a single pivot; use the standard trick: rotate around a point, e.g., for each piece define cells relative to a pivot and rotate with (x,y) -> (y, x) or (x,y)->(-y,x) etc. The I piece needs a pivot between cells (like pivot at (1.5, 0.5)) — can handle with a formula using 2*x+... Hmm.
+
+Common minimal-tetris approach (like the famous "tetris in 140 bytes of C" style): use a fixed set of rotations precomputed. For JS golf, a popular approach:
+
+```js
+p=[[1,1,1,1,0...],...] // shapes as bitmaps
+```
+
+Let me think of a really compact representation. Each tetromino fits in a 4×4 box (or 3×3 for most, 4×2/2×4 for I). Encode each piece as a 16-bit number where bits map to a 4×4 grid. Then rotation = rotate the 4×4 bitmap. Rotating a 4×4 bitmap can be done with bit manipulation or by precomputing.
+
+Alternative super-compact: define all rotations of all 7 pieces as a flat array of numbers. That's 7 pieces × up to 4 rotations = 28 bitmaps (some pieces have fewer distinct rotations: O has 1, I/S/Z have 2, T/J/L have 4 → 1+2+2+2+4+4+4 = 19 distinct). But for golf simplicity, just store 4 rotations each (with duplicates) = 28 entries, each a 16-bit int. That's compact-ish: e.g., `R=[0x...,...]`.
+
+Actually, a cleaner golf trick used in famous minimal JS tetris: represent the board and piece as arrays, and use string-based shapes:
+
+```js
+S="0123 0123..." 
+```
+
+Hmm. Let me think about the classic approach from "Tetris in 140 bytes" ported to JS. There's a known tiny JS tetris around 400-500 bytes. Let me just write my own clean-ish golfed version.
+
+Plan:
+
+- Canvas for rendering (small canvas, e.g., 120×240 px, 12px cells). Rendering with fillRect.
+- Board: array of 20 strings? Or a 2D array. For golf, use a single array of length 200 (10×20), values 0 or color index.
+- Piece: current piece
+---

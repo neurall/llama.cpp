@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+ds-warm5-ledger-d1,ds,2,tetrisc,300,"-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe 'spec-depth=1,ledger=1'",--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt --env PERF_LEDGER=1
+ds-warm5-stress-d1,ds,2,tetrisc,300,"-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe 'spec-depth=1,race-stress=5'",--nothink --ctx 8192 --prompt @/p/bw/wt-main/fork/prompts/prompt-tetris-long.txt
+glm-ub4k-graphs-on,glm,1,pf12k,256,-ub 4096,
+glm-ub4k-graphs-off,glm,1,pf12k,256,-ub 4096,--env GGML_CUDA_DISABLE_GRAPHS=1

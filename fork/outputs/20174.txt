@@ -1,0 +1,72 @@
+run 20174 | dynhot_two_pool_keys | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 89.03 t/s | prompt 56.7 t/s | 1007 tokens | args: -np 1 --moe state=/tmp/runstate/dynab-q36-off.ini --moe sim-vram=3072 | power 220+280 W | 2026-10-28 07:41:58
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means a single HTML file (or minimal structure) that implements a playable Tetris game using HTML, CSS, and JavaScript. The goal is to minimize code size while maintaining core functionality (grid, pieces, rotation, movement, collision, line clearing, scoring, game over).
+
+2.  **Identify Core Requirements for Tetris:**
+   - 10x20 grid
+   - 7 tetromino shapes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Piece rotation
+   - Collision detection (walls, existing blocks)
+   - Line clearing
+   - Scoring
+   - Game over condition
+   - Controls (keyboard)
+   - Rendering (canvas or div-based)
+
+3.  **Minimize Code Strategy:**
+   - Use a single HTML file with inline CSS and JS.
+   - Use `<canvas>` for rendering (more compact than div-based).
+   - Use compact variable names and bitwise/array tricks where possible.
+   - Avoid external libraries.
+   - Keep logic minimal but functional.
+   - Use a compact representation for pieces (e.g., arrays of coordinates or bit patterns).
+   - Use a single loop for game logic.
+   - Minimize comments and whitespace.
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head><title>Tetris</title><style>body{margin:0;background:#000}canvas{display:block}</style></head>
+   <body><canvas id=c></canvas><script>
+   // Game state
+   const W=10,H=20;
+   const c=document.getElementById('c');
+   const ctx=c.getContext('2d');
+   c.width=W*10; c.height=H*10;
+   let grid=[];
+   for(let y=0;y<H;y++) grid[y]=[0];
+   // Actually, grid should be 2D array of 0/1 or colors
+   // Let's use 0 for empty, 1 for filled (or store colors)
+   // For simplicity, store 0/1 and map to colors later
+   // Better: store colors directly for line clearing
+   // Let's use a flat array or 2D array. 2D is easier.
+   // grid[y][x] = 0 or color index
+   // Colors: 1-7
+   // Pieces: define as arrays of [x,y] relative to center
+   // Rotation: standard matrix rotation or pre-defined shapes
+   // Pre-defined shapes are more compact:
+   const P=[
+     [[0,0],[1,0],[2,0],[3,0]], // I
+     [[0,0],[1,0],[0,1],[1,1]], // O
+     [[0,0],[1,0],[2,0],[1,1]], // T
+     [[0,0],[1,0],[1,1],[2,1]], // S
+     [[0,0],[1,0],[0,1],[1,1]], // Z (wait, Z is different)
+     // Let's fix shapes properly
+   ];
+   ```
+
+   Let's carefully define the 7 tetrominoes with their rotations precomputed or use a rotation function. Precomputing is more compact for code size.
+   Actually, a standard compact representation:
+   ```javascript
+   const T=[
+     [[0,0],[1,0],[2,0],[3,0]], // I
+     [[0,0],[1,0],[0,1],[1,1]], // O
+     [[0,0],[1,0],[2,0],[1,1]], // T
+     [[0,0],[1,0],[1,1],[2,1]], // S
+     [[0,0],[1,0],[0,1],[1,1]], // Z? No, Z is [[0,0],[1,0],[1,1],[2,1]]? Wait, Z is [[0,0],[1,0],[1,1],[2,1]]? Actually Z is [[0,0],[1,0],[1,1],[2,1]]? Let's check: Z shape: top row: 0,1; bottom row: 1,2. So [[0,0],[1,0],[1,1],[2,1]] is correct.
+     [[0,0],[1,0],[
+---

@@ -1,0 +1,58 @@
+run 17796 | rc1 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 53.15 t/s | prompt 59.1 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-10-22 15:47:08
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I'll keep it tiny as asked, but make it feel crafted rather than a bare rectangle: keep code small but add tasteful polish — a nice background, good typography pairing, keyboard controls, score/level/next piece, subtle animations — while staying reasonably small.
+
+Balance: "smallest" is the explicit ask. So I should deliver a genuinely compact single-file Tetris, but with craft: good type, a considered palette, micro-interactions. Maybe ~60-100 lines. Let me write tight but readable code.
+
+Design instincts: for a Tetris clone, the game itself is the subject, so the opening should be the playfield and a live score/HUD rather than a generic title block. I want a distinctive display face paired with a readable body/mono face. Palette: Tetris pieces have their own canonical colors, so let the pieces carry the color — background should be a deep desaturated blue-black with a subtle CRT scanline/grid ambient layer, which reads as arcade rather than a purple gradient. Type: a chunky arcade display face like "Bungee" or "Silkscreen" for the wordmark, paired with "Space Grotesk" for body/labels — the blocky display face matches the pixel-block subject, and Space Grotesk handles numbers and labels cleanly.
+
+Keep it small. Use canvas for the board. Minimal JS.
+
+Let me write it.
+
+Structure:
+- HTML with a canvas 10x20, side panel with score/lines/level/next, controls legend.
+- CSS: dark background with subtle grid + vignette + faint animated scanline.
+- JS: standard Tetris with SRS-ish simple rotation, 7-bag, ghost piece, hold maybe (keeps it bigger). Keep: move, rotate, soft drop, hard drop, hold (small addition, worth it). Lines, score, level, speed.
+
+Let me write compact code.
+
+```html
+<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>TETRIS</title>
+<link href="https://fonts.googleapis.com/css2?family=Bungee&family=Space+Grotesk:wght@400;500;700&display=swap" rel=stylesheet>
+<style>...</style>
+<canvas id=c width=300 height=600></canvas>
+...
+```
+
+Let me design the layout: a "cabinet" panel: left = playfield with bezel, right = stacked stat blocks (score big number, lines, level, next mini canvas, hold). Below: key legend with kbd chips that light up on keypress (micro-interaction!). Pause overlay, game over overlay with restart.
+
+Micro-interactions:
+- kbd chips flash when the corresponding key is pressed.
+- line-clear flash on canvas.
+- score number pops (scale) when it changes.
+- level-up flash.
+- hover on buttons.
+- subtle animated background: slow-moving grid + noise.
+
+Ambient background: layered — a faint tetromino-grid pattern that slowly drifts, plus a soft radial glow behind the board, plus scanlines. Keep it tasteful.
+
+Now the JS. Compact but correct.
+
+```js
+const S=15, W=10, H=20, c=document.getElementById('c'), x=c.getContext('2d');
+let g=Array.from({length:H},()=>Array(W).fill(0)), bag=[], p, nx, sc=0, ln=0, lv=1, t=0, ov=0, hold;
+```
+
+Piece definitions as strings for compactness. Use matrices.
+
+Standard approach: pieces defined as arrays of rotation states or use a rotate function on matrix.
+
+```js
+const P='I,J,L,O,S,T,Z'.split(','),
+SH={I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+J:[[1,0,0],[1,1,1],[0,0,0]],
+L:[[0,0,1],[1,1,1],[0,0,0]],
+O:[[1,1],[1,1]],
+S:[[0,1,1
+---

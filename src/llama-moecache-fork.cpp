@@ -60,6 +60,20 @@ static std::string hw_key(const std::string & key) {
     return pl.empty() ? key : pl + "." + key;
 }
 
+// a card's own name in a state key: its PCI address (0000_04_00_0), which stays with the card whatever order the devices are listed in and tells two cards
+// of one model apart; the device name (CUDA0) when the backend has no address, the link index when there is no device. Values measured per card (the VRAM a
+// start needs outside the pool, the link bandwidth) are stored under it: under the model name alone, two RTX 3090 overwrote each other (2026-10-28)
+static std::string dev_pci_id(ggml_backend_dev_t dev, int k) {
+    std::string id = "link" + std::to_string(k);
+    if (dev) {
+        ggml_backend_dev_props props = {};
+        ggml_backend_dev_get_props(dev, &props);
+        id = props.device_id ? props.device_id : ggml_backend_dev_name(dev);
+    }
+    for (char & c : id) { if (!isalnum((unsigned char) c)) { c = '_'; } }
+    return id;
+}
+
 static bool g_pred_train_now = false, g_pred_train_built = false;
 static uint64_t g_pred_epoch = 0, g_pred_epoch_built = 0;   // bumped when a layer's predictor is switched on or off
 // 2-GPU prefill: the second GPU's share of the experts in big batches (0: one GPU); set by the prefill tuner, baked into
@@ -2474,7 +2488,10 @@ void resource_probe(moe_cache * mc) {
         for (int k = 0; k < mc->n_links; ++k) {
             if (link_alone[k] <= 0) { continue; }
             const double seen = std::pow(2.0, std::round(2.0*std::log2(link_alone[k]))/2.0);
-            const std::string key = pre + ".link" + std::to_string(k);
+            // keyed by the card's PCI address, not the link's index: the index is the cache's order (link 0 = the card prompts go to, then the device
+            // order), so when that choice or the device order changes, a card's speed would be compared with another card's (PC1: 24.9 against 5.7 GB/s,
+            // a change of 4x) and the placement records dropped for nothing
+            const std::string key = pre + ".link." + dev_pci_id(mc->link_dev[k], k);
             std::string old;
             const double o = moe_state_get(mc->profile, key, old) ? atof(old.c_str()) : 0.0;
             if (o > 0 && (link_alone[k] >= 2*o || link_alone[k] <= o/2)) {
@@ -5729,8 +5746,10 @@ void llama_moe_cache_context_live_fork(const void * ctx, const llama_model * mod
 
 // cold: this start runs the max-batch probe (no stored timings), whose calibration graphs take ~100 MiB more outside the pool than a warm start
 // (GLM 3.0 140 against 49 MiB, MiMo 111 against 36, Qwen3.8 166 against 52, 2026-10-22): the two are stored apart
+// The card's PCI address is part of the key: two cards of one model (PC1's two RTX 3090) had the same key, so the second card's figure overwrote the
+// first's (35 over 290 MiB, 2026-10-28) and the next start left cuda0x4 a 99 MiB margin where the DSpark draft's setup needs 260 MiB: cudaMalloc failed at load.
 static std::string vram_key(ggml_backend_dev_t dev, bool cold) {
-    std::string gpu = ggml_backend_dev_description(dev);
+    std::string gpu = std::string(ggml_backend_dev_description(dev)) + "." + dev_pci_id(dev, 0);
     for (char & c : gpu) { if (!isalnum((unsigned char) c)) { c = '_'; } }
     const char * b = moe_opt("build-id");
     const std::string with = g_vram_others ? ".with" + std::to_string(g_vram_others >> 20) : "";   // a plain run keeps the key it always had

@@ -1,0 +1,57 @@
+run 20121 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 29.2 t/s | prompt 18.9 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 21:33:27
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need use canvas. Need implement tetrominoes, rotation, collision, line clear, gravity, keyboard. Need minimal code.
+
+Let's design compact single-file HTML.
+
+Canvas dimensions: 10 cols x 20 rows, block size 24 maybe. Canvas width 240 height 480. Use CSS body background. Use canvas.
+
+JS:
+const c=document.getElementById('c'), x=c.getContext('2d'), W=10,H=20,S=24;
+let b=Array(H).fill().map(()=>Array(W).fill(0)), p, score=0, over=false, drop=0;
+const shapes = [
+ [[1,1,1,1]], // I
+ [[1,1],[1,1]], // O
+ [[0,1,0],[1,1,1]], // T
+ [[1,0,0],[1,1,1]], // J? Actually shape
+ [[0,0,1],[1,1,1]], // L
+ [[0,1,1],[1,1,0]], // S
+ [[1,1,0],[0,1,1]] // Z
+];
+Need rotation. Use matrix rotate clockwise: m[0].map((_,i)=>m.map(r=>r[i]).reverse())? Let's verify. For matrix rows, clockwise rotation: new[r][c] = old[n-1-c][r]? Simpler: m[0].map((_, i) => m.map(row => row[i]).reverse())? Let's test 2x3 [[0,1,0],[1,1,1]]: m[0].map((_,i)=>m.map(row=>row[i]).reverse()) gives i=0: [0,1].reverse? Wait m.map(row=>row[i]) = [0,1], reverse => [1,0]; i=1: [1,1] reverse [1,1]; i=2: [0,1] reverse [1,0] => [[1,0],[1,1],[1,0]] which is clockwise? Original T: row0 010, row1 111. Clockwise should [[1,0],[1,1],[1,0]]? Let's visualize original:
+0 1 0
+1 1 1
+Rotate clockwise: 
+1 0
+1 1
+1 0? Actually coordinates: (0,1)->(1,0)? Hmm yes. Good.
+
+Need spawn piece at top. p={m: shape, x: Math.floor((W - shape[0].length)/2), y:0}. Need collision function. For each cell in m if 1, check x+col, y+row within bounds and b[y+row][x+col]==0. Need allow y negative? Spawn y=0. If collision at spawn -> game over. Need maybe y=-? no.
+
+Need draw. Use requestAnimationFrame or setInterval. Need gravity. Use drop timer. Simpler setInterval tick every 500ms. But keyboard rotation immediate. Need handle down arrow. Need line clear.
+
+Need implement move(dx,dy), rotate. Need lock piece when cannot move down. On lock, add to board, clear lines, spawn new. If spawn collision game over.
+
+Need scoring: lines cleared * 100 maybe. Need display score. Need maybe next? Not necessary.
+
+Need minimal code. Need ensure rotation can be blocked; if rotated collides, ignore. Need maybe wall kick? Not necessary.
+
+Need draw board and piece. Need draw grid? Minimal.
+
+Need controls: Arrow keys: left/right, up rotate, down soft drop, space hard drop? Could include. Need prevent default. Need restart on R. Need game over overlay.
+
+Need maybe use canvas with CSS. Need code compact.
+
+Let's craft robust code.
+
+HTML:
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tetris</title>
+<style>
+body{margin:0;background:#111;color:#fff;font:16px monospace;display:flex;align-items:center;justify-content:center;height
+---

@@ -1,0 +1,71 @@
+run 17808 | b13600 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.61 t/s | prompt 19.6 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-10-22 16:06:49
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count. This is an explicit user request that overrides my usual preference for elaborate visuals. I should honor the request: make a genuinely tiny, single-file Tetris that actually works.
+
+Let me think about what "smallest" means here. I'll aim for a compact but fully functional Tetris:
+- 10×20 board
+- 7 tetrominoes with rotation
+- Line clearing
+- Score, maybe levels/speed
+- Keyboard controls (left/right/down/rotate/drop)
+- Game over
+
+I can write it as an extremely golfed piece of code. Let me try to write it carefully and then compress.
+
+Approach: use a canvas, draw cells as filled rects. Represent pieces as arrays of rotation states or use a compact encoding.
+
+Classic golfed tetris approaches: represent each tetromino as a set of coordinates in a 4×4 or use bit patterns. A common trick: store pieces as arrays of 4 rotations, each rotation as array of [x,y] offsets, or as strings.
+
+Let me design:
+
+Board: 2D array 10×20, values 0 or color index 1-7.
+
+Pieces (tetromino shapes) with rotations. To golf, I can define each piece as a matrix and rotate by transposing+reversing. E.g., shape stored as array of strings like "01 01 11" etc. Or store as arrays of arrays.
+
+A very compact known trick: define shapes as:
+```js
+S=[[1,1,1,1],[[2,.2],[.2,2]]...]
+```
+Hmm, let me think of the classic "smallest tetris" implementations. There's a famous one: "Tetris in 140 bytes"? Not really functional. There's a well-known compact tetris in ~ a few hundred bytes of JS.
+
+Let me just write my own compact version.
+
+Plan:
+
+```html
+<body><canvas id=c width=200 height=400></canvas><script>...</script>
+```
+
+Actually to be smallest, maybe skip canvas and use a table of divs? Canvas is compact for drawing.
+
+Let me write the logic:
+
+```js
+D=10;H=20; // dims
+B=Array(H).fill(0).map(_=>Array(D).fill(0)); // board
+// shapes: 7 pieces, each with 4 rotations
+```
+
+Compact shape encoding: I'll encode each piece as a list of rotations where each rotation is a list of [x,y] cells relative to a pivot. Or simpler: store each piece as a 2D binary matrix in one rotation, and compute rotations by rotation function. Rotation of matrix: `m[y][x] -> rotated`. For square matrices (all tetromino bounding boxes can be made square: I is 4×4, O is 2×2 (or 4×4), others 3×3). Using square matrices makes rotation easy: rotate 90° clockwise: `r[x][N-1-y] = m[y][x]`.
+
+Define shapes as arrays of strings? e.g.:
+
+```js
+S=["0110/0110", ...]
+```
+
+Hmm. Let me define each piece as a single string with rows separated by something, using digits for cell presence. Actually a neat trick: encode all pieces in one long string.
+
+Classic compact encoding: each piece as 4 rotations × 4 rows... too much. Better: one rotation per piece, rotate programmatically.
+
+Shapes (one orientation):
+- I: 4×4: row 1 filled: `0010`? Let's use 4×4 with cells at y=1, x=0..3: "1111" placed in row index 1. Matrix: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]].
+- O: 2×2 all filled: [[1,1],[1,1]].
+- T: 3×3: [[0,1,0],[1,1,1],[0,0,0]].
+- S: [[0,1,1],[1,1,0],[0,0,0]].
+- Z: [[1,1,0],[0,1,1],[0,0,0]].
+- J: [[1,0,0],[1,1,1],[0,0,0]].
+- L: [[0,0,1],[1,1,1],[0,0,0]].
+
+Rotation clockwise for Nx
+---

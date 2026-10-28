@@ -1,0 +1,72 @@
+run 17600 | stock-b11799-official | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 11.9 t/s | prompt 36.6 t/s | 965 tokens | args: -c 1024 | power 475 W | 2026-10-21 22:57:41
+
+The user wants the smallest HTML Tetris game. Let me think about this. "Smallest" — they want minimal code. But I don't want to just dump a bare 400-byte blob with no care; the interesting challenge is packing real Tetris into as few bytes as possible while still feeling alive and playable.
+
+Let me write a compact but complete Tetris in a single HTML file.
+
+Let me craft it carefully.
+
+Classic minimal Tetris approach:
+
+```html
+<canvas id=c width=200 height=400></canvas>
+<script>
+// minimal tetris
+</script>
+```
+
+Let me write a genuinely small but working Tetris.
+
+Approach: use a grid array 10x20. Pieces defined by rotation via matrix rotation of a base shape string.
+
+Compact version:
+
+```html
+<canvas id=C width=260 height=520></canvas>
+<script>
+let g=S=0,r=0,c=6,p=P(),B=[];
+for(i=300)B[i]=0;
+function P(){return[...atob("...")]}
+```
+
+Hmm, let me do the classic trick: pieces as numbers.
+
+A well-known tiny Tetris:
+
+```js
+k=(x,y,r)=>(x*x*3+y*7+r)%4 // no
+```
+
+Let me use the known compact approach with a lookup of piece shapes as base64-ish strings.
+
+Simplest readable-but-tiny:
+
+```html
+<body style=margin:0 background:#111><canvas id=c width=250 height=500></canvas>
+<script>
+const W=10,H=20,S=25,cv=c,x=cv.getContext`2d`;
+let b=Array(W*H).fill(0),p,q,r,cy,cx,sc=0,ov=0,t=0;
+const P=[0xf0,0x99,0x3c,0x6c,0x36,0x66,0xc6]; // bit masks 4x4
+```
+
+Rotating 4x4 bit masks: rotate by extracting bits.
+
+Actually easier: define pieces as 4x4 bit masks, rotate function:
+
+```js
+const rot=m=>{let n=0;for(let y=0;y<4;y++)for(let x=0;x<4;x++)if(m>>(y*4+x))n|=1<<((3-x)*4+y);return n};
+```
+
+Wait for 4x4 rotation: new[(3-x)][y]? Let's define bit index = y*4+x. Rotate clockwise: new[x][3-y] = old[y][x]. So new index = x*4 + (3-y)... let me be careful.
+
+Rotation clockwise: pixel at (x,y) moves to (H-1-y, x) in new grid where H=4. So new_x = 3-y, new_y = x. So n |= 1 << (x*4 + (3-y)).
+
+That works. But the I piece in 4x4 mask: 0x0FF0 rotates to 0x2222. Good. O piece 0x0660 stays. Good. Others: T = 0x00F0? Let's define pieces in 4x4:
+
+- I: 0x0FF0
+- O: 0x6600? Let's use rows top-down: row0 bits 0-3 (mask 0x000F is row0 if index=y*4+x, bit y*4+x). Hmm bit index y*4+x means row0 = bits 0..3 = low nibble.
+
+- I: row1 filled → bits 4..7 → 0x00F0.
+- O: rows1,2 cols1,2 → bits 5,6,9,10 → 0x0660.
+- T: row0 cols1,2,3? Standard T: row0: X X X (cols 0,1,2)? Let's just do: row0 bits 4,5,6 (cols0,1,2) + row1 bit 9 (col1) → 0x0270? bits: 4,5,6,9 → 0b0010_0111_00
+---

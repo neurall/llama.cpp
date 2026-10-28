@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+q38ds0-i,qwen38,2,pf12k1k,128,--moe dense-split=0,
+q38ds1-i,qwen38,2,pf12k1k,128,--moe dense-split=1,
+q38dsone-i,qwen38,2,pf12k1k,128,"--moe dense-split=one,one-range=1",
+mimo-i,mimo,2,pf12k1k,128,,
+mimops1-i,mimo,2,pf12k1k,128,--moe prefill-split=1,

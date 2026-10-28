@@ -1,0 +1,3 @@
+run 19638 | deep-seek | pf2k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 40.16 t/s | prompt 146.1 t/s | 128 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 14:05:24
+
+<think>

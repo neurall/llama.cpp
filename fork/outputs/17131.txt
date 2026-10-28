@@ -1,0 +1,64 @@
+run 17131 | stock-b11742-official | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 12.87 t/s | prompt 42.4 t/s | 1024 tokens | args:  | power 220+280 W | 2026-10-20 05:25:26
+
+Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params) {` with no body. So I should note that the file appears incomplete/truncated.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Issues:
+- If `min_items > 0` and `max_items == 0`, returns "" — but that's contradictory (min > max). Actually if max_items == 0 and min_items > 0, that's an invalid schema (min > max). The function returns "" which would silently produce an empty rule. Hmm, actually wait — if max_items == 0, then min_items should be 0 too for a valid schema. If min_items > 0 and max_items == 0, the schema is invalid. Returning "" silently is questionable but arguably fine.
+- Potential integer overflow: `max_items - 1` when max_items is INT_MAX... wait, `has_max` is false when max_items == INT_MAX, so `max_items - 1` isn't computed in that branch. Actually it is computed: `has_max ? max_items - 1 : max_items` — if has_max is false, max_items is INT_MAX and we pass max_items unchanged. OK.
+- But wait: `min_items == 0 ? 0 : min_items - 1` — fine.
+- Edge case: `min_items == 1 && max_items == 1` with separator: result = item + " " + build_repetition(sep+item, 0, 0). build_repetition with max_items == 0 returns "". So result = item + " " + "" = item + " " — trailing space! Hmm, let me check: `build_repetition("(" + separator_rule + " " + item_rule + ")", 0, 0)` — max_items == 0 returns "". So result = item_rule + " " + "" = "item_rule ". Then min_items != 0 so no "?" appended. Result has a trailing space. In GBNF, trailing space might be harmless or might not parse. Actually wait, in GBNF, spaces in rules... the rule text "item " with trailing space — the grammar parser might treat trailing whitespace as insignificant. Probably fine but sloppy.
+
+Actually wait, let me re-check: for min_items == 1, max_items == 1, separator non-empty:
+- result = item_rule + " " + build_repetition(..., min_items-1 = 0, max_items-1 = 0)
+- build_repetition with max_items == 0 → ""
+- result = "item_rule " (with trailing space)
+- min_items != 0, so no "?" 
+- Final: "item_rule " — trailing space. Hmm. That's a bug-ish. Actually let me double check the original llama.cpp code... This looks like it's derived from llama.cpp's json-schema-to-grammar.cpp. In the original:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    ...
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " +
+---

@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+glm35ab-io,glm35,2,edit4c,1024,,
+glm35ab-o,glm35,2,tetrisc,1024,,
+glm35ab-io-ps,glm35,2,edit4c,1024,--moe pswap=1,
+glm35ab-o-ps,glm35,2,tetrisc,1024,--moe pswap=1,

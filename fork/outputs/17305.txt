@@ -1,0 +1,4 @@
+run 17305 | iq3sw | edit4c | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 221.03 t/s | prompt 13789.9 t/s | 15 tokens | args: -np 1 -c 4096 | power ? W | 2026-10-21 12:07:45
+
+<|im_end|>
+<|im_start|>assistant

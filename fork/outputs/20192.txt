@@ -1,0 +1,87 @@
+run 20192 | dynhot_two_pool_keys | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 91.14 t/s | prompt 58.2 t/s | 1007 tokens | args: -np 1 --moe state=/tmp/runstate/dynab-q36-pure.ini --moe sim-vram=3072 | power 220+280 W | 2026-10-28 07:52:14
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means a single HTML file (or minimal structure) that implements a playable Tetris game using HTML, CSS, and JavaScript. The goal is to minimize code size while maintaining core functionality (grid, pieces, movement, rotation, collision, line clearing, scoring, game over).
+
+2.  **Identify Core Requirements for Tetris:**
+   - 10x20 grid
+   - 7 tetromino shapes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Piece rotation
+   - Collision detection (walls, existing blocks)
+   - Line clearing
+   - Scoring
+   - Game over condition
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Minimization Strategies:**
+   - Use a single HTML file with inline CSS and JS
+   - Use Canvas for rendering (more compact than DOM manipulation)
+   - Use compact variable names
+   - Use bitwise/array representations for pieces
+   - Minimize comments
+   - Use efficient algorithms (e.g., matrix for grid, simple collision checks)
+   - Avoid external libraries
+   - Use `requestAnimationFrame` or simple loop for game tick
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head>
+     <style>
+       canvas { display: block; margin: auto; }
+       body { background: #000; color: #fff; font-family: monospace; text-align: center; }
+     </style>
+   </head>
+   <body>
+     <canvas id="c" width="200" height="400"></canvas>
+     <script>
+       // Game logic here
+     </script>
+   </body>
+   </html>
+   ```
+
+5.  **Develop Core Logic (Mental Refinement):**
+   - Grid: 2D array `g[20][10]` (0 = empty, 1 = filled)
+   - Pieces: Define as arrays of coordinates or bit patterns. Let's use a compact representation:
+     ```js
+     const P = [
+       [[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]], // I
+       [[1,1],[1,1]], // O
+       [[0,1,0],[1,1,1],[0,0,0]], // T
+       [[0,1,1],[1,1,0],[0,0,0]], // S
+       [[1,1,0],[0,1,1],[0,0,0]], // Z
+       [[1,0,0],[1,1,1],[0,0,0]], // J
+       [[0,0,1],[1,1,1],[0,0,0]]  // L
+     ];
+     ```
+     Actually, bit patterns or flat arrays might be smaller. Let's stick with 2D arrays for simplicity, but compress them.
+     Alternatively, use a single string/array representation and rotate via matrix transpose.
+     Let's use a compact piece definition:
+     ```js
+     const T = [
+       [1,1,1,1],
+       [1,1],
+       [0,1,0,1,1],
+       [1,0,1,1,1],
+       [1,1,0,1,1],
+       [1,0,0,1,1,1],
+       [0,0,1,1,1,1]
+     ];
+     ```
+     This is messy. Better to use standard 3x3 or 4x4 matrices with 0/1.
+     Let's use a more compact approach: define pieces as arrays of offsets, or just use a simple rotation function.
+
+     Actually, for minimal code, I'll use a 2D array for the board and a piece object with `x, y, shape, rotation`.
+     Rotation: `shape = shape.map((r,i) => r.map((_,j) => shape[j][i]))` (transpose) then reverse? Actually, standard rotation is transpose + reverse rows or columns. Let's use a simple function.
+
+     Let's draft the JS:
+     ```js
+     const c = document.getElementById('c');
+     const ctx = c.getContext('2d');
+     const W =
+---

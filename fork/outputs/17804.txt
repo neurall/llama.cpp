@@ -1,0 +1,45 @@
+run 17804 | rc1 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.16 t/s | prompt 19.3 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-10-22 15:58:15
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count. Let me think about what "smallest" means here: probably fewest characters/bytes in the HTML file. I should aim for a genuinely tiny, single-file Tetris that still works: piece movement, rotation, gravity, line clears, score maybe.
+
+Let me think about how to write an extremely compact Tetris in one HTML file.
+
+Classic approach: use a canvas, a piece set encoded compactly, keyboard controls, setInterval for gravity, collision detection, line clearing.
+
+Let me try to write it as compactly as possible while still being functional and playable. I'll aim for something like ~500-700 bytes, maybe less. There are famous tiny Tetris implementations. Let me construct my own.
+
+Key components:
+
+1. Canvas setup: `<canvas id=c width=200 height=400>` or use body with script. Actually to minimize, I can create canvas via JS: `document.body.appendChild(c=document.createElement('canvas'))` — but that's longer than just writing the canvas tag. Hmm, `<canvas width=120 height=240>` is short-ish. Actually `<canvas id=c>` then set width/height in JS? `c.width=...` — probably similar length. Let's just write `<canvas width=120 height=240></canvas>` — actually canvas tag doesn't need closing? In HTML, `<canvas>` requires closing tag. `<canvas width=120 height=240></canvas>` — that's fine. Or `<canvas width=120 height=240>` — unclosed canvas tag: the parser will treat subsequent content as canvas content... Actually canvas is not a void element; unclosed canvas will swallow the script element as its content (fallback content), which would break. So need `</canvas>`.
+
+Alternative: `document.write`? No. Or use `with(document)` tricks.
+
+Let me plan the game logic compactly.
+
+Board: 10 wide, 20 tall. Represent as array of rows, each row a string or array of 0/1... For line clearing and drawing, a 2D array of numbers is easiest. Or a flat array.
+
+Pieces: 7 tetrominoes. Compact encoding: each piece as a set of coordinates in a 4x4 or via bit patterns. A classic golf trick: encode each rotation state as a 16-bit number (4x4 grid), and rotate by bit manipulation. Or store all rotations.
+
+A very compact known approach: pieces as arrays of [x,y] offsets for one orientation, and rotation via (x,y)->(y,3-x) or similar within a bounding box. But different pieces have different bounding boxes (I is 4x4, O is 2x2 effectively, others 3x3). Rotation formulas differ.
+
+Simplest golf approach: define each tetromino as a 4x4 (or 3x3) matrix of bits, rotate matrix by transposing+reversing. Represent matrix as array of 4 numbers (bitmask rows). E.g., I piece horizontal: rows [0,0,15,0] in 4x4? Actually I piece in 4x4: row 1 = 1111. Let's use 4x4 for all pieces with proper placement:
+
+Standard SRS-ish initial orientations in a 4x4 box:
+- I: [[0,15,0,0]]? Hmm, I in 4x4: row index 1 filled: [0,15,0,0]. Rotations: vertical: [1,1,1,1] i.e., column 2 filled: [4,4,4,4]? Let's compute: rotating [0,15,0,0] 90° CW: transpose+reverse. Let me just define rotation function R(m) that rotates a 4x4 matrix: new[i][j] = old[3-j][i]. Then apply repeatedly.
+
+But storing 4x4 matrices for 7 pieces × maybe just one orientation and rotating is compact.
+
+Alternative super-compact encoding used in famous golfed tetris (e.g., the ~140-byte-ish ones are fake/incomplete; realistic minimal playable ones are ~400-800 bytes).
+
+Let me design my own carefully, prioritizing correctness and playability, then compress.
+
+Plan:
+
+```html
+<!doctype html><meta charset=utf8><title>T</title><body><canvas id=c width=120 height=240></canvas><script>...
+```
+
+Actually `<canvas width=120 height=240></canvas>` — attribute quotes optional. `id=c` needed for JS access via `c` global (elements with id become globals). Good.
+
+Cell size
+---

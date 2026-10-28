@@ -1,0 +1,4 @@
+run 18935 | spass11 | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 29.87 t/s | prompt 864.0 t/s | 32 tokens | args: -np 1 --moe dense-split=1,split-pieces=1 -b 131072 -ctxcp 0 | power 220+280 W | 2026-10-24 13:28:45
+
+We need answer user's request: "Do a code review of the following source file." They provided two files concatenated? // file: common/json-schema-to-
+---

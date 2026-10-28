@@ -1,0 +1,53 @@
+run 17594 | stock-b11799-official | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 6.11 t/s | prompt 10.3 t/s | 1005 tokens | args: -c 1024 | power 475 W | 2026-10-21 22:40:20
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. This is different from my usual inclination toward polished, memorable experiences. The user explicitly asks for "smallest" — so the goal here is minimalism, a code-golf artifact. I should honor that request literally: produce the tiniest functional Tetris in a single HTML file.
+
+But even in code golf, I can make it *good* — a tiny Tetris that still plays well: arrow keys, rotation, line clearing, score, game over, restart. Let me think about how small I can make it while keeping it genuinely playable.
+
+Let me design a minimal Tetris:
+
+Core requirements:
+1. 10×20 grid
+2. 7 tetrominoes with rotation
+3. Movement left/right/down, rotation, (maybe soft drop / hard drop)
+4. Line clear + score
+5. Game over detection
+6. Gravity/tick
+7. Rendering — canvas is usually smallest
+
+Approach for smallest code:
+
+**Piece representation trick**: Use a single 4×4 matrix per rotation? Or the classic trick: encode pieces as numbers and extract coordinates via bit tricks. A well-known golf trick: represent each piece as a 16-bit number (4×4 grid), rotate by bit manipulation.
+
+A famous minimal Tetris (the "tiny tetris in C" style) uses a rotation trick. In JS, a common compact approach:
+
+Pieces as arrays of rotations? That's verbose. Better: store each piece as a 16-bit integer where bits map to a 4×4 grid, and rotation = transpose+reverse which can be done with bit tricks... Actually rotating a 4×4 bitfield: rotation clockwise can be done by mapping bit index i to... For a 4×4 grid with bit index = row*4+col, rotating 90° CW: new[r][c] = old[3-c][r], so new bit index r*4+c gets old bit (3-c)*4+r. That's a permutation of 16 bits — can be done with a lookup or arithmetic.
+
+Alternative simpler approach used in many JS golf tetris: store pieces as arrays of [x,y] pairs, rotate by (x,y) -> (y, 3-x) or similar around a pivot. Actually simpler: store each piece as a list of coordinates in a 4×4 box, rotate with (x,y)→(y,x) then flip.
+
+Even simpler classic trick: define pieces via binary numbers per row.
+
+Let me think about the truly minimal well-known approach. There's a famous ~140-byte-ish tetris... realistic minimal JS tetris is around 400-600 bytes for playable with line clears.
+
+Let me write my own compact version:
+
+```js
+D=document,C=D.getContext... 
+```
+
+Plan:
+- Grid: array of 200 cells (10 wide, 20 tall), values 0 or color index.
+- Pieces: 7 shapes. Encode each as a 16-bit number. Rotation via a function.
+
+Compact piece encoding: Each piece = 16-bit int, bit i (0..15) = cell (i>>2, i&3)? Let's define shapes:
+
+I: 0x0F00 (row 0 filled: cells (0,0..3)) — bits 4,5,6,7 set → 0x00F0? Let's compute: bit index i = r*4+c. Row 0 = bits 0-3 = 0x000F. Hmm depends on ordering. Let me just say bit (r*4+c), value = 1<<(r*4+c).
+
+I piece horizontal: row 1 (to center-ish): bits 4-7 → 0x00F0.
+O: rows 1-2, cols 1-2: bits 5,6,9,10 → 0x0660.
+T: row 1 cols 0-2 + row 2 col 1: bits 4,5,6,9 → 0x0072.
+S: row1 cols1-2, row2 cols0-1: bits 5,6,8,9 → 0x0630.
+Z: row1 cols0-1, row2 cols1-2: bits 4,5,9,10 → 0x0360.
+J: row1 cols0-2, row2 col0: bits 4,5,6,8 → 0x0170? bits 4,5,6 = 0x70, bit 8 = 0x100 → 0x0170.
+L: row1 cols0-2, row2 col2: bits 4
+---

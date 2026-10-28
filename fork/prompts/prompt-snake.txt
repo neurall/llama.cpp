@@ -1,0 +1,1 @@
+generate smallest html snake game.

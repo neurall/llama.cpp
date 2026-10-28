@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+q36r128k-i,qwen36,1,pf128k,128,--moe sim-vram=3000,

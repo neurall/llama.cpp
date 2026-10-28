@@ -1,0 +1,102 @@
+run 19529 | um6g | pf60k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.29 t/s | prompt 546.2 t/s | 1000 tokens | args: -np 1 -lm mmap --moe pin-budget=96636764160 --moe dense-split=0,mode=cache | power 220+280 W | 2026-10-25 18:04:07
+
+Let me analyze the provided source code to find bugs that need fixing.
+
+Looking at the first file `common/json-schema-to-grammar.cpp`:
+
+1. In `build_repetition`, the logic looks mostly fine.
+
+2. In `build_min_max_int`, there's a `std::function` used with `uniform_range` - that's fine.
+
+3. Looking at `_visit_pattern` - the `unsupported_pattern` catch reverts rules via `_rules = std::move(rules_snapshot);` - wait, `rules_snapshot` is a copy (`auto rules_snapshot = _rules;`), so moving it is fine.
+
+4. In `_pattern_to_rule`, there's a potential bug: in the `{...}` handling:
+```cpp
+auto &last = seq.back();
+auto &sub = last.first;
+auto sub_is_literal = last.second;
+
+if (!sub_is_literal) {
+    std::string & sub_id = sub_rule_ids[sub];
+    if (sub_id.empty()) {
+        sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+    }
+    sub = sub_id;
+}
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+```
+
+Wait, there's a subtle bug here. `sub` is a reference to `last.first` which is `seq.back().first`. When `sub = sub_id;` is executed, `sub` (which is `seq.back().first`) becomes the rule id. Then `build_repetition(sub_is_literal ? ... : sub, ...)` uses `sub` which is now the rule id. That's correct behavior. But wait - if `sub_is_literal` is true, then `sub` is the literal text, and we quote it. That's fine.
+
+Hmm, but actually there's a bug: when `sub_is_literal` is false and we do `sub = sub_id`, then `seq.back().first` is now the rule id, and `seq.back().second` is still false. Then `seq.back().first = build_repetition(...)`. That's fine.
+
+Actually wait, let me look at the original llama.cpp code for this function to compare. The original code in llama.cpp's json-schema-to-grammar.cpp:
+
+```cpp
+} else if (c == '{') {
+    std::string curly_brackets = std::string(1, c);
+    i++;
+    while (i < length && sub_pattern[i] != '}') {
+        curly_brackets += sub_pattern[i];
+        i++;
+    }
+    if (i >= length) {
+        throw unsupported_pattern("unterminated curly brackets");
+    }
+    curly_brackets += '}';
+    i++;
+    auto nums = string_split(curly_brackets.substr(1, curly_brackets.length() - 2), ",");
+    int min_times = 0;
+    int max_times = std::numeric_limits<int>::max();
+    if (nums.size() != 1 && nums.size() != 2) {
+        throw unsupported_pattern("wrong number of values in curly brackets");
+    }
+    try {
+        if (nums.size() == 1) {
+            min_times = max_times = std::stoi(nums[0]);
+        } else {
+            if (!nums[0].empty()) {
+                min_times = std::stoi(nums[0]);
+            }
+            if (!nums[1].empty()) {
+                max_times = std::stoi(nums[1]);
+            }
+        }
+    } catch (const std::logic_error &) {
+        throw unsupported_pattern("invalid number in curly brackets");
+    }
+    if (seq.empty()) {
+        throw invalid_pattern("nothing to repeat");
+    }
+    auto &last = seq.back();
+    auto &sub = last.first;
+    auto sub_is_literal = last.second;
+
+    if (!sub_is_literal) {
+        std::string & sub_id = sub_rule_ids[sub];
+        if (sub_id.empty()) {
+            sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+        }
+        sub = sub_id;
+    }
+    seq.back().first = build_repetition(
+        sub_is_literal ? "\"" + sub + "\"" : sub,
+        min_times,
+        max_times,
+        ""
+    );
+    seq.back().second = false;
+}
+```
+
+Hmm, this matches the original. Wait, actually in the original llama.cpp code, there's a subtle issue with `sub_rule_ids.size()` being used for naming - if the same sub rule appears twice, the second time `sub_id` is not empty so no new rule is added. That's fine.
+
+Let me look at other parts. The `_not_strings` function:
+
+```cpp
+std::string _not_strings(const std::vector<std::string> & strings) {

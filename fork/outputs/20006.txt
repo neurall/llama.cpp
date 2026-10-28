@@ -1,0 +1,35 @@
+run 20006 | fix_first_pass_scratch_computed | pf8k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.84 t/s | prompt 1083.6 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-27 14:48:52
+
+<think>Let me carefully review this source file for bugs, issues, and potential improvements.
+
+Let me go through the code systematically.
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is not empty and `min_items == 0`, the result wraps in `(...)?`. But when `min_items > 0`, the separator-based repetition starts with `item_rule + " " + build_repetition(...)`. This seems correct for building `item (sep item)*` patterns.
+   - When `max_items == 0`, returns empty string - correct.
+   - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct.
+   - The separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. When `min_items == 0`, this builds `item (sep item)*` which is correct. When `min_items == 1`, it builds `item (sep item){0,...}` which is correct. When `min_items == 2`, it builds `item (sep item){1,...}` which is correct.
+
+2. **`build_min_max_int` function:**
+   - This is complex. Let me check edge cases.
+   - When both min and max are set and both negative: it negates and swaps - correct.
+   - When min is negative and max is positive: handles negative part then continues with positive part - correct.
+   - The `uniform_range` lambda: handles digit-by-digit range matching. Let me check for potential issues.
+   - In `uniform_range`, when `from[i] == to[i]` for all positions, it outputs the literal string. When they differ at position `i`, it handles the branching.
+   - Potential issue: `to[i] - 1` when `to[i]` is `'0'` would give `'/'` which is not a digit. But this would only happen if `from[i] > to[i]` which shouldn't happen for valid ranges.
+   - Actually wait, let me think about this more carefully. If `from` and `to` have the same prefix up to position `i`, and `from[i] < to[i]`, then we need to handle the case where `from[i] == to[i]` (same digit) vs `from[i] < to[i]` (different digits). The code handles this correctly.
+
+3. **`_pattern_to_rule` function:**
+   - The `join_seq` lambda: it joins items with spaces, merging consecutive literals. But there's a subtle issue - when items are joined with spaces, the result is marked as `false` (not a literal). This means the entire sequence is treated as a rule reference, not a literal. This seems correct since the sequence may contain rule references.
+   - The `to_rule` function: if `is_literal`, wraps in quotes; otherwise returns as-is. This is correct.
+   - In the character class handling: it reads until `]`, handling escapes. Looks correct.
+   - In the quantifier handling (`*`, `+`, `?`): it applies to the last item. But there's a potential issue - if the last item is a literal, it wraps it in quotes before appending the quantifier. This seems correct.
+   - In the `{n,m}` handling: it creates a sub-rule for non-literal items. The sub-rule naming uses `name + "-" + std::to_string(sub_rule_ids.size())`. This could potentially collide with other rule names.
+   - The literal accumulation loop: it handles escapes, quotes, and non-literal characters. The condition for continuing to accumulate literals is complex. Let me check:
+     ```
+     !is_non_literal(sub_pattern[i]) &&
+     (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))
+     ```
+     This means: current char is not a special char, AND (we're at the end, OR literal is empty, OR next char is '.', OR next char is not special). This seems like it's trying to handle cases where a special char follows a literal - it should stop accumulating. But the `literal.empty()` condition means if we haven't accumulated anything yet, we continue even if the next char is special. This could be problematic - if the current char is not special but the next is, and literal is empty, we'd add the current char and then on the next iteration, the current char would be special and we'd break. Actually wait, that's fine - we'd add one non-special char and then break on the next iteration.
+
+     Actually, I think there's a subtle issue here. Consider the pattern `a|b`. When

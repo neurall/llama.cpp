@@ -1,0 +1,68 @@
+run 19474 | rc5v | pf400k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 11.92 t/s | prompt 362.6 t/s | 1000 tokens | args: -np 1 -lm mmap --moe pin-budget=53687091200 | power 220+280 W | 2026-10-25 13:31:02
+
+        {"--spec-draft-threads-batch", "-tbd", "--threads-batch-draft"}, "N",
+        "number of threads to use during batch and prompt processing (default: same as --threads-draft)",
+        [](common_params & params, int value) {
+            params.speculative.draft.cpuparams_batch.n_threads = value;
+            if (params.speculative.draft.cpuparams_batch.n_threads <= 0) {
+                params.speculative.draft.cpuparams_batch.n_threads = std::thread::hardware_concurrency();
+            }
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-draft-cpu-mask", "-Cd", "--cpu-mask-draft"}, "M",
+        "Draft model CPU affinity mask. Complements cpu-range-draft (default: same as --cpu-mask)",
+        [](common_params & params, const std::string & mask) {
+            params.speculative.draft.cpuparams.mask_valid = true;
+            if (!parse_cpu_mask(mask, params.speculative.draft.cpuparams.cpumask)) {
+                throw std::invalid_argument("invalid cpumask");
+            }
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-draft-cpu-range", "-Crd", "--cpu-range-draft"}, "lo-hi",
+        "Ranges of CPUs for affinity. Complements --cpu-mask-draft",
+        [](common_params & params, const std::string & range) {
+            params.speculative.draft.cpuparams.mask_valid = true;
+            if (!parse_cpu_range(range, params.speculative.draft.cpuparams.cpumask)) {
+                throw std::invalid_argument("invalid range");
+            }
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-draft-cpu-strict", "--cpu-strict-draft"}, "<0|1>",
+        "Use strict CPU placement for draft model (default: same as --cpu-strict)",
+        [](common_params & params, int value) {
+            params.speculative.draft.cpuparams.strict_cpu = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-draft-prio", "--prio-draft"}, "N",
+        string_format("set draft process/thread priority : 0-normal, 1-medium, 2-high, 3-realtime (default: %d)\n", params.speculative.draft.cpuparams.priority),
+        [](common_params & params, int prio) {
+            if (prio < 0 || prio > 3) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.speculative.draft.cpuparams.priority = (enum ggml_sched_priority) prio;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-draft-poll", "--poll-draft"}, "<0|1>",
+        "Use polling to wait for draft model work (default: same as --poll)",
+        [](common_params & params, int value) {
+            params.speculative.draft.cpuparams.poll = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-draft-cpu-mask-batch", "-Cbd", "--cpu-mask-batch-draft"}, "M",
+        "Draft model CPU affinity mask. Complements cpu-range-draft (default: same as --cpu-mask)",
+        [](common_params & params, const std::string & mask) {
+            params.speculative.draft.cpuparams_batch.mask_valid = true;
+            if (!parse_cpu_mask(mask, params.speculative.draft.cpuparams_batch.cpumask)) {
+                throw std::invalid_argument("invalid cpumask");
+            }
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-draft-cpu-range-batch", "-Crbd", "--cpu-range-batch-draft"}, "lo-hi",
+        "Ranges of CPUs for affinity. Complements --cpu-mask-draft

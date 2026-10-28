@@ -1,0 +1,72 @@
+run 18966 | spass19 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 56.2 t/s | prompt 126.1 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-24 15:26:42
+
+The user wants the smallest HTML Tetris game. Let me think about what "smallest" means — minimal code, single file. But I don't want to just dump a cramped 1KB blob. The interesting challenge is: smallest code that's still a genuinely good Tetris.
+
+Let me write compact but working Tetris in a single HTML file.
+
+Let me write it carefully.
+
+```html
+<canvas id=c width=240 height=480></canvas>
+<script>
+// Tetris
+</script>
+```
+
+Let me write compact Tetris:
+
+```js
+const B=document.body,c=c0=c,v=c.getContext`2d`,S=4,W=10,H=20;
+c.style.cssText=`image-rendering:pixelated;height:96vh`;
+let g=Array(H*W),p,P,x,y,s=0,score=0,lv=1,lines=0,t=0,ov=0;
+const T=[0x0C00,0x0606,0x0E20,0x0C60,0x0E02,0x02E0,0x00F0].map(n=>{
+  let a=[];for(let i=0;i<4;i++)a.push([(n>>(i*4)&3)-1, ...]);
+});
+```
+
+Hmm, let me use a simpler representation. Classic approach: define pieces as 4x4 bit patterns per rotation, or use the matrix rotation trick.
+
+Compact approach: pieces defined as arrays of 4 numbers (bitmask rows) in a 4x4 grid, rotate by bit manipulation.
+
+Actually the smallest classic: define each piece as a string of coordinates? Let's use the well-known trick:
+
+```js
+const P = "00F0 0606 0E20 0C60 0E02 02E0 00F0"
+```
+
+Wait, standard tetromino bitmasks in 4x4:
+- I: rows 0000,1111,0000,0000 → 0x0F00
+- O: 0110,0110 → 0x6600
+- T: 0, 111, 100 → 0x0E40? Let's do rows top to bottom as nibbles: row0<<12|row1<<8|row2<<4|row3.
+  - T: row1=111=7, row2=100=4 → 0x0740
+  - Actually let me just use 3x3 for non-I, 4x4 for I... complexity.
+
+Alternative minimal approach that's very common and short: use the "rotation by coordinate transform" with piece definitions as arrays of [x,y] offsets.
+
+```js
+const P=[[[0,0],[1,0],[2,0],[3,0]], ...]
+```
+That's long.
+
+Even shorter classic trick:
+```js
+const P = "1f 33 72 63 27 0f".split(' ')  // nah
+```
+
+Let me use the well-known minimal Tetris approach with a single number per piece encoding 4 cells in a 4x4 grid (16 bits), and rotate via bit ops on 4x4.
+
+Rotation of a 4x4 bitmask: transpose then reverse rows.
+
+```js
+r=(m,k=0)=>{for(let i=0;i<4;i++)for(let j=0;j<4;j++)if(m>>i*4+j&1)k|=1<<(15-j*4-i);return k}
+```
+Hmm that's transpose (reflect across main diagonal). Combined with horizontal flip gives rotation. Let's define rotate = transpose + reverse each row:
+
+For a 4x4 grid with bit index = y*4+x (y row from top). Rotate clockwise: new[y][x] = old[3-x][y].
+
+```js
+const R=m=>{let n=0;for(let y=0;y<4;y++)for(let x=0;x<4;x++)if(m>>(3-x)*4+y&1)n|=1<<y*4+x;return n}
+```
+
+That's compact enough. 4 rotations
+---

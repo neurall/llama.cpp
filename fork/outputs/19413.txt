@@ -1,0 +1,63 @@
+run 19413 | rc5 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.69 t/s | prompt 8.1 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-25 09:21:09
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. However, I still want it to be a genuinely playable, complete Tetris: movement, rotation, line clearing, scoring, game over, next piece maybe.
+
+Let me think about what "smallest" means here. The user asked for the smallest HTML Tetris. I should write extremely compact code — code golf style. Single HTML file, minimal markup, canvas-based rendering, terse JS.
+
+Let me design a minimal Tetris:
+
+Core requirements for a real Tetris:
+1. 10×20 grid
+2. 7 tetrominoes with rotation
+3. Gravity (falling)
+4. Left/right movement, rotation, soft drop (down)
+5. Line clear detection and removal
+6. Game over when spawn collides
+7. Score display
+
+The classic minimal Tetris approach: use a canvas, draw cells as filled rects. Represent pieces as arrays of coordinates or as bit patterns.
+
+A well-known ultra-compact approach: encode each tetromino as a 4×4 or use rotation via matrix transpose. A common trick: store each piece as a 2D array and rotate by transposing + reversing rows.
+
+Let me write compact code. I'll aim for something genuinely tiny but readable-ish, maybe with minimal compression. The user said "smallest" — I'll go for real minimality but keep it functional and even add score.
+
+Let me draft:
+
+```html
+<body onload="setInterval(f,300)"><canvas id=c width=100 height=200></canvas><script>
+D=document,W=D.getElementById('c').getContext('2d'),G=[],S=0
+for(y=0;y<20;y++)G[y]=[]
+P=[[1,3],[[6,7,11],[5,7,6,8]],[[4,5,6,7],[1,5,9,13]],[[1,2,5,6],[5,6,9,10]],[[1,5,6,7],[1,2,6,10]],[[5,6,8,9],[2,5,6,9]],[[6,7,9,10],[4,5,9,10]]]
+...
+```
+
+Hmm, let me think about the piece encoding. A very compact encoding: each piece as a list of cell offsets in a 4×4 grid (0-15), with two rotation states each (or use rotation function).
+
+Actually a classic trick: represent pieces as binary numbers in a 4×4 matrix and rotate with bit manipulation. Or store pieces as arrays of [x,y] pairs and rotate around a pivot.
+
+Simplest robust approach: store each of the 7 pieces as a 2D matrix (array of arrays), rotate via `m[0].map((_,i)=>m.map(r=>r[i]).reverse())`.
+
+Compact piece definitions as strings? E.g., each piece as a string of 16 chars "0"/"1"? That's 7×16 = 112 chars. Or as arrays of numbers.
+
+Alternative compact encoding: each piece = array of 4 [x,y] pairs. Rotation: (x,y) -> (y, 3-x) or similar within a bounding box... but that changes shape center. Better to use matrix rotation.
+
+Let me define pieces as matrices:
+
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[1,1,1],[0,1,0]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+
+Compact: `P=[[[1,1,1,1]],[[1,1],[1,1]],[[1,1,1],[0,1,0]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]]]`
+
+That's fine. Rotation function: `R=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse())`.
+
+Game loop: piece falls every N ms. Keyboard: arrows for left/right/down, up for rotate.
+
+Collision check: for each cell of piece matrix at position (x,y), check bounds and grid.
+
+Line clear: filter rows that are full,
+---

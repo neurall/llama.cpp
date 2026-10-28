@@ -1,0 +1,71 @@
+run 18389 | relfx1 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.1 t/s | prompt 18.0 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-23 12:31:07
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count. Let me think about what "smallest" means here: probably fewest characters/bytes in the HTML file. I should aim for a genuinely tiny, single-file Tetris that still works: piece movement, rotation, gravity, line clears, score, game over.
+
+Let me think about how to write ultra-compact Tetris in JavaScript.
+
+Classic approach: use a canvas, a grid array, tetromino definitions as compact data.
+
+Key tricks for golfing:
+- Use `document.body.appendChild(c)` or even write canvas via `document.write`.
+- Use short variable names.
+- Encode tetromino shapes compactly. A common trick: shapes as arrays of rotations, or generate rotations by rotating a matrix.
+- Use `setInterval` for gravity, keydown for movement.
+- Draw with fillRect.
+
+Let me try to write a really compact version. Known minimal Tetris implementations exist around 200-500 bytes of JS. Let me craft one myself, carefully, ensuring correctness.
+
+Plan:
+
+```html
+<body><canvas id=c width=200 height=400><script>...
+```
+
+Actually we can be clever: `<canvas id=c>` then script.
+
+Grid: 10 wide, 20 tall. Represent grid as array of 200 cells (0 or color index). Current piece: shape matrix + position.
+
+Tetromino shapes: encode as strings. E.g., shapes in a compact form. A classic golfed approach:
+
+```js
+D=[[1,1,1,1,0],...]
+```
+
+Alternative: use the "SRS via rotation of NxN matrix" trick. Define each tetromino as a square matrix (I in 4x4, others in 3x3 or 2x2), rotate by transposing+reversing.
+
+Compact encoding: each shape as a binary number with bit positions. E.g., for 3x3 shapes, 9 bits; I piece 4x4 = 16 bits; O 2x2... Actually O can be 2x2 within a 4-wide? Let's simplify: use 4x4 for all? That wastes but simplifies rotation. Hmm, but for golf, maybe encode shapes as arrays of [x,y] offsets? 
+
+A very compact known trick: define shapes as strings like "0111 1110" etc. Let me think of the classic minimal tetromino data:
+
+Common golfed Tetris (e.g., from code-golf StackExchange) uses something like:
+
+```js
+b=[[7,0],[3,1],[5,2],[9,3],[4,4],[1,5],[8,6]] // piece types with color
+```
+
+Hmm. Let me design my own clean-but-tiny version. I'll aim for maybe ~600-800 bytes total HTML. That's impressively small while fully functional.
+
+Let me write it:
+
+```html
+<body onload=Z()><canvas id=c width=120 height=240><script>
+```
+
+Wait, canvas needs explicit size; default is 300x150. We can set via attributes: `<canvas width=99 height=198>`? Grid 10x20, cell 9px? Let's use cell size 15: canvas 150x300. Or cell 10: 100x200. Small canvas = smaller attribute text? "width=100 height=200" vs "width=150 height=300" — same length roughly. Use 10px cells: crisp.
+
+Actually to golf further: we can set canvas size in JS: `c.width=100;c.height=200` — but attribute is shorter: `<canvas width=100 height=200>`.
+
+Even shorter: we could avoid canvas and use a `<pre>` with text characters! Text-based Tetris: grid of characters like "█" or "[]". Using innerHTML string building. That might be smaller than canvas drawing code? Canvas: `x.fillRect(...)` per cell — loop over 200 cells each frame. Text: build a string of 200 chars, set `p.textContent`. Hmm.
+
+Text approach: each frame, compose string: for each cell, if filled use "■" else "·"? Actually we can build with map/join. Colors lost, but "smallest" is the goal. But visual quality... The user asked for smallest; I'll still make it look decent. Canvas with colors is nicer. Let me weigh.
+
+Canvas approach code:
+
+```js
+C=c.getContext('2d')
+```
+
+Drawing: `C.fillStyle=...;C.fillRect(px,py,10,10)`.
+
+Per frame: clear + draw grid + draw piece
+---

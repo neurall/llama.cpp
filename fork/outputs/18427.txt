@@ -1,0 +1,26 @@
+run 18427 | relfx1 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 10.7 t/s | prompt 272.7 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 12:55:04
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 0` we return early, so `max_items - 1` is safe. OK.
+   - Actually wait — if `min_items == 0 && max_items == 1` with a separator, it returns `item_rule + "?"` — correct since max 1 item means no separator needed.
+   - Hmm, but what about `min_items == 1 && max_items == 1`? Falls to the general case: `item_rule (sep item_rule){0,0}` — that generates `{0,0}` repetition which is weird but technically matches zero times. Actually `{0,0}` in GBNF... might be invalid or match empty. This could produce `item_rule ("sep" item_rule){0,0}` which is fine semantically (matches just item_rule) but ugly. Minor.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead.
+   - `decimals_left = 16` default. The recursion for negative numbers: `build_min_max_int(-max_value, -min_value, ...)` — careful with `min_value == std::numeric_limits<int64_t>::min()`: negating INT64_MIN is UB! Let me check: in the `has_min && has_max` branch, `min_value < 0 && max_value < 0` → `-max_value, -min_value`. If `min_value == INT64_MIN`, then `has_min` is false (since `min_value != std::numeric_limits<int64_t>::min()` is the definition of has_min)... wait, `has_min = min_value != std::numeric_limits<int64_t>::min()`. So if min_value is INT64_MIN, has_min is false, and we don't enter the `has_min && has_max` branch. OK so negation of INT64_MIN can't happen in that branch since has_min would be false. But wait — in the `has_min` branch: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — here `-min_value` where min_value could be... min_value < 0 and has_min true, so min_value != INT64_MIN, so -min_value is safe. OK.
+   - In `has_max` branch: `build_min_max_int(-max_value, ...)` where max_value < 0 — max_value != INT64_MAX (has_max true), but could max_value be INT64_MIN? If max_value == INT64_MIN, has_max would be false. So safe.
+   - Hmm wait, actually there's an edge: `min_value < 0` in the has_min && has_max branch: `-min_value` — min_value != INT64_MIN because has_min. Safe. Good.
+   - `std::stoll(min_s.substr(1))` — could overflow? min_s is a string of min_value which fits in int64_t, substr(1) removes first digit, so the remaining number is smaller. Safe.
+   - The `uniform_range` lambda captures by reference and recurses via `std::function` — fine.
+   - Potential issue: `more_digits(0, decimals_left - 1)` when `decimals_left` is 1 → `more_digits(0, 0)` → outputs `[0-9]{0}` — a zero-width repetition. `{0}` might not be valid in GBNF? Actually in the grammar format used (llama.cpp GBNF), `{0}` might be problematic. Hmm, `less_decimals = std::max(decimals_left - 1, 1)` so decimals_left - 1 could be 0 when decimals_left == 1. `more_digits(0, 0)` outputs `[0-9]` then since min==max==0... wait: `if (min_digits == max_digits && min_digits == 1) return;` — min_digits is 0,
+---

@@ -1,0 +1,6 @@
+run 18847 | ncard5 | pf15k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 140.74 t/s | prompt 6533.3 t/s | 64 tokens | args: -np 1 --moe dense-split=1 | power 220+280 W | 2026-10-23 22:53:46
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants a code review of two provided source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. The code appears to be part of a larger C++ project (likely Llama.cpp or similar,
+---

@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+ds-i-pin101,ds,2,pfbest1k,1024,,
+ds-i-sp1-pin101,ds,2,pfbest1k,1024,"-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1",
+ds-i-sp2-pin101,ds,2,pfbest1k,1024,"-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe spec-depth=2",
+ds-i-sp3-pin101,ds,2,pfbest1k,1024,"-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 3 --moe spec-depth=3",

@@ -1,0 +1,37 @@
+run 19371 | rc5 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.7 t/s | prompt 20.8 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-25 08:47:29
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and looking decent (minimal but not ugly).
+
+Let me think about what "smallest" means here. The classic minimal Tetris implementations in JS are around 300-500 bytes for extremely stripped versions (like the famous "tetris in 140 bytes" or the ~500 byte ones). But those are barely playable. A good balance: a compact but fully playable Tetris — piece rotation, movement, drop, line clearing, score, game over, restart — in maybe 600-900 bytes of code, minified-ish but readable enough.
+
+Let me design it:
+
+- Canvas rendering, small grid (10x20 standard, or maybe smaller like 8x16 to save bytes? Standard 10x20 is fine).
+- Pieces: use the classic 7 tetrominoes. A compact way: encode each piece as a 4x4 matrix or as coordinate lists. A very compact trick: represent pieces as binary numbers per rotation, or use the "piece shapes as strings" approach.
+
+A well-known compact approach: shapes defined as arrays of arrays of [x,y] offsets, or as bit patterns. Another famous trick: define all rotations via a single shape and rotate mathematically: rotate (x,y) -> (y, -x) or similar, then normalize. That saves a lot.
+
+Compact piece representation: each piece as a list of 4 cells in a 4x4 box, rotation by transforming coordinates. E.g., piece I: [[0,1],[1,1],[2,1],[3,1]] in a 4x4; rotate: (x,y) -> (3-y, x) or (y, 3-x)... Let me think.
+
+Standard rotation within an N×N box: rotating clockwise maps (x, y) -> (N-1-y, x). For a 4x4 box with I piece horizontal at y=1: cells (0,1),(1,1),(2,1),(3,1). Rotate CW: (x,y)->(3-y,x): (0,1)->(2,0), (1,1)->(2,1), (2,1)->(2,2), (3,1)->(2,3). That's vertical I at x=2. Good.
+
+But different pieces have different bounding boxes: I is 4x4, O is 2x2 (or 4x4 with cells), others are 3x3. To keep it simple, use 4x4 for all? O in 4x4 rotating would move around — bad. Alternative: use per-piece box size. Or use the classic trick: define pieces as strings.
+
+A very compact known approach (from code golf tetris):
+
+```js
+const P = [
+  [[1,1,1,1]], // I
+  [[1,1],[1,1]], // O
+  ...
+];
+```
+
+And rotate by transposing + reversing rows. Rotation of matrix M clockwise = transpose then reverse each row (or reverse rows then transpose). For square matrices this works. For I (1x4), need 4x4 representation. So represent I as 4x4 with one row filled. O as 2x2 (rotation invariant). Others 3x3.
+
+So pieces as matrices of varying sizes, each with its own size. Rotation: for square matrix, rotate CW: `M[y][x]` -> new matrix where `new[x][N-1-y] = M[y][x]`. Compact: `r=m=>m.map((r,i)=>r.map((c,j)=>m[j][m.length-1-i]))` — wait let me get it right.
+
+Rotate CW: new[i][j] = old[N-1-j][i]. Check: old row 0 becomes new column N-1... Let's verify with I piece 4x4: old has row 1 filled: old[1] = [1,1,1,1]. new[i][j] = old[3-j][i]. new[0][?]... For new[0][0] = old[3][0] = 0. Hmm, that gives vertical column at... new[i][j]=old[3-j][i]; filled when 3-j==1, i.e., j==2, any i. So column j=2 filled for all rows i=0..3. Vertical I at column 2. Correct CW rotation. 
+
+So rotate CW function:
+---

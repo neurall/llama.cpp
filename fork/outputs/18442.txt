@@ -1,0 +1,57 @@
+run 18442 | relfx1 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.86 t/s | prompt 552.0 t/s | 1024 tokens | args: -np 1 --moe dense-split=one | power 220+280 W | 2026-10-23 14:01:17
+
+Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears truncated)
+
+The second file appears to be cut off mid-function (`static bool spec_types_is_default(const common_params & params) {` and then it just ends). So I should note that the file appears truncated and focus my review on what's provided.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Issues:
+- If `min_items > 0` and `max_items == 0`, this is contradictory (min > max). The function returns "" silently. Actually wait, if max_items == 0 and min_items > 0, that's an invalid schema (min > max). The function returns "" which would produce an empty rule. Hmm, actually returning "" for max_items == 0 means "match nothing" — but if min_items > 0, the schema is unsatisfiable. This might be intentional (empty string means the repetition matches nothing), but it silently ignores min_items > 0. Actually in GBNF, an empty rule content might be invalid. Let me think... `_add_rule(rule_name, "\"[\" space " + build_repetition(...) + " space \"]\"")` — if build_repetition returns "", the rule becomes `"[" space  space "]"` which has double space but is probably still parseable. Actually "space" is a rule name, so `"[" space  space "]"` would be two space rules adjacent, fine.
+
+- Negative min_items: if min_items is negative (schema validation should prevent this, but the code doesn't check), `{`-1,...`}` would be generated. For arrays, `arr.min_items` comes from schema; presumably validated elsewhere.
+
+- `min_items == 1 && max_items == 1` case: falls to the `{1,1}` branch — produces `{1,1}` which is fine but could be simplified. Actually wait: `min_items == 0 && max_items == 1` returns `item_rule + "?"`. For min=1, max=1, it goes to the general branch producing `{1,1}`. That's correct but verbose. Minor.
+
+- Potential issue: when `min_items > 0` and separator non-empty and `max_items == std::numeric_limits<int>::max()`, recursion: `build_repetition(sep_item, min_items - 1, max_items)` — max_items stays INT_MAX, fine. But each recursion level wraps in parens: `(sep item)` repeated min_items-1 times... Actually the recursion builds `item (sep item){min-1,}` — wait no. Let me trace: `build_repetition(item, 3, INT_MAX, sep)` → `item + " " + build_repetition("(sep item)", 2, INT_MAX)` → `(sep item)` + ... hmm, `build_repetition("(sep item)", 2, INT_MAX)` with empty separator → returns `(sep item){2,}`. So result is `item (sep item){2,}`. Good.
+
+- For min_items == 0 with separator: `item (sep item){0, max-1}` wrapped in `(...)?`. Wait: `build_repetition("(sep item)", 0, max-1)` → `(sep item){0,max-1}`. Then result = `item (sep item){0,max-1
+---

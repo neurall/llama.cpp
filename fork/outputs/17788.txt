@@ -1,0 +1,80 @@
+run 17788 | rc1 | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 85.68 t/s | prompt 86.9 t/s | 1007 tokens | args: -np 1 --moe sim-vram=3000 | power 280+280 W | 2026-10-22 15:41:18
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the *smallest* HTML Tetris game. This means I need to minimize code size while keeping it functional as a Tetris game. It should be a single HTML file (or as close as possible) with inline CSS and JavaScript.
+
+2.  **Key Requirements for Tetris:**
+   - Grid/board (typically 10x20)
+   - Tetromino pieces (7 shapes)
+   - Movement (left, right, down, rotate)
+   - Collision detection
+   - Line clearing
+   - Game over condition
+   - Score tracking (optional but good)
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Minimization Strategies:**
+   - Use a single `<canvas>` for rendering
+   - Minimize variable names
+   - Use compact logic (bit manipulation, arrays, loops)
+   - Avoid external libraries
+   - Inline everything in one file
+   - Use modern JS features (arrow functions, template literals, etc.)
+   - Remove comments, whitespace, and unnecessary features
+   - Use a compact representation for pieces (e.g., bitmasks or arrays)
+
+4.  **Core Logic Design (Mental Draft):**
+   - Board: 10x20 array of 0/1
+   - Pieces: 7 tetrominoes, each with rotation states
+   - Current piece: position, shape, rotation
+   - Controls: arrow keys + space for drop
+   - Game loop: update piece, check collision, clear lines, spawn new piece
+   - Rendering: draw board and piece on canvas
+
+   Let's think about compact piece representation:
+   Standard Tetris pieces can be represented as arrays of offsets or bitmasks. For minimal code, I'll use a simple array of arrays for each rotation, or generate them mathematically. Actually, a common compact approach is:
+   ```js
+   const P = [
+     [[1,1,1,1]], // I
+     [[1,1],[1,1]], // O
+     [[1,1,1],[0,1,0]], // T
+     [[1,1,1],[1,0,0]], // L
+     [[1,1,1],[0,0,1]], // J
+     [[1,1,0],[0,1,1]], // S
+     [[0,1,1],[1,1,0]]  // Z
+   ]
+   ```
+   But rotations need to be handled. Instead of storing all rotations, I can rotate them on the fly using a simple matrix rotation function, or just store them compactly.
+
+   Actually, a very compact way is to use a single array of strings or numbers, but that's messy. Let's stick to arrays and write a compact rotation function.
+
+   Better: Use a 2D array for the board, and a function to get piece shape based on type and rotation.
+
+   Let's try a different approach: Represent pieces as bitmasks or use a compact encoding. But for readability vs size, I'll keep it simple but minified.
+
+   Actually, I can use a well-known compact Tetris implementation pattern. Many "smallest Tetris" games use ~500-800 bytes. I'll aim for that.
+
+   Key components:
+   - Canvas setup
+   - Board array (10x20)
+   - Piece definition
+   - Input handling
+   - Game loop (requestAnimationFrame or setInterval)
+   - Collision check
+   - Line clear
+   - Draw function
+
+   Let's draft it mentally and then write it out, minimizing as I go.
+
+   ```html
+   <canvas id=c></canvas>
+   <script>
+   const c=document.getElementById('c'),ctx=c.getContext('2d');
+   c.width=200;c.height=400;
+   const B=Array(20).fill(0).map(()=>Array(10).fill(0));
+   const P=[[[1,1,1,1]],[[1,1],[1,1]],[[1,1,1],[0,1,0]],[[1,1,1],[1,0,0]],[[1,1,1],[0,0,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]]];
+   let x=4,y=0,t=0,r=0;
+   function D(){ctx.fillStyle='#000';ctx.fillRect(0,0,200,400);
+---

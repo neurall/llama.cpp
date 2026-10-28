@@ -1,0 +1,38 @@
+run 18300 | splitfix | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 11.02 t/s | prompt 277.4 t/s | 1024 tokens | args: -np 1 --moe dense-split=one,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-23 10:16:08
+
+Let me analyze this code carefully. The user wants a code review of the source file(s). Actually, they've provided two files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (though the second one appears truncated). Let me focus on reviewing both, but primarily the first one since it's complete.
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition`:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- If `max_items == 0` but `min_items > 0`, this returns empty string, which would produce an invalid grammar (empty rule). Actually in GBNF, an empty rule might be problematic. Hmm, but this matches upstream llama.cpp behavior. Actually wait — if min_items > 0 and max_items == 0, the schema is contradictory; returning "" means the rule matches empty. This could be a bug but matches upstream. Worth noting.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead.
+- `digit_range(to[i], to[i])` — could just output the char.
+- Potential issue: `decimals_left` default 16, and `less_decimals = std::max(decimals_left - 1, 1)`.
+- In the `has_min && has_max` branch with negative handling: `build_min_max_int(-max_value, -min_value, ...)` — correct.
+- Note: `min_value < 0` case sets `min_value = 0` then continues — fine.
+- The `uniform_range` lambda: `out << "\"" << from.substr(0, i) << "\"";` — string_view to out via `<<` works in C++20? Actually `operator<<` for `std::string_view` was added in C++17? No — `std::string_view` has an `operator<<` overload since C++17. Yes, `operator<<(basic_string_view)` exists. OK.
+- Potential subtle bug: in `uniform_range`, when `from_sub == sub_zeros` branch: `digit_range(from[i], to[i] - 1)` — if `from[i] == to[i]`, then `to[i] - 1 < from[i]`, producing an invalid range like `[5-4]`. Wait, can that happen? If `from[i] == to[i]` and `from_sub != sub_zeros`... Let's think: `uniform_range` is called with from <= to (as strings of equal length). If `from[i] == to[i]`, then the while loop at top would have consumed it... no wait, the while loop stops when `from[i] != to[i]` OR when i reaches length. If `from[i] == to[i]` and i < from.length() and i < to.length(), the loop continues. So when we exit the loop with `i < from.length() && i < to.length()`, we know `from[i] != to[i]`. So `from[i] < to[i]`. OK so `digit_range(from[i], to[i] - 1)` is safe when `from_sub == sub_zeros`? If `from[i] < to[i]`, then `to[i] - 1 >= from[i]`. OK fine.
+- But wait, there's the case where `i == from.length()` (from is prefix of to). Then `i < from.length()` fails, so nothing more is output. Hmm, but then the range would only match the prefix exactly... Actually in the usage, `uniform_range(min_s, string_repeat("9", digits))` — both same length. And `uniform_range(sub_zeros, to_sub)` — same length. And `uniform_range(from_sub, sub_nines)` — same length. So lengths are always equal in practice. OK.
+
+3. `SPACE_RULE`: `"| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"` — starts with `|` which is an empty alternative — intentional in llama.cpp grammar to allow empty space. OK.
+
+4. `PRIMITIVE_RULES` — note the deps for "object" and "array" don't include all deps? "object" content references `string`, `value`, `space` — deps listed: {"string", "value"} — space is always defined. OK.
+
+5. `is_reserved_name` — uses a static initialized lambda. Fine.
+
+6. `replacePattern` — manual regex replace loop. Note: `result.append(searchStart, searchStart + match
+---

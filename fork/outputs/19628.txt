@@ -1,0 +1,85 @@
+run 19628 | deep-seek | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.4 t/s | prompt 7.3 t/s | 1005 tokens | args: -np 1 --moe pswap=1,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-26 12:04:45
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. This is one of the rare cases where the user's explicit request overrides my usual preference for polished, elaborate output — they want golf.
+
+However, I should still make it genuinely playable and functional: falling tetrominoes, rotation, line clearing, score, game over, keyboard controls. I can make it small but complete.
+
+Let me write a genuinely golfed Tetris in a single HTML file. Classic approach: canvas, a compact piece definition using bit encoding, gravity timer, keyboard input, line clear.
+
+Let me think about the smallest reasonable implementation.
+
+Standard golfed Tetris approaches:
+
+Pieces can be encoded as arrays of coordinates, or as bitmasks. A very compact trick: store each rotation state as 4 coordinate pairs packed into numbers, or use the classic "each piece = 4 rotations × 4 cells" encoded in a single number.
+
+A well-known compact encoding: for each of the 7 pieces, define all rotations as 16-bit masks (4x4 grid). Then drawing = iterate bits.
+
+Alternative compact approach used in tiny Tetris implementations (like the famous 140-byte-ish ones are too extreme; a playable one in ~500-800 bytes of JS is realistic).
+
+Let me design:
+
+- Canvas 120×240, cell 12px? Or use a table? Canvas is easiest.
+- Grid: 10×20.
+- Pieces: I'll use the bitmask approach.
+
+Let me define pieces as arrays of rotation masks. Actually a very compact known trick:
+
+```js
+// piece shapes as offsets
+```
+
+Let me try to write compact but readable-ish code. The user asked for "smallest" — I'll aim for a genuinely tiny single file, maybe under 1KB or close to it, while still playable. I'll present it and note the byte count.
+
+Let me actually write it carefully.
+
+Plan:
+
+```html
+<canvas id=c></canvas>
+<script>
+// code
+</script>
+```
+
+Compact piece data: Use the classic encoding where each piece's 4 rotations are stored as 16-bit numbers. For example:
+
+I piece rotations (4x4): 
+- horizontal: rows 0: 1111 → bits... 
+
+Actually simpler: use 4x4 masks per rotation, 7 pieces × 4 rotations = 28 masks. Each mask 16 bits. Could encode as a string of hex? Or compute rotations by rotating the mask? Rotating a 4x4 bitmask by 90°: bit (r,c) → (c, 3-r). That's computable but code for it may be longer than just storing data.
+
+Alternative: store each piece as a list of 4 [x,y] cells relative to a pivot, and rotate via (x,y)→(y,-x). That's the classic tiny approach:
+
+```js
+P=[[[0,1],[1,1],[2,1],[3,1]],...]
+```
+
+Rotation: for each cell, relative to first cell or a pivot: nx = pivot + (y-py), ny = pivot - (x-px)... needs care.
+
+A known ultra-compact approach (from "tiny tetris" demos):
+
+```js
+d=[["1ddd...",...]]
+```
+
+Hmm. Let me think about what's genuinely smallest while playable.
+
+Known minimal Tetris in JS (~ 500 bytes) exists. Let me construct my own.
+
+Approach: 
+- Board B = array of 20 strings? Or a single number? Board as array of 20 integers (bitmask rows, 10 bits). Line clear = row == 1023 (all 10 bits set), remove and unshift 0. Very compact!
+
+- Current piece: 4 cells as bitmask in a 4x4 box? Or as coordinates.
+
+Let me use: piece defined as array of [x,y] pairs. 7 pieces:
+
+I: (0,0),(1,0),(2,0),(3,0)
+O: (0,0),(1,0),(0,1),(1,1)
+T: (0,0),(1,0),(2,0),(1,1)
+S: (1,0),(2,0),(0,1),(1,1)
+Z: (0,0),(1,0),(1,1),(2,1)
+J: (0,0),(0,1),(1,1),(2,1)
+L: (0,0),(1,0),(2,0),(0,1)
+
+Rotation about origin (0,0) with formula (x,y)→(y,-x) then normalize?
+---

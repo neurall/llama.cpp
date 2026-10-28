@@ -1,0 +1,70 @@
+run 20170 | dynhot_two_pool_keys | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 94.14 t/s | prompt 60.6 t/s | 1007 tokens | args: -np 1 --moe state=/tmp/runstate/dynab-q36-off.ini --moe sim-vram=3072 | power 220+280 W | 2026-10-28 07:39:20
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the *smallest* HTML Tetris game. This means I need to minimize code size while maintaining core Tetris functionality (grid, falling pieces, rotation, collision, line clearing, scoring, game over).
+
+2.  **Key Constraints & Goals:**
+   - Single HTML file (no external dependencies)
+   - Minimal code size (bytes)
+   - Functional Tetris mechanics
+   - Use inline CSS/JS
+   - Avoid unnecessary features (keep it simple)
+
+3.  **Core Tetris Mechanics Needed:**
+   - 10x20 grid
+   - 7 tetrominoes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Rotation
+   - Collision detection
+   - Line clearing
+   - Score tracking
+   - Game over condition
+   - Keyboard controls
+
+4.  **Minimization Strategies:**
+   - Use compact variable names
+   - Avoid comments
+   - Use bitwise operations or compact representations for pieces
+   - Use a single loop for game logic
+   - Minimize CSS (inline, minimal styles)
+   - Use `document.body` or `canvas`? Canvas is usually smaller for rendering.
+   - Represent pieces as arrays of coordinates or bitmasks
+   - Use a single string/array for the board
+   - Combine rotation logic with piece definitions
+
+5.  **Draft - Mental Code Structure:**
+   ```html
+   <canvas id=c></canvas>
+   <script>
+   // Setup
+   const c=document.getElementById('c'), ctx=c.getContext('2d');
+   c.width=200; c.height=400;
+   // Board: 20x10 array, 0=empty, 1=filled
+   // Pieces: define shapes
+   // Game loop: setInterval
+   // Controls: keydown
+   // Render: draw grid, piece, score
+   ```
+
+6.  **Refining Piece Representation:**
+   Standard Tetris pieces can be represented as arrays of [x,y] offsets or bitmasks. For minimal code, I'll use a compact array of strings or numbers.
+   Let's use a 4x4 bitmask approach or just coordinate arrays. Actually, a common trick is to store pieces as arrays of 4 coordinates relative to a pivot, or use a single string like "0110,1100,0000,0000" but that's verbose.
+   Better: Use a 2D array for each piece, but compress it.
+   Actually, I'll use a simple array of 7 pieces, each as an array of 4 [x,y] pairs.
+   Wait, rotation can be done by transposing and reversing.
+   Let's define pieces as:
+   `P=[[[0,0],[1,0],[2,0],[3,0]], [[0,0],[1,0],[0,1],[1,1]], ...]`
+   That's too long.
+
+   Alternative: Use a single string for all pieces, or encode them compactly.
+   Actually, I can use a 4x4 grid representation for each piece, but that's still verbose.
+   Let's try a different approach: Represent pieces as arrays of 4 integers (bitmasks for 4x4), but rotation is tricky.
+   Actually, the classic minimal Tetris uses a 20x10 board and defines pieces as arrays of 4 coordinates. I'll stick with that but compress it.
+
+   Let's look at known minimal Tetris implementations. They often use:
+   `b=[]` for board
+   `p=[[0,0,1,0],[1,0,1,0],[0,0,1,1],[1,0,0,1],[0,1,1,0],[1,1,0,0],[1,0,0,1]]` (not quite)
+   Actually, I'll define pieces as:
+   `T=[[[0,0],[1,0],[2,0],[3,0]], [[0,0],[0,1],[0,2],[0,3]], [[0,0],[1,0],[1,1],[1,2]], [[0,0],[0,1],[1,1],[2,1]], [[0,0],[1,0],[1,1],[2,0]], [[0,0],[0,1],[1,1],[2,1]], [[0,0],[1,0],[1,1],[2,1]]]` - too long.
+---

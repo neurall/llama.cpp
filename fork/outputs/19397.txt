@@ -1,0 +1,44 @@
+run 19397 | rc5 | pf2k | Qwen3.8-27B-MTP-Q5_K_M.gguf | decode 38.71 t/s | prompt 1476.9 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-25 09:00:30
+
+We need answer user's request: "Do a code review of the following source file." They provided partial source file? It ends abruptly at array rule missing closing brace? Need review. Need likely identify bugs, style, correctness, maintainability, security, performance, portability, C++ issues. Need maybe infer missing code? The file is truncated. We should review what's provided, note truncation. Need produce thorough code review. Need think in English (user English). Need final answer only. Need analyze code deeply.
+
+File: common/json-schema-to-grammar.cpp
+Includes json-schema-to-grammar.h, common.h, trie.h, unicode.h.
+using json = common_json;
+
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+Potential issues:
+- build_repetition with separator: For min_items=0, max_items=INT_MAX: result = item + " " + build_repetition("(sep item)", 0, INT_MAX) => item " " ((sep item)*)? Actually build_repetition returns (sep item)*, then result = item " " (sep item)*, then wrap (item " " (sep item)*)? This matches zero or more items separated by sep? For zero items, empty? The outer optional allows empty. For one item, item. For two, item sep item. Good. But if min_items=1, max_items=INT_MAX: result = item " " ((sep item)*)? Wait build_repetition with min=0 max=INT_MAX returns (sep item)*. So result = item " " (sep item)*. That matches one or more. Good. If min_items=2, max=INT_MAX: result = item " " build_repetition(...,1,INT_MAX) => item " " (sep item)+? Actually build_repetition with min=1 max=INT_MAX returns (sep item)+. So item (sep item)+ => at least 2. Good. If max finite: min=0 max=2: result = item " " build_repetition(...,0,1) => item " " ((sep item)?)? then wrap (item " " ((sep item)?)?)? This can match item sep item? yes. But can it match item sep? No because sep item group. Good. But regex generated may be inefficient/backtracking? It's a grammar maybe not regex? It uses regex-like syntax. Could be okay.
+- If min_items > max_items? Not validated. Could produce weird. If max_items=0 and min_items>0 returns "" incorrectly? It returns empty if max_items==0 regardless min. If min>max invalid. Should assert/throw.
+- If min_items negative? Not validated. Could produce negative counts. Should clamp/validate.
+- If max_items < 0? has_max true, max_items==0 false, min==0 max==1 false, separator empty: if min==1 && !has_max false, min==0 && !has_max false, returns item + "{min,max}" with negative max maybe invalid. Should validate.
+- If separator_rule non-empty and max_items=0 returns "" even if min_items=0? okay if zero allowed. If min>0 invalid.
+- If min_items=0 max_items=1 with separator: returns item? It returns item_rule + "?" before separator branch. That's okay for zero or one item, separator irrelevant.
+- If min_items=1 max_items=1 with separator: has_max true, not special, separator branch: result = item + " " + build_repetition("(sep item)", 0, 0
+---

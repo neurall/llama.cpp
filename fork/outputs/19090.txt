@@ -1,0 +1,26 @@
+run 19090 | spass33 | pf8k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.88 t/s | prompt 893.7 t/s | 1024 tokens | args: -np 1 --moe dense-split=1,split-experts=0 | power 220+280 W | 2026-10-24 23:28:40
+
+Let me carefully review this source file for bugs, style issues, potential problems, and other concerns.
+
+Let me go through it systematically.
+
+1. **`build_repetition` function:**
+   - When `max_items == 0`, returns `""` — but what if `min_items > 0` and `max_items == 0`? That's an invalid constraint (min > max), but it silently returns empty string. Could be a bug or intentional.
+   - The separator case: when `min_items == 0`, it wraps in `(...)?`. But the recursive call passes `min_items - 1` when `min_items != 0`, so for `min_items == 0` it passes `0`. That seems correct.
+   - When `has_max` is false and separator is empty, the `{min,}` syntax is used — but the code writes `std::to_string(min_items) + "," + (has_max ? ... : "")` which produces `{min,}` — that's correct for regex.
+   - Wait, actually looking more carefully: when separator is empty and we don't hit the early returns, we fall through to the `{min,max}` case. But if `min_items == 1 && !has_max`, we return `item_rule + "+"`. If `min_items == 0 && !has_max`, we return `item_rule + "*"`. Otherwise we use `{min,max}`. But what about `min_items == 0 && has_max`? That would be `{0,max}` which is correct. And `min_items == 1 && has_max` would be `{1,max}` which is correct.
+
+2. **`build_min_max_int` function:**
+   - The `uniform_range` lambda captures `out` by reference — fine.
+   - `digit_range` lambda: when `from == to`, outputs single char. Otherwise outputs range. But what if `from > to`? That would produce an invalid range like `[9-1]`. This could happen if the logic has a bug.
+   - The `more_digits` lambda: when `min_digits == max_digits && min_digits == 1`, returns early after writing `[0-9]`. Otherwise writes `[0-9]{min,max}`. But if `min_digits == 0`, it writes `[0-9]{0,...}` which is fine.
+   - Wait, there's a subtle issue: `more_digits` always writes `[0-9]` first, then optionally the quantifier. But if `min_digits == 0`, it writes `[0-9]{0,...}` which means zero or more digits. That's correct.
+   - Actually wait — if `min_digits == 0 && max_digits == 0`, it would write `[0-9]{0,0}` which is equivalent to nothing. But `more_digits(0, 0)` would write `[0-9]{0,0}` — that's a bit odd but functionally correct (matches nothing).
+   - The `uniform_range` function: it finds common prefix, then handles the differing part. The logic for `from_sub == sub_zeros` and `to_sub == sub_nines` cases seems correct for handling ranges.
+   - Potential issue: `digit_range(from[i] + 1, to[i])` — if `from[i] + 1 > to[i]`, this would produce an invalid range. But the code checks `from[i] < to[i] - 1` before entering that branch, so `from[i] + 1 <= to[i] - 1 < to[i]`, so `from[i] + 1 <= to[i]`. Actually `from[i] < to[i] - 1` means `from[i] + 1 < to[i]`, so `from[i] + 1 <= to[i] - 1 < to[i]`. So `digit_range(from[i] + 1, to[i])` is valid. And `digit_range(from[i] + 1, to[i] - 1)` is also valid since `from[i] + 1 <= to[i] - 1`.
+   - The `top_level` parameter: used to determine whether leading zeros are allowed. Seems correct.
+   - The `decimals_left` parameter: limits digit depth to prevent exponential blowup. The default is 16, and it decrements by 1 each recursive call. This seems like a reasonable safeguard.
+
+3. **`PRIMITIVE_RULES` and `STRING_FORMAT_RULES`:**
+   - The `date` rule: `[0-9]{4} "-" ( "0" [1-9] | "1" [0-2] ) "-" ( "0" [1-9] | [1-2] [0-9] | "3" [0-1] )` — this allows dates like "000
+---

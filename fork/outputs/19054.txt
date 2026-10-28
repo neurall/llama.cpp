@@ -1,0 +1,12 @@
+run 19054 | spass29 | pf60k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 14.22 t/s | prompt 741.3 t/s | 64 tokens | args: -np 1 --moe dense-split=1,log=a -b 131072 -ctxcp 0 | power 220+280 W | 2026-10-24 20:53:03
+
+The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1.
+---

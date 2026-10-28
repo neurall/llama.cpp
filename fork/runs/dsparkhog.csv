@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+ds-1k-nodraft-hog,ds,2,1k1k,1024,"--moe hog-CUDA0=7943,hog-CUDA1=253",

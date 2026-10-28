@@ -1,0 +1,128 @@
+run 19089 | spass32 | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.98 t/s | prompt 24.6 t/s | 1010 tokens | args: -np 1 --moe dense-split=1,split-experts=0 | power 220+280 W | 2026-10-24 23:23:34
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal but complete Tetris game:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+// Tetris game
+</script>
+</body>
+</html>
+```
+
+Let me write a complete, compact Tetris game. I'll try to keep it small but functional.
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>canvas{background:#000}</style>
+</head>
+<body>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let grid=[],score=0,cur,next,gameOver=false;
+const shapes=[
+ [[1,1,1,1]],
+ [[1,1],[1,1]],
+ [[1,1,1],[0,1,0]],
+ [[1,1,1],[1,0,0]],
+ [[1,1,1],[0,0,1]],
+ [[1,1,1],[0,1,0]],
+ [[1,1,1],[1,0,0]]
+];
+// Wait, let me reconsider. I need 7 standard tetris pieces.
+
+const shapes=[
+ [[1,1,1,1]],           // I
+ [[1,1],[1,1]],         // O
+ [[1,1,1],[0,1,0]],     // T
+ [[1,1,1],[1,0,0]],     // J
+ [[1,1,1],[0,0,1]],     // L
+ [[0,1,1],[1,1,0]],     // S
+ [[1,1,0],[0,1,1]]      // Z
+];
+const colors=['#0ff','#ff0','#f0f','#00f','#f80','#0f0','#f00'];
+
+function newPiece(){
+  let i=Math.floor(Math.random()*7);
+  return {s:shapes[i].map(r=>[...r]),x:3,y:0,c:i};
+}
+
+function collide(p,g){
+  for(let r=0;r<p.s.length;r++)
+    for(let c=0;c<p.s[r].length;c++)
+      if(p.s[r][c]){
+        let nx=p.x+c,ny=p.y+r;
+        if(nx<0||nx>=W||ny>=H)return true;
+        if(ny>=0&&g[ny][nx])return true;
+      }
+  return false;
+}
+
+function merge(p,g){
+  for(let r=0;r<p.s.length;r++)
+    for(let c=0;c<p.s[r].length;c++)
+      if(p.s[r][c]&&p.y+r>=0)g[p.y+r][p.x+c]=p.c+1;
+}
+
+function clearLines(g){
+  let n=0;
+  for(let r=H-1;r>=0;r--){
+    if(g[r].every(v=>v)){
+      g.splice(r,1);
+      g.unshift(Array(W).fill(0));
+      n++;
+      r++;
+    }
+  }
+  score+=n*n*100;
+}
+
+function rotate(p){
+  let s=p.s[0].map((_,i)=>p.s.map(r=>r[i]).reverse());
+  let np={...p,s};
+  if(!collide(np,grid))p.s=s;
+}
+
+function draw(){
+  x.fillStyle='#000';
+  x.fillRect(0,0,c.width,c.height);
+  // grid
+  for(let r=0;r<H;r++)
+    for(let c=0;c<W;c++)
+      if(grid[r][c]){
+        x.fillStyle=colors[grid[r][c]-1];
+        x.fillRect(c*S,r*S,S-1,S-1);
+      }
+  // current piece
+  if(cur&&!gameOver){
+    x.fillStyle=colors[cur.c];
+    for(let r=0;r<cur.s.length;r++)
+      for(let c=0;c<cur.s[r].length;c++)
+        if(cur.s[r][c])
+          x.fillRect((cur.x+c)*S,(cur.y+r)*S,S-1,S-1);
+  }
+  // score
+  x.fillStyle='#fff';
+  x.font='20px sans-serif';
+  x.fillText('Score: '+score,10,30);
+  if(gameOver){
+    x.fillStyle='#f00';
+    x.font='40px
+---

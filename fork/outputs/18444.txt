@@ -1,0 +1,63 @@
+run 18444 | relfx1 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.57 t/s | prompt 625.1 t/s | 1024 tokens | args: -np 1 --moe dense-split=1 --moe split-experts=0 | power 220+280 W | 2026-10-23 14:04:56
+
+Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params) {` with no body. So I should note that the file appears incomplete.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Issues:
+- If `min_items > 0` and `max_items == 0`, returns "" — but that's contradictory (min > max). Actually if max_items == 0 and min_items > 0, that's an invalid schema (min > max). The function returns "" which would silently produce an empty rule. Hmm, actually wait — if max_items == 0, then min_items should be 0 for a valid schema. If min_items > 0 and max_items == 0, the schema is invalid. The code returns "" silently. Might be worth noting.
+- Potential integer overflow: `max_items - 1` when max_items is INT_MAX... wait, `has_max` is false when max_items == INT_MAX, so `max_items - 1` isn't evaluated in that branch. Actually it is: `has_max ? max_items - 1 : max_items` — if has_max is false, max_items stays INT_MAX. OK.
+- But what if min_items > max_items? E.g., min_items = 5, max_items = 3. Then result would be weird. Not validated.
+- Negative min_items? Not validated. `{ -1, ... }` would produce weird grammar.
+- Also `min_items == 0 && max_items == 1` returns `item_rule + "?"` — fine.
+- What about min_items == 1 && max_items == 1? Falls to `{1,1}` — could be simplified but fine.
+- Recursion with separator: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items - 1, max_items - 1)` — this recursion is linear in max_items, so for large max_items (e.g., 1000000), this could produce a huge string or stack overflow. Actually the recursion depth is max_items - min_items, which could be large. For example, a schema with max_items = 100000 would recurse 100000 times, each time building a string. That's a potential performance/stack issue. Worth noting.
+
+Wait, actually let me re-check: `build_repetition(item, min, max, sep)` calls `build_repetition("(sep item)", min-1, max-1, sep)`. So recursion depth is max - min. If max is large (like INT_MAX... no, has_max false means no recursion with max-1; it passes max_items unchanged). Hmm wait:
+
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+
+If !has_max (max_items == INT_MAX), it passes max_items = INT_MAX again. So recursion continues with min_items decreasing each time until min_items == 0, then it stays 0. So recursion depth is min_items (bounded by min_items). Wait: min
+---

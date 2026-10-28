@@ -1,0 +1,95 @@
+run 18133 | relfl6 | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 34.88 t/s | prompt 25.4 t/s | 1010 tokens | args: -np 1 | power 220+280 W | 2026-10-23 03:21:18
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+1. A canvas or grid to display the game
+2. Piece definitions (tetrominoes)
+3. Game loop (falling, collision, line clearing)
+4. Controls (left, right, rotate, drop)
+4. Score
+
+Let me write a compact version:
+
+```html
+<canvas id=c width=200 height=400></canvas>
+<script>
+// Minimal Tetris
+</script>
+```
+
+Let me write a compact but functional Tetris game.
+
+```html
+<canvas id=c width=200 height=400></canvas>
+<script>
+let c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=20;
+let g=[],p=[],sc=0,px=0,py=0,rot=0;
+// pieces: I, O, T, S, Z, J, L
+let P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]]];
+let C=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+for(let y=0;y<H;y++)g[y]=[];
+function newPiece(){
+  let i=Math.floor(Math.random()*7);
+  p=P[i];rot=0;px=Math.floor((W-p[0].length)/2);py=0;
+  if(!valid(px,py,rot))gameOver();
+}
+function valid(x,y,r){
+  let q=rotate(p,r);
+  for(let i=0;i<q.length;i++)for(let j=0;j<q[i].length;j++){
+    if(q[i][j]){
+      let nx=x+j,ny=y+i;
+      if(nx<0||nx>=W||ny>=H)return false;
+      if(ny>=0&&g[ny][nx])return false;
+    }
+  }
+  return true;
+}
+function rotate(p,r){
+  let q=p;
+  for(let i=0;i<r;i++){
+    let t=[];
+    for(let j=0;j<q[0].length;j++){
+      t[j]=[];
+      for(let k=0;k<q.length;k++)t[j][k]=q[q.length-1-k][j];
+    }
+    q=t;
+  }
+  return q;
+}
+function merge(){
+  let q=rotate(p,rot);
+  for(let i=0;i<q.length;i++)for(let j=0;j<q[i].length;j++){
+    if(q[i][j]&&py+i>=0)g[py+i][px+j]=1;
+  }
+  clearLines();
+  newPiece();
+}
+function clearLines(){
+  for(let y=H-1;y>=0;y--){
+    if(g[y].every(v=>v)){
+      g.splice(y,1);g.unshift([]);for(let i=0;i<W;i++)g[0][i]=0;
+      sc+=100;y++;
+    }
+  }
+}
+function draw(){
+  x.fillStyle='#000';x.fillRect(0,0,W*S,H*S);
+  for(let y=0;y<H;y++)for(let i=0;i<W;i++){
+    if(g[y][i]){x.fillStyle='#fff';x.fillRect(i*S,y*S,S-1,S-1);}
+  }
+  let q=rotate(p,rot);
+  for(let i=0;i<q.length;i++)for(let j=0;j<q[i].length;j++){
+    if(q[i][j]&&py+i>=0){x.fillStyle='#0f0';x.fillRect((px+j)*S,(py+i)*S,S-1,S-1);}
+  }
+  x.fillStyle='#fff';x.font='16px monospace';x.fillText('Score:'+sc,5,20);
+}
+function gameOver(){
+  alert('Game Over! Score:'+sc);g=[];for(let y=0;y<H;y++)g[y]=[];sc=0;newPiece();
+}
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowLeft'&&valid(px-1,py,rot))px--;
+  if(e.key==='ArrowRight'&&valid(px+1,py,rot))px++;
+  if(e.key==='ArrowUp'&&valid(px,py,rot+1))rot++;
+  if(e.key==='Arrow
+---

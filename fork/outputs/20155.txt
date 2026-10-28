@@ -1,0 +1,66 @@
+run 20155 | fix_dspark_prompt_runs_no_draft | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 20.41 t/s | prompt 9.4 t/s | 986 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-28 07:24:26
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 10x20 grid, cell size maybe 24. Canvas width 240 height 480. Use JS.
+
+Tetromino shapes represented as arrays of coordinates or matrices. Need rotation. Could use 4x4 matrices for each piece. Simpler: define pieces as arrays of [x,y] cells relative to top-left? Rotation around center. Need handle rotation. Could use matrices.
+
+Option: Use 4x4 matrices for I, J, L, O, S, T, Z. Each piece matrix with 1s. Rotation by transpose/reverse. Collision checks cells. Spawn at x=3, y=0? For 4x4 matrices, top-left at x=3? Board width 10. Need spawn x=3, y=-? Actually matrix 4x4, cells may occupy rows. Spawn at x=3, y=0. For I horizontal matrix row 1? Need ensure top row empty? Let's define matrices with cells in rows 0-3. Spawn y=0. If matrix has cells at row 0, okay. But if top row empty, piece appears lower. Fine.
+
+Need rotation: rotate matrix clockwise: new[r][c] = old[3-c][r]? For 4x4. Or use coordinates and rotate around center. Matrix rotation easier.
+
+Need collision: for each cell in matrix, board x+col, y+row. If out of bounds or occupied. Need allow y negative? Spawn y=0. Rotation may cause cells outside? We can check.
+
+Need line clearing: after lock, remove full rows, shift down, score. Need maybe update board.
+
+Need gravity: setInterval or requestAnimationFrame. Use drop timer. Need keyboard: left/right, down, up rotate, space hard drop. Need prevent default.
+
+Need game over: if spawn collision, reset? Show overlay.
+
+Need minimal code. Could use canvas drawing. Need maybe no CSS except body. Use canvas.
+
+Let's craft code.
+
+Potential issue: "smallest html tetris game" maybe wants minimal code. We can provide compact but readable. Need ensure no external dependencies.
+
+Let's write:
+
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id=c width=240 height=480></canvas>
+<script>
+const c=document.getElementById('c'),g=c.getContext('2d'),W=10,H=20,S=24;
+let b=Array.from({length:H},()=>Array(W).fill(0)),p,px,py,score=0,over=false;
+const P=[
+ [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]], // I
+ [[0,0,0,0],[0,1,1,0],[0,0,1,0],[0,0,0,0]], // J? Need check
+ ...
+];
+Need define pieces correctly. Let's use standard 4x4 matrices.
+
+Tetromino matrices:
+I: 
+[0,0,0,0]
+[1,1,1,1]
+[0,0,0,0]
+[0,0,0,0]
+J:
+[0,0,0,0]
+[0,1,1,0]
+[0,0,1,0]
+[0,0,0,0]? Wait J shape: row1: 0 1 1 0? Actually J is like:
+[0,0,0,0]
+[0,1,1,0]
+[0,0,1,0]
+[0,0,0,0] gives cells (1,1),(1,2),(2,2) = L? Let's map. Standard J: 
+[0,0,0,0]
+[0,1,1,0]
+[0,0,1,0]
+[0,0,0,0
+---

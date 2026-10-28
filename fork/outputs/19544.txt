@@ -1,0 +1,58 @@
+run 19544 | ds41i4 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 29.42 t/s | prompt 20.2 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-25 23:15:14
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need ensure game playable. Need maybe keyboard controls, score, game over. Need smallest possible. We can write compact code. Need answer likely code block only. Need think through implementation.
+
+We need generate smallest HTML Tetris game. Need produce a single HTML file. Need maybe use canvas and JS. Need ensure no external dependencies. Need minimal code but functional. Need maybe use 10x20 board, tetrominoes, rotation, gravity, line clearing, score. Need controls: arrows left/right/down, up rotate, space hard drop? Maybe restart. Need compact.
+
+Let's design.
+
+HTML:
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Tetris</title>
+<style>body{background:#111;color:#fff;font:14px monospace;display:flex;gap:16px;align-items:center;justify-content:center;height:100vh;margin:0}canvas{background:#000;border:1px solid #444}</style>
+</head>
+<body>
+<canvas id=c width=200 height=400></canvas>
+<div id=s>Score: 0</div>
+<script>
+...
+</script>
+</body>
+</html>
+
+Need implement.
+
+Canvas dimensions: cell size 20, board 10x20 => 200x400. Use ctx.
+
+Tetromino shapes. Could represent as arrays of coordinates. Need rotation. Minimal.
+
+Option: Use 4x4 matrices for each tetromino. But compact. Could use shapes as arrays of [x,y] cells. Rotation around center? Need handle. Simpler: define tetrominoes as 4x4 matrices with 1s. Rotation by matrix rotate. But need collision. Could use 4x4 grid. Board 10x20. Piece position x,y top-left of 4x4. Rotation rotates matrix. Need ensure shapes fit. Use standard tetromino matrices.
+
+Define shapes:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]? Actually 4x4. Rotation works.
+O: [[1,1],[1,1]]? Could use 2x2. But rotation no effect. Simpler use 4x4? Need consistent. Could use arrays of cells and rotate around center. Maybe use 4x4 matrices for all.
+
+Tetromino matrices:
+I: 
+[0,0,0,0]
+[1,1,1,1]
+[0,0,0,0]
+[0,0,0,0]
+J:
+[1,0,0,0]
+[1,1,1,0]
+[0,0,0,0]
+[0,0,0,0]? Actually J shape: 
+[1,0,0]
+[1,1,1]
+[0,0,0]? Need 3x3. But 4x4 can include. Let's use 4x4 with shapes:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]
+J: [[1,0,0,0],[1,1,1,0],[0,0,0,0],[0,0,0,0]]
+L: [[0,0,1,0],[1,1,1,0],[0,0,0,0],[0,0,0,0]]
+S: [[0,1,1,0],[1,1,0,0],[0,0,0,0],[0,0,0,0]]
+Z: [[1,1,0,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]]
+T: [[0,1,0,0],[1,1,1,0],[0,0,0,0],[0,0,0,0]]
+O: [[1,1,0,0],[1,1,0,0],[0,0,0,0],[0,0,0,0]]
+But rotation of 4x4 matrices around center may shift shapes. Need collision and rendering. If piece position x,y is top-left of 4x4, rotation may cause cells outside
+---

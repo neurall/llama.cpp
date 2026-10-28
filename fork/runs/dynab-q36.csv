@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+off-game1,qwen36,2,tetrisc,1024,"--moe state=/tmp/runstate/dynab-q36-off.ini",
+off-prose1,qwen36,2,scific,1024,"--moe state=/tmp/runstate/dynab-q36-off.ini",
+off-game2,qwen36,2,tetrisc,1024,"--moe state=/tmp/runstate/dynab-q36-off.ini",
+off-prose2,qwen36,2,scific,1024,"--moe state=/tmp/runstate/dynab-q36-off.ini",
+on-game1,qwen36,2,tetrisc,1024,"--moe state=/tmp/runstate/dynab-q36-on.ini,dynhot=1,dynhot-merge=2,dynhot-max=0",
+on-prose1,qwen36,2,scific,1024,"--moe state=/tmp/runstate/dynab-q36-on.ini,dynhot=1,dynhot-merge=2,dynhot-max=0",
+on-game2,qwen36,2,tetrisc,1024,"--moe state=/tmp/runstate/dynab-q36-on.ini,dynhot=1,dynhot-merge=2,dynhot-max=0",
+on-prose2,qwen36,2,scific,1024,"--moe state=/tmp/runstate/dynab-q36-on.ini,dynhot=1,dynhot-merge=2,dynhot-max=0",
+pure-game1,qwen36,2,tetrisc,1024,"--moe state=/tmp/runstate/dynab-q36-pure.ini",
+pure-game2,qwen36,2,tetrisc,1024,"--moe state=/tmp/runstate/dynab-q36-pure.ini",
+pure-game3,qwen36,2,tetrisc,1024,"--moe state=/tmp/runstate/dynab-q36-pure.ini",
+pure-game4,qwen36,2,tetrisc,1024,"--moe state=/tmp/runstate/dynab-q36-pure.ini",

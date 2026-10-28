@@ -1,0 +1,35 @@
+run 18448 | relfx1 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 10.84 t/s | prompt 253.9 t/s | 1024 tokens | args: -np 1 --moe dense-split=1,pin-budget=108447924224 --moe split-experts=0 -lm mmap | power 220+280 W | 2026-10-23 14:13:59
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- Note: `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, returns "". OK.
+- Potential issue: when `min_items > 0` and `max_items == 0`... returns "" which is fine.
+- When separator_rule is non-empty and `min_items == 0 && max_items == 1`: handled earlier by `item_rule + "?"`. OK.
+- Edge case: `min_items > max_items`? Not validated. E.g., min_items=2, max_items=1 would produce weird grammar. Probably schema validation should catch this, but worth noting.
+- Edge case: `max_items == 0` but `min_items > 0` — returns empty string, which would produce invalid grammar like `"[" space  space "]"`. Actually in the array case: `"[" space " " space "]"` — double space. Hmm, actually `build_repetition` returning "" would result in `"[" space  space "]"` which is a grammar with an empty rule reference... Actually it would just be extra whitespace in the grammar text, which is probably fine syntactically since space is a rule name... wait no. `"[" space  space "]"` — the grammar would contain two consecutive `space` tokens, which is valid GBNF (matches two spaces). But semantically, if min_items > 0 and max_items == 0, the schema is contradictory. Minor.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead; could be a static helper function instead.
+- `decimals_left = 16` default. The recursion decrements.
+- Potential bug: In `more_digits`, `max_digits != std::numeric_limits<int>::max()` — comparing int to int max, fine.
+- In the `has_min && has_max` branch with negative values: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == std::numeric_limits<int64_t>::min()`, then `-min_value` is UB (signed overflow). Wait, in that branch, `has_min` is true means `min_value != INT64_MIN`, and `has_max` true means `max_value != INT64_MAX`. So `-min_value` and `-max_value` are safe... Actually wait: if both negative, min_value < 0 and max_value < 0. has_min means min_value != INT64_MIN. So -min_value is fine. -max_value: max_value < 0 so max_value != INT64_MAX anyway; -max_value fine. OK.
+- In the `min_value < 0` (mixed sign) branch: `build_min_max_int(0, -min_value, ...)`. Here has_min is true (min_value != INT64_MIN since we're in has_min && has_max branch... wait no. Let me re-check. The `has_min && has_max` branch is entered only when both are set. So min_value != INT64_MIN, so -min_value is safe. OK.
+- In the `has_min` only branch (max == INT64_MAX): `if (min_value < 0)`: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. Here min_value could be INT64_MIN! Then `-min_value` is UB — signed integer overflow. Hmm wait: has_min is `min_value != INT64_MIN`. In the has_min branch, min_value != INT64_MIN is guaranteed. So -min_value is safe. OK good.
+- `std::stoll(min_s.substr(1))` — min_value > 9 here, so substr(1) is at most 18 digits, safe.
+- The `uniform_range` lambda captures by reference and recurses via std::function. Fine.
+- Potential issue: `digit_range(from[i] + 1, to[i])` — char arithmetic; from[i] is a digit char. If from[i] == '9' and to[i] == '9'... then `from[i] < to[i] - 1` false, and `to_sub == sub_nines`? If to_sub == sub_nines, then `digit
+---

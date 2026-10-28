@@ -1,0 +1,82 @@
+run 19100 | spass35 | pf60k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 23.5 t/s | prompt 865.4 t/s | 1000 tokens | args: -np 1 --moe dense-split=1,split-pass=0 | power 220+280 W | 2026-10-25 00:03:26
+
+<think>The user wants me to return the completed source with bugs fixed. Let me analyze the code carefully.
+
+Looking at the code, I need to find bugs. Let me go through both files systematically.
+
+**File 1: common/json-schema-to-grammar.cpp**
+
+Let me look for bugs:
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps in `(...)?`. But when `min_items > 0`, the first item is always required. Let me check the logic more carefully.
+
+Actually, looking at the `build_repetition` function with separator:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+if (min_items == 0) {
+    result = "(" + result + ")?";
+}
+```
+
+When `min_items == 0`, the first item is optional (wrapped in `(...)?`), and the repetition starts from 0. That seems correct.
+
+When `min_items == 1`, the first item is required, and the repetition starts from 0 (min_items - 1 = 0). That seems correct.
+
+When `min_items == 2`, the first item is required, and the repetition starts from 1 (min_items - 1 = 1). That seems correct.
+
+2. In `build_min_max_int`, let me check the `uniform_range` lambda. It's defined as a `std::function` but it's recursive (calls itself). The lambda captures by reference `[&]`, so it should work.
+
+Wait, actually there's a potential issue. The `uniform_range` lambda is defined as:
+```cpp
+std::function<void(const std::string_view &, const std::string_view &)> uniform_range =
+    [&](const std::string_view & from, const std::string_view & to) {
+```
+
+This is a `std::function` that captures by reference. Since it's defined before the `if (has_min && has_max)` block, it should be fine.
+
+3. In `_pattern_to_rule`, the `join_seq` function returns `std::make_pair(string_join(results, " "), false)`. But `string_join` joins with spaces. For a sequence of literals and rules, this should be correct for GBNF.
+
+Wait, actually there's a subtle issue. When `join_seq` is called, it joins all items with spaces. But if there's a `|` in the sequence (alternation), the items before and after `|` should be grouped. Let me think about this...
+
+Actually, looking at the code more carefully, when `|` is encountered:
+```cpp
+} else if (c == '|') {
+    seq.emplace_back("|", false);
+    i++;
+}
+```
+
+The `|` is added as a non-literal item. Then in `join_seq`, it's joined with spaces. So the result would be like `A | B` which is correct for GBNF.
+
+But wait, there's an issue with precedence. In GBNF, `|` has lower precedence than concatenation. So `A B | C D` means `(A B) | (C D)`. But if we have `A | B C`, it means `A | (B C)`. The `join_seq` function joins everything with spaces, so `A | B C` would be `A | B C` which is correct.
+
+Actually, I think the issue might be more subtle. Let me look at how groups are handled:
+
+```cpp
+} else if (c == '(') {
+    ...
+    seq.emplace_back("(" + to_rule(transform()) + ")", false);
+}
+```
+
+Groups are wrapped in parentheses. So `(A | B)` would be correct.
+
+Hmm, but what about `A | B` where `A` and `B` are sequences? The `join_seq` would produce `A B | C D` which in GBNF means `(A B) | (C D)`. That's correct.
+
+4. In `_pattern_to_rule`, the `to_rule` function:
+```cpp
+auto to_rule = [&](const literal_or_rule & ls) {
+    auto is_literal = ls.second;
+    auto s = ls.first;
+    return is_literal ? "\"" + s + "\"" : s;
+};
+```
+
+For literals, it wraps in quotes. For rules, it uses the rule name directly. This seems correct.
+
+5. In `_pattern_to_rule`, the `{` handling:
+```cpp
+} else if (c == '{') {
+    ...
+    auto &last = seq.back();
+    auto &sub = last.first;

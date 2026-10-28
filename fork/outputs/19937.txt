@@ -1,0 +1,340 @@
+run 19937 | fix_cuda_argmax_returns_zero_for_nonfinite_row | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 22.24 t/s | prompt 19.7 t/s | 4096 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 200+200 W | 2026-10-27 02:35:58
+
+
+---
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>3D Tetris — Polycube Well</title>
+<style>
+  :root {
+    --bg: #0b0f1a;
+    --panel: rgba(14,20,32,0.85);
+    --accent: #6ee7ff;
+    --accent2: #ff7ad9;
+    --text: #e6f0ff;
+    --muted: #8aa0c0;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: radial-gradient(circle at 50% 30%, #16203a 0%, #070a12 70%);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .hud {
+    position: fixed; top: 12px; left: 12px;
+    display: flex; gap: 10px; flex-wrap: wrap;
+    pointer-events: none;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid rgba(110,231,255,0.18);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 13px;
+    line-height: 1.35;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+  }
+  .card b { color: var(--accent); }
+  .card .muted { color: var(--muted); }
+
+  #rightHud {
+    position: fixed; top: 12px; right: 12px;
+    display: flex; flex-direction: column; gap: 10px;
+    pointer-events: none;
+  }
+  #nextPreview {
+    display: flex; gap: 8px; align-items: center;
+  }
+  #nextPreview canvas {
+    width: 64px; height: 64px;
+    border-radius: 8px;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(110,231,255,0.15);
+  }
+  #holdPreview canvas {
+    width: 64px; height: 64px;
+    border-radius: 8px;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,122,217,0.2);
+  }
+
+  .btn {
+    pointer-events: auto;
+    background: rgba(110,231,255,0.12);
+    border: 1px solid rgba(110,231,255,0.35);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+  }
+  .btn:hover { background: rgba(110,231,255,0.22); }
+  .btn:active { transform: scale(0.97); }
+  .btn.primary { background: rgba(255,122,217,0.18); border-color: rgba(255,122,217,0.5); }
+
+  .overlay {
+    position: fixed; inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    background: rgba(4,8,14,0.72);
+    backdrop-filter: blur(4px);
+    z-index: 20;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    background: var(--panel);
+    border: 1px solid rgba(110,231,255,0.25);
+    border-radius: 14px;
+    padding: 20px 24px;
+    max-width: 520px;
+    width: 90%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  .modal h2 { margin: 0 0 10px; font-size: 20px; color: var(--accent); }
+  .modal p { margin: 6px 0; color: var(--muted); font-size: 13px; }
+  .modal .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .modal label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
+  .modal input[type=range] { width: 140px; }
+  .modal select {
+    background: rgba(0,0,0,0.4); color: var(--text);
+    border: 1px solid rgba(110,231,255,0.3);
+    border-radius: 6px; padding: 6px 8px; font-size: 13px;
+  }
+  .modal table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  .modal table th, .modal table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid rgba(110,231,255,0.12); }
+  .modal table th { color: var(--accent); font-weight: 600; }
+
+  #touchControls {
+    position: fixed; bottom: 12px; left: 12px; right: 12px;
+    display: none;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+    z-index: 10;
+  }
+  #touchControls .btn { padding: 10px 14px; font-size: 14px; }
+
+  #helpOverlay .modal { max-width: 640px; }
+  #helpOverlay ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+  #helpOverlay li { margin: 4px 0; }
+  kbd {
+    background: rgba(110,231,255,0.15);
+    border: 1px solid rgba(110,231,255,0.3);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 12px;
+    color: var(--text);
+  }
+
+  #toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: rgba(255,122,217,0.18);
+    border: 1px solid rgba(255,122,217,0.5);
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+    z-index: 15;
+  }
+  #toast.show { opacity: 1; }
+
+  @media (max-width: 700px) {
+    #touchControls { display: flex; }
+    .hud { font-size: 12px; }
+    #rightHud { top: 8px; right: 8px; }
+  }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="gl"></canvas></div>
+
+<div class="hud">
+  <div class="card">
+    <b>Score</b> <span id="score">0</span>
+    <span class="muted">· Level</span> <span id="level">1</span>
+    <span class="muted">· Lines</span> <span id="lines">0</span>
+  </div>
+  <div class="card">
+    <b>Combo</b> <span id="combo">0</span>
+    <span class="muted">· B2B</span> <span id="b2b">0</span>
+  </div>
+</div>
+
+<div id="rightHud">
+  <div class="card">
+    <div class="muted" style="margin-bottom:6px;">Next</div>
+    <div id="nextPreview"></div>
+  </div>
+  <div class="card">
+    <div class="muted" style="margin-bottom:6px;">Hold</div>
+    <div id="holdPreview"></div>
+  </div>
+  <div class="card" style="display:flex; gap:8px;">
+    <button class="btn" id="btnPause">Pause</button>
+    <button class="btn" id="btnHelp">Help</button>
+    <button class="btn" id="btnSettings">Settings</button>
+  </div>
+</div>
+
+<div id="touchControls">
+  <button class="btn" data-touch="left">◀</button>
+  <button class="btn" data-touch="right">▶</button>
+  <button class="btn" data-touch="rotX">Rot X</button>
+  <button class="btn" data-touch="rotY">Rot Y</button>
+  <button class="btn" data-touch="rotZ">Rot Z</button>
+  <button class="btn" data-touch="soft">Soft</button>
+  <button class="btn primary" data-touch="hard">Drop</button>
+  <button class="btn" data-touch="hold">Hold</button>
+</div>
+
+<div class="overlay" id="pauseOverlay">
+  <div class="modal">
+    <h2>Paused</h2>
+    <p>Press <kbd>P</kbd> or click Resume to continue.</p>
+    <div class="row">
+      <button class="btn primary" id="btnResume">Resume</button>
+      <button class="btn" id="btnRestart">Restart</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="gameOverOverlay">
+  <div class="modal">
+    <h2>Game Over</h2>
+    <p>Final score: <b id="finalScore">0</b></p>
+    <p>Level reached: <b id="finalLevel">1</b></p>
+    <div class="row">
+      <button class="btn primary" id="btnPlayAgain">Play Again</button>
+      <button class="btn" id="btnHighScores">High Scores</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="helpOverlay">
+  <div class="modal">
+    <h2>How to Play</h2>
+    <p>3D polycube Tetris. Pieces fall down a 3D well; clearing a full layer collapses it.</p>
+    <ul>
+      <li><kbd>←</kbd>/<kbd>→</kbd> move piece horizontally</li>
+      <li><kbd>↑</kbd>/<kbd>↓</kbd> move piece depth-wise (toward/away from camera)</li>
+      <li><kbd>Q</kbd>/<kbd>E</kbd> rotate around X axis</li>
+      <li><kbd>W</kbd>/<kbd>S</kbd> rotate around Y axis</li>
+      <li><kbd>A</kbd>/<kbd>D</kbd> rotate around Z axis</li>
+      <li><kbd>Space</kbd> hard drop</li>
+      <li><kbd>Shift</kbd> soft drop</li>
+      <li><kbd>C</kbd> hold piece</li>
+      <li><kbd>P</kbd> pause</li>
+      <li><kbd>H</kbd> help</li>
+      <li><kbd>R</kbd> restart</li>
+      <li>Mouse drag orbits camera; scroll zooms</li>
+    </ul>
+    <p style="margin-top:12px;">New mechanics:</p>
+    <ul>
+      <li><b>Gravity Wells</b>: Each cleared layer increases the well's "gravity" — pieces fall faster and the well visually narrows, making later levels harder.</li>
+      <li><b>Combo Chain</b>: Clearing multiple layers in one drop builds a combo multiplier; consecutive clears without a miss grant back-to-back (B2B) bonuses.</li>
+    </ul>
+    <div class="row">
+      <button class="btn primary" id="btnCloseHelp">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="settingsOverlay">
+  <div class="modal">
+    <h2>Settings</h2>
+    <div class="row" style="flex-direction:column; gap:12px;">
+      <label>Volume <input type="range" id="volRange" min="0" max="1" step="0.05" value="0.6"></label>
+      <label>Ghost piece <input type="checkbox" id="ghostToggle" checked></label>
+      <label>Colour theme
+        <select id="themeSelect">
+          <option value="neon">Neon</option>
+          <option value="pastel">Pastel</option>
+          <option value="mono">Mono</option>
+        </select>
+      </label>
+      <label>Camera speed <input type="range" id="camSpeed" min="0.2" max="2" step="0.1" value="1"></label>
+    </div>
+    <div class="row">
+      <button class="btn primary" id="btnCloseSettings">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="highScoreOverlay">
+  <div class="modal">
+    <h2>High Scores</h2>
+    <table id="highScoreTable">
+      <thead><tr><th>#</th><th>Score</th><th>Level</th><th>Date</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="row">
+      <button class="btn primary" id="btnCloseHighScores">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ============================================================
+   NEW MECHANICS (explained here, as required):
+   1. GRAVITY WELLS — every cleared layer raises the well's gravity.
+      The falling piece accelerates faster, and the well visually
+      narrows (walls move inward), increasing difficulty.
+   2. COMBO CHAIN — clearing multiple layers in a single drop builds
+      a combo multiplier. Consecutive clears without a miss grant
+      back-to-back (B2B) bonuses. This is a scoring mechanic layered
+      on top of classic Tetris.
+   ============================================================ */
+
+/* ---------- Constants ---------- */
+const WELL_W = 8;      // width in cells
+const WELL_D = 8;      // depth in cells
+const WELL_H = 20;     // height in cells
+const CELL = 1.0;      // world units per cell
+
+/* ---------- Utility ---------- */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function randInt(n) { return Math.floor(Math.random() * n); }
+
+/* ---------- Piece definitions ----------
+   Each piece is a set of integer 3D coordinates (polycube).
+   Classic tetrominoes are extended into 3D by giving them depth
+   (a second layer) or by using 3D pentacube variants.
+*/
+const PIECES = [
+  // I — 4 long, 1 deep
+  { name: 'I', cells: [[0,0,0],[1,0,0],[2,0,0],[3,0,0]], color: 0 },
+  // O — 2x2x1
+  { name: 'O', cells: [[0,0,0],[1,0,0],[0,0,1],[1,0,1]], color: 1 },
+  // T — 3 long + 1 branch, 1 deep
+  { name: 'T', cells: [[0,0,0],[1,0,0],[2,0,0],[1,0,1]], color: 2 },
+  // S — 2x2 zigzag, 1 deep
+  { name: 'S', cells: [[0,0,0],[1,0,0],[1,0,1],[2,0,1]], color: 3 },
+  // Z — 2x2 zigzag, 1 deep
+  { name: 'Z', cells: [[0,0,1],[1,0,1],[1,0,0],[2,0,0]], color: 4 },
+  // L — 3 long + 1 branch, 1 deep
+  { name: 'L', cells: [[0,0,0],[1,0,0],[2,0,0],[2,0,1]], color: 5 },
+  // J — 3 long + 1 branch, 1 deep
+  { name: 'J', cells: [[0,0,1],[1,0,1],[2,0,1],[2,0,0]], color: 6 },
+  // 3D pentacube variants (new pieces)
+  // P — 2x2x2 minus one corner
+  { name: 'P', cells: [[0,0,0],[1,0,0],[0,0,1],[1,0,1],[0,1,0]], color: 7 },
+  // U — 3x1x2 U-shape
+  { name: 'U', cells: [[0,0,0],[1,0,0],[2,

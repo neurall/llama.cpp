@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+glm-i,glm,3,pf12k1k,128,,
+mimo-i,mimo,3,pf12k1k,128,,
+q38-i,qwen38,3,pf12k1k,128,,
+q36r-i,qwen36,3,pf12k1k,128,--moe sim-vram=3000,

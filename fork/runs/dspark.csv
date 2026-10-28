@@ -1,0 +1,12 @@
+name,model,n,test,tokens,args,extra
+ds-1k-auto,ds,2,1k1k,1024,,
+ds-1k-dsplit1,ds,2,1k1k,1024,--moe dense-split=1,
+ds-1k-dsplit0,ds,2,1k1k,1024,--moe dense-split=0,
+ds-1k-1gpu,ds,2,1k1k,1024,,--env CUDA_VISIBLE_DEVICES=1
+ds-1k-jig,ds,2,1k1k,1024,-md /m/ds/dspark/DeepSeek-V4.1-Flash-DSpark.gguf --spec-type draft-dspark,
+ds-1k-jig-cpu,ds,2,1k1k,1024,-md /m/ds/dspark/DeepSeek-V4.1-Flash-DSpark.gguf --spec-type draft-dspark -devd none,
+ds-1k-luce,ds,2,1k1k,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.gguf --spec-type draft-dspark,
+ds-16k-auto,ds,2,16k1k,1024,,
+ds-16k-dsplit1,ds,2,16k1k,1024,--moe dense-split=1,
+ds-16k-dsplit0,ds,2,16k1k,1024,--moe dense-split=0,
+ds-16k-1gpu,ds,2,16k1k,1024,,--env CUDA_VISIBLE_DEVICES=1

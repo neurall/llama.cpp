@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+olmoe-io,olmoe,2,edit4c,1024,,
+olmoe-o,olmoe,2,tetrisc,1024,,
+q36-io,qwen36,2,edit4c,1024,,
+q36-o,qwen36,2,tetrisc,1024,,
+qn1-o,qn_iq1m,2,tetrisc,1024,,

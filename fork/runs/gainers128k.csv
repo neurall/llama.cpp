@@ -1,0 +1,8 @@
+name,model,n,test,tokens,args,extra
+mimo-128k,mimo,1,128k,1024,,
+glm-128k,glm,1,128k,1024,,
+glm35-128k,glm35,1,128k,1024,,
+ds-128k,ds,1,128k,1024,,
+qni4-128k,qn_iq4xs,1,128k,1024,,
+qni3-128k,qwen38,1,128k,1024,,
+q36-128k,qwen36,1,128k,1024,,

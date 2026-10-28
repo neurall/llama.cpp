@@ -1,0 +1,53 @@
+run 19620 | relfx1 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.96 t/s | prompt 9.8 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 11:49:56
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. This is one of the rare cases where the user's explicit request overrides my usual preference for polished, elaborate output — they want a golfed Tetris.
+
+Let me think about what "smallest" means here. A single self-contained HTML file with a playable Tetris, as few bytes as possible. I should still make it genuinely playable: move left/right, rotate, soft drop, hard drop maybe, line clearing, game over, score. Keep it minimal but functional.
+
+Let me write a golfed Tetris. Classic approaches:
+
+- Canvas for rendering (small code).
+- Board as array of rows (strings or arrays).
+- Pieces defined compactly.
+
+Let me draft a compact implementation.
+
+Key components:
+1. Canvas element (can be created in JS to save bytes: `C=document.body.appendChild(document.createElement('canvas'))` — actually `<canvas id=c>` in HTML is shorter: `<canvas id=c></canvas>` is 19 bytes; creating in JS: `c=document.createElement`canvas`;document.body.append(c)` — hmm, `<canvas id=c>` without closing tag works in HTML parsing! `<canvas id=c>` — browsers auto-close. So `<canvas id=c>` = 13 bytes. Even shorter: `<body onload=...>`? Actually we can do `<canvas id=c width=99 height=198>` — or set sizes in JS. Canvas default is 300×150. We could just use default 300×150 and scale drawing. Board 10×20 → each cell 15px wide, 7.5px tall — ugly. Better set width/height in JS: `c.width=99,c.height=198` — or use scale transform. Actually simplest: `c.width=120;c.height=240` then cell = 12px. Or keep default 300×150 and draw with cell size 15×7.5? Non-square cells look bad. Let's set in JS.
+
+Actually, we can avoid canvas entirely and use a `<pre>` with text characters! Text-based Tetris in a `<pre>` element can be very small: board as strings, render with innerHTML or textContent. Characters like `[]` or `##`. That's a classic golfed Tetris approach. Rendering: `p.textContent = b.map(r=>r.join('')).join('\n')`. Monospace font default in `<pre>`. That's quite compact and avoids canvas context code.
+
+But canvas gives color. Text version is smaller. The user asked for smallest, so text-based `<pre>` is likely the winner. But maybe canvas with minimal color isn't much bigger. Let's compare.
+
+Let me design a compact Tetris:
+
+Board: 10 wide, 20 tall. Represent as array of 20 strings? Or array of arrays. For collision and clearing, arrays of 0/1 (or piece index) work.
+
+Pieces: 7 tetrominoes. Compact representation: each piece as list of rotations, each rotation as list of [x,y] offsets. Or use binary encoding.
+
+A very compact trick: define pieces via coordinates encoded in a string. E.g., each piece has 4 cells; encode each cell as a number 0-99 (x + y*10)? Or use the classic trick: represent each rotation shape as 4-bit rows.
+
+Known ultra-compact approach: pieces as arrays of rotation matrices encoded in base-36 strings.
+
+Alternative classic: use the "binary digit" trick — each rotation of a piece is a 4×4 (or 3×3) grid; encode as a number. E.g., for each piece, 4 rotations × 16 bits = 64 bits. Could encode all 7 pieces in a big number or string.
+
+Let me think of a well-known minimal Tetris in JS. There's a famous one by Alex Nisnevich? Or "Tetris in 140 bytes"? There are some tiny ones. Let me just write my own carefully.
+
+Plan (text-based, `<pre>`):
+
+```html
+<body onload="..."> or script at end.
+```
+
+Data:
+- Board `B`: array of 20 rows, each row an array of 10 values (0 or 1, or letter for color).
+- Current piece: shape `S` (array of rotations, each rotation array of [x,y]), position x,y.
+
+Movement: left/right/rotate/down via keydown. Gravity via setInterval.
+
+Line clear: after lock, remove full rows, unshift empty rows.
+
+Game over: if new piece collides immediately at spawn.
+
+Let me write compact piece definitions. A neat trick: define each piece as
+---
