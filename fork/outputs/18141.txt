@@ -1,0 +1,67 @@
+run 18141 | relfl6 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 56.51 t/s | prompt 40.6 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-23 03:29:15
+
+The user wants the smallest HTML Tetris game. Let me make a compact but actually good Tetris. "Smallest" — they want minimal code. But I don't want to just dump a bare 400-byte blob with no styling. Let me strike a balance: a genuinely small, self-contained single-file Tetris that still feels alive.
+
+The task is "generate smallest html tetris game" — the core function is the game. I should make it tiny but playable, and then maybe a brief note. I'll keep the deliverable compact and let the game itself carry the polish.
+
+Let me write compact Tetris.
+
+```html
+<canvas id=c width=260 height=520></canvas>
+```
+
+Actually let me do a compact but complete version.
+
+```html
+<canvas id=C width=260 height=520></canvas>
+<script>
+// compact tetris
+</script>
+```
+
+Let me write it carefully.
+
+```js
+const c=C,x=c.getContext('2d'),S=26,W=10,H=20;
+let g=[],r=Array.from({length:H},()=>Array(W).fill(0)),p,s,x0,y0,n=0,sc=0,ov=0;
+const T='㐀᐀... '
+```
+
+Classic compact approach: define pieces as strings of rotation states, or use the matrix-rotation trick.
+
+Compact piece definitions using numbers:
+
+```js
+const P=[[0,1,0,1,1,1,1,1],[0,0,2,2,2,2],[1,1,1,1],[0,3,3,3,3],[2,2,0,0,2],[0,4,4,4,4],[0,0,5,5,5]];
+```
+
+Hmm, let me use the standard approach: each piece is a 4x4 (or NxN) bitmask that rotates.
+
+Simplest compact: define pieces as arrays of [x,y] offsets in a bounding box, rotate by (x,y)->(y, -x) etc.
+
+Let me do: pieces defined as strings, rotate matrix.
+
+```js
+const S=['....','....','....','....']
+```
+
+Alternative super-compact: use the classic "tetromino as 4 numbers" trick.
+
+I'll go with a readable-compact approach:
+
+```js
+P=[0x0F00,0x2222,0x060C00,0x0C0600,0x0E0800,0x0E0200,0x0E0400] // 16-bit 4x4 grids? 
+```
+
+Hmm, 4x4 grid = 16 bits. I rows: I = 1111000000000000 = 0xF000. O = 0110011000000000 = 0x6600. T = 0000 1110 0100 = 0x0E40. S = 0110 1100 = 0x6C00. Z = 1100 0110 = 0xC600. J = 1000 1110 = 0x8E00. L = 0010 1110 = 0x2E00.
+
+Rotation of a 4x4 bit grid: rotate each 2x2 quadrant... Actually rotating a 4x4 bitmap by 90°: transpose then reverse rows. With bit ops that's messy but doable via string.
+
+Simpler: store as strings of 16 chars, rotate via index map.
+
+```js
+const R=[12,8,4,0,13,9,5,1,14,10,6,2,15,11,7,3] // rotate 4x4 clockwise: new[i] = old[R[i]]
+```
+
+Let's verify: 4x4 grid indexed row-major, index = y*4+x. Rotate clockwise: new(x,y) = old(y, 3-x). new index i = y*4+x, so old index = y*4 +
+---

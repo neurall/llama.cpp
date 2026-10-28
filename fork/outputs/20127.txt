@@ -1,0 +1,58 @@
+run 20127 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 25.82 t/s | prompt 12.2 t/s | 987 tokens | args: -np 1 --moe pswap=1,reheat=2,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-27 21:48:55
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design compact Tetris. Single HTML file. Use canvas 10x20. Controls arrow keys, rotate up, space drop? Need implement.
+
+Need "smallest html tetris game" maybe code golf. Need produce minimal HTML. Need ensure no bugs. Let's craft compact but readable enough. Could use canvas and JS.
+
+Need implement Tetris:
+- board 10x20.
+- tetromino shapes. Use arrays of coordinates or bit masks.
+- current piece, rotation, x,y.
+- collision.
+- game loop with requestAnimationFrame or setInterval.
+- keyboard controls.
+- score maybe.
+- line clearing.
+- game over.
+
+Need minimal code. Could use canvas 200x400, cell 20. Use CSS. Use JS.
+
+Let's design robust.
+
+Option use 7 tetrominoes as matrices:
+I: [[0,0],[1,0],[2,0],[3,0]]? But rotation around center. Simpler use shapes as arrays of 4 cells for each rotation? Could use matrix and rotate. Need collision.
+
+Use shapes as 4x4 matrices? Minimal:
+const S=[
+ [[1,1,1,1]], // I
+ [[1,1],[1,1]], // O
+ [[0,1,0],[1,1,1]], // T
+ [[1,0,0],[1,1,1]], // J? 
+ [[0,0,1],[1,1,1]], // L
+ [[0,1,1],[1,1,0]], // S
+ [[1,1,0],[0,1,1]] // Z
+];
+But rotation of matrix. Need handle variable dimensions. Could rotate matrix by 90. For I 1x4 -> 4x1. O 2x2. T 2x3 -> 3x2. Works. Need spawn at x=3? y=0. Need collision with board.
+
+Implement rotate:
+function rot(m){ return m[0].map((_,i)=>m.map(r=>r[i]).reverse()); } Wait rotate clockwise: new rows = old columns reversed? Let's derive. For matrix m rows y, cols x. Clockwise rotation: new[r][c] = old[m.length-1-c][r]? Simpler: m[0].map((_, i) => m.map(row => row[i]).reverse())? Let's test m=[[1,2],[3,4]]. m[0].map((_,i)=>m.map(row=>row[i]).reverse()) => i=0: [1,3].reverse()=[3,1]; i=1: [2,4].reverse()=[4,2] => [[3,1],[4,2]] which is clockwise? Original:
+1 2
+3 4
+Clockwise -> 3 1 / 4 2 yes. Good.
+
+Need collision:
+function hit(m,x,y){ for each cell if m[r][c] and (x+c<0||x+c>=10||y+r>=20||board[y+r][x+c]) return true; return false; }
+Need board array 20 rows x 10 cols.
+
+Need spawn:
+piece = random shape; x = Math.floor((10 - piece[0].length)/2); y=0; if hit then game over.
+But for I width 4 x=3. T width 3 x=3? floor((10-3)/2)=3. Good.
+
+Need game loop:
+let dropTimer=0; setInterval? Use requestAnimationFrame with time. Simpler setInterval(tick, 500). But keyboard rotation immediate. Need drop every 500ms. Use setInterval. Need handle game over.
+
+Need line clear:
+for y from 19 down to 0 if board[y].every(v=>v) then board.splice(y,1); board.unshift(Array(10).fill(0)); score += 10; y++? Need careful. If splice removes row and unshift new row, then same y now new row? We can loop y=19 down; if full, remove and unshift, then y++? Let's think. If row y full, remove it, unshift empty at top. Rows above shift down? Actually board.splice(y,1)
+---

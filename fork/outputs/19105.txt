@@ -1,0 +1,103 @@
+run 19105 | spass38 | pf60k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 17.69 t/s | prompt 692.6 t/s | 1000 tokens | args: -np 1 --moe dense-split=1,split-pass=0,log=w | power 220+280 W | 2026-10-25 00:54:05
+
+Let me analyze the provided source code files to find bugs that need fixing.
+
+Looking at the first file `common/json-schema-to-grammar.cpp`:
+
+1. In `build_repetition`, the logic looks mostly fine.
+
+2. In `build_min_max_int`, there's a `std::function` used with `uniform_range` - that's fine.
+
+3. Looking at `_pattern_to_rule`:
+   - The `transform` function uses `std::function<literal_or_rule()>` - recursion is fine.
+   - In the `{` handling: `seq.back().first = build_repetition(...)` - looks OK.
+   - Wait, there's a potential bug: in the `*`, `+`, `?` handling:
+     ```cpp
+     } else if (c == '*' || c == '+' || c == '?') {
+         if (seq.empty()) {
+             throw invalid_pattern("nothing to repeat");
+         }
+         seq.back() = std::make_pair(to_rule(seq.back()) + c, false);
+         i++;
+     }
+     ```
+     This looks fine.
+
+4. In `_not_strings` - the trie usage looks fine.
+
+5. In `_resolve_ref` - looks fine.
+
+6. In `_build_object_rule` - looks fine.
+
+7. In `_add_primitive`:
+   ```cpp
+   std::string _add_primitive(const std::string & name, const BuiltinRule & rule) {
+       auto n = _add_rule(name, rule.content);
+       for (const auto & dep : rule.deps) {
+           BuiltinRule dep_rule;
+           auto it = PRIMITIVE_RULES.find(dep);
+           if (it == PRIMITIVE_RULES.end()) {
+               it = STRING_FORMAT_RULES.find(dep);
+               if (it == STRING_FORMAT_RULES.end()) {
+                   _errors.push_back("Rule " + dep + " not known");
+                   continue;
+               }
+           }
+           if (_rules.find(dep) == _rules.end()) {
+               _add_primitive(dep, it->second);
+           }
+       }
+       return n;
+   }
+   ```
+   There's an unused variable `dep_rule` declared but never used. That's a warning but not necessarily a bug. Actually wait - `BuiltinRule dep_rule;` is declared and never used - that's dead code. Hmm, but is it a "bug"? It's unused. Let me note it.
+
+8. In `visit` for KIND_ARRAY:
+   ```cpp
+   if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
+       return _visit_primitive(rule_name, "array");
+   }
+   ```
+   Looks fine.
+
+9. In `json_schema_to_grammar(const common_json & schema, bool force_gbnf)`:
+   ```cpp
+   #ifdef LLAMA_USE_LLGUIDANCE
+       if (!force_gbnf) {
+           return "%llguidance {}\nstart: %json " + schema.dump();
+       }
+   #else
+       (void)force_gbnf;
+   #endif // LLAMA_USE_LLGUIDANCE
+   ```
+   Looks fine.
+
+Now the second file `common/arg.cpp` - this is a huge file. Let me look for bugs:
+
+1. In `break_str_into_lines`:
+   ```cpp
+   auto add_line = [&](const std::string& l) {
+       if (l.length() <= max_char_per_line) {
+           result.push_back(l);
+       } else {
+           std::istringstream line_stream(l);
+           std::string word, current_line;
+           while (line_stream >> word) {
+               if (current_line.length() + !current_line.empty() + word.length() > max_char_per_line) {
+                   if (!current_line.empty()) result.push_back(current_line);
+                   current_line = word;
+               } else {
+                   current_line += (!current_line.empty() ? " " : "") + word;
+               }
+           }
+           if (!current_line.empty()) result.push_back(current_line);
+       }
+   };
+   ```
+   Hmm, `current_line.length() + !current_line.empty() + word.length()` - this is a bool converted to int, so it accounts for the space. That's clever but works. Actually wait - if `current_line` is empty, `!current_line.empty()` is 0, so it's `0 + word.length()`. If word.length() > max_char_per_line, then it would still be added as a single line... that's fine-ish.
+
+2. In `common_arg::to_string()`:
+   ```cpp
+   if (ss.tellp() > n_leading_spaces - 3) {
+   ```
+   `ss.tellp()` returns `std::streampos`, comparing with int... `n_leading_spaces - 3` is int. Comparison between

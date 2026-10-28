@@ -1,0 +1,92 @@
+run 16687 | um3d | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.87 t/s | prompt 9.0 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=54829309632 | power 220+280 W | 2026-10-19 15:44:22
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. This is one of the rare cases where the user's explicit request (smallest possible) overrides my usual preference for elaborate polish. The user's request IS the spec here: minimal bytes.
+
+However, I should still make it functional and complete: a real Tetris with piece movement, rotation, gravity, line clearing, scoring, game over. The classic minimal Tetris implementations are around 300-500 bytes of JS.
+
+Let me think about what "smallest" means. There are famous minimal Tetris implementations:
+- "Tiny Tetris" by Nicky Case / others
+- The famous 229-byte Tetris in C
+- JS Tetris in ~500 bytes
+
+Let me write a genuinely small but complete Tetris in a single HTML file. I'll aim for something like under 1KB total, ideally much less. I should make it actually playable: arrow keys to move/rotate, gravity, line clear, game over, maybe score.
+
+Let me design the minimal Tetris:
+
+Approach: canvas, 10x20 grid, pieces defined as bit patterns.
+
+Classic minimal approach: define pieces as arrays of rotation states encoded in binary numbers, or use a rotation function on coordinate pairs.
+
+A very compact approach: represent each piece as a 4x4 (or 3x3) matrix and rotate by transposing. Or use the trick: piece shapes as numbers, rotate via bit manipulation.
+
+Let me write it:
+
+```html
+<body onload="setInterval(f,100)"><canvas id=c></canvas><script>
+...
+</script>
+```
+
+Actually let me carefully craft a compact but correct Tetris.
+
+Data:
+- Board: 10 wide, 20 tall. Store as array of 20 rows, each row a 10-bit number or array.
+- Pieces: 7 tetrominoes. Compact encoding: each piece as 4 rotation states of 16-bit masks? That's 28 numbers. Or compute rotation.
+
+Compact piece encoding trick: use a string like "0100010111000100..." Hmm.
+
+A known compact trick: define pieces via binary numbers where each piece is 4 rows of 4 bits = 16 bits, and rotation is done by bit rotation of the 4x4 matrix. Rotating a 4x4 bit matrix packed in a 16-bit integer can be done with a loop.
+
+Alternative compact approach used in famous tiny tetris (e.g., "smallest tetris" by Michael Birken in C, 229 bytes): pieces defined as 7 numbers, each encoding all rotations via base-... Actually Birken's uses a clever numeric encoding.
+
+Let me just write my own compact JS version.
+
+Plan:
+
+```js
+D=document
+C=D.getElementById? ... 
+```
+
+Let me write straightforwardly then golf.
+
+Core:
+
+```js
+var B=[], // board rows
+    P,    // current piece matrix
+    X,Y,  // position
+    W=10,H=20;
+```
+
+Pieces as matrices. Compact: define all 7 pieces as arrays of arrays of 0/1 in one flat string, parse it.
+
+E.g. shapes:
+I: 0010/0010/0010/0010 — or use 4x4
+O: 0110/0110
+T: 010/111
+S: 011/110
+Z: 110/011
+J: 100/111
+L: 001/111
+
+To rotate, easiest with square matrices. Use 3x3 for all except I (4x4) and O (2x2 or 4x4). Rotation of NxN matrix: `m[y][x] -> m[N-1-x][y]` (clockwise).
+
+Compact representation: each piece as array of strings? Or as binary numbers.
+
+Let me encode each piece as a number with bits, plus dimension. E.g.:
+
+```js
+S=[0x1320, ...]
+```
+
+Hmm, let me think of the classic compact encoding: each piece = 4 rotations precomputed as 16-bit ints. 7 pieces × 4 rotations = 28 numbers. Precomputing avoids rotation code. But listing 28 numbers costs bytes too.
+
+Rotation code for 4x4 packed int (row-major, bit 15 = top-left):
+
+```js
+function rot(m){r=0;for(i=0;i<16;i++)if(m>>i&1)r|=1<<(i%4*4+3-i/4|0);return r}
+```
+
+Hmm, let me get mapping right. If bit
+---

@@ -1,0 +1,8 @@
+run 18562 | relmf1 | pf16k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 9.22 t/s | prompt 305.0 t/s | 64 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 16:35:23
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. The second file appears to be cut off mid-function (`common_params_apply_system_config`).
+
+Let me go through the code systematically and identify issues:
+
+##
+---

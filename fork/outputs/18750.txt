@@ -1,0 +1,8 @@
+run 18750 | relmf1 | pf2k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 11.59 t/s | prompt 144.6 t/s | 64 tokens | args: -np 1 --moe dense-split=0,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-23 20:05:00
+
+Let me analyze this code carefully. This is a JSON schema to grammar converter (likely for llama.cpp's grammar-based sampling). The file appears to be cut off mid-way through the `PRIMITIVE_RULES` map initialization. Let me do a thorough code review.
+
+Let me go through the code section by section:
+
+1
+---

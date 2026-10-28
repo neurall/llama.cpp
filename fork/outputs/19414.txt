@@ -1,0 +1,72 @@
+run 19414 | rc5 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.1 t/s | prompt 8.1 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-25 09:23:21
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. This is different from my usual approach of making polished, memorable experiences. The user explicitly asked for "smallest" — so the goal here is extreme minification while keeping it functional and playable.
+
+Let me think about what "smallest Tetris" means. There are famous tiny Tetris implementations:
+- "Tiny Tetris" by Nick (tinytetris) — ~600 bytes C version
+- JavaScript Tetris in a tweet — there's a famous 140-byte-ish or a few hundred bytes version
+
+The classic minimal JS Tetris approach: use a canvas or even just text. Let me write my own minimal version and golf it hard.
+
+Key components:
+1. Playfield: 10×20 grid
+2. 7 tetrominoes with rotation
+3. Gravity, movement, rotation, collision
+4. Line clearing
+5. Score maybe (optional for smallest)
+6. Game over
+
+Let me design a compact representation. A classic trick: encode pieces as binary numbers. The famous "JavaScript Tetris in 140 bytes" style uses a bitmask approach.
+
+Let me think about a well-known compact approach:
+
+Pieces can be encoded as 4x4 bit patterns or as coordinate offsets. A very compact trick: each rotation state as a 16-bit number, or use the "sum of powers" encoding.
+
+One famous approach (from "Tetris in 140 bytes" discussions / codegolf):
+
+```js
+D=[...]; // piece data
+```
+
+Let me actually write my own and golf it. I'll aim for something genuinely small but readable-ish, maybe with a golfed version plus explanation. The user asked for "smallest html tetris game" — I should deliver a single HTML file, heavily golfed, and explain the tricks used.
+
+Let me design:
+
+Canvas approach: canvas 10 wide, 20 tall, each cell 1 pixel scaled up via CSS (image-rendering: pixelated). Actually we can draw with fillRect at scale, or set canvas width=10 height=20 and CSS scale it. That saves bytes: `c.width=10;c.height=20` and CSS `canvas{width:200px;image-rendering:pixelated}` — but CSS in a style tag costs bytes. Alternatively use `c.style.width='200px'`... Hmm, or just leave it tiny? Better to scale. Actually we can do `c.width=99` no... Let's do canvas 10×20 and CSS transform. Or simpler: draw at scale factor in fillRect calls — costs bytes per call. CSS scaling is cheaper: `<style>canvas{width:10em;image-rendering:pixelated}</style>` — hmm, image-rendering:pixelated is needed to avoid blur. That's ~45 bytes. Worth it.
+
+Alternative: use a `<pre>` with text characters! Text-based Tetris: each cell a character. That can be very compact:
+
+```js
+setInterval(...)
+```
+
+Actually text rendering with innerText might be smaller than canvas. Let's compare.
+
+Text approach: build a string of the board, use `pre.textContent = s`. Board 10×20 = 200 chars + newlines. Characters: ' ' empty, 'X' filled, maybe '#' for current piece. That's quite compact.
+
+Canvas approach: loop over board, fillRect. 
+
+Let me think about the core game logic golf.
+
+Classic golfed Tetris logic (I recall a famous ~250-byte JS tetris by @aemkei or similar). Let me reconstruct from scratch.
+
+Representation: board as array of 200 (or 20 rows of strings). Pieces: define each tetromino's rotations.
+
+Compact piece encoding trick: represent each piece shape as a 4x4 grid encoded in a number, and rotation via bit manipulation. A famous trick by David... "Tetris in 140 bytes" uses:
+
+Actually there's the well-known trick where all rotations of all pieces are generated from a single number per piece using bit rotation on a 4x4 grid. Let me think.
+
+A 4x4 grid = 16 bits. Rotating 90°: bit (r,c) → (c, 3-r). There's a neat arithmetic trick: rotating a 16-bit 4x4 matrix can be done with a lookup or with the "transpose + reverse" bit trick.
+
+Alternative compact encoding: store each piece as a list of 4 [x,y] offsets per rotation... that's a lot of data.
+
+Another classic: encode shapes as strings. E.g.:
+
+```js
+P="0123..." 
+```
+
+Hmm. Let me recall the famous "smallest tetris" JS entries:
+
+1. **"Tetris in 
+---

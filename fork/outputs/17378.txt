@@ -1,0 +1,63 @@
+run 17378 | iq3sw | edit4c | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 323.69 t/s | prompt 33200.1 t/s | 647 tokens | args: -np 1 -c 4096 | power ? W | 2026-10-21 12:45:47
+
+a-fA-F0-9]{8}-?\\d{4}-?\\d{4}-?\\d{4}-?\\d{12}"}
+};
+
+static std::unordered_map<std::string, BuiltinRule> PREFIX_RULES = {
+    {"bool", {"boolean"}},
+    {"decimal", {"decimal-part"}},
+    {"integer", {"integral-part"}},
+    {"number", {"number"}},
+    {"value", {"value"}},
+    {"object", {"object"}},
+    {"array", {"array"}},
+    {"uuid", {"uuid"}}
+};
+
+static std::string jsonSchemaToGrammar(const json& json) {
+    std::string grammar = "{\n";
+
+    for (const auto& rule : json) {
+        if (rule.first.find('$') != std::string::npos) {
+            continue; // Skip external grammars
+        }
+
+        auto [json_schema_rule, dependencies] = rule;
+        grammar += fst::LexicalGrammar::escape(json_schema_rule) + ";" + SPACE_RULE;
+
+        if (dependencies.size()) {
+            grammar += " " + PREFIX_RULES[json_schema_rule].content + " " + join(", ", dependencies) + ";" + "\n";
+        } else {
+            grammar += json_schema_rule + ";" + "\n";
+        }
+    }
+
+    grammar += "}";
+    return grammar;
+}
+
+// file: json-schema-to-grammar.cpp
+#include "common/json-schema-to-grammar.h"
+#include "trie.h"
+
+// ... rest of the implementation ...
+
+int main() {
+    // Example usage
+    json j = {
+        {"type", "object"},
+        {"properties", {
+            {"boolean", {"boolean"}},
+            {"decimal", {"decimal-part"}},
+            {"integer", {"integral-part"}},
+            {"number", {"number"}},
+            {"value", {"value"}},
+            {"object", {"\"{\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \"}\"", {"string", "value"}}},
+            {"array", {"\"[\" space ( value (\",\" space value)* )? space \"]\"", {"value"}}},
+            {"uuid", {"\"\\\"\\\" [0-9a-fA-F]{8}-?\\d{4}-?\\d{4}-?\\d{4}-?\\d{12}"}
+        }};
+
+    std::string grammar = jsonSchemaToGrammar(j);
+    std::cout << grammar;
+    return 0;
+}

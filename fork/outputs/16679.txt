@@ -1,0 +1,67 @@
+run 16679 | um3d | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.3 t/s | prompt 20.8 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-19 14:25:32
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, minified/compact, but still functional and playable.
+
+Let me think about what "smallest" means here. The user wants minimal bytes. I should write a compact Tetris: canvas rendering, keyboard controls, gravity, line clearing, scoring, game over, next piece maybe. To keep it truly small I might skip next-piece preview, hold, etc. But core Tetris: 7 tetrominoes, rotation, movement, drop, line clear, score.
+
+Let me design a compact implementation.
+
+Classic minimal Tetris approaches:
+
+- Represent pieces as arrays of rotations, or use a compact encoding.
+- Use a grid array, draw with canvas.
+
+Let me write it carefully and then compress.
+
+Plan:
+
+- Canvas 240x480 or so, cell 24px? Actually smaller cell = smaller canvas but same code size. Let's use cell size 20, grid 10x20 → canvas 200x400. Or scale via CSS. Keep it simple: canvas width=200 height=400, cell 20.
+
+- Board: array of 200 (10x20), values 0 or color index.
+
+- Pieces: 7 tetrominoes. Compact representation: each piece as list of 4 cell offsets in one rotation, then rotate mathematically? Rotating offsets: for I, S, Z that doesn't work with simple offset rotation around a pivot unless we use a 5x5 or appropriate matrix rotation. A common trick: store each piece as a 2x2... hmm.
+
+Simplest compact approach: store shapes as strings. E.g. shapes encoded as arrays of [x,y] pairs per rotation. Or use the classic "each piece = 4 rotations as bit patterns".
+
+A very compact known trick: define pieces via a string like "01 02 12" etc. Let me think.
+
+Alternative compact approach used in many golfed tetris: 
+
+```js
+d=[[1,1,1,1,0...]] 
+```
+
+Let me just write a reasonably compact but readable-ish implementation, then minify manually. The user asked for "smallest" — I'll aim for genuinely small (maybe ~600-800 bytes of code). I can present the minified single-file HTML and also briefly explain controls.
+
+Let me actually construct it.
+
+Core logic:
+
+```js
+W=10,H=20,S=20 // grid, cell
+c=document.querySelector('canvas') // get ctx
+```
+
+Pieces: I'll encode each tetromino as a set of coordinates. A neat compact encoding: each piece as a string of 4 numbers where each number encodes x*16+y? Or use the "shapes as binary matrices" approach.
+
+Compact classic: 
+
+```js
+P=[ // 7 pieces, each 4 rotations, each rotation as 4 [x,y]
+]
+```
+
+That's verbose. Better: encode rotations as strings.
+
+Known golf trick: represent each rotation state as a 4x4 or use offsets and rotate via (x,y)->(y,-x) around pivot with per-piece pivot. For I piece pivot issues... Actually a common approach: store each piece as array of 4 coordinate pairs for spawn state, and rotate by transforming coordinates relative to a pivot point stored per piece. For S/Z/I pieces, rotating offsets around a half-integer pivot works if we use the trick: rotate (x,y) -> (y, x) or (x,y)->(y, max-x) etc. Hmm.
+
+Simplest robust compact method: store all rotations explicitly as strings.
+
+E.g. piece data as a single string where each piece's rotations are encoded. Let me define shapes as 2D patterns in a 4x4 box (or smaller), each rotation as a string of 16 chars '0'/'1'? That's 7*4*16 = 448 chars — too big.
+
+Better: each rotation as list of 4 cells encoded as 2-digit numbers? Like "46 57 68 79" for vertical I... 
+
+Alternative: use the well-known compact representation where each tetromino is defined by 4 rotations of coordinate pairs, encoded as a string like:
+
+I: horizontal: (0,1)(1,1)(2,1)(3,1); vertical: (2,0)(2,1)(2,2)(2,3) — in a 4x4 box with rotation via matrix rotation of the box. If we embed each piece in a minimal bounding box and rotate the box contents, we get correct rotations for all pieces
+---

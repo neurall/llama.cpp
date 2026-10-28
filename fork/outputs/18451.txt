@@ -1,0 +1,54 @@
+run 18451 | mfx1 | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 31.26 t/s | prompt 756.9 t/s | 906 tokens | args: -np 1 | power 220+280 W | 2026-10-23 14:21:54
+
+Let me analyze this file carefully to identify which code is never used.
+
+First, let me understand what's used and what's not:
+
+1. `build_repetition` - static function, need to check if it's called anywhere in this file
+2. `build_min_max_int` - static function, need to check if it's called
+3. `SPACE_RULE` - const string, need to check if used
+4. `BuiltinRule` struct - used by PRIMITIVE_RULES and STRING_FORMAT_RULES
+5. `PRIMITIVE_RULES` - used by `is_reserved_name` and likely elsewhere
+6. `STRING_FORMAT_RULES` - used by `is_reserved_name` and likely elsewhere
+7. `is_reserved_name` - static function, need to check if called
+8. `INVALID_RULE_CHARS_RE` - static regex, need to check if used
+9. `GRAMMAR_LITERAL_ESCAPE_RE` - used by `format_literal`
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - need to check if used
+11. `GRAMMAR_LITERAL_ESCAPES` - used by `format_literal`
+12. `MAX_PATTERN_DEPTH` - need to check if used
+13. `NON_LITERAL_SET` - need to check if used
+14. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - need to check if used
+15. `replacePattern` - used by `format_literal`
+16. `format_literal` - used by `gbnf_format_literal`
+17. `gbnf_format_literal` - exported function (declared in header)
+18. `gbnf_escape_length` - static function, need to check if called
+
+The file is truncated at `gbnf_escape_length`, so I need to analyze what's visible.
+
+Let me trace through the code:
+
+- `build_repetition` - Is it called? I don't see any calls to it in the visible code. It's a static function. Since the file is truncated, it might be called later. But based on what's visible, it's not called.
+
+- `build_min_max_int` - It's called recursively within itself (in the `has_min && has_max` section and `has_min` section). So it IS used (at least recursively). But is it called from outside? The file is truncated so we can't see. However, since it's called recursively, it's at least partially used. But wait - the question is about code that is "never used." If `build_min_max_int` is only called recursively but never from outside, then the entire function is never used (the recursion doesn't count as external usage). Hmm, but actually if the function is never called from outside, then the recursive calls are also never executed. So the entire function would be unused.
+
+Wait, but the file is truncated. Let me re-read the prompt. The file ends with `gbnf_escape_length` which is incomplete. So we only see up to that point.
+
+Let me check each item:
+
+1. `build_repetition` - Not called anywhere in the visible code. Static function. **UNUSED**
+
+2. `build_min_max_int` - Not called from outside the function itself (only recursive calls). Static function. **UNUSED** (since it's never called from outside)
+
+Wait, actually, let me reconsider. The file is truncated. The prompt says "Delete the code in this file that is never used." Since the file is truncated, we should only consider what's visible.
+
+Actually, looking more carefully at the file, it seems like it's a partial file. The `gbnf_escape_length` function is cut off. So there might be more code after that which uses some of these functions.
+
+But the task says to delete code that is never used. Let me focus on what's clearly unused based on the visible code:
+
+1. `build_repetition` - static, not called in visible code → **UNUSED**
+2. `build_min_max_int` - static, only called recursively → **UNUSED** (never called from outside)
+3. `SPACE_RULE` - const, not referenced in visible code → **UNUSED**
+4. `INVALID_RULE_CHARS_RE` - static, not referenced in visible code → **UNUSED**
+5. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - static, not referenced in visible code → **UNUSED**
+
+---

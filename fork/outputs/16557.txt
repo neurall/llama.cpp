@@ -1,0 +1,32 @@
+run 16557 | um3d | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.46 t/s | prompt 22.2 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-19 08:22:39
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf/minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a genuinely playable Tetris.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris" genre — like the ~200 byte-ish ones that are barely playable. But I want something that's actually playable: 7 pieces, rotation, line clearing, score, game over, keyboard controls. I can compress it heavily.
+
+Let me aim for a genuinely tiny but fully playable Tetris. I'll write it in a single HTML file with an inline `<canvas>` and a compact script. I'll use terse variable names, minimal DOM, and pack the piece definitions cleverly.
+
+Key design decisions for compactness:
+
+1. **Rendering**: Use a `<canvas>` with small cell size (e.g., 12px or 16px). Draw blocks as filled rects. Maybe use different colors per piece via a small palette string.
+
+2. **Pieces**: The classic trick is to encode each tetromino as a set of coordinates, or use the "binary encoding" trick. A very compact approach: represent each rotation state as a 4x4 (or 3x3) grid encoded in a number. Or the famous trick: pieces as arrays of [x,y] offsets.
+
+Actually a super-compact classic: define pieces via a string of coordinates. E.g.:
+
+```js
+P=[[1,1,0,0,1,0,0,0],...] 
+```
+
+Hmm. Let me think about the most compact encoding that still supports rotation.
+
+**Option A: rotation via coordinate math.** Store each piece as a list of 4 cells relative to a pivot; rotate by (x,y)->(y,-x) or similar. This gives free rotation with SRS-ish behavior (not exact SRS but fine). Encoding: each piece = array of 4 [x,y] pairs. That's like `[[1,0],[2,0],[0,1],[1,1]]` for J etc. Compact-ish.
+
+**Option B: matrix rotation.** Store piece as a square matrix (2x2 for O, 3x3 for others, or 4x4 for I), rotate by transposing+reversing rows. Encoding matrices as arrays of arrays is verbose. But we can encode each piece as a single number bitmask over a 4x4 grid (16 bits) and rotate the bitmask with bit math. That's very compact!
+
+Bitmask rotation on a 4x4 grid: cell (x,y) at bit index y*4+x. Rotating 90° clockwise: new position (x', y') where... For a grid rotation, (x,y) -> (3-y, x) for clockwise in a 4x4. So bit b at index i = y*4+x maps to index (x)*4 + (3-y) = ... let me compute: new_x = 3 - y? Wait clockwise rotation: point at (x,y) goes to (y, 3-x)? Let's define: rotating the grid 90° CW, the cell at column x, row y moves to column (3-y), row x. So new index = x*4 + (3-y). Hmm, let me verify with a simple example: cell at (0,0) top-left. After CW rotation, top-left goes to top-right: (3,0). Formula: new_x = 3 - y = 3, new_y = x = 0. Yes → (3,0). Correct.
+
+So rotation of a 16-bit mask: for each bit i (y=i>>2, x=i&3), if set, set bit at (x*4 + (3-y))... wait new index = new_y*4 + new_x = x*4 + (3-y). Hmm that gives new index = x*4+(3-y). Check (0,0): x=0,y=0 → 0*4+3 = 3 → (3,0) top-right. Good. Check (3,0) top-right → x=3,y=0 → 3*4+3=15 → (3,3) bottom-right. Good, top-right goes to bottom-right under CW. Correct.
+
+So a rotate function: `r=m=>{let n=0;for(i=0;i<16;i++)if(m>>i&1)n|=1<<(i&3)*4+3-(i>>2);return n}` — hmm wait that
+---

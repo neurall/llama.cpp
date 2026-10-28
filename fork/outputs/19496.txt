@@ -1,0 +1,26 @@
+run 19496 | um6d | pf60k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 94.88 t/s | prompt 3748.4 t/s | 1000 tokens | args: -np 1 --moe dense-split=1,split-experts=0,mode=cache,share-adj=+0.10 | power 220+280 W | 2026-10-25 16:28:36
+
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - The user provided two C++ source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+   - The prompt says: "Return the completed source with the bugs fixed."
+   - I need to identify bugs in the provided code and fix them.
+   - The code is from `llama.cpp` (or a similar project), specifically dealing with JSON schema to grammar conversion and CLI argument parsing.
+
+2.  **Scan for Bugs in `common/json-schema-to-grammar.cpp`:**
+   - *Bug 1:* `build_repetition` function uses `string_repeat` which is not defined in the provided code. It's likely a helper function from `common.h`, but I should check if it's used correctly. Actually, `string_repeat` is probably defined elsewhere, but I'll assume it's available. Wait, looking at the code, `string_repeat` is used in `build_min_max_int`. It's likely a utility function. I'll leave it as is, but note it might need to be defined if it's missing. However, the prompt says "bugs fixed", so I should focus on logical/compiler errors.
+   - *Bug 2:* `build_min_max_int` uses `string_repeat` again. Same issue.
+   - *Bug 3:* `uniform_range` lambda captures `out` by reference, but `out` is a `std::stringstream`. That's fine.
+   - *Bug 4:* `build_min_max_int` has a recursive call with `decimals_left` parameter. The signature is `build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true)`. In recursive calls, it passes `decimals_left` correctly.
+   - *Bug 5:* `build_repetition` uses `string_repeat` in `build_min_max_int`. Wait, `string_repeat` is not in the includes. It's likely from `common.h`. I'll assume it's fine.
+   - *Bug 6:* `build_min_max_int` has a potential issue with `more_digits` lambda. It uses `out << "{"; out << min_digits; if (max_digits != min_digits) { out << ","; if (max_digits != std::numeric_limits<int>::max()) { out << max_digits; } } out << "}";`. This is correct for GBNF repetition syntax.
+   - *Bug 7:* `build_min_max_int` handles negative numbers. `if (min_value < 0 && max_value < 0) { out << "\"-\" ("; build_min_max_int(-max_value, -min_value, out, decimals_left, /* top_level= */ true); out << ")"; return; }`. This swaps min/max correctly for absolute values.
+   - *Bug 8:* `build_min_max_int` has `auto less_decimals = std::max(decimals_left - 1, 1);`. This is fine.
+   - *Bug 9:* `build_min_max_int` recursive call: `build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, /* top_level= */ false);`. `std::stoll` might throw if `min_s.substr(1)` is empty, but `min_s` comes from `std::to_string(min_value)` where `min_value > 9`, so it's at least 2 chars. Safe.
+   - *Bug 10:* `build_min_max_int` throws `std::runtime_error("At least one of min_value or max_value must be set")` at the end. This is fine.
+   - *Bug 11:* `build_repetition` uses `string_repeat` in `build_min_max_int`. I'll assume it's defined elsewhere.
+   - *Bug 12:* `build_min_max_int` uses `string_repeat` in `uniform_range`. I'll assume it's fine.
+   - *Bug 13:* `build_min_max_int` has `auto sub_len = from.length() - i - 1;`. If `sub_len > 0`, it calls `string_repeat("0", sub_len)`. This is fine.
+   - *Bug 14:* `build_min_max_int` has `auto to_reached = false;` and logic for ranges. It seems complex but likely correct for GBNF.
+   - *Bug 15:* `build_min_max_int` uses `std::numeric_limits<int>::max

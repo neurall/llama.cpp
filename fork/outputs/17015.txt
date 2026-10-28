@@ -1,0 +1,83 @@
+run 17015 | b13600 | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.04 t/s | prompt 585.5 t/s | 918 tokens | args: -np 1 --moe split-f16=1 | power 220+280 W | 2026-10-20 03:14:57
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function, used by... let me check. It's used in the schema conversion code (which isn't shown in the snippet, but the file is truncated). Actually, the file shown is truncated at `gbnf_escape_length`. So I only see part of the file. Hmm, but the task says "Delete the code in this file that is never used." I need to work with what's shown.
+
+Wait, the file is cut off mid-function:
+```cpp
+static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
+   
+```
+
+So the file is incomplete. I need to figure out what's used within the shown portion, and presumably the rest of the file continues. But since I can't see the rest, I should analyze what's used within the visible portion and infer typical usage from the actual llama.cpp file (this is from llama.cpp's common/json-schema-to-grammar.cpp).
+
+Let me recall the actual llama.cpp file content. The actual file has:
+
+- `build_repetition` - used in `build_repetition_for_array` or similar... Actually in llama.cpp, `build_repetition` is used in the schema-to-grammar conversion for arrays with minItems/maxItems, and for string patterns with minLength/maxLength. It's used.
+
+- `build_min_max_int` - used for integer minimum/maximum constraints. Used.
+
+- `SPACE_RULE` - used in grammar generation. Used.
+
+- `BuiltinRule`, `PRIMITIVE_RULES`, `STRING_FORMAT_RULES` - used.
+
+- `is_reserved_name` - used in `add_rule` to check name collisions. Used.
+
+- `INVALID_RULE_CHARS_RE` - used in `add_rule` when sanitizing rule names. Used.
+
+- `GRAMMAR_LITERAL_ESCAPE_RE` - used in `format_literal`. Used.
+
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - used in... hmm. In the actual llama.cpp file, there's a function that converts regex character ranges to grammar ranges. Let me recall.
+
+Actually, in the llama.cpp json-schema-to-grammar.cpp, there's a `GBNFParser` class (in newer versions) that parses regex patterns and converts them to grammar. The `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` is used in... Let me think.
+
+Actually wait. Let me recall the actual file. The llama.cpp file `common/json-schema-to-grammar.cpp` contains:
+
+```cpp
+// NOTE: This is a modified version of
+// https://github.com/ollama/ollama/blob/.../json_schema_to_grammar.py
+```
+
+Functions include:
+- `build_repetition`
+- `build_min_max_int`
+- `SPACE_RULE`
+- `BuiltinRule`, `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`
+- `is_reserved_name`
+- regex constants
+- `replacePattern`
+- `format_literal`, `gbnf_format_literal`
+- `gbnf_escape_length`
+- `gbnf_unescape`? Hmm.
+
+Actually let me recall more precisely. The file in llama.cpp (as of 2024) has:
+
+```cpp
+static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
+    size_t len = 1;
+    if (pattern[pos] == '\\') {
+        len = 2;
+        if (pos + 1 < pattern.size()) {
+            auto c = pattern[pos + 1];
+            if (c == 'x') {
+                len = 4;
+            } else if (c == 'u') {
+                len = 6;
+            } else if (c == 'U') {
+                len = 10;
+            } else if (c == '0' && ...) ...
+        }
+    }
+    return len;
+}
+```
+
+Hmm, I don't remember exactly. Let me think about what functions exist in the actual file and which are unused.
+
+Actually, I recall that in llama.cpp's json-schema-to-grammar.cpp there's a class `SchemaToGrammarInternal` (or functions like `add_rule`, `add_schema`, `add_string`, `add_string_with_recursion`, etc.). There's also a regex-to-grammar
+---

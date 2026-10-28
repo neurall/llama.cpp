@@ -1,0 +1,100 @@
+run 20189 | dynhot_two_pool_keys | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 91.49 t/s | prompt 55.8 t/s | 1007 tokens | args: -np 1 --moe state=/tmp/runstate/dynab-q36-pure.ini --moe sim-vram=3072 | power 220+280 W | 2026-10-28 07:51:15
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means a single HTML file (or minimal code) that implements a playable Tetris game. I need to prioritize code size while maintaining functionality.
+
+2.  **Key Requirements for Tetris:**
+   - Grid/board (10x20 standard)
+   - Tetromino pieces (7 shapes)
+   - Movement (left, right, down, rotate)
+   - Collision detection
+   - Line clearing
+   - Score tracking
+   - Game over condition
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Constraints for "Smallest":**
+   - Single HTML file
+   - Minimal CSS/JS
+   - Use canvas for rendering (more compact than DOM)
+   - Compact variable names
+   - Avoid unnecessary features (animations, sounds, etc.)
+   - Use efficient algorithms
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head><title>Tetris</title><style>body{margin:0}canvas{display:block}</style></head>
+   <body><canvas id=c></canvas><script>
+   // Game logic
+   </script>
+   </body>
+   </html>
+   ```
+
+5.  **Core Logic Implementation (Mental Refinement):**
+   - Board: 10x20 array of 0s
+   - Pieces: 7 tetrominoes, each with rotations
+   - Current piece: position, shape, rotation
+   - Controls: Arrow keys + space for drop
+   - Loop: requestAnimationFrame or setInterval
+   - Drawing: canvas fillRect
+   - Collision: check bounds and occupied cells
+   - Line clear: check rows, remove, shift down
+   - Score: increment on clear
+
+   Let's write it compactly.
+
+   *Piece representation:* 
+   Standard tetrominoes can be represented as arrays of offsets or 2D arrays. For compactness, I'll use a flat array of coordinates or a string representation. Actually, a common compact approach is:
+   `P = [[1,1,1,1],[1,1,0,0],[1,0,1,0],[1,1,1,0],[0,1,1,0],[1,0,0,1],[1,1,0,1]]` (7 pieces)
+   But rotations need handling. Better: define each piece as a set of relative coordinates, then rotate by swapping x/y and negating.
+
+   Actually, a very compact way:
+   ```javascript
+   const P = [
+     [[1,1,1,1]],
+     [[1,1],[1,1]],
+     [[1,0],[1,1]],
+     [[0,1],[1,1]],
+     [[1,1,0],[0,1,1]],
+     [[1,0,1],[1,1,0]],
+     [[1,1,1],[0,1,0]]
+   ];
+   ```
+   Wait, standard Tetris pieces are:
+   I: 4x1
+   O: 2x2
+   T: 3x1 with center down
+   S: 3x2
+   Z: 3x2
+   J: 3x2
+   L: 3x2
+
+   Let's use a simpler representation: each piece as an array of [x,y] offsets relative to a pivot, or just 2D arrays. For compactness, I'll use a flat array of 4 coordinates per piece, and rotate by transforming coordinates.
+
+   Actually, the most compact known Tetris implementations use:
+   ```javascript
+   const T = [
+     [1,1,1,1],
+     [1,1,0,0],
+     [1,0,1,0],
+     [1,1,1,0],
+     [0,1,1,0],
+     [1,0,0,1],
+     [1,1,0,1]
+   ];
+   ```
+   This is a common compact representation where each piece is a 4x4 grid (or similar), but that's not efficient.
+
+   Let's go with a proven minimal approach:
+   - Board: 200 cells (10x20)
+   - Pieces: 7 shapes, each as array of 4 offsets
+   - Rotation: swap x,y and negate one
+   - I'll write it step by step.
+
+  
+---

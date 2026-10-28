@@ -1,0 +1,7 @@
+run 16602 | um3d | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 22.22 t/s | prompt 1002.2 t/s | 64 tokens | args: -np 1 | power 220+280 W | 2026-10-19 11:06:35
+
+    return params.spec_types.empty() || params.spec_types == std::vector<std::string>{"draft"};
+}
+
+static void handle_model_result(const common_params & params, const std::string & model_url, const std::string & model_file, handle_model_result & result) {
+    auto is_mmproj = [](const

@@ -1,0 +1,12 @@
+run 19895 | fix_dsv4_dummy_block_row_inside_zone | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 6.74 t/s | prompt 19.7 t/s | 64 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe spec-depth=2,upload-now=0,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-27 01:22:55
+
+
+---
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>3D Tetris — Polycube Well</title>
+<style>

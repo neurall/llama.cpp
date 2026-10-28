@@ -1,0 +1,7 @@
+run 16594 | um3d | pf12k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 394.68 t/s | prompt 17378.1 t/s | 64 tokens | args: -np 1 | power 220+280 W | 2026-10-19 10:59:15
+
+    return params.spec_types.empty() || params.spec_types.size() == 1;
+}
+
+static bool spec_types_is_default(const common_params_model & params) {
+    return params.spec_types.empty() || params.spec_types.

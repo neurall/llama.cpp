@@ -1,0 +1,20 @@
+run 16702 | dyn3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 12.95 t/s | prompt 211.1 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 595 W | 2026-10-19 18:19:58
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - Wait, there's a subtle bug: `if (max_items == 0) return "";` — but what if `min_items > 0` and `max_items == 0`? That's an impossible/contradictory schema (min > max), and returning empty string silently accepts... actually returning "" means the rule matches empty string, which would violate min_items. But min > max is an invalid schema anyway. Minor.
+   - In the separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 1` and `min_items == 0`, then we get `item_rule (sep item){-1...}` wait: `min_items == 0 ? 0 : min_items - 1` → 0, `has_max ? max_items - 1 : ...` → 0. So `(sep item){0,0}` which matches empty. Then result = `item_rule (sep item){0,0}` wrapped in `(...)?`. Hmm, `(sep item){0,0}` — does GBNF support `{0,0}`? It would match empty. Actually wait, for min_items=0, max_items=1 with separator: result = `item_rule (sep item){0,0}` then `(result)?`. The `{0,0}` repetition is weird but functionally matches empty. Actually is `{0,0}` valid GBNF? In llama.cpp's GBNF, repetition `{0,0}`... I believe it parses. It's inefficient but works. Hmm, actually let me think: min_items=0, max_items=1: `build_repetition(item, 0, 1, sep)` → since separator non-empty: `item + " " + build_repetition("(sep item)", 0, 0)`. In the recursive call, separator is empty now: min=0, max=0, has_max=true. Not (min==0&&max==1). Not min==1&&!has_max. Not min==0&&!has_max. So returns `item{0,0}`. So overall: `(item (sep item){0,0})?`. That's valid but ugly. Edge case.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead; could be a static helper.
+   - `decimals_left = 16` default. The recursion for negative numbers: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == INT64_MIN`, then `-min_value` is UB (overflow). Let's check: in the `has_min && has_max` branch, if both negative: `build_min_max_int(-max_value, -min_value, ...)`. If `min_value == INT64_MIN` and `max_value < 0`, then `-min_value` overflows → UB. Actually wait, can min_value be INT64_MIN here? has_min is false if min_value == INT64_MIN. So in the `has_min && has_max` branch, min_value != INT64_MIN, so `-min_value` is fine. And `-max_value`: max_value != INT64_MAX since has_max. But max_value could be INT64_MIN? If max_value == INT64_MIN and min_value < max_value... min_value < INT64_MIN impossible. So max_value == INT64_MIN implies min_value == INT64_MIN too, but then has_min false. So both negative branch: min_value in [INT64_MIN+1, -1], max_value in [min_value, -1]. `-max_value` in [1, INT64_MAX-1]... wait `-min_value` where min_value >= INT64_MIN+1 → `-min_value <= INT64_MAX-1`? `- (INT64_MIN+1) = INT64_MAX - 1`? Actually `-INT64_MIN` is UB but `-(INT64_MIN+1) = INT64_MAX`. Hmm: INT64_MIN = -2^63. -(INT64_MIN + 1) = 2^63 - 1 = INT64_MAX. OK fine. So no UB there. Good.
+   - In the `has_min` branch with `
+---

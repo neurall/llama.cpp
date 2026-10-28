@@ -1,0 +1,3 @@
+run 17346 | iq3sw | edit4c | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 300.35 t/s | prompt 21103.9 t/s | 25 tokens | args: -np 1 -c 4096 | power ? W | 2026-10-21 12:28:55
+
+To count the lines in the given file, you can use the `std::ifstream` to read the file line by

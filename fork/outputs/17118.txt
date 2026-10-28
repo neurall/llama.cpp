@@ -1,0 +1,60 @@
+run 17118 | stock-b11742-official | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 14.2 t/s | prompt 49.2 t/s | 1024 tokens | args:  | power 220+280 W | 2026-10-20 04:47:33
+
+The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, performance concerns, security issues, and general code quality.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - `max_items == 0` returns empty string - correct
+  - `min_items == 0 && max_items == 1` returns `item_rule + "?"` - correct
+  - When separator is empty and `min_items == 1 && !has_max` returns `item_rule + "+"` - correct
+  - When separator is empty and `min_items == 0 && !has_max` returns `item_rule + "*"` - correct
+  - General case with separator: The logic for building `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", ...)` seems correct for building sequences like `item (sep item)*`
+  - When `min_items == 0`, wraps in `(...)?` - correct
+
+### build_min_max_int function
+- This is a complex function for generating integer range rules. Let me check:
+  - `decimals_left` parameter is used to limit digit depth - seems reasonable
+  - The `uniform_range` lambda handles digit-by-digit range generation
+  - The negative number handling looks correct
+  - The `top_level` parameter controls whether leading zeros are allowed
+  - Potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is too large, but since it's derived from `std::to_string(min_value)` where `min_value > 9`, the substring should be valid.
+
+### _add_rule function
+- The deduplication logic: if the same name maps to the same rule, it reuses it. If different, it appends a number. This seems correct but could be inefficient for large schemas.
+
+### _visit_pattern function
+- Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for rollback.
+- However, `_rules` is a `std::map` and copying it on every pattern visit could be expensive for large schemas.
+
+### _pattern_to_rule function
+- Complex regex-to-grammar conversion. Let me check for issues:
+  - The `paren_depth` tracking looks correct
+  - Character class parsing handles escapes
+  - The `join_seq` function merges consecutive literals
+  - Potential issue: In the `{` handling, `std::stoi` could throw `std::out_of_range` which is a subclass of `std::logic_error`... wait, actually `std::out_of_range` derives from `std::logic_error`. Let me check: `std::out_of_range` derives from `std::logic_error`. So catching `std::logic_error` would catch both `std::invalid_argument` and `std::out_of_range`. That's correct.
+  
+  - Wait, actually `std::out_of_range` derives from `std::logic_error`? Let me verify: Yes, `std::out_of_range` derives from `std::logic_error`. And `std::invalid_argument` also derives from `std::logic_error`. So catching `std::logic_error` catches both. Good.
+
+  - The literal parsing logic with `is_non_literal` checks is complex. The condition for consuming a character as literal seems to handle edge cases where the next character is a non-literal character.
+
+### _not_strings function
+- Generates a rule that matches strings that are NOT in a given set, using a trie.
+- The `rejects` string accumulates characters for the negation class. If a character is a regex special character (like `]`, `-`, `^`), it could break the character class. This is a potential bug - the characters in `rejects` are not escaped.
+
+Wait, let me look more carefully. The `rejects` string is used in `[^" << rejects << "]`. If any character in `rejects` is `]`, `-`, or `^`, it could cause issues in the grammar. This is a potential bug.
+
+Actually, looking at the code more carefully, `rejects` accumulates UTF-8 characters from the trie. These could include characters like `]`, `-`, `^` which would need escaping in a character class. This is a bug.
+
+### _resolve_ref function
+- Handles `$ref` resolution with cycle detection using `_refs_being_resolved`.
+- The `ref_fragment` extraction looks correct.
+
+### _build_object_rule function
+- Builds object rules with required and optional properties.
+- The `get_recursive_refs` lambda generates alternatives for optional properties.
+-
+---

@@ -1,0 +1,77 @@
+run 18983 | spass19 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 56.86 t/s | prompt 118.5 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-24 15:50:51
+
+The user wants the smallest HTML Tetris game. Let me think about this. "Smallest" — they want minimal code. But I also want it to feel genuinely crafted rather than a bare-bones dump. There's a tension: "smallest html tetris game" — the request is explicitly for minimal size. I should honor that: deliver a tiny, dense, working Tetris in one HTML file.
+
+But I can still make it feel crafted — the minimal version itself should be elegant, and maybe I present it with a compact but characteristic framing. The key deliverable is the minified-ish Tetris.
+
+Let me write a genuinely small but complete Tetris:
+
+Classic tiny Tetris approach using a matrix rotation trick.
+
+```html
+<canvas id=c width=120 height=240 tabindex=0></canvas>
+<script>
+// minimal tetris
+</script>
+```
+
+Let me craft it carefully.
+
+Standard tiny tetris:
+
+```js
+C=c.getContext`2d`,S=[[],[],[],[]],K={},O=0
+onkeydown=e=>K[e.keyCode]=e.preventDefault(!e.repeat)
+onkeyup=e=>K[e.keyCode]=0
+T=_=>{
+ ...
+}
+```
+
+Let me use the well-known compact technique: pieces defined as 4 rotation states via string, or use the matrix rotate trick with a single array per piece.
+
+Compact approach: Represent board as 13x20 array (or use a flat array). Pieces as 8x8? Let's do the classic:
+
+```
+P=[[],[],[],[]] // no
+```
+
+Let me write my own compact version:
+
+```js
+B=[];W=10;H=20;S=16;
+for(i=0;i<W*H;i++)B[i]=0
+// pieces as 4x4 bitmasks per rotation? 
+```
+
+Simplest tiny: define pieces by their 4x4 matrix in one rotation and rotate by index math.
+
+```js
+const P="0110 1111 1110 0111 1111".split(" ")
+```
+
+Hmm, let me use the classic "one big string of coordinates" approach.
+
+Alternative well-known minimal approach: use a single number per piece encoding rotations.
+
+Let me do this: pieces defined as arrays of 4 cell offsets in a 4x4 grid (as 16-bit masks), and rotate the 4x4 mask.
+
+```js
+P=[0b0110_0110, ...]
+```
+
+Actually simplest: define each tetromino as a 4-bit-per-row 4x4 (16 bits) and rotate the 4x4 grid.
+
+Rotate 4x4 bitmask:
+```js
+r=m=>{let n=0;for(y=0;y<4;y++)for(x=0;x<4;x++)n|=(m>>(y*4+x))<<(3-x)*4+y... }
+```
+Hmm careful. Let's define bit index = y*4+x. Rotate clockwise: new[x][3-y] = old[y][x] → new index = (3-y)... wait clockwise: new[x][3-y]... Let me be precise. For clockwise rotation: newX = H-1-Y, newY = X. So old(y,x) → new(3-y, x)? No: clockwise rotation of matrix: new[x][rows-1-y]... 
+
+Standard: rotate 90° clockwise: `newMatrix[i][j] = old[n-1-j][i]`. So new(x,y) = old(n-1-y, x). Bit index new = y*4+x, old = (n-1-y)*4 + x = (3-y)*4+x.
+
+So: `r=m=>{let n=0;for(y=4;y--;)for(x=4;x--;)if(m>>((3-y)*4+x)&1)n|=1<<(y*4+x);return n}` — hmm that's new(y,x) = old(3-y, x)? Let me just do: for each old bit at (oy,ox), new position is (ox, 3-oy). new index = ox*4 + (3-oy).
+
+```js
+r=m=>{let n=0;for(y=4;y--;)for(x=4;x--;)n|=(m>>(y*4+x)&1)<<(x*4+3
+---

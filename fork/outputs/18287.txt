@@ -1,0 +1,44 @@
+run 18287 | splitfix | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 10.67 t/s | prompt 269.8 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 09:52:36
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - Wait, there's a subtle bug: `if (max_items == 0) return "";` — but if `min_items > 0` and `max_items == 0`, this is an impossible constraint (min > max), and returning empty string silently accepts it. Actually returning "" means the rule matches empty, which would fail if min_items > 0. Hmm, actually returning "" makes the grammar match nothing... Actually an empty rule in GBNF might be invalid. Let me think. If max_items == 0 and min_items == 0, returning "" is correct (empty repetition). If min_items > 0 and max_items == 0, the schema is contradictory; returning "" would produce an invalid grammar rule (empty string). This is an edge case.
+   - In the separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 1` and `min_items == 1`, then max_items - 1 = 0, so the inner repetition would return "" — resulting in `item_rule " " ...` wait no. Let me trace: `result = item_rule + " " + build_repetition(...)` — wait, actually the separator case starts with `item_rule + " " + ...`. Hmm wait, that means even with min_items == 0, the result starts with item_rule? Let me re-read:
+
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+if (min_items == 0) {
+    result = "(" + result + ")?";
+}
+```
+
+So for min_items=0, max_items=2: result = `item " " (sep item){0,1}`, then wrapped: `(item " " (sep item){0,1})?`. That's correct for matching 0, 1, or 2 items.
+
+For min_items=1, max_items=1: inner build_repetition with min=0, max=0 returns "" — so result = `item " " ` — trailing space! That produces `item_rule " "` followed by nothing, which is a grammar bug (trailing space in rule). Actually wait, `item_rule + " " + ""` = `item_rule " "` — the rule would be `item " "` which requires a trailing space after the item. That's a bug for min_items=1, max_items=1 with separator. Hmm, let me check: min_items=1, max_items=1, separator non-empty. `has_max` = true. Inner call: min_items == 0 ? 0 : min_items - 1 = 0; has_max ? max_items - 1 : ... = 0. So inner build_repetition(sep_item_rule, 0, 0, "") — wait no, the inner call passes separator_rule as ""? No wait:
+
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+
+The inner call is `build_repetition(sep_item_group, inner_min, inner_max)` with default separator "". With inner_min=0, inner_max=0: first check `max_items == 0` → return "". So result = `item_rule + " " + ""` = `item_rule " "`. Then min_items != 0 so no wrapping. Final rule: `item " "` — this requires a trailing space after the single item! That's a bug. Hmm wait, but is it? Let me double check the original llama.cpp code... In the original llama.cpp json-schema-to-grammar.cpp:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Actually the original code has the
+---

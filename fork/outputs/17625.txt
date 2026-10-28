@@ -1,0 +1,25 @@
+run 17625 | tokms17 | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 31.45 t/s | prompt 1665.0 t/s | 241 tokens | args: -np 1 -c 4096 | power 475 W | 2026-10-21 23:36:37
+
+The user wants me to add a function that counts the lines of this file and prints the count. Since this is a C++ file, I'll add a function that reads the file itself and counts the lines.
+
+Let me add a function that opens the file `common/json-schema-to-grammar.cpp` and counts the lines.
+---
+Here's the function added at the end of the file:
+
+```cpp
+static void count_and_print_lines() {
+    std::ifstream file("common/json-schema-to-grammar.cpp");
+    if (!file.is_open()) {
+        std::cerr << "Could not open file." << std::endl;
+        return;
+    }
+    int line_count = 0;
+    std::string line;
+    while (std::getline(file, line)) {
+        line_count++;
+    }
+    std::cout << "Line count: " << line_count << std::endl;
+}
+```
+
+You'll also need to add `#include <fstream>` and `#include <iostream>` at the top of the file (if not already included). Then call `count_and_print_lines()` from wherever appropriate (e.g., `main()` or another entry point).

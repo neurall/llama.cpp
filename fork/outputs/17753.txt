@@ -1,0 +1,43 @@
+run 17753 | coldplan2 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.29 t/s | prompt 91.4 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-10-22 14:45:18
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the intent is a compact, self-contained Tetris in one HTML file. I should keep it small but functional. The most characteristic thing here is the game itself, so the board should be the first thing you see. I'll give the code block, minimal, plus brief controls note.
+
+Let me write a compact Tetris in HTML with canvas, ~30 lines. Keep it small but working.
+
+Let me write it carefully:
+
+```html
+<!DOCTYPE html><canvas id=c width=160 height=320 tabindex=0></canvas>
+<script>
+c=c.getContext`2d`,W=10,H=20,S=16,g=[...Array(H)].map(_=>Array(W).fill(0)),P
+function newP(){P={m:(P?P.n:newP.m)||[[[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],[[0,0,1,0],[0,0,1,0],[0,0,1,0],[0,0,1,0]]],[[[1,1],[1,1]]],[[[0,1,1],[1,1,0],[0,0,0]],[[0,1,0],[0,1,1],[0,0,1]]],[[[1,1,0],[0,1,1],[0,0,0]],[[0,1,0],[1,1,0],[0,1,0]]],[[[1,0,0],[1,1,1],[0,0,0]],[[0,1,0],[0,1,1],[0,1,0]],[[0,0,1],[1,1,1],[0,0,0]],[[0,1,0],[1,1,0],[1,0,0]]],[[[0,1,0],[1,1,1],[0,0,0]],[[1,0,0],[1,1,0],[0,1,0]],[[0,0,0],[1,1,1],[0,1,0]],[[0,1,0],[0,1,1],[0,0,1]]],[[[0,0,1],[1,1,1],[0,0,0]],[[0,1,0],[0,1,1],[1,0,0]]]],x:3,y:0,i:0,n:Math.random()*7|0}}
+```
+
+Hmm, that's getting complex. Simpler: define pieces as strings/arrays and rotate by matrix transpose.
+
+Compact approach: pieces defined as arrays of coordinates or as matrices; rotate = transpose+reverse.
+
+```js
+S=[[7,14],[4,4,4],[4,4,4],[1,1,1],[1,1,1]] // no
+```
+
+Classic minimal approach: represent each piece as a bitmask list of rotations. Or use the "matrix rotate" trick:
+
+```js
+P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,1],[0,1,0]]]
+```
+Rotation: transpose then reverse rows (clockwise). For non-square matrices this works if we treat them as their own bounding box — for I piece [1,1,1,1] rotate → [[1],[1],[1],[1]] works. For O [[1,1],[1,1]] stays. For T [[0,1,0],[1,1,1]] → transpose [[0,1],[1,1],[0,1]] then reverse rows → [[0,1],[1,1],[1,0]]... hmm that's T rotated 90°, correct-ish. Actually clockwise rotation = transpose then reverse each row. Let's verify T:
+```
+0 1 0
+1 1 1
+```
+Transpose:
+```
+0 1
+1 1
+0 1
+```
+Reverse each row:
+```
+1 
+---

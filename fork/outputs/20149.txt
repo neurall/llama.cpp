@@ -1,0 +1,34 @@
+run 20149 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 28.14 t/s | prompt 11.7 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 22:27:12
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need use canvas. Need implement tetrominoes, rotation, collision, line clearing, gravity, keyboard. Need minimal code.
+
+Let's design compact single-file HTML.
+
+Canvas dimensions: 10 cols x 20 rows. Cell size maybe 24. Canvas width 240 height 480. Use CSS body background. Use canvas.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Tetromino definitions:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+Need rotation function. Use matrix rotate clockwise: new matrix rows = old cols, new[r][c] = old[old.length-1-c][r]? Let's derive. For matrix m with rows y, cols x. Clockwise rotation: new[y][x] = old[old.length-1-x][y]? Example T [[0,1,0],[1,1,1]] rotate clockwise should [[1,0],[1,1],[1,0]]? Let's compute. old rows 2, cols 3. new rows 3, cols 2. new[0][0]=old[1][0]=1; new[0][1]=old[0][0]=0; new[1][0]=old[1][1]=1; new[1][1]=old[0][1]=1; new[2][0]=old[1][2]=1; new[2][1]=old[0][2]=0 => [[1,0],[1,1],[1,0]] yes. Formula new[r][c] = old[old.length-1-c][r]? For r=0,c=0 old[1][0]=1 yes. r=0,c=1 old[0][0]=0 yes. r=1,c=0 old[1][1]=1 yes. r=1,c=1 old[0][1]=1 yes. r=2,c=0 old[1][2]=1 yes. r=2,c=1 old[0][2]=0 yes. Good.
+
+Need board 10x20. Use array of strings? Could use 2D array. Need draw.
+
+Game loop: requestAnimationFrame or setInterval. Need gravity. Use timestamp. Simpler setInterval 500ms? But need smooth? Minimal. Use setInterval tick every 500ms. Keyboard moves. Need prevent rapid? Fine.
+
+Need spawn piece at top. Piece object {shape, x, y}. x,y top-left of matrix. Need collision: for each cell in shape, if board[y+r][x+c] filled or out of bounds. Need allow y negative? Spawn y=0. If collision at spawn game over. Need maybe spawn x = floor((10 - shape[0].length)/2). y=0. For I shape width 4, x=3. For O width 2 x=4. Good.
+
+Need rotation: rotate shape, check collision at same x,y. If collision, maybe try wall kicks? Minimal no wall kicks. Could rotate only if valid. Need maybe adjust x if out of bounds? Could implement simple wall kick: try x offsets -1,0,1? But minimal. Need ensure rotation works. Could just if valid rotate. If not, no. That's okay.
+
+Need movement: left/right/down. Down moves y+1 if valid. If cannot move down, lock piece into board, clear lines, spawn new. Need gravity tick calls down. Need hard drop? Could include space. Minimal maybe include. Need scoring. Need line clearing. Need game over.
+
+Need draw board and current piece. Need colors. Use array of colors per tetromino.
+---

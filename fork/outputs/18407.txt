@@ -1,0 +1,41 @@
+run 18407 | relfx1 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf | decode 71.25 t/s | prompt 44.2 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-23 12:38:21
+
+We need answer user: "generate smallest html tetris game." Need produce minimal HTML Tetris game likely single file. Need think in same language as user: English. Need final answer with code. Need smallest? Could provide compact HTML with inline JS/CSS. Need ensure playable. Need maybe minified but readable? User asks generate smallest html tetris game. We can provide a single HTML file, maybe very compact. Need balance correctness and size. Need maybe include controls, scoring, next piece, game over. "smallest" could mean minimal code. Need generate smallest HTML Tetris game. Could provide a concise self-contained HTML. Need maybe not truly golfed but small. Let's design compact Tetris.
+
+Need ensure works in browser. Use canvas. Minimal HTML:
+<!doctype html><canvas id=c></canvas><script>...
+</script>
+Need implement Tetris.
+
+Let's craft compact but functional. Need maybe 10x20 board. Pieces: I,O,T,S,Z,J,L. Use colors. Controls: left/right/rotate/soft drop/hard drop? Could be small. Need game loop.
+
+Potential compact code:
+<!doctype html><canvas id=c></canvas><script>
+const W=10,H=20,S=20,c=document.getElementById('c'),x=c.getContext('2d'),B=Array(W*H).fill(0),P=[0,1,2,3,4,5,6],C=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#fa0'];
+function R(p){return p.map((v,i)=>v?B[i]:0)}? Need pieces.
+
+Simpler: represent pieces as arrays of coordinates relative to origin. Use rotation by transform.
+
+Compact:
+P=[[[0,1,2,3]],[[0,1],[10,11]],[[0,1,2],[10]],[[1,2],[10,11]],[[0,1,2],[11]],[[0,1,2],[20]],[[1,2],[10,11]]]
+But coordinates as offsets in 4x4? Need rotation.
+
+Alternative use matrices and rotate.
+Pieces:
+I: [0,1,2,3]
+O: [0,1,10,11]
+T: [0,1,2,10]
+S: [1,2,10,11]
+Z: [0,1,11,12]
+J: [0,1,2,20]
+L: [1,2,20,21]? Need consistent.
+
+Use offsets in 4x4 grid (0-15). Rotation: for each cell (r,c) -> (c,3-r) if 4x4? But O and pieces may shift. Could normalize after rotation.
+
+Function rot(a){return a.map(i=>(i%4)*4+3-(i/4|0)) then normalize min row/col?}
+Need normalize: find min row and col, subtract.
+function N(a){let r=Math.min(...a.map(i=>i/4|0)),c=Math.min(...a.map(i=>i%4));return a.map(i=>(i/4|0-r)*4+i%4-c)}
+Rotation: function R(a){return N(a.map(i=>(i%4)*4+3-(i/4|0)))}
+This rotates within 4x4. For I [0,1,2,3] -> row0 col0-3 -> new col? (c,3-r): (0,3),(1,3),(2,3),(3,3) -> offsets 3,7,11,15 normalized min row0 col3 -> subtract col3 -> 0,4,8,12 vertical. Good.
+O [0,1,10,11] -> (0,3),(1,3),(0,2),(1,2) normalized -> [8,9,12,13]? Wait min row0 col2 -> subtract -> 2,3,6,7? Actually offsets: (0,3)=3, (1,3)=7, (0,2)=2, (1,2)=6; min row0 col2 -> 1,5,0,4? Let's compute: 3-2=1
+---

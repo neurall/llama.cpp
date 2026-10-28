@@ -1,0 +1,46 @@
+run 19652 | dsfix3 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 27.97 t/s | prompt 15.8 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 15:09:33
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design compact Tetris. Single HTML file. Use canvas 10x20. Controls arrow keys, rotate, drop. Score. Need minimal code. Need avoid bugs.
+
+Let's craft compact but readable. Need "smallest html tetris game" maybe code golf? We can provide minimal single-file. Need ensure no external dependencies. Use canvas.
+
+Let's design.
+
+HTML:
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Tetris</title>
+<style>body{margin:0;background:#111;display:flex;justify-content:center;align-items:center;height:100vh;color:#fff;font:14px monospace}canvas{background:#000;border:1px solid #333}</style>
+</head>
+<body>
+<canvas id=c width=200 height=400></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=20;
+let b=Array(H).fill().map(()=>Array(W).fill(0)),p,score=0,over=false;
+const shapes=[
+ [[1,1,1,1]],
+ [[1,1],[1,1]],
+ [[0,1,0],[1,1,1]],
+ [[1,0,0],[1,1,1]],
+ [[0,0,1],[1,1,1]],
+ [[1,1,0],[0,1,1]],
+ [[0,1,1],[1,1,0]]
+];
+function newPiece(){const s=shapes[Math.random()*shapes.length|0];p={s:s.map(r=>r.slice()),x:3,y:0};}
+function rot(){p.s=p.s[0].map((_,i)=>p.s.map(r=>r[i]).reverse());}
+function hit(px,py,s){return s.some((r,i)=>r.some((v,j)=>v&&(px+j<0||px+j>=W||py+i>=H||b[py+i][px+j])));}
+function drop(){p.y++;if(hit(p.x,p.y,p.s)){p.y--;p.s.forEach((r,i)=>r.forEach((v,j)=>v&&(b[p.y+i][p.x+j]=1)));score+=10;newPiece();if(hit(p.x,p.y,p.s))over=true;}}
+function draw(){x.clearRect(0,0,c.width,c.height);for(let i=0;i<H;i++)for(let j=0;j<W;j++)if(b[i][j]){x.fillStyle='#4cf';x.fillRect(j*S,i*S,S-1,S-1);}if(!over){x.fillStyle='#f4c';p.s.forEach((r,i)=>r.forEach((v,j)=>v&&x.fillRect((p.x+j)*S,(p.y+i)*S,S-1,S-1)));}x.fillStyle='#fff';x.font='14px monospace';x.fillText('Score '+score,10,20);if(over)x.fillText('Game Over',10,40);}
+function loop(){draw();}
+document.addEventListener('keydown',e=>{if(over)return;if(e.key==='ArrowLeft'&&!hit(p.x-1,p.y,p.s))p.x--;if(e.key==='ArrowRight'&&!hit(p.x+1,p.y,p.s))p.x++;if(e.key==='ArrowDown')drop();if(e.key==='ArrowUp'){const old=p.s;rot();if(hit(p.x,p.y,p.s))p.s=old;}draw();});
+newPiece();draw();
+</script>
+</body>
+</html>
+
+Need check hit function: hit(px,py,s) checks if any cell out of bounds or occupied. For rotation, if hit after rotation, revert. For left/right, hit checks current p.y. Good.
+
+But drop: p.y++; if hit(p.x,p.y,p.s) then p.y--; place at p.y. But if p.y++ causes hit due to bottom or collision, p.y-- and place. However if p.y++ is out of bounds? hit checks py+i>=H.
+---

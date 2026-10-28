@@ -1,0 +1,52 @@
+run 19980 | fix_scratch_per_card_from_graph | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 24.01 t/s | prompt 165.7 t/s | 680 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 13:18:00
+
+We need answer user asks: "Delete the code in this file that is never used." They provided file content. Need identify unused code in this file and provide modified file? Need infer task likely from code cleanup. Need analyze C++ file. Need find functions/static variables/constants not used. Need output code with unused removed. Need be careful: file is partial? It ends at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` incomplete. The prompt says "// file: common/json-schema-to-grammar.cpp ... [content] ... Delete the code in this file that is never used." Maybe they expect us to remove unused code from this file. Need inspect all declarations and usages. Need know full file? Provided truncated at gbnf_escape_length. We need answer likely list unused code or modified file. Need determine unused entities.
+
+Let's parse code. It includes headers. Functions:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- BuiltinRule struct
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- INVALID_RULE_CHARS_RE
+- GRAMMAR_LITERAL_ESCAPE_RE
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE
+- GRAMMAR_LITERAL_ESCAPES
+- MAX_PATTERN_DEPTH
+- NON_LITERAL_SET
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS
+- replacePattern
+- format_literal
+- gbnf_format_literal
+- gbnf_escape_length (incomplete)
+
+Need know which are used in rest of file not shown. The file likely continues with functions using these. The prompt includes only up to gbnf_escape_length declaration. Maybe they want delete code never used in this file (as shown). But if rest omitted, many are used later. Need infer from actual llama.cpp common/json-schema-to-grammar.cpp. I can recall source. Let's search memory. This is from llama.cpp. File common/json-schema-to-grammar.cpp. It has functions:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- BuiltinRule
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- INVALID_RULE_CHARS_RE
+- GRAMMAR_LITERAL_ESCAPE_RE
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE
+- GRAMMAR_LITERAL_ESCAPES
+- MAX_PATTERN_DEPTH
+- NON_LITERAL_SET
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS
+- replacePattern
+- format_literal
+- gbnf_format_literal
+- gbnf_escape_length
+- gbnf_escape_char
+- gbnf_escape_string
+- gbnf_escape_unicode
+- gbnf_escape_unicode_sequence
+- gbnf_escape_unicode_sequence
+- gbnf_escape_unicode_sequence
+- gbnf_escape_unicode_sequence
+- gbnf
+---

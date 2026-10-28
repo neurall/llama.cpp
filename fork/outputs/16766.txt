@@ -1,0 +1,67 @@
+run 16766 | um3d | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.93 t/s | prompt 117.7 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-19 22:59:56
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the priority is compactness — a tiny single-file HTML Tetris. I should deliver something small but functional.
+
+But my default is to make something crafted and polished. However, the user explicitly asks for the smallest. I should honor that: minimal code. But I can still make it look decent with minimal bytes — a dark background, monospace, canvas. Keep it genuinely small.
+
+Let me write a compact Tetris in ~1KB-ish. Let me craft it carefully so it actually works.
+
+Plan: single HTML file, canvas, JS inline.
+
+Compact Tetris implementation:
+
+```html
+<canvas id=c width=160 height=320></canvas>
+<script>
+// 10x20 grid
+```
+
+Let me write it carefully.
+
+```js
+const W=10,H=20,S=16,c=c0.getContext`2d`,g=[...Array(H)].map(_=>Array(W).fill(0));
+let p,r,x,y;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[1,1,1],[0,1,0]],[[1,1,0],[0,1,1]]];
+```
+
+Rotation: rotate matrix clockwise: `m[r][c] -> m[c][rows-1-r]`.
+
+Spawn: p = P[Math.random()*7|0].map(r=>r.slice()), r=0, x=3, y=0.
+
+Collision check function:
+```js
+const t=(m,dx,dy)=>m.some((row,j)=>row.some((v,i)=>v&&g[y+dy+j]?.[x+dx+i]!=0&&g[y+dy+j][x+dx+i]||v&&(y+dy+j<0||y+dy+j>=H||x+dx+i<0||x+dx+i>=W)));
+```
+Hmm careful: `g[y+dy+j]?.[x+dx+i]` — if out of bounds, undefined. Let me write a cleaner test:
+
+```js
+function hit(m,ox,oy){for(j in m)for(i in m[j])if(m[j][i]&&(ox+i<0||ox+i>=W||oy+j>=H||oy+j<0&&1||g[oy+j][ox+i]))return 1}
+```
+Wait `oy+j<0` — pieces above top: allow. But g[-1] would be undefined → falsy, so `g[oy+j][ox+i]` would throw if oy+j<0 since g[-1] is undefined. Use `g[oy+j]?.[ox+i]`. Optional chaining keeps it short and safe.
+
+So:
+```js
+const hit=(m,X,Y)=>m.some((r,j)=>r.some((v,i)=>v&&(X+i<0||X+i>=W||Y+j>=H||g[Y+j]?.[X+i])));
+```
+Y+j<0 allowed → g[-1]?.[..] is undefined → falsy. Good.
+
+Rotate:
+```js
+const rot=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse());
+```
+Standard clockwise rotation.
+
+Move/rotate with wall kick attempt simple: try rotated at x, x-1, x+1, x-2, x+2.
+
+Draw: draw grid cells with colors. Use a color array indexed by piece index. Need to track piece color index. Store piece as {m, c}.
+
+Let me store current piece as index `k` and matrix `m`.
+
+Compact version:
+
+```html
+<canvas id=c width=160 height=320></canvas>
+<script>
+W=10;H=20;S=16;v=c.getContext`2d`;g=[...Array(H)].map(_=>Array(W).fill(0));
+P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1
+---

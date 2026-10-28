@@ -1,0 +1,49 @@
+run 17621 | tokms17 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 35.78 t/s | prompt 3016.3 t/s | 1024 tokens | args: -np 1 | power 475 W | 2026-10-21 23:28:24
+
+The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This file converts JSON schemas to GBNF grammars
+- It's a complex file with regex parsing, grammar building, and schema traversal
+
+### Issues I can spot:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+     - `item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, max-1)` 
+     - This gives `item (sep item)*` for min=0
+     - Then wraps: `(item (sep item)*)?`
+     - This seems correct for 0 or more items with separator.
+   - For `min_items == 1` with separator: `item (sep item)*` - correct.
+   - For `min_items == 2` with separator: `item (sep item){1,...}` - correct.
+
+2. **`build_min_max_int` function:**
+   - Complex recursive function for generating integer ranges
+   - The `uniform_range` lambda captures `out` by reference - this is fine since it's used within the function scope.
+   - The `decimals_left` parameter limits recursion depth - good.
+   - Potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is empty or invalid, but since `min_s` is from `std::to_string(min_value)` and `min_value > 9`, `min_s` has at least 2 characters, so `min_s.substr(1)` is non-empty.
+   - The `top_level` parameter controls whether leading zeros are allowed - seems correct.
+
+3. **`_add_rule` function:**
+   - The deduplication logic: if a rule with the same name exists but different content, it appends a number. The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the name doesn't exist or the content matches. This seems correct but could be O(n) in pathological cases.
+
+4. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for rollback.
+   - However, `_rules` is a `std::map` and the snapshot copies the entire map - this could be expensive for large schemas.
+
+5. **`_pattern_to_rule` function:**
+   - Complex regex-to-grammar conversion
+   - The `transform` lambda is recursive (calls itself for groups) - this could stack overflow for deeply nested patterns, but `MAX_PATTERN_DEPTH` guards against this.
+   - The character class parsing: `while (i < length && sub_pattern[i] != ']')` - this doesn't handle `]` as the first character in a character class (which is valid in regex: `[]abc]` means `]`, `a`, `b`, `c`). This could be a bug.
+   - Actually wait, looking more carefully: the loop starts after `[` and checks for `]`. In standard regex, `[]abc]` - the first `]` after `[` is literal. But this code would stop at the first `]`, treating `[]abc]` as an empty character class followed by `abc]`. This is a potential bug.
+   - The `{` parsing: `while (i < length && sub_pattern[i] != '}')` - doesn't handle escaped `}` inside curly braces, but that's probably fine for quantifiers.
+   - The literal parsing: the condition `!is_non_literal(sub_pattern[i]) && (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))` - this is complex and hard to follow. It seems to be trying to merge consecutive literal characters but stop before non-literal characters.
+
+6. **`_not_strings` function:**
+   - Builds a trie-based rule to match strings that are NOT in a given set
+   - The `rejects` string accumulates characters for the negated character class - if a character is a regex metacharacter (like `]`, `-`, `^`), it could break the character class. For
+---

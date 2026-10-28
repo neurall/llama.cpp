@@ -1,0 +1,41 @@
+run 20162 | hotmap_dynhot | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 508.61 t/s | prompt 1439.4 t/s | 1024 tokens | args: -np 1 --moe state=/tmp/runstate/overlap-olmoe.ini,dynhot=1,dynhot-merge=2 | power 220+280 W | 2026-10-28 07:28:57
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, Thalia, the archivist of the generation ship Aetheria, had watched over the slumbering souls for what felt like an eternity. Aeons, perhaps. The journey had been planned with meticulous precision, a grand experiment in human endurance and hope. We were to be the vanguard, the pioneers of a new world, a testament to what humanity could achieve when it dared to dream beyond the confines of an aging star.
+
+The Aetheria had been designed as a beacon of progress, a self-sustaining ark hurtling through the void at a fraction of the speed of light. Our mission was to seed life on a distant planet, terraform it, and establish a new home for those who remained behind. We were to be the heralds of a new era, a new humanity.
+
+The journey had lasted longer than anticipated, stretching into a century of frozen slumber. The crew and I had aged at a fraction of the normal pace, preserved by the magic of cryosleep, a gift from our ancestors, the original crew who had launched the Aetheria centuries before.
+
+As consciousness returned, I felt the familiar stir of life within my veins. The ship's interior, once a sterile cocoon of technology, now pulsed with a life of its own. The hum of the life support systems was a symphony of existence, a reminder that we were not merely passengers but custodians of this vessel and its legacy.
+
+I made my way to the observation deck, my feet echoing against the metal floor. The view beyond the viewport was one of wonder and disbelief. The planet below was alive, its cities aglow with a light that defied the darkness of space. It was as if the Aetheria had arrived not centuries ago, but mere moments before, and the colonists had leapt into existence, fully formed and thriving.
+
+"Report status," came the voice of Captain Elara, crisp and authoritative even in the face of this marvel.
+
+"The planet is hospitable, Captain," I replied, my voice steady despite the whirlwind of emotions. "Terraforming appears to be in progress. Cities are lit, and there are signs of agricultural activity."
+
+"Good. Prepare the landing party," Elara ordered, her gaze fixed on the planet. "We have a lot to learn from these people."
+
+I nodded, my mind racing with questions. "Should we reveal ourselves immediately, or observe for a while?"
+
+"We wait," Elara said, her tone suggesting a decision already made. "We observe their progress, learn their ways. We are not just observers; we are the bridge between two eras."
+
+The landing party, a contingent of the ship's crew and selected scientists, descended onto the alien soil. They returned hours later, their faces alight with the fire of discovery.
+
+"They've built cities," one of the scientists, a woman named Lena, exclaimed breathlessly. "And they've cultivated crops. The soil is rich, and the climate is perfect."
+
+"They're our descendants," another crew member, Marcus, stated more to himself than to anyone else. "The Aetheria left a century after us, and they've replicated our journey in miniature."
+
+The implications were staggering. Our mission had not been in vain. The Aetheria had not only preserved our genetic legacy but had also nurtured it, allowing it to flourish in a new context. The descendants below had not just survived; they had thrived, adapting and evolving in ways we could scarcely imagine.
+
+"We must approach with caution," Elara advised, her voice carrying the weight of our responsibility. "We are not just visitors; we are the bridge between two worlds. Our presence could alter their development in ways we cannot foresee."
+
+The days that followed were a blur of activity. We established communication with the colonists, sharing knowledge and technology. They were curious, respectful, and eager to learn from us. We shared tales of our journey, of the vastness of space and the challenges we overcame.
+
+"They're like us, but not," Marcus observed, watching a group of children playing in the streets below. "They've taken our blueprint and made it their own."
+
+"They are a testament to the resilience of the human spirit," Elara said, her eyes reflecting the pride of a mother bird watching her chicks. "They've taken our legacy and made it their own."
+
+As the weeks turned into months, a bond formed between the crew of the Aetheria and the descendants. We taught them about our world, our history, and our dreams for the future. In return, they shared their knowledge of the planet, their customs, and their way

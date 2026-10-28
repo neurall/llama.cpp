@@ -1,0 +1,34 @@
+run 20109 | ds41i4 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 20.67 t/s | prompt 6.8 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 21:06:56
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 300x600? Board 10x20, cell 30. Canvas width 300 height 600. Draw grid. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Tetromino definitions:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+Need rotation function. Use matrix rotate clockwise: new matrix rows = old columns reversed? For matrix m with rows, rotate clockwise: m2[i][j] = m[m.length-1-j][i]? Let's derive. For 2x3, clockwise: new rows = old cols reversed? Example [[1,2,3],[4,5,6]] clockwise -> [[4,1],[5,2],[6,3]]. Formula new[i][j] = old[n-1-j][i] where n=old rows? Let's test i=0,j=0 -> old[1][0]=4 yes. i=0,j=1 -> old[0][0]=1 yes. i=1,j=0 -> old[1][1]=5. i=1,j=1 -> old[0][1]=2. i=2,j=0 -> old[1][2]=6. i=2,j=1 -> old[0][2]=3. Good. So rotate(m): m[0].length rows, m.length cols: result[i][j] = m[m.length-1-j][i]. Need ensure.
+
+Game state: board 20 rows x 10 cols, 0 empty, 1 filled. Current piece: shape matrix, x, y. Spawn at x = floor((10 - shape[0].length)/2), y=0. Need collision: for each cell in shape if board[y+r][x+c] filled or out of bounds. Need allow y negative? Spawn y=0. Rotation may cause out of bounds; if collision, don't rotate. Need maybe wall kick? Minimal no.
+
+Gravity: setInterval or requestAnimationFrame. Use setInterval 500ms. On tick, if can move down, y++; else lock piece, clear lines, spawn new. If spawn collision -> game over.
+
+Controls: ArrowLeft/Right move, ArrowDown soft drop, ArrowUp rotate, Space hard drop. Need prevent default. Maybe use keydown.
+
+Scoring: lines cleared * 100? Simple. Display score. Maybe no levels.
+
+Need draw: clear canvas, draw board cells, draw current piece. Use colors per piece? Could use one color. Minimal. Maybe use piece color. Need store color? Could use random color? Simpler use cyan for all. But visual. Could assign color per shape. Need minimal.
+
+Need line clearing: for each row from bottom to top, if all 10 filled, remove row and unshift empty row. Score += 100. Need maybe multiple lines. Use while? For each row if full, splice and unshift. Since rows shift, loop from bottom to top. If row full, board.splice(r,1); board.unshift(Array(10).fill(0)); score += 100; r++? Need careful. If loop r from 19 down to 0, when remove row at r, unshift adds at top, rows below? Let's think. Board rows indexed 0 top to 19 bottom. If row r full, remove it and add empty at top. This shifts rows above r down? Actually splice removes row r, rows after r shift up? Wait
+---

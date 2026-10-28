@@ -1,0 +1,42 @@
+run 20082 | rc_deepseek_dspark_fixes | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 21.27 t/s | prompt 151.6 t/s | 680 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 19:56:24
+
+We need answer user asks: "Delete the code in this file that is never used." They provided file content. Need identify unused code and provide modified file? Need infer task likely from code review: remove unused functions/variables/includes? Need analyze C++ file. Need produce cleaned version? Need be careful. We need inspect code. It's common/json-schema-to-grammar.cpp. They ask delete code never used. Need identify unused code in this file. We need maybe output file with unused code removed. Need analyze thoroughly.
+
+We have snippet ends mid-function `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` incomplete. The file likely truncated? User pasted partial file? It ends at function opening. Need answer based on provided code. Need identify unused code in this file. Could be from llama.cpp? Let's recall actual file. common/json-schema-to-grammar.cpp in llama.cpp. It has many functions. The snippet includes only first part. Need know full file? The user says "// file: common/json-schema-to-grammar.cpp" and pasted code up to `static size_t gbnf_escape_length... {` then blank. Maybe they expect us to delete unused code in this file, but file is incomplete. Need maybe identify unused code within pasted portion. Let's analyze.
+
+We need determine which code is never used. In C++ file, static functions/variables may be unused. Need find all definitions and usages in provided snippet. Since snippet incomplete, cannot know usages later. But maybe we can infer from actual llama.cpp file. Let's recall actual json-schema-to-grammar.cpp. It contains functions:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- BuiltinRule
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- INVALID_RULE_CHARS_RE
+- GRAMMAR_LITERAL_ESCAPE_RE
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE
+- GRAMMAR_LITERAL_ESCAPES
+- MAX_PATTERN_DEPTH
+- NON_LITERAL_SET
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS
+- replacePattern
+- format_literal
+- gbnf_format_literal
+- gbnf_escape_length
+- gbnf_escape_char
+- gbnf_escape_string
+- gbnf_escape_unicode
+- gbnf_escape_unicode_char
+- gbnf_escape_unicode_string
+- gbnf_escape_unicode_char? etc.
+- json_schema_to_grammar
+- etc.
+
+Need identify unused code in actual file. Let's search memory. I have seen llama.cpp common/json-schema-to-grammar.cpp. It defines:
+```
+static std::string build_repetition(...)
+static void build_min_max_int(...)
+const std::string SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}";
+struct BuiltinRule { ... };
+static std::unordered_map<std::string, BuiltinRule> PRIMITIVE_R
+---

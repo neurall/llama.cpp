@@ -1,0 +1,71 @@
+run 19005 | spass19 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.89 t/s | prompt 9.1 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-24 16:44:22
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. This is one of the rare cases where the user's explicit request overrides my usual preference for polished, elaborate output — they want a golfed Tetris.
+
+Let me think about what "smallest" means here. A single self-contained HTML file with a playable Tetris, as few bytes as possible. I should still make it genuinely playable: move left/right, rotate, soft drop, hard drop maybe, line clearing, game over, score. The classic minimal Tetris implementations (like the famous 140-byte-ish or the "tiny tetris" JS ones) are good references.
+
+There's a well-known tiny Tetris in JavaScript (by Alex L. / "tiny tetris" ~ 476 bytes or the famous one by "Sol" / the 219-byte one). Let me write my own compact version.
+
+Approach: Use a canvas or use divs? Canvas is usually compact. Actually, using a `<canvas>` with fillRect is compact. Or even simpler: render with text characters in a `<pre>` — that can be very compact but less visually appealing. Canvas with colored blocks is nicer and still small.
+
+Let me design a golfed Tetris:
+
+Core components:
+1. Board: 10x20 array.
+2. Pieces: 7 tetrominoes, defined compactly. A common trick: store pieces as arrays of coordinates, or use a compact encoding. A very compact trick is to define all rotations via bit patterns, or use the "each piece as 4 [x,y] pairs" and rotate by swapping.
+
+Compact piece representation: One classic approach encodes each tetromino as a 16-bit number per rotation, or uses a string. Another approach: define pieces as arrays of 4 cells relative to origin, rotate with (x,y) -> (y, -x) or similar.
+
+A famous compact approach (from the "tiny tetris in JavaScript" by Alex): 
+
+```js
+c=s=>document.getElementById(s),
+...
+```
+
+Let me just write my own from scratch and golf it.
+
+Plan:
+
+```html
+<canvas id=c width=100 height=200></canvas>
+<script>
+...
+</script>
+```
+
+Actually to be truly small, I can use `document.body.appendChild(c=document.createElement('canvas'))` or just write the canvas tag. Writing the tag is fine.
+
+Let me think about the game logic:
+
+- Board B = array of 20 rows, each row an array of 10 (or a flat array of 200).
+- Current piece: shape S (array of [x,y] or encoded), position x,y.
+- Gravity timer, keyboard input.
+- Collision check.
+- Lock piece, clear lines, spawn new piece, game over check.
+- Score.
+
+Compact piece definitions: The 7 tetrominoes. A neat trick: represent each piece as a 2x4 or 4x4 bitmask number, and rotate the bitmask. Or represent as list of coordinates.
+
+One very compact known encoding: pieces as arrays of strings? E.g.:
+
+```js
+P=[[1,1,1,1],[1,1,0,0],[1,0,0,0]...]
+```
+
+Hmm. Let me think of the coordinate-pair approach with rotation function:
+
+Piece = list of 4 [x,y] offsets. Rotation: [x,y] -> [y, 3-x]? Depends on bounding box. For a 4x4 box rotation: (x,y) -> (y, 3-x) rotates within 4x4. But pieces like O and I defined in 4x4 coordinates work fine.
+
+Define pieces in a 4x4 grid coordinates (0-3):
+
+- I: (0,1),(1,1),(2,1),(3,1)
+- O: (1,0),(2,0),(1,1),(2,1)
+- T: (1,0),(0,1),(1,1),(2,1)
+- S: (1,0),(2,0),(0,1),(1,1)
+- Z: (0,0),(1,0),(1,1),(2,1)
+- J: (0,0),(0,1),(1,1),(2,1)
+- L: (2,0),(0,1),(1,1),(2,1)
+
+Rotation in 4x4: (x,y) -> (3-y, x) or (y, 3-x). Let's check: rotating (x,y) -> (y, 3-x): point (0,1) -> (1,
+---

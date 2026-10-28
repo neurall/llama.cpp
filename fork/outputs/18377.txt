@@ -1,0 +1,115 @@
+run 18377 | relfx1 | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.97 t/s | prompt 20.8 t/s | 1010 tokens | args: -np 1 | power 220+280 W | 2026-10-23 12:17:29
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal but complete Tetris game:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+// Tetris game
+</script>
+</body>
+</html>
+```
+
+Let me write a complete, compact Tetris game. I need:
+- Board (10x20 grid)
+- 7 tetrominoes
+- Movement (left, right, down, rotate)
+- Line clearing
+- Score
+- Game over
+
+Let me write this as compactly as possible while keeping it functional.
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let b=[],s=0,g=0,over=0;
+// pieces: I, O, T, S, Z, J, L
+const P=[
+  [[1,1,1,1]],
+  [[1,1],[1,1]],
+  [[0,1,0],[1,1,1]],
+  [[0,1,1],[1,1,0]],
+  [[1,1,0],[0,1,1]],
+  [[1,0,0],[1,1,1]],
+  [[0,0,1],[1,1,1]]
+];
+const C=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+let p,px,py,pr;
+function init(){
+  b=Array.from({length:H},()=>Array(W).fill(0));
+  spawn();
+}
+function spawn(){
+  p=P[Math.floor(Math.random()*7)];
+  px=3;py=0;pr=0;
+  if(!valid(p,px,py))over=1;
+}
+function rot(m){
+  return m[0].map((_,i)=>m.map(r=>r[i]).reverse());
+}
+function valid(m,x,y){
+  return m.every((r,dy)=>r.every((v,dx)=>v&&x+dx>=0&&x+dx<W&&y+dy<H&&(!b[y+dy]||!b[y+dy][x+dx])));
+}
+function merge(){
+  p.forEach((r,dy)=>r.forEach((v,dx)=>{if(v)b[py+dy][px+dx]=1}));
+  let full=0;
+  for(let y=H-1;y>=0;y--){
+    if(b[y].every(v=>v)){
+      b.splice(y,1);b.unshift(Array(W).fill(0));full++;y++;
+    }
+  }
+  s+=full*full*100;
+  spawn();
+}
+function drop(){
+  if(valid(p,px,py+1))py++;
+  else merge();
+}
+function draw(){
+  x.fillStyle='#000';x.fillRect(0,0,c.width,c.height);
+  x.strokeStyle='#333';
+  for(let y=0;y<H;y++)for(let xx=0;xx<W;xx++){
+    if(b[y][xx]){x.fillStyle='#fff';x.fillRect(xx*S,y*S,S-1,S-1)}
+    x.strokeRect(xx*S,y*S,S,S);
+  }
+  if(!over){
+    p.forEach((r,dy)=>r.forEach((v,dx)=>{
+      if(v){x.fillStyle=C[P.indexOf(p)];x.fillRect((px+dx)*S,(py+dy)*S,S-1,S-1)}
+    }));
+  }
+  x.fillStyle='#fff';x.font='20px sans-serif';
+  x.fillText('Score:'+s,10,25);
+  if(over)x.fillText('GAME OVER',80,300);
+}
+document.addEventListener('keydown',e=>{
+  if(over)return;
+  if(e.key==='ArrowLeft'&&valid(p,px-1,py))px--;
+  if(e.key==='ArrowRight'&&valid(p,px+1,py))px++;
+  if(e.key==='ArrowDown')drop();
+  if(e.key==='ArrowUp'){let r=rot(p);if(valid(r,px,py))p=r}
+  if(e.key===' '){while(valid(p,px,py+1))py++;merge()}
+  draw();
+});
+init();
+setInterval(()=>{if(!over){drop();draw()}},500);
+draw();
+</script>
+```
+
+Wait, there's an issue with `P.indexOf(p)` - after rotation, `p` won't be found in `P`. I need to track the piece index separately.
+
+Let me
+---

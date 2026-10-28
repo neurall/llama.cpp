@@ -1,0 +1,36 @@
+run 17966 | inifix8 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.31 t/s | prompt 19.3 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-10-22 22:00:01
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf/minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a *playable, real* Tetris (not a broken stub).
+
+Let me think about what "smallest Tetris" means. Classic minimal Tetris implementations in JS are around 300–800 bytes for extremely golfed versions (there are famous ones like the 219-byte tetris in a tweet... actually there's a famous ~140-byte one that's barely functional). But those ultra-golfed ones often have poor playability. The user says "smallest html tetris game" — I'll aim for a genuinely small but fully playable implementation: keyboard controls, line clearing, scoring, next piece maybe, rotation, gravity, game over.
+
+I should balance: keep it small (single file, terse code, no external deps — that also keeps it small), but make it actually playable and look decent. Since it's minimal, I can use a canvas with a monochrome or simple color scheme. Actually for aesthetics even in minimal form: I can render blocks with a simple two-tone look. But "smallest" means I should minimize bytes. Let me write compact but readable-ish code. Maybe I'll present it with minimal formatting (short variable names) but still explain it.
+
+Let me design the game:
+
+- Canvas 2D, grid 10 wide × 20 tall, cell size ~16px → canvas 160×320. Maybe scale up a bit for visibility: cell 20 → 200×400. Or use CSS to scale. Keep canvas small and use image-rendering pixelated? Simplest: canvas width=200 height=400, draw 20px cells.
+
+- Board as a 2D array or a single array of rows. Use `b` = array of 20 rows, each row array of 10 (0 or color index).
+
+- Pieces: 7 tetrominoes. Compact encoding: each piece as a list of rotations? Or encode shapes as strings. A classic compact trick: define shapes as arrays of [x,y] offsets per rotation computed by rotating. Or use the well-known compact representation: each tetromino as a 4x4 or matrix string.
+
+Compact approach used in many golfed tetris: 
+
+```js
+const P = [[1,1,1,1],[[1,1],[1,1]],...]
+```
+
+Better: encode each piece as a set of cells in a 4×4 grid string, rotate by transposing. E.g. shapes:
+
+I: "0110/0110/0110/0110"? Hmm. Let me use the standard approach: represent each tetromino as a 2D matrix (array of arrays of 0/1), and rotation = transpose + reverse rows (rotate 90° CW). For I, O, and others this works with appropriately sized matrices:
+
+- I: 4×4 with a row of 1s? Standard SRS-ish: I as [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]] — rotating gives vertical. That works with rotate = transpose+reverse.
+- O: [[1,1],[1,1]] — rotation invariant.
+- T: [[0,1,0],[1,1,1],[0,0,0]] — 3×3, rotations work.
+- S: [[0,1,1],[1,1,0],[0,0,0]]
+- Z: [[1,1,0],[0,1,1],[0,0,0]]
+- J: [[1,0,0],[1,1,1],[0,0,0]]
+- L: [[0,0,1],[1,1,1],[0,0,0]]
+
+Rotation CW: m[i][j] -> m[n-1-j][i]. For a square matrix: rotated[r][c] = m[n-1-c][r]. Implement: `m.map((r,y)=>r.map((_,x)=>m[x][n-1-y]))`? Let me verify: rotate CW: new[y][x] = old[n-1-x][y]. Check with T: old = [[0,1,0],[1,1,1],[0,0,0]]. new[0][0] = old[2][0] = 0; new[0][1] = old[1][0] = 1; new[0][2] = old[
+---

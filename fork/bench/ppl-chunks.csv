@@ -1881,3 +1881,47 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-10-28 08:48:33,release-7286fc498 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.111
 2026-10-28 08:49:34,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1305
 2026-10-28 08:49:34,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1139
+2026-10-28 08:50:58,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1311
+2026-10-28 08:50:58,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1139
+2026-10-28 08:51:48,release-7286fc498 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1317
+2026-10-28 08:51:48,release-7286fc498 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1127
+2026-10-28 08:52:55,release-7286fc498 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3737
+2026-10-28 08:52:55,release-7286fc498 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4189
+2026-10-28 08:55:39,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3682
+2026-10-28 08:55:39,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.435
+2026-10-28 08:59:15,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3704
+2026-10-28 08:59:15,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4226
+2026-10-28 09:01:51,release-7286fc498 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3604
+2026-10-28 09:01:51,release-7286fc498 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4183
+2026-10-28 09:05:27,release-7286fc498 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4531
+2026-10-28 09:05:27,release-7286fc498 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5744
+2026-10-28 09:07:31,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4647
+2026-10-28 09:07:31,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5877
+2026-10-28 09:10:01,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4555
+2026-10-28 09:10:01,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5825
+2026-10-28 09:12:10,release-7286fc498 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4594
+2026-10-28 09:12:10,release-7286fc498 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5717
+2026-10-28 09:14:56,release-7286fc498 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-10-28 09:14:56,release-7286fc498 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-10-28 09:15:52,dynamic-ctx-c1d4fe980 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5649
+2026-10-28 09:15:52,dynamic-ctx-c1d4fe980 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.4232
+2026-10-28 09:16:48,dynamic-ctx-c1d4fe980 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5649
+2026-10-28 09:16:48,dynamic-ctx-c1d4fe980 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.4232
+2026-10-28 09:17:43,release-7286fc498 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-10-28 09:17:43,release-7286fc498 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-10-28 09:18:38,release-7286fc498 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-10-28 09:18:38,release-7286fc498 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-10-28 09:19:33,dynamic-ctx-c1d4fe980 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5649
+2026-10-28 09:19:33,dynamic-ctx-c1d4fe980 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.4232
+2026-10-28 09:20:29,dynamic-ctx-c1d4fe980 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5649
+2026-10-28 09:20:29,dynamic-ctx-c1d4fe980 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.4232
+2026-10-28 09:21:24,release-7286fc498 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-10-28 09:21:24,release-7286fc498 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-10-28 09:22:28,release-7286fc498 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1335
+2026-10-28 09:22:28,release-7286fc498 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1249
+2026-10-28 09:23:42,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1328
+2026-10-28 09:23:42,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1286
+2026-10-28 09:25:04,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1335
+2026-10-28 09:25:04,dynamic-ctx-c1d4fe980 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1236
+2026-10-28 09:25:54,release-7286fc498 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1258
+2026-10-28 09:25:54,release-7286fc498 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1243

@@ -1,0 +1,66 @@
+run 17005 | b13600 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 49.36 t/s | prompt 40.1 t/s | 965 tokens | args: -np 1 --moe split-f16=1 | power 220+280 W | 2026-10-20 03:01:33
+
+The user wants the smallest HTML Tetris game. Let me make a compact but actually good Tetris in a single HTML file. "Smallest" — but I don't want to just dump 40 unreadable characters. I can make it genuinely small (a few dozen lines) while still feeling alive: nice colors, ghost piece, next piece, score, level, keyboard controls.
+
+Let me write a compact Tetris. Keep it tight but readable-ish.
+
+Let me write it:
+
+```html
+<!DOCTYPE html><meta charset=utf-8><title>TETRIS</title>
+<style>
+body{margin:0;height:100vh;display:grid;place-items:center;background:#0b0e14;color:#e8eaf0;font:14px/1.4 ui-monospace,monospace}
+...
+</style>
+```
+
+Let me design the game logic compactly.
+
+Board 10x20. Use canvas.
+
+```js
+const B=10,H=20,S=24,c=document.querySelector('canvas');
+c.width=B*S;c.height=H*S;const x=c.getContext('2d');
+let g=[],p,px,py,pt,sc=0,lv=1,ln=0,dt=0,over=0;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]]];
+```
+
+Colors per piece index.
+
+Rotation: rotate matrix transpose+reverse.
+
+Collision check with merged board.
+
+Draw: grid, locked cells, ghost, piece.
+
+Line clear, score, level up, speed.
+
+Controls: arrows, space (hard drop), up rotate, Z rotate other way, P pause, R restart.
+
+Next piece preview in a small canvas or in the side panel drawn with divs. Simpler: second small canvas.
+
+Let me keep it small but polished. I'll add:
+- Ghost piece
+- Next queue (1 or 3)
+- Score/lines/level
+- Hold? maybe skip to keep small. Actually hold is nice. Hmm, "smallest" — I'll keep it modest: score, level, lines, next.
+- Subtle animated background (CSS gradient shimmer / grid glow).
+- Key feedback.
+- Game over overlay.
+- Mobile touch buttons? That adds size. Maybe minimal tap controls. I'll skip or add small.
+
+Let me write it carefully.
+
+```html
+<!doctype html><html lang=en><meta charset=utf-8><title>TETRIS</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(120% 100% at 50% 0%,#1b2030,#070910 60%);font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace;color:#cfd6e6}
+.wrap{display:flex;gap:18px;padding:18px;border-radius:16px;background:#0d1220;box-shadow:0 30px 80px #000, inset 0 0 0 1px #ffffff12}
+canvas{display:block;border-radius:8px;background:#05070d;box-shadow:inset 0 0 0 1px #ffffff10}
+#s{display:flex;flex-direction:column;gap:10px;width:132px}
+.b{padding:8px 10px;border-radius:8px;background:#131a2b;box-shadow:inset 0 0 0 1px #ffffff0d}
+.b span{display:block;font-size:10px;letter-spacing:.15em;color:#6b7897}
+.b b{font-size:20px;color:#fff}
+h1{margin:0;font-size:22px;letter-spacing:.3em;color:#fff;text-shadow:0 0 18px
+---

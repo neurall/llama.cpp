@@ -1,0 +1,73 @@
+run 19421 | rc5 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.66 t/s | prompt 1149.8 t/s | 1000 tokens | args: -np 1 | power 220+280 W | 2026-10-25 09:30:36
+
+<think>Let me analyze the code carefully to find bugs. I'll go through both files systematically.
+
+**File: common/json-schema-to-grammar.cpp**
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps with `(...)?`. But when `min_items > 0`, the initial `item_rule` is always included. Let me check the logic more carefully.
+
+Actually, looking at the `build_repetition` function with separator:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+if (min_items == 0) {
+    result = "(" + result + ")?";
+}
+```
+
+When `min_items == 0`, the first `item_rule` is always present in `result`, but then it's wrapped with `(...)?`. So the whole thing becomes `(item_rule (sep item_rule)* )?` which is correct for 0 items.
+
+When `min_items == 1`, it becomes `item_rule (sep item_rule)*` which is correct.
+
+When `min_items == 2`, it becomes `item_rule (sep item_rule){1,...}` which is correct.
+
+This looks correct.
+
+2. In `build_min_max_int`, let me check the `uniform_range` lambda. It's defined as a `std::function` but captures by reference. The `to_reached` variable is declared inside the lambda body but used across the `if (!to_reached)` check. Let me trace through:
+
+```cpp
+auto to_reached = false;
+out << "(";
+if (from_sub == sub_zeros) {
+    digit_range(from[i], to[i] - 1);
+    out << " ";
+    more_digits(sub_len, sub_len);
+} else {
+    out << "[" << from[i] << "] ";
+    out << "(";
+    uniform_range(from_sub, sub_nines);
+    out << ")";
+    if (from[i] < to[i] - 1) {
+        out << " | ";
+        if (to_sub == sub_nines) {
+            digit_range(from[i] + 1, to[i]);
+            to_reached = true;
+        } else {
+            digit_range(from[i] + 1, to[i] - 1);
+        }
+        out << " ";
+        more_digits(sub_len, sub_len);
+    }
+}
+if (!to_reached) {
+    out << " | ";
+    digit_range(to[i], to[i]);
+    out << " ";
+    uniform_range(sub_zeros, to_sub);
+}
+out << ")";
+```
+
+Wait, there's a problem. When `from_sub == sub_zeros` (i.e., the rest of `from` is all zeros), the code outputs `digit_range(from[i], to[i] - 1)` followed by `more_digits(sub_len, sub_len)`. But then `to_reached` is still false, so it also outputs `digit_range(to[i], to[i])` followed by `uniform_range(sub_zeros, to_sub)`.
+
+But wait - when `from_sub == sub_zeros`, the `from` suffix after position `i` is all zeros. So `from` looks like `prefix + from[i] + 000...0`. The range from `from` to `to` should be:
+- `from[i]` to `to[i]-1` with any digits (since from_sub is all zeros, any suffix works)
+- `to[i]` with suffix from `000...0` to `to_sub`
+
+That seems correct.
+
+When `from_sub != sub_zeros`:
+- `from[i]` with suffix from `from_sub` to `999...9`
+- `from[i]+1` to `to[i]-1` with any digits (if `from[i] < to[i]-1`)
+- `to[i]` with suffix from `000...0` to `to_sub`
+
+But there's a subtle issue: when `from[i] == to[i]`, the code enters the `else` branch (since `from_sub != sub_zeros`), outputs `from[i]` with suffix from `from_sub` to `999...9`, then checks `if (from[i] < to[i] - 1)` which is false (since `from[i] == to[i]`), so it skips the middle part. Then `to_reached` is false, so it outputs `to[i]` with suffix from `000...0` to `to_sub`. But `from[i] == to[i]`, so this is correct - we need both the `

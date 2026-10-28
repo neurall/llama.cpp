@@ -1,0 +1,53 @@
+run 19552 | ds41i5 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 29.79 t/s | prompt 15.2 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=96636764160 | power 220+280 W | 2026-10-25 23:30:05
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 300x600? Board 10x20, cell 30. Canvas width 300 height 600. Draw grid. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Tetromino definitions:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+Need rotation function. Use matrix rotate clockwise: new matrix rows = old columns reversed? For matrix m with rows, rotate clockwise: m2[y][x] = m[rows-1-x][y]? Let's derive. For 2x3 matrix:
+m = [[a,b,c],[d,e,f]]
+clockwise -> [[d,a],[e,b],[f,c]]? Actually rotate 90 clockwise: new row0 = old col0 bottom-to-top? Let's use formula: new[r][c] = old[n-1-c][r]? Wait.
+
+Coordinates (r,c). Clockwise rotation around center: (r,c) -> (c, n-1-r) for square n. For rectangular, dimensions swap. New matrix dimensions old cols x old rows. new[r][c] = old[oldRows-1-c][r]? Let's test old 2x3:
+old rows=2, cols=3. new rows=3, cols=2.
+new[0][0] = old[2-1-0=1][0]=d. new[0][1]=old[1][1]=e. new[1][0]=old[1][0]=d? Wait formula wrong.
+
+Let's derive using coordinate transform. For old cell at (r,c), clockwise rotation maps to (c, R-1-r) where R=old rows? But new dimensions C x R. New row = c, new col = R-1-r. So new[c][R-1-r] = old[r][c]. Thus new[r'][c'] = old[R-1-c'][r']? Let r'=c, c'=R-1-r => r = R-1-c', c = r'. So new[r'][c'] = old[R-1-c'][r']. Yes.
+
+Test old [[a,b,c],[d,e,f]], R=2.
+new rows=3, cols=2.
+new[0][0]=old[1][0]=d
+new[0][1]=old[0][0]=a
+new[1][0]=old[1][1]=e
+new[1][1]=old[0][1]=b
+new[2][0]=old[1][2]=f
+new[2][1]=old[0][2]=c
+=> [[d,a],[e,b],[f,c]]. That's clockwise? Visual old:
+a b c
+d e f
+Rotate clockwise: d a
+e b
+f c. Yes.
+
+So rotate function:
+function rot(m){let R=m.length,C=m[0].length,n=[];for(let r=0;r<C;r++){n[r]=[];for(let c=0;c<R;c++)n[r][c]=m[R-1-c][r];}return n;}
+Need maybe trim? Not necessary.
+
+Game state:
+const W=10,H=20,S=30; canvas.
+board = Array(H).fill().map(()=>Array(W).fill(0)) maybe colors? Use 0 empty, 1 filled. Could store color index? For drawing, use piece color. Simpler board
+---

@@ -1,0 +1,9 @@
+run 18720 | relmf1 | pf3k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 32.5 t/s | prompt 825.4 t/s | 64 tokens | args: -np 1 | power 220+280 W | 2026-10-23 19:31:21
+
+The user wants a code review of this C++ source file. Let me analyze it carefully for bugs, style issues, potential problems, and design concerns.
+
+Let me go through the code systematically.
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is provided and `min_items
+---

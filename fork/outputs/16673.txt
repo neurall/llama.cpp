@@ -1,0 +1,89 @@
+run 16673 | um3d | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 53.69 t/s | prompt 115.7 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-19 14:06:40
+
+The user wants the smallest HTML Tetris game. I'll give them a compact single-file Tetris. "Smallest" — so keep it tight. But I don't want to sacrifice all feel for size; a tiny game can still have a bit of craft in it. Let me write a genuinely compact Tetris that still feels alive — small code, but with nice styling, ghost piece, next piece, score, keyboard controls.
+
+The request is explicitly "smallest" — so I should honor that primarily. Deliver a tiny single file. But I can make it not ugly. Let me balance: give the compact version, well-formed, maybe ~40 lines, with a decent look.
+
+Let me write it.
+
+```html
+<!DOCTYPE html><meta charset=utf-8><title>Tetris</title>
+<style>
+body{margin:0;background:#0b0e14;color:#e8e8f0;font:14px/1.4 system-ui;display:grid;place-items:center;height:100vh;gap:12px}
+canvas{background:#05070c;border:2px solid #2a3348;border-radius:6px;box-shadow:0 0 40px #1b6cff33}
+b{color:#6cf}
+</style>
+<canvas id=c width=260 height=520></canvas>
+<div>Score <b id=s>0</b> · Line <b id=l>0</b> · ←↓→ move · ↑ rotate · Space drop</div>
+<script>
+// compact tetris
+</script>
+```
+
+Now the JS. Let me write compact but correct tetris.
+
+```js
+const W=10,H=20,S=26,x=c.getContext('2d'),C='IOTSZJL',
+P='7777,,,33,,33,,,,55,,55,,,1111,,,,,,,,9,,,99,,99,,,,66,,66,,,2222'.split(','),
+```
+
+Hmm, let me use a simpler encoding: define pieces as 4x4 or per-piece rotation via matrix rotation. Standard approach: define each piece as a small matrix, rotate it.
+
+```js
+const shapes={I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],...}
+```
+
+Compact: use strings.
+
+```js
+const S='.... .... #### ....,.... ##. ##. ....,.... .## ##. ....,.... #### .... ....'
+```
+
+Let me just do: pieces as array of {m:matrix-string, c:color}.
+
+Compact version:
+
+```js
+const B=[0,1,2,3,4,5,6];
+const P=[
+"0f0f0f0f 0000 0f00 0ff0 00f0", // messy
+```
+
+Better readable compact approach:
+
+```js
+const P=['####','....','....','....', ...]
+```
+
+Let me define each piece with a 4-char-per-row string block, and a color index.
+
+```js
+const K=[[['..','.O.','OO.','O.O'],3],...]
+```
+
+Hmm. Let me just do the classic minimal:
+
+```js
+const T='01 22 3 44 55 66'.split(' ')
+```
+
+OK, I'll write it plainly:
+
+```js
+const P=[ // [shape rows, color]
+ ["0000 1111 0000 0000",0],
+ ["220 220 000",1],
+ ["033 330 000",2],
+ ["444 040 000",3],
+ ["555 500 000",4],
+ ["666 006 000",5],
+ ["077 770 000",6]
+]
+```
+
+Wait, using digits as color and 0 as empty. That's neat: each cell digit = color index (or 0 empty). Rotation: rotate the matrix.
+
+Board: 20 rows x 10 cols of digits/0.
+
+Let me
+---

@@ -1,0 +1,53 @@
+run 19619 | relfx1 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.27 t/s | prompt 8.8 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 11:47:53
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. However, I still want it to be a genuinely playable Tetris: move left/right, rotate, soft drop, hard drop maybe, line clearing, score, game over.
+
+Let me think about what "smallest" means here. I should write extremely compact JavaScript. Single HTML file. I'll aim for something like under 1000 bytes, maybe even smaller. Let me try to golf it hard while keeping it playable.
+
+Key features to include (minimal viable Tetris):
+- 10x20 board
+- 7 tetrominoes with rotation
+- gravity/tick
+- left/right/rotate/down controls
+- collision detection
+- line clear + score
+- game over + restart
+
+Let me design the golfed version.
+
+Classic golfed Tetris approach: represent pieces as bitmasks or as arrays of coordinates. A well-known compact trick: store all rotations of all pieces in one string, or use a matrix rotation function.
+
+Approach 1: pieces as matrices, rotate by transposing + reversing.
+
+Let me draft:
+
+```html
+<body onload="f=setInterval(t,300)"><canvas id=c></canvas><script>
+...
+</script>
+```
+
+Actually let me write it carefully.
+
+Board: `D=[]` array of 200 cells (10 wide, 20 tall), values 0 or color index.
+
+Pieces: 7 shapes. Compact representation: each piece as array of rotations? Or one rotation + rotate function.
+
+Golfed rotation for square matrices: `m[0].map((_,i)=>m.map(r=>r[i]).reverse())` — but pieces aren't square matrices. Trick: embed each piece in smallest square matrix (2x2 or 3x3 or 4x4 for I). Or use the "all rotations in a string" approach.
+
+A very compact known approach: define pieces as arrays of [x,y] pairs and rotate around a pivot. But pivot handling differs per piece.
+
+Alternative super-compact: store each tetromino as 4 rotations of bitmask in a single number? That's clever but hard to write compactly.
+
+Common minimal Tetris golf (e.g., famous 140-byte-ish ones are too stripped). Let me aim for a readable-ish but very small ~600-900 byte version.
+
+Let me try the string-encoded rotations approach:
+
+Each piece: 4 rotation states, each state 4 cells (x,y). Encode as a flat string of numbers. E.g., piece data as a string like "0135" meaning cells at positions in a 4x4 grid? Hmm.
+
+Actually a neat trick: represent each rotation state as a 16-bit mask in a 4x4 box. Then a cell (x,y) is bit y*4+x. All 7 pieces × 4 rotations = 28 masks. Encode as a string of hex chars? 28 masks × 4 hex chars = 112 chars. Or base36... masks up to 0xFFFF need 4 hex chars.
+
+Alternatively encode each piece's 4 rotations as one number? Too big.
+
+Another classic trick: use a single string where each piece is defined by coordinates, and rotation computed via (x,y)->(y, 3-x) or similar in a 4x4 box, then normalize. Rotation in a 4x4 box: for piece stored as offsets within 4x4, rotating clockwise: new_x = 3 - y? Actually if we treat the piece as living in a 4x4 grid and rotate the whole grid, offsets transform (x,y) -> (3-y, x). This works for all pieces if we pick the right initial offsets! For I piece: cells (0,1),(1,1),(2,1),(3,1) → rotate → (2,0),(2,1),(2,2),(2,3) — vertical I at x=2. That's fine. For O piece: cells (1,0),(2,0),(1,1),(2,1) → rotate → (3,1),(3,2),(2,1),(2,2)? Let's check: (x,y)->(3-y,x): (1,0)->(3,1); (2,0)->(3,2); (1,1)->(2,1); (2,1)->(2,2). That's a different 2x2 block — O piece would "wobble" but still be a valid O shape (just shifted). Actually the O would move position on rotation, which is a bit odd but acceptable in a minimal game — actually it changes
+---

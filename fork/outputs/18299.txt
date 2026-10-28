@@ -1,0 +1,26 @@
+run 18299 | splitfix | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 11.96 t/s | prompt 301.4 t/s | 1024 tokens | args: -np 1 --moe dense-split=one,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-23 10:13:03
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 0` we return early, so `max_items - 1` is safe. OK.
+   - Actually wait — if `min_items == 0 && max_items == 1` with a separator, the result would be `(item (sep item)?)?` — hmm, actually with min=0, max=1, the recursive call gets min=0, max=0, which returns "" — so result is `(item )?` — wait no. Let me trace: `build_repetition(item, 0, 1, sep)`. First checks: `max_items != 0`, not (min==0 && max==1) return early... wait, actually the check `if (min_items == 0 && max_items == 1) return item_rule + "?"` happens BEFORE the separator check. So for min=0, max=1 with separator, it returns `item?` without separator — that's correct since only one item means no separator needed. Good.
+   - Hmm, but wait: the check order — `max_items == 0` returns "", then `min_items == 0 && max_items == 1` returns `item?`. Then separator handling. OK.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — minor performance issue but acceptable.
+   - `decimals_left = 16` default. The recursion for negative numbers: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == std::numeric_limits<int64_t>::min()`, then `-min_value` overflows (UB). Let me check: in the `has_min && has_max` branch, `min_value < 0 && max_value < 0` case calls `build_min_max_int(-max_value, -min_value, ...)`. If `min_value == INT64_MIN`, then `-min_value` is UB (signed overflow). But wait — can `min_value == INT64_MIN` reach here? `has_min = min_value != INT64_MIN`. In the `has_min && has_max` branch, `has_min` is true so `min_value != INT64_MIN`. So `-min_value` is safe. OK good.
+   - In the `has_min` only branch: `min_value < 0` → `build_min_max_int(INT64_MIN, -min_value, ...)`. Here `min_value != INT64_MIN` because `has_min`. So `-min_value` is fine. And passing INT64_MIN as min means `has_min = false` in the recursive call. OK.
+   - `std::stoll(min_s.substr(1))` — could this overflow? `min_value <= 9` handled separately, so `min_value >= 10`, `min_s` has at least 2 chars. `min_s.substr(1)` is at most... if min_value is large like 9223372036854775807, substr(1) = "223372036854775807" which fits. OK.
+   - Potential issue: `more_digits(0, decimals_left - 1)` when `decimals_left` could be... `less_decimals = std::max(decimals_left - 1, 1)`. Hmm.
+   - The `uniform_range` lambda captures by reference and recurses via `std::function` — fine.
+   - One thing: in `uniform_range`, `digit_range(from[i], to[i] - 1)` — if `from[i] == '0'` and `to[i] == '0'`? Can't happen since from < to in the digit position... Actually if `from_sub == sub_zeros` then `from[i] < to[i]` must hold? Hmm, `uniform_range` is called with from <= to. If from[i] == to[i] and from_sub == zeros and to_sub == nines... then
+---

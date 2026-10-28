@@ -1,0 +1,74 @@
+run 17150 | stock-b11742-official | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 8.72 t/s | prompt 7.7 t/s | 1005 tokens | args:  | power 220+280 W | 2026-10-20 06:45:32
+
+The user wants the smallest HTML Tetris game. This is a code golf / minimalism challenge. The user explicitly asks for "smallest" — so this is one of those cases where the user's explicit request overrides my usual preference for elaborate, polished deliverables. The goal here is minimal bytes while still being a functional Tetris.
+
+But wait — I should think about what "smallest" means and what I can deliver. The user wants the smallest HTML Tetris. I should aim for a genuinely tiny, single-file HTML with inline JS, golfed hard. I should still make it functional: falling tetrominoes, rotation, line clearing, scoring, game over, keyboard controls.
+
+Let me think about how to golf a Tetris in HTML+JS.
+
+Classic approaches:
+1. Canvas-based with a playfield array.
+2. Use emoji/unicode block characters in a `<pre>` — actually using text rendering can be very small.
+3. Use a table of divs.
+
+The smallest known Tetris implementations are around 200-500 bytes of JS. There are famous golfed Tetris entries. Let me try to write my own compact one.
+
+Let me design:
+
+- Playfield: 10 wide, 20 tall. Store as a single array or string.
+- Pieces: 7 tetrominoes. Can encode as bitmasks or as arrays of coordinates.
+- Rendering: canvas with fillRect, or a `<pre>` with textContent.
+
+A very compact approach: use canvas, draw cells as squares.
+
+Let me think about the classic ultra-golfed Tetris structure:
+
+```js
+D=document
+...
+```
+
+Let me write my own from scratch, aiming for maybe ~600-800 bytes total HTML. Actually let me try to get it really small.
+
+Key components:
+
+1. **Board**: `b=[]` array of 200 cells (10x20), values 0 or color index (1-7).
+
+2. **Pieces**: 7 shapes. A compact encoding: each piece as 4 rotation states of 4 cells, or use a well-known trick: encode each rotation as a 16-bit number (4x4 grid bits).
+
+A known compact trick: define pieces as arrays of coordinates per rotation. Or use the "sum of rotations" trick.
+
+Alternative super-compact trick used in golfed Tetris: represent each tetromino as a 4x4 bitmask per rotation, all 7 pieces × 4 rotations = 28 numbers. Or compute rotations algorithmically: rotation of a cell (x,y) in an n×n box is (n-1-y, x) or (y, n-1-x).
+
+Actually a neat trick: store each piece as a list of 4 [x,y] pairs in one rotation, and rotate dynamically: for rotation r, apply rotation transform r times. Rotating (x,y) → (y, 2-x) for a 3-wide box (I, O need 4-wide). Hmm, I-piece is 4 wide, O is effectively 2. Using a 4x4 box rotation: (x,y) → (3-y, x)? That rotates within 4x4. For 3x3 pieces (T, S, Z, J, L), rotating in a 4x4 box shifts them around but still works if we normalize... Actually many golfed Tetris versions rotate within a fixed box and it works fine visually even if the piece shifts.
+
+Let me think of the classic approach from famous golfed tetris (e.g., the ~140-byte one by ... there's "Tetris in 140 bytes" but those are incomplete). A well-known compact complete one is around 400-500 bytes JS.
+
+Let me just write my own clean-ish golfed version.
+
+Plan:
+
+```html
+<body onload=...>
+```
+
+Actually, let me write it as one HTML file:
+
+```html
+<canvas id=c width=100 height=200></canvas>
+<script>
+...
+</script>
+```
+
+Hmm, but I could even render with a `<pre>` and text characters — that might be smaller than canvas? Canvas fillRect per cell: `x.fillRect(...)` with scaling. Text approach: build a string each frame with block chars, set `pre.textContent`. Text approach avoids color but "smallest" — maybe monochrome is fine? But a Tetris with colors is nicer. The user asked for smallest, so I'll prioritize size but keep it playable and reasonably pleasant. I can add minimal color cheaply.
+
+Let me think about the smallest functional design:
+
+**Data structures:**
+
+- Board: `B=[]` length 200. Use 0 for empty, piece index+1 for filled.
+- Current piece: `p` = piece index 0-6, `r` = rotation 0-3, `x`, `y` position.
+
+
+---

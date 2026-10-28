@@ -1,0 +1,56 @@
+run 16569 | um3d | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.48 t/s | prompt 132.6 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-19 10:10:50
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the priority is compactness — a tiny single-file HTML Tetris. I should deliver something small but functional.
+
+There's a real tension here: my instincts would be to build something rich and crafted, but the user explicitly asked for the smallest game. So the right move is a genuinely tiny, dense, working Tetris — no bloat. I'll keep it minimal but complete: board, pieces, rotation, line clears, score, level, game over, restart.
+
+Let me write compact but readable-ish code.
+
+Smallest approach: use a table or canvas? Canvas is fewer bytes overall probably. Actually a grid of divs is more bytes. Canvas is good.
+
+Let me write it:
+
+```html
+<meta charset=utf-8><title>T</title>
+<body style=margin:0;background:#111;color:#fff;display:grid;place-items:center;height:100vh;font:16px monospace>
+<canvas id=c width=180 height=360 style=background:#000></canvas>
+<script>
+// tetris
+</script>
+```
+
+Compact Tetris logic:
+
+Pieces as strings or arrays. Classic compact trick: use a number per piece and rotation via matrix rotation.
+
+Let me use the well-known compact approach:
+
+```js
+P=[[],[0,15],[0,5,10,15],[1,5,9,13],[4,14,5,7],[2,14,4,13],[8,7,4,14],[12,13,4,7]]
+```
+
+Hmm, that's the "bits in 4x4" approach. Actually the classic tiny Tetris uses:
+
+```
+S=[0,[15],[0,5,10,15],[1,5,9,13],[4,14,5,7],[2,14,4,13],[8,7,4,14],[12,13,4,7]]
+```
+
+Wait, that's from the famous 468-byte Tetris by... Let me recall. There's a well-known tiny Tetris:
+
+```js
+M=[[0,0],[0,1],[1,1],[1,0]] // rotation
+```
+
+Let me just write my own clean compact version rather than trying to golf to the bone — "smallest" here means concise, not literally code-golf winning.
+
+Approach: 4x4 bitmask per rotation state? Simpler: define pieces as 4x4 bitmasks, rotate by bit manipulation.
+
+Piece masks (4x4, row-major, bit index = y*4+x):
+- I: rows 1 → bits 4,5,6,7 = 0xF0
+- O: bits 5,6,10,11 = 0xFC0
+- T: bits 5,4,6,9 → row1: 4,5,6 ; row2: 9 → mask = 0b0010_0111_0000_0000? Let me compute: bit9=512, bit4=16,bit5=32,bit6=64 → 512+112=624 = 0x270
+- S: bits 5,6,9,10 → 32+64+512+1024=1632=0x660
+- Z: bits 4,5,10,11 → 16+32+1024+2048=3120=0xC30
+- J: bits 4,5,6,10 → 16+32+64+1024=1136=0x470
+- L: bits 4,5,6,9 → 16+32+64+512=624 — same as T! Careful. T: row1 = 4,5,6 and row2 = 9? T shape: top row three cells, middle below center. Center of row1 is bit5, so below is bit9. Yes T = 4,5,6,9 = 
+---

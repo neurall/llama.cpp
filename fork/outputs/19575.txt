@@ -1,0 +1,53 @@
+run 19575 | deep-seek | pf200k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 72.16 t/s | prompt 3259.2 t/s | 1000 tokens | args: -np 1 | power 220+280 W | 2026-10-26 10:24:20
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants a code review of the provided source files. The files are part of `llama.cpp` (or similar project), covering CLI argument parsing (`arg.cpp`, `arg.h`), JSON schema to grammar conversion (`json-schema-to-grammar.cpp`), chat template auto-parser generation (`chat-auto-parser-generator.cpp`, `chat-auto-parser-helpers.cpp`, `chat-auto-parser.h`, `chat-diff-analyzer.cpp`, `chat-peg-parser.cpp`, `chat-peg-parser.h`, `chat.cpp`, `chat.h`), and some utility/common functions (`common.cpp`).
+
+2.  **Identify Key Areas for Review:**
+   - Structure & Organization
+   - Code Quality & Readability
+   - Performance & Efficiency
+   - Error Handling & Robustness
+   - Security & Safety
+   - Modern C++ Practices
+   - Potential Bugs/Edge Cases
+   - Documentation/Comments
+   - Dependencies & Includes
+
+3.  **Analyze Each File/Section (Mental Walkthrough):**
+
+   *Common/Utility Files:*
+   - `common.cpp`: Contains CPU utils, time measurement, etc. Looks standard. Some platform-specific includes. Good use of macros for Windows/Linux/macOS.
+   - `build-info.h`: Simple header with build info functions. Fine.
+
+   *CLI Argument Parsing (`arg.cpp`, `arg.h`):*
+   - `arg.h`: Defines `common_arg` struct with many fields. Uses function pointers for handlers. Has constructors for different argument types. Operators `<` and `==` based on first arg string. This is a bit fragile if args are empty or have multiple aliases. Could be improved to handle alias lists properly.
+   - `arg.cpp`: Huge file defining all CLI options. Very repetitive but structured. Uses lambdas extensively. Handles environment variables, config files, parsing logic.
+     - Issues: Repetitive code could be abstracted better. The `add_opt` lambda pattern is verbose. Hardcoded strings everywhere. Memory management in `parse_tensor_buffer_overrides` uses static vector which might cause issues across calls? Actually it's fine for lifetime but static inside function can be tricky.
+     - Error handling: Throws exceptions appropriately. Logs warnings/errors correctly.
+     - Platform specifics: Windows UTF-8 argv conversion looks correct.
+     - TODO comments present (e.g., "TODO @ngxson : find a way to deduplicate this code"). Good practice.
+
+   *JSON Schema to Grammar (`json-schema-to-grammar.cpp`):*
+   - Converts JSON schema to GBNF grammar. Complex recursive structure.
+   - `build_repetition`: Handles min/max items, separators. Looks solid.
+   - `build_min_max_int`: Generates integer range rules. Very complex regex-like generation. Potential edge cases with negative numbers, large ranges, decimal places. Logic seems sound but hard to verify mentally. Could benefit from unit tests or clearer comments.
+   - `common_chat_schema_converter`: Class managing rule generation. Uses `_rules` map, handles references, unions, objects, arrays, strings, integers, etc.
+     - Issues: Recursive depth limit (`MAX_PATTERN_DEPTH = 100`) is good. Regex escaping logic is detailed. `_add_rule` handles name collisions by appending indices. Might generate many rules if schemas are deeply nested.
+     - Memory/Performance: Maps and vectors used efficiently. No obvious leaks.
+     - Error handling: Catches unsupported patterns gracefully, falls back to string rule. Logs warnings/errors.
+     - Code style: Heavy use of lambdas, captures, `std::function`. Some might be overkill but acceptable for this complexity.
+
+   *Chat Auto-Parser & Diff Analyzer:*
+   - `chat-auto-parser.h`, `.cpp`, helpers: Defines analysis structures (reasoning, content, tools). Differential comparison using prefix/suffix matching on segmented markers.
+   - `calculate_diff_split`: Complex algorithm comparing two strings while respecting marker boundaries. Handles degenerate cases. Looks robust but intricate.
+   - `segmentize_markers`: Parses `<...>` and `[...]` tags. Simple state machine. Good.
+   - `autoparser` class: Analyzes templates via differential comparisons. Generates PEG parsers dynamically. Very sophisticated.
+   - Potential issues: Template application failures handled with fallbacks. Logging uses ANSI colors which might break in non-terminal environments or CI. Could add checks for terminal support.
+   - Regex/Pattern matching: Uses custom parsers rather than regex where appropriate. Good for performance/control.
+
+   *PEG Parser (`chat-peg-parser.cpp`, `.h`):*
+   - Builds parser from template structure. Supports JSON native, tagged JSON, tagged tagged formats.
+   - Mapper
+---

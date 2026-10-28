@@ -1,0 +1,32 @@
+run 19551 | ds41i5 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 24.7 t/s | prompt 8.3 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=96636764160 | power 220+280 W | 2026-10-25 23:28:29
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need use canvas. Need implement tetrominoes, rotation, collision, line clear, gravity, keyboard. Need minimal code.
+
+Let's design compact single-file HTML.
+
+Canvas dimensions: 10 cols x 20 rows. Cell size maybe 24. Canvas width 240 height 480. Use CSS body background. Use canvas.
+
+Tetromino shapes. Represent as arrays of coordinates or matrices. Need rotation. Could use 4x4 matrices for each piece. Simpler: define pieces as arrays of [x,y] cells relative to top-left? Rotation around center. Need handle rotation. Could use matrices.
+
+Option: Use 4x4 matrices for I, O, T, S, Z, J, L. Each piece matrix with 1s. Rotation by matrix transpose? For 4x4, rotate clockwise: new[r][c] = old[3-c][r]? Actually rotate 90 clockwise: new[r][c] = old[3-c][r]? Let's verify: old coordinates (x,y) with x row, y col. Clockwise rotation around center: new row = y? Hmm. For 4x4, rotate clockwise: new[r][c] = old[3-c][r]? Let's test old at (0,0) -> new? Clockwise rotation of top-left goes top-right? Coordinates row down, col right. Rotate clockwise: (r,c) -> (c, 3-r)? Wait standard matrix rotate clockwise: new[r][c] = old[3-c][r]? Let's derive: old row r, col c. Rotate 90 clockwise around center: new row = c, new col = 3-r. So new[c][3-r] = old[r][c]. Equivalently new[r][c] = old[3-c][r]. Yes.
+
+But for pieces not centered? 4x4 matrices with shapes. Rotation works.
+
+Need spawn at top. Board 10x20. Piece matrix 4x4. Position x,y top-left. Need collision: for each cell in matrix, board[y+r][x+c] if within and not occupied. Need allow above board? Spawn y=0. If collision at spawn game over. Need maybe y=-? Use y=0. For I piece matrix maybe row 1? Need ensure spawn. Use matrices.
+
+Define pieces:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]? Actually 4x4 with row 1. Spawn y=0, cells at row 1. Fine.
+O: [[0,0,0,0],[0,1,1,0],[0,1,1,0],[0,0,0,0]]
+T: [[0,0,0,0],[0,1,0,0],[1,1,1,0],[0,0,0,0]]? Need shape. Could use row 1 center, row 2 three. Fine.
+S: [[0,0,0,0],[0,1,1,0],[1,1,0,0],[0,0,0,0]]
+Z: [[0,0,0,0],[1,1,0,0],[0,1,1,0],[0,0,0,0]]
+J: [[0,0,0,0],[1,0,0,0],[1,1,1,0],[0,0,0,0]]
+L: [[0,0,0,0],[0,0,1,0],[1,1,1,0],[0,0,0,0]]
+Need maybe rotation of I from row 1 to col? 4x4 rotation works.
+
+Need board array 20 rows x 10 cols. Use 0/1.
+
+Game loop: requestAnimationFrame or setInterval. Need gravity. Use timestamp. Simpler setInterval tick every 500ms? But need smooth? Minimal. Use setInterval(update, 500). But keyboard moves immediate. Need
+---

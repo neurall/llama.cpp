@@ -1,0 +1,32 @@
+run 19406 | rc5 | edit4c | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.92 t/s | prompt 1409.2 t/s | 556 tokens | args: -np 1 | power 220+280 W | 2026-10-25 09:07:30
+
+We need answer user's request. User provided C++ file snippet and says: "// file: common/json-schema-to-grammar.cpp ... Delete the code in this file that is never used." Need likely produce modified file? We need infer unused code? We only have partial file ending at gbnf_escape_length. Need maybe identify dead code in provided snippet? Need be careful. Need maybe output code with unused code removed. But we don't have full file. Need analyze provided code for unused functions/variables? The request likely from code cleanup: delete code in this file that is never used. We need maybe remove unused includes? Or unused static functions? We need determine from snippet. It includes many functions: build_repetition, build_min_max_int, is_reserved_name, replacePattern, format_literal, gbnf_format_literal, gbnf_escape_length (incomplete). Some may be used elsewhere in full file not shown. We cannot know. Need maybe ask for full file? But likely expected to edit given file by removing unused code visible? Need produce final answer with code? Need maybe state cannot determine without full file. But user likely expects direct edit. Need satisfy. Let's inspect code.
+
+File: common/json-schema-to-grammar.cpp. It includes headers. using json = common_json;
+
+static std::string build_repetition(...) likely used later in full file for arrays, patterns? Could be used.
+
+static void build_min_max_int(...) likely used for integer bounds.
+
+const std::string SPACE_RULE = ... likely used.
+
+struct BuiltinRule, PRIMITIVE_RULES, STRING_FORMAT_RULES likely used.
+
+is_reserved_name likely used.
+
+INVALID_RULE_CHARS_RE, GRAMMAR_LITERAL_ESCAPE_RE, GRAMMAR_RANGE_LITERAL_ESCAPE_RE, GRAMMAR_LITERAL_ESCAPES likely used.
+
+MAX_PATTERN_DEPTH likely used.
+
+NON_LITERAL_SET, ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS likely used in regex conversion.
+
+replacePattern likely used.
+
+format_literal likely used.
+
+gbnf_format_literal exported maybe used elsewhere.
+
+gbnf_escape_length incomplete maybe used? It is static? Actually no static? It is static size_t gbnf_escape_length(...). Could be used later.
+
+What is never used in this snippet? Maybe includes <regex>, <sstream>, etc used. <map> maybe not used? Let's check: std::map not used in snippet. <unordered_map> used, <unordered_set> used, <vector> used, <algorithm> maybe not used? std::max used? <algorithm> for max? yes std::max. <limits> used. <regex> used. <sstream> used. <string> used.
+---

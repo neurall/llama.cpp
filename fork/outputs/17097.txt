@@ -1,0 +1,29 @@
+run 17097 | b13600 | pf12k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 54.06 t/s | prompt 1469.4 t/s | 1024 tokens | args: -np 1 --moe split-f16=0 | power 220+280 W | 2026-10-20 04:27:04
+
+We need answer user's request: "Do a code review of the following source file." They provided two files? Actually content includes // file: common/json-schema-to-grammar.cpp then later // file: common/arg.cpp. They say source file singular but pasted two files concatenated. Need review. Need likely provide detailed code review: correctness, style, potential bugs, security, maintainability. Need analyze code. Need maybe mention it's two files. Need be thorough. Need maybe not run code. Need identify issues.
+
+Let's inspect json-schema-to-grammar.cpp.
+
+Includes: json-schema-to-grammar.h, common.h, trie.h, unicode.h. using json = common_json.
+
+build_repetition:
+- max_items int, min_items int. has_max = max_items != INT_MAX.
+- if max_items == 0 return ""; if min_items ==0 && max_items==1 return item_rule + "?".
+- if separator empty: if min=1 && !has_max return +; if min=0 && !has_max return *; return {min,max?}.
+Potential issue: if min_items > max_items? Not validated. Could produce invalid grammar. If max_items < min_items? e.g min=2 max=1 returns {2,1} invalid. If max_items negative? Caller uses max_items <0 -> INT_MAX. But build_repetition could receive negative? maybe not.
+- separator case: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?".
+Potential issue: if max_items == 0 handled earlier. If max_items == 1 and min_items ==0? returns item_rule? Wait if separator non-empty and max_items=1 min=0: has_max true, result = item + " " + build_repetition(..., 0, 0). build_repetition with max=0 returns ""? Then result = item + " " + "" -> trailing space? Then if min=0 result = "(" + result + ")?". That yields "(item )?" invalid/trailing. But earlier if min=0 max=1 returns item_rule + "?" before separator branch, so okay. If min=1 max=1 returns item_rule + "?"? Actually min=0 max=1 only. For min=1 max=1: not caught, separator branch: result = item + " " + build_repetition(...,0,0) -> item + " " + "" trailing, no optional. Bad. But maybe max_items=1 min=1 with separator? For array with maxItems=1, build_repetition called with min=1 max=1 separator=", space". It returns item_rule + " " + build_repetition(...,0,0). build_repetition max=0 returns "" (empty). So result "item " trailing. Then grammar: "[\" space item  space \"]" maybe double space? Could be okay? GBNF may tolerate spaces? But rule has trailing space before space? Actually _build array: "\"[\" space " + build_repetition(...) + " space \"]\"". If build_repetition returns "item " then becomes "[\" space item  space \"]" two spaces. GBNF likely okay? But not ideal. If min=1 max=1 should return item_rule. Need fix.
+- If min_items=0 max_items=0 returns "" before optional. Good.
+- If min_items=0 max_items=2 separator: result = item + " " + build_repetition(sep item, 0,1) -> item (sep item)? Good.
+- If min_items=2 max_items=2: item + " " + build_repetition(sep item,1,1) -> item (sep item) good.
+- If min_items=0 max_items=INT_MAX: result = item + " " + build_repetition(sep item,0,INT_MAX) -> item (sep item)* good.
+- If min_items=1 max_items=INT_MAX: item + " " + build_repetition(sep item,0,INT_MAX) -> item (sep item)* good.
+- If min_items=0 max_items=1 caught.
+- If min_items=1 max_items=1 bug.
+- If min_items=0 max_items=0 caught.
+- If min_items=2 max_items=1 invalid.
+
+build_min_max_int:
+Recursive grammar for integer ranges. Potential issues:
+- decimals_left default 16. Recursion uses less_decimals = max(decimals_left-1,1). Could infinite? If decimals_left=1, less_decimals=1. In branches with min_value >9
+---

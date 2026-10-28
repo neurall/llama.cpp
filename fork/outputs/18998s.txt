@@ -1,0 +1,70 @@
+run 18998 | stock-b11829-official | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 12.83 t/s | prompt 15.2 t/s | 1005 tokens | args:  | power 220+280 W | 2026-10-24 16:25:07
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count. Let me think about what "smallest" means: probably fewest characters in a single HTML file. I should aim for a genuinely tiny, working Tetris.
+
+Let me think about the constraints:
+- Single self-contained HTML file
+- Must be a real, playable Tetris: falling pieces, movement, rotation, line clearing, scoring, game over.
+- No external dependencies needed (that would add bytes anyway).
+- Keep it as small as possible while still being playable and not broken.
+
+I should write extremely compact code. Single-letter variable names, no whitespace, minimal DOM. Use a canvas for rendering — canvas is compact. Or even render with text/monospace grid? Canvas is probably smallest.
+
+Let me design the smallest Tetris:
+
+Core components:
+1. Playfield: 10x20 grid (or smaller to save bytes? Standard is 10x20; smaller grid like 10x18 saves little. Keep 10x20 but maybe store as array).
+2. Pieces: 7 tetrominoes. Compact encoding: each piece as a list of cells, or use bit patterns. A classic trick: encode pieces as strings of coordinates or use a compact numeric encoding.
+3. Rotation: either precompute rotations or rotate dynamically. Dynamic rotation of coordinate lists is compact: rotate (x,y) -> (y, -x) or similar around a pivot. For tetrominoes in a 2x2 or 3x3 bounding box, rotation can be done via matrix rotation of the shape's cell list.
+4. Collision detection.
+5. Line clear.
+6. Gravity loop via setInterval or requestAnimationFrame.
+7. Keyboard controls: left/right/down, rotate (up or a key), maybe hard drop with space.
+8. Score: simple, +1 per piece or +lines*something.
+9. Game over when spawn collides.
+
+Smallest known Tetris implementations exist (like "smallest tetris in js" golfed around 200-400 bytes without HTML wrapper). With HTML wrapper, maybe ~500-700 bytes total. Let me try to write one.
+
+Let me think about the most compact piece representation. A common trick: represent each tetromino as a 16-bit number (4x4 grid bitmask), and rotation via bit manipulation or lookup. Alternatively, store shapes as arrays of [x,y] pairs and rotate with a formula.
+
+Compact approach used in many golfed tetris:
+
+```js
+D=[[1,1,1,1,0],...]
+```
+
+Hmm. Let me think of a known minimal design. One famous minimal Tetris (by @fsk141 or similar) uses:
+
+```js
+b = board, piece shapes as arrays of arrays
+```
+
+Let me just write my own carefully.
+
+Plan:
+
+```html
+<canvas id=c width=120 height=240></canvas>
+<script>
+...
+</script>
+```
+
+Actually to save bytes, use `document.body.appendChild(c=document.createElement("canvas"))`? That's longer than just writing the canvas tag. Writing `<canvas width=120 height=240>` inline is short. Then `c=document.querySelector("canvas")` or with id. Actually `c.getContext...`. Hmm, we can do:
+
+```html
+<body><canvas id=c width=100 height=200></canvas><script>...
+```
+
+Then `x=c.getContext('2d')`.
+
+Grid: 10 wide, 20 tall, cell 10px → canvas 100x200. Good.
+
+Board storage: a 2D array `B=[]` of rows, each row array of 10 cells (0 or color index / 1). To save bytes, store board as array of strings? Strings are compact for init but checking cells needs charAt. Array of arrays with numbers is fine.
+
+Actually a very compact trick: board as a single flat array of length 200, index = y*10+x. Collision check loops over piece cells.
+
+Piece representation: The 7 tetrominoes. Compact encoding idea: each piece as a string of 4 coordinates? Or as a 4x4 bitmask number where bits set = cells. Rotation of a 4x4 bitmask: rotating bits within 4x4 grid requires per-row/col manipulation — a bit fiddly but doable with a lookup or arithmetic.
+
+Alternative compact: shapes as arrays of [x,y] pairs relative to a pivot; rotation: [x,y] -> [y,-x] (90° CW around origin) then normalize? For tetrominoes embedded in a 3x3 box with pivot at (1,1), rotation [x,y]->[y, 2-x]? Let's define
+---

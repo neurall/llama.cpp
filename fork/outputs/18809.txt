@@ -1,0 +1,4 @@
+run 18809 | ncard3 | pf30k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 9.52 t/s | prompt 382.5 t/s | 64 tokens | args: -np 1 --moe dense-split=1,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-23 22:14:53
+
+Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. The second file appears to be cut off mid-function (it ends abruptly in the middle of `common_params_parser_init` with an incomplete `std::
+---

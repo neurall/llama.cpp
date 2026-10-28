@@ -1,0 +1,46 @@
+run 17568 | tokms2 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 9.64 t/s | prompt 23.1 t/s | 965 tokens | args: -np 1 -c 1024 | power 600 W | 2026-10-21 19:48:47
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Tetris</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#111;display:flex;justify-content:center;align-items:center;height:100vh;font-family:monospace;color:#fff}
+canvas{border:2px solid #555}
+#ui{position:fixed;top:10px;left:10px;font-size:14px}
+</style>
+</head>
+<body>
+<div id="ui">←→↓↑=move/rotate SPACE=drop R=reset</div>
+<canvas id="c" width="160" height="320"></canvas>
+<script>
+const W=10,H=20,S=16,c=document.getElementById('c'),x=c.getContext('2d');
+const COLORS=['#0ff','#ff0','#f0f','#f00','#0f0','#00f','#f80'];
+const SHAPES=[[[1,1,1],[0,1,0]],[[1,1,1],[1,0,0]],[[1,1,1],[0,0,1]],[[1,1,1],[0,1,1]],[[1,1,1],[1,1,0]],[[1,1],[1,1]],[[1,1,1],[0,1,1]]];
+let board,piece,px,py,over,score,lines;
+
+function reset(){
+  board=Array.from({length:H},()=>Array(W).fill(0));
+  piece=SHAPES[Math.random()*7|0];px=W/2-1|0;py=0;over=false;score=0;lines=0;
+}
+function collides(p,x,y){
+  for(let j=0;j<p.length;j++)for(let i=0;i<p[j].length;i++)
+    if(x+i<0||x+i>=W||y+j<0||y+j>=H||board[y+j][x+i])return true;
+  return false;
+}
+function lock(){
+  for(let j=0;j<piece.length;j++)for(let i=0;i<piece[j].length;i++)
+    if(piece[j][i])board[py+j][px+i]=COLORS[piece===SHAPES[0]?0:piece===SHAPES[1]?1:piece===SHAPES[2]?2:piece===SHAPES[3]?3:piece===SHAPES[4]?4:piece===SHAPES[5]?5:6];
+  let cleared=0;
+  for(let y=H-1;y>=0;y--){if(board[y].every(v=>v)){board.splice(y,1);board.unshift(Array(W).fill(0));cleared++}}
+  lines+=cleared;score+=cleared*cleared*100;
+  if(collides(piece,px,py))over=true;
+  else{piece=SHAPES[Math.random()*7|0];px=W/2-1|0;py=0}
+}
+function draw(){
+  x.fillStyle='#111';x.fillRect(0,0,c.width,c.height);
+  for(let y=0;y<H;y++)for(let i=0;i<W;i++)if(board[y][i]){x.fillStyle=board[y][i];x.fillRect(i*S,y*S,S-1,S-1)}
+  if(!over)for(let j=0;j<piece.length;j++)for(let i=0

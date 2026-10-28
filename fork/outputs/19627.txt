@@ -1,0 +1,52 @@
+run 19627 | deep-seek | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.07 t/s | prompt 9.0 t/s | 1005 tokens | args: -np 1 --moe pswap=1,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-26 12:02:37
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. This is one of the rare cases where the user's explicit request overrides my usual preference for polished, elaborate output — they want a golfed Tetris.
+
+Let me think about what "smallest" means here. A minimal Tetris in a single HTML file. I should aim for genuinely tiny code while still being a playable Tetris: falling tetrominoes, rotation, movement, line clearing, score, game over.
+
+Let me write a genuinely golfed Tetris. Classic approaches:
+
+- Use a canvas, draw blocks as filled rects.
+- Board as an array of strings or a 2D array.
+- Pieces defined compactly.
+
+Let me try to write it as small as possible while remaining readable-ish. Actually the user said "smallest" — I'll golf it but keep it functional. Let me aim for something like under 1000 bytes, maybe ~700-900 bytes.
+
+Let me design:
+
+```html
+<canvas id=c></canvas>
+<script>
+...
+</script>
+```
+
+Board: 10x20. Cell size 15px → canvas 150x300.
+
+Pieces: standard 7 tetrominoes. Compact representation: each piece as array of rotations, each rotation as list of coordinates, or use a binary encoding.
+
+A very compact trick: store pieces as arrays of 4 [x,y] offsets for one rotation, and rotate mathematically: (x,y) -> (y, -x) or (x,y)->(3-y,x) etc. Rotation around a point. For simplicity rotate in a 4x4 or use offsets relative to a pivot.
+
+Common golfed approach: pieces as numbers. E.g., each piece encoded as 16-bit or 32-bit number where bits represent cells in a 4x4 grid, then rotate by bit manipulation. That's very compact.
+
+Alternative compact: `P=[[1,1,1,1],[[1,0],[1,1],[0,1]],...]` hmm.
+
+Let me use the classic: each piece = array of 4 rotations, each rotation = array of strings like "0123" no...
+
+Actually a well-known ultra-compact encoding: represent each tetromino as 4 coordinate pairs packed into a single number. E.g., for each cell, x + 4*y... Let me think.
+
+Simplest readable-but-small: 
+
+```js
+C=[[-1,0],[1,0],[0,-1],[0,1]] // no
+```
+
+Let me define pieces with rotation via matrix rotation of coordinate pairs:
+
+Piece shapes (using coordinates in a grid, pivot at origin):
+- I: (0,0),(1,0),(2,0),(3,0) — rotate around center... rotation of I around its center (1.5, 0.5) gives half-integers. Trick: rotate (x,y) -> (y, -x) works if we pick coordinates centered appropriately. For I: cells at (-1,0),(0,0),(1,0),(2,0)? Rotating (x,y)->(-y,x): (-1,0)->(0,-1), (0,0)->(0,0), (1,0)->(0,1), (2,0)->(0,2). That gives vertical I at x=0, y from -1 to 2. Good enough — offsets can be negative; we just add to position and check bounds.
+
+- O: (0,0),(1,0),(0,1),(1,1) — rotation invariant under (x,y)->(-y,x)? (0,0)->(0,0), (1,0)->(0,1), (0,1)->(-1,0), (1,1)->(-1,1). That's cells (-1,0),(0,0),(-1,1),(0,1) — same square shifted. Fine, it's still the O shape (just offset by -1 in x). Since we recompute offsets each rotation and collision-check, it works; the piece may shift left by 1 on rotate but that's acceptable for a micro Tetris. Actually to avoid drift issues, could special-case O, but drift is fine — it stays a valid square.
+
+- T: (0,0),(-1,0),(1,0),(0,1)? Let's define T pointing down: cells (-1,0),(0,0),(1,0),(0,-1)? Hmm let me just define each piece as 4 cells and rotate with (x,y)->(-y,x) (90°
+---

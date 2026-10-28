@@ -1,0 +1,80 @@
+run 18383 | relfx1 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.75 t/s | prompt 39.4 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-23 12:22:04
+
+The user wants the smallest HTML Tetris game. The ask is literally "smallest" — so I should deliver a compact, single-file Tetris. But I don't want to ship something bare. Even a tiny game can feel considered: a nice background, feedback on input, particles/score feedback, etc.
+
+Balance: "smallest html tetris game" — they want minimal code. I should give a genuinely compact implementation but still polished visually. Let me aim for a small single file that's readable-ish but tight, with a nice canvas, ghost piece, next piece, score, level, hold maybe. But "smallest" argues against feature bloat.
+
+I think the best answer: a compact single-file Tetris that's small in bytes but plays properly — rotation with wall kicks (simplified), line clears, scoring, levels, pause, game over, keyboard + touch. Keep CSS minimal but with a layered background, subtle glow, and a scanline. Use a tiny palette.
+
+Let me write it tight.
+
+Approach: classic approach using string-based tetromino rotation via matrix rotation.
+
+```html
+<canvas id=c width=128 height=256></canvas>
+```
+with 16px cells → 8x16 board. Too small. Let's do cell=20, board 10x20 → canvas 200x400.
+
+Minimal code:
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<style>
+:root{--b:#07080d}
+*{margin:0;box-sizing:border-box}
+body{background:#07080d;color:#cfd6e6;font:12px/1.4 ui-monospace,monospace;display:grid;place-items:center;height:100vh;overflow:hidden}
+...
+</style>
+<canvas id=g width=200 height=400></canvas>
+<script>
+...
+</script>
+```
+
+Let me write the game logic compactly.
+
+```js
+const G=g.getContext('2d'),S=20,W=10,H=20;
+let b=Array.from({length:H},()=>Array(W).fill(0)),s=0,l=1,n=0,p,q,r,cx,cy,ov=0,t=0,d=0;
+const P='🟦🟪🟥🟧🟨🟩🟦' // no, use arrays
+```
+
+Better: define pieces as 4x4 bit patterns? Classic trick: use a number per piece per rotation. Or use the "tetromino via index math" trick:
+
+A well-known compact trick:
+```js
+const T=[0,1,1,2,3,3,4] // no
+```
+
+Let me use the standard compact approach: pieces defined as strings of rotation states? Simpler: define base shape as 4 numbers (offsets) and rotate around pivot.
+
+Compact approach with matrix rotation:
+
+```js
+const S={I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],...}
+```
+That's verbose. Alternative known minified trick:
+
+```js
+// piece shapes as hex per rotation using 4x4 bitfield
+```
+
+Actually a neat compact trick used in many tiny Tetris: 
+
+```js
+const P = '0000 1111 0000 0000|0000 0110 1100 0000|...'
+```
+
+Hmm. Let me use the classic "one number per piece" trick:
+
+For each piece, a 32-bit number where each rotation is encoded... complicated.
+
+Simplest readable-compact: define pieces as arrays of [x,y] cell offsets relative to pivot, and rotate with (x,y)->(-y,x).
+
+```js
+const P=[[[0,0],[1,0],[2,0],[3,0]],[[0,0],[1,0],[0,1],[1,1]],...]
+```
+Rotation of non-square pieces around a pivot with (x,y)→(y,-x) works for J,L,S,T,Z if pivot chosen at a cell center; I piece needs offset pivot.
+
+Honestly, the cleanest tiny approach: 4
+---

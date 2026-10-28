@@ -1,0 +1,40 @@
+run 18195 | relfl6 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.13 t/s | prompt 40.6 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-23 04:06:11
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I'll keep it small and readable, but I want it to feel crafted rather than a bare dump: add a subtle background, some motion, strong typographic contrast, keyboard controls, score/level/next piece, etc. But "smallest" is the constraint — so I should keep the code compact while still making it feel considered.
+
+Balance: compact code but a polished presentation. I'll write a single HTML file with a canvas, tight JS, and a distinctive monospace + display pairing.
+
+Design instinct: for a Tetris game, the most characteristic thing is the playfield itself, so I'll open directly with the board rather than any framing header — a lit CRT-ish console look. Tetris lives in a dark space, but I don't want the tired dark-background-plus-one-neon-accent look; instead I'll use a rich multi-hue palette (the classic 7 tetromino colors ARE the palette) against a layered background — a dark slate-blue with a subtle grid, scanlines, and a soft vignette. That's fine since the seven piece colors give it real chromatic range.
+
+Typography: display face — something blocky/pixel-ish. Google Fonts would need network; better to keep it self-contained but I can link Google Fonts. "Smallest" argues against external fonts. I'll use a font stack: display = 'Press Start 2P' via Google Fonts? That adds a request. Hmm. I could use system fonts: display could be a heavy condensed stack. Let me include one Google Fonts link for a display face (e.g., "Bungee" or "Silkscreen" or "Press Start 2P") and body monospace (ui-monospace). That's one line. It's acceptable and improves character. But "smallest" — one link tag is small. I'll do it, with fallback.
+
+Actually, to keep it truly self-contained and tiny, maybe use font stacks only. But a distinctive display face matters. I'll add the link — it's one line and degrades gracefully.
+
+Let me pick: display: 'Silkscreen' (pixel) or 'Press Start 2P'. Body: 'DM Mono' or system mono. Pairing a pixel display with a clean mono body reads as an arcade cabinet — exactly the right register for Tetris.
+
+Layout: a cabinet-ish layout — left: title block + score/level/lines stacked with big numerals; center: board canvas; right: next piece + hold + controls legend. Asymmetric, so it reads as a machine rather than a generic centered block.
+
+Keep code compact. Let me write the game.
+
+Core game logic (compact):
+
+```js
+const W=10,H=20,S=22; // cell px
+let g=Array.from({length:H},()=>Array(W).fill(0)), score=0,lines=0,level=1,ov;
+const P='IOTSZJ'.split('');
+```
+
+Use standard shapes as rotation-friendly matrices. Compact approach: define pieces as strings of coordinates per rotation, or use the classic matrix rotation.
+
+Compact classic approach:
+
+```js
+const SH={I:[[0,0,0,0],[1,1,1,1]],O:[[1,1],[1,1]],T:[[0,1,0],[1,1,1]],S:[[0,1,1],[1,1,0]],Z:[[1,1,0],[0,1,1]],J:[[1,0,0],[1,1,1]],L:[[0,0,1],[1,1,1]]};
+```
+
+Rotation: rotate matrix clockwise: `m[0].map((_,i)=>m.map(r=>r[i]).reverse())`.
+
+Colors: I=#31c7ef (cyan), O=#f7d308 (yellow), T=#a560e8 (purple), S=#51b326 (green), Z=#ef2244 (red), J=#5a9ff2 (blue), L=#f07f10 (orange). Classic Tetris Guideline colors — good, multi-hue.
+
+Board rendering: canvas 10x20 at cell 22 → 220x440, plus devicePixelRatio scaling for crispness. Keep it simple: canvas width=2
+---

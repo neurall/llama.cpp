@@ -1,0 +1,42 @@
+run 16949 | b13600 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 55.84 t/s | prompt 40.8 t/s | 965 tokens | args: -np 1 --moe split-f16=1 | power 200+200 W | 2026-10-20 02:29:46
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. But I don't want to ship a bare terminal grid — a Tetris game is a visual, tactile thing, so I can wrap that tiny playable core in an arcade-cabinet framing that makes it feel alive, without bloating the actual game code.
+
+Balance: "smallest" is the ask — so keep it compact, but I can still make it a crafted tiny thing: a small file that's dense but well-designed. Compact doesn't mean ugly. I'll make a small single-file Tetris with tight code, plus a distinctive arcade-cabinet look, a display face, and a bit of ambient life.
+
+Let me write genuinely compact but readable Tetris in ~1 file. Keep it small-ish (maybe 150-200 lines total) — "smallest" while still playable and looking good.
+
+Design direction: arcade cabinet / CRT terminal vibe. A near-black screen with one neon accent is the obvious Tetris cliché, so I'll steer away from that. Let's do a warm dark slate with multiple piece colors (Tetromino colors are inherently multi-hue, which helps). Use a bold display font for the title/score (e.g., a chunky geometric face) paired with a readable body face. Fonts via Google Fonts link — but "smallest" suggests avoiding external deps. I could use system font stacks... but a distinctive display face really lifts the look. I'll include one Google Fonts link (small) — acceptable. Let's pick something characteristic: for an arcade/puzzle feel, "Chakra Petch" or "Bungee" or "Silkscreen" (pixel) — pixel font is very characteristic of Tetris. Pair "Silkscreen" (display, pixel) with "Space Grotesk" or "IBM Plex Sans" for body. Actually Silkscreen is very Tetris-y. Let's do display: "Silkscreen" for numbers/title, body: "Space Grotesk". Hmm, Silkscreen at large sizes is blocky and great.
+
+Alternatively use a chunky display like "Archivo Black" + "Space Grotesk". Pixel font feels more characteristic. I'll go with Silkscreen for the wordmark and score digits, and Space Grotesk for body/labels.
+
+Layout: open with the playfield itself, not a generic header. Left: the board in a cabinet bezel. Right: a sidebar with score/lines/level, next piece preview, hold, controls legend. Above: a compact wordmark "TETRIS" with a tetromino motif. Ambient background: subtle grid, faint falling tetromino silhouettes drifting (CSS animation), scanline overlay on the board.
+
+Micro-interactions: 
+- Line clear flash animation (row flash white then collapse).
+- Piece lock shake / subtle screen shake on hard drop.
+- Score numbers pop when they change.
+- Next-piece preview with colored blocks.
+- Ghost piece.
+- Hold piece.
+- Key press feedback on the legend keys (highlight when pressed).
+- Pause overlay.
+- Game over overlay with restart.
+- Level up flash.
+
+Sound: tiny WebAudio blips — optional, adds life, small code. I'll add a minimal audio ping function. Keep it optional with mute toggle.
+
+Controls: arrows, space hard drop, Z/X rotate, C hold, P pause. Also touch buttons for mobile? Adds size. Maybe a compact touch pad row for mobile — nice but grows. I'll add a small on-screen control cluster that's hidden on desktop... Actually keep it small: add a compact touch pad row visible on small screens. It's worth it for playability.
+
+Implementation: canvas for the board (smallest code for rendering). Canvas 20x10? Standard 10 wide x 20 tall. Cell size responsive-ish; use fixed 24px cells with CSS scaling. Use canvas width 300 height 600 (cell 30). Draw with devicePixelRatio for crispness.
+
+Let me write compact JS.
+
+Tetris core:
+- S = 'IOTSZJL' shapes via matrices.
+- Use standard rotation systems simplified (no SRS kicks, or simple wall kicks: try offsets [0,-1,1,-2,2]).
+
+Compact approach: represent pieces as arrays of [x,y] offsets per rotation, or use matrix rotate.
+
+I
+---

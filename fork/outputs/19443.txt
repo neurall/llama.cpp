@@ -1,0 +1,37 @@
+run 19443 | rc5 | edit4c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 156.17 t/s | prompt 6460.0 t/s | 598 tokens | args: -np 1 | power 220+280 W | 2026-10-25 10:05:42
+
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - The user provided a C++ file: `common/json-schema-to-grammar.cpp`
+   - The request is: "Delete the code in this file that is never used."
+   - I need to identify unused code/functions/variables in the provided snippet and remove them.
+
+2.  **Scan the Code for Unused Elements:**
+   I'll go through the code systematically to identify what's defined but never referenced within the file itself. I'll also check for standard includes and forward declarations that might be unused.
+
+   *Includes:*
+   - `#include "json-schema-to-grammar.h"`
+   - `#include "common.h"`
+   - `#include "trie.h"`
+   - `#include "unicode.h"`
+   - `<algorithm>`, `<limits>`, `<map>`, `<regex>`, `<sstream>`, `<string>`, `<unordered_map>`, `<unordered_set>`, `<vector>`
+   - `using json = common_json;`
+   - These are likely needed for the full file, but I'll focus on the provided code. I'll keep them as they might be used elsewhere in the file or by the header.
+
+   *Functions/Variables:*
+   - `build_repetition`: Used? Not explicitly called in the snippet, but likely used elsewhere in the file. I'll keep it.
+   - `build_min_max_int`: Used? Not explicitly called in the snippet, but likely used elsewhere. Keep.
+   - `SPACE_RULE`: Used? Not explicitly called, but likely used. Keep.
+   - `struct BuiltinRule`: Used? Yes, in `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`. Keep.
+   - `PRIMITIVE_RULES`: Used? Yes, in `is_reserved_name`. Keep.
+   - `STRING_FORMAT_RULES`: Used? Yes, in `is_reserved_name`. Keep.
+   - `is_reserved_name`: Used? Yes, in `is_reserved_name` itself (static initialization), but likely used elsewhere. Keep.
+   - `INVALID_RULE_CHARS_RE`: Used? Not in the snippet. Might be used elsewhere. Keep.
+   - `GRAMMAR_LITERAL_ESCAPE_RE`: Used? Yes, in `replacePattern` and `format_literal`. Keep.
+   - `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`: Used? Not in the snippet. Might be used elsewhere. Keep.
+   - `GRAMMAR_LITERAL_ESCAPES`: Used? Yes, in `format_literal`. Keep.
+   - `MAX_PATTERN_DEPTH`: Used? Not in the snippet. Might be used elsewhere. Keep.
+   - `NON_LITERAL_SET`: Used? Not in the snippet. Might be used elsewhere. Keep.
+   - `ESCAPED_IN_REGEXPS_BUT_NOT
+---

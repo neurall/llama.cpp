@@ -1,0 +1,10 @@
+run 16493 | um3b | pf12k | Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf | decode 64.01 t/s | prompt 1368.9 t/s | 64 tokens | args: -np 1 -ub 2048 | power 200+200 W | 2026-10-19 05:00:11
+
+    return params.draft_model == nullptr && params.draft_type == nullptr && params.draft_k == 0;
+}
+
+static bool mmproj_is_default(const common_params & params) {
+    return params.mmproj == nullptr;
+}
+
+static bool mtp_is_default(const common_params & params)

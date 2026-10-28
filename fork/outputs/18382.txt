@@ -1,0 +1,70 @@
+run 18382 | relfx1 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 54.38 t/s | prompt 124.9 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-23 12:21:05
+
+The user wants the smallest HTML Tetris game. Let me make a single-file Tetris. "Smallest" — but I don't want to just dump a minified blob. I can make a compact but readable single-file Tetris that's genuinely small, and give it a crafted presentation (retinal arcade feel). Balance: they asked for smallest, so keep code tight. But I also want it to feel alive rather than a bare canvas.
+
+Let me write a compact Tetris in ~100 lines that plays well, with a nice arcade cabinet look. Keep it small-ish but polished. I'll aim for genuinely compact code with a good visual.
+
+Let me write it:
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<style>
+/* CRT arcade styling */
+</style>
+<canvas id=c width=300 height=600></canvas>
+```
+
+Design: dark arcade background with scanlines, a neon/magenta/cyan palette. Tetromino colors are canonical though — I'll use a saturated version of canonical colors which pops on dark. Typography: display face for the wordmark — something like "Press Start 2P"? That's a Google Font, needs network. Better to use a font stack that works offline-ish. I can link Google Fonts (works in browser). Pair display: "Monoton" or "Press Start 2P" for arcade, body: "Space Grotesk" or "IBM Plex Mono". Let's do display: 'Press Start 2P' (pixel arcade) + body: 'Space Grotesk'. Press Start 2P is very characteristic.
+
+Actually "smallest" — adding a font link is one line. Fine.
+
+Layout: rather than a generic header, I want the most characteristic thing — an arcade cabinet marquee with the title, the board on the left/center, and a side panel with score/level/next-piece, keys legend. Add ambient background: subtle animated grid/glow, scanlines, CRT vignette.
+
+Let me write compact but complete game logic:
+
+```js
+const W=10,H=20,S=30;
+let g=Array.from({length:H},()=>Array(W).fill(0)), score=0,lines=0,level=1,over=0,p,px,py,nxt;
+const P='␀'; // pieces
+```
+
+Piece definitions as strings/arrays. Compact approach:
+
+```js
+const T=[0,1,1,1, 0,0,0,0]; // no
+```
+
+Classic compact: define shapes as arrays of 4x4 or use rotation via matrix transpose+reverse.
+
+```js
+const S=['####','....','....','....', ...]
+```
+
+Let me use:
+```js
+const SH=[[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]], ...]
+```
+That's verbose. Alternative compact trick: encode each piece as a number in hex per row.
+
+Compact approach used in many minis:
+```js
+const O='0f00,00f0,0ff0,0f00,0f00,00ff,0f00,0000'... 
+```
+Hmm.
+
+Simplest readable-compact: pieces as 4 hex nibbles (16 bits) for a 4x4 grid.
+
+I: rows: 0,15,0,0 → "0f00"
+O: 0,6,6,0 → "0660"
+T: 0,7,2,0 → "0720"
+S: 0,6,3,0 → "0630"
+Z: 0,3,6,0 → "0360"
+J: 0,7,1,0 → "0710"
+L: 0,7,4,0 → "0740"
+
+So `const P='0f00,0660,0720,0630,0360,0710,0740'.split(',')`.
+
+Rotation: for a 4x4 bitmask, rotate: bit at (r,c) → (c, 3-r). Implement:
+```js
+function rot(m){let n=0;for(let
+---

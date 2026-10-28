@@ -1,0 +1,101 @@
+run 19580 | deep-seek | pf200k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 17.27 t/s | prompt 794.5 t/s | 1000 tokens | args: -np 1 | power 220+280 W | 2026-10-26 10:34:33
+
+The user wants a code review of several source files. Let me analyze them systematically.
+
+Let me go through each file carefully:
+
+1. **json-schema-to-grammar.cpp** - JSON schema to GBNF grammar converter
+2. **arg.cpp / arg.h** - CLI argument parsing
+3. **build-info.h** - Build info header
+4. **chat-auto-parser-generator.cpp** - Auto parser generation for chat templates
+5. **chat-auto-parser-helpers.cpp/h** - Helper functions for auto parser
+
+
+6. **chat-diff-analyzer.cpp** - Differential analysis of chat templates
+7. **chat-peg-parser.cpp/h** - PEG-based chat parser
+8. **chat.cpp/h** - Chat template application and parsing
+
+Now I'm diving into the actual implementation details across these files.
+---
+# Code Review
+
+## 1. `common/json-schema-to-grammar.cpp`
+
+### Bug: `_add_rule` collision loop can infinite-loop or produce wrong names
+
+```cpp
+std::string _add_rule(const std::string & name, const std::string & rule) {
+    // ...
+    int i = 0;
+    while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && 
+           _rules[esc_name + std::to_string(i)] != rule) {
+        i++;
+    }
+```
+If a key exists with *different* content, this increments until it finds either an empty slot or matching content — but if many keys exist with different rules, this could scan far. More importantly, when it exits because `_rules[key] == rule`, it still assigns to that key (correct), but if it exits because the key doesn't exist yet, it also assigns correctly. The logic is correct but fragile; consider using a counter map instead.
+
+### Issue: `build_min_max_int` uses `int64_t` sentinel values as "unset"
+
+```cpp
+auto has_min = min_value != std::numeric_limits<int64_t>::min();
+auto has_max = max_value != std::numeric_limits<int64_t>::max();
+```
+This means you cannot express a schema whose minimum is literally `INT64_MIN`. This is a design limitation worth documenting explicitly in the header.
+
+### Minor: `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` is defined but never used
+
+```cpp
+static std::regex GRAMMAR_RANGE_LITERAL_ESCAPE_RE("[\r\n\"\\]\\-\\\\]");
+```
+
+---
+
+## 2. `common/arg.cpp`
+
+### Bug: `parse_csv_row` always pushes at least one field even for empty input
+
+```cpp
+// Add the last field
+fields.push_back(std::move(field));
+return fields;
+```
+For an empty string `""`, this returns `{""}` — a single empty element. Callers like `--host` filter empties afterward so it's safe there, but other callers (e.g., `--api-key`) may not expect this.
+
+### Concern: Static mutable state in argument handlers
+
+```cpp
+static bool defaults_cleared = false; // inside --dry-sequence-breaker handler
+```
+and:
+```cpp
+static std::list<std::string> buft_overrides; // inside parse_tensor_buffer_overrides
+```
+These are function-local statics that persist across calls and are **not thread-safe** if parsing ever happens concurrently. The `buft_overrides` list grows unboundedly by design (to keep strings alive), which is intentional but should be documented more clearly.
+
+### Issue: Duplicated CLI-parsing logic between `common_params_parse_ex` and `common_params_to_map`
+
+The TODO comment acknowledges this:
+```cpp
+// TODO @ngxson : find a way to deduplicate this code
+```
+This duplication risks divergence when new arg types or behaviors are added.
+
+### Minor: `has_value_from_env()` duplicates neg-env lookup from `get_value_from_env()`
+
+Both methods independently compute the negative env name via `string_replace_all`. Extract into a helper.
+
+---
+
+## 3. `common/chat-auto-parser-generator.cpp`
+
+### Design concern: Grammar construction depends on tool format detection heuristics
+
+The three parser builders (`build_tool_parser_json_native`, `build_tool_parser_tag_json`, `build_tool_parser_tag_tagged`) each have subtly different whitespace handling around section markers, per-call wrappers, and closing tags. This makes it easy for one path to accept input another rejects — worth adding integration tests covering all three formats with parallel/non-parallel × required/auto combinations.
+
+### Minor: `trigger_marker` computed twice in `peg_generator::generate_parser`
+
+```cpp
+std::string trigger_marker = !autoparser.tools.format.section_start.empty() ? ... 
+                             : autoparser.tools.format.per_call_start;
+```
+Then later inside `if (data.grammar_lazy)` the same expression is re-eval

@@ -1,0 +1,49 @@
+run 18212 | relfl6 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.27 t/s | prompt 22.1 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-23 04:28:48
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and not totally ugly.
+
+Let me think about what "smallest tetris" means. There are famous tiny Tetris implementations. The classic "smallest tetris" is around a few hundred bytes of JS. I want to write a compact but complete Tetris:
+
+Features needed for it to feel like real Tetris:
+- 10×20 board
+- 7 tetrominoes (I, O, T, S, Z, J, L) with rotation
+- Movement left/right/down, rotation
+- Line clearing with score
+- Game over
+- Gravity/speed increase maybe
+
+I can compress heavily:
+- Use a single string encoding pieces as bit patterns.
+- Use canvas for rendering (small).
+- Keyboard controls: arrows + Z/X or up for rotate.
+- Minimal styling but still tasteful — dark background, neon-ish blocks? The user asked for smallest, so styling should be minimal but I can still make it look decent with a few lines of CSS. I shouldn't over-decorate since the point is size. But I also want it to look authored — a tiny, crisp, monospace-ish aesthetic. Maybe a retro terminal look with a small canvas, a score counter, and controls hint. That's a few extra bytes but worth it for the "feels real" bar.
+
+Let me actually write the code and golf it.
+
+Approach: classic compact Tetris.
+
+Board: 10 wide, 20 tall. Represent board as array of rows, each row a string or array of ints. For golf, use a 2D array of 0/1 (single color) or piece index for colors. Colors add bytes; maybe use per-piece colors via a small palette string. Actually for "smallest", monochrome or 2-3 colors is fine, but a bit of color makes it feel like Tetris. Let me include colors cheaply: store piece index in board cells, and color via a palette array of 7 colors. That's like 60 bytes for colors. Worth it.
+
+Piece representation: The classic trick — define each tetromino as a set of coordinates in a string, e.g. "0145" style. Or use the well-known compact encoding: pieces as arrays of 4 rotations each with 4 cells.
+
+A very compact known approach: 
+
+```js
+P=[[1,3,5,7],[2,6,9,11],...]
+```
+
+Hmm, let me think of the famous minimal tetris in JS (there's a known ~140-byte tetris using a clever encoding). The famous one:
+
+```js
+b=document.body
+...
+```
+
+There's the famous "Tetris in 140 bytes" but it's incomplete. Let me just write my own compact version, aiming for maybe ~600-900 bytes of JS, which is genuinely small and fully playable.
+
+Let me design:
+
+Pieces as bit patterns in a 4x4 grid encoded as numbers? Or as strings of coordinates.
+
+Compact encoding idea: each piece = string of 4 two-digit offsets? E.g., "I":"048C" meaning cells at 0,4,8,12 in a 4x4 grid (column-major: index = x + 4*y). Rotations can be computed by rotating the 4x4 grid: for a cell at index i (x=i%4, y=i/4|0), rotated 90° CW gives index = 12 + y - 4*x? Let's compute: rotating a 4x4 grid 90° clockwise: new_x = 3 - y, new_y = x. New index = new_x + 4*new_y = (3-y) + 4x = 4x + 3 - y. Hmm check: cell (0,0) top-left → after CW rotation goes to top-right (3,0). index 0 → 3. Formula: 4*0 + 3 - 0 = 3. ✓. Cell (3,0) top-right → bottom-right (3,3): index 3 → 15. Formula: 4*3+3-0=15 ✓. Cell (0,3) bottom-left → top-left (0,0): index 12 → 0. Formula: 4*0+3-3=0 ✓. Good: rot(i) = 4*(i%4) + 3 - (i>>2)... wait i%4 = x, i>>2 = y
+---

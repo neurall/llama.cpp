@@ -1,0 +1,27 @@
+run 19650 | dsfix1 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 29.11 t/s | prompt 14.6 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-26 15:06:43
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design smallest HTML Tetris. Need include controls, scoring? "smallest" means minimal code. Need produce a single HTML file. Need maybe use canvas and keyboard. Need implement Tetris mechanics: board 10x20, tetrominoes, rotation, collision, line clear, gravity, game over. Minimal.
+
+Need think through code carefully. Need produce valid HTML. Could use canvas 200x400? Use CSS. JS.
+
+Let's craft compact but readable. Need ensure no bugs.
+
+Approach:
+- Canvas width 200 height 400, cell 20.
+- Board 10x20 array.
+- Tetromino shapes as arrays of coordinates? Use 7 shapes with rotations? Could use matrix representation and rotate. Minimal: define shapes as arrays of 4 cells in 4x4 matrix? Or use coordinate lists and rotate around center. Need handle rotation.
+
+Simplest: define tetrominoes as 4x4 matrices:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]? Rotation works.
+O: [[1,1],[1,1]]? Need 4x4? Could use 2x2.
+T: [[0,1,0],[1,1,1],[0,0,0]]
+S: [[0,1,1],[1,1,0],[0,0,0]]
+Z: [[1,1,0],[0,1,1],[0,0,0]]
+J: [[1,0,0],[1,1,1],[0,0,0]]
+L: [[0,0,1],[1,1,1],[0,0,0]]
+Need rotation. Use matrix rotate clockwise. For O 2x2 rotation same. For I 4x4. But if using variable matrix sizes, rotation function can rotate square matrix. Need spawn at top. Need collision.
+
+Could use shapes as arrays of coordinates relative to top-left. Rotation around center? Matrix rotation easier. Need ensure spawn positions. Use matrix with 4x4 for all? Could define all as 4x4 matrices. Then rotate 4x4. But O as 4x4 with 2x2 block? Rotation around 4x4 center may shift O? If O matrix [[1,1,0,0],[1,1,0,0],[0,0,0,0],[0,0,0,0]], rotating 4x4 moves block to top-right? Actually rotation of 4x4 around center changes position, but O should not rotate. Could special-case O. Or use coordinate list and rotate around center of bounding box. Simpler: use 4x4 matrices for all except O? For O, rotation no effect. Need spawn x maybe 3? For 4x4 matrices, spawn at x=3? Board width 10. For I horizontal in row 1, x=3 gives cells at x=3..6. Good. For T matrix row 0 col1, row1 cols0..2, spawn x=3 gives cells x=4, x=3..5. Good. For O 2x2 spawn x=4? If using 2x2 matrix, spawn x=4, y=0. But rotation function for 2x2. Need handle variable sizes. Could use 4x4 for O with block at top-left? Spawn x=3? O cells at x=3,4 y=0,1. Fine. Rotation of O 4x4 would move block? If special-case O no rotation. Or define O as 4x4 with block centered? [[0,0,0,0],[0,1,1,0],[0,1,1,0],[0,0,0,0]] rotation around center stays same? Rotating 4x4: block at rows1-2 cols1-2, rotation maps to rows1-2 cols1-2? Let's check 4x4 rotate: new[r][c]=old[n-1-c][r]. For block rows1,2 cols1,2. new rows? old[3-c][r]. For r=1,c=
+---

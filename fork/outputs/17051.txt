@@ -1,0 +1,33 @@
+run 17051 | stock-b11742-official | edit4c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 154.65 t/s | prompt 4867.3 t/s | 598 tokens | args:  | power 220+280 W | 2026-10-20 03:58:22
+
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - The user provided a C++ file: `common/json-schema-to-grammar.cpp`
+   - The request is: "Delete the code in this file that is never used."
+   - I need to identify unused code/functions/variables in the provided snippet and remove them.
+
+2.  **Scan the Code for Unused Elements:**
+   Let's go through the code systematically:
+   - Includes: `<algorithm>`, `<limits>`, `<map>`, `<regex>`, `<sstream>`, `<string>`, `<unordered_map>`, `<unordered_set>`, `<vector>` - all seem used.
+   - `using json = common_json;` - used? Not explicitly in the snippet, but likely used elsewhere. I'll keep it.
+   - `build_repetition` - used? Likely used in grammar generation.
+   - `build_min_max_int` - used? Likely used for number ranges.
+   - `SPACE_RULE` - used? Likely used.
+   - `BuiltinRule` struct - used? Yes, in maps.
+   - `PRIMITIVE_RULES` - used? Yes.
+   - `STRING_FORMAT_RULES` - used? Yes.
+   - `is_reserved_name` - used? Yes.
+   - `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - used? `GRAMMAR_LITERAL_ESCAPE_RE` is used in `format_literal`. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` is defined but *never used* in the provided code. I should check if it's used elsewhere or just dead.
+   - `GRAMMAR_LITERAL_ESCAPES` - used in `format_literal`.
+   - `MAX_PATTERN_DEPTH` - defined but *never used* in the snippet.
+   - `NON_LITERAL_SET`, `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - defined but *never used* in the snippet.
+   - `replacePattern` - used in `format_literal`.
+   - `format_literal` - used.
+   - `gbnf_format_literal` - used? Probably an alias.
+   - `gbnf_escape_length` - defined but *never used* in the snippet. The function body is empty/cut off: `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) { \n   `
+   - Wait, the code ends abruptly at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) { \n   `. This suggests the file was truncated or the function is incomplete. I should note that or just remove the incomplete/unused parts.
+
+   Let's verify usage of each defined item:
+   - `build_repetition`: Used
+---

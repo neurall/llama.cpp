@@ -1,0 +1,10 @@
+run 18721 | relmf1 | pf5k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 24.43 t/s | prompt 982.6 t/s | 64 tokens | args: -np 1 | power 220+280 W | 2026-10-23 19:31:46
+
+Let me carefully review this source file for code quality, correctness, potential bugs, and style issues.
+
+Let me go through it systematically.
+
+1. **`build_repetition` function:**
+   - The function handles various repetition cases. Let me check edge cases:
+   - When `max_items == 0`,
+---

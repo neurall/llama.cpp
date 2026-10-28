@@ -1,0 +1,101 @@
+run 19212 | pre10 | pf16k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.58 t/s | prompt 821.2 t/s | 1000 tokens | args: -np 1 --moe log=w | power 220+280 W | 2026-10-25 04:46:33
+
+Let me analyze this task. The user wants me to return the completed source with bugs fixed. This appears to be a partial file dump of `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which is cut off mid-file).
+
+Wait, the prompt says "Return the completed source with the bugs fixed." The source given is incomplete - the arg.cpp file is cut off at `common_params_apply_system_config`. This is a strange task. Let me think about what's being asked.
+
+Actually, this looks like a task where I'm given source code that contains bugs, and I need to fix them. The code is from llama.cpp. Let me look for bugs in the code.
+
+Let me examine the json-schema-to-grammar.cpp file first:
+
+1. `build_repetition` - looks mostly fine.
+
+2. `build_min_max_int` - let me check the logic:
+   - `has_min`, `has_max` computed.
+   - `digit_range` lambda - fine.
+   - `more_digits` lambda - fine.
+   - `uniform_range` lambda - recursive std::function.
+   
+   In `uniform_range`, there's a potential bug: `if (i < from.length() && i < to.length())` - if one string is a prefix of the other... Actually for uniform_range with same-length strings this shouldn't happen. Hmm.
+
+   Wait, there's a subtle bug in `uniform_range`: when `i == from.length()` (from is a prefix of to), then nothing is output... Actually in the original llama.cpp code, let me recall. The original code:
+
+```cpp
+    std::function<void(const std::string &, const std::string &)> uniform_range =
+        [&](const std::string & from, const std::string & to) {
+            size_t i = 0;
+            while (i < from.length() && i < to.length() && from[i] == to[i]) {
+                i++;
+            }
+            if (i > 0) {
+                out << "\"" << from.substr(0, i) << "\"";
+            }
+            if (i < from.length() && i < to.length()) {
+                if (i > 0) {
+                    out << " ";
+                }
+                auto sub_len = from.length() - i - 1;
+                if (sub_len > 0) {
+                    auto from_sub = from.substr(i + 1);
+                    auto to_sub = to.substr(i + 1);
+                    auto sub_zeros = string_repeat("0", sub_len);
+                    auto sub_nines = string_repeat("9", sub_len);
+
+                    auto to_reached = false;
+                    out << "(";
+                    if (from_sub == sub_zeros) {
+                        digit_range(from[i], to[i] - 1);
+                        out << " ";
+                        more_digits(sub_len, sub_len);
+                    } else {
+                        out << "[" << from[i] << "] ";
+                        out << "(";
+                        uniform_range(from_sub, sub_nines);
+                        out << ")";
+                        if (from[i] < to[i] - 1) {
+                            out << " | ";
+                            if (to_sub == sub_nines) {
+                                digit_range(from[i] + 1, to[i]);
+                                to_reached = true;
+                            } else {
+                                digit_range(from[i] + 1, to[i] - 1);
+                            }
+                            out << " ";
+                            more_digits(sub_len, sub_len);
+                        }
+                    }
+                    if (!to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, to_sub);
+                    }
+                    out << ")";
+                } else {
+                    out << "[" << from[i] << "-" << to[i] << "]";
+                }
+            }
+        };
+```
+
+Hmm, that matches the original. Let me compare with the actual llama.cpp code from memory... The original code in llama.cpp's json-schema-to-grammar.cpp:
+
+```cpp
+    std::function<void(const std::string &, const std::string &)> uniform_range =
+        [&](const std::string & from, const std::string & to) {
+            size_t i = 0;
+            while (i < from.length() && i < to.length() && from[i] == to[i]) {
+                i++;
+            }
+            if (i > 0) {
+                out << "\"" << from.substr(0, i) << "\"";
+            }
+            if (i < from.length() && i < to.length()) {
+                if (i > 0) {
+                    out << " ";
+                }
+                auto sub_len = from.length() - i - 1;
+                if (sub_len > 0) {
+                    auto from_sub = from.substr(i + 1);
+                    auto to_sub = to.substr(i + 1);
+                   

@@ -1,0 +1,11 @@
+run 17525 | numa3 | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 99.05 t/s | prompt 3871.4 t/s | 64 tokens | args: -np 1 -ub 1024 | power 280+280 W | 2026-10-21 17:28:56
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool parse_cpu_mask(const std::string & mask, std::vector<int32_t> & cpumask) {
+   

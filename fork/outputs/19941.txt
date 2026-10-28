@@ -1,0 +1,330 @@
+run 19941 | fix_cuda_argmax_returns_zero_for_nonfinite_row | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 22.77 t/s | prompt 17.4 t/s | 4096 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 2 --moe spec-depth=2,pin-budget=108447924224 -lm mmap | power 200+200 W | 2026-10-27 02:50:02
+
+
+---
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>3D Tetris — Polycube Well</title>
+<style>
+  :root {
+    --bg: #0b0f1a;
+    --panel: rgba(14,20,32,0.85);
+    --accent: #6fd3ff;
+    --text: #e8f1ff;
+    --muted: #8fa3c0;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .hud {
+    position: fixed; pointer-events: none;
+    font-size: 13px; letter-spacing: 0.04em;
+  }
+  #topLeft {
+    top: 14px; left: 16px;
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.25);
+    border-radius: 10px;
+    padding: 10px 14px;
+    backdrop-filter: blur(6px);
+  }
+  #topLeft .row { display: flex; gap: 14px; align-items: center; }
+  #topLeft .label { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+  #topLeft .val { font-weight: 700; font-size: 15px; }
+  #combo { color: #ffd166; }
+  #b2b { color: #ff8fa3; }
+
+  #topRight {
+    top: 14px; right: 16px;
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.25);
+    border-radius: 10px;
+    padding: 10px 14px;
+    backdrop-filter: blur(6px);
+    display: flex; gap: 12px; align-items: center;
+  }
+  #topRight .mini { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+
+  #bottomBar {
+    bottom: 14px; left: 16px; right: 16px;
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 10px;
+  }
+  #bottomBar .hint {
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.2);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--muted);
+    backdrop-filter: blur(6px);
+  }
+  #bottomBar .hint b { color: var(--text); }
+
+  .btn {
+    pointer-events: auto;
+    background: rgba(111,211,255,0.12);
+    border: 1px solid rgba(111,211,255,0.35);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+  }
+  .btn:hover { background: rgba(111,211,255,0.22); }
+
+  /* Overlays */
+  .overlay {
+    position: fixed; inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    background: rgba(5,8,14,0.72);
+    backdrop-filter: blur(8px);
+    z-index: 20;
+  }
+  .overlay.show { display: flex; }
+  .card {
+    background: var(--panel);
+    border: 1px solid rgba(111,211,255,0.3);
+    border-radius: 14px;
+    padding: 22px 26px;
+    max-width: 520px;
+    width: 92%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  .card h2 { margin: 0 0 10px; font-size: 20px; letter-spacing: 0.05em; }
+  .card p { margin: 6px 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .card .actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  .card .actions .btn { padding: 10px 16px; font-size: 13px; }
+  .card table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  .card table th, .card table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid rgba(111,211,255,0.15); }
+  .card table th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  .card .kbd { display: inline-block; background: rgba(111,211,255,0.15); border: 1px solid rgba(111,211,255,0.3); border-radius: 6px; padding: 2px 6px; font-size: 12px; }
+
+  /* Settings */
+  .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; }
+  .settings-row label { font-size: 13px; color: var(--muted); }
+  .settings-row input[type="range"] { width: 180px; accent-color: var(--accent); }
+  .settings-row select { background: rgba(111,211,255,0.1); color: var(--text); border: 1px solid rgba(111,211,255,0.3); border-radius: 6px; padding: 6px 8px; font-size: 13px; }
+  .settings-row .toggle { display: flex; gap: 8px; align-items: center; }
+  .settings-row input[type="checkbox"] { accent-color: var(--accent); }
+
+  /* Touch controls */
+  #touch {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    display: none;
+    padding: 10px;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+    background: rgba(5,8,14,0.6);
+    backdrop-filter: blur(6px);
+    z-index: 10;
+  }
+  #touch .btn { padding: 12px 14px; font-size: 14px; }
+  @media (pointer: coarse) {
+    #touch { display: flex; }
+    #bottomBar .hint { display: none; }
+  }
+
+  /* Toast */
+  #toast {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    background: rgba(111,211,255,0.15);
+    border: 1px solid rgba(111,211,255,0.4);
+    color: var(--text);
+    padding: 10px 18px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+    z-index: 30;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+
+<div class="hud" id="topLeft">
+  <div class="row">
+    <div><div class="label">Score</div><div class="val" id="score">0</div></div>
+    <div><div class="label">Level</div><div class="val" id="level">1</div></div>
+    <div><div class="label">Lines</div><div class="val" id="lines">0</div></div>
+    <div><div class="label">Combo</div><div class="val" id="combo">0</div></div>
+    <div><div class="label">B2B</div><div class="val" id="b2b">0</div></div>
+  </div>
+</div>
+
+<div class="hud" id="topRight">
+  <div class="mini">Next</div>
+  <div id="nextPreview"></div>
+  <div class="mini">Hold</div>
+  <div id="holdPreview"></div>
+</div>
+
+<div class="hud" id="bottomBar">
+  <div class="hint">
+    <b>Drag</b> orbit · <b>Wheel</b> zoom · <b>Arrows</b> rotate · <b>Space</b> hard drop · <b>Shift</b> soft drop · <b>C</b> hold · <b>P</b> pause · <b>H</b> help
+  </div>
+  <div style="display:flex; gap:8px;">
+    <button class="btn" id="btnHelp">Help</button>
+    <button class="btn" id="btnSettings">Settings</button>
+    <button class="btn" id="btnPause">Pause</button>
+  </div>
+</div>
+
+<div id="touch">
+  <button class="btn" data-act="left">◀</button>
+  <button class="btn" data-act="right">▶</button>
+  <button class="btn" data-act="rotX">Rot X</button>
+  <button class="btn" data-act="rotY">Rot Y</button>
+  <button class="btn" data-act="rotZ">Rot Z</button>
+  <button class="btn" data-act="soft">Soft</button>
+  <button class="btn" data-act="hard">Hard</button>
+  <button class="btn" data-act="hold">Hold</button>
+</div>
+
+<div class="overlay" id="helpOverlay">
+  <div class="card">
+    <h2>How to Play</h2>
+    <p>Pieces are 3D polycubes falling into a 3D well. A full horizontal layer clears and collapses.</p>
+    <p><span class="kbd">Drag</span> orbit camera · <span class="kbd">Wheel</span> zoom · <span class="kbd">Arrows</span> rotate piece around X/Y/Z · <span class="kbd">Space</span> hard drop · <span class="kbd">Shift</span> soft drop · <span class="kbd">C</span> hold · <span class="kbd">P</span> pause · <span class="kbd">H</span> help</p>
+    <p><b>New mechanics:</b> <em>Gravity Well</em> — the well's gravity increases with level, making pieces fall faster and the camera follow tighter. <em>Layer Collapse</em> — when a full layer clears, all blocks above it fall down one layer, and the cleared layer emits particles.</p>
+    <div class="actions">
+      <button class="btn" id="helpClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="settingsOverlay">
+  <div class="card">
+    <h2>Settings</h2>
+    <div class="settings-row">
+      <label>Volume</label>
+      <input type="range" id="vol" min="0" max="1" step="0.05" value="0.6">
+    </div>
+    <div class="settings-row">
+      <label>Ghost piece</label>
+      <div class="toggle"><input type="checkbox" id="ghostToggle" checked></div>
+    </div>
+    <div class="settings-row">
+      <label>Colour theme</label>
+      <select id="themeSelect">
+        <option value="neon">Neon</option>
+        <option value="pastel">Pastel</option>
+        <option value="mono">Mono</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label>Camera speed</label>
+      <input type="range" id="camSpeed" min="0.2" max="2.5" step="0.1" value="1">
+    </div>
+    <div class="actions">
+      <button class="btn" id="settingsClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="pauseOverlay">
+  <div class="card">
+    <h2>Paused</h2>
+    <p>Press <span class="kbd">P</span> or the button below to resume.</p>
+    <div class="actions">
+      <button class="btn" id="resumeBtn">Resume</button>
+      <button class="btn" id="pauseRestart">Restart</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="gameOverOverlay">
+  <div class="card">
+    <h2>Game Over</h2>
+    <p id="finalScore"></p>
+    <p>High scores:</p>
+    <table id="highScoreTable">
+      <thead><tr><th>#</th><th>Score</th><th>Level</th><th>Lines</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="actions">
+      <button class="btn" id="restartBtn">Restart</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ============================================================
+   NEW MECHANICS (explained here, as required):
+   1) GRAVITY WELL: The well's gravity increases with level.
+      Pieces fall faster, and the camera-follow mode tightens
+      its tracking so the player feels the acceleration.
+   2) LAYER COLLAPSE: When a full horizontal layer clears, all
+      blocks above it fall down one layer (collapse), and the
+      cleared layer emits a particle burst. This is not classic
+      Tetris line-clear behavior — it's a 3D collapse.
+   ============================================================ */
+
+/* ---------- Constants ---------- */
+const WELL_W = 7;      // x cells
+const WELL_D = 7;      // z cells
+const WELL_H = 14;     // y cells (height)
+const CELL = 1.0;      // world units per cell
+
+/* ---------- Utility ---------- */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function randInt(n) { return Math.floor(Math.random() * n); }
+
+/* ---------- Piece definitions ----------
+   Each piece is a list of [x,y,z] cells relative to its origin.
+   Classic tetrominoes extended into 3D, plus 3D pentacube variants.
+*/
+const PIECES = {
+  I: { cells: [[0,0,0],[1,0,0],[2,0,0],[3,0,0]], color: 0x6fd3ff },
+  O: { cells: [[0,0,0],[1,0,0],[0,0,1],[1,0,1]], color: 0xffd166 },
+  T: { cells: [[0,0,0],[1,0,0],[2,0,0],[1,0,1]], color: 0xff8fa3 },
+  S: { cells: [[0,0,0],[1,0,0],[1,0,1],[2,0,1]], color: 0x9b8cff },
+  Z: { cells: [[0,0,1],[1,0,1],[1,0,0],[2,0,0]], color: 0x7ee787 },
+  J: { cells: [[0,0,0],[0,0,1],[1,0,1],[2,0,1]], color: 0xffa94d },
+  L: { cells: [[2,0,0],[2,0,1],[1,0,1],[0,0,1]], color: 0x4dd0e1 },
+  // 3D pentacube variants (new)
+  P1: { cells: [[0,0,0],[1,0,0],[0,0,1],[1,0,1],[0,1,0]], color: 0xc792ea },
+  P2: { cells: [[0,0,0],[1,0,0],[2,0,0],[1,0,1],[1,1,0]], color: 0xf78f6b },
+  P3: { cells: [[0,0,0],[0,0,1],[0,0,2],[1,0,1],[0,1,1]], color: 0x80cbc4 }
+};
+
+/* ---------- 7-bag randomizer ---------- */
+function makeBag() {
+  const keys = Object.keys(PIECES);
+  const bag = [];
+  for (let i = 0; i < keys.length; i++) bag.push(keys[i]);
+  // shuffle
+  for (let i = bag.length - 1; i > 0; i--) {
+    const j = randInt(i + 1);
+    [bag[i], bag[j]] = [bag[j], bag[i]];
+  }
+  return bag;
+}
+
+/* ---------- Game state ---------- */
+const state = {
+  grid: [],            // 3D array [x][y

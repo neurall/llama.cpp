@@ -1,0 +1,7 @@
+run 18496 | relmf1 | pf11k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.1 t/s | prompt 643.6 t/s | 64 tokens | args: -np 1 | power 220+280 W | 2026-10-23 15:10:27
+
+Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A complete file
+2. `common/arg.cpp` - A file that appears to be **truncated** (it ends mid-function: `while (std::getline(
+---

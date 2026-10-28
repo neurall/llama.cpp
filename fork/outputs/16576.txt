@@ -1,0 +1,58 @@
+run 16576 | um3d | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 55.69 t/s | prompt 127.5 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-19 10:21:01
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, working Tetris in a single HTML file. I should keep it small but make it feel crafted and alive rather than a bare canvas — add subtle polish: ambient background, HUD with stats, next piece preview, level, score, keyboard controls, micro-interactions — while keeping the code compact.
+
+Balance: "smallest" is the explicit ask. So I should keep the code tight but the result should still feel crafted and alive. I'll aim for a compact single-file game — maybe ~120 lines — with a distinctive look.
+
+Design: Tetris is the subject, so open with the playfield itself, not a generic banner. Layout: playfield left, HUD right with score/level/lines, next piece, controls legend. Use a bold arcade/CRT aesthetic — that's characteristic of Tetris. Typography: a distinctive display face like "Press Start 2P" for headings paired with a readable body face like "Space Grotesk" or "IBM Plex Mono". Press Start 2P is very characteristic of Tetris but hard to read at length; use it for the wordmark and numbers, and a mono for body.
+
+Palette: Tetris pieces have their own canonical seven colors, so let the board and pieces carry the color — a deep blue-black background with a subtle scanline/grid, and the seven tetromino colors as the accent system. That's bold and characteristic without needing decorative gradients.
+
+Let me write compact but readable code.
+
+Game logic (compact):
+- 10x20 board.
+- Pieces defined via strings or via the classic SRS-ish approach. Smallest approach: use matrix rotation of matrices defined as arrays.
+
+Compact approach: define pieces as arrays of coordinates offsets, rotate by (x,y)->(y,-x).
+
+Let me use the classic trick: pieces as arrays of strings, rotate by transposing+reversing.
+
+```js
+const P=[ // tetrominoes
+ [[1,1,1,1]],            // I
+ [[1,1],[1,1]],          // O
+ [[0,1,0],[1,1,1]],      // T
+ [[1,0,0],[1,1,1]],      // J
+ [[0,0,1],[1,1,1]],      // L
+ [[0,1,1],[1,1,0]],      // S
+ [[1,1,0],[0,1,1]]       // Z
+];
+```
+Rotate: `r=m[0].map((_,i)=>m.map(r=>r[i]).reverse())`.
+
+Colors: index into palette.
+
+Rendering: canvas, cell size ~ responsive. Use a canvas 300x600 with CSS scaling. Draw with rounded-ish blocks and inner highlight.
+
+Features:
+- Score, lines, level, speed ramp.
+- Next piece preview (canvas or mini grid).
+- Hold? Adds size. Maybe include hold — it's nice but "smallest". I'll include hold since it's cheap (~10 lines) and makes it feel complete. Hmm, keep it. Actually let's include it — it makes the game feel complete and alive.
+- Ghost piece.
+- Pause, restart, mute? Sound with WebAudio beep — small and adds life. Add tiny audio via AudioContext for line clears. Keep it optional (toggle).
+- 7-bag randomizer.
+- Lock delay? Skip for size; simple gravity.
+- Keyboard: arrows, space (hard drop), Z/X rotate, C hold, P pause, R restart.
+- Touch buttons? Maybe minimal on-screen buttons for mobile. Adds size. I'll add a compact touch pad row that only shows on small screens — nice polish.
+
+Visual polish:
+- Ambient background: layered CSS — a faint grid, drifting tetromino glyphs (CSS animated), scanlines, vignette.
+- Board frame with glow, subtle CRT curvature? Keep simple.
+- Line clear flash animation: draw a white flash row before removing.
+- Score popups / combo text.
+- Level up flash.
+- Game over overlay with restart.
+- Hover micro-interactions on buttons.
+- Scroll reveal isn't really relevant for a game page — but there could be a small "how to play" section below with reveal. Keep it minimal: a controls legend with keycap chips that light up when pressed (nice micro-interaction: keycaps highlight on
+---

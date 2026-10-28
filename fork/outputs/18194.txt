@@ -1,0 +1,45 @@
+run 18194 | relfl6 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.35 t/s | prompt 127.3 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-23 04:05:16
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I'll keep it small, but I don't want it to be a bare gray box — I want it to feel crafted and alive: a nice arcade cabinet aesthetic, rich CSS, but still compact code. Balance: "smallest" suggests minimal code, but I'll deliver a compact single file that's still well-crafted. I'll keep the code tight but include a nice visual design — CRT/arcade vibe, layered background, side panel with next piece, hold, stats, controls, keyboard handling, ghost piece, level/score, line-clear animation, sound via WebAudio maybe.
+
+Let me write it reasonably compact but readable. Not literally minified to 200 bytes — the user said "smallest", so I should keep the file lean, but I can still make it feel alive. I'll aim for a single file, maybe ~150-200 lines, with dense but clear code.
+
+Design direction: arcade cabinet CRT. For the palette I don't want the classic near-black screen with one neon accent — that reads as generic. Instead a warm arcade palette: deep plum/ink background with multiple tetromino colors (cyan, yellow, purple, green, red, blue, orange) — the seven tetromino colors naturally give a multi-accent scheme, which sidesteps the single-neon look. Good.
+
+Typography: display face — something arcade-y. Google Fonts: "Press Start 2P" for display (pixel), body face — "Space Grotesk" or "IBM Plex Mono". Pair "Press Start 2P" (display) with "Space Grotesk" or "Chivo Mono" for body. That's a distinctive pairing.
+
+Layout: rather than a plain centered stack, I'll do a cabinet layout: left panel (score/level/lines), center playfield with CRT bezel and scanlines, right panel (next queue of 3, hold). Header strip with title in pixel font, marquee. Bottom: controls legend keys as keycaps.
+
+Ambient background: layered — subtle grid, radial glow, animated floating tetromino silhouettes drifting slowly (CSS animation), scanline overlay.
+
+Micro-interactions: line-clear flash animation, piece lock flash, score number pop, level-up banner, keycap hover, buttons hover, pause overlay, game over overlay with shake.
+
+Sound: tiny WebAudio blips (optional, toggle). Keep it small — a few lines.
+
+Implementation: canvas-based rendering, 10x20 grid, 7 pieces with SRS-ish rotation (simple rotation matrices), 7-bag randomizer, ghost piece, hold, next queue of 3, scoring (100/300/500/800 * level), soft/hard drop, lock delay simple, level up every 10 lines, gravity speed.
+
+Keep code compact. Let me write it.
+
+Canvas: cell size 24 → 240x480. Use devicePixelRatio scaling for crispness.
+
+Let me write the code.
+
+```html
+<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>TETRIS // CRT</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Space+Grotesk:wght@400;500;700&display=swap" rel=stylesheet>
+<style>...</style>
+<body>
+ ... markup ...
+ <script>...</script>
+</body>
+```
+
+CSS: define palette vars.
+
+Let me design the visual:
+
+- body background: deep ink #12101c with layered radial gradients (magenta-ish and teal-ish but not blobby — use subtle radial vignettes + repeating linear grid lines + noise via SVG? keep small). Add drifting tetromino outlines as pseudo-elements? Simpler: a few absolutely positioned divs with border outlines of tetromino shapes rotating slowly. Could do with CSS shapes made of box-shadows. Let's do: `.drift i` elements with box-shadow pixel-art tetromino shapes, animated float. That's a nice living element and cheap.
+
+Actually simpler: use inline SVG shapes? Keep it CSS: each drift element is a 20px square with box-shadow creating an S/T
+---

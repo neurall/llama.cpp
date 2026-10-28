@@ -1,0 +1,83 @@
+run 19127 | pre7 | pf4k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 51.99 t/s | prompt 1384.9 t/s | 1000 tokens | args: -np 1 --moe log=w,dense-split=1 | power 220+280 W | 2026-10-25 02:48:31
+
+We need answer user's request: "Return the completed source with the bugs fixed." They provided a partial C++ file common/json-schema-to-grammar.cpp, ending mid-function. Need produce completed source with bugs fixed. We need infer full file? This is likely from llama.cpp? Need reconstruct missing code and fix bugs. Need output entire source? User says return completed source with bugs fixed. We need likely provide full file content. Need analyze code and identify bugs. We have only partial source. Need complete from known upstream? Let's identify project. File common/json-schema-to-grammar.cpp in llama.cpp? It converts JSON schema to GBNF grammar. Includes common/json-schema-to-grammar.h, common.h, trie.h, unicode.h. Uses common_json, common_chat_schema, common_grammar_builder, common_grammar_options. There is class common_chat_schema_converter. Need complete source. Could be from llama.cpp common/json-schema-to-grammar.cpp. Need know exact current version? The provided code has some modifications: common_chat_schema instead of json? common_chat_schema_ptr? Maybe from llama.cpp? Let's search memory.
+
+I know llama.cpp has common/json-schema-to-grammar.cpp. It includes <nlohmann/json.hpp> maybe. Functions: build_repetition, build_min_max_int, PRIMITIVE_RULES, STRING_FORMAT_RULES, is_reserved_name, replacePattern, format_literal, gbnf_format_literal, gbnf_escape_length, class json_schema_converter. There is build_grammar. The provided code seems adapted to common_chat_schema (maybe from llama.cpp chat templates? common_chat_schema?). Need complete missing parts after join_seq. Need fix bugs.
+
+Let's recall upstream code. In llama.cpp common/json-schema-to-grammar.cpp, there is class json_schema_converter with methods:
+- _add_rule
+- _generate_union_rule
+- _visit_pattern
+- _pattern_to_rule
+- _visit_json_schema? Actually visit(const json & schema, const std::string & path)
+- _visit_ref
+- _visit_anyof
+- _visit_object
+- _visit_array
+- _visit_string
+- _visit_number
+- _visit_integer
+- _visit_boolean
+- _visit_null
+- _visit_enum
+- _visit_const
+- _visit_pattern
+- _visit_format
+- _visit_type
+- _visit_json_schema? 
+- build_grammar.
+
+But here common_chat_schema maybe a variant. Need infer from includes and types.
+
+Let's search memory of llama.cpp code. common/json-schema-to-grammar.cpp (as of 2024/2025) maybe:
+
+#include "json-schema-to-grammar.h"
+#include "common.h"
+#include "unicode.h"
+#include "log.h"
+#include "nlohmann/json.hpp"
+
+#include <algorithm>
+#include <limits>
+#include <map>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+using json = nlohmann::json;
+
+static std::string build_repetition(...)
+...
+static void build_min_max_int(...)
+...
+const std::string SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}";
+
+struct BuiltinRule { std::string content; std::vector<std::string> deps; };
+
+static std::unordered_map<std::string, BuiltinRule> PRIMITIVE_RULES = { ... };
+static std::unordered_map<std::string, BuiltinRule> STRING_FORMAT_RULES = { ... };
+
+static bool is_reserved_name(...)
+...
+static std::regex INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+");
+static std::regex GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]");
+static std::regex GRAMMAR_RANGE_LITERAL_ESCAPE_RE("[\r\n\"\\]\\-\\\\]");
+static std::unordered_map<char, std::string> GRAMMAR_LITERAL_ESCAPES = { ... };
+
+static const int MAX_PATTERN_DEPTH = 100;
+
+static std::unordered_set<char> NON_LITERAL_SET = {'|', '.', '(', ')', '[', ']', '{', '}', '*', '+', '?', '^', '$'};
+static std::unordered_set<char> ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS = {'^', '$', '.', '[', ']', '(', ')', '|', '{', '}', '*', '+', '?'};
+
+static std::string replacePattern(...)
+...
+static std::string format_literal(...)
+std::string gbnf_format_literal(...)
+static size_t gbnf_escape_length(...)
+
+class json_schema_converter {
+private:
+    friend std

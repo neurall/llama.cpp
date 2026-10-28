@@ -1,0 +1,35 @@
+run 20119 | dspark-fix | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 28.36 t/s | prompt 7.9 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 21:31:14
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 300x600? Board 10x20, cell 30. Canvas width 300 height 600. Draw grid. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Tetromino definitions:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+Need rotation function. Use matrix rotate clockwise: new matrix rows = old columns reversed? For matrix m with rows, rotate: m[0].map((_, i)=>m.map(row=>row[i]).reverse())? Let's verify. For T [[0,1,0],[1,1,1]], rotate clockwise should [[1,0],[1,1],[1,0]]? Actually T rotated clockwise: original:
+0 1 0
+1 1 1
+Rotate clockwise: rows become columns reversed:
+col0 top-to-bottom [0,1] reversed [1,0]? Wait formula new[i][j] = old[n-1-j][i]? Let's derive. Clockwise rotation: new row 0 = old col 0 bottom-to-top? For 2x3 T:
+old:
+(0,0)=0 (0,1)=1 (0,2)=0
+(1,0)=1 (1,1)=1 (1,2)=1
+Clockwise 90: new dimensions 3x2. new[0][0]=old[1][0]=1; new[0][1]=old[0][0]=0 => [1,0]
+new[1][0]=old[1][1]=1; new[1][1]=old[0][1]=1 => [1,1]
+new[2][0]=old[1][2]=1; new[2][1]=old[0][2]=0 => [1,0]. Yes.
+Formula: new[i][j] = old[old.length-1-j][i]. Or m[0].map((_,i)=>m.map(row=>row[i]).reverse())? Let's test: m.map(row=>row[i]) gives column i top-to-bottom. reverse gives bottom-to-top. For i=0: [0,1] reversed [1,0] yes. So rotate = m[0].map((_,i)=>m.map(r=>r[i]).reverse()). Good.
+
+Need board array 20 rows x 10 cols. Use 0 empty, 1 filled. Current piece: shape matrix, x,y. Need spawn at top. Need collision function: for each cell in shape if board[y+r][x+c] filled or out of bounds. Need allow y negative? Spawn y=0 maybe shape top row. For I horizontal at y=0. For shapes with empty top row, okay. Need if collision at spawn game over. Need maybe spawn x = floor((10 - shape[0].length)/2), y=0. But if shape has empty top row, okay. Need if collision at spawn game over. Need maybe spawn x = floor((10 - shape[0].length)/2), y=0. But if shape has empty top row, okay. Need if collision at spawn game over. Need maybe spawn x = floor((10 - shape[0].length)/2), y=0. But if shape has empty top row, okay. Need if collision at spawn game over. Need maybe spawn x = floor((10 - shape[0].length)/2), y=0. But if shape has empty top
+---

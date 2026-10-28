@@ -1,0 +1,79 @@
+run 19217 | pre10 | pf60k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 23.97 t/s | prompt 1035.6 t/s | 1000 tokens | args: -np 1 --moe log=w | power 220+280 W | 2026-10-25 04:57:11
+
+<think>The user wants me to find and fix bugs in this large C++ source code. Let me carefully analyze both files.
+
+Let me go through the code systematically looking for bugs.
+
+**File 1: common/json-schema-to-grammar.cpp**
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps in `(...)?`. But when `min_items > 0`, the first item is always required. Let me check the logic more carefully.
+
+Actually, looking at the `build_repetition` function with separator:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+if (min_items == 0) {
+    result = "(" + result + ")?";
+}
+```
+
+When `min_items == 0`, the first item is `item_rule` (required), but then the whole thing is wrapped in `(...)?`. So the first item becomes optional. That seems correct.
+
+When `min_items == 1`, the first item is required, and the repetition has `min_items - 1 = 0` additional items. That's correct.
+
+When `min_items == 2`, the first item is required, and the repetition has `min_items - 1 = 1` additional items. That's correct.
+
+Wait, but when `min_items == 0` and `max_items == 1`, the function returns `item_rule + "?"` before reaching the separator logic. So that's fine.
+
+2. In `build_min_max_int`, let me check the `uniform_range` lambda. It's defined as a `std::function` but captures `out` by reference. The `out` is a `std::stringstream &`. That should be fine.
+
+3. In `_pattern_to_rule`, the `join_seq` function returns `std::make_pair(string_join(results, " "), false)`. But `results` contains strings that are either quoted literals or rule references. The `false` means it's not a literal. That seems correct since the joined result mixes literals and rules.
+
+Wait, actually there's a subtle issue. When `join_seq` returns, it returns a pair where the second element is `false` (not a literal). But if the sequence contains only literals, the joined result would be a string of quoted literals joined by spaces, and marking it as `false` (not a literal) is correct because it's already formatted as a rule expression.
+
+4. In `_pattern_to_rule`, the handling of `{` (curly brackets):
+```cpp
+auto &last = seq.back();
+auto &sub = last.first;
+auto sub_is_literal = last.second;
+```
+
+If `sub_is_literal` is true, then `sub` is a literal string. The code does:
+```cpp
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+```
+
+Wait, but if `sub_is_literal` is true, `sub` is the raw literal text. Wrapping it in quotes with `format_literal` would be more appropriate. But the code just does `"\"" + sub + "\""`. This might not properly escape special characters in the literal. However, looking at how literals are handled elsewhere in the code, they seem to be pre-escaped when added to `seq`. Let me check...
+
+In the literal handling section:
+```cpp
+literal += sub_pattern[i];  // for regular chars
+literal += "\\\"";  // for quotes
+literal += sub_pattern.substr(i, escape_length);  // for escapes
+```
+
+So literals are stored with some escaping already. When they're converted to rules via `to_rule`:
+```cpp
+return is_literal ? "\"" + s + "\"" : s;
+```
+
+So literals are wrapped in quotes. The curly bracket handling does the same: `"\"" + sub + "\""`. That seems consistent.
+
+5. In `_pattern_to_rule`, the handling of `*`, `+`, `?`:
+```cpp
+seq.back() = std::make_pair(to_rule(seq.back()) + c, false);
+```
+
+This converts the last element to a rule string and appends the quantifier. Marking it as `false` (not a literal) is correct since it's now a rule expression.
+
+6. In `_not_strings`, the function builds a rule for matching strings that are NOT in a given set. Let me check the logic...
+
+The trie-based approach seems correct. It builds alternatives for each prefix path.
+
+7. In `_build_object_rule`, the `get_recursive_refs` function:
+```cpp
+if (

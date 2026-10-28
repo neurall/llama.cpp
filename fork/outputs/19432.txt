@@ -1,0 +1,56 @@
+run 19432 | rc5 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.01 t/s | prompt 121.7 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-25 10:01:37
+
+The user wants the smallest HTML Tetris game. Let me make a compact but actually good Tetris. "Smallest" — they want minimal code. But I don't want to just dump a bare 20-line blob with no styling. I can make a compact Tetris that's still nice-looking. Let me balance: small code, but polished.
+
+Let me write a genuinely compact Tetris in a single HTML file, small but complete: rotation with wall kicks (simple), line clears, scoring, levels, next piece preview, hold maybe, game over, pause.
+
+Let me aim for something like ~60-80 lines minified-ish but readable. The user asked for "smallest" so brevity is the point. But I also want it to feel alive. I'll keep the code tight but add a subtle background, a nice type pairing, and micro-feedback.
+
+Hmm — tension. "generate smallest html tetris game" — the request is explicitly minimal. I should honor it: deliver compact code. But I can still make it look good with a handful of CSS lines. Let me do a "tiny but crafted" version — dense code, monospace, CRT-ish aesthetic which fits Tetris.
+
+Let me write it.
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<style>
+body{margin:0;background:#0b0b12;color:#e8e8f0;font:14px/1.4 ui-monospace,Menlo,monospace;display:grid;place-items:center;height:100vh;overflow:hidden}
+...
+</style>
+<canvas id=c width=... >
+```
+
+Let me design the compact algorithm.
+
+Classic approach: use a matrix rotation via transpose+reverse, and a string-based piece definition.
+
+Compact Tetris core:
+
+```js
+const W=10,H=20,S=24;
+let g=Array.from({length:H+2},()=>Array(W).fill(0)), o=0, p, n, s=0, l=0, d=0, t;
+```
+
+Piece definitions as strings: I'll use the standard approach with 4x4 bit patterns per piece per rotation? That's big. Better: define pieces as matrices and rotate.
+
+Compact: define pieces as arrays of [x,y] offsets in spawn orientation, rotate around a center.
+
+Simplest compact: use the "SRS-ish" matrix rotation with each piece as a square matrix:
+
+```js
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]]]
+```
+I is 1x4 — rotation of a 1x4 gives 4x1 which works with transpose/reverse. That's actually elegant and compact. Rotation: `m[0].map((_,i)=>m.map(r=>r[i]).reverse())`.
+
+For I piece: [[1,1,1,1]] → transpose gives [[1],[1],[1],[1]] → reverse each column... let's check: m[0] = [1,1,1,1], m[0].map((_,i)=> m.map(r=>r[i]).reverse()) → for i=0: m.map(r=>r[0]) = [1], reverse = [1]. So rows: [1],[1],[1],[1] → 4x1. Good.
+
+O piece: [[1,1],[1,1]] rotates to itself. Good.
+
+Colors: index into a palette array.
+
+Collision check:
+
+```js
+const R=(m,x,y)=>m.some((r,j)=>r.some((v,i)=>v&&(g[y+j]?.[x+i]??1)))
+```
+Careful: out of bounds left/right/bottom should be collision; top (y<0) should be allowed. `g[y+j]` undefined when y+j >= H+2 or <0. Using `?? 1` makes undefined cells collide, which blocks top overflow. Better to add 2 rows at top of grid that are always empty and allow y from -2. Hmm, simpler: make grid H rows, and treat y<0 as free:
+---

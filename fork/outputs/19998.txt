@@ -1,0 +1,34 @@
+run 19998 | fix_scratch_per_card_from_graph | pf18k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 146.7 t/s | prompt 7038.7 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-10-27 14:33:33
+
+<think>
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants a code review of two provided source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. The code appears to be from a C++ project (likely `llama.cpp` based on context like `common_chat_schema`, `common_params`, `ggml`, `llama.cpp`, etc.).
+
+2.  **Analyze File 1: `common/json-schema-to-grammar.cpp`**
+    *   **Purpose:** Converts JSON schemas to a grammar format (likely for LLM prompting/constrained generation).
+    *   **Key Components:**
+        *   `build_repetition`: Handles repetition rules (min/max items, separators).
+        *   `build_min_max_int`: Generates regex-like grammar for integer ranges.
+        *   `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`: Predefined grammar rules for JSON types.
+        *   `common_chat_schema_converter`: Main class that traverses a JSON schema and builds grammar rules.
+        *   `visit`: Dispatches based on schema kind (ref, any_of, all_of, const, enum, object, tuple, array, string, integer, number, boolean, null, any).
+        *   `_pattern_to_rule`: Converts regex patterns to grammar rules.
+        *   `_not_strings`: Generates a trie-based rule to match strings not in a given set.
+        *   `_build_object_rule`: Handles JSON object properties, required/optional, additional properties.
+        *   Helper functions: `format_literal`, `gbnf_escape_length`, `replacePattern`, etc.
+    *   **Potential Issues/Improvements:**
+        *   *Complexity & Readability:* The code is quite dense. `_pattern_to_rule` has a complex recursive lambda `transform` that parses regex manually. This is error-prone and hard to maintain.
+        *   *Regex Handling:* The manual regex parser handles `^` and `$` anchors, groups, character classes, quantifiers, and escapes. It throws `unsupported_pattern` or `invalid_pattern`. This is good for safety but might miss edge cases. The `NON_LITERAL_SET` and `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` are hardcoded. Could be simplified or documented.
+        *   *Integer Range Generation (`build_min_max_int`):* Very complex. It tries to generate a compact regex for integer ranges. It handles negative numbers, min/max, and decimal places. The logic is intricate and might have bugs or produce overly verbose/incorrect grammar for edge cases. The `decimals_left` parameter is used but not clearly explained. The `top_level` flag controls formatting.
+        *   *Object Rule Generation (`_build_object_rule`):* Handles required vs optional properties. It generates recursive rules for optional properties. The logic for `get_recursive_refs` is complex. It might generate deeply nested rules or inefficient grammar.
+        *   *Trie for `_not_strings`:* Uses a trie to generate a grammar that rejects specific strings. The logic seems correct but could be optimized or simplified. The `char_rule` is reused.
+        *   *Error Handling:* Uses `_errors` and `_warnings` vectors. `check_errors()` throws on errors, prints warnings. Good practice.
+        *   *Performance:* Uses `std::regex` for escaping and pattern validation. `replacePattern` is implemented manually to avoid regex overhead? Actually, it uses `std::regex_search` in a loop. Could be optimized.
+        *   *Dependencies/Includes:* Includes `<regex>`, `<map>`, `<unordered_map>`, etc. Standard.
+        *   *Naming/Style:* Uses `common_chat_schema_converter` class. Some functions are `static`. `gbnf_format_literal` is a thin wrapper. `string_join`, `string_split`, `string_repeat` are likely from `common.h`.
+        *   *Potential Bugs:*
+            *   `build_repetition`: When `min_items == 0 && max_items == 1`, returns `item_rule + "?"`. Correct.
+            *   `build_min_max_int`: The logic for negative numbers splits into `"-" (...) | [0] | [1-9] ...`. Might be overly complex.
+            *   `_pattern_to_rule`: The `transform` lambda captures `seq`, `i`, `length`, `paren_depth`. It's recursive but uses a `while` loop. The `join_seq` merges literals. This is a hand-written regex parser. It might fail on complex regexes like `(?=...)` or lookarounds (explicitly throws unsupported). Good.
+            *   `NON_LITERAL_SET` includes `|`, `.`, `(`, `)`, `[`, `]`, `{`, `}`, `*`, `+`, `

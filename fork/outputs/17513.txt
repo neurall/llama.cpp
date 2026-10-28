@@ -1,0 +1,38 @@
+run 17513 | numa3 | edit4c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 154.3 t/s | prompt 5224.1 t/s | 598 tokens | args: -np 1 | power 280+280 W | 2026-10-21 17:21:50
+
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - The user provided a C++ file: `common/json-schema-to-grammar.cpp`
+   - The request is: "Delete the code in this file that is never used."
+   - I need to identify unused code/functions/variables in the provided snippet and remove them.
+
+2.  **Scan the Code for Unused Elements:**
+   Let's go through the code systematically:
+   - Includes: `<algorithm>`, `<limits>`, `<map>`, `<regex>`, `<sstream>`, `<string>`, `<unordered_map>`, `<unordered_set>`, `<vector>` - all seem used.
+   - `using json = common_json;` - used later? Not explicitly in this snippet, but likely used elsewhere. I'll keep it.
+   - `build_repetition` - used? Not explicitly called in this snippet, but likely used elsewhere. I'll keep it.
+   - `build_min_max_int` - used? Not explicitly called, but likely used elsewhere. I'll keep it.
+   - `SPACE_RULE` - defined but never used in this snippet. Could be unused.
+   - `BuiltinRule` struct - used in `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`.
+   - `PRIMITIVE_RULES` - used? Not explicitly in this snippet, but likely used elsewhere.
+   - `STRING_FORMAT_RULES` - used? Not explicitly.
+   - `is_reserved_name` - uses `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`.
+   - `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - regexes.
+   - `GRAMMAR_LITERAL_ESCAPES` - map.
+   - `MAX_PATTERN_DEPTH` - defined but never used.
+   - `NON_LITERAL_SET`, `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - defined but never used.
+   - `replacePattern` - used in `format_literal`.
+   - `format_literal` - used in `gbnf_format_literal`.
+   - `gbnf_format_literal` - defined but never used in this snippet.
+   - `gbnf_escape_length` - defined but incomplete (ends with `size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` and then stops). This is clearly incomplete/unused.
+
+   Let's check for actual usage within the provided code:
+   - `build_repetition`: Not called.
+   - `build_min_max_int`: Not called.
+   - `SPACE_RULE`: Not used.
+   - `PRIMITIVE_RULES`: Not used.
+   - `STRING_FORMAT_RULES`: Not used.
+   - `is_reserved_name`: Not used.
+
+---

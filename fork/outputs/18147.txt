@@ -1,0 +1,43 @@
+run 18147 | relfl6 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.35 t/s | prompt 16.1 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-23 03:39:51
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and looking decent (minimal but not broken).
+
+Let me think about what "smallest" means here. The user wants minimal bytes. I should aim for a genuinely compact implementation — single file, no external dependencies (that also keeps it small and self-contained). I can write extremely dense JavaScript.
+
+Key features a Tetris needs (minimum viable):
+- 10×20 board
+- 7 tetrominoes with rotation
+- Gravity (falling), lock on landing
+- Line clear + score
+- Keyboard controls (left/right/down, rotate, maybe hard drop)
+- Game over
+- Rendering — canvas is the most compact way.
+
+Let me try to write it as compactly as possible while still being a real, playable game. I'll aim for something like ~600-800 bytes of actual code, maybe less. Let me draft.
+
+Classic minimal Tetris implementations exist (e.g., "Tetris in 140 bytes" style golf). Let me write my own dense version.
+
+Approach:
+- Canvas 120×240 (12px cells, 10 wide, 20 tall) — or scale up via CSS for visibility. Actually for readability I might use a slightly larger canvas but keep code small. Let's do canvas width=120 height=240, style it scaled up with CSS (image-rendering: pixelated). That keeps drawing code tiny: fillRect(x*12, y*12, 12, 12).
+
+- Board as a single array of 200 cells (0 or color index). Or use a string? Numbers simpler.
+
+- Pieces: 7 tetrominoes. Compact encoding: each piece as a set of 4 cells in a 4×4 or via rotation function. A very compact trick: define pieces as arrays of 4 coordinates, and rotate by (x,y)->(y,3-x) or similar within a bounding box. But different pieces have different box sizes (I is 4×4, O is 2×2 effectively, others 3×3). A common golf trick: use a 4×4 grid for all, encode each rotation state as a 16-bit number (bitmask), precompute all rotations.
+
+Encoding idea: each piece-rotation as a 16-bit mask. 7 pieces × 4 rotations = 28 masks. That's a lot of data. Alternative: store base shape and rotate procedurally.
+
+Compact procedural approach: represent each tetromino as array of 4 [x,y] pairs in a bounding box; rotation maps (x,y) → (y, size-1-x) where size is 3 (or 4 for I, 2 for O). Hmm, handling per-piece sizes adds bytes.
+
+Alternative classic trick: encode pieces as strings. E.g., shapes:
+- I: "0F44" style hex? 
+
+Let me think of a known ultra-compact representation: each tetromino as 4 cells; rotation via matrix rotation around a pivot. Simplest golf: define pieces with coordinates and rotate with (x,y)→(-y,x) then normalize... normalization costs bytes.
+
+Another approach used in tiny tetris: pieces defined as arrays of 4 numbers where each number encodes x,y in a 4x4 grid: n = y*4+x? And rotation: for cell value v: x=v%4? Hmm.
+
+Actually a neat trick: represent each rotation state of each piece as a 16-bit integer (4×4 bitmask). Then all 28 states can be generated at runtime by rotating the base mask: rotate 4×4 mask: bit (x,y) → bit (3-y? ...). Rotating a 16-bit mask procedurally is compact:
+
+rot(m): for each of 16 bits, new position. bit index i = y*4+x. Rotation clockwise: (x,y) → (3-y, x)? Let's check: rotating the grid 90° CW: new[x'][y'] where x' = 3-y, y' = x. So bit at (x,y) moves to (3-y, x), i.e., new index = x*4 + (3-y). Hmm wait let me define: after CW rotation, cell at old (x,y) appears at new (x', y') = (3-y, x). New index j = y'*4 + x' = x*4 + (3-y). So j = (i%4)*4 + 3 - (i/4|0). Compact loop:
+
+r=0
+---

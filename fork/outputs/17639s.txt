@@ -1,0 +1,56 @@
+run 17639 | stock-b11803-official | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 112.68 t/s | prompt 96.2 t/s | 1007 tokens | args: -c 1024 | power 165+165+165+165 W | 2026-10-22 00:54:48
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means a single HTML file (or minimal structure) that implements a playable Tetris game using HTML, CSS, and JavaScript. The goal is to minimize code size while maintaining core functionality (grid, pieces, rotation, movement, collision, line clearing, scoring, game over).
+
+2.  **Identify Core Requirements for Tetris:**
+   - 10x20 grid
+   - 7 tetromino shapes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Piece rotation
+   - Collision detection (walls, floor, existing blocks)
+   - Line clearing
+   - Scoring
+   - Game over condition
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Minimize Code Strategy:**
+   - Use a single HTML file with inline CSS and JS.
+   - Use `<canvas>` for rendering (more compact than DOM manipulation).
+   - Use compact variable names and bitwise/array tricks where possible.
+   - Avoid external libraries.
+   - Keep logic minimal but functional.
+   - Use a compact representation for pieces (e.g., arrays of coordinates or bit patterns).
+   - Use a single loop for game logic.
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head><title>Tetris</title><style>body{margin:0;background:#000}canvas{display:block}</style></head>
+   <body><canvas id=c></canvas><script>
+   // Setup
+   const c=document.getElementById('c'), ctx=c.getContext('2d');
+   c.width=200; c.height=400;
+   // Grid: 10x20, 0=empty, 1=filled
+   const g=[]; for(let y=0;y<20;y++) g.push(new Array(10).fill(0));
+   // Pieces: define shapes as arrays of [x,y] offsets or bit patterns
+   // Let's use a compact array of arrays for shapes
+   const P=[[[1,0],[0,0],[-1,0],[-2,0]], [[0,0],[1,0],[0,1],[1,1]], [[0,0],[1,0],[-1,0],[0,1]], [[0,0],[1,0],[0,1],[1,-1]], [[0,0],[-1,0],[0,1],[1,1]], [[0,0],[-1,0],[0,1],[-1,1]], [[0,0],[1,0],[0,1],[1,-1]]]; // Wait, need to verify shapes
+   // Actually, standard Tetris shapes:
+   // I: 4 in a row
+   // O: 2x2 square
+   // T: T shape
+   // S: S shape
+   // Z: Z shape
+   // J: J shape
+   // L: L shape
+   // Let's use a more compact representation: arrays of [dx,dy] for each block relative to center or top-left
+   // Better: use a single array of shapes, each shape is an array of 4 coordinates.
+   // Actually, I'll use a simpler approach: define shapes as arrays of strings or numbers, but arrays of coordinates is fine.
+   // Let's stick to arrays of [x,y] relative to a pivot.
+   // I'll define them as:
+   const S=[[[0,0],[1,0],[2,0],[3,0]], [[0,0],[0,1],[0,2],[0,3]], [[1,0],[0,0],[0,1],[0,2]], [[0,0],[1,0],[1,1],[1,2]], [[0,0],[1,0],[0,1],[1,1]], [[0,0],[1,0],[0,1],[0,2]], [[0,0],[-1,0],[0,1],[0,2]], [[0,0],[1,0],[0,1],[1,2]], [[0,0],[-1,0],[0,1],[-1,2]], [[0,0],[1,0],[0,1],[1,-1]], [[0,0],[-1,0],[0,1],[-1,-1]], [[0,0],[1,0],[0,1],[1,1]], [[0,0],[-1,0],[0,1],[-
+---

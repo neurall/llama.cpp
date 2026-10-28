@@ -1,0 +1,38 @@
+run 20113 | ds41i4 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 26.52 t/s | prompt 6.8 t/s | 987 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 21:22:40
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 300x600? Board 10x20, cell 30. Canvas width 300 height 600. Draw grid. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Tetromino definitions:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+Need rotation function. Use matrix rotate clockwise: new matrix rows = old columns reversed? For matrix m with rows, rotate clockwise: m[i][j] -> new[j][n-1-i]? Let's derive. For n rows, m rows. Clockwise rotation: new[r][c] = m[n-1-c][r]? Example [[0,1,0],[1,1,1]] n=2? Actually T 2x3. Rotation not square. Need handle non-square. Could use coordinate list and rotate around center. Simpler use predefined rotations? Or use matrix rotation with bounding box. For non-square, rotate matrix: new rows = old columns, new cols = old rows. Formula new[r][c] = old[oldRows-1-c][r]? Let's test T matrix 2x3:
+old:
+row0: 0 1 0
+row1: 1 1 1
+Clockwise should become:
+1 0
+1 1
+1 0? Wait T rotated clockwise: original T pointing down? Let's visualize cells (0,1),(1,0),(1,1),(1,2). Rotate clockwise around center (1,1): (0,1)->(1,0)? Actually coordinate x,y. Let's use matrix. Clockwise rotation of 2x3 matrix yields 3x2:
+new row0 = old row1? Let's compute formula new[r][c] = old[oldRows-1-c][r]? oldRows=2. r=0,c=0 -> old[1][0]=1. r=0,c=1 -> old[0][0]=0. row0 [1,0]. r=1,c=0 -> old[1][1]=1. r=1,c=1 -> old[0][1]=1. row1 [1,1]. r=2,c=0 -> old[1][2]=1. r=2,c=1 -> old[0][2]=0. row2 [1,0]. That matches T rotated clockwise? Original cells: (0,1),(1,0),(1,1),(1,2). Rotated clockwise around center: (0,1)->(1,0)? (1,0)->(1,1)? (1,1)->(1,1)? (1,2)->(1,2)? Hmm not. Let's use coordinate transform x,y -> y, -x? Need not.
+
+Maybe use predefined rotations for each shape to avoid rotation complexity. But minimal code can use matrix rotation function. Need ensure collision and rotation works.
+
+Alternative use coordinate list and rotate around center by (x,y)->(y,-x) then normalize. For each piece, store cells relative to origin. Rotation clockwise: (x,y) -> (y,-x). Then normalize min x/y to 0. This works for any shape. Need define shapes as coordinate arrays. Then rotate function maps. This is compact.
+
+Tetromino shapes as arrays of [x,y] cells:
+I: [[0,0],[1,0],[2,0],[3,0]]
+O: [[0,
+---

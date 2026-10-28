@@ -1,0 +1,37 @@
+run 16567 | um3d | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.4 t/s | prompt 132.6 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-19 10:09:08
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. But I don't want to stop at a bare minified blob — the fun version is a tiny file that's still crafted and alive: a playable Tetris with a distinctive visual identity, a layered background, micro-interactions, and strong type contrast on the HUD, while keeping the code genuinely small.
+
+Balance: "smallest" — keep it compact, single file, no dependencies. But make it feel alive: a CRT-ish playfield, next-piece preview, score/lines/level, keyboard controls, pause, game over overlay, subtle background grid, sound maybe (skip for size, or tiny WebAudio beep). Keep it reasonably small but polished.
+
+Let me write it.
+
+Design: a Tetris game naturally wants a dark playfield, but a flat near-black with one neon accent would look generic and lifeless — I'll use a richer palette: deep slate-blue background with a warm amber + cyan + magenta piece colors, and a layered background with a subtle grid and scanline. Type: display face "Bungee" or "Silkscreen"? Use Google Fonts — but "smallest" implies no external requests. Hmm. I could use system fonts with a distinctive stack. But I want a distinctive display face paired with a readable body face. I can include a Google Fonts link — small cost. Let's include one link for a display face like "Bungee" or "Chakra Petch" or "Silkscreen" + body "IBM Plex Mono". Actually for a pixel game, "Silkscreen" or "Press Start 2P" is characteristic. Press Start 2P is a bit cliché but very characteristic of Tetris. Let's use "Bungee" for display? Hmm, Tetris's official branding uses a bold geometric sans. I'll go with display: "Chakra Petch" (700/800) — techy, and body: "IBM Plex Mono". Or display "Bungee" (blocky, arcade) + body "IBM Plex Mono". Bungee is quite blocky/arcade — fits Tetris blocks. Let's do Bungee + IBM Plex Mono.
+
+Actually to keep it truly small and offline-capable, maybe use font stacks with fallbacks and a single Google Fonts link. Fine.
+
+Layout: rather than a generic header, I'll open with the thing that defines Tetris — the playfield itself, front and center-left, with the HUD as a vertical stack of block-shaped panels to the right, and a big title rotated vertically along the left edge. That's characteristic: the 10x20 grid.
+
+Let me design the layout:
+- Full viewport, dark blue-slate layered background: radial gradient + repeating grid lines + subtle noise via SVG data URI? Keep small: use CSS gradients for grid.
+- Left: vertical rotated wordmark "TETRIS" in Bungee with letter blocks.
+- Center: canvas playfield with a chunky bezel frame, glow.
+- Right: score panel with huge numerals (strong type contrast), next piece mini-canvas, held piece, level/lines, controls legend.
+- Bottom: key hints as keycaps with hover.
+
+Micro-interactions: line-clear flash, piece lock shake, hover on keycaps, score number pop animation, buttons with press effect, scanline overlay, subtle animated background grid drift.
+
+Sound: tiny WebAudio blip on rotate/lock/clear. Keep it small — a few lines. Add mute toggle.
+
+Keep code compact but readable-ish. The user asked "smallest" so I should keep it tight, but I'll aim for a compact single file (~150 lines) that's still crafted. I'll mention it's a single file, no dependencies (except font link, which is optional).
+
+Let me write the game logic compactly.
+
+Canvas approach: one canvas 10x20 cells, cell size 24 → 240x480. Plus next canvas 4x4.
+
+Logic:
+
+```js
+const W=10,H=20,S=24;
+const P='0,1,2,3|4,14,13,3|10,11,12,2|5,6,11,10|6,7,11,12|6,10,11
+---

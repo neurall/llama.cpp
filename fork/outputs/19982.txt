@@ -1,0 +1,31 @@
+run 19982 | fix_scratch_per_card_from_graph | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 23.02 t/s | prompt 170.1 t/s | 680 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-27 13:28:31
+
+We need answer user asks: "Delete the code in this file that is never used." They provided file content. Need identify unused code and provide modified file? Need infer task: likely wants remove unused code from common/json-schema-to-grammar.cpp. Need analyze code for unused functions/variables/constants. Need produce cleaned code? Need be careful. We need inspect entire file? They only pasted partial? It ends at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` with blank. Maybe file truncated? Need answer likely remove unused code in this file. Need identify unused code in provided snippet. But file may continue beyond. We only have partial. Need maybe say cannot determine fully because file truncated. But likely they expect code cleanup. Need analyze.
+
+Let's parse provided code. It includes includes, functions, maps, regexes, constants. Need find unused entities.
+
+We need know if functions used elsewhere? The file is common/json-schema-to-grammar.cpp. It likely has more code after truncated. The snippet includes only beginning. User asks delete code never used. We need identify unused code in this file. Could be from a codebase where some functions are unused. Need inspect.
+
+Let's list entities:
+
+- includes: algorithm, limits, map, regex, sstream, string, unordered_map, unordered_set, vector. Some may be unused? Need check.
+- using json = common_json; maybe used later? In snippet not used. But file likely uses json later. Can't remove if used later.
+- build_repetition: used? In snippet not called. Likely used later in schema conversion. Need keep.
+- build_min_max_int: used? likely used later. Keep.
+- SPACE_RULE: used in PRIMITIVE_RULES object/array. Keep.
+- BuiltinRule struct: used by maps. Keep.
+- PRIMITIVE_RULES: used by is_reserved_name and likely later. Keep.
+- STRING_FORMAT_RULES: used by is_reserved_name and likely later. Keep.
+- is_reserved_name: used? In snippet not called. Likely used later. Keep.
+- INVALID_RULE_CHARS_RE: used? Not in snippet. Likely used later. Keep.
+- GRAMMAR_LITERAL_ESCAPE_RE: used by format_literal. Keep.
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE: not used in snippet. Likely used later? Need check. It is defined but not used in provided snippet. Could be used later in file. Need know.
+- GRAMMAR_LITERAL_ESCAPES: used by format_literal. Keep.
+- MAX_PATTERN_DEPTH: not used in snippet. Likely used later. Keep.
+- NON_LITERAL_SET: not used in snippet. Likely used later. Keep.
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS: not used in snippet. Likely used later. Keep.
+- replacePattern: used by format_literal. Keep.
+- format_literal: used by gbnf_format_literal. Keep.
+- gbnf_format_literal: public function maybe used elsewhere. Keep.
+- gbnf_escape
+---

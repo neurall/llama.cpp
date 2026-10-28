@@ -1,0 +1,63 @@
+run 18292 | splitfix | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.71 t/s | prompt 3.9 t/s | 1005 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-10-23 10:03:43
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. This is one of the rare cases where the user's explicit request overrides my usual preference for polished, elaborate output — they want a golfed Tetris.
+
+Let me think about what "smallest" means here. A single self-contained HTML file with a playable Tetris, as few bytes as possible. I should still make it genuinely playable: move left/right, rotate, soft drop, hard drop maybe, line clearing, game over, score. The classic minimal Tetris implementations (like the famous 140-byte-ish ones or the "tiny tetris" in C) give inspiration.
+
+There's a well-known minimal JS Tetris approach using canvas. Let me write my own compact one.
+
+Key components:
+1. Canvas for rendering (or even use a `<pre>` with text? Canvas is usually smaller for block drawing... actually text-based rendering with monospace characters can be very compact too). Let me think.
+
+Option A: Canvas-based. Need `<canvas id=c>`, getContext, fillRect loops.
+
+Option B: DOM/text-based using a `<pre>` and innerHTML with characters. Could be smaller since no fillRect calls, just string building. But string building each frame with join might be comparable.
+
+Let me draft a compact canvas Tetris.
+
+Board: 10x20. Pieces: 7 tetrominoes. Compact piece encoding: use a string of rotations or encode each piece as 4x4 bit patterns.
+
+A classic compact encoding: pieces as arrays of coordinates, rotate by swapping x/y. E.g., piece defined as list of [x,y] cells; rotation: [x,y] -> [y, 3-x] or similar within a bounding box.
+
+Known ultra-compact approach (from "tiny tetris in javascript" by thingsinjars / or the famous one):
+
+Actually there's a famous minimal Tetris in JS. Let me just write my own carefully.
+
+Plan:
+
+- `c` canvas 120x240 (12px cells), or use scale.
+- Board `d` = array of 20 strings/arrays of 10.
+- Pieces: encode as numbers. Each tetromino rotation as 16-bit number (4x4 grid). 7 pieces × up to 4 rotations. Could store all rotations as one flat array of 16-bit ints.
+
+Compact piece data: I can generate rotations at runtime from one base pattern per piece to save bytes: define each piece as a 16-bit mask, rotate function rotates the 4x4 bit matrix. That's a small rotate function: for bits i in 0..15, new position... rotating a 4x4 matrix: cell (r,c) -> (c, 3-r). Bit index i = r*4+c. New index = c*4 + (3-r) = (i%4)*4 + 3-(i>>2).
+
+So rotate(m) = sum over bits: if m>>i &1, set bit ((i%4)*4+3-(i>>2)). Compact: 
+
+```js
+R=m=>m.reduce? ... 
+```
+
+Hmm, let me write: 
+
+```js
+r=m=>[...Array(16)].reduce((a,_,i)=>a|(m>>i&1)<<((i&3)*4+3-(i>>2)),0)? 
+```
+
+Wait careful: (i&3) is c, (i>>2) is r. New bit index = c*4 + (3-r) = (i&3)*4 + (3-(i>>2)). Yes.
+
+Actually simpler: `r=m=>[...Array(16)].reduce((a,_,i)=>a|(m>>i&1)<<((i&3)*4+3-(i>>2)),0)` — hmm reduce with initial 0, but `a|...` returns number, fine. Or use a for loop. Or:
+
+```js
+r=m=>m.toString(2)... 
+```
+
+no. The reduce works. Alternatively:
+
+```js
+r=(m,a=0)=>{for(i=0;i<16;i++)a|=(m>>i&1)<<((i&3)*4+3-(i>>2));return a}
+```
+
+Hmm, but arrow with default and loop... `r=m=>{a=0;for(i=0;i<16;i++)a|=...;return a}` — needs var declarations careful with globals. Using globals freely is fine for golf.
+
+Piece definitions (4x4 bit masks, row-major, bit 0 = top-left... let's define bit index i = r*4+c,
+---

@@ -1,0 +1,10 @@
+run 16685 | um3d | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 9.46 t/s | prompt 187.3 t/s | 64 tokens | args: -np 1 -lm mmap --moe pin-budget=54829309632 | power 220+280 W | 2026-10-19 15:38:50
+
+    return params.spec_type == COMMON_SPEC_TYPE_NONE || params.spec_type == COMMON_SPEC_TYPE_AUTO;
+}
+
+static bool spec_types_is_mtp(const common_params & params) {
+    return params.spec_type == COMMON_SPEC_TYPE_MTP || params.spec_type == COMMON_SPEC_TYPE_AUTO;
+}
+
+static bool spec_types_is_draft(const
