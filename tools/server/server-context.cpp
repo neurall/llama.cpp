@@ -2142,7 +2142,10 @@ private:
     }
 
     bool launch_slot_with_task(server_slot & slot, server_task && task) {
-        llama_moe_request_begin_fork();   // fork: a request starts: the MoE cache takes the next decode call as its prompt's first
+        {   // fork: a request starts: the MoE cache takes the next decode call as its prompt's first, the key of its topic from the whole prompt
+            const llama_tokens pt = task.tokens.get_text_tokens();
+            llama_moe_request_begin_fork(pt.data(), (int32_t) pt.size());
+        }
 
         // process per-request lora adapters
         if (!task.params.lora.empty()) {

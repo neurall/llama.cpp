@@ -24,6 +24,7 @@ const std::string & moe_state_place();
 bool moe_state_enabled();
 // the state file's path ("" when the state is off): per-model files that belong to the state live next to it (the hot maps per topic)
 std::string moe_state_file();
+std::string moe_user_dir();
 
 // false: no such key or the state is off
 bool moe_state_get(const std::string & section, const std::string & key, std::string & value);

@@ -37,6 +37,12 @@ std::string state_path() {
     if (const char * e = moe_opt("state")) {
         return strcmp(e, "0") == 0 ? "" : e;
     }
+    const std::string dir = moe_user_dir();
+    return dir.empty() ? "" : dir + "/moe-state.ini";
+}
+
+// the user's cache directory of the fork's files (created): <XDG_CACHE_HOME or ~/.cache>/llama.cpp, %LOCALAPPDATA%\llama.cpp on Windows; "" when there is none
+std::string moe_user_dir() {
 #ifdef _WIN32
     const char * base = getenv("LOCALAPPDATA");
     const std::string dir = base ? std::string(base) + "\\llama.cpp" : "";
@@ -50,7 +56,7 @@ std::string state_path() {
     }
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    return dir + "/moe-state.ini";
+    return dir;
 }
 
 std::string trim(const std::string & s) {

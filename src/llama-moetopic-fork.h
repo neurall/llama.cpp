@@ -62,7 +62,7 @@ static inline float moe_topic_qdot(const uint8_t * q, const float * key, uint32_
 }
 
 struct moe_topic_store {
-    static constexpr char MAGIC[8] = { 'M', 'O', 'E', 'T', 'O', 'P', 'C', '4' };
+    static constexpr char MAGIC[8] = { 'M', 'O', 'E', 'T', 'O', 'P', 'C', '5' };
     enum { KEY_MEAN = 0, KEY_MAX = 1, N_KEYS = 2 };
     uint32_t n_embd = 0, n_layers = 0, n_exp = 0;
     size_t   max_records = 4096;   // the oldest-used record is replaced past this (0: no limit)
@@ -73,6 +73,7 @@ struct moe_topic_store {
     std::vector<uint32_t> counts;  // records x n_layers x n_exp: uses of each expert
     std::vector<uint32_t> n_req;   // requests merged into each record
     std::vector<float>    hit;     // the best cache hit rate (0..1) a request on this record's topic reached; a request that did worse does not change the record (<0: unknown)
+    std::vector<uint32_t> src;     // what steered the cache when that hit rate was measured: 1 = the hot maps (dynhot=full|read), 0 = the ini's hot experts (dynhot=store)
     std::vector<uint64_t> last;    // the request number that last used a record (memory only: picks the record to replace)
     uint64_t clock = 0;
     std::string path;
@@ -83,7 +84,7 @@ struct moe_topic_store {
     size_t size() const { return n_req.size(); }
     size_t rec_cells() const { return (size_t) n_layers * n_exp; }
     size_t key_bytes() const { return (n_embd + 1) / 2; }
-    size_t rec_bytes() const { return sizeof(float) + sizeof(uint32_t) + N_KEYS * (sizeof(float) + key_bytes() + n_embd * sizeof(float)) + rec_cells() * sizeof(uint32_t); }
+    size_t rec_bytes() const { return sizeof(float) + 2 * sizeof(uint32_t) + N_KEYS * (sizeof(float) + key_bytes() + n_embd * sizeof(float)) + rec_cells() * sizeof(uint32_t); }
     static size_t head_bytes() { return sizeof(MAGIC) + 4 * sizeof(uint32_t); }
     uint8_t *       qk(size_t i, int kind)       { return qkeys.data() + (i * N_KEYS + kind) * key_bytes(); }
     const uint8_t * qk(size_t i, int kind) const { return qkeys.data() + (i * N_KEYS + kind) * key_bytes(); }
@@ -97,7 +98,7 @@ struct moe_topic_store {
     // starts empty in memory and is not written. Returns false then.
     bool open(const std::string & p, uint32_t e, uint32_t l, uint32_t x) {
         path = p; n_embd = e; n_layers = l; n_exp = x;
-        qkeys.clear(); fkeys.clear(); qinv.clear(); counts.clear(); n_req.clear(); hit.clear(); last.clear(); seen.clear();
+        qkeys.clear(); fkeys.clear(); qinv.clear(); counts.clear(); n_req.clear(); hit.clear(); src.clear(); last.clear(); seen.clear();
         FILE * f = fopen(path.c_str(), "rb");
         if (!f) { return true; }   // a new store: the first add creates the file
         char m[8]; uint32_t h[4];
@@ -106,8 +107,10 @@ struct moe_topic_store {
             std::vector<uint8_t> r(rec_bytes());
             while (fread(r.data(), 1, r.size(), f) == r.size()) {
                 const uint8_t * at = r.data();
-                float hr; memcpy(&hr, at, sizeof hr); at += sizeof hr;   // a record: hit rate, requests, per key (1 / length, 4-bit key, float key), counts
+                float hr; memcpy(&hr, at, sizeof hr); at += sizeof hr;   // a record: hit rate, source, requests, per key (1 / length, 4-bit key, float key), counts
                 hit.push_back(hr);
+                uint32_t so; memcpy(&so, at, sizeof so); at += sizeof so;
+                src.push_back(so);
                 uint32_t n; memcpy(&n, at, sizeof n); at += sizeof n;
                 n_req.push_back(n);
                 last.push_back(0);
@@ -181,7 +184,7 @@ struct moe_topic_store {
     // by its own rule (the mean key: a mean weighted by the requests each holds; the max key: per value the larger), the counts added, and the experts below
     // their layer's mean use dropped, so a record keeps only the hottest; the record is replaced in place. Else a new record (replacing the least recently
     // used one past max_records). Returns the record's index.
-    size_t add(const float * keys, const uint32_t * cnt, float merge_overlap, float hit_rate = -1.0f) {
+    size_t add(const float * keys, const uint32_t * cnt, float merge_overlap, float hit_rate = -1.0f, uint32_t source = 0) {
         size_t at = size();
         float  best = 0.0f;
         last_thr = merge_overlap >= 0.0f ? merge_overlap : auto_threshold();   // a negative value asks for the automatic threshold
@@ -202,7 +205,7 @@ struct moe_topic_store {
             return at;
         }
         if (at < size()) {
-            hit[at] = std::max(hit[at], hit_rate);
+            if (hit_rate >= hit[at]) { hit[at] = hit_rate; src[at] = source; }
             const float w = (float) n_req[at];
             for (int k = 0; k < N_KEYS; ++k) {
                 std::vector<float> r = key_of(at, k);
@@ -233,6 +236,7 @@ struct moe_topic_store {
                 std::copy(cnt, cnt + rec_cells(), counts.begin() + (ptrdiff_t) (at * rec_cells()));
                 n_req[at] = 1;
                 hit[at] = hit_rate;
+                src[at] = source;
             } else {
                 at = size();
                 qkeys.resize(qkeys.size() + N_KEYS * key_bytes());
@@ -241,6 +245,7 @@ struct moe_topic_store {
                 counts.insert(counts.end(), cnt, cnt + rec_cells());
                 n_req.push_back(1);
                 hit.push_back(hit_rate);
+                src.push_back(source);
                 last.push_back(0);
             }
             for (int k = 0; k < N_KEYS; ++k) {
@@ -266,6 +271,7 @@ struct moe_topic_store {
         }
         if (fseek(f, (long) (head_bytes() + i * rec_bytes()), SEEK_SET) == 0) {
             fwrite(&hit[i], sizeof(float), 1, f);
+            fwrite(&src[i], sizeof(uint32_t), 1, f);
             fwrite(&n_req[i], sizeof(uint32_t), 1, f);
             for (int k = 0; k < N_KEYS; ++k) {
                 fwrite(&qinv[i * N_KEYS + k], sizeof(float), 1, f);

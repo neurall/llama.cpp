@@ -88,9 +88,9 @@ int main() {
     {
         moe_topic_store h;
         CHECK(h.open("", E, L, X));
-        CHECK(h.add(keys2(a, am).data(), ca.data(), 0.9f, 0.60f) == 0 && h.hit[0] == 0.60f);
-        CHECK(h.add(keys2(a, am).data(), ca.data(), 0.9f, 0.50f) == 0 && h.last_kept && h.n_req[0] == 1 && h.counts[1] == 10);
-        CHECK(h.add(keys2(a, am).data(), ca.data(), 0.9f, 0.80f) == 0 && !h.last_kept && h.n_req[0] == 2 && h.hit[0] == 0.80f);
+        CHECK(h.add(keys2(a, am).data(), ca.data(), 0.9f, 0.60f, 0) == 0 && h.hit[0] == 0.60f && h.src[0] == 0);
+        CHECK(h.add(keys2(a, am).data(), ca.data(), 0.9f, 0.50f, 1) == 0 && h.last_kept && h.n_req[0] == 1 && h.counts[1] == 10 && h.src[0] == 0);
+        CHECK(h.add(keys2(a, am).data(), ca.data(), 0.9f, 0.80f, 1) == 0 && !h.last_kept && h.n_req[0] == 2 && h.hit[0] == 0.80f && h.src[0] == 1);
     }
 
     // pooling keeps the hottest: a request on the same experts adds its counts, and an expert below its layer's mean use is dropped; a request that shares
@@ -144,7 +144,7 @@ int main() {
 
     // the file holds both records with both keys: a second store reads them back
     moe_topic_store r;
-    CHECK(r.open(path, E, L, X) && r.size() == 2 && r.fkeys.size() == 2 * moe_topic_store::N_KEYS * E && r.key_of(1, 0) == s.key_of(1, 0) && r.qkeys == s.qkeys && r.hit == s.hit && r.n_req[0] == 2 && r.counts[1] == 20 && r.counts[L * X + 6] == 7);
+    CHECK(r.open(path, E, L, X) && r.size() == 2 && r.fkeys.size() == 2 * moe_topic_store::N_KEYS * E && r.key_of(1, 0) == s.key_of(1, 0) && r.qkeys == s.qkeys && r.hit == s.hit && r.src == s.src && r.n_req[0] == 2 && r.counts[1] == 20 && r.counts[L * X + 6] == 7);
     CHECK(r.nearest(b.data(), 1, moe_topic_store::KEY_MEAN)[0].second == 1 && r.nearest(bm.data(), 1, moe_topic_store::KEY_MAX)[0].second == 1);
 
     // another shape (another model or layer split): not read, and never written over

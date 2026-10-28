@@ -5319,9 +5319,12 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
 }
 
 // ---- hot maps per topic (task 158; user idea 2026-10-27; the store: llama-moetopic-fork.h) ---------------------------------------------------------
-// --moe dynhot=1 (off by default until an A/B shows the gain): every request's expert uses (prompt and answer, topic_cnt) are stored under its prompt's key,
-// the mean input embedding of its tokens; the first pass of the next prompt looks up the stored requests nearest to it (cosine >= --moe dynhot-min, 0.80)
-// and merges their maps (topic_heat, 0..1 per expert; all 0 for a new topic). From then on:
+// --moe dynhot=full|store|read|off (1 = full, 0 = off; default store, user 2026-10-28: "dynhot full/onlystore/onlyread/off meaning only store uses ini hotmoes
+// for decode"): every request's expert uses (prompt and answer, topic_cnt) and its decode hit rate are stored under its prompt's keys, the max and the mean
+// of the input embeddings of the whole prompt (template included); a record changes only for a better hit rate. store collects only: the cache runs on the
+// ini's hot experts, so the maps the ini steers and the maps dynhot steers (full) can be compared (each record says which); read steers from a frozen file
+// and stores nothing (reg tests). With full and read the first pass of the next prompt looks up the stored requests nearest to it (cosine >= --moe
+// dynhot-min, 0.80) and merges their maps (topic_heat, 0..1 per expert; all 0 for a new topic). From then on:
 //   - score() takes the topic's map plus this request's own uses as its lifetime term, not the counts of every request ever served (the ini's hot map):
 //     those kept other topics' experts in the cache, so a new topic evicted them before its own cold ones (user: "so tetris doesnt spend 2nd run evicting
 //     stubborn irrelevant moes, just his own cold");
@@ -5329,8 +5332,9 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
 //   - at the first decode step after it, every cached expert that neither the map rates nor the request used goes (topic_drop_foreign), and the refill after
 //     a prompt (reheat_free_blocks, by score) puts the topic's and the request's experts in those blocks: a new topic starts the answer with its own experts
 //     only, the empty start the user asked for, without a cold prompt.
-// Every prompt logs its best similarity: the threshold is calibrated from real prompts. The store lies next to the state file (--moe state=PATH moves both,
-// so a clean-state benchmark cell starts with no stored maps too); the ini's hot map is still counted and saved as before.
+// Every prompt logs its best similarity: the threshold is calibrated from real prompts. The store lies in the user's cache directory (hotmaps/, one file per
+// model; --moe hotmaps=DIR moves it, state=PATH does not: one set of maps collects from every run, clean-state benchmark cells included); the ini's hot map
+// is still counted and saved as before.
 static struct topic_t {
     int                 on = -1;          // -1: not decided yet (the first prompt opens the store)
     moe_topic_store     store;
@@ -5341,7 +5345,10 @@ static struct topic_t {
     int32_t             prev_n = 0;       // tokens of the previous decode call: a prompt starts where a call of more than a step follows a step
     bool                after_prompt = false;   // a prompt began: its first decode step drops the experts foreign to the topic and the request
     uint64_t h0 = 0, m0 = 0;   // decode hits and misses when the request began
-    bool     ro = false;       // --moe dynhot-ro=1: the stored maps are read, never changed
+    enum { OFF, FULL, STORE, READ };
+    int  mode = STORE;
+    bool use()  const { return mode == FULL || mode == READ; }    // the maps steer the cache
+    bool keep() const { return mode == FULL || mode == STORE; }   // requests are stored
 } g_topic;
 
 // the keys of a prompt (moe_topic_store::N_KEYS x n_embd floats, each unit length): the mean of its tokens' input embeddings and per value their largest,
@@ -5413,7 +5420,7 @@ static bool topic_key(const llama_model & model, const int32_t * ids, int32_t n,
 
 // the request just served: its counts under its key (merged into a stored request it nearly equals)
 static void topic_store_pending(moe_cache * mc) {
-    if (g_topic.key.empty() || g_topic.store.n_exp == 0 || g_topic.ro) {
+    if (g_topic.key.empty() || g_topic.store.n_exp == 0 || !g_topic.keep()) {
         g_topic.key.clear();
         return;
     }
@@ -5435,10 +5442,11 @@ static void topic_store_pending(moe_cache * mc) {
         { std::lock_guard<std::mutex> lk(mc->mtx); for (const auto & ls : mc->layers) { h1 += ls.n_hit; m1 += ls.n_miss; } }
         const uint64_t dh = h1 - g_topic.h0, dm = m1 - g_topic.m0;
         const float hr = dh + dm > 0 ? (float) ((double) dh / (double) (dh + dm)) : -1.0f;   // this request's decode hit rate (unknown when it decoded nothing)
-        const size_t at = g_topic.store.add(g_topic.key.data(), cnt.data(), g_topic.merge_overlap, hr);
-        LLAMA_LOG_WARN("moe-cache: dynhot: request stored: best overlap with a record %.2f, threshold %.2f%s: %s record %zu (%zu records, %.2f ms)\n",
-                g_topic.store.last_best, g_topic.store.last_thr, g_topic.merge_overlap < 0.0f ? " (automatic)" : "", g_topic.store.last_kept ? "kept (hit rate not better)" : g_topic.store.last_merged ? "pooled into" : "new",
-                at, g_topic.store.size(), (ggml_time_us() - t0) / 1e3);
+        const size_t at = g_topic.store.add(g_topic.key.data(), cnt.data(), g_topic.merge_overlap, hr, g_topic.use() ? 1u : 0u);
+        LLAMA_LOG_WARN("moe-cache: dynhot: request stored (hit %.1f%% with the cache on %s): best overlap with a record %.2f, threshold %.2f%s: %s record %zu "
+                "(its hit %.1f%%, %zu records, %.2f ms)\n", 100.0 * hr, g_topic.use() ? "the hot maps" : "the ini's hot experts", g_topic.store.last_best,
+                g_topic.store.last_thr, g_topic.merge_overlap < 0.0f ? " (automatic)" : "", g_topic.store.last_kept ? "kept (hit rate not better)" : g_topic.store.last_merged ? "pooled into" : "new",
+                at, 100.0 * g_topic.store.hit[at], g_topic.store.size(), (ggml_time_us() - t0) / 1e3);
     }
     g_topic.key.clear();
 }
@@ -5460,19 +5468,27 @@ static size_t topic_drop_foreign(moe_cache * mc) {
     return n;
 }
 
-// <state dir>/hotmaps/<model section><ext>: the files of the hot maps per topic and of the per-expert tokens, one per model, next to the state file
-// ("" when there is no state file). --moe hotmaps=DIR puts them in DIR instead: one set of maps that outlives clean-state benchmark cells (their state file
-// is a new one per cell), and the frozen set reg tests read (dynhot-ro=1)
+// the directory of the hot maps: --moe hotmaps=DIR (a frozen set for reg tests, a scratch set for an A/B), else hotmaps/ in the user's cache directory,
+// whatever state file the run uses; "" with state=0 (no learned state at all) or no cache directory
+static std::string hotmap_dir() {
+    if (const char * d = moe_opt("hotmaps")) {
+        return strcmp(d, "0") == 0 ? "" : d;
+    }
+    if (const char * s = moe_opt("state"); s != nullptr && strcmp(s, "0") == 0) {
+        return "";
+    }
+    const std::string u = moe_user_dir();
+    return u.empty() ? "" : u + "/hotmaps";
+}
+
+// <hot map dir>/<model section><ext>: the files of the hot maps per topic and of the per-expert tokens, one per model ("" when there is no directory)
 static std::string hotmap_path(const llama_model & model, const char * ext) {
-    const char * hd = moe_opt("hotmaps");
-    const std::string sf = moe_state_file();
-    if (hd == nullptr && sf.empty()) {
+    const std::string dir = hotmap_dir();
+    if (dir.empty()) {
         return "";
     }
     std::string sec = moe_state_section(model);
     for (char & ch : sec) { if (!isalnum((unsigned char) ch) && ch != '-' && ch != '.') { ch = '_'; } }
-    const std::filesystem::path sp(sf);
-    const std::string dir = hd != nullptr ? std::string(hd) : (sp.has_parent_path() ? sp.parent_path() : std::filesystem::path(".")).string() + "/hotmaps";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir + "/" + sec + ext;
@@ -5557,9 +5573,11 @@ static void exptok_call(const llama_model & model, const int32_t * ids, int32_t 
 // a request started (the server's hook): the next call starts its prompt, however short it is (topic_begin). Not set before the first request: the
 // server's warm-up decodes at load are no prompt (a record of their 2 tokens would be stored at every start)
 static std::atomic<bool> g_req_boundary{false};
+static std::vector<int32_t> g_req_prompt;   // the whole prompt of the request that started: the tokens of its topic's key (the server's thread, as decode)
 
 // the server's hooks (llama-fork-hooks.h): a request starts; a request ended: the per-expert token ids to the file, so the file is whole while the server waits
-void llama_moe_request_begin_fork(void) {
+void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_prompt) {
+    g_req_prompt.assign(prompt, prompt + (prompt != nullptr ? std::max(0, n_prompt) : 0));
     g_req_boundary.store(true);
 }
 
@@ -5581,28 +5599,35 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
     if (mc == nullptr || !first || g_topic.on == 0) {
         return;
     }
-    if (g_topic.on < 0) {   // the first prompt: open the store next to the state file
+    if (g_topic.on < 0) {   // the first prompt: open the store
         size_t max_rec = 1024;
-        const char * e = moe_opt("dynhot");
-        const std::string sf = moe_state_file();
-        g_topic.on = e != nullptr && atoi(e) != 0 && (!sf.empty() || moe_opt("hotmaps") != nullptr) && model.tok_embd != nullptr && model.hparams.n_expert > 0 ? 1 : 0;
+        const std::string m = moe_opt("dynhot") ? moe_opt("dynhot") : "store";
+        if      (m == "full" || m == "1") { g_topic.mode = topic_t::FULL; }
+        else if (m == "read")             { g_topic.mode = topic_t::READ; }
+        else if (m == "off"  || m == "0") { g_topic.mode = topic_t::OFF; }
+        else if (m == "store")            { g_topic.mode = topic_t::STORE; }
+        else { LLAMA_LOG_WARN("moe-cache: dynhot=%s: not full, store, read or off; store\n", m.c_str()); }
+        g_topic.on = g_topic.mode != topic_t::OFF && !hotmap_dir().empty() && model.tok_embd != nullptr && model.hparams.n_expert > 0 ? 1 : 0;
         if (g_topic.on == 0) {
+            g_req_prompt.clear();
             return;
         }
         if (const char * m = moe_opt("dynhot-pool"))  { g_topic.pool = strcmp(m, "max") == 0 ? moe_topic_store::KEY_MAX : moe_topic_store::KEY_MEAN; }
         if (const char * m = moe_opt("dynhot-max"))   { max_rec = (size_t) atoll(m); }   // records kept: 0 = no limit (while testing)
         if (const char * m = moe_opt("dynhot-min"))   { g_topic.min_cos   = (float) atof(m); }
-        if (const char * m = moe_opt("dynhot-ro"))    { g_topic.ro = atoi(m) != 0; }   // frozen maps: lookups only, no request stored (reg tests on one fixed file)
         if (const char * m = moe_opt("dynhot-merge")) { g_topic.merge_overlap = m[0] == 'a' ? -1.0f : (float) atof(m); }   // a number, or "auto" (the default)
-        const std::string path = hotmap_path(model, ".hotmap");   // <state dir>/hotmaps/<model>.hotmap
+        const std::string path = hotmap_path(model, ".hotmap");   // <hot map dir>/<model>.hotmap
         g_topic.store.pool = g_topic.pool;
         g_topic.store.max_records = max_rec;   // a record is the keys and a count per expert of every layer: 49 KB on DeepSeek-V4.1, 49 MB of RAM at the default 1024
         if (!g_topic.store.open(path, (uint32_t) model.hparams.n_embd, (uint32_t) model.hparams.n_layer(), (uint32_t) model.hparams.n_expert)) {
             LLAMA_LOG_WARN("moe-cache: dynhot: %s holds maps of another shape (model or layer count): not used, not written\n", path.c_str());
         }
-        LLAMA_LOG_WARN("moe-cache: dynhot: %zu stored requests in %s (nearest at cosine >= %.2f fill the cache; none: the answer starts with the prompt's experts only)%s\n",
-                g_topic.store.size(), path.c_str(), g_topic.min_cos, g_topic.ro ? ", frozen: nothing stored" : "");
-        g_topic_on.store(true);
+        static const char * what[] = { "off", "full: the nearest maps steer the cache (cosine >= %.2f), every request stored",
+            "store: requests stored, the cache runs on the ini's hot experts", "read: the nearest maps steer the cache (cosine >= %.2f), nothing stored (frozen)" };
+        LLAMA_LOG_WARN("moe-cache: dynhot: %zu stored requests in %s; dynhot=%s\n", g_topic.store.size(), path.c_str(), tr_fmt(what[g_topic.mode], g_topic.min_cos).c_str());
+        if (g_topic.use()) {
+            g_topic_on.store(true);
+        }
     }
     topic_store_pending(mc);   // the request before this prompt, now searchable too
     const int64_t t0 = ggml_time_us();
@@ -5612,11 +5637,21 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
     size_t  used = 0;
     int32_t n_distinct = 0;
     int64_t t_key = 0;
-    if (topic_key(model, ids, n, key, &n_distinct)) {   // no key (an embedding type without a float conversion): a new topic, and nothing stored for it
+    // the key: the server's whole prompt (its prompt cache may decode only the tail: the 4 tokens of a repeated prompt were a new topic), else this call's tokens
+    const std::vector<int32_t> whole = std::move(g_req_prompt);
+    g_req_prompt.clear();
+    const int32_t * kt = whole.empty() ? ids : whole.data();
+    const int32_t   kn = whole.empty() ? n : (int32_t) whole.size();
+    if (topic_key(model, kt, kn, key, &n_distinct)) {   // no key (an embedding type without a float conversion): a new topic, and nothing stored for it
         t_key = ggml_time_us() - t0;
         const uint32_t ne = g_topic.store.n_embd;
         const int      other = moe_topic_store::N_KEYS - 1 - g_topic.pool;
-        used = g_topic.store.merge(key.data() + (size_t) g_topic.pool * ne, 4, g_topic.min_cos, heat, &best);
+        if (g_topic.use()) {
+            used = g_topic.store.merge(key.data() + (size_t) g_topic.pool * ne, 4, g_topic.min_cos, heat, &best);
+        } else {   // store: only how near the nearest record is (the log)
+            const auto nb = g_topic.store.nearest(key.data() + (size_t) g_topic.pool * ne, 1, g_topic.pool);
+            best = nb.empty() ? -1.0f : nb[0].first;
+        }
         const auto nb = g_topic.store.nearest(key.data() + (size_t) other * ne, 1, other);
         best_other = nb.empty() ? -1.0f : nb[0].first;
     }
@@ -5637,10 +5672,11 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         for (const auto & ls : mc->layers) { g_topic.h0 += ls.n_hit; g_topic.m0 += ls.n_miss; }
     }
     g_topic.key          = std::move(key);
-    g_topic.after_prompt = true;
-    LLAMA_LOG_WARN("moe-cache: dynhot: prompt of %d tokens (%d distinct), nearest of %zu stored requests at cosine %.3f by %s pooling (%.3f by %s): %s "
-            "(key %.1f ms, search %.1f ms)\n", n, n_distinct, g_topic.store.size(), best, g_topic.pool == moe_topic_store::KEY_MAX ? "max" : "mean", best_other,
-            g_topic.pool == moe_topic_store::KEY_MAX ? "mean" : "max", used > 0 ? tr_fmt("%zu merged, their map rates %zu experts", used, rated).c_str() : "a new topic",
+    g_topic.after_prompt = g_topic.use();
+    LLAMA_LOG_WARN("moe-cache: dynhot: prompt of %d tokens (%d distinct, %d in this call), nearest of %zu stored requests at cosine %.3f by %s pooling (%.3f by %s): %s "
+            "(key %.1f ms, search %.1f ms)\n", kn, n_distinct, n, g_topic.store.size(), best, g_topic.pool == moe_topic_store::KEY_MAX ? "max" : "mean", best_other,
+            g_topic.pool == moe_topic_store::KEY_MAX ? "mean" : "max",
+            !g_topic.use() ? "store only, the cache keeps the ini's hot experts" : used > 0 ? tr_fmt("%zu merged, their map rates %zu experts", used, rated).c_str() : "a new topic",
             t_key / 1e3, (ggml_time_us() - t0 - t_key) / 1e3);
 }
 
