@@ -8,10 +8,10 @@
 // Two keys per record, one per pooling (KEY_MEAN: the mean of the token embeddings, KEY_MAX: per value the largest); --moe dynhot-pool picks the one the
 // lookup uses, and since both are stored, one run shows which of the two predicts the experts a request uses (run.py hotmapmat).
 //
-// The store is one flat file per model (<state dir>/hotmap/<model>.hotmap), fixed-size records searched by brute force: 1024 records of a 5120-wide key take
-// 2.2 ms (PC2), against seconds of expert uploads the answer saves (a vector index - HNSW as Chroma uses, or product quantization - pays only from about a
-// million records). A request that used nearly the same experts as a stored one (overlap >= merge_overlap) is pooled into that record, keeping the hottest
-// experts, instead of becoming a new one; merge_overlap > 1 keeps every request as its own record (the first tests: the store grows unmerged).
+// The store is one flat file per model (<user cache dir>/hotmaps/<model>.hotmap), fixed-size records searched by brute force: 1024 records of a 5120-wide key
+// take 2.2 ms (PC2), against seconds of expert uploads the answer saves (a vector index - HNSW as Chroma uses, or product quantization - pays only from about
+// a million records). A request whose key is near a stored record's (4-bit cosine >= merge_cos) joins that record: one record per topic, not per request
+// (add); merge_cos > 1 keeps every request as its own record.
 // No ggml in here: tests/test-moetopic-fork.cpp drives it.
 #pragma once
 #include <algorithm>
@@ -77,9 +77,8 @@ struct moe_topic_store {
     std::vector<uint64_t> last;    // the request number that last used a record (memory only: picks the record to replace)
     uint64_t clock = 0;
     std::string path;
-    std::vector<float> seen;       // memory only: per stored request the overlap of its nearest record (the values the automatic threshold splits)
-    float last_best = 0.0f, last_thr = 0.0f;   // what the last add compared (for the log)
-    bool  last_merged = false, last_kept = false;   // last_kept: merged topic, but the request hit worse than the record: nothing changed
+    float last_cos = 0.0f, last_best = 0.0f;   // the last add: the nearest record's cosine (4-bit, as the lookup reads it), how alike the maps were (the log)
+    bool  last_merged = false, last_kept = false;   // last_merged: the request went to a stored record; last_kept: its prompt, but no better hit rate: nothing changed
     bool  last_same = false;                         // the last add was a prompt already stored (its key as alike as SAME_KEY)
     static constexpr float SAME_KEY = 0.999f;        // keys this alike (cosine of the float keys) are one prompt: one record, its map replaced only by a better hit rate
 
@@ -100,7 +99,7 @@ struct moe_topic_store {
     // starts empty in memory and is not written. Returns false then.
     bool open(const std::string & p, uint32_t e, uint32_t l, uint32_t x) {
         path = p; n_embd = e; n_layers = l; n_exp = x;
-        qkeys.clear(); fkeys.clear(); qinv.clear(); counts.clear(); n_req.clear(); hit.clear(); src.clear(); last.clear(); seen.clear();
+        qkeys.clear(); fkeys.clear(); qinv.clear(); counts.clear(); n_req.clear(); hit.clear(); src.clear(); last.clear();
         FILE * f = fopen(path.c_str(), "rb");
         if (!f) { return true; }   // a new store: the first add creates the file
         char m[8]; uint32_t h[4];
@@ -167,50 +166,30 @@ struct moe_topic_store {
         return layers > 0 ? (float) (sum / (double) layers) : 0.0f;
     }
 
-    // the overlap at which two requests are one topic, from the requests seen so far: the best overlap of each against the records before it falls in two
-    // groups, requests on a topic already stored (high) and requests on a new topic (low); the threshold splits them where the two groups differ most
-    // (the split that maximises the variance between them, midway between the neighbouring values; the values start empty with the server). Too high a
-    // threshold stores a record per request, too low merges topics; with fewer than 6 values or no clear gap between the groups (under 0.15 apart) the
-    // start value 0.90 stands.
-    float auto_threshold() const {
-        const float start = 0.90f;
-        if (seen.size() < 6) { return start; }
-        std::vector<float> v(seen);
-        std::sort(v.begin(), v.end());
-        double tot = 0.0;
-        for (float x : v) { tot += x; }
-        double lo = 0.0, bestvar = -1.0, thr = start, gap = 0.0;
-        for (size_t k = 1; k < v.size(); ++k) {
-            lo += v[k - 1];
-            const double n0 = (double) k, n1 = (double) (v.size() - k), m0 = lo / n0, m1 = (tot - lo) / n1;
-            const double var = n0 * n1 * (m1 - m0) * (m1 - m0);
-            if (var > bestvar) { bestvar = var; thr = 0.5 * (v[k - 1] + v[k]); gap = m1 - m0; }
+    // a finished request (keys: N_KEYS x n_embd floats, each unit length, in KEY_ order), its hit rate and what picked the cache's experts (source). The
+    // record nearest by the lookup key (4-bit, as the lookup reads it) is the request's topic when at least merge_cos alike (merge_cos > 1: never, every
+    // request a record of its own):
+    //   - the same prompt (float keys as alike as SAME_KEY): its map, hit rate and source are replaced when the request hit better, else nothing changes
+    //     (user 2026-10-28: "store only if new heatmap better hitrate": repeated runs keep the best map);
+    //   - another prompt of the topic: its counts are added and the experts below their layer's mean use dropped, so the record keeps the topic's hottest
+    //     experts; the record keeps its first prompt's keys (pooled keys drift: a max-pooled key grows toward a vector near every prompt, and one record
+    //     would take every topic). The 4-bit search rounds away the small values of a key, so prompts on one topic come out close: 100k Python requests
+    //     make a few records, not 100k, and a query not asked before finds its topic's map (user 2026-10-28).
+    // Else a new record (replacing the least recently used one past max_records). Returns the record's index.
+    size_t add(const float * keys, const uint32_t * cnt, float merge_cos, float hit_rate = -1.0f, uint32_t source = 0) {
+        const float * key = keys + (size_t) pool * n_embd;
+        const auto nb = nearest(key, 4, pool);
+        size_t at = size();
+        last_cos = nb.empty() ? -1.0f : nb[0].first;
+        last_same = false;
+        for (const auto & c : nb) {
+            if (merge_cos <= 1.0f && key_cos(c.second, key) >= SAME_KEY) { at = c.second; last_same = true; break; }
         }
-        return gap < 0.15 ? start : std::min(0.98f, std::max(0.5f, (float) thr));
-    }
-
-    // a finished request (keys: N_KEYS x n_embd floats, each unit length, in KEY_ order) and its hit rate (source: what steered the cache). The same prompt as a
-    // record (keys as alike as SAME_KEY; merging on) is that record: its map, hit rate and source are replaced when the request hit better, else nothing
-    // changes (user 2026-10-28: "store only if new heatmap better hitrate"; repeated runs keep the best map). Otherwise, when one of the records nearest by cosine used the experts nearly as
-    // it did (overlap >= merge_overlap, the best such record; a negative merge_overlap = automatic, auto_threshold), the two are one topic: each key is pooled
-    // by its own rule (the mean key: a mean weighted by the requests each holds; the max key: per value the larger), the counts added, and the experts below
-    // their layer's mean use dropped, so a record keeps only the hottest; the record is replaced in place. Else a new record (replacing the least recently
-    // used one past max_records). Returns the record's index.
-    size_t add(const float * keys, const uint32_t * cnt, float merge_overlap, float hit_rate = -1.0f, uint32_t source = 0) {
-        size_t at = size(), same = SIZE_MAX;
-        float  best = 0.0f;
-        last_thr = merge_overlap >= 0.0f ? merge_overlap : auto_threshold();   // a negative value asks for the automatic threshold
-        for (const auto & c : nearest(keys + (size_t) pool * n_embd, 4, pool)) {   // only the records nearest by cosine are compared by experts used
-            const float o = overlap(counts.data() + c.second * rec_cells(), cnt);
-            if (o > best) { best = o; at = c.second; }
-            if (same == SIZE_MAX && merge_overlap <= 1.0f && key_cos(c.second, keys + (size_t) pool * n_embd) >= SAME_KEY) { same = c.second; }
-        }
-        last_best = best;
-        last_same = same != SIZE_MAX;
+        if (!last_same && !nb.empty() && nb[0].first >= merge_cos) { at = nb[0].second; }
+        last_merged = at < size();
+        last_best = last_merged ? overlap(counts.data() + at * rec_cells(), cnt) : 0.0f;
         last_kept = false;
         if (last_same) {
-            at = same;
-            last_merged = true;
             if (hit_rate < 0.0f || (hit[at] >= 0.0f && hit_rate < hit[at])) {   // not measured, or not better: the record stays
                 last_kept = true;
                 return at;
@@ -219,34 +198,7 @@ struct moe_topic_store {
             hit[at] = hit_rate;
             src[at] = source;
             n_req[at]++;
-            last[at] = ++clock;
-            write(at);
-            return at;
-        }
-        if (size() > 0) {   // the last 256 values: the threshold follows the recent mix of requests and costs the same however long the server runs
-            if (seen.size() >= 256) { seen.erase(seen.begin()); }
-            seen.push_back(best);
-        }
-        if (best < last_thr) { at = size(); }
-        last_merged = at < size();
-        if (at < size() && hit_rate >= 0.0f && hit[at] >= 0.0f && hit_rate < hit[at]) {   // store only a better hit rate: the record already serves this topic better
-            last_kept = true;
-            return at;
-        }
-        if (at < size()) {
-            if (hit_rate >= hit[at]) { hit[at] = hit_rate; src[at] = source; }
-            const float w = (float) n_req[at];
-            for (int k = 0; k < N_KEYS; ++k) {
-                std::vector<float> r = key_of(at, k);
-                const float * key = keys + (size_t) k * n_embd;
-                for (uint32_t j = 0; j < n_embd; ++j) { r[j] = k == KEY_MAX ? std::max(r[j], key[j]) : r[j] * w + key[j]; }
-                double nn = 0.0;
-                for (uint32_t j = 0; j < n_embd; ++j) { nn += (double) r[j] * r[j]; }
-                const float inv = nn > 0.0 ? (float) (1.0 / std::sqrt(nn)) : 1.0f;
-                for (uint32_t j = 0; j < n_embd; ++j) { r[j] *= inv; }
-                std::copy(r.begin(), r.end(), fkeys.begin() + (ptrdiff_t) ((at * N_KEYS + k) * n_embd));   // the pooled key as it is, unit length
-                moe_topic_quant(r.data(), n_embd, qk(at, k), &qinv[at * N_KEYS + k]);
-            }
+        } else if (last_merged) {
             uint32_t * c = counts.data() + at * rec_cells();
             for (uint32_t l = 0; l < n_layers; ++l) {
                 uint32_t * x = c + (size_t) l * n_exp;
@@ -258,6 +210,7 @@ struct moe_topic_store {
                 }
                 for (uint32_t e = 0; e < n_exp; ++e) { if ((uint64_t) x[e] * n_exp < tot) { x[e] = 0; } }
             }
+            if (hit_rate > hit[at]) { hit[at] = hit_rate; src[at] = source; }   // the best hit rate a request of the topic reached
             n_req[at]++;
         } else {
             if (size() >= max_records && max_records > 0) {
@@ -322,7 +275,7 @@ struct moe_topic_store {
         const auto nb = nearest(key, k, pool);
         if (best) { *best = nb.empty() ? -1.0f : nb[0].first; }
         for (const auto & p : nb) {
-            if (p.first < min_cos) { break; }
+            if (p.first < min_cos || p.first <= 0.0f) { break; }   // the weight is the cosine: a record pointing away adds nothing
             const uint32_t * c = counts.data() + p.second * rec_cells();
             for (uint32_t l = 0; l < n_layers; ++l) {
                 uint64_t tot = 0;

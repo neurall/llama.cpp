@@ -37,7 +37,7 @@ static std::vector<float> keys2(const std::vector<float> & mean, const std::vect
 
 int main() {
     const uint32_t E = 64, L = 3, X = 8;
-    const float NEVER = 2.0f;   // a merge threshold no overlap reaches: every request its own record
+    const float NEVER = 2.0f;   // a merge cosine no key reaches: every request its own record
     const std::string path = std::string(P_tmpdir) + "/test-moetopic-fork.bin";
     std::remove(path.c_str());
     std::mt19937 g(7);
@@ -76,15 +76,10 @@ int main() {
     CHECK(nb.size() == 2 && nb[0].second == 0 && nb[0].first > 0.95f && nb[1].first < nb[0].first);
     CHECK(s.nearest(bm.data(), 1, moe_topic_store::KEY_MAX)[0].second == 1);
 
-    // a request that used the same experts merges into its record (lookup by the max key, the default): counts add, both keys stay unit length
-    CHECK(s.add(keys2(a2, a2m).data(), ca.data(), 0.9f) == 0 && !s.last_same);
+    // a near prompt (not the same one) joins its record (lookup by the max key, the default): counts add, the record keeps its first prompt's keys
+    CHECK(s.add(keys2(a2, a2m).data(), ca.data(), 0.9f) == 0 && !s.last_same && s.last_merged && s.last_cos >= 0.9f);
     CHECK(s.size() == 2 && s.n_req[0] == 2 && s.counts[1] == 20);
-    for (int k = 0; k < moe_topic_store::N_KEYS; ++k) {
-        const std::vector<float> k0 = s.key_of(0, k);
-        double n = 0.0;
-        for (uint32_t j = 0; j < E; ++j) { n += (double) k0[j] * k0[j]; }
-        CHECK(std::fabs(n - 1.0) < 1e-4);
-    }
+    CHECK(s.key_of(0, moe_topic_store::KEY_MEAN) == a && s.key_of(0, moe_topic_store::KEY_MAX) == am);
 
     // the same prompt again: one record, its map replaced only by a better hit rate (not added: repeated runs keep the best map); a run not measured changes nothing
     {
@@ -98,42 +93,18 @@ int main() {
         CHECK(h.add(keys2(a, am).data(), ca2.data(), 0.9f, 0.80f, 1) == 0 && !h.last_kept && h.size() == 1 && h.n_req[0] == 2 && h.counts[1] == 20 && h.hit[0] == 0.80f && h.src[0] == 1);
     }
 
-    // pooling keeps the hottest: a request on the same experts adds its counts, and an expert below its layer's mean use is dropped; a request that shares
-    // only half its experts is a record of its own (the overlap is the sum of the smaller shares: 0.5 here)
+    // a prompt of the topic adds its counts and the experts below their layer's mean use are dropped; a prompt far from every record is a record of its own;
+    // merging off (merge_cos > 1): every request its own record, the same one again too
     std::vector<uint32_t> cc(L * X, 0), ch(L * X, 0);
     for (uint32_t l = 0; l < L; ++l) { cc[l * X + 1] = 100; cc[l * X + 2] = 60; cc[l * X + 7] = 1; ch[l * X + 1] = 100; ch[l * X + 5] = 100; }
     {
         moe_topic_store p;
         CHECK(p.open("", E, L, X));
-        CHECK(std::fabs(p.overlap(ch.data(), cc.data()) - 0.5f) < 1e-5f);
-        CHECK(p.add(keys2(a, am).data(), cc.data(), 0.9f) == 0 && p.add(keys2(b, bm).data(), cc.data(), 0.9f) == 0 && p.size() == 1);   // same experts
+        CHECK(std::fabs(p.overlap(ch.data(), cc.data()) - 0.5f) < 1e-5f);   // how alike two maps are (the log): the smaller shares summed
+        CHECK(p.add(keys2(a, am).data(), cc.data(), 0.9f) == 0 && p.add(keys2(a2, a2m).data(), cc.data(), 0.9f) == 0 && p.size() == 1 && std::fabs(p.last_best - 1.0f) < 1e-5f);
         CHECK(p.counts[1] == 200 && p.counts[2] == 120 && p.counts[7] == 0 && p.n_req[0] == 2);   // expert 7 (2 of 322 uses) is below the mean of 40
-        CHECK(p.add(keys2(a, am).data(), ch.data(), 0.9f) == 1 && p.size() == 2);
-        CHECK(p.add(keys2(a, am).data(), cc.data(), NEVER) == 2 && p.size() == 3);   // merging off: the same request again is a record of its own
-    }
-
-    // pooled keys, each by its rule: the mean key the mean of the two (weighted by the requests each holds), the max key per value the larger
-    {
-        moe_topic_store m;
-        CHECK(m.open("", E, L, X));
-        std::vector<float> u(E, 0.0f), v(E, 0.0f);
-        u[0] = 1.0f; v[1] = 1.0f;
-        CHECK(m.add(keys2(u, u).data(), cc.data(), 0.9f) == 0 && m.add(keys2(v, v).data(), cc.data(), 0.9f) == 0);   // same experts: one record
-        const std::vector<float> kmean = m.key_of(0, moe_topic_store::KEY_MEAN), kmax = m.key_of(0, moe_topic_store::KEY_MAX);
-        CHECK(std::fabs(kmean[0] - 0.70710678f) < 1e-4f && std::fabs(kmean[1] - 0.70710678f) < 1e-4f && kmean[2] == 0.0f);   // (u + v) / |u + v|
-        CHECK(std::fabs(kmax[0] - 0.70710678f) < 1e-4f && std::fabs(kmax[1] - 0.70710678f) < 1e-4f && kmax[2] == 0.0f);     // max(u, v), unit length
-    }
-
-    // the automatic threshold: too few requests or no gap between the two groups keeps the start value, else it splits the groups midway
-    {
-        moe_topic_store t;
-        CHECK(t.open("", E, L, X) && t.auto_threshold() == 0.90f);
-        t.seen = { 0.20f, 0.25f, 0.30f, 0.22f, 0.95f, 0.97f };
-        CHECK(std::fabs(t.auto_threshold() - 0.625f) < 1e-5f);
-        t.seen = { 0.88f, 0.90f, 0.91f, 0.92f, 0.93f, 0.95f };
-        CHECK(t.auto_threshold() == 0.90f);
-        t.seen.clear();
-        CHECK(t.add(keys2(a, am).data(), cc.data(), -1.0f) == 0 && t.add(keys2(b, bm).data(), ch.data(), -1.0f) == 1 && !t.last_merged);   // another prompt, 0.5 < 0.9: new
+        CHECK(p.add(keys2(b, bm).data(), ch.data(), 0.9f) == 1 && p.size() == 2 && !p.last_merged);
+        CHECK(p.add(keys2(a, am).data(), cc.data(), NEVER) == 2 && p.size() == 3);
     }
 
     // the merged heat of a key near a, one scale for all layers: expert 1 of layers 0 and 1 (2/3 of their uses) is 1.0 and expert 2 there 0.5; layer 2

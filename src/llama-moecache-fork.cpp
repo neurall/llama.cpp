@@ -5323,15 +5323,16 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
 // for decode"): every request's expert uses (prompt and answer, topic_cnt) and its decode hit rate are stored under its prompt's keys, the max and the mean
 // of the input embeddings of the whole prompt (template included); a record changes only for a better hit rate. store collects only: the cache runs on the
 // ini's hot experts, so the maps the ini steers and the maps dynhot steers (full) can be compared (each record says which); read steers from a frozen file
-// and stores nothing (reg tests). With full and read the first pass of the next prompt looks up the stored requests nearest to it (cosine >= --moe
-// dynhot-min, 0.80) and merges their maps (topic_heat, 0..1 per expert; all 0 for a new topic). From then on:
+// and stores nothing (reg tests). With full and read the first pass of the next prompt looks up the 4 stored records nearest to it and merges their maps,
+// each weighted by its cosine (topic_heat, 0..1 per expert): a query not asked before takes the maps of the nearest topics, at least as near to it as the
+// ini's map of everything (user 2026-10-28: "cos dist always picks one that is simmilar to what ini had maybe even better"); --moe dynhot-min=X takes only
+// records at least X alike. With nothing stored the ini picks, as before. From then on:
 //   - score() takes the topic's map plus this request's own uses as its lifetime term, not the counts of every request ever served (the ini's hot map):
 //     those kept other topics' experts in the cache, so a new topic evicted them before its own cold ones (user: "so tetris doesnt spend 2nd run evicting
 //     stubborn irrelevant moes, just his own cold");
 //   - the prompt runs on whatever the cache holds (an expert it finds there is one it does not stream);
 //   - at the first decode step after it, every cached expert that neither the map rates nor the request used goes (topic_drop_foreign), and the refill after
-//     a prompt (reheat_free_blocks, by score) puts the topic's and the request's experts in those blocks: a new topic starts the answer with its own experts
-//     only, the empty start the user asked for, without a cold prompt.
+//     a prompt (reheat_free_blocks, by score) puts the topic's and the request's experts in those blocks.
 // Every prompt logs its best similarity: the threshold is calibrated from real prompts. The store lies in the user's cache directory (hotmaps/, one file per
 // model; --moe hotmaps=DIR moves it, state=PATH does not: one set of maps collects from every run, clean-state benchmark cells included); the ini's hot map
 // is still counted and saved as before.
@@ -5341,13 +5342,14 @@ static struct topic_t {
     std::vector<float>  mean;             // the vocabulary's mean input embedding: keys are centered on it (a mean over many tokens is mostly the common ones)
     std::vector<float>  key;              // the key of the request being served (empty: none)
     int                 pool = moe_topic_store::KEY_MAX;   // --moe dynhot-pool=max (default) | avg: the pooled key the lookup uses (both are stored)
-    float               min_cos = 0.80f, merge_overlap = -1.0f;   // lookup: records at least min_cos alike in key; store: requests at least merge_overlap alike in experts used merge (negative: found from the requests, auto_threshold)
+    float               min_cos = -1.0f, merge_cos = 0.80f;   // lookup: the 4 nearest records (only those at least min_cos alike; -1: any); store: a request at least merge_cos alike joins the record
     int32_t             prev_n = 0;       // tokens of the previous decode call: a prompt starts where a call of more than a step follows a step
     bool                after_prompt = false;   // a prompt began: its first decode step drops the experts foreign to the topic and the request
     uint64_t h0 = 0, m0 = 0;   // decode hits and misses when the request began
     enum { OFF, FULL, STORE, READ };
     int  mode = STORE;
-    bool use()  const { return mode == FULL || mode == READ; }    // the maps steer the cache
+    bool steer = false;   // this request: stored maps pick the cache's experts (full or read, and a map found)
+    bool use()  const { return mode == FULL || mode == READ; }    // the maps pick the cache's experts
     bool keep() const { return mode == FULL || mode == STORE; }   // requests are stored
 } g_topic;
 
@@ -5442,11 +5444,13 @@ static void topic_store_pending(moe_cache * mc) {
         { std::lock_guard<std::mutex> lk(mc->mtx); for (const auto & ls : mc->layers) { h1 += ls.n_hit; m1 += ls.n_miss; } }
         const uint64_t dh = h1 - g_topic.h0, dm = m1 - g_topic.m0;
         const float hr = dh + dm > 0 ? (float) ((double) dh / (double) (dh + dm)) : -1.0f;   // this request's decode hit rate (unknown when it decoded nothing)
-        const size_t at = g_topic.store.add(g_topic.key.data(), cnt.data(), g_topic.merge_overlap, hr, g_topic.use() ? 1u : 0u);
-        LLAMA_LOG_WARN("moe-cache: dynhot: request stored (hit %.1f%% with the cache on %s): best overlap with a record %.2f, threshold %.2f%s: %s record %zu "
-                "(its hit %.1f%%, %zu records, %.2f ms)\n", 100.0 * hr, g_topic.use() ? "the hot maps" : "the ini's hot experts", g_topic.store.last_best,
-                g_topic.store.last_thr, g_topic.merge_overlap < 0.0f ? " (automatic)" : "", g_topic.store.last_kept ? "kept (hit rate not better)" : g_topic.store.last_same ? "the same prompt: map replaced in" : g_topic.store.last_merged ? "pooled into" : "new",
-                at, 100.0 * g_topic.store.hit[at], g_topic.store.size(), (ggml_time_us() - t0) / 1e3);
+        const float  mcos = g_topic.merge_cos;
+        const size_t at = g_topic.store.add(g_topic.key.data(), cnt.data(), mcos, hr, g_topic.steer ? 1u : 0u);
+        const auto & st = g_topic.store;
+        LLAMA_LOG_WARN("moe-cache: dynhot: request stored (hit %.1f%% with the cache on %s): nearest record at cosine %.3f (joins at >= %.2f), maps overlap %.2f: "
+                "%s record %zu (its hit %.1f%%, %u requests, %zu records, %.2f ms)\n", 100.0 * hr, g_topic.steer ? "the hot maps" : "the ini's hot experts",
+                st.last_cos, mcos, st.last_best, st.last_kept ? "kept (hit rate not better)" : st.last_same ? "the same prompt: map replaced in" : st.last_merged ? "joined" : "new",
+                at, 100.0 * st.hit[at], st.n_req[at], st.size(), (ggml_time_us() - t0) / 1e3);
     }
     g_topic.key.clear();
 }
@@ -5615,19 +5619,18 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         if (const char * m = moe_opt("dynhot-pool"))  { g_topic.pool = strcmp(m, "max") == 0 ? moe_topic_store::KEY_MAX : moe_topic_store::KEY_MEAN; }
         if (const char * m = moe_opt("dynhot-max"))   { max_rec = (size_t) atoll(m); }   // records kept: 0 = no limit (while testing)
         if (const char * m = moe_opt("dynhot-min"))   { g_topic.min_cos   = (float) atof(m); }
-        if (const char * m = moe_opt("dynhot-merge")) { g_topic.merge_overlap = m[0] == 'a' ? -1.0f : (float) atof(m); }   // a number, or "auto" (the default)
+        if (const char * m = moe_opt("dynhot-merge")) { g_topic.merge_cos = (float) atof(m); }   // the 4-bit cosine at which a request joins a record (default 0.80; > 1: never)
         const std::string path = hotmap_path(model, ".hotmap");   // <hot map dir>/<model>.hotmap
         g_topic.store.pool = g_topic.pool;
         g_topic.store.max_records = max_rec;   // a record is the keys and a count per expert of every layer: 49 KB on DeepSeek-V4.1, 49 MB of RAM at the default 1024
         if (!g_topic.store.open(path, (uint32_t) model.hparams.n_embd, (uint32_t) model.hparams.n_layer(), (uint32_t) model.hparams.n_expert)) {
             LLAMA_LOG_WARN("moe-cache: dynhot: %s holds maps of another shape (model or layer count): not used, not written\n", path.c_str());
         }
-        static const char * what[] = { "off", "full: the nearest maps steer the cache (cosine >= %.2f), every request stored",
-            "store: requests stored, the cache runs on the ini's hot experts", "read: the nearest maps steer the cache (cosine >= %.2f), nothing stored (frozen)" };
-        LLAMA_LOG_WARN("moe-cache: dynhot: %zu stored requests in %s; dynhot=%s\n", g_topic.store.size(), path.c_str(), tr_fmt(what[g_topic.mode], g_topic.min_cos).c_str());
-        if (g_topic.use()) {
-            g_topic_on.store(true);
-        }
+        static const char * what[] = { "off", "full: the nearest maps pick the cache's experts, every request stored",
+            "store: requests stored, the ini's hot experts pick the cache's", "read: the nearest maps pick the cache's experts, nothing stored (frozen)" };
+        LLAMA_LOG_WARN("moe-cache: dynhot: %zu records in %s; dynhot=%s (lookup: the 4 nearest%s; a request joins a record at cosine >= %.2f)\n",
+                g_topic.store.size(), path.c_str(), what[g_topic.mode], g_topic.min_cos > -1.0f ? tr_fmt(" at cosine >= %.2f", g_topic.min_cos).c_str() : "",
+                g_topic.merge_cos);
     }
     topic_store_pending(mc);   // the request before this prompt, now searchable too
     const int64_t t0 = ggml_time_us();
@@ -5668,15 +5671,18 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
             }
         }
         g_topic_tmax.store(1);
+        g_topic.steer = g_topic.use() && used > 0;   // no stored map: the ini picks for this request
+        g_topic_on.store(g_topic.steer);
         g_topic.h0 = g_topic.m0 = 0;   // the decode hits so far: this request's hit rate is what comes after
         for (const auto & ls : mc->layers) { g_topic.h0 += ls.n_hit; g_topic.m0 += ls.n_miss; }
     }
     g_topic.key          = std::move(key);
-    g_topic.after_prompt = g_topic.use();
+    g_topic.after_prompt = g_topic.steer;
     LLAMA_LOG_WARN("moe-cache: dynhot: prompt of %d tokens (%d distinct, %d in this call), nearest of %zu stored requests at cosine %.3f by %s pooling (%.3f by %s): %s "
             "(key %.1f ms, search %.1f ms)\n", kn, n_distinct, n, g_topic.store.size(), best, g_topic.pool == moe_topic_store::KEY_MAX ? "max" : "mean", best_other,
             g_topic.pool == moe_topic_store::KEY_MAX ? "mean" : "max",
-            !g_topic.use() ? "store only, the cache keeps the ini's hot experts" : used > 0 ? tr_fmt("%zu merged, their map rates %zu experts", used, rated).c_str() : "a new topic",
+            !g_topic.use() ? "store only, the ini's hot experts pick the cache's" : used > 0 ? tr_fmt("%zu merged, their map rates %zu experts", used, rated).c_str()
+                                                                                  : "nothing stored: the ini's hot experts pick the cache's",
             t_key / 1e3, (ggml_time_us() - t0 - t_key) / 1e3);
 }
 
