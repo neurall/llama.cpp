@@ -3200,6 +3200,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
         input_cpy->buffer = pf_slot_buf[ri][slot];
         input_cpy->data   = pf_slot_data[ri][slot];
+        // The slot rotates from graph to graph (ring cursor), so a reused graph's split may read its weights from another slot than at its capture. A new uid
+        // makes the CUDA graph cache compare the split's nodes (the uid fast path compares nothing) and capture again when the address changed; a replay would
+        // otherwise read the slot of an earlier pass, which by now holds another layer's experts (the same kind of stale address as the scratch region of
+        // 2026-10-28). Prompt passes only: decode graphs stage nothing.
+        s->graph.uid = ggml_graph_next_uid();
         // Only the experts this MUL_MAT_ID owns (--moe prefill-split gives each card an id range, op_params 8 and 9; 0 is the precision, 1 the skip flag, 3 the src1 precision): one copy of that contiguous range,
         // not the whole tensor. The padding after the range is the MMQ rule of sched_copy_experts: the next expert's first bytes must not hold NaNs.
         const ggml_tensor * mm_node = s->graph.nodes[0];
