@@ -11,6 +11,8 @@
 		onClose?: () => void;
 		onKeyDown?: (event: KeyboardEvent) => void;
 		class?: string;
+		/** Input height, matching the small size of the other controls. */
+		size?: 'sm' | 'default';
 		id?: string;
 		ref?: HTMLInputElement | null;
 		isCancelAlwaysVisible?: boolean;
@@ -26,6 +28,7 @@
 		onKeyDown,
 		placeholder = 'Search...',
 		ref = $bindable(null),
+		size = 'default',
 		value = $bindable('')
 	}: Props = $props();
 

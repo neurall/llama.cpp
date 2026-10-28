@@ -142,7 +142,8 @@ size_t llama_kv_cache_tail_ratio_fork(const void * kv) {   // declared where it 
 
 llama_kv_cache::llama_kv_cache(
         const llama_model & model,
-        const llama_hparams & hparams,
+                     bool   no_alloc,
+      const llama_hparams & hparams,
                 ggml_type   type_k,
                 ggml_type   type_v,
                      bool   v_trans,
@@ -150,16 +151,16 @@ llama_kv_cache::llama_kv_cache(
                      bool   unified,
                  uint32_t   kv_size,
                  uint32_t   n_seq_max,
-                 uint32_t   n_pad,
                  uint32_t   n_swa,
            llama_swa_type   swa_type,
            llama_memory_t   mem_other,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse,
     const  layer_share_cb & share,
-             const char *   name_tag) :
+               const char * name_tag) :
     model(model), hparams(hparams), v_trans(v_trans),
-    n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa), swa_type(swa_type),
+    n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_swa(n_swa), swa_type(swa_type),
+    ctxs_bufs(no_alloc),
     other(static_cast<llama_kv_cache *>(mem_other)),
     v_cells_impl(other ? other->v_cells_impl : std::make_shared<llama_kv_cells_vec>()),
     v_cells(*v_cells_impl) {
@@ -185,14 +186,13 @@ llama_kv_cache::llama_kv_cache(
         }
         const bool can = tm && atoi(tm) != 0 && !other && n_stream == 1 && !v_trans && type_k == type_v && !share && offload && gpu_kv;
         if (kt && atoi(kt) != 0 && uc && !can) {
-            const uint32_t user = GGML_PAD((uint32_t) atoi(uc), n_pad);
+            const uint32_t user = (uint32_t) atoi(uc);
             if (user < kv_size) {
                 LLAMA_LOG_WARN("%s: kv-tail is not possible for this cache (needs flash attention, one stream, equal K and V types, no shared layers, GPU offload): the normal layout with %u cells\n", __func__, user);
                 kv_size = user;
             }
         }
     }
-    GGML_ASSERT(kv_size % n_pad == 0);
 
     const uint32_t n_layer = hparams.n_layer_all;
 
@@ -441,7 +441,7 @@ llama_kv_cache::llama_kv_cache(
         ggml_backend_buffer_t buf;
         auto tm_it = tm_map.find(buft);
         ggml_backend_dev_t tdev = ggml_backend_buft_get_device(buft);
-        const bool tail_here = kv_tail && !hparams.no_alloc && tm_it != tm_map.end() && tm_it->second.rec && tdev && ggml_backend_dev_type(tdev) == GGML_BACKEND_DEVICE_TYPE_GPU;
+        const bool tail_here = kv_tail && !ctxs_bufs.no_alloc && tm_it != tm_map.end() && tm_it->second.rec && tdev && ggml_backend_dev_type(tdev) == GGML_BACKEND_DEVICE_TYPE_GPU;
         if (tail_here) {
             // no memory of its own: a zero-size buffer so the scheduler sees the tensors as allocated; the pool places the record at its tail (attach below).
             // Nothing runs on the KV before that (no warm-up decode with kv-tail, the pool starts at the first real decode), and nothing is allocated or freed.
@@ -450,14 +450,9 @@ llama_kv_cache::llama_kv_cache(
             buf = ggml_backend_buft_alloc_buffer(buft, 0);
             for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) { t->buffer = buf; }
             LLAMA_LOG_WARN("%s: kv-tail: record of %.1f MiB (%zu B per cell, %u cells) on %s has no memory of its own\n", __func__, R / 1048576.0, r.row, kv_size, ggml_backend_dev_name(tdev));
-        } else
-        if (hparams.no_alloc) {
-            buf = ggml_backend_buft_alloc_buffer(buft, /*size =*/ 0); // dummy buffer
-            for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) {
-                t->buffer = buf; // set dummy buffer for KV cache so that the backend scheduler won't try to allocate it
-            }
+            ctxs_bufs.bufs.emplace_back(std::move(ctx), ggml_backend_buffer_ptr(buf));
         } else {
-            buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft); // real buffer
+            buf = ctxs_bufs.emplace(std::move(ctx), buft, "kv cache");   // real buffer, or a dummy one with no_alloc; cleared against NaNs in the padding
         }
         if (!buf) {
             throw std::runtime_error("failed to allocate buffer for kv cache");
@@ -465,13 +460,11 @@ llama_kv_cache::llama_kv_cache(
 
         LLAMA_LOG_INFO("%s: %10s KV buffer size = %8.2f MiB\n", __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf)/1024.0/1024.0);
 
-        if (!tail_here) { ggml_backend_buffer_clear(buf, 0); }
-        ctxs_bufs.emplace_back(std::move(ctx), buf);
         if (tail_here) {
             tm_rec & r = tm_it->second;
-            const size_t idx = ctxs_bufs.size() - 1;
+            const size_t idx = ctxs_bufs.bufs.size() - 1;
             ggml_tensor * rec = r.rec;
-            ggml_context * cx = ctxs_bufs[idx].first.get();
+            ggml_context * cx = ctxs_bufs.bufs[idx].first.get();
             llama_kv_tail_fork reg;
             reg.owner = this;
             reg.dev   = tdev;
@@ -479,7 +472,7 @@ llama_kv_cache::llama_kv_cache(
             reg.row   = r.row;
             reg.step  = kv_tail_step;
             reg.bpv   = (float) ggml_row_size(type_k, 256) / 256.0f;   // equal K and V types here (tail_possible)
-            reg.pad   = std::max(n_pad, 256u);   // the attention reads the cells rounded up as get_n_kv does (at least 256): those rows must be claimed and finite
+            reg.pad   = 256u;   // the attention reads the cells rounded up as get_n_kv does (at least 256): those rows must be claimed and finite
             reg.rows  = [this]() -> size_t {
                 if (const auto fn = tail_rows_get(this)) { return fn(); }   // a cache the graph writes by row (DSV4 compressed): its owner counts the rows
                 return v_cells.empty() ? 0 : (size_t) v_cells[0].used_max_p1();
@@ -583,7 +576,7 @@ llama_kv_cache::llama_kv_cache(
 
         const bool attn_rot_disable = !model.attn_rot || (env_rot_disable != nullptr && atoi(env_rot_disable) != 0);
         if (attn_rot_disable) {
-            LLAMA_LOG_WARN("%s: attention rotation force disabled (%s)\n", __func__,
+            LLAMA_LOG_INFO("%s: attention rotation force disabled (%s)\n", __func__,
                     model.attn_rot ? "LLAMA_ATTN_ROT_DISABLE" : "llama_model_set_attn_rot");
         }
 
@@ -970,20 +963,7 @@ llama_pos llama_kv_cache::seq_pos_max(llama_seq_id seq_id) const {
 }
 
 std::map<ggml_backend_buffer_type_t, size_t> llama_kv_cache::memory_breakdown() const {
-    std::map<ggml_backend_buffer_type_t, size_t> ret;
-    for (const auto & [ctx, buf] : ctxs_bufs) {
-        ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(buf.get());
-
-        if (hparams.no_alloc) {
-            GGML_ASSERT(ggml_backend_buffer_get_base(buf.get()) == nullptr);
-            ret[buft] += ggml_backend_alloc_ctx_tensors_from_buft_size(ctx.get(), buft);
-        } else {
-            // GGML_ASSERT(ggml_backend_buffer_get_base(buf.get()) != nullptr); // multi_buffer does not have a defined base
-            ret[buft] += ggml_backend_buffer_get_size(buf.get());
-        }
-    }
-
-    return ret;
+    return ctxs_bufs.memory_breakdown();
 }
 
 llama_memory_context_ptr llama_kv_cache::init_batch(
@@ -1563,12 +1543,12 @@ uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
 
     // pad the n_kv value so that the graph remains constant across batches and can be reused
     // note: this also helps some backends with performance (f.ex https://github.com/ggml-org/llama.cpp/pull/16812#issuecomment-3455112220)
-    const uint32_t n_pad_cur = std::max(n_pad, 256u);
+    const uint32_t n_pad = 256;
 
     for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
         const auto & cells = v_cells[sinfo.strm[s]];
 
-        result = std::max(std::min(cells.size(), std::max(n_pad_cur, GGML_PAD(cells.used_max_p1(), n_pad_cur))), result);
+        result = std::max(std::min(cells.size(), std::max(n_pad, GGML_PAD(cells.used_max_p1(), n_pad))), result);
     }
 
     return result;
@@ -2165,6 +2145,9 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
     // only the SWA cache (or the SWA layers of a single cache) become non-causal
     if (!causal_attn && hparams.non_causal_type == LLAMA_NON_CAUSAL_TYPE_SWA_ONLY) {
         causal_attn = swa_type == LLAMA_SWA_TYPE_NONE;
+    }
+    if (!causal_attn && hparams.non_causal_type == LLAMA_NON_CAUSAL_TYPE_DENSE_ONLY) {
+        causal_attn = swa_type != LLAMA_SWA_TYPE_NONE;
     }
 
     //const int64_t t_start = ggml_time_us();
