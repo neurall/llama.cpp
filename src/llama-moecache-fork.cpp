@@ -5356,21 +5356,7 @@ static struct topic_t {
 // the keys of a prompt (moe_topic_store::N_KEYS x n_embd floats, each unit length): the mean of its tokens' input embeddings and per value their largest,
 // both minus the vocabulary's mean. A token's row is converted once however often it occurs (a code prompt repeats its tokens), weighted by its count for
 // the mean; past 8192 distinct tokens every k-th of them is taken (the counts still weight the mean)
-// the chat template's own tokens (the server renders its template around a one-letter request at load, thinking on and off): left out of the key, so it
-// pools the request's own text (user 2026-10-28: "pool just raw pretemplate prompts"; in a 2-word request the template is most of the prompt, in a 60k source
-// it drowns). The map still counts the template's experts. A client's own template sent to /completion is not known and stays in the key; --moe dynhot-key=all
-// keeps the template's tokens too (the A/B)
-static std::vector<uint8_t> g_tmpl_tok;   // per vocabulary entry: 1 = a token of the template
-
-void llama_moe_template_tokens_fork(const int32_t * tokens, int32_t n) {
-    for (int32_t i = 0; i < n; ++i) {
-        if (tokens[i] < 0) { continue; }
-        if ((size_t) tokens[i] >= g_tmpl_tok.size()) { g_tmpl_tok.resize((size_t) tokens[i] + 1, 0); }
-        g_tmpl_tok[(size_t) tokens[i]] = 1;
-    }
-}
-
-static bool topic_key(const llama_model & model, const int32_t * ids, int32_t n, std::vector<float> & key, int32_t * n_distinct, int32_t * n_tmpl) {
+static bool topic_key(const llama_model & model, const int32_t * ids, int32_t n, std::vector<float> & key, int32_t * n_distinct) {
     const ggml_tensor * te = model.tok_embd;
     if (te == nullptr || n <= 0 || (te->type != GGML_TYPE_F32 && ggml_get_type_traits(te->type)->to_float == nullptr)) {
         return false;
@@ -5399,11 +5385,8 @@ static bool topic_key(const llama_model & model, const int32_t * ids, int32_t n,
     static std::vector<int32_t>  uniq;
     if ((int64_t) tok_n.size() < nv) { tok_n.assign(nv, 0); }
     uniq.clear();
-    static const bool raw = [] { const char * k = moe_opt("dynhot-key"); return !(k && strcmp(k, "all") == 0); }();
-    *n_tmpl = 0;
     for (int32_t i = 0; i < n; ++i) {
         if (ids[i] < 0 || ids[i] >= nv) { continue; }
-        if (raw && (size_t) ids[i] < g_tmpl_tok.size() && g_tmpl_tok[(size_t) ids[i]]) { ++*n_tmpl; continue; }
         if (tok_n[ids[i]]++ == 0) { uniq.push_back(ids[i]); }
     }
     *n_distinct = (int32_t) uniq.size();
@@ -5657,14 +5640,14 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
     std::vector<float> heat;
     float   best = -1.0f, best_other = -1.0f;   // the nearest record by the lookup key, and by the other pooling (the log compares the two)
     size_t  used = 0;
-    int32_t n_distinct = 0, n_tmpl = 0;
+    int32_t n_distinct = 0;
     int64_t t_key = 0;
     // the key: the server's whole prompt (its prompt cache may decode only the tail: the 4 tokens of a repeated prompt were a new topic), else this call's tokens
     const std::vector<int32_t> whole = std::move(g_req_prompt);
     g_req_prompt.clear();
     const int32_t * kt = whole.empty() ? ids : whole.data();
     const int32_t   kn = whole.empty() ? n : (int32_t) whole.size();
-    if (topic_key(model, kt, kn, key, &n_distinct, &n_tmpl)) {   // no key (an embedding type without a float conversion): a new topic, and nothing stored for it
+    if (topic_key(model, kt, kn, key, &n_distinct)) {   // no key (an embedding type without a float conversion): a new topic, and nothing stored for it
         t_key = ggml_time_us() - t0;
         const uint32_t ne = g_topic.store.n_embd;
         const int      other = moe_topic_store::N_KEYS - 1 - g_topic.pool;
@@ -5697,8 +5680,8 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
     }
     g_topic.key          = std::move(key);
     g_topic.after_prompt = g_topic.steer;
-    LLAMA_LOG_WARN("moe-cache: dynhot: prompt of %d tokens (%d distinct, %d of the template left out, %d in this call), nearest of %zu stored requests at cosine %.3f "
-            "by %s pooling (%.3f by %s): %s (key %.1f ms, search %.1f ms)\n", kn, n_distinct, n_tmpl, n, g_topic.store.size(), best, g_topic.pool == moe_topic_store::KEY_MAX ? "max" : "mean", best_other,
+    LLAMA_LOG_WARN("moe-cache: dynhot: prompt of %d tokens (%d distinct, %d in this call), nearest of %zu stored requests at cosine %.3f by %s pooling (%.3f by %s): %s "
+            "(key %.1f ms, search %.1f ms)\n", kn, n_distinct, n, g_topic.store.size(), best, g_topic.pool == moe_topic_store::KEY_MAX ? "max" : "mean", best_other,
             g_topic.pool == moe_topic_store::KEY_MAX ? "mean" : "max",
             !g_topic.use() ? "store only, the ini's hot experts pick the cache's" : g_topic.steer ? tr_fmt("%zu maps merged and the global map at weight %.2f, "
                 "they rate %zu experts", used, g_topic.store.last_wg, rated).c_str() : "nothing stored: the ini's hot experts pick the cache's",
