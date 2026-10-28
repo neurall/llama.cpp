@@ -67,3 +67,18 @@ Trigger: DeepSeek 4.1 + DSpark draft, every repeat request broke after ~256 toke
 - A registry for host-side buffers.
 - Computed scratch for small ops (argsort, top-k, softmax): the shortfall alarm covers them.
 - Byte-level shadow memory on the GPU: unit tests only.
+
+## State on pool_refactor (2026-10-28)
+
+| done | commit subject (short) |
+|---|---|
+| zone bounds from shared functions (kvz_bytes, kvz_row_at, kvz_end, kvz_read_cells, kv_read_range), no behaviour change | pool: the KV zone's bounds come from shared functions |
+| the lend synchronises before the expert tables change; a graph is not reused after its place in the pool moved (lend epoch) | pool: the lend synchronises before the expert tables change ... |
+| ledger: thread, rw, start/done columns, 2 s flush, graph windows (lend .. graph-done), CUDA graph capture/replay lines with the scratch range, expert table check against block owners (every 64th step, every step with ledger/poison), --moe race-stress=N | pool debugging: ledger lines name the thread ... |
+| a split whose expert input is redirected to a staging slot gets a new uid (no stale slot address in a replayed CUDA graph); suspected, not yet seen | sched: a split whose expert weights were redirected ... |
+
+In release (dspark-fix3): a CUDA graph is captured again when the scratch region moved since its capture.
+
+Next, in order: build and run this branch (OLMoE unit tests test-pool-fork and kvzone_fuzz, the DSpark repeat cell, a GLM 12k multi-pass prompt with CUDA graphs on vs off for the staging-slot case); the layout serial as one per-card counter that the CUDA graph cache and llama's reuse check both read (replacing the scratch compare, the lend epoch and the staging uid with one rule); the one commit function for owner changes; the access-chunk guards for the lend parts; the dense split's copies placed by the manager.
+
+Hotspots (bug-log rows by 2026-10-28): lend / compute alias / CUDA scratch 26, pass planner 23, KV zone 23, expert uploads / tables / slots 21, dense split 12, DSpark draft 12, stored state 8.
