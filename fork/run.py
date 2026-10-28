@@ -8843,7 +8843,8 @@ def _tool_bad_runs():
     with open(csvp, newline="") as f: rd = csv.DictReader(f); head = rd.fieldnames; rows = list(rd)
     keep, move = [], []
     for r in rows:
-        why = reason(r.get("loop"), r.get("uniq4"), r.get("out_chars"), (r.get("ts"), r.get("build"), r.get("test"), r.get("model")), r.get("md5"), r.get("tps"), r.get("major_faults"), r.get("ok"), r.get("note"))
+        why = reason(r.get("loop"), r.get("uniq4"), r.get("out_chars"), (r.get("ts"), r.get("build"), r.get("test"), r.get("model")), r.get("md5"), r.get("tps"), r.get("major_faults"), r.get("ok"), r.get("note"),
+                     r.get("n_gen"), r.get("args"))
         (move if why else keep).append(dict(r, reason=why) if why else r)
     from collections import Counter
     print(f"runs.db: {len(bad)} of {con.execute('select count(*) from runs').fetchone()[0]} runs corrupt:", dict(Counter(w.split(" (")[0].split(":")[0] for _, w in bad)))
