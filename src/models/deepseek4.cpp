@@ -1256,6 +1256,18 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
     inpL = ggml_repeat_4d(ctx0, inpL, n_embd, hc, n_tokens, 1);
     cb(inpL, "hc_init", -1);
 
+    // fork: the layer inputs a draft reads (DSpark: layers 37-39), of only the pass's last rows when the draft sees no more than those
+    // (llama_set_embeddings_layer_inp_last: its sliding window, 129 positions). The mean is taken of those rows alone, so a prompt pass of 16384 tokens holds
+    // 3 x 129 rows (8 MiB) for the draft instead of 3 x 16384 (960 MiB of VRAM, kept to the end of the graph; it no longer fit beside the pool when the
+    // draft switched them on after the pool was sized, 2026-10-28)
+    auto layer_inp = [&](ggml_tensor * x) {
+        const int64_t last = cparams.embeddings_layer_inp_last;
+        if (last > 0 && x->ne[2] > last) {
+            x = ggml_view_3d(ctx0, x, x->ne[0], x->ne[1], last, x->nb[1], x->nb[2], (size_t) (x->ne[2] - last) * x->nb[2]);
+        }
+        return build_hc_mean(x);
+    };
+
     // ---- fork: dense split (token ranges, one per card; the shared kit in llama-graph.cpp, the reasoning in llama-dsplit-fork.cpp) ---------------------------
     // Everything of a DeepSeek-4 layer is per token except the attention block: the compressors (CSA / HCA) keep a running state over the tokens and the
     // indexer selects over the compressed cache, so the attention stays whole. Per layer: every card runs the hyper-connection mix, the norm and (after the
@@ -1341,7 +1353,7 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
 
     for (int il = 0; il < n_layer && !ds_done; ++il) {
         if ((size_t) il < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il]) {
-            res->t_layer_inp[il] = build_hc_mean(inpL);
+            res->t_layer_inp[il] = layer_inp(inpL);
             cb(res->t_layer_inp[il], "layer_inp", il);
             ggml_build_forward_expand(gf, res->t_layer_inp[il]);
         }
@@ -1431,7 +1443,7 @@ llama_model_deepseek4::graph::graph(const llama_model & model, const llm_graph_p
     }
 
     if ((size_t) n_layer < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[n_layer]) {
-        res->t_layer_inp[n_layer] = build_hc_mean(inpL);
+        res->t_layer_inp[n_layer] = layer_inp(inpL);
         cb(res->t_layer_inp[n_layer], "layer_inp", n_layer);
         ggml_build_forward_expand(gf, res->t_layer_inp[n_layer]);
     }

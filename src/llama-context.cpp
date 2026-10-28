@@ -2715,6 +2715,11 @@ void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
     sched_need_reserve = true;
 }
 
+void llama_context::set_embeddings_layer_inp_last(uint32_t n) {
+    cparams.embeddings_layer_inp_last = n;
+    sched_need_reserve = true;   // the graph's outputs change (llm_graph_result::set_outputs)
+}
+
 void llama_context::set_nextn_layer_offset(int32_t offset) {
     cparams.nextn_layer_offset = offset;
 }
@@ -4269,6 +4274,14 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
             embd_layer_inp_float_count += (size_t) n_embd * n_batch;
         }
     }
+    // fork: only the last rows of a ubatch are written (embeddings_layer_inp_last): the layer inputs go to lazily paged memory, not into the pinned,
+    // cleared output buffer (DeepSeek-V4.1 + DSpark at 16384 rows: 1 GB pinned and cleared for 129 rows per pass the draft reads)
+    const bool   layer_inp_lazy   = cparams.embeddings_layer_inp_last > 0 && embd_layer_inp_float_count > 0;
+    const size_t layer_inp_pinned = layer_inp_lazy ? 0 : embd_layer_inp_float_count;
+    if (layer_inp_lazy && embd_layer_inp_lazy_n < embd_layer_inp_float_count) {
+        embd_layer_inp_lazy.reset(new float[embd_layer_inp_float_count]);
+        embd_layer_inp_lazy_n = embd_layer_inp_float_count;
+    }
 
     // Allocate backend sampling output buffers if there are backend samplers configured.
     const bool has_sampling = !sampling.samplers.empty();
@@ -4284,7 +4297,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     const size_t prev_size = buf_output ? ggml_backend_buffer_get_size(buf_output.get()) : 0;
     const size_t new_size  =
-        (logits.size + embd.size + embd_nextn.size + embd_layer_inp_float_count + backend_float_count) * sizeof(float) +
+        (logits.size + embd.size + embd_nextn.size + layer_inp_pinned + backend_float_count) * sizeof(float) +
         (                                                                         backend_token_count) * sizeof(llama_token);
 
     // alloc only when more than the current capacity is required
@@ -4336,8 +4349,12 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     embd_nextn = has_embd_nextn ? buffer_view<float>{(float *) (base + offset), embd_nextn.size} : buffer_view<float>{nullptr, 0};
     offset += embd_nextn.size * sizeof(float);
 
+    size_t lazy_offset = 0;
     for (uint32_t il = 0; il < embd_layer_inp.size(); ++il) {
-        if (cparams.embeddings_layer_inp[il]) {
+        if (cparams.embeddings_layer_inp[il] && layer_inp_lazy) {
+            embd_layer_inp[il] = buffer_view<float>{embd_layer_inp_lazy.get() + lazy_offset, (size_t) n_embd * n_batch};
+            lazy_offset += embd_layer_inp[il].size;
+        } else if (cparams.embeddings_layer_inp[il]) {
             embd_layer_inp[il] = buffer_view<float>{(float *) (base + offset), (size_t) n_embd * n_batch};
             offset += embd_layer_inp[il].size * sizeof(float);
         } else {
@@ -4408,11 +4425,12 @@ bool llama_context::extract_layer_inputs(const llm_graph_result * res, size_t to
         const size_t nbytes = ggml_nbytes(t);
         const size_t nfloats = nbytes / sizeof(float);
         GGML_ASSERT(n_tokens > 0);
-        GGML_ASSERT(nfloats % n_tokens == 0);
 
-        const size_t row_floats = nfloats / n_tokens;
-        GGML_ASSERT(row_floats == model.hparams.n_embd);
-        const size_t dst_offset = token_offset * row_floats;
+        const size_t row_floats = model.hparams.n_embd;
+        GGML_ASSERT(nfloats % row_floats == 0);
+        const size_t rows = nfloats / row_floats;   // the ubatch's rows, or only its last ones (cparams.embeddings_layer_inp_last)
+        GGML_ASSERT(rows > 0 && rows <= n_tokens);
+        const size_t dst_offset = (token_offset + n_tokens - rows) * row_floats;
         GGML_ASSERT(dst_offset + nfloats <= embd_layer_inp[il].size);
 
         ggml_backend_t backend = ggml_backend_sched_get_tensor_backend(sched.get(), t);
@@ -6405,6 +6423,10 @@ void llama_set_embeddings_nextn(llama_context * ctx, bool value, bool masked) {
 
 void llama_set_embeddings_layer_inp(llama_context * ctx, uint32_t lid, bool value) {
     ctx->set_embeddings_layer_inp(lid, value);
+}
+
+void llama_set_embeddings_layer_inp_last(llama_context * ctx, uint32_t n) {
+    ctx->set_embeddings_layer_inp_last(n);
 }
 
 void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
