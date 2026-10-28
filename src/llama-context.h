@@ -158,6 +158,7 @@ struct llama_context {
     void set_embeddings (bool value);
     void set_embeddings_nextn(bool value, bool masked);
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
+    void set_embeddings_layer_inp_last(uint32_t n);   // fork: llama_set_embeddings_layer_inp_last
     void set_nextn_layer_offset(int32_t offset);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
@@ -368,6 +369,10 @@ private:
     // host buffers for output layer input embeddings, per layer
     // populated when cparams.output_layer_inp[il] is true
     std::vector<buffer_view<float>> embd_layer_inp;
+    // fork: with cparams.embeddings_layer_inp_last set, the layer inputs live here instead of the pinned output buffer: never cleared, so a page
+    // takes RAM only once a row is written to it (the last rows of each ubatch)
+    std::unique_ptr<float[]> embd_layer_inp_lazy;
+    size_t                   embd_layer_inp_lazy_n = 0;
     std::vector<int32_t> embd_batch_idxs; // extracted index -> original batch index
 
     struct sampling_info {

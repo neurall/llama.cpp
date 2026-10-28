@@ -998,6 +998,29 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
     int32_t n_embd_enc = 0;  // target_layer_ids_n * target_hidden_size
     int32_t n_embd_tgt = 0;  // target model hidden size
 
+    // fork: the DeepSeek-V4 DSpark backbone attends only to a sliding window of n_keep positions in every stage (the draft KV ring,
+    // src/models/dflash.cpp), so of a prompt only its last n_keep rows ever reach a draft. The prompt runs no draft and costs it nothing:
+    // its passes only keep their last rows in a ring here (the target copies out only those, llama_set_embeddings_layer_inp_last, so its
+    // prompt passes hold no extra VRAM or pinned RAM for the draft either), and they go into the draft's K/V cache when the answer starts
+    // (begin()). The answer's steps go in at once, as before. Injecting every prompt row instead copied all of them through host RAM and ran
+    // the draft over them (DeepSeek-V4.1, 16k prompt: ~0.8 GB of target features gathered per pass and a 16k-row draft pass, 2026-10-27).
+    // 0: every row is injected at once (drafts with full or interleaved attention).
+    int32_t n_keep = 0;
+    struct kept_rows {
+        std::vector<float>     feat;   // n_keep x n_embd_enc, a ring: row (head + i) % n_keep is the i-th oldest
+        std::vector<llama_pos> pos;
+        int32_t                head = 0;
+        int32_t                n    = 0;
+    };
+    std::vector<kept_rows> kept;          // [n_seq] the last prompt rows, waiting for the answer
+    std::vector<uint8_t>   answering;     // [n_seq] begin() ran: batches of answer steps go into the draft's cache at once
+    std::vector<llama_pos> answer_pos0;   // [n_seq] the answer's first position
+    // the proof for the log at the answer's start: what a prompt cost the draft (passes and rows of it, and the draft's own calls in that time: 0)
+    int64_t              n_dft_calls = 0;   // llama_process calls on the draft context
+    std::vector<int32_t> prompt_passes;     // [n_seq] prompt passes since the last answer start
+    std::vector<int64_t> prompt_rows;       // [n_seq] their rows
+    std::vector<int64_t> prompt_dft0;       // [n_seq] n_dft_calls at the prompt's first pass
+
     int32_t     block_size    = 0;
     llama_token mask_token_id = 0;
 
@@ -1048,6 +1071,22 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         n_embd_dec    = llama_model_n_embd(model_dft);
         n_embd_enc    = (int32_t) target_layer_ids_n * n_embd_tgt;
 
+        {
+            // the DSV4 backbone (hyper-connections) makes every stage a sliding window; other drafts keep every row
+            char buf[16] = {};
+            const bool ring = llama_model_meta_val_str(model_dft, "dflash.hyper_connection.count", buf, sizeof(buf)) >= 0 && std::atoi(buf) > 0;
+            n_keep = ring ? llama_model_n_swa(model_dft) : 0;
+            kept.assign(n_seq, {});
+            answering.assign(n_seq, 0);
+            answer_pos0.assign(n_seq, 0);
+            prompt_passes.assign(n_seq, 0);
+            prompt_rows.assign(n_seq, 0);
+            prompt_dft0.assign(n_seq, 0);
+            if (n_keep > 0) {
+                llama_set_embeddings_layer_inp_last(ctx_tgt, (uint32_t) n_keep);   // before the layers are switched on below
+            }
+        }
+
         // read the trained block size from the dflash.block_size metadata key
         block_size = 16;
         {
@@ -1093,6 +1132,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         LOG_INF("%s: - n_max=%d, n_min=%d, p_min=%.2f\n", __func__, this->params.n_max, this->params.n_min, this->params.p_min);
         LOG_INF("%s: - block_size=%d, mask_token_id=%d, n_extract=%u, sample_from_anchor=%s\n", __func__,
                 block_size, mask_token_id, target_layer_ids_n, sample_from_anchor ? "true" : "false");
+        if (n_keep > 0) {
+            LOG_INF("%s: - the draft sees the last %d positions: a prompt pass runs no draft and keeps only its last %d rows, injected when the answer starts\n",
+                    __func__, n_keep, n_keep);
+        }
 
         // DFlash input is [id_last, <mask> * (block_size-1)]: in-place denoising yields at most
         // block_size-1 draft tokens, anchor-first DSpark yields a full block_size draft tokens
@@ -1173,6 +1216,20 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             return;
         }
 
+        // the answer starts: the rows the prompt kept for the draft go into its K/V cache now, and the answer's steps go in as they come
+        answering[seq_id]   = 1;
+        answer_pos0[seq_id] = N;
+        if (n_keep > 0) {
+            LOG_INF("%s: prompt of %d tokens: %d passes (%lld rows) ran no draft (draft calls in that time: %lld); its last %d rows go into the draft now\n",
+                    __func__, N, prompt_passes[seq_id], (long long) prompt_rows[seq_id],
+                    (long long) (prompt_passes[seq_id] > 0 ? n_dft_calls - prompt_dft0[seq_id] : 0), kept[seq_id].n);
+            prompt_passes[seq_id] = 0;
+            prompt_rows[seq_id]   = 0;
+        }
+        if (!inject_kept(seq_id)) {
+            LOG_WRN("%s: the kept prompt rows could not be injected: drafts may degrade\n", __func__);
+        }
+
         const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(params.ctx_dft), seq_id);
         if (pos_max < N - 1) {
             LOG_WRN("%s: ctx_dft pos_max=%d < N-1=%d - process() did not run on every prefill ubatch. "
@@ -1212,71 +1269,59 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             }
         }
 
-        auto * ctx_tgt = this->params.ctx_tgt;
-        auto * ctx_dft = this->params.ctx_dft;
-
-        const int32_t n_ubatch = (int32_t) llama_n_ubatch(ctx_dft);
+        const int32_t n_ubatch = (int32_t) llama_n_ubatch(this->params.ctx_dft);
+        std::vector<const float *> layers;   // the target's extracted layer inputs, fetched once (each fetch synchronizes it)
 
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
             if (i_batch_beg[seq_id] < 0) {
                 continue;
             }
-            const int32_t n_rows = i_batch_end[seq_id] - i_batch_beg[seq_id] + 1;
+            const int32_t beg    = i_batch_beg[seq_id];
+            const int32_t n_rows = i_batch_end[seq_id] - beg + 1;
 
             // an M-RoPE image pins all its rows to one position, so a windowed draft
             // cache cannot free cells for it - skip it, the draft can jump over the gap
-            const bool pos_pinned = batch_in.tokens[i_batch_beg[seq_id]].pos[0] == batch_in.tokens[i_batch_end[seq_id]].pos[0];
+            const bool pos_pinned = batch_in.tokens[beg].pos[0] == batch_in.tokens[i_batch_end[seq_id]].pos[0];
             if (has_embeddings && n_rows > 1 && pos_pinned) {
                 continue;
             }
 
-            for (int32_t offset = 0; offset < n_rows; offset += n_ubatch) {
-                const int32_t n_chunk = std::min(n_ubatch, n_rows - offset);
-
-                // gather target features per extract layer; the fused decode encodes and
-                // injects them into the K/V cache at the target positions
-                features_buf.resize((size_t) n_chunk * n_embd_enc);
-                for (uint32_t k = 0; k < target_layer_ids_n; ++k) {
-                    const float * layer = llama_get_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k]);
-                    if (!layer) {
-                        GGML_ABORT("DFlash: target layer %d input not extracted.", target_layer_ids[k]);
+            if (n_keep > 0) {
+                // an answer step (the target checked the sampled token and the drafts: at or after the answer's first position, at most n_max + 1
+                // rows) goes into the draft's cache at once, as before. Anything else is a prompt pass: no draft work, its last rows wait in the ring
+                const llama_pos p0 = batch_in.tokens[beg].pos[0];
+                if (!(answering[seq_id] && p0 >= answer_pos0[seq_id] && n_rows <= this->n_max + 1)) {
+                    answering[seq_id] = 0;
+                    if (prompt_passes[seq_id]++ == 0) {
+                        prompt_dft0[seq_id] = n_dft_calls;
                     }
-                    for (int32_t i = 0; i < n_chunk; ++i) {
-                        float       * dst = features_buf.data() + (size_t) i * n_embd_enc + k * (size_t) n_embd_tgt;
-                        const float * src = layer + (size_t) (i_batch_beg[seq_id] + offset + i) * n_embd_tgt;
-                        std::memcpy(dst, src, (size_t) n_embd_tgt * sizeof(float));
-                    }
-                }
-
-                batch_inject.clear();
-                for (int32_t i = 0; i < n_chunk; ++i) {
-                    const llama_pos p = batch_in.tokens[i_batch_beg[seq_id] + offset + i].pos[0];
-                    const llama_pos pos_arr[4] = { p, p, p, 0 };
-                    batch_inject.add_embd({ features_buf.data() + (size_t) i * n_embd_enc, 1, (size_t) n_embd_enc }, pos_arr, seq_id, false);
-                }
-                const int32_t rc = llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch_inject.get());
-                if (rc != 0) {
-                    LOG_ERR("%s: llama_process(ctx_dft) failed rc=%d (n_tokens=%d, offset=%d)\n",
-                            __func__, rc, (int) n_chunk, (int) offset);
-                    return false;
-                }
-                if (is_lilicorr) {
-                    // Ordinary DFlash can write to the KV cache, but LiliCorr needs to store embeddings across sequences.
-                    const float * projected = llama_get_embeddings_nextn(ctx_dft);
-                    if (projected) {
-                        const size_t seq_offset = (size_t) seq_id * lilicorr_rows;
-                        const llama_pos pos_min = std::max(0, batch_inject.tokens.back().pos[0] - block_size);
-                        for (int32_t i = 0; i < n_chunk; ++i) {
-                            const llama_pos pos = batch_inject.tokens[i].pos[0];
-                            if (pos < pos_min) {
-                                continue;
+                    prompt_rows[seq_id] += n_rows;
+                    ring_drop_from(seq_id, p0);   // rows at or after this pass's start belong to a request or a branch that is gone
+                    if (layers.empty()) {
+                        for (uint32_t k = 0; k < target_layer_ids_n; ++k) {
+                            layers.push_back(llama_get_embeddings_layer_inp(this->params.ctx_tgt, (uint32_t) target_layer_ids[k]));
+                            if (!layers.back()) {
+                                GGML_ABORT("DFlash: target layer %d input not extracted.", target_layer_ids[k]);
                             }
-                            const size_t slot = seq_offset + (size_t) pos % lilicorr_rows;
-                            std::memcpy(lilicorr_embd.data() + slot * (size_t) n_embd_dec,
-                                    projected + (size_t) i * n_embd_dec, (size_t) n_embd_dec * sizeof(float));
-                            lilicorr_pos[slot] = pos;
                         }
                     }
+                    for (int32_t i = std::max(0, n_rows - n_keep); i < n_rows; ++i) {
+                        ring_push(seq_id, layers.data(), beg + i, batch_in.tokens[beg + i].pos[0]);
+                    }
+                    continue;
+                }
+            }
+
+            std::vector<llama_pos> pos;
+            for (int32_t offset = 0; offset < n_rows; offset += n_ubatch) {
+                const int32_t n_chunk = std::min(n_ubatch, n_rows - offset);
+                gather_features(beg + offset, n_chunk, features_buf);
+                pos.resize(n_chunk);
+                for (int32_t i = 0; i < n_chunk; ++i) {
+                    pos[i] = batch_in.tokens[beg + offset + i].pos[0];
+                }
+                if (!inject(seq_id, features_buf.data(), pos.data(), n_chunk)) {
+                    return false;
                 }
             }
         }
@@ -1284,10 +1329,135 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         return true;
     }
 
+    // gather the target features of batch rows [row0, row0 + n) per extract layer into dst (n x n_embd_enc)
+    void gather_features(int32_t row0, int32_t n, std::vector<float> & dst) {
+        dst.resize((size_t) n * n_embd_enc);
+        for (uint32_t k = 0; k < target_layer_ids_n; ++k) {
+            const float * layer = llama_get_embeddings_layer_inp(this->params.ctx_tgt, (uint32_t) target_layer_ids[k]);
+            if (!layer) {
+                GGML_ABORT("DFlash: target layer %d input not extracted.", target_layer_ids[k]);
+            }
+            for (int32_t i = 0; i < n; ++i) {
+                float       * d = dst.data() + (size_t) i * n_embd_enc + k * (size_t) n_embd_tgt;
+                const float * s = layer + (size_t) (row0 + i) * n_embd_tgt;
+                std::memcpy(d, s, (size_t) n_embd_tgt * sizeof(float));
+            }
+        }
+    }
+
+    // n rows of target features at positions pos: the fused decode encodes and injects them into the draft's K/V cache
+    bool inject(llama_seq_id seq_id, const float * feat, const llama_pos * pos, int32_t n) {
+        auto * ctx_dft = this->params.ctx_dft;
+        const int32_t n_ubatch = (int32_t) llama_n_ubatch(ctx_dft);
+        for (int32_t offset = 0; offset < n; offset += n_ubatch) {
+            const int32_t n_chunk = std::min(n_ubatch, n - offset);
+
+            batch_inject.clear();
+            for (int32_t i = 0; i < n_chunk; ++i) {
+                const llama_pos p = pos[offset + i];
+                const llama_pos pos_arr[4] = { p, p, p, 0 };
+                batch_inject.add_embd({ feat + (size_t) (offset + i) * n_embd_enc, 1, (size_t) n_embd_enc }, pos_arr, seq_id, false);
+            }
+            const int32_t rc = llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch_inject.get());
+            n_dft_calls++;
+            if (rc != 0) {
+                LOG_ERR("%s: llama_process(ctx_dft) failed rc=%d (n_tokens=%d, offset=%d)\n",
+                        __func__, rc, (int) n_chunk, (int) offset);
+                return false;
+            }
+            if (is_lilicorr) {
+                // Ordinary DFlash can write to the KV cache, but LiliCorr needs to store embeddings across sequences.
+                const float * projected = llama_get_embeddings_nextn(ctx_dft);
+                if (projected) {
+                    const size_t seq_offset = (size_t) seq_id * lilicorr_rows;
+                    const llama_pos pos_min = std::max(0, batch_inject.tokens.back().pos[0] - block_size);
+                    for (int32_t i = 0; i < n_chunk; ++i) {
+                        const llama_pos p = batch_inject.tokens[i].pos[0];
+                        if (p < pos_min) {
+                            continue;
+                        }
+                        const size_t slot = seq_offset + (size_t) p % lilicorr_rows;
+                        std::memcpy(lilicorr_embd.data() + slot * (size_t) n_embd_dec,
+                                projected + (size_t) i * n_embd_dec, (size_t) n_embd_dec * sizeof(float));
+                        lilicorr_pos[slot] = p;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    // the ring: rows at or after position p go (the newest first)
+    void ring_drop_from(llama_seq_id seq_id, llama_pos p) {
+        auto & r = kept[seq_id];
+        while (r.n > 0 && r.pos[(r.head + r.n - 1) % n_keep] >= p) {
+            r.n--;
+        }
+    }
+
+    // the ring: the target's features (layers: its extracted inputs per extract layer) of batch row `row` at position p (the oldest row goes
+    // when it is full)
+    void ring_push(llama_seq_id seq_id, const float * const * layers, int32_t row, llama_pos p) {
+        auto & r = kept[seq_id];
+        if (r.feat.empty()) {
+            r.feat.resize((size_t) n_keep * n_embd_enc);
+            r.pos.resize(n_keep);
+        }
+        int32_t at = 0;
+        if (r.n < n_keep) {
+            at = (r.head + r.n) % n_keep;
+            r.n++;
+        } else {
+            at = r.head;
+            r.head = (r.head + 1) % n_keep;
+        }
+        for (uint32_t k = 0; k < target_layer_ids_n; ++k) {
+            std::memcpy(r.feat.data() + (size_t) at * n_embd_enc + k * (size_t) n_embd_tgt, layers[k] + (size_t) row * n_embd_tgt, (size_t) n_embd_tgt * sizeof(float));
+        }
+        r.pos[at] = p;
+    }
+
+    // the rows the prompt kept for the answer into the draft's K/V cache. The cache has to end right before the first of them (an embeddings batch
+    // continues it at its last position or the next one): rows at or after it go, and a gap (the prompt rows that never reached the draft) empties
+    // the sequence, since what it held lies outside the draft's window
+    bool inject_kept(llama_seq_id seq_id) {
+        auto & r = kept[seq_id];
+        if (r.n == 0) {
+            return true;
+        }
+        const int32_t n = r.n;
+        features_buf.resize((size_t) n * n_embd_enc);
+        std::vector<llama_pos> pos(n);
+        for (int32_t i = 0; i < n; ++i) {
+            const int32_t at = (r.head + i) % n_keep;
+            std::memcpy(features_buf.data() + (size_t) i * n_embd_enc, r.feat.data() + (size_t) at * n_embd_enc, (size_t) n_embd_enc * sizeof(float));
+            pos[i] = r.pos[at];
+        }
+        r.n    = 0;
+        r.head = 0;
+        llama_memory_t mem = llama_get_memory(params.ctx_dft);
+        const llama_pos p_end = llama_memory_seq_pos_max(mem, seq_id);
+        if (p_end >= pos[0]) {
+            if (!llama_memory_seq_rm(mem, seq_id, pos[0], -1)) {
+                llama_memory_seq_rm(mem, seq_id, -1, -1);
+            }
+        } else if (p_end >= 0 && p_end + 1 < pos[0]) {
+            llama_memory_seq_rm(mem, seq_id, -1, -1);
+        }
+        return inject(seq_id, features_buf.data(), pos.data(), n);
+    }
+
     void draft(common_speculative_draft_params_vec & dparams) override {
         auto & ctx_dft = params.ctx_dft;
 
         batch.clear();
+
+        // rows a prompt kept for the answer, if begin() did not take them already
+        for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+            if (dparams[seq_id].drafting && !inject_kept(seq_id)) {
+                LOG_WRN("%s: the kept prompt rows could not be injected: drafts may degrade\n", __func__);
+            }
+        }
 
         // build one batch holding every drafting sequence's noise block into a single decode)
         // record where each block starts and its size
@@ -1325,6 +1495,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
         // decode all sequence's noise block in a single batch
         int ret = llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+        n_dft_calls++;
         if (ret != 0) {
             LOG_WRN("%s: llama_process returned %d\n", __func__, ret);
             return;

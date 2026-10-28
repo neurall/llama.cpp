@@ -1858,7 +1858,18 @@ void llm_graph_result::set_outputs(const llm_graph_params & params) {
         for (size_t il = 0; il < embeddings_layer_inp.size(); ++il) {
             if (embeddings_layer_inp[il]) {
                 GGML_ASSERT(t_layer_inp[il] != nullptr && "layer input tensor is null");
-                ggml_set_output(t_layer_inp[il]);
+                // fork: a ubatch longer than embeddings_layer_inp_last keeps only its last rows as the output, as a copy, so only those are copied
+                // out. The copy runs at the end of the graph, so the whole tensor still lives to the end: a model whose layer inputs are big takes
+                // only the last rows itself (deepseek4.cpp: DeepSeek-V4.1 + DSpark, 3 layers x 320 MiB at a 16384-row pass)
+                const int64_t last = params.cparams.embeddings_layer_inp_last;
+                ggml_tensor * t = t_layer_inp[il];
+                if (last > 0 && t->ne[1] > last && ggml_n_dims(t) <= 2 && ggml_is_contiguous(t)) {
+                    ggml_context * ctx = ctx_compute.get();
+                    t = ggml_cont(ctx, ggml_view_2d(ctx, t, t->ne[0], last, t->nb[1], (size_t) (t->ne[1] - last) * t->nb[1]));
+                    ggml_build_forward_expand(gf, t);
+                    t_layer_inp[il] = t;
+                }
+                ggml_set_output(t);
             }
         }
     }

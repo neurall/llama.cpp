@@ -139,6 +139,11 @@ LLAMA_API const int32_t * llama_get_mtp_dsa_selection(struct llama_context * ctx
 // Set whether the context outputs the input embeddings of a specific layer
 LLAMA_API void llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid, bool value);
 
+// fork: of a ubatch longer than n, only the last n rows of the extracted layer inputs are kept and copied out (0: every row, the default); the
+// rows before them hold nothing. A draft that reads only a window of the last positions (DSpark) sets its window, so a prompt pass keeps
+// neither the whole tensors in VRAM to the end of the graph nor a copy of every row in host memory.
+LLAMA_API void llama_set_embeddings_layer_inp_last(struct llama_context * ctx, uint32_t n);
+
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
 LLAMA_API float * llama_get_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid);

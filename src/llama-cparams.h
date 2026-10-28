@@ -68,6 +68,7 @@ struct llama_cparams {
     int prefetch_experts_slots = -1; // --prefetch-experts-slots: MoE expert H2D staging slots (0 = off, >=2 enables full-tensor lookahead prefetch; capped at 4)
 
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
+    uint32_t embeddings_layer_inp_last = 0; // fork: > 0: a ubatch longer than this extracts only its last this-many rows of them (a draft's window)
 
     enum llama_context_type ctx_type;
     enum llama_rope_scaling_type rope_scaling_type;
