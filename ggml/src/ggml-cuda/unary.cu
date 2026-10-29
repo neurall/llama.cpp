@@ -1,3 +1,4 @@
+#include "../ggml-det-math.h"
 #include "unary.cuh"
 #include "convert.cuh"
 
@@ -46,7 +47,7 @@ static __device__ __forceinline__ float op_relu(float x) {
 }
 
 static __device__ __forceinline__ float op_sigmoid(float x) {
-    return 1.0f / (1.0f + expf(-x));
+    return ggml_det_sigmoid(x);
 }
 
 static __device__ __forceinline__ float op_hardsigmoid(float x) {
@@ -91,7 +92,7 @@ static __device__ __forceinline__ float op_expm1(float x) {
 }
 
 static __device__ __forceinline__ float op_softplus(float x) {
-    return (x > 20.0f) ? x : log1pf(expf(x));
+    return ggml_det_softplus(x);
 }
 
 static __device__ __forceinline__ float op_elu(float x) {

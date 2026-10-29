@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <float.h>
 #include <stdlib.h> // for qsort
+#include <math.h>
 #include <stdio.h>  // for GGML_ASSERT
 
 #define GROUP_MAX_EPS 1e-15f
@@ -47,6 +48,7 @@ void quantize_row_q5_1(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, in
 }
 
 void quantize_row_q8_0_generic(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    if (ggml_cpu_gpu_shape()) { quantize_row_q8_0_gpu_shape(x, y, k); return; }
     quantize_row_q8_0_ref(x, y, k);
 }
 
@@ -174,6 +176,83 @@ void ggml_vec_dot_q1_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     *s = sumf;
 }
 
+
+// GPU-shaped dot products (GGML_CPU_GPU_SHAPE=1): the CPU adds the block terms in the order the CUDA decode kernels do, so a CPU-computed matmul gives
+// the same float bits as the GPU one and greedy runs do not diverge on a cache miss. Shapes copied from the sm_86 SASS of mul_mat_vec_q (Q8_0, 4 warps,
+// one block per row) and mul_mat_vec_q_moe (Q2_0, one warp): each lane keeps one fused multiply-add chain over its blocks, then the lanes are reduced.
+int ggml_cpu_gpu_shape(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char * e = getenv("GGML_CPU_GPU_SHAPE");
+        on = e && atoi(e) != 0;
+    }
+    return on;
+}
+
+static float ggml_gpu_shape_reduce(float * lane) {
+    for (int off = 16; off > 0; off >>= 1) {
+        float t[32];
+        for (int l = 0; l < 32; l++) t[l] = lane[l] + lane[l ^ off];
+        for (int l = 0; l < 32; l++) lane[l] = t[l];
+    }
+    return lane[0];
+}
+
+// activation quantization as the CUDA kernel: scale d = amax/127, q = round(x/d) with a true division (the CPU loop multiplies by 1/d or 127/amax)
+void quantize_row_q8_0_gpu_shape(const float * GGML_RESTRICT x, block_q8_0 * GGML_RESTRICT y, int64_t k) {
+    const int nb = k / QK8_0;
+    for (int i = 0; i < nb; i++) {
+        float amax = 0.0f;
+        for (int j = 0; j < QK8_0; j++) amax = MAX(amax, fabsf(x[i*QK8_0 + j]));
+        const float d = amax / 127.0f;
+        y[i].d = GGML_FP32_TO_FP16(d);
+        for (int j = 0; j < QK8_0; ++j) y[i].qs[j] = d ? (int8_t) roundf(x[i*QK8_0 + j] / d) : 0;
+    }
+}
+
+void ggml_vec_dot_q8_0_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    const int nb = n / QK8_0;
+    const block_q8_0 * GGML_RESTRICT x = vx;
+    const block_q8_0 * GGML_RESTRICT y = vy;
+    float tmp[4][32] = {{0}};      // [warp][lane]
+    for (int b = 0; b < nb; b++) {
+        const float dd = GGML_CPU_FP16_TO_FP32(x[b].d) * GGML_CPU_FP16_TO_FP32(y[b].d);
+        for (int c = 0; c < 4; c++) {
+            int sumi = 0;
+            for (int j = 0; j < 8; j++) sumi += x[b].qs[c*8 + j] * y[b].qs[c*8 + j];
+            const int tid = (b % 32)*4 + c;
+            float * t = &tmp[tid / 32][tid % 32];
+            *t = fmaf(dd, (float) sumi, *t);
+        }
+    }
+    float lane[32];
+    for (int l = 0; l < 32; l++) lane[l] = ((tmp[1][l] + tmp[0][l]) + tmp[2][l]) + tmp[3][l];
+    *s = ggml_gpu_shape_reduce(lane);
+}
+
+void ggml_vec_dot_q2_0_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    const int nb = n / QK2_0;
+    const block_q2_0 * GGML_RESTRICT x = vx;
+    const block_q8_0 * GGML_RESTRICT y = vy;
+    float lane[32] = {0};
+    for (int b = 0; b < nb; b++) {
+        const float d2 = GGML_CPU_FP16_TO_FP32(x[b].d);
+        for (int c = 0; c < 2; c++) {
+            const block_q8_0 * yb = &y[b*2 + c];
+            int sumi = 0;
+            for (int j = 0; j < 32; j++) sumi += ((int) ((x[b].qs[c*8 + j/4] >> (2*(j%4))) & 3) - 1) * yb->qs[j];
+            const int tid = (b % 16)*2 + c;
+            // the CUDA expert kernel rounds the product and then adds: not a fused multiply-add (checked against its output); the empty asm keeps the compiler from fusing them
+            float prod = (d2 * GGML_CPU_FP16_TO_FP32(yb->d)) * (float) sumi;
+#if defined(__x86_64__)
+            __asm__ volatile("" : "+x"(prod));
+#endif
+            lane[tid] = lane[tid] + prod;
+        }
+    }
+    *s = ggml_gpu_shape_reduce(lane);
+}
+
 void ggml_vec_dot_q2_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK2_0;
     const int nb = n / qk;
@@ -185,6 +264,7 @@ void ggml_vec_dot_q2_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     UNUSED(by);
     UNUSED(bs);
 
+    if (ggml_cpu_gpu_shape()) { ggml_vec_dot_q2_0_q8_0_gpu_shape(n, s, vx, vy); return; }
     const block_q2_0 * GGML_RESTRICT x = vx;
     const block_q8_0 * GGML_RESTRICT y = vy;
 
@@ -459,6 +539,7 @@ void ggml_vec_dot_q8_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     UNUSED(by);
     UNUSED(bs);
 
+    if (ggml_cpu_gpu_shape()) { ggml_vec_dot_q8_0_q8_0_gpu_shape(n, s, vx, vy); return; }
     const block_q8_0 * GGML_RESTRICT x = vx;
     const block_q8_0 * GGML_RESTRICT y = vy;
 

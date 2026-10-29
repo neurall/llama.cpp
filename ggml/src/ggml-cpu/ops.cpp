@@ -7,6 +7,9 @@
 #include "ggml.h"
 #include "unary-ops.h"
 #include "vec.h"
+#include "../ggml-det-math.h"
+
+extern "C" int ggml_cpu_gpu_shape(void);
 
 #include <algorithm>
 #include <cfloat>
@@ -1501,7 +1504,40 @@ static void ggml_compute_forward_sum_rows_f32(
                 float * src_row = (float *) ((char *) src0->data + i1*nb01 + i2*nb02 + i3*nb03);
                 float * dst_row = (float *) ((char *) dst->data  + i1*nb1  + i2*nb2  + i3*nb3);
                 float row_sum = 0;
-                ggml_vec_sum_f32(ne00, &row_sum, src_row);
+                if (ggml_cpu_gpu_shape()) {
+                    // order of the CUDA reduce_rows_f32 for a single row (512 threads): thread t adds x[t], x[t+512], .. into 8 slots (slot j = the j-th load of each pass),
+                    // the slots are added in order, then an xor tree over the 32 lanes of a warp and a second one over the warp sums
+                    const int bd = 512;
+                    float thr[512];
+                    for (int t = 0; t < bd; t++) {
+                        float slot[8] = {0};
+                        for (int64_t i = t; i < ne00;) {
+                            for (int j = 0; j < 8; j++) { slot[j] += i < ne00 ? src_row[i] : 0.0f; i += bd; }
+                        }
+                        float sm = 0.0f;
+                        for (int j = 0; j < 8; j++) sm += slot[j];
+                        thr[t] = sm;
+                    }
+                    float buf[32] = {0};
+                    for (int w = 0; w < bd/32; w++) {
+                        float l[32];
+                        for (int i = 0; i < 32; i++) l[i] = thr[w*32 + i];
+                        for (int off = 16; off > 0; off >>= 1) {
+                            float t2[32];
+                            for (int i = 0; i < 32; i++) t2[i] = l[i] + l[i ^ off];
+                            for (int i = 0; i < 32; i++) l[i] = t2[i];
+                        }
+                        buf[w] = l[0];
+                    }
+                    for (int off = 16; off > 0; off >>= 1) {
+                        float t2[32];
+                        for (int i = 0; i < 32; i++) t2[i] = buf[i] + buf[i ^ off];
+                        for (int i = 0; i < 32; i++) buf[i] = t2[i];
+                    }
+                    row_sum = buf[0];
+                } else {
+                    ggml_vec_sum_f32(ne00, &row_sum, src_row);
+                }
                 dst_row[0] = row_sum;
             }
         }
@@ -5840,6 +5876,43 @@ void ggml_compute_forward_diag_mask_zero(
 
 // ggml_compute_forward_soft_max
 
+// GPU-shaped softmax of one row (GGML_CPU_GPU_SHAPE=1): the order of the CUDA kernel soft_max_f32 -- nth threads (the power of two from 32 up that covers the row,
+// at most 1024), thread t adds the exps of columns t, t+nth, ..; xor tree over the 32 lanes of a warp, warp sums through shared memory (unused lanes 0), a second
+// xor tree; the sink joins the sum after the reduction; the result is exp * (1/sum) with IEEE division and the deterministic exp.
+static void ggml_soft_max_row_gpu_shape(int n, float * dp, const float * wp, float max, bool has_sink, float sink) {
+    int nth = 32;
+    while (nth < n && nth < 1024) nth *= 2;
+    float acc[1024];
+    for (int t = 0; t < nth; t++) acc[t] = 0.0f;
+    for (int c = 0; c < n; c++) {
+        const float e = ggml_det_expf(wp[c] - max);
+        dp[c] = e;
+        acc[c % nth] += e;
+    }
+    float buf[32] = {0};
+    for (int w = 0; w < nth/32; w++) {
+        float l[32];
+        for (int i = 0; i < 32; i++) l[i] = acc[w*32 + i];
+        for (int off = 16; off > 0; off >>= 1) {
+            float t2[32];
+            for (int i = 0; i < 32; i++) t2[i] = l[i] + l[i ^ off];
+            for (int i = 0; i < 32; i++) l[i] = t2[i];
+        }
+        buf[w] = l[0];
+    }
+    if (nth > 32) {
+        for (int off = 16; off > 0; off >>= 1) {
+            float t2[32];
+            for (int i = 0; i < 32; i++) t2[i] = buf[i] + buf[i ^ off];
+            for (int i = 0; i < 32; i++) buf[i] = t2[i];
+        }
+    }
+    float sum = buf[0];
+    if (has_sink) sum += ggml_det_expf(sink - max);
+    const float inv = ggml_det_div(1.0f, sum);
+    for (int c = 0; c < n; c++) dp[c] = dp[c] * inv;
+}
+
 static void ggml_compute_forward_soft_max_f32(
         const ggml_compute_params * params,
               ggml_tensor * dst) {
@@ -5931,6 +6004,10 @@ static void ggml_compute_forward_soft_max_f32(
                     max = MAX(max, sk[i02]);
                 }
 
+                if (ggml_cpu_gpu_shape()) {
+                    ggml_soft_max_row_gpu_shape(ne00, dp, wp, max, sk != NULL, sk ? sk[i02] : 0.0f);
+                    continue;
+                }
                 ggml_float sum = ggml_vec_soft_max_f32(ne00, dp, wp, max);
                 assert(sum > 0.0);
 
@@ -11253,7 +11330,56 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
         // attn output pointer for first token of this (head, seq)
         float * attn_data = attn_out_base + (iv3 * n_tokens * H + iv1) * S_v;
 
+        // GPU-shaped (GGML_CPU_GPU_SHAPE=1, not KDA): the order of the CUDA kernel gated_delta_net_cuda, read from its sm_86 SASS. A state column is split over
+        // `lanes` lanes, lane l owns rows i = r*lanes + l; every sum is a fused multiply-add chain over r from 0, then an xor tree over the lanes.
+        // delta = beta*fma(-g, kv, v); S = fma(g, S, k*delta); out = scale * tree(chain(q, S)).
+        const bool gpu_shape = !kda && ggml_cpu_gpu_shape();
+        const int  lanes     = (int) ((S_v < 32 ? S_v : 32) / 4);
+        auto lane_tree = [&](float * a) {
+            for (int off = lanes/2; off > 0; off >>= 1) {
+                float b[32];
+                for (int l = 0; l < lanes; l++) b[l] = a[l] + a[l ^ off];
+                for (int l = 0; l < lanes; l++) a[l] = b[l];
+            }
+            return a[0];
+        };
+
         for (int64_t t = 0; t < n_tokens; t++) {
+            if (gpu_shape) {
+                const float * q_g = (const float *)((const char *)src_q->data + iq3 * nbq3 + t * nbq2 + iq1 * nbq1);
+                const float * k_g = (const float *)((const char *)src_k->data + ik3 * nbk3 + t * nbk2 + ik1 * nbk1);
+                const float * v_g = (const float *)((const char *)src_v->data + iv3 * nbv3 + t * nbv2 + iv1 * nbv1);
+                const float   beta_g = *(const float *)((const char *)src_beta->data + iv3 * nbb3 + t * nbb2 + iv1 * nbb1);
+                const float   g_val  = ggml_det_expf(*(const float *)((const char *)src_g->data + iv3 * nbg3 + t * nbg2 + iv1 * nbg1));
+                for (int64_t j = 0; j < S_v; ++j) {
+                    float * row = &s_out[j * S_v];
+                    float acc[32];
+                    for (int l = 0; l < lanes; l++) {
+                        float a = 0.0f;
+                        for (int64_t i = l; i < S_v; i += lanes) a = fmaf(row[i], k_g[i], a);
+                        acc[l] = a;
+                    }
+                    const float kv = lane_tree(acc);
+                    const float dl = beta_g * fmaf(-g_val, kv, v_g[j]);
+                    for (int l = 0; l < lanes; l++) {
+                        float a = 0.0f;
+                        for (int64_t i = l; i < S_v; i += lanes) {
+                            row[i] = fmaf(g_val, row[i], k_g[i] * dl);
+                            a = fmaf(q_g[i], row[i], a);
+                        }
+                        acc[l] = a;
+                    }
+                    attn_data[j] = lane_tree(acc) * scale;
+                }
+                attn_data += S_v * H;
+                if (K > 1) {
+                    const int64_t target_slot = n_tokens - 1 - t;
+                    if (target_slot >= 0 && target_slot < K) {
+                        memcpy(state_out_base + target_slot * state_size_per_snap + (iv3 * H + iv1) * S_v * S_v, s_out, S_v * S_v * sizeof(float));
+                    }
+                }
+                continue;
+            }
             const float * q_d = (const float *)((const char *)src_q->data + iq3 * nbq3 + t * nbq2 + iq1 * nbq1);
             const float * k_d = (const float *)((const char *)src_k->data + ik3 * nbk3 + t * nbk2 + ik1 * nbk1);
             const float * v_d = (const float *)((const char *)src_v->data + iv3 * nbv3 + t * nbv2 + iv1 * nbv1);

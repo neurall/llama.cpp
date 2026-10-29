@@ -89,7 +89,8 @@ static __global__ void quantize_q8_1(
     sum  = warp_reduce_sum<QK8_1>(sum);
 
     const float  d = amax / 127.0f;
-    const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
+    // IEEE division: the fast-math "/" turns an exact tie like -27.5 into -27.499998, which rounds the other way than the CPU's quantizer
+    const int8_t q = amax == 0.0f ? 0 : roundf(__fdiv_rn(xi, d));
 
     y[ib].qs[iqs] = q;
 

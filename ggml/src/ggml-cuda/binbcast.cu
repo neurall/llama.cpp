@@ -24,7 +24,7 @@ static __device__ __forceinline__ float op_mul(const float a, const float b) {
 }
 
 static __device__ __forceinline__ float op_div(const float a, const float b) {
-    return a / b;
+    return __fdiv_rn(a, b);   // IEEE division: the fast-math "/" cannot be reproduced on the CPU
 }
 
 template <float (*bin_op)(const float, const float),
