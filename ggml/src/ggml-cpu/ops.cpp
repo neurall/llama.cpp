@@ -4066,6 +4066,72 @@ enum ggml_rms_norm_fuse_op {
     GGML_RMS_NORM_FUSE_OP_MUL,
 };
 
+// Sum of squares of one row in the order CUDA's rms_norm_f32 (ggml-cuda/norm.cu) adds it, so CPU and GPU produce the same bits.
+// The GPU gives each of `block` threads a slice of the row (the block size is picked from the width like rms_norm_f32_dispatch does),
+// each thread sums its squares with FMAs, then a halving tree runs inside each warp (xor-shuffle 16,8,4,2,1 gives the same value as a
+// halving tree because float addition commutes) and a second tree over the per-warp sums. Not bit-identical for denormals (the GPU flushes them).
+static float ggml_rms_sumsq_gpu_shape(const float * x, int64_t n) {
+    int  block = 256;
+    int  vpt   = 1;
+    bool vec   = n > 0 && n % 4 == 0;
+    if (vec) {
+        const int64_t n4 = n / 4;
+        if      (n4 <= 32)   { block = 32;   }
+        else if (n4 <= 128)  { block = 128;  }
+        else if (n4 <= 256)  { block = 256;  }
+        else if (n4 <= 512)  { block = 512;  }
+        else if (n4 <= 1024) { block = 1024; }
+        else if (n4 <= 4096) { block = 1024; vpt = 4; }
+        else                 { block = 1024; vec = false; }
+    } else {
+        block = n < 1024 ? 256 : 1024;
+    }
+
+    float part[1024];
+    for (int t = 0; t < block; ++t) {
+        float tmp = 0.0f;
+        if (vec) {
+            const int64_t n4 = n / 4;
+            for (int k = 0; k < vpt; ++k) {
+                const int64_t i = t + (int64_t) k*block;
+                if (i < n4) {
+                    const float * v = x + 4*i;
+                    float s = v[1]*v[1];
+                    s = fmaf(v[0], v[0], s);
+                    s = fmaf(v[2], v[2], s);
+                    s = fmaf(v[3], v[3], s);
+                    tmp = tmp + s;
+                }
+            }
+        } else {
+            for (int64_t col = t; col < n; col += block) {
+                tmp = fmaf(x[col], x[col], tmp);
+            }
+        }
+        part[t] = tmp;
+    }
+
+    float warp_sums[32] = {0.0f};
+    for (int w = 0; w < block/32; ++w) {
+        float * v = part + 32*w;
+        for (int off = 16; off > 0; off >>= 1) {
+            for (int l = 0; l < off; ++l) {
+                v[l] = v[l] + v[l + off];
+            }
+        }
+        warp_sums[w] = v[0];
+    }
+    if (block <= 32) {
+        return warp_sums[0];
+    }
+    for (int off = 16; off > 0; off >>= 1) {
+        for (int l = 0; l < off; ++l) {
+            warp_sums[l] = warp_sums[l] + warp_sums[l + off];
+        }
+    }
+    return warp_sums[0];
+}
+
 template <ggml_rms_norm_fuse_op FUSE_OP>
 static void ggml_compute_forward_rms_norm_f32(
         const ggml_compute_params * params,
@@ -4100,13 +4166,8 @@ static void ggml_compute_forward_rms_norm_f32(
             for (int64_t i01 = ith; i01 < ne01; i01 += nth) {
                 const float * x = (float *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
 
-                ggml_float sum = 0.0;
-                // worth switching to explicit SIMD?
-                for (int64_t i00 = 0; i00 < ne00; i00++) {
-                    sum += (ggml_float)(x[i00] * x[i00]);
-                }
-
-                const float mean  = sum/ne00;
+                const float sum   = ggml_rms_sumsq_gpu_shape(x, ne00);
+                const float mean  = sum/(float) ne00;
                 const float scale = 1.0f/sqrtf(mean + eps);
 
                 // if you hit this, likely you got an inf somewhere earlier

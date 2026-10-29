@@ -152,16 +152,24 @@ static __global__ void rms_norm_f32(const float * x,
                 float4 xs[vpt];
                 float  tmp = 0.0f;
 
+                // The arithmetic is spelled out (y*y first, then FMAs over x, z, w, then one add per slot) so that the CPU (ggml_rms_sumsq_gpu_shape in
+                // ggml-cpu/ops.cpp) can repeat it bit for bit: this is what the compiler made of the plain expression on sm_86
 #pragma unroll
                 for (int k = 0; k < vpt; k++) {
                     const int i = tid + k*block_size;
                     if (i < ncols4) {
                         xs[k] = x4[i];
-                        tmp += xs[k].x*xs[k].x + xs[k].y*xs[k].y + xs[k].z*xs[k].z + xs[k].w*xs[k].w;
+                        float s = __fmul_rn(xs[k].y, xs[k].y);
+                        s = __fmaf_rn(xs[k].x, xs[k].x, s);
+                        s = __fmaf_rn(xs[k].z, xs[k].z, s);
+                        s = __fmaf_rn(xs[k].w, xs[k].w, s);
+                        tmp = __fadd_rn(tmp, s);
                     }
                 }
                 tmp = block_reduce<block_reduce_method::SUM, block_size>(tmp, s_sum);
-                const float scale = rsqrtf(tmp / ncols + eps);
+                // IEEE divide and sqrt (-use_fast_math would use the MUFU approximations, which no CPU can repeat)
+                const float mean  = __fdiv_rn(tmp, (float) ncols);
+                const float scale = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(mean, eps)));
 
 #pragma unroll
                 for (int k = 0; k < vpt; k++) {
@@ -196,14 +204,14 @@ static __global__ void rms_norm_f32(const float * x,
 
                 for (int col = tid; col < ncols; col += block_size) {
                     const float xi = xc[col];
-                    tmp += xi * xi;
+                    tmp = __fmaf_rn(xi, xi, tmp);
                 }
 
                 // sum up partial sums
                 tmp = block_reduce<block_reduce_method::SUM, block_size>(tmp, s_sum);
 
-                const float mean = tmp / ncols;
-                const float scale = rsqrtf(mean + eps);
+                const float mean  = __fdiv_rn(tmp, (float) ncols);
+                const float scale = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(mean, eps)));
 
                 for (int col = tid; col < ncols; col += block_size) {
                     if constexpr (do_multiply && do_add) {
