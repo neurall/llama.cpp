@@ -233,6 +233,9 @@ static const llm_fused_op_probe llm_fused_op_top_k_mask_probe = {
     /*.n_tokens_per_seq =*/ 1,
 };
 
+void llama_moe_uniq_start(const llama_model & model);   // llama-moecache-fork.cpp
+void llama_moe_uniq_step(int n_tokens);
+
 llama_context::llama_context(
         const llama_model & model,
               llama_context_params params) :
@@ -3593,6 +3596,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             LLAMA_LOG_INFO("%s: the fork's per-call hooks are skipped (stock path): %s\n", __func__, fo && atoi(fo) != 0 ? "--fork off" : "all weights are on the GPU and there is no expert cache");
         }
     }
+    llama_moe_uniq_start(model);   // --moe uniqdump=PATH: the full expert set of every request (llama-moecache-fork.cpp)
+    llama_moe_uniq_step((int) batch_inp.tokens.size());
     if (!fork_resident && !cparams.moe_cache && !moe_observe_started && !moe_cache_defer) {
         moe_observe_started = true;
         llama_moe_observe_start(model);

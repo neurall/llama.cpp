@@ -893,7 +893,37 @@ policy get_policy() {
 // gmax: the scale of the lifetime-count term. Within a layer its own busiest expert (ls.glob_max); when experts of different layers compete
 // for a block (block pool) one common scale, else a layer that spreads its traffic over many experts gets all of them scored near the top and
 // a layer with a few very hot experts loses its second tier (measured MiMo stand-in, 25% cache: layer 4 fell from 64 to 13 experts, hit 68 -> 43%)
+// replay prefetch (user 2026-10-29: "for sure prefetch, that's major benefit"; --moe replay=1, with jit-all=1 for a deterministic replay): every
+// request's answer picks (per model layer, 16 per token) are stored under its prompt's hash (<store>/trace/<hash>.ids); a request with a stored trace
+// plays it: each step uploads the experts the next tokens of the trace need, as many as the link moves in --moe replay-frac (0.9) of a token's time,
+// into the blocks whose expert the trace needs latest or never (Belady), and every eviction ranks by the same next use. The token being computed
+// takes its own misses just in time (JIT): an expert in flight during its token would be computed by the CPU.
+struct replay_state {
+    bool   on      = false;                       // --moe replay=1
+    bool   active  = false;                       // this request plays a stored trace
+    int    ahead   = 4;                           // --moe replay-ahead=N (GLM 3.0bit tetrisc: 1, 2, 4 tokens 29.2 t/s, 8 28.7, 16 27.2): tokens of the trace the prefetch looks at; an expert the trace needs
+                                                  // within them is never evicted for a prefetch (that would only move the miss)
+    int    horizon = 512;                         // tokens of the trace the next-use ranks see
+    double frac    = 0.9;                         // --moe replay-frac
+    std::vector<std::vector<int16_t>> rec;        // per model layer: this request's answer picks, 16 per token (-1 pads)
+    std::vector<std::vector<int16_t>> play;       // the stored trace being played, same layout
+    std::vector<int32_t>              pos;        // per model layer: answer tokens computed so far = the row of the next one
+    std::vector<std::vector<int32_t>> nu;         // per model layer and expert: tokens from pos to its next use in the trace (INT32_MAX: none seen)
+    uint64_t picks = 0, matched = 0, n_pref = 0, jit0 = 0, jitm0 = 0, n_tok = 0;
+    uint64_t n_cpu = 0;                           // answer picks the CPU computed (not in VRAM when their token ran, not uploaded just in time)
+    int64_t  t_end  = 0;                          // the last step's end (its prefetch queued): the next step's start minus this = the token's compute
+    double   cu_ema = 0;                          // that compute time, smoothed (us): the link budget of the prefetch is a share of it, not of the step
+                                                  // (the step also waits for the uploads: sized by the step, the budget grew with its own wait)
+    int32_t  first_mis = -1, first_mis_layer = -1; // the first answer token whose picks differ from the stored trace's
+    int32_t  first_cpu = -1, first_cpu_layer = -1; // the first answer token a pick of which the CPU computed
+};
+replay_state g_rp;
+
 double score(const layer_state & ls, int32_t id, uint64_t gmax) {
+    if (g_rp.active && ls.pub.il >= 0 && (size_t) ls.pub.il < g_rp.nu.size() && (size_t) id < g_rp.nu[ls.pub.il].size()) {
+        const int32_t d = g_rp.nu[ls.pub.il][id];   // replay: the trace's next use ranks (sooner = higher, never again = 0)
+        return d == INT32_MAX ? 0.0 : 1e9 / (1.0 + (double) d);
+    }
     switch (get_policy()) {
         case policy::window: return ls.win_count[id];
         case policy::lru:    return (double) ls.expert_last[id];
@@ -1172,6 +1202,261 @@ void moe_seed_hot(const std::string & section, size_t n_expert) {
 }
 
 }  // namespace
+
+// --moe uniqdump=PATH (user 2026-10-29: "full 60k set collect"; "inc counters from router selections to get full set per req"): the GPU histograms of the
+// stock observer (every expert matmul, prompt batches too) are read when a request ends; the delta since the last request is its full set. One line per
+// request and MoE layer goes to PATH ("req N layer L uses U unique K: counts of every expert"), the log gets the unique experts per layer (number, % of
+// the layer's experts) and the share of the uses the 8 hottest carry. Needs --moe observe=0 (the observer would switch the counters off after N steps).
+namespace {
+struct uniq_state_t {
+    bool                  on = false;
+    std::string           path;
+    int                   nl = 0, ne = 0;
+    uint64_t              n_req = 0;
+    std::vector<uint64_t> ans, prompt;           // this request's answer and prompt picks per layer x expert
+    bool                  in_prompt = false;
+    int64_t               dec = 0, seg0 = 0, seg = 256;   // answer tokens so far, the current segment's first, segment length
+    int                   trace = 0;                     // --moe uniqtrace=N: answer tokens traced per request (0: off)
+    bool                  host = false;                  // the expert cache runs: its observer gives the true expert ids (the GPU sees cache slots)
+    std::mutex            mtx;                           // host mode: the observer adds, the decode thread reads
+    std::vector<uint64_t> hcnt;                          // host mode: picks since the last read, layer x expert
+    std::vector<std::vector<int16_t>> htrace;            // host mode: per layer the answer's picks, 16 per token (-1 pads)
+    int                   acts = 0;                      // --moe acts=N: the answer's first N tokens' expert inputs of every layer to <store>/acts (0: off)
+    int                   n_embd = 0;
+    std::vector<std::vector<uint16_t>> hacts;            // per layer: the answer tokens' expert inputs (f16, n_embd per token)
+    std::vector<std::vector<int16_t>>  hids;             // per layer: their picks, 16 per token (-1 pads)
+} g_uniq;
+
+// host mode (expert cache): the observer's ids of one MoE layer and batch, and with --moe acts the experts' input rows of the answer's tokens
+static void uniq_host_obs(int il, const ggml_tensor * ids, const ggml_tensor * op, bool prefill) {
+    auto & u = g_uniq;
+    if (!u.on || il < 0 || il >= u.nl) { return; }
+    std::lock_guard<std::mutex> lk(u.mtx);
+    if (!u.host) {   // the cache started after uniqdump did (deferred setup): its observer counts from now on, the GPU counters stop
+        u.host = true;
+        if (auto off = (void (*)(void)) cuda_obs_proc("ggml_backend_cuda_obs_full_off_fork")) { off(); }
+        if (u.trace == 0) { if (const char * tr = moe_opt("uniqtrace"); tr && atoi(tr) > 0) { u.trace = atoi(tr); } }
+        if (u.acts == 0)  { if (const char * ac = moe_opt("acts"); ac && atoi(ac) > 0) { u.acts = atoi(ac); } }
+    }
+    const int64_t n_ids = ids->ne[0], n_tok = ids->ne[1];
+    auto & tr = u.htrace[il];
+    for (int64_t t = 0; t < n_tok; ++t) {
+        const bool keep = !prefill && u.trace > 0 && tr.size() < (size_t) u.trace * 16;
+        for (int64_t i = 0; i < n_ids; ++i) {
+            const int32_t id = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+            if (id >= 0 && id < u.ne) { u.hcnt[(size_t) il*u.ne + id]++; }
+            if (keep && i < 16) { tr.push_back((int16_t) id); }
+        }
+        for (int64_t i = n_ids; keep && i < 16; ++i) { tr.push_back(-1); }
+    }
+    const ggml_tensor * x = op ? op->src[1] : nullptr;   // the experts' input: [n_embd, 1, tokens] (or [n_embd, tokens]), F32 on the host
+    if (prefill || u.acts <= 0 || x == nullptr || x->type != GGML_TYPE_F32 || x->data == nullptr || (x->ne[2] != n_tok && x->ne[1] != n_tok)) { return; }
+    if (u.n_embd == 0) { u.n_embd = (int) x->ne[0]; }
+    if (x->ne[0] != u.n_embd) { return; }
+    const size_t xs = x->ne[2] == n_tok ? x->nb[2] : x->nb[1];
+    auto & ha = u.hacts[il];
+    auto & hi = u.hids[il];
+    for (int64_t t = 0; t < n_tok && hi.size() < (size_t) u.acts * 16; ++t) {
+        const float * row = (const float *) ((const char *) x->data + t * xs);
+        for (int c = 0; c < u.n_embd; ++c) { ha.push_back(ggml_fp32_to_fp16(row[c])); }
+        for (int64_t i = 0; i < 16; ++i) {
+            hi.push_back(i < n_ids ? (int16_t) *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]) : (int16_t) -1);
+        }
+    }
+}
+
+static std::string topic_store_dir();   // below: the model's hot map directory ("" without one)
+
+// --moe acts: the request's answer tokens to <store>/acts/<n>.f16 (per layer in layer order: its tokens' expert inputs, n_embd f16 each) and <n>.ids
+// (the same tokens' picks, 16 int16 per token, -1 pads), described by <n>.json (layers, tokens per layer, n_embd); n = the next free number
+static void uniq_acts_dump() {
+    auto & u = g_uniq;
+    std::lock_guard<std::mutex> lk(u.mtx);
+    if (u.acts <= 0 || u.n_embd <= 0) { return; }
+    size_t tot = 0;
+    for (const auto & v : u.hids) { tot += v.size(); }
+    const std::string base = topic_store_dir();
+    if (tot == 0 || base.empty()) { for (auto & v : u.hacts) { v.clear(); } for (auto & v : u.hids) { v.clear(); } return; }
+    const std::filesystem::path dir = std::filesystem::path(base) / "acts";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    int n = 0;
+    while (std::filesystem::exists(dir / (std::to_string(n) + ".json"), ec)) { n++; }
+    const std::string stem = (dir / std::to_string(n)).string();
+    FILE * fa = fopen((stem + ".f16").c_str(), "wb");
+    FILE * fi = fopen((stem + ".ids").c_str(), "wb");
+    FILE * fj = fopen((stem + ".json").c_str(), "w");
+    if (fa && fi && fj) {
+        fprintf(fj, "{\"n_embd\": %d, \"k\": 16, \"layers\": [", u.n_embd);
+        bool first = true;
+        for (int il = 0; il < u.nl; ++il) {
+            if (u.hids[il].empty()) { continue; }
+            fwrite(u.hacts[il].data(), sizeof(uint16_t), u.hacts[il].size(), fa);
+            fwrite(u.hids[il].data(), sizeof(int16_t), u.hids[il].size(), fi);
+            fprintf(fj, "%s[%d, %zu]", first ? "" : ", ", il, u.hids[il].size() / 16);
+            first = false;
+        }
+        fprintf(fj, "]}\n");
+        LLAMA_LOG_WARN("moe-cache: acts: request's answer inputs and picks of every layer to %s.f16/.ids (%.1f MB)\n", stem.c_str(), (double) tot / 16 * u.n_embd * 2 / 1e6);
+    }
+    if (fa) { fclose(fa); }
+    if (fi) { fclose(fi); }
+    if (fj) { fclose(fj); }
+    for (auto & v : u.hacts) { v.clear(); }
+    for (auto & v : u.hids) { v.clear(); }
+}
+}
+
+// the counts since the last read under a label (prompt, answer 0-255, ...): one line per layer to the file, a summary to the log; also added to the
+// request's total. Returns nothing; a segment with no picks writes nothing.
+static void uniq_report(const std::vector<uint64_t> & now, const char * label) {
+    auto & u = g_uniq;
+    if (u.path.empty()) { return; }   // --moe acts alone: no uniqdump file, no lines
+    FILE * f = u.path.empty() ? nullptr : fopen(u.path.c_str(), "a");
+    uint64_t uses = 0, top8 = 0, uniq_sum = 0;
+    int      layers = 0, umin = INT32_MAX, umax = 0;
+    for (int il = 0; il < u.nl; ++il) {
+        std::vector<uint64_t> c(now.begin() + (size_t) il*u.ne, now.begin() + (size_t) (il + 1)*u.ne);
+        uint64_t tot = 0;
+        int      k   = 0;
+        for (int e = 0; e < u.ne; ++e) { tot += c[e]; k += c[e] > 0; }
+        if (tot == 0) { continue; }
+        if (f) {
+            fprintf(f, "req %llu %s layer %d uses %llu unique %d:", (unsigned long long) u.n_req, label, il, (unsigned long long) tot, k);
+            for (int e = 0; e < u.ne; ++e) { fprintf(f, " %llu", (unsigned long long) c[e]); }
+            fputc('\n', f);
+        }
+        std::partial_sort(c.begin(), c.begin() + std::min(8, u.ne), c.end(), std::greater<uint64_t>());
+        for (int i = 0; i < std::min(8, u.ne); ++i) { top8 += c[i]; }
+        uses += tot; uniq_sum += k; layers++; umin = std::min(umin, k); umax = std::max(umax, k);
+    }
+    if (f) { fclose(f); }
+    if (layers > 0) {
+        LLAMA_LOG_WARN("moe-cache: uniqdump: request %llu %s: %llu expert uses, unique experts per layer %.1f of %d (%.1f%%; min %d, max %d, %d layers), the 8 hottest of a layer carry %.1f%% of its uses\n",
+                (unsigned long long) u.n_req, label, (unsigned long long) uses, (double) uniq_sum / layers, u.ne, 100.0 * (double) uniq_sum / layers / u.ne, umin, umax, layers,
+                100.0 * (double) top8 / (double) uses);
+    }
+}
+
+// read the cards' counters (cleared by the read) as one segment: into the request's answer total unless it is the prompt
+static void uniq_flush(const char * label, bool answer) {
+    auto & u = g_uniq;
+    if (!u.on) { return; }
+    std::vector<uint64_t> now((size_t) u.nl*u.ne, 0);   // the picks since the last read (the counters are cleared by the read)
+    if (u.host) {
+        std::lock_guard<std::mutex> lk(u.mtx);
+        now.swap(u.hcnt);
+        u.hcnt.assign(now.size(), 0);
+        if (std::all_of(now.begin(), now.end(), [](uint64_t c) { return c == 0; })) { return; }
+    } else {
+        auto rd = (bool (*)(int, int, uint64_t *)) cuda_obs_proc("ggml_backend_cuda_obs_full_read_fork");
+        if (!rd || !rd(u.nl, u.ne, now.data())) { return; }
+    }
+    uniq_report(now, label);
+    for (size_t i = 0; i < now.size(); ++i) { (answer ? u.ans : u.prompt)[i] += now[i]; }
+}
+
+// every decode call (before its graph runs): the batches up to the first one of at most 8 tokens are the prompt; the answer is cut into segments of
+// --moe uniqseg=N tokens (default 256) to see experts hot early and cold late (user 2026-10-29)
+void llama_moe_uniq_step(int n_tokens) {
+    auto & u = g_uniq;
+    if (!u.on) { return; }
+    if (n_tokens > 8) { u.in_prompt = true; return; }
+    if (u.in_prompt) { uniq_flush("prompt", false); u.in_prompt = false; u.seg0 = u.dec = 0; }
+    if (u.dec - u.seg0 >= u.seg) {
+        const std::string l = "answer " + std::to_string(u.seg0) + "-" + std::to_string(u.dec - 1);
+        uniq_flush(l.c_str(), true);
+        u.seg0 = u.dec;
+    }
+    u.dec += n_tokens;
+}
+
+// --moe uniqtrace=N: the request's answer picks per layer in token order to PATH.trace, one line per layer: "req R layer L tokens T: a,b,..,h a,b,..,h ..."
+// (the k picks of each token, comma separated; tokens space separated)
+static void uniq_trace_dump() {
+    auto & u = g_uniq;
+    if (!u.on || u.trace <= 0) { return; }
+    std::vector<int32_t> n_tok(u.nl, 0);
+    std::vector<int16_t> ids((size_t) u.nl * u.trace * 16, -1);
+    if (u.host) {
+        std::lock_guard<std::mutex> lk(u.mtx);
+        for (int il = 0; il < u.nl; ++il) {
+            n_tok[il] = (int32_t) (u.htrace[il].size() / 16);
+            std::copy(u.htrace[il].begin(), u.htrace[il].end(), ids.begin() + (size_t) il * u.trace * 16);
+            u.htrace[il].clear();
+        }
+    } else {
+        auto rd = (bool (*)(int, int32_t *, int16_t *)) cuda_obs_proc("ggml_backend_cuda_obs_trace_read_fork");
+        if (!rd || !rd(u.nl, n_tok.data(), ids.data())) { return; }
+    }
+    FILE * f = fopen((u.path + ".trace").c_str(), "a");
+    if (!f) { return; }
+    for (int il = 0; il < u.nl; ++il) {
+        if (n_tok[il] <= 0) { continue; }
+        fprintf(f, "req %llu layer %d tokens %d:", (unsigned long long) u.n_req, il, n_tok[il]);
+        for (int t = 0; t < n_tok[il]; ++t) {
+            const int16_t * r = ids.data() + ((size_t) il * u.trace + t) * 16;
+            fputc(' ', f);
+            for (int i = 0, first = 1; i < 16; ++i) {
+                if (r[i] < 0) { continue; }
+                fprintf(f, first ? "%d" : ",%d", r[i]);
+                first = 0;
+            }
+        }
+        fputc('\n', f);
+    }
+    fclose(f);
+}
+
+static void uniq_request_end() {
+    auto & u = g_uniq;
+    if (!u.on) { return; }
+    uniq_trace_dump();
+    uniq_acts_dump();
+    if (u.in_prompt) { uniq_flush("prompt", false); u.in_prompt = false; }
+    const std::string l = "answer " + std::to_string(u.seg0) + "-" + std::to_string(u.dec > 0 ? u.dec - 1 : 0);
+    uniq_flush(l.c_str(), true);
+    uniq_report(u.ans, "answer all");
+    for (size_t i = 0; i < u.ans.size(); ++i) { u.ans[i] += u.prompt[i]; }
+    uniq_report(u.ans, "whole request");
+    std::fill(u.ans.begin(), u.ans.end(), 0);
+    std::fill(u.prompt.begin(), u.prompt.end(), 0);
+    u.seg0 = u.dec = 0;
+    u.n_req++;
+}
+
+void llama_moe_uniq_start(const llama_model & model) {   // called for every model, also one fully on the GPUs (no cache, no observer)
+    if (g_uniq.on) { return; }
+    const char * up = moe_opt("uniqdump");
+    const char * ac = moe_opt("acts");
+    if (((up && *up) || (ac && atoi(ac) > 0)) && model.hparams.n_expert > 0) {   // --moe acts works without uniqdump too
+        g_uniq.on = true;
+        g_uniq.path = up && *up ? up : "";
+        g_uniq.nl = (int) model.hparams.n_layer();
+        g_uniq.ne = (int) model.hparams.n_expert;
+        g_uniq.ans.assign((size_t) g_uniq.nl*g_uniq.ne, 0);
+        g_uniq.prompt.assign((size_t) g_uniq.nl*g_uniq.ne, 0);
+        if (const char * sg = moe_opt("uniqseg"); sg && atoi(sg) > 0) { g_uniq.seg = atoi(sg); }
+        g_uniq.host = llama_moe_cache_active_fork();   // the cache's observer gives true expert ids; the GPU counters would see cache slots
+        g_uniq.hcnt.assign((size_t) g_uniq.nl*g_uniq.ne, 0);
+        g_uniq.htrace.assign(g_uniq.nl, {});
+        g_uniq.hacts.assign(g_uniq.nl, {});
+        g_uniq.hids.assign(g_uniq.nl, {});
+        if (const char * tr = moe_opt("uniqtrace"); tr && atoi(tr) > 0 && g_uniq.host) { g_uniq.trace = atoi(tr); }
+        if (const char * ac = moe_opt("acts"); ac && atoi(ac) > 0 && g_uniq.host) { g_uniq.acts = atoi(ac); }
+        if (auto in = g_uniq.host ? nullptr : (bool (*)(int, int, int)) cuda_obs_proc("ggml_backend_cuda_obs_full_init_fork")) {
+            const ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+            for (int d = 0; d < (int) ggml_backend_reg_dev_count(reg); ++d) { in(d, g_uniq.nl, g_uniq.ne); }
+        }
+        if (const char * tr = moe_opt("uniqtrace"); tr && atoi(tr) > 0 && !g_uniq.host) {
+            if (auto ti = (bool (*)(int, int, int)) cuda_obs_proc("ggml_backend_cuda_obs_trace_init_fork")) {
+                g_uniq.trace = atoi(tr);
+                const ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
+                for (int d = 0; d < (int) ggml_backend_reg_dev_count(reg); ++d) { ti(d, g_uniq.nl, g_uniq.trace); }
+            }
+        }
+    }
+}
 
 void llama_moe_observe_start(const llama_model & model) {
     const char * off = moe_opt("observe");
@@ -1857,6 +2142,25 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
     if (!ls) {
         return;
     }
+    uniq_host_obs(il, ids, op, prefill);   // --moe uniqdump with the cache: every router pick (true expert ids), --moe acts: the answer's inputs
+    if (g_rp.on && !prefill && g_topic_answer.load(std::memory_order_relaxed) && il >= 0 && (size_t) il < g_rp.rec.size()) {   // replay: record, follow
+        for (int64_t t = 0; t < n_tokens; ++t) {
+            const int32_t row = g_rp.pos[il]++;
+            const bool    pl  = g_rp.active && (size_t) (row + 1) * 16 <= g_rp.play[il].size();
+            for (int64_t i = 0; i < 16; ++i) {
+                const int32_t id = i < n_ids ? *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]) : -1;
+                g_rp.rec[il].push_back((int16_t) id);
+                if (id < 0) { continue; }
+                g_rp.picks++;
+                if (pl) {
+                    const int16_t * r = g_rp.play[il].data() + (size_t) row * 16;
+                    const bool m = std::find(r, r + 16, (int16_t) id) != r + 16;
+                    g_rp.matched += m;
+                    if (!m && (g_rp.first_mis < 0 || row < g_rp.first_mis)) { g_rp.first_mis = row; g_rp.first_mis_layer = il; }
+                }
+            }
+        }
+    }
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->last_prefill = prefill;
@@ -1920,6 +2224,20 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
                 }
             } else {
                 ls->n_miss += !prefill;
+                if (g_rp.on && !prefill && g_topic_answer.load(std::memory_order_relaxed) && il >= 0 && (size_t) il < g_rp.pos.size()) {
+                    g_rp.n_cpu++;
+                    const int32_t row = g_rp.pos[il] - 1;   // this token's row (the replay block above already advanced pos for this batch)
+                    if (g_rp.first_cpu < 0 || row < g_rp.first_cpu) { g_rp.first_cpu = row; g_rp.first_cpu_layer = il; }
+                }
+                {   // --moe jit-all: every expert a decode token computes on the CPU breaks the deterministic replay: say which and why (first 40)
+                    static const bool ja = [] { const char * v = moe_opt("jit-all"); return v && atoi(v) > 0; }();
+                    static int n_said = 0;
+                    if (ja && !prefill && n_tokens <= 4 && n_said < 40) {
+                        n_said++;
+                        LLAMA_LOG_WARN("moe-cache: jit-all: CPU computes layer %d expert %d (step %llu, batch %lld tokens, queued %d, slots %d)\n",
+                                il, id, (unsigned long long) mc->n_steps, (long long) n_tokens, (int) ls->queued[id], ls->pub.n_slots);
+                    }
+                }
                 if (!prefill && ls->ghost_flag[id]) { mc->pr[12]++; ls->ghost_flag[id] = 0; }   // evicted recently and wanted again
                 bool dup = false;
                 for (int32_t p : ls->pending) {
@@ -2061,6 +2379,12 @@ void publish_job(moe_cache * mc, const upload_job & j) {
     if (j.skipped) {
         ls.slot_in_flight[j.slot] = false;
         ls.queued[j.expert]       = 0;
+        return;
+    }
+    if (ls.expert_slot[j.expert] >= 0 && ls.expert_slot[j.expert] != j.slot) {   // --moe jit-all: the token needed it before this copy landed, the JIT
+        ls.slot_in_flight[j.slot] = false;                                          // gave it a block of its own; this block goes back
+        ls.queued[j.expert]       = 0;
+        pool_release(mc, j.layer_idx, j.slot);
         return;
     }
     ls.slot_expert[j.slot]     = j.expert;
@@ -5452,6 +5776,152 @@ static struct topic_t {
     bool keep() const { return mode == FULL || mode == STORE; }   // requests are stored
 } g_topic;
 
+namespace {
+static std::string topic_store_dir() { return g_topic.store.path; }   // declared above the uniqdump section (same namespace)
+}
+
+namespace {
+static std::string replay_path(uint64_t h) {
+    char hx[32];
+    snprintf(hx, sizeof hx, "%016llx", (unsigned long long) h);
+    return (std::filesystem::path(g_topic.store.path) / "trace" / (std::string(hx) + ".ids")).string();
+}
+
+// the answer starts (the prompt's last pass is over): record from here, and play the prompt's stored trace if there is one. mc->mtx held.
+static void replay_begin(moe_cache * mc) {
+    auto & r = g_rp;
+    if (!r.on || g_topic.store.path.empty()) { return; }
+    if (const char * v = moe_opt("replay-ahead")) { r.ahead = std::max(1, atoi(v)); }
+    if (const char * v = moe_opt("replay-frac"))  { r.frac  = std::max(0.05, atof(v)); }
+    int nl = 0;
+    size_t ne = 0;
+    for (const auto & ls : mc->layers) { nl = std::max(nl, ls.pub.il + 1); ne = std::max(ne, ls.expert_slot.size()); }
+    r.rec.assign(nl, {});
+    r.pos.assign(nl, 0);
+    r.play.assign(nl, {});
+    r.nu.assign(nl, std::vector<int32_t>(ne, INT32_MAX));
+    r.active = false;
+    r.picks = r.matched = r.n_pref = r.n_tok = r.n_cpu = 0;
+    r.first_mis = r.first_mis_layer = r.first_cpu = r.first_cpu_layer = -1;
+    r.jit0  = mc->n_jit;
+    r.jitm0 = mc->n_jit_miss;
+    FILE * f = fopen(replay_path(g_topic.phash).c_str(), "rb");
+    if (!f) { return; }
+    int32_t n = 0;
+    bool ok = fread(&n, sizeof n, 1, f) == 1 && n == nl;
+    std::vector<int32_t> rows(ok ? n : 0);
+    ok = ok && fread(rows.data(), sizeof(int32_t), rows.size(), f) == rows.size();
+    for (int il = 0; ok && il < nl; ++il) {
+        r.play[il].resize((size_t) rows[il] * 16);
+        ok = fread(r.play[il].data(), sizeof(int16_t), r.play[il].size(), f) == r.play[il].size();
+    }
+    fclose(f);
+    if (!ok) { for (auto & v : r.play) { v.clear(); } return; }
+    r.active = true;
+    int32_t mx = 0;
+    for (int32_t x : rows) { mx = std::max(mx, x); }
+    LLAMA_LOG_WARN("moe-cache: replay: this prompt's stored trace plays (%d answer tokens): the steps upload what its next tokens need\n", mx);
+}
+
+// the next use of every expert from each layer's position, looking horizon tokens ahead (the step: all layers are at the same token). mc->mtx held.
+static void replay_next_use() {
+    auto & r = g_rp;
+    for (size_t il = 0; il < r.play.size(); ++il) {
+        auto & nu = r.nu[il];
+        std::fill(nu.begin(), nu.end(), INT32_MAX);
+        const int32_t rows = (int32_t) (r.play[il].size() / 16), p = r.pos[il];
+        for (int32_t t = std::min(rows, p + r.horizon) - 1; t >= p; --t) {
+            const int16_t * row = r.play[il].data() + (size_t) t * 16;
+            for (int i = 0; i < 16; ++i) {
+                if (row[i] >= 0 && (size_t) row[i] < nu.size()) { nu[row[i]] = t - p; }
+            }
+        }
+    }
+}
+
+// upload what the next tokens of the trace need, soonest first, into the blocks the trace needs latest (never a block whose expert is needed no
+// later than the candidate, never an expert the token about to run needs: the JIT gives it its own). Returns the uploads queued. mc->mtx held.
+static int replay_prefetch(moe_cache * mc, double * bud) {
+    auto & r = g_rp;
+    int n = 0;
+    std::vector<upload_job> jobs;
+    for (int d = 1; d <= r.ahead; ++d) {
+        for (size_t li = 0; li < mc->layers.size(); ++li) {
+            layer_state & ls = mc->layers[li];
+            const int il = ls.pub.il;
+            if (il < 0 || (size_t) il >= r.play.size()) { continue; }
+            const int32_t t = r.pos[il] + d;
+            if ((size_t) (t + 1) * 16 > r.play[il].size()) { continue; }
+            const int16_t * row = r.play[il].data() + (size_t) t * 16;
+            const double S = (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
+            const int    lk = ls.link >= 0 && ls.link < MAX_LINKS ? ls.link : 0;
+            for (int i = 0; i < 16 && bud[lk] >= S; ++i) {
+                const int32_t id = row[i];
+                if (id < 0 || (size_t) id >= ls.expert_slot.size() || ls.expert_slot[id] >= 0 || ls.queued[id] || r.nu[il][id] == 0) { continue; }
+                double best;
+                const slot_pick pk = pick_slot(mc, li, [&](layer_state & lo, size_t, int32_t x) {
+                    if (pinned(mc, lo, x)) { return -1.0; }
+                    const int32_t dx = lo.pub.il >= 0 && (size_t) lo.pub.il < r.nu.size() ? r.nu[lo.pub.il][x] : INT32_MAX;
+                    return dx <= r.ahead ? -1.0 : (dx == INT32_MAX ? 0.0 : 1e9 / (1.0 + (double) dx));   // needed within the window: kept
+                }, best);
+                if (pk.slot < 0) { continue; }
+                layer_state & lo = pk.owner >= 0 ? mc->layers[pk.owner] : ls;
+                if (pk.owner >= 0 && lo.slot_expert[pk.slot] >= 0) { evict_slot(mc, lo, pk.slot); }
+                pool_take(mc, li, pk.slot);
+                ls.slot_in_flight[pk.slot] = true;
+                ls.queued[id]              = 1;
+                upload_job j { li, id, pk.slot };
+                j.t_queued = ggml_time_us();
+                jobs.push_back(j);
+                bud[lk] -= S;
+                n++;
+            }
+        }
+    }
+    if (!jobs.empty()) {
+        std::lock_guard<std::mutex> wlk(mc->wmtx);
+        for (const auto & j : jobs) { mc->todo.push_back(j); }
+        mc->wcv.notify_all();
+    }
+    r.n_pref += n;
+    r.n_tok++;
+    return n;
+}
+
+// the request is over: its trace replaces the prompt's stored one, and the log says how the play went
+static void replay_end(moe_cache * mc) {
+    auto & r = g_rp;
+    if (!r.on || r.rec.empty() || g_topic.store.path.empty() || g_topic.phash == 0) { return; }
+    size_t tot = 0;
+    for (const auto & v : r.rec) { tot += v.size(); }
+    if (tot == 0) { return; }
+    uint64_t jit, jitm;
+    {
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        jit = mc->n_jit - r.jit0; jitm = mc->n_jit_miss - r.jitm0;
+    }
+    const std::string path = replay_path(g_topic.phash);
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    if (FILE * f = fopen(path.c_str(), "wb")) {
+        const int32_t n = (int32_t) r.rec.size();
+        fwrite(&n, sizeof n, 1, f);
+        for (const auto & v : r.rec) { const int32_t rows = (int32_t) (v.size() / 16); fwrite(&rows, sizeof rows, 1, f); }
+        for (const auto & v : r.rec) { fwrite(v.data(), sizeof(int16_t), v.size(), f); }
+        fclose(f);
+    }
+    LLAMA_LOG_WARN("moe-cache: replay: first pick unlike the trace at answer token %d (layer %d); %llu answer picks computed by the CPU, the first at token %d (layer %d)\n",
+            r.first_mis, r.first_mis_layer, (unsigned long long) r.n_cpu, r.first_cpu, r.first_cpu_layer);
+    LLAMA_LOG_WARN("moe-cache: replay: %s: %llu picks, %.2f%% of them as the stored trace had them; %llu prefetched ahead (%.1f per token), %llu of the picks "
+            "missed the cache when their token ran (%.2f%%: %llu uploaded just in time), the trace stored for the next request of this prompt\n",
+            r.active ? "played the stored trace" : "recorded (no stored trace)", (unsigned long long) r.picks, r.active ? 100.0 * (double) r.matched / (double) std::max<uint64_t>(1, r.picks) : 0.0,
+            (unsigned long long) r.n_pref, (double) r.n_pref / (double) std::max<uint64_t>(1, r.n_tok), (unsigned long long) jitm,
+            100.0 * (double) jitm / (double) std::max<uint64_t>(1, r.picks), (unsigned long long) jit);
+    r.active = false;
+    for (auto & v : r.rec) { v.clear(); }
+}
+}
+
 // up to 400 bytes of text into t (cut at a character boundary): what a record keeps of a request's words
 static void topic_text_add(std::string & t, const std::string & piece) {
     if (t.size() >= 400) { return; }
@@ -5512,7 +5982,7 @@ static void topic_store_pending(moe_cache * mc) {
     std::vector<uint32_t> cnt(g_topic.store.rec_cells(), 0), cth(g_topic.store.rec_cells(), 0);
     uint64_t tot = 0, all = 0, n_used = 0, tot_t = 0, all_t = 0, n_used_t = 0;   // per map: uses kept, uses, experts used
     size_t   kept = 0, kept_t = 0;
-    uint64_t h1 = 0, m1 = 0;
+    uint64_t h1 = 0, m1 = 0, have_map = 0, rec_hit = 0, rec_hit_t = 0;   // experts the recalled map rates, uses of the request's kept experts they cover
     {
         std::lock_guard<std::mutex> lk(mc->mtx);
         for (const auto & ls : mc->layers) {
@@ -5529,10 +5999,24 @@ static void topic_store_pending(moe_cache * mc) {
                 n_used_t += ls.topic_think[e] > 0;
             }
         }
-        kept   = topic_hottest(mc, cnt);
-        kept_t = all_t > 0 ? topic_hottest(mc, cth) : 0;
-        for (const uint32_t c : cnt) { tot += c; }
-        for (const uint32_t c : cth) { tot_t += c; }
+        // the record keeps every expert the routers picked (user 2026-10-29: "what routers picked in each layer at any point must be captured, stored
+        // and 100% recalled per that req"); the cut to what the cache holds is the fill's business (heat order), so it is only counted here for the log
+        std::vector<uint32_t> cut = cnt, cut_t = cth;
+        kept   = topic_hottest(mc, cut);
+        kept_t = all_t > 0 ? topic_hottest(mc, cut_t) : 0;
+        for (const uint32_t c : cut)   { tot   += c; }
+        for (const uint32_t c : cut_t) { tot_t += c; }
+        // recall: of all this request's uses, the share at experts the recalled map rates; greedy sampling
+        // (temperature 0, top-k 1) walks a repeated prompt through the same experts, so a map stored for it must recall 100% (user 2026-10-29)
+        for (const auto & ls : mc->layers) {
+            if (ls.pub.il < 0 || (uint32_t) ls.pub.il >= g_topic.store.n_layers) { continue; }
+            for (size_t e = 0; e < ls.topic_heat.size() && e < g_topic.store.n_exp; ++e) {
+                const size_t c = (size_t) ls.pub.il * g_topic.store.n_exp + e;
+                have_map   += ls.topic_heat[e] > 0.0f;
+                rec_hit    += ls.topic_heat[e] > 0.0f ? cnt[c] : 0;
+                rec_hit_t  += ls.topic_heat[e] > 0.0f ? cth[c] : 0;
+            }
+        }
     }
     if (tot > 0 || tot_t > 0) {
         const int64_t t0 = ggml_time_us();
@@ -5550,6 +6034,11 @@ static void topic_store_pending(moe_cache * mc) {
             g_topic.key.clear();
             g_topic.act_ok = false;
             return;
+        }
+        if (have_map > 0) {
+            LLAMA_LOG_WARN("moe-cache: dynhot: recall of the map used: %.1f%% of the answer's uses, %.1f%% of the thinking's (%llu experts rated)\n",
+                    100.0 * (double) rec_hit / (double) std::max<uint64_t>(1, all), 100.0 * (double) rec_hit_t / (double) std::max<uint64_t>(1, all_t),
+                    (unsigned long long) have_map);
         }
         const auto & st = g_topic.store;
         LLAMA_LOG_WARN("moe-cache: dynhot: request stored (hit %.1f%% with the cache on %s; its %zu hottest of %llu experts the answer used, %.1f%% of its uses%s): "
@@ -5698,6 +6187,8 @@ void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_prompt, bool
 
 void llama_moe_request_end_fork(void) {
     exptok_save();
+    uniq_request_end();
+    if (g_cache != nullptr) { replay_end(g_cache); }
     if (g_cache != nullptr) {
         topic_store_pending(g_cache);   // the request's map now, not when the next prompt begins: a server's last request is kept too
     }
@@ -5730,6 +6221,7 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         else if (m == "store")            { g_topic.mode = topic_t::STORE; }
         else { LLAMA_LOG_WARN("moe-cache: dynhot=%s: not full, store, read or off; store\n", m.c_str()); }
         g_topic.on = g_topic.mode != topic_t::OFF && !hotmap_dir().empty() && model.tok_embd != nullptr && model.hparams.n_expert > 0 ? 1 : 0;
+        g_rp.on = g_topic.on == 1 && [] { const char * v = moe_opt("replay"); return v && atoi(v) > 0; }();   // --moe replay=1 (needs the hot map store)
         if (g_topic.on == 0) {
             g_req_prompt.clear();
             return;
@@ -5738,8 +6230,12 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         if (const char * m = moe_opt("dynhot-min"))   { g_topic.min_cos   = (float) atof(m); }
         if (const char * m = moe_opt("dynhot-merge")) { g_topic.merge_cos = (float) atof(m); }   // the 4-bit cosine at which a request joins a record (default 2: never)
         if (const char * m = moe_opt("dynhot-global")) { g_topic.store.use_glob = atoi(m) != 0; }
-        if (const char * m = moe_opt("dynhot-same"))   { g_topic.store.same_pool = strcmp(m, "pool") == 0; }   // the same prompt again: replace (a better run's map) | pool (every run's counts)   // 0: the lookup blends the nearest topics only (the A/B against the global map)
-        const std::string path = hotmap_path(model, ".js");   // <hot map dir>/<model>.js (one assignment per line; the binary .hotmap before it is deleted)
+        if (const char * m = moe_opt("dynhot-near")) { g_topic.store.near_cos = (float) atof(m); }   // the averaged cosine from which the nearest records are used as they are
+        if (const char * m = moe_opt("dynhot-same")) {   // pool: the same prompt's maps added; a number: the similarity at which a request is one stored before
+            g_topic.store.same_pool = strcmp(m, "pool") == 0;
+            if (std::isdigit((unsigned char) m[0])) { g_topic.store.same_cos = (float) atof(m); }
+        }   // the same prompt again: replace (a better run's map) | pool (every run's counts)   // 0: the lookup blends the nearest topics only (the A/B against the global map)
+        const std::string path = hotmap_path(model, "");   // <hot map dir>/<model>/: keys.js, a file of sets per layer, global.js (the stores before it are deleted)
         g_topic.store.max_records = max_rec;   // a record is the keys and a count per expert of every layer: 49 KB on DeepSeek-V4.1, 49 MB of RAM at the default 1024
         if (!g_topic.store.open(path, (uint32_t) model.hparams.n_embd, (uint32_t) model.hparams.n_layer(), (uint32_t) model.hparams.n_expert)) {
             LLAMA_LOG_WARN("moe-cache: dynhot: %s holds maps of another shape (model or layer count): not used, not written\n", path.c_str());
@@ -5747,7 +6243,7 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         static const char * what[] = { "off", "full: the nearest maps pick the cache's experts, every request stored",
             "store: requests stored, the ini's hot experts pick the cache's", "read: the nearest maps pick the cache's experts, nothing stored (frozen)" };
         LLAMA_LOG_WARN("moe-cache: dynhot: %zu records and a global map of %u requests in %s; dynhot=%s (lookup: the 4 nearest%s%s; a request joins a record at "
-                "cosine >= %.2f)\n", g_topic.store.size(), g_topic.store.glob_req, path.c_str(), what[g_topic.mode],
+                "cosine >= %.2f)\n", g_topic.store.size(), g_topic.store.glob_requests(), path.c_str(), what[g_topic.mode],
                 g_topic.min_cos > -1.0f ? tr_fmt(" at cosine >= %.2f", g_topic.min_cos).c_str() : "", g_topic.store.use_glob ? " and the global map" : "", g_topic.merge_cos);
     }
     topic_store_pending(mc);   // the request before this prompt, if its end did not store it
@@ -5880,6 +6376,10 @@ void llama_moe_topic_act_fork(const float * const * rows, int n_rows, int64_t n_
             std::fill(ls.topic_dec.begin(), ls.topic_dec.end(), 0u);
             std::fill(ls.topic_think.begin(), ls.topic_think.end(), 0u);
         }
+    }
+    if (g_rp.on) {   // replay: record this answer, play the prompt's stored trace
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        replay_begin(mc);
     }
     g_topic_answer.store(true);
     const int64_t t0 = ggml_time_us();
@@ -7256,7 +7756,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
 // (same eviction score as the step's swaps), so the upload also serves later tokens.
 void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids) {
     moe_cache * mc = g_cache;
-    if (!mc || knobs().jit == 0 || ids->ne[1] > 4) {
+    static const bool jit_all_mode = [] { const char * v = moe_opt("jit-all"); return v && atoi(v) > 0; }();
+    // jit-all: every batch the cache serves as decode (the prompt's last small batches too), else the answer's batches of up to 4 tokens
+    if (!mc || knobs().jit == 0 || ids->ne[1] > (jit_all_mode ? std::max<int64_t>(4, llama_moe_cache_max_batch_fork()) : 4)) {
         return;
     }
     std::lock_guard<std::mutex> lock(mc->mtx);
@@ -7271,7 +7773,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     const bool pool = ls.pub.jit_n > 0; // slower-link layer: the pool on the fastest-link GPU instead of its own cache
     const int  lk   = pool ? 0 : ls.link;
     ggml_backend_t be = mc->link_be[lk];
-    const double rl = mc->gbs_link[lk];
+    const double rl = mc->gbs_link[lk] > 0 ? mc->gbs_link[lk] : jit_all_mode ? 1.0 : 0.0;   // jit-all: before the link is measured too
     if (!be || rl <= 0) {
         return;
     }
@@ -7285,7 +7787,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             cur.push_back(e);
             if (pool && ls.pool_slot[e] >= 0) {
                 mc->n_pool_hit++;
-            } else if (ls.expert_slot[e] < 0 && !ls.queued[e]) {
+            } else if (ls.expert_slot[e] < 0 && (!ls.queued[e] || jit_all_mode)) {   // jit-all: an expert still in flight too (its own copy now; publish_job drops the late one)
                 miss.push_back(e);
             }
         }
@@ -7308,6 +7810,10 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     for (int k = 1; k <= m; ++k) {
         if (T(k) < T(kb)) { kb = k; }
     }
+    // --moe jit-all=1 (user 2026-10-29: "no point until you achieve fully deterministic moe replay"): every miss of this token goes to the GPU, none to
+    // the CPU: the CPU's float results differ from the GPU's, and greedy runs of one prompt diverged after a median 5 tokens when the CPU computed some
+    static const bool jit_all = [] { const char * v = moe_opt("jit-all"); return v && atoi(v) > 0; }();
+    if (jit_all) { kb = m; }
     if (kb == 0) {
         return;
     }
@@ -8076,6 +8582,10 @@ void llama_moe_cache_step_fork() {
     if (mc->starved.load()) {
         return;   // kv-tail: the KV holds every expert block, nothing to score, admit or upload
     }
+    if (g_rp.active && g_rp.t_end > 0) {   // replay: the token's compute (from the last step's end to now, before this step waits for uploads)
+        const double cu = (double) (ggml_time_us() - g_rp.t_end);
+        g_rp.cu_ema = g_rp.cu_ema > 0 ? 0.8 * g_rp.cu_ema + 0.2 * cu : cu;
+    }
 
     // LLAMA_MOE_CACHE_DETERMINISTIC=1 (benchmarks): publish exactly the uploads
     // scheduled by the previous step, in a fixed order, with a fixed swap budget
@@ -8109,9 +8619,11 @@ void llama_moe_cache_step_fork() {
         }
         if (wait_publish) {
             // wait for the cache swaps only; a stream copy still running lands later and is published at a split
+            // --moe jit-all: the background refills too (one still in flight during a token is computed by the CPU: no deterministic replay)
+            static const bool jit_all_wait = [] { const char * v = moe_opt("jit-all"); return v && atoi(v) > 0; }();
             mc->dcv.wait(wlk, [mc]() {
-                return mc->in_flight == mc->in_flight_stream &&
-                    std::none_of(mc->todo.begin(), mc->todo.end(), [](const upload_job & j) { return !j.stream && !j.bg; });
+                return (jit_all_wait ? mc->in_flight == 0 : mc->in_flight == mc->in_flight_stream) &&
+                    std::none_of(mc->todo.begin(), mc->todo.end(), [](const upload_job & j) { return !j.stream && (!j.bg || jit_all_wait); });
             });
             std::sort(mc->done.begin(), mc->done.end(), [](const upload_job & a, const upload_job & b) {
                 return a.layer_idx != b.layer_idx ? a.layer_idx < b.layer_idx : a.slot < b.slot;
@@ -8218,6 +8730,10 @@ void llama_moe_cache_step_fork() {
             budget_total = fixed_budget >= 0 ? fixed_budget : 8;
         }
         budget_total = std::max(0, budget_total);
+        // --moe jit-all=1: no background swaps; every expert a token needs is uploaded just in time and computed by the GPU (an expert whose
+        // swap is still in flight during the token would be computed by the CPU, whose floats differ: no deterministic replay)
+        static const bool jit_all_step = [] { const char * v = moe_opt("jit-all"); return v && atoi(v) > 0; }();
+        if (jit_all_step) { budget_total = 0; }
         mc->last_budget = budget_total;
     }
 
@@ -8491,7 +9007,7 @@ void llama_moe_cache_step_fork() {
     // hot maps per topic: the first decode step after a prompt drops the cached experts neither the topic's map nor the request used; the refill below
     // fills their blocks too
     size_t n_drop = 0;
-    if (g_topic.after_prompt && decode_graph) {
+    if (g_topic.after_prompt && decode_graph && !g_rp.active) {
         g_topic.after_prompt = false;
         const int64_t t0 = ggml_time_us();
         n_drop = topic_drop_foreign(mc);
@@ -8511,6 +9027,15 @@ void llama_moe_cache_step_fork() {
             pool_fill_log(mc, tr_fmt("%" PRId64 " decode steps (%.0f ms) after a prompt", d, (ggml_time_us() - mc->fill_t0) / 1e3).c_str());
             if (d == 128) { mc->fill_from = -1; }
         }
+    }
+    if (g_rp.active) {   // replay: the trace says what comes; the reactive swaps below would only fight it
+        replay_next_use();
+        double bud[MAX_LINKS];   // bytes each link may move during the next token: a share of the token's compute
+        const double cu = g_rp.cu_ema > 0 ? g_rp.cu_ema : 20000.0;
+        for (int k = 0; k < MAX_LINKS; ++k) { bud[k] = g_rp.frac * cu * (mc->gbs_link[k] > 0 ? mc->gbs_link[k] : 1.0) * 1e3; }
+        replay_prefetch(mc, bud);
+        for (auto & ls : mc->layers) { ls.pending.clear(); }
+        g_rp.t_end = ggml_time_us();
     }
     // 2) schedule new uploads: evict at a sync point (clear the victim's table
     //    entry now), then hand the slice copies to the worker

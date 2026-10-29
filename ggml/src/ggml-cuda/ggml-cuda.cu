@@ -2818,6 +2818,168 @@ static bool ggml_backend_cuda_obs_prompt_read_fork(int n_layer, int n_expert, ui
     return any;
 }
 
+// fork: --moe uniqdump (user 2026-10-29: "full set per req" from the router selections): one histogram per device, layer and expert counting EVERY router
+// pick of every batch (prompt and answer alike); allocated once at load, only a kernel launch at run time (safe inside a CUDA graph capture). Read and
+// cleared by ggml_backend_cuda_obs_full_read_fork when a request ends (the cards idle).
+static std::atomic<bool> g_obs_full_on{false};
+static std::mutex        g_obs_full_mtx;
+static uint32_t *        g_obs_full[GGML_CUDA_MAX_DEVICES] = {};
+static int               g_obs_full_layers = 0, g_obs_full_experts = 0;
+
+static bool ggml_backend_cuda_obs_full_init_fork(int device, int n_layer, int n_expert) {
+    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES || n_layer <= 0 || n_expert <= 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lk(g_obs_full_mtx);
+    if (g_obs_full[device]) {
+        return true;
+    }
+    ggml_cuda_set_device(device);
+    void * p = nullptr;
+    if (cudaMalloc(&p, (size_t) n_layer * n_expert * sizeof(uint32_t)) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    CUDA_CHECK(cudaMemset(p, 0, (size_t) n_layer * n_expert * sizeof(uint32_t)));
+    g_obs_full[device]  = (uint32_t *) p;
+    g_obs_full_layers   = n_layer;
+    g_obs_full_experts  = n_expert;
+    g_obs_full_on       = true;
+    return true;
+}
+
+// off for good once the expert cache's observer counts instead (its ids are the true experts; here the cache's MUL_MAT_ID sees slots)
+static void ggml_backend_cuda_obs_full_off_fork(void) {
+    g_obs_full_on = false;
+}
+
+// out[(layer)*n_expert + e] += the picks since the last read, over all cards; the counters are cleared. Returns false when nothing was counted.
+static bool ggml_backend_cuda_obs_full_read_fork(int n_layer, int n_expert, uint64_t * out) {
+    std::lock_guard<std::mutex> lk(g_obs_full_mtx);
+    if (n_layer != g_obs_full_layers || n_expert != g_obs_full_experts) {
+        return false;
+    }
+    bool any = false;
+    std::vector<uint32_t> h((size_t) n_layer * n_expert);
+    for (int d = 0; d < GGML_CUDA_MAX_DEVICES; ++d) {
+        if (!g_obs_full[d]) {
+            continue;
+        }
+        ggml_cuda_set_device(d);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        if (cudaMemcpy(h.data(), g_obs_full[d], h.size() * sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess) {
+            (void) cudaGetLastError();
+            continue;
+        }
+        CUDA_CHECK(cudaMemset(g_obs_full[d], 0, h.size() * sizeof(uint32_t)));
+        for (size_t i = 0; i < h.size(); ++i) {
+            out[i] += h[i];
+            any |= h[i] != 0;
+        }
+    }
+    return any;
+}
+
+// fork: --moe uniqtrace=N: the router picks of the first N answer tokens (batches of at most 8 tokens) of a request, per layer in token order, for the
+// offline study of how the picks of one layer change from token to token (user 2026-10-29: "do 10 token gen layer 5 sees mostly sameish 10 activations
+// having mostly sameish moe sets"). Per device: n_layer x N x kmax ids (int16) and n_layer write positions; one single-block kernel per layer and batch
+// appends the batch's ids at the layer's position (device side, so a CUDA graph replays it right). Read and cleared with the counters.
+static int16_t * g_obs_trace[GGML_CUDA_MAX_DEVICES]     = {};
+static int32_t * g_obs_trace_pos[GGML_CUDA_MAX_DEVICES] = {};
+static int       g_obs_trace_cap = 0;
+static const int g_obs_trace_kmax = 16;
+
+static __global__ void k_obs_trace(const char * ids, int64_t ne0, int64_t nb0, int64_t nb1, int64_t ntok, int16_t * out, int32_t * pos, int cap) {
+    const int32_t p0 = *pos;
+    for (int64_t k = threadIdx.x; k < ntok*ne0; k += blockDim.x) {
+        const int64_t t = k/ne0, i = k%ne0;
+        if (p0 + t < cap && i < 16) {
+            out[(p0 + t)*16 + i] = (int16_t) *(const int32_t *) (ids + t*nb1 + i*nb0);
+        }
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        *pos = p0 + (int32_t) ntok;
+    }
+}
+
+static bool ggml_backend_cuda_obs_trace_init_fork(int device, int n_layer, int cap) {
+    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES || n_layer <= 0 || cap <= 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lk(g_obs_full_mtx);
+    if (g_obs_trace[device]) {
+        return true;
+    }
+    ggml_cuda_set_device(device);
+    void * p = nullptr, * q = nullptr;
+    if (cudaMalloc(&p, (size_t) n_layer * cap * g_obs_trace_kmax * sizeof(int16_t)) != cudaSuccess ||
+        cudaMalloc(&q, (size_t) n_layer * sizeof(int32_t)) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    CUDA_CHECK(cudaMemset(p, 0xff, (size_t) n_layer * cap * g_obs_trace_kmax * sizeof(int16_t)));
+    CUDA_CHECK(cudaMemset(q, 0, (size_t) n_layer * sizeof(int32_t)));
+    g_obs_trace[device]     = (int16_t *) p;
+    g_obs_trace_pos[device] = (int32_t *) q;
+    g_obs_trace_cap         = cap;
+    return true;
+}
+
+// per layer: the number of traced tokens (n_tok[layer], at most cap) and their ids (out: n_layer x cap x 16, -1 = none); the first card that traced a
+// layer gives it (a layer runs on one card in a layer split). The trace is cleared. Returns false when nothing was traced.
+static bool ggml_backend_cuda_obs_trace_read_fork(int n_layer, int32_t * n_tok, int16_t * out) {
+    std::lock_guard<std::mutex> lk(g_obs_full_mtx);
+    if (n_layer != g_obs_full_layers || g_obs_trace_cap <= 0) {
+        return false;
+    }
+    bool any = false;
+    std::vector<int32_t> pos(n_layer);
+    std::vector<int16_t> h((size_t) n_layer * g_obs_trace_cap * g_obs_trace_kmax);
+    for (int l = 0; l < n_layer; ++l) { n_tok[l] = 0; }
+    for (int d = 0; d < GGML_CUDA_MAX_DEVICES; ++d) {
+        if (!g_obs_trace[d]) {
+            continue;
+        }
+        ggml_cuda_set_device(d);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaMemcpy(pos.data(), g_obs_trace_pos[d], pos.size() * sizeof(int32_t), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h.data(), g_obs_trace[d], h.size() * sizeof(int16_t), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemset(g_obs_trace_pos[d], 0, pos.size() * sizeof(int32_t)));
+        CUDA_CHECK(cudaMemset(g_obs_trace[d], 0xff, h.size() * sizeof(int16_t)));
+        for (int l = 0; l < n_layer; ++l) {
+            if (pos[l] <= 0 || n_tok[l] > 0) {
+                continue;
+            }
+            n_tok[l] = std::min(pos[l], g_obs_trace_cap);
+            const size_t o = (size_t) l * g_obs_trace_cap * g_obs_trace_kmax;
+            std::copy(h.begin() + o, h.begin() + o + (size_t) n_tok[l] * g_obs_trace_kmax, out + o);
+            any = true;
+        }
+    }
+    return any;
+}
+
+// every MUL_MAT_ID node of the graph loop (fused into gate/up/glu or not: the fused path never calls ggml_cuda_mul_mat_id), gate tensor only: one count
+// per router pick into the full counters, and the decode trace
+static void ggml_cuda_obs_full_count(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * ids) {
+    const char * nm = src0->name;
+    if (strncmp(nm, "blk.", 4) != 0 || !strstr(nm, "ffn_gate_exps") || ids->type != GGML_TYPE_I32 || ctx.device >= GGML_CUDA_MAX_DEVICES || !g_obs_full[ctx.device]) {
+        return;
+    }
+    const int il = atoi(nm + 4);
+    if (il < 0 || il >= g_obs_full_layers || (int) src0->ne[2] != g_obs_full_experts) {
+        return;
+    }
+    const int64_t n = ids->ne[0]*ids->ne[1];
+    k_obs_count<<<(unsigned) ((n + 127)/128), 128, 0, ctx.stream()>>>((const char *) ids->data, ids->ne[0], ids->nb[0], ids->nb[1], n,
+            g_obs_full[ctx.device] + (size_t) il*g_obs_full_experts, g_obs_full_experts);
+    if (g_obs_trace[ctx.device] && ids->ne[1] <= 8) {
+        k_obs_trace<<<1, 256, 0, ctx.stream()>>>((const char *) ids->data, ids->ne[0], ids->nb[0], ids->nb[1], ids->ne[1],
+                g_obs_trace[ctx.device] + (size_t) il*g_obs_trace_cap*g_obs_trace_kmax, g_obs_trace_pos[ctx.device] + il, g_obs_trace_cap);
+    }
+}
+
 static void ggml_cuda_obs_count(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * ids) {
     const char * nm = src0->name;
     if (strncmp(nm, "blk.", 4) != 0 || !strstr(nm, "ffn_gate_exps") || ids->type != GGML_TYPE_I32) {
@@ -6355,6 +6517,9 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     && (g_cuda_scratch[cuda_ctx->device].owner == nullptr || g_cuda_scratch[cuda_ctx->device].owner == cuda_ctx);
                 const size_t check_saved = check_node ? ggml_cuda_scratch_check_begin_fork(cuda_ctx->device) : 0;
 
+                if (node->op == GGML_OP_MUL_MAT_ID && g_obs_full_on.load(std::memory_order_relaxed)) {
+                    ggml_cuda_obs_full_count(*cuda_ctx, node->src[0], node->src[2]);   // fork: --moe uniqdump (every router pick, fused or not)
+                }
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
 
                 if (nodes_to_skip != 0) {
@@ -8017,6 +8182,21 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_thread_sync_fork") == 0) {
         return (void *)ggml_backend_cuda_thread_sync_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_obs_trace_init_fork") == 0) {
+        return (void *)ggml_backend_cuda_obs_trace_init_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_obs_trace_read_fork") == 0) {
+        return (void *)ggml_backend_cuda_obs_trace_read_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_obs_full_off_fork") == 0) {
+        return (void *)ggml_backend_cuda_obs_full_off_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_obs_full_init_fork") == 0) {
+        return (void *)ggml_backend_cuda_obs_full_init_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_obs_full_read_fork") == 0) {
+        return (void *)ggml_backend_cuda_obs_full_read_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_obs_enable") == 0) {
         return (void *)ggml_backend_cuda_obs_enable;
