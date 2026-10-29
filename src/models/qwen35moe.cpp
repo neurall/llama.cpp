@@ -440,7 +440,9 @@ ggml_tensor * llama_model_qwen35moe::graph::build_norm_gated(
         ggml_tensor * gate,
         int           layer) {
     ggml_tensor * normalized = build_norm(input, weights, nullptr, LLM_NORM_RMS, layer);
+    cb(normalized, "gated_norm", layer);
     ggml_tensor * gated_silu = ggml_silu(ctx0, gate);
+    cb(gated_silu, "gated_silu", layer);
 
     return ggml_mul(ctx0, normalized, gated_silu);
 }
@@ -649,6 +651,7 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn_linear(
 
     // Final reshape: [head_dim, n_heads, n_tokens, n_seqs] -> [n_heads * head_dim , n_tokens * n_seqs ]
     ggml_tensor * final_output = ggml_reshape_2d(ctx0, attn_out_norm, head_v_dim * num_v_heads, n_seq_tokens * n_seqs);
+    cb(final_output, "final_output", il);
 
     // Output projection
     cur = build_lora_mm(model.layers[il].ssm_out, final_output, model.layers[il].ssm_out_s);

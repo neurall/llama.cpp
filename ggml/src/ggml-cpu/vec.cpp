@@ -261,6 +261,41 @@ void ggml_vec_dot_bf16(int n, float * GGML_RESTRICT s, size_t bs, ggml_bf16_t * 
     *s = sumf;
 }
 
+// bf16 weights against an f32 activation. The activation is NOT rounded to bf16 (CUDA keeps it f32 in its decode kernels, so rounding it on the CPU costs ~3 digits
+// against the GPU and 8 mantissa bits of every activation); the weights widen exactly, the products and sums are f32 like the f32 dot
+void ggml_vec_dot_bf16_f32(int n, float * GGML_RESTRICT s, size_t bs, ggml_bf16_t * GGML_RESTRICT x, size_t bx, float * GGML_RESTRICT y, size_t by, int nrc) {
+    assert(nrc == 1);
+    GGML_UNUSED(nrc);
+    GGML_UNUSED(bx);
+    GGML_UNUSED(by);
+    GGML_UNUSED(bs);
+    int i = 0;
+    ggml_float sumf = 0;
+#if defined(__AVX2__)
+    __m256 c1 = _mm256_setzero_ps();
+    __m256 c2 = _mm256_setzero_ps();
+    __m256 c3 = _mm256_setzero_ps();
+    __m256 c4 = _mm256_setzero_ps();
+#define LOADW(p) _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i *)(p))), 16))
+    for (; i + 32 <= n; i += 32) {
+        c1 = _mm256_add_ps(_mm256_mul_ps(LOADW(x + i),      _mm256_loadu_ps(y + i)),      c1);
+        c2 = _mm256_add_ps(_mm256_mul_ps(LOADW(x + i + 8),  _mm256_loadu_ps(y + i + 8)),  c2);
+        c3 = _mm256_add_ps(_mm256_mul_ps(LOADW(x + i + 16), _mm256_loadu_ps(y + i + 16)), c3);
+        c4 = _mm256_add_ps(_mm256_mul_ps(LOADW(x + i + 24), _mm256_loadu_ps(y + i + 24)), c4);
+    }
+#undef LOADW
+    c1 = _mm256_add_ps(_mm256_add_ps(c1, c3), _mm256_add_ps(c2, c4));
+    __m128 g = _mm_add_ps(_mm256_extractf128_ps(c1, 1), _mm256_castps256_ps128(c1));
+    g = _mm_add_ps(g, _mm_movehl_ps(g, g));
+    g = _mm_add_ss(g, _mm_movehdup_ps(g));
+    sumf += (ggml_float)_mm_cvtss_f32(g);
+#endif
+    for (; i < n; ++i) {
+        sumf += (ggml_float)(GGML_BF16_TO_FP32(x[i]) * y[i]);
+    }
+    *s = sumf;
+}
+
 void ggml_vec_dot_f16(int n, float * GGML_RESTRICT s, size_t bs, ggml_fp16_t * GGML_RESTRICT x, size_t bx, ggml_fp16_t * GGML_RESTRICT y, size_t by, int nrc) {
     assert(nrc == 1);
     GGML_UNUSED(nrc);
