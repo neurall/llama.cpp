@@ -756,6 +756,7 @@ struct knobs_t {
                             // count is derived from the probed link speeds (PREDICT_AHEAD overrides). 0: every lookahead up to PREDICT_AHEAD (the old behaviour)
     double lead_span   = 1; // LEAD_SPAN: layers beyond the nearest feasible one that are also used
     double admit_jit   = 0; // ADMIT_JIT=N: the same admission rule for just-in-time uploads (a miss of this token goes to the GPU only after N uses in the last 64 tokens); 0: any
+    double gpu_shape   = -1; // GPU_SHAPE=0|1: the CPU computes with the GPU's accumulation order and math (GGML_CPU_GPU_SHAPE), so a miss computed on the CPU has the GPU's bits; -1: as the environment says. Switchable while running (ctl file)
     double jit         = 1; // JIT miss offload (JIT=0 off): once a layer's router ids reach the host, upload the k misses (k from the
                             // measured link / CPU / combined RAM rates) that make CPU + link finish soonest into cache slots on
                             // the chain's stream, so the GPU computes them this token while the CPU computes the rest
@@ -784,6 +785,7 @@ static const std::vector<std::pair<const char *, double knobs_t::*>> & knob_fiel
         { "PRED_LEAD", &knobs_t::offset }, { "PRED_SLOW", &knobs_t::stream_slow },
         { "TRACE_N", &knobs_t::trace }, { "TRACE_SKIP", &knobs_t::trace_after }, { "UPLOAD_NOW", &knobs_t::jit },
         { "LEAD", &knobs_t::lead }, { "LEAD_SPAN", &knobs_t::lead_span }, { "ADMIT", &knobs_t::admit }, { "ADMIT_BOOT", &knobs_t::admit_boot }, { "ADMIT_BOOT_STEPS", &knobs_t::admit_boot_steps }, { "ADMIT_SLOW", &knobs_t::admit_slow }, { "ADMIT_JIT", &knobs_t::admit_jit },
+        { "GPU_SHAPE", &knobs_t::gpu_shape },
     };
     return fields;
 }
@@ -810,7 +812,7 @@ std::set<std::string> & user_knobs() {
 knobs_t & knobs() {
     static knobs_t k = [] {
         knobs_t r;
-        for (const char * n : { "VRAM_RESERVE_MB", "UPLOAD_SHARE", "PIN_HOT", "STAY_BONUS", "SLOW_MIN_STAY", "SWAP_LEAD", "SWAPS_PER_STEP", "CPU_RAM_GBS", "SWAP_LEAD_PER_LINK", "UPLOAD_WAIT", "UPLOAD_WAIT_MAX_US", "PRED_ISO", "PRED_N", "TRACE_N", "TRACE_SKIP", "LEAD", "LEAD_SPAN", "ADMIT", "ADMIT_BOOT", "ADMIT_BOOT_STEPS", "ADMIT_SLOW", "ADMIT_JIT", "PRED_LEAD", "PRED_SLOW", "RAM_CEILING_GBS", "WAIT_SWAPS", "UPLOAD_CHUNK_KB", "PRED_AUTO", "IDLE_UP", "IDLE_UP_N", "EV_CLD", "L3_PF", "L3_AUTO", "PRED_KEEP", "PRED_TUNE", "PRED", "UPLOAD_NOW" }) {
+        for (const char * n : { "VRAM_RESERVE_MB", "UPLOAD_SHARE", "PIN_HOT", "STAY_BONUS", "SLOW_MIN_STAY", "SWAP_LEAD", "SWAPS_PER_STEP", "CPU_RAM_GBS", "SWAP_LEAD_PER_LINK", "UPLOAD_WAIT", "UPLOAD_WAIT_MAX_US", "PRED_ISO", "PRED_N", "TRACE_N", "TRACE_SKIP", "LEAD", "LEAD_SPAN", "ADMIT", "ADMIT_BOOT", "ADMIT_BOOT_STEPS", "ADMIT_SLOW", "ADMIT_JIT", "PRED_LEAD", "PRED_SLOW", "RAM_CEILING_GBS", "WAIT_SWAPS", "UPLOAD_CHUNK_KB", "PRED_AUTO", "IDLE_UP", "IDLE_UP_N", "EV_CLD", "L3_PF", "L3_AUTO", "PRED_KEEP", "PRED_TUNE", "PRED", "UPLOAD_NOW", "GPU_SHAPE" }) {
             if (const char * e = moe_opt(knob_key(n).c_str())) {
                 knob_set(r, n, atof(e));
                 user_knobs().insert(n);
@@ -819,6 +821,17 @@ knobs_t & knobs() {
         return r;
     }();
     return k;
+}
+
+// GPU_SHAPE knob: flips the CPU backend's GPU-shaped math (quants.c, ggml_cpu_set_gpu_shape). Between decode steps, so one graph compute never mixes both.
+static void apply_gpu_shape(double v) {
+    if (v < 0) { return; }
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name("CPU");
+    auto set = reg ? (void (*)(int)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cpu_set_gpu_shape") : nullptr;
+    if (set) {
+        set(v != 0);
+        LLAMA_LOG_WARN("moe-cache: CPU math in the GPU's order: %s\n", v != 0 ? "on" : "off");
+    }
 }
 
 // "NAME=value ..." of every knob the cache runs with at this moment (tuner decisions included); a * marks the ones the user set. Written to the state snapshot as run.knobs (after the key settings).
@@ -2147,6 +2160,7 @@ void ctl_poll(moe_cache * mc) {
     }
     const bool resort = k.hot_frac != knobs().hot_frac || k.sticky != knobs().sticky;
     knobs() = k;
+    apply_gpu_shape(k.gpu_shape);
     for (int i = 0; i < mc->n_links; ++i) { // new settings: fresh measurement window (the learned lead / M are kept)
         mc->st_up[i] = mc->st_late[i] = mc->st_hit[i] = 0;
     }
@@ -6156,6 +6170,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             return;
         }
 
+        apply_gpu_shape(knobs().gpu_shape);   // --moe gpu-shape=N / LLAMA_MOE_CACHE_GPU_SHAPE at start; the ctl file switches it later
         auto * mc = new moe_cache();
         mc->n_slots = n_slots;
         mc->n_expert_used = (int64_t) model.hparams.n_expert_used();
