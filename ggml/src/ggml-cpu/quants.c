@@ -541,8 +541,69 @@ void ggml_vec_dot_mxfp4_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const voi
 void ggml_vec_dot_iq4_xs_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
     gs_dot(n/QK_K, sizeof(block_iq4_xs), 8, 8, 4, 4, 1, gs_term_iq4_xs, vx, vy, s);
 }
+#if defined(__AVX2__) && defined(__FMA__)
+#include <immintrin.h>
+
+// Q2_K, 8 slices of a super-block at once (lane c = slice c = CUDA thread chunk c): the integer sums with maddubs, the float chain of each slice in the lanes.
+// The 128 running sums of the kernel are 16 vectors of 8: block b adds into vector b % 16.
+static inline __m256i gs_slice4(__m256i m) {   // m: 8 sums of 4 products; slice s is lanes 2s and 2s+1 -> 4 int32
+    const __m256i h = _mm256_hadd_epi32(m, m);
+    return _mm256_permutevar8x32_epi32(h, _mm256_setr_epi32(0, 1, 4, 5, 0, 1, 4, 5));
+}
+
+static void gs_dot_q2_K_avx2(int nb, const block_q2_K * GGML_RESTRICT x, const block_q8_0 * GGML_RESTRICT y, float * GGML_RESTRICT s) {
+    __m256 acc[16];
+    for (int k = 0; k < 16; k++) acc[k] = _mm256_setzero_ps();
+    const __m256i m3 = _mm256_set1_epi8(3), ones8 = _mm256_set1_epi8(1), ones16 = _mm256_set1_epi16(1);
+    for (int b = 0; b < nb; b++) {
+        const block_q2_K * xb = x + b;
+        const block_q8_0 * yb = y + (size_t) b*8;
+        __m256i isd[4], ism[4];
+        for (int h = 0; h < 2; h++) {
+            const __m256i q = _mm256_loadu_si256((const __m256i *) (xb->qs + 32*h));
+            for (int i = 0; i < 4; i++) {
+                const __m256i w  = _mm256_and_si256(_mm256_srli_epi16(q, 2*i), m3);
+                const __m256i yv = _mm256_loadu_si256((const __m256i *) yb[4*h + i].qs);
+                const __m256i d4 = gs_slice4(_mm256_madd_epi16(_mm256_maddubs_epi16(w,     yv), ones16));
+                const __m256i m4 = gs_slice4(_mm256_madd_epi16(_mm256_maddubs_epi16(ones8, yv), ones16));
+                if (h == 0) { isd[i] = d4; ism[i] = m4; }
+                else        { isd[i] = _mm256_inserti128_si256(isd[i], _mm256_castsi256_si128(d4), 1); ism[i] = _mm256_inserti128_si256(ism[i], _mm256_castsi256_si128(m4), 1); }
+            }
+        }
+        int32_t sdv[4][8], smv[4][8]; float d8v[4][8];
+        for (int c = 0; c < 8; c++) {
+            for (int i = 0; i < 4; i++) {
+                const int sb = xb->scales[8*(c/4) + 4*(i/2) + (c%4)/2 + 2*(i%2)];
+                sdv[i][c] = sb & 0xF; smv[i][c] = sb >> 4;
+                d8v[i][c] = GGML_CPU_FP16_TO_FP32(yb[4*(c/4) + i].d);
+            }
+        }
+        __m256 sumf_d = _mm256_setzero_ps(), sumf_m = _mm256_setzero_ps();
+        for (int i = 0; i < 4; i++) {
+            const __m256 d8 = _mm256_loadu_ps(d8v[i]);
+            const __m256 xd = _mm256_cvtepi32_ps(_mm256_mullo_epi32(isd[i], _mm256_loadu_si256((const __m256i *) sdv[i])));
+            const __m256 xm = _mm256_cvtepi32_ps(_mm256_mullo_epi32(ism[i], _mm256_loadu_si256((const __m256i *) smv[i])));
+            sumf_d = _mm256_fmadd_ps(d8, xd, sumf_d);
+            sumf_m = _mm256_fmadd_ps(d8, xm, sumf_m);
+        }
+        const __m256 dy_sm = _mm256_mul_ps(_mm256_set1_ps(GGML_CPU_FP16_TO_FP32(xb->dmin)), sumf_m);
+        const __m256 t = _mm256_fmsub_ps(_mm256_set1_ps(GGML_CPU_FP16_TO_FP32(xb->d)), sumf_d, dy_sm);
+        acc[b % 16] = _mm256_add_ps(acc[b % 16], t);
+    }
+    float tmp[4][32];
+    for (int k = 0; k < 16; k++) _mm256_storeu_ps(&tmp[k/4][(k%4)*8], acc[k]);
+    float lane[32];
+    for (int l = 0; l < 32; l++) lane[l] = ((tmp[0][l] + tmp[1][l]) + tmp[2][l]) + tmp[3][l];
+    *s = ggml_gpu_shape_reduce(lane);
+}
+#endif
+
 void ggml_vec_dot_q2_K_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+#if defined(__AVX2__) && defined(__FMA__)
+    gs_dot_q2_K_avx2(n/QK_K, vx, vy, s);
+#else
     gs_dot(n/QK_K, sizeof(block_q2_K), 8, 8, 2, 4, 1, gs_term_q2_K, vx, vy, s);
+#endif
 }
 void ggml_vec_dot_q3_K_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
     gs_dot(n/QK_K, sizeof(block_q3_K), 8, 8, 2, 4, 1, gs_term_q3_K, vx, vy, s);

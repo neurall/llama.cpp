@@ -8818,10 +8818,27 @@ int64_t llama_moe_cache_max_batch_cap_fork() {
     return std::max<int64_t>(128, mb_fixed());   // graph node budget at reserve time
 }
 
+// Exact mode (the CPU backend's GPU-shaped math on, GPU_SHAPE knob / GGML_CPU_GPU_SHAPE): the CPU copies the GPU's one-token kernel (mul_mat_vec_q, 4 warps
+// over K). For 2..8 tokens the GPU computes a cached expert with another kernel (mul_mat_vec_q_moe, one warp per token) and with MMQ above that, so a
+// multi-token pass that mixes cached (GPU) and missed (CPU) experts gives bits that depend on what is cached: the 4-token tail of a server prompt moved
+// token 0's logprob with the cache size (Qwen3.6, 3000 against 4000 MiB). Here only one-token passes take the cache path; larger ones take the prompt
+// path, all experts on the GPU, the same bits at any cache size (400 of 400 tokens equal at 89.5% and 96.8% hits).
+static bool cpu_gpu_shape_on() {
+    static int (*get)(void) = nullptr;   // looked up once the CPU backend is loaded
+    if (!get) {
+        ggml_backend_reg_t reg = ggml_backend_reg_by_name("CPU");
+        get = reg ? (int (*)(void)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cpu_get_gpu_shape") : nullptr;
+    }
+    return get && get() != 0;
+}
+
 int64_t llama_moe_cache_max_batch_fork() {
     const int64_t p = g_mb_probe.load(std::memory_order_relaxed);
     if (p >= 0) {
         return p;
+    }
+    if (cpu_gpu_shape_on()) {
+        return 1;
     }
     if (mb_fixed() >= 0) {
         return mb_fixed();
