@@ -6301,7 +6301,14 @@ static void rope_yarn(
         theta = theta_interp * (1 - ramp_mix) + theta_extrap * ramp_mix;
 
         // Get n-d magnitude scaling corrected for interpolation
-        mscale *= 1.0f + 0.1f * logf(1.0f / freq_scale);
+        mscale *= 1.0f + 0.1f * (ggml_cpu_gpu_shape() ? ggml_det_logf(ggml_det_div(1.0f, freq_scale)) : logf(1.0f / freq_scale));
+    }
+    if (ggml_cpu_gpu_shape()) {
+        float sin_raw, cos_raw;
+        ggml_det_sincosf(theta, &sin_raw, &cos_raw);
+        *cos_theta = cos_raw * mscale;
+        *sin_theta = sin_raw * mscale;
+        return;
     }
     *cos_theta = cosf(theta) * mscale;
     *sin_theta = sinf(theta) * mscale;
@@ -6312,8 +6319,12 @@ static void ggml_rope_cache_init(
      float * cache, float sin_sign, float theta_scale) {
     // ref: https://github.com/jquesnelle/yarn/blob/master/scaled_rope/LlamaYaRNScaledRotaryEmbedding.py
     float theta = theta_base;
+    const bool gpu_shape = ggml_cpu_gpu_shape();
     for (int64_t i0 = 0; i0 < ne0; i0 += 2) {
         const float ff = freq_factors ? freq_factors[i0/2] : 1.0f;
+        if (gpu_shape) {
+            theta = theta_base * ggml_det_powf(theta_scale, (float) (i0/2));   // the CUDA kernels' form: pos * theta_scale^(i0/2), not the running product
+        }
         rope_yarn(
             theta/ff, freq_scale, corr_dims, i0, ext_factor, mscale, &cache[i0 + 0], &cache[i0 + 1]
         );
@@ -6339,6 +6350,11 @@ static void ggml_mrope_cache_init(
 
     for (int64_t i0 = 0; i0 < ne0; i0 += 2) {
         const float ff = freq_factors ? freq_factors[i0/2] : 1.0f;
+
+        if (ggml_cpu_gpu_shape() && !indep_sects) {
+            const float pw = ggml_det_powf(theta_scale, (float) (i0/2));   // the CUDA kernels' form (see ggml_rope_cache_init)
+            theta_t = theta_base_t*pw; theta_h = theta_base_h*pw; theta_w = theta_base_w*pw; theta_e = theta_base_e*pw;
+        }
 
         int sector = (i0 / 2) % sect_dims;
         if (indep_sects) {

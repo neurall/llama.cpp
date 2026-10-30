@@ -1,3 +1,4 @@
+#include "../ggml-det-math.h"
 #include "convert.cuh"
 #include "ggml-cuda/common.cuh"
 #include "ggml.h"
@@ -31,10 +32,12 @@ static __device__ void rope_yarn(
         theta = theta_interp * (1 - ramp_mix) + theta_extrap * ramp_mix;
 
         // Get n-d magnitude scaling corrected for interpolation
-        mscale *= 1.0f + 0.1f * logf(1.0f / freq_scale);
+        mscale *= 1.0f + 0.1f * ggml_det_logf(ggml_det_div(1.0f, freq_scale));
     }
-    cos_theta = cosf(theta) * mscale;
-    sin_theta = sinf(theta) * mscale;
+    float sin_raw, cos_raw;
+    ggml_det_sincosf(theta, &sin_raw, &cos_raw);   // fast-math sinf/cosf cannot be reproduced on the CPU
+    cos_theta = cos_raw * mscale;
+    sin_theta = sin_raw * mscale;
     if (!forward) {
         sin_theta *= -1.0f;
     }
@@ -104,7 +107,7 @@ static __global__ void rope_norm(const T *            x,
 
     const int iw = i0 - n_offs; // relative idx
 
-    const float theta_base = pos[i2]*powf(theta_scale, iw/2.0f);
+    const float theta_base = pos[i2]*ggml_det_powf(theta_scale, iw/2.0f);
 
     const float freq_factor = has_ff ? freq_factors[iw/2] : 1.0f;
 
@@ -179,7 +182,7 @@ static __global__ void rope_neox(const T *            x,
 
     const int iw = i0 - n_offs; // relative idx
 
-    const float theta_base = pos[i2]*powf(theta_scale, iw/2.0f);
+    const float theta_base = pos[i2]*ggml_det_powf(theta_scale, iw/2.0f);
 
     const float freq_factor = has_ff ? freq_factors[iw/2] : 1.0f;
 
@@ -265,23 +268,23 @@ static __global__ void rope_multi(const T *            x,
     float theta_base = 0.0;
     if (is_imrope) {
         if (sector % 3 == 1 && sector < 3 * sections.v[1]) {         // h
-            theta_base = pos[i2 + ne02 * 1] * powf(theta_scale, iw / 2.0f);
+            theta_base = pos[i2 + ne02 * 1] * ggml_det_powf(theta_scale, iw / 2.0f);
         } else if (sector % 3 == 2 && sector < 3 * sections.v[2]) {  // w
-            theta_base = pos[i2 + ne02 * 2] * powf(theta_scale, iw / 2.0f);
+            theta_base = pos[i2 + ne02 * 2] * ggml_det_powf(theta_scale, iw / 2.0f);
         } else if (sector % 3 == 0 && sector < 3 * sections.v[0]) {  // t
-            theta_base = pos[i2] * powf(theta_scale, iw / 2.0f);
+            theta_base = pos[i2] * ggml_det_powf(theta_scale, iw / 2.0f);
         } else {
-            theta_base = pos[i2 + ne02 * 3] * powf(theta_scale, iw / 2.0f);
+            theta_base = pos[i2 + ne02 * 3] * ggml_det_powf(theta_scale, iw / 2.0f);
         }
     } else {
         if (sector < sections.v[0]) {
-            theta_base = pos[i2] * powf(theta_scale, iw / 2.0f);
+            theta_base = pos[i2] * ggml_det_powf(theta_scale, iw / 2.0f);
         } else if (sector >= sections.v[0] && sector < sec_w) {
-            theta_base = pos[i2 + ne02 * 1] * powf(theta_scale, iw / 2.0f);
+            theta_base = pos[i2 + ne02 * 1] * ggml_det_powf(theta_scale, iw / 2.0f);
         } else if (sector >= sec_w && sector < sec_w + sections.v[2]) {
-            theta_base = pos[i2 + ne02 * 2] * powf(theta_scale, iw / 2.0f);
+            theta_base = pos[i2 + ne02 * 2] * ggml_det_powf(theta_scale, iw / 2.0f);
         } else if (sector >= sec_w + sections.v[2]) {
-            theta_base = pos[i2 + ne02 * 3] * powf(theta_scale, iw / 2.0f);
+            theta_base = pos[i2 + ne02 * 3] * ggml_det_powf(theta_scale, iw / 2.0f);
         }
     }
 
@@ -344,10 +347,10 @@ static __global__ void rope_vision(const T *            x,
     float theta_base = 0.0;
     if (sector < sections.v[0]) {
         const int p = sector;
-        theta_base  = pos[i2] * powf(theta_scale, p);
+        theta_base  = pos[i2] * ggml_det_powf(theta_scale, p);
     } else if (sector >= sections.v[0] && sector < sec_w) {
         const int p = sector - sections.v[0];
-        theta_base  = pos[i2 + ne02] * powf(theta_scale, p);
+        theta_base  = pos[i2 + ne02] * ggml_det_powf(theta_scale, p);
     }
 
     const float freq_factor = has_ff ? freq_factors[i0/2] : 1.0f;

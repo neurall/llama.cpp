@@ -88,7 +88,7 @@ static __global__ void quantize_q8_1(
     amax = warp_reduce_max<QK8_1>(amax);
     sum  = warp_reduce_sum<QK8_1>(sum);
 
-    const float  d = amax / 127.0f;
+    const float  d = __fdiv_rn(amax, 127.0f);   // fast-math turns the division by a constant into amax*(1/127), 1 ulp off the CPU's amax/127 for some blocks
     // IEEE division: the fast-math "/" turns an exact tie like -27.5 into -27.499998, which rounds the other way than the CPU's quantizer
     const int8_t q = amax == 0.0f ? 0 : roundf(__fdiv_rn(xi, d));
 

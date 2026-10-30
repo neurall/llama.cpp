@@ -1,3 +1,4 @@
+#include "../ggml-det-math.h"
 #include "ggml-cuda/common.cuh"
 #include "ggml.h"
 #include "topk-moe.cuh"
@@ -31,24 +32,32 @@ __device__ void softmax_warp_inplace(float (&vals)[experts_per_thread], const in
 
     max_val = warp_reduce_max(max_val);
 
-    float sum = 0.f;
+    // Same sum order as the standalone soft_max_f32 kernel (a block with one expert per thread): the 32 experts of each register slot i are added with the warp's
+    // xor tree (that kernel's per-warp stage), then the slot sums go through one more xor tree (its cross-warp stage, unused lanes 0). Deterministic exp, IEEE division.
+    float group_sum[experts_per_thread];
 
 #pragma unroll
     for (int i = 0; i < experts_per_thread; i++) {
         const int  idx    = lane + i * WARP_SIZE;
         const bool active = !use_limit || (idx < limit);
+        float val = 0.f;
         if (active) {
-            const float val = expf(vals[i] - max_val);
-            vals[i]         = val;
-            sum += val;
-        } else {
-            vals[i] = 0.f;
+            val = ggml_det_expf(vals[i] - max_val);
         }
+        vals[i]      = val;
+        group_sum[i] = warp_reduce_sum(val);
     }
 
-    sum = warp_reduce_sum(sum);
+    float slot_sums = 0.f;
+#pragma unroll
+    for (int i = 0; i < experts_per_thread; i++) {
+        if (lane == i) {
+            slot_sums = group_sum[i];
+        }
+    }
+    const float sum = experts_per_thread == 1 ? group_sum[0] : warp_reduce_sum(slot_sums);
 
-    const float inv_sum = 1.0f / sum;
+    const float inv_sum = ggml_det_div(1.0f, sum);
 
 #pragma unroll
     for (int i = 0; i < experts_per_thread; i++) {
@@ -66,7 +75,7 @@ __device__ void sigmoid_warp_inplace(float (&vals)[experts_per_thread], const in
     for (int i = 0; i < experts_per_thread; i++) {
         const int  idx    = lane + i * WARP_SIZE;
         const bool active = !use_limit || (idx < limit);
-        vals[i]           = active ? 1.f / (1.f + expf(-vals[i])) : -INFINITY;
+        vals[i]           = active ? ggml_det_sigmoid(vals[i]) : -INFINITY;
     }
 }
 
@@ -76,7 +85,7 @@ __device__ void sqrt_softplus_warp_inplace(float (&vals)[experts_per_thread], co
     for (int i = 0; i < experts_per_thread; i++) {
         const int  idx    = lane + i * WARP_SIZE;
         const bool active = !use_limit || (idx < limit);
-        vals[i]           = active ? sqrtf(vals[i] > 20.0f ? vals[i] : log1pf(expf(vals[i]))) : -INFINITY;
+        vals[i]           = active ? __fsqrt_rn(ggml_det_softplus(vals[i])) : -INFINITY;
     }
 }
 

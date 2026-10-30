@@ -76,3 +76,32 @@ GGML_DET_FN float ggml_det_log1pf(float y) {
 GGML_DET_FN float ggml_det_sigmoid(float x) { return GGML_DET_DIV(1.0f, 1.0f + ggml_det_expf(-x)); }
 GGML_DET_FN float ggml_det_silu(float x)    { return GGML_DET_DIV(x, 1.0f + ggml_det_expf(-x)); }
 GGML_DET_FN float ggml_det_softplus(float x){ return x > 20.0f ? x : ggml_det_log1pf(ggml_det_expf(x)); }
+
+// powf for a > 0 from the deterministic exp/log (the CUDA fast-math powf and glibc's differ in the last bits)
+GGML_DET_FN float ggml_det_powf(float a, float b) { return ggml_det_expf(b * ggml_det_logf(a)); }
+
+// sin and cos: Cody-Waite reduction by pi/2 in three float parts (every product through fmaf), then the Taylor polynomials on [-pi/4, pi/4] and the quadrant swap
+GGML_DET_FN void ggml_det_sincosf(float x, float * s, float * c) {
+    const float n = rintf(x * 0.63661977236758134f);
+    float r = fmaf(-n, 1.5707963705062866f, x);
+    r = fmaf(-n, -4.371138828673793e-08f, r);
+    r = fmaf(-n, -1.7151245100058819e-15f, r);
+    const float r2 = r * r;
+    float sp = 1.0f/362880.0f;
+    sp = fmaf(sp, r2, -1.0f/5040.0f);
+    sp = fmaf(sp, r2, 1.0f/120.0f);
+    sp = fmaf(sp, r2, -1.0f/6.0f);
+    const float sr = fmaf(sp * r2, r, r);
+    float cp = 1.0f/40320.0f;
+    cp = fmaf(cp, r2, -1.0f/720.0f);
+    cp = fmaf(cp, r2, 1.0f/24.0f);
+    cp = fmaf(cp, r2, -0.5f);
+    const float cr = fmaf(cp, r2, 1.0f);
+    const int q = (int) n & 3;
+    switch (q) {
+        case 0:  *s =  sr; *c =  cr; break;
+        case 1:  *s =  cr; *c = -sr; break;
+        case 2:  *s = -sr; *c = -cr; break;
+        default: *s = -cr; *c =  sr; break;
+    }
+}
