@@ -56,6 +56,7 @@ static uint32_t g_decode_n_tokens = 0;   // tokens of the decode call in progres
 void llama_moe_token_time_fork(double ms);   // src/llama-moestate-fork.cpp
 void llama_moe_prompt_done_fork(uint32_t n_tokens, double ms);
 void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch);
+void llama_moe_cache_prompt_call_fork(bool on);   // llama-moecache-fork.cpp
 void     llama_dsplit_note_limit_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the one-card pass limit of this call
 void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the context's card limit (what %limit is of)
 size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
@@ -3098,7 +3099,8 @@ void tokheat_dump_trace() {
         fprintf(fj, "{\"n_embd\": %d, \"layers\": [", g_tokheat.tr_embd);
         bool first = true;
         for (auto & [il, ids] : g_tokheat.tr_ids) {
-            fprintf(fj, "%s[%d, %zu]", first ? "" : ", ", il, ids.size() / 16); first = false;
+            auto itx = g_tokheat.tr_x.find(il);   // the expert inputs can have more rows than the picks (a one-token pass the top-k node was not named in)
+            fprintf(fj, "%s[%d, %zu, %zu]", first ? "" : ", ", il, ids.size() / 16, itx != g_tokheat.tr_x.end() && g_tokheat.tr_embd > 0 ? itx->second.size() / (size_t) g_tokheat.tr_embd : (size_t) 0); first = false;
             fwrite(ids.data(), sizeof(int16_t), ids.size(), fi);
             auto it = g_tokheat.tr_x.find(il);
             if (it != g_tokheat.tr_x.end()) { fwrite(it->second.data(), sizeof(uint16_t), it->second.size(), fx); }
@@ -4056,6 +4058,15 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     const uint32_t n_ubatch_split = g_split_sub && cparams.moe_cache ? (llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_tokens_all), n_tokens_all) : 0;
     const uint32_t n_ubatch_call = n_ubatch_split > 0 ? n_ubatch_split : cparams.moe_cache ? llama_moe_ubadapt_cache_fork(n_tokens_all, llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim), n_ubatch_lim) : llama_moe_ubadapt_next_fork(n_tokens_all, n_ubatch_lim);
     if (n_tokens_all > 1) { llama_moe_prompt_begin_fork((uint32_t) n_tokens_all, n_ubatch_call); }
+    // a prompt call (several tokens, at most one with logits) never computes cache misses on the CPU: llama_moe_cache_max_batch_fork answers 1 inside it
+    struct prompt_call_guard {
+        explicit prompt_call_guard(bool on) { llama_moe_cache_prompt_call_fork(on); }
+        ~prompt_call_guard() { llama_moe_cache_prompt_call_fork(false); }
+    } prompt_guard([&] {
+        size_t n_out = 0;
+        for (const auto & t : batch_inp.tokens) { n_out += t.output ? 1 : 0; }
+        return n_tokens_all > 1 && n_out <= 1 && !cparams.ctx_other;
+    }());
     if (cparams.moe_cache && memory && n_tokens_all >= 64) {   // the mask math, checkable against the host pins in the same log (--moe log=m not needed: one line per call)
         const uint64_t kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
         const uint64_t mask_b = (uint64_t) GGML_PAD(n_ubatch_call, 64) * GGML_PAD(kv_end, 256) * 2;

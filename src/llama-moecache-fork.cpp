@@ -8835,6 +8835,9 @@ static bool cpu_gpu_shape_on() {
     return get && get() != 0;
 }
 
+static std::atomic<bool> g_prompt_call{false};   // inside a decode call that is a prompt (see llama_moe_cache_prompt_call_fork)
+void llama_moe_cache_prompt_call_fork(bool on) { g_prompt_call.store(on, std::memory_order_relaxed); }
+
 int64_t llama_moe_cache_max_batch_fork() {
     const int64_t p = g_mb_probe.load(std::memory_order_relaxed);
     if (p >= 0) {
@@ -8844,10 +8847,11 @@ int64_t llama_moe_cache_max_batch_fork() {
         return 1;
     }
     // A prompt never computes cache misses on the CPU: a missed expert gets (tokens x 8 / experts used) tokens, so the CPU cost grows with the pass while an
-    // upload costs the same (Qwen3.6, pure prompt time: 6.1 s at 1k tokens and 98 s at 10k on the cache path, 0.38 s and 2.6 s staged). Before the answer starts only
-    // one-token passes take the cache path; larger ones stage the experts they use to the GPU (--moe prefill-cpu=1 gives the old rule back).
+    // upload costs the same (Qwen3.6, pure prompt time: 6.1 s at 1k tokens and 98 s at 10k on the cache path, 0.38 s and 2.6 s staged). In a prompt call (several
+    // tokens, at most one with logits: llama_context::decode) only one-token passes take the cache path; larger ones stage the experts they use to the GPU
+    // (--moe prefill-cpu=1 gives the old rule back). The verify batch of a draft has logits on every token and keeps the cache path.
     static const bool prefill_cpu = [] { const char * e = moe_opt("prefill-cpu"); return e && atoi(e) != 0; }();
-    if (!prefill_cpu && !g_topic_answer.load(std::memory_order_relaxed)) {
+    if (!prefill_cpu && g_prompt_call.load(std::memory_order_relaxed)) {
         return 1;
     }
     if (mb_fixed() >= 0) {
