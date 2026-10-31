@@ -247,7 +247,6 @@ llama_context::llama_context(
     // TODO warning when creating llama_context with awkward ctx size that is not a power of 2,
     //     may need to be backend-dependent
     LLAMA_LOG_INFO("%s: constructing llama_context\n", __func__);
-    llama_moe_cache_experts_fork((int32_t) model.hparams.n_expert, (int32_t) model.hparams.n_expert_used());   // fork: bounds the pass-strategy search (llama-moecache-fork.cpp)
     llama_dsplit_bench_fork(model);   // fork: once per process, while the VRAM is still free (the KV cache and the expert pool come below)
 
     t_start_us = model.t_start_us;
@@ -1199,16 +1198,11 @@ bool llama_context::swap_layers_fork(int a, int b) {
     return true;
 }
 
-// fork: --moe max-batch=auto, the pass-strategy tuner. A micro-batch of n tokens can go three ways: the cache path (misses uploaded in place), predicted staging
-// (the early router's top experts, K = the experts a token uses, staged ahead of the layer), or plain upload of what the layer uses. Two sizes decide: `mb`, where the
-// cache path starts to lose to the better of the other two, and `kb`, where staging stops beating plain upload. Each is found by doubling the size until the
-// answer flips and then bisecting the bracket, so about log2(size) timed steps and no fixed list of sizes. A step times the three ways at the same n (one warm
-// run, then two timed runs on varied tokens, so the routing is not one fixed expert set); the spread of the two timed runs is the noise, and a way only
-// "wins" by more than that. The bracket is bisected until it is narrower than the noise (at least one token's expert picks). Result stored per model and cards.
+// fork: --moe max-batch=auto: how long a 16- and a 64-token batch take on the cache path, and a streamed pass of two larger sizes (second run of each: graphs built, uploads settled),
+// on varied tokens so the routing is not one fixed expert set. The context is cleared after each run.
 void llama_context::moe_probe_costs_fork() {
     const int64_t t_start = ggml_time_us();
     const llama_token n_vocab = (llama_token) model.vocab.n_tokens();
-    const int n_used = std::max<int>(1, (int) model.hparams.n_expert_used());
     llama_moe_cache_probe_begin_fork();
     auto run = [&](int n) -> double {
         llama_batch_ext batch(this);
@@ -1228,76 +1222,47 @@ void llama_context::moe_probe_costs_fork() {
         memory->clear(true);
         return ret == 0 ? dt : -1.0;
     };
-    struct way { double t = -1.0, e = 0.0; };   // best of two timed runs, their relative spread
-    // way 0 = cache path, 1 = streaming (plain upload), 2 = predicted staging
-    auto time_way = [&](int w, int n) -> way {
-        llama_moe_cache_probe_stream_fork(w != 0);
-        llama_moe_cache_probe_k_fork(w == 2 ? n_used : -1);
-        way r;
-        run(n);
-        const double a = run(n), b = run(n);
-        if (a > 0 && b > 0) { r.t = std::min(a, b); r.e = std::abs(a - b) / r.t; }
-        llama_moe_cache_probe_k_fork(-1);
-        return r;
-    };
-    struct step { bool ok = false, cache_loses = false, k_wins = false; double eps = 0.0; };
-    auto eval = [&](int n) -> step {
-        step r;
-        const way c = time_way(0, n), st = time_way(1, n), k = time_way(2, n);
-        if (c.t <= 0 || st.t <= 0 || k.t <= 0) { return r; }
-        r.ok  = true;
-        r.eps = std::max({ c.e, st.e, k.e });
-        r.cache_loses = c.t > std::min(st.t, k.t) * (1.0 + r.eps);
-        r.k_wins      = k.t * (1.0 + r.eps) < st.t;
-        LLAMA_LOG_WARN("%s: n %d: cache %.0f ms, upload %.0f ms, staged %.0f ms (noise %.1f%%)\n", __func__, n, c.t / 1e3, st.t / 1e3, k.t / 1e3, 100.0 * r.eps);
-        return r;
-    };
     const int cap = (int) llama_moe_cache_max_batch_cap_fork();
-    const int top = std::min<int>(cap, (int) cparams.n_ubatch);
-    int64_t mb = top, kb = 0;
+    // the cache path timed up to the cap: where it starts to lose to streaming is the number the tuner is after
+    double cn[4] = { 16, 64, 256, (double) cap };
+    int nc = cap > 256 ? 4 : 3;
+    if (nc == 3) { cn[2] = (double) cap; }
+    double cus[4] = { -1, -1, -1, -1 };
     if (run(4) > 0) {
-        // the cache path: double until it loses, then bisect (lo wins, hi loses)
-        int lo = 0, hi = 0;
-        step at_hi;
-        for (int n = std::max(8, 2*n_used); n <= top; n *= 2) {
-            const step r = eval(n);
-            if (!r.ok) { break; }
-            if (r.cache_loses) { hi = n; at_hi = r; break; }
-            lo = n;
-        }
-        if (hi > 0) {
-            if (lo == 0) { lo = std::max(8, hi / 2); }
-            while (hi - lo > std::max<double>(n_used, at_hi.eps * lo)) {
-                const int mid = (lo + hi) / 2;
-                const step r = eval(mid);
-                if (!r.ok) { break; }
-                if (r.cache_loses) { hi = mid; at_hi = r; } else { lo = mid; }
-            }
-            mb = hi;
-            // staging window: it must win where the cache path stops; double while it keeps winning, bisect the end
-            if (at_hi.k_wins) {
-                int wlo = hi, whi = 0;
-                for (int n = 2*hi; n <= (int) cparams.n_ubatch; n *= 2) {
-                    const step r = eval(n);
-                    if (!r.ok) { break; }
-                    if (!r.k_wins) { whi = n; break; }
-                    wlo = n;
-                }
-                if (whi > 0) {
-                    while (whi - wlo > std::max<double>(n_used, at_hi.eps * wlo)) {
-                        const int mid = (wlo + whi) / 2;
-                        const step r = eval(mid);
-                        if (!r.ok) { break; }
-                        if (r.k_wins) { wlo = mid; } else { whi = mid; }
-                    }
-                }
-                kb = wlo;   // the last size timed with staging ahead; past a timed size it is not used
-            }
+        for (int i = 0; i < nc; ++i) {
+            run((int) cn[i]);
+            cus[i] = run((int) cn[i]);
         }
     }
-    llama_moe_cache_probe_end_fork(nullptr, nullptr, 0, nullptr, nullptr, 0);
-    llama_moe_cache_tune_set_fork(mb, kb, true);
-    LLAMA_LOG_WARN("%s: pass-strategy search took %.1f s\n", __func__, (ggml_time_us() - t_start) / 1e6);
+    // streamed passes (above 0 tokens forced onto the streaming path), sizes up to the micro-batch
+    double sn[4], sus[4];
+    int ns = 0;
+    if (cus[nc - 1] > 0) {
+        llama_moe_cache_probe_stream_fork(true);
+        for (int n : { 64, 128, 256, 512 }) {
+            if (n > (int) cparams.n_ubatch) { break; }
+            run(n);
+            sn[ns] = n; sus[ns] = run(n); ++ns;
+        }
+        llama_moe_cache_probe_stream_fork(false);
+    }
+    llama_moe_cache_probe_end_fork(cn, cus, nc, sn, sus, ns);
+    // the same sizes with the early router's predicted staging (K = the experts a token uses): the window between the cache path and plain upload
+    double kn[5], kus[5];
+    int nk = 0;
+    if (cus[nc - 1] > 0 && ns >= 2) {
+        llama_moe_cache_probe_stream_fork(true);
+        llama_moe_cache_probe_k_fork((int) model.hparams.n_expert_used());
+        for (int n : { 64, 128, 256, 512, 1024 }) {
+            if (n > (int) cparams.n_ubatch) { break; }
+            run(n);
+            kn[nk] = n; kus[nk] = run(n); ++nk;
+        }
+        llama_moe_cache_probe_k_fork(-1);
+        llama_moe_cache_probe_stream_fork(false);
+    }
+    llama_moe_cache_probe_k_end_fork(kn, kus, nk);
+    LLAMA_LOG_WARN("%s: cache-path probe took %.1f s\n", __func__, (ggml_time_us() - t_start) / 1e6);
 }
 
 // fork: the compute alias lends the pool's first blocks to the worst-case graph, its CUDA scratch and the prefetch staging slots. When they do not fit
