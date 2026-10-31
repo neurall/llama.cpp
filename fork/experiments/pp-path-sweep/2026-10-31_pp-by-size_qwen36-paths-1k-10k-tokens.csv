@@ -1,0 +1,7 @@
+model,config,setup,prompt_tokens,mean_pass_ms,mean_ms_per_layer,prompt_tokens_per_s,runs
+qwen36-35b-a3b,stage,sim-vram=3000,1000,379.1,9.48,2638,3
+qwen36-35b-a3b,stage,sim-vram=3000,10000,2553.4,63.84,3916,3
+qwen36-35b-a3b,k8,sim-vram=3000,1000,409.9,10.25,2439,3
+qwen36-35b-a3b,k8,sim-vram=3000,10000,2791.6,69.79,3582,3
+qwen36-35b-a3b,cache,sim-vram=3000,1000,6109.3,152.73,164,3
+qwen36-35b-a3b,cache,sim-vram=3000,10000,97895.4,2447.39,102,3

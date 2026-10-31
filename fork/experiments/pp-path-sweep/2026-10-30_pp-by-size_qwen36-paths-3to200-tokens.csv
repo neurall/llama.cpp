@@ -1,0 +1,49 @@
+model,config,setup,prompt_tokens,mean_pass_ms,mean_ms_per_layer,prompt_tokens_per_s,runs
+qwen36-35b-a3b,cpu_only,no GPU experts,3,118.7,2.97,25,6
+qwen36-35b-a3b,cpu_only,no GPU experts,10,216.7,5.42,46,6
+qwen36-35b-a3b,cpu_only,no GPU experts,20,386.9,9.67,52,6
+qwen36-35b-a3b,cpu_only,no GPU experts,35,638.8,15.97,55,6
+qwen36-35b-a3b,cpu_only,no GPU experts,50,879.1,21.98,57,6
+qwen36-35b-a3b,cpu_only,no GPU experts,70,1214.0,30.35,58,6
+qwen36-35b-a3b,cpu_only,no GPU experts,100,1698.3,42.46,59,6
+qwen36-35b-a3b,cpu_only,no GPU experts,200,3338.5,83.46,60,6
+qwen36-35b-a3b,all_in_vram,"floor, all experts in VRAM",3,10.5,0.26,285,6
+qwen36-35b-a3b,all_in_vram,"floor, all experts in VRAM",10,16.9,0.42,591,6
+qwen36-35b-a3b,all_in_vram,"floor, all experts in VRAM",20,18.9,0.47,1058,6
+qwen36-35b-a3b,all_in_vram,"floor, all experts in VRAM",35,27.9,0.70,1253,6
+qwen36-35b-a3b,all_in_vram,"floor, all experts in VRAM",50,38.7,0.97,1292,6
+qwen36-35b-a3b,all_in_vram,"floor, all experts in VRAM",70,47.5,1.19,1475,6
+qwen36-35b-a3b,all_in_vram,"floor, all experts in VRAM",100,61.0,1.52,1640,6
+qwen36-35b-a3b,all_in_vram,"floor, all experts in VRAM",200,92.3,2.31,2167,6
+qwen36-35b-a3b,cache,sim-vram=3000,3,29.0,0.72,103,6
+qwen36-35b-a3b,cache,sim-vram=3000,10,50.5,1.26,198,6
+qwen36-35b-a3b,cache,sim-vram=3000,20,71.0,1.77,282,6
+qwen36-35b-a3b,cache,sim-vram=3000,35,128.6,3.21,272,6
+qwen36-35b-a3b,cache,sim-vram=3000,50,184.4,4.61,271,6
+qwen36-35b-a3b,cache,sim-vram=3000,70,230.8,5.77,303,6
+qwen36-35b-a3b,cache,sim-vram=3000,100,352.5,8.81,284,6
+qwen36-35b-a3b,cache,sim-vram=3000,200,688.6,17.21,290,6
+qwen36-35b-a3b,stage,sim-vram=3000,3,47.0,1.17,64,6
+qwen36-35b-a3b,stage,sim-vram=3000,10,121.2,3.03,83,6
+qwen36-35b-a3b,stage,sim-vram=3000,20,214.8,5.37,93,6
+qwen36-35b-a3b,stage,sim-vram=3000,35,147.5,3.69,237,6
+qwen36-35b-a3b,stage,sim-vram=3000,50,173.8,4.35,288,6
+qwen36-35b-a3b,stage,sim-vram=3000,70,316.5,7.91,221,6
+qwen36-35b-a3b,stage,sim-vram=3000,100,317.2,7.93,315,6
+qwen36-35b-a3b,stage,sim-vram=3000,200,323.6,8.09,618,6
+qwen36-35b-a3b,k8,sim-vram=3000,3,47.5,1.19,63,6
+qwen36-35b-a3b,k8,sim-vram=3000,10,121.4,3.04,82,6
+qwen36-35b-a3b,k8,sim-vram=3000,20,214.1,5.35,93,6
+qwen36-35b-a3b,k8,sim-vram=3000,35,147.2,3.68,238,6
+qwen36-35b-a3b,k8,sim-vram=3000,50,171.7,4.29,291,6
+qwen36-35b-a3b,k8,sim-vram=3000,70,180.0,4.50,389,6
+qwen36-35b-a3b,k8,sim-vram=3000,100,194.2,4.86,515,6
+qwen36-35b-a3b,k8,sim-vram=3000,200,260.5,6.51,768,6
+qwen36-35b-a3b,cpu_all,CPU computes every expert,3,125.0,3.13,24,6
+qwen36-35b-a3b,cpu_all,CPU computes every expert,10,223.4,5.59,45,6
+qwen36-35b-a3b,cpu_all,CPU computes every expert,20,397.8,9.94,50,6
+qwen36-35b-a3b,cpu_all,CPU computes every expert,35,1657.1,41.43,21,6
+qwen36-35b-a3b,cpu_all,CPU computes every expert,50,1678.8,41.97,30,6
+qwen36-35b-a3b,cpu_all,CPU computes every expert,70,1876.1,46.90,37,6
+qwen36-35b-a3b,cpu_all,CPU computes every expert,100,1876.7,46.92,53,6
+qwen36-35b-a3b,cpu_all,CPU computes every expert,200,1876.7,46.92,107,6
